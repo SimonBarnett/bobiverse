@@ -23,7 +23,10 @@ Get-Content $env:USERPROFILE\.agentic-irc-bobiverse\irc.log -Tail 80
 
 ## Systray Restart
 
-Must restart **`ircBob`** (not tray-only): departure announce in `#bobiverse` and `#{machine}`, then Restart-Service ircBob, then tray.
+`Start-BobTray.ps1` (bob MSI) and Desktop **Bob Fleet Restart** call `Restart-BobEar.ps1`:
+write `depart-request.txt` → ear announces → `Restart-Service ircBob`.
+
+Watch-AgentHealth installs to Desktop **IF MISSING** from pack `Watch-AgentHealth\`.
 
 ## Recycle
 

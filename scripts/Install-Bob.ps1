@@ -13,7 +13,10 @@ param(
     [string]$BobHome = '',
     [switch]$NoStart,
     [switch]$ForceTools,
-    [switch]$SkipIcons
+    [switch]$SkipIcons,
+    [switch]$SkipWatchAgentHealth,
+    [switch]$SkipTray,
+    [switch]$PromptServicePassword
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,13 +78,37 @@ $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $user))
+Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user -PromptIfMissing:$PromptServicePassword
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', "BOB_MACHINE_ID=$MachineId"))
+
+# Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)
+if (-not $SkipWatchAgentHealth) {
+    $wahSrc = Join-Path $InstallRoot 'Watch-AgentHealth'
+    if (-not (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1'))) {
+        $wahSrc = Join-Path $repoRoot 'Watch-AgentHealth'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1'))) {
+        $wahSrc = Join-Path $repoRoot 'third_party\Watch-AgentHealth'
+    }
+    $wahDesk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Watch-AgentHealth'
+    if (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1')) {
+        if (-not (Test-Path -LiteralPath $wahDesk) -or $ForceTools) {
+            New-Item -ItemType Directory -Force -Path $wahDesk | Out-Null
+            Copy-Item -Path (Join-Path $wahSrc '*') -Destination $wahDesk -Recurse -Force
+            Write-Host "INFO Watch-AgentHealth -> $wahDesk"
+        } else {
+            Write-Host "INFO Watch-AgentHealth already on Desktop (pass -ForceTools to refresh)"
+        }
+    } else {
+        Write-Host 'WARN Watch-AgentHealth not in pack; skip Desktop install'
+    }
+}
 
 if (-not $SkipIcons) {
     $desk = [Environment]::GetFolderPath('Desktop')
     $start = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\Bobiverse'
     $restartPs1 = Join-Path $InstallRoot 'scripts\Restart-BobEar.ps1'
+    $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
     New-BobiverseShortcut -LinkPath (Join-Path $desk 'Bob Fleet Restart.lnk') `
         -TargetPath 'powershell.exe' `
         -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$restartPs1`"" `
@@ -95,6 +122,29 @@ if (-not $SkipIcons) {
     New-BobiverseShortcut -LinkPath (Join-Path $start 'Bob Services.lnk') `
         -TargetPath 'services.msc' `
         -Description 'Windows Services'
+    if ((-not $SkipTray) -and (Test-Path -LiteralPath $trayPs1)) {
+        New-BobiverseShortcut -LinkPath (Join-Path $desk 'Bobiverse Tray.lnk') `
+            -TargetPath 'powershell.exe' `
+            -Arguments "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`"" `
+            -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
+            -Description 'bobiverse tray (Restart ircBob)'
+        New-BobiverseShortcut -LinkPath (Join-Path $start 'Bobiverse Tray.lnk') `
+            -TargetPath 'powershell.exe' `
+            -Arguments "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`"" `
+            -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
+            -Description 'bobiverse tray (Restart ircBob)'
+    }
+}
+
+if ((-not $SkipTray) -and (-not $NoStart)) {
+    $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
+    if (Test-Path -LiteralPath $trayPs1) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', $trayPs1, '-InstallRoot', $InstallRoot
+        ) | Out-Null
+        Write-Host 'INFO started Start-BobTray'
+    }
 }
 
 if (-not $NoStart) {

@@ -1,11 +1,14 @@
 ﻿dist/
 third_party/nssm/win64/
 third_party/nssm/*.exe
+third_party/ergo/win64/
+third_party/ergo/**/ergo.exe
 third_party/wix/bin/
 third_party/wix/_extract/
 third_party/wix/*.zip
 third_party/bootstrap/
 config/ergo.password
+config/ircd.yaml
 **/connect.password
 __pycache__/
 *.pyc

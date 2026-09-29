@@ -140,6 +140,8 @@ function Request-BobiverseUacRelaunch {
             if ($val.IsPresent) { [void]$list.Add("-$key") }
             continue
         }
+        # Never re-pass plaintext passwords on the UAC command line.
+        if ($key -eq 'ServicePassword') { continue }
         [void]$list.Add("-$key")
         if ($val -is [System.Array]) {
             foreach ($item in $val) { [void]$list.Add([string]$item) }
@@ -150,4 +152,54 @@ function Request-BobiverseUacRelaunch {
     $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $list.ToArray() -Wait -PassThru
     if ($null -eq $p) { throw 'UAC cancelled' }
     exit [int]$p.ExitCode
+}
+
+function Set-BobiverseServiceObjectName {
+    <#
+      Set NSSM ObjectName to the install user (DPAPI). Password from:
+        1) -Password SecureString
+        2) env BOBIVERSE_SERVICE_PASSWORD (plaintext, cleared by caller if desired)
+        3) interactive Get-Credential when -PromptIfMissing and UserInteractive
+      Without a password, sets username only and warns (service may fail logon).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Nssm,
+        [Parameter(Mandatory)][string]$ServiceName,
+        [Parameter(Mandatory)][string]$User,
+        [SecureString]$Password = $null,
+        [switch]$PromptIfMissing
+    )
+    $plain = $null
+    try {
+        if (-not $Password -and $env:BOBIVERSE_SERVICE_PASSWORD) {
+            $Password = ConvertTo-SecureString -String $env:BOBIVERSE_SERVICE_PASSWORD -AsPlainText -Force
+        }
+        if (-not $Password -and $PromptIfMissing -and [Environment]::UserInteractive) {
+            $cred = Get-Credential -UserName $User -Message "Password for Windows service $ServiceName (runs as this user for DPAPI)"
+            if ($cred) {
+                $User = $cred.UserName
+                $Password = $cred.Password
+            }
+        }
+        if ($Password) {
+            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+            try {
+                $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+            } finally {
+                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
+        }
+        if ($plain) {
+            $r = Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $User, $plain)
+            if ($r.ExitCode -ne 0) {
+                throw "nssm set ObjectName failed ($($r.ExitCode)): $($r.Output -join ' ')"
+            }
+            Write-Host "INFO ObjectName=$User (password set)"
+        } else {
+            [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $User))
+            Write-Host "WARN ObjectName=$User without password — if logon fails: nssm set $ServiceName ObjectName `"$User`" <password>  or re-run with -PromptServicePassword / BOBIVERSE_SERVICE_PASSWORD"
+        }
+    } finally {
+        $plain = $null
+    }
 }

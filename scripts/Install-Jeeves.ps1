@@ -10,9 +10,11 @@ param(
     [string]$ServiceName = 'ircJeeves',
     [string]$Python = '',
     [string]$ChairHome = '',
+    [string]$ErgoRoot = 'C:\ai\ergo',
     [switch]$SkipErgo,
     [switch]$NoStart,
-    [switch]$ForceTools
+    [switch]$ForceTools,
+    [switch]$PromptServicePassword
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,14 +60,25 @@ if (-not (Test-Path -LiteralPath $ops)) {
     [IO.File]::WriteAllText($ops, "Simon`n", [Text.UTF8Encoding]::new($false))
 }
 
-# Ergo / BobIrcd if present under pack or C:\ai\ergo
+# Ergo payload: pack lays ergo\ under InstallRoot; BobIrcd AppDirectory is ErgoRoot (C:\ai\ergo)
 if (-not $SkipErgo) {
-    $ergoExe = Join-Path $InstallRoot 'ergo\ergo.exe'
-    if (-not (Test-Path $ergoExe)) { $ergoExe = 'C:\ai\ergo\ergo.exe' }
-    if (Test-Path -LiteralPath $ergoExe) {
-        Write-Host "INFO Ergo present at $ergoExe — ensure BobIrcd service separately if needed"
+    $packErgo = Join-Path $InstallRoot 'ergo'
+    if (-not (Test-Path -LiteralPath (Join-Path $packErgo 'ergo.exe'))) {
+        $packErgo = Join-Path $repoRoot 'ergo'
+    }
+    $installBobIrcd = Join-Path $here 'Install-BobIrcd.ps1'
+    if (Test-Path -LiteralPath $installBobIrcd) {
+        $ircdArgs = @{
+            ErgoRoot    = $ErgoRoot
+            NssmSource  = $Nssm
+            NoStart     = $NoStart
+        }
+        if (Test-Path -LiteralPath (Join-Path $packErgo 'ergo.exe')) {
+            $ircdArgs['PackErgoDir'] = $packErgo
+        }
+        & $installBobIrcd @ircdArgs
     } else {
-        Write-Host 'WARN Ergo binary not in pack yet; install BobIrcd manually or re-pack with ergo payload'
+        Write-Host 'WARN Install-BobIrcd.ps1 missing'
     }
 }
 
@@ -80,16 +93,23 @@ $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', 'bobiverse Jeeves chair'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $user))
-# Prompt for password is interactive; document that ObjectName may need nssm set ObjectName manually with password.
-Write-Host "INFO ObjectName=$user (if service fails logon, run: nssm set $ServiceName ObjectName `"$user`" <password>)"
+Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user -PromptIfMissing:$PromptServicePassword
 
 $envExtra = "BOB_DIGEST_HOME=$digestHome"
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', $envExtra))
+
+# Prefer Ergo up before chair when both are installed
+if (-not $SkipErgo -and -not $NoStart) {
+    $ircd = Get-Service -Name 'BobIrcd' -ErrorAction SilentlyContinue
+    if ($ircd -and $ircd.Status -ne 'Running') {
+        Start-Service -Name 'BobIrcd' -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+    }
+}
 
 if (-not $NoStart) {
     Start-Service $ServiceName
     Start-Sleep -Seconds 2
 }
-Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
+Get-Service $ServiceName, BobIrcd -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize
 Write-Host 'INFO Install-Jeeves done'

@@ -28,9 +28,25 @@ if ($msiVersion -notmatch '^\d+\.\d+\.\d+') { throw "bad VERSION $Version" }
 
 $fetchNssm = Join-Path $RepoRoot 'scripts\Fetch-Nssm.ps1'
 $fetchWix = Join-Path $RepoRoot 'scripts\Fetch-Wix.ps1'
-& $fetchNssm -OutDir (Join-Path $RepoRoot 'third_party\nssm\win64') -CacheDir (Join-Path $RepoRoot 'third_party\nssm')
+$fetchErgo = Join-Path $RepoRoot 'scripts\Fetch-Ergo.ps1'
+$null = & $fetchNssm -OutDir (Join-Path $RepoRoot 'third_party\nssm\win64') -CacheDir (Join-Path $RepoRoot 'third_party\nssm')
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
+
+function Resolve-WatchAgentHealthSrc {
+    foreach ($c in @(
+            (Join-Path $RepoRoot 'third_party\Watch-AgentHealth'),
+            $env:BOBIVERSE_WATCH_AGENTHEALTH,
+            (Join-Path (Split-Path -Parent $RepoRoot) 'agentic_build\tools\Watch-AgentHealth'),
+            (Join-Path $env:USERPROFILE 'agentic_build\tools\Watch-AgentHealth'),
+            'C:\Users\Administrator\agentic_build\tools\Watch-AgentHealth'
+        )) {
+        if ($c -and (Test-Path -LiteralPath (Join-Path $c 'Watch-AgentHealth.ps1'))) {
+            return $c
+        }
+    }
+    return $null
+}
 
 function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
@@ -56,6 +72,41 @@ function Stage-Product([string]$Name) {
     }
     if ($Name -eq 'airc' -and -not (Test-Path (Join-Path $stage 'config\ergo.password'))) {
         throw 'airc pack requires config/ergo.password or packer ~/.grok/ergo/connect.password'
+    }
+    if ($Name -eq 'jeeves') {
+        $ergoStage = Join-Path $stage 'ergo'
+        New-Item -ItemType Directory -Force -Path $ergoStage | Out-Null
+        $null = & $fetchErgo -OutDir $ergoStage -CacheDir (Join-Path $RepoRoot 'third_party\ergo')
+        if (-not (Test-Path -LiteralPath (Join-Path $ergoStage 'ergo.exe'))) {
+            throw 'jeeves pack requires ergo.exe (Fetch-Ergo failed)'
+        }
+        # Optional operator ircd.yaml (never from git secrets); else Install seeds default.yaml
+        foreach ($c in @(
+                (Join-Path $RepoRoot 'config\ircd.yaml'),
+                $env:BOBIVERSE_IRCD_YAML,
+                'C:\ai\ergo\ircd.yaml'
+            )) {
+            if ($c -and (Test-Path -LiteralPath $c)) {
+                Copy-Item -LiteralPath $c -Destination (Join-Path $ergoStage 'ircd.yaml') -Force
+                Write-Host "INFO jeeves embedded ergo/ircd.yaml from $c"
+                break
+            }
+        }
+        Write-Host "INFO jeeves staged Ergo payload under ergo\"
+    }
+    if ($Name -eq 'bob') {
+        $wahSrc = Resolve-WatchAgentHealthSrc
+        if ($wahSrc) {
+            $wahDest = Join-Path $stage 'Watch-AgentHealth'
+            New-Item -ItemType Directory -Force -Path $wahDest | Out-Null
+            Copy-Item -Path (Join-Path $wahSrc '*') -Destination $wahDest -Recurse -Force
+            # Drop binary .lnk shortcuts from foreign trees (recreated by Install if needed)
+            Get-ChildItem -Path $wahDest -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+            Write-Host "INFO bob staged Watch-AgentHealth from $wahSrc"
+        } else {
+            Write-Host 'WARN bob pack: Watch-AgentHealth source missing (Desktop install will skip)'
+        }
     }
     return $stage
 }

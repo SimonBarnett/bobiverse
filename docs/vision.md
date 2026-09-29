@@ -68,7 +68,10 @@ Systray is the Bob UI surface; HTML mocks document tray states for UAT later.
 - Op registers via `!register`; Bob does not self-REGISTER shops
 - Self-update via GitHub Release MSI on service start
 
-## UNKNOWN
+## LOCKED (pack layout)
 
-- Exact Ergo binary packaging path inside Jeeves MSI payload layout
-- Whether `!recycle jeeves` also bounces `BobIrcd` (default: ircJeeves only)
+- Jeeves MSI stages Ergo under payload `ergo\` (`ergo.exe`, `default.yaml`, languages…).
+  Install copies/seeds **`C:\ai\ergo`** and registers service **`BobIrcd`** (NSSM in Ergo root).
+- Bob MSI stages **`Watch-AgentHealth\`** (Desktop install IF MISSING) + **`Start-BobTray.ps1`**
+  (Restart → `Restart-BobEar.ps1` → `ircBob`).
+- `!recycle jeeves` restarts **`ircJeeves` only** (does not bounce `BobIrcd`).
