@@ -147,10 +147,13 @@ function Build-Msi([string]$Name, [string]$Stage) {
     & $heat dir $Stage -cg $cg -gg -sfrag -srd -sreg -scom -dr INSTALLDIR -var var.StageDir -out $harvested
     if ($LASTEXITCODE -ne 0) { throw "heat failed $LASTEXITCODE" }
 
+    # airc UpgradeCode must NOT match agentic_irc airc-console
+    # (B7E3C9A1-4F2D-4E8B-9C11-A1BC00501E01) or 0.1.x packs look like
+    # downgrades of airc-console 0.1.19+ (issue #12).
     $upgrade = switch ($Name) {
         'jeeves' { 'B7E3C9A1-4F2D-4E8B-9C11-A1BC00FEE001' }
         'bob' { 'B7E3C9A1-4F2D-4E8B-9C11-A1BC0000B0B1' }
-        'airc' { 'B7E3C9A1-4F2D-4E8B-9C11-A1BC00501E01' }
+        'airc' { 'B7E3C9A1-4F2D-4E8B-9C11-A1BC00A1C001' }
     }
     $installCmd = switch ($Name) {
         'jeeves' { 'Install-Jeeves.cmd' }
