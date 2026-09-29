@@ -40,10 +40,21 @@ if (Test-BobiverseIsLocalSystem) {
     $env:BOBIVERSE_NO_UPDATE = '1'
 }
 
-# Embedded MSI PASS (Simon: keep embed) or operator connect.password
+# Ergo server PASS from config\ergo.password / home / env (public MSI no longer embeds — issue #4).
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
 if (-not $env:AGENTIC_IRC_PASSWORD) {
-    Write-Host 'WARN AGENTIC_IRC_PASSWORD unset — TLS to irc.ntsa.uk will fail without config\ergo.password'
+    Write-Host 'WARN AGENTIC_IRC_PASSWORD unset - TLS to irc.ntsa.uk will fail without config\ergo.password'
+}
+
+# Issue #8: SASL as bob-{machine} so reserved Bob-* nicks get 001 (NickServ account owns the nick).
+$nsFile = Join-Path $BobHome 'nickserv.password'
+$env:AGENTIC_IRC_SASL_USER = 'bob-' + $MachineId
+if (Test-Path -LiteralPath $nsFile) {
+    $env:AGENTIC_IRC_SASL_PASSWORD = (Get-Content -LiteralPath $nsFile -Raw).Trim()
+    $nsLen = $env:AGENTIC_IRC_SASL_PASSWORD.Length
+    Write-Host "INFO SASL user=$($env:AGENTIC_IRC_SASL_USER) from $nsFile (len=$nsLen)"
+} else {
+    Write-Host "WARN missing $nsFile - reserved nick will fail without AGENTIC_IRC_SASL_PASSWORD"
 }
 
 $update = Join-Path $scriptDir 'Check-BobiverseUpdate.ps1'

@@ -86,20 +86,30 @@ Install-BobiversePythonDeps -Python $Python
 
 # Quote-safe NSSM: no -Python path in AppParameters (issue #3); Start-Bob resolves python.
 $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
-$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId $MachineId -BobHome `"$BobHome`" -InstallRoot `"$InstallRoot`""
 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
 
-# Default: prompt for ObjectName password when interactive (ship password UX)
-$doPrompt = $PromptServicePassword -or ([Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem))
+# Issue #6: msiexec /qn is UserInteractive=$true but has no console — never Get-Credential unless -PromptServicePassword
+# and not under MSI/quiet.
+$doPrompt = $PromptServicePassword -or (
+    -not (Test-BobiverseMsiOrQuiet) -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)
+)
 $objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user `
     -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
+
+# Issue #7: LocalSystem must not bake the installing user's -BobHome; Start-Bob then picks InstallRoot\home.
+$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId $MachineId -InstallRoot `"$InstallRoot`""
+if ($objectOk) {
+    $appParams += " -BobHome `"$BobHome`""
+} else {
+    Write-Host "INFO LocalSystem ObjectName: omit -BobHome (issue #7; Start-Bob uses $InstallRoot\home)"
+}
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
 
 $envExtra = @(
     "BOB_MACHINE_ID=$MachineId"
@@ -109,7 +119,6 @@ if ($env:AGENTIC_IRC_PASSWORD) {
     $envExtra += "AGENTIC_IRC_PASSWORD=$($env:AGENTIC_IRC_PASSWORD)"
 }
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
-
 # Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)
 if (-not $SkipWatchAgentHealth) {
     $wahSrc = Join-Path $InstallRoot 'Watch-AgentHealth'
@@ -190,8 +199,13 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
 }
 
 if (-not $NoStart) {
-    Start-Service $ServiceName
-    Start-Sleep -Seconds 2
+    # Soft-fail start so missing ObjectName password does not 1603 the MSI (issue #6).
+    try {
+        Start-Service $ServiceName -ErrorAction Stop
+        Start-Sleep -Seconds 2
+    } catch {
+        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) — complete service logon then start"
+    }
 }
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
 Write-Host "INFO Install-Bob done nick=$nick"

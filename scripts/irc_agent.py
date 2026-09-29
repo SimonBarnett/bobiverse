@@ -1313,7 +1313,9 @@ class Client:
         if cmd == "CAP" and "ack" in tokens and "sasl" in tokens:
             self.sasl_ack.set()
             out.append("AUTHENTICATE PLAIN")
-        if cmd == "AUTHENTICATE" and trailing.strip() == "+":
+        # Ergo sends bare "AUTHENTICATE +" (no " :"); trailing-only miss → no-sasl timeout (issue #8).
+        auth_chal = (trailing or (args[0] if args else "")).strip().lstrip(":")
+        if cmd == "AUTHENTICATE" and auth_chal == "+":
             self.sasl_plus.set()
             tok = self.sasl_token()
             if tok:
@@ -2014,6 +2016,14 @@ class Client:
                                 self.live_nick = self.original_nick + "_l"
                             self.send("NICK " + self.live_nick)
                             info(f"INFO nick -> {self.live_nick} (still accept {self.original_nick})")
+                    # Ergo: FAIL NICK NICKNAME_RESERVED <nick> :… — surface before NO 001 (issue #8).
+                    if cmd == "FAIL":
+                        info(
+                            "INFO FAIL "
+                            + " ".join(parts[1:4] + ([trailing] if trailing else []))[:220]
+                        )
+                    if trailing and "nickname is reserved" in trailing.lower():
+                        info(f"INFO NICKNAME_RESERVED {trailing.strip()[:180]}")
                     for line in self.sasl_on_line(cmd, parts[1:], trailing):
                         self.send(line)
                     if cmd == "PRIVMSG" and " :" in wire:

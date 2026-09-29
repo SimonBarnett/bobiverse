@@ -179,6 +179,26 @@ function Test-BobiverseIsLocalSystem {
     return ($sid -eq 'S-1-5-18') -or ($id.Name -match 'SYSTEM$')
 }
 
+function Test-BobiverseMsiOrQuiet {
+    <#
+      True under msiexec custom actions / quiet installs (issue #6).
+      MSI Impersonate=yes still reports UserInteractive=$true, so Get-Credential hangs forever under /qn.
+    #>
+    if ($env:BOBIVERSE_NONINTERACTIVE -eq '1') { return $true }
+    if ($env:MsiLogFileLocation) { return $true }
+    if ($env:WINDOWS_INSTALLER -eq '1') { return $true }
+    try {
+        $pidWalk = $PID
+        for ($i = 0; $i -lt 8 -and $pidWalk; $i++) {
+            $p = Get-CimInstance Win32_Process -Filter "ProcessId=$pidWalk" -ErrorAction Stop
+            if ($p.Name -match '(?i)^msiexec') { return $true }
+            $pidWalk = $p.ParentProcessId
+            if (-not $pidWalk -or $pidWalk -eq 0) { break }
+        }
+    } catch { }
+    return $false
+}
+
 function Resolve-BobiverseServiceUser {
     <# Prefer interactive / install user over LocalSystem (MSI deferred CA). #>
     if (-not (Test-BobiverseIsLocalSystem)) {
@@ -263,7 +283,8 @@ function Get-BobiverseServicePasswordSecure {
             Write-Host "WARN DPAPI service.cred unreadable: $($_.Exception.Message)"
         }
     }
-    if ($PromptIfMissing -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)) {
+    # Never prompt under msiexec / quiet (issue #6) — Get-Credential has no UI and hangs the CA.
+    if ($PromptIfMissing -and -not (Test-BobiverseMsiOrQuiet) -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)) {
         $who = if ($User) { $User } else { [Security.Principal.WindowsIdentity]::GetCurrent().Name }
         $cred = Get-Credential -UserName $who -Message 'Password for bobiverse Windows service (ObjectName / DPAPI user)'
         if ($cred) { return $cred.Password }

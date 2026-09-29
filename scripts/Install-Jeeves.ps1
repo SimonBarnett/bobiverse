@@ -101,7 +101,10 @@ $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', 'bobiverse Jeeves chair'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
-$doPrompt = $PromptServicePassword -or ([Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem))
+# Issue #6: never Get-Credential under msiexec /qn (UserInteractive can still be $true).
+$doPrompt = $PromptServicePassword -or (
+    -not (Test-BobiverseMsiOrQuiet) -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)
+)
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $ChairHome)
 $objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user `
     -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
@@ -131,8 +134,12 @@ if (-not $SkipErgo -and -not $NoStart) {
 }
 
 if (-not $NoStart) {
-    Start-Service $ServiceName
-    Start-Sleep -Seconds 2
+    try {
+        Start-Service $ServiceName -ErrorAction Stop
+        Start-Sleep -Seconds 2
+    } catch {
+        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) — complete service logon then start"
+    }
 }
 Get-Service $ServiceName, BobIrcd -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize
 Write-Host 'INFO Install-Jeeves done'
