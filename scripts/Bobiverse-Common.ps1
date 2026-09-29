@@ -126,7 +126,7 @@ function Copy-BobiverseVersion {
 }
 
 function Request-BobiverseUacRelaunch {
-    param([Parameter(Mandatory)][System.Management.Automation.PSBoundParameters]$Bound)
+    param([Parameter(Mandatory)]$Bound)
     $self = $PSCommandPath
     if (-not $self) { $self = $MyInvocation.MyCommand.Path }
     if (-not $self) { throw 'cannot resolve script path for UAC' }
@@ -197,7 +197,7 @@ function Set-BobiverseServiceObjectName {
             Write-Host "INFO ObjectName=$User (password set)"
         } else {
             [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $User))
-            Write-Host "WARN ObjectName=$User without password — if logon fails: nssm set $ServiceName ObjectName `"$User`" <password>  or re-run with -PromptServicePassword / BOBIVERSE_SERVICE_PASSWORD"
+            Write-Host ('WARN ObjectName={0} without password - if logon fails: nssm set {1} ObjectName "{0}" PASSWORD  or re-run with -PromptServicePassword / BOBIVERSE_SERVICE_PASSWORD' -f $User, $ServiceName)
         }
     } finally {
         $plain = $null
