@@ -33,6 +33,7 @@ import shop_ops  # noqa: E402
 import shop_chanserv  # noqa: E402
 import shop_listen  # noqa: E402
 import agent_control  # noqa: E402
+import registered_machines  # noqa: E402
 import talk_seat_ghost  # noqa: E402
 import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
@@ -674,6 +675,8 @@ class Client:
                 return
         if who and who.lower() not in self._mine_nicks() and ch.lower() == bobreport.FLEET_CHANNEL:
             self._maybe_brief_joiner(who)
+        if who and who.lower() not in self._mine_nicks():
+            self._maybe_grant_bob_modes(who)
         if not self._is_digest_operator():
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
@@ -808,6 +811,57 @@ class Client:
         info(f"INFO bobiverse refused to={who} url={bobreport.digest_url()}")
         return True
 
+    def _register_operators(self) -> set[str]:
+        """Simon + configured operators may !register (bobiverse)."""
+        ops = {"simon"}
+        p = Path(self.home) / "operators.txt"
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8-sig").splitlines():
+                s = line.strip().lstrip("\ufeff")
+                if s and not s.startswith("#"):
+                    ops.add(s.lower())
+        return ops
+
+    def _handle_register_command(self, asker: str, body: str) -> bool:
+        """Chair: !register <machine> → ChanServ REGISTER #{machine} + persist."""
+        if not getattr(self.args, "chair", False):
+            return False
+        mid = registered_machines.parse_register_command(body)
+        if not mid:
+            return False
+        who = (asker or "").strip()
+        if not who or who.lower() in self._mine_nicks():
+            return True
+        if who.lower() not in self._register_operators():
+            self.whisper(who, f"ERR !register denied (operators only) machine={mid}")
+            info(f"INFO register denied nick={who} machine={mid}")
+            return True
+        shop = f"#{mid}"
+        if shop.lower() not in {c.lower() for c in self.channels}:
+            self.channels.append(shop)
+            self.send(f"JOIN {shop}")
+            time.sleep(FLOOD_S)
+        # Jeeves owns registration (Bob does not self-REGISTER).
+        self.send(f"PRIVMSG ChanServ :REGISTER {shop}")
+        time.sleep(FLOOD_S)
+        registered_machines.add_registered(Path(self.home), mid)
+        self.whisper(who, f"ACK registered {shop}")
+        info(f"INFO register machine={mid} by={who}")
+        return True
+
+    def _maybe_grant_bob_modes(self, nick: str) -> None:
+        """On Bob-* JOIN: +o shop and +h #bobiverse if machine was !register'd."""
+        if not getattr(self.args, "chair", False):
+            return
+        mid = registered_machines.machine_from_bob_nick(nick)
+        if not mid or not registered_machines.is_registered(Path(self.home), mid):
+            return
+        shop = f"#{mid}"
+        self.send(f"MODE {shop} +o {nick}")
+        time.sleep(FLOOD_S)
+        self.send(f"MODE {bobreport.FLEET_CHANNEL} +h {nick}")
+        info(f"INFO jeeves-op bob={nick} shop={shop} +o/+h")
+
     def _handle_recycle_command(self, asker: str, body: str) -> None:
         if not getattr(self.args, "chair", False):
             return
@@ -823,6 +877,22 @@ class Client:
                 self.whisper(who, bob_recycle.refuse_message(machine_id))
             return
         mid = machine_id or ""
+        # !recycle jeeves → restart chair (MSI self-update on start).
+        if mid.lower() in {"jeeves", "ircjeeves"}:
+            try:
+                self.say("Jeeves departing (recycle)")
+            except Exception:
+                pass
+            if who:
+                self.whisper(who, "ACK recycle jeeves")
+            info("INFO recycle jeeves")
+            try:
+                import agent_control
+
+                agent_control.request_agent_quit(self.home, "recycle-jeeves")
+            except Exception:
+                pass
+            return
         if bob_recycle.chair_targets_local(mid):
             bob_recycle.execute_local_recycle(
                 mid, self.home, ionos_chair=True, hooks=getattr(self, "_recycle_hooks", None)
@@ -1597,6 +1667,8 @@ class Client:
                 if pulled is not None:
                     self._on_digest_whisper(src, pulled)
                     return
+        if self._handle_register_command(src, body):
+            return
         if bobtalk.parse_recycle_command(body):
             self._handle_recycle_command(src, body)
             return

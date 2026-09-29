@@ -62,6 +62,9 @@ def parse_recycle_wire(body: str) -> str | None:
 
 
 def resolve_recycle_machine(token: str) -> str | None:
+    raw = (token or "").strip().lower()
+    if raw in {"jeeves", "ircjeeves"}:
+        return "jeeves"
     mid = bobreport.normalize_machine_id(token)
     if not mid or mid not in bobreport.FLEET_MACHINE_IDS:
         return None
