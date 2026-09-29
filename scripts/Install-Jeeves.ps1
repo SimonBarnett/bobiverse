@@ -33,7 +33,7 @@ if (Test-Path -LiteralPath $bootstrap) {
 }
 
 $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
-if (-not $Nssm) { throw 'nssm missing — pack third_party\nssm\win64\nssm.exe or pass -Nssm' }
+if (-not $Nssm) { throw 'nssm missing - pack third_party\nssm\win64\nssm.exe or pass -Nssm' }
 if (-not $Python) { $Python = Resolve-BobiversePython }
 if (-not $ChairHome) { $ChairHome = Join-Path $env:USERPROFILE '.agentic-irc-jeeves' }
 New-Item -ItemType Directory -Force -Path $ChairHome | Out-Null
@@ -44,7 +44,7 @@ New-Item -ItemType Directory -Force -Path $digestHome | Out-Null
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
 Get-ScheduledTask -TaskName 'BobJeeves-chair' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
 
-# Lay tree: copy scripts + skills into InstallRoot (skip when MSI already staged — issue #2)
+# Lay tree: copy scripts + skills into InstallRoot (skip when MSI already staged - issue #2)
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
@@ -91,7 +91,7 @@ if (-not $SkipErgo) {
 
 $launcher = Join-Path $InstallRoot 'scripts\Start-Jeeves.ps1'
 $user = Resolve-BobiverseServiceUser
-# No -Python in AppParameters (spaces break NSSM quoting — issue #3)
+# No -Python in AppParameters (spaces break NSSM quoting - issue #3)
 $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome `"$ChairHome`" -RepoRoot `"$InstallRoot`""
 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
@@ -138,7 +138,7 @@ if (-not $NoStart) {
         Start-Service $ServiceName -ErrorAction Stop
         Start-Sleep -Seconds 2
     } catch {
-        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) — complete service logon then start"
+        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
     }
 }
 Get-Service $ServiceName, BobIrcd -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize

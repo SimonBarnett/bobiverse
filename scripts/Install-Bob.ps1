@@ -94,7 +94,7 @@ $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
 
-# Issue #6: msiexec /qn is UserInteractive=$true but has no console — never Get-Credential unless -PromptServicePassword
+# Issue #6: msiexec /qn is UserInteractive=$true but has no console - never Get-Credential unless -PromptServicePassword
 # and not under MSI/quiet.
 $doPrompt = $PromptServicePassword -or (
     -not (Test-BobiverseMsiOrQuiet) -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)
@@ -204,7 +204,7 @@ if (-not $NoStart) {
         Start-Service $ServiceName -ErrorAction Stop
         Start-Sleep -Seconds 2
     } catch {
-        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) — complete service logon then start"
+        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
     }
 }
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize

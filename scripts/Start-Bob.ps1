@@ -4,7 +4,7 @@
   Launch Bob-{MachineId} ear (NSSM ircBob). Self-update check then irc_agent.
 .NOTES
   Issue #3: use --channel (not --channels); load Ergo PASS from MSI config\ergo.password.
-  Do not pass -Python via NSSM AppParameters (spaces break quoting) — resolve here.
+  Do not pass -Python via NSSM AppParameters (spaces break quoting) - resolve here.
 #>
 [CmdletBinding()]
 param(
@@ -40,7 +40,7 @@ if (Test-BobiverseIsLocalSystem) {
     $env:BOBIVERSE_NO_UPDATE = '1'
 }
 
-# Ergo server PASS from config\ergo.password / home / env (public MSI no longer embeds — issue #4).
+# Ergo server PASS from config\ergo.password / home / env (public MSI no longer embeds - issue #4).
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
 if (-not $env:AGENTIC_IRC_PASSWORD) {
     Write-Host 'WARN AGENTIC_IRC_PASSWORD unset - TLS to irc.ntsa.uk will fail without config\ergo.password'

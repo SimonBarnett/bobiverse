@@ -140,7 +140,7 @@ function Test-BobiverseSamePath([string]$A, [string]$B) {
 function Copy-BobiverseTree {
     <#
       Copy source tree to dest. No-op when source and dest are the same path
-      (MSI heat already laid files under InstallRoot — issue #2).
+      (MSI heat already laid files under InstallRoot - issue #2).
     #>
     param(
         [Parameter(Mandatory)][string]$Source,
@@ -283,7 +283,7 @@ function Get-BobiverseServicePasswordSecure {
             Write-Host "WARN DPAPI service.cred unreadable: $($_.Exception.Message)"
         }
     }
-    # Never prompt under msiexec / quiet (issue #6) — Get-Credential has no UI and hangs the CA.
+    # Never prompt under msiexec / quiet (issue #6) - Get-Credential has no UI and hangs the CA.
     if ($PromptIfMissing -and -not (Test-BobiverseMsiOrQuiet) -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)) {
         $who = if ($User) { $User } else { [Security.Principal.WindowsIdentity]::GetCurrent().Name }
         $cred = Get-Credential -UserName $who -Message 'Password for bobiverse Windows service (ObjectName / DPAPI user)'
@@ -374,7 +374,7 @@ function Set-BobiverseServiceObjectName {
             return $true
         }
         if ($AllowLocalSystem -or -not $User) {
-            Write-Host 'WARN ObjectName left as service default (LocalSystem) — run Complete-BobiverseServiceLogon.ps1 or set BOBIVERSE_SERVICE_PASSWORD'
+            Write-Host 'WARN ObjectName left as service default (LocalSystem) - run Complete-BobiverseServiceLogon.ps1 or set BOBIVERSE_SERVICE_PASSWORD'
             return $false
         }
         [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $User))
