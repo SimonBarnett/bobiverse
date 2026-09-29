@@ -915,6 +915,68 @@ class Client:
             self.whisper(who, bob_recycle.ack_message(mid, local=False))
         info(f"INFO recycle wire machine={mid}")
 
+    def _announce_departure(self, reason: str) -> None:
+        """Announce leaving #bobiverse and #{machine} before recycle/restart."""
+        mid = self._local_machine_id() or ""
+        nick = self.live_nick or self.original_nick or "Bob"
+        msg = f"{nick} departing ({reason})"
+        try:
+            self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + msg)
+            time.sleep(FLOOD_S)
+        except Exception:
+            pass
+        if mid:
+            try:
+                self.send("PRIVMSG #" + mid + " :" + msg)
+                time.sleep(FLOOD_S)
+            except Exception:
+                pass
+        info(f"INFO depart announce reason={reason} machine={mid}")
+
+    def _handle_bob_local_recycle_command(self, asker: str, body: str) -> None:
+        """Bob ear: !recycle / !recycle {this-machine} → announce + local recycle."""
+        if getattr(self.args, "chair", False):
+            return
+        if not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return
+        parsed = bob_recycle.parse_recycle_query(body)
+        if not parsed:
+            return
+        kind, machine_id = parsed
+        local = self._local_machine_id()
+        if not local:
+            return
+        who = (asker or "").strip()
+        # Bare !recycle (refuse/None) or explicit this machine
+        if kind == "refuse" and machine_id is None:
+            mid = local
+        elif kind == "run" and (machine_id or "").lower() == local:
+            mid = local
+        else:
+            return
+        ops = {"simon", "jeeves"}
+        if who and who.lower() not in ops and who.lower() not in self._mine_nicks():
+            # Allow Jeeves + Simon; other operators via operators.txt in bob home
+            op_file = Path(self.home) / "operators.txt"
+            allowed = set(ops)
+            if op_file.is_file():
+                for line in op_file.read_text(encoding="utf-8-sig").splitlines():
+                    s = line.strip().lstrip("\ufeff")
+                    if s and not s.startswith("#"):
+                        allowed.add(s.lower())
+            if who.lower() not in allowed:
+                return
+        self._announce_departure("recycle")
+        if who:
+            try:
+                self.whisper(who, f"ACK recycle {mid}")
+            except Exception:
+                pass
+        bob_recycle.execute_local_recycle(
+            mid, self.home, ionos_chair=False, hooks=getattr(self, "_recycle_hooks", None)
+        )
+        info(f"INFO bob local recycle machine={mid} from={who}")
+
     def _maybe_execute_recycle_wire(self, src: str, body: str) -> bool:
         if getattr(self.args, "chair", False):
             return False
@@ -938,15 +1000,7 @@ class Client:
         chair = (bobreport.digest_chair_nick(self.home) or "").strip().lower()
         if not chair or src.strip().lower() != chair:
             return False
-        # CAST IRON: announce restarting on the wire, then actually recycle.
-        ann = bob_recycle.restarting_announce(mid, self.original_nick)
-        try:
-            self.say(ann)
-        except Exception:
-            try:
-                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + ann)
-            except Exception:
-                pass
+        self._announce_departure("recycle")
         info(f"INFO recycle announcing restart machine={mid} from={src}")
         bob_recycle.execute_local_recycle(
             mid, self.home, ionos_chair=(mid == bob_recycle.CHAIR_HOME_MACHINE), hooks=getattr(self, "_recycle_hooks", None)
@@ -1013,6 +1067,29 @@ class Client:
         self._ghost_prune_last = now
         if pruned:
             info(f"INFO ghost-prune nicks={','.join(pruned)}")
+
+    def _maybe_depart_request(self) -> None:
+        """Tray/shortcut sets depart-request.txt → announce then quit for service restart."""
+        if getattr(self.args, "chair", False):
+            return
+        if not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return
+        flag = Path(self.home) / "depart-request.txt"
+        if not flag.is_file():
+            return
+        try:
+            reason = flag.read_text(encoding="utf-8").strip() or "tray-restart"
+            flag.unlink(missing_ok=True)
+        except OSError:
+            return
+        self._announce_departure(reason)
+        try:
+            import agent_control
+
+            agent_control.request_agent_quit(self.home, f"depart-{reason}")
+        except Exception:
+            pass
+        info(f"INFO depart-request handled reason={reason}")
 
     def _maybe_bobiverse_pull(self) -> None:
         """Refresh local digest via public HTTP GET (#174). No IRC !bobiverse."""
@@ -1670,7 +1747,10 @@ class Client:
         if self._handle_register_command(src, body):
             return
         if bobtalk.parse_recycle_command(body):
-            self._handle_recycle_command(src, body)
+            if getattr(self.args, "chair", False):
+                self._handle_recycle_command(src, body)
+            else:
+                self._handle_bob_local_recycle_command(src, body)
             return
         if self._maybe_execute_recycle_wire(src, body):
             return
@@ -2002,6 +2082,7 @@ class Client:
             try:
                 self.drain_outbox_once()
                 self._maybe_bobiverse_pull()
+                self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
             except OSError:
                 return

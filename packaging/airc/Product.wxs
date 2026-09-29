@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  airc console per-machine MSI (issue #305).
-  Files harvested by heat.exe into HarvestedFiles.wxs (ComponentGroup AircConsoleFiles).
-  Deferred CustomAction runs Install-AircConsole.cmd after InstallFiles (MSI already elevated).
+  airc per-machine MSI (issue #305).
+  Files harvested by heat.exe into HarvestedFiles.wxs (ComponentGroup AircFiles).
+  Deferred CustomAction runs Install-Airc.cmd after InstallFiles (MSI already elevated).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
       Id="*"
-      Name="airc console"
+      Name="airc"
       Language="1033"
       Version="$(var.ProductVersion)"
       Manufacturer="SimonBarnett"
@@ -16,32 +16,32 @@
         InstallerVersion="500"
         Compressed="yes"
         InstallScope="perMachine"
-        Description="airc console IRC shell service (FR #253 / #305)"
+        Description="airc IRC shell service (FR #253 / #305)"
         Comments="Nick console-machine on #machine; silent in channel."
         Platform="x64" />
 
     <MajorUpgrade
-        DowngradeErrorMessage="A newer version of airc console is already installed."
+        DowngradeErrorMessage="A newer version of airc is already installed."
         Schedule="afterInstallInitialize" />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Feature Id="MainFeature" Title="airc console" Level="1">
-      <ComponentGroupRef Id="AircConsoleFiles" />
+    <Feature Id="MainFeature" Title="airc" Level="1">
+      <ComponentGroupRef Id="AircFiles" />
       <ComponentRef Id="CmpInstallDirMark" />
     </Feature>
 
-    <!-- Default install root C:\ai\airc-console (fleet convention). Avoid Id=WindowsVolume (ICE99). -->
+    <!-- Default install root C:\ai\airc (fleet convention). Avoid Id=WindowsVolume (ICE99). -->
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="INSTALLDIR" Name="airc-console" />
+      <Directory Id="INSTALLDIR" Name="airc" />
     </Directory>
-    <SetDirectory Id="INSTALLDIR" Value="C:\ai\airc-console" />
+    <SetDirectory Id="INSTALLDIR" Value="C:\ai\airc" />
 
     <Component Id="CmpInstallDirMark" Directory="INSTALLDIR" Guid="E2A4B6C8-1D3F-4A5B-9C0D-00A1BC01D001">
       <CreateFolder />
       <RegistryValue
           Root="HKLM"
-          Key="Software\SimonBarnett\airc-console"
+          Key="Software\SimonBarnett\airc"
           Name="InstallDir"
           Type="string"
           Value="[INSTALLDIR]"
@@ -49,7 +49,7 @@
     </Component>
 
     <!--
-      Quiet-exec Install-AircConsole.cmd from the installed tree.
+      Quiet-exec Install-Airc.cmd from the installed tree.
       Requires WixUtilExtension (WixCA / CAQuietExec64 on x64).
       Issue #309: deferred CAQuietExec64 reads CustomActionData (property =
       deferred CA Id). QtExecCmdLine is immediate-only and yields 0x80070057.
@@ -57,7 +57,7 @@
     <CustomAction
         Id="SetAircInstallCmd"
         Property="RunAircInstall"
-        Value="&quot;[INSTALLDIR]scripts\Install-AircConsole.cmd&quot;"
+        Value="&quot;[INSTALLDIR]scripts\Install-Airc.cmd&quot;"
         Execute="immediate" />
     <CustomAction
         Id="RunAircInstall"

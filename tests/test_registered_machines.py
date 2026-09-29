@@ -24,3 +24,19 @@ def test_registry_roundtrip(tmp_path: Path):
     assert rm.bob_nick_for_machine("marchhare") == "Bob-marchhare"
     assert rm.machine_from_bob_nick("Bob-marchhare") == "marchhare"
     assert rm.machine_from_bob_nick("bob-ionos") == "ionos"
+
+
+def test_recycle_jeeves_token():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import bob_recycle
+
+    assert bob_recycle.resolve_recycle_machine("jeeves") == "jeeves"
+    assert bob_recycle.parse_recycle_query("!recycle jeeves") == ("run", "jeeves")
+
+
+def test_airc_console_nick_shape():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import airc_console as ac
+
+    assert ac.machine_console_nick("marchhare") == "marchhare_console"
+    assert ac.machine_console_nick("ionos").endswith("_console")

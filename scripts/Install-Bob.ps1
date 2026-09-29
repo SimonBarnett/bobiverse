@@ -1,0 +1,105 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Clean-install ircBob + desktop/Start Menu icons. Nick Bob-{MachineId}.
+#>
+[CmdletBinding()]
+param(
+    [string]$Nssm = '',
+    [string]$InstallRoot = 'C:\ai\bob',
+    [string]$ServiceName = 'ircBob',
+    [string]$Python = '',
+    [string]$MachineId = '',
+    [string]$BobHome = '',
+    [switch]$NoStart,
+    [switch]$ForceTools,
+    [switch]$SkipIcons
+)
+
+$ErrorActionPreference = 'Stop'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $here 'Bobiverse-Common.ps1')
+
+if (-not (Test-BobiverseIsAdmin)) {
+    Request-BobiverseUacRelaunch -Bound $PSBoundParameters
+}
+
+$repoRoot = Split-Path -Parent $here
+$bootstrap = Join-Path $here 'Install-BootstrapTools.ps1'
+if (Test-Path -LiteralPath $bootstrap) {
+    if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
+}
+
+if (-not $MachineId) {
+    $MachineId = ($env:BOB_MACHINE_ID | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
+}
+if (-not $MachineId) {
+    $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+} else {
+    $MachineId = ($MachineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+}
+if (-not $MachineId) { throw 'MachineId required' }
+$nick = "Bob-$MachineId"
+Write-Host "INFO MachineId=$MachineId nick=$nick"
+
+$Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
+if (-not $Nssm) { throw 'nssm missing' }
+if (-not $Python) { $Python = Resolve-BobiversePython }
+if (-not $BobHome) { $BobHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse' }
+New-Item -ItemType Directory -Force -Path $BobHome | Out-Null
+
+# Kill conflicting priors (tray/watch left to operator; stop ear service)
+Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
+Get-Process -Name 'powershell' -ErrorAction SilentlyContinue | Where-Object {
+    $_.CommandLine -match 'Watch-BobTray|Watch-Bobiverse'
+} | ForEach-Object { Write-Host "INFO leave tray/watch PID=$($_.Id) (restart via shortcuts)" }
+
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts') | Out-Null
+Copy-Item -Path (Join-Path $here '*') -Destination (Join-Path $InstallRoot 'scripts') -Recurse -Force
+Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+$skillsSrc = Join-Path $repoRoot '.grok\skills'
+if (Test-Path $skillsSrc) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot '.grok\skills') | Out-Null
+    Copy-Item -Path (Join-Path $skillsSrc '*') -Destination (Join-Path $InstallRoot '.grok\skills') -Recurse -Force
+    Install-BobiverseSkills -RepoSkillsRoot (Join-Path $InstallRoot '.grok\skills') -SkillNames @('bobiverse-bob', 'harvest-agent-skills')
+}
+
+$launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId $MachineId -BobHome `"$BobHome`" -Python `"$Python`""
+
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $user))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', "BOB_MACHINE_ID=$MachineId"))
+
+if (-not $SkipIcons) {
+    $desk = [Environment]::GetFolderPath('Desktop')
+    $start = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\Bobiverse'
+    $restartPs1 = Join-Path $InstallRoot 'scripts\Restart-BobEar.ps1'
+    New-BobiverseShortcut -LinkPath (Join-Path $desk 'Bob Fleet Restart.lnk') `
+        -TargetPath 'powershell.exe' `
+        -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$restartPs1`"" `
+        -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
+        -Description 'Restart ircBob (announces departure)'
+    New-BobiverseShortcut -LinkPath (Join-Path $start 'Restart ircBob.lnk') `
+        -TargetPath 'powershell.exe' `
+        -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$restartPs1`"" `
+        -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
+        -Description 'Restart ircBob service'
+    New-BobiverseShortcut -LinkPath (Join-Path $start 'Bob Services.lnk') `
+        -TargetPath 'services.msc' `
+        -Description 'Windows Services'
+}
+
+if (-not $NoStart) {
+    Start-Service $ServiceName
+    Start-Sleep -Seconds 2
+}
+Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
+Write-Host "INFO Install-Bob done nick=$nick"

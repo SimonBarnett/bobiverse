@@ -1,0 +1,78 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Install Airc service (renamed from airc-console). Tree C:\ai\airc, service Airc.
+  Nick {machinename}_console — see airc_console_service shop-mode.
+#>
+[CmdletBinding()]
+param(
+    [string]$Nssm = '',
+    [string]$InstallRoot = 'C:\ai\airc',
+    [string]$MachineId = '',
+    [string]$ConsoleHome = '',
+    [string[]]$Operators = @('Simon'),
+    [string]$Python = '',
+    [switch]$NoStart,
+    [switch]$ForceTools
+)
+
+$ErrorActionPreference = 'Stop'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $here 'Bobiverse-Common.ps1')
+
+if (-not (Test-BobiverseIsAdmin)) {
+    Request-BobiverseUacRelaunch -Bound $PSBoundParameters
+}
+
+$repoRoot = Split-Path -Parent $here
+$bootstrap = Join-Path $here 'Install-BootstrapTools.ps1'
+if (Test-Path -LiteralPath $bootstrap) {
+    if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
+}
+
+# Stage into C:\ai\airc then call legacy Install-AircConsole with new names
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
+Copy-Item -Path (Join-Path $here '*') -Destination (Join-Path $InstallRoot 'scripts') -Recurse -Force
+Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+$skillsSrc = Join-Path $repoRoot '.grok\skills'
+if (Test-Path $skillsSrc) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot '.grok\skills') | Out-Null
+    Copy-Item -Path (Join-Path $skillsSrc '*') -Destination (Join-Path $InstallRoot '.grok\skills') -Recurse -Force
+    Install-BobiverseSkills -RepoSkillsRoot (Join-Path $InstallRoot '.grok\skills') -SkillNames @('bobiverse-airc', 'harvest-agent-skills')
+}
+
+# Package ergo.password into staged config if available on packer
+$packErgo = Join-Path $repoRoot 'config\ergo.password'
+$destErgo = Join-Path $InstallRoot 'config\ergo.password'
+if (-not (Test-Path $destErgo)) {
+    foreach ($c in @($packErgo, (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'))) {
+        if (Test-Path -LiteralPath $c) {
+            Copy-Item -LiteralPath $c -Destination $destErgo -Force
+            Write-Host "INFO staged config\ergo.password from $c"
+            break
+        }
+    }
+}
+
+if (-not $ConsoleHome) { $ConsoleHome = Join-Path $env:USERPROFILE '.airc' }
+# Migrate from .airc-console if needed
+$legacy = Join-Path $env:USERPROFILE '.airc-console'
+if (-not (Test-Path $ConsoleHome) -and (Test-Path $legacy)) {
+    Copy-Item -LiteralPath $legacy -Destination $ConsoleHome -Recurse -Force
+    Write-Host "INFO migrated $legacy -> $ConsoleHome"
+}
+
+$installLegacy = Join-Path $InstallRoot 'scripts\Install-AircConsole.ps1'
+$args = @{
+    ServiceName = 'Airc'
+    ConsoleHome = $ConsoleHome
+    Operators   = $Operators
+}
+if ($Nssm) { $args.Nssm = $Nssm }
+if ($MachineId) { $args.MachineId = $MachineId }
+if ($Python) { $args.Python = $Python }
+if ($NoStart) { $args.NoStart = $true }
+
+# Patch launcher path expectation: Install-AircConsole looks beside itself
+& $installLegacy @args
+Write-Host 'INFO Install-Airc done (service Airc)'
