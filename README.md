@@ -31,7 +31,12 @@ Or `msiexec /i bob-0.1.1.msi`.
 - Systray/shortcut Restart → departure announce → `Restart-Service ircBob`
 - `!recycle` / `!recycle {mid}` on Bob; `!recycle jeeves` on chair (ircJeeves only)
 - Service start runs Release MSI self-update (`Check-BobiverseUpdate.ps1`)
-- Jeeves ObjectName = install user (DPAPI): pass `-PromptServicePassword` or set `BOBIVERSE_SERVICE_PASSWORD`
+- ObjectName = fleet user (DPAPI): interactive prompt, `BOBIVERSE_SERVICE_PASSWORD`, `config\service.password`, or **Complete bobiverse service logon**
+- Ergo server PASS is **embedded** in the MSI as `config\ergo.password` (loaded at start)
 - First Ergo install seeds `C:\ai\ergo\ircd.yaml` from `default.yaml` until operator TLS/PASS/ChanServ are set
+
+## Post-install
+
+See **[docs/post-install.md](docs/post-install.md)** (ObjectName password, PASS embed, verify ear).
 
 Repo: https://github.com/SimonBarnett/bobiverse

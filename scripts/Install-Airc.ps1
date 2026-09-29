@@ -32,13 +32,14 @@ if (Test-Path -LiteralPath $bootstrap) {
 
 # Stage into C:\ai\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
-Copy-Item -Path (Join-Path $here '*') -Destination (Join-Path $InstallRoot 'scripts') -Recurse -Force
+Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
 $skillsSrc = Join-Path $repoRoot '.grok\skills'
 if (Test-Path $skillsSrc) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot '.grok\skills') | Out-Null
-    Copy-Item -Path (Join-Path $skillsSrc '*') -Destination (Join-Path $InstallRoot '.grok\skills') -Recurse -Force
-    Install-BobiverseSkills -RepoSkillsRoot (Join-Path $InstallRoot '.grok\skills') -SkillNames @('bobiverse-airc', 'harvest-agent-skills')
+    $skillsDest = Join-Path $InstallRoot '.grok\skills'
+    New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
+    Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-airc', 'harvest-agent-skills')
 }
 
 # Package ergo.password into staged config if available on packer
