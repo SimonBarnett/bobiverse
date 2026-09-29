@@ -1,0 +1,12 @@
+﻿dist/
+third_party/nssm/win64/
+third_party/nssm/*.exe
+third_party/wix/bin/
+third_party/wix/_extract/
+third_party/wix/*.zip
+third_party/bootstrap/
+config/ergo.password
+**/connect.password
+__pycache__/
+*.pyc
+.wixpdb
