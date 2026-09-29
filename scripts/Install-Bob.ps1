@@ -189,7 +189,11 @@ if (-not $SkipIcons) {
 
 if ((-not $SkipTray) -and (-not $NoStart)) {
     $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
-    if (Test-Path -LiteralPath $trayPs1) {
+    $fleetTray = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match 'Watch-BobTray\.ps1' }
+    if ($fleetTray) {
+        Write-Host 'INFO Watch-BobTray already running - skip Start-BobTray (one tray)'
+    } elseif (Test-Path -LiteralPath $trayPs1) {
         Start-Process -FilePath 'powershell.exe' -ArgumentList @(
             '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
             '-File', $trayPs1, '-InstallRoot', $InstallRoot
