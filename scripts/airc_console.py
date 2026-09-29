@@ -204,10 +204,14 @@ def parse_chanserv_info(text: str, channel: str) -> ShopProbeResult:
         return "missing"
     if "no such channel" in t and ch and ch in t.replace("#", ""):
         return "missing"
-    # Atheme / Ergo-style success: "Information on channel #foo:" / "Registered:"
-    if "registered:" in t or "registered on" in t:
+    # Atheme / Ergo-style success. Ergo: "Channel #foo is registered" (no colon).
+    if "registered:" in t or "registered on" in t or "registered at" in t:
+        return "registered"
+    if "is registered" in t:
         return "registered"
     if "information on" in t and ch and ch in t.replace("#", ""):
+        return "registered"
+    if "founder:" in t and ch and ch in t.replace("#", ""):
         return "registered"
     return "unknown"
 

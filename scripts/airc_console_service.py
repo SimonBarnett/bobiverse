@@ -650,6 +650,8 @@ def selftest() -> int:
         parse_chanserv_info("Information on channel #ionos:\nRegistered: yes", "#ionos")
         == "registered"
     )
+    assert parse_chanserv_info("Channel #marchhare is registered", "#marchhare") == "registered"
+    assert parse_chanserv_info("Registered at: Tue, 29 Sep 2026 17:50:35 UTC", "#marchhare") == "registered"
     auth = AuthPolicy(operators={"simon"}, accounts=set())
     assert auth.allow("Simon")
     assert not auth.allow("stranger")

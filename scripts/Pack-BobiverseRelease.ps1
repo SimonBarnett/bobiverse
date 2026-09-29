@@ -11,7 +11,10 @@ param(
     [string]$OutDir = '',
     [string]$Version = '',
     [switch]$KeepStage,
-    [switch]$SkipMsi
+    [switch]$SkipMsi,
+    # Issue #4: public GitHub Release MSIs must NOT embed the live Ergo PASS.
+    # Pass -EmbedErgoPassword only for private/offline packs.
+    [switch]$EmbedErgoPassword
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,19 +65,28 @@ function Stage-Product([string]$Name) {
         Copy-Item (Join-Path $RepoRoot '.grok\skills\*') (Join-Path $stage '.grok\skills') -Recurse -Force
     }
     Copy-Item (Join-Path $RepoRoot 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
-    # Ergo PASS embedded in MSI by design (Simon 2026-09-29: keep embed)
-    foreach ($c in @(
-            (Join-Path $RepoRoot 'config\ergo.password'),
-            (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
-        )) {
-        if (Test-Path -LiteralPath $c) {
-            Copy-Item $c (Join-Path $stage 'config\ergo.password') -Force
-            Write-Host "INFO $Name embedded config/ergo.password from $c"
-            break
+    # Issue #4: do not embed live Ergo PASS into public release assets by default.
+    $stageErgo = Join-Path $stage 'config\ergo.password'
+    if ($EmbedErgoPassword) {
+        foreach ($c in @(
+                (Join-Path $RepoRoot 'config\ergo.password'),
+                (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
+            )) {
+            if (Test-Path -LiteralPath $c) {
+                Copy-Item $c $stageErgo -Force
+                Write-Host "INFO $Name embedded config/ergo.password from $c (-EmbedErgoPassword)"
+                break
+            }
         }
-    }
-    if ($Name -eq 'airc' -and -not (Test-Path (Join-Path $stage 'config\ergo.password'))) {
-        throw 'airc pack requires config/ergo.password or packer ~/.grok/ergo/connect.password'
+        if (-not (Test-Path -LiteralPath $stageErgo)) {
+            throw "-EmbedErgoPassword set but no config/ergo.password or ~/.grok/ergo/connect.password found"
+        }
+    } else {
+        if (Test-Path -LiteralPath $stageErgo) {
+            Remove-Item -LiteralPath $stageErgo -Force
+            Write-Host "WARN $Name removed staged config/ergo.password (issue #4 public pack guard)"
+        }
+        Write-Host "INFO $Name skipping Ergo PASS embed (issue #4; pass -EmbedErgoPassword for private packs)"
     }
     if ($Name -eq 'jeeves') {
         $ergoStage = Join-Path $stage 'ergo'
