@@ -14,7 +14,8 @@ param(
     [switch]$SkipErgo,
     [switch]$NoStart,
     [switch]$ForceTools,
-    [switch]$PromptServicePassword
+    [switch]$PromptServicePassword,
+    [switch]$SkipCopy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,16 +44,22 @@ New-Item -ItemType Directory -Force -Path $digestHome | Out-Null
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
 Get-ScheduledTask -TaskName 'BobJeeves-chair' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
 
-# Lay tree: copy scripts + skills into InstallRoot
-New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts') | Out-Null
-Copy-Item -Path (Join-Path $here '*') -Destination (Join-Path $InstallRoot 'scripts') -Recurse -Force
+# Lay tree: copy scripts + skills into InstallRoot (skip when MSI already staged — issue #2)
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
+if (-not $SkipCopy) {
+    Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
+}
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
 $skillsSrc = Join-Path $repoRoot '.grok\skills'
 if (Test-Path $skillsSrc) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot '.grok\skills') | Out-Null
-    Copy-Item -Path (Join-Path $skillsSrc '*') -Destination (Join-Path $InstallRoot '.grok\skills') -Recurse -Force
-    Install-BobiverseSkills -RepoSkillsRoot (Join-Path $InstallRoot '.grok\skills') -SkillNames @('bobiverse-jeeves', 'harvest-agent-skills')
+    $skillsDest = Join-Path $InstallRoot '.grok\skills'
+    New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
+    if (-not $SkipCopy) {
+        Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
+    }
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-jeeves', 'harvest-agent-skills')
 }
+Install-BobiversePythonDeps -Python $Python
 
 # Seed operators for !register
 $ops = Join-Path $ChairHome 'operators.txt'
@@ -83,8 +90,9 @@ if (-not $SkipErgo) {
 }
 
 $launcher = Join-Path $InstallRoot 'scripts\Start-Jeeves.ps1'
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome `"$ChairHome`" -Python `"$Python`""
+$user = Resolve-BobiverseServiceUser
+# No -Python in AppParameters (spaces break NSSM quoting — issue #3)
+$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome `"$ChairHome`" -RepoRoot `"$InstallRoot`""
 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
@@ -93,11 +101,26 @@ $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', 'bobiverse Jeeves chair'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
-Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user -PromptIfMissing:$PromptServicePassword
+$doPrompt = $PromptServicePassword -or ([Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem))
+[void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $ChairHome)
+$objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user `
+    -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
 
-$envExtra = "BOB_DIGEST_HOME=$digestHome"
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', $envExtra))
+$envLines = @("BOB_DIGEST_HOME=$digestHome")
+if ($env:AGENTIC_IRC_PASSWORD) { $envLines += "AGENTIC_IRC_PASSWORD=$($env:AGENTIC_IRC_PASSWORD)" }
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envLines -join "`n")))
 
+if (-not $objectOk) {
+    $logonPs1 = Join-Path $InstallRoot 'scripts\Complete-BobiverseServiceLogon.ps1'
+    $desk = [Environment]::GetFolderPath('Desktop')
+    if (Test-Path -LiteralPath $logonPs1) {
+        New-BobiverseShortcut -LinkPath (Join-Path $desk 'Complete bobiverse service logon.lnk') `
+            -TargetPath 'powershell.exe' `
+            -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$logonPs1`" -Product jeeves -InstallRoot `"$InstallRoot`"" `
+            -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
+            -Description 'Set ircJeeves ObjectName password'
+    }
+}
 # Prefer Ergo up before chair when both are installed
 if (-not $SkipErgo -and -not $NoStart) {
     $ircd = Get-Service -Name 'BobIrcd' -ErrorAction SilentlyContinue

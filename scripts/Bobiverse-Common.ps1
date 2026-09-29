@@ -125,6 +125,162 @@ function Copy-BobiverseVersion {
     Copy-Item -LiteralPath $src -Destination (Join-Path $InstallRoot 'VERSION') -Force
 }
 
+function Get-BobiverseFullPath([string]$Path) {
+    if (-not $Path) { return $null }
+    try { return [IO.Path]::GetFullPath($Path) } catch { return $Path }
+}
+
+function Test-BobiverseSamePath([string]$A, [string]$B) {
+    $fa = Get-BobiverseFullPath $A
+    $fb = Get-BobiverseFullPath $B
+    if (-not $fa -or -not $fb) { return $false }
+    return ($fa.TrimEnd('\') -ieq $fb.TrimEnd('\'))
+}
+
+function Copy-BobiverseTree {
+    <#
+      Copy source tree to dest. No-op when source and dest are the same path
+      (MSI heat already laid files under InstallRoot — issue #2).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination,
+        [switch]$ContentsOnly
+    )
+    if (-not (Test-Path -LiteralPath $Source)) {
+        Write-Host "WARN copy-skip missing source $Source"
+        return
+    }
+    $srcFull = Get-BobiverseFullPath $Source
+    $dstFull = Get-BobiverseFullPath $Destination
+    if (Test-BobiverseSamePath $srcFull $dstFull) {
+        Write-Host "INFO copy-skip same-path $srcFull (MSI staged)"
+        return
+    }
+    # Also skip when Source is Dest\* already (scripts → InstallRoot\scripts and $here is that scripts dir)
+    if ($ContentsOnly) {
+        $parentOfSrc = Split-Path -Parent $srcFull
+        if (Test-BobiverseSamePath $parentOfSrc $dstFull) {
+            Write-Host "INFO copy-skip source already under dest $dstFull"
+            return
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    if ($ContentsOnly) {
+        Copy-Item -Path (Join-Path $Source '*') -Destination $Destination -Recurse -Force
+    } else {
+        Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
+    }
+}
+
+function Test-BobiverseIsLocalSystem {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $sid = $id.User.Value
+    return ($sid -eq 'S-1-5-18') -or ($id.Name -match 'SYSTEM$')
+}
+
+function Resolve-BobiverseServiceUser {
+    <# Prefer interactive / install user over LocalSystem (MSI deferred CA). #>
+    if (-not (Test-BobiverseIsLocalSystem)) {
+        return [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    }
+    if ($env:BOBIVERSE_SERVICE_USER) { return $env:BOBIVERSE_SERVICE_USER.Trim() }
+    try {
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        if ($cs.UserName) { return $cs.UserName }
+    } catch { }
+    try {
+        $explorer = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($explorer) {
+            $owner = Invoke-CimMethod -InputObject $explorer -MethodName GetOwner -ErrorAction SilentlyContinue
+            if ($owner -and $owner.User) {
+                if ($owner.Domain) { return "$($owner.Domain)\$($owner.User)" }
+                return $owner.User
+            }
+        }
+    } catch { }
+    return $null
+}
+
+function Get-BobiverseErgoPasswordPath {
+    param([string]$InstallRoot = '', [string]$HomeDir = '')
+    foreach ($c in @(
+            $(if ($HomeDir) { Join-Path $HomeDir 'ergo.password' } else { $null }),
+            $(if ($InstallRoot) { Join-Path $InstallRoot 'config\ergo.password' } else { $null }),
+            (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'),
+            (Join-Path $env:USERPROFILE '.grok\ergo\ergo.password')
+        )) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+function Import-BobiverseErgoPassword {
+    param([string]$InstallRoot = '', [string]$HomeDir = '')
+    if ($env:AGENTIC_IRC_PASSWORD) { return $true }
+    $path = Get-BobiverseErgoPasswordPath -InstallRoot $InstallRoot -HomeDir $HomeDir
+    if (-not $path) { return $false }
+    $secret = (Get-Content -LiteralPath $path -Raw).Trim()
+    if (-not $secret) { return $false }
+    $env:AGENTIC_IRC_PASSWORD = $secret
+    Write-Host "INFO loaded AGENTIC_IRC_PASSWORD from $path"
+    return $true
+}
+
+function Get-BobiverseServicePasswordSecure {
+    param(
+        [string]$InstallRoot = '',
+        [SecureString]$Password = $null,
+        [switch]$PromptIfMissing,
+        [string]$User = ''
+    )
+    if ($Password) { return $Password }
+    if ($env:BOBIVERSE_SERVICE_PASSWORD) {
+        return (ConvertTo-SecureString -String $env:BOBIVERSE_SERVICE_PASSWORD -AsPlainText -Force)
+    }
+    $fileCandidates = @(
+        $env:BOBIVERSE_SERVICE_PASSWORD_FILE,
+        $(if ($InstallRoot) { Join-Path $InstallRoot 'config\service.password' } else { $null })
+    )
+    foreach ($f in $fileCandidates) {
+        if ($f -and (Test-Path -LiteralPath $f)) {
+            $raw = (Get-Content -LiteralPath $f -Raw).Trim()
+            if ($raw) {
+                Write-Host "INFO loaded service password from file $f"
+                return (ConvertTo-SecureString -String $raw -AsPlainText -Force)
+            }
+        }
+    }
+    $dpapi = if ($InstallRoot) { Join-Path $InstallRoot 'config\service.cred' } else { $null }
+    if ($dpapi -and (Test-Path -LiteralPath $dpapi)) {
+        try {
+            $enc = Get-Content -LiteralPath $dpapi -Raw
+            $ss = ConvertTo-SecureString -String $enc
+            Write-Host "INFO loaded service password from DPAPI $dpapi"
+            return $ss
+        } catch {
+            Write-Host "WARN DPAPI service.cred unreadable: $($_.Exception.Message)"
+        }
+    }
+    if ($PromptIfMissing -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)) {
+        $who = if ($User) { $User } else { [Security.Principal.WindowsIdentity]::GetCurrent().Name }
+        $cred = Get-Credential -UserName $who -Message 'Password for bobiverse Windows service (ObjectName / DPAPI user)'
+        if ($cred) { return $cred.Password }
+    }
+    return $null
+}
+
+function Save-BobiverseServicePassword {
+    param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][SecureString]$Password)
+    $cfg = Join-Path $InstallRoot 'config'
+    New-Item -ItemType Directory -Force -Path $cfg | Out-Null
+    $dpapi = Join-Path $cfg 'service.cred'
+    $enc = ConvertFrom-SecureString -SecureString $Password
+    [IO.File]::WriteAllText($dpapi, $enc)
+    Write-Host "INFO saved DPAPI service.cred under config\"
+}
+
 function Request-BobiverseUacRelaunch {
     param([Parameter(Mandatory)]$Bound)
     $self = $PSCommandPath
@@ -156,50 +312,69 @@ function Request-BobiverseUacRelaunch {
 
 function Set-BobiverseServiceObjectName {
     <#
-      Set NSSM ObjectName to the install user (DPAPI). Password from:
+      Set NSSM ObjectName to the fleet user (DPAPI). Password from:
         1) -Password SecureString
-        2) env BOBIVERSE_SERVICE_PASSWORD (plaintext, cleared by caller if desired)
-        3) interactive Get-Credential when -PromptIfMissing and UserInteractive
-      Without a password, sets username only and warns (service may fail logon).
+        2) env BOBIVERSE_SERVICE_PASSWORD
+        3) BOBIVERSE_SERVICE_PASSWORD_FILE or InstallRoot\config\service.password
+        4) InstallRoot\config\service.cred (DPAPI)
+        5) interactive Get-Credential when -PromptIfMissing
+      Without a password, leaves LocalSystem and writes Complete-BobiverseServiceLogon shortcut path.
     #>
     param(
         [Parameter(Mandatory)][string]$Nssm,
         [Parameter(Mandatory)][string]$ServiceName,
-        [Parameter(Mandatory)][string]$User,
+        [string]$User = '',
         [SecureString]$Password = $null,
-        [switch]$PromptIfMissing
+        [string]$InstallRoot = '',
+        [switch]$PromptIfMissing,
+        [switch]$AllowLocalSystem
     )
+    if (-not $User) { $User = Resolve-BobiverseServiceUser }
+    $Password = Get-BobiverseServicePasswordSecure -InstallRoot $InstallRoot -Password $Password -PromptIfMissing:$PromptIfMissing -User $User
     $plain = $null
     try {
-        if (-not $Password -and $env:BOBIVERSE_SERVICE_PASSWORD) {
-            $Password = ConvertTo-SecureString -String $env:BOBIVERSE_SERVICE_PASSWORD -AsPlainText -Force
-        }
-        if (-not $Password -and $PromptIfMissing -and [Environment]::UserInteractive) {
-            $cred = Get-Credential -UserName $User -Message "Password for Windows service $ServiceName (runs as this user for DPAPI)"
-            if ($cred) {
-                $User = $cred.UserName
-                $Password = $cred.Password
-            }
-        }
-        if ($Password) {
+        if ($Password -and $User) {
             $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
             try {
                 $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
             } finally {
                 [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
             }
-        }
-        if ($plain) {
             $r = Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $User, $plain)
             if ($r.ExitCode -ne 0) {
                 throw "nssm set ObjectName failed ($($r.ExitCode)): $($r.Output -join ' ')"
             }
             Write-Host "INFO ObjectName=$User (password set)"
-        } else {
-            [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $User))
-            Write-Host ('WARN ObjectName={0} without password - if logon fails: nssm set {1} ObjectName "{0}" PASSWORD  or re-run with -PromptServicePassword / BOBIVERSE_SERVICE_PASSWORD' -f $User, $ServiceName)
+            if ($InstallRoot) {
+                try { Save-BobiverseServicePassword -InstallRoot $InstallRoot -Password $Password } catch {
+                    Write-Host "WARN could not save service.cred: $($_.Exception.Message)"
+                }
+            }
+            return $true
         }
+        if ($AllowLocalSystem -or -not $User) {
+            Write-Host 'WARN ObjectName left as service default (LocalSystem) — run Complete-BobiverseServiceLogon.ps1 or set BOBIVERSE_SERVICE_PASSWORD'
+            return $false
+        }
+        [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'ObjectName', $User))
+        Write-Host ('WARN ObjectName={0} without password - service may fail logon. Run Complete-BobiverseServiceLogon.ps1 or set BOBIVERSE_SERVICE_PASSWORD' -f $User)
+        return $false
     } finally {
         $plain = $null
+    }
+}
+
+function Install-BobiversePythonDeps {
+    param([Parameter(Mandatory)][string]$Python)
+    $pkgs = @('cryptography')
+    foreach ($pkg in $pkgs) {
+        $code = & $Python -c "import $pkg" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "INFO python-dep-present $pkg"
+            continue
+        }
+        Write-Host "INFO python-dep-install $pkg"
+        & $Python -m pip install --upgrade $pkg
+        if ($LASTEXITCODE -ne 0) { throw "pip install $pkg failed ($LASTEXITCODE)" }
     }
 }

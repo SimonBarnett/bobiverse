@@ -53,13 +53,16 @@ function Stage-Product([string]$Name) {
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Force -Path "$stage\scripts", "$stage\docs", "$stage\.grok\skills", "$stage\src", "$stage\config", "$stage\third_party\nssm\win64" | Out-Null
     Copy-Item (Join-Path $RepoRoot 'scripts\*') (Join-Path $stage 'scripts') -Recurse -Force
+    # Issue #2: do not ship __pycache__ (self-copy / heat noise)
+    Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $RepoRoot 'src\VERSION') (Join-Path $stage 'VERSION') -Force
     Copy-Item (Join-Path $RepoRoot 'src\VERSION') (Join-Path $stage 'src\VERSION') -Force
     if (Test-Path (Join-Path $RepoRoot '.grok\skills')) {
         Copy-Item (Join-Path $RepoRoot '.grok\skills\*') (Join-Path $stage '.grok\skills') -Recurse -Force
     }
     Copy-Item (Join-Path $RepoRoot 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
-    # Ergo PASS for airc (and useful for ears)
+    # Ergo PASS embedded in MSI by design (Simon 2026-09-29: keep embed)
     foreach ($c in @(
             (Join-Path $RepoRoot 'config\ergo.password'),
             (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
@@ -164,7 +167,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <RegistryValue Root="HKLM" Key="Software\SimonBarnett\bobiverse\$Name" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
     </Component>
     <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot;" Execute="immediate" />
-    <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="check" />
+    <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
+    <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
     <InstallExecuteSequence>
       <Custom Action="SetInstallCmd" After="InstallFiles">NOT Installed OR REINSTALL</Custom>
       <Custom Action="RunInstall" After="SetInstallCmd">NOT Installed OR REINSTALL</Custom>

@@ -16,7 +16,8 @@ param(
     [switch]$SkipIcons,
     [switch]$SkipWatchAgentHealth,
     [switch]$SkipTray,
-    [switch]$PromptServicePassword
+    [switch]$PromptServicePassword,
+    [switch]$SkipCopy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,7 +49,15 @@ Write-Host "INFO MachineId=$MachineId nick=$nick"
 $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing' }
 if (-not $Python) { $Python = Resolve-BobiversePython }
-if (-not $BobHome) { $BobHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse' }
+$user = Resolve-BobiverseServiceUser
+if (-not $BobHome) {
+    if (-not $user -or (Test-BobiverseIsLocalSystem)) {
+        $BobHome = Join-Path $InstallRoot 'home'
+    } else {
+        # Profile of service user when known; else current profile
+        $BobHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+    }
+}
 New-Item -ItemType Directory -Force -Path $BobHome | Out-Null
 
 # Kill conflicting priors (tray/watch left to operator; stop ear service)
@@ -57,19 +66,27 @@ Get-Process -Name 'powershell' -ErrorAction SilentlyContinue | Where-Object {
     $_.CommandLine -match 'Watch-BobTray|Watch-Bobiverse'
 } | ForEach-Object { Write-Host "INFO leave tray/watch PID=$($_.Id) (restart via shortcuts)" }
 
-New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts') | Out-Null
-Copy-Item -Path (Join-Path $here '*') -Destination (Join-Path $InstallRoot 'scripts') -Recurse -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
+if (-not $SkipCopy) {
+    Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
+}
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
 $skillsSrc = Join-Path $repoRoot '.grok\skills'
 if (Test-Path $skillsSrc) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot '.grok\skills') | Out-Null
-    Copy-Item -Path (Join-Path $skillsSrc '*') -Destination (Join-Path $InstallRoot '.grok\skills') -Recurse -Force
-    Install-BobiverseSkills -RepoSkillsRoot (Join-Path $InstallRoot '.grok\skills') -SkillNames @('bobiverse-bob', 'harvest-agent-skills')
+    $skillsDest = Join-Path $InstallRoot '.grok\skills'
+    New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
+    if (-not $SkipCopy) {
+        Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
+    }
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-bob', 'harvest-agent-skills')
 }
 
+Install-BobiversePythonDeps -Python $Python
+[void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
+
+# Quote-safe NSSM: no -Python path in AppParameters (issue #3); Start-Bob resolves python.
 $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId $MachineId -BobHome `"$BobHome`" -Python `"$Python`""
+$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId $MachineId -BobHome `"$BobHome`" -InstallRoot `"$InstallRoot`""
 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
@@ -78,8 +95,20 @@ $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
-Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user -PromptIfMissing:$PromptServicePassword
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', "BOB_MACHINE_ID=$MachineId"))
+
+# Default: prompt for ObjectName password when interactive (ship password UX)
+$doPrompt = $PromptServicePassword -or ([Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem))
+$objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user `
+    -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
+
+$envExtra = @(
+    "BOB_MACHINE_ID=$MachineId"
+)
+if ($env:AGENTIC_IRC_PASSWORD) {
+    # NSSM AppEnvironmentExtra multi-line: KEY=VAL each line
+    $envExtra += "AGENTIC_IRC_PASSWORD=$($env:AGENTIC_IRC_PASSWORD)"
+}
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
 
 # Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)
 if (-not $SkipWatchAgentHealth) {
@@ -133,6 +162,19 @@ if (-not $SkipIcons) {
             -Arguments "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`"" `
             -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
             -Description 'bobiverse tray (Restart ircBob)'
+    }
+    $logonPs1 = Join-Path $InstallRoot 'scripts\Complete-BobiverseServiceLogon.ps1'
+    if ((-not $objectOk) -and (Test-Path -LiteralPath $logonPs1)) {
+        New-BobiverseShortcut -LinkPath (Join-Path $desk 'Complete bobiverse service logon.lnk') `
+            -TargetPath 'powershell.exe' `
+            -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$logonPs1`" -Product bob -InstallRoot `"$InstallRoot`"" `
+            -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
+            -Description 'Set ircBob ObjectName password (required once after MSI)'
+        New-BobiverseShortcut -LinkPath (Join-Path $start 'Complete bobiverse service logon.lnk') `
+            -TargetPath 'powershell.exe' `
+            -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$logonPs1`" -Product bob -InstallRoot `"$InstallRoot`"" `
+            -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
+            -Description 'Set ircBob ObjectName password'
     }
 }
 

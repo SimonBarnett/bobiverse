@@ -46,4 +46,14 @@ Ensure-Tool 'python' 'python' 'Python.Python.3.12' {
     return ([version]$v -ge [version]'3.12')
 }
 Ensure-Tool 'node' 'node' 'OpenJS.NodeJS.LTS' { Test-CmdVersion 'node' }
+
+# Runtime deps for irc_agent / seal (issue #3)
+$py = Get-Command python.exe -ErrorAction SilentlyContinue
+if ($py) {
+    $here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    . (Join-Path $here 'Bobiverse-Common.ps1')
+    try { Install-BobiversePythonDeps -Python $py.Source } catch {
+        Write-Host "WARN python deps: $($_.Exception.Message)"
+    }
+}
 Write-Host 'INFO bootstrap-tools done'

@@ -26,20 +26,27 @@ def protect_path(path: Path) -> None:
         else:
             user_spec = user
         # Also grant local machine account when domain-joined (bob homes carry both).
+        # Skip MACHINE$ / LocalSystem-as-USERNAME (icacls 1332 — issue #3).
         machine = (os.environ.get("COMPUTERNAME") or "").strip()
         grants = [
             "NT AUTHORITY\\SYSTEM:(OI)(CI)(F)",
             "BUILTIN\\Administrators:(OI)(CI)(F)",
-            f"{user_spec}:(OI)(CI)(F)",
         ]
-        if machine and domain and machine.upper() != domain.upper():
-            grants.append(f"{machine}\\{user}:(OI)(CI)(F)")
+        user_l = (user or "").rstrip("$")
+        if user and not user.endswith("$") and user.upper() not in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"):
+            grants.append(f"{user_spec}:(OI)(CI)(F)")
+            if machine and domain and machine.upper() != domain.upper() and user_l:
+                grants.append(f"{machine}\\{user}:(OI)(CI)(F)")
         cmd = ["icacls", str(path), "/inheritance:r"]
         for g in grants:
             cmd.extend(["/grant:r", g])
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             err = (r.stderr or r.stdout or f"icacls exit {r.returncode}").strip()
+            # Soft-fail under LocalSystem when profile ACL mapping fails; home under C:\ai\*\home is OK.
+            if "1332" in err or "No mapping between account names" in err:
+                sys.stderr.write(f"WARN protect_path soft-fail: {err}\n")
+                return
             sys.stderr.write(err + "\n")
             raise ProtectError(f"icacls exit {r.returncode}")
         return
