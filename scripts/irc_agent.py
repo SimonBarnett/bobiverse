@@ -451,6 +451,7 @@ class Client:
         self.sasl_plus = threading.Event()
         self.sasl_903 = threading.Event()
         self.sasl_fail = threading.Event()
+        self._nickname_reserved = False
         # FR #230: nick -> services account (CAP account-notify / extended-join / account-tag)
         try:
             from account_map import AccountMap
@@ -1328,11 +1329,12 @@ class Client:
             out.append("CAP END")
         return out
 
-    def sasl_plain(self) -> None:
+    def sasl_plain(self) -> bool:
+        """Run PLAIN SASL. Returns True on 903 success. Issue #11: reason-tagged no-sasl."""
         if not self.sasl_token():
-            info("INFO no-sasl")
+            info("INFO no-sasl reason=missing-creds")
             self.send("CAP END")
-            return
+            return False
         self.sasl_ack.clear()
         self.sasl_plus.clear()
         self.sasl_903.clear()
@@ -1340,20 +1342,22 @@ class Client:
         # Request sasl + account caps together; server ACKs what it supports (FR #230).
         self.send("CAP REQ :sasl account-notify extended-join account-tag")
         if not self.sasl_ack.wait(10):
-            info("INFO no-sasl")
+            info("INFO no-sasl reason=cap-ack-timeout")
             self.send("CAP END")
-            return
+            return False
         if not self.sasl_plus.wait(10):
-            info("INFO no-sasl")
+            info("INFO no-sasl reason=authenticate-timeout")
             self.send("CAP END")
-            return
+            return False
         if self.sasl_fail.wait(0.01):
-            info("INFO no-sasl")
-            return
+            info("INFO no-sasl reason=sasl-numeric-fail")
+            return False
         if not self.sasl_903.wait(10):
-            info("INFO no-sasl")
+            info("INFO no-sasl reason=903-timeout")
             self.send("CAP END")
-            return
+            return False
+        info("INFO sasl ok")
+        return True
 
     def handle_capa(self, src: str, body: str) -> None:
         p = wire.parse_capa_line(body)
@@ -2010,19 +2014,34 @@ class Client:
                             self.handle_quit(who)
                     if cmd in ("433", "432"):
                         if self.live_nick == self.original_nick:
-                            if bobreport.parse_worker_nick(self.original_nick):
+                            # Fleet Bob-* ears: do not silently fall back to _l when the
+                            # reserved nick is owned by another NickServ account (issue #11).
+                            if (self.original_nick or "").lower().startswith("bob-"):
+                                self._nickname_reserved = True
+                                info(
+                                    "INFO NICKNAME_RESERVED abort nick="
+                                    + self.original_nick
+                                    + " - fix home\\nickserv.password or oper SAREGISTER"
+                                )
+                            elif bobreport.parse_worker_nick(self.original_nick):
                                 self.live_nick = self.original_nick + "_"
+                                self.send("NICK " + self.live_nick)
+                                info(f"INFO nick -> {self.live_nick} (still accept {self.original_nick})")
                             else:
                                 self.live_nick = self.original_nick + "_l"
-                            self.send("NICK " + self.live_nick)
-                            info(f"INFO nick -> {self.live_nick} (still accept {self.original_nick})")
+                                self.send("NICK " + self.live_nick)
+                                info(f"INFO nick -> {self.live_nick} (still accept {self.original_nick})")
                     # Ergo: FAIL NICK NICKNAME_RESERVED <nick> :… — surface before NO 001 (issue #8).
                     if cmd == "FAIL":
                         info(
                             "INFO FAIL "
                             + " ".join(parts[1:4] + ([trailing] if trailing else []))[:220]
                         )
+                        joined = " ".join(parts[1:4] + ([trailing] if trailing else [])).lower()
+                        if "nickname_reserved" in joined or "nickname is reserved" in joined:
+                            self._nickname_reserved = True
                     if trailing and "nickname is reserved" in trailing.lower():
+                        self._nickname_reserved = True
                         info(f"INFO NICKNAME_RESERVED {trailing.strip()[:180]}")
                     for line in self.sasl_on_line(cmd, parts[1:], trailing):
                         self.send(line)
@@ -2106,6 +2125,7 @@ class Client:
         self.ready.clear()
         self.joined.clear()
         self.dead.clear()
+        self._nickname_reserved = False
         self.live_nick = self.original_nick
         self._pending_joins = {c.lower() for c in self.channels}
         self._outbox_gen += 1
@@ -2123,9 +2143,24 @@ class Client:
         if pw:
             self.send("PASS " + pw)
         self.send("CAP LS 302")
-        self.send("NICK " + self.live_nick)
-        self.send(f"USER {self.live_nick} 0 * :{self.args.realname}")
-        self.sasl_plain()
+        # Issue #11: when SASL creds exist, authenticate BEFORE NICK so Ergo
+        # reserved Bob-* nicks are claimed by the owning NickServ account.
+        want_sasl = bool(self.sasl_token())
+        if want_sasl:
+            sasl_ok = self.sasl_plain()
+            self.send("NICK " + self.live_nick)
+            self.send(f"USER {self.live_nick} 0 * :{self.args.realname}")
+            if not sasl_ok:
+                # Give FAIL/NICKNAME_RESERVED a moment to arrive, then abort.
+                time.sleep(1.0)
+                if self._nickname_reserved or (self.original_nick or "").lower().startswith("bob-"):
+                    self._abort_gate("NICKNAME_RESERVED")
+        else:
+            self.send("NICK " + self.live_nick)
+            self.send(f"USER {self.live_nick} 0 * :{self.args.realname}")
+            self.sasl_plain()
+        if self._nickname_reserved and (self.original_nick or "").lower().startswith("bob-"):
+            self._abort_gate("NICKNAME_RESERVED")
         if not self.ready.wait(30):
             self._abort_gate("NO 001")
         time.sleep(1)

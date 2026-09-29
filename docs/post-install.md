@@ -15,10 +15,12 @@
    Private/offline packs may use `Pack-BobiverseRelease.ps1 -EmbedErgoPassword`.
 
 3. **NickServ / SASL (Bob ear)**  
-   Reserved `Bob-*` / `bob-*` nicks need SASL (issue #8).  
+   Reserved `Bob-*` / `bob-*` nicks need SASL (issue #8 / #11).  
    `Start-Bob.ps1` loads `home\nickserv.password` into `AGENTIC_IRC_SASL_USER=bob-{machine}` + `AGENTIC_IRC_SASL_PASSWORD`.  
-   Mint or oper-`SAREGISTER` that account before expecting `001`.  
-   If stdout shows `INFO NICKNAME_RESERVED` / `INFO FAIL … NICKNAME_RESERVED`, fix NickServ (ERASE/SAREGISTER/IDENTIFY) — not `!register` (that is ChanServ shops).
+   When those env vars are set, `irc_agent` authenticates **before** NICK so Ergo accepts the reserved nick.  
+   Do **not** mint a fresh GUID for an account that already exists on the network — restore the real password or oper-`SAREGISTER` / `RESETPASS`.  
+   If stdout shows `INFO no-sasl reason=…`, `INFO NICKNAME_RESERVED`, or abort `NICKNAME_RESERVED`, fix NickServ credentials — not `!register` (that is ChanServ shops).  
+   Fleet `Bob-*` ears no longer silently fall back to `Bob-…_l`.
 
 4. **LocalSystem fallback**  
    If ObjectName stays LocalSystem, NSSM **omits** `-BobHome` so `Start-Bob` uses `C:\ai\bob\home` (issue #7). Prefer completing service logon.
@@ -34,6 +36,12 @@
 
 8. **Airc shop channel**  
    With `shop-mode=auto`, Airc probes ChanServ `INFO #{machine}`. Ergo replies `Channel #x is registered` — that counts as registered (join `#{machine}` as `{machine}_console`).
+
+9. **Bootstrap tools (issue #10)**  
+   Quiet MSI runs install as LocalSystem. `Install-BootstrapTools.ps1` resolves well-known per-user paths for `gh` / Python before winget. Missing `gh` soft-fails (update-check limited); missing git/python/node still fails the install.
+
+10. **Airc vs airc-console UpgradeCode (issue #12)**  
+    bobiverse `airc` MSI uses UpgradeCode `B7E3C9A1-4F2D-4E8B-9C11-A1BC00A1C001`, distinct from agentic_irc `airc-console`. They can coexist (`C:\ai\airc` / service `Airc` vs `C:\ai\airc-console` / `AircConsole`). Prefer one console per box.
 
 ## Verify Bob
 

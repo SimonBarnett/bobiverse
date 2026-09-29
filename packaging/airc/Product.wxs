@@ -11,7 +11,7 @@
       Language="1033"
       Version="$(var.ProductVersion)"
       Manufacturer="SimonBarnett"
-      UpgradeCode="B7E3C9A1-4F2D-4E8B-9C11-A1BC00501E01">
+      UpgradeCode="B7E3C9A1-4F2D-4E8B-9C11-A1BC00A1C001">
     <Package
         InstallerVersion="500"
         Compressed="yes"
@@ -37,11 +37,12 @@
     </Directory>
     <SetDirectory Id="INSTALLDIR" Value="C:\ai\airc" />
 
-    <Component Id="CmpInstallDirMark" Directory="INSTALLDIR" Guid="E2A4B6C8-1D3F-4A5B-9C0D-00A1BC01D001">
+    <!-- Distinct from agentic_irc airc-console CmpInstallDirMark (issue #12). -->
+    <Component Id="CmpInstallDirMark" Directory="INSTALLDIR" Guid="A1C001D0-1D3F-4A5B-9C0D-00A1BC0A1C01">
       <CreateFolder />
       <RegistryValue
           Root="HKLM"
-          Key="Software\SimonBarnett\airc"
+          Key="Software\SimonBarnett\bobiverse\airc"
           Name="InstallDir"
           Type="string"
           Value="[INSTALLDIR]"
