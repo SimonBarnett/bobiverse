@@ -37,6 +37,18 @@
 8. **Airc shop channel**  
    With `shop-mode=auto`, Airc probes ChanServ `INFO #{machine}`. Ergo replies `Channel #x is registered` — that counts as registered (join `#{machine}` as `{machine}_console`).
 
+8b. **Airc ConsoleHome under quiet MSI / LocalSystem**  
+   Quiet MSI runs install as LocalSystem. Do **not** use `C:\Users\Default\.airc` — that orphans the NickServ GUID from the Admin home and leaves `{machine}_console` reserved with a password the service no longer has (`sasl-fail 904` / `433` loop).  
+   `Install-Airc` prefers `C:\Users\Administrator\.airc` when present, else `C:\ai\airc\home`.  
+   `Start-AircConsole` / `airc_console_service.py` default **SASL on** so reserved `{machine}_console` authenticates before NICK.
+
+8c. **Reclaim `{machine}_console` after a wrong GUID (oper)**  
+   If the service log shows `sasl-fail 904` then `nick-in-use 433` for `{machine}_console`:
+   1. Read the GUID on the box: `Get-Content C:\Users\Administrator\.airc\console.password` (or `C:\ai\airc\home\console.password`).
+   2. As an Ergo oper with `accreg`: `/OPER …` then `/msg NickServ PASSWD {machine}_console <guid>`.
+   3. `Restart-Service Airc` and confirm `joined #{machine} as {machine}_console` without a `433` loop.  
+   `ERASE` also works (`/msg NickServ ERASE {machine}_console` then confirm with the code) but requires the same oper cap; without `/OPER`, NickServ replies `Command restricted` (easy to miss in Halloy Notices).
+
 9. **Bootstrap tools (issue #10)**  
    Quiet MSI runs install as LocalSystem. `Install-BootstrapTools.ps1` resolves well-known per-user paths for `gh` / Python before winget. Missing `gh` soft-fails (update-check limited); missing git/python/node still fails the install.
 

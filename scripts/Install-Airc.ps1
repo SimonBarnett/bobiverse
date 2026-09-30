@@ -55,12 +55,37 @@ if (-not (Test-Path $destErgo)) {
     }
 }
 
-if (-not $ConsoleHome) { $ConsoleHome = Join-Path $env:USERPROFILE '.airc' }
-# Migrate from .airc-console if needed
-$legacy = Join-Path $env:USERPROFILE '.airc-console'
-if (-not (Test-Path $ConsoleHome) -and (Test-Path $legacy)) {
-    Copy-Item -LiteralPath $legacy -Destination $ConsoleHome -Recurse -Force
-    Write-Host "INFO migrated $legacy -> $ConsoleHome"
+# Under MSI LocalSystem, USERPROFILE is often C:\Users\Default — that loses the
+# Admin NickServ GUID and breaks {machine}_console reclaim (marchhare 2026-09-30).
+# Mirror Install-Jeeves: prefer existing Admin home, else InstallRoot\home.
+if (-not $ConsoleHome) {
+    $adminHome = Join-Path $env:SystemDrive 'Users\Administrator\.airc'
+    if (Test-BobiverseIsLocalSystem) {
+        if (Test-Path -LiteralPath $adminHome) {
+            $ConsoleHome = $adminHome
+            Write-Host "INFO LocalSystem using existing Admin ConsoleHome=$ConsoleHome"
+        } else {
+            $ConsoleHome = Join-Path $InstallRoot 'home'
+            Write-Host "INFO LocalSystem ConsoleHome=$ConsoleHome (avoid Default profile)"
+        }
+    } else {
+        $ConsoleHome = Join-Path $env:USERPROFILE '.airc'
+    }
+}
+# Migrate from .airc-console / Default bake if needed
+$legacyCandidates = @(
+    (Join-Path $env:USERPROFILE '.airc-console'),
+    (Join-Path $env:SystemDrive 'Users\Default\.airc'),
+    (Join-Path $env:SystemDrive 'Users\Default\.airc-console')
+)
+if (-not (Test-Path -LiteralPath $ConsoleHome)) {
+    foreach ($legacy in $legacyCandidates) {
+        if (Test-Path -LiteralPath $legacy) {
+            Copy-Item -LiteralPath $legacy -Destination $ConsoleHome -Recurse -Force
+            Write-Host "INFO migrated $legacy -> $ConsoleHome"
+            break
+        }
+    }
 }
 
 $installLegacy = Join-Path $InstallRoot 'scripts\Install-AircConsole.ps1'
