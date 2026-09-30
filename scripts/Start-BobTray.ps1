@@ -6,10 +6,10 @@
   Sets BOB_MACHINE_ID / BOB_BRIDGE_HOME / IRC home, then starts tools\Watch-BobTray.ps1
   under InstallRoot (STA). Companion to the ircBob Windows service — not a BobFleet task.
 .NOTES
-  TipForm menu Restart recycles the tray watcher (Start-BobFleetTray -ForceNew) and
-  announces IRC logout; it does not call Restart-BobEar / nssm restart ircBob.
-  Use Desktop "Bob Fleet Restart" / scripts\Restart-BobEar.ps1 to recycle the ear service.
-  MSI product updates: Check-BobiverseUpdate (not agentic_build git-pull).
+  CAST IRON: product Sync/ff runs only on ircBob service start (Start-Bob).
+  This launcher always passes -SkipUpdate to Start-BobFleetTray.
+  TipForm menu Restart calls Restart-BobEar (service recycle -> Start-Bob Sync/ff),
+  then relaunches the tray watcher in the interactive session.
 #>
 [CmdletBinding()]
 param(

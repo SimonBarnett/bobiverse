@@ -1,6 +1,7 @@
 #Requires -Version 5.1
-# Vendored for bob MSI TipForm tray. Does NOT git-pull agentic_build.
-# Product updates: scripts\Check-BobiverseUpdate.ps1 (GitHub Releases MSI).
+# Vendored for bob MSI TipForm tray.
+# CAST IRON: product repo ff/Sync/MSI update is owned by ircBob Start-Bob
+# (and TipForm Restart -> Restart-BobEar). Tray Start never updates the tree.
 [CmdletBinding()]
 param(
     [string]$RepoRoot,
@@ -22,23 +23,9 @@ $result = [ordered]@{
     count   = 0
     dialog  = $false
     error   = $null
-    summary = 'msi-tray: skip agentic_build git-pull (use Check-BobiverseUpdate)'
+    summary = 'tray: product update owned by ircBob Start-Bob / Restart-BobEar (no-op)'
 }
 
-$checker = Join-Path $RepoRoot 'scripts\Check-BobiverseUpdate.ps1'
-if (-not (Test-Path -LiteralPath $checker)) {
-    $checker = Join-Path (Split-Path $RepoRoot -Parent) 'bob\scripts\Check-BobiverseUpdate.ps1'
-}
-if ($Force -and (Test-Path -LiteralPath $checker) -and -not $WhatIf) {
-    try {
-        $ps = (Get-Command powershell.exe).Source
-        & $ps -NoProfile -ExecutionPolicy Bypass -File $checker -Product bob -InstallRoot $RepoRoot -DryRun 2>&1 | Out-Null
-        $result.summary = 'msi-tray: Check-BobiverseUpdate -DryRun invoked'
-    } catch {
-        $result.error = $_.Exception.Message
-        $result.summary = 'msi-tray: Check-BobiverseUpdate dry-run failed (non-fatal)'
-    }
-}
-
+# Intentionally ignore -Force / Check-BobiverseUpdate / Sync-BobiverseFromRepo / git pull.
 $result | ConvertTo-Json -Compress
 exit 0

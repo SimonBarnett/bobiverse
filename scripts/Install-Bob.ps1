@@ -209,7 +209,7 @@ if (-not $SkipIcons) {
         -Description 'Windows Services'
     if ((-not $SkipTray) -and (Test-Path -LiteralPath $trayPs1)) {
         $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew"
-        $trayDesc = 'bob TipForm systray (companion to ircBob; Restart recycles tray)'
+        $trayDesc = 'bob TipForm systray (companion to ircBob; Restart recycles ircBob + Sync/ff)'
         New-BobiverseShortcut -LinkPath (Join-Path $desk 'Bobiverse Tray.lnk') `
             -TargetPath 'powershell.exe' `
             -Arguments $trayArgs `
@@ -271,12 +271,61 @@ try {
 if ((-not $SkipTray) -and (-not $NoStart)) {
     $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
     $watchPs1 = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
+    $trayInteractive = Join-Path $InstallRoot 'scripts\Start-BobTrayInteractive.ps1'
     if (-not (Test-Path -LiteralPath $watchPs1)) {
         Write-Host 'WARN TipForm Watch-BobTray.ps1 missing - skip tray start'
-    } elseif (-not [Environment]::UserInteractive) {
-        Write-Host 'INFO non-interactive session - skip TipForm tray start (Startup/HKCU will launch at logon)'
+    } elseif (-not [Environment]::UserInteractive -or ([Security.Principal.WindowsIdentity]::GetCurrent().Name -match 'SYSTEM')) {
+        # Session 0 / quiet MSI: never Start-Process TipForm here (invisible ghosts).
+        # Register ONLOGON /IT task + try RunNow into active RDP/console session.
+        Write-Host 'INFO non-interactive/session0 - register interactive TipForm logon task (no session-0 Start-Process)'
+        if (Test-Path -LiteralPath $trayInteractive) {
+            try {
+                & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RunNow
+            } catch {
+                Write-Host ("WARN Start-BobTrayInteractive: {0}" -f $_.Exception.Message)
+            }
+        }
+        # Also seed Administrator Startup/HKCU when installing as SYSTEM
+        $adminStartup = 'C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+        $adminDesk = 'C:\Users\Administrator\Desktop'
+        if ((Test-Path 'C:\Users\Administrator') -and (Test-Path -LiteralPath $trayPs1)) {
+            $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew"
+            $trayDesc = 'bob TipForm systray (companion to ircBob; Restart recycles ircBob + Sync/ff)'
+            $trayIco = Join-Path $InstallRoot 'assets\bob-systray.ico'
+            if (-not (Test-Path -LiteralPath $trayIco)) { $trayIco = '' }
+            if (Test-Path -LiteralPath $adminStartup) {
+                New-BobiverseShortcut -LinkPath (Join-Path $adminStartup 'Bobiverse Tray.lnk') `
+                    -TargetPath 'powershell.exe' -Arguments $trayArgs -WorkingDirectory $InstallRoot `
+                    -Description $trayDesc -IconLocation $(if ($trayIco) { "$trayIco,0" } else { '' })
+            }
+            if (Test-Path -LiteralPath $adminDesk) {
+                New-BobiverseShortcut -LinkPath (Join-Path $adminDesk 'Bobiverse Tray.lnk') `
+                    -TargetPath 'powershell.exe' -Arguments $trayArgs -WorkingDirectory $InstallRoot `
+                    -Description $trayDesc -IconLocation $(if ($trayIco) { "$trayIco,0" } else { '' })
+            }
+            try {
+                $adminHive = 'Registry::HKEY_USERS'
+                # Best-effort: load Admin NTUSER if we can resolve SID; else skip
+                $adminSid = (New-Object System.Security.Principal.NTAccount('Administrator')).Translate([System.Security.Principal.SecurityIdentifier]).Value
+                $runPath = "Registry::HKEY_USERS\$adminSid\Software\Microsoft\Windows\CurrentVersion\Run"
+                if (-not (Test-Path -LiteralPath $runPath)) {
+                    $ntuser = 'C:\Users\Administrator\NTUSER.DAT'
+                    if (Test-Path -LiteralPath $ntuser) {
+                        reg load "HKU\$adminSid" $ntuser | Out-Null
+                    }
+                }
+                if (Test-Path -LiteralPath $runPath) {
+                    $runVal = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId"
+                    New-Item -Path $runPath -Force -ErrorAction SilentlyContinue | Out-Null
+                    Set-ItemProperty -LiteralPath $runPath -Name 'BobiverseTray' -Value $runVal -Type String -Force
+                    Write-Host 'INFO Administrator HKU Run BobiverseTray registered'
+                }
+            } catch {
+                Write-Host ("WARN Admin HKU Run BobiverseTray: {0}" -f $_.Exception.Message)
+            }
+        }
     } elseif (Test-Path -LiteralPath $trayPs1) {
-        # Stop prior minimal Start-BobTray / other Watch-BobTray before companion start
+        # Interactive install: kill prior tray then start TipForm in this session
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             $_.CommandLine -and (
                 $_.CommandLine -match 'Start-BobTray\.ps1' -or
@@ -295,6 +344,9 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
             '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew'
         ) | Out-Null
         Write-Host 'INFO started TipForm Start-BobTray (ircBob companion)'
+        if (Test-Path -LiteralPath $trayInteractive) {
+            try { & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RegisterOnly } catch { }
+        }
     }
 }
 

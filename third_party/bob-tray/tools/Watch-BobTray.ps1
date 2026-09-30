@@ -2238,25 +2238,56 @@ function Request-BobTrayIrcLogout {
 }
 
 function Restart-BobTrayWatcher {
-    # CAST IRON: Restart uses the SAME bootstrap as Start (Start-BobFleetTray -ForceNew).
-    # No separate Restart shortcut. No LLM.
-    Write-TrayLog 'Restart: Start-BobFleetTray -ForceNew (same bootstrap as Start Menu)'
+    # CAST IRON: Restart recycles ircBob (Start-Bob Sync/ff), then relaunches TipForm.
+    # Product update is never done by tray Start — only by service Start after Restart-BobEar.
+    Write-TrayLog 'Restart: Restart-BobEar then Start-BobTray -ForceNew'
     try {
-        $script:notifyIcon.ShowBalloonTip(8000, 'Bob Systray', 'Restarting (bootstrap + tidy)...', [System.Windows.Forms.ToolTipIcon]::Info)
+        $script:notifyIcon.ShowBalloonTip(8000, 'Bob Systray', 'Restarting ircBob (Sync/ff) + tray...', [System.Windows.Forms.ToolTipIcon]::Info)
     }
     catch { }
-    # Log off IRC before this process dies (replacement will rejoin).
-    # agentic_irc #250: same graceful announce+quit path as Exit (not a raw kill).
     try { Request-BobTrayIrcLogout -Reason Restart } catch { Write-TrayLog ('restart irc logout: ' + $_.Exception.Message) }
-    $startTray = Join-Path $RepoRoot 'tools\Start-BobFleetTray.ps1'
+
     $ps = (Get-Command powershell.exe).Source
-    if (Test-Path -LiteralPath $startTray) {
-        Start-Process -FilePath $ps `
-            -ArgumentList @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startTray, '-RepoRoot', $RepoRoot, '-ForceNew') `
-            -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
+    $ear = $null
+    foreach ($c in @(
+            (Join-Path $RepoRoot 'scripts\Restart-BobEar.ps1'),
+            'C:\ai\bob\scripts\Restart-BobEar.ps1'
+        )) {
+        if ($c -and (Test-Path -LiteralPath $c)) { $ear = $c; break }
+    }
+    if ($ear) {
+        try {
+            Write-TrayLog ("Restart: invoking {0}" -f $ear)
+            Start-Process -FilePath $ps `
+                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ear, '-Reason', 'tipform-restart') `
+                -WorkingDirectory (Split-Path -Parent $ear) -WindowStyle Hidden -Wait | Out-Null
+        }
+        catch {
+            Write-TrayLog ('Restart: Restart-BobEar failed: ' + $_.Exception.Message)
+        }
     }
     else {
-        Write-TrayLog 'Restart: Start-BobFleetTray.ps1 missing'
+        Write-TrayLog 'Restart: Restart-BobEar.ps1 missing - Restart-Service ircBob fallback'
+        try { Restart-Service -Name 'ircBob' -Force -ErrorAction Stop } catch {
+            Write-TrayLog ('Restart: Restart-Service ircBob failed: ' + $_.Exception.Message)
+        }
+    }
+
+    $startBobTray = Join-Path $RepoRoot 'scripts\Start-BobTray.ps1'
+    if (-not (Test-Path -LiteralPath $startBobTray)) {
+        $startBobTray = Join-Path $RepoRoot 'tools\Start-BobFleetTray.ps1'
+    }
+    if (Test-Path -LiteralPath $startBobTray) {
+        $args = if ($startBobTray -match 'Start-BobTray\.ps1$') {
+            @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startBobTray, '-InstallRoot', $RepoRoot, '-ForceNew')
+        }
+        else {
+            @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startBobTray, '-RepoRoot', $RepoRoot, '-ForceNew', '-SkipUpdate')
+        }
+        Start-Process -FilePath $ps -ArgumentList $args -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
+    }
+    else {
+        Write-TrayLog 'Restart: Start-BobTray / Start-BobFleetTray missing'
     }
     $ctx.ExitThread()
 }
@@ -2985,7 +3016,7 @@ $miPlan.Add_DropDownOpening({ Build-BobTrayPlanMenu -Parent $miPlan })
 $miAck = $menu.Items.Add('Acknowledge')
 $miLog = $menu.Items.Add('Open log')
 [void]$menu.Items.Add('-')
-$miRestart = $menu.Items.Add('Restart')
+$miRestart = $menu.Items.Add('Restart ircBob')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
