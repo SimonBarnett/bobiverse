@@ -171,6 +171,8 @@ def validate_payload(
     if kind not in KINDS:
         return "bad_kind", {}
     repo = str(payload.get("repo") or "").strip()
+    if not repo:
+        return "missing_repo", {}
     if not _REPO_RE.fullmatch(repo):
         return "bad_repo", {}
     if repo not in cfg.allow_repos:

@@ -30,7 +30,8 @@ DEFAULT_PORT = 7700
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
 POST_ROUTES = frozenset({REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH})
-SECRET_POST_ROUTES = frozenset({REPORT_PATH, INTAKE_PATH, JIRA_PATH})
+# Report stays secret-gated. Intake + jira are open (skill/harvest reporters; Jira webhooks).
+SECRET_POST_ROUTES = frozenset({REPORT_PATH})
 
 
 def secret_path() -> Path:
@@ -302,8 +303,9 @@ def handle_intake_post(
     filer: intake.GitHubFiler | None = None,
     rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
-    if not _secret_matches(headers, secret):
-        return 401, b""
+    # Open endpoint: skill harvest / no-GitHub reporters must POST without a fleet secret.
+    # Optional X-Bob-Secret is ignored; rate limits + allowlist live in intake.process_intake.
+    _ = secret
     payload = _parse_json_body(body, scan_secret=False)
     if payload is None:
         return 400, b'{"error":"invalid_json"}'
@@ -347,8 +349,8 @@ def handle_jira_post(
     *,
     filer: intake.GitHubFiler | None = None,
 ) -> tuple[int, bytes]:
-    if not _secret_matches(headers, secret):
-        return 401, b""
+    # Open endpoint: Jira Cloud/Data Center webhooks have no shared Bob secret.
+    _ = secret
     payload = _parse_json_body(body, scan_secret=False)
     if payload is None:
         return 400, b"invalid_json"
@@ -378,9 +380,8 @@ def handle_jira_post(
 
 
 def handle_jira_get(home: Path, headers: dict[str, str], secret: str) -> tuple[int, bytes]:
-    """GET tickets JSON; secret required when configured."""
-    if secret and not _secret_matches(headers, secret):
-        return 401, b""
+    """GET tickets JSON; open (same policy as jira POST)."""
+    _ = headers, secret
     doc = jira_webhook.load_jira_tickets(home)
     tickets = doc.get("tickets") if isinstance(doc.get("tickets"), dict) else {}
     body = json.dumps(
@@ -607,6 +608,8 @@ def serve(
         try:
             import gh_filer
 
+            src = gh_filer.ensure_gh_token_env()
+            print(f"INFO gh token source={src}", flush=True)
             use_filer = gh_filer.default_filer()
         except Exception:
             use_filer = None

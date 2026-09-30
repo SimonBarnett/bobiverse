@@ -56,3 +56,16 @@ def test_bad_kind_still_rejected():
     err, norm = intake.validate_payload(_base(kind="nope"))
     assert err == "bad_kind"
     assert norm == {}
+
+
+def test_missing_repo_rejected():
+    err, norm = intake.validate_payload(_base(repo=""))
+    assert err == "missing_repo"
+    assert norm == {}
+
+
+def test_omitted_repo_rejected():
+    p = {"title": "t", "body": "b"}
+    err, norm = intake.validate_payload(p)
+    assert err == "missing_repo"
+    assert norm == {}

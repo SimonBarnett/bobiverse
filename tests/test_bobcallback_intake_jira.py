@@ -80,9 +80,9 @@ def test_intake_post_files_issue_and_announces(tmp_path: Path) -> None:
     assert st.get("url")
 
 
-def test_intake_requires_secret(tmp_path: Path) -> None:
-    body = b'{"repo":"SimonBarnett/bobiverse","title":"x","body":"y"}'
-    code, _ = bobcallback.handle_request(
+def test_intake_open_without_secret(tmp_path: Path) -> None:
+    body = b'{"repo":"SimonBarnett/bobiverse","title":"x","body":"y","idempotency_key":"open-intake-1"}'
+    code, payload = bobcallback.handle_request(
         "POST",
         "/bob/v1/intake",
         {"Content-Type": "application/json"},
@@ -93,10 +93,12 @@ def test_intake_requires_secret(tmp_path: Path) -> None:
         ALLOW,
         filer=intake.FakeGitHubFiler(),
     )
-    assert code == 401
+    assert code == 202
+    doc = json.loads(payload.decode("utf-8"))
+    assert doc.get("intake_id")
 
 
-def test_jira_post_persists_and_get_requires_secret(tmp_path: Path) -> None:
+def test_jira_post_persists_and_get_is_open(tmp_path: Path) -> None:
     payload = {
         "webhookEvent": "jira:issue_updated",
         "timestamp": 1705424400000,
@@ -130,22 +132,10 @@ def test_jira_post_persists_and_get_requires_secret(tmp_path: Path) -> None:
     assert "PROJ-42" in outbox
     assert list((tmp_path / "webhook-queue" / "done").glob("*.json"))
 
-    code_deny, _ = bobcallback.handle_request(
-        "GET",
-        "/bob/v1/jira",
-        {},
-        b"",
-        "127.0.0.1",
-        tmp_path,
-        SECRET,
-        ALLOW,
-    )
-    assert code_deny == 401
-
     code_ok, got = bobcallback.handle_request(
         "GET",
         "/bob/v1/jira",
-        _headers(),
+        {},
         b"",
         "127.0.0.1",
         tmp_path,
@@ -157,7 +147,7 @@ def test_jira_post_persists_and_get_requires_secret(tmp_path: Path) -> None:
     assert "PROJ-42" in parsed["tickets"]
 
 
-def test_jira_post_requires_secret(tmp_path: Path) -> None:
+def test_jira_post_open_without_secret(tmp_path: Path) -> None:
     code, _ = bobcallback.handle_request(
         "POST",
         "/bob/v1/jira",
@@ -168,7 +158,7 @@ def test_jira_post_requires_secret(tmp_path: Path) -> None:
         SECRET,
         ALLOW,
     )
-    assert code == 401
+    assert code == 204
 
 
 def test_resolve_listen_port_never_ephemeral(monkeypatch) -> None:
