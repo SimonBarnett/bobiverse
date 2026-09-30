@@ -71,7 +71,7 @@ Get-Content $env:USERPROFILE\.airc\*.log -Tail 40 -ErrorAction SilentlyContinue
 
 Expect `chanserv-info status=registered` and `joined #<machine> as <machine>_console` when the shop is ChanServ-registered.
 
-`Install-Airc` **disables** leftover agentic_irc `AircConsole` so only bobiverse `Airc` remains the live console.
+`Install-Airc` **removes** leftover agentic_irc `AircConsole` from the SCM so only bobiverse `Airc` remains (on-disk `C:\ai\airc-console` tree may remain).
 
 ## Verify Jeeves (Ergo host)
 
@@ -84,7 +84,7 @@ Get-Content $env:USERPROFILE\.agentic-irc-jeeves\irc.log -Tail 40 -ErrorAction S
 
 Expect:
 
-- Legacy **`BobJeeves` Stopped + Disabled** (Install-Jeeves disables it — both chairs fight for nick `Jeeves`)
+- Legacy **`BobJeeves` absent** from SCM (Install-Jeeves removes it — both chairs fight for nick `Jeeves`; `C:\ai\ergo` tree may remain)
 - `ircJeeves` Running; ObjectName = fleet user when `service.password` / `BOBIVERSE_SERVICE_PASSWORD` was supplied
 - Log: `joined #bobiverse,#… as Jeeves`
 

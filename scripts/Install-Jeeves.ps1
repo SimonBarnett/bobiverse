@@ -65,9 +65,9 @@ if (Test-BobiverseIsLocalSystem) {
 }
 New-Item -ItemType Directory -Force -Path $digestHome | Out-Null
 
-# Clean prior ircJeeves + legacy gh-Jeeves chair (both fight for nick Jeeves)
+# Clean prior ircJeeves + remove legacy gh-Jeeves chair (both fight for nick Jeeves)
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
-Disable-BobiverseLegacyBobJeeves
+Remove-BobiverseLegacyService -Name 'BobJeeves' -Nssm $Nssm
 Get-ScheduledTask -TaskName 'BobJeeves-chair' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
 # Lay tree: copy scripts + skills into InstallRoot (skip when MSI already staged - issue #2)
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null

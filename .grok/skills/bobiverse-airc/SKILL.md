@@ -25,7 +25,7 @@ Get-Content $env:USERPROFILE\.airc\*.log -Tail 40 -ErrorAction SilentlyContinue
 ## Airc vs AircConsole
 
 - bobiverse **Airc** UpgradeCode is distinct from agentic_irc **AircConsole** (issue #12).
-- Prefer **one console per box**. Install-Airc disables leftover `AircConsole` (stop + disabled).
+- Prefer **one console per box**. Install-Airc **removes** leftover `AircConsole` from the SCM.
 - Roots: `C:\ai\airc` / service `Airc` vs `C:\ai\airc-console` / `AircConsole`.
 
 ## Remote shell via PRIVMSG

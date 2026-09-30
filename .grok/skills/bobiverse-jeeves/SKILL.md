@@ -14,7 +14,7 @@ Foundation: harvest-agent-skills -> https://github.com/SimonBarnett/bobiverse
 
 - `ircJeeves` — nick **Jeeves**, `irc_agent.py --chair` (bobiverse)
 - `BobIrcd` — Ergo TLS :6697
-- Legacy **`BobJeeves`** (gh-Jeeves `python -m jeeves`) — **disable** on cutover; both fight for nick Jeeves
+- Legacy **`BobJeeves`** (gh-Jeeves `python -m jeeves`) — **remove** from SCM on cutover/install; both fight for nick Jeeves
 
 ```powershell
 Get-Service ircJeeves,BobJeeves,BobIrcd
@@ -46,7 +46,7 @@ First boot may seed `ircd.yaml` from `default.yaml` — set TLS, server PASS, Ch
 
 ## Cutover checklist (Ergo host)
 
-1. `Stop-Service BobJeeves; Set-Service BobJeeves -StartupType Disabled` (Install-Jeeves does this).
+1. Remove SCM entry `BobJeeves` (Install-Jeeves calls `Remove-BobiverseLegacyService`).
 2. Ensure `C:\ai\jeeves\config\ergo.password` exists (copy from `~\.grok\ergo\connect.password`).
 3. Set ObjectName via `Complete-BobiverseServiceLogon.ps1 -Product jeeves` when `service.password` is available.
 4. `Restart-Service ircJeeves`
