@@ -33,6 +33,12 @@ if (-not (Test-Path $psd1)) { throw "missing $psd1" }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# CatchException before any Control. Otherwise a recycle Stop-Process mid-Timer tick
+# surfaces PipelineStoppedException as the Windows Forms JIT dialog.
+try {
+    [System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+}
+catch { }
 Add-Type -Name Native -Namespace BobTray -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
@@ -40,10 +46,8 @@ Add-Type -Name Native -Namespace BobTray -MemberDefinition @'
 $hwnd = [BobTray.Native]::GetConsoleWindow()
 if ($hwnd -ne [IntPtr]::Zero) { [void][BobTray.Native]::ShowWindow($hwnd, 0) }
 
-# Must run before any Control is created (NotifyIcon / TipForm). Late call fails and
-# PipelineStoppedException from a killed recycle then pops the JIT dialog.
+# ThreadException / UnhandledException handlers (mode already set above when possible).
 try {
-    [System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException)
     [System.Windows.Forms.Application]::add_ThreadException({
             param($sender, $e)
             $ex = $e.Exception
