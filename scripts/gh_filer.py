@@ -30,6 +30,19 @@ _ISSUE_NUM = re.compile(r"/issues/(\d+)\s*$")
 _LABEL_FAIL = re.compile(r"(?i)label|not found|could not add")
 
 
+def _token_candidate_paths() -> list[Path]:
+    """Paths to try for a one-line GitHub token (LocalSystem-safe)."""
+    paths: list[Path] = [Path.home() / ".grok" / "bob" / "github.token"]
+    # airc/bobcallback often run as LocalSystem; interactive gh auth is under Administrator.
+    paths.append(Path(r"C:\Users\Administrator\.grok\bob\github.token"))
+    paths.append(Path(r"C:\ai\jeeves\config\github.token"))
+    digest = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    if digest:
+        paths.append(Path(digest) / "github.token")
+        paths.append(Path(digest) / "config" / "github.token")
+    return paths
+
+
 def ensure_gh_token_env() -> str:
     """Ensure GH_TOKEN is set for subprocess gh. Returns token source tag (never value)."""
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
@@ -38,12 +51,15 @@ def ensure_gh_token_env() -> str:
             if name == "GITHUB_TOKEN" and not (os.environ.get("GH_TOKEN") or "").strip():
                 os.environ["GH_TOKEN"] = v
             return f"env:{name}"
-    path = Path.home() / ".grok" / "bob" / "github.token"
-    if path.is_file():
-        tok = path.read_text(encoding="utf-8").strip()
-        if tok:
-            os.environ["GH_TOKEN"] = tok
-            return f"file:{path}"
+    for path in _token_candidate_paths():
+        try:
+            if path.is_file():
+                tok = path.read_text(encoding="utf-8").strip()
+                if tok:
+                    os.environ["GH_TOKEN"] = tok
+                    return f"file:{path}"
+        except OSError:
+            continue
     return "none"
 
 
