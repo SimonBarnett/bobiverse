@@ -53,6 +53,27 @@ $scriptDir = Get-AircConsoleScriptDir
 if (-not $RepoRoot -or -not (Test-Path -LiteralPath $RepoRoot)) {
     $RepoRoot = Split-Path -Parent $scriptDir
 }
+
+# Fast-forward bobiverse clone and sync into this install tree before launch.
+# Operators may set BOBIVERSE_NO_UPDATE=1 to skip.
+$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
+$synced = $false
+if ((Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+    try {
+        & $sync -Product airc -InstallRoot $RepoRoot
+        if ($LASTEXITCODE -eq 0) { $synced = $true }
+    } catch {
+        Write-Host "WARN sync-from-repo: $($_.Exception.Message)"
+    }
+}
+if (-not $synced -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+    $update = Join-Path $scriptDir 'Check-BobiverseUpdate.ps1'
+    if (Test-Path -LiteralPath $update) {
+        try { & $update -Product airc -InstallRoot $RepoRoot }
+        catch { Write-Host "WARN update-check: $($_.Exception.Message)" }
+    }
+}
+
 $script = Join-Path $scriptDir 'airc_console_service.py'
 if (-not (Test-Path -LiteralPath $script)) { throw "missing $script" }
 

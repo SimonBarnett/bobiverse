@@ -36,9 +36,9 @@ if (-not $Python) {
 }
 
 $env:BOB_MACHINE_ID = $MachineId
-# Update check runs for LocalSystem too (Check-BobiverseUpdate uses GitHub API; no user gh PATH needed).
-# Operators may still set BOBIVERSE_NO_UPDATE=1 to skip.
-
+# Update runs for LocalSystem too. Prefer git ff-only on the bobiverse clone + sync into
+# this install tree; MSI Check-BobiverseUpdate is fallback when no clone exists.
+# Operators may set BOBIVERSE_NO_UPDATE=1 to skip.
 
 # Ergo server PASS from config\ergo.password / home / env (public MSI no longer embeds - issue #4).
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
@@ -57,10 +57,22 @@ if (Test-Path -LiteralPath $nsFile) {
     Write-Host "WARN missing $nsFile - reserved nick will fail without AGENTIC_IRC_SASL_PASSWORD"
 }
 
-$update = Join-Path $scriptDir 'Check-BobiverseUpdate.ps1'
-if ((Test-Path -LiteralPath $update) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
-    try { & $update -Product bob -InstallRoot $InstallRoot }
-    catch { Write-Host "WARN update-check: $($_.Exception.Message)" }
+$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
+$synced = $false
+if ((Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+    try {
+        & $sync -Product bob -InstallRoot $InstallRoot
+        if ($LASTEXITCODE -eq 0) { $synced = $true }
+    } catch {
+        Write-Host "WARN sync-from-repo: $($_.Exception.Message)"
+    }
+}
+if (-not $synced -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+    $update = Join-Path $scriptDir 'Check-BobiverseUpdate.ps1'
+    if (Test-Path -LiteralPath $update) {
+        try { & $update -Product bob -InstallRoot $InstallRoot }
+        catch { Write-Host "WARN update-check: $($_.Exception.Message)" }
+    }
 }
 
 $agent = Join-Path $scriptDir 'irc_agent.py'

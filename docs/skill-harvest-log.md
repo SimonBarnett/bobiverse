@@ -32,3 +32,16 @@ Harvested into .grok/skills/bobiverse-bob + docs/post-install.md + tray launcher
 | Version visible on card | TipForm footer `bob {ver}` |
 
 VERSION → **0.1.8** (pack when shipping).
+
+## 2026-09-30 — Jeeves webhooks + digest roster + start ff-only (0.1.9)
+
+| Lesson | Fix |
+|--------|-----|
+| Digest machines must be ChanServ shops only | `bobreport` roster gate + prune unregistered; period roll replaces lesser pcent |
+| Intake/jira on ionos | `bobcallback` `/bob/v1/intake` + `/bob/v1/jira`; durable `webhook_queue`; announce `#bobiverse` |
+| Harvest without GitHub | shared `.grok/skills/harvest` in every MSI; intake `kind` default `issue` |
+| Product MSI books split | Pack stages per-product docs/skills/AGENTS; jeeves has no bob seat/TipForm |
+| Start-time update | `Sync-BobiverseFromRepo` ff-only clone → sync install tree; MSI update is fallback |
+| Install start failures | `Report-BobiverseIntakeIssue` from Install-Jeeves/Bob/Airc |
+
+VERSION → **0.1.9**.

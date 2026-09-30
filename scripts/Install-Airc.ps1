@@ -39,7 +39,7 @@ if (Test-Path $skillsSrc) {
     $skillsDest = Join-Path $InstallRoot '.grok\skills'
     New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
     Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
-    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-airc', 'harvest-agent-skills')
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-airc', 'harvest', 'harvest-agent-skills')
 }
 
 # Package ergo.password into staged config if available on packer
@@ -75,7 +75,18 @@ if ($Python) { $args.Python = $Python }
 if ($NoStart) { $args.NoStart = $true }
 
 # Patch launcher path expectation: Install-AircConsole looks beside itself
-& $installLegacy @args
+try {
+    & $installLegacy @args
+} catch {
+    Write-Host "ERROR Install-AircConsole: $($_.Exception.Message)"
+    $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
+    if (Test-Path -LiteralPath $report) {
+        try {
+            & $report -Title 'airc install: Install-AircConsole failed' -Body $_.Exception.Message -InstallRoot $InstallRoot
+        } catch {}
+    }
+    throw
+}
 
 # Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
 Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
