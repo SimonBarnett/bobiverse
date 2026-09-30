@@ -2238,56 +2238,25 @@ function Request-BobTrayIrcLogout {
 }
 
 function Restart-BobTrayWatcher {
-    # CAST IRON: Restart recycles ircBob (Start-Bob Sync/ff), then relaunches TipForm.
-    # Product update is never done by tray Start — only by service Start after Restart-BobEar.
-    Write-TrayLog 'Restart: Restart-BobEar then Start-BobTray -ForceNew'
+    # CAST IRON: Restart uses the SAME bootstrap as Start (Start-BobFleetTray -ForceNew).
+    # No separate Restart shortcut. No LLM.
+    Write-TrayLog 'Restart: Start-BobFleetTray -ForceNew (same bootstrap as Start Menu)'
     try {
-        $script:notifyIcon.ShowBalloonTip(8000, 'Bob Systray', 'Restarting ircBob (Sync/ff) + tray...', [System.Windows.Forms.ToolTipIcon]::Info)
+        $script:notifyIcon.ShowBalloonTip(8000, 'Bob Systray', 'Restarting (bootstrap + tidy)...', [System.Windows.Forms.ToolTipIcon]::Info)
     }
     catch { }
+    # Log off IRC before this process dies (replacement will rejoin).
+    # agentic_irc #250: same graceful announce+quit path as Exit (not a raw kill).
     try { Request-BobTrayIrcLogout -Reason Restart } catch { Write-TrayLog ('restart irc logout: ' + $_.Exception.Message) }
-
+    $startTray = Join-Path $RepoRoot 'tools\Start-BobFleetTray.ps1'
     $ps = (Get-Command powershell.exe).Source
-    $ear = $null
-    foreach ($c in @(
-            (Join-Path $RepoRoot 'scripts\Restart-BobEar.ps1'),
-            'C:\ai\bob\scripts\Restart-BobEar.ps1'
-        )) {
-        if ($c -and (Test-Path -LiteralPath $c)) { $ear = $c; break }
-    }
-    if ($ear) {
-        try {
-            Write-TrayLog ("Restart: invoking {0}" -f $ear)
-            Start-Process -FilePath $ps `
-                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ear, '-Reason', 'tipform-restart') `
-                -WorkingDirectory (Split-Path -Parent $ear) -WindowStyle Hidden -Wait | Out-Null
-        }
-        catch {
-            Write-TrayLog ('Restart: Restart-BobEar failed: ' + $_.Exception.Message)
-        }
+    if (Test-Path -LiteralPath $startTray) {
+        Start-Process -FilePath $ps `
+            -ArgumentList @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startTray, '-RepoRoot', $RepoRoot, '-ForceNew') `
+            -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
     }
     else {
-        Write-TrayLog 'Restart: Restart-BobEar.ps1 missing - Restart-Service ircBob fallback'
-        try { Restart-Service -Name 'ircBob' -Force -ErrorAction Stop } catch {
-            Write-TrayLog ('Restart: Restart-Service ircBob failed: ' + $_.Exception.Message)
-        }
-    }
-
-    $startBobTray = Join-Path $RepoRoot 'scripts\Start-BobTray.ps1'
-    if (-not (Test-Path -LiteralPath $startBobTray)) {
-        $startBobTray = Join-Path $RepoRoot 'tools\Start-BobFleetTray.ps1'
-    }
-    if (Test-Path -LiteralPath $startBobTray) {
-        $args = if ($startBobTray -match 'Start-BobTray\.ps1$') {
-            @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startBobTray, '-InstallRoot', $RepoRoot, '-ForceNew')
-        }
-        else {
-            @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startBobTray, '-RepoRoot', $RepoRoot, '-ForceNew', '-SkipUpdate')
-        }
-        Start-Process -FilePath $ps -ArgumentList $args -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
-    }
-    else {
-        Write-TrayLog 'Restart: Start-BobTray / Start-BobFleetTray missing'
+        Write-TrayLog 'Restart: Start-BobFleetTray.ps1 missing'
     }
     $ctx.ExitThread()
 }
@@ -2367,7 +2336,7 @@ function Update-Hover {
                     # Format-BobCursorAccountLabel will pick tip/overspend when RemainingPct empty
                 }
             }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels)
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -2670,7 +2639,7 @@ function Add-BobTrayUsageRow {
 }
 
 function Rebuild-BobTrayTiles {
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp)
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels)
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -2702,6 +2671,30 @@ function Rebuild-BobTrayTiles {
     $oldHost = $script:tileHost
     $script:tileHost = $stage
     try {
+        # ChanServ shops from digest chair_channels (Jeeves registry) — names only.
+        $shops = @()
+        foreach ($ch in @($ChairChannels)) {
+            $s = [string]$ch
+            if (-not $s) { continue }
+            if ($s -eq '#bobiverse' -or $s -eq 'bobiverse') { continue }
+            $shops += ,($s.TrimStart('#'))
+        }
+        if ($shops.Count -gt 0) {
+            $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'ChanServ' -Icon $null
+            $shopFont = New-Object System.Drawing.Font 'Segoe UI', 9
+            foreach ($shop in $shops) {
+                $lbl = New-Object System.Windows.Forms.Label
+                $lbl.AutoSize = $true
+                $lbl.Font = $shopFont
+                $lbl.ForeColor = $fg
+                $lbl.BackColor = [System.Drawing.Color]::Transparent
+                $lbl.Text = [string]$shop
+                $lbl.Location = New-Object System.Drawing.Point 18, $y
+                $script:tileHost.Controls.Add($lbl)
+                $y += 18
+            }
+            $y += 6
+        }
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
         $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'Cursor' -Icon $cursorIcon -WithHelp -Agent $cursorAgent `
@@ -3016,7 +3009,7 @@ $miPlan.Add_DropDownOpening({ Build-BobTrayPlanMenu -Parent $miPlan })
 $miAck = $menu.Items.Add('Acknowledge')
 $miLog = $menu.Items.Add('Open log')
 [void]$menu.Items.Add('-')
-$miRestart = $menu.Items.Add('Restart ircBob')
+$miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 

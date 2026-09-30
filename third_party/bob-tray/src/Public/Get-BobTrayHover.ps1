@@ -1301,9 +1301,13 @@ function Format-BobCursorControlPoolHeading {
         [string]$PctLabel,
         [string]$ResetLabel
     )
-    $heading = ('{0}  {1}' -f $GroupLabel, $PctLabel)
-    if ($ResetLabel) { $heading = ('{0}  {1}' -f $heading, $ResetLabel) }
-    return $heading
+    # TipForm: "Cursor Models  0% · 15 days, 2 hours" (FR #445). Missing reset → n/a.
+    $reset = if ($ResetLabel -and -not [string]::IsNullOrWhiteSpace([string]$ResetLabel)) {
+        [string]$ResetLabel
+    } else {
+        'n/a'
+    }
+    return ('{0}  {1} · {2}' -f $GroupLabel, $PctLabel, $reset)
 }
 
 function Select-BobCursorGroupRemainMinimum {
@@ -1409,11 +1413,40 @@ function Set-BobCursorControlPoolRow {
     }
 }
 
+function Get-BobDigestPoolPeriodEnd {
+    param(
+        $DigestPools,
+        [string]$GroupId
+    )
+    $gid = [string]$GroupId
+    $aliases = @($gid)
+    switch ($gid) {
+        'auto' { $aliases = @('auto', 'low-cost-models', 'cursor-models') }
+        'low-cost-models' { $aliases = @('low-cost-models', 'auto', 'cursor-models') }
+        'high-cost-models' { $aliases = @('high-cost-models', 'other-models') }
+        'grok-chat' { $aliases = @('grok-chat', 'grok-weekly', 'sand') }
+    }
+    foreach ($p in @($DigestPools)) {
+        if (-not $p) { continue }
+        $pid = [string]$(if ($p.group_id) { $p.group_id } elseif ($p.group) { $p.group } elseif ($p.id) { $p.id } else { '' })
+        if (-not $pid) { continue }
+        $hit = $false
+        foreach ($a in $aliases) {
+            if ($pid -eq $a) { $hit = $true; break }
+        }
+        if (-not $hit) { continue }
+        if ($p.period_end) { return [string]$p.period_end }
+        if ($p.reset) { return [string]$p.reset }
+    }
+    return $null
+}
+
 function Get-BobCursorPoolsForTray {
     param(
         [string]$MachineId,
         $LocalCursorDoc,
         $PcentRows,
+        $DigestPools,
         # FR #445: Write-BobIrcStatus / digest publish must not republish peer pool values.
         [switch]$LocalOnly
     )
@@ -1502,11 +1535,14 @@ function Get-BobCursorPoolsForTray {
                 if ($ge -and $ge.period_end) { $pe = [string]$ge.period_end }
             }
         }
+        # Digest may fill still-null period_end (reset countdown) without clobbering local %.
+        if ((-not $pe -or $pe -eq '') -and -not $LocalOnly -and $DigestPools) {
+            $pe = Get-BobDigestPoolPeriodEnd -DigestPools $DigestPools -GroupId $gid
+        }
         $fetchedAt = $null
         if ($LocalCursorDoc -and $LocalCursorDoc.fetched_at) { $fetchedAt = [string]$LocalCursorDoc.fetched_at }
         $resetLabel = Format-BobResetLabel -PeriodEnd $pe -FetchedAt $fetchedAt
-        $heading = ('{0}  {1}' -f $glabel, $pctLabel)
-        if ($resetLabel) { $heading = ('{0}  {1}' -f $heading, $resetLabel) }
+        $heading = Format-BobCursorControlPoolHeading -GroupLabel $glabel -PctLabel $pctLabel -ResetLabel $resetLabel
         $pools += ,[pscustomobject]@{
             seat_id         = $localSeatId
             seat_label      = $localSeatLabel
@@ -1562,8 +1598,14 @@ function Get-BobCursorPoolsForTray {
             if ($null -ne $pool.remaining_pct -and [string]$pool.remaining_pct -ne '') { break }
             $pool.remaining_pct = $pct
             $pool.pct_label = ('{0}%' -f $pct)
-            $pool.heading = ('{0}  {1}' -f $pool.group_label, $pool.pct_label)
-            if ($pool.reset_label) { $pool.heading = ('{0}  {1}' -f $pool.heading, $pool.reset_label) }
+            if ((-not $pool.period_end -or [string]$pool.period_end -eq '') -and $DigestPools) {
+                $fillPe = Get-BobDigestPoolPeriodEnd -DigestPools $DigestPools -GroupId $groupId
+                if ($fillPe) {
+                    $pool.period_end = $fillPe
+                    $pool.reset_label = Format-BobResetLabel -PeriodEnd $fillPe -FetchedAt $pool.fetched_at
+                }
+            }
+            $pool.heading = Format-BobCursorControlPoolHeading -GroupLabel ([string]$pool.group_label) -PctLabel $pool.pct_label -ResetLabel $pool.reset_label
             break
         }
         foreach ($seat in @(Get-BobSeatConfig)) {
@@ -2175,7 +2217,9 @@ function Get-BobTrayHover {
         }
     }
     catch { }
-    $cursorPools = @(Get-BobCursorPoolsForTray -MachineId $machineId -LocalCursorDoc $cursorWeek -PcentRows $digestPcentRows)
+    $digestPools = @()
+    if ($reportDigest -and $reportDigest.cursor_pools) { $digestPools = @($reportDigest.cursor_pools) }
+    $cursorPools = @(Get-BobCursorPoolsForTray -MachineId $machineId -LocalCursorDoc $cursorWeek -PcentRows $digestPcentRows -DigestPools $digestPools)
     $cursorGroups = @()
     foreach ($pool in $cursorPools) {
         if (-not $pool) { continue }
@@ -2251,6 +2295,18 @@ function Get-BobTrayHover {
         account_period_end = $(if ($cursorWeek -and $cursorWeek.period_end) { [string]$cursorWeek.period_end } else { $null })
         account_reset_label = $(if ($cursorWeek -and $cursorWeek.period_end) { Format-BobResetLabel -PeriodEnd $cursorWeek.period_end -FetchedAt $cursorWeek.fetched_at } else { $null })
         gh_posting          = $ghPosting
+        chair_channels      = $(
+            if ($reportDigest -and $reportDigest.chair_channels) {
+                @($reportDigest.chair_channels | ForEach-Object { [string]$_ })
+            } elseif ($reportDigest -and $reportDigest.machines) {
+                @(
+                    $reportDigest.machines.PSObject.Properties.Name | ForEach-Object {
+                        $m = [string]$_
+                        if ($m) { '#' + $m.TrimStart('#') }
+                    }
+                )
+            } else { @() }
+        )
     }
 }
 
