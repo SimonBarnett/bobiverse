@@ -44,6 +44,40 @@ function Remove-BobiverseService {
     Start-Sleep -Seconds 1
 }
 
+function Remove-BobiverseLegacyService {
+    <#
+      Stop + delete a leftover Windows service by name (NSSM or sc).
+      Used to remove agentic_irc AircConsole and gh-Jeeves BobJeeves on bobiverse install.
+      Leaves on-disk trees (C:\ai\ergo, C:\ai\airc-console) for manual rollback.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$Nssm = ''
+    )
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Write-Host "INFO legacy service $Name absent"
+        return
+    }
+    Write-Host "INFO removing legacy service $Name"
+    if (-not $Nssm) { $Nssm = Resolve-BobiverseNssm }
+    if ($Nssm -and (Test-Path -LiteralPath $Nssm)) {
+        Remove-BobiverseService -Nssm $Nssm -Name $Name
+    }
+    # sc delete if nssm remove left the SCM entry (non-nssm or wrong nssm binary)
+    $still = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if ($still) {
+        try { Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue } catch { }
+        $r = cmd.exe /c "sc stop $Name & sc delete $Name"
+        Write-Host ("INFO sc delete $Name -> {0}" -f (($r | Out-String).Trim()))
+    }
+}
+
+function Disable-BobiverseLegacyBobJeeves {
+    # Back-compat alias: remove, do not merely disable (operator asked for SCM cleanup).
+    Remove-BobiverseLegacyService -Name 'BobJeeves'
+}
+
 function Resolve-BobiverseNssm {
     param([string]$Preferred = '', [string]$ScriptDir = '')
     if ($Preferred -and (Test-Path -LiteralPath $Preferred)) {

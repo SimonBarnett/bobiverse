@@ -2261,7 +2261,11 @@ def main() -> None:
     p.add_argument("--port", type=int, default=6697)
     p.add_argument("--password", default="", help="IRC PASS (or env AGENTIC_IRC_PASSWORD)")
     p.add_argument("--nick", required=True)
-    p.add_argument("--channel", required=True)
+    p.add_argument(
+        "--channel",
+        default="",
+        help="seed channel (required unless --chair; chair defaults to bobiverse)",
+    )
     p.add_argument("--home", default="", help="AGENTIC_IRC_HOME (required if two nicks on one box)")
     p.add_argument("--realname", default="agentic-irc")
     p.add_argument("--outbox", default="")
@@ -2279,6 +2283,11 @@ def main() -> None:
         help="talk seat: set --nick suffix to irc_agent PID (env self/agent= or coordinator.pid)",
     )
     args = p.parse_args()
+    if not str(args.channel or "").strip():
+        if args.chair:
+            args.channel = "bobiverse"
+        else:
+            p.error("--channel is required unless --chair")
     home = (args.home or os.environ.get("AGENTIC_IRC_HOME") or "").strip()
     seat_pid = talk_seat_pid.resolve_seat_pid(home or None, self_pid=os.getpid())
     if args.auto_nick:

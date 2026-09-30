@@ -64,9 +64,51 @@ If you see `INFO no-sasl` then `INFO NICKNAME_RESERVED` / `NO 001`, fix NickServ
 ## Verify Airc
 
 ```powershell
-Get-Service Airc
+Get-Service Airc,AircConsole
 # NSSM AppStdout path, or:
 Get-Content $env:USERPROFILE\.airc\*.log -Tail 40 -ErrorAction SilentlyContinue
 ```
 
 Expect `chanserv-info status=registered` and `joined #<machine> as <machine>_console` when the shop is ChanServ-registered.
+
+`Install-Airc` **removes** leftover agentic_irc `AircConsole` from the SCM so only bobiverse `Airc` remains (on-disk `C:\ai\airc-console` tree may remain).
+
+## Verify Jeeves (Ergo host)
+
+```powershell
+Get-Service ircJeeves,BobJeeves,BobIrcd
+Get-Content C:\ai\jeeves\logs\stdout.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content C:\ai\jeeves\logs\stderr.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content $env:USERPROFILE\.agentic-irc-jeeves\irc.log -Tail 40 -ErrorAction SilentlyContinue
+```
+
+Expect:
+
+- Legacy **`BobJeeves` absent** from SCM (Install-Jeeves removes it — both chairs fight for nick `Jeeves`; `C:\ai\ergo` tree may remain)
+- `ircJeeves` Running; ObjectName = fleet user when `service.password` / `BOBIVERSE_SERVICE_PASSWORD` was supplied
+- Log: `joined #bobiverse,#… as Jeeves`
+
+### LocalSystem / DPAPI pitfalls
+
+Quiet MSI runs as LocalSystem. If ObjectName stays LocalSystem:
+
+- Do **not** use `C:\Users\Default\.agentic-irc-jeeves` (Install-Jeeves avoids Default; prefers Admin chair or `C:\ai\jeeves\home-jeeves`).
+- Admin-sealed `identity.json` cannot be opened → `CryptUnprotectData failed` crash-loop.
+  - Fix properly: `Complete-BobiverseServiceLogon.ps1 -Product jeeves` with `C:\ai\jeeves\config\service.password`.
+  - Interim: rename `identity.json` → `identity.json.admin-dpapi.bak` so LocalSystem mints a fresh identity (SEAL key changes).
+
+Never pass unquoted `#channel` in PowerShell AppParameters / one-liners — `#` starts a comment. `Start-Jeeves` omits `--channel`; `irc_agent --chair` defaults the seed channel.
+
+### Remote ops via airc
+
+From a fleet bob ear outbox (UTF-8 no BOM):
+
+```text
+PRIVMSG {machine}_console :sc query ircJeeves
+```
+
+Keep commands short; stage longer fixes with `irm` + `powershell -File`.
+
+## Tray
+
+On boxes that already run agentic_build **Watch-BobTray**, the MSI **Start-BobTray** must not also start (blank duplicate icon — issue #14 / 0.1.5+). Kill stray `Start-BobTray` processes if both appear.

@@ -76,4 +76,8 @@ if ($NoStart) { $args.NoStart = $true }
 
 # Patch launcher path expectation: Install-AircConsole looks beside itself
 & $installLegacy @args
+
+# Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
+Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
+
 Write-Host 'INFO Install-Airc done (service Airc)'
