@@ -47,11 +47,13 @@ If `C:\ai\bob\home` is LocalSystem-ACL only, the interactive user cannot write t
 ## Systray (0.1.7+ TipForm companion)
 
 - bob MSI ships full TipForm under `C:\ai\bob\tools\Watch-BobTray.ps1` (+ BobBridge `src\`, `assets\bob-systray.ico`, `PIN.txt`).
-- **`scripts\Start-BobTray.ps1`** launches it (STA) with `BOB_MACHINE_ID` / bridge / IRC home. Companion to **`ircBob`** — Desktop/Start Menu/Startup + HKCU Run; **not** a `BobFleet-*` task.
+- **`scripts\Start-BobTray.ps1`** → `tools\Start-BobFleetTray.ps1` (STA) with `BOB_MACHINE_ID` / bridge / IRC home. Companion to **`ircBob`** — Desktop/Start Menu/Startup + HKCU `Run\BobiverseTray`; **not** a `BobFleet-*` task (disable leftover `BobFleet-<MachineId>`).
+- **Durable start (0.1.8+):** `Start-BobFleetTray` uses **WMI `Win32_Process.Create`** so TipForm breaks away from agent/console job objects. `Start-Process -PassThru` from a Grok shell dies when that shell exits (even after `tray up`).
+- Seat-wrapper kill filter: `-File …Watch-BobTray` only (broad `match Watch-BobTray` kills diagnosing agent shells).
 - TipForm menu **Restart** recycles the tray watcher (IRC logout announce), not the ear service.
 - Desktop **Bob Fleet Restart** / `Restart-BobEar.ps1`: depart-request → announce → `Restart-Service ircBob`.
-- Digest POST: `Write-BobIrcStatus` → `reportUrl`; secret from `~\.grok\bob\report.secret` or `BOB_REPORT_SECRET`.
-- Product updates: `Check-BobiverseUpdate` (not agentic_build git-pull).
+- Digest POST: `Write-BobIrcStatus` → `reportUrl`; secret from `~\.grok\bob\report.secret` or `BOB_REPORT_SECRET`. Assert: `scripts\Assert-BobDigestWebhookLocal.ps1`.
+- Product updates: `Check-BobiverseUpdate` (GitHub Releases API + well-known `gh` paths; LocalSystem may update). Operators set `BOBIVERSE_NO_UPDATE=1` to skip.
 
 ## Recycle
 

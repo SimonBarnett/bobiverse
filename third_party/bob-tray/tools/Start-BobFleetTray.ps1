@@ -50,7 +50,10 @@ function Ensure-BobSystraySeatWrapper {
         '# DO NOT EDIT - per-machine wrapper from Start-BobFleetTray / Install-BobFleet.'
         '$ErrorActionPreference = "Continue"'
         'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {'
-        '  $_.CommandLine -and $_.CommandLine -match "Watch-BobTray" -and [int]$_.ProcessId -ne $PID'
+        '  $_.CommandLine -and [int]$_.ProcessId -ne $PID -and ('
+        '    $_.CommandLine -match ''(-File|-f)\s+"?[^"\s]*Watch-BobTray\.ps1'' -or'
+        '    $_.CommandLine -match ''(-File|-f)\s+"?[^"\s]*_Watch-BobTray-[^\s"]+\.ps1'''
+        '  )'
         '} | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }'
         'Start-Sleep -Milliseconds 600'
         ('$env:BOB_IRC_HOME = "{0}"' -f $ircHome.Replace('\', '\\'))
@@ -62,7 +65,9 @@ function Ensure-BobSystraySeatWrapper {
     $needWrite = $true
     if (Test-Path -LiteralPath $wrap) {
         $cur = Get-Content -LiteralPath $wrap -Raw -ErrorAction SilentlyContinue
-        if ($cur -and $cur -match [regex]::Escape($trayPath) -and $cur -match [regex]::Escape($MachineId)) {
+        # Rewrite when path/id change OR when the old broad "Watch-BobTray" kill filter is still present.
+        if ($cur -and $cur -match [regex]::Escape($trayPath) -and $cur -match [regex]::Escape($MachineId) `
+                -and $cur -match '\(-File\|-f\)' -and $cur -notmatch 'CommandLine -match "Watch-BobTray"') {
             $needWrite = $false
         }
     }
@@ -240,10 +245,26 @@ else {
 }
 
 $ps = (Get-Command powershell.exe).Source
-$proc = Start-Process -FilePath $ps -ArgumentList @(
-    '-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-    '-File', $launch
-) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+# Win32_Process.Create breaks away from agent/console job objects. Start-Process
+# -PassThru children die when the launching job closes (Grok Build shells, etc.).
+$argLine = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $launch
+$cmdLine = '"{0}" {1}' -f $ps, $argLine
+$created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+    CommandLine      = $cmdLine
+    CurrentDirectory = $RepoRoot
+}
+$launcherPid = 0
+if ($created -and [int]$created.ReturnValue -eq 0 -and $created.ProcessId) {
+    $launcherPid = [int]$created.ProcessId
+}
+else {
+    # Fallback for hosts that block WMI process create.
+    $proc = Start-Process -FilePath $ps -ArgumentList @(
+        '-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
+        '-File', $launch
+    ) -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+    if ($proc) { $launcherPid = [int]$proc.Id }
+}
 
 Start-Sleep -Seconds 2
 # Second icon sweep: Explorer drops ghosts from the ForceNew kill once the new tray is up.
@@ -258,7 +279,7 @@ if (-not $SkipTidy) {
 }
 $alive = @(Get-BobSystrayTrayProcesses)
 if ($alive.Count -eq 0) {
-    throw ("Watch-BobTray failed to stay up after start (launcherPid={0} launch={1})" -f $(if ($proc) { $proc.Id } else { 0 }), $launch)
+    throw ("Watch-BobTray failed to stay up after start (launcherPid={0} launch={1})" -f $launcherPid, $launch)
 }
 Write-Output ("Bob Systray started trayPid={0} count={1}" -f $alive[0].ProcessId, $alive.Count)
 exit 0

@@ -62,7 +62,8 @@ function Get-BobStallAlerts {
     $nowRun = @{}
     foreach ($j in $runningNow) {
         $id = [string]$j.id
-        if (-not $id) { continue }`r`n        $nowRun[$id] = $true
+        if (-not $id) { continue }
+        $nowRun[$id] = $true
         $sid = [string]$j.sessionId
         if (-not $sid) { $sid = $id }
         $claimedAge = $null

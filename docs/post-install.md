@@ -111,11 +111,12 @@ Keep commands short; stage longer fixes with `irm` + `powershell -File`.
 
 ## Tray (ircBob companion TipForm)
 
-From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.ps1` + BobBridge under `C:\ai\bob`), launched by `scripts\Start-BobTray.ps1` as an **interactive companion** to the `ircBob` Windows service (Desktop / Start Menu / per-user Startup + HKCU `Run\BobiverseTray`). It is **not** a `BobFleet-*` scheduled task.
+From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.ps1` + BobBridge under `C:\ai\bob`), launched by `scripts\Start-BobTray.ps1` → `tools\Start-BobFleetTray.ps1` as an **interactive companion** to the `ircBob` Windows service (Desktop / Start Menu / per-user Startup + HKCU `Run\BobiverseTray`). It is **not** a `BobFleet-*` scheduled task — disable any leftover `BobFleet-<MachineId>` task after upgrade.
 
+- **Durable start (0.1.8+):** `Start-BobFleetTray` starts the seat wrapper with **WMI `Win32_Process.Create`** so TipForm survives agent/console job-object teardown. Do not rely on `Start-Process -PassThru` from a Grok Build shell.
 - **Digest webhook:** TipForm calls `Write-BobIrcStatus` about every 30s and POSTs usage to `reportUrl` (`https://irc.ntsa.uk/bob/v1/report` from `config\bobiverse.json`). Auth header `X-Bob-Secret` comes from `BOB_REPORT_SECRET` or `~\.grok\bob\report.secret` (never in git / MSI).
 - **Restart** on the TipForm menu recycles the **tray watcher** (and IRC logout announce), not `nssm restart ircBob`. Use Desktop **Bob Fleet Restart** / `scripts\Restart-BobEar.ps1` to recycle the ear service.
-- Product updates use `scripts\Check-BobiverseUpdate.ps1` (GitHub Releases MSI), not an `agentic_build` git-pull.
-- Vendored pin: `C:\ai\bob\PIN.txt` (agentic_build SHA used at pack time).
+- Product updates use `scripts\Check-BobiverseUpdate.ps1` (GitHub Releases API / well-known `gh` paths; runs under LocalSystem unless `BOBIVERSE_NO_UPDATE=1`), not an `agentic_build` git-pull.
+- Vendored pin: `C:\ai\bob\PIN.txt` (agentic_build SHA used at pack time). TipForm footer shows `bob {VERSION}`.
 
 Smoke (optional): `scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot C:\ai\bob`.

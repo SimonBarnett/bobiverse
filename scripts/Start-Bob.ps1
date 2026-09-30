@@ -36,9 +36,9 @@ if (-not $Python) {
 }
 
 $env:BOB_MACHINE_ID = $MachineId
-if (Test-BobiverseIsLocalSystem) {
-    $env:BOBIVERSE_NO_UPDATE = '1'
-}
+# Update check runs for LocalSystem too (Check-BobiverseUpdate uses GitHub API; no user gh PATH needed).
+# Operators may still set BOBIVERSE_NO_UPDATE=1 to skip.
+
 
 # Ergo server PASS from config\ergo.password / home / env (public MSI no longer embeds - issue #4).
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
