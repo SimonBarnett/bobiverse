@@ -122,6 +122,48 @@ function Stage-Product([string]$Name) {
         } else {
             Write-Host 'WARN bob pack: Watch-AgentHealth source missing (Desktop install will skip)'
         }
+
+        # TipForm companion tray (vendored from agentic_build) -> InstallRoot tools/src/assets
+        $traySrc = Join-Path $RepoRoot 'third_party\bob-tray'
+        $syncTray = Join-Path $RepoRoot 'scripts\Sync-BobTrayFromAgenticBuild.ps1'
+        if (-not (Test-Path -LiteralPath (Join-Path $traySrc 'tools\Watch-BobTray.ps1'))) {
+            if (Test-Path -LiteralPath $syncTray) {
+                Write-Host 'INFO bob tray missing; running Sync-BobTrayFromAgenticBuild.ps1'
+                & $syncTray -RepoRoot $RepoRoot | Out-Null
+            }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $traySrc 'tools\Watch-BobTray.ps1'))) {
+            throw 'bob pack requires third_party/bob-tray/tools/Watch-BobTray.ps1 (run Sync-BobTrayFromAgenticBuild.ps1)'
+        }
+        foreach ($sub in @('tools', 'assets')) {
+            $from = Join-Path $traySrc $sub
+            $to = Join-Path $stage $sub
+            New-Item -ItemType Directory -Force -Path $to | Out-Null
+            Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
+        }
+        # Merge BobBridge module into stage\src (keep bobiverse VERSION)
+        $traySrcDir = Join-Path $traySrc 'src'
+        Copy-Item -LiteralPath (Join-Path $traySrcDir 'BobBridge.psd1') -Destination (Join-Path $stage 'src\BobBridge.psd1') -Force
+        Copy-Item -LiteralPath (Join-Path $traySrcDir 'BobBridge.psm1') -Destination (Join-Path $stage 'src\BobBridge.psm1') -Force
+        foreach ($sub in @('Public', 'Private')) {
+            $from = Join-Path $traySrcDir $sub
+            $to = Join-Path $stage "src\$sub"
+            New-Item -ItemType Directory -Force -Path $to | Out-Null
+            Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
+        }
+        Copy-Item -LiteralPath (Join-Path $traySrc 'PIN.txt') -Destination (Join-Path $stage 'PIN.txt') -Force
+        foreach ($cfg in @('bobiverse.json', 'bob-seats.json', 'default.json', 'fleet-registry.json')) {
+            $from = Join-Path $traySrc "config\$cfg"
+            if (Test-Path -LiteralPath $from) {
+                Copy-Item -LiteralPath $from -Destination (Join-Path $stage "config\$cfg") -Force
+            }
+        }
+        # Guard: never ship ergo.password from tray sync
+        $stageErgoGuard = Join-Path $stage 'config\ergo.password'
+        if ((-not $EmbedErgoPassword) -and (Test-Path -LiteralPath $stageErgoGuard)) {
+            Remove-Item -LiteralPath $stageErgoGuard -Force
+        }
+        Write-Host ("INFO bob staged TipForm tray from {0} pin={1}" -f $traySrc, ((Get-Content (Join-Path $traySrc 'PIN.txt') -TotalCount 1).Trim()))
     }
     return $stage
 }

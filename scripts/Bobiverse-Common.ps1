@@ -137,7 +137,8 @@ function New-BobiverseShortcut {
         [Parameter(Mandatory)][string]$TargetPath,
         [string]$Arguments = '',
         [string]$WorkingDirectory = '',
-        [string]$Description = ''
+        [string]$Description = '',
+        [string]$IconLocation = ''
     )
     $dir = Split-Path -Parent $LinkPath
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -147,6 +148,7 @@ function New-BobiverseShortcut {
     if ($Arguments) { $sc.Arguments = $Arguments }
     if ($WorkingDirectory) { $sc.WorkingDirectory = $WorkingDirectory }
     if ($Description) { $sc.Description = $Description }
+    if ($IconLocation) { $sc.IconLocation = $IconLocation }
     $sc.Save()
     Write-Host "INFO shortcut $LinkPath"
 }

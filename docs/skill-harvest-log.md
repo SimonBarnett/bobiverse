@@ -17,3 +17,18 @@ Harvested into `.grok/skills/bobiverse-{jeeves,bob,airc}` + `docs/post-install.m
 | Duplicate MSI tray vs Watch-BobTray | already 0.1.5 (#14); documented again |
 
 VERSION → **0.1.6** (pack when shipping).
+
+## 2026-09-30 — DEV1 TipForm companion durable start
+
+Harvested into .grok/skills/bobiverse-bob + docs/post-install.md + tray launcher:
+
+| Lesson | Fix |
+|--------|-----|
+| Tray logs `tray up` then dies when started from Grok agent shell | `Start-BobFleetTray` uses WMI `Win32_Process.Create` (job-object breakaway) |
+| Broad seat-wrapper `match Watch-BobTray` kills diagnosing shells | Kill filter requires `-File …Watch-BobTray.ps1` / `_Watch-BobTray-*.ps1` |
+| Product is service + companion, not BobFleet task | HKCU `Run\BobiverseTray`; disable `BobFleet-<id>` |
+| LocalSystem skipped update-check | `Start-Bob` no longer forces `BOBIVERSE_NO_UPDATE`; `Check-BobiverseUpdate` resolves `gh` + Releases API |
+| TipForm recycle JIT `PipelineStoppedException` | CatchException before Controls; swallow on ticks (agentic_build Watch-BobTray) |
+| Version visible on card | TipForm footer `bob {ver}` |
+
+VERSION → **0.1.8** (pack when shipping).

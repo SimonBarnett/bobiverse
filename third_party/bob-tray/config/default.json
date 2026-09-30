@@ -1,0 +1,97 @@
+{
+    "max_workers_per_machine":  0,
+    "models":  {
+                   "mrbGrok":  "grok-4.6",
+                   "mrbCursor":  "grok-4.6",
+                   "buildGrok":  "build0.1",
+                   "buildGrokFallback":  "grok-4.5",
+                   "buildCursor":  "composer-2.5",
+                   "uatCursor":  "claude-opus-5-thinking-high"
+               },
+    "repoPairModelTier":  {
+                              "less":  "composer-2.5",
+                              "medium":  "grok-4.6",
+                              "more":  "claude-opus-5-thinking-high"
+                          },
+    "fuelModelFamilies":  {
+                              "cursor-models":  "cursor",
+                              "grok-build":  "grok",
+                              "grok-bot":  "grok",
+                              "on-demand":  "grok",
+                              "copilot":  "none"
+                          },
+    "modelFamilies":  {
+                            "cursor":  [
+                                           "^composer-",
+                                           "^claude-",
+                                           "^gpt-",
+                                           "^cursor-",
+                                           "^muse-",
+                                           "^grok-4\\."
+                                       ],
+                            "grok":  [
+                                         "^grok-",
+                                         "^build0\\.1$",
+                                         "(?i)^grok-build-",
+                                         "^build-0\\.1$"
+                                     ],
+                            "none":  [
+
+                                     ]
+                        },
+    "profiles":  {
+                     "formprep":  {
+                                      "yolo":  false,
+                                      "timeoutSec":  1200,
+                                      "maxPerCwd":  1,
+                                      "rules":  "DEV only. Never SQL-flip UPD. Never AllUnprepared. Never commit secrets. MSSQL is the Windows logon user (integrated auth). Never put SQL passwords in the prompt."
+                                  },
+                     "teams":  {
+                                   "yolo":  false,
+                                   "timeoutSec":  600,
+                                   "maxPerCwd":  1,
+                                   "rules":  "No AccessMedia.All. No claiming fixture speak is audible."
+                               },
+                     "mud":  {
+                                 "yolo":  true,
+                                 "timeoutSec":  600,
+                                 "maxPerCwd":  2,
+                                 "rules":  "No spend. Stay on configured host."
+                             },
+                     "generic":  {
+                                     "yolo":  false,
+                                     "timeoutSec":  7200,
+                                     "maxPerCwd":  2,
+                                     "rules":  "No production deploys. No force-push."
+                                 },
+                     "grok-talk":  {
+                                       "yolo":  false,
+                                       "timeoutSec":  600,
+                                       "maxPerCwd":  1,
+                                       "rules":  "IRC listen-talk only. One English fact per line. No secrets on the wire."
+                                   },
+                     "repo-pair-dev":  {
+                                           "yolo":  false,
+                                           "timeoutSec":  7200,
+                                           "maxPerCwd":  2,
+                                           "rules":  "Persistent dev seat. Load bob-spec-intake, bob-build-dispatch, grok-build-fleet, bob-irc, reinstall-agentic-build-skills. JOIN shop only. Do not Start-BobBuild, Start-BobBuildLoop, Start-BobMrbHandoff, or cursor-mrb-dev handoff. Chair assigns via inbox/chair-task."
+                                       },
+                     "repo-pair-mrb":  {
+                                           "yolo":  false,
+                                           "timeoutSec":  7200,
+                                           "maxPerCwd":  2,
+                                           "rules":  "Persistent MRB seat. Load bob-hostile-mrb, bob-irc, reinstall-agentic-build-skills. JOIN shop only. Do not Start-BobBuild, Start-BobBuildLoop, Start-BobMrbHandoff, or cursor-mrb-dev handoff. Chair assigns via inbox/chair-task. Enforce Test-BobRepoPairSelfMrb before reviewing. Merge dups, close finished issues, merge PASS-nits."
+                                       }
+                 },
+    "agents":  {
+                   "bob":  {
+                               "profile":  "generic"
+                           },
+                   "haitch":  {
+                                  "profile":  "teams"
+                              },
+                   "merc":  {
+                                "profile":  "generic"
+                            }
+               }
+}

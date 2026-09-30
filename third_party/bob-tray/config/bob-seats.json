@@ -1,0 +1,29 @@
+{
+  "seats": [
+    {
+      "id": "smart-catalogue",
+      "label": "Smart Catalogue",
+      "email": "social@smartcatalogue.uk",
+      "machines": [
+        "ionos"
+      ]
+    },
+    {
+      "id": "club-madeira",
+      "label": "Club Madeira",
+      "email": "social@clubmadeira.uk",
+      "machines": [
+        "flamingo"
+      ]
+    },
+    {
+      "id": "ntsa",
+      "label": "ntsa",
+      "email": "si@ntsa.uk",
+      "machines": [
+        "marchhare",
+        "ce-priority-dev1"
+      ]
+    }
+  ]
+}
