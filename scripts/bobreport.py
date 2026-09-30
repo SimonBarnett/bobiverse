@@ -1642,9 +1642,22 @@ def _cursor_pool_overage(ent: dict) -> str | None:
     return None
 
 
-def _cursor_pool_period(ent: dict) -> tuple[str | None, str | None]:
+def _cursor_pool_period(ent: dict, pool_id: str | None = None) -> tuple[str | None, str | None]:
+    """Per-pool reset clock: grok-weekly/sand = machine weekly period_end; else Cursor billing."""
+    pid = str(pool_id or "").strip().lower()
+    if pid in ("grok-weekly", "grok-chat", "sand"):
+        weekly = ent.get("period_end") or ent.get("sand_period_end")
+        if weekly not in (None, ""):
+            period_s = str(weekly)
+            return period_s, period_s
+        return None, None
     cursor_period = ent.get("cursor_period_end")
     if cursor_period in (None, ""):
+        # Fall back to weekly only when billing end is unknown
+        weekly = ent.get("period_end")
+        if weekly not in (None, ""):
+            period_s = str(weekly)
+            return period_s, period_s
         return None, None
     period_s = str(cursor_period)
     return period_s, period_s
@@ -1726,7 +1739,7 @@ def build_cursor_pools(doc: dict, machines: dict[str, dict]) -> list[dict]:
             if rem_m is not None:
                 pe, reset = (None, None)
                 if ent:
-                    pe, reset = _cursor_pool_period(ent)
+                    pe, reset = _cursor_pool_period(ent, pid)
                 rolled = _period_rolled(row.get("period_end"), pe)
                 if rolled:
                     row["remaining"] = rem_m
@@ -1751,7 +1764,7 @@ def build_cursor_pools(doc: dict, machines: dict[str, dict]) -> list[dict]:
         period_end, reset = (None, None)
         overage = None
         if ent:
-            period_end, reset = _cursor_pool_period(ent)
+            period_end, reset = _cursor_pool_period(ent, pool_id)
             if pool_id == "on-demand":
                 overage = _cursor_pool_overage(ent)
         pools.append(
@@ -1780,27 +1793,33 @@ def _public_queue(home: Path) -> dict:
 
 
 def build_digest_object(home: Path, briefer_nick: str) -> dict:
+    """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
+    roster = list(roster_machine_ids(home))
     machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
     cleaned: dict[str, dict] = {}
     for mid, ent in machines.items():
         coerced = _coerce_machine(str(mid), ent)
-        cleaned[str(coerced["id"])] = coerced
-    for mid in FLEET_MACHINE_IDS:
+        cid = str(coerced["id"])
+        if cid in roster or (not roster and cid in FLEET_MACHINE_IDS):
+            cleaned[cid] = coerced
+    for mid in roster:
         cleaned.setdefault(mid, _empty_machine(mid))
     exported: dict[str, dict] = {}
-    for mid in FLEET_MACHINE_IDS:
-        exported[mid] = export_machine_for_tray(home, mid, cleaned[mid])
+    for mid in roster:
+        exported[mid] = export_machine_for_tray(home, mid, cleaned.get(mid) or _empty_machine(mid))
     chair = (os.environ.get(CHAIR_NICK_ENV) or "").strip() or str(
         doc.get("chairNick") or doc.get("chair_nick") or ""
     ).strip()
     briefer = (briefer_nick or str(doc.get("briefer") or "")).strip()
+    channels = chair_channels(home)
     return {
         "v": int(doc.get("v") or 1),
         "ts": str(doc.get("ts") or _utc_now_iso()),
         "briefer": briefer,
         "chairNick": chair or briefer,
         "machines": exported,
+        "chair_channels": channels,
         "cursor_pools": build_cursor_pools(doc, exported),
         "queue": _public_queue(home),
     }
