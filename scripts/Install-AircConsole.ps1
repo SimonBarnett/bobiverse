@@ -128,8 +128,27 @@ if ($Launcher -match '^[A-Za-z]:\\' ) {
     }
 }
 
+# LocalSystem / quiet MSI: never bake C:\Users\Default\.airc* (NickServ GUID orphan).
 if (-not $ConsoleHome) {
-    $ConsoleHome = Join-Path $env:USERPROFILE '.airc-console'
+    $adminHome = Join-Path $env:SystemDrive 'Users\Administrator\.airc'
+    $isSystem = $false
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $isSystem = ($id.User.Value -eq 'S-1-5-18') -or ($id.Name -match 'SYSTEM$')
+    } catch { }
+    if ($isSystem) {
+        if (Test-Path -LiteralPath $adminHome) {
+            $ConsoleHome = $adminHome
+            Write-Host "INFO LocalSystem using existing Admin ConsoleHome=$ConsoleHome"
+        } else {
+            $installGuess = Split-Path -Parent (Split-Path -Parent $Launcher)
+            if (-not $installGuess) { $installGuess = 'C:\ai\airc' }
+            $ConsoleHome = Join-Path $installGuess 'home'
+            Write-Host "INFO LocalSystem ConsoleHome=$ConsoleHome (avoid Default profile)"
+        }
+    } else {
+        $ConsoleHome = Join-Path $env:USERPROFILE '.airc-console'
+    }
 }
 New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
 

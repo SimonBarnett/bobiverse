@@ -35,8 +35,14 @@ param(
     [switch]$RequireAccount,
     [switch]$TlsInsecure,
     [switch]$ServiceMode,
+    # Reserved {machine}_console needs SASL before NICK (Ergo nick reservation).
+    # Default on; pass -Sasl:$false only for lab servers without NickServ.
+    [switch]$Sasl,
+    [switch]$NoSasl,
     [switch]$SelfTest
 )
+if (-not $PSBoundParameters.ContainsKey('Sasl')) { $Sasl = $true }
+if ($NoSasl) { $Sasl = $false }
 
 $ErrorActionPreference = 'Stop'
 
@@ -181,8 +187,9 @@ if ($Accounts.Count -gt 0) {
 }
 if ($RequireAccount) { $argsList += '--require-account' }
 if ($TlsInsecure) { $argsList += '--tls-insecure' }
+if ($Sasl) { $argsList += '--sasl' }
 if ($SelfTest) { $argsList += '--selftest' }
 
-Write-Host ("INFO Start-AircConsole ServiceMode={0} home={1} scriptDir={2}" -f [bool]$ServiceMode, $ConsoleHome, $scriptDir)
+Write-Host ("INFO Start-AircConsole ServiceMode={0} home={1} sasl={2} scriptDir={3}" -f [bool]$ServiceMode, $ConsoleHome, [bool]$Sasl, $scriptDir)
 & $Python @argsList
 exit $LASTEXITCODE

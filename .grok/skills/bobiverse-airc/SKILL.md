@@ -15,12 +15,18 @@ Foundation: harvest-agent-skills -> https://github.com/SimonBarnett/bobiverse
 - Service **`Airc`**, tree `C:\ai\airc`
 - Nick **`{MachineId}_console`** (MachineId = sanitized lowercase hostname / `BOB_MACHINE_ID`)
 - JOIN **`#{MachineId}`** if ChanServ-registered; else **`#{domain|workgroup}`**
-- Console home: `%USERPROFILE%\.airc` (often Administrator when NSSM is LocalSystem)
+- Console home: under interactive install `%USERPROFILE%\.airc`; under quiet MSI / LocalSystem prefer `C:\Users\Administrator\.airc` else `C:\ai\airc\home` — never `C:\Users\Default\.airc` (orphans NickServ GUID).
+- SASL defaults **on** for reserved `{machine}_console` (before NICK).
 
 ```powershell
 Get-Service Airc,AircConsole
-Get-Content $env:USERPROFILE\.airc\*.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content C:\Users\Administrator\.grok\long-running-background-tasks\airc-console-service.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content C:\ai\airc\home\*.log -Tail 40 -ErrorAction SilentlyContinue
 ```
+
+## NickServ reclaim (`sasl-fail 904` / `433`)
+
+Wrong GUID vs reserved nick: oper `/msg NickServ PASSWD {machine}_console <guid-from-console.password>` then `Restart-Service Airc`. `ERASE` needs `/OPER` + `accreg` or NickServ says `Command restricted`.
 
 ## Airc vs AircConsole
 

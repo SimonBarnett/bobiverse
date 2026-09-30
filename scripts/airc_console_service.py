@@ -620,9 +620,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--password-file", default=None)
     p.add_argument(
         "--sasl",
-        action="store_true",
-        default=False,
-        help="attempt SASL PLAIN after server PASS (default off; Ergo fleet uses PASS)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="SASL PLAIN after server PASS (default on; required for reserved "
+        "{machine}_console nick). Use --no-sasl only on lab nets without NickServ.",
     )
     p.add_argument("--operators", nargs="*", default=[])
     p.add_argument("--operators-file", default=None)
