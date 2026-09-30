@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 # Bob Systray launcher (Start Menu / Desktop shortcut target).
-# CAST IRON: always check git for updates and install via scripts (no LLM)
-# before starting the tray. Show Updating dialog when behind origin.
+# CAST IRON: product repo ff/Sync/MSI update is owned by ircBob Start-Bob
+# (TipForm Restart -> Restart-BobEar). Tray Start never updates the install tree.
 # Prefer tools\_Watch-BobTray-<machineId>.ps1 (sets BOB_MACHINE_ID + IRC home).
 # ASCII-only for Windows PowerShell 5.1 UTF-8 no BOM.
 [CmdletBinding()]
@@ -89,21 +89,9 @@ function Get-BobSystrayTrayProcesses {
         })
 }
 
-# --- deterministic update gate (start + restart) ---
+# --- product update: owned by ircBob Start-Bob / Restart-BobEar (never tray Start) ---
 if (-not $SkipUpdate) {
-    $updater = Join-Path $RepoRoot 'tools\Update-BobSystrayFromGit.ps1'
-    if (Test-Path -LiteralPath $updater) {
-        $ps = (Get-Command powershell.exe).Source
-        $updArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $updater, '-RepoRoot', $RepoRoot)
-        if ($WhatIf) { $updArgs += '-WhatIf' }
-        $updOut = & $ps @updArgs 2>&1
-        $updCode = $LASTEXITCODE
-        if ($null -eq $updCode) { $updCode = 0 }
-        Write-Output (@($updOut) -join "`n")
-        if ($updCode -ne 0) {
-            Write-Warning "Bob Systray update exited $updCode - starting tray from current tree"
-        }
-    }
+    Write-Output 'update: skipped (CAST IRON: Sync/ff runs on ircBob service start only)'
 }
 
 function Invoke-BobSystrayTidy {
