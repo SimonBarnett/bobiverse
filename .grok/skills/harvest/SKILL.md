@@ -68,12 +68,13 @@ flowchart TD
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
-Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), `repo`,
-`title`, `body`, optional `files[]` (`path` + `content`, small), `source`
-(machine, agent/tool, skill book + version), optional `contact`,
-`idempotency_key`. **No auth required** — any skill user may POST. Optional
-fleet intake key `X-Bob-Intake-Key` / `BOB_INTAKE_KEY` only when the host
-enables keyed mode; do not invent a secret requirement. Never commit secrets.
+Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), **`repo`
+(required `owner/name` — never omit; no default)**, `title`, `body`, optional
+`files[]` (`path` + `content`, small), `source` (machine, agent/tool, skill
+book + version), optional `contact`, `idempotency_key`. **No auth required** —
+any skill user may POST. Optional fleet intake key `X-Bob-Intake-Key` /
+`BOB_INTAKE_KEY` only when the host enables keyed mode; do not invent a secret
+requirement. Never commit secrets.
 
 curl:
 

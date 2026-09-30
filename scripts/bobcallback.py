@@ -608,6 +608,8 @@ def serve(
         try:
             import gh_filer
 
+            src = gh_filer.ensure_gh_token_env()
+            print(f"INFO gh token source={src}", flush=True)
             use_filer = gh_filer.default_filer()
         except Exception:
             use_filer = None

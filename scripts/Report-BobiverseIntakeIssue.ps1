@@ -12,7 +12,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Title,
     [Parameter(Mandatory = $true)][string]$Body,
-    [string]$Repo = 'SimonBarnett/bobiverse',
+    [Parameter(Mandatory = $true)][string]$Repo,
     [ValidateSet('issue', 'fr', 'skill', 'harvest')]
     [string]$Kind = 'issue',
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
@@ -27,6 +27,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
+    throw "Repo must be owner/name (got '$Repo'). Intake requires an explicit target repo."
+}
 
 function Get-BobiverseIntakeSecret {
     param([string]$Explicit)

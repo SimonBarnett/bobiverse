@@ -11,7 +11,7 @@ Auth: `POST /bob/v1/report` needs header `X-Bob-Secret` from `BOB_REPORT_SECRET`
 | GET | `/bob/v1/report` | Public fleet digest JSON (also `/bob/v1/digest`) |
 | POST | `/bob/v1/report` | TipForm / status callback (`op` body); **secret required** |
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
-| POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest) — **open, no secret** — **not** `/bob/v1/harvest` |
+| POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
 
 Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
