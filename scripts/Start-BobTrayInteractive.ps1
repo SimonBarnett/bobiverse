@@ -38,14 +38,45 @@ if (-not $RunAsUser) {
     else { $RunAsUser = $env:USERNAME }
 }
 
-schtasks /Delete /TN $TaskName /F 2>$null | Out-Null
-# /IT = only when user is logged on interactively; /RL LIMITED = no elevation needed for UI
-$create = schtasks /Create /TN $TaskName /SC ONLOGON /RU $RunAsUser /RL LIMITED /IT /F /TR $tr 2>&1
-Write-Host ("INFO schtasks create {0}: {1}" -f $TaskName, (($create | Out-String).Trim()))
-
-if ($RunNow -and -not $RegisterOnly) {
-    $run = schtasks /Run /TN $TaskName 2>&1
-    Write-Host ("INFO schtasks run {0}: {1}" -f $TaskName, (($run | Out-String).Trim()))
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+# Missing task -> Delete errors; ignore so Create still runs.
+cmd /c "schtasks /Delete /TN `"$TaskName`" /F >nul 2>&1" | Out-Null
+# /IT = interactive session only; /RL LIMITED = TipForm UI (no elevation).
+# Workgroup Admin ONLOGON may need a password; prefer Register-ScheduledTask when available.
+$created = $false
+try {
+    $action = New-ScheduledTaskAction -Execute $ps -Argument ("-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId {0} -ForceNew" -f $MachineId)
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $RunAsUser
+    $principal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    $created = $true
+    Write-Host ("INFO Register-ScheduledTask {0} user={1}" -f $TaskName, $RunAsUser)
+} catch {
+    Write-Host ("WARN Register-ScheduledTask: {0}" -f $_.Exception.Message)
+    $create = cmd /c "schtasks /Create /TN `"$TaskName`" /SC ONLOGON /RU `"$RunAsUser`" /RL LIMITED /IT /F /TR $tr"
+    Write-Host ("INFO schtasks create {0}: {1}" -f $TaskName, (($create | Out-String).Trim()))
+    if ($LASTEXITCODE -eq 0) { $created = $true }
 }
+if ($RunNow -and -not $RegisterOnly) {
+    if ($created) {
+        $run = cmd /c "schtasks /Run /TN `"$TaskName`""
+        Write-Host ("INFO schtasks run {0}: {1}" -f $TaskName, (($run | Out-String).Trim()))
+    }
+    # Also drop Startup shortcut for Administrator so next logon is covered.
+    $adminStartup = 'C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+    if (Test-Path -LiteralPath $adminStartup) {
+        $lnk = Join-Path $adminStartup 'Bobiverse Tray.lnk'
+        $ws = New-Object -ComObject WScript.Shell
+        $s = $ws.CreateShortcut($lnk)
+        $s.TargetPath = $ps
+        $s.Arguments = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew"
+        $s.WorkingDirectory = $InstallRoot
+        $s.Description = 'bob TipForm (interactive)'
+        $s.Save()
+        Write-Host "INFO Startup shortcut $lnk"
+    }
+}
+$ErrorActionPreference = $prevEap
 
 Write-Host "INFO Start-BobTrayInteractive done user=$RunAsUser machine=$MachineId"
