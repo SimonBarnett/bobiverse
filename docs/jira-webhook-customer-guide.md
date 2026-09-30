@@ -15,7 +15,6 @@ No Jira license is required on the customer's side for this: the **Send web requ
 1. A Jira Cloud site (any plan).
 2. Admin rights to create an automation rule (Project settings → Automation, or the global Automation page).
 3. The webhook URL from Simon (see below).
-4. The shared secret from Simon, if one is configured (see Authentication).
 
 ## Webhook URL
 
@@ -25,17 +24,11 @@ Simon provides the full HTTPS URL. Typical forms:
 
 The path is `/bob/v1/jira`. Method: **POST**. Content-Type: `application/json`.
 
-Simon will confirm the exact URL and any secret before the customer configures the rule.
+Simon will confirm the exact URL before the customer configures the rule.
 
 ## Authentication
 
-If Simon has configured a shared secret, every POST must include the header:
-
-```http
-X-Bob-Secret: <secret-value>
-```
-
-Missing or wrong secret → **401**. Simon never logs the secret value. If no secret is configured, the header is not required.
+**None.** `POST /bob/v1/jira` and `GET /bob/v1/jira` are open. Do not send `X-Bob-Secret`.
 
 ## Automation rule (Jira Cloud)
 
@@ -46,7 +39,7 @@ Build one rule in Jira Automation:
 3. **Action:** Send web request.
    - URL: the webhook URL from Simon.
    - Method: POST.
-   - Headers: `Content-Type: application/json`, plus `X-Bob-Secret` if configured.
+   - Headers: `Content-Type: application/json` only.
    - Body: choose **Issue data (Jira format)**.
 
 That body option emits Jira's native webhook shape, which is exactly what Simon's receiver expects. No custom JSON templating is needed.

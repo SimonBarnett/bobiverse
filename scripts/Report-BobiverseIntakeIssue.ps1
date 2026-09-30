@@ -3,7 +3,8 @@
   POST kind=issue to https://irc.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
 
 .DESCRIPTION
-  Auth via X-Bob-Secret from env or file. On network/HTTP failure, writes the
+  Intake is open (no secret required). Optional X-Bob-Secret / X-Bob-Intake-Key
+  are sent only when present in env/file. On network/HTTP failure, writes the
   payload JSON under report-outbox and/or install-outbox for later retry
   (same idempotency_key).
 #>

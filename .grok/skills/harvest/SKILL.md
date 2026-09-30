@@ -71,16 +71,15 @@ flowchart TD
 Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), `repo`,
 `title`, `body`, optional `files[]` (`path` + `content`, small), `source`
 (machine, agent/tool, skill book + version), optional `contact`,
-`idempotency_key`. Auth header `X-Bob-Secret` from env/file — never commit
-or log it. Optional fleet intake key: `X-Bob-Intake-Key` / `BOB_INTAKE_KEY`.
+`idempotency_key`. **No auth required** — any skill user may POST. Optional
+fleet intake key `X-Bob-Intake-Key` / `BOB_INTAKE_KEY` only when the host
+enables keyed mode; do not invent a secret requirement. Never commit secrets.
 
 curl:
 
 ```bash
 curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
   -H "Content-Type: application/json" \
-  -H "X-Bob-Secret: $BOB_REPORT_SECRET" \
-  ${BOB_INTAKE_KEY:+-H "X-Bob-Intake-Key: $BOB_INTAKE_KEY"} \
   -d @harvest.json
 ```
 
@@ -89,10 +88,8 @@ PowerShell:
 ```powershell
 .\scripts\Report-BobiverseIntakeIssue.ps1 -Title 'harvest: …' -Body '…'
 # or:
-$h = @{ 'Content-Type' = 'application/json' }
-if ($env:BOB_REPORT_SECRET) { $h['X-Bob-Secret'] = $env:BOB_REPORT_SECRET }
 Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
-  -Headers $h -Body (Get-Content harvest.json -Raw)
+  -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
 ```
 
 Expect `202 {intake_id, url}` or `202 {intake_id, queued:true}`. Check status
