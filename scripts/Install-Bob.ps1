@@ -123,7 +123,7 @@ if (Test-Path $skillsSrc) {
     if (-not $SkipCopy) {
         Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
     }
-    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-bob', 'harvest-agent-skills')
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-bob', 'harvest', 'harvest-agent-skills')
 }
 
 Install-BobiversePythonDeps -Python $Python
@@ -305,6 +305,12 @@ if (-not $NoStart) {
         Start-Sleep -Seconds 2
     } catch {
         Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
+        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
+        if (Test-Path -LiteralPath $report) {
+            try {
+                & $report -Title "bob install: Start-Service $ServiceName failed" -Body $_.Exception.Message -InstallRoot $InstallRoot
+            } catch {}
+        }
     }
 }
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize

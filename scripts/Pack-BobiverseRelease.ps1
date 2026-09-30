@@ -61,9 +61,68 @@ function Stage-Product([string]$Name) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $RepoRoot 'src\VERSION') (Join-Path $stage 'VERSION') -Force
     Copy-Item (Join-Path $RepoRoot 'src\VERSION') (Join-Path $stage 'src\VERSION') -Force
-    if (Test-Path (Join-Path $RepoRoot '.grok\skills')) {
-        Copy-Item (Join-Path $RepoRoot '.grok\skills\*') (Join-Path $stage '.grok\skills') -Recurse -Force
+
+    # Product AGENTS.md (repo AGENTS.<product>.md -> stage AGENTS.md)
+    $agentsSrc = Join-Path $RepoRoot ("AGENTS.$Name.md")
+    if (Test-Path -LiteralPath $agentsSrc) {
+        Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $stage 'AGENTS.md') -Force
+        Write-Host "INFO $Name staged AGENTS.md from AGENTS.$Name.md"
+    } else {
+        Write-Host "WARN $Name missing AGENTS.$Name.md (stage has no AGENTS.md)"
     }
+
+    # Docs: shared map + product-named files + optional docs/<product>/ tree
+    $docsSrc = Join-Path $RepoRoot 'docs'
+    $docsDest = Join-Path $stage 'docs'
+    $sharedDocs = @('post-install.md', 'skill-harvest-log.md', 'vision.md')
+    $productDocsMap = @{
+        'jeeves' = @('jeeves-admin.md', 'webhooks.md', 'jira-webhook-customer-guide.md')
+        'bob'    = @('bob-ear.md')
+        'airc'   = @('airc-ops.md')
+    }
+    $docsToCopy = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in $sharedDocs) { [void]$docsToCopy.Add($d) }
+    foreach ($d in @($productDocsMap[$Name])) { if ($d) { [void]$docsToCopy.Add($d) } }
+    foreach ($d in $docsToCopy) {
+        $from = Join-Path $docsSrc $d
+        if (Test-Path -LiteralPath $from) {
+            Copy-Item -LiteralPath $from -Destination (Join-Path $docsDest $d) -Force
+        }
+    }
+    $productDocsDir = Join-Path $docsSrc $Name
+    if (Test-Path -LiteralPath $productDocsDir) {
+        Copy-Item -Path (Join-Path $productDocsDir '*') -Destination $docsDest -Recurse -Force
+        Write-Host "INFO $Name staged docs/$Name/ into docs\"
+    }
+    Write-Host ("INFO $Name staged docs: {0}" -f (($docsToCopy | Sort-Object) -join ', '))
+
+    # Skills: product skill + harvest only (do not ship sibling product skills)
+    $skillsRoot = Join-Path $RepoRoot '.grok\skills'
+    $skillsDest = Join-Path $stage '.grok\skills'
+    $productSkill = "bobiverse-$Name"
+    $productSkillSrc = Join-Path $skillsRoot $productSkill
+    if (Test-Path -LiteralPath $productSkillSrc) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest $productSkill) | Out-Null
+        Copy-Item -Path (Join-Path $productSkillSrc '*') -Destination (Join-Path $skillsDest $productSkill) -Recurse -Force
+    } else {
+        Write-Host "WARN $Name missing .grok/skills/$productSkill"
+    }
+    $harvestSrc = Join-Path $skillsRoot 'harvest'
+    $harvestAliasSrc = Join-Path $skillsRoot 'harvest-agent-skills'
+    if (Test-Path -LiteralPath $harvestSrc) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest 'harvest') | Out-Null
+        Copy-Item -Path (Join-Path $harvestSrc '*') -Destination (Join-Path $skillsDest 'harvest') -Recurse -Force
+    } elseif (Test-Path -LiteralPath $harvestAliasSrc) {
+        # Alias: stage harvest-agent-skills content as harvest/
+        New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest 'harvest') | Out-Null
+        Copy-Item -Path (Join-Path $harvestAliasSrc '*') -Destination (Join-Path $skillsDest 'harvest') -Recurse -Force
+        Write-Host "INFO $Name staged harvest-agent-skills as harvest/"
+    }
+    if (Test-Path -LiteralPath $harvestAliasSrc) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest 'harvest-agent-skills') | Out-Null
+        Copy-Item -Path (Join-Path $harvestAliasSrc '*') -Destination (Join-Path $skillsDest 'harvest-agent-skills') -Recurse -Force
+    }
+
     Copy-Item (Join-Path $RepoRoot 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
     # Issue #4: do not embed live Ergo PASS into public release assets by default.
     $stageErgo = Join-Path $stage 'config\ergo.password'

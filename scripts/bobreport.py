@@ -12,6 +12,7 @@ from pathlib import Path
 
 import bobstat
 import bobtalk
+import registered_machines
 
 REPORT_CMD = "!report"
 REPORT_GONE = "ERR report gone — use callback or GET /bob/v1/report"
@@ -42,6 +43,52 @@ SHORT_ID: dict[str, str] = {
 SHORT_TO_MACHINE = {v: k for k, v in SHORT_ID.items()}
 FLEET_MACHINE_IDS = ("flamingo", "marchhare", "ionos", "ce-priority-dev1")
 _FLEET_MACHINE_ID_SET = frozenset(FLEET_MACHINE_IDS)
+
+
+def roster_machine_ids(home: Path | None = None) -> tuple[str, ...]:
+    """ChanServ-registered shops only when registry non-empty; else bootstrap fleet tuple."""
+    if home is not None:
+        reg = registered_machines.load_registered(Path(home))
+        if reg:
+            return tuple(sorted(reg))
+    return FLEET_MACHINE_IDS
+
+
+def is_roster_machine(home: Path | None, mid: str) -> bool:
+    m = normalize_machine_id(mid) or ""
+    if not m:
+        return False
+    ids = set(roster_machine_ids(home))
+    return m in ids
+
+
+def _parse_iso_ts(raw: object) -> datetime | None:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _period_rolled(existing_end: object, incoming_end: object) -> bool:
+    """True when incoming period_end is a new billing window vs stored."""
+    inc = _parse_iso_ts(incoming_end)
+    if inc is None:
+        return False
+    ex = _parse_iso_ts(existing_end)
+    if ex is None:
+        return True
+    if inc != ex:
+        # Newer or different window → allow replace (incl. 100% after reset)
+        return True
+    # Same end: if that end is already in the past and incoming still claims it, not a roll
+    return False
+
+
 CURSOR_SPENDING_POOLS: tuple[tuple[str, str], ...] = (
     ("cursor-models", "Cursor Models"),
     ("other-models", "Other Models"),
@@ -280,9 +327,18 @@ def shop_channel(machine_id: str) -> str:
     return f"#{mid}"
 
 
-def chair_channels() -> list[str]:
-    """Jeeves / digest chair: bobosphere + every fleet shop (Simon 2026-09-22)."""
-    shops = [shop_channel(mid) for mid in FLEET_MACHINE_IDS]
+def chair_channels(home: Path | None = None) -> list[str]:
+    """Jeeves: #bobiverse + ChanServ-registered shops only (registry or bootstrap fleet)."""
+    if home is None:
+        env_home = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+        home = Path(env_home) if env_home else None
+        if home is None:
+            chair = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
+            if chair:
+                # Prefer digest home sibling used by Start-Jeeves
+                cand = Path(chair) / ".agentic-irc-bobiverse"
+                home = cand if cand.is_dir() else None
+    shops = [shop_channel(mid) for mid in roster_machine_ids(home)]
     return [FLEET_CHANNEL] + shops
 
 
@@ -583,15 +639,18 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     return base
 
 
-def _ensure_seats(doc: dict) -> dict:
+def _ensure_seats(doc: dict, home: Path | None = None) -> dict:
     machines = doc.setdefault("machines", {})
     if not isinstance(machines, dict):
         machines = {}
         doc["machines"] = machines
-    for mid in FLEET_MACHINE_IDS:
-        machines[mid] = _coerce_machine(mid, machines.get(mid))
-    extra = [k for k in list(machines) if k not in FLEET_MACHINE_IDS]
-    for mid in extra:
+    roster = set(roster_machine_ids(home))
+    # Drop machines not on ChanServ roster (immediate)
+    for mid in list(machines.keys()):
+        norm = normalize_machine_id(str(mid)) or str(mid).strip().lower()
+        if norm not in roster:
+            machines.pop(mid, None)
+    for mid in roster:
         machines[mid] = _coerce_machine(mid, machines.get(mid))
     doc.setdefault("v", 1)
     doc.setdefault("events", [])
@@ -613,7 +672,7 @@ def load_digest(home: Path) -> dict:
         return empty_digest()
     if not isinstance(doc, dict):
         return empty_digest()
-    return _ensure_seats(doc)
+    return _ensure_seats(doc, home)
 
 
 def save_digest(home: Path, doc: dict) -> None:
@@ -851,8 +910,13 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         ent["status"] = "I am online" if ent["online"] else "I am offline"
     if payload.get("status"):
         ent["status"] = str(payload["status"])
+    # Period roll (cursor billing or weekly sand) → allow pcent/weekly to rise again (e.g. 100%)
+    cursor_rolled = _period_rolled(ent.get("cursor_period_end"), payload.get("cursor_period_end"))
+    weekly_rolled = _period_rolled(ent.get("period_end"), payload.get("period_end"))
     if "pcent" in payload and isinstance(payload["pcent"], dict):
-        ent["pcent"] = _merge_pcent_lesser(ent.get("pcent"), payload["pcent"])
+        ent["pcent"] = _merge_pcent_lesser(
+            ent.get("pcent"), payload["pcent"], replace=(cursor_rolled or weekly_rolled)
+        )
     if payload.get("uptime_since"):
         ent["uptime_since"] = str(payload["uptime_since"])
     if pid_raw is not None and str(pid_raw) != "":
@@ -896,7 +960,10 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         if key == "pcent" and isinstance(val, dict):
             continue
         if key in ("weekly",) and val is not None:
-            ent[key] = _lesser_int(ent.get(key), val)
+            if weekly_rolled:
+                ent[key] = val
+            else:
+                ent[key] = _lesser_int(ent.get(key), val)
             continue
         ent[key] = val
     if "running" in ent:
@@ -1128,6 +1195,8 @@ def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> Callbac
     if op == "merge":
         if not mid:
             return CallbackOutcome(ok=False, err="bad machine")
+        if not is_roster_machine(home, mid):
+            return CallbackOutcome(ok=False, err="not registered")
         pid_raw = payload.get("pid")
         if pid_raw is not None and str(pid_raw) != "" and "working_on" in payload:
             try:
@@ -1608,10 +1677,12 @@ def _lesser_int(a: object, b: object) -> int | None:
     return min(vals)
 
 
-def _merge_pcent_lesser(existing: object, incoming: dict) -> dict:
+def _merge_pcent_lesser(existing: object, incoming: dict, *, replace: bool = False) -> dict:
+    """Lesser remaining within a period; replace entirely when billing period rolled."""
+    if replace or not isinstance(existing, dict) or not existing:
+        return dict(incoming)
     out: dict = {}
-    if isinstance(existing, dict):
-        out.update(existing)
+    out.update(existing)
     for key, val in incoming.items():
         if key in out:
             lesser = _lesser_int(out.get(key), val)
@@ -1628,7 +1699,8 @@ def _lesser_machine_pcent_for_pool(
     """Pick the lesser remaining % across machines (shared account SoT, #174)."""
     best_rem: int | None = None
     best_ent: dict | None = None
-    for mid in FLEET_MACHINE_IDS:
+    mids = [m for m in machines.keys() if normalize_machine_id(str(m))] or list(FLEET_MACHINE_IDS)
+    for mid in mids:
         ent = machines.get(mid) or {}
         pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
         rem = _pcent_remaining_for_pool(pcent, pool_id)
@@ -1652,14 +1724,23 @@ def build_cursor_pools(doc: dict, machines: dict[str, dict]) -> list[dict]:
             rem_m, ent = _lesser_machine_pcent_for_pool(machines, pid) if pid else (None, None)
             row = dict(pool)
             if rem_m is not None:
-                cur = row.get("remaining")
-                lesser = _lesser_int(cur, rem_m)
-                if lesser is not None:
-                    row["remaining"] = lesser
-                if ent and row.get("period_end") in (None, ""):
+                pe, reset = (None, None)
+                if ent:
                     pe, reset = _cursor_pool_period(ent)
-                    row["period_end"] = pe
-                    row["reset"] = reset
+                rolled = _period_rolled(row.get("period_end"), pe)
+                if rolled:
+                    row["remaining"] = rem_m
+                    if pe:
+                        row["period_end"] = pe
+                        row["reset"] = reset
+                else:
+                    cur = row.get("remaining")
+                    lesser = _lesser_int(cur, rem_m)
+                    if lesser is not None:
+                        row["remaining"] = lesser
+                    if ent and row.get("period_end") in (None, ""):
+                        row["period_end"] = pe
+                        row["reset"] = reset
             rebuilt.append(row)
         return rebuilt
     pools: list[dict] = []

@@ -82,7 +82,7 @@ if (Test-Path $skillsSrc) {
     if (-not $SkipCopy) {
         Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
     }
-    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-jeeves', 'harvest-agent-skills')
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-jeeves', 'harvest', 'harvest-agent-skills')
 }
 Install-BobiversePythonDeps -Python $Python
 
@@ -157,6 +157,25 @@ if (-not $objectOk) {
     }
 }
 # Prefer Ergo up before chair when both are installed
+# IIS rewrite → bobcallback :7700 (report/git/intake/jira)
+$installWh = Join-Path $here 'Install-BobWebhooks.ps1'
+if (Test-Path -LiteralPath $installWh) {
+    try { & $installWh } catch {
+        Write-Host "WARN Install-BobWebhooks: $($_.Exception.Message)"
+    }
+}
+
+# Supervised BobCallback (ONSTART) — adopts/replaces ad-hoc tasks
+try {
+    $pyCb = if ($Python) { $Python } else { Resolve-BobiversePython }
+    $cbScript = Join-Path $InstallRoot 'scripts\bobcallback.py'
+    $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --bind 127.0.0.1 --port 7700"
+    schtasks /Create /TN BobCallback /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR $tr | Out-Null
+    Write-Host 'INFO registered scheduled task BobCallback'
+} catch {
+    Write-Host "WARN BobCallback task: $($_.Exception.Message)"
+}
+
 if (-not $SkipErgo -and -not $NoStart) {
     $ircd = Get-Service -Name 'BobIrcd' -ErrorAction SilentlyContinue
     if ($ircd -and $ircd.Status -ne 'Running') {
@@ -171,6 +190,12 @@ if (-not $NoStart) {
         Start-Sleep -Seconds 2
     } catch {
         Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
+        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
+        if (Test-Path -LiteralPath $report) {
+            try {
+                & $report -Title "jeeves install: Start-Service $ServiceName failed" -Body $_.Exception.Message -InstallRoot $InstallRoot
+            } catch {}
+        }
     }
 }
 Get-Service $ServiceName, BobIrcd -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize
