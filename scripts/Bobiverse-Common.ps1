@@ -44,6 +44,26 @@ function Remove-BobiverseService {
     Start-Sleep -Seconds 1
 }
 
+function Disable-BobiverseLegacyBobJeeves {
+    <#
+      Legacy gh-Jeeves chair service (BobJeeves) fights bobiverse ircJeeves for nick Jeeves.
+      Stop + disable; do not remove (operator may want the binary tree for rollback).
+    #>
+    $svc = Get-Service -Name 'BobJeeves' -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Write-Host 'INFO legacy BobJeeves absent'
+        return
+    }
+    Write-Host 'INFO disabling legacy BobJeeves (gh-Jeeves) so ircJeeves owns nick Jeeves'
+    try { Stop-Service -Name 'BobJeeves' -Force -ErrorAction Stop } catch {
+        Write-Host ("WARN Stop-Service BobJeeves: {0}" -f $_.Exception.Message)
+    }
+    try { Set-Service -Name 'BobJeeves' -StartupType Disabled -ErrorAction Stop } catch {
+        # sc.exe fallback when Set-Service lacks rights mid-MSI
+        [void](cmd.exe /c 'sc config BobJeeves start= disabled')
+    }
+}
+
 function Resolve-BobiverseNssm {
     param([string]$Preferred = '', [string]$ScriptDir = '')
     if ($Preferred -and (Test-Path -LiteralPath $Preferred)) {

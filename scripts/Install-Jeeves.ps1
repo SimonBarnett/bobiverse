@@ -35,15 +35,40 @@ if (Test-Path -LiteralPath $bootstrap) {
 $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing - pack third_party\nssm\win64\nssm.exe or pass -Nssm' }
 if (-not $Python) { $Python = Resolve-BobiversePython }
-if (-not $ChairHome) { $ChairHome = Join-Path $env:USERPROFILE '.agentic-irc-jeeves' }
+# Chair home: under MSI LocalSystem, $env:USERPROFILE is often C:\Users\Default — that
+# breaks DPAPI identity and loses the real Administrator chair. Prefer an existing
+# Admin chair, else InstallRoot\home-jeeves (issue: win-mpre cutover 2026-09-29).
+if (-not $ChairHome) {
+    $adminChair = Join-Path $env:SystemDrive 'Users\Administrator\.agentic-irc-jeeves'
+    if (Test-BobiverseIsLocalSystem) {
+        if (Test-Path -LiteralPath $adminChair) {
+            $ChairHome = $adminChair
+            Write-Host "INFO LocalSystem using existing Admin ChairHome=$ChairHome"
+        } else {
+            $ChairHome = Join-Path $InstallRoot 'home-jeeves'
+            Write-Host "INFO LocalSystem ChairHome=$ChairHome (avoid Default profile)"
+        }
+    } else {
+        $ChairHome = Join-Path $env:USERPROFILE '.agentic-irc-jeeves'
+    }
+}
 New-Item -ItemType Directory -Force -Path $ChairHome | Out-Null
-$digestHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+if (Test-BobiverseIsLocalSystem) {
+    $adminDigest = Join-Path $env:SystemDrive 'Users\Administrator\.agentic-irc-bobiverse'
+    if (Test-Path -LiteralPath $adminDigest) {
+        $digestHome = $adminDigest
+    } else {
+        $digestHome = Join-Path $InstallRoot 'home'
+    }
+} else {
+    $digestHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+}
 New-Item -ItemType Directory -Force -Path $digestHome | Out-Null
 
-# Clean prior
+# Clean prior ircJeeves + legacy gh-Jeeves chair (both fight for nick Jeeves)
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
+Disable-BobiverseLegacyBobJeeves
 Get-ScheduledTask -TaskName 'BobJeeves-chair' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
-
 # Lay tree: copy scripts + skills into InstallRoot (skip when MSI already staged - issue #2)
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 if (-not $SkipCopy) {
@@ -101,6 +126,13 @@ $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome 
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', 'bobiverse Jeeves chair'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
+# Keep crash loops out of the airc console pipe — always log to files.
+$logsDir = Join-Path $InstallRoot 'logs'
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdout', (Join-Path $logsDir 'stdout.log')))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderr', (Join-Path $logsDir 'stderr.log')))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdoutCreationDisposition', '4'))
+[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderrCreationDisposition', '4'))
 # Issue #6: never Get-Credential under msiexec /qn (UserInteractive can still be $true).
 $doPrompt = $PromptServicePassword -or (
     -not (Test-BobiverseMsiOrQuiet) -and [Environment]::UserInteractive -and -not (Test-BobiverseIsLocalSystem)
