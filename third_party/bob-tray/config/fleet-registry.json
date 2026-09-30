@@ -1,0 +1,29 @@
+﻿{
+    "transport":  "filesystem-readonly",
+    "docs":  "docs/bob-fleet-peer-peek.md",
+    "staleAfterSec":  900,
+    "peekTimeoutMs":  1500,
+    "machines":  [
+                     {
+                         "id":  "ce-priority-dev1",
+                         "hostname":  "CE-PRIORITY-DEV1",
+                         "bridgeHome":  "C:\\Users\\Administrator\\.grok\\bob-bridge"
+                     },
+                     {
+                         "id":  "flamingo",
+                         "hostname":  "FLAMINGO",
+                         "bridgeHome":  "C:\\Users\\simon\\.grok\\bob-bridge",
+                         "note":  "Club Madeira social@clubmadeira.uk"
+                     },
+                     {
+                         "id":  "marchhare",
+                         "hostname":  "MarchHare",
+                         "bridgeHome":  "C:\\Users\\Administrator\\.grok\\bob-bridge"
+                     },
+                     {
+                         "id":  "ionos",
+                         "hostname":  "WIN-MPRE8VI4U6U",
+                         "bridgeHome":  "C:\\Users\\Administrator\\.grok\\bob-bridge"
+                     }
+                 ]
+}

@@ -1,0 +1,25 @@
+﻿{
+    "channel":  "#bobiverse",
+    "mode":  "free",
+    "mootId":  "b0b1be15e0000001",
+    "transport":  "irc-moot-mode2",
+    "docs":  "docs/bobiverse.md",
+    "host":  "irc.ntsa.uk",
+    "port":  6697,
+    "reportUrl":  "https://irc.ntsa.uk/bob/v1/report",
+    "reportPort":  7700,
+    "shortids":  {
+                     "flamingo":  "fl",
+                     "marchhare":  "mh",
+                     "ionos":  "io",
+                     "ce-priority-dev1":  "d1"
+                 },
+    "nicks":  {
+                  "flamingo":  "bob-flamingo",
+                  "marchhare":  "bob-marchhare",
+                  "ionos":  "bob-ionos",
+                  "ce-priority-dev1":  "bob-ce-priority-dev1"
+              },
+    "chairNick":  "Jeeves",
+    "chairHome":  "ionos"
+}

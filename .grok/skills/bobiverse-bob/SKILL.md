@@ -44,14 +44,14 @@ Replies appear in `home\irc.log` as `PRIVMSG` from `{machine}_console`.
 
 If `C:\ai\bob\home` is LocalSystem-ACL only, the interactive user cannot write the outbox — use a talk-seat home or the user-writable Watch home carefully.
 
-## Systray
+## Systray (0.1.7+ TipForm companion)
 
-- Prefer **agentic_build `Watch-BobTray`** (robot TipForm, `#Bobiverse (<machineId>)`).
-- MSI **`Start-BobTray`** is minimal; Install-Bob skips auto-start when Watch-BobTray is already running (issue #14 / 0.1.5+).
-- Blank second tray = Start-BobTray `SystemIcons.Application` — kill the MSI tray process; do not run both.
-
-`Start-BobTray.ps1` / Desktop **Bob Fleet Restart** call `Restart-BobEar.ps1`:
-write `depart-request.txt` → ear announces → `Restart-Service ircBob`.
+- bob MSI ships full TipForm under `C:\ai\bob\tools\Watch-BobTray.ps1` (+ BobBridge `src\`, `assets\bob-systray.ico`, `PIN.txt`).
+- **`scripts\Start-BobTray.ps1`** launches it (STA) with `BOB_MACHINE_ID` / bridge / IRC home. Companion to **`ircBob`** — Desktop/Start Menu/Startup + HKCU Run; **not** a `BobFleet-*` task.
+- TipForm menu **Restart** recycles the tray watcher (IRC logout announce), not the ear service.
+- Desktop **Bob Fleet Restart** / `Restart-BobEar.ps1`: depart-request → announce → `Restart-Service ircBob`.
+- Digest POST: `Write-BobIrcStatus` → `reportUrl`; secret from `~\.grok\bob\report.secret` or `BOB_REPORT_SECRET`.
+- Product updates: `Check-BobiverseUpdate` (not agentic_build git-pull).
 
 ## Recycle
 
