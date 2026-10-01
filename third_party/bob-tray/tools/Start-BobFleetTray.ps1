@@ -35,8 +35,9 @@ function Get-BobSystrayMachineId {
     $hn = $env:COMPUTERNAME
     if ($hn -match '(?i)marchhare') { return 'marchhare' }
     if ($hn -match '(?i)flamingo') { return 'flamingo' }
-    if ($hn -match '(?i)ionos') { return 'ionos' }
     if ($hn -match '(?i)ce-priority|dev1') { return 'ce-priority-dev1' }
+    # #42: any other host = its own lowercased machine name (no hardcoded fleet).
+    if ($hn) { return $hn.ToLowerInvariant() }
     return $null
 }
 

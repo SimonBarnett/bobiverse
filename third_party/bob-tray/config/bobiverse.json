@@ -8,18 +8,11 @@
   "port": 6697,
   "reportUrl": "https://irc.ntsa.uk/bob/v1/report",
   "reportPort": 7700,
-  "shortids": {
-    "flamingo": "fl",
-    "marchhare": "mh",
-    "ionos": "io",
-    "ce-priority-dev1": "d1"
+  "shortids": {},
+  "nicks": {},
+  "legacyAliases": {
+    "ionos": "win-mpre8vi4u6u",
+    "dev1": "ce-priority-dev1"
   },
-  "nicks": {
-    "flamingo": "bob-flamingo",
-    "marchhare": "bob-marchhare",
-    "ionos": "bob-ionos",
-    "ce-priority-dev1": "bob-ce-priority-dev1"
-  },
-  "chairNick": "Jeeves",
-  "chairHome": "ionos"
+  "chairNick": "Jeeves"
 }
