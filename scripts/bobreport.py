@@ -1819,6 +1819,7 @@ def build_digest_object(home: Path, briefer_nick: str) -> dict:
         "briefer": briefer,
         "chairNick": chair or briefer,
         "machines": exported,
+        "roster_machine_ids": sorted(roster),
         "chair_channels": channels,
         "cursor_pools": build_cursor_pools(doc, exported),
         "queue": _public_queue(home),
