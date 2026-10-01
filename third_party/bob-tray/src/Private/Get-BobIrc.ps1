@@ -2280,6 +2280,21 @@ function Write-BobIrcStatus {
         $slimPools = @(ConvertTo-BobDigestCursorPoolRows -Pools $poolRows)
         if ($slimPools.Count -gt 0) {
             $doc | Add-Member -NotePropertyName cursor_pools -NotePropertyValue @($slimPools) -Force
+            # #41: when cursor_spending_groups was unavailable (pcent empty - e.g. marchhare), derive
+            # this machine's pcent from its own pool rows so the digest still gets grok-chat / cursor bars.
+            if ($null -eq $doc.pcent -or @($doc.pcent.PSObject.Properties).Count -eq 0) {
+                $fromRows = [ordered]@{}
+                foreach ($pr in $slimPools) {
+                    if ($null -eq $pr.remaining_pct -or [string]$pr.remaining_pct -eq '') { continue }
+                    $k = switch ([string]$pr.group_id) {
+                        'auto'             { 'cursor-models' }
+                        'low-cost-models'  { 'cursor-models' }
+                        default            { [string]$pr.group_id }
+                    }
+                    try { $fromRows[$k] = [int]$pr.remaining_pct } catch { }
+                }
+                if ($fromRows.Count -gt 0) { $doc.pcent = [pscustomobject]$fromRows }
+            }
             Save-BobFleetCursorPoolsSnapshot -MachineId $id -Pools @($slimPools)
             $localSeat = Get-BobSeatForMachine -MachineId $id
             if ($localSeat -and $localSeat.id) {
