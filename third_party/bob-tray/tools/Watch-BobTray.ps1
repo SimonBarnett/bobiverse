@@ -2671,30 +2671,8 @@ function Rebuild-BobTrayTiles {
     $oldHost = $script:tileHost
     $script:tileHost = $stage
     try {
-        # ChanServ shops from digest chair_channels (Jeeves registry) — names only.
-        $shops = @()
-        foreach ($ch in @($ChairChannels)) {
-            $s = [string]$ch
-            if (-not $s) { continue }
-            if ($s -eq '#bobiverse' -or $s -eq 'bobiverse') { continue }
-            $shops += ,($s.TrimStart('#'))
-        }
-        if ($shops.Count -gt 0) {
-            $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'ChanServ' -Icon $null
-            $shopFont = New-Object System.Drawing.Font 'Segoe UI', 9
-            foreach ($shop in $shops) {
-                $lbl = New-Object System.Windows.Forms.Label
-                $lbl.AutoSize = $true
-                $lbl.Font = $shopFont
-                $lbl.ForeColor = $fg
-                $lbl.BackColor = [System.Drawing.Color]::Transparent
-                $lbl.Text = [string]$shop
-                $lbl.Location = New-Object System.Drawing.Point 18, $y
-                $script:tileHost.Controls.Add($lbl)
-                $y += 18
-            }
-            $y += 6
-        }
+        # #42: no separate ChanServ section. The ChanServ-registered channels ARE the
+        # 'Grok accounts' rows below: one per digest roster machine, keyed by machine id.
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
         $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'Cursor' -Icon $cursorIcon -WithHelp -Agent $cursorAgent `

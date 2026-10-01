@@ -40,6 +40,10 @@ function Resolve-BobiverseMachineId {
             return [string]$p.Name
         }
     }
+    # #42: machine ids from the digest's ChanServ roster resolve even when absent from config nicks.
+    if ($script:BobRosterIds -and (@($script:BobRosterIds) -contains $id.ToLowerInvariant())) {
+        return $id.ToLowerInvariant()
+    }
     return $null
 }
 
@@ -2055,11 +2059,13 @@ function Invoke-BobDigestWebhookMergePost {
 function Get-BobDigestWebhookHeartbeatSec {
     # Change-only POSTs never advance report lastSeen while a peer is idle and in
     # sync. Re-POST at most this often (0 disables). Env: BOB_DIGEST_WEBHOOK_HEARTBEAT_SEC.
+    # #41: every bob reports its Grok + Cursor pools about every 30 s (tray PollSec = 30);
+    # the digest merge is idempotent (fingerprint compare) so an unchanged re-POST is a no-op.
     $raw = [string]$env:BOB_DIGEST_WEBHOOK_HEARTBEAT_SEC
     if ($raw.Trim()) {
         try { return [int]$raw.Trim() } catch { }
     }
-    return 300
+    return 30
 }
 
 function Test-BobDigestWebhookHeartbeatDue {
