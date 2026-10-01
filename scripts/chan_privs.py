@@ -403,6 +403,9 @@ class ChanPrivEngine:
                     self.apply(ch, "nick")
         elif cmd == "ACCOUNT" and who:
             acct = (parts[1] if len(parts) > 1 else trailing).lstrip(":")
+            if st.account(who) != (acct if acct not in ("", "*") else None):
+                for ch in list(st.members):
+                    self._fresh(ch, who)         # a login/logout is a new situation: its grant/revoke is not a retry
             st.set_account(who, acct)
             if acct in ("", "*"):
                 self.log(f"INFO chan-privs {who} logged out")

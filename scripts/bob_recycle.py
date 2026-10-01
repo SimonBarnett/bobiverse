@@ -81,6 +81,7 @@ def resolve_recycle_machine(token: str) -> str | None:
     mid = bobreport.normalize_machine_id(token)
     if not mid:
         return None
+    mid = bobreport.fold_machine_id(mid)       # v0.1.19 (#79): the roster holds the real id, not the legacy alias
     if mid not in bobreport.roster_machine_ids() and mid != chair_home_machine():
         return None
     return mid

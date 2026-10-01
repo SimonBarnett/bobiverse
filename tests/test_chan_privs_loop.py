@@ -268,3 +268,17 @@ def test_chair_own_op_state_survives_bom_and_userhost_names():
     r = chair_oper.names_has_op(["", "353", "Jeeves", "=", "#bobiverse"], f"{BOM}@{BOM}Jeeves!u@h bob-x", f"{BOM}Jeeves")
     assert r == ("#bobiverse", True)
     assert chair_oper.mode_changes_for(["MODE", "#c", "+o", f":{BOM}Jeeves"], "Jeeves") == [("#c", "o", True)]
+
+
+def test_simon_quick_relogin_is_granted_again_promptly(home):
+    srv = Server(home)
+    srv.members["#bobiverse"]["simon"] = set()
+    _boot(srv)
+    for _ in range(4):                                  # four login/logout cycles inside a minute
+        srv.feed(":simon!u@h ACCOUNT simon")
+        srv.t += 3
+        srv.feed(":simon!u@h ACCOUNT *")
+        srv.t += 3
+    srv.feed(":simon!u@h ACCOUNT simon")
+    mine = [m for m in srv.modes() if "simon" in m]
+    assert mine[-1] == "MODE #bobiverse +o simon" and mine.count("MODE #bobiverse +o simon") == 5
