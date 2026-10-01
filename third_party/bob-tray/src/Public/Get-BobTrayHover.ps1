@@ -1682,6 +1682,13 @@ function Get-BobTrayHover {
 
     $reportDigest = $null
     try { $reportDigest = Read-BobReportDigest } catch { $reportDigest = $null }
+    # #42: the digest's ChanServ roster (roster_machine_ids, bobiverse#33) is the ONLY source
+    # of Grok-account rows when present - no hardcoded config nicks (e.g. legacy 'ionos').
+    # Set before Expand-BobReportDigestView so Resolve-BobiverseMachineId accepts roster ids.
+    $script:BobRosterIds = @()
+    if ($reportDigest -and $reportDigest.roster_machine_ids) {
+        $script:BobRosterIds = @($reportDigest.roster_machine_ids | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+    }
     $digestView = Expand-BobReportDigestView -Digest $reportDigest
     $digestTasksByMachine = $digestView.tasksByMachine
     $uptimeByMachine = $digestView.uptimeByMachine
@@ -1739,6 +1746,8 @@ function Get-BobTrayHover {
     $specBy = @{}
     $seatIds = @()
     try { $seatIds = @(Get-BobiverseMachineIds) } catch { $seatIds = @() }
+    # #42: when the digest carries the ChanServ roster, it replaces the config nick list.
+    if ($script:BobRosterIds.Count -gt 0) { $seatIds = @($script:BobRosterIds) }
     $knownTile = @{}
     if ($machineId) { $knownTile[$machineId] = $true }
     foreach ($sid in $seatIds) { if ($sid) { $knownTile[$sid] = $true } }

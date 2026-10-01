@@ -89,6 +89,22 @@ def _period_rolled(existing_end: object, incoming_end: object) -> bool:
     return False
 
 
+def _period_expired(end: object, now: datetime | None = None) -> bool:
+    """True when ``end`` parses and is at/before ``now`` (#40: the period has ended).
+
+    Unparseable / missing -> False (unknown clock is not evidence of expiry).
+    """
+    dt = _parse_iso_ts(end)
+    if dt is None:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return dt <= ref
+
+
 CURSOR_SPENDING_POOLS: tuple[tuple[str, str], ...] = (
     ("cursor-models", "Cursor Models"),
     ("other-models", "Other Models"),
@@ -125,6 +141,8 @@ _PCENT_KEYS_BY_POOL: dict[str, tuple[str, ...]] = {
     "grok-weekly": ("grok-weekly", "grok_weekly", "grok-chat", "grok_chat", "grok chat", "sand"),
     "on-demand": ("on-demand", "on_demand"),
 }
+# #40: pcent keys that follow the Grok weekly clock but are not Cursor pools.
+_GROK_WEEKLY_EXTRA_PCENT_KEYS = ("grok-build",)
 _MERGE_PEER_FIELDS = (
     "weekly",
     "cursor_label",
@@ -142,6 +160,7 @@ _MERGE_PEER_FIELDS = (
     "kind",
     "cur",
     "pcent",
+    "overage_gbp",
 )
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
@@ -168,6 +187,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "cursor_period_end",
     "kind",
     "cur",
+    "overage_gbp",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -1580,7 +1600,38 @@ def _peer_fill_keys() -> tuple[str, ...]:
     return _MERGE_PEER_FIELDS
 
 
-def export_machine_for_tray(home: Path, mid: str, ent: dict) -> dict:
+def _mask_expired_pools(base: dict, now: datetime | None = None) -> None:
+    """#40: a pool whose billing/weekly period has ended is UNKNOWN (null), never its old value.
+
+    Mutates ``base`` (a private copy): expired pcent keys become None, weekly -> None when the
+    weekly period ended, overage_gbp -> None when the Cursor billing period ended.
+    Missing period_end => cannot tell => values are left alone.
+    """
+    pcent = base.get("pcent")
+    if isinstance(pcent, dict) and pcent:
+        masked = dict(pcent)
+        for pool_id, aliases in _PCENT_KEYS_BY_POOL.items():
+            pe, _ = _cursor_pool_period(base, pool_id)
+            if not _period_expired(pe, now):
+                continue
+            for key in aliases:
+                if key in masked:
+                    masked[key] = None
+        if _period_expired(base.get("period_end"), now):
+            for key in _GROK_WEEKLY_EXTRA_PCENT_KEYS:
+                if key in masked:
+                    masked[key] = None
+        base["pcent"] = masked
+    if base.get("weekly") is not None and _period_expired(base.get("period_end"), now):
+        base["weekly"] = None
+    cpe, _ = _cursor_pool_period(base, "cursor-models")
+    if base.get("overage_gbp") not in (None, "") and _period_expired(cpe, now):
+        base["overage_gbp"] = None
+
+
+def export_machine_for_tray(
+    home: Path, mid: str, ent: dict, now: datetime | None = None
+) -> dict:
     """Tray-complete machine row: digest presence + bob-peers metrics."""
     base = _coerce_machine(mid, ent)
     peer = bobstat.read_peer(home, mid)
@@ -1614,6 +1665,7 @@ def export_machine_for_tray(home: Path, mid: str, ent: dict) -> dict:
         reset = base.get("reset")
         if reset:
             base["period_end"] = str(reset)
+    _mask_expired_pools(base, now)
     out: dict = {}
     for key in _TRAY_MACHINE_EXPORT_KEYS:
         if key in base:
@@ -1639,6 +1691,12 @@ def _cursor_pool_overage(ent: dict) -> str | None:
         val = ent.get(key)
         if val is not None and str(val).strip():
             return str(val)
+    gbp = ent.get("overage_gbp")
+    if gbp not in (None, ""):
+        try:
+            return "\u00a3%.2f" % float(gbp)
+        except (TypeError, ValueError):
+            return None
     return None
 
 
@@ -1725,7 +1783,35 @@ def _lesser_machine_pcent_for_pool(
     return best_rem, best_ent
 
 
-def build_cursor_pools(doc: dict, machines: dict[str, dict]) -> list[dict]:
+def _pcent_key_present(pcent: object, pool_id: str) -> bool:
+    if not isinstance(pcent, dict):
+        return False
+    return any(k in pcent for k in _PCENT_KEYS_BY_POOL.get(pool_id, (pool_id,)))
+
+
+def _finalize_pool(row: dict, now: datetime | None) -> dict:
+    """#40/#41: stamp state; expired period or no value => remaining None (unknown, not 0)."""
+    if row.get("remaining") is not None and _period_expired(row.get("period_end"), now):
+        row["remaining"] = None
+        row["overage"] = None
+        row["state"] = "unknown"
+        row["reason"] = "period-expired"
+        return row
+    if row.get("remaining") is None:
+        row["state"] = "unknown"
+        row["reason"] = row.get("reason") or "no-data"
+        if _period_expired(row.get("period_end"), now):
+            row["overage"] = None
+            row["reason"] = "period-expired"
+    else:
+        row["state"] = "current"
+        row.pop("reason", None)
+    return row
+
+
+def build_cursor_pools(
+    doc: dict, machines: dict[str, dict], now: datetime | None = None
+) -> list[dict]:
     stored = _coerce_cursor_pools(doc.get("cursor_pools"))
     if stored:
         # Still force lesser across live machine pcent when both exist (#174).
@@ -1754,13 +1840,23 @@ def build_cursor_pools(doc: dict, machines: dict[str, dict]) -> list[dict]:
                     if ent and row.get("period_end") in (None, ""):
                         row["period_end"] = pe
                         row["reset"] = reset
-            rebuilt.append(row)
+            rebuilt.append(_finalize_pool(row, now))
         return rebuilt
     pools: list[dict] = []
     for pool_id, label in CURSOR_SPENDING_POOLS:
         remaining, ent = _lesser_machine_pcent_for_pool(machines, pool_id)
         if remaining is None:
-            continue
+            # #40: a machine that reported this pool but whose value was masked as
+            # expired (None) still yields an explicit UNKNOWN row, not a missing/zero one.
+            holder = None
+            for mid in machines:
+                e = machines.get(mid) or {}
+                if _pcent_key_present(e.get("pcent"), pool_id):
+                    holder = e
+                    break
+            if holder is None:
+                continue
+            ent = holder
         period_end, reset = (None, None)
         overage = None
         if ent:
@@ -1768,15 +1864,18 @@ def build_cursor_pools(doc: dict, machines: dict[str, dict]) -> list[dict]:
             if pool_id == "on-demand":
                 overage = _cursor_pool_overage(ent)
         pools.append(
-            {
-                "id": pool_id,
-                "seat": pool_id,
-                "label": label,
-                "remaining": remaining,
-                "period_end": period_end,
-                "reset": reset,
-                "overage": overage,
-            }
+            _finalize_pool(
+                {
+                    "id": pool_id,
+                    "seat": pool_id,
+                    "label": label,
+                    "remaining": remaining,
+                    "period_end": period_end,
+                    "reset": reset,
+                    "overage": overage,
+                },
+                now,
+            )
         )
     return pools
 
@@ -1792,7 +1891,7 @@ def _public_queue(home: Path) -> dict:
     }
 
 
-def build_digest_object(home: Path, briefer_nick: str) -> dict:
+def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
     """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
     roster = list(roster_machine_ids(home))
@@ -1807,7 +1906,9 @@ def build_digest_object(home: Path, briefer_nick: str) -> dict:
         cleaned.setdefault(mid, _empty_machine(mid))
     exported: dict[str, dict] = {}
     for mid in roster:
-        exported[mid] = export_machine_for_tray(home, mid, cleaned.get(mid) or _empty_machine(mid))
+        exported[mid] = export_machine_for_tray(
+            home, mid, cleaned.get(mid) or _empty_machine(mid), now
+        )
     chair = (os.environ.get(CHAIR_NICK_ENV) or "").strip() or str(
         doc.get("chairNick") or doc.get("chair_nick") or ""
     ).strip()
@@ -1821,7 +1922,7 @@ def build_digest_object(home: Path, briefer_nick: str) -> dict:
         "machines": exported,
         "roster_machine_ids": sorted(roster),
         "chair_channels": channels,
-        "cursor_pools": build_cursor_pools(doc, exported),
+        "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
     }
 
