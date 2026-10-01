@@ -94,6 +94,10 @@ class AircConsoleService:
         else:
             self.channel = self.shop_channel
         self._nick_retries = 0
+        # #34: nick the SERVER says we hold (001 / own NICK echo), not local intent.
+        self.server_nick: str | None = None
+        self._sasl_failed = False
+        self._pending_join_deadline = 0.0
         self._probe_state = "idle"  # idle | waiting | done
         self._probe_deadline = 0.0
         self._awaiting_lobby_nick = False
@@ -113,6 +117,12 @@ class AircConsoleService:
         )
         if self.nickserv_password:
             info(f"INFO nickserv-password file={nickserv_path} (GUID store+reuse)")
+        if not getattr(args, "sasl", True) and self.shop_mode != "domain-lobby":
+            info(
+                f"ERROR --no-sasl with shop-mode={self.shop_mode}: the reserved "
+                f"{machine_console_nick(self.machine)} nick needs SASL (Ergo nick reservation); "
+                "the console will not be able to hold its nick. Remove --no-sasl."
+            )
         if self.server_password:
             info("INFO server PASS available (env/ergo.password)")
         else:
@@ -236,11 +246,25 @@ class AircConsoleService:
         if not self.nickserv_password:
             info("INFO skip nick register/identify (no nickserv password)")
             return
+        if not self._may_register_nick():
+            info(
+                f"ERROR refusing NickServ REGISTER/IDENTIFY for {self.nick}: in shop mode the "
+                f"console may only own {machine_console_nick(self.machine)} (#34)"
+            )
+            return
         # Ergo may have services disabled; ignore failures in read loop.
         self.send(f"PRIVMSG NickServ :IDENTIFY {self.nick} {self.nickserv_password}")
         self.send(
             f"PRIVMSG NickServ :REGISTER {self.nickserv_password} console@{self.machine}.local"
         )
+
+    def _may_register_nick(self) -> bool:
+        """#34: never auto-register {machine}_N accounts in registered-shop mode."""
+        if self._nick_explicit or self.shop_mode == "domain-lobby":
+            return True
+        if self._active_mode == "domain-lobby":
+            return True
+        return self.nick.lower() == machine_console_nick(self.machine).lower()
 
     def handshake(self) -> None:
         self._want_sasl = False
@@ -249,6 +273,9 @@ class AircConsoleService:
         self._awaiting_lobby_nick = False
         self._joined_shop = False
         self._active_mode = None
+        self.server_nick = None
+        self._sasl_failed = False
+        self._pending_join_deadline = 0.0
         self.core.nick = self.nick
         # Order matches irc_agent: PASS → CAP → NICK/USER → (SASL) → CAP END.
         self.send_server_pass()
@@ -267,7 +294,21 @@ class AircConsoleService:
         self.core.nick = nick
         self.send(f"NICK {nick}")
 
+    def _holds_nick(self) -> bool:
+        """True when the server confirmed we hold self.nick (registered mode only)."""
+        if self._active_mode != "registered":
+            return True  # lobby keeps the optimistic path (#321)
+        return bool(self.server_nick) and self.server_nick.lower() == self.nick.lower()
+
     def join_shop(self) -> None:
+        if not self._holds_nick():
+            info(
+                f"ERROR not joining {self.channel}: wanted nick {self.nick} but the server "
+                f"says we are {self.server_nick or '?'} (#34); deferring until the NICK is confirmed"
+            )
+            self._pending_join_deadline = time.monotonic() + 10.0
+            return
+        self._pending_join_deadline = 0.0
         self.core.channel = self.channel
         for cmd in self.core.join_commands():
             self.send(cmd)
@@ -328,6 +369,18 @@ class AircConsoleService:
             self.join_shop()
 
     def _check_probe_timeout(self) -> None:
+        if (
+            self._pending_join_deadline
+            and not self._joined_shop
+            and time.monotonic() >= self._pending_join_deadline
+        ):
+            info(
+                f"ERROR nick {self.nick} was never confirmed by the server "
+                f"(server says {self.server_nick or '?'}); reconnecting instead of joining under the wrong nick"
+            )
+            self._pending_join_deadline = 0.0
+            self._force_reconnect = True
+            return
         if self._probe_state != "waiting":
             return
         if time.monotonic() < self._probe_deadline:
@@ -352,7 +405,12 @@ class AircConsoleService:
             self.send("CAP END")
             return
         if cmd in {"904", "905", "906", "907"}:
-            info(f"INFO sasl-fail {cmd} (continuing with server PASS)")
+            self._sasl_failed = True
+            info(
+                f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
+                f"with console.password, or the account is not registered yet. Reset it "
+                f"(NickServ SAPASSWD) or fix console.password; continuing so registration can finish"
+            )
             self.send("CAP END")
             return
 
@@ -396,6 +454,7 @@ class AircConsoleService:
             # Welcome — probe ChanServ (or forced mode) before JOIN.
             self._registered = True
             self._nick_retries = 0
+            self.server_nick = args[0] if args else None
             if self._nick_explicit:
                 # Explicit nick: join current channel (shop unless domain-lobby forced).
                 self._apply_shop_mode(
@@ -420,10 +479,19 @@ class AircConsoleService:
             if lobby:
                 alt = domain_lobby_nick(self.machine, self._nick_retries)
             else:
+                # #34: shop mode never falls back to {machine}_N. The reserved console
+                # nick is only usable by a SASL-authenticated session; fail loudly.
                 base = machine_console_nick(self.machine)
+                if base.lower() == self.nick.lower() or self._nick_explicit:
+                    info(
+                        f"ERROR nick {self.nick} refused (433, reserved by NickServ). "
+                        f"{'SASL failed for this account; ' if self._sasl_failed else ''}"
+                        f"NOT falling back to {self.machine}_N. Fix the account password "
+                        f"(console.password) and restart the Airc service."
+                    )
+                    self._force_reconnect = True
+                    return
                 alt = base
-                if alt.lower() == self.nick.lower():
-                    alt = domain_lobby_nick(self.machine, self._nick_retries)
             info(f"INFO nick-in-use 433 {self.nick} -> {alt}")
             self._set_nick(alt)
             if lobby and self._active_mode == "domain-lobby":
@@ -436,8 +504,23 @@ class AircConsoleService:
         if cmd == "NICK":
             # Optional echo; lobby no longer depends on it (#321).
             new_nick = (trailing or (args[0] if args else "")).lstrip(":")
+            old_nick = (parse_prefix_nick(":" + prefix) if prefix else "") or ""
+            if (
+                new_nick
+                and self.server_nick
+                and old_nick.lower() == self.server_nick.lower()
+            ):
+                self.server_nick = new_nick  # #34: our own rename was confirmed
             if new_nick and self.nick and new_nick.lower() == self.nick.lower():
                 self._awaiting_lobby_nick = False
+                if (
+                    self._active_mode == "registered"
+                    and not self._joined_shop
+                    and self._pending_join_deadline
+                    and self._holds_nick()
+                ):
+                    self.register_or_identify()
+                    self.join_shop()
 
         if cmd == "NOTICE":
             src = parse_prefix_nick(":" + prefix) if prefix else ""
