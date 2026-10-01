@@ -318,12 +318,62 @@ def machine_from_nick(nick: str) -> str | None:
     return None
 
 
+_SEAT_ROSTER_CACHE: dict = {"key": None, "ids": ()}
+
+
+def seat_machine_ids() -> tuple[str, ...]:
+    """Machine ids a real seat nick ``<machine>-<pid>`` may carry (#39 gap 1).
+
+    Bootstrap fleet ids PLUS the ChanServ registry (registered-machines.json) of the
+    digest home, so ``win-mpre8vi4u6u-8412`` is a seat even though that machine is not in
+    the 4-entry bootstrap table. Longest id first so ``ce-priority-dev1-1`` never parses
+    as machine ``ce``. Cached on the registry file's mtime.
+    """
+    env_home = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    home: Path | None = Path(env_home) if env_home else None
+    if home is None:
+        prof = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
+        if prof:
+            cand = Path(prof) / ".agentic-irc-bobiverse"
+            home = cand if cand.is_dir() else None
+    reg = registered_machines.registry_path(home) if home is not None else None
+    try:
+        stamp = (str(reg), reg.stat().st_mtime_ns) if reg is not None and reg.is_file() else (str(reg), 0)
+    except OSError:
+        stamp = (str(reg), 0)
+    if _SEAT_ROSTER_CACHE["key"] != stamp:
+        ids = set(FLEET_MACHINE_IDS)
+        if home is not None:
+            ids |= registered_machines.load_registered(home)
+        _SEAT_ROSTER_CACHE["ids"] = tuple(sorted(ids, key=lambda m: (-len(m), m)))
+        _SEAT_ROSTER_CACHE["key"] = stamp
+    return _SEAT_ROSTER_CACHE["ids"]
+
+
+def parse_seat_nick(nick: str) -> tuple[str, str] | None:
+    """(machine_id, pid) for a legacy ``w-<short>-<pid>`` worker or a real
+    ``<machine>-<pid>`` seat nick. None for bob-*, Jeeves, anything else."""
+    w = parse_worker_nick(nick)
+    if w:
+        return w
+    n = (nick or "").strip().lower()
+    if not n or n.startswith("bob-"):
+        return None
+    for mid in seat_machine_ids():
+        prefix = f"{mid}-"
+        if n.startswith(prefix):
+            rest = n[len(prefix):]
+            if rest.isdigit() and int(rest) > 0:
+                return mid, str(int(rest))
+    return None
+
+
 def parse_talk_seat_nick(nick: str) -> str | None:
     """{machine}-{agentPid} talk seat → machine id. Not bob-* / w-*."""
     n = (nick or "").strip().lower()
     if not n or n.startswith("bob-") or parse_worker_nick(n):
         return None
-    for mid in sorted(FLEET_MACHINE_IDS, key=len, reverse=True):
+    for mid in seat_machine_ids():
         prefix = f"{mid}-"
         if n.startswith(prefix):
             rest = n[len(prefix) :]

@@ -330,8 +330,7 @@ def format_unaccepted_list(
 
     Updated FR #208: no header spam; default max 10 jobs; ``N unaccepted (showing M)``.
     """
-    rows = list(load_unaccepted(home))
-    rows.sort(key=_sort_key)
+    rows = ordered_unaccepted(home, list(load_unaccepted(home)))
     if task_filter:
         tf = task_filter.upper()
         rows = [r for r in rows if str(r.get("task") or "").upper() == tf]
@@ -647,13 +646,17 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
 
 
 def canonical_worker_nick(nick: str) -> str | None:
-    parsed = bobreport.parse_worker_nick(nick)
-    if not parsed:
-        return None
-    try:
-        return bobreport.worker_nick(parsed[0], parsed[1])
-    except ValueError:
-        return None
+    """Legacy ``w-<short>-<pid>`` or real seat nick ``<machine>-<pid>`` (#39 gap 1)."""
+    legacy = bobreport.parse_worker_nick(nick)
+    if legacy:
+        try:
+            return bobreport.worker_nick(legacy[0], legacy[1])
+        except ValueError:
+            return None
+    seat = bobreport.parse_seat_nick(nick)
+    if seat:
+        return f"{seat[0]}-{seat[1]}"
+    return None
 
 
 def _channel(target: str) -> str:
@@ -661,7 +664,7 @@ def _channel(target: str) -> str:
 
 
 def worker_shop_channel(nick: str) -> str | None:
-    parsed = bobreport.parse_worker_nick(nick)
+    parsed = bobreport.parse_seat_nick(nick)
     if not parsed:
         return None
     try:
@@ -672,7 +675,7 @@ def worker_shop_channel(nick: str) -> str | None:
 
 def worker_working_on(home: Path, nick: str) -> str:
     """Digest working_on for this worker pid. Empty if the worker is absent."""
-    parsed = bobreport.parse_worker_nick(nick)
+    parsed = bobreport.parse_seat_nick(nick)
     if not parsed:
         return ""
     mid, pid = parsed
@@ -740,7 +743,9 @@ def _coerce_row(row: dict) -> dict | None:
         out["seq"] = int(row.get("seq") or 0)
     except (TypeError, ValueError):
         out["seq"] = 0
-    for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel"):
+    # author_seat/url: written by gh-Jeeves-style producers; needed by the MRB author rule and wire url (#39).
+    for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel",
+                "author_seat", "author_nick", "author", "url"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -1005,6 +1010,142 @@ def last_worker_activity(home: Path, nick: str) -> float | None:
     val = seen.get(canon)
     return float(val) if val is not None else None
 
+
+
+OFFER_TIMEOUT_S = 90.0
+
+
+def ordered_unaccepted(home: Path, rows: list[dict] | None = None) -> list[dict]:
+    """Unaccepted rows in assignment order (#39 gap 2): ignored dropped, strict-focus filter,
+    item rank > repo priority > seq. Same order feeds !list and !bored."""
+    import focus_ignore
+
+    if rows is None:
+        rows = load_unaccepted(home)
+    return focus_ignore.sort_unaccepted_rows(home, list(rows))
+
+
+def _canon_task(row: dict) -> str:
+    task = str(row.get("task") or "FR").upper()
+    if task == "PR":
+        task = "FR"
+    return task if task in ("FR", "MRB", "UAT") else "FR"
+
+
+def row_url(row: dict) -> str:
+    url = str(row.get("url") or "").strip()
+    if url:
+        return url
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return ""
+    kind = "pull" if _canon_task(row) == "MRB" else "issues"
+    return f"https://github.com/{repo}/{kind}/{num}"
+
+
+def format_assign_line(nick: str, row: dict) -> str:
+    """Wire line the seats and Watch-AgentHealth parse: ``<nick>: FR|MRB|UAT owner/repo#N url``."""
+    num = str(row.get("id") or "").strip().lstrip("#")
+    line = f"{nick}: {_canon_task(row)} {row.get('repo') or ''}#{num} {row_url(row)}"
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", line)).strip()
+
+
+def format_nothing_queued(nick: str) -> str:
+    return f"{nick}: nothing queued"
+
+
+def live_seat_nicks(home: Path) -> set[str]:
+    """Seat nicks present in the digest (``<machine>-<pid>``), for the MRB author rule."""
+    out: set[str] = set()
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:
+        return out
+    for mid, ent in (doc.get("machines") or {}).items():
+        if not isinstance(ent, dict):
+            continue
+        for pid in (ent.get("workers") or {}):
+            if str(pid).isdigit():
+                out.add(f"{mid}-{int(pid)}")
+    return out
+
+
+def mrb_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
+    """Do not hand an MRB to the seat that authored the PR while another seat is live."""
+    if _canon_task(row) != "MRB":
+        return False
+    author = ""
+    for k in ("author_seat", "author_nick", "author"):
+        v = str(row.get(k) or "").strip()
+        if v and bobreport.parse_seat_nick(v):
+            author = canonical_worker_nick(v) or v
+            break
+    if not author:
+        return False
+    me = canonical_worker_nick(nick) or nick
+    if author.lower() != me.lower():
+        return False
+    others = {(canonical_worker_nick(n) or n).lower() for n in live} - {me.lower()}
+    return bool(others)
+
+
+def offer_focus_top(
+    home: Path, nick: str, channel: str, *, now: float | None = None
+) -> tuple[str, dict | None]:
+    """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
+
+    "ok" job | "empty" (nothing queued / nothing eligible under strict focus or ignore) | "error".
+    A row offered to another seat within OFFER_TIMEOUT_S is skipped; a row already offered to
+    this nick is re-offered (rebroadcast) instead of burning a second job.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    live = live_seat_nicks(home)
+    me = (nick or "").strip()
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return "error", None
+            order = ordered_unaccepted(home, doc["unaccepted"])
+            pick = None
+            for cand in order:
+                to = str(cand.get("offered_to") or "").strip()
+                if to and to.lower() != me.lower():
+                    try:
+                        age = now_f - datetime.fromisoformat(
+                            str(cand.get("offered_ts") or "").replace("Z", "+00:00")
+                        ).timestamp()
+                    except ValueError:
+                        age = OFFER_TIMEOUT_S + 1
+                    if age < OFFER_TIMEOUT_S:
+                        continue
+                if mrb_blocked_for_author(cand, me, live):
+                    continue
+                pick = cand
+                break
+            if pick is None:
+                return "empty", None
+            for i, row in enumerate(doc["unaccepted"]):
+                if row is pick or _same(row, str(pick.get("repo") or ""), str(pick.get("task") or ""), str(pick.get("id") or "")):
+                    job = dict(row)
+                    job["offered_to"] = me
+                    job["offered_ts"] = _utc_now()
+                    job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
+                    doc["unaccepted"][i] = job
+                    break
+            else:
+                return "error", None
+            try:
+                _write_queue(queue_path(home), doc)
+            except OSError:
+                return "error", None
+            return "ok", job
+    except (TimeoutError, OSError):
+        return "error", None
 
 
 def offer_top(home: Path, nick: str, channel: str) -> tuple[str, dict | None]:

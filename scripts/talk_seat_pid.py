@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from bobreport import FLEET_MACHINE_IDS, normalize_machine_id
+from bobreport import FLEET_MACHINE_IDS, normalize_machine_id, seat_machine_ids
 
 _COORD_LINE = re.compile(r"^([a-z_]+)=(.*)$", re.IGNORECASE)
 _SEAT_ENV = "AGENTIC_IRC_SEAT_PID"
@@ -18,7 +18,8 @@ def parse_talk_seat_nick(nick: str) -> tuple[str, str] | None:
     n = (nick or "").strip().lower()
     if not n or n.startswith("bob-") or n.startswith("w-"):
         return None
-    for mid in sorted(FLEET_MACHINE_IDS, key=len, reverse=True):
+    # #39 gap 1: registered (ChanServ) machines are seats too, not just the bootstrap four.
+    for mid in seat_machine_ids():
         prefix = f"{mid}-"
         if not n.startswith(prefix):
             continue
