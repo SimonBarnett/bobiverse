@@ -18,8 +18,8 @@ SECRET = "test-secret-intake-jira"
 ALLOW = {"127.0.0.1"}
 
 
-def _headers(secret: str = SECRET, **extra: str) -> dict[str, str]:
-    h = {"X-Bob-Secret": secret, "Content-Type": "application/json"}
+def _headers(**extra: str) -> dict[str, str]:
+    h = {"Content-Type": "application/json"}
     h.update(extra)
     return h
 
@@ -42,7 +42,6 @@ def test_intake_post_files_issue_and_announces(tmp_path: Path) -> None:
         body,
         "127.0.0.1",
         tmp_path,
-        SECRET,
         ALLOW,
         filer=filer,
     )
@@ -70,7 +69,6 @@ def test_intake_post_files_issue_and_announces(tmp_path: Path) -> None:
         b"",
         "127.0.0.1",
         tmp_path,
-        SECRET,
         ALLOW,
         filer=filer,
     )
@@ -89,7 +87,6 @@ def test_intake_open_without_secret(tmp_path: Path) -> None:
         body,
         "127.0.0.1",
         tmp_path,
-        SECRET,
         ALLOW,
         filer=intake.FakeGitHubFiler(),
     )
@@ -120,7 +117,6 @@ def test_jira_post_persists_and_get_is_open(tmp_path: Path) -> None:
         json.dumps(payload).encode(),
         "127.0.0.1",
         tmp_path,
-        SECRET,
         ALLOW,
     )
     assert code == 204 and body == b""
@@ -139,7 +135,6 @@ def test_jira_post_persists_and_get_is_open(tmp_path: Path) -> None:
         b"",
         "127.0.0.1",
         tmp_path,
-        SECRET,
         ALLOW,
     )
     assert code_ok == 200
@@ -155,7 +150,6 @@ def test_jira_post_open_without_secret(tmp_path: Path) -> None:
         b'{"issue":{"key":"X-1","fields":{"summary":"s"}}}',
         "127.0.0.1",
         tmp_path,
-        SECRET,
         ALLOW,
     )
     assert code == 204
@@ -183,7 +177,6 @@ def test_report_still_works_with_queue(tmp_path: Path) -> None:
         body,
         "127.0.0.1",
         tmp_path,
-        SECRET,
         ALLOW,
     )
     assert code == 204 and payload == b""

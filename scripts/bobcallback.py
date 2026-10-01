@@ -5,6 +5,14 @@ GET/HEAD on /bob/v1/report returns the JSON digest (same body as /bob/v1/digest)
 IIS already proxies reportUrl; browsers must not keep seeing 405.
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
+
+NO PASSWORD / SHARED SECRET anywhere (v0.1.16, Simon): no route checks ``X-Bob-Secret`` (a stray
+header is ignored and never stored). Abuse protection instead of a secret, all enforced here:
+body size caps (413), strict JSON-object + op/event schema validation, per-machine rate limiting
+(429), GitHub hooks only for allow-listed owners/events, and POSTs on /bob/v1/report only from
+machine ids on the roster that **Jeeves publishes** in ``registered-machines.json``. The receiver
+only READS that file (``bobreport.roster_machine_ids``); it never talks to ChanServ or IRC - the
+chair is the only ChanServ client.
 """
 from __future__ import annotations
 
@@ -24,72 +32,21 @@ INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
 DIGEST_PATH = "/bob/v1/digest"
 DIGEST_ALIAS = "/digest"
-SECRET_ENV = "BOB_REPORT_SECRET"
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
 POST_ROUTES = frozenset({REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH})
-# Report stays secret-gated. Intake + jira are open (skill/harvest reporters; Jira webhooks).
-SECRET_POST_ROUTES = frozenset({REPORT_PATH})
-
-
-def secret_path() -> Path:
-    return Path.home() / ".grok" / "bob" / "report.secret"
-
-
-SECRET_FILE_ENV = "BOB_REPORT_SECRET_FILE"
-
-
-def secret_candidates(home: Path | None = None, secret_file: str = "") -> list[Path]:
-    """Ordered report.secret locations (#31).
-
-    The BobCallback scheduled task runs as SYSTEM, whose Path.home() has no
-    .grok\\bob\\report.secret. So besides the user profile we also try:
-    an explicit --secret-file / BOB_REPORT_SECRET_FILE, the profile that owns the
-    digest home (``<profile>\\.bobiverse`` -> ``<profile>\\.grok\\bob``), and the
-    install-root ``config\\report.secret`` next to scripts\\.
-    """
-    out: list[Path] = []
-
-    def add(p: Path | str | None) -> None:
-        if not p:
-            return
-        pp = Path(p).expanduser()
-        if pp not in out:
-            out.append(pp)
-
-    add(secret_file)
-    add(os.environ.get(SECRET_FILE_ENV))
-    cfg_env = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
-    if cfg_env:
-        add(Path(cfg_env).expanduser() / "report.secret")
-    add(Path(__file__).resolve().parent.parent / "config" / "report.secret")
-    add(secret_path())
-    if home is not None:
-        add(Path(home).expanduser().parent / ".grok" / "bob" / "report.secret")
-    add(Path(__file__).resolve().parent.parent / "config" / "report.secret")
-    return out
-
-
-def find_secret(home: Path | None = None, secret_file: str = "") -> tuple[str, str]:
-    """Return (secret, source). source is 'env', a file path, or '' when none found."""
-    env = (os.environ.get(SECRET_ENV) or "").strip()
-    if env:
-        return env, f"env:{SECRET_ENV}"
-    for path in secret_candidates(home, secret_file):
-        try:
-            if path.is_file():
-                val = path.read_text(encoding="utf-8-sig").strip()
-                if val:
-                    return val, str(path)
-        except OSError:
-            continue
-    return "", ""
-
-
-def load_secret(home: Path | None = None, secret_file: str = "") -> str:
-    return find_secret(home, secret_file)[0]
+# v0.1.16: NO route needs a password/secret. Every POST route is open and protected by input
+# validation, size limits, per-machine rate limiting and the Jeeves-published roster instead.
+MAX_BODY_BYTES = 1024 * 1024          # hard cap for any POST body (413 above)
+MAX_REPORT_BYTES = 256 * 1024         # /bob/v1/report bodies are tiny status docs
+REPORT_RATE_ENV = "BOB_REPORT_RATE_PER_MIN"
+DEFAULT_REPORT_RATE_PER_MIN = 120     # per machine id (tray posts ~2/min, workers a few more)
+GIT_OWNERS_ENV = "BOB_GIT_OWNERS"     # comma list of GitHub owners whose hooks we accept
+DEFAULT_GIT_OWNERS = ("SimonBarnett",)
+GIT_RATE_PER_MIN = 120                # per repository
+GIT_EVENTS = frozenset({"ping", "push", "issues", "pull_request"})
 
 
 def load_allow_ips() -> set[str]:
@@ -125,10 +82,17 @@ def _check_post_route(
     return 0, allow
 
 
-def _secret_matches(headers: dict[str, str], secret: str) -> bool:
-    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
-    got = (hdrs.get("x-bob-secret") or "").strip()
-    return bool(secret) and got == secret
+def report_rate_per_min() -> int:
+    try:
+        return max(1, int(os.environ.get(REPORT_RATE_ENV) or DEFAULT_REPORT_RATE_PER_MIN))
+    except ValueError:
+        return DEFAULT_REPORT_RATE_PER_MIN
+
+
+def git_owners() -> set[str]:
+    raw = (os.environ.get(GIT_OWNERS_ENV) or "").strip()
+    names = [x.strip() for x in raw.split(",") if x.strip()] or list(DEFAULT_GIT_OWNERS)
+    return {n.lower() for n in names}
 
 
 def _announce(home: Path, text: str) -> bool:
@@ -252,17 +216,33 @@ def handle_git_webhook(
     home: Path,
     *,
     envelope_id: str | None = None,
+    rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
     hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
     event = (hdrs.get("x-github-event") or "").strip()
     if not event:
         _log_git_reject("no event")
         return 400, b""
+    if len(body or b"") > MAX_BODY_BYTES:
+        _log_git_reject("too large", event=event)
+        return 413, b""
+    if event.lower() not in GIT_EVENTS:
+        _log_git_reject("unsupported event", event=event)
+        return 400, b""
     # Do not secret-scan the full JSON (FR #206).
     payload = _parse_json_body(body, scan_secret=False)
     if payload is None:
         _log_git_reject("invalid json", event=event)
         return 400, b""
+    # No HMAC secret: accept only hooks for allow-listed GitHub owners (BOB_GIT_OWNERS).
+    full = bobreport._github_repo_name(payload)  # noqa: SLF001
+    owner, _, name = full.partition("/")
+    if not owner or not name or owner.lower() not in git_owners():
+        _log_git_reject("repo not allowed", event=event, repo=full[:80])
+        return 403, b""
+    if rate is not None and not rate.allow("git:" + full.lower()):
+        _log_git_reject("rate limited", event=event, repo=full[:80])
+        return 429, b""
     env = _enqueue_post(
         home,
         kind="git",
@@ -295,20 +275,53 @@ def handle_git_webhook(
     return 204, b""
 
 
+REPORT_OPS = frozenset({"merge", "delete-worker", "shop-down"})
+
+
+def validate_report_payload(home: Path, payload: dict) -> tuple[int, str, str]:
+    """Schema + roster gate for POST /bob/v1/report. Returns (0, machine_id, "") or (http, "", why).
+
+    - ``op`` must be one of REPORT_OPS (``git-claim`` is NOT a network op: Jeeves claims locally);
+    - ``machine``/``id`` must be a syntactically valid machine id;
+    - that id must be on the roster Jeeves published (registered-machines.json). Pure file read;
+      an empty/missing roster accepts nothing. No ChanServ/IRC call happens here.
+    """
+    op = str(payload.get("op") or "").strip().lower()
+    if op not in REPORT_OPS:
+        return 400, "", "bad op"
+    mid = bobreport.normalize_machine_id(str(payload.get("machine") or payload.get("id") or ""))
+    if not mid:
+        return 400, "", "bad machine"
+    if not bobreport.is_roster_machine(home, mid):
+        return 403, "", "not on roster"
+    for key in ("pid",):
+        val = payload.get(key)
+        if val is not None and val != "" and not str(val).isdigit():
+            return 400, "", "bad pid"
+    return 0, mid, ""
+
+
 def handle_report_post(
     headers: dict[str, str],
     body: bytes | str,
     home: Path,
-    secret: str,
     briefer_nick: str = "",
     *,
     filer: intake.GitHubFiler | None = None,
+    rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
-    if not _secret_matches(headers, secret):
-        return 401, b""
+    if len(body or b"") > MAX_REPORT_BYTES:
+        return 413, b""
     payload = _parse_json_body(body)
     if payload is None:
         return 400, b""
+    code, mid, why = validate_report_payload(home, payload)
+    if code:
+        print(f"INFO report reject {code} {why}", flush=True)
+        return code, b""
+    if rate is not None and not rate.allow("report:" + mid):
+        print(f"INFO report reject 429 rate machine={mid}", flush=True)
+        return 429, b""
     env = _enqueue_post(
         home,
         kind="report",
@@ -341,15 +354,15 @@ def handle_intake_post(
     headers: dict[str, str],
     body: bytes | str,
     home: Path,
-    secret: str,
     peer_ip: str,
     *,
     filer: intake.GitHubFiler | None = None,
     rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
     # Open endpoint: skill harvest / no-GitHub reporters must POST without a fleet secret.
-    # Optional X-Bob-Secret is ignored; rate limits + allowlist live in intake.process_intake.
-    _ = secret
+    # No secret: rate limits + allowlist live in intake.process_intake.
+    if len(body or b"") > MAX_BODY_BYTES:
+        return 413, b'{"error":"too_large"}'
     payload = _parse_json_body(body, scan_secret=False)
     if payload is None:
         return 400, b'{"error":"invalid_json"}'
@@ -389,12 +402,15 @@ def handle_jira_post(
     headers: dict[str, str],
     body: bytes | str,
     home: Path,
-    secret: str,
     *,
     filer: intake.GitHubFiler | None = None,
+    rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
     # Open endpoint: Jira Cloud/Data Center webhooks have no shared Bob secret.
-    _ = secret
+    if len(body or b"") > MAX_BODY_BYTES:
+        return 413, b""
+    if rate is not None and not rate.allow("jira"):
+        return 429, b""
     payload = _parse_json_body(body, scan_secret=False)
     if payload is None:
         return 400, b"invalid_json"
@@ -423,9 +439,9 @@ def handle_jira_post(
     return 204, b""
 
 
-def handle_jira_get(home: Path, headers: dict[str, str], secret: str) -> tuple[int, bytes]:
+def handle_jira_get(home: Path, headers: dict[str, str]) -> tuple[int, bytes]:
     """GET tickets JSON; open (same policy as jira POST)."""
-    _ = headers, secret
+    _ = headers
     doc = jira_webhook.load_jira_tickets(home)
     tickets = doc.get("tickets") if isinstance(doc.get("tickets"), dict) else {}
     body = json.dumps(
@@ -447,13 +463,13 @@ def handle_request(
     body: bytes | str,
     peer_ip: str,
     home: Path,
-    secret: str,
     allow_ips: set[str] | None = None,
     briefer_nick: str = "",
     filer: intake.GitHubFiler | None = None,
     intake_rate: intake.RateLimiter | None = None,
+    report_rate: intake.RateLimiter | None = None,
 ) -> tuple[int, bytes]:
-    """Pure request handler. No sockets. Public GET digest; POST still gated."""
+    """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
     # GET/HEAD digest on /bob/v1/digest, /digest, and reportUrl (/bob/v1/report).
@@ -463,7 +479,7 @@ def handle_request(
             return code, b""
         return code, payload
     if verb in ("GET", "HEAD") and route == JIRA_PATH:
-        code, payload = handle_jira_get(home, headers, secret)
+        code, payload = handle_jira_get(home, headers)
         if verb == "HEAD":
             return code, b""
         return code, payload
@@ -482,21 +498,18 @@ def handle_request(
     if gate[0] != 0:
         return gate[0], gate[1]
     if route == GIT_WEBHOOK_PATH:
-        return handle_git_webhook(headers, body, home)
+        return handle_git_webhook(headers, body, home, rate=report_rate)
     if route == INTAKE_PATH:
-        return handle_intake_post(
-            headers, body, home, secret, peer_ip, filer=filer, rate=intake_rate
-        )
+        return handle_intake_post(headers, body, home, peer_ip, filer=filer, rate=intake_rate)
     if route == JIRA_PATH:
-        return handle_jira_post(headers, body, home, secret, filer=filer)
-    return handle_report_post(headers, body, home, secret, briefer_nick, filer=filer)
+        return handle_jira_post(headers, body, home, filer=filer, rate=report_rate)
+    return handle_report_post(headers, body, home, briefer_nick, filer=filer, rate=report_rate)
 
 
 class ReportHandler:
     """stdlib BaseHTTPRequestHandler mixin state. Instantiated by serve()."""
 
     home: Path
-    secret: str
     allow_ips: set[str]
     briefer_nick: str
 
@@ -504,7 +517,6 @@ class ReportHandler:
 def _replay_handlers(
     home: Path,
     *,
-    secret: str,
     briefer_nick: str,
     filer: intake.GitHubFiler | None,
 ) -> dict[str, Callable[[dict[str, Any]], Any]]:
@@ -554,7 +566,6 @@ def _replay_handlers(
 def drain_pending(
     home: Path,
     *,
-    secret: str = "",
     briefer_nick: str = "",
     filer: intake.GitHubFiler | None = None,
     limit: int = 20,
@@ -562,7 +573,7 @@ def drain_pending(
     """Drain webhook_queue pending + intake outbox (when filer available)."""
     done = webhook_queue.process_pending(
         home,
-        _replay_handlers(home, secret=secret, briefer_nick=briefer_nick, filer=filer),
+        _replay_handlers(home, briefer_nick=briefer_nick, filer=filer),
         limit=limit,
     )
     if filer is not None:
@@ -575,19 +586,30 @@ def drain_pending(
 
 def make_handler(
     home: Path,
-    secret: str,
     allow_ips: set[str],
     briefer_nick: str = "",
     filer: intake.GitHubFiler | None = None,
     intake_rate: intake.RateLimiter | None = None,
+    report_rate: intake.RateLimiter | None = None,
 ):
     from http.server import BaseHTTPRequestHandler
 
     rate = intake_rate or intake.RateLimiter()
+    rrate = report_rate or intake.RateLimiter(per_min=report_rate_per_min())
 
     class _Handler(BaseHTTPRequestHandler):
         def _run(self, method: str) -> None:
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length < 0:
+                self._reply(400, b"")
+                return
+            if length > MAX_BODY_BYTES:  # never read an oversized body into memory
+                self._reply(413, b"")
+                self.close_connection = True
+                return
             body = self.rfile.read(length) if length > 0 else b""
             peer = (self.client_address or ("", 0))[0]
             code, payload = handle_request(
@@ -597,12 +619,15 @@ def make_handler(
                 body,
                 peer,
                 home,
-                secret,
                 allow_ips,
                 briefer_nick,
                 filer=filer,
                 intake_rate=rate,
+                report_rate=rrate,
             )
+            self._reply(code, payload, method)
+
+        def _reply(self, code: int, payload: bytes, method: str = "GET") -> None:
             self.send_response(code)
             if payload:
                 ctype = "application/json; charset=utf-8"
@@ -636,28 +661,22 @@ def serve(
     home: Path,
     host: str = "127.0.0.1",
     port: int = 0,
-    secret: str | None = None,
     allow_ips: set[str] | None = None,
     briefer_nick: str = "",
     filer: intake.GitHubFiler | None = None,
-    secret_file: str = "",
 ):
-    """Blocking listener: public GET digest + gated POST report/git/intake/jira."""
+    """Blocking listener: public GET digest + validated, secret-free POST report/git/intake/jira."""
     from http.server import ThreadingHTTPServer
 
     listen_port = resolve_listen_port(int(port))
-    if secret is not None:
-        sec, src = secret, "argument"
-    else:
-        sec, src = find_secret(home, secret_file)
-    # #31: never fail silently - a missing secret makes every report POST return 401.
-    if sec:
-        print(f"INFO report secret loaded from {src}", flush=True)
+    # Loud, once: the roster is what Jeeves published (the receiver never asks ChanServ).
+    roster = bobreport.roster_machine_ids(home)
+    if roster:
+        print(f"INFO report roster (published by Jeeves) machines={len(roster)}: {','.join(roster)}", flush=True)
     else:
         print(
-            "WARN no report secret found (tried env "
-            f"{SECRET_ENV} and {[str(c) for c in secret_candidates(home, secret_file)]}); "
-            "all report POSTs will 401",
+            "WARN report roster EMPTY: registered-machines.json has no machines yet - machine POSTs to "
+            "/bob/v1/report are refused (403) until Jeeves publishes the ChanServ roster",
             flush=True,
         )
     allow = allow_ips or load_allow_ips()
@@ -671,8 +690,8 @@ def serve(
             use_filer = gh_filer.default_filer()
         except Exception:
             use_filer = None
-    drain_pending(home, secret=sec, briefer_nick=briefer_nick, filer=use_filer)
-    handler = make_handler(home, sec, allow, briefer_nick, filer=use_filer)
+    drain_pending(home, briefer_nick=briefer_nick, filer=use_filer)
+    handler = make_handler(home, allow, briefer_nick, filer=use_filer)
     httpd = ThreadingHTTPServer((host, listen_port), handler)
     return httpd
 
@@ -691,7 +710,7 @@ def main() -> None:
     p.add_argument(
         "--secret-file",
         default="",
-        help=f"report.secret path (else {SECRET_FILE_ENV}, user profile, digest-home profile, install config)",
+        help="ignored (v0.1.16: webhooks need no secret); accepted so old scheduled tasks still start",
     )
     p.add_argument(
         "--port",
@@ -701,7 +720,7 @@ def main() -> None:
     )
     args = p.parse_args()
     home = Path(args.home).expanduser() if args.home else bobreport.digest_path(Path(".")).parent
-    httpd = serve(home, host=args.bind, port=args.port, secret_file=args.secret_file)
+    httpd = serve(home, host=args.bind, port=args.port)
     host, port = httpd.server_address[:2]
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH} "

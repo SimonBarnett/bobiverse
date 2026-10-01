@@ -2,14 +2,14 @@
 
 Default public base: `https://irc.ntsa.uk`. Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
 
-Auth: `POST /bob/v1/report` needs header `X-Bob-Secret` from `BOB_REPORT_SECRET` or `~\.grok\bob\report.secret` (never commit secrets). **`POST /bob/v1/intake` and `POST|GET /bob/v1/jira` are open** (no secret) so skill harvest and Jira webhooks can file without a fleet credential. Rate limits and repo allowlists still apply on intake.
+Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to copy between machines. Protection is validation instead: body size caps (413), strict JSON/op schema (400), per-machine rate limit (429), GitHub hooks only for allow-listed owners (`BOB_GIT_OWNERS`, default `SimonBarnett`; 403 otherwise), and `POST /bob/v1/report` only from machine ids on the **roster Jeeves publishes** (`registered-machines.json`, mirrored from ChanServ by the chair; 403 otherwise). The receiver only reads that file - it never talks to ChanServ or IRC. A stray `X-Bob-Secret` header is ignored. `POST /bob/v1/intake` and `POST|GET /bob/v1/jira` stay open with their own rate limits and repo allow-lists.
 
 ## Paths
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/bob/v1/report` | Public fleet digest JSON (also `/bob/v1/digest`) |
-| POST | `/bob/v1/report` | TipForm / status callback (`op` body); **secret required** |
+| POST | `/bob/v1/report` | TipForm / status callback (`op`: merge|delete-worker|shop-down); **no secret; machine must be on the Jeeves roster** |
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
@@ -18,7 +18,7 @@ Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
 ## Placeholder curls
 
-Replace `SECRET` and host as needed. Bodies are minimal scaffolds.
+Replace the host as needed. Bodies are minimal scaffolds.
 
 ### GET digest
 
@@ -31,7 +31,6 @@ curl -sS "https://irc.ntsa.uk/bob/v1/report"
 ```bash
 curl -sS -X POST "https://irc.ntsa.uk/bob/v1/report" \
   -H "Content-Type: application/json" \
-  -H "X-Bob-Secret: SECRET" \
   -d "{\"op\":\"ping\",\"machine\":\"example-host\"}"
 ```
 
@@ -41,7 +40,6 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/report" \
 curl -sS -X POST "https://irc.ntsa.uk/bob/v1/git" \
   -H "Content-Type: application/json" \
   -H "X-GitHub-Event: issues" \
-  -H "X-Bob-Secret: SECRET" \
   -d "{\"action\":\"opened\",\"repository\":{\"full_name\":\"SimonBarnett/bobiverse\"},\"issue\":{\"number\":1,\"title\":\"example\"}}"
 ```
 

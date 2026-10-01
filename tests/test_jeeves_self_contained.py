@@ -1,4 +1,4 @@
-﻿"""#53 (complete): jeeves MSI is self-contained - no agentic_irc paths/env/modules; home migration;
+"""#53 (complete): jeeves MSI is self-contained - no agentic_irc paths/env/modules; home migration;
 report.secret generation; webhook bits packaged."""
 import json
 import re
@@ -152,31 +152,32 @@ def test_no_legacy_home_is_a_noop(tmp_path):
     assert not (tmp_path / ".bobiverse").exists()
 
 
-def test_secrets_copied_into_install_config_once(tmp_path):
+def test_optional_github_token_copied_into_install_config_once_and_report_secret_never(tmp_path):
     prof = tmp_path / "Administrator"
     (prof / ".grok" / "bob").mkdir(parents=True)
     (prof / ".grok" / "bob" / "report.secret").write_text("RS", encoding="utf-8")
+    (prof / ".grok" / "bob" / "github.token").write_text("GT0", encoding="utf-8")
     cfg = tmp_path / "install" / "config"
     got = bob_home.migrate_secrets_to_config(cfg, profiles=[prof])
-    assert got == ["report.secret"] and (cfg / "report.secret").read_text() == "RS"
-    (cfg / "report.secret").write_text("NEW", encoding="utf-8")
+    assert got == ["github.token"] and (cfg / "github.token").read_text() == "GT0"
+    assert not (cfg / "report.secret").exists()  # v0.1.16: webhooks use no report.secret
+    (cfg / "github.token").write_text("NEW", encoding="utf-8")
     assert bob_home.migrate_secrets_to_config(cfg, profiles=[prof]) == []
-    assert (cfg / "report.secret").read_text() == "NEW"
+    assert (cfg / "github.token").read_text() == "NEW"
+    cfg2 = tmp_path / "install2" / "config"
     # from a migrated home
     home = tmp_path / "h"
     home.mkdir()
     (home / "github.token").write_text("GT", encoding="utf-8")
-    assert bob_home.migrate_secrets_to_config(cfg, profiles=[], homes=[home]) == ["github.token"]
+    assert bob_home.migrate_secrets_to_config(cfg2, profiles=[], homes=[home]) == ["github.token"]
 
 
 # ---------------------------------------------------------------- installer / packaging
-def test_install_jeeves_generates_report_secret_and_shows_path_only():
+def test_install_jeeves_needs_and_generates_no_webhook_secret():
     t = _text(SCRIPTS / "Install-Jeeves.ps1")
-    assert "RandomNumberGenerator" in t and "generated NEW webhook secret" in t
-    assert "-not (Test-Path -LiteralPath $secretFile)" in t
-    # the generated value is never written to the host
-    assert not re.search(r"Write-Host[^\n]*\$hex", t)
-    assert "--secret-file" in t and "/TN BobCallback" in t and "Install-BobWebhooks.ps1" in t
+    assert "RandomNumberGenerator" not in t and "report.secret" not in t and "--secret-file" not in t
+    assert "no password/secret required" in t
+    assert "/TN BobCallback" in t and "Install-BobWebhooks.ps1" in t
     assert "BOB_CONFIG_DIR=$cfgDir" in t and "BOB_HOME=$ChairHome" in t
     assert "bob_home.py" in t and "migrate" in t
 
@@ -193,22 +194,16 @@ def test_pack_stages_tools_for_jeeves_and_webhook_files_exist():
 
 def test_callback_cmd_and_watchers_use_install_relative_config():
     cb = _text(SCRIPTS / "Start-BobCallback.cmd")
-    assert "BOB_CONFIG_DIR" in cb and "report.secret" in cb and "Administrator" not in cb
+    assert "BOB_CONFIG_DIR" in cb and "report.secret" not in cb and "--secret-file" not in cb and "Administrator" not in cb
     wh = _text(SCRIPTS / "Watch-BobWebhooks.ps1")
     assert ".agentic-irc" not in wh and "'.bobiverse'" in wh
 
 
-def test_secret_candidates_include_install_config_env(monkeypatch, tmp_path):
-    import bobcallback, gh_filer
-    monkeypatch.delenv(bobcallback.SECRET_ENV, raising=False)
-    monkeypatch.delenv(bobcallback.SECRET_FILE_ENV, raising=False)
+def test_gh_token_candidates_include_install_config_env(monkeypatch, tmp_path):
+    import gh_filer
     cfg = tmp_path / "cfg"
     cfg.mkdir()
-    (cfg / "report.secret").write_text("fromcfg\n", encoding="utf-8")
-    (cfg / "github.token").write_text("ghp_x\n", encoding="utf-8")
     monkeypatch.setenv("BOB_CONFIG_DIR", str(cfg))
-    monkeypatch.setattr(bobcallback.Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
-    assert bobcallback.find_secret(tmp_path / "x")[0] == "fromcfg"
     assert gh_filer._token_candidate_paths()[0] == cfg / "github.token"
 
 

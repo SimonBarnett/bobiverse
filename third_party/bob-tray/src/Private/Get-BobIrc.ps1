@@ -1862,16 +1862,6 @@ function Get-BobDigestReportUrl {
     return $null
 }
 
-function Get-BobDigestReportSecret {
-    $s = [string]$env:BOB_REPORT_SECRET
-    if ($s.Trim()) { return $s.Trim() }
-    $p = Join-Path $env:USERPROFILE '.grok\bob\report.secret'
-    if (Test-Path $p) {
-        try { return (Get-Content -LiteralPath $p -Raw).Trim() } catch { }
-    }
-    return $null
-}
-
 function Get-BobDigestWebhookJobsFingerprint {
     param($Doc)
     $jobsNorm = @()
@@ -2058,11 +2048,11 @@ function Invoke-BobDigestWebhookMergePost {
     }
     $url = Get-BobDigestReportUrl
     if (-not $url) { return $null }
-    $secret = Get-BobDigestReportSecret
-    if (-not $secret) { return $null }
+    # v0.1.16: NO password/secret. The digest accepts this machine because Jeeves published it on the
+    # ChanServ roster (registered-machines.json); the receiver validates + rate-limits instead.
     try {
         $resp = Invoke-WebRequest -Uri $url -Method POST -Body $body -ContentType 'application/json' `
-            -Headers @{ 'X-Bob-Secret' = $secret } -UseBasicParsing -TimeoutSec 15
+            -UseBasicParsing -TimeoutSec 15
         return [int]$resp.StatusCode
     }
     catch {
