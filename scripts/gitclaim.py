@@ -2,7 +2,7 @@
 """GIT job queue owned by the digest webhook. No model calls.
 
 POST /bob/v1/git appends claimable work. GET /bob/v1/report lists
-queue.unaccepted and queue.accepted. POST /bob/v1/report op=git-claim
+queue.unaccepted and queue.accepted. (claim_top is local to Jeeves; not a network op)
 pops the oldest unaccepted row and stamps it accepted in one step.
 
 Jeeves does that POST when a shop worker sends !BORED, then announces
@@ -914,48 +914,6 @@ def claim_top(home: Path, nick: str, channel: str) -> tuple[str, dict | None]:
             return "ok", job
     except (TimeoutError, OSError):
         return "error", None
-
-
-def claim_top_http(nick: str, channel: str) -> tuple[str, dict | None]:
-    """POST op=git-claim to the digest webhook. Jeeves must not read queue.json."""
-    import bobcallback
-    import post_working_on
-
-    secret = bobcallback.load_secret()
-    url = post_working_on.report_url()
-    if not secret or not url:
-        return "error", None
-    body = json.dumps(
-        {"op": "git-claim", "nick": (nick or "").strip(), "channel": (channel or "").strip()}
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json", "X-Bob-Secret": secret},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            status = int(resp.status)
-            raw = resp.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        return "error", None
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        return "error", None
-    if status != 200:
-        return "error", None
-    try:
-        doc = json.loads(raw or "{}")
-    except json.JSONDecodeError:
-        return "error", None
-    if not isinstance(doc, dict) or not doc.get("ok"):
-        return "error", None
-    claimed = doc.get("claimed")
-    if claimed is None:
-        return "empty", None
-    if not isinstance(claimed, dict):
-        return "error", None
-    return "ok", claimed
 
 
 def _read_activity(path: Path) -> dict[str, float]:

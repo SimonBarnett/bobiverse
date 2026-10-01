@@ -3,8 +3,8 @@
   POST kind=issue to https://irc.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
 
 .DESCRIPTION
-  Intake is open (no secret required). Optional X-Bob-Secret / X-Bob-Intake-Key
-  are sent only when present in env/file. On network/HTTP failure, writes the
+  Intake is open: NO password/secret is sent or needed. (Optional X-Bob-Intake-Key
+  only when BOB_INTAKE_KEY is set by the host.) On network/HTTP failure, writes the
   payload JSON under report-outbox and/or install-outbox for later retry
   (same idempotency_key).
 #>
@@ -21,7 +21,6 @@ param(
     [string]$Agent = 'Report-BobiverseIntakeIssue',
     [string]$OutboxDir = '',
     [string]$InstallRoot = '',
-    [string]$Secret = '',
     [int]$TimeoutSec = 30
 )
 
@@ -30,43 +29,6 @@ $ErrorActionPreference = 'Stop'
 
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
     throw "Repo must be owner/name (got '$Repo'). Intake requires an explicit target repo."
-}
-
-function Get-BobiverseIntakeSecret {
-    param([string]$Explicit)
-    if ($Explicit) { return $Explicit.Trim() }
-    foreach ($name in @(
-            'BOB_REPORT_SECRET',
-            'BOB_CALLBACK_SECRET',
-            'BOB_SECRET',
-            'BOB_INTAKE_SECRET'
-        )) {
-        $v = [string][Environment]::GetEnvironmentVariable($name)
-        if ($v -and $v.Trim()) { return $v.Trim() }
-    }
-    $candidates = @(
-        (Join-Path $env:USERPROFILE '.grok\bob\report.secret'),
-        (Join-Path $env:USERPROFILE '.grok\bob\bob.secret')
-    )
-    if ($env:BOB_DIGEST_HOME) {
-        $candidates += @(
-            (Join-Path $env:BOB_DIGEST_HOME 'bob.secret'),
-            (Join-Path $env:BOB_DIGEST_HOME 'report.secret')
-        )
-    }
-    if ($InstallRoot) {
-        $candidates += @(
-            (Join-Path $InstallRoot 'config\report.secret'),
-            (Join-Path $InstallRoot 'config\bob.secret')
-        )
-    }
-    foreach ($p in $candidates) {
-        if ($p -and (Test-Path -LiteralPath $p)) {
-            $t = [IO.File]::ReadAllText($p).Trim()
-            if ($t) { return $t }
-        }
-    }
-    return ''
 }
 
 function New-BobiverseIntakePayload {
@@ -122,7 +84,6 @@ function Write-BobiverseIntakeOutbox {
 }
 
 $payload = New-BobiverseIntakePayload
-$secret = Get-BobiverseIntakeSecret -Explicit $Secret
 
 $outDirs = New-Object System.Collections.Generic.List[string]
 if ($OutboxDir) { [void]$outDirs.Add($OutboxDir) }
@@ -139,9 +100,6 @@ else {
 
 $headers = @{
     'Content-Type' = 'application/json'
-}
-if ($secret) {
-    $headers['X-Bob-Secret'] = $secret
 }
 if ($env:BOB_INTAKE_KEY) {
     $headers['X-Bob-Intake-Key'] = [string]$env:BOB_INTAKE_KEY

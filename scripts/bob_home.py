@@ -3,7 +3,7 @@
 Homes (no agentic_irc dependency):
   chair home   BOB_HOME           default ``~/.jeeves``      (Jeeves identity, operators, accounts)
   digest home  BOB_DIGEST_HOME    default ``~/.bobiverse``   (digest.json, registered-machines.json ...)
-  config dir   BOB_CONFIG_DIR     default ``<install>/config`` (report.secret, github.token, oper creds)
+  config dir   BOB_CONFIG_DIR     default ``<install>/config`` (optional github.token, chair oper.cred)
 
 ``migrate_legacy`` COPIES the old home into the new one (never overwrites, never deletes) and
 drops a marker, so the old home stays as a backup and the migration runs once. Secret values
@@ -156,8 +156,8 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
 def migrate_secrets_to_config(
     cfg: Path, profiles: list[Path] | None = None, homes: list[Path] | None = None
 ) -> list[str]:
-    """Copy report.secret / github.token into the install config dir from ``<profile>\\.grok\\bob``
-    or from the (migrated) chair/digest homes.
+    """Copy the OPTIONAL github.token into the install config dir from ``<profile>\\.grok\\bob``
+    or from the (migrated) chair/digest homes. (v0.1.16: report.secret is no longer used or copied.)
 
     Never overwrites. Returns the names copied (values are never read into logs).
     """
@@ -167,7 +167,7 @@ def migrate_secrets_to_config(
         _profile(),
         _admin_profile(),
     ]
-    for name in ("report.secret", "github.token"):
+    for name in ("github.token",):
         dst = cfg / name
         if dst.is_file():
             continue

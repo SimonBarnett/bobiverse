@@ -52,7 +52,7 @@ If `C:\ai\bob\home` is LocalSystem-ACL only, the interactive user cannot write t
 - Seat-wrapper kill filter: `-File …Watch-BobTray` only (broad `match Watch-BobTray` kills diagnosing agent shells).
 - TipForm menu **Restart** recycles the tray watcher (IRC logout announce), not the ear service.
 - Desktop **Bob Fleet Restart** / `Restart-BobEar.ps1`: depart-request → announce → `Restart-Service ircBob`.
-- Digest POST: `Write-BobIrcStatus` → `reportUrl`; secret from `~\.grok\bob\report.secret` or `BOB_REPORT_SECRET`. Assert: `scripts\Assert-BobDigestWebhookLocal.ps1`.
+- Digest POST: `Write-BobIrcStatus` → `reportUrl`; no secret needed (roster-gated by Jeeves). Assert: `scripts\Assert-BobDigestWebhookLocal.ps1`.
 - Product updates: `Check-BobiverseUpdate` (GitHub Releases API + well-known `gh` paths; LocalSystem may update). Operators set `BOBIVERSE_NO_UPDATE=1` to skip.
 
 ## Recycle

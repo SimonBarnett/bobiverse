@@ -23,10 +23,10 @@ def test_watch_webhooks_cooldown_param_name_matches_use():
     assert "$AnnounceCooldownMinutes" in t and "CooldownCooldown" not in t
 
 
-def test_install_jeeves_registers_webhook_task_and_reports_missing_secrets():
+def test_install_jeeves_registers_webhook_task_and_notes_optional_token():
     t = (SCRIPTS / "Install-Jeeves.ps1").read_text(encoding="utf-8-sig")
     assert "/TN BobCallback" in t and "Install-BobWebhooks.ps1" in t
-    assert "report.secret" in t and "github.token" in t
+    assert "report.secret" not in t and "github.token" in t  # token optional; no webhook secret
 
 
 def test_recycle_prefers_installer_task_then_falls_back(monkeypatch, tmp_path):

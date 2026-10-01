@@ -265,18 +265,8 @@ function Invoke-BobRepoPairChairUsageWebhookIfChanged {
         Write-JsonFile (Get-BobDigestUsageWebhookLastPostPath) $payload
         return [pscustomobject]@{ ok = $true; posted = $false; reason = 'no_report_url' }
     }
-    $secret = $null
-    if ($env:BOB_REPORT_SECRET -and $env:BOB_REPORT_SECRET.Trim()) {
-        $secret = [string]$env:BOB_REPORT_SECRET.Trim()
-    }
-    elseif ($env:BOB_IRC_HOME -and $env:BOB_IRC_HOME.Trim()) {
-        $sf = Join-Path $env:BOB_IRC_HOME.Trim() 'report.secret'
-        if (Test-Path $sf) {
-            try { $secret = ([IO.File]::ReadAllText($sf)).Trim() } catch { }
-        }
-    }
+    # v0.1.16: no secret/header - the digest validates machine id against Jeeves's published roster.
     $headers = @{ 'Content-Type' = 'application/json' }
-    if ($secret) { $headers['X-Bob-Secret'] = $secret }
     $json = ($payload | ConvertTo-Json -Depth 8 -Compress)
     try {
         $null = Invoke-RestMethod -Uri $url -Method Post -Body $json -Headers $headers -TimeoutSec 30
@@ -335,18 +325,8 @@ function Invoke-BobDigestWebhookPost {
         Write-JsonFile (Get-BobDigestWebhookLastPostPath) $payload
         return [pscustomobject]@{ ok = $true; posted = $false; reason = 'no_report_url' }
     }
-    $secret = $null
-    if ($env:BOB_REPORT_SECRET -and $env:BOB_REPORT_SECRET.Trim()) {
-        $secret = [string]$env:BOB_REPORT_SECRET.Trim()
-    }
-    elseif ($env:BOB_IRC_HOME -and $env:BOB_IRC_HOME.Trim()) {
-        $sf = Join-Path $env:BOB_IRC_HOME.Trim() 'report.secret'
-        if (Test-Path $sf) {
-            try { $secret = ([IO.File]::ReadAllText($sf)).Trim() } catch { }
-        }
-    }
+    # v0.1.16: no secret/header - the digest validates machine id against Jeeves's published roster.
     $headers = @{ 'Content-Type' = 'application/json' }
-    if ($secret) { $headers['X-Bob-Secret'] = $secret }
     $json = ($payload | ConvertTo-Json -Depth 6 -Compress)
     try {
         $null = Invoke-RestMethod -Uri $url -Method Post -Body $json -Headers $headers -TimeoutSec 30

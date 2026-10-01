@@ -199,27 +199,17 @@ if (Test-Path -LiteralPath $operPy) {
 try {
     $pyCb = if ($Python) { $Python } else { Resolve-BobiversePython }
     $cbScript = Join-Path $InstallRoot 'scripts\bobcallback.py'
-    $secretFile = Join-Path $cfgDir 'report.secret'
-    $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --secret-file `"$secretFile`" --bind 127.0.0.1 --port 7700"
+    $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --bind 127.0.0.1 --port 7700"
     schtasks /Create /TN BobCallback /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR $tr | Out-Null
     Write-Host 'INFO registered scheduled task BobCallback'
-    # #53: webhook secrets live in THIS install's config\. report.secret is GENERATED when missing
-    # (256-bit random; ACL SYSTEM + Administrators). Only the PATH is printed, never the value.
-    if (-not (Test-Path -LiteralPath $secretFile)) {
-        $bytes = New-Object byte[] 32
-        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-        $rng.GetBytes($bytes); $rng.Dispose()
-        $hex = -join ($bytes | ForEach-Object { $_.ToString('x2') })
-        [IO.File]::WriteAllText($secretFile, $hex, [Text.UTF8Encoding]::new($false))
-        $hex = $null
-        Write-Host "INFO generated NEW webhook secret: $secretFile (value not shown; give it to bob machines as ~\.grok\bob\report.secret)"
-    } else {
-        Write-Host "INFO webhook secret present: $secretFile"
-    }
-    & icacls $secretFile /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(F)' 'BUILTIN\Administrators:(F)' 2>&1 | Out-Null
+    # v0.1.16: webhooks need NO password/secret (no shared secret is generated or copied). The digest
+    # accepts POSTs from machine ids on the roster this Jeeves publishes (registered-machines.json).
+    Write-Host 'INFO webhooks: no password/secret required (roster-gated by the machine list Jeeves publishes)'
     $ghTok = Join-Path $cfgDir 'github.token'
     if (-not (Test-Path -LiteralPath $ghTok)) {
-        Write-Host "WARN github token missing: $ghTok (issue filing from intake/jira is OFF until provided; never in git/MSI)"
+        # OPTIONAL. Receiving GitHub/Jira/bob webhooks needs no token; it is only used to FILE issues from
+        # intake/jira. Without it filings wait in the durable intake outbox (or use an existing `gh auth login`).
+        Write-Host "INFO github token not set ($ghTok) - optional; webhooks work without it, issue filing queues in the intake outbox"
     } else {
         & icacls $ghTok /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(F)' 'BUILTIN\Administrators:(F)' 2>&1 | Out-Null
         Write-Host "INFO github token present: $ghTok"
