@@ -14,7 +14,7 @@ ROSTER = {"ce-priority-dev1", "flamingo", "marchhare", "win-mpre8vi4u6u"}
 
 def _digest(tmp_path: Path, machines: dict[str, dict]):
     registered_machines.save_registered(tmp_path, set(machines) | ROSTER)
-    doc = bobreport.empty_digest()
+    doc = bobreport._ensure_seats(bobreport.empty_digest(), tmp_path)
     for mid, fields in machines.items():
         doc["machines"].setdefault(mid, bobreport._empty_machine(mid)).update(fields)
     bobreport.save_digest(tmp_path, doc)
@@ -95,7 +95,7 @@ def test_missing_period_end_does_not_mask_values(tmp_path):
 
 def test_rollover_to_new_period_replaces_value(tmp_path):
     registered_machines.save_registered(tmp_path, ROSTER)
-    doc = bobreport.empty_digest()
+    doc = bobreport._ensure_seats(bobreport.empty_digest(), tmp_path)
     doc["machines"]["flamingo"]["pcent"] = {"cursor-models": 3}
     doc["machines"]["flamingo"]["cursor_period_end"] = "2026-09-16T00:00:00Z"
     bobreport.save_digest(tmp_path, doc)

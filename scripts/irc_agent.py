@@ -464,6 +464,11 @@ class Client:
         self._bobiverse_last_query: dict[str, float] = {}
         self._bobiverse_last_tray: dict[str, float] = {}
         self._bobiverse_pull_last = 0.0
+        # #42: ChanServ roster mirror (chair only). Query state; registry file is the cache.
+        self._cs_collector: registered_machines.ChanServListCollector | None = None
+        self._cs_sent_at = 0.0
+        self._cs_force = False
+        self._cs_fail_at = 0.0
         self._digest_asm = bobreport.DigestWhisperAssembler()
         self._report_gone_told: set[str] = set()
         self._pm_open: dict[str, float] = {}
@@ -824,6 +829,80 @@ class Client:
                     ops.add(s.lower())
         return ops
 
+    # ---- #42: ChanServ-registered machine channels are the roster (mirror, add AND remove)
+    def _cs_ttl_s(self) -> float:
+        try:
+            return max(15.0, float(os.environ.get("BOB_CHANSERV_SYNC_TTL_S") or 120.0))
+        except ValueError:
+            return 120.0
+
+    def _maybe_chanserv_sync(self) -> None:
+        """Chair: periodically send ``ChanServ LIST`` (oper ``chanreg``); the NOTICE replies
+        are mirrored into registered-machines.json by :meth:`_on_chanserv_notice`."""
+        if not getattr(self.args, "chair", False) or not self.joined.is_set():
+            return
+        now = time.time()
+        if self._cs_collector is not None:
+            if now - self._cs_sent_at > 30.0:  # no End marker: outage / lost reply
+                info("INFO chanserv-sync timeout; keeping last good roster")
+                self._cs_collector = None
+                self._cs_fail_at = now
+            return
+        digest = self._digest_home()
+        due = self._cs_force or registered_machines.refresh_due(digest, self._cs_ttl_s(), now)
+        if not due:
+            return
+        if not self._cs_force and now - self._cs_fail_at < 30.0:
+            return  # back off after a failed attempt
+        self._cs_force = False
+        self._cs_collector = registered_machines.ChanServListCollector()
+        self._cs_sent_at = now
+        try:
+            self.send("PRIVMSG ChanServ :LIST")
+        except OSError:
+            self._cs_collector = None
+            self._cs_fail_at = now
+
+    def _on_chanserv_notice(self, text: str) -> None:
+        col = self._cs_collector
+        if col is None:
+            return
+        ev = col.feed(text)
+        if ev == "error":
+            info(f"INFO chanserv-sync denied ({col.error}); chair needs oper chanreg; keeping last roster")
+            self._cs_collector = None
+            self._cs_fail_at = time.time()
+        elif ev == "end":
+            self._cs_collector = None
+            self._apply_chanserv_channels(col.channels)
+
+    def _apply_chanserv_channels(self, channels: list[str]) -> None:
+        digest = self._digest_home()
+        res = registered_machines.sync_from_chanserv(digest, channels)
+        if res is None:
+            info("INFO chanserv-sync empty/unusable result; keeping last roster")
+            self._cs_fail_at = time.time()
+            return
+        added, removed = res
+        info(f"INFO chanserv-sync ok machines={len(registered_machines.load_registered(digest))} "
+             f"+{sorted(added)} -{sorted(removed)}")
+        have = {c.lower() for c in self.channels}
+        for mid in sorted(added):
+            shop = f"#{mid}"
+            if shop.lower() not in have:
+                self.channels.append(shop)
+                try:
+                    self.send(f"JOIN {shop}")
+                except OSError:
+                    pass
+        for mid in sorted(removed):
+            shop = f"#{mid}"
+            self.channels = [c for c in self.channels if c.lower() != shop.lower()]
+            try:
+                self.send(f"PART {shop} :no longer registered")
+            except OSError:
+                pass
+
     def _handle_register_command(self, asker: str, body: str) -> bool:
         """Chair: !register <machine> → ChanServ REGISTER #{machine} + persist."""
         if not getattr(self.args, "chair", False):
@@ -846,7 +925,8 @@ class Client:
         # Jeeves owns registration (Bob does not self-REGISTER).
         self.send(f"PRIVMSG ChanServ :REGISTER {shop}")
         time.sleep(FLOOD_S)
-        registered_machines.add_registered(Path(self.home), mid)
+        registered_machines.add_registered(self._digest_home(), mid)
+        self._cs_force = True  # #42: re-sync the mirror from ChanServ right away
         self.whisper(who, f"ACK registered {shop}")
         info(f"INFO register machine={mid} by={who}")
         return True
@@ -856,7 +936,7 @@ class Client:
         if not getattr(self.args, "chair", False):
             return
         mid = registered_machines.machine_from_bob_nick(nick)
-        if not mid or not registered_machines.is_registered(Path(self.home), mid):
+        if not mid or not registered_machines.is_registered(self._digest_home(), mid):
             return
         shop = f"#{mid}"
         self.send(f"MODE {shop} +o {nick}")
@@ -1005,7 +1085,7 @@ class Client:
         self._announce_departure("recycle")
         info(f"INFO recycle announcing restart machine={mid} from={src}")
         bob_recycle.execute_local_recycle(
-            mid, self.home, ionos_chair=(mid == bob_recycle.CHAIR_HOME_MACHINE), hooks=getattr(self, "_recycle_hooks", None)
+            mid, self.home, ionos_chair=(mid == bob_recycle.chair_home_machine()), hooks=getattr(self, "_recycle_hooks", None)
         )
         info(f"INFO recycle wire accepted machine={mid} from={src}")
         return True
@@ -1994,6 +2074,11 @@ class Client:
                         info(f"INFO reg {cmd} {detail}".strip()[:220])
                         if cmd == "ERROR" and is_connect_throttle(detail):
                             self._throttled = True
+                    if cmd == "NOTICE" and prefix.split("!", 1)[0].lower() == "chanserv":
+                        try:
+                            self._on_chanserv_notice(trailing)
+                        except Exception as exc:  # never kill the reader over a mirror bug
+                            info(f"INFO chanserv-sync notice error {type(exc).__name__}")
                     if cmd == "001":
                         self.ready.set()
 
@@ -2142,6 +2227,7 @@ class Client:
             try:
                 self.drain_outbox_once()
                 self._maybe_bobiverse_pull()
+                self._maybe_chanserv_sync()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
             except OSError:

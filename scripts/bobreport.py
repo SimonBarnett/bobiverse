@@ -30,33 +30,55 @@ MAX_DIGEST_LINE = 350
 FLEET_CHANNEL = "#bobiverse"
 ACTION_COOLDOWN_S = 30.0
 DISCONNECT_DEDUPE_S = 30.0
-ID_ALIASES = {"dev1": "ce-priority-dev1", "ce-priority-dev1": "ce-priority-dev1"}
+# LEGACY aliases (#42): old short/handle -> current machine name. Never the roster.
+ID_ALIASES = {
+    "dev1": "ce-priority-dev1",
+    "ce-priority-dev1": "ce-priority-dev1",
+}
 
+# LEGACY aliases ONLY (#42): old ``bob-<alias>`` nicks and ``w-<short>-<pid>`` worker nicks
+# resolve to a machine name. They never define the roster - the roster is the ChanServ
+# mirror in registered-machines.json (registered_machines.sync_from_chanserv).
 NICK_TO_MACHINE: dict[str, str] = {
-    "bob-flamingo": "flamingo",
-    "bob-marchhare": "marchhare",
-    "bob-ionos": "ionos",
     "bob-dev1": "ce-priority-dev1",
+    "bob-ionos": "win-mpre8vi4u6u",
 }
 
 SHORT_ID: dict[str, str] = {
     "flamingo": "fl",
     "marchhare": "mh",
-    "ionos": "io",
+    "win-mpre8vi4u6u": "io",  # legacy w-io-<pid> worker nicks
     "ce-priority-dev1": "d1",
 }
 SHORT_TO_MACHINE = {v: k for k, v in SHORT_ID.items()}
-FLEET_MACHINE_IDS = ("flamingo", "marchhare", "ionos", "ce-priority-dev1")
-_FLEET_MACHINE_ID_SET = frozenset(FLEET_MACHINE_IDS)
 
 
 def roster_machine_ids(home: Path | None = None) -> tuple[str, ...]:
-    """ChanServ-registered shops only when registry non-empty; else bootstrap fleet tuple."""
+    """Machine ids = the ChanServ mirror (registered-machines.json). No hardcoded fallback.
+
+    Pure file read (cached by the chair's periodic ``ChanServ LIST`` sync, see
+    ``registered_machines.sync_from_chanserv``) so the HTTP digest path never talks to IRC.
+    An empty/missing registry is an EMPTY roster, not a bootstrap fleet.
+    """
+    if home is None:
+        home = _default_digest_home()
     if home is not None:
         reg = registered_machines.load_registered(Path(home))
         if reg:
             return tuple(sorted(reg))
-    return FLEET_MACHINE_IDS
+    return ()
+
+
+def _default_digest_home() -> Path | None:
+    env_home = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+    if env_home:
+        return Path(env_home)
+    prof = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
+    if prof:
+        cand = Path(prof) / ".agentic-irc-bobiverse"
+        if cand.is_dir():
+            return cand
+    return None
 
 
 def is_roster_machine(home: Path | None, mid: str) -> bool:
@@ -307,10 +329,6 @@ def normalize_machine_id(raw: str) -> str | None:
     mid = ID_ALIASES.get(mid, mid)
     if not bobstat.ID_RE.match(mid):
         return None
-    if mid not in SHORT_ID and mid not in ID_ALIASES:
-        # accept registry ids even if extra, as long as they look like ids
-        if mid not in FLEET_MACHINE_IDS:
-            return mid if bobstat.ID_RE.match(mid) else None
     return mid
 
 
@@ -334,20 +352,14 @@ def seat_machine_ids() -> tuple[str, ...]:
     the 4-entry bootstrap table. Longest id first so ``ce-priority-dev1-1`` never parses
     as machine ``ce``. Cached on the registry file's mtime.
     """
-    env_home = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
-    home: Path | None = Path(env_home) if env_home else None
-    if home is None:
-        prof = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
-        if prof:
-            cand = Path(prof) / ".agentic-irc-bobiverse"
-            home = cand if cand.is_dir() else None
+    home = _default_digest_home()
     reg = registered_machines.registry_path(home) if home is not None else None
     try:
         stamp = (str(reg), reg.stat().st_mtime_ns) if reg is not None and reg.is_file() else (str(reg), 0)
     except OSError:
         stamp = (str(reg), 0)
     if _SEAT_ROSTER_CACHE["key"] != stamp:
-        ids = set(FLEET_MACHINE_IDS)
+        ids: set[str] = set()
         if home is not None:
             ids |= registered_machines.load_registered(home)
         _SEAT_ROSTER_CACHE["ids"] = tuple(sorted(ids, key=lambda m: (-len(m), m)))
@@ -631,7 +643,7 @@ def empty_digest() -> dict:
         "v": 1,
         "ts": "",
         "briefer": "",
-        "machines": {mid: _empty_machine(mid) for mid in FLEET_MACHINE_IDS},
+        "machines": {},
         "events": [],
     }
 
@@ -1672,7 +1684,7 @@ def english_summary_lines(home: Path) -> list[str]:
     doc = load_digest(home)
     lines: list[str] = []
     machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
-    for mid in FLEET_MACHINE_IDS:
+    for mid in roster_machine_ids(home):
         ent = machines.get(mid)
         if isinstance(ent, dict):
             lines.append(machine_english(ent))
@@ -1709,6 +1721,12 @@ def _normalize_jobs_list(raw: object) -> list[dict]:
     return out
 
 
+def _pool_reject_machine_ids() -> set[str]:
+    """Ids that are machines/seats, not pools (old rows carried ``seat: <machine>``)."""
+    ids = set(SHORT_ID) | set(ID_ALIASES) | set(seat_machine_ids())
+    return ids
+
+
 def _normalize_cursor_pool_id(raw: object) -> str | None:
     if raw is None:
         return None
@@ -1722,7 +1740,7 @@ def _normalize_cursor_pool_id(raw: object) -> str | None:
         return _CURSOR_POOL_ID_ALIASES[lower]
     if lower in CURSOR_POOL_IDS:
         return lower
-    if lower in _FLEET_MACHINE_ID_SET or normalize_machine_id(lower) in _FLEET_MACHINE_ID_SET:
+    if lower in _pool_reject_machine_ids():
         return None
     if lower in _CURSOR_POOL_ID_ALIASES.values():
         return lower
@@ -1968,7 +1986,7 @@ def _lesser_machine_pcent_for_pool(
     """Pick the lesser remaining % across machines (shared account SoT, #174)."""
     best_rem: int | None = None
     best_ent: dict | None = None
-    mids = [m for m in machines.keys() if normalize_machine_id(str(m))] or list(FLEET_MACHINE_IDS)
+    mids = [m for m in machines.keys() if normalize_machine_id(str(m))]
     for mid in mids:
         ent = machines.get(mid) or {}
         pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
@@ -2098,7 +2116,7 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
     for mid, ent in machines.items():
         coerced = _coerce_machine(str(mid), ent)
         cid = str(coerced["id"])
-        if cid in roster or (not roster and cid in FLEET_MACHINE_IDS):
+        if cid in roster:
             cleaned[cid] = coerced
     for mid in roster:
         cleaned.setdefault(mid, _empty_machine(mid))
