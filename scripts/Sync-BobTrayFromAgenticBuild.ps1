@@ -67,6 +67,14 @@ $optionalTools = @(
     'Bob-WatchSeatSlot.ps1'
 )
 
+# #60: bobiverse-owned tools that upstream does not ship (or ships a machine-specific copy of).
+# They are preserved across a re-sync so the vendored tray keeps working on every machine.
+$ownedTools = @('Get-CursorAgentUsage.py')
+$ownedKeep = @{}
+foreach ($leaf in $ownedTools) {
+    $p = Join-Path $OutDir "tools\$leaf"
+    if (Test-Path -LiteralPath $p) { $ownedKeep[$leaf] = [IO.File]::ReadAllBytes($p) }
+}
 if (Test-Path -LiteralPath $OutDir) {
     Remove-Item -LiteralPath $OutDir -Recurse -Force
 }
@@ -84,7 +92,11 @@ foreach ($leaf in $toolFiles) {
     }
     Copy-Item -LiteralPath $from -Destination (Join-Path $OutDir "tools\$leaf") -Force
 }
+foreach ($leaf in $ownedKeep.Keys) {
+    [IO.File]::WriteAllBytes((Join-Path $OutDir "tools\$leaf"), $ownedKeep[$leaf])
+}
 foreach ($leaf in $optionalTools) {
+    if ($ownedKeep.ContainsKey($leaf)) { continue }
     $from = Join-Path $srcRoot "tools\$leaf"
     if (Test-Path -LiteralPath $from) {
         Copy-Item -LiteralPath $from -Destination (Join-Path $OutDir "tools\$leaf") -Force

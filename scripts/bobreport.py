@@ -189,6 +189,13 @@ _MERGE_PEER_FIELDS = (
     "cur",
     "pcent",
     "overage_gbp",
+    # #60: overspend amount + state and the Sand (grok-chat) weekly reset, per machine.
+    "overage_usd",
+    "overspend_state",
+    "on_demand_used_cents",
+    "on_demand_limit_cents",
+    "on_demand_remaining_pct",
+    "sand_period_end",
 )
 _TRAY_MACHINE_EXPORT_KEYS = (
     "id",
@@ -217,6 +224,12 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "kind",
     "cur",
     "overage_gbp",
+    "overage_usd",
+    "overspend_state",
+    "on_demand_used_cents",
+    "on_demand_limit_cents",
+    "on_demand_remaining_pct",
+    "sand_period_end",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 

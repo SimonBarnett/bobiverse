@@ -200,6 +200,48 @@ function Get-BobWeeklyRemaining {
     catch { return $null }
 }
 
+function Get-BobCursorOverspendState {
+    # none | over (on-demand spend > 0) | at-limit (spend reached the limit) | unknown (no spend data)
+    param($UsedCents, $LimitCents, $OverageGbp, $OverageUsd)
+    $c = $null
+    if ($null -ne $UsedCents -and [string]$UsedCents -ne '') { try { $c = [double]$UsedCents } catch { } }
+    if ($null -eq $c -and $null -ne $OverageUsd -and [string]$OverageUsd -ne '') { try { $c = [double]$OverageUsd * 100.0 } catch { } }
+    if ($null -eq $c -and $null -ne $OverageGbp -and [string]$OverageGbp -ne '') { try { $c = [double]$OverageGbp * 100.0 } catch { } }
+    if ($null -eq $c) { return 'unknown' }
+    if ($c -le 0) { return 'none' }
+    if ($null -ne $LimitCents -and [string]$LimitCents -ne '') {
+        try { if ([double]$LimitCents -gt 0 -and $c -ge [double]$LimitCents) { return 'at-limit' } } catch { }
+    }
+    return 'over'
+}
+
+function Get-BobTrayDigestMachineSummary {
+    # Digest machines.<id> -> grok pools (grok-weekly/grok-chat with period_end), cursor pools and overspend.
+    param($Digest, [string]$MachineId)
+    $r = [pscustomobject]@{ grok_pools = @(); cursor_pools = @(); overspend_gbp = $null; overspend_state = $null }
+    if (-not $Digest -or -not $Digest.machines -or -not $MachineId) { return $r }
+    $ent = $null
+    foreach ($p in @($Digest.machines.PSObject.Properties)) {
+        if ([string]$p.Name -ieq $MachineId) { $ent = $p.Value; break }
+    }
+    if (-not $ent) { return $r }
+    $grok = @(); $cur = @()
+    foreach ($row in @($ent.cursor_pools)) {
+        if (-not $row) { continue }
+        $rid = [string]$row.id
+        if (-not $rid) { $rid = [string]$row.group_id }
+        $rem = $row.remaining
+        if ($null -eq $rem) { $rem = $row.remaining_pct }
+        $item = [pscustomobject]@{ id = $rid; label = $(if ($row.label) { [string]$row.label } else { $rid }); remaining_pct = $rem; period_end = $(if ($row.period_end) { [string]$row.period_end } else { $null }) }
+        if ($rid -in @('grok-weekly', 'grok-chat', 'sand')) { $grok += ,$item } else { $cur += ,$item }
+    }
+    $r.grok_pools = $grok
+    $r.cursor_pools = $cur
+    if ($null -ne $ent.overage_gbp -and [string]$ent.overage_gbp -ne '') { try { $r.overspend_gbp = [double]$ent.overage_gbp } catch { } }
+    if ($ent.overspend_state) { $r.overspend_state = [string]$ent.overspend_state }
+    return $r
+}
+
 function ConvertTo-BobCursorUsageDoc {
     param($j)
     if (-not $j) { return $null }
@@ -282,6 +324,7 @@ function ConvertTo-BobCursorUsageDoc {
         remaining_bonus = $(if ($null -ne $j.remaining_bonus -and [string]$j.remaining_bonus -ne '') { [bool]$j.remaining_bonus } else { $null })
         bonus_tooltip = $(if ($j.bonus_tooltip) { [string]$j.bonus_tooltip } else { $null })
         overage_source = $(if ($j.overage_source) { [string]$j.overage_source } else { $null })
+        overspend_state = $(if ($j.overspend_state) { [string]$j.overspend_state } else { (Get-BobCursorOverspendState -UsedCents $cents -LimitCents $odLimit -OverageGbp $overGbp -OverageUsd $overUsd) })
         period_end    = $periodEnd
         sand_used_pct = $sandUsed
         sand_remaining_pct = $sandRemain
@@ -346,7 +389,14 @@ function Get-BobCursorSpendingFromApiFixture {
         [pscustomobject]@{ id = 'auto'; label = 'Low cost models'; used_pct = $autoUsed; remaining_pct = $autoRemain; source = 'GetCurrentPeriodUsage.planUsage.autoPercentUsed' }
     )
     $periodEnd = $null
-    if ($period -and $period.billingCycleEnd) { $periodEnd = [string]$period.billingCycleEnd }
+    if ($period -and $period.billingCycleEnd) {
+        $periodEnd = [string]$period.billingCycleEnd
+        # Cursor sends epoch milliseconds; the digest/tray want ISO-8601 (same as Get-CursorAgentUsage.py).
+        $ms = 0.0
+        if ([double]::TryParse($periodEnd, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$ms) -and $ms -gt 10000000000) {
+            $periodEnd = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$ms).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        }
+    }
     $cents = $null
     $limitCents = $null
     if ($period -and $period.spendLimitUsage) {
@@ -422,36 +472,73 @@ function Get-BobCursorAgentWeeklyRemaining {
         }
         catch { }
     }
-    $py = $null
-    foreach ($c in @(
-            'C:\Python\Python312\python.exe',
-            'C:\Python\Python313\python.exe',
-            (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
-            (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe')
-        )) {
-        if ($c -and (Test-Path $c)) { $py = $c; break }
+    # #60: any machine. The fetcher ships with the tray (tools\Get-CursorAgentUsage.py) and python is
+    # discovered (PATH, py launcher, Program Files, per-user, C:\Python*) - not just C:\Python\Python312.
+    $py = Resolve-BobCursorPython
+    $script = Resolve-BobCursorUsageScript
+    $errPath = $null
+    try { $errPath = Join-Path (Get-BridgeRoot) 'cursor-agent-usage.error.json' } catch { }
+    if (-not $py -or -not $script) {
+        $why = $(if (-not $script) { 'fetcher-script-missing' } else { 'python-missing' })
+        if ($errPath) { try { Write-JsonFile $errPath ([pscustomobject]@{ ok = $false; error = $why; at = [DateTime]::UtcNow.ToString('o') }) } catch { } }
+        return $null
     }
-    $script = $null
     try {
-        $root = Split-Path (Get-ModuleRoot) -Parent
-        $cand = Join-Path $root 'tools\Get-CursorAgentUsage.py'
-        if (Test-Path $cand) { $script = $cand }
-    } catch { }
-    if (-not $script) {
-        $cand2 = Join-Path (Get-ModuleRoot) 'tools\Get-CursorAgentUsage.py'
-        if (Test-Path $cand2) { $script = $cand2 }
-    }
-    if ($py -and (Test-Path $script)) {
-        try {
-            $raw = & $py $script 2>$null
-            $j = $raw | ConvertFrom-Json
-            $doc = ConvertTo-BobCursorUsageDoc $j
-            if ($doc -and $cache) {
-                try { Write-JsonFile $cache $doc } catch { }
-            }
-            if ($doc) { return $doc }
+        $raw = (& $py $script 2>$null) -join "`n"
+        $j = $raw | ConvertFrom-Json
+        if ($j -and $j.ok -eq $false) {
+            # Stage name only (token-missing, key-unprotect, cryptography-missing, http-401, network ...).
+            if ($errPath) { try { Write-JsonFile $errPath ([pscustomobject]@{ ok = $false; error = [string]$j.error; detail = [string]$j.detail; at = [DateTime]::UtcNow.ToString('o') }) } catch { } }
+            return $null
         }
-        catch { }
+        $doc = ConvertTo-BobCursorUsageDoc $j
+        if ($doc -and $cache) {
+            try { Write-JsonFile $cache $doc } catch { }
+        }
+        if ($errPath -and (Test-Path $errPath)) { try { Remove-Item -LiteralPath $errPath -Force } catch { } }
+        if ($doc) { return $doc }
+    }
+    catch { }
+    return $null
+}
+
+function Resolve-BobCursorPython {
+    # First python.exe that exists. Skips the Microsoft Store stub (WindowsApps) which opens the Store.
+    $cands = New-Object System.Collections.Generic.List[string]
+    foreach ($e in @($env:BOB_CURSOR_PYTHON, $env:BOB_PYTHON)) { if ($e) { $cands.Add($e.Trim()) } }
+    try {
+        foreach ($cmd in @(Get-Command python.exe -All -ErrorAction SilentlyContinue)) {
+            if ($cmd.Source -and $cmd.Source -notmatch '\\WindowsApps\\') { $cands.Add($cmd.Source) }
+        }
+    } catch { }
+    try {
+        $pyl = Get-Command py.exe -ErrorAction SilentlyContinue
+        if ($pyl) {
+            $exe = (& $pyl.Source -3 -c 'import sys;print(sys.executable)' 2>$null | Select-Object -First 1)
+            if ($exe) { $cands.Add([string]$exe) }
+        }
+    } catch { }
+    foreach ($ver in @('313', '312', '311', '310')) {
+        $cands.Add("C:\Python\Python$ver\python.exe")
+        $cands.Add("C:\Python$ver\python.exe")
+        if ($env:ProgramFiles) { $cands.Add((Join-Path $env:ProgramFiles "Python$ver\python.exe")) }
+        if ($env:LOCALAPPDATA) { $cands.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Python$ver\python.exe")) }
+    }
+    foreach ($c in $cands) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+function Resolve-BobCursorUsageScript {
+    $rel = 'tools\Get-CursorAgentUsage.py'
+    $roots = New-Object System.Collections.Generic.List[string]
+    try { $roots.Add((Get-ModuleRoot)) } catch { }
+    try { $roots.Add((Split-Path (Get-ModuleRoot) -Parent)) } catch { }
+    foreach ($r in $roots) {
+        if (-not $r) { continue }
+        $cand = Join-Path $r $rel
+        if (Test-Path -LiteralPath $cand) { return $cand }
     }
     return $null
 }
@@ -2139,8 +2226,14 @@ function Get-BobTrayHover {
             }
             catch { }
         }
+        # #60: this machine's pools + overspend from the digest machines.<id> (what its Bob POSTed).
+        $dm = Get-BobTrayDigestMachineSummary -Digest $reportDigest -MachineId $mid
         $tile = New-Object psobject -Property @{
             id                   = $mid
+            grok_pools           = @($dm.grok_pools)
+            cursor_pools         = @($dm.cursor_pools)
+            overspend_gbp        = $dm.overspend_gbp
+            overspend_state      = $dm.overspend_state
             job_count            = $rows.Count
             jobs                 = $rows
             reach                = $reach

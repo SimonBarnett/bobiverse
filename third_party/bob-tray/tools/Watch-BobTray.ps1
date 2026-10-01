@@ -2748,7 +2748,23 @@ function Rebuild-BobTrayTiles {
                 -RemainingPct $pct -BarWidth 354 -Icon $null
             $reach = [string]$m.reach
             $jobTxt = ''
-            if ($m.up_since) { $jobTxt = ('up since {0}' -f [string]$m.up_since) }
+            # #60: what this machine's Bob reported to the digest (grok pools, cursor pools, overspend).
+            $poolBits = @()
+            foreach ($gp in @($m.grok_pools)) {
+                if (-not $gp) { continue }
+                $gpPct = $(if ($null -ne $gp.remaining_pct -and [string]$gp.remaining_pct -ne '') { ('{0}%' -f [int]$gp.remaining_pct) } else { 'n/a' })
+                $gpEnd = $(if ($gp.period_end) { (' resets {0}' -f [string]$gp.period_end) } else { '' })
+                $poolBits += ('{0} {1}{2}' -f [string]$gp.label, $gpPct, $gpEnd)
+            }
+            foreach ($cp in @($m.cursor_pools)) {
+                if (-not $cp) { continue }
+                $cpPct = $(if ($null -ne $cp.remaining_pct -and [string]$cp.remaining_pct -ne '') { ('{0}%' -f [int]$cp.remaining_pct) } else { 'n/a' })
+                $poolBits += ('{0} {1}' -f [string]$cp.label, $cpPct)
+            }
+            $mOver = Format-BobTrayCursorOverspendLine -OverageGbp $m.overspend_gbp
+            if ($mOver) { $poolBits += $mOver }
+            if ($poolBits.Count -gt 0) { $jobTxt = ($poolBits -join "`n") }
+            if ($m.up_since) { $jobTxt = $(if ($jobTxt) { $jobTxt + "`n" } else { '' }) + ('up since {0}' -f [string]$m.up_since) }
             if ($reach -eq 'not-in-moot' -or $reach -eq 'unreachable') {
                 $jobTxt = $(if ($jobTxt) { $jobTxt + "`nnot in moot" } else { 'not in moot' })
             }
