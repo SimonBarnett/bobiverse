@@ -16,6 +16,9 @@ param(
     [switch]$SkipIcons,
     [switch]$SkipWatchAgentHealth,
     [switch]$SkipTray,
+# #32: start the tray WITHOUT Stop-BobSystrayPriorAgents (which kills grok.exe seats, Grok Bot,
+# Watch-AgentHealth). Implied under msiexec/quiet installs; or set env BOBIVERSE_NO_TIDY=1.
+[switch]$SkipTidy,
     [switch]$PromptServicePassword,
     [switch]$SkipCopy
 )
@@ -269,6 +272,8 @@ try {
 } catch { }
 
 if ((-not $SkipTray) -and (-not $NoStart)) {
+    $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1' -or (Test-BobiverseMsiOrQuiet)
+    if ($noTidy) { Write-Host 'INFO tray start with SkipTidy: running seats and Grok Bot are not killed (#32)' }
     $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
     $watchPs1 = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
     $trayInteractive = Join-Path $InstallRoot 'scripts\Start-BobTrayInteractive.ps1'
@@ -280,7 +285,7 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
         Write-Host 'INFO non-interactive/session0 - register interactive TipForm logon task (no session-0 Start-Process)'
         if (Test-Path -LiteralPath $trayInteractive) {
             try {
-                & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RunNow
+                & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RunNow -SkipTidy:$noTidy
             } catch {
                 Write-Host ("WARN Start-BobTrayInteractive: {0}" -f $_.Exception.Message)
             }
@@ -339,10 +344,12 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
             } catch { }
         }
         Start-Sleep -Milliseconds 500
-        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        $trayLaunch = @(
             '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
             '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew'
-        ) | Out-Null
+        )
+        if ($noTidy) { $trayLaunch += '-SkipTidy' }
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $trayLaunch | Out-Null
         Write-Host 'INFO started TipForm Start-BobTray (ircBob companion)'
         if (Test-Path -LiteralPath $trayInteractive) {
             try { & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RegisterOnly } catch { }

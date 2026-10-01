@@ -17,7 +17,10 @@ param(
     [string]$ServiceName = 'ircBob',
     [string]$BobHome = '',
     [string]$MachineId = '',
-    [switch]$ForceNew
+    [switch]$ForceNew,
+    # #32: do not run Stop-BobSystrayPriorAgents (kills grok.exe seats, Grok Bot, Watch-AgentHealth).
+    # Also honoured via env BOBIVERSE_NO_TIDY=1 (set by Install-Bob for quiet/MSI installs).
+    [switch]$SkipTidy
 )
 
 $ErrorActionPreference = 'Continue'
@@ -93,7 +96,9 @@ if ($ForceNew -or $prior.Count -gt 0) {
 # Prefer Start-BobFleetTray when present (tidy + MSI update stub); else Watch-BobTray direct.
 $fleetStart = Join-Path $InstallRoot 'tools\Start-BobFleetTray.ps1'
 if (Test-Path -LiteralPath $fleetStart) {
-    & $fleetStart -RepoRoot $InstallRoot -SkipUpdate -ForceNew:$ForceNew
+    $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1'
+    if ($noTidy) { Write-Host 'INFO tray start: SkipTidy (seats and Grok Bot are left running)' }
+    & $fleetStart -RepoRoot $InstallRoot -SkipUpdate -ForceNew:$ForceNew -SkipTidy:$noTidy
     exit $LASTEXITCODE
 }
 
