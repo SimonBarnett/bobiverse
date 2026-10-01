@@ -8,7 +8,7 @@ param(
     [string]$LocalUrl = 'http://127.0.0.1:7700/bob/v1/report',
     [string]$PublicUrl = 'https://irc.ntsa.uk/bob/v1/report',
     [string]$DigestHome = '',
-    [int]$CooldownCooldownMinutes = 10
+    [int]$AnnounceCooldownMinutes = 10
 )
 
 $ErrorActionPreference = 'Continue'

@@ -36,6 +36,9 @@ def _token_candidate_paths() -> list[Path]:
     # airc/bobcallback often run as LocalSystem; interactive gh auth is under Administrator.
     paths.append(Path(r"C:\Users\Administrator\.grok\bob\github.token"))
     paths.append(Path(r"C:\ai\jeeves\config\github.token"))
+    # #53: the jeeves install owns the webhook receiver: <InstallRoot>\config\github.token
+    # next to scripts\ (works for any InstallRoot, not just C:\ai\jeeves).
+    paths.insert(0, Path(__file__).resolve().parent.parent / "config" / "github.token")
     digest = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
     if digest:
         paths.append(Path(digest) / "github.token")
