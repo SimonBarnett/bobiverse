@@ -561,7 +561,7 @@ function Get-BobSeatConfig {
         } catch { }
     }
     return @(
-        [pscustomobject]@{ id = 'smart-catalogue'; label = 'Smart Catalogue'; email = 'social@smartcatalogue.uk'; machines = @('ionos') },
+        [pscustomobject]@{ id = 'smart-catalogue'; label = 'Smart Catalogue'; email = 'social@smartcatalogue.uk'; machines = @('win-mpre8vi4u6u') },
         [pscustomobject]@{ id = 'club-madeira'; label = 'Club Madeira'; email = 'social@clubmadeira.uk'; machines = @('flamingo') },
         [pscustomobject]@{ id = 'ntsa'; label = 'ntsa'; email = 'si@ntsa.uk'; machines = @('marchhare', 'ce-priority-dev1') }
     )
@@ -1689,6 +1689,18 @@ function Get-BobTrayHover {
     if ($reportDigest -and $reportDigest.roster_machine_ids) {
         $script:BobRosterIds = @($reportDigest.roster_machine_ids | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
     }
+    # #42: digest has no roster (older chair / offline) => ONLY the local machine plus whatever
+    # the digest's `machines` keys contain. Never the bobiverse.json nick list.
+    if ($script:BobRosterIds.Count -eq 0) {
+        $fallbackIds = @()
+        if ($machineId -and $machineId -ne 'this-machine') { $fallbackIds += ([string]$machineId).ToLowerInvariant() }
+        if ($reportDigest -and $reportDigest.machines) {
+            foreach ($mp in @($reportDigest.machines.PSObject.Properties)) {
+                if ($mp.Name) { $fallbackIds += ([string]$mp.Name).Trim().ToLowerInvariant() }
+            }
+        }
+        $script:BobRosterIds = @($fallbackIds | Where-Object { $_ } | Select-Object -Unique)
+    }
     $digestView = Expand-BobReportDigestView -Digest $reportDigest
     $digestTasksByMachine = $digestView.tasksByMachine
     $uptimeByMachine = $digestView.uptimeByMachine
@@ -1745,9 +1757,9 @@ function Get-BobTrayHover {
     $seenBy = @{}
     $specBy = @{}
     $seatIds = @()
-    try { $seatIds = @(Get-BobiverseMachineIds) } catch { $seatIds = @() }
-    # #42: when the digest carries the ChanServ roster, it replaces the config nick list.
-    if ($script:BobRosterIds.Count -gt 0) { $seatIds = @($script:BobRosterIds) }
+    # #42: ChanServ roster from the digest, else local + digest machine keys (see above).
+    # bobiverse.json nicks are NOT consulted for the Grok accounts rows.
+    $seatIds = @($script:BobRosterIds)
     $knownTile = @{}
     if ($machineId) { $knownTile[$machineId] = $true }
     foreach ($sid in $seatIds) { if ($sid) { $knownTile[$sid] = $true } }

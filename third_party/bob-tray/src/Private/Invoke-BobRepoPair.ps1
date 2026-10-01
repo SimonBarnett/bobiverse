@@ -38,7 +38,7 @@ function Get-BobShopChannelForMachine {
 function Get-BobRepoPairShopNickShort {
     param([string]$MachineId)
     switch ([string]$MachineId) {
-        'ionos' { return 'io' }
+        'win-mpre8vi4u6u' { return 'io' }
         'flamingo' { return 'fl' }
         'marchhare' { return 'mh' }
         'ce-priority-dev1' { return 'd1' }

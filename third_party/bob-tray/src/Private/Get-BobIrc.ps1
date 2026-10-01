@@ -11,15 +11,15 @@ function Get-BobiverseConfig {
 }
 
 function Get-BobiverseMachineIds {
-    $cfg = Get-BobiverseConfig
+    # #42: NO hardcoded config nicks. Machine ids = the digest's ChanServ roster
+    # ($script:BobRosterIds, set by Get-BobTrayHover) plus THIS machine.
     $ids = @()
-    if ($cfg -and $cfg.nicks) {
-        foreach ($p in @($cfg.nicks.PSObject.Properties)) {
-            $id = [string]$p.Name
-            if ($id) { $ids += $id }
-        }
-    }
-    return @($ids)
+    if ($script:BobRosterIds) { foreach ($r in @($script:BobRosterIds)) { if ($r) { $ids += ([string]$r).ToLowerInvariant() } } }
+    try {
+        $self = [string](Get-ThisMachineId)
+        if ($self) { $ids += $self.ToLowerInvariant() }
+    } catch { }
+    return @($ids | Select-Object -Unique)
 }
 
 function Resolve-BobiverseMachineId {
@@ -28,9 +28,15 @@ function Resolve-BobiverseMachineId {
     $id = [string]$Raw.Trim()
     if (-not $id) { return $null }
     $cfg = Get-BobiverseConfig
-    if (-not $cfg -or -not $cfg.nicks) { return $id }
+    # #42: legacy handle -> machine name (e.g. ionos -> win-mpre8vi4u6u). Alias only, never a roster.
+    if ($cfg -and $cfg.legacyAliases) {
+        $al = $cfg.legacyAliases.PSObject.Properties[$id.ToLowerInvariant()]
+        if ($al -and $al.Value) { $id = [string]$al.Value }
+    }
+    if (-not $cfg -or -not $cfg.nicks) { return $id.ToLowerInvariant() }
     $props = @($cfg.nicks.PSObject.Properties)
-    if ($props.Count -eq 0) { return $id }
+    # #42: no config nick list => any machine id is accepted (lowercase machine name).
+    if ($props.Count -eq 0) { return $id.ToLowerInvariant() }
     foreach ($p in $props) {
         if ([string]$p.Name -eq $id) { return [string]$p.Name }
     }
@@ -81,7 +87,7 @@ function Get-BobWorkerIrcNick {
     $shortByMid = @{
         flamingo           = 'fl'
         marchhare          = 'mh'
-        ionos              = 'io'
+        'win-mpre8vi4u6u'  = 'io'
         'ce-priority-dev1' = 'd1'
     }
     $short = $shortByMid[$mid]
