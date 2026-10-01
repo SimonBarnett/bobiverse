@@ -395,7 +395,9 @@ function Read-BobReportDigestHttp {
     try {
         $resp = Invoke-WebRequest -Uri $url -Method GET -UseBasicParsing -TimeoutSec 15 -Headers @{ Accept = 'application/json' }
         if (-not $resp -or [int]$resp.StatusCode -lt 200 -or [int]$resp.StatusCode -ge 300) { return $null }
-        $j = $resp.Content | ConvertFrom-Json
+        # v0.1.18: decode the body as UTF-8 explicitly. Windows PowerShell 5.1 decodes .Content as
+        # ISO-8859-1 when the response lacks a charset, which turned U+00B7 into "A-circumflex + dot".
+        $j = ConvertFrom-BobUtf8Json -Response $resp
         if (-not $j) { return $null }
         $script:BobDigestHttpCache = $j
         $script:BobDigestHttpCacheAt = $now
@@ -404,6 +406,33 @@ function Read-BobReportDigestHttp {
     catch {
         return $null
     }
+}
+
+function ConvertFrom-BobUtf8Json {
+    # Parse a web response as UTF-8 JSON regardless of the charset header (bytes, not .Content).
+    param($Response)
+    if (-not $Response) { return $null }
+    $text = $null
+    try {
+        $ms = $Response.RawContentStream
+        if ($ms -and $ms.Length -gt 0) {
+            $ms.Position = 0
+            $buf = New-Object byte[] ([int]$ms.Length)
+            [void]$ms.Read($buf, 0, $buf.Length)
+            $text = [System.Text.Encoding]::UTF8.GetString($buf)
+        }
+    }
+    catch { $text = $null }
+    if ([string]::IsNullOrEmpty($text)) {
+        $text = [string]$Response.Content
+        # Repair UTF-8 that was decoded as Latin-1 (every non-ASCII byte became 2+ chars).
+        if ($text -match '[\u00C2-\u00F4][\u0080-\u00BF]') {
+            try { $text = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::GetEncoding(28591).GetBytes($text)) } catch { }
+        }
+    }
+    if ($text.Length -gt 0 -and [int][char]$text[0] -eq 0xFEFF) { $text = $text.Substring(1) }
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    return ($text | ConvertFrom-Json)
 }
 
 function Read-BobReportDigest {

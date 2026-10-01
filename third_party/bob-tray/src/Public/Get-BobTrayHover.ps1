@@ -757,7 +757,8 @@ function Format-BobResetLabel {
         $nowUtc = ConvertTo-BobUtcDateTime $Now
         if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
         $span = $dt - $nowUtc
-        if ($span -lt [TimeSpan]::Zero) { $span = [TimeSpan]::Zero }
+        # Period already over: the figure is stale/unknown - hide it, do not clamp to "0 minutes".
+        if ($span -le [TimeSpan]::Zero) { return $null }
         $days = [int][math]::Floor($span.TotalDays)
         $hours = [int]$span.Hours
         $mins = [int]$span.Minutes
@@ -776,6 +777,68 @@ function Format-BobResetLabel {
         return ($parts -join ', ')
     }
     catch { return $null }
+}
+
+function Test-BobPeriodExpired {
+    # True when period_end is known and already past: the usage figure that goes with it is stale.
+    param($PeriodEnd, $Now = $null)
+    $dt = ConvertTo-BobUtcDateTime $PeriodEnd
+    if (-not $dt) { return $false }
+    $nowUtc = ConvertTo-BobUtcDateTime $Now
+    if (-not $nowUtc) { $nowUtc = [DateTime]::UtcNow }
+    return ($dt -le $nowUtc)
+}
+
+function Resolve-BobTrayLivePeriod {
+    # Weekly pct + period_end for a Grok account row. A past period_end => both unknown (null), so
+    # the tray hides them instead of showing n/a / a stale reset date.
+    param($Pct, $PeriodEnd, $FetchedAt = $null, $Now = $null)
+    $pctOut = $Pct
+    $endOut = $null
+    if ($PeriodEnd -and -not [string]::IsNullOrWhiteSpace([string]$PeriodEnd)) { $endOut = [string]$PeriodEnd }
+    if ($endOut -and (Test-BobPeriodExpired -PeriodEnd $endOut -Now $Now)) {
+        $pctOut = $null
+        $endOut = $null
+    }
+    $label = $null
+    if ($endOut) { $label = Format-BobResetLabel -PeriodEnd $endOut -FetchedAt $FetchedAt -Now $Now }
+    return [pscustomobject]@{ pct = $pctOut; period_end = $endOut; reset_label = $label }
+}
+
+function Format-BobTrayWorkerLine {
+    # Exactly "{irc nick}: {doing|idle}" - doing is the current work description.
+    param($Worker)
+    if (-not $Worker) { return $null }
+    $nick = ([string]$Worker.nick).Trim()
+    if (-not $nick) { return $null }
+    $state = ([string]$Worker.state).Trim().ToLowerInvariant()
+    $text = 'idle'
+    if ($state -eq 'doing') {
+        $w = ([string]$Worker.work) -replace '[\r\n\t]+', ' '
+        $w = $w.Trim()
+        if (-not $w) { $w = 'working' }
+        $text = $w
+    }
+    return ('{0}: {1}' -f $nick, $text)
+}
+
+function Get-BobTrayDigestWorkers {
+    # Digest machines.<id>.workers = [{nick,state,work,updated}] (Jeeves-maintained) -> tile worker rows.
+    param($Digest, [string]$MachineId)
+    if (-not $Digest -or -not $Digest.machines -or -not $MachineId) { return @() }
+    $ent = $null
+    foreach ($p in @($Digest.machines.PSObject.Properties)) {
+        if ([string]$p.Name -ieq $MachineId) { $ent = $p.Value; break }
+    }
+    if (-not $ent -or -not ($ent.PSObject.Properties.Name -contains 'workers')) { return @() }
+    $out = @()
+    foreach ($w in @($ent.workers)) {
+        if (-not $w -or -not ($w.PSObject.Properties.Name -contains 'nick')) { continue }
+        $st = ([string]$w.state).Trim().ToLowerInvariant()
+        if ($st -ne 'doing' -and $st -ne 'idle') { continue }
+        $out += ,[pscustomobject]@{ nick = [string]$w.nick; state = $st; work = [string]$w.work; updated = [string]$w.updated }
+    }
+    return @($out | Sort-Object -Property nick)
 }
 
 function Get-BobTrayTitle {
@@ -1388,13 +1451,14 @@ function Format-BobCursorControlPoolHeading {
         [string]$PctLabel,
         [string]$ResetLabel
     )
-    # TipForm: "Cursor Models  0% · 15 days, 2 hours" (FR #445). Missing reset → n/a.
+    # TipForm: "Cursor Models  0% [middle dot] 15 days, 2 hours" (FR #445). Missing reset -> n/a.
     $reset = if ($ResetLabel -and -not [string]::IsNullOrWhiteSpace([string]$ResetLabel)) {
         [string]$ResetLabel
     } else {
         'n/a'
     }
-    return ('{0}  {1} · {2}' -f $GroupLabel, $PctLabel, $reset)
+    # U+00B7 by char code: a literal here is mis-decoded (A-circumflex + dot) by Windows PowerShell 5.1.
+    return ('{0}  {1} {3} {2}' -f $GroupLabel, $PctLabel, $reset, [char]0x00B7)
 }
 
 function Select-BobCursorGroupRemainMinimum {
@@ -2206,7 +2270,10 @@ function Get-BobTrayHover {
         if ($periodEndBy.ContainsKey($mid)) { $tileEnd = [string]$periodEndBy[$mid] }
         $tileFetched = $null
         if ($weekFetchedBy.ContainsKey($mid)) { $tileFetched = [string]$weekFetchedBy[$mid] }
-        $tileReset = Format-BobResetLabel -PeriodEnd $tileEnd -FetchedAt $tileFetched
+        $livePeriod = Resolve-BobTrayLivePeriod -Pct $wPct -PeriodEnd $tileEnd -FetchedAt $tileFetched
+        $wPct = $livePeriod.pct
+        $tileEnd = $livePeriod.period_end
+        $tileReset = $livePeriod.reset_label
         $upSince = $null
         if ($uptimeByMachine.ContainsKey($mid)) { $upSince = [string]$uptimeByMachine[$mid] }
         $tileAvail = $null
@@ -2228,8 +2295,12 @@ function Get-BobTrayHover {
         }
         # #60: this machine's pools + overspend from the digest machines.<id> (what its Bob POSTed).
         $dm = Get-BobTrayDigestMachineSummary -Digest $reportDigest -MachineId $mid
+        $tileWorkers = @(Get-BobTrayDigestWorkers -Digest $reportDigest -MachineId $mid)
+        $tileWorkerLines = @($tileWorkers | ForEach-Object { Format-BobTrayWorkerLine -Worker $_ } | Where-Object { $_ })
         $tile = New-Object psobject -Property @{
             id                   = $mid
+            workers              = $tileWorkers
+            worker_lines         = $tileWorkerLines
             grok_pools           = @($dm.grok_pools)
             cursor_pools         = @($dm.cursor_pools)
             overspend_gbp        = $dm.overspend_gbp
@@ -2249,15 +2320,13 @@ function Get-BobTrayHover {
             seat_email           = $(if ($seatInfo) { [string]$seatInfo.email } else { $null })
         }
         $tiles += ,$tile
-        $pctLabel = 'n/a'
-        if ($null -ne $wPct) { $pctLabel = ('{0}%' -f [int]$wPct) }
         $jlName = $mid
         if ($seatInfo -and $seatInfo.label) { $jlName = ('{0}  -  {1}' -f $mid, $seatInfo.label) }
-        $machHeading = ('  {0} ({1})' -f $jlName, $pctLabel)
+        $machHeading = ('  {0}' -f $jlName)
+        if ($null -ne $wPct) { $machHeading = ('{0} ({1}%)' -f $machHeading, [int]$wPct) }
         if ($tileAvail -and $null -eq $wPct) { $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail) }
         if ($tileReset) { $machHeading = ('{0} - {1}' -f $machHeading, $tileReset) }
         $jobLines += $machHeading
-        if ($upSince) { $jobLines += ('    up since {0}' -f $upSince) }
         $tileFuels = @('cursor-models', 'grok-build', 'copilot', 'grok-bot')
         if ($mid -match '2012') { $tileFuels = @() }
         $tile | Add-Member -NotePropertyName fuels -NotePropertyValue $tileFuels -Force
@@ -2273,23 +2342,8 @@ function Get-BobTrayHover {
             $tile | Add-Member -NotePropertyName out_of_tokens -NotePropertyValue $true -Force
             $tile | Add-Member -NotePropertyName token_hint -NotePropertyValue 'out of tokens, open with key' -Force
         }
-        if ($reach -eq 'not-in-moot' -or $reach -eq 'unreachable') {
-            $jobLines += '    not in moot'
-        }
-        elseif ($rows.Count -eq 0) {
-            if ($reach -eq 'stale') { $jobLines += '    lastSeen stale' }
-            else { $jobLines += '    no jobs' }
-        }
-        else {
-            if ($reach -eq 'stale') { $jobLines += '    lastSeen stale' }
-            foreach ($j in $rows) {
-                $ln = $j.line
-                if (-not $ln) {
-                    $ln = Format-BobTrayJobLine -Job $j -SkipGit
-                }
-                if ($ln) { $jobLines += ('    {0}' -f $ln) }
-            }
-        }
+        # v0.1.18: one line per worker process "{nick}: {doing|idle}" (Jeeves-maintained digest list).
+        foreach ($wl in $tileWorkerLines) { $jobLines += ('    {0}' -f $wl) }
     }
     $peerPeek = $order.Count -gt 1
     if (-not $peerPeek) {

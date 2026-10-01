@@ -23,7 +23,10 @@ param(
     # Prompt-less: -OperFile <existing ergo-oper file>  OR  -OperName + env BOB_OPER_PASSWORD.
     # Without either, an existing config\oper.cred is kept, else Desktop\ergo-oper*.txt is used.
     [string]$OperFile = '',
-    [string]$OperName = ''
+    [string]$OperName = '',
+    # NickServ account(s) Simon is verified under (comma list). Jeeves gives +o ONLY to a logged-in
+    # nick whose services account matches (never on nick alone). Stored in <InstallRoot>\config\op-accounts.txt.
+    [string]$OpAccounts = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -169,6 +172,11 @@ $doPrompt = $PromptServicePassword -or (
 $objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user `
     -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
 
+if ($OpAccounts.Trim()) {
+    $opFile = Join-Path $cfgDir 'op-accounts.txt'
+    Set-Content -LiteralPath $opFile -Value (($OpAccounts -split '[,;\s]+' | Where-Object { $_ }) -join "`r`n") -Encoding ASCII
+    Write-Host "INFO op accounts written to $opFile"
+}
 $envLines = @("BOB_DIGEST_HOME=$digestHome", "BOB_HOME=$ChairHome", "BOB_CONFIG_DIR=$cfgDir")
 if ($env:BOB_IRC_PASSWORD) { $envLines += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)" }
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envLines -join "`n")))
