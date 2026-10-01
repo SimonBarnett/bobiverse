@@ -63,6 +63,7 @@ function Read-JsonFile {
             Start-Sleep -Milliseconds 60
         }
     }
+    if ($raw) { $raw = $raw.TrimStart([char]0xFEFF) }   # v0.1.19: a doubled / stray BOM must not make a good file unreadable
     if (-not $raw -or -not $raw.Trim()) { return $null }
     # NUL-smashed or truncated files must not throw into tray poll.
     if ($raw.IndexOf([char]0) -ge 0) { return $null }

@@ -53,6 +53,39 @@ function Resolve-BobiverseMachineId {
     return $null
 }
 
+function Get-BobCanonicalMachineId {
+    # v0.1.19 (#79): the ONE canonical, lower-case machine id used as a key for rosters, tiles, caches and rows.
+    # legacyAliases (ionos -> win-mpre8vi4u6u) are folded in; an id the config does not know stays itself
+    # (lower-cased) rather than vanishing, so a roster machine is never lost, only de-duplicated.
+    param([string]$Raw)
+    if (-not $Raw) { return $null }
+    $id = ([regex]::Replace([string]$Raw, '[\uFEFF\u200B\u00A0]', '')).Trim().TrimStart('#').ToLowerInvariant()
+    if (-not $id) { return $null }
+    $r = $null
+    try { $r = Resolve-BobiverseMachineId $id } catch { $r = $null }
+    if ($r) { return ([string]$r).Trim().ToLowerInvariant() }
+    try {
+        $cfg = Get-BobiverseConfig
+        if ($cfg -and $cfg.legacyAliases) {
+            $al = $cfg.legacyAliases.PSObject.Properties[$id]
+            if ($al -and $al.Value) { return ([string]$al.Value).Trim().ToLowerInvariant() }
+        }
+    } catch { }
+    return $id
+}
+
+function Select-BobUniqueCanonicalIds {
+    # Canonicalise + de-duplicate (order preserved).
+    param($Ids)
+    $seen = @{}
+    $out = @()
+    foreach ($x in @($Ids)) {
+        $c = Get-BobCanonicalMachineId ([string]$x)
+        if ($c -and -not $seen.ContainsKey($c)) { $seen[$c] = $true; $out += $c }
+    }
+    return @($out)
+}
+
 function Get-BobIrcShopChannel {
     param([Parameter(Mandatory)][string]$MachineId)
     $mid = Resolve-BobiverseMachineId $MachineId
@@ -517,6 +550,7 @@ function Save-BobSeatPeriodEnd {
     )
     $p = Get-BobSeatPeriodEndCachePath
     if (-not $p) { return }
+    if ($MachineId) { $c = Get-BobCanonicalMachineId $MachineId; if ($c) { $MachineId = $c } }   # #79: never write alias-keyed entries
     $cache = Read-BobSeatPeriodEndCache
     if ($MachineId -and $PeriodEnd) { $cache.by_machine[$MachineId] = [string]$PeriodEnd }
     if ($MachineId -and $null -ne $Weekly -and [string]$Weekly -ne '') {
@@ -972,11 +1006,19 @@ function Sync-BobIrcChannelOpsWire {
     $map = Read-JsonFile $path
     if (-not $map) { return [pscustomobject]@{ ok = $false; error = 'no_manifest' } }
     $queued = @()
+    if (-not $script:BobChannelOpsWireSent) { $script:BobChannelOpsWireSent = @{} }
+    $junk = '[\uFEFF\u200B\u200C\u200D\u2060\u00A0\x00]'
     foreach ($prop in @($map.PSObject.Properties)) {
-        $chan = [string]$prop.Name
-        $nick = [string]$prop.Value
+        # v0.1.19: a BOM / zero-width char in the manifest must never reach the wire as part of a nick.
+        $chan = ([regex]::Replace([string]$prop.Name, $junk, '')).Trim()
+        $nick = ([regex]::Replace([string]$prop.Value, $junk, '')).Trim().TrimStart(':')
         if (-not $chan -or -not $nick) { continue }
         $line = "MODE $chan +o $nick"
+        # Idempotent: the same grant is queued at most once per 15 minutes (the chair also grants it; this is only
+        # a fallback), instead of on every manifest sync.
+        $prev = $script:BobChannelOpsWireSent[$line]
+        if ($prev -and ((Get-Date) - $prev).TotalMinutes -lt 15) { continue }
+        $script:BobChannelOpsWireSent[$line] = Get-Date
         Add-BobIrcOutboxChannelLine $line
         $queued += $line
     }

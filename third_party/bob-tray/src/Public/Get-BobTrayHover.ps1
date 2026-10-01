@@ -1838,7 +1838,8 @@ function Get-BobTrayHover {
     # Set before Expand-BobReportDigestView so Resolve-BobiverseMachineId accepts roster ids.
     $script:BobRosterIds = @()
     if ($reportDigest -and $reportDigest.roster_machine_ids) {
-        $script:BobRosterIds = @($reportDigest.roster_machine_ids | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+        # v0.1.19 (#79): fold legacy aliases (ionos -> win-mpre8vi4u6u) and de-dupe BEFORE any set is built from the roster.
+        $script:BobRosterIds = @(Select-BobUniqueCanonicalIds @($reportDigest.roster_machine_ids))
     }
     # #42: digest has no roster (older chair / offline) => ONLY the local machine plus whatever
     # the digest's `machines` keys contain. Never the bobiverse.json nick list.
@@ -1850,7 +1851,7 @@ function Get-BobTrayHover {
                 if ($mp.Name) { $fallbackIds += ([string]$mp.Name).Trim().ToLowerInvariant() }
             }
         }
-        $script:BobRosterIds = @($fallbackIds | Where-Object { $_ } | Select-Object -Unique)
+        $script:BobRosterIds = @(Select-BobUniqueCanonicalIds @($fallbackIds | Where-Object { $_ }))
     }
     $digestView = Expand-BobReportDigestView -Digest $reportDigest
     $digestTasksByMachine = $digestView.tasksByMachine
@@ -1910,14 +1911,14 @@ function Get-BobTrayHover {
     $seatIds = @()
     # #42: ChanServ roster from the digest, else local + digest machine keys (see above).
     # bobiverse.json nicks are NOT consulted for the Grok accounts rows.
-    $seatIds = @($script:BobRosterIds)
+    $seatIds = @(Select-BobUniqueCanonicalIds @($script:BobRosterIds))
     $knownTile = @{}
     if ($machineId) { $knownTile[$machineId] = $true }
     foreach ($sid in $seatIds) { if ($sid) { $knownTile[$sid] = $true } }
     $restrictTiles = $knownTile.Count -gt 1 -or ($seatIds.Count -gt 0)
     if ($reg) {
         foreach ($m in @($reg.machines)) {
-            $mid = [string]$m.id
+            $mid = Get-BobCanonicalMachineId ([string]$m.id)
             if (-not $mid) { continue }
             if ($restrictTiles -and -not $knownTile.ContainsKey($mid)) { continue }
             if (-not $byMachine.ContainsKey($mid)) { $byMachine[$mid] = @() }
@@ -2093,6 +2094,16 @@ function Get-BobTrayHover {
         }
     }
 
+    # v0.1.19 (#79): fold any alias-keyed bucket into its canonical machine (jobs kept, once) so the same
+    # machine can never get two rows.
+    foreach ($k in @($byMachine.Keys)) {
+        $ck = Get-BobCanonicalMachineId $k
+        if ($ck -and $ck -ne $k) {
+            if (-not $byMachine.ContainsKey($ck)) { $byMachine[$ck] = @() }
+            $byMachine[$ck] = @($byMachine[$ck]) + @($byMachine[$k])
+            $byMachine.Remove($k)
+        }
+    }
     $order = @()
     if ($byMachine.ContainsKey($machineId)) { $order += $machineId }
     foreach ($k in ($byMachine.Keys | Sort-Object)) {

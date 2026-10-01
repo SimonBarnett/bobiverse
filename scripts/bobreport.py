@@ -35,6 +35,13 @@ ID_ALIASES = {
     "dev1": "ce-priority-dev1",
     "ce-priority-dev1": "ce-priority-dev1",
 }
+# #79: the ionos box was renamed; its old #ionos channel is still ChanServ-registered, so the roster mirror
+# carries BOTH ids. These are folded into the real machine in the DIGEST ONLY (roster_machine_ids / machines /
+# cursor_pools). Seat nicks and channel membership (``ionos-<pid>`` in #ionos) are deliberately untouched.
+DIGEST_ID_FOLD: dict[str, str] = {
+    "ionos": "win-mpre8vi4u6u",
+    "dev1": "ce-priority-dev1",
+}
 
 # LEGACY aliases ONLY (#42): old ``bob-<alias>`` nicks and ``w-<short>-<pid>`` worker nicks
 # resolve to a machine name. They never define the roster - the roster is the ChanServ
@@ -53,7 +60,7 @@ SHORT_ID: dict[str, str] = {
 SHORT_TO_MACHINE = {v: k for k, v in SHORT_ID.items()}
 
 
-def roster_machine_ids(home: Path | None = None) -> tuple[str, ...]:
+def roster_machine_ids(home: Path | None = None, *, fold: bool = True) -> tuple[str, ...]:
     """Machine ids = the ChanServ mirror (registered-machines.json). No hardcoded fallback.
 
     Pure file read (cached by the chair's periodic ``ChanServ LIST`` sync, see
@@ -65,8 +72,23 @@ def roster_machine_ids(home: Path | None = None) -> tuple[str, ...]:
     if home is not None:
         reg = registered_machines.load_registered(Path(home))
         if reg:
-            return tuple(sorted(reg))
+            if not fold:
+                return tuple(sorted(reg))
+            return tuple(sorted({fold_machine_id(m) for m in reg}))     # #79: alias ids never appear twice
     return ()
+
+
+def fold_machine_id(raw: object) -> str:
+    """Canonical machine id: legacy aliases (``ID_ALIASES``) folded in; unknown ids lower-cased as-is."""
+    s = str(raw or "").strip().lstrip("#").lower()
+    s = DIGEST_ID_FOLD.get(s, s)
+    return normalize_machine_id(s) or s
+
+
+def is_alias_machine_id(raw: object) -> bool:
+    """True for a legacy alias key (``ionos``, ``dev1``) whose canonical id differs."""
+    s = str(raw or "").strip().lstrip("#").lower()
+    return bool(s) and DIGEST_ID_FOLD.get(s, s) != s
 
 
 def _default_digest_home() -> Path | None:
@@ -85,6 +107,7 @@ def is_roster_machine(home: Path | None, mid: str) -> bool:
     m = normalize_machine_id(mid) or ""
     if not m:
         return False
+    m = fold_machine_id(m)      # #79: a legacy bob-ionos still reports as its real machine
     ids = set(roster_machine_ids(home))
     return m in ids
 
@@ -135,7 +158,7 @@ def _period_expired(end: object, now: datetime | None = None) -> bool:
 CURSOR_SPENDING_POOLS: tuple[tuple[str, str], ...] = (
     ("cursor-models", "Cursor Models"),
     ("other-models", "Other Models"),
-    ("grok-weekly", "Grok Weekly"),
+    ("grok-weekly", "Grok chat (Cursor)"),
     ("on-demand", "On-demand"),
 )
 CURSOR_POOL_IDS = frozenset(pid for pid, _ in CURSOR_SPENDING_POOLS)
@@ -440,7 +463,7 @@ def chair_channels(home: Path | None = None) -> list[str]:
                 # Prefer digest home sibling used by Start-Jeeves
                 cand = Path(chair) / ".bobiverse"
                 home = cand if cand.is_dir() else None
-    shops = [shop_channel(mid) for mid in roster_machine_ids(home)]
+    shops = [shop_channel(mid) for mid in roster_machine_ids(home, fold=False)]   # still joins legacy #ionos
     return [FLEET_CHANNEL] + shops
 
 
@@ -813,6 +836,16 @@ def _ensure_seats(doc: dict, home: Path | None = None) -> dict:
         machines = {}
         doc["machines"] = machines
     roster = set(roster_machine_ids(home))
+    # #79: fold legacy alias keys (ionos -> win-mpre8vi4u6u) into the canonical machine. The canonical entry
+    # always wins; an alias entry is only promoted when there is no canonical one yet.
+    for mid in list(machines.keys()):
+        if is_alias_machine_id(mid):
+            ent = machines.pop(mid, None)
+            canon = fold_machine_id(mid)
+            if canon not in machines and isinstance(ent, dict):
+                ent = dict(ent)
+                ent["id"] = canon
+                machines[canon] = ent
     # Drop machines not on ChanServ roster (immediate)
     for mid in list(machines.keys()):
         norm = normalize_machine_id(str(mid)) or str(mid).strip().lower()
@@ -1605,6 +1638,8 @@ def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> Callbac
         body = json.dumps({"ok": True, "claimed": job}, separators=(",", ":")).encode("utf-8")
         return CallbackOutcome(ok=True, changed=job is not None, body=body)
     mid = normalize_machine_id(str(payload.get("machine") or payload.get("id") or ""))
+    if mid:
+        mid = fold_machine_id(mid)       # #79: reports from a legacy alias land on the canonical machine
     actions: list[str] = []
     if op == "merge":
         if not mid:
@@ -2126,10 +2161,11 @@ def _cursor_pool_overage(ent: dict) -> str | None:
 
 
 def _cursor_pool_period(ent: dict, pool_id: str | None = None) -> tuple[str | None, str | None]:
-    """Per-pool reset clock: grok-weekly/sand = machine weekly period_end; else Cursor billing."""
+    """Per-pool reset clock: grok-weekly/sand = Cursor Sand period end (NOT the xAI weekly ``period_end``,
+    #80); else Cursor billing."""
     pid = str(pool_id or "").strip().lower()
     if pid in ("grok-weekly", "grok-chat", "sand"):
-        weekly = ent.get("period_end") or ent.get("sand_period_end")
+        weekly = ent.get("sand_period_end") or ent.get("period_end")
         if weekly not in (None, ""):
             period_s = str(weekly)
             return period_s, period_s
@@ -2189,15 +2225,42 @@ def _merge_pcent_lesser(existing: object, incoming: dict, *, replace: bool = Fal
     return out
 
 
+POOL_STALE_AFTER_S = 6 * 3600.0     # #80: a machine not heard from for this long no longer speaks for the pool
+
+
+def _machine_counts_for_pools(mid: object, ent: dict, now: datetime | None = None) -> bool:
+    """#80: only a live machine's number may set the fleet pool minimum.
+
+    Excluded: legacy alias keys (``ionos`` -> win-mpre8vi4u6u), machines that are offline, and machines whose
+    ``lastSeen`` is older than ``POOL_STALE_AFTER_S``. (A missing/unparseable lastSeen is not evidence of staleness.)
+    """
+    if is_alias_machine_id(mid):
+        return False
+    if not ent.get("online"):
+        return False
+    seen = _parse_iso_ts(ent.get("lastSeen"))
+    if seen is not None:
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        ref = now or datetime.now(timezone.utc)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        if (ref - seen).total_seconds() > POOL_STALE_AFTER_S:
+            return False
+    return True
+
+
 def _lesser_machine_pcent_for_pool(
-    machines: dict[str, dict], pool_id: str
+    machines: dict[str, dict], pool_id: str, now: datetime | None = None
 ) -> tuple[int | None, dict | None]:
-    """Pick the lesser remaining % across machines (shared account SoT, #174)."""
+    """Pick the lesser remaining % across LIVE machines (shared account SoT, #174; offline/stale/alias: #80)."""
     best_rem: int | None = None
     best_ent: dict | None = None
     mids = [m for m in machines.keys() if normalize_machine_id(str(m))]
     for mid in mids:
         ent = machines.get(mid) or {}
+        if not _machine_counts_for_pools(mid, ent, now):
+            continue
         pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
         rem = _pcent_remaining_for_pool(pcent, pool_id)
         if rem is None:
@@ -2245,7 +2308,7 @@ def build_cursor_pools(
             if not isinstance(pool, dict):
                 continue
             pid = str(pool.get("id") or "")
-            rem_m, ent = _lesser_machine_pcent_for_pool(machines, pid) if pid else (None, None)
+            rem_m, ent = _lesser_machine_pcent_for_pool(machines, pid, now) if pid else (None, None)
             row = dict(pool)
             if rem_m is not None:
                 pe, reset = (None, None)
@@ -2269,13 +2332,15 @@ def build_cursor_pools(
         return rebuilt
     pools: list[dict] = []
     for pool_id, label in CURSOR_SPENDING_POOLS:
-        remaining, ent = _lesser_machine_pcent_for_pool(machines, pool_id)
+        remaining, ent = _lesser_machine_pcent_for_pool(machines, pool_id, now)
         if remaining is None:
             # #40: a machine that reported this pool but whose value was masked as
             # expired (None) still yields an explicit UNKNOWN row, not a missing/zero one.
             holder = None
             for mid in machines:
                 e = machines.get(mid) or {}
+                if is_alias_machine_id(mid):
+                    continue            # a live pool with no live reporter is UNKNOWN, but never via the alias
                 if _pcent_key_present(e.get("pcent"), pool_id):
                     holder = e
                     break
@@ -2322,10 +2387,11 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
     roster = list(roster_machine_ids(home))
     machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
     cleaned: dict[str, dict] = {}
-    for mid, ent in machines.items():
+    for mid, ent in sorted(machines.items(), key=lambda kv: is_alias_machine_id(kv[0])):   # canonical first
         coerced = _coerce_machine(str(mid), ent)
-        cid = str(coerced["id"])
-        if cid in roster:
+        cid = fold_machine_id(coerced["id"])
+        coerced["id"] = cid
+        if cid in roster and cid not in cleaned:
             cleaned[cid] = coerced
     for mid in roster:
         cleaned.setdefault(mid, _empty_machine(mid))

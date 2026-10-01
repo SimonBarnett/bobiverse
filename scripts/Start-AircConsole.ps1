@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Launch airc console service host (FR #253). Use -ServiceMode under NSSM.

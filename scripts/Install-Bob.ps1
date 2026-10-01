@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Clean-install ircBob + desktop/Start Menu icons. Nick Bob-{MachineId}.

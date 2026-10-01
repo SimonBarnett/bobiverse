@@ -257,6 +257,26 @@ function Build-Msi([string]$Name, [string]$Stage) {
     & $heat dir $Stage -cg $cg -gg -sfrag -srd -sreg -scom -dr INSTALLDIR -var var.StageDir -out $harvested
     if ($LASTEXITCODE -ne 0) { throw "heat failed $LASTEXITCODE" }
 
+    # #70 (v0.1.19): the pack's nssm.exe is the service binary of running Windows services (ircJeeves/ircBob, and on
+    # older boxes also BobIrcd/Ergo). heat gives every build fresh component GUIDs, so a MajorUpgrade used to REMOVE
+    # and re-lay nssm.exe -> the services holding it were stopped (Ergo bounced, all clients reconnected).
+    # Permanent = the old product never removes it; NeverOverwrite = the new product never rewrites an existing copy.
+    # The file is byte-identical across releases (nssm 2.24), so keeping the installed one is always correct.
+    [xml]$hx = Get-Content -LiteralPath $harvested -Raw -Encoding UTF8
+    $wns = New-Object System.Xml.XmlNamespaceManager($hx.NameTable)
+    $wns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
+    $nssmFiles = @($hx.SelectNodes('//w:File', $wns) | Where-Object { ([string]$_.GetAttribute('Source')) -match '[\\/]nssm\.exe$' })
+    if ($nssmFiles.Count -lt 1) { throw 'nssm.exe component not found in harvested files (cannot mark it permanent)' }
+    foreach ($nf in $nssmFiles) {
+        $nc = $nf.ParentNode
+        $nc.SetAttribute('Permanent', 'yes')
+        $nc.SetAttribute('NeverOverwrite', 'yes')
+        # Stable component GUID (per product) so every release refers to the SAME component, not a fresh one.
+        $nc.SetAttribute('Guid', '{' + ([guid]::new([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("bobiverse-$Name-nssm-component"))).ToString().ToUpper()) + '}')
+    }
+    $hx.Save($harvested)
+    Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+NeverOverwrite" -f $nssmFiles.Count)
+
     # airc UpgradeCode must NOT match agentic_irc airc-console
     # (B7E3C9A1-4F2D-4E8B-9C11-A1BC00501E01) or 0.1.x packs look like
     # downgrades of airc-console 0.1.19+ (issue #12).

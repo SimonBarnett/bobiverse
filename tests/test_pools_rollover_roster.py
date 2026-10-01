@@ -16,7 +16,7 @@ def _digest(tmp_path: Path, machines: dict[str, dict]):
     registered_machines.save_registered(tmp_path, set(machines) | ROSTER)
     doc = bobreport._ensure_seats(bobreport.empty_digest(), tmp_path)
     for mid, fields in machines.items():
-        doc["machines"].setdefault(mid, bobreport._empty_machine(mid)).update(fields)
+        doc["machines"].setdefault(mid, bobreport._empty_machine(mid)).update({"online": True, **fields})   # #80: only live machines set pools
     bobreport.save_digest(tmp_path, doc)
     return bobreport.build_digest_object(tmp_path, "Jeeves", now=NOW)
 
@@ -99,7 +99,7 @@ def test_rollover_to_new_period_replaces_value(tmp_path):
     doc["machines"]["flamingo"]["pcent"] = {"cursor-models": 3}
     doc["machines"]["flamingo"]["cursor_period_end"] = "2026-09-16T00:00:00Z"
     bobreport.save_digest(tmp_path, doc)
-    assert bobreport.apply_callback(tmp_path, {"op": "merge", "id": "flamingo",
+    assert bobreport.apply_callback(tmp_path, {"op": "merge", "id": "flamingo", "online": True,
         "pcent": {"cursor-models": 100}, "cursor_period_end": "2026-10-16T00:00:00Z"}).ok
     out = bobreport.build_digest_object(tmp_path, "Jeeves", now=NOW)
     assert out["machines"]["flamingo"]["pcent"]["cursor-models"] == 100
@@ -129,7 +129,7 @@ def test_all_current_fleet_machines_exported_with_pool_payloads(tmp_path):
 
 def test_idempotent_merge_is_noop(tmp_path):
     registered_machines.save_registered(tmp_path, ROSTER)
-    payload = {"op": "merge", "id": "flamingo", "pcent": {"cursor-models": 50},
+    payload = {"op": "merge", "id": "flamingo", "online": True, "pcent": {"cursor-models": 50},
                "cursor_period_end": "2026-10-16T00:00:00Z"}
     first = bobreport.apply_callback(tmp_path, payload)
     again = bobreport.apply_callback(tmp_path, payload)
@@ -150,7 +150,7 @@ def test_tray_has_no_separate_chanserv_section():
 def test_tray_grok_rows_come_from_digest_roster_not_hardcoded():
     h = _t("src/Public/Get-BobTrayHover.ps1")
     assert "roster_machine_ids" in h
-    assert "$seatIds = @($script:BobRosterIds)" in h
+    assert "$seatIds = @(Select-BobUniqueCanonicalIds @($script:BobRosterIds))" in h      # v0.1.19: canonical + de-duped
     c = _t("src/Private/Get-BobIrc.ps1")
     assert "BobRosterIds" in c   # Resolve-BobiverseMachineId accepts roster ids (e.g. win-mpre8vi4u6u)
 

@@ -30,7 +30,7 @@ def machine_for_channel(home: Path, channel: str) -> str | None:
         return None
     if ch.lower() != bobreport.shop_channel(mid).lower():
         return None
-    return mid
+    return bobreport.fold_machine_id(mid)      # #79: workers in the legacy #ionos count for the real machine
 
 
 def speaker_machine(home: Path, nick: str, channel: str) -> str | None:
@@ -39,7 +39,7 @@ def speaker_machine(home: Path, nick: str, channel: str) -> str | None:
     if not mid or not bobreport.is_worker_nick(nick):
         return None
     seat = bobreport.parse_seat_nick(nick)
-    if seat and seat[0] != mid:
+    if seat and bobreport.fold_machine_id(seat[0]) != mid:
         return None
     return mid
 

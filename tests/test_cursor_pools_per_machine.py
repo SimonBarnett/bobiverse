@@ -27,6 +27,7 @@ def home(tmp_path):
 
 
 def merge(home, mid, **kw):
+    kw.setdefault("online", True)       # bob posts online=true with every report (#80: only live machines set the min)
     out = bobreport.apply_callback(home, {"op": "merge", "machine": mid, **kw}, "Jeeves")
     assert out.ok, out.err
     return out

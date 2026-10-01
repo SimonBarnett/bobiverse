@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700

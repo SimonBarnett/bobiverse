@@ -126,19 +126,29 @@ def provision(
 
 # ---------------------------------------------------------------- wire parsing (pure)
 
+_JUNK = {ord(c): None for c in "\ufeff\u200b\u200c\u200d\u2060\u00a0\x00"}
+
+
+def _c(s) -> str:
+    """BOM / zero-width / whitespace-safe token (v0.1.19: a stray U+FEFF must not hide our own +o)."""
+    return str(s or "").translate(_JUNK).strip()
+
+
 def names_has_op(parts: list[str], trailing: str, nick: str) -> tuple[str, bool] | None:
     """``353 <me> = #chan :@a +b me`` -> (channel, I am @-or-higher)."""
     if len(parts) < 4:
         return None
-    chan = next((p for p in parts[2:5] if p.startswith("#")), "")
+    chan = next((_c(p) for p in parts[2:5] if _c(p).startswith("#")), "")
     if not chan:
         return None
-    me = nick.lower()
-    for tok in (trailing or "").split():
+    me = _c(nick).lower()
+    for tok in _c(trailing).split():
+        tok = _c(tok)
         pref = ""
         while tok and tok[0] in "~&@%+":
             pref += tok[0]
             tok = tok[1:]
+        tok = _c(tok.split("!", 1)[0])
         if tok.lower() == me:
             return chan, any(c in pref for c in "~&@")
     return chan, False
@@ -146,9 +156,9 @@ def names_has_op(parts: list[str], trailing: str, nick: str) -> tuple[str, bool]
 
 def mode_changes_for(parts: list[str], nick: str) -> list[tuple[str, str, bool]]:
     """``MODE #chan +o me`` -> [(channel, mode, added)] for the entries that target ``nick``."""
-    if len(parts) < 4 or not parts[1].startswith("#"):
+    if len(parts) < 4 or not _c(parts[1]).startswith("#"):
         return []
-    chan, modestr, args = parts[1], parts[2].lstrip(":"), [a.lstrip(":") for a in parts[3:]]
+    chan, modestr, args = _c(parts[1]), _c(parts[2]).lstrip(":"), [_c(a).lstrip(":") for a in parts[3:]]
     out: list[tuple[str, str, bool]] = []
     add = True
     ai = 0
@@ -161,7 +171,7 @@ def mode_changes_for(parts: list[str], nick: str) -> list[tuple[str, str, bool]]
         elif ch in takes_arg:
             arg = args[ai] if ai < len(args) else ""
             ai += 1
-            if ch in "ovhaq" and arg.lower() == nick.lower():
+            if ch in "ovhaq" and arg.lower() == _c(nick).lower():
                 out.append((chan, ch, add))
     return out
 
