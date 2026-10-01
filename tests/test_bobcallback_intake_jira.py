@@ -170,8 +170,11 @@ def test_resolve_listen_port_never_ephemeral(monkeypatch) -> None:
 
 
 def test_report_still_works_with_queue(tmp_path: Path) -> None:
+    import registered_machines
+
+    registered_machines.save_registered(tmp_path, {"win-mpre8vi4u6u"})
     body = json.dumps(
-        {"op": "merge", "machine": "ionos", "pid": 884, "working_on": "callback", "kind": "cursor"}
+        {"op": "merge", "machine": "win-mpre8vi4u6u", "pid": 884, "working_on": "callback", "kind": "cursor"}
     ).encode()
     code, payload = bobcallback.handle_request(
         "POST",

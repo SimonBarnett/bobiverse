@@ -41,7 +41,7 @@ def _queue(home, rows):
     ("ionos-12916", "ionos", "12916"),
     ("ce-priority-dev1-13204", "ce-priority-dev1", "13204"),
     ("win-mpre8vi4u6u-8412", "win-mpre8vi4u6u", "8412"),
-    ("w-io-123", "ionos", "123"),
+    ("w-io-123", "win-mpre8vi4u6u", "123"),  # legacy w-<short>-<pid> alias
 ])
 def test_real_seat_nicks_parse(nick, mid, pid):
     assert bobreport.parse_seat_nick(nick) == (mid, pid)

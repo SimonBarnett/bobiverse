@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from bobreport import FLEET_MACHINE_IDS, normalize_machine_id, seat_machine_ids
+from bobreport import normalize_machine_id, seat_machine_ids
 
 _COORD_LINE = re.compile(r"^([a-z_]+)=(.*)$", re.IGNORECASE)
 _SEAT_ENV = "AGENTIC_IRC_SEAT_PID"
@@ -209,7 +209,7 @@ def parse_talk_seat_placeholder(nick: str) -> str | None:
     n = (nick or "").strip().lower()
     if not n or n.startswith("bob-") or n.startswith("w-"):
         return None
-    for mid in sorted(FLEET_MACHINE_IDS, key=len, reverse=True):
+    for mid in seat_machine_ids():
         if n == f"{mid}-0":
             norm = normalize_machine_id(mid)
             return norm or None

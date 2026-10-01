@@ -9,7 +9,6 @@ from pathlib import Path
 import bobstat
 
 FLEET_MOOT_ID = "b0b1be15e0000001"
-FLEET_MACHINE_ORDER = ("flamingo", "marchhare", "ionos", "ce-priority-dev1")
 BOBIVERSE_CMD = "!bobiverse"
 RECYCLE_CMD = "!recycle"
 BOBIVERSE_COOLDOWN_S = 60.0
@@ -142,7 +141,10 @@ def _resolve_peer_id(home: Path, machine_id: str) -> dict | None:
 def list_fleet_peers(home: Path) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
-    for mid in FLEET_MACHINE_ORDER:
+    import registered_machines
+
+    # Roster order = ChanServ mirror (#42), then any other bob-peers file.
+    for mid in sorted(registered_machines.load_registered(home)):
         peer = _resolve_peer_id(home, mid)
         if peer and peer.get("id") not in seen:
             out.append(peer)

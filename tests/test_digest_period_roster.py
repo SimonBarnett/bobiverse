@@ -25,8 +25,8 @@ def test_period_rolled_detects_new_window():
 
 
 def test_apply_merge_period_roll_allows_pcent_rise(tmp_path: Path):
-    registered_machines.save_registered(tmp_path, {"flamingo", "ionos"})
-    doc = bobreport.empty_digest()
+    registered_machines.save_registered(tmp_path, {"flamingo", "win-mpre8vi4u6u"})
+    doc = bobreport._ensure_seats(bobreport.empty_digest(), tmp_path)
     doc["machines"]["flamingo"]["pcent"] = {"cursor-models": 12}
     doc["machines"]["flamingo"]["cursor_period_end"] = "2026-09-01T00:00:00Z"
     bobreport.save_digest(tmp_path, doc)
@@ -72,9 +72,9 @@ def test_ensure_seats_prunes_unregistered(tmp_path: Path):
 
 def test_build_digest_object_exports_chanserv_roster_and_chair_channels(tmp_path: Path):
     registered_machines.save_registered(
-        tmp_path, {"flamingo", "ionos", "win-mpre8vi4u6u"}
+        tmp_path, {"flamingo", "ce-priority-dev1", "win-mpre8vi4u6u"}
     )
-    doc = bobreport.empty_digest()
+    doc = bobreport._ensure_seats(bobreport.empty_digest(), tmp_path)
     doc["machines"]["flamingo"]["online"] = True
     doc["machines"]["flamingo"]["pcent"] = {"cursor-models": 12, "grok-chat": 40}
     doc["machines"]["flamingo"]["cursor_period_end"] = "2026-10-16T17:23:01Z"
@@ -82,14 +82,14 @@ def test_build_digest_object_exports_chanserv_roster_and_chair_channels(tmp_path
     bobreport.save_digest(tmp_path, doc)
 
     out = bobreport.build_digest_object(tmp_path, "Jeeves")
-    assert set(out["machines"].keys()) == {"flamingo", "ionos", "win-mpre8vi4u6u"}
+    assert set(out["machines"].keys()) == {"flamingo", "ce-priority-dev1", "win-mpre8vi4u6u"}
     assert "marchhare" not in out["machines"]
     # #33: the ChanServ roster itself is exported, sorted, machine-id keyed.
-    assert out["roster_machine_ids"] == ["flamingo", "ionos", "win-mpre8vi4u6u"]
+    assert out["roster_machine_ids"] == ["ce-priority-dev1", "flamingo", "win-mpre8vi4u6u"]
     assert out["chair_channels"] == [
         "#bobiverse",
+        "#ce-priority-dev1",
         "#flamingo",
-        "#ionos",
         "#win-mpre8vi4u6u",
     ]
     by_id = {p["id"]: p for p in out["cursor_pools"]}

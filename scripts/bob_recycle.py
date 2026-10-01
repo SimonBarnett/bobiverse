@@ -13,7 +13,19 @@ from typing import Callable
 import bobreport
 
 RECYCLE_WIRE_PREFIX = "RECYCLE v1 "
-CHAIR_HOME_MACHINE = "ionos"
+CHAIR_ENV = "BOB_CHAIR_MACHINE"
+
+
+def chair_home_machine() -> str:
+    """Machine the chair (Jeeves) runs on: BOB_CHAIR_MACHINE, else this host name (#42).
+
+    Was hardcoded ``ionos``; the box is ``win-mpre8vi4u6u`` now and ids come from ChanServ."""
+    raw = (os.environ.get(CHAIR_ENV) or os.environ.get("COMPUTERNAME") or "").strip().lower()
+    if not raw:
+        import socket
+
+        raw = socket.gethostname().strip().lower()
+    return bobreport.normalize_machine_id(raw) or raw
 # FR #197 (gh-Jeeves): RECYCLE machine=<id> by=<nick> scope=local|fleet exec=local-bob-seat
 _JEEVES_ROUTE_RE = re.compile(
     r"^RECYCLE\s+machine=(\S+)\s+by=\S+\s+scope=(\S+)\s+exec=local-bob-seat\s*$",
@@ -35,7 +47,7 @@ def parse_jeeves_recycle_route(body: str) -> tuple[str, str] | None:
     raw_mid = (m.group(1) or "").strip().lower()
     scope = (m.group(2) or "local").strip().lower()
     if raw_mid in ("bobiverse", "agentic_irc", "unknown", ""):
-        raw_mid = CHAIR_HOME_MACHINE
+        raw_mid = chair_home_machine()
     if raw_mid == "fleet" or scope == "fleet":
         return "fleet", "fleet"
     if raw_mid == "dev1":
@@ -67,7 +79,9 @@ def resolve_recycle_machine(token: str) -> str | None:
     if raw in {"jeeves", "ircjeeves"}:
         return "jeeves"
     mid = bobreport.normalize_machine_id(token)
-    if not mid or mid not in bobreport.FLEET_MACHINE_IDS:
+    if not mid:
+        return None
+    if mid not in bobreport.roster_machine_ids() and mid != chair_home_machine():
         return None
     return mid
 
@@ -96,7 +110,7 @@ def local_fleet_machine_id() -> str | None:
 
 
 def chair_targets_local(machine_id: str) -> bool:
-    return machine_id == CHAIR_HOME_MACHINE
+    return machine_id == chair_home_machine()
 
 
 def find_agentic_irc_root() -> Path | None:
@@ -134,7 +148,7 @@ class RecyclePlan:
 
 def build_recycle_plan(machine_id: str, *, ionos_chair: bool) -> RecyclePlan:
     steps = ["git_pull_agentic_irc", "restart_watch_bobiverse", "recycle_watch_bobtray"]
-    if ionos_chair and machine_id == CHAIR_HOME_MACHINE:
+    if ionos_chair and machine_id == chair_home_machine():
         steps.extend(["restart_bob_chair", "restart_bobcallback"])
     return RecyclePlan(machine_id=machine_id, ionos_chair=ionos_chair, steps=steps)
 
@@ -490,7 +504,7 @@ def execute_local_recycle(
         h.recycle_tray(build_root or Path("."))
     elif build_root:
         _default_recycle_tray(build_root)
-    if ionos_chair and mid == CHAIR_HOME_MACHINE and (h.restart_chair or irc_root):
+    if ionos_chair and mid == chair_home_machine() and (h.restart_chair or irc_root):
         (h.restart_chair or _default_restart_chair)(irc_root, Path(home))
         if h.restart_callback:
             h.restart_callback(Path(home), irc_root)
@@ -500,7 +514,7 @@ def execute_local_recycle(
 def refuse_message(token: str | None) -> str:
     if token:
         return f"recycle: refused unknown machine {token}"
-    return "recycle: need machine (flamingo, marchhare, ionos, dev1)"
+    return "recycle: need a registered machine name (see ChanServ shops)"
 
 
 def ack_message(machine_id: str, *, local: bool) -> str:
