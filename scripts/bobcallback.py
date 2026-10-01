@@ -38,14 +38,54 @@ def secret_path() -> Path:
     return Path.home() / ".grok" / "bob" / "report.secret"
 
 
-def load_secret() -> str:
+SECRET_FILE_ENV = "BOB_REPORT_SECRET_FILE"
+
+
+def secret_candidates(home: Path | None = None, secret_file: str = "") -> list[Path]:
+    """Ordered report.secret locations (#31).
+
+    The BobCallback scheduled task runs as SYSTEM, whose Path.home() has no
+    .grok\\bob\\report.secret. So besides the user profile we also try:
+    an explicit --secret-file / BOB_REPORT_SECRET_FILE, the profile that owns the
+    digest home (``<profile>\\.agentic-irc-*`` -> ``<profile>\\.grok\\bob``), and the
+    install-root ``config\\report.secret`` next to scripts\\.
+    """
+    out: list[Path] = []
+
+    def add(p: Path | str | None) -> None:
+        if not p:
+            return
+        pp = Path(p).expanduser()
+        if pp not in out:
+            out.append(pp)
+
+    add(secret_file)
+    add(os.environ.get(SECRET_FILE_ENV))
+    add(secret_path())
+    if home is not None:
+        add(Path(home).expanduser().parent / ".grok" / "bob" / "report.secret")
+    add(Path(__file__).resolve().parent.parent / "config" / "report.secret")
+    return out
+
+
+def find_secret(home: Path | None = None, secret_file: str = "") -> tuple[str, str]:
+    """Return (secret, source). source is 'env', a file path, or '' when none found."""
     env = (os.environ.get(SECRET_ENV) or "").strip()
     if env:
-        return env
-    path = secret_path()
-    if path.is_file():
-        return path.read_text(encoding="utf-8").strip()
-    return ""
+        return env, f"env:{SECRET_ENV}"
+    for path in secret_candidates(home, secret_file):
+        try:
+            if path.is_file():
+                val = path.read_text(encoding="utf-8-sig").strip()
+                if val:
+                    return val, str(path)
+        except OSError:
+            continue
+    return "", ""
+
+
+def load_secret(home: Path | None = None, secret_file: str = "") -> str:
+    return find_secret(home, secret_file)[0]
 
 
 def load_allow_ips() -> set[str]:
@@ -596,12 +636,26 @@ def serve(
     allow_ips: set[str] | None = None,
     briefer_nick: str = "",
     filer: intake.GitHubFiler | None = None,
+    secret_file: str = "",
 ):
     """Blocking listener: public GET digest + gated POST report/git/intake/jira."""
     from http.server import ThreadingHTTPServer
 
     listen_port = resolve_listen_port(int(port))
-    sec = secret if secret is not None else load_secret()
+    if secret is not None:
+        sec, src = secret, "argument"
+    else:
+        sec, src = find_secret(home, secret_file)
+    # #31: never fail silently - a missing secret makes every report POST return 401.
+    if sec:
+        print(f"INFO report secret loaded from {src}", flush=True)
+    else:
+        print(
+            "WARN no report secret found (tried env "
+            f"{SECRET_ENV} and {[str(c) for c in secret_candidates(home, secret_file)]}); "
+            "all report POSTs will 401",
+            flush=True,
+        )
     allow = allow_ips or load_allow_ips()
     use_filer = filer
     if use_filer is None:
@@ -631,6 +685,11 @@ def main() -> None:
     p.add_argument("--home", default="", help="AGENTIC_IRC_HOME (digest.json)")
     p.add_argument("--bind", default="127.0.0.1")
     p.add_argument(
+        "--secret-file",
+        default="",
+        help=f"report.secret path (else {SECRET_FILE_ENV}, user profile, digest-home profile, install config)",
+    )
+    p.add_argument(
         "--port",
         type=int,
         default=int(os.environ.get("BOB_REPORT_PORT") or str(DEFAULT_PORT)),
@@ -638,7 +697,7 @@ def main() -> None:
     )
     args = p.parse_args()
     home = Path(args.home).expanduser() if args.home else bobreport.digest_path(Path(".")).parent
-    httpd = serve(home, host=args.bind, port=args.port)
+    httpd = serve(home, host=args.bind, port=args.port, secret_file=args.secret_file)
     host, port = httpd.server_address[:2]
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH} "
