@@ -30,10 +30,51 @@ function Invoke-BobiverseNssm {
     return [pscustomobject]@{ ExitCode = $code; Output = @($out | ForEach-Object { "$_" }) }
 }
 
+function Invoke-BobiverseNssmChecked {
+    <# nssm call that THROWS on a non-zero exit (installer bug: install/set results were ignored). #>
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$NssmArgs)
+    $r = Invoke-BobiverseNssm -Exe $Exe -NssmArgs $NssmArgs
+    if ($r.ExitCode -ne 0) {
+        # Never echo parameter VALUES: ObjectName carries the service password and
+        # AppEnvironmentExtra carries AGENTIC_IRC_PASSWORD. Show verb/service/parameter only.
+        $shown = ($NssmArgs | Select-Object -First 3) -join ' '
+        throw "nssm $shown failed ($($r.ExitCode)): $($r.Output -join ' ')"
+    }
+    return $r
+}
+
+function Test-BobiverseServiceDeletePending {
+    param([Parameter(Mandatory)][string]$Name)
+    $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"
+    if (-not (Test-Path -LiteralPath $k)) { return $false }
+    $df = (Get-ItemProperty -LiteralPath $k -Name DeleteFlag -ErrorAction SilentlyContinue).DeleteFlag
+    return ($df -eq 1)
+}
+
+function Wait-BobiverseServiceGone {
+    <# True once the SCM entry AND its registry key are gone (a DeleteFlag=1 key means delete is still pending). #>
+    param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSeconds = 30)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $still = Get-Service -Name $Name -ErrorAction SilentlyContinue
+        $key = Test-Path -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"
+        if (-not $still -and -not $key) { return $true }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
 function Remove-BobiverseService {
-    param([Parameter(Mandatory)][string]$Nssm, [Parameter(Mandatory)][string]$Name)
+    param(
+        [Parameter(Mandatory)][string]$Nssm,
+        [Parameter(Mandatory)][string]$Name,
+        [int]$TimeoutSeconds = 30
+    )
     $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if (-not $svc) {
+        if (Test-BobiverseServiceDeletePending -Name $Name) {
+            throw "service $Name is marked for deletion (DeleteFlag=1) and cannot be recreated yet. Close Services.msc / mmc / Task Manager windows (or reboot) and retry."
+        }
         Write-Host "INFO service $Name absent"
         return
     }
@@ -41,7 +82,15 @@ function Remove-BobiverseService {
     [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('stop', $Name))
     Start-Sleep -Seconds 2
     [void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('remove', $Name, 'confirm'))
-    Start-Sleep -Seconds 1
+    if (-not (Wait-BobiverseServiceGone -Name $Name -TimeoutSeconds $TimeoutSeconds)) {
+        # nssm remove can leave the SCM entry; try sc delete once, then wait again.
+        Write-Host "WARN service $Name still present after nssm remove; trying sc delete"
+        $null = & sc.exe delete $Name 2>&1
+        if (-not (Wait-BobiverseServiceGone -Name $Name -TimeoutSeconds $TimeoutSeconds)) {
+            throw "service $Name is still present / marked for deletion after $TimeoutSeconds s x2. A process holds an open handle (Services.msc / mmc / Task Manager / sc). Close them (or reboot) and re-run."
+        }
+    }
+    Write-Host "INFO removed service $Name"
 }
 
 function Remove-BobiverseLegacyService {

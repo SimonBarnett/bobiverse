@@ -135,12 +135,12 @@ Install-BobiversePythonDeps -Python $Python
 # Quote-safe NSSM: no -Python path in AppParameters (issue #3); Start-Bob resolves python.
 $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
 
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
 
 # Issue #6: msiexec /qn is UserInteractive=$true but has no console - never Get-Credential unless -PromptServicePassword
 # and not under MSI/quiet.
@@ -157,7 +157,7 @@ if ($objectOk) {
 } else {
     Write-Host "INFO LocalSystem ObjectName: omit -BobHome (issue #7; Start-Bob uses $InstallRoot\home)"
 }
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
 
 $envExtra = @(
     "BOB_MACHINE_ID=$MachineId"
@@ -166,7 +166,7 @@ if ($env:AGENTIC_IRC_PASSWORD) {
     # NSSM AppEnvironmentExtra multi-line: KEY=VAL each line
     $envExtra += "AGENTIC_IRC_PASSWORD=$($env:AGENTIC_IRC_PASSWORD)"
 }
-[void](Invoke-BobiverseNssm -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
 # Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)
 if (-not $SkipWatchAgentHealth) {
     $wahSrc = Join-Path $InstallRoot 'Watch-AgentHealth'
