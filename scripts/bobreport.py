@@ -145,6 +145,7 @@ _CURSOR_POOL_ID_ALIASES: dict[str, str] = {
     "cursor_models_remaining": "cursor-models",
     "low cost models": "cursor-models",
     "low-cost-models": "cursor-models",
+    "auto": "cursor-models",  # bob wire id for the Cursor Models bar
     "high cost models": "other-models",
     "high-cost-models": "other-models",
     "other_models": "other-models",
@@ -212,6 +213,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "sha",
     "cursor_label",
     "cursor_period_end",
+    "cursor_pools",
     "kind",
     "cur",
     "overage_gbp",
@@ -708,6 +710,8 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     )
     if isinstance(raw.get("pcent"), dict):
         base["pcent"] = raw["pcent"]
+    if isinstance(raw.get("cursor_pools"), list):
+        base["cursor_pools"] = _coerce_cursor_pools(raw["cursor_pools"])
     if raw.get("uptime_since"):
         base["uptime_since"] = str(raw["uptime_since"])
     for key in _MERGE_PEER_FIELDS:
@@ -1061,6 +1065,7 @@ def _machine_fingerprint(ent: dict) -> str:
         "status": ent.get("status"),
         "working_on": ent.get("working_on"),
         "pcent": ent.get("pcent"),
+        "cursor_pools": ent.get("cursor_pools"),
         "uptime_since": ent.get("uptime_since"),
         "workers": ent.get("workers"),
     }
@@ -1100,6 +1105,40 @@ def _merge_worker_on_ent(
     workers[pid_s] = w
     _roll_working_on(ent)
     return [f"'s pid {pid_s} on {mid} is working on {text}"]
+
+
+_POOL_PCENT_KEY = {"grok-weekly": "grok-chat", "other-models": "other-models"}
+
+
+def _store_machine_pool_rows(ent: dict, raw_rows: object) -> None:
+    """#41: keep THIS machine's own pool rows in ``machines.<id>.cursor_pools``.
+
+    A machine reports its LOCAL pools (grok-chat weekly + Cursor bars, each with its own
+    period_end). They used to replace one fleet-wide list (and were dropped entirely when bob's
+    row shape did not coerce). Now: replace only this machine's rows (never with an empty
+    list), and backfill ``pcent`` / ``period_end`` / ``cursor_period_end`` gaps from them so the
+    lesser-across-machines pool bars and the expiry masking work for rows-only reporters.
+    """
+    rows = _coerce_cursor_pools(raw_rows)
+    if not rows:
+        return
+    ent["cursor_pools"] = rows
+    pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
+    changed = False
+    for row in rows:
+        pid = str(row.get("id") or "")
+        rem = row.get("remaining")
+        pe = row.get("period_end")
+        if rem is not None and not _pcent_key_present(pcent, pid):
+            pcent = dict(pcent)
+            pcent[_POOL_PCENT_KEY.get(pid, pid)] = rem
+            changed = True
+        if pe:
+            field = "period_end" if pid == "grok-weekly" else "cursor_period_end"
+            if ent.get(field) in (None, ""):
+                ent[field] = pe
+    if changed:
+        ent["pcent"] = pcent
 
 
 def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
@@ -1142,6 +1181,8 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         )
     if payload.get("uptime_since"):
         ent["uptime_since"] = str(payload["uptime_since"])
+    if isinstance(payload.get("cursor_pools"), list):
+        _store_machine_pool_rows(ent, payload["cursor_pools"])
     if pid_raw is not None and str(pid_raw) != "":
         try:
             pid_s = str(int(str(pid_raw)))
@@ -1444,7 +1485,10 @@ def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> Callbac
         fp_before = _machine_fingerprint(ent_before)
         pools_before = copy.deepcopy(doc.get("cursor_pools"))
         if isinstance(payload.get("cursor_pools"), list):
-            doc["cursor_pools"] = _coerce_cursor_pools(payload["cursor_pools"])
+            # #41: per-machine rows live in machines.<id>.cursor_pools (see _apply_merge_payload);
+            # a machine report must never replace/clear the fleet-wide list. Drop the legacy
+            # fleet list once machines report their own so it cannot go stale.
+            doc.pop("cursor_pools", None)
         actions = _apply_merge_payload(doc, mid, payload)
         fp_after = _machine_fingerprint(_machine_entry(doc, mid))
         pools_after = doc.get("cursor_pools")
@@ -1760,21 +1804,27 @@ def _official_cursor_pool_label(pool_id: str, raw_label: object) -> str:
 def _coerce_cursor_pool(raw: object) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    pool_id = _normalize_cursor_pool_id(raw.get("group") or raw.get("id"))
+    # #41: accept BOTH the server row shape (group/id, remaining) and bob's wire row shape
+    # (group_id, group_label, remaining_pct, period_end) from ConvertTo-BobDigestCursorPoolRows.
+    pool_id = _normalize_cursor_pool_id(raw.get("group") or raw.get("group_id") or raw.get("id"))
     if not pool_id:
         pool_id = _normalize_cursor_pool_id(raw.get("seat"))
     if not pool_id:
         return None
-    label = _official_cursor_pool_label(pool_id, raw.get("label"))
+    label = _official_cursor_pool_label(pool_id, raw.get("label") or raw.get("group_label"))
     if label.lower() in _XAI_SEAT_LABELS:
         return None
     remaining = raw.get("remaining")
     if remaining is None:
+        remaining = raw.get("remaining_pct")
+    if remaining is None:
         remaining = raw.get("used")
     if remaining is not None:
         try:
-            remaining = int(remaining)
+            remaining = int(float(remaining))
         except (TypeError, ValueError):
+            remaining = None
+        if remaining is not None and not 0 <= remaining <= 100:
             remaining = None
     period = raw.get("period_end") or raw.get("reset")
     overage = raw.get("overage")
@@ -1840,6 +1890,16 @@ def _mask_expired_pools(base: dict, now: datetime | None = None) -> None:
         base["pcent"] = masked
     if base.get("weekly") is not None and _period_expired(base.get("period_end"), now):
         base["weekly"] = None
+    rows = base.get("cursor_pools")
+    if isinstance(rows, list):
+        masked_rows = []
+        for row in rows:
+            row = dict(row)
+            if row.get("remaining") is not None and _period_expired(row.get("period_end"), now):
+                row["remaining"] = None  # expired window => unknown, never the old value / 0
+                row["overage"] = None
+            masked_rows.append(row)
+        base["cursor_pools"] = masked_rows
     cpe, _ = _cursor_pool_period(base, "cursor-models")
     if base.get("overage_gbp") not in (None, "") and _period_expired(cpe, now):
         base["overage_gbp"] = None
