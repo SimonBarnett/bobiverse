@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -424,18 +425,41 @@ def _default_restart_chair(irc_root: Path, home: Path) -> None:
     )
 
 
+def _restart_bobcallback_task() -> bool:
+    """#53: the jeeves installer registers the ``BobCallback`` scheduled task; prefer it.
+
+    End + Run the task so the receiver comes back under the same supervisor/args the MSI
+    configured. Returns False (caller falls back to a direct spawn) when the task is absent.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        q = subprocess.run(["schtasks", "/Query", "/TN", "BobCallback"], capture_output=True, text=True)
+        if q.returncode != 0:
+            return False
+        subprocess.run(["schtasks", "/End", "/TN", "BobCallback"], capture_output=True, text=True)
+        for pid, _cmd in _win_process_commandlines("bobcallback.py"):
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], check=False, capture_output=True)
+        r = subprocess.run(["schtasks", "/Run", "/TN", "BobCallback"], capture_output=True, text=True)
+        return r.returncode == 0
+    except OSError:
+        return False
+
+
 def _default_restart_callback(_home: Path, irc_root: Path) -> None:
     """Restart bobcallback on the digest home. `_home` is the Jeeves identity home."""
     if os.name != "nt":
         return
     digest_s = digest_home_native()
+    if _restart_bobcallback_task():
+        return
     for pid, _cmd in _win_process_commandlines("bobcallback.py"):
         subprocess.run(["taskkill", "/F", "/PID", str(pid)], check=False, capture_output=True)
     cb = irc_root / "scripts" / "bobcallback.py"
     if not cb.is_file():
         return
     subprocess.Popen(
-        ["python", "-u", str(cb), "--home", digest_s],
+        [sys.executable or "python", "-u", str(cb), "--home", digest_s],
         cwd=str(irc_root / "scripts"),
         creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
     )

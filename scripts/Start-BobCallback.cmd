@@ -1,15 +1,16 @@
 @echo off
-REM Start bobcallback for IIS ARR (:7700). Safe under LocalSystem airc:
-REM load GH_TOKEN from Administrator token file so gh issue create works.
-set "USERPROFILE=C:\Users\Administrator"
-set "HOMEDRIVE=C:"
-set "HOMEPATH=\Users\Administrator"
-set "GH_TOKEN="
-if exist "C:\Users\Administrator\.grok\bob\github.token" (
-  set /p GH_TOKEN=<"C:\Users\Administrator\.grok\bob\github.token"
+REM Start bobcallback (:7700) from THIS install (jeeves MSI), no hardcoded paths (#53).
+REM Layout: <InstallRoot>\scripts\Start-BobCallback.cmd ; secrets in <InstallRoot>\config\ .
+setlocal
+set "SCRIPTS=%~dp0"
+if "%SCRIPTS:~-1%"=="\" set "SCRIPTS=%SCRIPTS:~0,-1%"
+if not defined BOB_DIGEST_HOME (
+  if exist "%SystemDrive%\Users\Administrator\.agentic-irc-bobiverse" (
+    set "BOB_DIGEST_HOME=%SystemDrive%\Users\Administrator\.agentic-irc-bobiverse"
+  ) else (
+    set "BOB_DIGEST_HOME=%SCRIPTS%\..\home"
+  )
 )
-if exist "C:\ai\jeeves\config\github.token" (
-  set /p GH_TOKEN=<"C:\ai\jeeves\config\github.token"
-)
-cd /d C:\ai\jeeves\scripts
-start "" /B C:\Python\Python312\python.exe -u bobcallback.py --home C:\Users\Administrator\.agentic-irc-bobiverse --bind 127.0.0.1 --port 7700
+if not defined BOB_PYTHON set "BOB_PYTHON=python"
+cd /d "%SCRIPTS%"
+start "" /B "%BOB_PYTHON%" -u bobcallback.py --home "%BOB_DIGEST_HOME%" --bind 127.0.0.1 --port 7700

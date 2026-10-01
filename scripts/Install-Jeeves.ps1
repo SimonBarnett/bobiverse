@@ -172,6 +172,17 @@ try {
     $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --bind 127.0.0.1 --port 7700"
     schtasks /Create /TN BobCallback /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR $tr | Out-Null
     Write-Host 'INFO registered scheduled task BobCallback'
+    # #53: webhook secrets live in THIS install's config\ (not agentic_irc). Say so if absent.
+    $cfgDir = Join-Path $InstallRoot 'config'
+    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+    foreach ($sec in @('report.secret', 'github.token')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $cfgDir $sec))) {
+            Write-Host "WARN webhook secret missing: $cfgDir\$sec (report POSTs rejected / issue filing off until provided; never in git/MSI)"
+        }
+    }
+    if (-not $NoStart) {
+        schtasks /Run /TN BobCallback 2>&1 | Out-Null
+    }
 } catch {
     Write-Host "WARN BobCallback task: $($_.Exception.Message)"
 }
