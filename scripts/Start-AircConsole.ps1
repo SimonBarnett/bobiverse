@@ -187,7 +187,13 @@ if ($Accounts.Count -gt 0) {
 }
 if ($RequireAccount) { $argsList += '--require-account' }
 if ($TlsInsecure) { $argsList += '--tls-insecure' }
-if ($Sasl) { $argsList += '--sasl' }
+# #34: always pass the choice explicitly (a bare omission must never silently flip it).
+if ($Sasl) { $argsList += '--sasl' } else {
+    $argsList += '--no-sasl'
+    if ($ShopMode -ne 'domain-lobby') {
+        Write-Warning "airc-console: --no-sasl in shop mode ($ShopMode): reserved {machine}_console cannot be held without SASL (#34)"
+    }
+}
 if ($SelfTest) { $argsList += '--selftest' }
 
 Write-Host ("INFO Start-AircConsole ServiceMode={0} home={1} sasl={2} scriptDir={3}" -f [bool]$ServiceMode, $ConsoleHome, [bool]$Sasl, $scriptDir)
