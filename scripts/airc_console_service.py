@@ -55,7 +55,7 @@ def info(msg: str) -> None:
 
 def read_password(path: Path | None, env_key: str = "AIRC_CONSOLE_PASSWORD") -> str | None:
     """Legacy helper — prefer resolve_server_password / ensure_nickserv_password (#271)."""
-    for key in (env_key, "AGENTIC_IRC_PASSWORD", "AIRC_CONSOLE_SERVER_PASSWORD"):
+    for key in (env_key, "BOB_IRC_PASSWORD", "AGENTIC_IRC_PASSWORD", "AIRC_CONSOLE_SERVER_PASSWORD"):
         env = os.environ.get(key)
         if env and env.strip():
             return env.strip()

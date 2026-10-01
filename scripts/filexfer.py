@@ -189,7 +189,7 @@ class FileBag:
 
 def _home(h: str | None) -> Path:
     if h:
-        os.environ["AGENTIC_IRC_HOME"] = str(Path(h).expanduser())
+        os.environ["BOB_HOME"] = str(Path(h).expanduser())
     return seal.home()
 
 

@@ -58,7 +58,7 @@ if (-not $env:BOB_BRIDGE_HOME) {
     $env:BOB_BRIDGE_HOME = Join-Path $env:USERPROFILE '.grok\bob-bridge'
 }
 if (-not $env:BOB_IRC_HOME) {
-    $env:BOB_IRC_HOME = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+    $env:BOB_IRC_HOME = Join-Path $env:USERPROFILE '.bobiverse'
 }
 New-Item -ItemType Directory -Force -Path $env:BOB_BRIDGE_HOME, $env:BOB_IRC_HOME | Out-Null
 

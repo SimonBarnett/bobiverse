@@ -23,7 +23,7 @@ import shop_ops  # noqa: E402
 def ensure_bob_nickserv_password(home: Path | str, *, mint: bool = True) -> str | None:
     """Load or mint ``<home>/nickserv.password`` for bob-* services account (FR #313)."""
     path = Path(home) / "nickserv.password"
-    env = (os.environ.get("AGENTIC_IRC_NICKSERV_PASSWORD") or "").strip()
+    env = (os.environ.get("BOB_IRC_NICKSERV_PASSWORD") or "").strip()
     if env:
         return env
     if path.is_file():

@@ -167,6 +167,15 @@ function Stage-Product([string]$Name) {
             }
         }
         Write-Host "INFO jeeves staged Ergo payload under ergo\"
+        # #53: webhook helpers shipped with the receiver (git hook ensure/verify + repo hook creator)
+        $toolsStage = Join-Path $stage 'tools'
+        New-Item -ItemType Directory -Force -Path $toolsStage | Out-Null
+        foreach ($tf in @('bob_git_hook.py', 'New-BobGitWebhook.ps1')) {
+            $from = Join-Path $RepoRoot "tools\$tf"
+            if (-not (Test-Path -LiteralPath $from)) { throw "jeeves pack requires tools\$tf (webhooks, #53)" }
+            Copy-Item -LiteralPath $from -Destination (Join-Path $toolsStage $tf) -Force
+        }
+        Write-Host "INFO jeeves staged tools\bob_git_hook.py + New-BobGitWebhook.ps1"
     }
     if ($Name -eq 'bob') {
         $wahSrc = Resolve-WatchAgentHealthSrc

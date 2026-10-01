@@ -7,7 +7,7 @@ Companion: TipForm systray (`scripts\Start-BobTray.ps1` → `tools\Start-BobFlee
 
 - JOIN `#bobiverse` + `#{MachineId}`
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
-- Home: `C:\ai\bob\home` when ObjectName is LocalSystem; else often `~\.agentic-irc-bobiverse`
+- Home: `C:\ai\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
 
 ## Secrets
@@ -15,7 +15,7 @@ Companion: TipForm systray (`scripts\Start-BobTray.ps1` → `tools\Start-BobFlee
 | Secret | Path / env |
 |--------|------------|
 | Ergo PASS | `C:\ai\bob\config\ergo.password` or `~\.grok\ergo\connect.password` |
-| NickServ SASL | `C:\ai\bob\home\nickserv.password` → `AGENTIC_IRC_SASL_USER=bob-{machine}` |
+| NickServ SASL | `C:\ai\bob\home\nickserv.password` → `BOB_IRC_SASL_USER=bob-{machine}` |
 | Service logon | `config\service.password` / `BOBIVERSE_SERVICE_PASSWORD` → DPAPI `service.cred` |
 | Digest POST | `BOB_REPORT_SECRET` or `~\.grok\bob\report.secret` |
 

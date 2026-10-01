@@ -53,7 +53,7 @@ if (-not $MachineId) {
 }
 
 if (-not $BobHome) {
-    $BobHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+    $BobHome = Join-Path $env:USERPROFILE '.bobiverse'
 }
 $bridge = Join-Path $env:USERPROFILE '.grok\bob-bridge'
 New-Item -ItemType Directory -Force -Path $BobHome, $bridge | Out-Null
@@ -61,7 +61,7 @@ New-Item -ItemType Directory -Force -Path $BobHome, $bridge | Out-Null
 $env:BOB_MACHINE_ID = $MachineId
 $env:BOB_BRIDGE_HOME = $bridge
 $env:BOB_IRC_HOME = $BobHome
-$env:AGENTIC_IRC_HOME = $BobHome
+$env:BOB_HOME = $BobHome
 if (-not $env:BOBIVERSE_BOB_VERSION) {
     foreach ($vf in @(
             (Join-Path $InstallRoot 'VERSION'),

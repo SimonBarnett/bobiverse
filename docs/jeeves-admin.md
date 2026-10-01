@@ -15,11 +15,11 @@ IRCd: **BobIrcd** → live root `C:\ai\ergo` (MSI stages `ergo\` then Install-Bo
 
 | Role | Path |
 |------|------|
-| Chair | `~\.agentic-irc-jeeves` (prefer Admin on Ergo host; else `C:\ai\jeeves\home-jeeves`) |
-| Digest | `BOB_DIGEST_HOME=~\.agentic-irc-bobiverse` |
+| Chair | `~\.jeeves` (prefer Admin on Ergo host; else `C:\ai\jeeves\home-jeeves`) |
+| Digest | `BOB_DIGEST_HOME=~\.bobiverse` |
 | Logs | `C:\ai\jeeves\logs\stdout.log`, `stderr.log` |
 
-Quiet MSI as LocalSystem must **not** bake `C:\Users\Default\.agentic-irc-jeeves` into NSSM.
+Quiet MSI as LocalSystem must **not** bake `C:\Users\Default\.jeeves` into NSSM.
 
 ## Operator commands (IRC)
 

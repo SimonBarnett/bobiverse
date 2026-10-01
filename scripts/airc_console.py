@@ -613,6 +613,7 @@ def resolve_server_password(
     """
     for key in (
         "AIRC_CONSOLE_SERVER_PASSWORD",
+        "BOB_IRC_PASSWORD",
         "AGENTIC_IRC_PASSWORD",
         "AIRC_CONSOLE_PASSWORD",
     ):

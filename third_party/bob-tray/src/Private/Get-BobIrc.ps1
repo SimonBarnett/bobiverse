@@ -133,10 +133,10 @@ function Get-BobIrcHome {
     if ($env:BOB_IRC_HOME -and $env:BOB_IRC_HOME.Trim()) {
         return [IO.Path]::GetFullPath($env:BOB_IRC_HOME.Trim())
     }
-    if ($env:AGENTIC_IRC_HOME -and $env:AGENTIC_IRC_HOME.Trim()) {
-        return [IO.Path]::GetFullPath($env:AGENTIC_IRC_HOME.Trim())
+    if ($env:BOB_HOME -and $env:BOB_HOME.Trim()) {
+        return [IO.Path]::GetFullPath($env:BOB_HOME.Trim())
     }
-    return [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'))
+    return [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.bobiverse'))
 }
 
 function Get-BobMootRoster {
@@ -363,7 +363,7 @@ function Save-BobCursorPoolForSeat {
 function Get-BobDigestUrl {
     # FR #354: public GET digest is the same document as reportUrl (IIS has no /digest).
     # Never default to bob.ntsa.uk (does not resolve).
-    foreach ($cand in @($env:AGENTIC_IRC_DIGEST_URL, $env:BOB_DIGEST_URL)) {
+    foreach ($cand in @($env:BOB_DIGEST_URL)) {
         if ($cand -and [string]$cand.Trim()) { return [string]$cand.Trim() }
     }
     try {
@@ -1857,7 +1857,6 @@ function Get-BobDigestReportUrl {
     $url = ''
     if ($cfg -and $cfg.reportUrl) { $url = [string]$cfg.reportUrl }
     if (-not $url.Trim()) { $url = [string]$env:BOB_REPORT_URL }
-    if (-not $url.Trim()) { $url = [string]$env:AGENTIC_IRC_REPORT_URL }
     $url = $url.Trim()
     if ($url) { return $url }
     return $null

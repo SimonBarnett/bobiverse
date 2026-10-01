@@ -33,7 +33,7 @@ def config_path(home: Path) -> Path:
 
 
 def grok_talk_enabled(home: Path) -> bool:
-    flag = (os.environ.get("AGENTIC_IRC_GROK_TALK") or "").strip().lower()
+    flag = (os.environ.get("BOB_IRC_GROK_TALK") or "").strip().lower()
     if flag in ("1", "true", "yes", "on"):
         return True
     p = config_path(home)

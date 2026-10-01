@@ -25,7 +25,7 @@ Complete-BobiverseServiceLogon.ps1 -Product jeeves   # when service.password pre
 Restart-Service ircJeeves
 ```
 
-Chair home: `~\.agentic-irc-jeeves` (or Admin / `C:\ai\jeeves\home-jeeves`). Digest: `BOB_DIGEST_HOME=~\.agentic-irc-bobiverse`.
+Chair home: `~\.jeeves` (or Admin / `C:\ai\jeeves\home-jeeves`). Digest: `BOB_DIGEST_HOME=~\.bobiverse`.
 
 ## Do not
 

@@ -2,7 +2,7 @@
 """TLS IRC agent: reconnect, SASL from env, flood delay, AGPK TOFU, SEAL v2 inbox.
 
 Stdout is INFO only (no raw IRC, no AGPK/SEAL bodies). Full lines go to irc.log if
-AGENTIC_IRC_DEBUG=1. SASL: AGENTIC_IRC_SASL_USER + AGENTIC_IRC_SASL_PASSWORD (not argv).
+BOB_IRC_DEBUG=1. SASL: BOB_IRC_SASL_USER + BOB_IRC_SASL_PASSWORD (not argv).
 """
 from __future__ import annotations
 
@@ -35,6 +35,8 @@ import shop_chanserv  # noqa: E402
 import shop_listen  # noqa: E402
 import agent_control  # noqa: E402
 import registered_machines  # noqa: E402
+import bob_home  # noqa: E402
+import chair_oper  # noqa: E402
 import talk_seat_ghost  # noqa: E402
 import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
@@ -375,7 +377,7 @@ def is_connect_throttle(text: str) -> bool:
 
 def throttle_delay_s(n: int) -> float:
     """Backoff after the n-th consecutive Ergo connect-throttle ERROR (n>=1)."""
-    raw = (os.environ.get("AGENTIC_IRC_THROTTLE_BASE_S") or "120").strip()
+    raw = (os.environ.get("BOB_IRC_THROTTLE_BASE_S") or "120").strip()
     try:
         base = float(raw)
     except ValueError:
@@ -387,7 +389,7 @@ def throttle_delay_s(n: int) -> float:
 
 def reconnect_cap() -> int | None:
     """Max reconnect cycles after a failed session; None = unlimited."""
-    raw = (os.environ.get("AGENTIC_IRC_RECONNECT_MAX") or "").strip()
+    raw = (os.environ.get("BOB_IRC_RECONNECT_MAX") or "").strip()
     if not raw:
         return None
     try:
@@ -423,8 +425,21 @@ class Client:
         self._pending_joins: set[str] = {c.lower() for c in self.channels}
         self._last_call_channel: str | None = None
         if args.home:
-            os.environ["AGENTIC_IRC_HOME"] = str(Path(args.home).expanduser())
+            os.environ["BOB_HOME"] = str(Path(args.home).expanduser())
         self.home = seal.home()
+        # #53: first start under the jeeves/bobiverse home names -> copy data from the old
+        # ~\\.agentic-irc-* home (kept as backup). Idempotent; never blocks the connect.
+        try:
+            if getattr(args, "chair", False):
+                bob_home.ensure_homes(chair=self.home, digest=bob_home.digest_home(), log=info)
+                for _n in bob_home.migrate_secrets_to_config(
+                    bob_home.config_dir(), homes=[self.home, bob_home.digest_home()]
+                ):
+                    info(f"INFO config secret {_n} migrated into {bob_home.config_dir()}")
+            else:
+                bob_home.ensure_homes(digest=self.home, log=info)
+        except Exception as exc:  # pragma: no cover
+            info(f"WARN home-migration skipped {type(exc).__name__}")
         self.home.mkdir(parents=True, exist_ok=True)
         protect.protect_path(self.home)
         if getattr(args, "chair", False):
@@ -433,7 +448,7 @@ class Client:
         self.inbox = self.home / "inbox"
         self.inbox.mkdir(parents=True, exist_ok=True)
         protect.protect_path(self.inbox)
-        self.debug = self.home / "irc.log" if os.environ.get("AGENTIC_IRC_DEBUG") else None
+        self.debug = self.home / "irc.log" if os.environ.get("BOB_IRC_DEBUG") else None
         self.ident = seal.load_ident() if seal.ident_path().exists() else None
         self.peers = seal.load_peers()
         self.fragments = seal.FragmentStore()
@@ -469,6 +484,15 @@ class Client:
         self._cs_sent_at = 0.0
         self._cs_force = False
         self._cs_fail_at = 0.0
+        self._cs_list_status = "unknown"  # unknown | ok | denied
+        # Chair OPER + channel-op upkeep (see chair_oper.py).
+        self._oper_state = "off"  # off | nocred | pending | ok | failed
+        self._oper_name = ""
+        self._oper_done = threading.Event()
+        self._chan_op: dict[str, bool] = {}
+        self._op_try_at: dict[str, float] = {}
+        self._chair_status_at = 0.0
+        self._chair_status_last = ""
         self._digest_asm = bobreport.DigestWhisperAssembler()
         self._report_gone_told: set[str] = set()
         self._pm_open: dict[str, float] = {}
@@ -830,6 +854,118 @@ class Client:
         return ops
 
     # ---- #42: ChanServ-registered machine channels are the roster (mirror, add AND remove)
+    # ---- chair: OPER on connect + channel +o upkeep ------------------------------------
+    def _chair_reset_session(self) -> None:
+        self._oper_state = "off"
+        self._oper_done.clear()
+        self._chan_op = {}
+        self._op_try_at = {}
+        self._cs_list_status = "unknown"
+        self._cs_collector = None
+
+    def _chair_oper_on_connect(self) -> None:
+        """Send OPER with the install-config credentials and wait briefly for 381 / +o."""
+        if not getattr(self.args, "chair", False):
+            return
+        path = chair_oper.cred_path(bob_home.config_dir())
+        cred = chair_oper.load_credentials(path)
+        if cred is None:
+            self._oper_state = "nocred"
+            info(
+                f"WARN OPER SKIPPED: no readable oper credentials at {path} - Jeeves is NOT an IRC "
+                "operator (no ChanServ LIST, no SAMODE). Re-run Install-Jeeves.ps1 with -OperFile "
+                "<ergo-oper file> or -OperName/-OperPassword."
+            )
+            return
+        self._oper_name = cred[0]
+        self._oper_state = "pending"
+        self._oper_done.clear()
+        info(f"INFO OPER sending as '{cred[0]}' (credentials from {path}; value not logged)")
+        self.send(f"OPER {cred[0]} {cred[1]}")
+        if not self._oper_done.wait(8):
+            self._oper_state = "failed"
+            info("WARN OPER: no reply (381/464/491) within 8s - treating as NOT oper")
+        self._chair_log_status(force=True)
+
+    def _on_oper_numeric(self, cmd: str, parts: list[str], trailing: str) -> None:
+        if cmd == "381":
+            self._oper_state = "ok"
+            self._oper_done.set()
+            info(f"INFO OPER OK: 381 RPL_YOUREOPER as '{self._oper_name}' - Jeeves is an IRC operator")
+        elif cmd in ("464", "491", "481") and self._oper_state == "pending":
+            self._oper_state = "failed"
+            self._oper_done.set()
+            info(
+                f"ERROR OPER FAILED: {cmd} {(trailing or '').strip()[:80]} for '{self._oper_name}' "
+                "- wrong oper name/password or ircd.yaml has no such oper; Jeeves is NOT an operator"
+            )
+        elif cmd in ("221", "MODE"):
+            modes = parts[2] if cmd == "221" and len(parts) > 2 else (parts[2] if len(parts) > 2 else "")
+            target = parts[1] if len(parts) > 1 else ""
+            if (cmd == "221" or target.lower() == self.live_nick.lower()) and chair_oper.umode_has_o(modes):
+                if self._oper_state != "ok":
+                    info("INFO OPER OK: user mode +o set on Jeeves")
+                self._oper_state = "ok"
+                self._oper_done.set()
+
+    def _on_chair_channel_line(self, cmd: str, parts: list[str], trailing: str) -> None:
+        if not getattr(self.args, "chair", False):
+            return
+        if cmd == "353":
+            r = chair_oper.names_has_op(parts, trailing, self.live_nick)
+            if r is not None and (r[1] or r[0].lower() not in self._chan_op):
+                self._chan_op[r[0].lower()] = r[1]
+        elif cmd == "MODE":
+            for chan, mode, added in chair_oper.mode_changes_for(parts, self.live_nick):
+                if mode in "oaq":
+                    self._chan_op[chan.lower()] = added
+                    info(f"INFO chair {'+' if added else '-'}{mode} in {chan}")
+        elif cmd in ("PART", "KICK"):
+            pass
+
+    def _ensure_chan_ops(self) -> None:
+        """Chair must hold +o in #bobiverse and every machine channel (SAMODE as oper; else ChanServ OP)."""
+        if not getattr(self.args, "chair", False) or not self.joined.is_set():
+            return
+        now = time.time()
+        for ch in list(self.channels):
+            key = ch.lower()
+            if self._chan_op.get(key):
+                continue
+            if now - self._op_try_at.get(key, 0.0) < 45.0:
+                continue
+            self._op_try_at[key] = now
+            try:
+                if self._oper_state == "ok":
+                    self.send(f"SAMODE {ch} +o {self.live_nick}")
+                    info(f"INFO chair not +o in {ch}: SAMODE {ch} +o {self.live_nick} (oper samode)")
+                else:
+                    self.send(f"PRIVMSG ChanServ :OP {ch}")
+                    info(
+                        f"WARN chair not +o in {ch} and not oper (oper={self._oper_state}); "
+                        "asked ChanServ OP (works only with founder/AMODE)"
+                    )
+            except OSError:
+                return
+        self._chair_log_status()
+
+    def _chair_status_line(self) -> str:
+        ops = sorted(c for c in (x.lower() for x in self.channels) if self._chan_op.get(c))
+        missing = sorted(c.lower() for c in self.channels if not self._chan_op.get(c.lower()))
+        return (
+            f"oper={self._oper_state} chanserv-list={self._cs_list_status} "
+            f"op-in={','.join(ops) or '-'} NOT-op-in={','.join(missing) or '-'}"
+        )
+
+    def _chair_log_status(self, force: bool = False) -> None:
+        line = self._chair_status_line()
+        now = time.time()
+        if force or line != self._chair_status_last or now - self._chair_status_at > 300.0:
+            level = "INFO" if (self._oper_state == "ok" and "NOT-op-in=-" in line) else "WARN"
+            info(f"{level} chair-status {line}")
+            self._chair_status_last = line
+            self._chair_status_at = now
+
     def _cs_ttl_s(self) -> float:
         try:
             return max(15.0, float(os.environ.get("BOB_CHANSERV_SYNC_TTL_S") or 120.0))
@@ -869,11 +1005,20 @@ class Client:
             return
         ev = col.feed(text)
         if ev == "error":
-            info(f"INFO chanserv-sync denied ({col.error}); chair needs oper chanreg; keeping last roster")
+            self._cs_list_status = "denied"
+            info(
+                f"ERROR chanserv LIST DENIED ({col.error}); oper={self._oper_state}. "
+                "Needs Ergo oper capability 'chanreg': "
+                + chair_oper.CHANREG_HINT % (self._oper_name or "<jeeves oper>")
+                + " Keeping last roster."
+            )
             self._cs_collector = None
             self._cs_fail_at = time.time()
         elif ev == "end":
             self._cs_collector = None
+            if self._cs_list_status != "ok":
+                info("INFO chanserv LIST OK (oper has chanreg)")
+            self._cs_list_status = "ok"
             self._apply_chanserv_channels(col.channels)
 
     def _apply_chanserv_channels(self, channels: list[str]) -> None:
@@ -1136,7 +1281,7 @@ class Client:
         now = time.time()
         if now - self._ghost_prune_last < 45.0:
             return
-        pw = (self.args.password or os.environ.get("AGENTIC_IRC_PASSWORD") or "").strip()
+        pw = (self.args.password or os.environ.get("BOB_IRC_PASSWORD") or "").strip()
         if not pw:
             return
         mid = self.original_nick[4:]
@@ -1382,8 +1527,8 @@ class Client:
         return sock
 
     def sasl_token(self) -> str | None:
-        user = os.environ.get("AGENTIC_IRC_SASL_USER")
-        pw = os.environ.get("AGENTIC_IRC_SASL_PASSWORD")
+        user = os.environ.get("BOB_IRC_SASL_USER")
+        pw = os.environ.get("BOB_IRC_SASL_PASSWORD")
         if not user or not pw:
             return None
         return base64.b64encode(b"\0" + user.encode("utf-8") + b"\0" + pw.encode("utf-8")).decode("ascii")
@@ -2079,6 +2224,10 @@ class Client:
                             self._on_chanserv_notice(trailing)
                         except Exception as exc:  # never kill the reader over a mirror bug
                             info(f"INFO chanserv-sync notice error {type(exc).__name__}")
+                    if cmd in ("381", "464", "491", "481", "221") or (cmd == "MODE" and len(parts) > 2 and not parts[1].startswith("#")):
+                        self._on_oper_numeric(cmd, parts, trailing)
+                    if cmd in ("353", "MODE"):
+                        self._on_chair_channel_line(cmd, parts, trailing)
                     if cmd == "001":
                         self.ready.set()
 
@@ -2228,6 +2377,7 @@ class Client:
                 self.drain_outbox_once()
                 self._maybe_bobiverse_pull()
                 self._maybe_chanserv_sync()
+                self._ensure_chan_ops()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
             except OSError:
@@ -2245,6 +2395,7 @@ class Client:
         self._nickname_reserved = False
         self.live_nick = self.original_nick
         self._pending_joins = {c.lower() for c in self.channels}
+        self._chair_reset_session()
         self._outbox_gen += 1
         gen = self._outbox_gen
         info(
@@ -2256,7 +2407,7 @@ class Client:
         threading.Thread(target=self.outbox_loop, args=(gen,), daemon=True).start()
         if self._seat_liveness_enabled():
             threading.Thread(target=self.seat_liveness_loop, daemon=True).start()
-        pw = (self.args.password or os.environ.get("AGENTIC_IRC_PASSWORD") or "").strip()
+        pw = (self.args.password or os.environ.get("BOB_IRC_PASSWORD") or "").strip()
         if pw:
             self.send("PASS " + pw)
         self.send("CAP LS 302")
@@ -2284,6 +2435,7 @@ class Client:
         # Ergo default-usermode is +i (LUSERS: "0 users and N invisible").
         # Halloy nick lists that use WHO then omit flamingos even in-channel.
         self.send("MODE " + self.live_nick + " -i")
+        self._chair_oper_on_connect()
         # Per-channel JOIN (more reliable than comma-join on some paths / ionos shop).
         for ch in self.channels:
             self.send("JOIN " + ch)
@@ -2331,7 +2483,7 @@ class Client:
                 return
             attempt += 1
             if cap is not None and attempt >= cap:
-                info(f"INFO reconnect stopped (AGENTIC_IRC_RECONNECT_MAX={cap})")
+                info(f"INFO reconnect stopped (BOB_IRC_RECONNECT_MAX={cap})")
                 return
             delay = backoff + random.uniform(0, 1)
             if getattr(self, "_throttled", False):
@@ -2348,11 +2500,11 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
     """Hard-kill hung same-nick / same-home priors before the first connect.
 
     Once per process, not on reconnect, so a listen started afterwards stays.
-    --once and AGENTIC_IRC_SKIP_PRIOR_CLEAN=1 skip (tests). No command lines logged.
+    --once and BOB_IRC_SKIP_PRIOR_CLEAN=1 skip (tests). No command lines logged.
     """
     if once:
         return
-    flag = (os.environ.get("AGENTIC_IRC_SKIP_PRIOR_CLEAN") or "").strip().lower()
+    flag = (os.environ.get("BOB_IRC_SKIP_PRIOR_CLEAN") or "").strip().lower()
     if flag in {"1", "true", "yes"}:
         return
     import prior_irc
@@ -2376,15 +2528,15 @@ def main() -> None:
     p = argparse.ArgumentParser(description="agentic TLS IRC")
     p.add_argument("--host", default="irc.ntsa.uk")
     p.add_argument("--port", type=int, default=6697)
-    p.add_argument("--password", default="", help="IRC PASS (or env AGENTIC_IRC_PASSWORD)")
+    p.add_argument("--password", default="", help="IRC PASS (or env BOB_IRC_PASSWORD)")
     p.add_argument("--nick", required=True)
     p.add_argument(
         "--channel",
         default="",
         help="seed channel (required unless --chair; chair defaults to bobiverse)",
     )
-    p.add_argument("--home", default="", help="AGENTIC_IRC_HOME (required if two nicks on one box)")
-    p.add_argument("--realname", default="agentic-irc")
+    p.add_argument("--home", default="", help="BOB_HOME (required if two nicks on one box)")
+    p.add_argument("--realname", default="bobiverse")
     p.add_argument("--outbox", default="")
     p.add_argument("--hello", default="")
     p.add_argument("--announce-key", action="store_true")
@@ -2405,12 +2557,12 @@ def main() -> None:
             args.channel = "bobiverse"
         else:
             p.error("--channel is required unless --chair")
-    home = (args.home or os.environ.get("AGENTIC_IRC_HOME") or "").strip()
+    home = (args.home or os.environ.get("BOB_HOME") or "").strip()
     seat_pid = talk_seat_pid.resolve_seat_pid(home or None, self_pid=os.getpid())
     if args.auto_nick:
         if seat_pid is None:
             info(
-                "INFO --auto-nick requires AGENTIC_IRC_SEAT_PID (or self) or coordinator.pid agent="
+                "INFO --auto-nick requires BOB_IRC_SEAT_PID (or self) or coordinator.pid agent="
             )
             sys.exit(2)
         args.nick = talk_seat_pid.auto_talk_seat_nick(args.nick, seat_pid)
@@ -2418,7 +2570,7 @@ def main() -> None:
     if talk_seat_pid.parse_talk_seat_nick(args.nick):
         if seat_pid is None:
             err = (
-                "INFO talk-seat nick requires AGENTIC_IRC_SEAT_PID (or self) or coordinator.pid agent="
+                "INFO talk-seat nick requires BOB_IRC_SEAT_PID (or self) or coordinator.pid agent="
             )
         else:
             err = talk_seat_pid.check_nick_seat_pid(args.nick, seat_pid)

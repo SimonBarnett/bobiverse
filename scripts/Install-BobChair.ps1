@@ -1,6 +1,6 @@
 # Jeeves digest chair. Do not share --home with bob-ionos.
-# --home / AGENTIC_IRC_HOME = ~\.agentic-irc-jeeves
-# BOB_DIGEST_HOME           = ~\.agentic-irc-bobiverse  (digest.json, chair-outbox.txt)
+# --home / BOB_HOME = ~\.jeeves
+# BOB_DIGEST_HOME           = ~\.bobiverse  (digest.json, chair-outbox.txt)
 # Without BOB_DIGEST_HOME, fleet_digest_home() uses --home and GIT lines stay stuck.
 # BobIrcd NSSM and the hook that starts Jeeves with the IRC server live in
 # agentic_build (chairNick Jeeves). This script does not install that service.
@@ -12,24 +12,24 @@ if (-not $env:USERPROFILE) {
 }
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $py = Join-Path $here 'irc_agent.py'
-# Never inherit AGENTIC_IRC_HOME. Watch/bob-ionos sets that to the digest home.
-$chairHome = Join-Path $env:USERPROFILE '.agentic-irc-jeeves'
-$digestHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+# Never inherit BOB_HOME. Watch/bob-ionos sets that to the digest home.
+$chairHome = Join-Path $env:USERPROFILE '.jeeves'
+$digestHome = Join-Path $env:USERPROFILE '.bobiverse'
 $chairFull = [IO.Path]::GetFullPath($chairHome).TrimEnd('\').ToLowerInvariant()
 $digestFull = [IO.Path]::GetFullPath($digestHome).TrimEnd('\').ToLowerInvariant()
 if ($chairFull -eq $digestFull) {
     Write-Error "Jeeves --home must not be the bob-ionos digest home ($digestHome)"
 }
-$nick = if ($env:AGENTIC_IRC_CHAIR_NICK) { $env:AGENTIC_IRC_CHAIR_NICK } else { 'Jeeves' }
-$env:AGENTIC_IRC_CHAIR_NICK = $nick
-$env:AGENTIC_IRC_HOME = $chairHome
+$nick = if ($env:BOB_CHAIR_NICK) { $env:BOB_CHAIR_NICK } else { 'Jeeves' }
+$env:BOB_CHAIR_NICK = $nick
+$env:BOB_HOME = $chairHome
 $env:BOB_DIGEST_HOME = $digestHome
 
 $pwFile = Join-Path $env:USERPROFILE '.grok\ergo\connect.password'
 if (Test-Path -LiteralPath $pwFile) {
-    $env:AGENTIC_IRC_PASSWORD = (Get-Content -LiteralPath $pwFile -Raw).Trim()
-} elseif (-not $env:AGENTIC_IRC_PASSWORD) {
-    Write-Error 'missing connect.password (set AGENTIC_IRC_PASSWORD or the file)'
+    $env:BOB_IRC_PASSWORD = (Get-Content -LiteralPath $pwFile -Raw).Trim()
+} elseif (-not $env:BOB_IRC_PASSWORD) {
+    Write-Error 'missing connect.password (set BOB_IRC_PASSWORD or the file)'
 }
 
 $forward = @()

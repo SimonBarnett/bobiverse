@@ -113,7 +113,7 @@ def chair_targets_local(machine_id: str) -> bool:
     return machine_id == chair_home_machine()
 
 
-def find_agentic_irc_root() -> Path | None:
+def find_install_root() -> Path | None:
     here = Path(__file__).resolve().parent
     if (here / "irc_agent.py").is_file():
         return here.parent
@@ -147,7 +147,7 @@ class RecyclePlan:
 
 
 def build_recycle_plan(machine_id: str, *, ionos_chair: bool) -> RecyclePlan:
-    steps = ["git_pull_agentic_irc", "restart_watch_bobiverse", "recycle_watch_bobtray"]
+    steps = ["git_pull_install", "restart_watch_bobiverse", "recycle_watch_bobtray"]
     if ionos_chair and machine_id == chair_home_machine():
         steps.extend(["restart_bob_chair", "restart_bobcallback"])
     return RecyclePlan(machine_id=machine_id, ionos_chair=ionos_chair, steps=steps)
@@ -385,7 +385,7 @@ def digest_home_native() -> str:
     profile = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
     if not profile:
         profile = os.path.expanduser("~")
-    return _native_abspath(os.path.join(profile, ".agentic-irc-bobiverse"))
+    return _native_abspath(os.path.join(profile, ".bobiverse"))
 
 
 def _default_restart_chair(irc_root: Path, home: Path) -> None:
@@ -490,7 +490,7 @@ def execute_local_recycle(
     mid = resolve_recycle_machine(machine_id) or machine_id
     plan = build_recycle_plan(mid, ionos_chair=ionos_chair)
     h = hooks or RecycleHooks()
-    irc_root = find_agentic_irc_root()
+    irc_root = find_install_root()
     build_root = find_agentic_build_root()
     if h.git_pull:
         h.git_pull(irc_root or Path("."))

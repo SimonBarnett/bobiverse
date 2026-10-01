@@ -44,7 +44,7 @@ function Get-BobSystrayMachineId {
 function Ensure-BobSystraySeatWrapper {
     param([string]$Root, [string]$MachineId)
     $wrap = Join-Path $Root ("tools\_Watch-BobTray-{0}.ps1" -f $MachineId)
-    $ircHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+    $ircHome = Join-Path $env:USERPROFILE '.bobiverse'
     $bridge = Join-Path $env:USERPROFILE '.grok\bob-bridge'
     $trayPath = Join-Path $Root 'tools\Watch-BobTray.ps1'
     $lines = @(
@@ -58,7 +58,7 @@ function Ensure-BobSystraySeatWrapper {
         '} | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }'
         'Start-Sleep -Milliseconds 600'
         ('$env:BOB_IRC_HOME = "{0}"' -f $ircHome.Replace('\', '\\'))
-        ('$env:AGENTIC_IRC_HOME = "{0}"' -f $ircHome.Replace('\', '\\'))
+        ('$env:BOB_HOME = "{0}"' -f $ircHome.Replace('\', '\\'))
         ('$env:BOB_MACHINE_ID = "{0}"' -f $MachineId)
         ('$env:BOB_BRIDGE_HOME = "{0}"' -f $bridge.Replace('\', '\\'))
         ('& "{0}"' -f $trayPath)
@@ -161,7 +161,7 @@ if ($ForceNew -and $hits.Count -gt 0) {
     # FR #453: if Restart already announced, outbox is empty; if an external
     # ForceNew kills a live tray, still try a best-effort departure line first.
     try {
-        $ircHomeFn = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+        $ircHomeFn = Join-Path $env:USERPROFILE '.bobiverse'
         if (Test-Path -LiteralPath $ircHomeFn) {
             $midFn = Get-BobSystrayMachineId
             if (-not $midFn) { $midFn = 'unknown' }

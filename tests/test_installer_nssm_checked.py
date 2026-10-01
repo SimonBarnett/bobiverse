@@ -33,7 +33,7 @@ def test_common_has_delete_pending_wait_and_no_password_echo():
     assert "DeleteFlag" in t
     assert "marked for deletion" in t
     # the checked helper must not echo args after ObjectName (password)
-    assert "Select-Object -First 3" in t  # values (password, AGENTIC_IRC_PASSWORD) never echoed
+    assert "Select-Object -First 3" in t  # values (password, BOB_IRC_PASSWORD) never echoed
 
 
 @pytest.mark.skipif(not PS or sys.platform != "win32", reason="needs Windows PowerShell")

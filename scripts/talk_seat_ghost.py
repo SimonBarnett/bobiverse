@@ -16,7 +16,7 @@ ERGO_DEAD_TCP_NAMES_SEC = 240
 
 
 def ergo_dead_tcp_names_s() -> float:
-    raw = (os.environ.get("AGENTIC_IRC_ERGO_DEAD_TCP_S") or str(ERGO_DEAD_TCP_NAMES_SEC)).strip()
+    raw = (os.environ.get("BOB_IRC_ERGO_DEAD_TCP_S") or str(ERGO_DEAD_TCP_NAMES_SEC)).strip()
     try:
         n = float(raw)
     except ValueError:
@@ -26,7 +26,7 @@ def ergo_dead_tcp_names_s() -> float:
 
 def seat_recv_idle_s() -> float:
     """No server lines this long → talk seat QUIT (deaf / hung reader)."""
-    raw = (os.environ.get("AGENTIC_IRC_SEAT_RECV_IDLE_S") or "150").strip()
+    raw = (os.environ.get("BOB_IRC_SEAT_RECV_IDLE_S") or "150").strip()
     try:
         n = float(raw)
     except ValueError:
@@ -36,7 +36,7 @@ def seat_recv_idle_s() -> float:
 
 
 def pong_grace_s() -> float:
-    raw = (os.environ.get("AGENTIC_IRC_PONG_GRACE_S") or "45").strip()
+    raw = (os.environ.get("BOB_IRC_PONG_GRACE_S") or "45").strip()
     try:
         n = float(raw)
     except ValueError:
@@ -50,7 +50,7 @@ def discover_talk_seat_homes(machine_id: str) -> list[Path]:
         return []
     base = Path.home()
     candidates: list[Path] = []
-    for pattern in (".agentic-irc-cursor", ".agentic-irc-cursor-*"):
+    for pattern in (".bobiverse-cursor", ".bobiverse-cursor-*"):
         for path in sorted(base.glob(pattern)):
             if not path.is_dir():
                 continue

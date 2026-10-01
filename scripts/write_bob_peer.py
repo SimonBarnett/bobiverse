@@ -12,13 +12,13 @@ import bobstat
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--home", default=None, help="AGENTIC_IRC_HOME (fleet bob-peers parent)")
+    ap.add_argument("--home", default=None, help="BOB_HOME (fleet bob-peers parent)")
     ap.add_argument("--point", default=None, help="BOB v1 POINT trailing text")
     ap.add_argument("--refresh-cursor", action="store_true", help="merge Cursor Models remaining when weekly=0")
     ap.add_argument("--stdin-json", action="store_true", help="read peer JSON object from stdin")
     args = ap.parse_args(argv)
 
-    home = Path(args.home or Path.home() / ".agentic-irc-bobiverse").expanduser()
+    home = Path(args.home or Path.home() / ".bobiverse").expanduser()
     doc: dict | None = None
     if args.point:
         doc = bobstat.parse_bob_point(args.point)

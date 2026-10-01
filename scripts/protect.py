@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 MAGIC = b"AIRC1"
+MAGIC_MACHINE = b"AIRC2"  # DPAPI CRYPTPROTECT_LOCAL_MACHINE: readable by any account on THIS box (file ACL guards it)
 
 
 class ProtectError(Exception):
@@ -37,6 +38,10 @@ def protect_path(path: Path) -> None:
             grants.append(f"{user_spec}:(OI)(CI)(F)")
             if machine and domain and machine.upper() != domain.upper() and user_l:
                 grants.append(f"{machine}\\{user}:(OI)(CI)(F)")
+        if path.is_file():
+            # (OI)(CI) on a FILE yields an EMPTY DACL after /inheritance:r (file unreadable,
+            # even by its owner) - found while provisioning config\oper.cred. Plain (F) for files.
+            grants = [g.replace("(OI)(CI)", "") for g in grants]
         cmd = ["icacls", str(path), "/inheritance:r"]
         for g in grants:
             cmd.extend(["/grant:r", g])
@@ -56,7 +61,7 @@ def protect_path(path: Path) -> None:
         raise ProtectError(f"chmod failed: {e}") from e
 
 
-def _dpapi_protect(data: bytes) -> bytes:
+def _dpapi_protect(data: bytes, machine: bool = False) -> bytes:
     import ctypes
     from ctypes import wintypes
 
@@ -69,7 +74,7 @@ def _dpapi_protect(data: bytes) -> bytes:
     blob_in = DATA_BLOB(len(data), ctypes.cast(in_buf, ctypes.POINTER(ctypes.c_char)))
     blob_out = DATA_BLOB()
     if not crypt32.CryptProtectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+        ctypes.byref(blob_in), None, None, None, None, 4 if machine else 0, ctypes.byref(blob_out)
     ):
         raise OSError("CryptProtectData failed")
     try:
@@ -100,11 +105,13 @@ def _dpapi_unprotect(data: bytes) -> bytes:
         kernel32.LocalFree(blob_out.pbData)
 
 
-def write_secret_bytes(path: Path, data: bytes) -> None:
+def write_secret_bytes(path: Path, data: bytes, machine: bool = False) -> None:
+    """DPAPI-protect ``data`` at rest (Windows). ``machine=True`` binds to the machine, not the
+    user, so an installer run by one account can provision a secret a service account reads."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
-        path.write_bytes(MAGIC + _dpapi_protect(data))
+        path.write_bytes((MAGIC_MACHINE if machine else MAGIC) + _dpapi_protect(data, machine))
     else:
         path.write_bytes(data)
     protect_path(path)
@@ -114,6 +121,8 @@ def read_secret_bytes(path: Path) -> bytes:
     raw = Path(path).read_bytes()
     if raw.startswith(MAGIC):
         return _dpapi_unprotect(raw[len(MAGIC) :])
+    if raw.startswith(MAGIC_MACHINE):
+        return _dpapi_unprotect(raw[len(MAGIC_MACHINE) :])
     return raw
 
 

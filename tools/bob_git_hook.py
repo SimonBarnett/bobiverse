@@ -194,7 +194,7 @@ def announce_needle(event: str, repo: str, number=None, action: str = "opened") 
 
 def default_log_paths() -> list:
     home = Path(os.environ.get("USERPROFILE") or Path.home())
-    return [home / ".agentic-irc-bobiverse" / "irc.log"]
+    return [home / ".bobiverse" / "irc.log"]
 
 
 def _tail_lines(path: Path, max_bytes: int = 2_000_000) -> list:

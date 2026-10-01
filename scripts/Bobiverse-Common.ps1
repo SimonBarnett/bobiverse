@@ -36,7 +36,7 @@ function Invoke-BobiverseNssmChecked {
     $r = Invoke-BobiverseNssm -Exe $Exe -NssmArgs $NssmArgs
     if ($r.ExitCode -ne 0) {
         # Never echo parameter VALUES: ObjectName carries the service password and
-        # AppEnvironmentExtra carries AGENTIC_IRC_PASSWORD. Show verb/service/parameter only.
+        # AppEnvironmentExtra carries BOB_IRC_PASSWORD. Show verb/service/parameter only.
         $shown = ($NssmArgs | Select-Object -First 3) -join ' '
         throw "nssm $shown failed ($($r.ExitCode)): $($r.Output -join ' ')"
     }
@@ -323,13 +323,13 @@ function Get-BobiverseErgoPasswordPath {
 
 function Import-BobiverseErgoPassword {
     param([string]$InstallRoot = '', [string]$HomeDir = '')
-    if ($env:AGENTIC_IRC_PASSWORD) { return $true }
+    if ($env:BOB_IRC_PASSWORD) { return $true }
     $path = Get-BobiverseErgoPasswordPath -InstallRoot $InstallRoot -HomeDir $HomeDir
     if (-not $path) { return $false }
     $secret = (Get-Content -LiteralPath $path -Raw).Trim()
     if (-not $secret) { return $false }
-    $env:AGENTIC_IRC_PASSWORD = $secret
-    Write-Host "INFO loaded AGENTIC_IRC_PASSWORD from $path"
+    $env:BOB_IRC_PASSWORD = $secret
+    Write-Host "INFO loaded BOB_IRC_PASSWORD from $path"
     return $true
 }
 

@@ -1,7 +1,7 @@
 # Start exactly one irc_agent after deterministic prior cleanup.
 # Watch-Bobiverse (agentic_build tools/Watch-Bobiverse.ps1) calls this
 # instead of Start-Process -WindowStyle Hidden.
-# Password stays in the environment (AGENTIC_IRC_PASSWORD). It is not an argument and is not logged.
+# Password stays in the environment (BOB_IRC_PASSWORD). It is not an argument and is not logged.
 param(
     [Parameter(Mandatory = $true)][string]$Python,
     [Parameter(Mandatory = $true)][string]$AgentPath,

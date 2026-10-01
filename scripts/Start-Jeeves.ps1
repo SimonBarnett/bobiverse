@@ -18,13 +18,17 @@ if (-not $ChairHome) {
     if (Test-BobiverseIsLocalSystem) {
         $ChairHome = Join-Path $RepoRoot 'home-jeeves'
     } else {
-        $ChairHome = Join-Path $env:USERPROFILE '.agentic-irc-jeeves'
+        $ChairHome = Join-Path $env:USERPROFILE '.jeeves'
     }
 }
 New-Item -ItemType Directory -Force -Path $ChairHome | Out-Null
 if (-not $Python) {
     try { $Python = Resolve-BobiversePython } catch { throw 'python.exe missing' }
 }
+# #53: everything the chair + webhooks need lives under THIS install (config\) and the
+# jeeves/bobiverse homes; BOB_* variables only (legacy names are not read).
+$env:BOB_CONFIG_DIR = if ($env:BOB_CONFIG_DIR) { $env:BOB_CONFIG_DIR } else { Join-Path $RepoRoot 'config' }
+$env:BOB_HOME = $ChairHome
 
 [void](Import-BobiverseErgoPassword -InstallRoot $RepoRoot -HomeDir $ChairHome)
 
@@ -55,9 +59,16 @@ $agent = Join-Path $scriptDir 'irc_agent.py'
 if (-not (Test-Path -LiteralPath $agent)) { throw "missing $agent" }
 
 $env:BOB_DIGEST_HOME = if ($env:BOB_DIGEST_HOME) { $env:BOB_DIGEST_HOME } else {
-    if (Test-BobiverseIsLocalSystem) { Join-Path $RepoRoot 'home' } else { Join-Path $env:USERPROFILE '.agentic-irc-bobiverse' }
+    if (Test-BobiverseIsLocalSystem) { Join-Path $RepoRoot 'home' } else { Join-Path $env:USERPROFILE '.bobiverse' }
 }
 New-Item -ItemType Directory -Force -Path $env:BOB_DIGEST_HOME | Out-Null
+# First start after upgrade: copy data from the old ~\.agentic-irc-* homes (kept as backup).
+$homeMigrate = Join-Path $scriptDir 'bob_home.py'
+if (Test-Path -LiteralPath $homeMigrate) {
+    try { & $Python $homeMigrate migrate --chair-home $ChairHome --digest-home $env:BOB_DIGEST_HOME --config-dir $env:BOB_CONFIG_DIR } catch {
+        Write-Host "WARN home migration: $($_.Exception.Message)"
+    }
+}
 
 # Ensure BobIrcd is up before chair (monitor path; !recycle jeeves still chair-only).
 $watchIrcd = Join-Path $scriptDir 'Watch-BobIrcd.ps1'

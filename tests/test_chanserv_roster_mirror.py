@@ -110,6 +110,9 @@ class _FakeAgent:
         self._cs_sent_at = 0.0
         self._cs_force = False
         self._cs_fail_at = 0.0
+        self._cs_list_status = "unknown"
+        self._oper_state = "ok"
+        self._oper_name = "admin"
 
     def send(self, line):
         self.sent.append(line)
