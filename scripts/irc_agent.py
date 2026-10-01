@@ -24,6 +24,7 @@ import bobreport  # noqa: E402
 import bobstat  # noqa: E402
 import bobtalk  # noqa: E402
 import gitclaim  # noqa: E402
+import focus_ignore  # noqa: E402
 import grok_talk  # noqa: E402
 import filexfer  # noqa: E402
 import moot  # noqa: E402
@@ -1611,6 +1612,32 @@ class Client:
         info(f"INFO git-help pm nick={src} lines={len(lines)} from_chan={to_channel}")
         return True
 
+    def _maybe_focus_ignore(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
+        """Chair only (#39 gap 3): !focus / !unfocus / !focus strict / !ignore / !unignore / !ignored.
+
+        Replies by PM (never floods the channel). Reads are open; mutations need the owner's
+        services account (AccountMap from account-tag / extended-join), see focus_ignore.may_mutate.
+        """
+        if not getattr(self.args, "chair", False):
+            return False
+        if not focus_ignore.is_focus_family(body):
+            return False
+        if to_channel and not self._joined_channel(target):
+            return False
+        if src.lower() in self._mine_nicks():
+            return True
+        acct = self.accounts.get(src) if self.accounts is not None else None
+        try:
+            lines = focus_ignore.dispatch(self.home, src, acct, body)
+        except Exception as exc:  # never let a bad focus file kill the chair loop
+            info(f"INFO focus-ignore error {type(exc).__name__}: {exc}"[:200])
+            return True
+        for ln in lines or []:
+            self.whisper(src, ln)
+            time.sleep(FLOOD_S)
+        info(f"INFO focus-ignore nick={src} account={acct or '-'} lines={len(lines or [])}")
+        return True
+
     def _maybe_git_claim(self, src: str, target: str, body: str) -> bool:
         """Shop claim path (FR #207 / #233): chair or bob-* ear in #{machine}.
 
@@ -1657,18 +1684,20 @@ class Client:
             self._git_say(target, gitclaim.NAK_BORED_BUSY)
             info(f"INFO git-claim bored nak busy nick={src}")
             return
-        # Chair-only offer (legacy). Acceptance is ACK (FR #207).
-        status, job = gitclaim.offer_top(self.home, src, bobreport.normalize_channel(target))
+        # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
+        # Acceptance is still the seat's ACK (FR #207).
+        status, job = gitclaim.offer_focus_top(
+            self.home, src, bobreport.normalize_channel(target), now=now
+        )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)
-            line = gitclaim.format_claimed(job)
-            # Address the worker so the seat knows the offer is theirs
-            self._git_say(target, f"{src}: ASSIGN {line}")
+            line = gitclaim.format_assign_line(src, job)
+            self._git_say(target, line)
             info(f"INFO git-claim bored offered {line} nick={src}")
             return
         if status == "empty":
             gitclaim.note_worker_activity(self.home, src, now)
-            self._git_say(target, gitclaim.NO_JOBS)
+            self._git_say(target, gitclaim.format_nothing_queued(src))
             info(f"INFO git-claim bored empty nick={src}")
             return
         info(f"INFO git-claim bored offer failed nick={src}")
@@ -1738,6 +1767,8 @@ class Client:
         if self._maybe_git_list(src, target, body, to_channel=to_channel):
             return
         if self._maybe_git_help(src, target, body, to_channel=to_channel):
+            return
+        if self._maybe_focus_ignore(src, target, body, to_channel=to_channel):
             return
         if to_channel and self._maybe_shop_listen(src, target, body):
             return
