@@ -1967,6 +1967,9 @@ function Get-BobDigestWebhookFingerprint {
         [string]$Doc.responding
         [string]$Doc.remaining_pct
         [string]$Doc.overage_gbp
+        [string]$Doc.overage_usd
+        [string]$Doc.overspend_state
+        [string]$Doc.on_demand_limit_cents
         $(if ($Doc.pcent) { ($Doc.pcent | ConvertTo-Json -Compress -Depth 5) } else { '' })
         $poolsSig
         $jobsJson
@@ -2012,6 +2015,15 @@ function Build-BobDigestWebhookMergePayload {
     # CAST IRON (Simon 2026-09-27): month overspend GBP on every usage heartbeat.
     if ($null -ne $Doc.overage_gbp -and [string]$Doc.overage_gbp -ne '') {
         try { $payload.overage_gbp = [double]$Doc.overage_gbp } catch { }
+    }
+    # #60: overspend amount + state (none|over|at-limit|unknown) so the digest/tray can show it per machine.
+    if ($null -ne $Doc.overage_usd -and [string]$Doc.overage_usd -ne '') {
+        try { $payload.overage_usd = [double]$Doc.overage_usd } catch { }
+    }
+    if ($Doc.overspend_state) { $payload.overspend_state = [string]$Doc.overspend_state }
+    foreach ($odk in @('on_demand_used_cents', 'on_demand_limit_cents', 'on_demand_remaining_pct')) {
+        $odv = $Doc.$odk
+        if ($null -ne $odv -and [string]$odv -ne '') { try { $payload[$odk] = [int]$odv } catch { } }
     }
     return [pscustomobject]$payload
 }
@@ -2191,6 +2203,7 @@ function Write-BobIrcStatus {
     $sandPeriodEnd = $null
     $cursorRemainingPct = $null
     $overageGbp = $null
+    $cw = $null
     try {
         $cw = Get-BobCursorAgentWeeklyRemaining
         if ($cw) {
@@ -2265,6 +2278,11 @@ function Write-BobIrcStatus {
         account_remaining_pct  = $cursorRemainingPct
         cursor_remaining_pct   = $cursorRemainingPct
         overage_gbp            = $overageGbp
+        overage_usd            = $(if ($cw) { $cw.overage_usd } else { $null })
+        overspend_state        = $(if ($cw) { $cw.overspend_state } else { $null })
+        on_demand_used_cents   = $(if ($cw) { $cw.on_demand_used_cents } else { $null })
+        on_demand_limit_cents  = $(if ($cw) { $cw.on_demand_limit_cents } else { $null })
+        on_demand_remaining_pct = $(if ($cw) { $cw.on_demand_remaining_pct } else { $null })
         pcent                  = $pcent
         running                = @($running).Count + $liveN
         queued                 = @($inbox).Count
