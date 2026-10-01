@@ -981,8 +981,8 @@ class Client:
         try:
             self._privs().on_line(cmd, parts, trailing, prefix, tags)
             who = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
-            if not who or who.lower() in self._mine_nicks():
-                return
+            if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
+                return        # own PART/QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
             if cmd in ("PART", "KICK"):
                 chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
                 gone = (parts[2].lstrip(":") if cmd == "KICK" and len(parts) > 2 else who)

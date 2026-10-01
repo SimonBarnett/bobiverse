@@ -188,6 +188,12 @@ def test_kick_removes_the_kicked_nick_not_the_kicker(chair):
     assert [w["nick"] for w in listed(chair)] == ["marchhare-102"]
 
 
+def test_kick_by_jeeves_itself_removes_the_kicked_worker(chair):
+    _two(chair)
+    wire(chair, ":Jeeves!u@h KICK #marchhare marchhare-102 :invalid seat")
+    assert [w["nick"] for w in listed(chair)] == ["marchhare-101"]
+
+
 def test_nick_change_drops_old_nick(chair):
     _two(chair)
     wire(chair, ":marchhare-101!u@h NICK :marchhare-999")
