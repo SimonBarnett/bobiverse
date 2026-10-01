@@ -84,6 +84,8 @@ def test_build_digest_object_exports_chanserv_roster_and_chair_channels(tmp_path
     out = bobreport.build_digest_object(tmp_path, "Jeeves")
     assert set(out["machines"].keys()) == {"flamingo", "ionos", "win-mpre8vi4u6u"}
     assert "marchhare" not in out["machines"]
+    # #33: the ChanServ roster itself is exported, sorted, machine-id keyed.
+    assert out["roster_machine_ids"] == ["flamingo", "ionos", "win-mpre8vi4u6u"]
     assert out["chair_channels"] == [
         "#bobiverse",
         "#flamingo",
