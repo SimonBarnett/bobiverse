@@ -36,9 +36,7 @@ if (-not $Python) {
 }
 
 $env:BOB_MACHINE_ID = $MachineId
-# Update runs for LocalSystem too. Prefer git ff-only on the bobiverse clone + sync into
-# this install tree; MSI Check-BobiverseUpdate is fallback when no clone exists.
-# Operators may set BOBIVERSE_NO_UPDATE=1 to skip.
+# Self-update on start: see the v0.1.17 block below (Update-BobiverseService.ps1).
 
 # Ergo server PASS from config\ergo.password / home / env (public MSI no longer embeds - issue #4).
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
@@ -57,22 +55,19 @@ if (Test-Path -LiteralPath $nsFile) {
     Write-Host "WARN missing $nsFile - reserved nick will fail without BOB_IRC_SASL_PASSWORD"
 }
 
-$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
-$synced = $false
-if ((Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
-    try {
-        & $sync -Product bob -InstallRoot $InstallRoot
-        if ($LASTEXITCODE -eq 0) { $synced = $true }
-    } catch {
-        Write-Host "WARN sync-from-repo: $($_.Exception.Message)"
-    }
+# v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
+# helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.
+# Never blocks or fails the start. Never touches Ergo. Opt out: BOB_AUTOUPDATE=0 (or BOBIVERSE_NO_UPDATE=1).
+# BOBIVERSE_REPO (explicit dev opt-in) still fast-forwards that clone into this tree.
+$updater = Join-Path $scriptDir 'Update-BobiverseService.ps1'
+if (Test-Path -LiteralPath $updater) {
+    try { & $updater -Product bob -InstallRoot $InstallRoot -ServiceName ircBob }
+    catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
 }
-if (-not $synced -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
-    $update = Join-Path $scriptDir 'Check-BobiverseUpdate.ps1'
-    if (Test-Path -LiteralPath $update) {
-        try { & $update -Product bob -InstallRoot $InstallRoot }
-        catch { Write-Host "WARN update-check: $($_.Exception.Message)" }
-    }
+$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
+if ($env:BOBIVERSE_REPO -and (Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+    try { & $sync -Product bob -InstallRoot $InstallRoot }
+    catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
 }
 
 $agent = Join-Path $scriptDir 'irc_agent.py'

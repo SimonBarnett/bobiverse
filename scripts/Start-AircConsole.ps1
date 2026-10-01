@@ -62,22 +62,21 @@ if (-not $RepoRoot -or -not (Test-Path -LiteralPath $RepoRoot)) {
 
 # Fast-forward bobiverse clone and sync into this install tree before launch.
 # Operators may set BOBIVERSE_NO_UPDATE=1 to skip.
-$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
-$synced = $false
-if ((Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
-    try {
-        & $sync -Product airc -InstallRoot $RepoRoot
-        if ($LASTEXITCODE -eq 0) { $synced = $true }
-    } catch {
-        Write-Host "WARN sync-from-repo: $($_.Exception.Message)"
+# v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
+# helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.
+# Never blocks or fails the start. Never touches Ergo. Opt out: BOB_AUTOUPDATE=0 (or BOBIVERSE_NO_UPDATE=1).
+# BOBIVERSE_REPO (explicit dev opt-in) still fast-forwards that clone into this tree.
+if ($ServiceMode) {
+    $updater = Join-Path $scriptDir 'Update-BobiverseService.ps1'
+    if (Test-Path -LiteralPath $updater) {
+        try { & $updater -Product airc -InstallRoot $RepoRoot -ServiceName Airc }
+        catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
     }
 }
-if (-not $synced -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
-    $update = Join-Path $scriptDir 'Check-BobiverseUpdate.ps1'
-    if (Test-Path -LiteralPath $update) {
-        try { & $update -Product airc -InstallRoot $RepoRoot }
-        catch { Write-Host "WARN update-check: $($_.Exception.Message)" }
-    }
+$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
+if ($env:BOBIVERSE_REPO -and (Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+    try { & $sync -Product airc -InstallRoot $RepoRoot }
+    catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
 }
 
 $script = Join-Path $scriptDir 'airc_console_service.py'

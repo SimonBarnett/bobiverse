@@ -12,6 +12,9 @@ param(
     [string]$ChairHome = '',
     [string]$ErgoRoot = 'C:\ai\ergo',
     [switch]$SkipErgo,
+    # v0.1.17: an existing Ergo (ergo.exe + ircd.yaml + BobIrcd service) is left completely alone
+    # (an update must never restart or reconfigure the IRC server). -ForceErgo re-runs Install-BobIrcd.
+    [switch]$ForceErgo,
     [switch]$NoStart,
     [switch]$ForceTools,
     [switch]$PromptServicePassword,
@@ -111,6 +114,13 @@ if (-not (Test-Path -LiteralPath $ops)) {
 }
 
 # Ergo payload: pack lays ergo\ under InstallRoot; BobIrcd AppDirectory is ErgoRoot (C:\ai\ergo)
+if (-not $SkipErgo -and -not $ForceErgo -and
+    (Test-Path -LiteralPath (Join-Path $ErgoRoot 'ergo.exe')) -and
+    (Test-Path -LiteralPath (Join-Path $ErgoRoot 'ircd.yaml')) -and
+    (Get-Service -Name 'BobIrcd' -ErrorAction SilentlyContinue)) {
+    Write-Host 'INFO existing Ergo found - leaving ergo.exe, ircd.yaml and the BobIrcd service untouched (-ForceErgo to re-run Install-BobIrcd)'
+    $SkipErgo = $true
+}
 if (-not $SkipErgo) {
     $packErgo = Join-Path $InstallRoot 'ergo'
     if (-not (Test-Path -LiteralPath (Join-Path $packErgo 'ergo.exe'))) {
