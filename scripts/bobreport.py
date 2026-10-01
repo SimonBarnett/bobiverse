@@ -2,10 +2,15 @@
 """Shop-channel digest + public HTTP digest reader (issue #174). !bobiverse removed."""
 from __future__ import annotations
 
+import contextlib
 import copy
+import functools
 import json
 import os
 import re
+import threading
+import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -746,11 +751,146 @@ def load_digest(home: Path) -> dict:
 
 
 def save_digest(home: Path, doc: dict) -> None:
+    """Atomic write of digest.json (#51).
+
+    Unique tmp name per write (pid + uuid) so concurrent writers never share one
+    ``digest.json.tmp``; ``os.replace`` retried with backoff on Windows sharing violations
+    (WinError 32) / access denied (WinError 5, AV / indexer holding the target).
+    """
     path = digest_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    _cleanup_stale_digest_tmp(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
+    try:
+        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        _replace_with_retry(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+_REPLACE_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)
+_STALE_TMP_AGE_S = 120.0
+
+
+def _is_sharing_error(exc: OSError) -> bool:
+    if isinstance(exc, PermissionError):
+        return True
+    return getattr(exc, "winerror", None) in (5, 32)
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    last: OSError | None = None
+    for delay in (0.0,) + _REPLACE_RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            if not _is_sharing_error(exc):
+                raise
+            last = exc
+    assert last is not None
+    raise last
+
+
+def _cleanup_stale_digest_tmp(path: Path, max_age_s: float | None = None) -> int:
+    """Remove orphaned ``digest.json*.tmp`` left by crashed writers. Returns count removed."""
+    age = _STALE_TMP_AGE_S if max_age_s is None else max_age_s
+    removed = 0
+    now = time.time()
+    try:
+        cands = list(path.parent.glob(path.name + "*.tmp"))
+    except OSError:
+        return 0
+    for p in cands:
+        try:
+            if now - p.stat().st_mtime >= age:
+                p.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+_DIGEST_THREAD_LOCK = threading.RLock()
+_LOCK_STATE = threading.local()
+
+
+@contextlib.contextmanager
+def digest_lock(home: Path, timeout_s: float = 15.0):
+    """Serialise digest read-modify-write across threads AND processes (#51).
+
+    Re-entrant per thread. Cross-process part is an advisory lock on ``digest.lock``;
+    if it cannot be taken within ``timeout_s`` we proceed (never wedge the webhook) -
+    the unique-tmp + replace retry still keeps the file consistent.
+    """
+    depth = getattr(_LOCK_STATE, "depth", 0)
+    if depth > 0:
+        _LOCK_STATE.depth = depth + 1
+        try:
+            yield
+        finally:
+            _LOCK_STATE.depth -= 1
+        return
+    with _DIGEST_THREAD_LOCK:
+        fh = None
+        locked = False
+        try:
+            lock_path = digest_path(home).with_name("digest.lock")
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fh = open(lock_path, "a+b")
+            deadline = time.monotonic() + timeout_s
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.02)
+        except OSError:
+            pass
+        _LOCK_STATE.depth = 1
+        try:
+            yield
+        finally:
+            _LOCK_STATE.depth = 0
+            if fh is not None:
+                if locked:
+                    with contextlib.suppress(OSError):
+                        if os.name == "nt":
+                            import msvcrt
+
+                            fh.seek(0)
+                            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+
+                            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                with contextlib.suppress(OSError):
+                    fh.close()
+
+
+def _digest_locked(fn):
+    """Decorator: run a ``fn(home, ...)`` digest mutator under :func:`digest_lock`."""
+
+    @functools.wraps(fn)
+    def wrapper(home, *args, **kwargs):
+        with digest_lock(Path(home)):
+            return fn(home, *args, **kwargs)
+
+    return wrapper
 
 
 def _utc_now_iso() -> str:
@@ -849,6 +989,7 @@ def chair_mode_active(home: Path) -> bool:
     return bool(digest_chair_nick(home))
 
 
+@_digest_locked
 def persist_chair_nick(home: Path, nick: str) -> None:
     """Write digest chair identity to shared digest.json (issue #73 / #78)."""
     n = (nick or "").strip()
@@ -1057,6 +1198,7 @@ def apply_report(home: Path, sender_nick: str, briefer_nick: str, body: str) -> 
     return ReportOutcome(ok=False, err=REPORT_GONE)
 
 
+@_digest_locked
 def merge_worker_working_on(
     home: Path,
     machine_id: str,
@@ -1120,6 +1262,7 @@ def start_worker(
     return merge_worker_working_on(home, machine_id, pid, working_on, briefer_nick, kind=kind)
 
 
+@_digest_locked
 def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str = "", now: float | None = None) -> PresenceOutcome:
     mid = normalize_machine_id(machine_id)
     if not mid:
@@ -1155,6 +1298,7 @@ def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str
     return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid)
 
 
+@_digest_locked
 def shop_down(home: Path, machine_id: str, briefer_nick: str = "") -> PresenceOutcome:
     mid = normalize_machine_id(machine_id)
     if not mid:
@@ -1173,6 +1317,7 @@ def shop_down(home: Path, machine_id: str, briefer_nick: str = "") -> PresenceOu
     return PresenceOutcome(ok=True, actions=[action], shop_closed=True, machine_id=mid)
 
 
+@_digest_locked
 def apply_join(home: Path, nick: str, channel: str, briefer_nick: str = "") -> PresenceOutcome:
     ch = normalize_channel(channel)
     worker = parse_worker_nick(nick)
@@ -1214,6 +1359,7 @@ def apply_join(home: Path, nick: str, channel: str, briefer_nick: str = "") -> P
     return PresenceOutcome(ok=True, machine_id=mid)
 
 
+@_digest_locked
 def apply_part(home: Path, nick: str, channel: str, briefer_nick: str = "") -> PresenceOutcome:
     ch = normalize_channel(channel)
     worker = parse_worker_nick(nick)
@@ -1228,6 +1374,7 @@ def apply_part(home: Path, nick: str, channel: str, briefer_nick: str = "") -> P
     return PresenceOutcome(ok=True, machine_id=mid)
 
 
+@_digest_locked
 def apply_quit(home: Path, nick: str, briefer_nick: str = "") -> PresenceOutcome:
     worker = parse_worker_nick(nick)
     if worker:
@@ -1239,6 +1386,7 @@ def apply_quit(home: Path, nick: str, briefer_nick: str = "") -> PresenceOutcome
     return PresenceOutcome(ok=True)
 
 
+@_digest_locked
 def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> CallbackOutcome:
     if not isinstance(payload, dict):
         return CallbackOutcome(ok=False, err="malformed")
@@ -2147,6 +2295,7 @@ def merge_payload_local_peer_ahead_of_chair(
     return payload
 
 
+@_digest_locked
 def ingest_fleet_digest_pull(home: Path, pull: dict) -> None:
     """Apply chair !bobiverse JSON to local digest.json and bob-peers (tray pull)."""
     if not isinstance(pull, dict):
