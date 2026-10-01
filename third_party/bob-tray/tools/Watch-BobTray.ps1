@@ -1014,7 +1014,13 @@ function Get-BobTrayMachineGrokChatPcent {
     }
     if (-not $doc) {
         try {
-            $doc = Invoke-RestMethod -Uri (Get-BobTrayDigestReportUrl) -TimeoutSec 8
+            # UTF-8 explicitly (PS 5.1 would decode a charset-less body as Latin-1: "A-circumflex + dot").
+            $resp = Invoke-WebRequest -Uri (Get-BobTrayDigestReportUrl) -UseBasicParsing -TimeoutSec 8 -Headers @{ Accept = 'application/json' }
+            $ms = $resp.RawContentStream
+            $ms.Position = 0
+            $buf = New-Object byte[] ([int]$ms.Length)
+            [void]$ms.Read($buf, 0, $buf.Length)
+            $doc = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
         }
         catch {
             Write-TrayLog ('agents: digest fuel read failed: ' + $_.Exception.Message)
@@ -2735,56 +2741,23 @@ function Rebuild-BobTrayTiles {
             if (-not $resolved) { continue }
             $id = ([string]$resolved).ToUpperInvariant()
             $pct = $m.remaining_pct
-            # 0% is real (#179) - only missing/null is n/a.
-            $pctLabel = 'n/a'
+            # 0% is real (#179). Unknown/stale (period over) is hidden, never "n/a" or a stale reset.
+            $pctLabel = $null
             if ($null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
             $seat = [string]$m.seat_label
             if (-not $seat) { $seat = [string]$m.seat_email }
             $nameHeading = $id
             if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
-            $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel)
-            if ($m.reset_label) { $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label) }
+            $machHeading = $nameHeading
+            if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
+            if ($pctLabel -and $m.reset_label) { $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label) }
             $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading `
                 -RemainingPct $pct -BarWidth 354 -Icon $null
-            $reach = [string]$m.reach
-            $jobTxt = ''
-            # #60: what this machine's Bob reported to the digest (grok pools, cursor pools, overspend).
-            $poolBits = @()
-            foreach ($gp in @($m.grok_pools)) {
-                if (-not $gp) { continue }
-                $gpPct = $(if ($null -ne $gp.remaining_pct -and [string]$gp.remaining_pct -ne '') { ('{0}%' -f [int]$gp.remaining_pct) } else { 'n/a' })
-                $gpEnd = $(if ($gp.period_end) { (' resets {0}' -f [string]$gp.period_end) } else { '' })
-                $poolBits += ('{0} {1}{2}' -f [string]$gp.label, $gpPct, $gpEnd)
-            }
-            foreach ($cp in @($m.cursor_pools)) {
-                if (-not $cp) { continue }
-                $cpPct = $(if ($null -ne $cp.remaining_pct -and [string]$cp.remaining_pct -ne '') { ('{0}%' -f [int]$cp.remaining_pct) } else { 'n/a' })
-                $poolBits += ('{0} {1}' -f [string]$cp.label, $cpPct)
-            }
-            $mOver = Format-BobTrayCursorOverspendLine -OverageGbp $m.overspend_gbp
-            if ($mOver) { $poolBits += $mOver }
-            if ($poolBits.Count -gt 0) { $jobTxt = ($poolBits -join "`n") }
-            if ($m.up_since) { $jobTxt = $(if ($jobTxt) { $jobTxt + "`n" } else { '' }) + ('up since {0}' -f [string]$m.up_since) }
-            if ($reach -eq 'not-in-moot' -or $reach -eq 'unreachable') {
-                $jobTxt = $(if ($jobTxt) { $jobTxt + "`nnot in moot" } else { 'not in moot' })
-            }
-            elseif (@($m.jobs).Count -eq 0) {
-                $idle = $(if ($reach -eq 'stale') { 'lastSeen stale' } else { 'no jobs' })
-                $jobTxt = $(if ($jobTxt) { $jobTxt + "`n$idle" } else { $idle })
-            }
-            else {
-                $bits = @()
-                if ($jobTxt) { $bits += $jobTxt }
-                if ($reach -eq 'stale') { $bits += 'lastSeen stale' }
-                foreach ($j in @($m.jobs)) {
-                    $ln = $j.line
-                    if (-not $ln) {
-                        try { $ln = Format-BobTrayJobLine -Job $j } catch { $ln = $null }
-                    }
-                    if ($ln) { $bits += $ln }
-                }
-                $jobTxt = ($bits -join "`n")
-            }
+            # v0.1.18: ONE line per worker process on this machine, "{irc nick}: {doing|idle}".
+            # Fleet-wide Cursor values are shown ONCE in the Cursor section above, not repeated here.
+            $wLines = @($m.worker_lines | Where-Object { $_ })
+            $jobTxt = ($wLines -join "`n")
+            if (-not $jobTxt) { $y += 4; continue }
             $jl = New-Object System.Windows.Forms.Label
             $jl.AutoSize = $true
             $jl.MaximumSize = New-Object System.Drawing.Size 392, 0

@@ -650,6 +650,7 @@ def _empty_machine(machine_id: str) -> dict:
         "status": "I am offline",
         "working_on": "",
         "workers": {},
+        "worker_list": [],
     }
 
 
@@ -705,6 +706,68 @@ def _coerce_workers(mid: str, raw: object) -> dict:
     return out
 
 
+# ---- v0.1.18: chair-maintained worker list (machines.<id>.workers on the wire) ----------------
+# Stored as ``worker_list`` (list of {nick,state,work,updated}); the legacy pid-keyed ``workers``
+# dict (merge op / gitclaim seat lookup) is untouched. Export publishes the list as ``workers``.
+WORKER_STATES = ("doing", "idle")
+WORKER_WORK_MAX = 160
+WORKER_LIST_MAX = 32
+_WORKER_NICK_RE = re.compile(r"^[A-Za-z_\[\]\\`^{|}][A-Za-z0-9_\-\[\]\\`^{|}]{0,31}$")
+_NOT_WORKER_NICKS = frozenset(
+    {"jeeves", "chanserv", "nickserv", "operserv", "hostserv", "memoserv", "botserv",
+     "histserv", "global", "simon"}
+)
+
+
+def is_worker_nick(nick: str) -> bool:
+    """True for a nick that may appear in a machine's worker list.
+
+    Workers are seat nicks that speak ``!bored``/ACK/DONE. Ear/monitor nicks (``bob-*``,
+    ``*_console``, ``console-*``), Jeeves, Simon and IRC services are never workers."""
+    n = (nick or "").strip()
+    if not n or not _WORKER_NICK_RE.match(n):
+        return False
+    low = n.lower()
+    if low in _NOT_WORKER_NICKS or low.startswith("bob-") or low.startswith("console-"):
+        return False
+    if low.endswith("_console") or low.endswith("-console"):
+        return False
+    return True
+
+
+def clean_worker_work(text: object) -> str:
+    s = "".join(ch if (ch.isprintable() and ch not in "\r\n\t") else " " for ch in str(text or ""))
+    s = " ".join(s.split())
+    return s[:WORKER_WORK_MAX]
+
+
+def _coerce_worker_list(raw: object) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for ent in raw:
+        if not isinstance(ent, dict):
+            continue
+        nick = str(ent.get("nick") or "").strip()
+        if not is_worker_nick(nick) or nick.lower() in seen:
+            continue
+        seen.add(nick.lower())
+        state = str(ent.get("state") or "idle").strip().lower()
+        if state not in WORKER_STATES:
+            state = "idle"
+        work = clean_worker_work(ent.get("work")) if state == "doing" else ""
+        out.append(
+            {"nick": nick, "state": state, "work": work, "updated": str(ent.get("updated") or "")}
+        )
+    return out[:WORKER_LIST_MAX]
+
+
+def worker_list_for_export(ent: dict) -> list[dict]:
+    rows = _coerce_worker_list(ent.get("worker_list"))
+    return sorted(rows, key=lambda r: r["nick"].lower())
+
+
 def _coerce_machine(mid: str, raw: object) -> dict:
     base = _empty_machine(mid)
     if not isinstance(raw, dict):
@@ -719,6 +782,7 @@ def _coerce_machine(mid: str, raw: object) -> dict:
             "status": status,
             "working_on": str(raw.get("working_on") or ""),
             "workers": _coerce_workers(mid, raw.get("workers")),
+            "worker_list": _coerce_worker_list(raw.get("worker_list")),
         }
     )
     if isinstance(raw.get("pcent"), dict):
@@ -960,6 +1024,7 @@ def _set_online(ent: dict, online: bool) -> None:
     if not online:
         ent["working_on"] = ""
         ent["workers"] = {}
+        ent["worker_list"] = []
 
 
 @dataclass
@@ -1081,6 +1146,7 @@ def _machine_fingerprint(ent: dict) -> str:
         "cursor_pools": ent.get("cursor_pools"),
         "uptime_since": ent.get("uptime_since"),
         "workers": ent.get("workers"),
+        "worker_list": ent.get("worker_list"),
     }
     for key in _MERGE_PEER_FIELDS:
         if key in ent:
@@ -1364,6 +1430,70 @@ def delete_worker(home: Path, machine_id: str, pid: int | str, briefer_nick: str
     return PresenceOutcome(ok=True, deleted_pid=pid_s, machine_id=mid)
 
 
+def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick: str = "") -> CallbackOutcome:
+    """worker-upsert / worker-remove / worker-work (chair-side, roster machines only)."""
+    nick = str(payload.get("nick") or "").strip()
+    if not is_worker_nick(nick):
+        return CallbackOutcome(ok=False, err="bad nick")
+    state_raw = payload.get("state")
+    state = str(state_raw).strip().lower() if state_raw not in (None, "") else ""
+    if state and state not in WORKER_STATES:
+        return CallbackOutcome(ok=False, err="bad state")
+    work_raw = payload.get("work")
+    if work_raw is not None and not isinstance(work_raw, str):
+        return CallbackOutcome(ok=False, err="bad work")
+    if looks_like_secret(str(work_raw or "")):
+        return CallbackOutcome(ok=False, err="secret")
+    if op == "worker-work" and not state:
+        return CallbackOutcome(ok=False, err="state required")
+    doc = load_digest(home)
+    ent = _machine_entry(doc, mid)
+    rows = list(ent.get("worker_list") or [])
+    idx = next((i for i, r in enumerate(rows) if r["nick"].lower() == nick.lower()), -1)
+    def _sig(rs):
+        return json.dumps([{k: v for k, v in r.items() if k != "updated"} for r in rs], sort_keys=True)
+
+    before = _sig(rows)
+    now_iso = _utc_now_iso()
+    touched = nick
+    if op == "worker-remove":
+        if idx < 0:
+            return CallbackOutcome(ok=True, changed=False)
+        rows.pop(idx)
+        event = "worker-remove"
+    else:
+        if idx < 0:
+            if len(rows) >= WORKER_LIST_MAX:
+                return CallbackOutcome(ok=False, err="too many workers")
+            row = {"nick": nick, "state": "idle", "work": "", "updated": now_iso}
+            rows.append(row)
+        else:
+            row = rows[idx]
+        if state:
+            row["state"] = state
+        if row["state"] == "doing":
+            if work_raw is not None:
+                row["work"] = clean_worker_work(work_raw)
+            if not row["work"]:
+                row["work"] = "working"
+        else:
+            row["work"] = ""
+        event = op
+    after_rows = _coerce_worker_list(rows)
+    if _sig(after_rows) == before:
+        return CallbackOutcome(ok=True, changed=False)
+    for r in after_rows:
+        if r["nick"].lower() == touched.lower():
+            r["updated"] = now_iso
+    ent["worker_list"] = after_rows
+    if briefer_nick:
+        doc["briefer"] = briefer_nick
+    doc["ts"] = now_iso
+    _note_event(doc, event, machine=mid, nick=nick)
+    save_digest(home, doc)
+    return CallbackOutcome(ok=True, changed=True)
+
+
 @_digest_locked
 def shop_down(home: Path, machine_id: str, briefer_nick: str = "") -> PresenceOutcome:
     mid = normalize_machine_id(machine_id)
@@ -1513,6 +1643,12 @@ def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> Callbac
         _note_event(doc, "merge", machine=mid)
         save_digest(home, doc)
         return CallbackOutcome(ok=True, actions=actions)
+    if op in ("worker-upsert", "worker-remove", "worker-work"):
+        if not mid:
+            return CallbackOutcome(ok=False, err="bad machine")
+        if not is_roster_machine(home, mid):
+            return CallbackOutcome(ok=False, err="not registered")
+        return _apply_worker_op(home, op, mid, payload, briefer_nick)
     if op == "delete-worker":
         if not mid:
             return CallbackOutcome(ok=False, err="bad machine")
@@ -1965,7 +2101,7 @@ def export_machine_for_tray(
     out.setdefault("online", False)
     out.setdefault("status", "I am offline" if not out.get("online") else "I am online")
     out.setdefault("working_on", "")
-    out.setdefault("workers", {})
+    out["workers"] = worker_list_for_export(base)
     out.setdefault("weekly", None)
     out.setdefault("period_end", None)
     out.setdefault("lastSeen", None)

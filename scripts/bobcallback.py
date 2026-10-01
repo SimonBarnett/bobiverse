@@ -275,7 +275,8 @@ def handle_git_webhook(
     return 204, b""
 
 
-REPORT_OPS = frozenset({"merge", "delete-worker", "shop-down"})
+WORKER_OPS = frozenset({"worker-upsert", "worker-remove", "worker-work"})
+REPORT_OPS = frozenset({"merge", "delete-worker", "shop-down"}) | WORKER_OPS
 
 
 def validate_report_payload(home: Path, payload: dict) -> tuple[int, str, str]:
@@ -298,6 +299,17 @@ def validate_report_payload(home: Path, payload: dict) -> tuple[int, str, str]:
         val = payload.get(key)
         if val is not None and val != "" and not str(val).isdigit():
             return 400, "", "bad pid"
+    if op in WORKER_OPS:
+        if not bobreport.is_worker_nick(str(payload.get("nick") or "")):
+            return 400, "", "bad nick"
+        st = payload.get("state")
+        if st not in (None, "") and str(st).strip().lower() not in bobreport.WORKER_STATES:
+            return 400, "", "bad state"
+        if op == "worker-work" and st in (None, ""):
+            return 400, "", "state required"
+        work = payload.get("work")
+        if work is not None and (not isinstance(work, str) or len(work) > 400):
+            return 400, "", "bad work"
     return 0, mid, ""
 
 

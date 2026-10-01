@@ -37,6 +37,8 @@ import agent_control  # noqa: E402
 import registered_machines  # noqa: E402
 import bob_home  # noqa: E402
 import chair_oper  # noqa: E402
+import chan_privs  # noqa: E402
+import chan_workers  # noqa: E402
 import talk_seat_ghost  # noqa: E402
 import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
@@ -706,8 +708,6 @@ class Client:
                 return
         if who and who.lower() not in self._mine_nicks() and ch.lower() == bobreport.FLEET_CHANNEL:
             self._maybe_brief_joiner(who)
-        if who and who.lower() not in self._mine_nicks():
-            self._maybe_grant_bob_modes(who)
         if not self._is_digest_operator():
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
@@ -862,6 +862,9 @@ class Client:
         self._op_try_at = {}
         self._cs_list_status = "unknown"
         self._cs_collector = None
+        eng = getattr(self, "_privs_engine", None)
+        if eng is not None:
+            eng.reset()
 
     def _chair_oper_on_connect(self) -> None:
         """Send OPER with the install-config credentials and wait briefly for 381 / +o."""
@@ -919,9 +922,88 @@ class Client:
             for chan, mode, added in chair_oper.mode_changes_for(parts, self.live_nick):
                 if mode in "oaq":
                     self._chan_op[chan.lower()] = added
-                    info(f"INFO chair {'+' if added else '-'}{mode} in {chan}")
+                    if added:
+                        info(f"INFO chair +{mode} in {chan}")
+                    else:
+                        # mode drift: Jeeves lost ops - retry immediately (not after the 45 s back-off)
+                        self._op_try_at.pop(chan.lower(), None)
+                        info(f"WARN chair -{mode} in {chan}: Jeeves lost ops, re-applying")
         elif cmd in ("PART", "KICK"):
             pass
+
+    # ---- v0.1.18: channel privilege rules + worker list (chair only; see chan_privs / chan_workers)
+    def _privs(self):
+        eng = getattr(self, "_privs_engine", None)
+        if eng is None:
+            eng = chan_privs.ChanPrivEngine(
+                send=self.send,
+                log=info,
+                now=time.time,
+                me=lambda: self.live_nick,
+                channels=lambda: list(self.channels),
+                is_registered=lambda mid: registered_machines.is_registered(self._digest_home(), mid),
+                normalize=bobreport.normalize_machine_id,
+                chan_op=lambda ch: bool(self._chan_op.get(ch.lower())),
+                is_oper=lambda: getattr(self, "_oper_state", "") == "ok",
+                on_names=self._on_channel_names,
+                skip_whois=self._privs_skip_whois,
+            )
+            self._privs_engine = eng
+        return eng
+
+    def _privs_skip_whois(self, nick: str) -> bool:
+        """No account lookup for ears, seats, Jeeves or IRC services - they never earn owner ops."""
+        low = (nick or "").lower()
+        if low in self._mine_nicks() or low.endswith("serv") or low == "global":
+            return True
+        return bool(
+            registered_machines.machine_from_bob_nick(nick) or bobreport.parse_seat_nick(nick)
+            or not bobreport.is_worker_nick(nick) and low != "simon" and low.startswith(("bob-", "console-"))
+        )
+
+    def _workers(self):
+        wk = getattr(self, "_worker_tracker", None)
+        if wk is None:
+            wk = chan_workers.WorkerTracker(self._digest_home(), log=info)
+            self._worker_tracker = wk
+        return wk
+
+    def _on_channel_names(self, chan: str, present: set) -> None:
+        try:
+            self._workers().reconcile(chan, present)
+        except Exception as exc:  # never kill the reader over the worker list
+            info(f"WARN workers reconcile error {type(exc).__name__}")
+
+    def _chair_wire(self, cmd: str, parts: list, trailing: str, prefix: str, tags: dict) -> None:
+        """Chair: feed membership/mode/account events to the privilege engine and the worker list."""
+        if not getattr(self.args, "chair", False):
+            return
+        try:
+            self._privs().on_line(cmd, parts, trailing, prefix, tags)
+            who = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
+            if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
+                return        # own PART/QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
+            if cmd in ("PART", "KICK"):
+                chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
+                gone = (parts[2].lstrip(":") if cmd == "KICK" and len(parts) > 2 else who)
+                self._workers().on_leave(gone, chan)
+            elif cmd == "QUIT":
+                self._workers().on_quit(who)
+            elif cmd == "NICK":
+                new = (parts[1] if len(parts) > 1 else trailing).lstrip(":")
+                self._workers().on_nick(who, new)
+        except Exception as exc:  # noqa: BLE001
+            info(f"WARN chair-wire {cmd} error {type(exc).__name__}: {exc}"[:200])
+
+    def _chan_privs_tick(self) -> None:
+        if not getattr(self.args, "chair", False) or not self.joined.is_set():
+            return
+        try:
+            self._privs().tick()
+        except OSError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - never kill the outbox loop over the reconcile
+            info(f"WARN chan-privs tick error {type(exc).__name__}: {exc}"[:200])
 
     def _ensure_chan_ops(self) -> None:
         """Chair must hold +o in #bobiverse and every machine channel (SAMODE as oper; else ChanServ OP)."""
@@ -1077,17 +1159,16 @@ class Client:
         return True
 
     def _maybe_grant_bob_modes(self, nick: str) -> None:
-        """On Bob-* JOIN: +o shop and +h #bobiverse if machine was !register'd."""
+        """Merged into chan_privs (v0.1.18): bob-<machine> +o in #<machine>, +h in #bobiverse, re-applied
+        on JOIN / mode drift / reconcile by the privilege engine. Kept as an explicit re-apply hook."""
         if not getattr(self.args, "chair", False):
             return
         mid = registered_machines.machine_from_bob_nick(nick)
-        if not mid or not registered_machines.is_registered(self._digest_home(), mid):
+        if not mid:
             return
-        shop = f"#{mid}"
-        self.send(f"MODE {shop} +o {nick}")
-        time.sleep(FLOOD_S)
-        self.send(f"MODE {bobreport.FLEET_CHANNEL} +h {nick}")
-        info(f"INFO jeeves-op bob={nick} shop={shop} +o/+h")
+        eng = self._privs()
+        for ch in (f"#{mid}", bobreport.FLEET_CHANNEL):
+            eng.apply(ch, "bob-join")
 
     def _handle_recycle_command(self, asker: str, body: str) -> None:
         if not getattr(self.args, "chair", False):
@@ -1878,6 +1959,11 @@ class Client:
             return False
         now = time.time()
         if gitclaim.is_bored_command(body):
+            if chair:
+                try:
+                    self._workers().on_bored(src, target)
+                except Exception as exc:  # noqa: BLE001
+                    info(f"WARN workers bored error {type(exc).__name__}")
             self._git_bored(src, target, now, chair=chair)
             return True
         if gitclaim.is_accept_command(body):
@@ -1936,6 +2022,11 @@ class Client:
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)
             line = gitclaim.format_claimed(job)
+            if getattr(self.args, "chair", False):
+                try:
+                    self._workers().on_ack(src, target, shop_listen.activity_description(job))
+                except Exception as exc:  # noqa: BLE001
+                    info(f"WARN workers ack error {type(exc).__name__}")
             self._git_say(target, f"{src}: accepted {line}")
             info(f"INFO git-claim ack accepted {line} nick={src}")
             return
@@ -1971,6 +2062,13 @@ class Client:
         verb = result.get("verb") or ""
         status = result.get("status") or ""
         act = result.get("activity")
+        try:
+            if verb == "ACK" and status in ("ok", "duplicate") and act:
+                self._workers().on_ack(src, target, act)
+            elif verb in ("DONE", "NACK", "GIVEUP"):
+                self._workers().on_done(src, target)
+        except Exception as exc:  # noqa: BLE001
+            info(f"WARN workers {verb} error {type(exc).__name__}")
         info(
             f"INFO shop-listen {verb} status={status} nick={src} "
             f"activity={act!r} webhook={result.get('webhook')}"
@@ -2228,6 +2326,10 @@ class Client:
                         self._on_oper_numeric(cmd, parts, trailing)
                     if cmd in ("353", "MODE"):
                         self._on_chair_channel_line(cmd, parts, trailing)
+                    if cmd in ("353", "366", "JOIN", "PART", "KICK", "QUIT", "NICK", "ACCOUNT", "MODE", "330", "318") or (
+                        cmd == "PRIVMSG" and "account" in tags
+                    ):
+                        self._chair_wire(cmd, parts, trailing, prefix, tags)
                     if cmd == "001":
                         self.ready.set()
 
@@ -2378,6 +2480,7 @@ class Client:
                 self._maybe_bobiverse_pull()
                 self._maybe_chanserv_sync()
                 self._ensure_chan_ops()
+                self._chan_privs_tick()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
             except OSError:
@@ -2396,6 +2499,8 @@ class Client:
         self.live_nick = self.original_nick
         self._pending_joins = {c.lower() for c in self.channels}
         self._chair_reset_session()
+        if getattr(self.args, "chair", False):
+            self._privs().announce()      # created here, before the reader/outbox threads exist
         self._outbox_gen += 1
         gen = self._outbox_gen
         info(

@@ -253,8 +253,10 @@ def test_tray_renders_per_machine_grok_accounts_section():
     w = (TRAY / "tools" / "Watch-BobTray.ps1").read_text(encoding="utf-8-sig")
     i = w.index("-Title 'Grok accounts'")
     sec = w[i:i + 4500]
+    # v0.1.18: fleet-wide Cursor pools/overspend are shown ONCE at the top, never per grok account
     for needle in ("$m.grok_pools", "$m.cursor_pools", "$m.overspend_gbp", "Format-BobTrayCursorOverspendLine"):
-        assert needle in sec, needle
+        assert needle not in sec, needle
+    assert "$m.worker_lines" in sec
     h = (TRAY / "src" / "Public" / "Get-BobTrayHover.ps1").read_text(encoding="utf-8-sig")
     assert "Get-BobTrayDigestMachineSummary -Digest $reportDigest -MachineId $mid" in h
     for key in ("grok_pools", "cursor_pools", "overspend_gbp", "overspend_state"):
