@@ -11,12 +11,12 @@
 
 2. **Ergo server PASS**  
    Public release MSIs **do not** embed `config\ergo.password` (issue #4).  
-   After install, place one line at `C:\ai\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or set `AGENTIC_IRC_PASSWORD`.  
+   After install, place one line at `C:\ai\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or set `BOB_IRC_PASSWORD`.  
    Private/offline packs may use `Pack-BobiverseRelease.ps1 -EmbedErgoPassword`.
 
 3. **NickServ / SASL (Bob ear)**  
    Reserved `Bob-*` / `bob-*` nicks need SASL (issue #8 / #11).  
-   `Start-Bob.ps1` loads `home\nickserv.password` into `AGENTIC_IRC_SASL_USER=bob-{machine}` + `AGENTIC_IRC_SASL_PASSWORD`.  
+   `Start-Bob.ps1` loads `home\nickserv.password` into `BOB_IRC_SASL_USER=bob-{machine}` + `BOB_IRC_SASL_PASSWORD`.  
    When those env vars are set, `irc_agent` authenticates **before** NICK so Ergo accepts the reserved nick.  
    Do **not** mint a fresh GUID for an account that already exists on the network — restore the real password or oper-`SAREGISTER` / `RESETPASS`.  
    If stdout shows `INFO no-sasl reason=…`, `INFO NICKNAME_RESERVED`, or abort `NICKNAME_RESERVED`, fix NickServ credentials — not `!register` (that is ChanServ shops).  
@@ -62,7 +62,7 @@ Get-Service ircBob
 Get-Content C:\ai\bob\logs\stdout.log -Tail 40
 # or:
 Get-Content C:\ai\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue
-Get-Content $env:USERPROFILE\.agentic-irc-bobiverse\irc.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content $env:USERPROFILE\.bobiverse\irc.log -Tail 40 -ErrorAction SilentlyContinue
 ```
 
 Expect:
@@ -91,7 +91,7 @@ Expect `chanserv-info status=registered` and `joined #<machine> as <machine>_con
 Get-Service ircJeeves,BobJeeves,BobIrcd
 Get-Content C:\ai\jeeves\logs\stdout.log -Tail 40 -ErrorAction SilentlyContinue
 Get-Content C:\ai\jeeves\logs\stderr.log -Tail 40 -ErrorAction SilentlyContinue
-Get-Content $env:USERPROFILE\.agentic-irc-jeeves\irc.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content $env:USERPROFILE\.jeeves\irc.log -Tail 40 -ErrorAction SilentlyContinue
 ```
 
 Expect:
@@ -104,7 +104,7 @@ Expect:
 
 Quiet MSI runs as LocalSystem. If ObjectName stays LocalSystem:
 
-- Do **not** use `C:\Users\Default\.agentic-irc-jeeves` (Install-Jeeves avoids Default; prefers Admin chair or `C:\ai\jeeves\home-jeeves`).
+- Do **not** use `C:\Users\Default\.jeeves` (Install-Jeeves avoids Default; prefers Admin chair or `C:\ai\jeeves\home-jeeves`).
 - Admin-sealed `identity.json` cannot be opened → `CryptUnprotectData failed` crash-loop.
   - Fix properly: `Complete-BobiverseServiceLogon.ps1 -Product jeeves` with `C:\ai\jeeves\config\service.password`.
   - Interim: rename `identity.json` → `identity.json.admin-dpapi.bak` so LocalSystem mints a fresh identity (SEAL key changes).

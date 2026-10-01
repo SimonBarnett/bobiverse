@@ -23,7 +23,7 @@ REPORT_CMD = "!report"
 REPORT_GONE = "ERR report gone — use callback or GET /bob/v1/report"
 NO_MACHINE = "ERR no such machine"
 DEFAULT_DIGEST_URL = "https://irc.ntsa.uk/bob/v1/report"
-DIGEST_URL_ENV = "AGENTIC_IRC_DIGEST_URL"
+DIGEST_URL_ENV = "BOB_DIGEST_URL"
 BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://irc.ntsa.uk/bob/v1/report"
 DIGEST_PREFIX = "BOB DIGEST v1 "
 MAX_DIGEST_LINE = 350
@@ -75,7 +75,7 @@ def _default_digest_home() -> Path | None:
         return Path(env_home)
     prof = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
     if prof:
-        cand = Path(prof) / ".agentic-irc-bobiverse"
+        cand = Path(prof) / ".bobiverse"
         if cand.is_dir():
             return cand
     return None
@@ -425,7 +425,7 @@ def chair_channels(home: Path | None = None) -> list[str]:
             chair = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
             if chair:
                 # Prefer digest home sibling used by Start-Jeeves
-                cand = Path(chair) / ".agentic-irc-bobiverse"
+                cand = Path(chair) / ".bobiverse"
                 home = cand if cand.is_dir() else None
     shops = [shop_channel(mid) for mid in roster_machine_ids(home)]
     return [FLEET_CHANNEL] + shops
@@ -615,7 +615,7 @@ def digest_path(home: Path) -> Path:
 def fleet_digest_home(home: Path) -> Path:
     """Digest root (digest.json, chair-outbox.txt).
 
-    BOB_DIGEST_HOME wins so Jeeves (--home ~/.agentic-irc-jeeves) drains
+    BOB_DIGEST_HOME wins so Jeeves (--home ~/.jeeves) drains
     chair-outbox.txt on the bobiverse digest home. Do not point --home there.
     """
     env = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
@@ -988,7 +988,7 @@ GIT_ANNOUNCE_PREFIX = "GIT "
 MAX_GIT_ANNOUNCE = 380
 
 
-CHAIR_NICK_ENV = "AGENTIC_IRC_CHAIR_NICK"
+CHAIR_NICK_ENV = "BOB_CHAIR_NICK"
 
 
 def digest_chair_nick(home: Path) -> str | None:

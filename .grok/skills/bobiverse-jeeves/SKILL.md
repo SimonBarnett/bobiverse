@@ -19,18 +19,18 @@ Foundation: harvest-agent-skills -> https://github.com/SimonBarnett/bobiverse
 ```powershell
 Get-Service ircJeeves,BobJeeves,BobIrcd
 Get-Content C:\ai\jeeves\logs\stderr.log -Tail 80 -ErrorAction SilentlyContinue
-Get-Content $env:USERPROFILE\.agentic-irc-jeeves\irc.log -Tail 80
+Get-Content $env:USERPROFILE\.jeeves\irc.log -Tail 80
 ```
 
 ## Homes and DPAPI (CAST IRON)
 
-- Chair home: `~\.agentic-irc-jeeves` (or Admin path on Ergo host).
-- Digest: `BOB_DIGEST_HOME=~\.agentic-irc-bobiverse`.
+- Chair home: `~\.jeeves` (or Admin path on Ergo host).
+- Digest: `BOB_DIGEST_HOME=~\.bobiverse`.
 - **ObjectName must be the install user** (DPAPI) — not LocalSystem.
   - Quiet MSI: `BOBIVERSE_SERVICE_PASSWORD` or `C:\ai\jeeves\config\service.password` (one line) before install, or Desktop **Complete bobiverse service logon**.
   - LocalSystem + Admin-sealed `identity.json` → `OSError: CryptUnprotectData failed` and crash-loop.
   - Interim: park `identity.json` → `identity.json.admin-dpapi.bak`, let LocalSystem mint a fresh identity (SEAL key changes). Prefer fixing ObjectName and restoring the bak when the password is available.
-- MSI as LocalSystem must **not** bake `C:\Users\Default\.agentic-irc-jeeves` into NSSM AppParameters. Install-Jeeves prefers existing `C:\Users\Administrator\.agentic-irc-jeeves`, else `C:\ai\jeeves\home-jeeves`.
+- MSI as LocalSystem must **not** bake `C:\Users\Default\.jeeves` into NSSM AppParameters. Install-Jeeves prefers existing `C:\Users\Administrator\.jeeves`, else `C:\ai\jeeves\home-jeeves`.
 
 ## Start-Jeeves / --channel
 

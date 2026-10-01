@@ -14,7 +14,7 @@ param(
 $ErrorActionPreference = 'Continue'
 if (-not $DigestHome) {
     if ($env:BOB_DIGEST_HOME) { $DigestHome = $env:BOB_DIGEST_HOME }
-    else { $DigestHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse' }
+    else { $DigestHome = Join-Path $env:USERPROFILE '.bobiverse' }
 }
 $fail = $false
 $detail = @()

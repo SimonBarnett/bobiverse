@@ -12,7 +12,7 @@ so founder/op persists. KICK/MODE without op returns numeric 482; the agent logs
 it (INFO shop-op 482 ...) so the gap is visible.
 
 CLI (queues lines in <home>/outbox.txt; the running irc_agent drains them):
-  python scripts/shop_ops.py invalid --home ~/.agentic-irc-bobiverse --nick bob-marchhare
+  python scripts/shop_ops.py invalid --home ~/.bobiverse --nick bob-marchhare
   python scripts/shop_ops.py kick-invalid --home ... --nick bob-marchhare [--dry-run]
   python scripts/shop_ops.py names --home ... --nick bob-marchhare
 """

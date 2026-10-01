@@ -39,6 +39,9 @@ def _token_candidate_paths() -> list[Path]:
     # #53: the jeeves install owns the webhook receiver: <InstallRoot>\config\github.token
     # next to scripts\ (works for any InstallRoot, not just C:\ai\jeeves).
     paths.insert(0, Path(__file__).resolve().parent.parent / "config" / "github.token")
+    cfg_env = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
+    if cfg_env:
+        paths.insert(0, Path(cfg_env).expanduser() / "github.token")
     digest = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
     if digest:
         paths.append(Path(digest) / "github.token")

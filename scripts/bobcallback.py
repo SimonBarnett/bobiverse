@@ -47,7 +47,7 @@ def secret_candidates(home: Path | None = None, secret_file: str = "") -> list[P
     The BobCallback scheduled task runs as SYSTEM, whose Path.home() has no
     .grok\\bob\\report.secret. So besides the user profile we also try:
     an explicit --secret-file / BOB_REPORT_SECRET_FILE, the profile that owns the
-    digest home (``<profile>\\.agentic-irc-*`` -> ``<profile>\\.grok\\bob``), and the
+    digest home (``<profile>\\.bobiverse`` -> ``<profile>\\.grok\\bob``), and the
     install-root ``config\\report.secret`` next to scripts\\.
     """
     out: list[Path] = []
@@ -61,6 +61,10 @@ def secret_candidates(home: Path | None = None, secret_file: str = "") -> list[P
 
     add(secret_file)
     add(os.environ.get(SECRET_FILE_ENV))
+    cfg_env = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
+    if cfg_env:
+        add(Path(cfg_env).expanduser() / "report.secret")
+    add(Path(__file__).resolve().parent.parent / "config" / "report.secret")
     add(secret_path())
     if home is not None:
         add(Path(home).expanduser().parent / ".grok" / "bob" / "report.secret")
@@ -682,7 +686,7 @@ def main() -> None:
             "GET digest on /bob/v1/report and /bob/v1/digest; GET /bob/v1/jira"
         )
     )
-    p.add_argument("--home", default="", help="AGENTIC_IRC_HOME (digest.json)")
+    p.add_argument("--home", default="", help="BOB_HOME (digest.json)")
     p.add_argument("--bind", default="127.0.0.1")
     p.add_argument(
         "--secret-file",

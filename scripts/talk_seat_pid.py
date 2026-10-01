@@ -10,7 +10,7 @@ from pathlib import Path
 from bobreport import normalize_machine_id, seat_machine_ids
 
 _COORD_LINE = re.compile(r"^([a-z_]+)=(.*)$", re.IGNORECASE)
-_SEAT_ENV = "AGENTIC_IRC_SEAT_PID"
+_SEAT_ENV = "BOB_IRC_SEAT_PID"
 
 
 def parse_talk_seat_nick(nick: str) -> tuple[str, str] | None:
@@ -169,7 +169,7 @@ def seat_pid_from_env() -> int | None:
 def resolve_seat_pid(
     home: Path | str | None = None, *, self_pid: int | None = None
 ) -> int | None:
-    """irc_agent PID: env AGENTIC_IRC_SEAT_PID (or self), then coordinator.pid agent=."""
+    """irc_agent PID: env BOB_IRC_SEAT_PID (or self), then coordinator.pid agent=."""
     raw = (os.environ.get(_SEAT_ENV) or "").strip()
     if raw.lower() == "self":
         if self_pid is not None and self_pid > 0:
@@ -257,7 +257,7 @@ def home_bind_refusal(
         return (
             f"home has live irc_agent nick={agent_nick}{seat_part}; "
             f"this seat wants {expected}. Use a different -IrcHome "
-            "(e.g. ~/.agentic-irc-cursor-2). Do not kill the other seat's listen."
+            "(e.g. ~/.bobiverse-cursor-2). Do not kill the other seat's listen."
         )
 
     if lock_nick and lock_nick != expected and occupied:
@@ -265,7 +265,7 @@ def home_bind_refusal(
         return (
             f"coordinator.pid nick={lock_nick}{seat_part} with live listen/agent; "
             f"this seat wants {expected}. Use a different -IrcHome "
-            "(e.g. ~/.agentic-irc-cursor-2). Do not steal the first talk-seat home."
+            "(e.g. ~/.bobiverse-cursor-2). Do not steal the first talk-seat home."
         )
     return None
 
@@ -295,7 +295,7 @@ def process_is_alive(pid: int) -> bool:
 
 
 def seat_liveness_poll_s() -> float:
-    raw = (os.environ.get("AGENTIC_IRC_SEAT_LIVENESS_S") or "15").strip()
+    raw = (os.environ.get("BOB_IRC_SEAT_LIVENESS_S") or "15").strip()
     try:
         n = float(raw)
     except ValueError:
@@ -304,7 +304,7 @@ def seat_liveness_poll_s() -> float:
 
 
 def seat_liveness_disabled() -> bool:
-    return (os.environ.get("AGENTIC_IRC_SEAT_LIVENESS") or "").strip().lower() in (
+    return (os.environ.get("BOB_IRC_SEAT_LIVENESS") or "").strip().lower() in (
         "0",
         "off",
         "false",

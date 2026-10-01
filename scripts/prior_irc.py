@@ -17,19 +17,19 @@ irc_agent.py — kill when the command line names that script and any of:
 irc_listen.py — kill when the command line names that script and any of:
   1. --home normalizes to H
   2. N is a bob-* builder nick and --home's last path component is exactly
-     .agentic-irc-cursor (not .agentic-irc-cursor-2). irc_listen does not
+     .bobiverse-cursor (not .bobiverse-cursor-2). irc_listen does not
      join IRC; workers do not use it. This clears the hung default-cursor
      pile that stacked up beside the builder. A live legacy TSR on that
      home is started again by Start-TalkSeat / Start-IrcTsr.
 
-After any kill, wait AGENTIC_IRC_PRIOR_WAIT_S seconds (default 3, clamped
+After any kill, wait BOB_IRC_PRIOR_WAIT_S seconds (default 3, clamped
 2–5) so the server can drop the TCP session, then scan once more and kill
 stragglers. One wait per pass, two passes maximum. No wait when nothing
 matched.
 
 Verify (prints pids only, kills nothing):
 
-  python scripts/prior_irc.py --nick bob-flamingo --home ~/.agentic-irc-bobiverse --dry-run
+  python scripts/prior_irc.py --nick bob-flamingo --home ~/.bobiverse --dry-run
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 WAIT_DEFAULT_S = 3.0
 WAIT_MIN_S = 2.0
 WAIT_MAX_S = 5.0
-CURSOR_GHOST_HOME = ".agentic-irc-cursor"
+CURSOR_GHOST_HOME = ".bobiverse-cursor"
 BARE_BOB_NICK = "bob"
 
 _SCRIPT_RE = {
@@ -150,7 +150,7 @@ def resolve_wait_s(explicit: float | None) -> float:
         if explicit == 0:
             return 0.0
         return min(WAIT_MAX_S, max(WAIT_MIN_S, float(explicit)))
-    raw = (os.environ.get("AGENTIC_IRC_PRIOR_WAIT_S") or "").strip()
+    raw = (os.environ.get("BOB_IRC_PRIOR_WAIT_S") or "").strip()
     if not raw:
         return WAIT_DEFAULT_S
     try:

@@ -41,7 +41,7 @@ def test_system_profile_falls_back_to_digest_home_profile(monkeypatch, tmp_path)
     monkeypatch.setattr(bobcallback.Path, "home", classmethod(lambda cls: system_home))
     admin = tmp_path / "Administrator"
     _write(admin / ".grok" / "bob" / "report.secret", "adminsecret\n")
-    digest_home = admin / ".agentic-irc-bobiverse"
+    digest_home = admin / ".bobiverse"
     digest_home.mkdir()
     sec, src = bobcallback.find_secret(digest_home)
     assert sec == "adminsecret"
@@ -52,5 +52,5 @@ def test_missing_secret_returns_empty(monkeypatch, tmp_path):
     monkeypatch.delenv(bobcallback.SECRET_ENV, raising=False)
     monkeypatch.delenv(bobcallback.SECRET_FILE_ENV, raising=False)
     monkeypatch.setattr(bobcallback.Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
-    assert bobcallback.find_secret(tmp_path / "nohome2" / ".agentic-irc-x") == ("", "")
-    assert bobcallback.load_secret(tmp_path / "nohome2" / ".agentic-irc-x") == ""
+    assert bobcallback.find_secret(tmp_path / "nohome2" / ".bobiverse-x") == ("", "")
+    assert bobcallback.load_secret(tmp_path / "nohome2" / ".bobiverse-x") == ""

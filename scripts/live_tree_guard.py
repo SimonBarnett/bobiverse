@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 EXPECTED_BRANCH = "main"
-START_MARKER = ".agentic-irc-service-start"
+START_MARKER = ".bobiverse-service-start"
 WARN_REPORT = "service-tree-warn.json"
 
 
@@ -48,7 +48,7 @@ def resolve_service_tree(explicit: str | Path | None = None) -> Path | None:
     if explicit is not None and str(explicit).strip():
         raw: str | Path = explicit
     else:
-        raw = (os.environ.get("AGENTIC_IRC_SERVICE_TREE") or "").strip()
+        raw = (os.environ.get("BOB_IRC_SERVICE_TREE") or "").strip()
     if raw:
         p = Path(raw).expanduser().resolve()
         return p if (p / ".git").exists() or (p / ".git").is_file() else None
@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(description="FR #213 live service tree guard")
     p.add_argument("--tree", default="", help="service checkout (default: env or repo root)")
-    p.add_argument("--home", default="", help="AGENTIC_IRC_HOME for start marker + report")
+    p.add_argument("--home", default="", help="BOB_HOME for start marker + report")
     p.add_argument("--role", default="cli")
     p.add_argument("--no-mark-start", action="store_true")
     p.add_argument("--json", action="store_true")

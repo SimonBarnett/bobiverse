@@ -58,7 +58,7 @@ if (-not $BobHome) {
         $BobHome = Join-Path $InstallRoot 'home'
     } else {
         # Profile of service user when known; else current profile
-        $BobHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+        $BobHome = Join-Path $env:USERPROFILE '.bobiverse'
     }
 }
 New-Item -ItemType Directory -Force -Path $BobHome | Out-Null
@@ -162,9 +162,9 @@ if ($objectOk) {
 $envExtra = @(
     "BOB_MACHINE_ID=$MachineId"
 )
-if ($env:AGENTIC_IRC_PASSWORD) {
+if ($env:BOB_IRC_PASSWORD) {
     # NSSM AppEnvironmentExtra multi-line: KEY=VAL each line
-    $envExtra += "AGENTIC_IRC_PASSWORD=$($env:AGENTIC_IRC_PASSWORD)"
+    $envExtra += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)"
 }
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
 # Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)

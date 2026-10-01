@@ -2210,7 +2210,7 @@ function Request-BobTrayIrcLogout {
     }
     catch { }
     if (-not $ircHome) {
-        $ircHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+        $ircHome = Join-Path $env:USERPROFILE '.bobiverse'
     }
     if ($ircHome -and (Test-Path -LiteralPath $ircHome)) {
         if (-not $SkipAnnounce) {

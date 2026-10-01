@@ -34,7 +34,7 @@ if ($svc2 -and $svc2.Status -eq 'Running') {
     Write-Host 'INFO BobIrcd restarted OK'
     if (-not $DigestHome) {
         if ($env:BOB_DIGEST_HOME) { $DigestHome = $env:BOB_DIGEST_HOME }
-        else { $DigestHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse' }
+        else { $DigestHome = Join-Path $env:USERPROFILE '.bobiverse' }
     }
     $stamp = Join-Path $DigestHome 'bobircd-restart.stamp'
     $cooldown = [TimeSpan]::FromMinutes($AnnounceDownCooldownMinutes)

@@ -14,7 +14,7 @@ Foundation: harvest-agent-skills -> https://github.com/SimonBarnett/bobiverse
 
 - Service **`ircBob`**, nick **`Bob-{MachineId}`** (MachineId from `BOB_MACHINE_ID` / sanitized hostname)
 - Channels: `#bobiverse` + `#{MachineId}`
-- Home: `C:\ai\bob\home` when ObjectName is LocalSystem; else often `~\.agentic-irc-bobiverse`
+- Home: `C:\ai\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
 
@@ -27,13 +27,13 @@ Get-Content C:\ai\bob\logs\stdout.log -Tail 40 -ErrorAction SilentlyContinue
 ## Secrets
 
 - Ergo PASS: `C:\ai\bob\config\ergo.password` or `~\.grok\ergo\connect.password`
-- NickServ SASL: `C:\ai\bob\home\nickserv.password` → `AGENTIC_IRC_SASL_USER=bob-{machine}`
+- NickServ SASL: `C:\ai\bob\home\nickserv.password` → `BOB_IRC_SASL_USER=bob-{machine}`
 - Do **not** mint a fresh GUID for an already-registered account — oper `PASSWD` / restore real secret
 - Service ObjectName: prefer fleet user + `service.password` / `BOBIVERSE_SERVICE_PASSWORD` (DPAPI). LocalSystem is allowed but loses per-user DPAPI secrets.
 
 ## Outbox → remote airc (fleet ops)
 
-Bob ears with `AGENTIC_IRC_DEBUG=1` drain `home\outbox.txt`. Append UTF-8 **no BOM**:
+Bob ears with `BOB_IRC_DEBUG=1` drain `home\outbox.txt`. Append UTF-8 **no BOM**:
 
 ```text
 PRIVMSG {machine}_console :<cmd>

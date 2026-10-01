@@ -114,7 +114,7 @@ if (-not (Test-Path -LiteralPath $ergoDest) -or -not (Get-Content -LiteralPath $
     }
 }
 if (-not (Test-Path -LiteralPath $ergoDest) -or -not (Get-Content -LiteralPath $ergoDest -Raw -ErrorAction SilentlyContinue).Trim()) {
-    if (-not $env:AGENTIC_IRC_PASSWORD -and -not $env:AIRC_CONSOLE_SERVER_PASSWORD) {
+    if (-not $env:BOB_IRC_PASSWORD -and -not $env:AGENTIC_IRC_PASSWORD -and -not $env:AIRC_CONSOLE_SERVER_PASSWORD) {
         throw 'Ergo server PASS missing: need ConsoleHome\ergo.password or package config\ergo.password (or AGENTIC_IRC_PASSWORD). Without PASS, irc.ntsa.uk drops the TLS link (EOF) — looks like "does not connect".'
     }
 }

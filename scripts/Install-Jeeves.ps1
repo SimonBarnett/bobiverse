@@ -15,7 +15,12 @@ param(
     [switch]$NoStart,
     [switch]$ForceTools,
     [switch]$PromptServicePassword,
-    [switch]$SkipCopy
+    [switch]$SkipCopy,
+    # IRC operator credentials for the chair (DPAPI file <InstallRoot>\config\oper.cred).
+    # Prompt-less: -OperFile <existing ergo-oper file>  OR  -OperName + env BOB_OPER_PASSWORD.
+    # Without either, an existing config\oper.cred is kept, else Desktop\ergo-oper*.txt is used.
+    [string]$OperFile = '',
+    [string]$OperName = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,7 +44,7 @@ if (-not $Python) { $Python = Resolve-BobiversePython }
 # breaks DPAPI identity and loses the real Administrator chair. Prefer an existing
 # Admin chair, else InstallRoot\home-jeeves (issue: win-mpre cutover 2026-09-29).
 if (-not $ChairHome) {
-    $adminChair = Join-Path $env:SystemDrive 'Users\Administrator\.agentic-irc-jeeves'
+    $adminChair = Join-Path $env:SystemDrive 'Users\Administrator\.jeeves'
     if (Test-BobiverseIsLocalSystem) {
         if (Test-Path -LiteralPath $adminChair) {
             $ChairHome = $adminChair
@@ -49,21 +54,34 @@ if (-not $ChairHome) {
             Write-Host "INFO LocalSystem ChairHome=$ChairHome (avoid Default profile)"
         }
     } else {
-        $ChairHome = Join-Path $env:USERPROFILE '.agentic-irc-jeeves'
+        $ChairHome = Join-Path $env:USERPROFILE '.jeeves'
     }
 }
 New-Item -ItemType Directory -Force -Path $ChairHome | Out-Null
 if (Test-BobiverseIsLocalSystem) {
-    $adminDigest = Join-Path $env:SystemDrive 'Users\Administrator\.agentic-irc-bobiverse'
+    $adminDigest = Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse'
     if (Test-Path -LiteralPath $adminDigest) {
         $digestHome = $adminDigest
     } else {
         $digestHome = Join-Path $InstallRoot 'home'
     }
 } else {
-    $digestHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+    $digestHome = Join-Path $env:USERPROFILE '.bobiverse'
 }
 New-Item -ItemType Directory -Force -Path $digestHome | Out-Null
+
+# #53: first-run migration of the pre-0.1.15 ~\.agentic-irc-* homes into the jeeves/bobiverse homes
+# (copy only; the old homes stay as backup). The chair also repeats this on first start.
+$cfgDir = Join-Path $InstallRoot 'config'
+New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+$homeMigrate = Join-Path $here 'bob_home.py'
+if ((Test-Path -LiteralPath $homeMigrate) -and $Python) {
+    try {
+        & $Python $homeMigrate migrate --chair-home $ChairHome --digest-home $digestHome --config-dir $cfgDir
+    } catch {
+        Write-Host "WARN home migration: $($_.Exception.Message)"
+    }
+}
 
 # Clean prior ircJeeves + remove legacy gh-Jeeves chair (both fight for nick Jeeves)
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
@@ -141,8 +159,8 @@ $doPrompt = $PromptServicePassword -or (
 $objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName -User $user `
     -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
 
-$envLines = @("BOB_DIGEST_HOME=$digestHome")
-if ($env:AGENTIC_IRC_PASSWORD) { $envLines += "AGENTIC_IRC_PASSWORD=$($env:AGENTIC_IRC_PASSWORD)" }
+$envLines = @("BOB_DIGEST_HOME=$digestHome", "BOB_HOME=$ChairHome", "BOB_CONFIG_DIR=$cfgDir")
+if ($env:BOB_IRC_PASSWORD) { $envLines += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)" }
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envLines -join "`n")))
 
 if (-not $objectOk) {
@@ -165,20 +183,46 @@ if (Test-Path -LiteralPath $installWh) {
     }
 }
 
+# Chair IRC-operator credentials (DPAPI machine scope). Status only; the value is never printed.
+$operPy = Join-Path $here 'chair_oper.py'
+if (Test-Path -LiteralPath $operPy) {
+    try {
+        $opArgs = @($operPy, 'provision', '--config-dir', $cfgDir)
+        if ($OperFile) { $opArgs += @('--oper-file', $OperFile) }
+        if ($OperName) { $opArgs += @('--name', $OperName) }
+        & $Python @opArgs
+    } catch {
+        Write-Host "WARN oper provisioning: $($_.Exception.Message)"
+    }
+}
 # Supervised BobCallback (ONSTART) — adopts/replaces ad-hoc tasks
 try {
     $pyCb = if ($Python) { $Python } else { Resolve-BobiversePython }
     $cbScript = Join-Path $InstallRoot 'scripts\bobcallback.py'
-    $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --bind 127.0.0.1 --port 7700"
+    $secretFile = Join-Path $cfgDir 'report.secret'
+    $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --secret-file `"$secretFile`" --bind 127.0.0.1 --port 7700"
     schtasks /Create /TN BobCallback /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR $tr | Out-Null
     Write-Host 'INFO registered scheduled task BobCallback'
-    # #53: webhook secrets live in THIS install's config\ (not agentic_irc). Say so if absent.
-    $cfgDir = Join-Path $InstallRoot 'config'
-    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
-    foreach ($sec in @('report.secret', 'github.token')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $cfgDir $sec))) {
-            Write-Host "WARN webhook secret missing: $cfgDir\$sec (report POSTs rejected / issue filing off until provided; never in git/MSI)"
-        }
+    # #53: webhook secrets live in THIS install's config\. report.secret is GENERATED when missing
+    # (256-bit random; ACL SYSTEM + Administrators). Only the PATH is printed, never the value.
+    if (-not (Test-Path -LiteralPath $secretFile)) {
+        $bytes = New-Object byte[] 32
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        $rng.GetBytes($bytes); $rng.Dispose()
+        $hex = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+        [IO.File]::WriteAllText($secretFile, $hex, [Text.UTF8Encoding]::new($false))
+        $hex = $null
+        Write-Host "INFO generated NEW webhook secret: $secretFile (value not shown; give it to bob machines as ~\.grok\bob\report.secret)"
+    } else {
+        Write-Host "INFO webhook secret present: $secretFile"
+    }
+    & icacls $secretFile /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(F)' 'BUILTIN\Administrators:(F)' 2>&1 | Out-Null
+    $ghTok = Join-Path $cfgDir 'github.token'
+    if (-not (Test-Path -LiteralPath $ghTok)) {
+        Write-Host "WARN github token missing: $ghTok (issue filing from intake/jira is OFF until provided; never in git/MSI)"
+    } else {
+        & icacls $ghTok /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(F)' 'BUILTIN\Administrators:(F)' 2>&1 | Out-Null
+        Write-Host "INFO github token present: $ghTok"
     }
     if (-not $NoStart) {
         schtasks /Run /TN BobCallback 2>&1 | Out-Null

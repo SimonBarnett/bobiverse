@@ -36,8 +36,8 @@ MAX_INDEX_DIGITS = 2  # n <= 64
 MSGID_RE = re.compile(r"^[a-fA-F0-9]{16}$")
 NICK_RE = re.compile(r"^[A-Za-z\[\]^`{|}][A-Za-z0-9\[\]^`{|_-]{0,31}$")
 def home() -> Path:
-    raw = os.environ.get("AGENTIC_IRC_HOME")
-    return Path(raw).expanduser() if raw else Path.home() / ".agentic-irc"
+    raw = os.environ.get("BOB_HOME")
+    return Path(raw).expanduser() if raw else Path.home() / ".bobiverse"
 
 
 def ident_path() -> Path:
@@ -371,7 +371,7 @@ def tofu_pin(peers: dict, nick: str, pk_b64: str) -> str:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="agentic-irc sealed box")
+    p = argparse.ArgumentParser(description="bobiverse sealed box")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("genkey", help="create identity (DPAPI on Windows)")
     sub.add_parser("pubkey", help="print AGPK v1 line for IRC")
@@ -406,7 +406,7 @@ def main() -> None:
         return
     if args.cmd == "dumb-key":
         if args.home:
-            os.environ["AGENTIC_IRC_HOME"] = str(Path(args.home).expanduser())
+            os.environ["BOB_HOME"] = str(Path(args.home).expanduser())
         d = home() / "dumb"
         d.mkdir(parents=True, exist_ok=True)
         key = secrets.token_bytes(32)

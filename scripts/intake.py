@@ -23,7 +23,6 @@ DEFAULT_ALLOW_REPOS = frozenset(
     {
         "SimonBarnett/bobiverse",
         "SimonBarnett/gh-Jeeves",
-        "SimonBarnett/agentic_irc",
         "SimonBarnett/agentic_build",
         "SimonBarnett/skills-visionary",
         "SimonBarnett/AgentMonitor",
