@@ -339,3 +339,19 @@ def test_install_jeeves_has_opaccounts_parameter():
     import pathlib
     t = (pathlib.Path(irc_agent.__file__).parent / "Install-Jeeves.ps1").read_text(encoding="utf-8-sig")
     assert "[string]$OpAccounts" in t and "op-accounts.txt" in t
+
+
+def test_periodic_reverify_drops_cached_account_then_whois_only(irc):
+    irc.names("#bobiverse", "@Jeeves simon")
+    irc.line(":simon!u@h ACCOUNT simon")
+    irc.line(":Jeeves!u@h MODE #bobiverse +o simon")
+    irc.clear()
+    irc.t += cp.RECONCILE_S + 1
+    irc.eng.tick()
+    assert irc.eng.state.account("simon") is None            # cache dropped...
+    irc.clear()
+    irc.names("#bobiverse", "@Jeeves @simon")
+    assert irc.sent == ["WHOIS simon"]                       # ...which only triggers a WHOIS, no -o
+    irc.line(":srv 330 Jeeves simon simon :is logged in as")
+    irc.line(":srv 318 Jeeves simon :End of /WHOIS list.")
+    assert irc.modes() == []                                 # still verified and still +o: nothing to do

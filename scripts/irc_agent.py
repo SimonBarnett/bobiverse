@@ -949,7 +949,6 @@ class Client:
                 skip_whois=self._privs_skip_whois,
             )
             self._privs_engine = eng
-            eng.announce()
         return eng
 
     def _privs_skip_whois(self, nick: str) -> bool:
@@ -999,7 +998,12 @@ class Client:
     def _chan_privs_tick(self) -> None:
         if not getattr(self.args, "chair", False) or not self.joined.is_set():
             return
-        self._privs().tick()
+        try:
+            self._privs().tick()
+        except OSError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - never kill the outbox loop over the reconcile
+            info(f"WARN chan-privs tick error {type(exc).__name__}: {exc}"[:200])
 
     def _ensure_chan_ops(self) -> None:
         """Chair must hold +o in #bobiverse and every machine channel (SAMODE as oper; else ChanServ OP)."""
@@ -2495,6 +2499,8 @@ class Client:
         self.live_nick = self.original_nick
         self._pending_joins = {c.lower() for c in self.channels}
         self._chair_reset_session()
+        if getattr(self.args, "chair", False):
+            self._privs().announce()      # created here, before the reader/outbox threads exist
         self._outbox_gen += 1
         gen = self._outbox_gen
         info(

@@ -18,6 +18,7 @@ to send (sockets and clock are injected, so it is testable with a fake IRC).
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -297,6 +298,7 @@ class ChanPrivEngine:
             self.accounts_source = "explicit"
         self.accounts = set(accounts)
         self.nicks = op_nicks() if nicks is None else set(nicks)
+        self.lock = threading.RLock()      # reader thread (on_line) vs outbox thread (tick)
         self.state = PrivState()
         self.owner_granted: set = set()    # nicks THIS chair opped for a verified account (revoked on logout)
         self._sent: dict = {}
@@ -325,6 +327,10 @@ class ChanPrivEngine:
 
     # -- wire -------------------------------------------------------------------------
     def on_line(self, cmd: str, parts: list, trailing: str, prefix: str = "", tags: dict | None = None) -> None:
+        with self.lock:
+            self._on_line(cmd, parts, trailing, prefix, tags)
+
+    def _on_line(self, cmd: str, parts: list, trailing: str, prefix: str = "", tags: dict | None = None) -> None:
         who = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
         tags = tags or {}
         st = self.state
@@ -447,6 +453,10 @@ class ChanPrivEngine:
         return done
 
     def tick(self) -> None:
+        with self.lock:
+            self._tick()
+
+    def _tick(self) -> None:
         """Periodic reconcile: NAMES every channel; the 366 handler re-plans with fresh modes."""
         now = self.now()
         if now - self._last_names < RECONCILE_S:
@@ -458,5 +468,10 @@ class ChanPrivEngine:
             st.acct_none.clear()                      # re-ask everyone every ~5 minutes
         else:
             st.acct_none -= self.nicks                # candidate nick(s) every minute
+        # Re-verify (WHOIS) every nick we opped for an account and every candidate nick: without
+        # account-notify a logout is otherwise never seen. Dropping the cached account only ever
+        # leads to a WHOIS, never to a grant or a revoke on its own.
+        for n in set(self.nicks) | set(self.owner_granted):
+            st.accts.pop(n, None)
         for ch in list(self.channels()):
             self.send(f"NAMES {ch}")
