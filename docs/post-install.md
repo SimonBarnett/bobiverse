@@ -18,9 +18,9 @@
    Reserved `Bob-*` / `bob-*` nicks need SASL (issue #8 / #11).  
    `Start-Bob.ps1` loads `home\nickserv.password` into `BOB_IRC_SASL_USER=bob-{machine}` + `BOB_IRC_SASL_PASSWORD`.  
    When those env vars are set, `irc_agent` authenticates **before** NICK so Ergo accepts the reserved nick.  
-   Do **not** mint a fresh GUID for an account that already exists on the network — restore the real password or oper-`SAREGISTER` / `RESETPASS`.  
-   If stdout shows `INFO no-sasl reason=…`, `INFO NICKNAME_RESERVED`, or abort `NICKNAME_RESERVED`, fix NickServ credentials — not `!register` (that is ChanServ shops).  
-   Fleet `Bob-*` ears no longer silently fall back to `Bob-…_l`.
+   Do **not** mint a fresh GUID for an account that already exists on the network â€” restore the real password or oper-`SAREGISTER` / `RESETPASS`.  
+   If stdout shows `INFO no-sasl reason=â€¦`, `INFO NICKNAME_RESERVED`, or abort `NICKNAME_RESERVED`, fix NickServ credentials â€” not `!register` (that is ChanServ shops).  
+   Fleet `Bob-*` ears no longer silently fall back to `Bob-â€¦_l`.
 
 4. **LocalSystem fallback**  
    If ObjectName stays LocalSystem, NSSM **omits** `-BobHome` so `Start-Bob` uses `C:\ai\bob\home` (issue #7). Prefer completing service logon.
@@ -35,17 +35,17 @@
    Install runs `pip install cryptography` into the selected Python.
 
 8. **Airc shop channel**  
-   With `shop-mode=auto`, Airc probes ChanServ `INFO #{machine}`. Ergo replies `Channel #x is registered` — that counts as registered (join `#{machine}` as `{machine}_console`).
+   With `shop-mode=auto`, Airc probes ChanServ `INFO #{machine}`. Ergo replies `Channel #x is registered` â€” that counts as registered (join `#{machine}` as `{machine}_console`).
 
 8b. **Airc ConsoleHome under quiet MSI / LocalSystem**  
-   Quiet MSI runs install as LocalSystem. Do **not** use `C:\Users\Default\.airc` — that orphans the NickServ GUID from the Admin home and leaves `{machine}_console` reserved with a password the service no longer has (`sasl-fail 904` / `433` loop).  
+   Quiet MSI runs install as LocalSystem. Do **not** use `C:\Users\Default\.airc` â€” that orphans the NickServ GUID from the Admin home and leaves `{machine}_console` reserved with a password the service no longer has (`sasl-fail 904` / `433` loop).  
    `Install-Airc` prefers `C:\Users\Administrator\.airc` when present, else `C:\ai\airc\home`.  
    `Start-AircConsole` / `airc_console_service.py` default **SASL on** so reserved `{machine}_console` authenticates before NICK.
 
 8c. **Reclaim `{machine}_console` after a wrong GUID (oper)**  
    If the service log shows `sasl-fail 904` then `nick-in-use 433` for `{machine}_console`:
    1. Read the GUID on the box: `Get-Content C:\Users\Administrator\.airc\console.password` (or `C:\ai\airc\home\console.password`).
-   2. As an Ergo oper with `accreg`: `/OPER …` then `/msg NickServ PASSWD {machine}_console <guid>`.
+   2. As an Ergo oper with `accreg`: `/OPER â€¦` then `/msg NickServ PASSWD {machine}_console <guid>`.
    3. `Restart-Service Airc` and confirm `joined #{machine} as {machine}_console` without a `433` loop.  
    `ERASE` also works (`/msg NickServ ERASE {machine}_console` then confirm with the code) but requires the same oper cap; without `/OPER`, NickServ replies `Command restricted` (easy to miss in Halloy Notices).
 
@@ -67,13 +67,15 @@ Get-Content $env:USERPROFILE\.bobiverse\irc.log -Tail 40 -ErrorAction SilentlyCo
 
 Expect:
 
-- `INFO SASL user=bob-<machine> from …\nickserv.password` (when file present)
+- `INFO SASL user=bob-<machine> from â€¦\nickserv.password` (when file present)
 - `INFO connecting irc.ntsa.uk:6697`
 - `INFO joined #bobiverse,#<machine> as Bob-<machine>`
 
 If you see `INFO no-sasl` then `INFO NICKNAME_RESERVED` / `NO 001`, fix NickServ SASL credentials before retrying.
 
 ## Verify Airc
+
+Remote control protocol (current + FR): [airc-remote-control.md](./airc-remote-control.md).
 
 ```powershell
 Get-Service Airc,AircConsole
@@ -96,20 +98,20 @@ Get-Content $env:USERPROFILE\.jeeves\irc.log -Tail 40 -ErrorAction SilentlyConti
 
 Expect:
 
-- Legacy **`BobJeeves` absent** from SCM (Install-Jeeves removes it — both chairs fight for nick `Jeeves`; `C:\ai\ergo` tree may remain)
+- Legacy **`BobJeeves` absent** from SCM (Install-Jeeves removes it â€” both chairs fight for nick `Jeeves`; `C:\ai\ergo` tree may remain)
 - `ircJeeves` Running; ObjectName = fleet user when `service.password` / `BOBIVERSE_SERVICE_PASSWORD` was supplied
-- Log: `joined #bobiverse,#… as Jeeves`
+- Log: `joined #bobiverse,#â€¦ as Jeeves`
 
 ### LocalSystem / DPAPI pitfalls
 
 Quiet MSI runs as LocalSystem. If ObjectName stays LocalSystem:
 
 - Do **not** use `C:\Users\Default\.jeeves` (Install-Jeeves avoids Default; prefers Admin chair or `C:\ai\jeeves\home-jeeves`).
-- Admin-sealed `identity.json` cannot be opened → `CryptUnprotectData failed` crash-loop.
+- Admin-sealed `identity.json` cannot be opened â†’ `CryptUnprotectData failed` crash-loop.
   - Fix properly: `Complete-BobiverseServiceLogon.ps1 -Product jeeves` with `C:\ai\jeeves\config\service.password`.
-  - Interim: rename `identity.json` → `identity.json.admin-dpapi.bak` so LocalSystem mints a fresh identity (SEAL key changes).
+  - Interim: rename `identity.json` â†’ `identity.json.admin-dpapi.bak` so LocalSystem mints a fresh identity (SEAL key changes).
 
-Never pass unquoted `#channel` in PowerShell AppParameters / one-liners — `#` starts a comment. `Start-Jeeves` omits `--channel`; `irc_agent --chair` defaults the seed channel.
+Never pass unquoted `#channel` in PowerShell AppParameters / one-liners â€” `#` starts a comment. `Start-Jeeves` omits `--channel`; `irc_agent --chair` defaults the seed channel.
 
 ### Remote ops via airc
 
@@ -123,13 +125,13 @@ Keep commands short; stage longer fixes with `irm` + `powershell -File`.
 
 ## Tray (ircBob companion TipForm)
 
-From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.ps1` + BobBridge under `C:\ai\bob`), launched by `scripts\Start-BobTray.ps1` → `tools\Start-BobFleetTray.ps1` as an **interactive companion** to the `ircBob` Windows service (Desktop / Start Menu / per-user Startup + HKCU `Run\BobiverseTray`). It is **not** a `BobFleet-*` scheduled task — disable any leftover `BobFleet-<MachineId>` task after upgrade.
+From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.ps1` + BobBridge under `C:\ai\bob`), launched by `scripts\Start-BobTray.ps1` â†’ `tools\Start-BobFleetTray.ps1` as an **interactive companion** to the `ircBob` Windows service (Desktop / Start Menu / per-user Startup + HKCU `Run\BobiverseTray`). It is **not** a `BobFleet-*` scheduled task â€” disable any leftover `BobFleet-<MachineId>` task after upgrade.
 
 - **Durable start (0.1.8+):** `Start-BobFleetTray` starts the seat wrapper with **WMI `Win32_Process.Create`** so TipForm survives agent/console job-object teardown. Do not rely on `Start-Process -PassThru` from a Grok Build shell.
 - **Digest webhook:** TipForm calls `Write-BobIrcStatus` about every 30s and POSTs usage to `reportUrl` (`https://irc.ntsa.uk/bob/v1/report` from `config\bobiverse.json`). No password/secret is used: the digest accepts the POST because this machine id is on the roster Jeeves publishes (ChanServ mirror).
 - **Restart** on the TipForm menu recycles the **tray watcher** (and IRC logout announce), not `nssm restart ircBob`. Use Desktop **Bob Fleet Restart** / `scripts\Restart-BobEar.ps1` to recycle the ear service.
 - Product updates on **service** start only: `scripts\Sync-BobiverseFromRepo.ps1` fast-forwards the bobiverse clone (`C:\ai\bobiverse` or `BOBIVERSE_REPO`) and syncs into `C:\ai\<product>`; MSI `Check-BobiverseUpdate.ps1` is the fallback when no clone exists. Skip with `BOBIVERSE_NO_UPDATE=1`.
-- TipForm systray is a **watcher**: ordinary tray Start does **not** Sync/ff. TipForm **Restart ircBob** calls `Restart-BobEar` (service recycle → Start-Bob Sync/ff) then relaunches the tray in the interactive session. Quiet MSI registers logon task `BobiverseTray` (`Start-BobTrayInteractive.ps1`) so TipForm is not started in session 0.
+- TipForm systray is a **watcher**: ordinary tray Start does **not** Sync/ff. TipForm **Restart ircBob** calls `Restart-BobEar` (service recycle â†’ Start-Bob Sync/ff) then relaunches the tray in the interactive session. Quiet MSI registers logon task `BobiverseTray` (`Start-BobTrayInteractive.ps1`) so TipForm is not started in session 0.
 - Vendored pin: `C:\ai\bob\PIN.txt` (agentic_build SHA used at pack time). TipForm footer shows `bob {VERSION}`.
 
 Smoke (optional): `scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot C:\ai\bob`.

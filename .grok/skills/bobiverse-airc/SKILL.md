@@ -15,7 +15,7 @@ Foundation: harvest-agent-skills -> https://github.com/SimonBarnett/bobiverse
 - Service **`Airc`**, tree `C:\ai\airc`
 - Nick **`{MachineId}_console`** (MachineId = sanitized lowercase hostname / `BOB_MACHINE_ID`)
 - JOIN **`#{MachineId}`** if ChanServ-registered; else **`#{domain|workgroup}`**
-- Console home: under interactive install `%USERPROFILE%\.airc`; under quiet MSI / LocalSystem prefer `C:\Users\Administrator\.airc` else `C:\ai\airc\home` — never `C:\Users\Default\.airc` (orphans NickServ GUID).
+- Console home: under interactive install `%USERPROFILE%\.airc`; under quiet MSI / LocalSystem prefer `C:\Users\Administrator\.airc` else `C:\ai\airc\home` â€” never `C:\Users\Default\.airc` (orphans NickServ GUID).
 - SASL defaults **on** for reserved `{machine}_console` (before NICK).
 
 ```powershell
@@ -36,6 +36,8 @@ Wrong GUID vs reserved nick: oper `/msg NickServ PASSWD {machine}_console <guid-
 
 ## Remote shell via PRIVMSG
 
+FR / protocol sketch: `docs/airc-remote-control.md` (PowerShell default + PUT/RUN — not shipped yet).
+
 Authenticated fleet ears (`bob-*`) may:
 
 ```text
@@ -44,8 +46,8 @@ PRIVMSG win-mpre8vi4u6u_console :sc query ircJeeves
 
 - Shell is **cmd.exe** under the service account (often `nt authority\system`).
 - Keep each command **short** (IRC line length); avoid nested multiline PowerShell in one PRIVMSG.
-- Stage scripts with `irm <gist-raw> -OutFile C:\ai\drop\….ps1` then `powershell -File …`.
-- Killing broad `powershell.exe` on the box can take down Airc’s own host process — target `Start-Jeeves` / specific PIDs only.
+- Stage scripts with `irm <gist-raw> -OutFile C:\ai\drop\â€¦.ps1` then `powershell -File â€¦`.
+- Killing broad `powershell.exe` on the box can take down Aircâ€™s own host process â€” target `Start-Jeeves` / specific PIDs only.
 - After a kill, `Restart-Service Airc` on the box until `{machine}_console` is visible on IRC again.
 
 ## Install / secrets
