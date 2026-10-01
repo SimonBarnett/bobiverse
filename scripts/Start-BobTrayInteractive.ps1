@@ -14,7 +14,9 @@ param(
     [string]$TaskName = 'BobiverseTray',
     [string]$RunAsUser = '',
     [switch]$RunNow,
-    [switch]$RegisterOnly
+    [switch]$RegisterOnly,
+    # #32: RunNow must not kill seats / Grok Bot. The persistent logon task keeps the normal tidy.
+    [switch]$SkipTidy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,7 +61,23 @@ try {
     if ($LASTEXITCODE -eq 0) { $created = $true }
 }
 if ($RunNow -and -not $RegisterOnly) {
-    if ($created) {
+    if ($created -and $SkipTidy) {
+        # One-shot interactive task with -SkipTidy (deleting a task does not stop its running process).
+        $onceName = "$TaskName-once"
+        try {
+            $onceArg = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId {0} -ForceNew -SkipTidy" -f $MachineId
+            $onceAct = New-ScheduledTaskAction -Execute $ps -Argument $onceArg
+            $oncePri = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
+            Register-ScheduledTask -TaskName $onceName -Action $onceAct -Principal $oncePri -Force | Out-Null
+            Start-ScheduledTask -TaskName $onceName
+            Write-Host ("INFO started {0} (SkipTidy)" -f $onceName)
+            Start-Sleep -Seconds 8
+        } catch {
+            Write-Host ("WARN one-shot SkipTidy tray start failed: {0}" -f $_.Exception.Message)
+        } finally {
+            Unregister-ScheduledTask -TaskName $onceName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    } elseif ($created) {
         $run = cmd /c "schtasks /Run /TN `"$TaskName`""
         Write-Host ("INFO schtasks run {0}: {1}" -f $TaskName, (($run | Out-String).Trim()))
     }
