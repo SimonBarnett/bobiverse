@@ -84,6 +84,8 @@ Export-ModuleMember -Function @(
     'ConvertFrom-BobIrcTrayLine',
     'Get-BobJobRepoStamp',
     'Resolve-BobiverseMachineId',
+    'Get-BobCanonicalMachineId',
+    'Select-BobUniqueCanonicalIds',
     'Get-BobIrcShopChannel',
     'Get-BobIrcBuilderChannels',
     'Get-BobWorkerIrcNick',

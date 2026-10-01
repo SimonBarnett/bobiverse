@@ -63,7 +63,8 @@ def raw_op_line(line: str, own_nick: str) -> str | None:
     if not shop:
         return None
     # Collapse CR/LF so outbox multi-line paste cannot smuggle a second verb.
-    t = (line or "").replace("\r", " ").replace("\n", " ").strip()
+    t = (line or "").replace("\r", " ").replace("\n", " ")
+    t = t.translate({ord(c): None for c in "\ufeff\u200b\u200c\u200d\u2060\x00"}).strip()   # BOM-safe nicks
     m = KICK_RE.match(t)
     if m:
         if m.group("chan").lower() != shop:

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Fast-forward the bobiverse git clone, then sync runtime files into a product install tree.
@@ -61,7 +61,10 @@ function Resolve-BobiverseClone {
     $clone = $env:BOBIVERSE_REPO
     if ($clone -and (Test-Path -LiteralPath (Join-Path $clone '.git'))) { return [IO.Path]::GetFullPath($clone) }
     foreach ($c in @('C:\ai\bobiverse', 'D:\ai\bobiverse')) {
-        if (Test-Path -LiteralPath (Join-Path $c '.git')) { return $c }
+        # #70: a box without a D: drive threw "Cannot find drive 'D'" on every start
+        $drive = $c.Substring(0, 2)
+        if (-not (Test-Path -LiteralPath ($drive + '\') -ErrorAction SilentlyContinue)) { continue }
+        if (Test-Path -LiteralPath (Join-Path $c '.git') -ErrorAction SilentlyContinue) { return $c }
     }
     return $null
 }

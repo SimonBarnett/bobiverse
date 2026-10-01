@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Install/update Windows service BobIrcd (Ergo) from the jeeves pack or -ErgoRoot.

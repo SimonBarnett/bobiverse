@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Register NSSM service AircConsole (Automatic). FR #253 / #256 / #305.

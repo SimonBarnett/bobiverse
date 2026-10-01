@@ -2733,12 +2733,16 @@ function Rebuild-BobTrayTiles {
         $y += 4
         $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'Grok accounts' -Icon $grokIcon -Agent $grokAgent
         $indent = 18
+        $shownMachines = @{}
         foreach ($m in @($Machines)) {
             if (-not $m) { continue }
             $id = [string]$m.id
             $resolved = $null
-            try { $resolved = Resolve-BobiverseMachineId $id } catch { $resolved = $id }
+            try { $resolved = Get-BobCanonicalMachineId $id } catch { $resolved = $id }
             if (-not $resolved) { continue }
+            # v0.1.19 (#79): one row per CANONICAL machine, whatever alias the source row carried.
+            if ($shownMachines.ContainsKey([string]$resolved)) { continue }
+            $shownMachines[[string]$resolved] = $true
             $id = ([string]$resolved).ToUpperInvariant()
             $pct = $m.remaining_pct
             # 0% is real (#179). Unknown/stale (period over) is hidden, never "n/a" or a stale reset.

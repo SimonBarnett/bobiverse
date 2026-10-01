@@ -37,7 +37,7 @@ def test_hover_fallback_is_local_plus_digest_machine_keys_only():
     fb = t.split("digest has no roster", 1)[1].split("$digestView = Expand-BobReportDigestView", 1)[0]
     assert "$machineId" in fb and "$reportDigest.machines" in fb
     assert "Get-BobiverseConfig" not in fb and "nicks" not in fb
-    seat = t.split("$seatIds = @($script:BobRosterIds)", 1)
+    seat = t.split("$seatIds = @(Select-BobUniqueCanonicalIds @($script:BobRosterIds))", 1)
     assert len(seat) == 2
     assert "Get-BobiverseMachineIds" not in t.split("$specBy = @{}", 1)[1].split("$knownTile", 1)[0]
 

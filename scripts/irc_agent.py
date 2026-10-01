@@ -980,7 +980,7 @@ class Client:
             return
         try:
             self._privs().on_line(cmd, parts, trailing, prefix, tags)
-            who = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
+            who = chan_privs.clean_nick(prefix.split("!", 1)[0]) if prefix else ""
             if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
                 return        # own PART/QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
             if cmd in ("PART", "KICK"):
@@ -2657,6 +2657,8 @@ def main() -> None:
         help="talk seat: set --nick suffix to irc_agent PID (env self/agent= or coordinator.pid)",
     )
     args = p.parse_args()
+    args.nick = chan_privs.clean_nick(args.nick)          # a BOM from a config file must never reach NICK / MODE
+    args.channel = chan_privs.clean(args.channel)
     if not str(args.channel or "").strip():
         if args.chair:
             args.channel = "bobiverse"

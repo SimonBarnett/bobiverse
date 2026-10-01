@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Install Airc service (renamed from airc-console). Tree C:\ai\airc, service Airc.

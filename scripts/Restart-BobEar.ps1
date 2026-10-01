@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Systray / shortcut Restart: announce via running ear if possible, then Restart-Service ircBob.

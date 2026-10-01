@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Dot-source only. Issue #282: LocalSystem has no python on PATH — resolve absolute exe.
 function Test-AircRealPythonExe {
     param([string]$Path)

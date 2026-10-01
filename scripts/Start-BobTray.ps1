@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Public launcher for the TipForm Bob systray shipped in the bob MSI.

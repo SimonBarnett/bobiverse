@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Clean-install ircJeeves (+ optional BobIrcd if Ergo present). Nick Jeeves.
@@ -122,6 +122,12 @@ if (-not $SkipErgo -and -not $ForceErgo -and
     (Test-Path -LiteralPath (Join-Path $ErgoRoot 'ircd.yaml')) -and
     (Get-Service -Name 'BobIrcd' -ErrorAction SilentlyContinue)) {
     Write-Host 'INFO existing Ergo found - leaving ergo.exe, ircd.yaml and the BobIrcd service untouched (-ForceErgo to re-run Install-BobIrcd)'
+    try {
+        $ircdImg = [string](Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\BobIrcd' -Name ImagePath -ErrorAction Stop).ImagePath
+        if ($ircdImg -and $ircdImg.ToLowerInvariant().Contains($InstallRoot.TrimEnd('\').ToLowerInvariant() + '\')) {
+            Write-Host "WARN BobIrcd runs from the MSI-owned $ircdImg - upgrading FROM a pre-0.1.19 jeeves MSI replaces that file and bounces Ergo (0.1.19+ packs keep nssm.exe in place). Before that one upgrade, in a maintenance window: copy it to $ErgoRoot\nssm.exe, sc config BobIrcd binPath= `"$ErgoRoot\nssm.exe`", restart BobIrcd once (#70)."
+        }
+    } catch { }
     $SkipErgo = $true
 }
 if (-not $SkipErgo) {

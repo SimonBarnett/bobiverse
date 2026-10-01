@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Shared helpers for bobiverse Install-*.ps1 (clean reinstall, NSSM, skills, shortcuts).

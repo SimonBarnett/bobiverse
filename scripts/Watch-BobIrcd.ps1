@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Ensure BobIrcd is Running; restart if stopped; optionally append chair announce.
@@ -6,7 +6,7 @@
 [CmdletBinding()]
 param(
     [string]$DigestHome = '',
-    [int]$CooldownDownCooldownMinutes = 5
+    [int]$AnnounceDownCooldownMinutes = 5
 )
 
 $ErrorActionPreference = 'Continue'
