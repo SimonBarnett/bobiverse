@@ -770,12 +770,13 @@ class Relay:
     it is ready (a timer-less callback). Flood guard: >max_burst injections per window are coalesced into one."""
 
     def __init__(self, log: Callable[[str], None], max_burst: int = 8, window_s: float = 30.0, max_pending: int = 5,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, persist_dir: Optional[Path] = None):
         self.log = log
         self.max_burst = max_burst
         self.window_s = window_s
         self.max_pending = max_pending
         self.clock = clock
+        self.persist_dir = Path(persist_dir) if persist_dir else None
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
@@ -837,7 +838,8 @@ class Relay:
             self.injected += 1
             self.last_injected_at = self.clock()
             self.last_unacked = line
-            self.log("relay: injected " + line[:120])
+            self.log("relay: injected " + line)
+            self._persist_last_from(line)
             if self.on_inject:
                 try:
                     self.on_inject()
@@ -849,6 +851,15 @@ class Relay:
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
+
+    def _persist_last_from(self, line: str) -> None:
+        if not self.persist_dir or not line:
+            return
+        try:
+            self.persist_dir.mkdir(parents=True, exist_ok=True)
+            (self.persist_dir / "last-from.txt").write_text(line + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     def _flush_overflow(self) -> None:
         with self._lock:
@@ -1833,7 +1844,7 @@ def run_agent(args, log: Log) -> int:
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
         sasl = (os.environ["BOB_IRC_SASL_USER"], os.environ["BOB_IRC_SASL_PASSWORD"])
     irc = IrcSeat(args.host, args.port, nick, machine, pw, sasl, tls=not args.no_tls, log=log)
-    relay = Relay(log)
+    relay = Relay(log, persist_dir=run_dir)
     irc.on_message = relay.deliver
     try:
         irc.connect()

@@ -5,8 +5,8 @@ from pathlib import Path
 
 from repo_layout import ROOT
 
-WATCH = ROOT / "bob" / "third_party" / "bob-tray" / "tools" / "Watch-BobTray.ps1"
-START = ROOT / "bob" / "third_party" / "bob-tray" / "tools" / "Start-BobFleetTray.ps1"
+WATCH = ROOT / "bob" / "tray" / "tools" / "Watch-BobTray.ps1"
+START = ROOT / "bob" / "tray" / "tools" / "Start-BobFleetTray.ps1"
 EAR = ROOT / "bob" / "scripts" / "Restart-BobEar.ps1"
 
 DOC_PATHS = [
