@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from account_map import AccountMap, parse_message_tags
+from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy, parse_job_verb
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -715,7 +716,7 @@ class HandleResult:
 
 
 class AircConsoleCore:
-    """Pure handler: parse PRIVMSG, gate auth, run shell jobs, stay silent on channel."""
+    """Pure handler: parse PRIVMSG, gate auth, run shell/job verbs, stay silent on channel."""
 
     def __init__(
         self,
@@ -725,6 +726,7 @@ class AircConsoleCore:
         sessions: ConsoleSessionManager | None = None,
         nick: str = NICK,
         shell_runner: ShellJobRunner | None = None,
+        job_protocol: JobProtocol | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -732,6 +734,7 @@ class AircConsoleCore:
         self.nick = nick
         self.sessions = sessions or ConsoleSessionManager()
         self.shell_runner = shell_runner
+        self.job_protocol = job_protocol
         self.channel_traffic: list[str] = []
 
     def register_commands(self) -> list[str]:
@@ -814,12 +817,19 @@ class AircConsoleCore:
                 target=target,
                 text=text,
                 reply=(
-                    "airc console (FR #75): default PowerShell -NoProfile; "
-                    "cmd: COMSPEC escape; psb64:<base64> EncodedCommand; "
+                    "airc console (FR #75/#78): PowerShell -NoProfile; cmd:; psb64:; "
+                    "STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL; "
                     "replies out/err id= seq= then DONE id= exit=; "
                     ".quit closes; silent on channel; answers ping"
                 ),
             )
+
+        # FR #78: PUT/RUN/JOB/STATUS protocol (before plain shell).
+        parsed = parse_job_verb(cmd)
+        if parsed is not None and self.job_protocol is not None:
+            verb, kv = parsed
+            self.job_protocol.handle_async(nick, verb, kv)
+            return HandleResult(action="job", nick=nick, target=target, text=text)
 
         # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.
         if self.shell_runner is not None:

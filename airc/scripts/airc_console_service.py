@@ -45,6 +45,7 @@ from airc_console import (
     resolve_server_password,
     shop_channel,
 )
+from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 
 FLOOD_S = 0.35
 # Issue #298: half-open / silent link detection + reconnect.
@@ -172,12 +173,24 @@ class AircConsoleService:
             cwd=cwd,
             wait=False,
         )
+        ai_root = Path(os.environ.get("AI_ROOT") or self.home.parent.parent)
+        # Verb matrix: empty write/exec sets => any base-authenticated nick (documented).
+        self.job_store = JobStore(self.home)
+        self.job_protocol = JobProtocol(
+            self.job_store,
+            verb_auth=VerbAuthPolicy(),
+            on_reply=self._on_console_out,
+            ai_root=ai_root if (ai_root / "bob").is_dir() or (ai_root / "airc").is_dir() else Path(r"C:\ai"),
+            machine=self.machine,
+            airc_running=True,
+        )
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
             sessions=self.sessions,
             nick=self.nick,
             shell_runner=self.shell_runner,
+            job_protocol=self.job_protocol,
         )
         self.core.channel = self.channel
         self.sock: ssl.SSLSocket | socket.socket | None = None
@@ -589,6 +602,8 @@ class AircConsoleService:
             self.send_privmsg(hr.nick, hr.reply)
         elif hr.action == "shell":
             info(f"INFO shell from={hr.nick}")
+        elif hr.action == "job":
+            info(f"INFO job from={hr.nick}")
         elif hr.action == "pipe":
             info(f"INFO pipe from={hr.nick}")
 
