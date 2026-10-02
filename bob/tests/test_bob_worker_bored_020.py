@@ -75,14 +75,61 @@ def test_a_busy_agent_is_silent_when_it_is_not_ready_or_the_ack_is_fresh_but_sta
 
 
 def test_nack_and_giveup_free_the_seat():
+    """FR #161: GIVEUP/NACK clear busy and post !bored immediately (reason=free), with a free-rx log line."""
     sent: list = []
-    e = emitter(sent)
+    logs: list = []
+    e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, logs.append, idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0)
+    e.start()
     e.set_ready(True)
     assert wait_until(lambda: len(sent) == 1, 1.0)
     e.on_outbox("ACK UAT o/r#4")
     time.sleep(0.2)
+    n = len(sent)
+    t = time.monotonic()
     e.on_outbox("GIVEUP UAT o/r#4")
-    assert wait_until(lambda: len(sent) >= 2, 2.0)
+    assert wait_until(lambda: len(sent) == n + 1, 1.0)
+    assert sent[-1] - t < 0.2, "GIVEUP -> !bored must be immediate like DONE"
+    assert e.sent[-1][1] == "free"
+    assert any("free-rx matched (GIVEUP)" in m for m in logs)
+    e.on_outbox("ACK FR o/r#5")
+    time.sleep(0.1)
+    n2 = len(sent)
+    e.on_outbox("NACK FR o/r#5")
+    assert wait_until(lambda: len(sent) == n2 + 1, 1.0)
+    assert e.sent[-1][1] == "free"
+    assert any("free-rx matched (NACK)" in m for m in logs)
+    e.stop()
+
+
+def test_drain_applies_job_bookkeeping_when_say_fails(tmp_path):
+    """FR #161: if irc.say fails, still apply ACK/DONE/NACK/GIVEUP busy bookkeeping so !bored can fire."""
+    sent: list = []
+    logs: list = []
+
+    class FailSay:
+        shop = "#marchhare"
+
+        def say(self, target, text):
+            return False
+
+    e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, logs.append, idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0)
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    ob = tmp_path / "outbox.txt"
+    ob.write_text("PRIVMSG #marchhare :ACK FR SimonBarnett/bobiverse#161\n", encoding="utf-8")
+    assert bw.drain_outbox(ob, FailSay(), logs.append, e.on_outbox) == 0
+    assert any("say failed; applied busy bookkeeping for ACK" in m for m in logs)
+    time.sleep(IDLE + REPEAT + 0.2)
+    assert len(sent) == 1, "failed ACK must still mark the seat busy"
+    ob.write_text("PRIVMSG #marchhare :GIVEUP FR SimonBarnett/bobiverse#161\n", encoding="utf-8")
+    t = time.monotonic()
+    assert bw.drain_outbox(ob, FailSay(), logs.append, e.on_outbox) == 0
+    assert any("say failed; applied busy bookkeeping for GIVEUP" in m for m in logs)
+    assert any("free-rx matched (GIVEUP)" in m for m in logs)
+    assert wait_until(lambda: len(sent) >= 2, 1.0)
+    assert sent[-1] - t < 0.25
+    assert e.sent[-1][1] == "free"
     e.stop()
 
 

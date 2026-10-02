@@ -96,10 +96,11 @@ by a **NEW agent** (never a resume) after a backoff of 5 s, then 15 s, then 45 s
 ## `!bored`, ACK and DONE (the program posts `!bored`, you write ACK/DONE)
 
 The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - exactly like the agent watcher (`Watch-AgentHealth`, FR #100): when the agent is ready (seat start),
-immediately after a DONE, and while idle (first after 120 s of quiet, then every 180 s). Never while busy: busy = an open `ACK` with no `DONE` (younger than 45 min), or the agent
-starting/restarting/hung. Any forwarded message or outbox activity resets the idle clock; at most one `!bored` per second. It stops for good on IRC loss/shutdown. A `!bored` written by the
-agent into `outbox.txt` is refused. Jeeves answers by assigning in `!focus` order; you ACK; DONE marks the seat idle. Exact lines: skill `bobiverse-bob-job-irc`; per job type: `bobiverse-bob-job-fr`,
-`bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
+immediately after a DONE or NACK/GIVEUP (`bored -> shop reason=done|free`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: busy = an open `ACK`
+with no DONE/NACK/GIVEUP (younger than 45 min), or the agent starting/restarting/hung. Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161),
+and logs `bored: free-rx matched (...)`. Any forwarded message or outbox activity resets the idle clock; at most one `!bored` per second. It stops for good on IRC loss/shutdown.
+A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by assigning in `!focus` order; you ACK; DONE/NACK/GIVEUP mark the seat idle. Exact lines: skill
+`bobiverse-bob-job-irc`; per job type: `bobiverse-bob-job-fr`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
 
 ## Exit codes
 
@@ -125,7 +126,7 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 | Exit 2, no agent | Ergo PASS missing/wrong or `irc.ntsa.uk:6697` unreachable; check `worker.log` (`IRC refused (464)` = bad PASS, `433` = nick clash - start again). |
 | Exit 3 soon after start | IRC dropped; this is by design. Check Ergo/network; start a new seat. |
 | Two windows appear for one click | should never happen: report it (intake). The agent must be a child of the exe's console; look for `CREATE_NEW_CONSOLE` in `worker.log` / a second `bob-worker.exe`. |
-| `!bored` never posts | open ACK without DONE (busy), agent restarting, or IRC lost. Look for `bored -> shop` / `bored: not sent` in `worker.log`. |
+| `!bored` never posts | open ACK without DONE/NACK/GIVEUP (busy), agent restarting, or IRC lost. Look for `bored -> shop` / `bored: free-rx matched` / `bored: not sent` in `worker.log`. |
 | Messages do not reach the agent | agent not ready yet (6 s) or `inject failed` in `worker.log`; raw-mode TUIs may need the window to exist - never minimise-kill the console. |
 | Agent restarted repeatedly | `HUNG` lines in `worker.log`; after 3 restarts in 30 min the seat ends (exit 5). |
 | Wrong agent chosen | selection is automatic; fix the fuel readings, do not edit the exe. |
