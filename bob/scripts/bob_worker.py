@@ -676,7 +676,8 @@ def inject_console(pid: int, text: str, submit_gap_s: float = 0.06) -> bool:
     kept for the call signature/logging only. Returns True on success."""
     if os.name != "nt":
         return False
-    text = one_line(text)
+    # FR #86: allow long FROM assign lines (format_from up to 2000); still scrub controls via one_line
+    text = one_line(text, 2000)
     if not text:
         return False
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -716,7 +717,8 @@ def drop_text(text: str) -> bool:
     return bool(_DROP_RX.search(t))
 
 
-def format_from(nick: str, target: str, text: str, maxlen: int = 350) -> str:
+def format_from(nick: str, target: str, text: str, maxlen: int = 2000) -> str:
+    # FR #86: keep long assign / trailing instruction text; old 350 cut mid-URL / mid-sentence.
     return "FROM %s %s %s" % (nick, target, one_line(text, maxlen))
 
 
@@ -726,12 +728,13 @@ class Relay:
     it is ready (a timer-less callback). Flood guard: >max_burst injections per window are coalesced into one."""
 
     def __init__(self, log: Callable[[str], None], max_burst: int = 8, window_s: float = 30.0, max_pending: int = 5,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, persist_dir: Optional[Path] = None):
         self.log = log
         self.max_burst = max_burst
         self.window_s = window_s
         self.max_pending = max_pending
         self.clock = clock
+        self.persist_dir = Path(persist_dir) if persist_dir else None
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
@@ -781,6 +784,18 @@ class Relay:
         self._do_inject(line)
         return "injected"
 
+    def _persist_last_from(self, line: str) -> None:
+        """FR #86: sibling of worker.log so a recovering agent can read the full assign after a hang restart."""
+        if not self.persist_dir or not line:
+            return
+        try:
+            self.persist_dir.mkdir(parents=True, exist_ok=True)
+            path = self.persist_dir / "last-from.txt"
+            # UTF-8 no BOM; single complete FROM line + newline
+            path.write_text(line + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
     def _do_inject(self, line: str) -> None:
         fn = self._inject
         ok = False
@@ -793,14 +808,16 @@ class Relay:
             self.injected += 1
             self.last_injected_at = self.clock()
             self.last_unacked = line
-            self.log("relay: injected " + line[:120])
+            # FR #86: log the FULL inject payload (never truncate mid-URL / mid-instruction)
+            self.log("relay: injected " + line)
+            self._persist_last_from(line)
             if self.on_inject:
                 try:
                     self.on_inject()
                 except Exception:
                     pass
         else:
-            self.log("relay: inject failed, holding " + line[:80])
+            self.log("relay: inject failed, holding " + line)
             with self._lock:
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
@@ -1727,7 +1744,7 @@ def run_agent(args, log: Log) -> int:
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
         sasl = (os.environ["BOB_IRC_SASL_USER"], os.environ["BOB_IRC_SASL_PASSWORD"])
     irc = IrcSeat(args.host, args.port, nick, machine, pw, sasl, tls=not args.no_tls, log=log)
-    relay = Relay(log)
+    relay = Relay(log, persist_dir=run_dir)  # FR #86: last-from.txt beside worker.log
     irc.on_message = relay.deliver
     try:
         irc.connect()
