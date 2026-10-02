@@ -464,6 +464,7 @@ def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
     if mei:
         cands.append(Path(mei) / "assets" / "bob-systray.ico")
     cands.append(Path(__file__).resolve().parent.parent / "assets" / "bob-systray.ico")
+    cands.append(Path(__file__).resolve().parent.parent / "tray" / "assets" / "bob-systray.ico")  # t829u: bob/tray is a first-class source
     cands.append(Path(__file__).resolve().parent.parent / "third_party" / "bob-tray" / "assets" / "bob-systray.ico")
     for c in cands:
         try:

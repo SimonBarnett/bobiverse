@@ -239,17 +239,10 @@ function Stage-Product([string]$Name) {
             Write-Host 'WARN bob pack: Watch-AgentHealth source missing (Desktop install will skip)'
         }
 
-        # TipForm companion tray (vendored from agentic_build) -> InstallRoot tools/src/assets
+        # t829u: the systray (bob\tray) is a first-class bob source -> InstallRoot tools/src/assets (flat)
         $traySrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray')
-        $syncTray = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Sync-BobTrayFromAgenticBuild.ps1')
         if (-not (Test-Path -LiteralPath (Join-Path $traySrc 'tools\Watch-BobTray.ps1'))) {
-            if (Test-Path -LiteralPath $syncTray) {
-                Write-Host 'INFO bob tray missing; running Sync-BobTrayFromAgenticBuild.ps1'
-                & $syncTray -RepoRoot $RepoRoot | Out-Null
-            }
-        }
-        if (-not (Test-Path -LiteralPath (Join-Path $traySrc 'tools\Watch-BobTray.ps1'))) {
-            throw 'bob pack requires third_party/bob-tray/tools/Watch-BobTray.ps1 (run Sync-BobTrayFromAgenticBuild.ps1)'
+            throw 'bob pack requires bob/tray/tools/Watch-BobTray.ps1 (first-class bob source, t829u)'
         }
         foreach ($sub in @('tools', 'assets')) {
             $from = Join-Path $traySrc $sub
@@ -257,6 +250,15 @@ function Stage-Product([string]$Name) {
             New-Item -ItemType Directory -Force -Path $to | Out-Null
             Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
         }
+        # t828u: compiled Acknowledge/Status dialogs -> stage\tools\bob-about.exe, bob-status.exe (+ sources in stage\dialogs, rebuildable by Sync)
+        $dlgSrc = Join-Path $traySrc 'dialogs'
+        if (Test-Path -LiteralPath $dlgSrc) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $stage 'dialogs') | Out-Null
+            Copy-Item -Path (Join-Path $dlgSrc '*') -Destination (Join-Path $stage 'dialogs') -Recurse -Force
+            $buildDialogs = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobDialogs.ps1')
+            $dlgExes = @(& $buildDialogs -RepoRoot $RepoRoot -OutDir (Join-Path $stage 'tools'))
+            if ($dlgExes.Count -lt 3) { throw 'Build-BobDialogs.ps1 did not produce bob-about.exe + bob-status.exe + bob-tray.exe' }
+        } else { throw 'bob pack requires bob/tray/dialogs (t828u compiled dialogs)' }
         # Merge BobBridge module into stage\src (keep bobiverse VERSION)
         $traySrcDir = Join-Path $traySrc 'src'
         Copy-Item -LiteralPath (Join-Path $traySrcDir 'BobBridge.psd1') -Destination (Join-Path $stage 'src\BobBridge.psd1') -Force

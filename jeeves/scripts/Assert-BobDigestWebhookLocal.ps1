@@ -25,7 +25,7 @@ function Resolve-BobTrayModuleRoot {
             $Preferred,
             (Join-Path (Get-BobiverseProductRoot -Product bob) ''),   # t780u: discovered <drive>:\ai
             (Join-Path $repoRoot 'third_party\bob-tray'),
-            (Join-Path (Split-Path -Parent $repoRoot) 'bob\third_party\bob-tray'),   # t773u split repo: jeeves\scripts -> ..\bob
+            (Join-Path (Split-Path -Parent $repoRoot) 'bob\tray'),   # t773u split repo: jeeves\scripts -> ..\bob (t829u: bob\tray is first-class)
             (Join-Path $repoRoot 'dist\bob-*')
         )) {
         if (-not $c) { continue }
@@ -43,7 +43,7 @@ function Resolve-BobTrayModuleRoot {
 
 $root = Resolve-BobTrayModuleRoot -Preferred $InstallRoot
 if (-not $root) {
-    throw 'BobBridge not found (pass -InstallRoot to staged bob tree or run Sync-BobTrayFromAgenticBuild)'
+    throw 'BobBridge not found (pass -InstallRoot to staged bob tree or sync/pack bob)'
 }
 $psd1 = Join-Path $root 'src\BobBridge.psd1'
 Write-Host "INFO Import-Module $psd1"

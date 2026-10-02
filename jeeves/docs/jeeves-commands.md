@@ -86,7 +86,7 @@ per 30 minutes per nick (with a count of suppressed repeats); the WHOIS itself k
 ## Remote worker start: `!startworker` (Bob ear, t810u)
 
 Not a chair command: it is handled by the **Bob ear of the target machine** (`bob-<machine>`), never by Jeeves (Jeeves runs no host ops).
-Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_startworker`) + `bob/third_party/bob-tray/tools/BobTrayStartWorker.ps1` (tray side).
+Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_startworker`) + `bob/tray/tools/BobTrayStartWorker.ps1` (tray side).
 
 | Syntax | Where | Reply |
 |---|---|---|
