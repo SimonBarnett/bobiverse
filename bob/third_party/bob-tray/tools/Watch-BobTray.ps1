@@ -2035,6 +2035,12 @@ function Start-JobsWatcher {
         $script:jobsOwned = $false
         return
     }
+    # t784u: Watch-BobJobs.ps1 is not shipped in the bob MSI / vendored tray. Without this guard the tray spawned a hidden
+    # powershell for the missing file every 30 s (MarchHare 2026-10-02 12:16Z log: 'started Watch-BobJobs pid=...' x N).
+    if (-not (Test-Path -LiteralPath $watchJobs)) {
+        if (-not $script:jobsMissingLogged) { Write-TrayLog "Watch-BobJobs.ps1 not installed ($watchJobs); not starting it"; $script:jobsMissingLogged = $true }
+        return
+    }
     $p = Start-Process -FilePath (Get-Command powershell.exe).Source `
         -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $watchJobs) `
         -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
