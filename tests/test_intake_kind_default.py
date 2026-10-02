@@ -52,6 +52,39 @@ def test_bobiverse_repo_allowed():
     assert norm["repo"] == "SimonBarnett/bobiverse"
 
 
+def test_agentic_fomprep_repo_allowed():
+    """FR #94: Priority formprep harvests must intake to SimonBarnett/agentic_fomprep."""
+    assert "SimonBarnett/agentic_fomprep" in intake.DEFAULT_ALLOW_REPOS
+    err, norm = intake.validate_payload(
+        _base(repo="SimonBarnett/agentic_fomprep", kind="fr", title="VISION.md")
+    )
+    assert err is None
+    assert norm["repo"] == "SimonBarnett/agentic_fomprep"
+    assert norm["kind"] == "fr"
+
+
+def test_unknown_repo_not_allowed():
+    err, norm = intake.validate_payload(_base(repo="SimonBarnett/not-a-fleet-repo"))
+    assert err == "repo_not_allowed"
+    assert norm == {}
+
+
+def test_repo_not_allowed_is_http_403():
+    filer = intake.FakeGitHubFiler()
+    rate = intake.RateLimiter(per_min=30)
+    home = ROOT / "tests" / "_tmp_intake_home_fr94"
+    home.mkdir(parents=True, exist_ok=True)
+    result = intake.process_intake(
+        home,
+        {"repo": "SimonBarnett/not-a-fleet-repo", "title": "t", "body": "b"},
+        filer=filer,
+        rate=rate,
+        client_ip="127.0.0.1",
+    )
+    assert result.status == 403
+    assert result.body.get("error") == "repo_not_allowed"
+
+
 def test_bad_kind_still_rejected():
     err, norm = intake.validate_payload(_base(kind="nope"))
     assert err == "bad_kind"
