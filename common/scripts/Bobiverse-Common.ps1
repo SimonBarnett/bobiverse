@@ -946,10 +946,21 @@ function Remove-BobiverseStartMenuDuplicates {
     if (-not $ProgramsRoots -or $ProgramsRoots.Count -eq 0) {
         $roots = New-Object System.Collections.Generic.List[string]
         $roots.Add((Get-BobiverseProgramsRoot))
-        foreach ($u in @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue)) {
-            $p = Join-Path $u.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs'
-            if (Test-Path -LiteralPath $p) { $roots.Add($p) }
+        # t794u: profiles are not always on C: (MarchHare: D:\Users). Take every ProfileList entry, the current user's Programs folder
+        # and C:\Users, de-duplicated.
+        $profileDirs = New-Object System.Collections.Generic.List[string]
+        try {
+            foreach ($k in @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' -ErrorAction SilentlyContinue)) {
+                $pi = [string](Get-ItemProperty -LiteralPath $k.PSPath -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
+                if ($pi) { $profileDirs.Add([Environment]::ExpandEnvironmentVariables($pi)) }
+            }
+        } catch { }
+        foreach ($u in @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue)) { $profileDirs.Add($u.FullName) }
+        foreach ($pd in @($profileDirs | Select-Object -Unique)) {
+            $p = Join-Path $pd 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs'
+            if ((Test-Path -LiteralPath $p) -and -not $roots.Contains($p)) { $roots.Add($p) }
         }
+        try { $cu = [Environment]::GetFolderPath('Programs'); if ($cu -and (Test-Path -LiteralPath $cu) -and -not $roots.Contains($cu)) { $roots.Add($cu) } } catch { }
         $ProgramsRoots = $roots.ToArray()
     }
     $legacyTop = '^(Bob Systray.*|Bob Tray.*|Bobiverse Tray.*|Bobiverse.*|Bob Fleet.*|Restart ircBob|Restart ircJeeves|Restart Airc|Bob Services|Start Systray|Complete bobiverse service logon.*)\.lnk$'
