@@ -200,8 +200,12 @@ def format_activity_payload(
 
 
 def apply_activity_local(home: Path, payload: dict, briefer: str = "Jeeves"):
-    """Apply activity to local digest (tests / same-box chair)."""
-    return bobreport.apply_callback(home, payload, briefer)
+    """Apply activity to local digest (tests / same-box chair).
+
+    FR #69: resolve ``BOB_DIGEST_HOME`` so a chair ``--home`` (~/.jeeves) still updates
+    the ChanServ-mirrored digest home, not a stale chair-home roster copy.
+    """
+    return bobreport.apply_callback(bobreport.fleet_digest_home(Path(home)), payload, briefer)
 
 
 def post_activity(
@@ -390,7 +394,14 @@ def complete_job_by_ref(
         return "error", None
 
 
-def return_job_to_unaccepted(home: Path, *, repo: str, task: str, ident: str) -> tuple[str, dict | None]:
+def return_job_to_unaccepted(
+    home: Path, *, repo: str, task: str, ident: str, now: float | None = None
+) -> tuple[str, dict | None]:
+    """Return an accepted job to unaccepted after NACK/GIVEUP (FR #180 cooldown + needs_human)."""
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+
+    now_f = _time.time() if now is None else float(now)
     try:
         with gitclaim._lock(home):
             try:
@@ -406,8 +417,20 @@ def return_job_to_unaccepted(home: Path, *, repo: str, task: str, ident: str) ->
             if ai is None:
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
-            for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "channel"):
+            for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
+            try:
+                count = int(job.get("giveup_count") or 0) + 1
+            except (TypeError, ValueError):
+                count = 1
+            job["giveup_count"] = count
+            job["giveup_ts"] = gitclaim._utc_now()
+            until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
+                seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
+            )
+            job["cooldown_until"] = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            if count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
+                job["needs_human"] = True
             doc.setdefault("unaccepted", []).append(job)
             try:
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)

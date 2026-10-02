@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Stage + WiX-pack jeeves, bob, and/or airc MSIs for SimonBarnett/bobiverse releases.
@@ -239,17 +239,10 @@ function Stage-Product([string]$Name) {
             Write-Host 'WARN bob pack: Watch-AgentHealth source missing (Desktop install will skip)'
         }
 
-        # TipForm companion tray (vendored from agentic_build) -> InstallRoot tools/src/assets
+        # t829u: the systray (bob\tray) is a first-class bob source -> InstallRoot tools/src/assets (flat)
         $traySrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray')
-        $syncTray = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Sync-BobTrayFromAgenticBuild.ps1')
         if (-not (Test-Path -LiteralPath (Join-Path $traySrc 'tools\Watch-BobTray.ps1'))) {
-            if (Test-Path -LiteralPath $syncTray) {
-                Write-Host 'INFO bob tray missing; running Sync-BobTrayFromAgenticBuild.ps1'
-                & $syncTray -RepoRoot $RepoRoot | Out-Null
-            }
-        }
-        if (-not (Test-Path -LiteralPath (Join-Path $traySrc 'tools\Watch-BobTray.ps1'))) {
-            throw 'bob pack requires third_party/bob-tray/tools/Watch-BobTray.ps1 (run Sync-BobTrayFromAgenticBuild.ps1)'
+            throw 'bob pack requires bob/tray/tools/Watch-BobTray.ps1 (first-class bob source, t829u)'
         }
         foreach ($sub in @('tools', 'assets')) {
             $from = Join-Path $traySrc $sub
@@ -257,6 +250,15 @@ function Stage-Product([string]$Name) {
             New-Item -ItemType Directory -Force -Path $to | Out-Null
             Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
         }
+        # t828u: compiled Acknowledge/Status dialogs -> stage\tools\bob-about.exe, bob-status.exe (+ sources in stage\dialogs, rebuildable by Sync)
+        $dlgSrc = Join-Path $traySrc 'dialogs'
+        if (Test-Path -LiteralPath $dlgSrc) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $stage 'dialogs') | Out-Null
+            Copy-Item -Path (Join-Path $dlgSrc '*') -Destination (Join-Path $stage 'dialogs') -Recurse -Force
+            $buildDialogs = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobDialogs.ps1')
+            $dlgExes = @(& $buildDialogs -RepoRoot $RepoRoot -OutDir (Join-Path $stage 'tools'))
+            if ($dlgExes.Count -lt 3) { throw 'Build-BobDialogs.ps1 did not produce bob-about.exe + bob-status.exe + bob-tray.exe' }
+        } else { throw 'bob pack requires bob/tray/dialogs (t828u compiled dialogs)' }
         # Merge BobBridge module into stage\src (keep bobiverse VERSION)
         $traySrcDir = Join-Path $traySrc 'src'
         Copy-Item -LiteralPath (Join-Path $traySrcDir 'BobBridge.psd1') -Destination (Join-Path $stage 'src\BobBridge.psd1') -Force
@@ -359,6 +361,43 @@ function Build-Msi([string]$Name, [string]$Stage) {
         'bob' { 'Install-Bob.cmd' }
         'airc' { 'Install-Airc.cmd' }
     }
+    # #70: public MSI properties flow into RunInstall (CAQuietExec64). Empty props expand to "" and Install-*.ps1 ignores them.
+    # msiexec /i jeeves-*.msi OPERFILE=C:\path\oper.txt SKIPERGO=1 SKIPCOPY=1
+    # msiexec /i bob-*.msi MACHINEID=marchhare SKIPCOPY=1
+    $installArgs = switch ($Name) {
+        'jeeves' {
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -OperFile &quot;[OPERFILE]&quot; -OperName &quot;[OPERNAME]&quot; -OpAccounts &quot;[OPACCOUNTS]&quot; -MsiSkipErgo &quot;[SKIPERGO]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot;'
+        }
+        'bob' {
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -IrcHost &quot;[IRCHOST]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot;'
+        }
+        'airc' {
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot;'
+        }
+    }
+    $msiProps = switch ($Name) {
+        'jeeves' {
+            @"
+    <Property Id="OPERFILE" Secure="yes" />
+    <Property Id="OPERNAME" Secure="yes" />
+    <Property Id="OPACCOUNTS" Secure="yes" />
+    <Property Id="SKIPERGO" Secure="yes" />
+    <Property Id="SKIPCOPY" Secure="yes" />
+"@
+        }
+        'bob' {
+            @"
+    <Property Id="MACHINEID" Secure="yes" />
+    <Property Id="IRCHOST" Secure="yes" />
+    <Property Id="SKIPCOPY" Secure="yes" />
+"@
+        }
+        'airc' {
+            @"
+    <Property Id="MACHINEID" Secure="yes" />
+"@
+        }
+    }
     $guidMark = [guid]::NewGuid().ToString().ToUpper()
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -377,6 +416,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     </Directory>
     <!-- t780u: <drive>:\ai discovered on the fixed disks (BOB_AI_ROOT / AIROOT= override); no hard-coded C:\ai. -->
     <Property Id="AIROOT" Secure="yes" />
+$msiProps
     <Binary Id="FindAiRootJs" SourceFile="$findAiFile" />
     <CustomAction Id="FindAiRoot" BinaryKey="FindAiRootJs" JScriptCall="FindAiRoot" Execute="immediate" Return="check" />
     <CustomAction Id="SetInstallDirFromAiRoot" Property="INSTALLDIR" Value="[AIROOT]\$Name\" />
@@ -384,7 +424,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <CreateFolder />
       <RegistryValue Root="HKLM" Key="Software\SimonBarnett\bobiverse\$Name" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
     </Component>
-    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot;" Execute="immediate" />
+    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
+    <!-- #70: RunInstall forwards OPERFILE/SKIPERGO/MACHINEID/... via public Property Ids. -->
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
     <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
     <InstallUISequence>

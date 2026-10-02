@@ -35,10 +35,12 @@ param(
     [string]$PlanFile = '',
     [string]$StateDir = '',
     [string]$ReleaseJson = '',      # test hook: local release JSON instead of GitHub
+    [string]$TargetVersion = '',    # FR #77: pin UPDATE airc|bob|jeeves <ver> (tag vX.Y.Z)
     [switch]$AllowLocalAssets,      # test hook: plan asset "urls" may be local files
     [switch]$DryRun,                # Check: decide + log only
     [switch]$NoSpawn,               # Check: write plan/state but do not start the helper
     [switch]$VerifyOnly,            # Apply: download + verify the hash, then stop (service untouched)
+    [switch]$ForceCheck,            # FR #77: IRC UPDATE bypasses the 2-minute lookup throttle
     [int]$DelaySeconds = 15,
     [int]$MaxAttempts = 2,
     [int]$CooldownMinutes = 10
@@ -115,7 +117,13 @@ function ConvertTo-UtcDate {
 function Get-LatestRelease {
     if ($ReleaseJson) { return (Get-Content -LiteralPath $ReleaseJson -Raw | ConvertFrom-Json) }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    return (Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
+    $uri = "https://api.github.com/repos/$Repo/releases/latest"
+    $tv = ConvertTo-Ver $TargetVersion
+    if ($tv) {
+        # FR #77: UPDATE <product> <ver> pins an allowlisted release tag (never a free-form URL).
+        $uri = "https://api.github.com/repos/$Repo/releases/tags/v$($tv.ToString())"
+    }
+    return (Invoke-RestMethod -Uri $uri `
             -Headers @{ 'User-Agent' = 'bobiverse-self-update'; Accept = 'application/vnd.github+json' } -TimeoutSec 15)
 }
 
@@ -508,9 +516,13 @@ function Invoke-Check {
 
     # A crash-looping service restarts every few seconds: do not hammer the unauthenticated GitHub API
     # (60 requests/hour/IP) - at most one live lookup per 2 minutes per product.
-    if (-not $ReleaseJson) {
+    # FR #77: IRC UPDATE uses -ForceCheck to bypass the throttle (still respects pending/loop-guard).
+    if (-not $ReleaseJson -and -not $ForceCheck) {
         $lc = ConvertTo-UtcDate $st.lastCheckUtc
         if ($lc -and (((Get-Date).ToUniversalTime() - $lc).TotalSeconds -lt 120)) { Write-UpdLog 'check result=throttled (checked <2 min ago)'; return }
+        $st.lastCheckUtc = (Get-Date).ToUniversalTime().ToString('o')
+        try { Save-State $st } catch { }
+    } elseif ($ForceCheck -and -not $ReleaseJson) {
         $st.lastCheckUtc = (Get-Date).ToUniversalTime().ToString('o')
         try { Save-State $st } catch { }
     }
@@ -530,6 +542,11 @@ function Invoke-Check {
     if (-not $msi -or -not $tagVer) { Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"; return }
     $remote = ConvertTo-Ver ([string]$msi.name)
     if (-not $remote -or $remote -ne $tagVer) { Write-UpdLog "check result=asset-tag-mismatch tag=$($rel.tag_name) asset=$($msi.name)"; return }
+    $want = ConvertTo-Ver $TargetVersion
+    if ($want -and $remote -ne $want) {
+        Write-UpdLog "check result=target-version-mismatch want=$($want.ToString()) asset=$($remote.ToString())"
+        return
+    }
     $sha = @($rel.assets | Where-Object { $_.name -eq ($msi.name + '.sha256') }) | Select-Object -First 1
     if (-not $sha) { Write-UpdLog "check result=no-sha256-asset tag=$($rel.tag_name) - not updating"; return }
     if (-not (Test-AssetUrl -Url ([string]$msi.browser_download_url)) -or -not (Test-AssetUrl -Url ([string]$sha.browser_download_url))) {
@@ -537,7 +554,16 @@ function Invoke-Check {
     }
 
     $tag = 'v' + $remote.ToString()
-    if ($remote -le $local) { Write-UpdLog "check result=current local=$($local.ToString()) latest=$($remote.ToString())"; return }
+    # Without TargetVersion never downgrade. Explicit IRC pin may match local only with ForceCheck.
+    if (-not $want -and $remote -le $local) { Write-UpdLog "check result=current local=$($local.ToString()) latest=$($remote.ToString())"; return }
+    if ($want -and $remote -lt $local) {
+        Write-UpdLog "check result=current local=$($local.ToString()) latest=$($remote.ToString()) (refusing downgrade)"
+        return
+    }
+    if ($want -and $remote -eq $local -and -not $ForceCheck) {
+        Write-UpdLog "check result=current local=$($local.ToString()) latest=$($remote.ToString())"
+        return
+    }
 
     $fails = 0
     if ($st.failures.ContainsKey($tag)) { $fails = [int]$st.failures[$tag] }

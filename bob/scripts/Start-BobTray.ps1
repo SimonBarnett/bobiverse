@@ -41,14 +41,18 @@ $tray = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
 if (-not (Test-Path -LiteralPath $tray)) {
     # Dev fallback: vendored tree next to scripts\
     $repo = Split-Path -Parent $PSScriptRoot
-    $alt = Join-Path $repo 'third_party\bob-tray\tools\Watch-BobTray.ps1'
+    $trayDir = Join-Path $repo 'third_party\bob-tray'
+    foreach ($cand in @((Join-Path $repo 'tray'), (Join-Path (Split-Path -Parent $repo) 'bob\tray'), $trayDir)) {   # t829u: bob\tray is the first-class source
+        if (Test-Path -LiteralPath (Join-Path $cand 'tools\Watch-BobTray.ps1')) { $trayDir = $cand; break }
+    }
+    $alt = Join-Path $trayDir 'tools\Watch-BobTray.ps1'
     if (Test-Path -LiteralPath $alt) {
-        $InstallRoot = [IO.Path]::GetFullPath((Join-Path $repo 'third_party\bob-tray'))
+        $InstallRoot = [IO.Path]::GetFullPath($trayDir)
         $tray = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
     }
 }
 if (-not (Test-Path -LiteralPath $tray)) {
-    Write-Error "missing TipForm tray: $InstallRoot\tools\Watch-BobTray.ps1 (run Sync-BobTrayFromAgenticBuild / pack bob)"
+    Write-Error "missing TipForm tray: $InstallRoot\tools\Watch-BobTray.ps1 (sync/pack bob)"
     exit 1
 }
 

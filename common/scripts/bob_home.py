@@ -1,4 +1,4 @@
-﻿r"""Bobiverse home layout + one-time migration from the pre-0.1.15 ``~\.agentic-irc-*`` homes.
+r"""Bobiverse home layout + one-time migration from the pre-0.1.15 ``~\.agentic-irc-*`` homes.
 
 Homes (no agentic_irc dependency):
   chair home   BOB_HOME           default ``~/.jeeves``      (Jeeves identity, operators, accounts)
@@ -29,6 +29,10 @@ SKIP_NAMES = {".agentic-irc-service-start", ".bobiverse-service-start", "agent.q
 SECRET_NAMES = ("report.secret", "github.token", "nickserv.password", "identity.json")
 # the files the fleet cares about most (reported by name in the migration summary)
 KEY_FILES = ("digest.json", "focus.json", "ignored.json", "queue.json", "registered-machines.json")
+# FR #69: digest-only files must never land in the chair home (stale second roster -> webhook 400)
+DIGEST_ONLY_FILES = frozenset(KEY_FILES)
+# outbox basenames that need a companion cursor after migrate (FR #68)
+OUTBOX_BASENAMES = ("chair-outbox.txt", "outbox.txt")
 
 
 def _admin_profile() -> Path:
@@ -83,8 +87,10 @@ def legacy_candidates(new_home: Path, role: str = "") -> list[Path]:
     return out
 
 
-def _skip(p: Path) -> bool:
+def _skip(p: Path, extra_skip: frozenset[str] | None = None) -> bool:
     n = p.name
+    if extra_skip and n in extra_skip:
+        return True
     return n in SKIP_NAMES or n.lower().endswith(SKIP_SUFFIXES)
 
 
@@ -112,9 +118,54 @@ def _unreadable_protected(path: Path) -> bool:
         return False
 
 
-def _copy_tree(src: Path, dst: Path, stats: dict) -> None:
+def _is_outbox_file(name: str) -> bool:
+    n = name.lower()
+    return n in OUTBOX_BASENAMES or n.endswith("outbox.txt")
+
+
+def _seal_outbox_cursors(old: Path, new_home: Path, stats: dict) -> None:
+    """FR #68: after copying outbox bodies, restore or invent ``*.pos`` cursors.
+
+    ``SKIP_SUFFIXES`` drops live ``.pos`` files. Without a cursor, ``load_outbox_pos``
+    returns 0 and the chair replays the whole backlog (flood-starving +o / ChanServ).
+    Prefer the legacy cursor when present; otherwise seal at EOF so history is not resent.
+    """
+    sealed: list[str] = stats.setdefault("outbox_pos_sealed", [])
+    old = Path(old)
+    new_home = Path(new_home)
+    for entry in sorted(new_home.iterdir()):
+        if not entry.is_file() or not _is_outbox_file(entry.name):
+            continue
+        pos_name = entry.name + ".pos"
+        dest_pos = new_home / pos_name
+        if dest_pos.is_file():
+            continue
+        candidates = [
+            old / pos_name,
+            old / (entry.stem + ".pos"),  # chair-outbox.pos next to chair-outbox.txt
+        ]
+        copied = False
+        for src_pos in candidates:
+            if src_pos.is_file():
+                try:
+                    shutil.copy2(src_pos, dest_pos)
+                    sealed.append(pos_name)
+                    copied = True
+                    break
+                except OSError as exc:
+                    stats.setdefault("errors", []).append(f"{pos_name}: {type(exc).__name__}")
+        if copied:
+            continue
+        try:
+            dest_pos.write_text(str(entry.stat().st_size) + "\n", encoding="utf-8")
+            sealed.append(pos_name)
+        except OSError as exc:
+            stats.setdefault("errors", []).append(f"{pos_name}: {type(exc).__name__}")
+
+
+def _copy_tree(src: Path, dst: Path, stats: dict, extra_skip: frozenset[str] | None = None) -> None:
     for entry in sorted(src.iterdir()):
-        if _skip(entry):
+        if _skip(entry, extra_skip):
             continue
         target = dst / entry.name
         try:
@@ -122,7 +173,7 @@ def _copy_tree(src: Path, dst: Path, stats: dict) -> None:
                 if entry.name == "__pycache__":
                     continue
                 target.mkdir(parents=True, exist_ok=True)
-                _copy_tree(entry, target, stats)
+                _copy_tree(entry, target, stats, extra_skip)
             elif entry.is_file():
                 if _unreadable_protected(entry):
                     stats["skipped_protected"].append(entry.name)
@@ -157,8 +208,14 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
     if old is None:
         return {"status": "no-legacy", "new": str(new_home)}
     new_home.mkdir(parents=True, exist_ok=True)
-    stats = {"copied": 0, "kept": 0, "names": [], "errors": [], "conflicts": [], "skipped_protected": []}
-    _copy_tree(Path(old), new_home, stats)
+    stats = {"copied": 0, "kept": 0, "names": [], "errors": [], "conflicts": [], "skipped_protected": [], "outbox_pos_sealed": []}
+    # Infer chair role from folder name when caller omits role (FR #69)
+    role_l = (role or "").strip().lower()
+    if not role_l and new_home.name.lower() == CHAIR_NAME:
+        role_l = "chair"
+    extra_skip = DIGEST_ONLY_FILES if role_l == "chair" else None
+    _copy_tree(Path(old), new_home, stats, extra_skip)
+    _seal_outbox_cursors(Path(old), new_home, stats)
     summary = {
         "status": "error" if stats["errors"] and not stats["copied"] else "migrated",
         "old": str(old),
@@ -167,6 +224,7 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
         "kept_existing": stats["kept"],
         "key_files": [n for n in KEY_FILES if n in stats["names"]],
         "secret_files": [n for n in SECRET_NAMES if n in stats["names"]],
+        "outbox_pos_sealed": list(stats.get("outbox_pos_sealed") or [])[:20],
         "conflicts": stats["conflicts"][:20],
         "skipped_protected": stats["skipped_protected"][:20],
         "errors": stats["errors"][:10],
@@ -227,6 +285,11 @@ def ensure_homes(chair: Path | None = None, digest: Path | None = None, log=prin
                 f"key={','.join(res['key_files']) or '-'} secrets={','.join(res['secret_files']) or '-'} "
                 "(old home kept as backup)"
             )
+            if res.get("skipped_protected"):
+                log(
+                    f"INFO home-migration skipped DPAPI-bound files this account cannot decrypt: "
+                    f"{','.join(res['skipped_protected'])} (a fresh one is created)"
+                )
             if res.get("skipped_protected"):
                 log(
                     f"INFO home-migration skipped DPAPI-bound files this account cannot decrypt: "

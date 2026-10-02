@@ -40,7 +40,11 @@ def resolve(rel: str) -> Path:
         alias = r.split(".")[1] + "/AGENTS.md"
     elif r.startswith("packaging/airc/"):
         alias = "airc/packaging/" + r[len("packaging/airc/"):]
-    elif re.match(r"^third_party/(bob-tray|Watch-AgentHealth)(/.*)?$", r):
+    elif re.match(r"^third_party/bob-tray(/.*)?$", r):  # t829u: first-class bob sources; legacy flat spellings keep resolving
+        alias = "bob/tray" + r[len("third_party/bob-tray"):]
+    elif re.match(r"^third_party/Watch-AgentHealth(/.*)?$", r):
+        alias = "bob/agentwatcher" + r[len("third_party/Watch-AgentHealth"):]
+    elif re.match(r"^(tray|agentwatcher)(/.*)?$", r):
         alias = "bob/" + r
     elif re.match(r"^third_party/(nssm|ergo|wix|bootstrap)(/.*)?$", r):
         alias = "common/" + r

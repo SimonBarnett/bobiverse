@@ -45,8 +45,9 @@ CLAIM_ACTIONS: dict[tuple[str, str], str] = {
     ("pull_request", "opened"): "MRB",
     ("pull_request", "ready_for_review"): "MRB",
 }
+# t826u: `Closes #N` and the full `Closes owner/repo#N` form (what the worker FR skill mandates in every FR PR body).
 CLOSES_RE = re.compile(
-    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+#(\d+)\b"
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<num>\d+)\b"
 )
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -61,6 +62,13 @@ LIST_MAX_LINES = 10  # job lines; + optional 1 summary + 1 more-hint <= ~12 tota
 LIST_LINE_MAX = 400  # bytes budget; only title is truncated
 _LIST_LAST: dict[str, float] = {}
 
+# FR #180: after GIVEUP/NACK, do not re-offer immediately; repeated giveups need a human.
+GIVEUP_COOLDOWN_S = 600.0
+GIVEUP_NEEDS_HUMAN_COUNT = 2
+SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
+HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
+SKIP_FR_LABELS = frozenset({"skill", "umbrella", "parent-fr"})
+
 
 @dataclass(frozen=True)
 class GitClaim:
@@ -72,6 +80,10 @@ class GitClaim:
     line: str
     refs: tuple[str, ...] = ()  # linked issue ids e.g. ("#19",) when PR supersedes FR
     merged: bool | None = None  # pull_request closed: True if merged
+    title: str = ""
+    body: str = ""
+    labels: tuple[str, ...] = ()
+    state: str = ""
 
 
 def _utc_now() -> str:
@@ -412,13 +424,19 @@ def _payload_number(event: str, payload: dict) -> str | None:
 
 
 
-def extract_closes_issue_ids(*texts: str) -> tuple[str, ...]:
-    """Issue ids referenced via Closes/Fixes/Resolves/Refs #n (deterministic)."""
+def extract_closes_issue_ids(*texts: str, repo: str = "") -> tuple[str, ...]:
+    """Issue ids referenced via Closes/Fixes/Resolves/Refs #n or ``Closes owner/repo#n`` (deterministic).
+
+    With ``repo`` given, a link that names ANOTHER repo is ignored (it closes an issue elsewhere, not a row of this repo's queue).
+    """
     found: list[str] = []
     seen: set[str] = set()
     for text in texts:
         for m in CLOSES_RE.finditer(text or ""):
-            ident = f"#{int(m.group(1))}"
+            named = (m.group("repo") or "").lower()
+            if repo and named and named != repo.lower():
+                continue
+            ident = f"#{int(m.group('num'))}"
             if ident not in seen:
                 seen.add(ident)
                 found.append(ident)
@@ -435,10 +453,79 @@ def _issue_blob(payload: dict) -> dict:
     return issue if isinstance(issue, dict) else {}
 
 
+def _label_names(labels) -> tuple[str, ...]:
+    out: list[str] = []
+    for lab in labels or []:
+        if isinstance(lab, dict):
+            name = str(lab.get("name") or "").strip()
+        else:
+            name = str(lab or "").strip()
+        if name:
+            out.append(name)
+    return tuple(out)
+
+
+def issue_skip_fr_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    state: str = "",
+) -> str | None:
+    """FR #180: why an issue must not become (or stay) an assignable FR row; None = ok."""
+    if (state or "").strip().lower() == "closed":
+        return "closed"
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    hit = labs & SKIP_FR_LABELS
+    if hit:
+        return f"label:{sorted(hit)[0]}"
+    title_s = (title or "").strip()
+    if HARVEST_TITLE_RE.match(title_s):
+        return "harvest_title"
+    blob = f"{title_s}\n{body or ''}"
+    if SAFE_TO_CLOSE_RE.search(blob):
+        return "safe_to_close"
+    return None
+
+
+def row_skip_fr_reason(row: dict) -> str | None:
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    return issue_skip_fr_reason(
+        title=str(row.get("title") or ""),
+        body=str(row.get("body") or ""),
+        labels=tuple(str(x) for x in labels),
+        state=str(row.get("state") or ""),
+    )
+
+
+def _parse_iso_ts(raw: str) -> float | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def row_on_cooldown(row: dict, now: float) -> bool:
+    until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
+    return until is not None and float(now) < until
+
+
+def row_needs_human(row: dict) -> bool:
+    v = row.get("needs_human")
+    if isinstance(v, bool):
+        return v
+    return str(v or "").strip().lower() in ("1", "true", "yes")
+
+
 def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim | None:
     """Build a claim from the GitHub webhook body. None if not a queue-driving event.
 
-    issues opened/reopened -> FR
+    issues opened/reopened -> FR (skipped for skill/harvest/safe-to-close/umbrella/closed — FR #180)
     pull_request opened/ready_for_review -> MRB (with refs to linked issues)
     pull_request closed -> MRB row used for supersede (merged flag set)
     issues closed -> FR/UAT removal via apply_queue_event (task FR id)
@@ -456,7 +543,25 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         ident = _payload_number(ev, payload)
         if ident is None:
             return None
-        return GitClaim(repo=repo, task="FR", id=ident, event=ev, action=action, line=src)
+        issue = _issue_blob(payload)
+        title = str(issue.get("title") or "")
+        body = str(issue.get("body") or "")
+        labels = _label_names(issue.get("labels"))
+        state = str(issue.get("state") or "open")
+        if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
+            return None
+        return GitClaim(
+            repo=repo,
+            task="FR",
+            id=ident,
+            event=ev,
+            action=action,
+            line=src,
+            title=title,
+            body=body,
+            labels=labels,
+            state=state,
+        )
 
     if ev == "issues" and action == "closed":
         ident = _payload_number(ev, payload)
@@ -471,7 +576,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         pr = _pr_blob(payload)
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
-        refs = extract_closes_issue_ids(title, body, src)
+        refs = extract_closes_issue_ids(title, body, src, repo=repo)
         task = "MRB" if action in ("opened", "ready_for_review") else "MRB"
         return GitClaim(
             repo=repo, task=task, id=ident, event=ev, action=action, line=src, refs=refs
@@ -484,7 +589,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         pr = _pr_blob(payload)
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
-        refs = extract_closes_issue_ids(title, body, src)
+        refs = extract_closes_issue_ids(title, body, src, repo=repo)
         merged = bool(pr.get("merged"))
         return GitClaim(
             repo=repo,
@@ -526,6 +631,10 @@ def _remove_unaccepted_tasks(doc: dict, repo: str, ident: str, tasks: set[str]) 
 
 
 def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
+    if claim.task == "FR" and issue_skip_fr_reason(
+        title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
+    ):
+        return "skipped"
     if _already(doc, claim.repo, claim.task, claim.id):
         # refresh refs/line on existing unaccepted row
         for row in doc["unaccepted"]:
@@ -535,6 +644,10 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
                 row["action"] = claim.action
                 if claim.refs:
                     row["refs"] = list(claim.refs)
+                if claim.title:
+                    row["title"] = claim.title
+                if claim.labels:
+                    row["labels"] = list(claim.labels)
                 for k, v in extra.items():
                     if v:
                         row[k] = v
@@ -558,6 +671,12 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
     }
     if claim.refs:
         row["refs"] = list(claim.refs)
+    if claim.title:
+        row["title"] = claim.title
+    if claim.body:
+        row["body"] = claim.body[:500]
+    if claim.labels:
+        row["labels"] = list(claim.labels)
     for k, v in extra.items():
         if not v:
             continue
@@ -585,11 +704,27 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
 
             if ev == "issues" and action in ("opened", "reopened"):
                 # FR for issue; drop any stale UAT for same id
-                _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
-                changed = _append_unaccepted(doc, claim)
+                if issue_skip_fr_reason(
+                    title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
+                ):
+                    changed = "noop"
+                else:
+                    _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
+                    changed = _append_unaccepted(doc, claim)
+                    if changed == "skipped":
+                        changed = "noop"
 
             elif ev == "issues" and action == "closed":
-                n = _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"FR", "PR", "UAT"})
+                # t826u: a closed issue drops its FR/PR rows (FR #180 point 4). A UAT row queued BY A MERGED PR is kept: every FR PR
+                # carries `Closes owner/repo#N`, so the merge itself closes the issue and the UAT of that merge must still be assigned.
+                n = _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"FR", "PR"})
+                before = len(doc["unaccepted"])
+                doc["unaccepted"] = [
+                    r for r in doc["unaccepted"]
+                    if not (r.get("repo") == claim.repo and r.get("id") == claim.id and r.get("task") == "UAT"
+                            and r.get("action") != "uat")
+                ]
+                n += before - len(doc["unaccepted"])
                 changed = "removed" if n else "noop"
 
             elif ev == "pull_request" and action in ("opened", "ready_for_review", "edited"):
@@ -744,8 +879,10 @@ def _coerce_row(row: dict) -> dict | None:
     except (TypeError, ValueError):
         out["seq"] = 0
     # author_seat/url: written by gh-Jeeves-style producers; needed by the MRB author rule and wire url (#39).
+    # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
     for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel",
-                "author_seat", "author_nick", "author", "url"):
+                "author_seat", "author_nick", "author", "url", "title", "body", "state",
+                "cooldown_until", "giveup_ts"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -754,6 +891,19 @@ def _coerce_row(row: dict) -> dict | None:
             out["refs"] = [str(x) for x in refs]
         else:
             out["refs"] = str(refs)
+    if row.get("labels"):
+        labs = row.get("labels")
+        if isinstance(labs, list):
+            out["labels"] = [str(x) for x in labs]
+        else:
+            out["labels"] = [str(labs)]
+    try:
+        if row.get("giveup_count") is not None:
+            out["giveup_count"] = int(row.get("giveup_count") or 0)
+    except (TypeError, ValueError):
+        pass
+    if row_needs_human(row):
+        out["needs_human"] = True
     return out
 
 
@@ -1071,6 +1221,10 @@ def offer_focus_top(
             order = ordered_unaccepted(home, doc["unaccepted"])
             pick = None
             for cand in order:
+                if row_needs_human(cand) or row_on_cooldown(cand, now_f):
+                    continue  # FR #180: GIVEUP/NACK cooldown / needs-human
+                if row_skip_fr_reason(cand):
+                    continue
                 to = str(cand.get("offered_to") or "").strip()
                 if to and to.lower() != me.lower():
                     try:
@@ -1106,8 +1260,11 @@ def offer_focus_top(
         return "error", None
 
 
-def offer_top(home: Path, nick: str, channel: str) -> tuple[str, dict | None]:
-    """Peek oldest unaccepted and stamp offered_to without accepting (FR #207)."""
+def offer_top(home: Path, nick: str, channel: str, *, now: float | None = None) -> tuple[str, dict | None]:
+    """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
     try:
         with _lock(home):
             try:
@@ -1117,11 +1274,19 @@ def offer_top(home: Path, nick: str, channel: str) -> tuple[str, dict | None]:
             if not doc["unaccepted"]:
                 return "empty", None
             doc["unaccepted"].sort(key=_sort_key)
-            job = dict(doc["unaccepted"][0])
+            pick_i = None
+            for i, row in enumerate(doc["unaccepted"]):
+                if row_needs_human(row) or row_on_cooldown(row, now_f) or row_skip_fr_reason(row):
+                    continue
+                pick_i = i
+                break
+            if pick_i is None:
+                return "empty", None
+            job = dict(doc["unaccepted"][pick_i])
             job["offered_to"] = (nick or "").strip()
             job["offered_ts"] = _utc_now()
             job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
-            doc["unaccepted"][0] = job
+            doc["unaccepted"][pick_i] = job
             try:
                 _write_queue(queue_path(home), doc)
             except OSError:
@@ -1183,6 +1348,35 @@ def accept_offered(home: Path, nick: str, channel: str) -> tuple[str, dict | Non
         return "error", None
 
 
+def prune_unassignable_queue(home: Path) -> dict:
+    """FR #180: drop unaccepted FR rows that are skill/harvest/safe-to-close/umbrella (local metadata).
+
+    Does not call GitHub. Closed-issue drops still come from webhooks + ``resync_from_github``.
+    ``needs_human`` rows are kept but never offered (see ``offer_focus_top``).
+    """
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return {"ok": False, "error": "load"}
+            before = len(doc["unaccepted"])
+            keep = []
+            for row in doc["unaccepted"]:
+                if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
+                    continue
+                keep.append(row)
+            doc["unaccepted"] = keep
+            dropped = before - len(keep)
+            try:
+                _write_queue(queue_path(home), doc)
+            except OSError:
+                return {"ok": False, "error": "write"}
+            return {"ok": True, "dropped": dropped, "unaccepted": len(keep)}
+    except (TimeoutError, OSError):
+        return {"ok": False, "error": "lock"}
+
+
 def resync_from_github(
     home: Path,
     repos: list[str],
@@ -1196,6 +1390,7 @@ def resync_from_github(
     Merge, not wipe (the chair runs this every 15 min):
     * rows of other kinds (UAT/BUILD/FIX/PR), ``accepted`` jobs, and rows of repos whose fetch FAILED are kept;
     * a stale FR/MRB row of a successfully fetched repo (closed/merged/superseded) is dropped;
+    * skill/harvest/safe-to-close/umbrella issues are never (re)added and are pruned from unaccepted (FR #180);
     * existing rows keep their seq/offer fields; new items are appended; repos in ``ignored`` are skipped.
 
     ``token`` (optional) is sent as ``Authorization: Bearer``; it is never logged or returned.
@@ -1241,7 +1436,7 @@ def resync_from_github(
                 continue
             title = str(pr.get("title") or "")
             body = str(pr.get("body") or "")
-            refs = extract_closes_issue_ids(title, body)
+            refs = extract_closes_issue_ids(title, body, repo=repo)
             for r in refs:
                 closed_by_pr.add(r)
             desired.append(
@@ -1256,8 +1451,25 @@ def resync_from_github(
             ident = f"#{num}"
             if ident in closed_by_pr:
                 continue
+            title = str(iss.get("title") or "")
+            body = str(iss.get("body") or "")
+            labels = _label_names(iss.get("labels"))
+            state = str(iss.get("state") or "open")
+            if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
+                continue
             desired.append(
-                GitClaim(repo=repo, task="FR", id=ident, event="issues", action="opened", line="")
+                GitClaim(
+                    repo=repo,
+                    task="FR",
+                    id=ident,
+                    event="issues",
+                    action="opened",
+                    line="",
+                    title=title,
+                    body=body,
+                    labels=labels,
+                    state=state,
+                )
             )
 
     try:
@@ -1268,6 +1480,8 @@ def resync_from_github(
             before = len(doc["unaccepted"])
             keep = []
             for row in doc["unaccepted"]:
+                if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
+                    continue  # FR #180 local junk
                 if (
                     row.get("repo") in fetched_set
                     and row.get("task") in ("FR", "MRB")

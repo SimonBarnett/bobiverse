@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Digest callback: report/git/intake/jira; public GET digest (#174).
+"""Digest callback: report/git/intake/jira; public GET digest (#174, #149).
 
-GET/HEAD on /bob/v1/report returns the JSON digest (same body as /bob/v1/digest).
-IIS already proxies reportUrl; browsers must not keep seeing 405.
+Public IIS front-door GET is **/bob/v1/report** only (FR #149 / FR #354). Local bobcallback
+also serves `/bob/v1/digest` and `/digest` with the same JSON body; those aliases are not
+published through the irc.ntsa.uk IIS rewrite today (GET https://irc.ntsa.uk/bob/v1/digest -> 404).
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 
@@ -33,6 +34,13 @@ JIRA_PATH = "/bob/v1/jira"
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
 DIGEST_ALIAS = "/digest"
+# Public readers (IIS / browsers / UAT): use reportUrl. Local bobcallback still answers DIGEST_*.
+PUBLIC_DIGEST_PATH = REPORT_PATH
+CLI_DESCRIPTION = (
+    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira; "
+    "front-door GET is /bob/v1/report (local bobcallback also serves /bob/v1/digest); "
+    "GET /bob/v1/jira"
+)
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
@@ -489,7 +497,7 @@ def handle_request(
     """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
-    # GET/HEAD digest on /bob/v1/digest, /digest, and reportUrl (/bob/v1/report).
+    # GET/HEAD digest: local paths include /digest aliases; public front-door is REPORT_PATH only (#149).
     if verb in ("GET", "HEAD") and route in DIGEST_GET_PATHS:
         code, payload = handle_digest_get(home, briefer_nick)
         if verb == "HEAD":
@@ -716,12 +724,7 @@ def serve(
 def main() -> None:
     import argparse
 
-    p = argparse.ArgumentParser(
-        description=(
-            "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira; "
-            "GET digest on /bob/v1/report and /bob/v1/digest; GET /bob/v1/jira"
-        )
-    )
+    p = argparse.ArgumentParser(description=CLI_DESCRIPTION)
     p.add_argument("--home", default="", help="BOB_HOME (digest.json)")
     p.add_argument("--bind", default="127.0.0.1")
     p.add_argument(

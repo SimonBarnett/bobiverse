@@ -318,7 +318,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1', 'BobTrayDialogs.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -1719,6 +1719,7 @@ function Start-BobTrayWorkerExe {
 }
 
 $script:attention = $false
+$script:attentionSeq = 0
 $script:bobTrayGrokSessions = @()
 $script:flashOn = $false
 $script:lastAlerts = @()
@@ -2071,6 +2072,7 @@ function Start-JobsWatcher {
 function Set-Attention([string[]]$alerts) {
     $script:lastAlerts = @($alerts)
     $script:attention = $true
+    $script:attentionSeq = [int64]$script:attentionSeq + 1
     $text = ($alerts | Select-Object -First 1)
     if ($text.Length -gt 60) { $text = $text.Substring(0, 60) }
     Clear-BobNativeTip
@@ -2116,6 +2118,15 @@ function Update-Hover {
         if ($script:attention) { $short = '! ' + $short }
         if ($short.Length -gt 63) { $short = $short.Substring(0, 63) }
         $script:notifyTipText = $short
+        # t828u/t832u: bob-status.exe / bob-tray.exe paint from this snapshot (dashboard only, plus the tray's hover text + attention state).
+        try {
+            if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) {
+                $snapModel = New-BobTrayStatusModel -Hover $h -AlertKind $script:alertKind -Alerts @($script:lastAlerts) -Version (Get-BobTrayProductVersionLabel) -Machine ([string]$env:BOB_MACHINE_ID) -Title $script:hoverTitle `
+                    -Short $script:notifyTipText -Attention ([bool]$script:attention) -AttentionSeq ([int64]$script:attentionSeq) -Pulse ([bool]$paint.pulse)
+                [void](Write-BobTrayStatusSnapshot -Root $RepoRoot -Model $snapModel)
+            }
+        }
+        catch { Write-TrayLog ('status snapshot error: ' + $_.Exception.Message) }
         Clear-BobNativeTip
         if ($script:titleLabel) {
             $script:titleLabel.Text = $script:hoverTitle
@@ -2194,6 +2205,9 @@ function Hide-BobTrayCard {
 
 # t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
 function Invoke-BobTrayStatus {
+    # t828u: Status is a compiled exe (instant, single-instance, reads the snapshot Update-Hover writes). The in-process card is the fallback
+    # when tools\bob-status.exe is not installed. Update-Hover refreshes the snapshot; the exe re-reads it every 2 s while open.
+    if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'status')) { return }
     Update-Hover
     Show-BobTrayCard -Reason 'click'
 }
@@ -2217,6 +2231,11 @@ function Get-BobTrayLogoImage {
 
 # Acknowledge: clears the alert and shows the ntsa gut logo badge, "by Simon Barnett", and every installed product.
 function Show-BobTrayAbout {
+    # t828u: compiled exe first (opens at once, scans installs on its own thread, single-instance); the in-process dialog below is the fallback.
+    if ((Get-Command Start-BobTrayDialog -ErrorAction SilentlyContinue) -and (Start-BobTrayDialog -Root $RepoRoot -Name 'about')) {
+        Write-TrayLog 'about dialog: bob-about.exe started'
+        return
+    }
     try {
         if ($script:aboutForm -and -not $script:aboutForm.IsDisposed) {
             $script:aboutForm.Activate()
@@ -2281,6 +2300,12 @@ function Show-BobTrayAbout {
 
 # Close every dialog the tray owns: the pools card and the about dialog. Never throws.
 function Close-BobTrayDialogs {
+    # t828u: the compiled dialogs belong to this install: close the ones started from <root>\tools.
+    try {
+        foreach ($pr in @(Get-Process -Name 'bob-about', 'bob-status' -ErrorAction SilentlyContinue)) {
+            try { if ($pr.Path -and $pr.Path.StartsWith((Join-Path $RepoRoot 'tools'), [StringComparison]::OrdinalIgnoreCase)) { [void]$pr.CloseMainWindow(); if (-not $pr.WaitForExit(500)) { $pr.Kill() } } } catch { }
+        }
+    } catch { }
     try { if ($script:aboutForm -and -not $script:aboutForm.IsDisposed) { $script:aboutForm.Close(); $script:aboutForm.Dispose() } } catch { }
     $script:aboutForm = $null
     try {
@@ -2954,6 +2979,11 @@ $startWorkerTimer.Add_Tick({
             [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
                     -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
                     -Log { param($m) Write-TrayLog $m })
+            if (Test-BobTrayEngineMode) {
+                [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
+                        -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
+                        -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'; [Environment]::Exit(0) })
+            }
         }
         catch [System.Management.Automation.PipelineStoppedException] { return }
         catch { Write-TrayLog ('startworker queue: ' + $_.Exception.Message) }
@@ -2996,7 +3026,8 @@ try {
 }
 catch { Write-TrayLog ('digest startup: ' + $_.Exception.Message) }
 # TipForm handle only on click - startup CreateHandle caused hover stub.
-$notify.Visible = $true
+if (Test-BobTrayEngineMode) { Write-TrayLog 'engine mode: bob-tray.exe owns the icon and the menu (this process is headless)'; [void](Write-BobTrayEngineEnv -Root $RepoRoot) }
+else { $notify.Visible = $true }
 $flash.Start()
 $poll.Start()
 $pulse.Start()

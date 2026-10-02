@@ -48,6 +48,8 @@ import channel_only  # noqa: E402
 import startworker  # noqa: E402
 
 FLOOD_S = 0.8
+# FR #68: cap each outbox tick so chair +o and ChanServ sync cannot starve.
+OUTBOX_LINES_PER_TICK = 8
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
 # Safe default for PRIVMSG *text* when LINELEN/prefix unknown (~400 bytes of UTF-8 text).
 DEFAULT_PRIVMSG_TEXT_MAX = 400
@@ -181,7 +183,9 @@ def write_outbox_line(path: Path, text: str, *, channel: str | None = None) -> N
         fh.write(line + "\n")
 
 
-def take_outbox_lines(path: Path, last: int) -> tuple[list[str], int]:
+def take_outbox_lines(
+    path: Path, last: int, max_lines: int | None = None
+) -> tuple[list[str], int]:
     """Complete newline-terminated outbox lines from byte offset `last`.
 
     A poll that lands mid-write must not send a truncated SEAL/FILE line
@@ -189,6 +193,9 @@ def take_outbox_lines(path: Path, last: int) -> tuple[list[str], int]:
 
     FR #226: strip UTF-8 BOM on the file head and per-line; normalize pre-wrapped
     PRIVMSG so drain never double-wraps.
+
+    FR #68: optional max_lines caps the returned non-empty lines so a backlog
+    cannot starve chair +o / ChanServ work.
     """
     try:
         data = path.read_bytes()
@@ -213,7 +220,10 @@ def take_outbox_lines(path: Path, last: int) -> tuple[list[str], int]:
         base = last
     lines: list[str] = []
     consumed = 0
+    limit = None if max_lines is None else max(0, int(max_lines))
     while True:
+        if limit is not None and len(lines) >= limit:
+            break
         nl = buf.find(b"\n", consumed)
         if nl < 0:
             break
@@ -735,8 +745,10 @@ class Client:
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
         # FR #211: worker QUIT mid-task → idle webhook + job back to unaccepted
+        # FR #69: digest home for roster + digest.json (chair --home is identity only)
+        digest = self._digest_home()
         try:
-            q = shop_listen.handle_shop_worker_quit(self.home, nick=who, briefer=briefer)
+            q = shop_listen.handle_shop_worker_quit(digest, nick=who, briefer=briefer)
             if q.get("handled"):
                 info(
                     f"INFO shop-listen quit nick={who} returned={q.get('returned')} "
@@ -744,7 +756,7 @@ class Client:
                 )
         except Exception as exc:
             info(f"INFO shop-listen quit error {type(exc).__name__}")
-        out = bobreport.apply_quit(self.home, who, briefer)
+        out = bobreport.apply_quit(digest, who, briefer)
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, who)
 
@@ -2288,8 +2300,9 @@ class Client:
             return False
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick or "Jeeves"
         try:
+            # FR #69: digest home holds ChanServ roster + digest.json (not chair --home)
             result = shop_listen.handle_shop_worker_line(
-                self.home,
+                self._digest_home(),
                 nick=src,
                 channel=target,
                 body=body,
@@ -2669,7 +2682,7 @@ class Client:
         if self.sock is None or not path.exists():
             return []
         last = load_outbox_pos(path)
-        lines, new_last = take_outbox_lines(path, last)
+        lines, new_last = take_outbox_lines(path, last, max_lines=OUTBOX_LINES_PER_TICK)
         sent: list[str] = []
         gate_fleet = bobreport.chair_mode_active(self.home)
         for line in lines:
@@ -2721,11 +2734,13 @@ class Client:
             if gen is not None and gen != self._outbox_gen:
                 return
             try:
-                self.drain_outbox_once()
                 self._maybe_bobiverse_pull()
+                # FR #68: establish chair/ChanServ privileges before draining backlog.
                 self._maybe_chanserv_sync()
                 self._ensure_chan_ops()
                 self._chan_privs_tick()
+                self.drain_outbox_once()
+                self._maybe_bobiverse_pull()
                 self._chair_jobs_tick()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()

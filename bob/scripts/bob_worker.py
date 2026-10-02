@@ -464,6 +464,7 @@ def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
     if mei:
         cands.append(Path(mei) / "assets" / "bob-systray.ico")
     cands.append(Path(__file__).resolve().parent.parent / "assets" / "bob-systray.ico")
+    cands.append(Path(__file__).resolve().parent.parent / "tray" / "assets" / "bob-systray.ico")  # t829u: bob/tray is a first-class source
     cands.append(Path(__file__).resolve().parent.parent / "third_party" / "bob-tray" / "assets" / "bob-systray.ico")
     for c in cands:
         try:
@@ -759,7 +760,7 @@ def accept_for_agent(src: str, target: str, text: str, own_nick: str, jeeves: st
     return addressed_to(text, own_nick)
 
 
-def format_from(nick: str, target: str, text: str, maxlen: int = 350) -> str:
+def format_from(nick: str, target: str, text: str, maxlen: int = 2000) -> str:
     return "FROM %s %s %s" % (nick, target, one_line(text, maxlen))
 
 
@@ -769,12 +770,13 @@ class Relay:
     it is ready (a timer-less callback). Flood guard: >max_burst injections per window are coalesced into one."""
 
     def __init__(self, log: Callable[[str], None], max_burst: int = 8, window_s: float = 30.0, max_pending: int = 5,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, persist_dir: Optional[Path] = None):
         self.log = log
         self.max_burst = max_burst
         self.window_s = window_s
         self.max_pending = max_pending
         self.clock = clock
+        self.persist_dir = Path(persist_dir) if persist_dir else None
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
@@ -836,7 +838,8 @@ class Relay:
             self.injected += 1
             self.last_injected_at = self.clock()
             self.last_unacked = line
-            self.log("relay: injected " + line[:120])
+            self.log("relay: injected " + line)
+            self._persist_last_from(line)
             if self.on_inject:
                 try:
                     self.on_inject()
@@ -848,6 +851,15 @@ class Relay:
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
+
+    def _persist_last_from(self, line: str) -> None:
+        if not self.persist_dir or not line:
+            return
+        try:
+            self.persist_dir.mkdir(parents=True, exist_ok=True)
+            (self.persist_dir / "last-from.txt").write_text(line + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     def _flush_overflow(self) -> None:
         with self._lock:
@@ -1301,11 +1313,11 @@ def outbox_payload(line: str) -> str:
 
 class BoredEmitter:
     """t770u: the EXE (never the model) posts `PRIVMSG #<machine> :!bored` exactly like the agent watcher (Watch-AgentHealth FR #100):
-      * on seat start (agent ready), right after a DONE, and while idle: first idle after 120 s, then every 180 s;
+      * on seat start (agent ready), right after a DONE or NACK/GIVEUP, and while idle: first idle after 120 s, then every 180 s;
       * never while busy (an open ACK younger than 45 min, or the agent starting/restarting/hung);
       * any forward / outbox activity resets the idle clock; at most one line per second per reason;
       * only the seat's own shop (IrcSeat.say refuses anything else); never after IRC loss/shutdown (stop()).
-    Jeeves then assigns in !focus order; ACK marks the seat doing, DONE marks it idle.
+    Jeeves then assigns in !focus order; ACK marks the seat doing; DONE/NACK/GIVEUP mark it idle (immediate !bored).
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
@@ -1325,6 +1337,8 @@ class BoredEmitter:
         self._last_reason = ""
         self._done_key = ""
         self._last_done_key = ""
+        self._free_key = ""
+        self._last_free_key = ""
         self._start_sent = False
         self._last_dedupe = None
         self._retry_at = 0.0
@@ -1373,9 +1387,12 @@ class BoredEmitter:
                 self._ack_open = False
                 self._done_key = p
                 self._idle_since = now
-            elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP hand the job back: the seat is free again (the watcher only closes on DONE)
+            elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP: free immediately and !bored (FR #161)
+                verb = (p.split(None, 1)[0] if p else "FREE").upper()
                 self._ack_open = False
+                self._free_key = p
                 self._idle_since = now
+                self.log(f"bored: free-rx matched ({verb}) - seat idle")
             elif self._ack_open:
                 self._ack_at = now  # outbox activity keeps an open ACK fresh (the watcher uses the outbox mtime)
             else:
@@ -1400,6 +1417,8 @@ class BoredEmitter:
             return "start"
         if self._done_key and self._done_key != self._last_done_key:
             return "done"
+        if self._free_key and self._free_key != self._last_free_key:
+            return "free"
         if self._nak_due is not None and now >= self._nak_due:
             return "nak"
         since = (now - self._last_bored) if self._last_bored is not None else 1e12
@@ -1426,7 +1445,13 @@ class BoredEmitter:
         return due
 
     def _fire(self, reason: str, now: float) -> None:
-        key = (reason, int(now))
+        # DONE/free already de-dupe on payload key; do not collapse distinct NACK then GIVEUP in the same second (FR #161).
+        if reason == "done":
+            key = (reason, self._done_key)
+        elif reason == "free":
+            key = (reason, self._free_key)
+        else:
+            key = (reason, int(now))
         if key == self._last_dedupe:
             self._retry_at = now + 1.0
             return
@@ -1445,6 +1470,8 @@ class BoredEmitter:
             self._start_sent = True
         if reason == "done":
             self._last_done_key = self._done_key
+        if reason == "free":
+            self._last_free_key = self._free_key
         self.sent.append((now, reason))
         self.log(f"bored -> shop reason={reason}")
 
@@ -1669,16 +1696,27 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
                 continue
             m = re.match(r"(?i)^PRIVMSG\s+(\S+)\s+:?(.*)$", ln)
             target, text = (m.group(1), m.group(2)) if m else (irc.shop, ln)
-            if _OUT_BORED_RX.match(text.strip()):  # t770u: !bored is posted by the exe ONLY, never by the model
+            payload = text.strip()
+            if _OUT_BORED_RX.match(payload):  # t770u: !bored is posted by the exe ONLY, never by the model
                 log("outbox: refused agent-written !bored (the exe posts it)")
                 continue
-            if irc.say(target, text):
+            ok = bool(irc.say(target, text))
+            is_job = bool(_OUT_ACK_RX.match(payload) or _OUT_DONE_RX.match(payload) or _OUT_FREE_RX.match(payload))
+            if ok:
                 n += 1
                 if on_payload:
                     try:
-                        on_payload(text)  # ACK / DONE / NACK drive busy-idle for !bored
+                        on_payload(text)  # ACK / DONE / NACK / GIVEUP drive busy-idle for !bored
                     except Exception:
                         pass
+            elif on_payload and is_job:
+                # FR #161: say() failure must not leave the seat stuck busy (or skip DONE/free bookkeeping).
+                try:
+                    on_payload(text)
+                except Exception:
+                    pass
+                verb = payload.split(None, 1)[0] if payload else "JOB"
+                log(f"outbox: say failed; applied busy bookkeeping for {verb}")
     finally:
         try:
             tmp.unlink()
@@ -1806,7 +1844,7 @@ def run_agent(args, log: Log) -> int:
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
         sasl = (os.environ["BOB_IRC_SASL_USER"], os.environ["BOB_IRC_SASL_PASSWORD"])
     irc = IrcSeat(args.host, args.port, nick, machine, pw, sasl, tls=not args.no_tls, log=log)
-    relay = Relay(log)
+    relay = Relay(log, persist_dir=run_dir)
     irc.on_message = relay.deliver
     try:
         irc.connect()

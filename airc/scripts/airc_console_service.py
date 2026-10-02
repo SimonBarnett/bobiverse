@@ -25,9 +25,12 @@ if _common.is_dir():
 
 from account_map import AccountMap, account_from_tags, parse_message_tags, parse_prefix_nick
 from airc_console import (
+    IRC_SAFE_PAYLOAD,
     AircConsoleCore,
     AuthPolicy,
     ConsoleSessionManager,
+    ShellJobRunner,
+    chunk_irc_text,
     console_nick,
     domain_channel,
     domain_lobby_nick,
@@ -38,9 +41,11 @@ from airc_console import (
     machine_console_nick,
     machine_id,
     parse_chanserv_info,
+    resolve_powershell,
     resolve_server_password,
     shop_channel,
 )
+from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 
 FLOOD_S = 0.35
 # Issue #298: half-open / silent link detection + reconnect.
@@ -154,17 +159,39 @@ class AircConsoleService:
         )
         if not ops and not accts:
             raise SystemExit("airc console: refuse empty operators/accounts (FR #253)")
+        cwd = args.cwd or str(self.home)
         self.sessions = ConsoleSessionManager(
-            shell=args.shell,
-            cwd=args.cwd or str(self.home),
+            shell=args.shell or resolve_powershell(),
+            cwd=cwd,
             on_output=self._on_console_out,
             idle_sec=float(args.idle_sec),
+        )
+        self.shell_runner = ShellJobRunner(
+            on_reply=self._on_console_out,
+            cwd=cwd,
+            wait=False,
+        )
+        # Install root = parent of scripts/ (product tree). Used by FR #77 UPDATE.
+        install_root = str(Path(__file__).resolve().parents[1])
+        ai_root = Path(os.environ.get("AI_ROOT") or self.home.parent.parent)
+        # Verb matrix: empty write/exec sets => any base-authenticated nick (documented).
+        self.job_store = JobStore(self.home)
+        self.job_protocol = JobProtocol(
+            self.job_store,
+            verb_auth=VerbAuthPolicy(),
+            on_reply=self._on_console_out,
+            ai_root=ai_root if (ai_root / "bob").is_dir() or (ai_root / "airc").is_dir() else Path(r"C:\ai"),
+            machine=self.machine,
+            airc_running=True,
         )
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
             sessions=self.sessions,
             nick=self.nick,
+            shell_runner=self.shell_runner,
+            install_root=install_root,
+            job_protocol=self.job_protocol,
         )
         self.core.channel = self.channel
         self.sock: ssl.SSLSocket | socket.socket | None = None
@@ -178,7 +205,10 @@ class AircConsoleService:
 
     def _on_console_out(self, nick: str, line: str) -> None:
         # Reply in Query only — never on shop channel (silent).
-        self.send_privmsg(nick, line[:400])
+        # FR #75: chunk deterministically within IRC_SAFE_PAYLOAD (no silent 400 clip).
+        text = (line or "").replace("\n", " ").replace("\r", " ")
+        for piece in chunk_irc_text(text, limit=IRC_SAFE_PAYLOAD, prefix=""):
+            self.send_privmsg(nick, piece)
 
     def connect(self) -> None:
         self._registered = False
@@ -569,8 +599,15 @@ class AircConsoleService:
             info(f"INFO pong to={hr.nick} {hr.reply}")
         elif hr.action == "deny" and hr.nick and hr.reply:
             self.send_privmsg(hr.nick, hr.reply)
-        elif hr.action in {"help", "close"} and hr.nick and hr.reply:
+        elif hr.action in {"help", "close", "update"} and hr.nick and hr.reply:
+            # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
+            if hr.action == "update":
+                info(f"INFO update-reply to={hr.nick} {hr.reply}")
+        elif hr.action == "shell":
+            info(f"INFO shell from={hr.nick}")
+        elif hr.action == "job":
+            info(f"INFO job from={hr.nick}")
         elif hr.action == "pipe":
             info(f"INFO pipe from={hr.nick}")
 

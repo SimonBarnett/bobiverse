@@ -409,11 +409,11 @@ function Sync-BobiverseWorkTree {
                 $r = Invoke-BobiverseGit -Git $git -GitArgs ($G + $step) -TimeoutSec 30
                 if ($r.Code -ne 0) { Remove-Item -LiteralPath (Join-Path $root '.git') -Recurse -Force -ErrorAction SilentlyContinue; return (Done ("git $($step[0]) failed: " + ($r.Out -join ' '))) }
             }
-            # hide the composed flat runtime tree from git: only <product>/ and common/ are tracked/visible
-            $ex = Join-Path $root '.git\info\exclude'
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ex) | Out-Null
-            [IO.File]::WriteAllText($ex, "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/\n/*\n!/$Product/\n!/common/\n".Replace('\n', "`n"), (New-Object Text.UTF8Encoding($false)))
+            Write-BobiverseInstallGitExclude -InstallRoot $root -Product $Product
             $log.Add("INFO worktree-bootstrap $root sparse=$Product,common origin=$Remote")
+        } else {
+            # Refresh exclude on existing installs so FR #132 un-ignores land without re-bootstrap.
+            try { Write-BobiverseInstallGitExclude -InstallRoot $root -Product $Product } catch { }
         }
         if ($DryRun) { $log.Add('INFO worktree-dry-run skip fetch/merge'); $res.Ok = $true; return (Done 'dry-run') }
 
@@ -457,6 +457,26 @@ function Sync-BobiverseWorkTree {
         return [pscustomobject]$res
     }
 }
+function Get-BobiverseInstallGitExcludeText {
+    # Shared by install bootstrap and sync refresh (FR #132). Linked FR worktrees use this exclude.
+    param([Parameter(Mandatory)][string]$Product)
+    return (
+        "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/`n" +
+        "# FR worktrees sharing this git dir: sibling products un-ignored; else git add -f (FR #132)`n" +
+        "/*`n!/$Product/`n!/common/`n!/airc/`n!/jeeves/`n"
+    )
+}
+
+function Write-BobiverseInstallGitExclude {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$Product
+    )
+    $ex = Join-Path $InstallRoot '.git\info\exclude'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ex) | Out-Null
+    [IO.File]::WriteAllText($ex, (Get-BobiverseInstallGitExcludeText -Product $Product), (New-Object Text.UTF8Encoding($false)))
+}
+
 function Test-BobiverseSplitRepo {
     param([Parameter(Mandatory)][string]$Root)
     return [bool](Test-Path -LiteralPath (Join-Path $Root 'common\VERSION'))
@@ -505,7 +525,10 @@ function Get-BobiverseRepoPath {
     elseif ($r -imatch '^bob-agents(\\.*)?$') { $alias = 'bob\agents' + $Matches[1] }
     elseif ($r -imatch '^AGENTS\.(jeeves|bob|airc)\.md$') { $alias = $Matches[1] + '\AGENTS.md' }
     elseif ($r -imatch '^packaging\\airc\\(.+)$') { $alias = 'airc\packaging\' + $Matches[1] }
-    elseif ($r -imatch '^third_party\\(bob-tray|Watch-AgentHealth)(\\.*)?$') { $alias = 'bob\third_party\' + $Matches[1] + $Matches[2] }
+    # t829u: the systray and the agent watcher are first-class bob sources (bob\tray, bob\agentwatcher); the legacy flat spellings keep resolving.
+    elseif ($r -imatch '^third_party\\bob-tray(\\.*)?$') { $alias = 'bob\tray' + $Matches[1] }
+    elseif ($r -imatch '^third_party\\Watch-AgentHealth(\\.*)?$') { $alias = 'bob\agentwatcher' + $Matches[1] }
+    elseif ($r -imatch '^(tray|agentwatcher)(\\.*)?$') { $alias = 'bob\' + $Matches[1] + $Matches[2] }
     elseif ($r -imatch '^third_party\\(nssm|ergo|wix|bootstrap)(\\.*)?$') { $alias = 'common\third_party\' + $Matches[1] + $Matches[2] }
     if ($alias) { return (Join-Path $Root $alias) }
     foreach ($s in $script:BobiverseServiceDirs) {

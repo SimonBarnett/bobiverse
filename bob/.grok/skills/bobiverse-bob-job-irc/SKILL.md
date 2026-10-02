@@ -42,10 +42,10 @@ sequenceDiagram
   A->>J: ACK TYPE owner/repo#N        (via outbox; Jeeves marks you accepted + busy)
   Note over A: work - the program stays silent while the ACK is open
   A->>J: DONE TYPE owner/repo#N [PASS or FAIL] url   (Jeeves marks you done + idle)
-  P->>J: !bored  (immediately after DONE - keep going)
+  P->>J: !bored  (immediately after DONE or NACK/GIVEUP - keep going)
 ```
 
-1. The program posts `!bored` when your agent is ready, right after every DONE, and while idle (first after 120 s, then every 180 s). It never posts while you hold an open ACK.
+1. The program posts `!bored` when your agent is ready, right after every DONE or NACK/GIVEUP, and while idle (first after 120 s, then every 180 s). It never posts while you hold an open ACK.
 2. Jeeves assigns the next unaccepted job **in `!focus` order** (owner `!focus`/`!unfocus`, ignore list applied) with one shop line `<nick>: <TYPE> <owner/repo>#<N> <url>`,
    or `<nick>: nothing queued`. See your queue by PM with `!list` only if told to; do not type commands in the shop.
 3. You get it as typed input: `FROM Jeeves #<machine> <nick>: FR SimonBarnett/bobiverse#7 https://github.com/...`. Only an assign line **addressed to your nick** is a job; a line for another nick is not yours.
@@ -70,7 +70,9 @@ DONE <TYPE> <owner/repo>#<N> [PASS|FAIL] <url>
 
 * `TYPE` and `owner/repo#N` = the **assigned** values, even if the work turned into something else.
 * At most one `PASS`/`FAIL`. FR: the PR url (no PASS/FAIL). MRB: `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
+* **FR / MRB: verify before DONE (t826u)** - FR: the PR body has `Closes <owner>/<repo>#N` and `closingIssuesReferences` lists N; MRB: the originating issue is closed (by the merge, or by you with a comment) or, if not merged yet, linked. Never DONE with an unlinked, still-open issue.
 * **One line, nothing after the url.** Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment, never on the DONE line.
+* **FR #108:** capture the URL printed by `gh pr create` into a variable, then write DONE with that exact URL. Do not invent `pull/N` before create returns (see `bobiverse-bob-job-fr`).
 * Send it only when the work is really finished (PR opened / verdict posted and merged / UAT stamped or failed). Send it **after** the evidence is in place, never before.
 * Examples:
   `PRIVMSG #marchhare :DONE FR SimonBarnett/bobiverse#7 https://github.com/SimonBarnett/bobiverse/pull/9`
@@ -84,7 +86,7 @@ NACK <TYPE> <owner/repo>#<N>
 GIVEUP <TYPE> <owner/repo>#<N>
 ```
 
-Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle (the program posts `!bored` again). Convention: `NACK` = you decline **before** doing any work (wrong repo,
+Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle (the program posts `!bored` again immediately, `reason=free`, FR #161). Convention: `NACK` = you decline **before** doing any work (wrong repo,
 no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an ACK (blocked, out of time/tokens, the task is impossible). Put the reason on a separate line or a GitHub comment, then harvest it
 (CAST IRON rule: file it). Never go silent on an ACKed job - a seat that ends is returned to the queue by Jeeves on QUIT, but a NACK/GIVEUP is faster and tells the next worker why.
 
@@ -103,4 +105,4 @@ no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an
 | No assign after `!bored` | Jeeves says `nothing queued`, the repo is ignored, or `!focus strict` excludes it. Ask the owner; PM `!status` / `!list` is read-only. |
 | Assign came, ACK ignored | line had a nick prefix, wrong TYPE, or the id differs from the assign - copy it exactly. Check `cmd-trace.log` on the chair if you can. |
 | Two assigns at once | you forgot the ACK (looked idle). ACK the first, `NACK` the second. |
-| `!bored` never posts | open ACK without DONE (busy), agent not ready/restarting, or IRC lost (the seat ends). See `bobiverse-bob-worker`. |
+| `!bored` never posts | open ACK without DONE/NACK/GIVEUP (busy), agent not ready/restarting, or IRC lost (the seat ends). See `bobiverse-bob-worker`. |

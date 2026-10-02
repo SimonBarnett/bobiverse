@@ -66,9 +66,14 @@ def roster_machine_ids(home: Path | None = None, *, fold: bool = True) -> tuple[
     Pure file read (cached by the chair's periodic ``ChanServ LIST`` sync, see
     ``registered_machines.sync_from_chanserv``) so the HTTP digest path never talks to IRC.
     An empty/missing registry is an EMPTY roster, not a bootstrap fleet.
+
+    ``home`` may be the chair home (``~/.jeeves``); the ChanServ mirror lives in the digest
+    home (``BOB_DIGEST_HOME`` / ``~/.bobiverse``) — FR #69.
     """
     if home is None:
         home = _default_digest_home()
+    elif home is not None:
+        home = fleet_digest_home(Path(home))
     if home is not None:
         reg = registered_machines.load_registered(Path(home))
         if reg:
@@ -811,7 +816,8 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     if isinstance(raw.get("pcent"), dict):
         base["pcent"] = raw["pcent"]
     if isinstance(raw.get("cursor_pools"), list):
-        base["cursor_pools"] = _coerce_cursor_pools(raw["cursor_pools"])
+        # #114: stamp registered identity onto each pool row from the parent machine.
+        base["cursor_pools"] = _coerce_cursor_pools(raw["cursor_pools"], machine_id=mid)
     if raw.get("uptime_since"):
         base["uptime_since"] = str(raw["uptime_since"])
     for key in _MERGE_PEER_FIELDS:
@@ -877,22 +883,30 @@ def load_digest(home: Path) -> dict:
 
 
 def save_digest(home: Path, doc: dict) -> None:
-    """Atomic write of digest.json (#51).
+    """Atomically write digest.json with unique-temp and Windows retry handling.
 
-    Unique tmp name per write (pid + uuid) so concurrent writers never share one
-    ``digest.json.tmp``; ``os.replace`` retried with backoff on Windows sharing violations
-    (WinError 32) / access denied (WinError 5, AV / indexer holding the target).
+    The fresh-temp retry also covers AV/racing cleanup removing the temporary file
+    between write and replace (FR #36), while write/replace helpers cover WinError
+    5/32 sharing violations (FR #35/#37).
     """
     path = digest_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     _cleanup_stale_digest_tmp(path)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
-    try:
-        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-        _replace_with_retry(tmp, path)
-    finally:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+    payload = json.dumps(doc, indent=2) + "\n"
+    last_missing: FileNotFoundError | None = None
+    for _attempt in range(2):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
+        try:
+            _write_text_with_retry(tmp, payload)
+            _replace_with_retry(tmp, path)
+            return
+        except FileNotFoundError as exc:
+            last_missing = exc
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+    assert last_missing is not None
+    raise last_missing
 
 
 _REPLACE_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)
@@ -903,6 +917,23 @@ def _is_sharing_error(exc: OSError) -> bool:
     if isinstance(exc, PermissionError):
         return True
     return getattr(exc, "winerror", None) in (5, 32)
+
+
+def _write_text_with_retry(path: Path, text: str) -> None:
+    """Write ``path`` retrying Windows sharing / access-denied (intake #37)."""
+    last: OSError | None = None
+    for delay in (0.0,) + _REPLACE_RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            path.write_text(text, encoding="utf-8")
+            return
+        except OSError as exc:
+            if not _is_sharing_error(exc):
+                raise
+            last = exc
+    assert last is not None
+    raise last
 
 
 def _replace_with_retry(src: Path, dst: Path) -> None:
@@ -1231,13 +1262,19 @@ def _store_machine_pool_rows(ent: dict, raw_rows: object) -> None:
     list), and backfill ``pcent`` / ``period_end`` / ``cursor_period_end`` gaps from them so the
     lesser-across-machines pool bars and the expiry masking work for rows-only reporters.
     """
-    rows = _coerce_cursor_pools(raw_rows)
+    mid = str(ent.get("id") or "")
+    rows = _coerce_cursor_pools(raw_rows, machine_id=mid or None)
     if not rows:
         return
-    ent["cursor_pools"] = rows
+    account = str(ent.get("nick") or "") or None
+    channel = str(ent.get("shop") or "") or None
+    stamped: list[dict] = []
+    for row in rows:
+        stamped.append(_stamp_pool_identity(row, mid, account=account, channel=channel))
+    ent["cursor_pools"] = stamped
     pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
     changed = False
-    for row in rows:
+    for row in stamped:
         pid = str(row.get("id") or "")
         rem = row.get("remaining")
         pe = row.get("period_end")
@@ -1621,6 +1658,8 @@ def apply_quit(home: Path, nick: str, briefer_nick: str = "") -> PresenceOutcome
 
 @_digest_locked
 def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> CallbackOutcome:
+    # FR #69: chair --home is ~/.jeeves; digest.json + ChanServ roster live in BOB_DIGEST_HOME.
+    home = fleet_digest_home(Path(home))
     if not isinstance(payload, dict):
         return CallbackOutcome(ok=False, err="malformed")
     if any(k.lower() in ("secret", "x-bob-secret", "password") for k in payload):
@@ -2027,13 +2066,50 @@ def _coerce_cursor_pool(raw: object) -> dict | None:
         "reset": str(raw.get("reset") or period or "") or None,
         "overage": overage,
     }
+    # #114: registered account/channel identity the tray needs on each pool row.
+    machine_id = raw.get("machine_id") or raw.get("machine")
+    if machine_id is not None and str(machine_id).strip():
+        mid = normalize_machine_id(str(machine_id)) or str(machine_id).strip().lower()
+        entry["machine_id"] = mid
+    account = raw.get("account") or raw.get("nick")
+    if account is not None and str(account).strip():
+        entry["account"] = str(account).strip()
+    channel = raw.get("channel") or raw.get("shop")
+    if channel is not None and str(channel).strip():
+        ch = str(channel).strip()
+        if not ch.startswith("#"):
+            ch = f"#{ch.lstrip('#')}"
+        entry["channel"] = ch
     blob = json.dumps(entry, separators=(",", ":"))
     if looks_like_secret(blob):
         return None
     return entry
 
 
-def _coerce_cursor_pools(raw: object) -> list[dict]:
+def _stamp_pool_identity(row: dict, mid: str, *, account: str | None = None, channel: str | None = None) -> dict:
+    """#114: ensure machine_id / account / channel on a coerced pool row."""
+    if not isinstance(row, dict):
+        return row
+    norm = normalize_machine_id(mid) or (str(mid).strip().lower() if mid else "")
+    if norm and not row.get("machine_id"):
+        row["machine_id"] = norm
+    acct = (account or "").strip() or (nick_for_machine({}, norm) if norm else "")
+    if acct and not row.get("account"):
+        row["account"] = acct
+    ch = (channel or "").strip()
+    if not ch and norm:
+        try:
+            ch = shop_channel(norm)
+        except ValueError:
+            ch = f"#{norm}"
+    if ch and not row.get("channel"):
+        if not ch.startswith("#"):
+            ch = f"#{ch.lstrip('#')}"
+        row["channel"] = ch
+    return row
+
+
+def _coerce_cursor_pools(raw: object, *, machine_id: str | None = None) -> list[dict]:
     if not isinstance(raw, list):
         return []
     out: list[dict] = []
@@ -2042,6 +2118,8 @@ def _coerce_cursor_pools(raw: object) -> list[dict]:
         pool = _coerce_cursor_pool(item)
         if not pool:
             continue
+        if machine_id:
+            pool = _stamp_pool_identity(pool, machine_id)
         pid = str(pool.get("id") or "")
         if pid in seen:
             continue

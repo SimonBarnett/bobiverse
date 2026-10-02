@@ -22,8 +22,13 @@ param(
 # Watch-AgentHealth). Implied under msiexec/quiet installs; or set env BOBIVERSE_NO_TIDY=1.
 [switch]$SkipTidy,
     [switch]$PromptServicePassword,
-    [switch]$SkipCopy
+    [switch]$SkipCopy,
+    # #70: MSI public property SKIPCOPY=1 arrives via RunInstall as a string.
+    [string]$MsiSkipCopy = ''
 )
+
+# #70: map MSI property strings onto the real switches (empty / unset = no-op).
+if ($MsiSkipCopy -eq '1') { $SkipCopy = $true }
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -141,6 +146,16 @@ if ($trayVendor) {
             }
         }
         Write-Host "INFO TipForm tray -> $InstallRoot (tools/src/assets)"
+        # t828u: the Acknowledge / Status dialogs are compiled exes (tools\bob-about.exe, tools\bob-status.exe); sources stay in <root>\dialogs.
+        $dlgSrc = Join-Path $trayVendor 'dialogs'
+        if (Test-Path -LiteralPath $dlgSrc) {
+            Copy-BobiverseTree -Source $dlgSrc -Destination (Join-Path $InstallRoot 'dialogs') -ContentsOnly
+            try {
+                $bd = Join-Path $PSScriptRoot 'Build-BobDialogs.ps1'
+                if (-not (Test-Path -LiteralPath $bd)) { $bd = Get-BobiverseRepoPath -Root $repoRoot -Rel 'scripts\Build-BobDialogs.ps1' }
+                [void](& $bd -RepoRoot $repoRoot -OutDir (Join-Path $InstallRoot 'tools'))
+            } catch { Write-Host ("WARN bob dialogs not compiled (the tray falls back to its PowerShell dialogs): {0}" -f $_.Exception.Message) }
+        }
     }
 } elseif (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'))) {
     Write-Host 'WARN TipForm Watch-BobTray missing under InstallRoot (pack/sync bob-tray)'

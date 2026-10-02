@@ -35,8 +35,9 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 | IRC | channels `#bobiverse` + `#<machine>`; nick `Bob-<machine>`; SASL user `bob-<machine>`; host passed explicitly with `--host` (Start-Bob `-IrcHost`, default `irc.ntsa.uk`) |
 | Config | `config\ergo.password` (server PASS), `home\nickserv.password` (SASL), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon) |
 | Tray | `scripts\Start-BobTray.ps1 -> tools\Start-BobFleetTray.ps1`; HKCU `Run\BobiverseTray`; per-user Startup shortcut; quiet MSI uses the ONLOGON `/IT` task `BobiverseTray` |
+| TipForm **Restart** | Menu label **Restart** → `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
 | Agent / Plan | Tray items **Agent** and **Plan** (single click, no submenu) run `worker\bob-worker.exe` (via a per-user run-copy) -> a NEW agent each click, never resumed. Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
-| Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob, Bob Services, Logs, Skill books, Agent guide (all systray icon) |
+| Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
 
 ## Roles
 

@@ -1,7 +1,8 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Vendor TipForm Watch-BobTray + BobBridge into third_party/bob-tray for bob MSI.
+  RETIRED (t829u). The systray (bob/tray) and the agent watcher (bob/agentwatcher) are first-class bob sources now; edit them in place.
+  This script only re-vendors from a local agentic_build tree when -AllowRevendor is passed (it would overwrite local work).
 .NOTES
   Copies allowlisted files from a local agentic_build tree. Writes PIN.txt = git SHA.
   The tray has NO update logic (t794u): no git-pull / Update-BobSystrayFromGit / Updating dialog / Bootstrap; the ircBob service updates.
@@ -12,17 +13,22 @@ param(
     [string]$RepoRoot = '',
     [string]$AgenticBuildRoot = '',
     [string]$OutDir = '',
-    [string]$PinSha = ''
+    [string]$PinSha = '',
+    [switch]$AllowRevendor
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $AllowRevendor) {
+    Write-Host 'INFO Sync-BobTrayFromAgenticBuild is retired (t829u): bob/tray and bob/agentwatcher are first-class bob sources. Pass -AllowRevendor to overwrite them from agentic_build.'
+    exit 0
+}
 if (-not $RepoRoot) {
     $RepoRoot = Split-Path -Parent $PSScriptRoot
     # t773u: split repo = <repo>\bob\scripts -> <repo>
     if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $RepoRoot) 'common\VERSION')) { $RepoRoot = Split-Path -Parent $RepoRoot }
 }
 if (-not $OutDir) {
-    $OutDir = if (Test-Path -LiteralPath (Join-Path $RepoRoot 'common\VERSION')) { Join-Path $RepoRoot 'bob\third_party\bob-tray' } else { Join-Path $RepoRoot 'third_party\bob-tray' }
+    $OutDir = if (Test-Path -LiteralPath (Join-Path $RepoRoot 'common\VERSION')) { Join-Path $RepoRoot 'bob\tray' } else { Join-Path $RepoRoot 'third_party\bob-tray' }
 }
 
 function Resolve-AgenticBuildRoot {

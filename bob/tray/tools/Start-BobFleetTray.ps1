@@ -80,15 +80,23 @@ function Ensure-BobSystraySeatWrapper {
     return $wrap
 }
 
+function Get-BobSystrayTrayExe {
+    # t832u: the compiled tray (icon + menu + clicks). When present it IS the systray; the PowerShell tray script runs as its hidden engine.
+    param([string]$Root)
+    $p = Join-Path $Root 'tools\bob-tray.exe'
+    if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    return $null
+}
+
 function Get-BobSystrayTrayProcesses {
     # Match bare Watch-BobTray.ps1 AND seat wrappers (_Watch-BobTray-marchhare.ps1).
     # Wrapper CommandLine does not contain "Watch-BobTray.ps1", so a strict .ps1
     # suffix miss made ForceNew leave ghosts and "failed to stay up" false-fail.
     return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.CommandLine -and (
+            ($_.CommandLine -and (
                 $_.CommandLine -match 'Watch-BobTray\.ps1' -or
                 $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1'
-            )
+            )) -or ($_.Name -eq 'bob-tray.exe' -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith((Join-Path $RepoRoot 'tools'), [StringComparison]::OrdinalIgnoreCase))
         })
 }
 
@@ -242,6 +250,21 @@ else {
 }
 
 $ps = (Get-Command powershell.exe).Source
+$trayExe = Get-BobSystrayTrayExe -Root $RepoRoot
+if ($trayExe) {
+    # t832u: start the compiled tray (it starts the hidden engine itself); same job-object breakaway as below.
+    $exeArgs = '--root "{0}"' -f $RepoRoot
+    if ($mid) { $exeArgs += (' --machine {0}' -f $mid) }
+    $createdExe = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ('"{0}" {1}' -f $trayExe, $exeArgs); CurrentDirectory = $RepoRoot }
+    if (-not ($createdExe -and [int]$createdExe.ReturnValue -eq 0)) {
+        Start-Process -FilePath $trayExe -ArgumentList @('--root', ('"{0}"' -f $RepoRoot)) -WorkingDirectory $RepoRoot | Out-Null
+    }
+    Start-Sleep -Seconds 2
+    $aliveExe = @(Get-BobSystrayTrayProcesses)
+    if ($aliveExe.Count -eq 0) { throw ('bob-tray.exe failed to stay up after start ({0})' -f $trayExe) }
+    Write-Output ('Bob Systray (bob-tray.exe) started pid={0} count={1}' -f $aliveExe[0].ProcessId, $aliveExe.Count)
+    exit 0
+}
 # Win32_Process.Create breaks away from agent/console job objects. Start-Process
 # -PassThru children die when the launching job closes (Grok Build shells, etc.).
 $argLine = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $launch

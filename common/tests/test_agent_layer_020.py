@@ -54,7 +54,8 @@ def test_rule_commands_are_real_script_parameters():
     for p in ("$Title", "$Body", "$Repo", "$Kind"):
         assert p in rep
     assert "'issue', 'fr', 'skill', 'harvest'" in rep
-    for p in ("$Summary", "$Lesson", "$SkillFile", "[switch]$Flush", "/bob/v1/intake", "harvest-outbox", "secretRx"):
+    for p in ("$Summary", "$Lesson", "$SkillFile", "[switch]$Flush", "/bob/v1/intake", "harvest-outbox", "secretRx",
+              "repo_not_allowed", "DROPPED", "Get-IntakeAllowRepos"):
         assert p in hv
 
 

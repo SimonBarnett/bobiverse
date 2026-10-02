@@ -22,30 +22,31 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 
 ## Architecture
 
-Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: an IRC client with nick **`<machine>_console`** that executes
-short commands sent to it by authorized fleet ears (`bob-*`) and replies by PRIVMSG. It JOINs the shop `#<machine>` when ChanServ
-has it registered (`shop-mode=auto` probes `INFO #<machine>`), otherwise the domain/workgroup lobby `#<domain|workgroup>`.
+Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick **`<MachineId>_console`**.
+**MachineId** is the canonical lowercase fleet id (`-MachineId` / `BOB_MACHINE_ID`).
 
 | Piece | Where |
 |---|---|
-| Install root | `<ai root>\airc` (`scripts\`, `config\`, `logs\`, `assets\bob-systray.ico`, `.grok\skills\`, `VERSION`) |
-| Console home (identity, NickServ GUID `console.password`, logs) | `%USERPROFILE%\.airc`; under quiet MSI/LocalSystem prefer `C:\Users\Administrator\.airc`, else `<ai root>\airc\home` - NEVER `C:\Users\Default\.airc` (orphans the NickServ GUID) |
-| Config | `<ai root>\airc\config\ergo.password` (server PASS) |
-| Logs | `<ai root>\airc\logs\*.log`, `<console home>\*.log`, `airc-console-service.log` under the user's `.grok\long-running-background-tasks` |
-| IRC | SASL on by default for the reserved `<machine>_console` nick (before NICK) |
-| Start Menu | ONE all-users folder `Bobiverse`: Restart Airc, Bob Services, Logs (airc), Skill books (airc), Agent guide (airc) - systray icon |
+| Install root | `<ai root>\airc` (`scripts\`, `config\`, `logs\`, `assets\`, `.grok\skills\`, `VERSION`) |
+| ConsoleHome | `%USERPROFILE%\.airc`; LocalSystem: `C:\Users\Administrator\.airc` or `<ai root>\airc\home` — **never** `C:\Users\Default\.airc` |
+| NickServ GUID | `<ConsoleHome>\console.password` (minted; not the Ergo PASS) |
+| Ergo PASS | `<ai root>\airc\config\ergo.password` (Install copies; never invent) |
+| Logs | `<ai root>\airc\logs\*.log`, `<ConsoleHome>\*.log` |
+| IRC | SASL on by default for reserved `<MachineId>_console` |
 
-**Airc vs AircConsole:** bobiverse `Airc` (`<ai root>\airc`) has a distinct UpgradeCode from agentic_irc `AircConsole` (`<ai root>\airc-console`).
-One console per box: `Install-Airc` removes a leftover `AircConsole` service from the SCM.
+**Airc vs AircConsole:** bobiverse `Airc` (`<ai root>\airc`) ≠ agentic_irc `AircConsole` (`<ai root>\airc-console`). One console per box: `Install-Airc` removes leftover `AircConsole` from SCM.
+
+## Remote control
+
+- Shell ergonomics: FR #75 (PowerShell default, `cmd:`, `psb64:`, `DONE id= exit=`).
+- Driving-box helper: `scripts\Invoke-AircRemote.ps1` (FR #76) — `-SelfTest`, `-Outbox`, PUT chunking client-side.
+- Protocol sketch: `docs/airc-remote-control.md`. Ops: `docs/airc-ops.md`.
 
 ## Install, upgrade, rollback, hotpatch
 
-See `bobiverse-fleet-ops`. Airc specifics: after the MSI, place `config\ergo.password` (or `~\.grok\ergo\connect.password`); re-run
-`Install-Airc.cmd -MachineId <id>` if NSSM still points at an old tree. Self-update on start (`Update-BobiverseService.ps1`;
-`Sync-BobiverseFromRepo.ps1` when a clone exists). Hotpatch = back up `<ai root>\airc`, copy the changed scripts, `Restart-Service Airc`
-ONLY. Killing broad `powershell.exe` on the box can take down Airc's own host process - target PIDs; afterwards `Restart-Service Airc`
-until `<machine>_console` is visible on IRC again.
+See `bobiverse-fleet-ops`. Airc specifics: after MSI ensure `config\ergo.password`; re-run `Install-Airc.cmd -MachineId <id>` if NSSM is stale.
+Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply — never inline msiexec in the live service). Opt out `BOBIVERSE_NO_UPDATE=1`. Hotpatch = back up `<ai root>\airc`, copy changed scripts, `Restart-Service Airc` ONLY.
 
 ## Do not
 
-- Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; send multi-line PowerShell in one PRIVMSG.
+- Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
