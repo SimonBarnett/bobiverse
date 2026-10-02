@@ -112,6 +112,13 @@ Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
 Expect `202 {intake_id, url}` or `202 {intake_id, queued:true}`. Check status
 with `GET /bob/v1/intake/<id>`.
 
+`-Flush` (FR #139) inspects `payload.repo` against `DEFAULT_ALLOW_REPOS` in
+`intake.py` before POST. Repos outside the allowlist, or HTTP 403
+`repo_not_allowed`, are **DROPPED** into `report-outbox/dropped/` (or the
+matching outbox `dropped/`) so Flush stays clean. Transient errors stay KEPT
+for retry. To allow a new product repo, add it to `DEFAULT_ALLOW_REPOS` and
+deploy the intake host (see FR #94 / PR #99 for `agentic_fomprep`).
+
 Prefer `gh` and repo scripts over free-form reasoning.
 
 ## Report a bug or feature request

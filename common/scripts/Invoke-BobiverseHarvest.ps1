@@ -26,6 +26,7 @@ param(
     [string]$Machine = '',
     [string]$OutboxDir = '',
     [switch]$Flush,
+    [switch]$NoDefaultOutboxes,  # FR #139 tests: only flush -OutboxDir
     [switch]$DryRun,
     [int]$TimeoutSec = 30
 )
@@ -42,25 +43,126 @@ function Send-Payload([string]$Json) {
     return Invoke-RestMethod -Method Post -Uri $IntakeUrl -Headers $headers -Body $Json -TimeoutSec $TimeoutSec
 }
 
+function Get-IntakeAllowRepos {
+    # Mirror common/scripts/intake.py DEFAULT_ALLOW_REPOS (FR #139 pre-check before POST).
+    $fallback = @(
+        'SimonBarnett/bobiverse',
+        'SimonBarnett/gh-Jeeves',
+        'SimonBarnett/agentic_build',
+        'SimonBarnett/skills-visionary',
+        'SimonBarnett/AgentMonitor'
+    )
+    $candidates = @(
+        (Join-Path $PSScriptRoot 'intake.py'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'common\scripts\intake.py')
+    )
+    foreach ($p in $candidates) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        $t = Get-Content -LiteralPath $p -Raw -Encoding UTF8
+        $m = [regex]::Match($t, 'DEFAULT_ALLOW_REPOS\s*=\s*frozenset\(\s*\{(?<body>.*?)\}', [Text.RegularExpressions.RegexOptions]::Singleline)
+        if (-not $m.Success) { continue }
+        $repos = @(
+            [regex]::Matches($m.Groups['body'].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }
+        )
+        if ($repos.Count -gt 0) { return $repos }
+    }
+    return $fallback
+}
+
+function Get-IntakeHttpStatus {
+    param($ErrorRecord)
+    $ex = $ErrorRecord.Exception
+    while ($null -ne $ex) {
+        if ($ex.Response -and $ex.Response.StatusCode) {
+            try { return [int]$ex.Response.StatusCode } catch { }
+            try { return [int]$ex.Response.StatusCode.value__ } catch { }
+        }
+        $ex = $ex.InnerException
+    }
+    $detail = ''
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $detail = [string]$ErrorRecord.ErrorDetails.Message
+    }
+    if ($detail -match '"error"\s*:\s*"repo_not_allowed"' -or $detail -match 'repo_not_allowed') {
+        return 403
+    }
+    if ($ErrorRecord.Exception.Message -match '\(403\)') { return 403 }
+    return $null
+}
+
+function Move-OutboxDropped {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Reason)
+    $dir = Split-Path -Parent $Path
+    $dropDir = Join-Path $dir 'dropped'
+    New-Item -ItemType Directory -Force -Path $dropDir | Out-Null
+    $dest = Join-Path $dropDir (Split-Path -Leaf $Path)
+    if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
+    Move-Item -LiteralPath $Path -Destination $dest -Force
+    Write-Host "DROPPED $Path -> $dest ($Reason)"
+}
+
 if ($Flush) {
-    $dirs = @($OutboxDir, (Join-Path (Get-Location).Path 'harvest-outbox'), (Join-Path (Get-Location).Path 'report-outbox'),
-        (Join-Path $home1 '.grok\bob\report-outbox')) | Select-Object -Unique
-    $sent = 0; $kept = 0
+    if ($NoDefaultOutboxes) {
+        if (-not $OutboxDir) { throw '-NoDefaultOutboxes requires -OutboxDir' }
+        $dirs = @($OutboxDir)
+    } else {
+        $dirs = @(
+            $OutboxDir,
+            (Join-Path (Get-Location).Path 'harvest-outbox'),
+            (Join-Path (Get-Location).Path 'report-outbox'),
+            (Join-Path $home1 '.grok\bob\report-outbox'),
+            (Join-Path $home1 '.grok\bob\harvest-outbox')
+        ) | Select-Object -Unique
+    }
+    $allow = @(Get-IntakeAllowRepos | ForEach-Object { $_.ToLowerInvariant() })
+    $sent = 0; $kept = 0; $dropped = 0
     foreach ($d in $dirs) {
         if (-not (Test-Path -LiteralPath $d)) { continue }
         foreach ($f in @(Get-ChildItem -LiteralPath $d -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
+            $raw = $null
+            $payload = $null
             try {
-                $r = Send-Payload (Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8)
+                $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8
+                $payload = $raw | ConvertFrom-Json
+            } catch {
+                Move-OutboxDropped -Path $f.FullName -Reason 'malformed_json'
+                $dropped++
+                continue
+            }
+            $repo = ''
+            if ($payload -and $payload.PSObject.Properties.Name -contains 'repo') {
+                $repo = [string]$payload.repo
+            }
+            if (-not $repo) {
+                Move-OutboxDropped -Path $f.FullName -Reason 'missing_repo'
+                $dropped++
+                continue
+            }
+            if ($allow -notcontains $repo.ToLowerInvariant()) {
+                # FR #139: never retry repos outside DEFAULT_ALLOW_REPOS (403 forever on the wire).
+                Move-OutboxDropped -Path $f.FullName -Reason ("repo_not_allowed:$repo")
+                $dropped++
+                continue
+            }
+            try {
+                $r = Send-Payload $raw
                 Remove-Item -LiteralPath $f.FullName -Force
                 $sent++
                 Write-Host "SENT $($f.Name) intake_id=$($r.intake_id)"
             } catch {
-                $kept++
-                Write-Host "KEPT $($f.FullName): $($_.Exception.Message)"
+                $status = Get-IntakeHttpStatus -ErrorRecord $_
+                $msg = [string]$_.Exception.Message
+                if ($status -eq 403 -or $msg -match 'repo_not_allowed') {
+                    Move-OutboxDropped -Path $f.FullName -Reason 'http_403_repo_not_allowed'
+                    $dropped++
+                } else {
+                    $kept++
+                    Write-Host "KEPT $($f.FullName): $msg"
+                }
             }
         }
     }
-    Write-Host "flush: sent=$sent kept=$kept"
+    Write-Host "flush: sent=$sent kept=$kept dropped=$dropped"
     return
 }
 

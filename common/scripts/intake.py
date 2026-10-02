@@ -230,6 +230,34 @@ def validate_payload(
     return None, norm
 
 
+def outbox_drop_reason(
+    payload: Any,
+    *,
+    allow_repos: frozenset[str] | None = None,
+    http_status: int | None = None,
+    error: str | None = None,
+) -> str | None:
+    """FR #139: why a local report/harvest outbox JSON must be dropped (not retried forever).
+
+    Returns a short reason, or None when Flush should keep/retry the file (transient errors).
+    Permanent rejects: missing/bad repo, repo outside DEFAULT_ALLOW_REPOS, HTTP 403 / repo_not_allowed.
+    """
+    allow = DEFAULT_ALLOW_REPOS if allow_repos is None else allow_repos
+    err = (error or "").strip().lower()
+    if http_status == 403 or err == "repo_not_allowed":
+        return "repo_not_allowed"
+    if not isinstance(payload, dict):
+        return "malformed"
+    repo = str(payload.get("repo") or "").strip()
+    if not repo:
+        return "missing_repo"
+    if not _REPO_RE.fullmatch(repo):
+        return "bad_repo"
+    if repo not in allow:
+        return "repo_not_allowed"
+    return None
+
+
 class RateLimiter:
     def __init__(self, per_min: int = DEFAULT_RATE_PER_MIN) -> None:
         self.per_min = max(1, int(per_min))
