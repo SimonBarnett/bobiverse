@@ -493,30 +493,46 @@ def may_mutate(nick: str, account: str | None) -> bool:
     return (nick or "").strip().lower() in _csv_env("JEEVES_FOCUS_MUTATORS")
 
 
-def dispatch(home: Path, nick: str, account: str | None, body: str) -> list[str] | None:
+def dispatch(
+    home: Path,
+    nick: str,
+    account: str | None,
+    body: str,
+    *,
+    ops: bool | None = None,
+    focus_ok: bool | None = None,
+) -> list[str] | None:
     """Run a focus/ignore-family command. None = not one of ours. Reads (!focus bare,
-    !focus strict, !ignored) are open; every mutation needs ``may_mutate``."""
+    !focus strict, !ignored) are open; every mutation needs ``may_mutate`` OR the chair's own
+    principal check: ``ops`` (owner account / bob-<machine> ear, chair_commands.classify) allows all
+    mutations, ``focus_ok`` (adds the JEEVES_FOCUS_MUTATORS allowlist) allows !focus/!unfocus.
+    Denial replies are the gh-Jeeves strings."""
+    if ops is None:                      # no chair principal supplied: legacy account / allowlist rule
+        ops = may_mutate(nick, account)
+        focus_ok = ops if focus_ok is None else focus_ok
+    ops_ok = bool(ops)
+    foc_ok = bool(focus_ok) or ops_ok
     arg = parse_focus_cmd(body)
     if arg is not None:
         read_only = arg == "" or arg.lower() == "strict"
-        if not read_only and not may_mutate(nick, account):
-            return ["focus: denied (owner account only)"]
+        if not read_only and not foc_ok:
+            return ["focus: denied (owner account required)"]
         return handle_focus_cmd(home, arg)
     arg = parse_unfocus_cmd(body)
     if arg is not None:
-        if not may_mutate(nick, account):
-            return ["unfocus: denied (owner account only)"]
+        if not foc_ok:
+            return ["unfocus: denied (owner account required)"]
         return handle_unfocus_cmd(home, arg)
     if is_ignored_cmd(body):
         return format_ignored_lines(home)
     arg = parse_ignore_cmd(body)
     if arg is not None:
-        if not may_mutate(nick, account):
-            return ["ignore: denied (owner account only)"]
+        if not ops_ok:
+            return ["ignore: denied (simon or bob-* ops only)"]
         return handle_ignore_cmd(home, arg) if arg else ["ignore: usage !ignore {repo}"]
     arg = parse_unignore_cmd(body)
     if arg is not None:
-        if not may_mutate(nick, account):
-            return ["unignore: denied (owner account only)"]
+        if not ops_ok:
+            return ["unignore: denied (simon or bob-* ops only)"]
         return handle_unignore_cmd(home, arg) if arg else ["unignore: usage !unignore {repo}"]
     return None

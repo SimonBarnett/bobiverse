@@ -155,7 +155,10 @@ def test_swallowed_echo_and_refused_mode_back_off_instead_of_looping(home):
     # RESEND_S=20 would be ~60 sends/hour at the 60 s reconcile; backoff doubles up to 10 min.
     assert 2 <= n <= 12, srv.modes()      # 20,40,80,160,320,600,600,... not one per reconcile (60/h)
     assert any("WARN" in m and "without the channel state changing" in m for m in srv.logs)
-    assert sum("WARN" in m for m in srv.logs) == 1             # warned once, not on every attempt
+    # warned once about the unconfirmed sends, and (hard cap: 3 per 10 min) once per window about the suppression
+    assert sum("without the channel state changing" in m for m in srv.logs) == 1
+    capw = [m for m in srv.logs if "suppressed" in m and "hard cap" in m]
+    assert 1 <= len(capw) <= 6, capw
 
 
 def test_log_only_on_actual_change(home):
@@ -255,12 +258,12 @@ def test_rejoin_after_quit_gets_a_fresh_prompt_grant_even_after_earlier_grants(h
     srv.members["#win-mpre8vi4u6u"][EAR] = set()
     _boot(srv)
     assert len(srv.modes()) == 1
-    for _ in range(3):                                   # bob restarts: QUIT then JOIN, a few seconds apart
+    for _ in range(2):                                   # bob restarts: QUIT then JOIN, a few seconds apart
         srv.feed(f":{BOM}{EAR}!u@h QUIT :bye")
         srv.members["#win-mpre8vi4u6u"].pop(EAR, None)
         srv.t += 7
         srv.join("#win-mpre8vi4u6u", EAR)
-    assert len(srv.modes()) == 4                         # one grant per real arrival, none from the echoes
+    assert len(srv.modes()) == 3                         # one grant per real arrival, none from the echoes
 
 
 def test_chair_own_op_state_survives_bom_and_userhost_names():
@@ -274,11 +277,12 @@ def test_simon_quick_relogin_is_granted_again_promptly(home):
     srv = Server(home)
     srv.members["#bobiverse"]["simon"] = set()
     _boot(srv)
-    for _ in range(4):                                  # four login/logout cycles inside a minute
+    for _ in range(2):                                  # login/logout cycles inside a minute
         srv.feed(":simon!u@h ACCOUNT simon")
         srv.t += 3
         srv.feed(":simon!u@h ACCOUNT *")
         srv.t += 3
     srv.feed(":simon!u@h ACCOUNT simon")
     mine = [m for m in srv.modes() if "simon" in m]
-    assert mine[-1] == "MODE #bobiverse +o simon" and mine.count("MODE #bobiverse +o simon") == 5
+    # each real login/logout is a new situation (prompt), up to the 3-per-10-min hard cap per (nick,mode)
+    assert mine[-1] == "MODE #bobiverse +o simon" and mine.count("MODE #bobiverse +o simon") == 3

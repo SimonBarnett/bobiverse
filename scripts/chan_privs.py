@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -37,6 +38,9 @@ RESEND_S = 20.0          # never repeat the same MODE/WHOIS sooner than this
 BACKOFF_MAX_S = 600.0    # per (kind,chan,nick,mode) the gap between repeated MODEs doubles up to this ...
 BACKOFF_DECAY_S = 900.0  # ... and drops back to RESEND_S after this long without a send
 UNCONFIRMED_WARN = 3     # WARN once when this many sends for one key were never reflected in NAMES/MODE
+CAP_MAX = 3              # HARD CAP: at most this many MODE sends per (kind,channel,nick,mode) ...
+CAP_WINDOW_S = 600.0     # ... in any rolling window of this length; then one WARN and silence until it slides
+WHOIS_LOG_S = 1800.0     # "unverified: WHOIS" is logged once per nick per this long (the WHOIS itself keeps its cadence)
 
 
 # Characters that must never be part of a nick or a config token: BOM, zero-width/format chars, NBSP.
@@ -334,6 +338,10 @@ class ChanPrivEngine:
         self._whois: dict = {}      # nick_l -> got 330?
         self._last_names = 0.0
         self.sent_lines: list[str] = []
+        self._cap: dict = {}        # key -> deque of send times inside CAP_WINDOW_S (never reset by re-join)
+        self._cap_warned: dict = {}  # key -> True while the over-cap WARN for the current window was logged
+        self._wlog: dict = {}       # nick_l -> [last log time, suppressed count] for the unverified-WHOIS line
+        self._lost: dict = {}       # key -> last time we logged "mode removed by someone else"
 
     # -- logging --------------------------------------------------------------------
     def announce(self) -> None:
@@ -421,6 +429,8 @@ class ChanPrivEngine:
                 st.mode(chan, mode, add, nick)
                 touched.add(chan)
                 self._confirm(chan, nick, mode, add)
+                if not add and mode in "ohv" and not self._is_self(who):
+                    self._note_removed(chan, nick, mode, who)
             # Our own MODE (or a server-sourced SAMODE) is the echo of what we just asked for: record it
             # (above) but never re-plan on it - that was the grant/echo feedback loop.
             if not self._is_self(who):
@@ -449,6 +459,22 @@ class ChanPrivEngine:
         for k in [k for k in self._bo if k[1] == c and k[2] == n]:
             self._bo.pop(k, None)
             self._sent.pop(k, None)
+
+    def _note_removed(self, chan: str, nick: str, mode: str, actor: str) -> None:
+        """A mode WE granted was taken away by someone else (ChanServ AMODE/founder rules, another op, ...):
+        say so once per 10 min per key - this is the signature of a grant/strip fight."""
+        key = ("grant", clean(chan).lower(), clean_nick(nick).lower(), mode)
+        if not self._cap.get(key):
+            return
+        now = self.now()
+        if now - self._lost.get(key, -1e9) < CAP_WINDOW_S:
+            return
+        self._lost[key] = now
+        self.log(
+            f"WARN chan-privs -{mode} {clean_nick(nick)} in {clean(chan)} was removed by {actor or '?'} "
+            f"(not Jeeves): channel services/another op is undoing our grant; re-grants are capped at "
+            f"{CAP_MAX}/{int(CAP_WINDOW_S)}s"
+        )
 
     def _is_self(self, who: str) -> bool:
         who = clean_nick(who)
@@ -482,7 +508,13 @@ class ChanPrivEngine:
                 continue
             self._sent[key] = now
             self._whois[nick.lower()] = False
-            self.log(f"INFO chan-privs {nick} unverified in {chan}: WHOIS to learn account ({why})")
+            wl = self._wlog.setdefault(nick.lower(), [-1e9, 0])
+            if now - wl[0] >= WHOIS_LOG_S:
+                extra = f" [{wl[1]} identical lookups since the last line]" if wl[1] else ""
+                self.log(f"INFO chan-privs {nick} unverified in {chan}: WHOIS to learn account ({why}){extra}")
+                wl[0], wl[1] = now, 0
+            else:
+                wl[1] += 1
             self.send(f"WHOIS {nick}")
         # Anything we were waiting on that the live channel state no longer needs has taken effect:
         # drop its "unconfirmed" counter (the doubling gap itself decays, see below).
@@ -497,6 +529,8 @@ class ChanPrivEngine:
             if now - self._sent.get(key, -1e9) < gap:
                 continue
             sign = "+" if a.kind == "grant" else "-"
+            if not self._cap_ok(key, a, sign, now):
+                continue
             if self.chan_op(a.chan):
                 line = f"MODE {a.chan} {sign}{a.mode} {a.nick}"
             elif self.is_oper():
@@ -527,6 +561,7 @@ class ChanPrivEngine:
                 (self.owner_granted.add if a.kind == "grant" else self.owner_granted.discard)(a.nick.lower())
             elif a.kind == "revoke":
                 self.owner_granted.discard(a.nick.lower())
+            self._cap[key].append(now)
             self.log(
                 f"INFO chan-privs {a.kind.upper()} {sign}{a.mode} {a.nick} in {a.chan} [{why}]: {a.reason}"
             )
@@ -534,6 +569,33 @@ class ChanPrivEngine:
             self.sent_lines.append(line)
             done.append(a)
         return done
+
+    def _cap_ok(self, key: tuple, a, sign: str, now: float) -> bool:
+        """True if one more MODE for ``key`` fits the hard cap (CAP_MAX per CAP_WINDOW_S). Counting happens in
+        ``_cap_take`` once the line is really sent, so a missing-ops skip never burns the budget."""
+        dq = self._cap.setdefault(key, deque())
+        while dq and now - dq[0] >= CAP_WINDOW_S:
+            dq.popleft()
+        if len(dq) < CAP_MAX:
+            self._cap_warned.pop(key, None)
+            return True
+        if not self._cap_warned.get(key):
+            self._cap_warned[key] = True
+            self.log(
+                f"WARN chan-privs {a.kind} {sign}{a.mode} {a.nick} in {a.chan} suppressed: already sent "
+                f"{len(dq)}x in {int(CAP_WINDOW_S)}s (hard cap {CAP_MAX}). Something keeps undoing it "
+                f"(nick re-joining? ChanServ AMODE / another op removing it?) - retrying after "
+                f"{int(CAP_WINDOW_S - (now - dq[0]))}s"
+            )
+        return False
+
+    def sweep(self, chan: str) -> list:
+        """Operator !sweep: forget retry/backoff state for ``chan`` and re-plan now (the hard cap still applies)."""
+        chan = clean(chan)
+        with self.lock:
+            for nl in list(self.state.members.get(chan.lower(), {})):
+                self._fresh(chan, nl)
+            return self.apply(chan, "sweep")
 
     def tick(self) -> None:
         with self.lock:

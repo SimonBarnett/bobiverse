@@ -11,6 +11,8 @@ param(
     [string]$Python = '',
     [string]$MachineId = '',
     [string]$BobHome = '',
+    # Ergo host baked into the service command line (Start-Bob.ps1 -IrcHost -> irc_agent --host). Default irc.ntsa.uk.
+    [string]$IrcHost = '',
     [switch]$NoStart,
     [switch]$ForceTools,
     [switch]$SkipIcons,
@@ -151,7 +153,11 @@ $objectOk = Set-BobiverseServiceObjectName -Nssm $Nssm -ServiceName $ServiceName
     -InstallRoot $InstallRoot -PromptIfMissing:$doPrompt -AllowLocalSystem
 
 # Issue #7: LocalSystem must not bake the installing user's -BobHome; Start-Bob then picks InstallRoot\home.
-$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId $MachineId -InstallRoot `"$InstallRoot`""
+if (-not $IrcHost) { $IrcHost = [string]$env:BOB_IRC_HOST }
+if (-not $IrcHost) { $IrcHost = 'irc.ntsa.uk' }
+$IrcHost = $IrcHost.Trim()
+if ($IrcHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw "invalid -IrcHost '$IrcHost'" }
+$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -MachineId $MachineId -InstallRoot `"$InstallRoot`" -IrcHost $IrcHost"
 if ($objectOk) {
     $appParams += " -BobHome `"$BobHome`""
 } else {

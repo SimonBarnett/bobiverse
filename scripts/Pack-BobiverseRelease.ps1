@@ -274,6 +274,22 @@ function Build-Msi([string]$Name, [string]$Stage) {
         # Stable component GUID (per product) so every release refers to the SAME component, not a fresh one.
         $nc.SetAttribute('Guid', '{' + ([guid]::new([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("bobiverse-$Name-nssm-component"))).ToString().ToUpper()) + '}')
     }
+    # #70 (v0.1.20): the same for ergo\ergo.exe. C:\ai\ergo\ergo.exe was found HARD-LINKED to the pack's
+    # C:\ai\jeeves\ergo\ergo.exe, so the MSI rewriting its own copy rewrote the running Ergo binary and Windows
+    # Restart Manager bounced BobIrcd (pid change, every client reconnected). The pack keeps shipping ergo.exe (fresh
+    # installs seed C:\ai\ergo from it) but an upgrade must never remove/rewrite an existing one: Ergo upgrades are
+    # deliberate (Install-BobIrcd -ForceErgo), never a side effect of a jeeves MSI.
+    if ($Name -eq 'jeeves') {
+        $ergoFiles = @($hx.SelectNodes('//w:File', $wns) | Where-Object { ([string]$_.GetAttribute('Source')) -match '[\\/]ergo[\\/]ergo\.exe$' })
+        if ($ergoFiles.Count -lt 1) { throw 'ergo\ergo.exe component not found in harvested files (cannot mark it permanent)' }
+        foreach ($ef in $ergoFiles) {
+            $ec = $ef.ParentNode
+            $ec.SetAttribute('Permanent', 'yes')
+            $ec.SetAttribute('NeverOverwrite', 'yes')
+            $ec.SetAttribute('Guid', '{' + ([guid]::new([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("bobiverse-$Name-ergo-component"))).ToString().ToUpper()) + '}')
+        }
+        Write-Host ("INFO marked {0} ergo.exe component(s) Permanent+NeverOverwrite" -f $ergoFiles.Count)
+    }
     $hx.Save($harvested)
     Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+NeverOverwrite" -f $nssmFiles.Count)
 

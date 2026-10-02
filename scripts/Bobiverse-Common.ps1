@@ -484,3 +484,37 @@ function Install-BobiversePythonDeps {
         if ($LASTEXITCODE -ne 0) { throw "pip install $pkg failed ($LASTEXITCODE)" }
     }
 }
+
+function Get-BobiverseHardlinkCount {
+    <# Number of NTFS names for a file (1 = plain file). 0 when it cannot be determined. #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 0 }
+    try {
+        $names = @(& fsutil.exe hardlink list $Path 2>$null | Where-Object { $_ -and $_.Trim() })
+        if ($LASTEXITCODE -ne 0) { return 0 }
+        return $names.Count
+    } catch { return 0 }
+}
+
+function Repair-BobiverseErgoHardlink {
+    <#
+    .SYNOPSIS
+      #70: give a hard-linked ergo.exe its own physical file WITHOUT stopping Ergo.
+    .DESCRIPTION
+      A running image can be renamed but not overwritten/deleted, so: copy to a temp name, rename the linked
+      name aside (the running process keeps the old file), then move the copy into place. The next BobIrcd start
+      picks up the independent copy; the pack's ergo\ergo.exe is no longer the same file. Never stops a service.
+    #>
+    param([Parameter(Mandatory = $true)][string]$ErgoExe)
+    $n = Get-BobiverseHardlinkCount -Path $ErgoExe
+    if ($n -lt 2) { return $false }
+    $stamp = (Get-Date).ToString('yyyyMMddHHmmss')
+    $tmp = "$ErgoExe.copy-$stamp"
+    $aside = "$ErgoExe.linked-$stamp"
+    Copy-Item -LiteralPath $ErgoExe -Destination $tmp -Force
+    Move-Item -LiteralPath $ErgoExe -Destination $aside -Force
+    Move-Item -LiteralPath $tmp -Destination $ErgoExe -Force
+    try { Remove-Item -LiteralPath $aside -Force -ErrorAction Stop } catch { Write-Host "INFO ergo.exe was hard-linked ($n names); independent copy made, old name left at $aside (in use; delete after the next Ergo restart)" }
+    Write-Host "INFO ergo.exe was hard-linked ($n names) to the MSI payload: now its own file (#70); Ergo not restarted"
+    return $true
+}

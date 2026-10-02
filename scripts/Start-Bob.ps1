@@ -11,7 +11,11 @@ param(
     [Parameter(Mandatory = $true)][string]$MachineId,
     [string]$BobHome = '',
     [string]$Python = '',
-    [string]$InstallRoot = ''
+    [string]$InstallRoot = '',
+    # Ergo host the ear connects to. Passed EXPLICITLY on the irc_agent command line (v0.1.20): a process whose
+    # command line has no --host is indistinguishable from a stray agent to the tray/watch process matchers,
+    # which killed the ear every ~30 s (ionos 06:32-06:51, the repeated "+h" grants). Install-Bob.ps1 bakes it.
+    [string]$IrcHost = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,5 +77,10 @@ if ($env:BOBIVERSE_REPO -and (Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE
 $agent = Join-Path $scriptDir 'irc_agent.py'
 $shop = "#$MachineId"
 $channel = "#bobiverse,$shop"
-& $Python -u $agent --nick $nick --home $BobHome --channel $channel
+if (-not $IrcHost) { $IrcHost = [string]$env:BOB_IRC_HOST }
+if (-not $IrcHost) { $IrcHost = 'irc.ntsa.uk' }
+$IrcHost = $IrcHost.Trim()
+if ($IrcHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw "invalid -IrcHost '$IrcHost'" }
+Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel"
+& $Python -u $agent --nick $nick --home $BobHome --channel $channel --host $IrcHost
 exit $LASTEXITCODE

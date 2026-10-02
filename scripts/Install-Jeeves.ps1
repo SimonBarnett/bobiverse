@@ -122,6 +122,9 @@ if (-not $SkipErgo -and -not $ForceErgo -and
     (Test-Path -LiteralPath (Join-Path $ErgoRoot 'ircd.yaml')) -and
     (Get-Service -Name 'BobIrcd' -ErrorAction SilentlyContinue)) {
     Write-Host 'INFO existing Ergo found - leaving ergo.exe, ircd.yaml and the BobIrcd service untouched (-ForceErgo to re-run Install-BobIrcd)'
+    # #70: an ergo.exe hard-linked to the MSI payload bounces Ergo whenever the MSI rewrites its copy: unlink it (no restart).
+    try { [void](Repair-BobiverseErgoHardlink -ErgoExe (Join-Path $ErgoRoot 'ergo.exe')) }
+    catch { Write-Host "WARN ergo.exe hard-link repair skipped: $($_.Exception.Message)" }
     try {
         $ircdImg = [string](Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\BobIrcd' -Name ImagePath -ErrorAction Stop).ImagePath
         if ($ircdImg -and $ircdImg.ToLowerInvariant().Contains($InstallRoot.TrimEnd('\').ToLowerInvariant() + '\')) {

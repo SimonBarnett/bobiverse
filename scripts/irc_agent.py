@@ -38,6 +38,7 @@ import registered_machines  # noqa: E402
 import bob_home  # noqa: E402
 import chair_oper  # noqa: E402
 import chan_privs  # noqa: E402
+import chair_commands  # noqa: E402
 import chan_workers  # noqa: E402
 import talk_seat_ghost  # noqa: E402
 import talk_seat_pid  # noqa: E402
@@ -1173,26 +1174,33 @@ class Client:
     def _handle_recycle_command(self, asker: str, body: str) -> None:
         if not getattr(self.args, "chair", False):
             return
-        parsed = bob_recycle.parse_recycle_query(body)
-        if not parsed:
+        ok, dry, arg = chair_commands.parse_recycle(body)
+        if not ok:
             return
-        kind, machine_id = parsed
         who = (asker or "").strip()
         if not who or who.lower() in self._mine_nicks():
             return
-        if kind == "refuse":
-            if who:
-                self.whisper(who, bob_recycle.refuse_message(machine_id))
+        prin = self._principal(who)
+        roster = tuple(bobreport.roster_machine_ids(self._digest_home()))
+        dec = chair_commands.decide_recycle(
+            who=prin, arg=arg, dry_run=dry, roster=roster,
+            resolve=bob_recycle.resolve_recycle_machine, gate=self._cc().recycle_gate,
+        )
+        self._cmd_reply(who, "recycle", dec.pm_lines)
+        info(f"INFO recycle nick={who} kind={prin.kind} ok={dec.ok} reason={dec.reason} machine={dec.machine} dry={dry}")
+        if not dec.ok:
+            if dec.reason == "denied":
+                self._whois_hint(who)
             return
-        mid = machine_id or ""
+        if dec.dry_run:
+            return
+        mid = dec.machine
         # !recycle jeeves → restart chair (MSI self-update on start).
         if mid.lower() in {"jeeves", "ircjeeves"}:
             try:
                 self.say("Jeeves departing (recycle)")
             except Exception:
                 pass
-            if who:
-                self.whisper(who, "ACK recycle jeeves")
             info("INFO recycle jeeves")
             try:
                 import agent_control
@@ -1201,12 +1209,10 @@ class Client:
             except Exception:
                 pass
             return
-        if bob_recycle.chair_targets_local(mid):
+        if dec.scope == "local" and bob_recycle.chair_targets_local(mid):
             bob_recycle.execute_local_recycle(
                 mid, self.home, ionos_chair=True, hooks=getattr(self, "_recycle_hooks", None)
             )
-            if who:
-                self.whisper(who, bob_recycle.ack_message(mid, local=True))
             info(f"INFO recycle local machine={mid}")
             try:
                 import agent_control
@@ -1215,13 +1221,11 @@ class Client:
             except Exception:
                 pass
             return
-        wire = bob_recycle.format_recycle_wire(mid)
+        wire = dec.route if dec.scope == "fleet" else bob_recycle.format_recycle_wire(mid)
         dest = bobreport.FLEET_CHANNEL
         self.send("PRIVMSG " + dest + " :" + wire)
         time.sleep(FLOOD_S)
-        if who:
-            self.whisper(who, bob_recycle.ack_message(mid, local=False))
-        info(f"INFO recycle wire machine={mid}")
+        info(f"INFO recycle wire machine={mid} scope={dec.scope}")
 
     def _announce_departure(self, reason: str) -> None:
         """Announce leaving #bobiverse and #{machine} before recycle/restart."""
@@ -1255,10 +1259,9 @@ class Client:
         if not local:
             return
         who = (asker or "").strip()
-        # Bare !recycle (refuse/None) or explicit this machine
-        if kind == "refuse" and machine_id is None:
-            mid = local
-        elif kind == "run" and (machine_id or "").lower() == local:
+        # Bare !recycle is the chair's fleet route (it arrives as a RECYCLE wire); only an explicit
+        # own-machine form is acted on here.
+        if kind == "run" and (machine_id or "").lower() == local:
             mid = local
         else:
             return
@@ -1892,30 +1895,164 @@ class Client:
             now=now,
         )
         # Pace under Ergo flood/fakelag (one job line per FLOOD_S). PM only.
-        for ln in lines:
-            self.whisper(src, ln)
-            time.sleep(FLOOD_S)
+        self._cmd_reply(src, "list", lines)
         info(f"INFO git-list pm nick={src} lines={len(lines)} from_chan={to_channel}")
         return True
+
+    # ---- chair command surface (gh-Jeeves @8d76d9a parity; see chair_commands / docs/jeeves-commands.md)
+    def _cc(self):
+        st = getattr(self, "_cc_state", None)
+        if st is None:
+            from types import SimpleNamespace
+
+            st = SimpleNamespace(
+                started=time.time(), help_rate=chair_commands.HelpRate(),
+                recycle_gate=chair_commands.RecycleGate(), whois_at={}, trace_ok=True,
+            )
+            self._cc_state = st
+        return st
+
+    def _ear_machine(self, nick: str):
+        return chan_privs.bob_machine(
+            nick,
+            lambda mid: registered_machines.is_registered(self._digest_home(), mid),
+            bobreport.normalize_machine_id,
+        )
+
+    def _account_of(self, nick: str):
+        """Services account for ``nick`` learned THIS session first (never a stale persisted value)."""
+        n = (nick or "").strip().lower()
+        try:
+            st = self._privs().state
+            acct = st.account(nick)
+            if acct:
+                return acct
+            if n in st.acct_none:
+                return None
+        except Exception:
+            pass
+        return (self.accounts.get(nick) if self.accounts is not None else None) or None
+
+    def _principal(self, nick: str):
+        return chair_commands.classify(nick, self._account_of(nick), ear_machine=self._ear_machine)
+
+    def _whois_hint(self, nick: str) -> None:
+        """A denied command from a nick whose account we do not know yet: learn it (rate limited)."""
+        now = time.time()
+        wh = self._cc().whois_at
+        if now - wh.get(nick.lower(), -1e9) < 30.0:
+            return
+        wh[nick.lower()] = now
+        try:
+            self.send(f"WHOIS {nick}")
+        except OSError:
+            pass
+
+    def _cmd_trace(self, nick: str, cmd: str, lines) -> None:
+        """Bounded audit of command replies (no secrets: replies are queue/focus/help text) - cmd-trace.log."""
+        try:
+            p = Path(self.home) / "cmd-trace.log"
+            if p.is_file() and p.stat().st_size > 262144:
+                tail = p.read_bytes()[-131072:]
+                p.write_bytes(tail[tail.find(b"\n") + 1:])
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with p.open("a", encoding="utf-8") as fh:
+                for ln in lines:
+                    fh.write(f"{stamp}\t{nick}\t{cmd}\t{str(ln)[:400]}\n")
+        except OSError:
+            pass
+
+    def _cmd_reply(self, nick: str, cmd: str, lines) -> None:
+        """PM every reply line (paced), and trace it."""
+        lines = list(lines or [])
+        self._cmd_trace(nick, cmd, lines)
+        for ln in lines:
+            self.whisper(nick, ln)
+            time.sleep(FLOOD_S)
+
+    def _maybe_chair_commands(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
+        """Chair only: !filter !status !resync !sweep and PM ping. (!list/!help/!focus/!ignore/!recycle
+        have their own handlers below.)"""
+        if not getattr(self.args, "chair", False):
+            return False
+        if src.lower() in self._mine_nicks():
+            return False
+        if to_channel and not self._joined_channel(target):
+            return False
+        text = (body or "").strip()
+        if not text:
+            return False
+        alt = chair_commands.filter_to_list(text)
+        if alt is not None:
+            return self._maybe_git_list(src, target, alt, to_channel=to_channel)
+        if not to_channel and to_me:
+            ok, pat = chair_commands.parse_ping(text)
+            if ok:
+                if chair_commands.ping_matches(pat, self.live_nick or self.original_nick or ""):
+                    self._cmd_reply(src, "ping", ["pong"])
+                return True
+        who = None
+        if chair_commands.is_status(text):
+            self._cmd_reply(src, "status", chair_commands.status_lines(
+                self._digest_home(), started=self._cc().started))
+            return True
+        if chair_commands.is_resync(text):
+            who = self._principal(src)
+            if not chair_commands.may("resync", who):
+                self._cmd_reply(src, "resync", [chair_commands.denied_line("resync")])
+                self._whois_hint(src)
+                return True
+            self._cs_force = True       # ChanServ roster mirror re-read now
+            purged = 0
+            try:
+                for repo in focus_ignore.ignored_list(self.home):
+                    purged += focus_ignore._purge_repo_from_queue(self.home, repo)
+            except Exception:
+                pass
+            un = len(gitclaim.load_unaccepted(self.home))
+            acc = len(gitclaim.load_accepted(self.home))
+            self._cmd_reply(src, "resync", [
+                f"resync: roster refresh requested; queue unaccepted={un} accepted={acc} purged_ignored={purged} "
+                "(webhook model, no GitHub token)"])
+            info(f"INFO resync nick={src} kind={who.kind}")
+            return True
+        ch = chair_commands.parse_sweep(text)
+        if ch is not None:
+            who = self._principal(src)
+            if not chair_commands.may("sweep", who):
+                self._cmd_reply(src, "sweep", [chair_commands.denied_line("sweep")])
+                self._whois_hint(src)
+                return True
+            if not ch:
+                ch = target if target.startswith("#") else bobreport.FLEET_CHANNEL
+            if not self._joined_channel(ch):
+                self._cmd_reply(src, "sweep", [f"sweep: not in {ch}"])
+                return True
+            try:
+                self.send(f"NAMES {ch}")
+            except OSError:
+                pass
+            sent = self._privs().sweep(ch)
+            self._cmd_reply(src, "sweep", [f"sweep: {ch} re-planned; {len(sent)} grant/revoke sent"])
+            info(f"INFO sweep nick={src} kind={who.kind} chan={ch} sent={len(sent)}")
+            return True
+        return False
 
     def _maybe_git_help(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
         """Chair only (FR #224 / gh-Jeeves #27): !help in-channel or PM → PM reply, no channel flood."""
         if not getattr(self.args, "chair", False):
             return False
-        if not gitclaim.is_help_command(body):
+        if not chair_commands.parse_help(body)[0]:
             return False
         if to_channel and not self._joined_channel(target):
             return False
-        now = time.time()
-        if not gitclaim.help_rate_ok(src, now):
-            self.whisper(src, gitclaim.help_rate_notice(src, now))
-            info(f"INFO git-help rate nick={src}")
+        if src.lower() in self._mine_nicks():
             return True
-        lines = gitclaim.format_help_lines(body, asker=src)
-        for ln in lines:
-            self.whisper(src, ln)
-            time.sleep(FLOOD_S)
-        info(f"INFO git-help pm nick={src} lines={len(lines)} from_chan={to_channel}")
+        ok, arg = chair_commands.parse_help(body)
+        who = self._principal(src)
+        lines = chair_commands.build_help(who, arg, rate=self._cc().help_rate)
+        self._cmd_reply(src, "help", lines)
+        info(f"INFO git-help pm nick={src} kind={who.kind} lines={len(lines)} from_chan={to_channel}")
         return True
 
     def _maybe_focus_ignore(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
@@ -1932,16 +2069,20 @@ class Client:
             return False
         if src.lower() in self._mine_nicks():
             return True
-        acct = self.accounts.get(src) if self.accounts is not None else None
+        acct = self._account_of(src)
+        who = self._principal(src)
         try:
-            lines = focus_ignore.dispatch(self.home, src, acct, body)
+            lines = focus_ignore.dispatch(
+                self.home, src, acct, body,
+                ops=who.ops, focus_ok=who.kind in ("owner", "ear", "allowlist"),
+            )
         except Exception as exc:  # never let a bad focus file kill the chair loop
             info(f"INFO focus-ignore error {type(exc).__name__}: {exc}"[:200])
             return True
-        for ln in lines or []:
-            self.whisper(src, ln)
-            time.sleep(FLOOD_S)
-        info(f"INFO focus-ignore nick={src} account={acct or '-'} lines={len(lines or [])}")
+        self._cmd_reply(src, "focus", lines or [])
+        if any(" denied" in ln for ln in lines or []):
+            self._whois_hint(src)
+        info(f"INFO focus-ignore nick={src} kind={who.kind} account={acct or '-'} lines={len(lines or [])}")
         return True
 
     def _maybe_git_claim(self, src: str, target: str, body: str) -> bool:
@@ -2086,6 +2227,8 @@ class Client:
         if not to_channel and not to_me:
             return
         if to_channel and self._maybe_channel_pong(src, target, body):
+            return
+        if self._maybe_chair_commands(src, target, body, to_channel=to_channel, to_me=to_me):
             return
         if self._maybe_git_list(src, target, body, to_channel=to_channel):
             return
