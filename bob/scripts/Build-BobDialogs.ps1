@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Compile the two fast tray dialogs (t828u): bob-about.exe (Acknowledge) and bob-status.exe (Status pools card).
+  Compile the fast tray executables (t828u/t832u): bob-about.exe (Acknowledge), bob-status.exe (Status pools card) and bob-tray.exe (the systray: icon, menu, clicks, hover; hosts both windows in-process).
 .DESCRIPTION
   C# WinForms compiled with csc.exe of the .NET Framework 4 that ships with every Windows 10/11 (no SDK, no PyInstaller, no extra
   toolchain on the build OR the target machine). The exes are ~30 KB, load only framework assemblies that are already NGEN'd, and start
@@ -46,8 +46,9 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $built = @()
 foreach ($d in @(
-        @{ Exe = 'bob-about.exe';  Main = 'BobAbout.cs';  Refs = @('System.ServiceProcess.dll') },
-        @{ Exe = 'bob-status.exe'; Main = 'BobStatus.cs'; Refs = @() })) {
+        @{ Exe = 'bob-about.exe';  Srcs = @('BobAbout.cs');  Main = 'BobDialogs.AboutProgram';  Refs = @('System.ServiceProcess.dll') },
+        @{ Exe = 'bob-status.exe'; Srcs = @('BobStatus.cs'); Main = 'BobDialogs.StatusProgram'; Refs = @() },
+        @{ Exe = 'bob-tray.exe';   Srcs = @('BobAbout.cs', 'BobStatus.cs', 'BobTray.cs'); Main = 'BobDialogs.TrayProgram'; Refs = @('System.ServiceProcess.dll') })) {
     $out = Join-Path $OutDir $d.Exe
     $tmp = $out + '.new'
     $argv = @('/nologo', '/target:winexe', '/optimize+', '/debug-', '/platform:anycpu', "/out:$tmp",
@@ -56,7 +57,9 @@ foreach ($d in @(
     if (Test-Path -LiteralPath $ico) { $argv += "/win32icon:$ico" }
     if (Test-Path -LiteralPath $manifest) { $argv += "/win32manifest:$manifest" }
     if (Test-Path -LiteralPath $logo) { $argv += "/resource:$logo,ntsa-gut-logo.png" }
-    $argv += @((Join-Path $SourceDir 'BobDialogsCommon.cs'), (Join-Path $SourceDir $d.Main))
+    $argv += "/main:$($d.Main)"
+    $argv += (Join-Path $SourceDir 'BobDialogsCommon.cs')
+    foreach ($sf in $d.Srcs) { $argv += (Join-Path $SourceDir $sf) }
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $log = & $csc @argv 2>&1
     $code = $LASTEXITCODE

@@ -91,7 +91,7 @@ def test_dialog_sources_are_csc4_compatible_text():
 # ---- build + behaviour: t828u ---------------------------------------------------------------------------------------------------
 @needs_csc
 def test_both_exes_compile_small_and_native(dialogs):
-    for n in ("bob-about.exe", "bob-status.exe"):
+    for n in ("bob-about.exe", "bob-status.exe", "bob-tray.exe"):
         p = dialogs / n
         assert p.is_file() and p.stat().st_size < 200_000, n          # ~25 KB: no bundled interpreter, nothing to unpack at start
         assert p.read_bytes()[:2] == b"MZ"
@@ -129,14 +129,14 @@ function Get-BobTrayBarPaint {{ param($RemainingPct, [int]$BarWidth = 100)
 function Get-BobCanonicalMachineId {{ param($Id) ([string]$Id).ToLowerInvariant() }}
 function Get-BobTrayCursorGroupHelpTooltip {{ param([string]$GroupId) 'help for ' + $GroupId }}
 $h = [pscustomobject]@{{
-  title = 'bob marchhare'; jobs_text = ''; account_overage_gbp = 1.5
+  title = 'bob marchhare'; jobs_text = 'fuels cursor-models, grok-build...`nGitHub issue post: ready`nout of tokens, open with key'; account_overage_gbp = 1.5
   cursor_pools = @([pscustomobject]@{{ heading = 'Low cost models (80%)'; remaining_pct = 80; pct_label = '80%'; group_id = 'auto' }},
                    [pscustomobject]@{{ heading = 'high cost models (-3.2)'; remaining_pct = 0; pct_label = '-3.2'; group_id = 'high-cost-models' }})
   machines = @([pscustomobject]@{{ id = 'MarchHare'; remaining_pct = 42; seat_label = 'ntsa'; reset_label = 'resets Mon'; worker_lines = @('marchhare-41912: doing FR simonbarnett/bobiverse#9', 'marchhare-5832: idle') }},
                [pscustomobject]@{{ id = 'marchhare'; remaining_pct = 42; worker_lines = @() }},
                [pscustomobject]@{{ id = 'flamingo'; remaining_pct = 0; worker_lines = @() }})
 }}
-$m = New-BobTrayStatusModel -Hover $h -AlertKind 'stall' -Alerts @('agent_stall x') -Version 'bob 1.2.3' -Machine 'marchhare'
+$m = New-BobTrayStatusModel -Hover $h -AlertKind 'stall' -Alerts @('agent_stall x') -Version 'bob 1.2.3' -Machine 'marchhare' -Short 'bob marchhare tip' -Attention $true -AttentionSeq 7 -Pulse $true
 $p = Write-BobTrayStatusSnapshot -Root '{root}' -Model $m
 Write-Output $p
 """
@@ -156,6 +156,8 @@ def test_status_model_matches_the_old_card_content(tmp_path):
     assert [c["heading"] for c in d["cursor"]] == ["Low cost models (80%)", "high cost models (-3.2)"]   # Cursor pools on top
     assert d["cursor"][0]["pct"] == 80 and d["cursor"][0]["help"] == "help for auto" and d["cursor"][0]["red"] is False
     assert d["cursor"][1]["red"] is True                                                                    # negative / pound label = red
+    assert "jobs_text" not in d and "fuels cursor-models" not in json.dumps(d)                              # t832u: no plain-text block, dashboard only
+    assert d["short"] == "bob marchhare tip" and d["attention"] is True and d["attention_seq"] == 7 and d["pulse"] is True
     g = d["grok"]
     assert [x["heading"] for x in g] == ["MARCHHARE  -  ntsa (42%) - resets Mon", "FLAMINGO (0%)"]         # one row per canonical machine; 0% is real
     assert g[0]["workers"] == ["marchhare-41912: doing FR simonbarnett/bobiverse#9", "marchhare-5832: idle"]  # {irc nick}: {doing/idle}
@@ -214,5 +216,101 @@ def test_second_launch_is_a_noop_that_brings_the_first_window_forward(dialogs, t
 
 def test_docs_describe_the_layout_the_tech_choice_and_the_dialog_contract():
     d = (ROOT / "docs" / "bob-tray-dialogs.md").read_text(encoding="utf-8-sig")
-    for needle in ("bob/tray", "bob/agentwatcher", "csc.exe", "PyInstaller", "tray-status.json", "{irc nick}: {doing|idle}", "Single instance", "-AllowRevendor"):
+    for needle in ("bob/tray", "bob/agentwatcher", "csc.exe", "PyInstaller", "tray-status.json", "{irc nick}: {doing|idle}", "Single instance", "-AllowRevendor", "bob-tray.exe", "tray-cmd.txt", "BOB_TRAY_ENGINE", "jobs_text"):
         assert needle in d, needle
+
+
+# ---- t832u: the compiled systray ----------------------------------------------------------------------------------------------
+def test_status_window_draws_only_the_dashboard_no_hover_text_block():
+    src = (DIALOGS / "BobStatus.cs").read_text(encoding="utf-8-sig")
+    assert "jobs_text" not in src and "m.Jobs" not in src and "Jobs" not in src.replace("jobs_", "")
+    ps = (TRAY_TOOLS / "BobTrayDialogs.ps1").read_text(encoding="utf-8-sig")
+    assert "jobs_text" not in ps.split("function New-BobTrayStatusModel", 1)[1].split("function ", 1)[0]
+
+
+@needs_csc
+def test_tray_menu_is_status_agent_plan_acknowledge_log_restart_exit(dialogs, tmp_path):
+    out = tmp_path / "menu.txt"
+    _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--dump-menu", str(out))
+    items = out.read_text(encoding="utf-8").splitlines()
+    assert items == ["Status", "Agent", "Plan", "Acknowledge", "Open log", "-", "Restart", "Exit"]
+    src = (DIALOGS / "BobTray.cs").read_text(encoding="utf-8-sig")
+    assert 'miStatus.Font = new Font(miStatus.Font, FontStyle.Bold)' in src and "DoubleClick" in src or "MouseClick" in src
+
+
+@needs_csc
+def test_tray_state_tip_and_acknowledge(dialogs, tmp_path):
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps({"short": "bob marchhare 42%", "alert": "stall", "attention": True, "attention_seq": 3, "pulse": True}), encoding="utf-8")
+    out = tmp_path / "st.txt"
+    _run(dialogs / "bob-tray.exe", "--dump-state", str(snap), "--text-out", str(out))
+    t = out.read_text(encoding="utf-8")
+    assert "attention=True" in t and "seq=3" in t and "alert=stall" in t and "tip=" in t and "tip_acked=" in t
+    assert all(len(l.split("=", 1)[1]) <= 127 for l in t.splitlines() if l.startswith("tip"))               # NotifyIcon.Text limit
+
+
+@needs_csc
+def test_tray_worker_seat_cap_reads_live_workers(dialogs, tmp_path):
+    out = tmp_path / "seats.txt"
+    _run(dialogs / "bob-tray.exe", "--root", str(tmp_path), "--seats", "--text-out", str(out))
+    first = out.read_text(encoding="utf-8").splitlines()[0]
+    assert first.isdigit()
+
+
+def test_tray_engine_contract_between_exe_and_powershell():
+    cs = (DIALOGS / "BobTray.cs").read_text(encoding="utf-8-sig")
+    ps = (TRAY_TOOLS / "Watch-BobTray.ps1").read_text(encoding="utf-8-sig")
+    helper = (TRAY_TOOLS / "BobTrayDialogs.ps1").read_text(encoding="utf-8-sig")
+    fleet = (TRAY_TOOLS / "Start-BobFleetTray.ps1").read_text(encoding="utf-8-sig")
+    for k in ("tray-cmd.txt", "tray-env.json", "BOB_TRAY_ENGINE", "BOB_TRAY_EXE_PID", "tray-status.json"):
+        assert k in cs
+    assert "tray-cmd.txt" in helper and "BOB_TRAY_EXE_PID" in helper and "tray-env.json" in helper
+    assert "Test-BobTrayEngineMode" in ps and "Invoke-BobTrayExeCommands" in ps
+    assert "else { $notify.Visible = $true }" in ps                                                          # engine mode: icon is the exe's
+    assert "Get-BobSystrayTrayExe" in fleet and "bob-tray.exe" in fleet
+    assert "ircBob" in fleet                                                                                 # restart-on-start unchanged
+    assert "sc.exe" in cs.lower() or "sc stop" in cs.lower() or "ircBob" in cs                               # Exit stops the service as before
+
+
+@pytest.mark.skipif(not (WIN and PS), reason="needs powershell")
+def test_engine_command_pump_consumes_ack_exit_restart_and_parent_gone(tmp_path):
+    helper = TRAY_TOOLS / "BobTrayDialogs.ps1"
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "tray-cmd.txt").write_text("ack\nexit\n", encoding="ascii")
+    script = f"""
+. '{helper}'
+$global:log = @()
+$r1 = Invoke-BobTrayExeCommands -Root '{tmp_path}' -OnAck {{ $global:log += 'ack' }} -OnExit {{ $global:log += 'exit' }} -OnRestart {{ $global:log += 'restart' }} -ParentGone {{ $global:log += 'gone' }}
+$env:BOB_TRAY_EXE_PID = '999999'
+$r2 = Invoke-BobTrayExeCommands -Root '{tmp_path}' -OnAck {{ }} -OnExit {{ }} -OnRestart {{ }} -ParentGone {{ $global:log += 'gone' }}
+Write-Output ($global:log -join ',')
+Write-Output (Test-Path '{run}\\tray-cmd.txt')
+"""
+    r = _ps(script)
+    assert r.returncode == 0, r.stdout + r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[-2] == "ack,exit,gone" and lines[-1] == "False"
+
+
+@needs_csc
+def test_tray_cold_start_and_menu_open_timing_and_single_instance(dialogs, tmp_path):
+    root = tmp_path / "r"
+    (root / "run").mkdir(parents=True)
+    f = tmp_path / "tt.txt"
+    best = None
+    for _ in range(3):
+        f.unlink(missing_ok=True)
+        _run(dialogs / "bob-tray.exe", "--root", str(root), "--no-engine", "--timing-out", str(f))
+        icon_ms, menu_ms = (int(x) for x in f.read_text().strip().split(","))
+        best = (icon_ms, menu_ms) if best is None or sum((icon_ms, menu_ms)) < sum(best) else best
+    print(f"tray cold start ms: icon visible={best[0]} menu opened={best[1]}")
+    assert best[0] < 3000 and best[1] < 5000
+    first = subprocess.Popen([str(dialogs / "bob-tray.exe"), "--root", str(root), "--no-engine"])
+    try:
+        time.sleep(2.0)
+        second = subprocess.Popen([str(dialogs / "bob-tray.exe"), "--root", str(root), "--no-engine"])
+        assert second.wait(timeout=20) == 0 and first.poll() is None                                          # one tray per root
+    finally:
+        first.kill()
+        first.wait(timeout=10)

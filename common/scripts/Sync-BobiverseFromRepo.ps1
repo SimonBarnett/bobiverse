@@ -188,7 +188,7 @@ if ($Product -eq 'bob') {
         $dlgNewest = $null
         if (Test-Path -LiteralPath $dlgDir) { $dlgNewest = (Get-ChildItem -LiteralPath $dlgDir -File | Measure-Object LastWriteTimeUtc -Maximum).Maximum }
         $needBuild = $false
-        foreach ($x in 'bob-about.exe', 'bob-status.exe') {
+        foreach ($x in 'bob-about.exe', 'bob-status.exe', 'bob-tray.exe') {
             $xp = Join-Path $InstallRoot ('tools\' + $x)
             if (-not (Test-Path -LiteralPath $xp)) { $needBuild = $true }
             elseif ($dlgNewest -and (Get-Item -LiteralPath $xp).LastWriteTimeUtc -lt $dlgNewest) { $needBuild = $true }
@@ -196,7 +196,7 @@ if ($Product -eq 'bob') {
         $bd = Join-Path $InstallRoot 'scripts\Build-BobDialogs.ps1'
         if ($needBuild -and $dlgNewest -and (Test-Path -LiteralPath $bd)) {
             [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir)
-            Write-Host 'INFO sync compiled bob-about.exe + bob-status.exe'
+            Write-Host 'INFO sync compiled bob-about.exe + bob-status.exe + bob-tray.exe'
         }
     } catch { Write-Host ("WARN sync dialogs not compiled: {0}" -f $_.Exception.Message) }
 }

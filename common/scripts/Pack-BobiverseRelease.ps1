@@ -257,7 +257,7 @@ function Stage-Product([string]$Name) {
             Copy-Item -Path (Join-Path $dlgSrc '*') -Destination (Join-Path $stage 'dialogs') -Recurse -Force
             $buildDialogs = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobDialogs.ps1')
             $dlgExes = @(& $buildDialogs -RepoRoot $RepoRoot -OutDir (Join-Path $stage 'tools'))
-            if ($dlgExes.Count -lt 2) { throw 'Build-BobDialogs.ps1 did not produce bob-about.exe + bob-status.exe' }
+            if ($dlgExes.Count -lt 3) { throw 'Build-BobDialogs.ps1 did not produce bob-about.exe + bob-status.exe + bob-tray.exe' }
         } else { throw 'bob pack requires bob/tray/dialogs (t828u compiled dialogs)' }
         # Merge BobBridge module into stage\src (keep bobiverse VERSION)
         $traySrcDir = Join-Path $traySrc 'src'

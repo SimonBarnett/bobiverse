@@ -25,7 +25,7 @@ namespace BobDialogs
 
     internal class StatusModel
     {
-        public string Title = "bob", Jobs = "", Alert = "none", Version = "", Overspend = "", Note = "";
+        public string Title = "bob", Alert = "none", Version = "", Overspend = "", Note = "";
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
 
         static StatusRow ParseRow(Dictionary<string, object> d)
@@ -46,7 +46,7 @@ namespace BobDialogs
             Dictionary<string, object> d = Common.Dict(Common.ParseJson(json));
             if (d == null) { m.Note = "snapshot is not an object"; return m; }
             string t = Common.Str(d, "title"); if (t.Length > 0) m.Title = t;
-            m.Jobs = Common.Str(d, "jobs_text"); m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
+            m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
             string a = Common.Str(d, "alert"); if (a.Length > 0) m.Alert = a;
             IList c = Common.List(d.ContainsKey("cursor") ? d["cursor"] : null);
             if (c != null) foreach (object o in c) { Dictionary<string, object> rd = Common.Dict(o); if (rd != null && Common.Str(rd, "heading").Length > 0) m.Cursor.Add(ParseRow(rd)); }
@@ -121,12 +121,7 @@ namespace BobDialogs
             Draw(g, m.Title, fTitle, Fg, 14, y);
             Draw(g, "X", fHead, Muted, CloseRect.X + 6, 10);
             y += 26;
-            if (m.Jobs.Length > 0)
-            {
-                Size sz = TextRenderer.MeasureText(g, m.Jobs, fText, new Size(W - 28, 0), Tf | TextFormatFlags.WordBreak);
-                TextRenderer.DrawText(g, m.Jobs, fText, new Rectangle(14, y, W - 28, sz.Height), Muted, Tf | TextFormatFlags.WordBreak);
-                y += sz.Height + 6;
-            }
+            // t832u: the dashboard only (pools, Grok accounts + workers, alert, version). The old hover/tooltip text block is NOT drawn.
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
             if (m.Cursor.Count > 0 || m.Grok.Count > 0)
             {

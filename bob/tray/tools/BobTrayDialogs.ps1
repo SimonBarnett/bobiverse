@@ -47,7 +47,8 @@ function New-BobTrayStatusModel {
       The pure data behind the Status card, in the exact order the old card drew it: Cursor pools first (fleet), then one Grok row per
       canonical machine with its workers as "{irc nick}: {doing|idle}", then alert + version footer. $Hover is Get-BobTrayHover's object.
     #>
-    param($Hover, [string]$AlertKind = 'none', [string[]]$Alerts = @(), [string]$Version = '', [string]$Machine = '', [string]$Title = '')
+    param($Hover, [string]$AlertKind = 'none', [string[]]$Alerts = @(), [string]$Version = '', [string]$Machine = '', [string]$Title = '',
+        [string]$Short = '', [bool]$Attention = $false, [int64]$AttentionSeq = 0, [bool]$Pulse = $false)
     $pound = [string][char]0x00A3
     $h = $Hover
     $over = ''
@@ -120,7 +121,10 @@ function New-BobTrayStatusModel {
         ts        = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         title     = $ttl
         machine   = $Machine
-        jobs_text = $(if ($h -and $h.jobs_text) { [string]$h.jobs_text } else { '' })
+        short     = $Short
+        attention = $Attention
+        attention_seq = $AttentionSeq
+        pulse     = $Pulse
         overspend = $over
         cursor    = @($cursor.ToArray())
         grok      = @($grok.ToArray())
@@ -144,4 +148,52 @@ function Write-BobTrayStatusSnapshot {
         return $path
     }
     catch { return $null }
+}
+
+# ---- t832u: the compiled tray (tools\bob-tray.exe) owns icon / menu / clicks; this script is then the headless "engine" (BOB_TRAY_ENGINE=1) ----
+function Test-BobTrayEngineMode { return ([string]$env:BOB_TRAY_ENGINE -eq '1') }
+
+function Write-BobTrayEngineEnv {
+    # The exe starts workers (Agent / Plan click) with the environment the engine got from the seat wrapper.
+    param([Parameter(Mandatory)][string]$Root)
+    try {
+        $dir = Join-Path $Root 'run'
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $o = [ordered]@{}
+        foreach ($e in Get-ChildItem Env: | Where-Object { $_.Name -match '^(BOB_|AGENTIC_|BOBIVERSE_)[A-Z0-9_]+$' -and $_.Name -notmatch 'PASSWORD|SECRET|TOKEN|KEY' }) { $o[$e.Name] = [string]$e.Value }
+        $tmp = Join-Path $dir 'tray-env.json.tmp'
+        [IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject $o -Compress), (New-Object System.Text.UTF8Encoding $false))
+        Move-Item -LiteralPath $tmp -Destination (Join-Path $dir 'tray-env.json') -Force
+        return $true
+    }
+    catch { return $false }
+}
+
+function Invoke-BobTrayExeCommands {
+    <#
+      Called every 2 s by the engine. Consumes <root>\run\tray-cmd.txt written by bob-tray.exe: ack | exit | restart.
+      Also: the engine leaves when its exe parent is gone (BOB_TRAY_EXE_PID) so a crashed/killed tray never leaves an orphan engine.
+      -OnAck/-OnExit/-OnRestart/-ParentGone are script blocks (the tray passes its functions; tests pass stubs).
+    #>
+    param([Parameter(Mandatory)][string]$Root, [scriptblock]$OnAck, [scriptblock]$OnExit, [scriptblock]$OnRestart, [scriptblock]$ParentGone)
+    $f = Join-Path (Join-Path $Root 'run') 'tray-cmd.txt'
+    $done = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath $f) {
+        $lines = @()
+        try { $lines = @(Get-Content -LiteralPath $f -ErrorAction Stop) } catch { }
+        try { Remove-Item -LiteralPath $f -Force -ErrorAction Stop } catch { }
+        foreach ($l in $lines) {
+            $cmd = ([string]$l).Trim().ToLowerInvariant()
+            if ($cmd -eq 'ack' -and $OnAck) { & $OnAck; $done.Add('ack') }
+            elseif ($cmd -eq 'exit' -and $OnExit) { & $OnExit; $done.Add('exit'); break }
+            elseif ($cmd -eq 'restart' -and $OnRestart) { & $OnRestart; $done.Add('restart'); break }
+        }
+    }
+    $pidText = [string]$env:BOB_TRAY_EXE_PID
+    if ($done.Count -eq 0 -and $pidText -match '^\d+$' -and $ParentGone) {
+        $alive = $true
+        try { $alive = [bool](Get-Process -Id ([int]$pidText) -ErrorAction Stop) } catch { $alive = $false }
+        if (-not $alive) { & $ParentGone; $done.Add('parent-gone') }
+    }
+    return $done.ToArray()
 }

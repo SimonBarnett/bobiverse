@@ -39,6 +39,7 @@ namespace BobDialogs
             bool created;
             keep = new Mutex(true, "Local\\Bobiverse_" + key, out created);
             if (created) return true;
+            if (windowTitle.Length == 0) return false;
             try
             {
                 IntPtr h = Native.FindWindow(null, windowTitle);

@@ -130,8 +130,10 @@ function Normalize-BobRepoPairArgvList {
 
 function Get-BobRepoPairIrcAgentScriptPath {
     $ircRoot = $null
-    if (Test-Path 'C:\ai\agentic_irc') { $ircRoot = 'C:\ai\agentic_irc' }
-    elseif (Test-Path 'D:\ai\agentic_irc') { $ircRoot = 'D:\ai\agentic_irc' }
+    # no drive-letter default (t832u: bob/tray is a first-class source now, so the hard-coded-root guard covers it): env override, else the sibling of the bob install root
+    $ircCandidates = @([string]$env:AGENTIC_IRC_ROOT)
+    try { $ircCandidates += (Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))) 'agentic_irc') } catch { }
+    foreach ($cand in $ircCandidates) { if ($cand -and (Test-Path -LiteralPath $cand)) { $ircRoot = $cand; break } }
     if ($ircRoot) {
         $agent = Join-Path $ircRoot 'scripts\irc_agent.py'
         if (Test-Path $agent) { return $agent }

@@ -1719,6 +1719,7 @@ function Start-BobTrayWorkerExe {
 }
 
 $script:attention = $false
+$script:attentionSeq = 0
 $script:bobTrayGrokSessions = @()
 $script:flashOn = $false
 $script:lastAlerts = @()
@@ -2071,6 +2072,7 @@ function Start-JobsWatcher {
 function Set-Attention([string[]]$alerts) {
     $script:lastAlerts = @($alerts)
     $script:attention = $true
+    $script:attentionSeq = [int64]$script:attentionSeq + 1
     $text = ($alerts | Select-Object -First 1)
     if ($text.Length -gt 60) { $text = $text.Substring(0, 60) }
     Clear-BobNativeTip
@@ -2112,18 +2114,19 @@ function Update-Hover {
         }
         $paint = Get-BobTrayBarPaint -RemainingPct $script:remainingPct -BarWidth 392
         $script:alertKind = Get-BobTrayAlertKind -Alerts $script:lastAlerts -RemainingPct $script:remainingPct
-        # t828u: the Status exe (tools\bob-status.exe) paints from this snapshot; writing it is cheap and never blocks on the exe.
-        try {
-            if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) {
-                $snapModel = New-BobTrayStatusModel -Hover $h -AlertKind $script:alertKind -Alerts @($script:lastAlerts) -Version (Get-BobTrayProductVersionLabel) -Machine ([string]$env:BOB_MACHINE_ID) -Title $script:hoverTitle
-                [void](Write-BobTrayStatusSnapshot -Root $RepoRoot -Model $snapModel)
-            }
-        }
-        catch { Write-TrayLog ('status snapshot error: ' + $_.Exception.Message) }
         $short = [string]$h.short
         if ($script:attention) { $short = '! ' + $short }
         if ($short.Length -gt 63) { $short = $short.Substring(0, 63) }
         $script:notifyTipText = $short
+        # t828u/t832u: bob-status.exe / bob-tray.exe paint from this snapshot (dashboard only, plus the tray's hover text + attention state).
+        try {
+            if (Get-Command Write-BobTrayStatusSnapshot -ErrorAction SilentlyContinue) {
+                $snapModel = New-BobTrayStatusModel -Hover $h -AlertKind $script:alertKind -Alerts @($script:lastAlerts) -Version (Get-BobTrayProductVersionLabel) -Machine ([string]$env:BOB_MACHINE_ID) -Title $script:hoverTitle `
+                    -Short $script:notifyTipText -Attention ([bool]$script:attention) -AttentionSeq ([int64]$script:attentionSeq) -Pulse ([bool]$paint.pulse)
+                [void](Write-BobTrayStatusSnapshot -Root $RepoRoot -Model $snapModel)
+            }
+        }
+        catch { Write-TrayLog ('status snapshot error: ' + $_.Exception.Message) }
         Clear-BobNativeTip
         if ($script:titleLabel) {
             $script:titleLabel.Text = $script:hoverTitle
@@ -2976,6 +2979,11 @@ $startWorkerTimer.Add_Tick({
             [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
                     -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
                     -Log { param($m) Write-TrayLog $m })
+            if (Test-BobTrayEngineMode) {
+                [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
+                        -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
+                        -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving'; $ctx.ExitThread() })
+            }
         }
         catch [System.Management.Automation.PipelineStoppedException] { return }
         catch { Write-TrayLog ('startworker queue: ' + $_.Exception.Message) }
@@ -3018,7 +3026,8 @@ try {
 }
 catch { Write-TrayLog ('digest startup: ' + $_.Exception.Message) }
 # TipForm handle only on click - startup CreateHandle caused hover stub.
-$notify.Visible = $true
+if (Test-BobTrayEngineMode) { Write-TrayLog 'engine mode: bob-tray.exe owns the icon and the menu (this process is headless)'; [void](Write-BobTrayEngineEnv -Root $RepoRoot) }
+else { $notify.Visible = $true }
 $flash.Start()
 $poll.Start()
 $pulse.Start()
