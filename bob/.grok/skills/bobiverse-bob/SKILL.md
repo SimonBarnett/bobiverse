@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob
 description: >
-  Use and maintain the ircBob ear, tray and shop on a fleet box. Architecture, paths, channels, config, logs, tray, install/upgrade/hotpatch. Use in C:\ai\bob or for the Bob service, tray restart, ear debugging, SASL/NickServ, or /bobiverse-bob.
+  Use and maintain the ircBob ear, tray and shop on a fleet box. Architecture, paths, channels, config, logs, tray, install/upgrade/hotpatch. Use in <ai root>\bob or for the Bob service, tray restart, ear debugging, SASL/NickServ, or /bobiverse-bob.
 ---
 
 # bobiverse-bob
@@ -29,9 +29,9 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 
 | Piece | Where |
 |---|---|
-| Install root | `C:\ai\bob` (`scripts\`, `tools\` TipForm, `src\` BobBridge, `assets\bob-systray.ico`, `config\`, `logs\`, `.grok\skills\`, `PIN.txt`, `VERSION`) |
-| Ear home | `C:\ai\bob\home` (LocalSystem) else `~\.bobiverse`; `outbox.txt` (+`.pos`), `irc.log` (with `BOB_IRC_DEBUG=1`), `nickserv.password`, `accounts.json`, `digest.json` |
-| Logs | `C:\ai\bob\logs\stdout.log` / `stderr.log` (rotated `ircBob-*` files) |
+| Install root | `<ai root>\bob` (`scripts\`, `tools\` TipForm, `src\` BobBridge, `assets\bob-systray.ico`, `config\`, `logs\`, `.grok\skills\`, `PIN.txt`, `VERSION`) |
+| Ear home | `<ai root>\bob\home` (LocalSystem) else `~\.bobiverse`; `outbox.txt` (+`.pos`), `irc.log` (with `BOB_IRC_DEBUG=1`), `nickserv.password`, `accounts.json`, `digest.json` |
+| Logs | `<ai root>\bob\logs\stdout.log` / `stderr.log` (rotated `ircBob-*` files) |
 | IRC | channels `#bobiverse` + `#<machine>`; nick `Bob-<machine>`; SASL user `bob-<machine>`; host passed explicitly with `--host` (Start-Bob `-IrcHost`, default `irc.ntsa.uk`) |
 | Config | `config\ergo.password` (server PASS), `home\nickserv.password` (SASL), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon) |
 | Tray | `scripts\Start-BobTray.ps1 -> tools\Start-BobFleetTray.ps1`; HKCU `Run\BobiverseTray`; per-user Startup shortcut; quiet MSI uses the ONLOGON `/IT` task `BobiverseTray` |
@@ -46,7 +46,7 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 
 ## Install, upgrade, rollback, hotpatch
 
-See `bobiverse-fleet-ops`. Bob specifics: hotpatch = back up `C:\ai\bob`, copy changed `scripts\*`, `Restart-Service ircBob` (or
+See `bobiverse-fleet-ops`. Bob specifics: hotpatch = back up `<ai root>\bob`, copy changed `scripts\*`, `Restart-Service ircBob` (or
 `Restart-BobEar.ps1`, which announces the departure first). Do not kill seats/agents or the tray to apply a patch. `Start-Bob.ps1`
 must pass `--host` or the watcher/tray treats the ear as foreign and kills it (restart loop).
 

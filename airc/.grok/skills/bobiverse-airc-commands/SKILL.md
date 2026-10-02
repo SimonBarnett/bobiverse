@@ -29,13 +29,13 @@ PRIVMSG <machine>_console :sc query ircJeeves
 - The command runs in **cmd.exe** under the Airc service account (often SYSTEM); the reply comes back as PRIVMSG lines from
   `<machine>_console` (visible in the sender's `irc.log` with `BOB_IRC_DEBUG=1`).
 - Keep each command SHORT (IRC line limit). Multi-line PowerShell does not survive: stage a script with
-  `irm <raw-url> -OutFile C:\ai\drop\x.ps1` then `powershell -File C:\ai\drop\x.ps1`.
+  `irm <raw-url> -OutFile <ai root>\drop\x.ps1` then `powershell -File <ai root>\drop\x.ps1`.
 - Allowlist: `bob-*` ears may always PRIVMSG `*_console`. Nothing else is authorized.
 - Planned extension (not shipped): PowerShell default + PUT/RUN - see `docs/airc-remote-control.md`.
 
 ## Safe diagnostic commands
 
-`sc query <svc>`, `sc qc <svc>`, `type C:\ai\<product>\VERSION`, `dir C:\ai\<product>\logs`, `tasklist /fi "imagename eq python.exe"`.
+`sc query <svc>`, `sc qc <svc>`, `type <ai root>\<product>\VERSION`, `dir <ai root>\<product>\logs`, `tasklist /fi "imagename eq python.exe"`.
 Do NOT: kill broad `powershell.exe`/`python.exe`, `sc stop BobIrcd`, edit Ergo files, print secrets.
 
 ## Verify the console

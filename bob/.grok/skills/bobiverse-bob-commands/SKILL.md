@@ -45,7 +45,7 @@ never start TipForm in session 0 (invisible ghost).
 
 ```powershell
 Get-Service ircBob
-Get-Content C:\ai\bob\logs\stdout.log -Tail 40
+Get-Content <ai root>\bob\logs\stdout.log -Tail 40
 Get-CimInstance Win32_Process | ? CommandLine -match 'irc_agent.py --nick Bob-' | Select ProcessId,CommandLine   # must contain --host
-.\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot C:\ai\bob
+.\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot <ai root>\bob
 ```

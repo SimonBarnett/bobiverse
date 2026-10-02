@@ -7,15 +7,15 @@ Companion: TipForm systray (`scripts\Start-BobTray.ps1` → `tools\Start-BobFlee
 
 - JOIN `#bobiverse` + `#{MachineId}`
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
-- Home: `C:\ai\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
+- Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
 
 ## Secrets
 
 | Secret | Path / env |
 |--------|------------|
-| Ergo PASS | `C:\ai\bob\config\ergo.password` or `~\.grok\ergo\connect.password` |
-| NickServ SASL | `C:\ai\bob\home\nickserv.password` → `BOB_IRC_SASL_USER=bob-{machine}` |
+| Ergo PASS | `<ai root>\bob\config\ergo.password` or `~\.grok\ergo\connect.password` |
+| NickServ SASL | `<ai root>\bob\home\nickserv.password` → `BOB_IRC_SASL_USER=bob-{machine}` |
 | Service logon | `config\service.password` / `BOBIVERSE_SERVICE_PASSWORD` → DPAPI `service.cred` |
 | Digest POST | none (no secret; the digest accepts machine ids on the roster Jeeves publishes) |
 
@@ -29,7 +29,7 @@ UTF-8 **no BOM**. Only lines starting with `PRIVMSG ` are sent raw:
 PRIVMSG {machine}_console :<short-cmd>
 ```
 
-If `C:\ai\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox — use a talk-seat home.
+If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox — use a talk-seat home.
 
 ## Tray / recycle
 
@@ -43,7 +43,7 @@ If `C:\ai\bob\home` is LocalSystem-ACL only, interactive users cannot write the 
 
 ```powershell
 Get-Service ircBob
-Get-Content C:\ai\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content <ai root>\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue
 # Expect: SASL user=bob-<machine>, joined #bobiverse,#<machine> as Bob-<machine>
 ```
 

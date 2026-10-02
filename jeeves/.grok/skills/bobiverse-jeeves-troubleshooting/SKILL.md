@@ -34,8 +34,8 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Chair keeps losing the nick `Jeeves` | Legacy `BobJeeves` (gh-Jeeves) still installed - remove it from the SCM. |
 | `error: the following arguments are required: --channel` | An unquoted `#bobiverse` in a PowerShell command line. Quote it. |
 | Mojibake / parse failure in a ps1 | Keep the BOM on existing ps1 files; write Python/JSON/outbox without BOM. |
-| After MSI, service still runs old code | NSSM Application path - re-run `Install-Jeeves.ps1`; check `C:\ai\jeeves\VERSION`. |
-| Ergo restarted when the MSI upgraded | `ergo.exe` hard link (#70) - verify `fsutil hardlink list C:\ai\ergo\ergo.exe` shows ONE name; the installer repairs it without stopping Ergo. |
+| After MSI, service still runs old code | NSSM Application path - re-run `Install-Jeeves.ps1`; check `<ai root>\jeeves\VERSION`. |
+| Ergo restarted when the MSI upgraded | `ergo.exe` hard link (#70) - verify `fsutil hardlink list <ai root>\ergo\ergo.exe` shows ONE name; the installer repairs it without stopping Ergo. |
 
 Always finish with the harvest step (see rule above) - every row here was learned the hard way and is only useful if the next
 agent files what it finds.

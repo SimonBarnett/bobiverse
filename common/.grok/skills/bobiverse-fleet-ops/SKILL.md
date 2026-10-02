@@ -1,7 +1,7 @@
 ---
 name: bobiverse-fleet-ops
 description: >
-  Shared Bobiverse operations - fleet model, machine id rules, health checks, install/upgrade/rollback, safe hotpatch, privilege rules, test procedures and the known-failure table. Use for ANY work in a C:\ai\jeeves, C:\ai\bob or C:\ai\airc directory, debugging a service, or /bobiverse-fleet-ops.
+  Shared Bobiverse operations - fleet model, machine id rules, health checks, install/upgrade/rollback, safe hotpatch, privilege rules, test procedures and the known-failure table. Use for ANY work in a <ai root>\jeeves, <ai root>\bob or <ai root>\airc directory, debugging a service, or /bobiverse-fleet-ops.
 ---
 
 # bobiverse-fleet-ops
@@ -20,9 +20,12 @@ description: >
 
 Shared by jeeves, bob and airc. Product specifics are in `bobiverse-jeeves*`, `bobiverse-bob*`, `bobiverse-airc*`.
 
+## Where the fleet lives (`<ai root>`)
+
+Never assume `C:\ai`. The root is the `<drive>:\ai` on a **fixed** disk (Win32_LogicalDisk DriveType 3; removable/network/CD ignored): the one already holding `bob`/`jeeves`/`airc`/`ergo`, else the one the services point at, else `<SystemDrive>:\ai` (created only by an installer). Override: env `BOB_AI_ROOT` (MSI: `AIROOT=D:\ai`). Check it with `. <install>\scripts\Bobiverse-Common.ps1; Get-BobiverseAiRoot` (read-only). Verify the REAL tree a service runs from with `nssm get ircBob AppDirectory` / the registry before hotpatching - a clone of the repo elsewhere is not the install.
 ## Fleet model (what talks to what)
 
-- **Ergo** IRC server (service `BobIrcd`, tree `C:\ai\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box.
+- **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box.
   NEVER edit `ircd.yaml`, never restart `BobIrcd` as part of a fix for something else.
 - **Jeeves** chair (service `ircJeeves`, nick `Jeeves`, `irc_agent.py --chair`): channel privileges, roster, queue, commands,
   digest, webhooks. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs

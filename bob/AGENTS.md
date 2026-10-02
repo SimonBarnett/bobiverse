@@ -12,7 +12,7 @@
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-Product tree: `C:\ai\bob`. Services: **ircBob** (ear nick `Bob-<machine>`) + the TipForm tray companion. This file is also shipped as `CLAUDE.md`, `GROK.md` and
+Product tree: `<ai root>\bob`. Services: **ircBob** (ear nick `Bob-<machine>`) + the TipForm tray companion. This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-bob.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
 
 ## What you are looking at
@@ -26,7 +26,7 @@ The Bob ear is this box's presence on IRC (`#bobiverse` + `#<machine>`): shop ch
 - `.grok/skills/bobiverse-bob-troubleshooting/SKILL.md` - restart loops (--host), SASL, outbox BOM, tray
 - `.grok/skills/bobiverse-bob-worker/SKILL.md` - the tray **Agent** item / `bob-worker.exe`: how a worker seat starts (cursor > grok > key prompt), ONE window, `!bored`, IRC relay, IRC-loss exit, hang restarts, logs
 - `.grok/skills/bobiverse-bob-job-irc/SKILL.md` (+ `-fr`, `-mrb`, `-uat`) - exact ACK / DONE / NACK / GIVEUP lines and the FR / MRB / UAT job processes (with diagrams) a worker follows
-- `.grok/skills/bobiverse-bob-plan/SKILL.md` - the tray **Plan** item: `bob-worker.exe --mode plan` in `C:\ai\bob\plan` (visionary / plan skills)
+- `.grok/skills/bobiverse-bob-plan/SKILL.md` - the tray **Plan** item: `bob-worker.exe --mode plan` in `<ai root>\bob\plan` (visionary / plan skills)
 - `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
 - `.grok/skills/harvest/SKILL.md` - harvest + intake
 
@@ -35,16 +35,16 @@ Docs in `docs\`:
 
 ## Agent and Plan (tray, single click each)
 
-- The tray has two plain items, **Agent** and **Plan** (no submenus). Each click runs `bob-worker.exe` (`C:\ai\bob\worker`) which starts a **NEW** agent
+- The tray has two plain items, **Agent** and **Plan** (no submenus). Each click runs `bob-worker.exe` (`<ai root>\bob\worker`) which starts a **NEW** agent
   every time - it NEVER resumes, continues or attaches to an existing agent session, window or process (no `--resume`/`--continue`).
 - The agent is chosen automatically by token availability: Cursor pool > 0 -> `agent.cmd`; else local Grok weekly tokens -> `agent.exe`; else a hidden-input prompt in the same window asks for a Grok session key.
-- Agent CWD is `C:\ai\bob\worker`; Plan CWD is `C:\ai\bob\plan`. Both folders have their own AGENTS.md + skills with the CAST IRON harvest rule on top.
+- Agent CWD is `<ai root>\bob\worker`; Plan CWD is `<ai root>\bob\plan`. Both folders have their own AGENTS.md + skills with the CAST IRON harvest rule on top.
 - Full start / troubleshooting guide: `bobiverse-bob-worker` and `bobiverse-bob-plan`.
 
 ## Hard rules (CAST IRON)
 
 - **Hotpatch safely**: back up the install tree first; copy only the changed files; restart ONLY this product's service;
-  never touch Ergo (`C:\ai\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
+  never touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
   commit secrets (`*.password`, `github.token`, `identity.json`, oper cred, NickServ GUIDs); PowerShell only on Windows
   (never wrap in `powershell -Command`). Full procedure: `bobiverse-fleet-ops`.
 - **Machine ids** are lowercase sanitized hostnames (`<machine>`): shop `#<machine>`, ear `Bob-<machine>`, console `<machine>_console`.
@@ -55,9 +55,9 @@ Docs in `docs\`:
 
 ```powershell
 Get-Service ircBob
-Get-Content C:\ai\bob\logs\stdout.log -Tail 40
+Get-Content <ai root>\bob\logs\stdout.log -Tail 40
 .\scripts\Restart-BobEar.ps1                 # announce departure, restart ircBob only
-.\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot C:\ai\bob
+.\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot <ai root>\bob
 .\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...'   # end of every session
 ```
 

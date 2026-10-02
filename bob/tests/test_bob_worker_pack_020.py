@@ -151,8 +151,8 @@ def test_stage_skills_carry_the_harvest_rule_with_install_absolute_paths(bob_sta
         t = f.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
         for mk in RULE:
             assert mk in t, f"{f.relative_to(bob_stage)}: missing {mk!r}"
-        assert "C:\\ai\\bob\\scripts\\Report-BobiverseIntakeIssue.ps1" in t, f.relative_to(bob_stage)
-        assert ".\\scripts\\Report-BobiverseIntakeIssue.ps1" not in t.replace("C:\\ai\\bob\\scripts\\", ""), f.relative_to(bob_stage)
+        assert "..\\scripts\\Report-BobiverseIntakeIssue.ps1" in t, f.relative_to(bob_stage)
+        assert ".\\scripts\\Report-BobiverseIntakeIssue.ps1" not in t.replace("..\\scripts\\", ""), f.relative_to(bob_stage)
         if f.name == "SKILL.md":
             assert t.index("CAST IRON RULE - HARVEST AND FILE EVERYTHING") < (t.find("\n## ") if "\n## " in t else 10**9), f
 
@@ -198,11 +198,11 @@ def test_install_sync_and_pack_use_the_shared_folder_builder():
 
 # ------------------------------------------------------------------------------------------------ the bob book (start guides)
 BOOK_TOPICS = {
-    "bobiverse-bob-worker": ["tray", "Agent", "bob-worker.exe", "--mode agent", "agent.cmd", "agent.exe", "prompt", r"C:\ai\bob\worker",
+    "bobiverse-bob-worker": ["tray", "Agent", "bob-worker.exe", "--mode agent", "agent.cmd", "agent.exe", "prompt", r"<ai root>\bob\worker",
                              "#<machine>", "<machine>-<pid>", "IRC is lost", "kill", "no reconnect", "hung", "backoff", "logs",
                              "Troubleshooting", "NEW agent", "--resume", "PING", "pong", "Exit codes", "run copy", "Plan",
                              "ONE window", "!bored", "bobiverse-bob-job-irc"],
-    "bobiverse-bob-plan": ["tray", "Plan", "--mode plan", r"C:\ai\bob\plan", "visionary", "NEW agent", "--resume", "agent.cmd", "agent.exe",
+    "bobiverse-bob-plan": ["tray", "Plan", "--mode plan", r"<ai root>\bob\plan", "visionary", "NEW agent", "--resume", "agent.cmd", "agent.exe",
                            "logs", "Troubleshooting", "work", "ONE window"],
 }
 

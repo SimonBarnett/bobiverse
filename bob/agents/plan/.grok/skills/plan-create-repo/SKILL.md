@@ -16,11 +16,11 @@ description: >
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
 > 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
->    `C:\ai\bob\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
 > 3. BEFORE finishing ANY debugging session run the harvest step:
->    `C:\ai\bob\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
->    then `C:\ai\bob\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+>    `..\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `..\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
 
@@ -34,7 +34,7 @@ only — do not require the full agentic_build pack.
 - Shape + success LOCKED or UNKNOWN.
 - `python tools/validate-vision-pack.py docs/vision.md --mocks-dir docs/mocks`
   exits 0 (product `tools/` else sister clone `D:\ai\skills-visionary`,
-  `C:\ai\skills-visionary`, `C:\src\skills-visionary`).
+  `<ai root>\skills-visionary`, `C:\src\skills-visionary`).
 - This is a **new product**, not an FR on an existing repo.
 
 ## Steps
@@ -63,7 +63,7 @@ and opens a PR — no extra permission step for humans.
 gh repo clone SimonBarnett/<name> D:\ai\<name>
 ```
 
-(or `C:\ai\<name>` / fleet home convention).
+(or `<ai root>\<name>` / fleet home convention).
 
 ## Same-turn follow-ups (required)
 

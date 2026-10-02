@@ -13,7 +13,7 @@ LOCKED
 | S1 | Three MSIs publish | `jeeves-*.msi`, `bob-*.msi`, `airc-*.msi` on a GitHub Release | `gh release view <tag> --repo SimonBarnett/bobiverse` lists all three assets | Missing any asset |
 | S2 | `!register` + Bob modes | Registered `Bob-{mid}` gets +o on shop and +h on `#bobiverse` | `irc.log` shows MODE +o/+h after Bob JOIN | No modes or Bob self-REGISTER required |
 | S3 | Recycle path | Systray Restart and `!recycle` restart `ircBob` with departure announce | Channel PRIVMSG + `Get-Service ircBob` Running | Tray-only restart leaves stale ear |
-| S4 | Self-update | Service restart installs newer Release MSI | `C:\ai\bob\VERSION` (or jeeves/airc) bumps after restart | Stays on old bits when newer release exists |
+| S4 | Self-update | Service restart installs newer Release MSI | `<ai root>\bob\VERSION` (or jeeves/airc) bumps after restart | Stays on old bits when newer release exists |
 
 LOCKED
 
@@ -71,7 +71,7 @@ Systray is the Bob UI surface; HTML mocks document tray states for UAT later.
 ## LOCKED (pack layout)
 
 - Jeeves MSI stages Ergo under payload `ergo\` (`ergo.exe`, `default.yaml`, languages…).
-  Install copies/seeds **`C:\ai\ergo`** and registers service **`BobIrcd`** (NSSM in Ergo root).
+  Install copies/seeds **`<ai root>\ergo`** and registers service **`BobIrcd`** (NSSM in Ergo root).
 - Bob MSI stages **`Watch-AgentHealth\`** (Desktop install IF MISSING) + **`Start-BobTray.ps1`**
   (Restart → `Restart-BobEar.ps1` → `ircBob`).
 - `!recycle jeeves` restarts **`ircJeeves` only** (does not bounce `BobIrcd`).

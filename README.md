@@ -4,9 +4,9 @@ Fleet IRC product: single-file MSIs for **Jeeves** (Ergo + chair), **Bob** ears,
 
 | MSI | Service(s) | Nick | Install tree |
 |-----|------------|------|--------------|
-| `jeeves-*.msi` | `BobIrcd` + `ircJeeves` | `Jeeves` | `C:\ai\jeeves` (+ Ergo → `C:\ai\ergo`) |
-| `bob-*.msi` | `ircBob` (+ tray / Watch-AgentHealth) | `Bob-{machinename}` | `C:\ai\bob` |
-| `airc-*.msi` | `Airc` | `{machinename}_console` | `C:\ai\airc` |
+| `jeeves-*.msi` | `BobIrcd` + `ircJeeves` | `Jeeves` | `<ai root>\jeeves` (+ Ergo → `<ai root>\ergo`) |
+| `bob-*.msi` | `ircBob` (+ tray / Watch-AgentHealth) | `Bob-{machinename}` | `<ai root>\bob` |
+| `airc-*.msi` | `Airc` | `{machinename}_console` | `<ai root>\airc` |
 
 ## Repository layout
 
@@ -30,6 +30,16 @@ Dev: run `pytest` from the repo root (`conftest.py` puts every `*/scripts` on `s
 Heads-up: an install that still has the pre-split `Sync-BobiverseFromRepo.ps1` finds no `scripts\` in a split clone and syncs nothing until it has
 taken the next MSI release.
 
+## The `<drive>:\ai` root (no hard-coded `C:\ai`)
+
+Fleet trees live under `<drive>:\ai` (`<ai root>\bob`, `\jeeves`, `\airc`, `\ergo`, `\bobiverse` clone) but the drive is **not always C:** (MarchHare keeps repos and agent homes on `D:\ai`). Every installer, MSI, updater, Start/Restart script, tray and the worker exe resolve the root the same way:
+
+1. env `BOB_AI_ROOT` (explicit override; MSI: `msiexec /i x.msi AIROOT=D:\ai`),
+2. otherwise scan the **fixed physical disks only** (`Win32_LogicalDisk` DriveType 3; removable, network and CD/DVD are ignored) for an existing `\ai` folder,
+3. several found: prefer the one already holding `bob`/`jeeves`/`airc`/`ergo` install folders, then the one the fleet services (`ircBob`, `ircJeeves`, `BobIrcd`, `Airc`) already point at, then the system drive, then drive-letter order,
+4. none found: `<SystemDrive>:\ai`, created **only** by an installer (never when an `ai` folder exists on any fixed disk).
+
+Implementations (same rules, tested together in `common/tests/test_ai_root_020.py`): `Get-BobiverseAiRoot` / `Get-BobiverseProductRoot` in `common/scripts/Bobiverse-Common.ps1`, `common/scripts/ai_root.py` (worker exe, `gh_filer.py`), `common/packaging/FindAiRoot.js` (MSI immediate custom action: sets `AIROOT`, `INSTALLDIR=[AIROOT]\<product>`, and passes `-InstallRoot` to the post-install script). Scripts that run from an installed tree also use their own location (`<install>\scripts`) before scanning.
 ## Pack
 
 ```powershell
@@ -57,7 +67,7 @@ Or `msiexec /i bob-0.1.1.msi`.
 - Ergo server PASS is **not** in public MSIs (issue #4); place `config\ergo.password` post-install (or pack with `-EmbedErgoPassword` for private builds)
 - Bob ear loads `home\nickserv.password` for SASL (`bob-{machine}`) so reserved nicks get `001`
 - Quiet MSI `/qn` never prompts for ObjectName password (issue #6); LocalSystem omits `-BobHome` (issue #7)
-- First Ergo install seeds `C:\ai\ergo\ircd.yaml` from `default.yaml` until operator TLS/PASS/ChanServ are set
+- First Ergo install seeds `<ai root>\ergo\ircd.yaml` from `default.yaml` until operator TLS/PASS/ChanServ are set
 
 ## Post-install
 

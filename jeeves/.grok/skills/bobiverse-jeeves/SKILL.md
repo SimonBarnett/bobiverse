@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves
 description: >
-  Maintain and debug the Jeeves chair (ircJeeves) and its webhooks on the Ergo host. Architecture, paths, ports, config, logs, background jobs (webhook health, GitHub resync), install/upgrade/hotpatch. Use in C:\ai\jeeves or for Jeeves service, !register, ChanServ, BobCallback, intake, or /bobiverse-jeeves.
+  Maintain and debug the Jeeves chair (ircJeeves) and its webhooks on the Ergo host. Architecture, paths, ports, config, logs, background jobs (webhook health, GitHub resync), install/upgrade/hotpatch. Use in <ai root>\jeeves or for Jeeves service, !register, ChanServ, BobCallback, intake, or /bobiverse-jeeves.
 ---
 
 # bobiverse-jeeves
@@ -27,16 +27,16 @@ deterministic and token-less except the optional GitHub token used for filing is
 
 | Piece | Where |
 |---|---|
-| Install root | `C:\ai\jeeves` (`scripts\`, `config\`, `logs\`, `docs\`, `.grok\skills\`, `assets\`, `VERSION`) |
-| Chair home (identity, queue, focus/ignore, traces) | `~\.jeeves`, else `C:\Users\Administrator\.jeeves`, else `C:\ai\jeeves\home-jeeves` (never `C:\Users\Default`) |
+| Install root | `<ai root>\jeeves` (`scripts\`, `config\`, `logs\`, `docs\`, `.grok\skills\`, `assets\`, `VERSION`) |
+| Chair home (identity, queue, focus/ignore, traces) | `~\.jeeves`, else `C:\Users\Administrator\.jeeves`, else `<ai root>\jeeves\home-jeeves` (never `C:\Users\Default`) |
 | Digest home (`digest.json`, `registered-machines.json`, `chair-outbox.txt`, `webhook-queue`) | `BOB_DIGEST_HOME` = `~\.bobiverse` |
-| Ergo (IRC server, separate service `BobIrcd`) | `C:\ai\ergo` - NEVER edit `ircd.yaml`, never restart for non-Ergo work |
+| Ergo (IRC server, separate service `BobIrcd`) | `<ai root>\ergo` - NEVER edit `ircd.yaml`, never restart for non-Ergo work |
 | Webhook receiver | task `BobCallback` (SYSTEM) `python scripts\bobcallback.py --home <digest home> --bind 127.0.0.1 --port 7700` |
 | Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira` -> 127.0.0.1:7700 |
 | Ports | 6697 TLS (public), 6667 plaintext loopback, 7700 bobcallback loopback |
-| Logs | `C:\ai\jeeves\logs\stdout.log` / `stderr.log` (INFO/WARN/ERROR, no timestamps - use the chair `cmd-trace.log` for timed command replies) |
+| Logs | `<ai root>\jeeves\logs\stdout.log` / `stderr.log` (INFO/WARN/ERROR, no timestamps - use the chair `cmd-trace.log` for timed command replies) |
 | Chair-home files | `cmd-trace.log` (time/nick/command/reply), `webhook-health.json`, `resync-token-source.log`, `operators.txt`, `identity.json` (DPAPI) |
-| Config (`C:\ai\jeeves\config`) | `ergo.password`, `service.password`, `github.token` (optional), `op-accounts.txt`, chair oper cred (DPAPI), `autoupdate.disabled` |
+| Config (`<ai root>\jeeves\config`) | `ergo.password`, `service.password`, `github.token` (optional), `op-accounts.txt`, chair oper cred (DPAPI), `autoupdate.disabled` |
 
 Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (command registry/auth/help),
 `focus_ignore.py`, `gitclaim.py` (queue + `resync_from_github`), `chan_privs.py` (op/halfop grants + hard cap),
@@ -73,7 +73,7 @@ Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (com
 See `bobiverse-fleet-ops`. Jeeves specifics: the installer also registers task `BobCallback`, runs `Install-BobWebhooks.ps1`
 (IIS rewrite incl. public `/bob/v1/digest`), provisions the chair oper credential, and builds the single Start Menu folder
 `Bobiverse` (Restart ircJeeves, Services, Logs, Skill books, Agent guide, Jeeves command reference - all with the systray icon).
-Hotpatch = back up `C:\ai\jeeves`, copy changed `scripts\*`, `Restart-Service ircJeeves` ONLY.
+Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Service ircJeeves` ONLY.
 
 ## Cutover checklist (Ergo host)
 

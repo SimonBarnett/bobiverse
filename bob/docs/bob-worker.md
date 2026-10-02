@@ -1,6 +1,6 @@
 # bob-worker.exe - the tray Agent / Plan items (t762u - t772u)
 
-One compiled program, `C:\ai\bob\worker\bob-worker.exe` (`scripts/bob_worker.py`, built by `scripts/Build-BobWorker.ps1` with PyInstaller, 11 MB, built into the bob MSI by
+One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker.py`, built by `scripts/Build-BobWorker.ps1` with PyInstaller, 11 MB, built into the bob MSI by
 `Pack-BobiverseRelease.ps1`), starts ONE agent and - in agent mode - owns the IRC connection. Skills text for agents: `.grok/skills/bobiverse-bob-worker`, `-plan`, `-job-irc`, `-job-fr`, `-job-mrb`, `-job-uat`.
 
 ## Rules (all enforced in code and tests)
@@ -10,7 +10,7 @@ One compiled program, `C:\ai\bob\worker\bob-worker.exe` (`scripts/bob_worker.py`
 * **ONE window** (t771u): the exe's visible console IS the agent's window. The agent inherits that console (no `CREATE_NEW_CONSOLE`), IRC relay / `!bored` / health run as threads of the same exe. Ending the exe ends the agent (close handler + kill-on-close job object);
   the agent exiting ends the exe. The Grok key prompt (no tokens left) is inside the same console, input hidden.
 * **Agent selection is automatic** by tokens: Cursor high or low pool > 0 -> `agent.cmd`; else local Grok weekly > 0 -> `agent.exe`; else a key prompt (memory only). Readings: `tools/Get-BobAgentFuel.ps1`; unknown = not available.
-* **CWD** `C:\ai\bob\worker` (agent) / `C:\ai\bob\plan` (plan); both folders carry AGENTS.md/CLAUDE.md/GROK.md/.cursor rule + skills, every one starting with the CAST IRON harvest rule.
+* **CWD** `<ai root>\bob\worker` (agent) / `<ai root>\bob\plan` (plan); both folders carry AGENTS.md/CLAUDE.md/GROK.md/.cursor rule + skills, every one starting with the CAST IRON harvest rule.
 * **IRC** (agent mode): nick `<machine>-<pid>`, joins ONLY `#<machine>`, speaks only there, event-driven relay (blocking read thread injects directly into the console input), answers PING/CTCP/fleet `ping`.
   IRC lost -> kill ONLY the agent tree it started, exit 3, no reconnect. Hang (input injected, then no CPU/IO for 300 s) -> kill tree, NEW agent after 5/15/45 s backoff, max 3 per 30 min (then exit 5), every restart logged.
 * **`!bored`** (t770u): posted by the exe only, exactly like the agent watcher (`Watch-AgentHealth` FR #100): on ready, right after DONE, idle 120 s then every 180 s, never while an ACK is open (<45 min) or the agent is (re)starting; never after IRC loss; an agent-written `!bored` is refused.

@@ -1,6 +1,6 @@
 # Airc ops (console)
 
-Service **Airc**, tree `C:\ai\airc`, nick **`{MachineId}_console`**.
+Service **Airc**, tree `<ai root>\airc`, nick **`{MachineId}_console`**.
 Console home: `%USERPROFILE%\.airc` (often Administrator when NSSM is LocalSystem).
 
 ## Shop vs lobby
@@ -13,7 +13,7 @@ Console home: `%USERPROFILE%\.airc` (often Administrator when NSSM is LocalSyste
 
 | | bobiverse **Airc** | agentic_irc **AircConsole** |
 |--|--------------------|-----------------------------|
-| Root | `C:\ai\airc` | `C:\ai\airc-console` |
+| Root | `<ai root>\airc` | `<ai root>\airc-console` |
 | Service | `Airc` | `AircConsole` |
 | UpgradeCode | `…A1BC00A1C001` | `…A1BC00501E01` |
 
@@ -34,9 +34,9 @@ PRIVMSG win-mpre8vi4u6u_console :sc query ircJeeves
 
 ## Install / secrets
 
-- After public MSI: place `C:\ai\airc\config\ergo.password` (or `~\.grok\ergo\connect.password`).
+- After public MSI: place `<ai root>\airc\config\ergo.password` (or `~\.grok\ergo\connect.password`).
 - Re-run `Install-Airc.cmd -MachineId <id>` if NSSM still points at an old airc-console tree.
-- Self-update on start: `Sync-BobiverseFromRepo.ps1` (`git fetch` + `merge --ff-only origin/main` on `C:\ai\bobiverse` / `BOBIVERSE_REPO`, then robocopy `scripts`/`third_party`/`VERSION` into `C:\ai\airc`). Falls back to `Check-BobiverseUpdate.ps1` when no clone exists. Skip with `BOBIVERSE_NO_UPDATE=1`.
+- Self-update on start: `Sync-BobiverseFromRepo.ps1` (`git fetch` + `merge --ff-only origin/main` on `<ai root>\bobiverse` / `BOBIVERSE_REPO`, then robocopy `scripts`/`third_party`/`VERSION` into `<ai root>\airc`). Falls back to `Check-BobiverseUpdate.ps1` when no clone exists. Skip with `BOBIVERSE_NO_UPDATE=1`.
 
 ## Verify
 

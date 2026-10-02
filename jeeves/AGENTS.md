@@ -12,7 +12,7 @@
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-Product tree: `C:\ai\jeeves`. Services: **ircJeeves** (chair nick `Jeeves`), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
+Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves`), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
 
 ## What you are looking at
@@ -33,7 +33,7 @@ Docs in `docs\`:
 ## Hard rules (CAST IRON)
 
 - **Hotpatch safely**: back up the install tree first; copy only the changed files; restart ONLY this product's service;
-  never touch Ergo (`C:\ai\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
+  never touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
   commit secrets (`*.password`, `github.token`, `identity.json`, oper cred, NickServ GUIDs); PowerShell only on Windows
   (never wrap in `powershell -Command`). Full procedure: `bobiverse-fleet-ops`.
 - **Machine ids** are lowercase sanitized hostnames (`<machine>`): shop `#<machine>`, ear `Bob-<machine>`, console `<machine>_console`.
@@ -44,7 +44,7 @@ Docs in `docs\`:
 
 ```powershell
 Get-Service ircJeeves,BobIrcd
-Get-Content C:\ai\jeeves\logs\stdout.log -Tail 80
+Get-Content <ai root>\jeeves\logs\stdout.log -Tail 80
 Get-Content $env:USERPROFILE\.jeeves\cmd-trace.log -Tail 40      # timed command replies (chair home may be Administrator's)
 Complete-BobiverseServiceLogon.ps1 -Product jeeves                 # when service.password is present
 Restart-Service ircJeeves                                          # ONLY this service

@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob-worker
 description: >
-  How to start and operate a bob WORKER agent: tray Agent click, bob-worker.exe command line, automatic cursor->grok->key-prompt selection, CWD C:\ai\bob\worker, always-new agent rule, IRC relay, ping/pong, IRC-loss exit, hang restart, logs, troubleshooting. Use when starting, debugging or changing the worker.
+  How to start and operate a bob WORKER agent: tray Agent click, bob-worker.exe command line, automatic cursor->grok->key-prompt selection, CWD <ai root>\bob\worker, always-new agent rule, IRC relay, ping/pong, IRC-loss exit, hang restart, logs, troubleshooting. Use when starting, debugging or changing the worker.
 ---
 
 # bobiverse bob - worker agent (bob-worker.exe)
@@ -18,8 +18,8 @@ description: >
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-Everything about starting and running a **worker agent** from the bob install (`C:\ai\bob`). The worker is one compiled program,
-`C:\ai\bob\worker\bob-worker.exe`, that starts ONE agent, keeps ITS OWN IRC connection and feeds IRC messages into that agent.
+Everything about starting and running a **worker agent** from the bob install (`<ai root>\bob`). The worker is one compiled program,
+`<ai root>\bob\worker\bob-worker.exe`, that starts ONE agent, keeps ITS OWN IRC connection and feeds IRC messages into that agent.
 
 ## Start it (three ways)
 
@@ -27,9 +27,9 @@ Everything about starting and running a **worker agent** from the bob install (`
    worker agent in ONE window (below). The tray copies `bob-worker.exe` to `%LOCALAPPDATA%\Bobiverse\worker\bin\bob-worker-<hash>.exe` and runs that copy (visible console), so
    an MSI upgrade/uninstall never finds the installed exe locked and never disturbs a running seat.
 2. **Command line** (PowerShell, any time; same thing the tray runs):
-   `& C:\ai\bob\worker\bob-worker.exe --mode agent --install-root C:\ai\bob --machine-id <machine>`
+   `& <ai root>\bob\worker\bob-worker.exe --mode agent --install-root <ai root>\bob --machine-id <machine>`
    (`--machine-id` defaults to `BOB_MACHINE_ID`, then the computer name; add `--echo` to also print the log; `--no-tls` is for tests only).
-3. **Selection preview, starts nothing**: `& C:\ai\bob\worker\bob-worker.exe --mode agent --dry-run` prints JSON
+3. **Selection preview, starts nothing**: `& <ai root>\bob\worker\bob-worker.exe --mode agent --dry-run` prints JSON
    (`decision`, `reason`, the fuel readings, the cwd).
 
 `--mode plan` is the plan variant (see skill `bobiverse-bob-plan`).
@@ -57,12 +57,12 @@ click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no
 3. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
    logged. Cancel = nothing starts (exit 4).
 
-An unknown reading is "not available" (falls through), never "available". Readings come from `C:\ai\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
+An unknown reading is "not available" (falls through), never "available". Readings come from `<ai root>\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
 `Get-BobCursorAgentWeeklyRemaining` via `Get-CursorAgentUsage.py`, `Get-BobWeeklyRemaining`, `Get-BobGrokAvailability`; no digest GET).
 
 ## What the worker agent gets
 
-* **CWD `C:\ai\bob\worker`** and a first instruction to read the skills in `C:\ai\bob\worker\.grok\skills` and `C:\ai\bob\worker\AGENTS.md`
+* **CWD `<ai root>\bob\worker`** and a first instruction to read the skills in `<ai root>\bob\worker\.grok\skills` and `<ai root>\bob\worker\AGENTS.md`
   (`bobiverse-worker-seat`, `bobiverse-bob-worker`, `harvest`; the CAST IRON harvest rule is at the top of each).
 * Grok: `agent.exe --no-auto-update --no-alt-screen --cwd <worker> -s <new-uuid> --rules <text> <prompt>`.
   Cursor: a generated launcher reads the prompt from a file (IRC text never lands on a command line) and runs `agent.cmd --trust --force --workspace <worker> -- $prompt`.
@@ -121,7 +121,7 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 | Symptom | Cause / fix |
 |---|---|
 | Click does nothing | `Open log` -> `worker: exe missing` = bob MSI older than this feature; reinstall. `--dry-run` shows what would start. |
-| Key prompt appears although you have tokens | the reading is unknown/stale: run `tools\Get-BobAgentFuel.ps1 -InstallRoot C:\ai\bob` and read the JSON (`null` = unknown). |
+| Key prompt appears although you have tokens | the reading is unknown/stale: run `tools\Get-BobAgentFuel.ps1 -InstallRoot <ai root>\bob` and read the JSON (`null` = unknown). |
 | Exit 2, no agent | Ergo PASS missing/wrong or `irc.ntsa.uk:6697` unreachable; check `worker.log` (`IRC refused (464)` = bad PASS, `433` = nick clash - start again). |
 | Exit 3 soon after start | IRC dropped; this is by design. Check Ergo/network; start a new seat. |
 | Two windows appear for one click | should never happen: report it (intake). The agent must be a child of the exe's console; look for `CREATE_NEW_CONSOLE` in `worker.log` / a second `bob-worker.exe`. |

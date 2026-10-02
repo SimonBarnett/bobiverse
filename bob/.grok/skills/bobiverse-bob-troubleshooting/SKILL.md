@@ -31,7 +31,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Tray shows twice / wrong icon | Old installers left top-level `Bob Systray` links; the new installer keeps ONE Start Menu folder `Bobiverse` and deletes the rest. |
 | Tray dies when the agent shell exits | It was started with `Start-Process`; use `Start-BobTray.ps1` (WMI create). |
 | Seat-wrapper kill removed a diagnosing shell | Never `match Watch-BobTray` broadly; the filter is `-File ...Watch-BobTray.ps1`. |
-| Service shows old code after MSI | NSSM path/params stale - re-run `Install-Bob.ps1`; check `C:\ai\bob\VERSION`. |
+| Service shows old code after MSI | NSSM path/params stale - re-run `Install-Bob.ps1`; check `<ai root>\bob\VERSION`. |
 | Digest POST fails | Machine not on the roster Jeeves publishes, or `reportUrl` unreachable. `Assert-BobDigestWebhookLocal.ps1`; `GET https://irc.ntsa.uk/bob/v1/report` should be 200. |
 
 Finish every session with the harvest step.

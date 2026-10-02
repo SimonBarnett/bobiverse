@@ -67,7 +67,7 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/jira" \
 
 ```powershell
 # TipForm digest path smoke (bob install):
-.\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot C:\ai\bob
+.\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot <ai root>\bob
 ```
 
 ## Offline / resume

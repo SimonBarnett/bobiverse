@@ -8,7 +8,7 @@ Authenticated PRIVMSG to `{machine}_console` pipes each line into a **cmd.exe** 
 
 ```text
 PRIVMSG marchhare_console :sc query Airc
-PRIVMSG marchhare_console :cmd /c type C:\ai\airc\VERSION
+PRIVMSG marchhare_console :cmd /c type <ai root>\airc\VERSION
 ```
 
 ## Target verbs (FR)
