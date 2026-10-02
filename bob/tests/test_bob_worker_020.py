@@ -700,3 +700,50 @@ def test_agent_exit_ends_the_exe_and_exe_end_ends_the_agent(tmp_path):
     rig2.sup.start_agent()
     rig2.sup.shutdown("window-closed", bw.EXIT_OK)           # exe ends -> its own agent tree is killed
     assert rig2.killed == [rig2.procs[0].pid]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="needs Windows")
+def test_sample_tree_does_not_spew_ctypes_tracebacks_into_the_agent_console():
+    """t787u: sample_tree's EnumWindows callback raised 'OverflowError: int too long to convert' (no argtypes for 64-bit
+    HWND/HANDLE) and the traceback was printed into the worker's console on every health sample."""
+    import subprocess
+
+    code = ("import sys, os; sys.path.insert(0, r'%s'); import bob_worker as bw; "
+            "s = bw.sample_tree(os.getpid()); print('ALIVE', s.alive)") % str(Path(bw.__file__).parent)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert "ALIVE True" in r.stdout, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr and "OverflowError" not in r.stderr, r.stderr
+    src = Path(bw.__file__).read_text(encoding="utf-8")
+    for needle in ("u32.GetWindowThreadProcessId.argtypes", "u32.IsWindowVisible.argtypes", "u32.IsHungAppWindow.argtypes",
+                   "k32.OpenProcess.restype"):
+        assert needle in src
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="needs Windows")
+def test_worker_never_writes_errors_to_the_shared_console(tmp_path):
+    """t787u: stderr, uncaught/thread exceptions and ctypes-callback errors go to worker.log, never to the console the agent TUI owns."""
+    import subprocess
+
+    logf = tmp_path / "worker.log"
+    code = (
+        "import sys, ctypes, threading; sys.path.insert(0, r'%s'); import bob_worker as bw\n"
+        "from pathlib import Path\n"
+        "log = bw.Log(Path(r'%s'))\n"
+        "bw.silence_console(log)\n"
+        "sys.stderr.write('Traceback (most recent call last): boom\\n')\n"
+        "cb = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)(lambda x: 1 // 0)\n"
+        "cb(1)\n"
+        "t = threading.Thread(target=lambda: 1 // 0); t.start(); t.join()\n"
+        "u = ctypes.WinDLL('user32'); u.IsWindowVisible(2**40)\n"  # ctypes.ArgumentError path: overflow on a 64-bit value
+        "raise RuntimeError('uncaught')\n"
+    ) % (str(Path(bw.__file__).parent), str(logf))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert r.stdout == "" and r.stderr == "", (r.stdout, r.stderr)
+    txt = logf.read_text(encoding="utf-8")
+    assert "stderr: Traceback" in txt and "unraisable" in txt and "thread error" in txt and "error: " in txt  # the ArgumentError ends the script: logged, not printed
+
+
+def test_sample_tree_callback_cannot_raise():
+    src = Path(bw.__file__).read_text(encoding="utf-8")
+    body = src.split("def cb(hwnd, _l):", 1)[1].split("return True", 1)[0]
+    assert "try:" in body and "except Exception" in body

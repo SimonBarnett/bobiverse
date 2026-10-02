@@ -123,6 +123,42 @@ class Log:
                     pass
 
 
+class _LogStream:
+    """t787u: stands in for sys.stderr so NOTHING reaches the shared console (the agent's TUI lives there) except what the exe
+    deliberately prints. Everything goes to the worker.log file instead."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def write(self, s):
+        t = str(s).strip()
+        if t:
+            self.log("stderr: " + t[:300])
+        return len(str(s))
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+
+def silence_console(log) -> None:
+    """Route every error path (stderr, uncaught exceptions, ctypes-callback 'Exception ignored', thread exceptions) to the log
+    file, each distinct message once. Deliberate console output (the key prompt, --dry-run JSON, --echo) uses sys.stdout and is untouched."""
+    seen: set = set()
+
+    def once(msg: str) -> None:
+        if msg not in seen and len(seen) < 50:
+            seen.add(msg)
+            log(msg)
+
+    sys.stderr = _LogStream(log)
+    sys.unraisablehook = lambda u: once("unraisable: %s: %s (%s)" % (getattr(u.exc_type, "__name__", "?"), str(u.exc_value)[:160], str(u.err_msg or "")[:80]))
+    threading.excepthook = lambda a: once("thread error: %s: %s" % (getattr(a.exc_type, "__name__", "?"), str(a.exc_value)[:160]))
+    sys.excepthook = lambda t, v, tb: once("error: %s: %s" % (getattr(t, "__name__", "?"), str(v)[:160]))
+
+
 _SECRET_RX = re.compile(r"(?i)(xai_api_key|cursor_api_key|password|passwd|secret|token|authenticate)\s*[=:]\s*\S+")
 
 
@@ -1077,7 +1113,22 @@ def sample_tree(root_pid: int) -> Sample:  # pragma: no cover - needs a live Win
         class IOC(ctypes.Structure):
             _fields_ = [(n, ctypes.c_ulonglong) for n in ("ro", "wo", "oo", "rb", "wb", "ob")]
 
+        # t787u: without argtypes ctypes passes Python ints as 32-bit C ints: a 64-bit HWND/HANDLE raised
+        # "OverflowError: int too long to convert" inside the EnumWindows callback and printed a traceback into the agent's
+        # console on EVERY health sample (and hung-window detection never worked).
+        HV = ctypes.c_void_p
         k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        k32.Process32FirstW.argtypes = [HV, HV]
+        k32.Process32NextW.argtypes = [HV, HV]
+        k32.CloseHandle.argtypes = [HV]
+        k32.OpenProcess.restype = HV
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.GetProcessIoCounters.argtypes = [HV, HV]
+        k32.GetProcessTimes.argtypes = [HV, HV, HV, HV, HV]
+        u32.GetWindowThreadProcessId.argtypes = [HV, HV]
+        u32.IsWindowVisible.argtypes = [HV]
+        u32.IsHungAppWindow.argtypes = [HV]
         snap = k32.CreateToolhelp32Snapshot(2, 0)
         kids: dict = {}
         pe = PE()
@@ -1111,12 +1162,16 @@ def sample_tree(root_pid: int) -> Sample:  # pragma: no cover - needs a live Win
         EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         def cb(hwnd, _l):
-            pid = wintypes.DWORD(0)
-            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value in tree and u32.IsWindowVisible(hwnd):
-                hung.append(bool(u32.IsHungAppWindow(hwnd)))
+            try:  # t787u: a callback must never raise (ctypes prints it into the shared console)
+                pid = wintypes.DWORD(0)
+                u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value in tree and u32.IsWindowVisible(hwnd):
+                    hung.append(bool(u32.IsHungAppWindow(hwnd)))
+            except Exception:
+                pass
             return True
 
+        u32.EnumWindows.argtypes = [EnumProc, wintypes.LPARAM]
         u32.EnumWindows(EnumProc(cb), 0)
         return Sample(alive=alive, responding=(not all(hung)) if hung else None, activity=int(total))
     except Exception:
@@ -1666,6 +1721,8 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps({"decision": dec.kind, "reason": dec.reason, "cursor_cmd": bool(cc), "grok_exe": bool(ge),
                           "fuel": fuel.__dict__, "cwd": str(Path(args.install_root) / ("plan" if args.mode == "plan" else "worker"))}))
         return EXIT_OK
+    if not args.echo:
+        silence_console(log)  # t787u: the console belongs to the agent TUI; errors go to the log file only
     try:
         ensure_console("Bob %s - starting" % args.mode)  # the ONE window for this agent
         return run_plan(args, log) if args.mode == "plan" else run_agent(args, log)
