@@ -267,6 +267,7 @@ def test_tray_engine_contract_between_exe_and_powershell():
         assert k in cs
     assert "tray-cmd.txt" in helper and "BOB_TRAY_EXE_PID" in helper and "tray-env.json" in helper
     assert "Test-BobTrayEngineMode" in ps and "Invoke-BobTrayExeCommands" in ps
+    assert "[Environment]::Exit(0)" in ps.split("-ParentGone", 1)[1][:260]                                       # a dead exe must NOT run the exit path (IRC logout / Stop-BobiverseMoot)
     assert "else { $notify.Visible = $true }" in ps                                                          # engine mode: icon is the exe's
     assert "Get-BobSystrayTrayExe" in fleet and "bob-tray.exe" in fleet
     assert "ircBob" in fleet                                                                                 # restart-on-start unchanged

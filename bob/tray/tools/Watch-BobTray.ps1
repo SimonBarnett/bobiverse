@@ -2982,7 +2982,7 @@ $startWorkerTimer.Add_Tick({
             if (Test-BobTrayEngineMode) {
                 [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
                         -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
-                        -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving'; $ctx.ExitThread() })
+                        -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'; [Environment]::Exit(0) })
             }
         }
         catch [System.Management.Automation.PipelineStoppedException] { return }
