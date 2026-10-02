@@ -663,3 +663,43 @@ function Install-BobiverseStartMenu {
     }
     return $specs
 }
+
+# ---------------------------------------------------------------------------------------------------------------
+# Agent-start layer (t759u): AGENTS.md / CLAUDE.md / GROK.md / .cursor/rules/bobiverse-<p>.mdc + the product skill book
+# live in the install root, so an agent started there has full service information. The MSI lays them; script installs
+# (repo -> install root) and the self-updater use these helpers. Files only - never touches secrets or services.
+# ---------------------------------------------------------------------------------------------------------------
+function Get-BobiverseSkillNames {
+    param([Parameter(Mandatory)][string]$SkillsRoot, [Parameter(Mandatory)][string]$Product)
+    if (-not (Test-Path -LiteralPath $SkillsRoot)) { return @() }
+    return @(Get-ChildItem -LiteralPath $SkillsRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "bobiverse-$Product" -or $_.Name -like "bobiverse-$Product-*" -or
+                $_.Name -in @('bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills') } |
+            ForEach-Object { $_.Name })
+}
+
+function Install-BobiverseAgentLayer {
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$Product
+    )
+    $same = $false
+    try { $same = ([IO.Path]::GetFullPath($RepoRoot).TrimEnd('\') -ieq [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')) } catch { }
+    if ($same) { Write-Host "INFO agent layer already in $InstallRoot (laid by the MSI)"; return }
+    $n = 0
+    foreach ($f in @('AGENTS.md', 'CLAUDE.md', 'GROK.md', ".cursor\rules\bobiverse-$Product.mdc")) {
+        $src = Join-Path $RepoRoot $f
+        if (-not (Test-Path -LiteralPath $src)) { continue }
+        $dst = Join-Path $InstallRoot $f
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+        $n++
+    }
+    # script installs stage from the repo: AGENTS.<product>.md is the source of AGENTS.md / CLAUDE.md / GROK.md
+    $agentsSrc = Join-Path $RepoRoot "AGENTS.$Product.md"
+    if ((-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'AGENTS.md'))) -and (Test-Path -LiteralPath $agentsSrc)) {
+        foreach ($d in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) { Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $InstallRoot $d) -Force; $n++ }
+    }
+    Write-Host "INFO agent layer files refreshed in ${InstallRoot}: $n"
+}

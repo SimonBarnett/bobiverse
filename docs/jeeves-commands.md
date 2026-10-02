@@ -17,7 +17,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `!list [all\|<repo>\|fr\|mrb\|uat]` | `N unaccepted (showing M)` + one job line each, `+K more; !list all` | focus order, ignore list applied; `(list sent Ns ago)` when repeated within the list rate window |
 | `!filter [..]` | same as `!list <filter>` | alias (not in gh-Jeeves @8d76d9a; added because ops use the word) |
 | `!status` | `Jeeves status: version=.. uptime_s=..`, `queue: unaccepted=U accepted=A`, `workers: busy=..`, `roster: machines=N (..)`, `last_resync: roster Ns ago` | read only |
-| `!resync` | `resync: roster refresh requested; queue unaccepted=U accepted=A purged_ignored=P (webhook model, no GitHub token)` | forces the ChanServ roster re-read now and purges ignored repos from the queue |
+| `!resync` | `resync: roster refresh requested; GitHub FR/MRB re-sync queued; queue unaccepted=U accepted=A purged_ignored=P` | forces the ChanServ roster re-read now, queues the authenticated GitHub FR/MRB merge-resync (Jeeves token) and purges ignored repos |
 | `!sweep [#chan]` | `sweep: #chan re-planned; N grant/revoke sent` | re-runs the privilege plan (+h/+o) for the channel (asks NAMES first); subject to the hard cap below |
 | `!ignore {repo}` / `!unignore {repo}` / `!ignored` | `ignore: now ignoring X (purged N queued)` / `unignore: resumed X (new events only)` / `ignored: (none)` or `ignored (N):` + `  repo` | bare: `ignore: usage !ignore {repo}` |
 | `!focus [strict on\|off]\|[n\|high\|medium\|low] {repo\|owner/repo#N}` | `focus: owner/repo priority=1 (high)`, `focus: item o/r#5 rank=2`, `focus strict: on`; bare lists strict flag, items, repos | reading (`!focus`, `!focus strict`) is open to anyone |
@@ -60,7 +60,7 @@ Differences from gh-Jeeves @8d76d9a, deliberate:
 * the owner is recognised by **account** (any nick), not by the nick `simon` / `simon-*`;
 * `!recycle` previously had no authorization check in the bobiverse chair at all; it now requires owner or ear;
   bare `!recycle` means the fleet (gh-Jeeves FR #197/#211) instead of a refusal; `dry-run` is new;
-* `!status` / `!resync` describe the webhook model (no GitHub queue rebuild);
+* `!status` also shows `github_resync:` and `webhooks:` (see Chair background jobs); `!resync` merges open FR/MRB from GitHub (never wipes accepted jobs);
 * `!focus medium` (a bare priority word) is a usage error, gh-Jeeves focused a repo called "medium".
 
 ## Privilege grants (`+h` / `+o`) - hard cap
@@ -73,3 +73,12 @@ If a mode we granted is removed by someone else (ChanServ AMODE / founder rule /
 `WARN ... -h nick in #chan was removed by <actor> (not Jeeves)` once per 10 minutes - the signature of a fight.
 `!sweep` clears retry back-off but not the cap. The `simon unverified in #chan: WHOIS to learn account` line is logged once
 per 30 minutes per nick (with a count of suppressed repeats); the WHOIS itself keeps its cadence.
+
+## Chair background jobs (inside `ircJeeves`)
+
+| Job | Interval | What it does |
+|---|---|---|
+| webhook health probe | 30 min | `GET /bob/v1/report`, `/bob/v1/jira`, `/bob/v1/intake/jeeves-health-probe` and a synthetic `POST /bob/v1/git` ping (zen `jeeves-health-probe`, answered 204, no queue entry) against `http://127.0.0.1:7700` and `https://irc.ntsa.uk`. One retry before a target counts as down. State in `webhook-health.json`; announces to `#bobiverse` only on an up/down transition. |
+| GitHub FR/MRB merge-resync | 15 min | Authenticated (existing Jeeves token, source logged once per process in `resync-token-source.log`, value never logged). Merges open FR/MRB issues into the queue; keeps accepted jobs, other task kinds, offered rows, failed and ignored repos; drops closed FR/MRB rows. Repos: `JEEVES_RESYNC_REPOS` or `resync-repos.txt` in the chair home, else queued repos plus the token owner's repos. No token = run skipped, queue untouched. |
+
+`!resync` triggers the roster refresh and the GitHub resync immediately; `!status` reports both.

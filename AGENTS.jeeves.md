@@ -1,34 +1,57 @@
-# AGENTS — jeeves (bobiverse)
+# AGENTS - jeeves (bobiverse)
 
-Product tree: `C:\ai\jeeves`. Services: **ircJeeves** (chair nick `Jeeves`), **BobIrcd** (Ergo).
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-## Read first
+Product tree: `C:\ai\jeeves`. Services: **ircJeeves** (chair nick `Jeeves`), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
+`.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
 
-- `.grok/skills/bobiverse-jeeves/SKILL.md` — install, DPAPI, cutover, recycle
-- `.grok/skills/harvest/SKILL.md` — promote lessons back to SimonBarnett/bobiverse
-- `docs/post-install.md` — ObjectName password, Ergo PASS, verify checklist
-- `docs/jeeves-admin.md` — Ergo host admin, ChanServ, !register
-- `docs/webhooks.md` — `/bob/v1/report|git|intake|jira` curls
+## What you are looking at
 
-## Boundaries (CAST IRON)
+Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks + 15-min authenticated GitHub resync), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
 
-- This MSI is **jeeves only**. Do not expect bob seat, TipForm, Watch-AgentHealth, or airc console here.
-- Legacy **BobJeeves** must be removed from SCM; it fights for nick `Jeeves`.
-- ObjectName must be the fleet user (DPAPI). LocalSystem + Admin-sealed `identity.json` crash-loops.
+## Read first (in this order)
+
+- `.grok/skills/bobiverse-jeeves/SKILL.md` - architecture, paths, ports, config, logs, background jobs, install/DPAPI/cutover
+- `.grok/skills/bobiverse-jeeves-commands/SKILL.md` - every command, authorization, how to test as the bob ear
+- `.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md` - failure playbook
+- `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
+- `.grok/skills/harvest/SKILL.md` - harvest + intake
+
+Docs in `docs\`:
+- `jeeves-commands.md` (command reference + authorization matrix), `jeeves-admin.md` (Ergo host admin, ChanServ, !register), `webhooks.md` (curls), `post-install.md`, `channel-privileges-and-workers.md`
+
+## Hard rules (CAST IRON)
+
+- **Hotpatch safely**: back up the install tree first; copy only the changed files; restart ONLY this product's service;
+  never touch Ergo (`C:\ai\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
+  commit secrets (`*.password`, `github.token`, `identity.json`, oper cred, NickServ GUIDs); PowerShell only on Windows
+  (never wrap in `powershell -Command`). Full procedure: `bobiverse-fleet-ops`.
+- **Machine ids** are lowercase sanitized hostnames (`<machine>`): shop `#<machine>`, ear `Bob-<machine>`, console `<machine>_console`.
+- **Do not** rebuild, release, bump `VERSION` or merge unless the owner says so; do not stamp UAT; do not invent an Ergo PASS.
+- **Always finish with the harvest step** (rule above) - file every issue/FR/bug and every learned playbook.
 
 ## Common ops
 
 ```powershell
-Get-Service ircJeeves,BobJeeves,BobIrcd
-Get-Content C:\ai\jeeves\logs\stderr.log -Tail 80
-Complete-BobiverseServiceLogon.ps1 -Product jeeves   # when service.password present
-Restart-Service ircJeeves
+Get-Service ircJeeves,BobIrcd
+Get-Content C:\ai\jeeves\logs\stdout.log -Tail 80
+Get-Content $env:USERPROFILE\.jeeves\cmd-trace.log -Tail 40      # timed command replies (chair home may be Administrator's)
+Complete-BobiverseServiceLogon.ps1 -Product jeeves                 # when service.password is present
+Restart-Service ircJeeves                                          # ONLY this service
+.\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...'   # end of every session
 ```
-
-Chair home: `~\.jeeves` (or Admin / `C:\ai\jeeves\home-jeeves`). Digest: `BOB_DIGEST_HOME=~\.bobiverse`.
 
 ## Do not
 
-- Invent Ergo PASS or stamp UAT
-- Ship or edit bob/airc product skills in this tree
-- Bump VERSION / pack MSI unless the operator asked
+- Invent Ergo PASS or stamp UAT; ship or edit bob/airc product skills in this tree
+- Run legacy `BobJeeves` with `ircJeeves`; bump VERSION / pack an MSI unless the operator asked

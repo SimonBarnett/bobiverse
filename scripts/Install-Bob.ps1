@@ -73,6 +73,7 @@ if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'bob'
 
 # TipForm tray payload (tools/src/assets/PIN) when installing from repo (MSI heat already staged)
 $trayVendor = Join-Path $repoRoot 'third_party\bob-tray'
@@ -128,7 +129,7 @@ if (Test-Path $skillsSrc) {
     if (-not $SkipCopy) {
         Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
     }
-    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-bob', 'harvest', 'harvest-agent-skills')
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames (Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'bob')
 }
 
 Install-BobiversePythonDeps -Python $Python

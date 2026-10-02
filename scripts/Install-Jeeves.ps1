@@ -99,6 +99,7 @@ if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'jeeves'
 $skillsSrc = Join-Path $repoRoot '.grok\skills'
 if (Test-Path $skillsSrc) {
     $skillsDest = Join-Path $InstallRoot '.grok\skills'
@@ -106,7 +107,7 @@ if (Test-Path $skillsSrc) {
     if (-not $SkipCopy) {
         Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
     }
-    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-jeeves', 'harvest', 'harvest-agent-skills')
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames (Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'jeeves')
 }
 Install-BobiversePythonDeps -Python $Python
 

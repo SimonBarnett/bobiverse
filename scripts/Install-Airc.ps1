@@ -34,12 +34,13 @@ if (Test-Path -LiteralPath $bootstrap) {
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'airc'
 $skillsSrc = Join-Path $repoRoot '.grok\skills'
 if (Test-Path $skillsSrc) {
     $skillsDest = Join-Path $InstallRoot '.grok\skills'
     New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
     Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
-    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames @('bobiverse-airc', 'harvest', 'harvest-agent-skills')
+    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames (Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'airc')
 }
 
 # Package ergo.password into staged config if available on packer

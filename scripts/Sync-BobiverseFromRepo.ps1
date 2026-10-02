@@ -146,13 +146,33 @@ $skillsSrc = Join-Path $clone '.grok\skills'
 $skillsDst = Join-Path $InstallRoot '.grok\skills'
 if (Test-Path -LiteralPath $skillsSrc) {
     New-Item -ItemType Directory -Force -Path $skillsDst | Out-Null
-    foreach ($name in @('harvest', "bobiverse-$Product")) {
-        if (-not $Product -and $name -like 'bobiverse-*') { continue }
+    $bookNames = @(Get-ChildItem -LiteralPath $skillsSrc -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('harvest', 'harvest-agent-skills', 'bobiverse-fleet-ops') -or
+                ($Product -and ($_.Name -eq "bobiverse-$Product" -or $_.Name -like "bobiverse-$Product-*")) } |
+            ForEach-Object { $_.Name })
+    foreach ($name in $bookNames) {
         $s = Join-Path $skillsSrc $name
         if (Test-Path -LiteralPath $s) {
             $t = Join-Path $skillsDst $name
             & robocopy.exe $s $t /E /XO /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
         }
+    }
+}
+
+# Agent-start layer for this product (AGENTS.md / CLAUDE.md / GROK.md / .cursor rule) from AGENTS.<product>.md.
+if ($Product) {
+    $agentsSrc = Join-Path $clone "AGENTS.$Product.md"
+    if (Test-Path -LiteralPath $agentsSrc) {
+        foreach ($d in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) { Copy-Item -Force -LiteralPath $agentsSrc -Destination (Join-Path $InstallRoot $d) }
+        $ruleDir = Join-Path $InstallRoot '.cursor\rules'
+        New-Item -ItemType Directory -Force -Path $ruleDir | Out-Null
+        $mdc = "---`ndescription: Bobiverse $Product service briefing`nalwaysApply: true`n---`n`n" + [IO.File]::ReadAllText($agentsSrc)
+        [IO.File]::WriteAllText((Join-Path $ruleDir "bobiverse-$Product.mdc"), $mdc, [Text.UTF8Encoding]::new($false))
+        Write-Host "INFO sync-agent-layer AGENTS.md CLAUDE.md GROK.md .cursor/rules/bobiverse-$Product.mdc"
+    }
+    $docsSrc = Join-Path $clone 'docs'
+    if (Test-Path -LiteralPath $docsSrc) {
+        & robocopy.exe $docsSrc (Join-Path $InstallRoot 'docs') '*.md' /XO /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
     }
 }
 

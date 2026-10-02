@@ -1,33 +1,56 @@
-# AGENTS — airc (bobiverse)
+# AGENTS - airc (bobiverse)
 
-Product tree: `C:\ai\airc`. Service: **Airc** (nick `{MachineId}_console`).
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-## Read first
+Product tree: `C:\ai\airc`. Services: **Airc** (console nick `<machine>_console`). This file is also shipped as `CLAUDE.md`, `GROK.md` and
+`.cursor/rules/bobiverse-airc.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
 
-- `.grok/skills/bobiverse-airc/SKILL.md` — lobby/shop, AircConsole leftover, remote shell
-- `.grok/skills/harvest/SKILL.md` — promote lessons back to SimonBarnett/bobiverse
-- `docs/post-install.md` — Ergo PASS, bootstrap, verify
-- `docs/airc-ops.md` — shop vs lobby, PRIVMSG shell, UpgradeCode notes
+## What you are looking at
 
-## Boundaries (CAST IRON)
+Airc is the remote console: authorized fleet ears PRIVMSG short cmd.exe commands to `<machine>_console` and read the reply. It joins the shop `#<machine>` when registered, else the domain/workgroup lobby. Distinct from the legacy agentic_irc `AircConsole`.
 
-- This MSI is **airc only**. Distinct UpgradeCode from agentic_irc **AircConsole**.
-- Prefer one console per box; Install-Airc removes leftover `AircConsole` from SCM.
-- Roots: `C:\ai\airc` / `Airc` vs `C:\ai\airc-console` / `AircConsole`.
+## Read first (in this order)
+
+- `.grok/skills/bobiverse-airc/SKILL.md` - architecture, paths, shop vs lobby, install/hotpatch
+- `.grok/skills/bobiverse-airc-commands/SKILL.md` - PRIVMSG remote shell, allowlist, safe diagnostics
+- `.grok/skills/bobiverse-airc-troubleshooting/SKILL.md` - NickServ GUID/904, Default-profile home, NSSM
+- `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
+- `.grok/skills/harvest/SKILL.md` - harvest + intake
+
+Docs in `docs\`:
+- `airc-ops.md` (shop vs lobby, PRIVMSG shell, UpgradeCode), `airc-remote-control.md` (protocol sketch), `post-install.md`
+
+## Hard rules (CAST IRON)
+
+- **Hotpatch safely**: back up the install tree first; copy only the changed files; restart ONLY this product's service;
+  never touch Ergo (`C:\ai\ergo`, `ircd.yaml`) or `BobIrcd`; never kill or disturb seats/agents/tray; never print or
+  commit secrets (`*.password`, `github.token`, `identity.json`, oper cred, NickServ GUIDs); PowerShell only on Windows
+  (never wrap in `powershell -Command`). Full procedure: `bobiverse-fleet-ops`.
+- **Machine ids** are lowercase sanitized hostnames (`<machine>`): shop `#<machine>`, ear `Bob-<machine>`, console `<machine>_console`.
+- **Do not** rebuild, release, bump `VERSION` or merge unless the owner says so; do not stamp UAT; do not invent an Ergo PASS.
+- **Always finish with the harvest step** (rule above) - file every issue/FR/bug and every learned playbook.
 
 ## Common ops
 
 ```powershell
 Get-Service Airc,AircConsole
-Get-Content $env:USERPROFILE\.airc\*.log -Tail 40 -ErrorAction SilentlyContinue
-# re-bind after MSI if NSSM still points at old tree:
-.\scripts\Install-Airc.cmd -MachineId <id>
+Get-Content C:\ai\airc\logs\*.log -Tail 40
+.\scripts\Install-Airc.cmd -MachineId <id>   # re-bind NSSM after an MSI if it points at an old tree
+Restart-Service Airc                          # ONLY this service
+.\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...'   # end of every session
 ```
-
-JOIN `#{MachineId}` when ChanServ-registered; else domain/workgroup lobby.
 
 ## Do not
 
-- Run Airc and AircConsole both as live consoles on the same machine
-- Invent Ergo PASS or stamp UAT
-- Kill broad `powershell.exe` when diagnosing — can take down Airc’s host process
+- Run Airc and AircConsole as live consoles together; invent an Ergo PASS or stamp UAT
+- Kill broad `powershell.exe` when diagnosing - it can take down Airc's host process

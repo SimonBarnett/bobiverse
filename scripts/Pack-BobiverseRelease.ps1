@@ -66,7 +66,15 @@ function Stage-Product([string]$Name) {
     $agentsSrc = Join-Path $RepoRoot ("AGENTS.$Name.md")
     if (Test-Path -LiteralPath $agentsSrc) {
         Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $stage 'AGENTS.md') -Force
-        Write-Host "INFO $Name staged AGENTS.md from AGENTS.$Name.md"
+        # Agent-start layer: the same briefing under every agent's well-known name, so Grok / Claude / Cursor started in
+        # the install dir all begin with FULL service information (and the CAST IRON harvest rule).
+        Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $stage 'CLAUDE.md') -Force
+        Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $stage 'GROK.md') -Force
+        $ruleDir = Join-Path $stage '.cursor\rules'
+        New-Item -ItemType Directory -Force -Path $ruleDir | Out-Null
+        $mdc = "---`ndescription: Bobiverse $Name service briefing (architecture, ops, hotpatch rules, CAST IRON harvest rule)`nalwaysApply: true`n---`n`n" + [IO.File]::ReadAllText($agentsSrc)
+        [IO.File]::WriteAllText((Join-Path $ruleDir "bobiverse-$Name.mdc"), $mdc, [Text.UTF8Encoding]::new($false))
+        Write-Host "INFO $Name staged AGENTS.md CLAUDE.md GROK.md .cursor/rules/bobiverse-$Name.mdc from AGENTS.$Name.md"
     } else {
         Write-Host "WARN $Name missing AGENTS.$Name.md (stage has no AGENTS.md)"
     }
@@ -76,9 +84,9 @@ function Stage-Product([string]$Name) {
     $docsDest = Join-Path $stage 'docs'
     $sharedDocs = @('post-install.md', 'skill-harvest-log.md', 'vision.md')
     $productDocsMap = @{
-        'jeeves' = @('jeeves-admin.md', 'webhooks.md', 'jira-webhook-customer-guide.md')
+        'jeeves' = @('jeeves-admin.md', 'jeeves-commands.md', 'channel-privileges-and-workers.md', 'webhooks.md', 'jira-webhook-customer-guide.md')
         'bob'    = @('bob-ear.md')
-        'airc'   = @('airc-ops.md')
+        'airc'   = @('airc-ops.md', 'airc-remote-control.md')
     }
     $docsToCopy = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($d in $sharedDocs) { [void]$docsToCopy.Add($d) }
@@ -99,14 +107,18 @@ function Stage-Product([string]$Name) {
     # Skills: product skill + harvest only (do not ship sibling product skills)
     $skillsRoot = Join-Path $RepoRoot '.grok\skills'
     $skillsDest = Join-Path $stage '.grok\skills'
+    # This product's whole skill book: bobiverse-<p> + bobiverse-<p>-commands / -troubleshooting / ... + the shared fleet-ops book.
     $productSkill = "bobiverse-$Name"
-    $productSkillSrc = Join-Path $skillsRoot $productSkill
-    if (Test-Path -LiteralPath $productSkillSrc) {
-        New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest $productSkill) | Out-Null
-        Copy-Item -Path (Join-Path $productSkillSrc '*') -Destination (Join-Path $skillsDest $productSkill) -Recurse -Force
-    } else {
+    $bookDirs = @(Get-ChildItem -LiteralPath $skillsRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq $productSkill -or $_.Name -like "$productSkill-*" -or $_.Name -eq 'bobiverse-fleet-ops' })
+    if (-not ($bookDirs | Where-Object { $_.Name -eq $productSkill })) {
         Write-Host "WARN $Name missing .grok/skills/$productSkill"
     }
+    foreach ($bd in $bookDirs) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest $bd.Name) | Out-Null
+        Copy-Item -Path (Join-Path $bd.FullName '*') -Destination (Join-Path $skillsDest $bd.Name) -Recurse -Force
+    }
+    Write-Host ("INFO $Name staged skill books: {0}" -f (($bookDirs | ForEach-Object Name) -join ', '))
     $harvestSrc = Join-Path $skillsRoot 'harvest'
     $harvestAliasSrc = Join-Path $skillsRoot 'harvest-agent-skills'
     if (Test-Path -LiteralPath $harvestSrc) {

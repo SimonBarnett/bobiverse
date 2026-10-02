@@ -1,72 +1,86 @@
 ---
 name: bobiverse-jeeves
 description: >
-  Maintain and debug ircJeeves + BobIrcd on the Ergo host. Use when Jeeves
-  service, !register, !recycle jeeves, ChanServ, cutover from BobJeeves,
-  CryptUnprotectData, ChairHome Default profile, or /bobiverse-jeeves.
+  Maintain and debug the Jeeves chair (ircJeeves) and its webhooks on the Ergo host. Architecture, paths, ports, config, logs, background jobs (webhook health, GitHub resync), install/upgrade/hotpatch. Use in C:\ai\jeeves or for Jeeves service, !register, ChanServ, BobCallback, intake, or /bobiverse-jeeves.
 ---
 
 # bobiverse-jeeves
 
-Foundation: harvest-agent-skills -> https://github.com/SimonBarnett/bobiverse
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-## Services
+Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> https://github.com/SimonBarnett/bobiverse
 
-- `ircJeeves` — nick **Jeeves**, `irc_agent.py --chair` (bobiverse)
-- `BobIrcd` — Ergo TLS :6697
-- Legacy **`BobJeeves`** (gh-Jeeves `python -m jeeves`) — **remove** from SCM on cutover/install; both fight for nick Jeeves
+## Architecture
 
-```powershell
-Get-Service ircJeeves,BobJeeves,BobIrcd
-Get-Content C:\ai\jeeves\logs\stderr.log -Tail 80 -ErrorAction SilentlyContinue
-Get-Content $env:USERPROFILE\.jeeves\irc.log -Tail 80
-```
+`ircJeeves` runs `irc_agent.py --chair --nick Jeeves --home <chair home>` (NSSM, `Start-Jeeves.ps1`). Everything is
+deterministic and token-less except the optional GitHub token used for filing issues and the 15-min FR/MRB resync.
 
-## Homes and DPAPI (CAST IRON)
+| Piece | Where |
+|---|---|
+| Install root | `C:\ai\jeeves` (`scripts\`, `config\`, `logs\`, `docs\`, `.grok\skills\`, `assets\`, `VERSION`) |
+| Chair home (identity, queue, focus/ignore, traces) | `~\.jeeves`, else `C:\Users\Administrator\.jeeves`, else `C:\ai\jeeves\home-jeeves` (never `C:\Users\Default`) |
+| Digest home (`digest.json`, `registered-machines.json`, `chair-outbox.txt`, `webhook-queue`) | `BOB_DIGEST_HOME` = `~\.bobiverse` |
+| Ergo (IRC server, separate service `BobIrcd`) | `C:\ai\ergo` - NEVER edit `ircd.yaml`, never restart for non-Ergo work |
+| Webhook receiver | task `BobCallback` (SYSTEM) `python scripts\bobcallback.py --home <digest home> --bind 127.0.0.1 --port 7700` |
+| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira` -> 127.0.0.1:7700 |
+| Ports | 6697 TLS (public), 6667 plaintext loopback, 7700 bobcallback loopback |
+| Logs | `C:\ai\jeeves\logs\stdout.log` / `stderr.log` (INFO/WARN/ERROR, no timestamps - use the chair `cmd-trace.log` for timed command replies) |
+| Chair-home files | `cmd-trace.log` (time/nick/command/reply), `webhook-health.json`, `resync-token-source.log`, `operators.txt`, `identity.json` (DPAPI) |
+| Config (`C:\ai\jeeves\config`) | `ergo.password`, `service.password`, `github.token` (optional), `op-accounts.txt`, chair oper cred (DPAPI), `autoupdate.disabled` |
 
-- Chair home: `~\.jeeves` (or Admin path on Ergo host).
-- Digest: `BOB_DIGEST_HOME=~\.bobiverse`.
-- **ObjectName must be the install user** (DPAPI) — not LocalSystem.
-  - Quiet MSI: `BOBIVERSE_SERVICE_PASSWORD` or `C:\ai\jeeves\config\service.password` (one line) before install, or Desktop **Complete bobiverse service logon**.
-  - LocalSystem + Admin-sealed `identity.json` → `OSError: CryptUnprotectData failed` and crash-loop.
-  - Interim: park `identity.json` → `identity.json.admin-dpapi.bak`, let LocalSystem mint a fresh identity (SEAL key changes). Prefer fixing ObjectName and restoring the bak when the password is available.
-- MSI as LocalSystem must **not** bake `C:\Users\Default\.jeeves` into NSSM AppParameters. Install-Jeeves prefers existing `C:\Users\Administrator\.jeeves`, else `C:\ai\jeeves\home-jeeves`.
+Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (command registry/auth/help),
+`focus_ignore.py`, `gitclaim.py` (queue + `resync_from_github`), `chan_privs.py` (op/halfop grants + hard cap),
+`registered_machines.py` (ChanServ roster mirror), `bobreport.py` (digest + chair outbox), `bobcallback.py` (webhooks),
+`intake.py` (intake + filing), `chair_health.py` (background jobs), `bob_recycle.py`.
 
-## Start-Jeeves / --channel
+## Chair background jobs (inside ircJeeves, no extra task)
 
-- `Start-Jeeves.ps1` launches `--chair --nick Jeeves --home …` (no `--channel`).
-- `irc_agent.py`: `--channel` is optional when `--chair`; defaults to `bobiverse`. Chair channel list comes from `bobreport.chair_channels()`.
-- Never pass unquoted `#bobiverse` in a PowerShell command line — `#` starts a comment and drops the rest of the argv (symptom: `error: the following arguments are required: --channel` or `expected one argument`).
+1. **Webhook health probe, every 30 min** (`chair_health.probe_cycle`): for BOTH `http://127.0.0.1:7700` and
+   `https://irc.ntsa.uk` it checks `GET /bob/v1/report` (200), `GET /bob/v1/jira` (200), `GET /bob/v1/intake/<id>` (404 counts
+   as up) and a synthetic `POST /bob/v1/git` ping (zen `jeeves-health-probe`, answered 204 with no queue entry and no
+   announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
+   `webhook-health.json`; `#bobiverse` is told ONLY on up<->down transitions (`WEBHOOK DOWN ...` / `WEBHOOK RECOVERED ...`)
+   through `chair-outbox.txt`.
+2. **GitHub resync, every 15 min** (`gitclaim.resync_from_github`, authenticated with the existing Jeeves token from
+   `config\github.token` via `gh_filer`; token handling is unchanged and the value is never logged - only the token SOURCE is
+   written once per process to `resync-token-source.log`). It MERGES: open issues -> FR, open PRs -> MRB; closed/superseded
+   FR/MRB rows of successfully fetched repos are dropped; accepted jobs, other kinds, failed repos and ignored repos are untouched.
+   Repos: `JEEVES_RESYNC_REPOS` / `resync-repos.txt` in the chair home, else repos already queued + the token's own repos
+   under the allowed owners. `!resync` runs it now; `!status` shows `github_resync:` and `webhooks:`.
 
-## Ergo
+## Services and identity
 
-Ergo payload: MSI `ergo\` → live root **`C:\ai\ergo`** (`Install-BobIrcd.ps1`).
-First boot may seed `ircd.yaml` from `default.yaml` — set TLS, server PASS, ChanServ/NickServ registration.
-`config\ergo.password` (or `~\.grok\ergo\connect.password`) required after public MSI.
+- `ircJeeves` (nick **Jeeves**) and `BobIrcd` (Ergo). Legacy `BobJeeves` (gh-Jeeves) must be removed from the SCM: it fights for the nick.
+- **ObjectName must be the install user** (DPAPI) - not LocalSystem. Quiet MSI: `BOBIVERSE_SERVICE_PASSWORD` or
+  `config\service.password`, or run **Complete bobiverse service logon** (Start Menu `Bobiverse` folder). LocalSystem + Admin-sealed
+  `identity.json` -> `CryptUnprotectData failed` crash loop. Interim: park `identity.json` as `identity.json.admin-dpapi.bak`.
+- NSSM must not bake `C:\Users\Default\.jeeves`; `Install-Jeeves` prefers the Admin chair home, else `home-jeeves`.
+- `Start-Jeeves.ps1` launches `--chair --nick Jeeves --home .`; never pass an unquoted `#bobiverse` in a PowerShell command line
+  (`#` starts a comment and drops the rest of the argv).
+
+## Install, upgrade, rollback, hotpatch
+
+See `bobiverse-fleet-ops`. Jeeves specifics: the installer also registers task `BobCallback`, runs `Install-BobWebhooks.ps1`
+(IIS rewrite incl. public `/bob/v1/digest`), provisions the chair oper credential, and builds the single Start Menu folder
+`Bobiverse` (Restart ircJeeves, Services, Logs, Skill books, Agent guide, Jeeves command reference - all with the systray icon).
+Hotpatch = back up `C:\ai\jeeves`, copy changed `scripts\*`, `Restart-Service ircJeeves` ONLY.
 
 ## Cutover checklist (Ergo host)
 
-1. Remove SCM entry `BobJeeves` (Install-Jeeves calls `Remove-BobiverseLegacyService`).
-2. Ensure `C:\ai\jeeves\config\ergo.password` exists (copy from `~\.grok\ergo\connect.password`).
-3. Set ObjectName via `Complete-BobiverseServiceLogon.ps1 -Product jeeves` when `service.password` is available.
-4. `Restart-Service ircJeeves`
-5. Expect stdout/irc.log: `joined #bobiverse,#… as Jeeves` and GIT announces on `#bobiverse`.
-
-NSSM AppStdout/AppStderr should be `C:\ai\jeeves\logs\*.log` so crash loops do not flood the airc console pipe.
-
-## Commands
-
-- `!register <machine>` — Simon/operators; ChanServ REGISTER `#{machine}`
-- `!recycle jeeves` — departure announce; restart `ircJeeves` only (not BobIrcd)
-- Existing chair: `!recycle <machine>`, `!list`, digest/GIT/`chair-outbox`
-
-## Restart / update
-
-Service start runs `Check-BobiverseUpdate.ps1 -Product jeeves` unless `BOBIVERSE_NO_UPDATE=1`.
-Ergo recycle: `Restart-Service BobIrcd` (separate from jeeves).
+1. Remove SCM `BobJeeves`. 2. Ensure `config\ergo.password`. 3. `Complete-BobiverseServiceLogon.ps1 -Product jeeves` when the password is available.
+4. `Restart-Service ircJeeves`. 5. Expect `joined #bobiverse,#... as Jeeves` and `chair-status ... op-in=` all channels.
 
 ## Do not
 
-- Invent Ergo PASS
-- Run legacy BobJeeves and ircJeeves together
-- Stamp UAT
+- Invent an Ergo PASS, stamp UAT, run `BobJeeves` and `ircJeeves` together, or restart `BobIrcd` to "fix" a chair problem.
+- Print or commit `github.token`, `service.password`, `ergo.password`, `identity.json`, oper cred.

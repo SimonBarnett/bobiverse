@@ -135,3 +135,21 @@ From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.
 - Vendored pin: `C:\ai\bob\PIN.txt` (agentic_build SHA used at pack time). TipForm footer shows `bob {VERSION}`.
 
 Smoke (optional): `scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot C:\ai\bob`.
+
+## Start Menu (single folder)
+
+Every installer (Bob, Jeeves, Airc) maintains ONE all-users folder, `Start Menu\Programs\Bobiverse`
+(`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Bobiverse`), and removes older top-level duplicates
+(`Bob Systray*`, `Bobiverse Tray*`, `Bob Fleet*`, `Restart ircBob`, `Bob Services`, `Complete bobiverse service logon*`,
+a `Bob Systray` folder, per-user `Bobiverse` folders) on every install/upgrade. Every shortcut uses `assets\bob-systray.ico`.
+Per product: Bob Services; Bobiverse Tray (bob); Restart ircBob / ircJeeves / Airc; Complete bobiverse service logon (<product>,
+only while the service has no ObjectName); Logs (<product>); Skill books (<product>); Agent guide (<product>);
+Jeeves command reference (jeeves). Inventory test: `tests/test_start_menu_020.py`.
+
+## Agent-start layer
+
+Each installed service dir (`C:\ai\bob`, `C:\ai\jeeves`, `C:\ai\airc`) gets `AGENTS.md`, `CLAUDE.md`, `GROK.md`,
+`.cursor\rules\bobiverse-<product>.mdc` and `.grok\skills\bobiverse-<product>*` + `bobiverse-fleet-ops` + `harvest*`.
+All start with the CAST IRON RULE: harvest skills and file every issue/FR/bug to the intake webhook
+(`scripts\Report-BobiverseIntakeIssue.ps1`, `scripts\Invoke-BobiverseHarvest.ps1`). The installers deploy them
+(`Install-BobiverseAgentLayer`) and the self-updater / `Sync-BobiverseFromRepo.ps1` refresh them. Tests: `tests/test_agent_layer_020.py`.

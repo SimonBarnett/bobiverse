@@ -243,7 +243,9 @@ function Update-SkillsInProfiles {
     # action runs as SYSTEM, so its own skill copy lands in the SYSTEM profile). File copies only.
     $src = Join-Path $InstallRoot '.grok\skills'
     if (-not (Test-Path -LiteralPath $src)) { Write-UpdLog 'skills-skip (no .grok\skills in install)'; return }
-    $names = @("bobiverse-$Product", 'harvest', 'harvest-agent-skills')
+    $names = @(Get-ChildItem -LiteralPath $src -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "bobiverse-$Product" -or $_.Name -like "bobiverse-$Product-*" -or
+                $_.Name -in @('bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills') } | ForEach-Object { $_.Name })
     $profiles = @()
     $usersRoot = Join-Path $env:SystemDrive 'Users'
     if (Test-Path -LiteralPath $usersRoot) {

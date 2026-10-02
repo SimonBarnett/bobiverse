@@ -1,0 +1,36 @@
+---
+name: bobiverse-bob-troubleshooting
+description: >
+  Debug playbook for the Bob ear - restart loops (missing --host), SASL/NickServ password reset, outbox BOM, no ops, tray problems, digest POST. Use when ircBob misbehaves.
+---
+
+# bobiverse-bob-troubleshooting
+
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+
+Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure table). Ear-specific lessons:
+
+| Symptom | Diagnosis / fix |
+|---|---|
+| Ear restarts every 30-60 s (new `ircBob-stdout-*.log` files, repeated `GRANT +h`) | The watcher/tray kills any `irc_agent.py --nick Bob-*` whose command line lacks `--host`. `Start-Bob.ps1` now passes `--host <IrcHost>` and the MSI bakes `-IrcHost` into NSSM. Hand-fix on an old install: add `--host irc.ntsa.uk` in `Start-Bob.ps1`, `Restart-Service ircBob`. |
+| `NICKNAME_RESERVED` / `sasl-fail 904` | `home\nickserv.password` does not match the registered account. Oper `NickServ PASSWD bob-<machine> <value from the file>`; never create a new GUID for a registered account; restart `ircBob`. |
+| SASL never attempted | Missing/unreadable `nickserv.password` (BOM or ACL). The file must be one line, no BOM. |
+| Outbox lines not sent | File has a BOM or a partial last line (no `\n`), or the home is LocalSystem-ACL only so your user cannot append - use a user-writable home. Check `outbox.txt.pos`. |
+| Ear joined but no ops | Shop not registered: Jeeves `!register <machine>`; then `!resync`. |
+| Tray shows twice / wrong icon | Old installers left top-level `Bob Systray` links; the new installer keeps ONE Start Menu folder `Bobiverse` and deletes the rest. |
+| Tray dies when the agent shell exits | It was started with `Start-Process`; use `Start-BobTray.ps1` (WMI create). |
+| Seat-wrapper kill removed a diagnosing shell | Never `match Watch-BobTray` broadly; the filter is `-File ...Watch-BobTray.ps1`. |
+| Service shows old code after MSI | NSSM path/params stale - re-run `Install-Bob.ps1`; check `C:\ai\bob\VERSION`. |
+| Digest POST fails | Machine not on the roster Jeeves publishes, or `reportUrl` unreachable. `Assert-BobDigestWebhookLocal.ps1`; `GET https://irc.ntsa.uk/bob/v1/report` should be 200. |
+
+Finish every session with the harvest step.

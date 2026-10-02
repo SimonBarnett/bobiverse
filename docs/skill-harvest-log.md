@@ -55,3 +55,13 @@ VERSION â†’ **0.1.9**.
 | Jeeves missing from #win-mpre… | ChanServ !register required for chair_channels |
 
 VERSION → **0.1.10**.
+
+## 2026-10-02 - chair commands, Start Menu, agent-start layer (PR #83)
+
+| Lesson | Fix |
+|---|---|
+| `+h` re-granted every 30-60 s | Not a ChanServ fight: the ear was killed by the watcher (no `--host` on its command line) and rejoined. Service now bakes `-IrcHost`; chan_privs hard cap 3 grants / 10 min |
+| `!recycle` had no authorization | `chair_commands.py` owner/ear auth, 120 s cooldown, `dry-run` |
+| Start Menu had scattered duplicates | One `Programs\Bobiverse` folder, `Install-BobiverseStartMenu` dedupes, systray icon everywhere |
+| ergo.exe hardlink broken by upgrade (#70) | Component Permanent+NeverOverwrite, `Repair-BobiverseErgoHardlink` |
+| Agents did not know to file what they learned | CAST IRON RULE in AGENTS/skills, `Invoke-BobiverseHarvest.ps1` |
