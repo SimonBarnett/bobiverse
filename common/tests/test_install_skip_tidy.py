@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-S = Path(__file__).resolve().parent.parent / "scripts"
+S = ROOT / "scripts"
 
 
 def _t(name: str) -> str:
@@ -39,5 +40,5 @@ def test_interactive_launcher_runs_one_shot_with_skiptidy():
 
 
 def test_vendored_fleet_tray_still_supports_skiptidy():
-    p = S.parent / "third_party" / "bob-tray" / "tools" / "Start-BobFleetTray.ps1"
+    p = ROOT / "third_party" / "bob-tray" / "tools" / "Start-BobFleetTray.ps1"
     assert "[switch]$SkipTidy" in p.read_text(encoding="utf-8-sig")

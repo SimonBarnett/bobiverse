@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import intake  # noqa: E402

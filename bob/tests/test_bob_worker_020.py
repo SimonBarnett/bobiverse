@@ -12,7 +12,7 @@ import pytest
 
 import bob_worker as bw
 
-ROOT = Path(__file__).resolve().parent.parent
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
 
 def wait_until(cond, timeout=5.0, step=0.01):

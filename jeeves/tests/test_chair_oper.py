@@ -1,5 +1,6 @@
 ﻿"""Chair OPER on connect + channel +o upkeep + loud LIST/oper status (v0.1.15)."""
-import sys
+import sys
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 import time
 from types import SimpleNamespace
 
@@ -260,6 +261,6 @@ def test_session_sends_oper_before_join_in_source():
 
 def test_installer_provisions_oper_without_prompt():
     from pathlib import Path
-    t = (Path(irc_agent.__file__).parent / "Install-Jeeves.ps1").read_text(encoding="utf-8-sig")
+    t = (ROOT / "scripts" / "Install-Jeeves.ps1").read_text(encoding="utf-8-sig")
     assert "chair_oper.py" in t and "'provision'" in t and "$OperFile" in t and "$OperName" in t
     assert "Read-Host" not in t.split("chair_oper.py", 1)[1].split("BobCallback", 1)[0]

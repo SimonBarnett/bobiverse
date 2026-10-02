@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 SKILLS = ROOT / ".grok" / "skills"
 PRODUCTS = ("jeeves", "bob", "airc")
 RULE_MARKERS = ("CAST IRON RULE - HARVEST AND FILE EVERYTHING", "Report-BobiverseIntakeIssue.ps1",

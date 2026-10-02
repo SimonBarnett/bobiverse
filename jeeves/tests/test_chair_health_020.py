@@ -7,6 +7,7 @@ from pathlib import Path
 import bobcallback
 import chair_health as ch
 import gitclaim
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
 BASES = {"local": "http://127.0.0.1:7700", "public": "https://irc.ntsa.uk"}
 OK = {"/bob/v1/report": 200, "/bob/v1/jira": 200, "/bob/v1/intake/jeeves-health-probe": 404, "/bob/v1/git": 204}
@@ -263,7 +264,7 @@ def test_discover_prefers_config_then_queue_and_token_repos(tmp_path, monkeypatc
 
 
 def test_iis_rewrite_has_public_digest_rule():
-    txt = (Path(__file__).resolve().parent.parent / "scripts" / "Install-BobWebhooks.ps1").read_text(encoding="utf-8-sig")
+    txt = (ROOT / "scripts" / "Install-BobWebhooks.ps1").read_text(encoding="utf-8-sig")
     assert 'bob/v1/digest$' in txt and "BobDigestWebhook" in txt
     assert txt.count("BobDigestWebhook") >= 3        # fresh config, rules table, and the existing-config insert
 

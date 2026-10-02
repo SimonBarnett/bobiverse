@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 SCRIPTS = ROOT / "scripts"
 ICO = ROOT / "third_party" / "bob-tray" / "assets" / "bob-systray.ico"
 WIN = pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="needs Windows PowerShell")
@@ -40,7 +40,7 @@ def test_pack_ships_the_systray_icon_for_every_product():
     pack = _read("Pack-BobiverseRelease.ps1")
     assert "bob-systray.ico" in pack and "Stage-Product" in pack
     # the copy sits in Stage-Product (all products), not only inside the bob-only tray block
-    assert pack.index("$trayIcoSrc") < pack.index("Copy-Item (Join-Path $RepoRoot 'third_party\\nssm")
+    assert pack.index("$trayIcoSrc") < pack.index("Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\\nssm")
 
 
 def test_restart_service_script_never_touches_ergo():

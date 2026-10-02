@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
+import pytest
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
 import bobreport
 import chan_privs as cp
@@ -337,7 +338,7 @@ def test_op_accounts_config_file_between_env_and_owner(tmp_path):
 
 def test_install_jeeves_has_opaccounts_parameter():
     import pathlib
-    t = (pathlib.Path(irc_agent.__file__).parent / "Install-Jeeves.ps1").read_text(encoding="utf-8-sig")
+    t = (ROOT / "scripts" / "Install-Jeeves.ps1").read_text(encoding="utf-8-sig")
     assert "[string]$OpAccounts" in t and "op-accounts.txt" in t
 
 

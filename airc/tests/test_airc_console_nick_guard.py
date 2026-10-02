@@ -10,8 +10,9 @@ from pathlib import Path
 import pytest
 
 import airc_console_service as svc
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-S = Path(__file__).resolve().parent.parent / "scripts"
+S = ROOT / "scripts"
 
 
 def make(tmp_path, monkeypatch, extra=()):

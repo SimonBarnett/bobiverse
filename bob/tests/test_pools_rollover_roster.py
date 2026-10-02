@@ -6,8 +6,9 @@ from pathlib import Path
 
 import bobreport
 import registered_machines
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-T = Path(__file__).resolve().parent.parent / "third_party" / "bob-tray"
+T = ROOT / "third_party" / "bob-tray"
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 ROSTER = {"ce-priority-dev1", "flamingo", "marchhare", "win-mpre8vi4u6u"}
 

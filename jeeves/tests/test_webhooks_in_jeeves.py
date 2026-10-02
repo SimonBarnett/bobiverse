@@ -2,8 +2,9 @@
 import re
 import gh_filer
 import bob_recycle
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+SCRIPTS = ROOT / "scripts"
 
 
 def test_start_bobcallback_cmd_has_no_hardcoded_install_or_profile():

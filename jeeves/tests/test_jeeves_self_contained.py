@@ -17,7 +17,7 @@ def _isolated_profiles(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: fake / "Administrator")
 
 
-ROOT = Path(__file__).resolve().parent.parent
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 SCRIPTS = ROOT / "scripts"
 AIRC_PRODUCT = re.compile(r"airc_console|AircConsole|Install-Airc|Pack-AircConsole|Fetch-Nssm|Resolve-AircConsole", re.I)
 

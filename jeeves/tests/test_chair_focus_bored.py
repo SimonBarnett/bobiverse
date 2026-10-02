@@ -12,6 +12,7 @@ import focus_ignore as fi
 import gitclaim
 import registered_machines
 import shop_listen
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
 
 @pytest.fixture(autouse=True)
@@ -261,7 +262,7 @@ def test_non_focus_body_returns_none(_home):
 
 
 def test_chair_wiring_present():
-    t = (Path(__file__).resolve().parent.parent / "scripts" / "irc_agent.py").read_text("utf-8-sig")
+    t = (ROOT / "scripts" / "irc_agent.py").read_text("utf-8-sig")
     assert "import focus_ignore" in t
     assert "_maybe_focus_ignore" in t
     assert "gitclaim.offer_focus_top" in t

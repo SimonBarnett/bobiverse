@@ -14,8 +14,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-S = Path(__file__).resolve().parent.parent / "scripts"
+S = ROOT / "scripts"
 UPD = S / "Update-BobiverseService.ps1"
 PS = shutil.which("powershell.exe") or shutil.which("powershell")
 win = pytest.mark.skipif(os.name != "nt" or not PS, reason="needs Windows PowerShell")

@@ -4,6 +4,7 @@ import pytest
 
 import bobreport
 import registered_machines as rm
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 FUT = "2026-10-16T17:23:01Z"
@@ -123,7 +124,7 @@ def test_pool_change_alone_is_a_change(home):
 def test_bob_derives_pcent_from_own_pool_rows_when_groups_missing():
     """marchhare posted pcent {} because cursor_spending_groups was absent; rows still carried data."""
     from pathlib import Path
-    t = (Path(__file__).resolve().parent.parent / "third_party" / "bob-tray" / "src" / "Private" / "Get-BobIrc.ps1").read_text(encoding="utf-8-sig")
+    t = (ROOT / "third_party" / "bob-tray" / "src" / "Private" / "Get-BobIrc.ps1").read_text(encoding="utf-8-sig")
     assert "derive" in t and "$fromRows" in t and "'auto'" in t
     assert "$doc.pcent = [pscustomobject]$fromRows" in t
 

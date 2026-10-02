@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-S = Path(__file__).resolve().parent.parent / "scripts"
+S = ROOT / "scripts"
 PS = shutil.which("powershell.exe") or shutil.which("pwsh")
 
 

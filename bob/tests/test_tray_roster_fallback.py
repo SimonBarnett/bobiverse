@@ -1,8 +1,9 @@
 ﻿import json
 import re
 from pathlib import Path
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-T = Path(__file__).resolve().parent.parent / "third_party" / "bob-tray"
+T = ROOT / "third_party" / "bob-tray"
 
 
 def _txt(rel):

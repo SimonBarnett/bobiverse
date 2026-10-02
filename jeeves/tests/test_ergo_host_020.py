@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 S = ROOT / "scripts"
 
 

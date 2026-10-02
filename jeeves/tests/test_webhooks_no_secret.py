@@ -19,7 +19,7 @@ import bobreport
 import intake
 import registered_machines as rm
 
-ROOT = Path(__file__).resolve().parents[1]
+from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 SCRIPTS = ROOT / "scripts"
 TRAY = ROOT / "third_party" / "bob-tray"
 PS = shutil.which("powershell") or shutil.which("pwsh")
