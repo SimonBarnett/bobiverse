@@ -33,7 +33,7 @@ Per service start: (1) repo fast-forward of the install work tree (sparse `<prod
 - **Jeeves** chair (service `ircJeeves`, nick `Jeeves`, `irc_agent.py --chair`): channel privileges, roster, queue, commands,
   digest, webhooks. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
   `#bobiverse` + `#<machine>`. **Airc** console (service `Airc`, nick `<machine>_console`): remote shell over PRIVMSG.
-- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira`.
+- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://irc.ntsa.uk/bob/v1/digest` is 404.
   Public URL `https://irc.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
 - **Digest** (`digest.json` + `registered-machines.json` roster + `chair-outbox.txt`) lives in the digest home
   (`BOB_DIGEST_HOME`, default `~\.bobiverse`). Roster = ChanServ-registered `#<machine>` shop channels, mirrored every ~2 min.

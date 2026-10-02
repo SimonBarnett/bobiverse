@@ -33,5 +33,6 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Seat-wrapper kill removed a diagnosing shell | Never `match Watch-BobTray` broadly; the filter is `-File ...Watch-BobTray.ps1`. |
 | Service shows old code after MSI | NSSM path/params stale - re-run `Install-Bob.ps1`; check `<ai root>\bob\VERSION`. |
 | Digest POST fails | Machine not on the roster Jeeves publishes, or `reportUrl` unreachable. `Assert-BobDigestWebhookLocal.ps1`; `GET https://irc.ntsa.uk/bob/v1/report` should be 200. |
+| `GET https://irc.ntsa.uk/bob/v1/digest` returns 404 | Expected on the public IIS front-door (FR #149). Public digest JSON is `GET https://irc.ntsa.uk/bob/v1/report`. Local bobcallback on `:7700` still answers `/bob/v1/digest` and `/digest` with the same body. |
 
 Finish every session with the harvest step.
