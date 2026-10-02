@@ -882,15 +882,11 @@ def load_digest(home: Path) -> dict:
 
 
 def save_digest(home: Path, doc: dict) -> None:
-    """Atomic write of digest.json (#51 / #36).
+    """Atomically write digest.json with unique-temp and Windows retry handling.
 
-    Unique tmp name per write (pid + uuid) so concurrent writers never share one
-    ``digest.json.tmp``; ``os.replace`` retried with backoff on Windows sharing violations
-    (WinError 32) / access denied (WinError 5, AV / indexer holding the target).
-
-    FR #36: if the tmp vanishes between write and replace (WinError 2 / FileNotFoundError —
-    AV quarantine or a racing cleanup), rewrite once under a fresh unique name instead of
-    failing the bobcallback ``report`` route.
+    The fresh-temp retry also covers AV/racing cleanup removing the temporary file
+    between write and replace (FR #36), while write/replace helpers cover WinError
+    5/32 sharing violations (FR #35/#37).
     """
     path = digest_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -900,11 +896,10 @@ def save_digest(home: Path, doc: dict) -> None:
     for _attempt in range(2):
         tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
         try:
-            tmp.write_text(payload, encoding="utf-8")
+            _write_text_with_retry(tmp, payload)
             _replace_with_retry(tmp, path)
             return
         except FileNotFoundError as exc:
-            # Source tmp gone before/during replace — try one fresh write (#36).
             last_missing = exc
         finally:
             with contextlib.suppress(OSError):
@@ -921,6 +916,23 @@ def _is_sharing_error(exc: OSError) -> bool:
     if isinstance(exc, PermissionError):
         return True
     return getattr(exc, "winerror", None) in (5, 32)
+
+
+def _write_text_with_retry(path: Path, text: str) -> None:
+    """Write ``path`` retrying Windows sharing / access-denied (intake #37)."""
+    last: OSError | None = None
+    for delay in (0.0,) + _REPLACE_RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            path.write_text(text, encoding="utf-8")
+            return
+        except OSError as exc:
+            if not _is_sharing_error(exc):
+                raise
+            last = exc
+    assert last is not None
+    raise last
 
 
 def _replace_with_retry(src: Path, dst: Path) -> None:

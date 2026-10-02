@@ -28,6 +28,7 @@ def test_save_digest_uses_unique_tmp_and_leaves_none(home, monkeypatch):
 
 
 def test_replace_retries_on_winerror_32_then_succeeds(tmp_path, monkeypatch):
+    """FR #35 / #51: report route failed with WinError 32 on digest.json.tmp -> digest.json."""
     src = tmp_path / "a.tmp"; dst = tmp_path / "a"
     src.write_text("x")
     calls = {"n": 0}
@@ -44,6 +45,47 @@ def test_replace_retries_on_winerror_32_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(bobreport, "_REPLACE_RETRY_DELAYS", (0.0, 0.0, 0.0, 0.0))
     bobreport._replace_with_retry(src, dst)
     assert calls["n"] == 3 and dst.read_text() == "x"
+
+
+def test_replace_retries_on_winerror_5(tmp_path, monkeypatch):
+    """Sibling intake #38: WinError 5 access denied on the same replace."""
+    src = tmp_path / "a.tmp"; dst = tmp_path / "a"
+    src.write_text("x")
+    calls = {"n": 0}
+    real = os.replace
+
+    def flaky(s, d):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            e = PermissionError(13, "access denied"); e.winerror = 5
+            raise e
+        return real(s, d)
+
+    monkeypatch.setattr(bobreport.os, "replace", flaky)
+    monkeypatch.setattr(bobreport, "_REPLACE_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    bobreport._replace_with_retry(src, dst)
+    assert calls["n"] == 2 and dst.read_text() == "x"
+
+
+def test_save_digest_retries_tmp_write_on_sharing_error(home, monkeypatch):
+    """Sibling intake #37: PermissionError on writing digest.json*.tmp before replace."""
+    calls = {"n": 0}
+    real_write = Path.write_text
+
+    def flaky(self, *args, **kwargs):
+        if self.name.startswith("digest.json.") and self.suffix == ".tmp":
+            calls["n"] += 1
+            if calls["n"] < 3:
+                e = PermissionError(13, "permission denied"); e.winerror = 32
+                raise e
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky)
+    monkeypatch.setattr(bobreport, "_REPLACE_RETRY_DELAYS", (0.0, 0.0, 0.0, 0.0))
+    bobreport.save_digest(home, bobreport.load_digest(home))
+    assert calls["n"] == 3
+    assert bobreport.digest_path(home).is_file()
+    assert not list(home.glob("digest.json*.tmp"))
 
 
 def test_replace_gives_up_after_retries_and_non_sharing_errors_raise_at_once(tmp_path, monkeypatch):
