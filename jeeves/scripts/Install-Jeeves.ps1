@@ -26,8 +26,15 @@ param(
     [string]$OperName = '',
     # NickServ account(s) Simon is verified under (comma list). Jeeves gives +o ONLY to a logged-in
     # nick whose services account matches (never on nick alone). Stored in <InstallRoot>\config\op-accounts.txt.
-    [string]$OpAccounts = ''
+    [string]$OpAccounts = '',
+    # #70: MSI public properties (msiexec ... SKIPERGO=1 SKIPCOPY=1) arrive as strings via RunInstall.
+    [string]$MsiSkipErgo = '',
+    [string]$MsiSkipCopy = ''
 )
+
+# #70: map MSI property strings onto the real switches (empty / unset = no-op).
+if ($MsiSkipErgo -eq '1') { $SkipErgo = $true }
+if ($MsiSkipCopy -eq '1') { $SkipCopy = $true }
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path

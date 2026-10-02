@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Stage + WiX-pack jeeves, bob, and/or airc MSIs for SimonBarnett/bobiverse releases.
@@ -359,6 +359,43 @@ function Build-Msi([string]$Name, [string]$Stage) {
         'bob' { 'Install-Bob.cmd' }
         'airc' { 'Install-Airc.cmd' }
     }
+    # #70: public MSI properties flow into RunInstall (CAQuietExec64). Empty props expand to "" and Install-*.ps1 ignores them.
+    # msiexec /i jeeves-*.msi OPERFILE=C:\path\oper.txt SKIPERGO=1 SKIPCOPY=1
+    # msiexec /i bob-*.msi MACHINEID=marchhare SKIPCOPY=1
+    $installArgs = switch ($Name) {
+        'jeeves' {
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -OperFile &quot;[OPERFILE]&quot; -OperName &quot;[OPERNAME]&quot; -OpAccounts &quot;[OPACCOUNTS]&quot; -MsiSkipErgo &quot;[SKIPERGO]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot;'
+        }
+        'bob' {
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -IrcHost &quot;[IRCHOST]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot;'
+        }
+        'airc' {
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot;'
+        }
+    }
+    $msiProps = switch ($Name) {
+        'jeeves' {
+            @"
+    <Property Id="OPERFILE" Secure="yes" />
+    <Property Id="OPERNAME" Secure="yes" />
+    <Property Id="OPACCOUNTS" Secure="yes" />
+    <Property Id="SKIPERGO" Secure="yes" />
+    <Property Id="SKIPCOPY" Secure="yes" />
+"@
+        }
+        'bob' {
+            @"
+    <Property Id="MACHINEID" Secure="yes" />
+    <Property Id="IRCHOST" Secure="yes" />
+    <Property Id="SKIPCOPY" Secure="yes" />
+"@
+        }
+        'airc' {
+            @"
+    <Property Id="MACHINEID" Secure="yes" />
+"@
+        }
+    }
     $guidMark = [guid]::NewGuid().ToString().ToUpper()
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -377,6 +414,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     </Directory>
     <!-- t780u: <drive>:\ai discovered on the fixed disks (BOB_AI_ROOT / AIROOT= override); no hard-coded C:\ai. -->
     <Property Id="AIROOT" Secure="yes" />
+$msiProps
     <Binary Id="FindAiRootJs" SourceFile="$findAiFile" />
     <CustomAction Id="FindAiRoot" BinaryKey="FindAiRootJs" JScriptCall="FindAiRoot" Execute="immediate" Return="check" />
     <CustomAction Id="SetInstallDirFromAiRoot" Property="INSTALLDIR" Value="[AIROOT]\$Name\" />
@@ -384,7 +422,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <CreateFolder />
       <RegistryValue Root="HKLM" Key="Software\SimonBarnett\bobiverse\$Name" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
     </Component>
-    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot;" Execute="immediate" />
+    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
+    <!-- #70: RunInstall forwards OPERFILE/SKIPERGO/MACHINEID/... via public Property Ids. -->
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
     <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
     <InstallUISequence>
