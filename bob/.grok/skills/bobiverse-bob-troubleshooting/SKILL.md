@@ -30,10 +30,11 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Tray **Agent** / **Plan** click does nothing, or the seat vanished | Read `%LOCALAPPDATA%\Bobiverse\worker\logs\bob-worker-agent.log` and the tray log `%USERPROFILE%\.grok\long-running-background-tasks\watch_bob_tray.log` (`worker exe missing` = reinstall the MSI; exit 3 = IRC lost, the exe kills its own agent and ends on purpose; exit 5 = restart limit). Every click starts a NEW agent - never resume. Full table: `bobiverse-bob-worker`. |
 | Tray shows twice / wrong icon | Old installers left top-level `Bob Systray` links; the new installer keeps ONE Start Menu folder `Bobiverse` and deletes the rest. |
 | Tray dies when the agent shell exits | It was started with `Start-Process`; use `Start-BobTray.ps1` (WMI create). |
-| TipForm **Restart** vs ear-only recycle | Menu **Restart** → `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` + relaunches tray). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1`. Do not document TipForm Restart as calling `Restart-BobEar.ps1` directly (drift fixed in FR #154). |
+| TipForm **Restart** vs ear-only recycle | Menu **Restart** â†’ `Restart-BobTrayWatcher` â†’ `Start-BobFleetTray -ForceNew` (restarts `ircBob` + relaunches tray). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1`. Do not document TipForm Restart as calling `Restart-BobEar.ps1` directly (drift fixed in FR #154). |
 | Seat-wrapper kill removed a diagnosing shell | Never `match Watch-BobTray` broadly; the filter is `-File ...Watch-BobTray.ps1`. |
 | Service shows old code after MSI | NSSM path/params stale - re-run `Install-Bob.ps1`; check `<ai root>\bob\VERSION`. |
 | Digest POST fails | Machine not on the roster Jeeves publishes, or `reportUrl` unreachable. `Assert-BobDigestWebhookLocal.ps1`; `GET https://irc.ntsa.uk/bob/v1/report` should be 200. |
 | `GET https://irc.ntsa.uk/bob/v1/digest` returns 404 | Expected on the public IIS front-door (FR #149). Public digest JSON is `GET https://irc.ntsa.uk/bob/v1/report`. Local bobcallback on `:7700` still answers `/bob/v1/digest` and `/digest` with the same body. |
+| Need to check NSSM env (e.g. `BOBIVERSE_NO_UPDATE`) | Do **not** run `nssm get ircBob AppEnvironmentExtra` and print the raw block â€” it includes `AGENTIC_IRC_PASSWORD` (FR #147). Print key names only (split on first `=`). See `bobiverse-fleet-ops` hotpatch rule. |
 
 Finish every session with the harvest step.
