@@ -2729,6 +2729,8 @@ class Client:
                 self._maybe_chanserv_sync()
                 self._ensure_chan_ops()
                 self._chan_privs_tick()
+                self.drain_outbox_once()
+                self._maybe_bobiverse_pull()
                 self._chair_jobs_tick()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
