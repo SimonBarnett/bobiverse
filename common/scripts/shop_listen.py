@@ -365,12 +365,16 @@ def complete_job_by_ref(
                         line=str(job.get("line") or ""),
                         refs=(ident,),
                     )
-                    gitclaim._append_unaccepted(doc, claim)
+                    # FR implementer becomes MRB author_seat (different seat must review).
+                    fr_author = str(job.get("nick") or job.get("done_by") or "").strip()
+                    extra = {"author_seat": fr_author} if fr_author else {}
+                    gitclaim._append_unaccepted(doc, claim, **extra)
             if str(job.get("task") or "").upper() == "MRB" and "PASS" in (result or "").upper():
-                # UAT for refs if any
+                # UAT for refs if any; stamp MRB author so UAT is not re-offered to them (FR #227).
                 refs = job.get("refs") or []
                 if isinstance(refs, str):
                     refs = [refs]
+                author = str(job.get("nick") or job.get("done_by") or "").strip()
                 for ref in refs:
                     ref_s = str(ref)
                     if not ref_s.startswith("#"):
@@ -384,7 +388,8 @@ def complete_job_by_ref(
                         line=str(job.get("line") or ""),
                         refs=(ident,),
                     )
-                    gitclaim._append_unaccepted(doc, uat)
+                    extra = {"author_seat": author} if author else {}
+                    gitclaim._append_unaccepted(doc, uat, **extra)
             try:
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except OSError:
