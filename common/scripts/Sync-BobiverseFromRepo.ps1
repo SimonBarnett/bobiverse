@@ -159,6 +159,26 @@ foreach ($d in @('scripts', 'third_party')) {
     }
 }
 
+# t784u: runtime dirs the stage/MSI lays out under another name than the repo uses (the tray runs from tools\ src\ assets\, not
+# from third_party\bob-tray; jeeves tools\). Without this a work-tree ff would update third_party\ but not what actually runs.
+$mirror = @()
+if ($Product -eq 'bob') {
+    $mirror += @(
+        @{ Rel = 'third_party\bob-tray\tools'; Dst = 'tools'; Xf = @() },
+        @{ Rel = 'third_party\bob-tray\assets'; Dst = 'assets'; Xf = @() },
+        @{ Rel = 'third_party\bob-tray\src'; Dst = 'src'; Xf = @('VERSION') },
+        @{ Rel = 'third_party\Watch-AgentHealth'; Dst = 'Watch-AgentHealth'; Xf = @() })
+}
+if ($Product -eq 'jeeves') { $mirror += @{ Rel = 'tools'; Dst = 'tools'; Xf = @() } }
+foreach ($m in $mirror) {
+    $from = Get-BobiverseRepoPath -Root $clone -Rel $m.Rel
+    if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
+    $roboArgs = @($from, (Join-Path $InstallRoot $m.Dst), '/E', '/XO', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+    if ($m.Xf.Count) { $roboArgs += @('/XF') + $m.Xf }
+    & robocopy.exe @roboArgs | Out-Null
+    if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok" -f $m.Dst) }
+}
+
 # Product skills book (shared harvest + product skill) when present in clone.
 $skillsDirs = @(Get-BobiverseRepoDirs -Root $clone -Sub '.grok\skills')
 $skillsDst = Join-Path $InstallRoot '.grok\skills'

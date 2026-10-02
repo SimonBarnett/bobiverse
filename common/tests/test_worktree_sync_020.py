@@ -42,6 +42,10 @@ def world(tmp_path):
     write(seed / "common/scripts/c1.ps1", "# common 1\n")
     write(seed / "bob/scripts/b1.ps1", "# bob 1\n")
     write(seed / "bob/scripts/b2.ps1", "# bob 2\n")
+    write(seed / "bob/third_party/bob-tray/tools/Watch-BobTray.ps1", "# tray v1\n")
+    write(seed / "bob/third_party/bob-tray/src/BobBridge.psm1", "# bridge v1\n")
+    write(seed / "bob/third_party/bob-tray/src/VERSION", "0.0.0-tray\n")
+    write(seed / "bob/third_party/bob-tray/assets/icon.txt", "icon\n")
     write(seed / "jeeves/scripts/j1.ps1", "# jeeves 1\n")
     write(seed / "airc/scripts/a1.ps1", "# airc 1\n")
     write(seed / "README.md", "root readme\n")
@@ -274,3 +278,16 @@ def test_docs_describe_the_work_tree_and_opt_out():
         t = _t(rel)
         assert "work tree" in t.lower() or "worktree" in t.lower(), rel
         assert "BOBIVERSE_NO_UPDATE" in t, rel
+
+def test_tray_runtime_dirs_follow_the_work_tree(world):
+    """The tray runs from tools\\ src\\ assets\\ (not third_party\\bob-tray): a work-tree ff must refresh those too, but never VERSION."""
+    r = world.root("bob")
+    write(r / "src/VERSION", "0.1.19\n")
+    assert world.sync("bob").returncode == 0
+    assert (r / "tools/Watch-BobTray.ps1").read_text() == "# tray v1\n"
+    assert (r / "src/BobBridge.psm1").read_text() == "# bridge v1\n"
+    assert (r / "assets/icon.txt").is_file()
+    assert (r / "src/VERSION").read_text().strip() == "0.1.19"           # the product VERSION is never replaced by the tray's
+    world.upstream("bob/third_party/bob-tray/tools/Watch-BobTray.ps1", "# tray v2\n")
+    assert world.sync("bob").returncode == 0
+    assert (r / "tools/Watch-BobTray.ps1").read_text() == "# tray v2\n"
