@@ -52,6 +52,11 @@ CLOSES_RE = re.compile(
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ID_RE = re.compile(r"^#\d+$")
+# FR #254: DONE FR URL -> real PR repo/id (cross-repo implement PRs).
+PULL_URL_RE = re.compile(
+    r"https?://github\.com/(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(?P<num>\d+)",
+    re.I,
+)
 
 NAK_BORED_WAIT = "NAK !BORED wait"
 NAK_BORED_BUSY = "NAK !BORED busy"
@@ -522,6 +527,97 @@ def row_needs_human(row: dict) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes")
 
 
+def parse_github_pull_url(url: str) -> tuple[str, str] | None:
+    """Return (owner/repo, #N) for a GitHub pull URL, else None (FR #254)."""
+    m = PULL_URL_RE.search(str(url or ""))
+    if not m:
+        return None
+    return m.group("repo"), f"#{m.group('num')}"
+
+
+def fr_issue_key(repo: str, ident: str) -> str:
+    """Canonical SimonBarnett/bobiverse#224 key for supersede checks."""
+    r = str(repo or "").strip()
+    i = str(ident or "").strip()
+    if i and not i.startswith("#"):
+        i = f"#{i}"
+    return f"{r}{i}"
+
+
+def _row_refs(row: dict) -> list[str]:
+    refs = row.get("refs") or []
+    if isinstance(refs, str):
+        return [x for x in refs.split(",") if x]
+    return [str(x) for x in refs]
+
+
+def fr_superseded_by_mrb(doc: dict, repo: str, ident: str) -> bool:
+    """True when an unaccepted/accepted MRB supersedes this FR (FR #254)."""
+    key = fr_issue_key(repo, ident)
+    ident_s = str(ident or "").strip()
+    if ident_s and not ident_s.startswith("#"):
+        ident_s = f"#{ident_s}"
+    for bucket in ("unaccepted", "accepted"):
+        for row in doc.get(bucket) or []:
+            if str(row.get("task") or "").upper() != "MRB":
+                continue
+            if str(row.get("supersedes") or "").strip() == key:
+                return True
+            if str(row.get("repo") or "") == str(repo or "") and ident_s in _row_refs(row):
+                return True
+    return False
+
+
+def fr_superseded_by_done_pr(
+    doc: dict,
+    repo: str,
+    ident: str,
+    *,
+    open_pulls: dict[str, set[str]] | None = None,
+    fetched_repos: set[str] | None = None,
+) -> bool:
+    """DONE FR with /pull/ URL keeps the issue superseded while that PR is open (FR #254).
+
+    If the PR repo was not fetched, stay superseded (avoid re-offer when implement PR is cross-repo).
+    If the PR repo was fetched and the PR is no longer open, do not block.
+    """
+    ident_s = str(ident or "").strip()
+    if ident_s and not ident_s.startswith("#"):
+        ident_s = f"#{ident_s}"
+    for row in doc.get("done") or []:
+        if str(row.get("task") or "").upper() != "FR":
+            continue
+        if str(row.get("repo") or "") != str(repo or "") or str(row.get("id") or "") != ident_s:
+            continue
+        parsed = parse_github_pull_url(str(row.get("url") or ""))
+        if not parsed:
+            continue
+        pr_repo, pr_id = parsed
+        if fetched_repos is not None and pr_repo not in fetched_repos:
+            return True
+        if open_pulls is not None:
+            return pr_id in open_pulls.get(pr_repo, set())
+        return True
+    return False
+
+
+def fr_is_superseded(
+    doc: dict,
+    repo: str,
+    ident: str,
+    *,
+    open_pulls: dict[str, set[str]] | None = None,
+    fetched_repos: set[str] | None = None,
+) -> bool:
+    """FR must not be (re)queued/offered while MRB supersedes it or implement PR is open."""
+    if fr_superseded_by_mrb(doc, repo, ident):
+        return True
+    return fr_superseded_by_done_pr(
+        doc, repo, ident, open_pulls=open_pulls, fetched_repos=fetched_repos
+    )
+
+
+
 def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim | None:
     """Build a claim from the GitHub webhook body. None if not a queue-driving event.
 
@@ -635,6 +731,8 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
         title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
     ):
         return "skipped"
+    if claim.task == "FR" and fr_is_superseded(doc, claim.repo, claim.id):
+        return "skipped"  # FR #254: MRB / open implement PR supersedes FR
     if _already(doc, claim.repo, claim.task, claim.id):
         # refresh refs/line on existing unaccepted row
         for row in doc["unaccepted"]:
@@ -873,7 +971,7 @@ def _lock(home: Path):
 
 
 def _empty_queue() -> dict:
-    return {"v": 1, "unaccepted": [], "accepted": []}
+    return {"v": 1, "unaccepted": [], "accepted": [], "done": []}
 
 
 def _coerce_row(row: dict) -> dict | None:
@@ -899,7 +997,7 @@ def _coerce_row(row: dict) -> dict | None:
     # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
     for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel",
                 "author_seat", "author_nick", "author", "url", "title", "body", "state",
-                "cooldown_until", "giveup_ts"):
+                "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -965,12 +1063,17 @@ def _read_queue_file(path: Path) -> dict:
         raise ValueError("queue")
     unaccepted = doc.get("unaccepted")
     accepted = doc.get("accepted")
+    done = doc.get("done")
     if not isinstance(unaccepted, list) or not isinstance(accepted, list):
         raise ValueError("queue lists")
+    if not isinstance(done, list):
+        done = []
     return {
         "v": 1,
         "unaccepted": [row for row in (_coerce_row(r) for r in unaccepted if isinstance(r, dict)) if row],
         "accepted": [row for row in (_coerce_row(r) for r in accepted if isinstance(r, dict)) if row],
+        # FR #254: keep DONE rows (url/result) so FR stays superseded while implement PR is open.
+        "done": [row for row in (_coerce_row(r) for r in done if isinstance(r, dict)) if row][-ACCEPTED_CAP:],
     }
 
 
@@ -989,7 +1092,7 @@ def _load_queue_unlocked(home: Path) -> dict:
     legacy_u = _read_legacy_unaccepted(root / LEGACY_UNACCEPTED)
     legacy_a = _read_legacy_accepted(root / LEGACY_ACCEPTED)
     if legacy_u or legacy_a:
-        doc = {"v": 1, "unaccepted": legacy_u, "accepted": legacy_a[-ACCEPTED_CAP:]}
+        doc = {"v": 1, "unaccepted": legacy_u, "accepted": legacy_a[-ACCEPTED_CAP:], "done": []}
         _write_queue(path, doc)
         return doc
     return _empty_queue()
@@ -1270,6 +1373,10 @@ def offer_focus_top(
                     continue  # FR #180: GIVEUP/NACK cooldown / needs-human
                 if row_skip_fr_reason(cand):
                     continue
+                if str(cand.get("task") or "").upper() == "FR" and fr_is_superseded(
+                    doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
+                ):
+                    continue  # FR #254
                 to = str(cand.get("offered_to") or "").strip()
                 if to and to.lower() != me.lower():
                     try:
@@ -1323,6 +1430,10 @@ def offer_top(home: Path, nick: str, channel: str, *, now: float | None = None) 
             for i, row in enumerate(doc["unaccepted"]):
                 if row_needs_human(row) or row_on_cooldown(row, now_f) or row_skip_fr_reason(row):
                     continue
+                if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
+                    doc, str(row.get("repo") or ""), str(row.get("id") or "")
+                ):
+                    continue  # FR #254
                 pick_i = i
                 break
             if pick_i is None:
@@ -1456,6 +1567,8 @@ def resync_from_github(
     desired: list[GitClaim] = []
     fetched: list[str] = []
     failed: list[str] = []
+    open_pulls_map: dict[str, set[str]] = {}
+    supersede_keys: set[str] = set()  # FR #254 owner/repo#N closed by open PR Closes
     for repo in repos:
         if not REPO_RE.fullmatch(repo):
             continue
@@ -1484,6 +1597,13 @@ def resync_from_github(
             refs = extract_closes_issue_ids(title, body, repo=repo)
             for r in refs:
                 closed_by_pr.add(r)
+            open_pulls_map.setdefault(repo, set()).add(f"#{num}")
+            # Full Closes owner/repo#N forms supersede that FR even cross-repo (FR #254).
+            for m in CLOSES_RE.finditer(f"{title}\n{body}"):
+                rname = (m.group("repo") or "").strip()
+                n = m.group("num")
+                if rname and n:
+                    supersede_keys.add(f"{rname}#{n}")
             desired.append(
                 GitClaim(repo=repo, task="MRB", id=f"#{num}", event="pull_request", action="opened", line="", refs=refs)
             )
@@ -1496,6 +1616,8 @@ def resync_from_github(
             ident = f"#{num}"
             if ident in closed_by_pr:
                 continue
+            if fr_issue_key(repo, ident) in supersede_keys:
+                continue  # FR #254 cross-repo Closes
             title = str(iss.get("title") or "")
             body = str(iss.get("body") or "")
             labels = _label_names(iss.get("labels"))
@@ -1527,6 +1649,14 @@ def resync_from_github(
             for row in doc["unaccepted"]:
                 if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
                     continue  # FR #180 local junk
+                if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
+                    doc,
+                    str(row.get("repo") or ""),
+                    str(row.get("id") or ""),
+                    open_pulls=open_pulls_map,
+                    fetched_repos=set(fetched),
+                ):
+                    continue  # FR #254
                 if (
                     row.get("repo") in fetched_set
                     and row.get("task") in ("FR", "MRB")
@@ -1538,7 +1668,16 @@ def resync_from_github(
             dropped = before - len(keep)
             doc["unaccepted"] = keep
             added = 0
+            fetched_set2 = set(fetched)
             for claim in desired:
+                if claim.task == "FR" and fr_is_superseded(
+                    doc,
+                    claim.repo,
+                    claim.id,
+                    open_pulls=open_pulls_map,
+                    fetched_repos=fetched_set2,
+                ):
+                    continue  # FR #254
                 if any(_same(r, claim.repo, claim.task, claim.id) for r in doc["accepted"] + doc["unaccepted"]):
                     continue                      # already queued/claimed: keep its line, seq and offer fields
                 if _append_unaccepted(doc, claim) == "added":
