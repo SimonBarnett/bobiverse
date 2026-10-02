@@ -26,6 +26,7 @@ from account_map import AccountMap, parse_message_tags
 NICK = "console"
 IRC_NICK_MAX = 30
 DEFAULT_SHELL = os.environ.get("COMSPEC") or "cmd.exe"
+UPDATE_PRODUCTS = frozenset({"airc", "bob", "jeeves"})
 _PRIVMSG_RE = re.compile(
     r"^:([^!\s]+)(?:![^@\s]*@\S+)?\s+PRIVMSG\s+(\S+)\s+:?(.*)$",
     re.IGNORECASE,
@@ -33,15 +34,73 @@ _PRIVMSG_RE = re.compile(
 _CHANNEL_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 _CTCP_PING_RE = re.compile(r"^\x01PING(?: (.*))?\x01\s*$", re.IGNORECASE | re.DOTALL)
 _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
+# FR #77: UPDATE airc|bob|jeeves [version] — fleet MSI via detached updater only.
+_UPDATE_CMD_RE = re.compile(
+    r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+))?\s*$",
+    re.IGNORECASE,
+)
 # Issue #302: fleet ear nicks bob-{machine} are already authenticated; machine varies.
 _BOB_FLEET_NICK_RE = re.compile(r"^bob-[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 
 ShopProbeResult = Literal["registered", "missing", "unknown"]
+MachineIdSource = Literal[
+    "arg",
+    "AIRC_CONSOLE_MACHINE",
+    "BOB_MACHINE_ID",
+    "COMPUTERNAME",
+    "HOSTNAME",
+    "default",
+]
+
+
+class MachineIdUnresolved(ValueError):
+    """No explicit fleet machine id and hostname fallback was refused (FR #77)."""
 
 
 def _sanitize_id(raw: str) -> str:
     cleaned = _CHANNEL_SAFE.sub("-", (raw or "").strip()).strip("-_")
     return (cleaned or "unknown").lower()
+
+
+def resolve_machine_id(
+    override: str | None = None,
+    *,
+    allow_hostname_fallback: bool = True,
+) -> tuple[str, MachineIdSource]:
+    """Canonical machine-id rule (FR #77).
+
+    Order: explicit ``-MachineId`` / override, then ``AIRC_CONSOLE_MACHINE``,
+    then ``BOB_MACHINE_ID``. Hostname (``COMPUTERNAME`` / ``HOSTNAME``) is only
+    used when ``allow_hostname_fallback`` is true — callers must treat that as
+    an explicit choice so the console does not silently join the wrong shop.
+    """
+    if override and str(override).strip():
+        return _sanitize_id(str(override)), "arg"
+    env_airc = (os.environ.get("AIRC_CONSOLE_MACHINE") or "").strip()
+    if env_airc:
+        return _sanitize_id(env_airc), "AIRC_CONSOLE_MACHINE"
+    env_bob = (os.environ.get("BOB_MACHINE_ID") or "").strip()
+    if env_bob:
+        return _sanitize_id(env_bob), "BOB_MACHINE_ID"
+    host = (os.environ.get("COMPUTERNAME") or "").strip()
+    if host:
+        if not allow_hostname_fallback:
+            raise MachineIdUnresolved(
+                "no -MachineId / AIRC_CONSOLE_MACHINE / BOB_MACHINE_ID; "
+                "refusing silent COMPUTERNAME fallback"
+            )
+        return _sanitize_id(host), "COMPUTERNAME"
+    host2 = (os.environ.get("HOSTNAME") or "").strip()
+    if host2:
+        if not allow_hostname_fallback:
+            raise MachineIdUnresolved(
+                "no -MachineId / AIRC_CONSOLE_MACHINE / BOB_MACHINE_ID; "
+                "refusing silent HOSTNAME fallback"
+            )
+        return _sanitize_id(host2), "HOSTNAME"
+    if not allow_hostname_fallback:
+        raise MachineIdUnresolved("no machine id available")
+    return "unknown", "default"
 
 
 def machine_id(override: str | None = None) -> str:
@@ -52,15 +111,159 @@ def machine_id(override: str | None = None) -> str:
     COMPUTERNAME alone (e.g. ``WIN-MPRE8VI4U6U``) joins the wrong channel and
     looks like \"does not connect\" on ``#ionos`` / ``#flamingo``.
     """
-    raw = (
-        override
-        or os.environ.get("AIRC_CONSOLE_MACHINE")
-        or os.environ.get("BOB_MACHINE_ID")
-        or os.environ.get("COMPUTERNAME")
-        or os.environ.get("HOSTNAME")
-        or "unknown"
-    ).strip()
-    return _sanitize_id(raw)
+    mid, _src = resolve_machine_id(override, allow_hostname_fallback=True)
+    return mid
+
+
+def parse_update_command(text: str) -> tuple[str, str | None] | None:
+    """Return ``(product, version|None)`` for an allowlisted UPDATE verb, else None."""
+    m = _UPDATE_CMD_RE.match(text or "")
+    if not m:
+        return None
+    product = m.group(1).lower()
+    if product not in UPDATE_PRODUCTS:
+        return None
+    return product, m.group(2)
+
+
+@dataclass
+class UpdateScheduleResult:
+    ok: bool
+    status: str
+    detail: str = ""
+    product: str = ""
+    version: str | None = None
+
+    def reply_line(self) -> str:
+        ver = self.version or ""
+        bits = [f"UPDATE {self.status}", f"product={self.product or '?'}"]
+        if ver:
+            bits.append(f"version={ver}")
+        if self.detail:
+            bits.append(self.detail)
+        if self.ok:
+            bits[0] = "UPDATE accepted"
+            bits.insert(1, f"status={self.status}")
+        return " ".join(bits)[:400]
+
+
+def schedule_fleet_update(
+    product: str,
+    version: str | None = None,
+    *,
+    install_root: str | None = None,
+    service_name: str | None = None,
+    updater_script: str | None = None,
+    state_dir: str | None = None,
+    dry_run: bool = False,
+    no_spawn: bool = False,
+) -> UpdateScheduleResult:
+    """Schedule ``Update-BobiverseService.ps1 -Mode Check`` (detached apply).
+
+    Never runs ``msiexec`` in this process. The Check mode writes a plan and
+    starts a scheduled-task / WMI helper; msiexec lives only in Apply.
+    """
+    product = (product or "").strip().lower()
+    if product not in UPDATE_PRODUCTS:
+        return UpdateScheduleResult(False, "rejected-product", product=product, version=version)
+    script = Path(updater_script) if updater_script else Path(__file__).resolve().parent / "Update-BobiverseService.ps1"
+    if not script.is_file():
+        # staged/split tree: common/scripts sibling
+        alt = Path(__file__).resolve().parents[2] / "common" / "scripts" / "Update-BobiverseService.ps1"
+        if alt.is_file():
+            script = alt
+    if not script.is_file():
+        return UpdateScheduleResult(
+            False, "updater-missing", detail=str(script), product=product, version=version
+        )
+    if not install_root:
+        # Prefer <ai root>\<product> next to this scripts dir's parent product root.
+        install_root = str(Path(__file__).resolve().parents[1])
+    if not service_name:
+        service_name = {"bob": "ircBob", "jeeves": "ircJeeves"}.get(product, "Airc")
+    ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
+    if not Path(ps).is_file():
+        ps = shutil_which_powershell()
+    args = [
+        ps,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Product",
+        product,
+        "-Mode",
+        "Check",
+        "-InstallRoot",
+        str(install_root),
+        "-ServiceName",
+        service_name,
+        "-ForceCheck",
+    ]
+    if version:
+        args += ["-TargetVersion", version]
+    if state_dir:
+        args += ["-StateDir", str(state_dir)]
+    if dry_run:
+        args.append("-DryRun")
+    if no_spawn:
+        args.append("-NoSpawn")
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=90)
+    except Exception as e:  # noqa: BLE001 — surface to IRC as spawn-failed
+        return UpdateScheduleResult(
+            False,
+            "spawn-failed",
+            detail=type(e).__name__,
+            product=product,
+            version=version,
+        )
+    out = ((p.stdout or "") + "\n" + (p.stderr or "")).lower()
+    # Prefer updater log phrases when present in stdout (Write-Host).
+    status = "check-ran"
+    ok = p.returncode == 0
+    for key in (
+        "update-scheduled",
+        "scheduled-nospawn",
+        "would-update",
+        "skipped-pending",
+        "blocked-loop-guard",
+        "skipped-optout",
+        "asset-url-rejected",
+        "no-matching-asset",
+        "no-sha256-asset",
+        "release-lookup-failed",
+        "spawn-failed",
+        "cooldown",
+        "current",
+        "throttled",
+    ):
+        if key in out.replace("result=", " "):
+            status = key
+            break
+    if status in {"update-scheduled", "scheduled-nospawn", "would-update"}:
+        ok = True
+        if status == "would-update":
+            status = "scheduled"
+        elif status == "update-scheduled":
+            status = "scheduled"
+    elif status in {"skipped-pending", "blocked-loop-guard", "skipped-optout", "cooldown", "current"}:
+        ok = False
+    detail = ""
+    for line in (p.stdout or "").splitlines()[::-1]:
+        if "self-update:" in line.lower() or "result=" in line.lower():
+            detail = line.strip()[:200]
+            break
+    if not detail and p.returncode != 0:
+        detail = f"exit={p.returncode}"
+    return UpdateScheduleResult(ok, status, detail=detail, product=product, version=version)
+
+
+def shutil_which_powershell() -> str:
+    import shutil
+
+    return shutil.which("powershell.exe") or shutil.which("powershell") or "powershell.exe"
 
 
 def shop_channel(machine: str | None = None) -> str:
@@ -458,6 +661,8 @@ class AircConsoleCore:
         auth: AuthPolicy,
         sessions: ConsoleSessionManager | None = None,
         nick: str = NICK,
+        update_scheduler: Callable[..., UpdateScheduleResult] | None = None,
+        install_root: str | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -465,6 +670,8 @@ class AircConsoleCore:
         self.nick = nick
         self.sessions = sessions or ConsoleSessionManager()
         self.channel_traffic: list[str] = []
+        self.update_scheduler = update_scheduler or schedule_fleet_update
+        self.install_root = install_root
 
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
@@ -543,7 +750,36 @@ class AircConsoleCore:
                 nick=nick,
                 target=target,
                 text=text,
-                reply="airc console: PRIVMSG lines pipe to your shell; .quit closes; silent on channel; answers ping",
+                reply=(
+                    "airc console: PRIVMSG lines pipe to your shell; "
+                    "UPDATE airc|bob|jeeves [ver] schedules detached MSI update; "
+                    ".quit closes; silent on channel; answers ping"
+                ),
+            )
+
+        # FR #77: UPDATE schedules Update-BobiverseService Check (detached); never msiexec here.
+        parsed = parse_update_command(cmd)
+        if parsed is not None:
+            product, ver = parsed
+            try:
+                result = self.update_scheduler(
+                    product,
+                    version=ver,
+                    install_root=self.install_root,
+                )
+            except TypeError:
+                # test doubles may omit kwargs
+                result = self.update_scheduler(product, version=ver)
+            if not isinstance(result, UpdateScheduleResult):
+                result = UpdateScheduleResult(
+                    False, "bad-scheduler", product=product, version=ver
+                )
+            return HandleResult(
+                action="update",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=result.reply_line(),
             )
 
         self.sessions.pipe(nick, cmd)

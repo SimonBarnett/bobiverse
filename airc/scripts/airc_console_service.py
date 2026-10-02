@@ -160,11 +160,14 @@ class AircConsoleService:
             on_output=self._on_console_out,
             idle_sec=float(args.idle_sec),
         )
+        # Install root = parent of scripts/ (product tree). Used by FR #77 UPDATE.
+        install_root = str(Path(__file__).resolve().parents[1])
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
             sessions=self.sessions,
             nick=self.nick,
+            install_root=install_root,
         )
         self.core.channel = self.channel
         self.sock: ssl.SSLSocket | socket.socket | None = None
@@ -569,8 +572,11 @@ class AircConsoleService:
             info(f"INFO pong to={hr.nick} {hr.reply}")
         elif hr.action == "deny" and hr.nick and hr.reply:
             self.send_privmsg(hr.nick, hr.reply)
-        elif hr.action in {"help", "close"} and hr.nick and hr.reply:
+        elif hr.action in {"help", "close", "update"} and hr.nick and hr.reply:
+            # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
+            if hr.action == "update":
+                info(f"INFO update-reply to={hr.nick} {hr.reply}")
         elif hr.action == "pipe":
             info(f"INFO pipe from={hr.nick}")
 

@@ -22,7 +22,23 @@ PRIVMSG marchhare_console :cmd /c type <ai root>\airc\VERSION
 | `PUT path` + chunks | Write file (base64 seq) |
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
 | `GET path` | hash/size + head/tail |
-| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI; airc updates defer self-recycle |
+| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77) |
+
+## UPDATE (FR #77) — shipped
+
+Authorized PRIVMSG only (`bob-*` / operators):
+
+```text
+PRIVMSG marchhare_console :UPDATE airc
+PRIVMSG marchhare_console :UPDATE airc 0.1.20
+```
+
+- Schedules **Check** mode of `Update-BobiverseService.ps1` with `-ForceCheck` (and optional `-TargetVersion`).
+- Detached helper (scheduled task / WMI) runs **Apply** later; the live airc process never invokes `msiexec`.
+- Reply (`UPDATE accepted status=scheduled …` or `UPDATE skipped-pending …`) is sent **before** the transport is stopped.
+- Assets must be `https://github.com/SimonBarnett/bobiverse/releases/download/...`; foreign URLs are rejected.
+- Pending / loop-guard / rollback / sha256 mismatch behaviour is owned by the updater (same as service-start self-update).
+- Machine id: explicit `-MachineId`, then `AIRC_CONSOLE_MACHINE` / `BOB_MACHINE_ID`; hostname fallback must be conscious (Start-AircConsole warns).
 
 ## Encoding policy
 
@@ -31,9 +47,8 @@ PRIVMSG marchhare_console :cmd /c type <ai root>\airc\VERSION
 - Secrets: **never** clear IRC — local files or agentic-file SEAL.
 - Large logs/MSI: HTTPS allowlist or path drop — IRC is control plane.
 
-## CAST IRON ops notes (until FR ships)
+## CAST IRON ops notes
 
-- Do not `Restart-Service Airc` / msiexec **airc** mid-playbook over airc — the transport dies.
-- Prefer `start /wait msiexec` and install **airc last/alone**.
+- Prefer `UPDATE airc` over free-form `msiexec` / `Restart-Service Airc` mid-playbook — the transport dies if you kill airc yourself.
 - LocalSystem ConsoleHome must not be `C:\Users\Default\.airc` (see post-install §8b).
 - Reserved nick + wrong GUID → oper `PASSWD {machine}_console <guid>` then restart Airc.

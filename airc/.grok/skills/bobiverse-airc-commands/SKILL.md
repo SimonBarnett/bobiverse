@@ -31,12 +31,14 @@ PRIVMSG <machine>_console :sc query ircJeeves
 - Keep each command SHORT (IRC line limit). Multi-line PowerShell does not survive: stage a script with
   `irm <raw-url> -OutFile <ai root>\drop\x.ps1` then `powershell -File <ai root>\drop\x.ps1`.
 - Allowlist: `bob-*` ears may always PRIVMSG `*_console`. Nothing else is authorized.
-- Planned extension (not shipped): PowerShell default + PUT/RUN - see `docs/airc-remote-control.md`.
+- Planned extension (partial): PowerShell default + PUT/RUN - see `docs/airc-remote-control.md`.
+- **UPDATE (FR #77, shipped):** `UPDATE airc|bob|jeeves [X.Y.Z]` schedules the detached `Update-BobiverseService.ps1` helper (never inline `msiexec` in the airc process). Reply returns before the service stops; pending/loop-guard/sha allowlist apply.
 
 ## Safe diagnostic commands
 
 `sc query <svc>`, `sc qc <svc>`, `type <ai root>\<product>\VERSION`, `dir <ai root>\<product>\logs`, `tasklist /fi "imagename eq python.exe"`.
 Do NOT: kill broad `powershell.exe`/`python.exe`, `sc stop BobIrcd`, edit Ergo files, print secrets.
+Prefer `UPDATE airc` over remote `msiexec` against the live console.
 
 ## Verify the console
 
