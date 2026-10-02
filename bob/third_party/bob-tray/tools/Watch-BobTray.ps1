@@ -2277,6 +2277,7 @@ function Show-BobTrayAbout {
         foreach ($c in @($logo, $title, $by, $ver, $box, $ok)) { $form.Controls.Add($c) }
         $form.AcceptButton = $ok
         $form.Add_FormClosed({ $script:aboutForm = $null })
+        $form.Add_Shown({ $box.Select(0, 0); $ok.Focus() })
         $script:aboutForm = $form
         $form.Show()
         Write-TrayLog ('about dialog shown: ' + $rows.Count + ' install folder(s)')
