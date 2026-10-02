@@ -1929,6 +1929,15 @@ function Get-BobDigestWebhookPostStatePath {
     Join-Path (Get-BobIrcHome) (Join-Path 'bob-peers' '_digest-webhook-posted.json')
 }
 
+function Get-BobDigestWebhookCapturePath {
+    # FR #113: hermetic Assert uses BOB_DIGEST_WEBHOOK_CAPTURE; also honour BOB_DIGEST_CAPTURE.
+    foreach ($name in @('BOB_DIGEST_WEBHOOK_CAPTURE', 'BOB_DIGEST_CAPTURE')) {
+        $v = [string][Environment]::GetEnvironmentVariable($name)
+        if ($v -and $v.Trim()) { return $v.Trim() }
+    }
+    return ''
+}
+
 function Get-BobDigestReportUrl {
     $cfg = Get-BobiverseConfig
     $url = ''
@@ -2111,16 +2120,15 @@ function Test-BobDigestWebhookPayloadSecretFree {
 # threw "A parameter cannot be found that matches parameter name 'Payload'".
 function Invoke-BobDigestWebhookMergePost {
     param([Parameter(Mandatory)]$Payload)
-    $capture = [string]$env:BOB_DIGEST_WEBHOOK_CAPTURE
+    $capture = Get-BobDigestWebhookCapturePath
     $body = $Payload | ConvertTo-Json -Depth 8 -Compress
     if (-not (Test-BobDigestWebhookPayloadSecretFree $body)) { return $null }
-    if ($capture.Trim()) {
-        $capPath = $capture.Trim()
-        $capDir = Split-Path $capPath -Parent
+    if ($capture) {
+        $capDir = Split-Path $capture -Parent
         if ($capDir -and -not (Test-Path $capDir)) {
             New-Item -ItemType Directory -Force -Path $capDir | Out-Null
         }
-        Add-Content -LiteralPath $capPath -Value $body -Encoding utf8
+        Add-Content -LiteralPath $capture -Value $body -Encoding utf8
         return 204
     }
     $url = Get-BobDigestReportUrl
@@ -2182,6 +2190,7 @@ function Send-BobDigestWebhookIfChanged {
     )
     $mid = [string]$Doc.id
     if (-not $mid) { return $null }
+    $capture = Get-BobDigestWebhookCapturePath
     $posted = @{}
     $statePath = Get-BobDigestWebhookPostStatePath
     if (Test-Path $statePath) {
@@ -2191,15 +2200,18 @@ function Send-BobDigestWebhookIfChanged {
         }
         catch { }
     }
+    # FR #113: capture mode is for Assert/hermetic tests — always write the ndjson line
+    # (do not skip on fingerprint / heartbeat / chair-in-sync).
+    $forceCapture = [bool]$capture
     $heartbeatDue = Test-BobDigestWebhookHeartbeatDue -Posted $posted -MachineId $mid -StatePath $statePath
-    if (-not $heartbeatDue -and $Before) {
+    if (-not $forceCapture -and -not $heartbeatDue -and $Before) {
         if (Test-BobIrcDigestWebhookChairInSync -Chair $Before -Local $Doc) {
             return $null
         }
     }
     $fp = Get-BobDigestWebhookFingerprint $Doc
-    if (-not $heartbeatDue -and $posted.ContainsKey($mid) -and [string]$posted[$mid] -eq $fp) { return $null }
-    if (-not (Get-BobDigestReportUrl) -and -not [string]$env:BOB_DIGEST_WEBHOOK_CAPTURE.Trim()) {
+    if (-not $forceCapture -and -not $heartbeatDue -and $posted.ContainsKey($mid) -and [string]$posted[$mid] -eq $fp) { return $null }
+    if (-not (Get-BobDigestReportUrl) -and -not $capture) {
         return $null
     }
     $payload = Build-BobDigestWebhookMergePayload $Doc
