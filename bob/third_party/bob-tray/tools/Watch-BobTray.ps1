@@ -2178,7 +2178,7 @@ function Get-BobTrayProductVersionLabel {
                 (Join-Path $RepoRoot 'VERSION'),
                 (Join-Path $RepoRoot 'src\VERSION'),
                 (Join-Path (Split-Path $RepoRoot -Parent) 'bob\VERSION'),
-                'C:\ai\bob\VERSION'
+                ([string]$env:BOB_AI_ROOT + '\bob\VERSION')   # t780u (was a hard-coded C:\ai\bob; Start-BobTray sets BOB_AI_ROOT)
             )) {
             if ($cand -and (Test-Path -LiteralPath $cand)) {
                 try {

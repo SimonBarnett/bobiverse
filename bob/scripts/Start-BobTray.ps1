@@ -13,7 +13,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallRoot = 'C:\ai\bob',
+    [string]$InstallRoot = '',   # '' = installed root / discovered <ai root>\bob (t780u)
     [string]$ServiceName = 'ircBob',
     [string]$BobHome = '',
     [string]$MachineId = '',
@@ -25,8 +25,18 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-if (-not $InstallRoot) { $InstallRoot = 'C:\ai\bob' }
+# t780u: no hard-coded C:\ai. Installed: this script lives in <install>\scripts, so the install root is its parent. Otherwise the
+# <drive>:\ai root is discovered on the fixed disks (Bobiverse-Common.ps1; BOB_AI_ROOT overrides).
+if (-not $InstallRoot) {
+    $selfRoot = Split-Path -Parent $PSScriptRoot
+    $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+    if (Test-Path -LiteralPath (Join-Path $selfRoot 'tools\Watch-BobTray.ps1')) { $InstallRoot = $selfRoot }
+    elseif (Test-Path -LiteralPath $cm) { . $cm; $InstallRoot = Get-BobiverseProductRoot -Product bob }
+    else { $InstallRoot = $selfRoot }
+}
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
+# The tray (vendored Watch-BobTray.ps1) resolves sibling products through BOB_AI_ROOT instead of a baked-in C:\ai.
+if (-not $env:BOB_AI_ROOT -and (Split-Path -Leaf $InstallRoot) -ieq 'bob') { $env:BOB_AI_ROOT = Split-Path -Parent $InstallRoot }
 
 $tray = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
 if (-not (Test-Path -LiteralPath $tray)) {
@@ -66,8 +76,7 @@ if (-not $env:BOBIVERSE_BOB_VERSION) {
     foreach ($vf in @(
             (Join-Path $InstallRoot 'VERSION'),
             (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\VERSION'),
-            (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\VERSION'),   # t773u split repo
-            'C:\ai\bob\VERSION'
+            (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\VERSION')   # t773u split repo
         )) {
         if ($vf -and (Test-Path -LiteralPath $vf)) {
             $env:BOBIVERSE_BOB_VERSION = ([string](Get-Content -LiteralPath $vf -TotalCount 1)).Trim()

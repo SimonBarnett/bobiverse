@@ -12,7 +12,7 @@
 #>
 [CmdletBinding()]
 param(
-    # Empty = auto: release third_party\nssm\win64\nssm.exe, then legacy C:\ai\ergo, then PATH (#266).
+    # Empty = auto: release third_party\nssm\win64\nssm.exe, then legacy <ai root>\ergo, then PATH (#266).
     [string]$Nssm = '',
     [string]$Launcher = '',
     [Alias('Home')]
@@ -113,7 +113,7 @@ else {
 }
 $resolvedNssm = Resolve-AircConsoleNssmPath -Preferred $Nssm -ScriptDir $scriptDir
 if (-not $resolvedNssm) {
-    throw 'nssm missing: unpack third_party\nssm\win64\nssm.exe from the release zip (issue #266), or pass -Nssm, or install to C:\ai\ergo\nssm.exe'
+    throw 'nssm missing: unpack third_party\nssm\win64\nssm.exe from the release zip (issue #266), or pass -Nssm, or install to <ai root>\ergo\nssm.exe'
 }
 $Nssm = $resolvedNssm
 Write-Host "INFO using nssm: $Nssm"
@@ -142,7 +142,7 @@ if (-not $ConsoleHome) {
             Write-Host "INFO LocalSystem using existing Admin ConsoleHome=$ConsoleHome"
         } else {
             $installGuess = Split-Path -Parent (Split-Path -Parent $Launcher)
-            if (-not $installGuess) { $installGuess = 'C:\ai\airc' }
+            if (-not $installGuess) { $installGuess = if (Get-Command Get-BobiverseAiRoot -ErrorAction SilentlyContinue) { Join-Path (Get-BobiverseAiRoot) 'airc' } else { throw 'cannot derive the airc install dir (dot-source Bobiverse-Common.ps1 or pass -ConsoleHome)' } }
             $ConsoleHome = Join-Path $installGuess 'home'
             Write-Host "INFO LocalSystem ConsoleHome=$ConsoleHome (avoid Default profile)"
         }

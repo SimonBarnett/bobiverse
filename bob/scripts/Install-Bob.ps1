@@ -6,7 +6,7 @@
 [CmdletBinding()]
 param(
     [string]$Nssm = '',
-    [string]$InstallRoot = 'C:\ai\bob',
+    [string]$InstallRoot = '',   # '' = <discovered ai root>\bob (t780u)
     [string]$ServiceName = 'ircBob',
     [string]$Python = '',
     [string]$MachineId = '',
@@ -41,6 +41,9 @@ if ($g -and (Test-Path -LiteralPath (Join-Path $g 'common\VERSION'))) {
     $here = Join-Path $flat 'scripts'
 }
 . (Join-Path $here 'Bobiverse-Common.ps1')
+# t780u: no hard-coded C:\ai - the <drive>:\ai root is discovered on the fixed disks (BOB_AI_ROOT overrides).
+if (-not $InstallRoot) { $InstallRoot = Join-Path (Get-BobiverseAiRoot -Create) 'bob' }
+
 
 if (-not (Test-BobiverseIsAdmin)) {
     Request-BobiverseUacRelaunch -Bound $PSBoundParameters

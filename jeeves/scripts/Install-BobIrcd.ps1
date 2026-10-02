@@ -8,7 +8,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ErgoRoot = 'C:\ai\ergo',
+    [string]$ErgoRoot = '',   # '' = <discovered ai root>\ergo (t780u)
     [string]$ServiceName = 'BobIrcd',
     [string]$PackErgoDir = '',
     [string]$NssmSource = '',
@@ -19,6 +19,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'Bobiverse-Common.ps1')
+# t780u: <drive>:\ai is discovered on the fixed disks; never assume C:\ai.
+if (-not $ErgoRoot) { $ErgoRoot = Join-Path (Get-BobiverseAiRoot -Create) 'ergo' }
+
 
 if (-not (Test-BobiverseIsAdmin)) {
     Request-BobiverseUacRelaunch -Bound $PSBoundParameters

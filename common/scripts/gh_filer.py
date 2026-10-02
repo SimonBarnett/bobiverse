@@ -35,9 +35,13 @@ def _token_candidate_paths() -> list[Path]:
     paths: list[Path] = [Path.home() / ".grok" / "bob" / "github.token"]
     # airc/bobcallback often run as LocalSystem; interactive gh auth is under Administrator.
     paths.append(Path(r"C:\Users\Administrator\.grok\bob\github.token"))
-    paths.append(Path(r"C:\ai\jeeves\config\github.token"))
+    try:  # t780u: the jeeves install under the discovered <drive>:\ai (BOB_AI_ROOT overrides)
+        import ai_root
+        paths.append(Path(ai_root.product_root("jeeves")) / "config" / "github.token")
+    except Exception:
+        pass
     # #53: the jeeves install owns the webhook receiver: <InstallRoot>\config\github.token
-    # next to scripts\ (works for any InstallRoot, not just C:\ai\jeeves).
+    # next to scripts\ (works for any InstallRoot, not just <ai root>\jeeves).
     paths.insert(0, Path(__file__).resolve().parent.parent / "config" / "github.token")
     cfg_env = (os.environ.get("BOB_CONFIG_DIR") or "").strip()
     if cfg_env:

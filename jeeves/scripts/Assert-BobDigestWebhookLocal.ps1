@@ -3,7 +3,7 @@
 .SYNOPSIS
   Smoke: Write-BobIrcStatus with BOB_DIGEST_WEBHOOK_CAPTURE; assert machine id / weekly / overage.
 .PARAMETER InstallRoot
-  Staged or live bob tree containing src\BobBridge.psd1 (default C:\ai\bob, else third_party\bob-tray).
+  Staged or live bob tree containing src\BobBridge.psd1 (default <ai root>\bob, else third_party\bob-tray).
 #>
 [CmdletBinding()]
 param(
@@ -14,12 +14,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+# t780u: <drive>:\ai discovery lives in Common (installed: next to this script; split repo: ..\..\common\scripts).
+foreach ($cm in @((Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'), (Join-Path (Split-Path -Parent $repoRoot) 'common\scripts\Bobiverse-Common.ps1'))) {
+    if (Test-Path -LiteralPath $cm) { . $cm; break }
+}
 
 function Resolve-BobTrayModuleRoot {
     param([string]$Preferred)
     foreach ($c in @(
             $Preferred,
-            (Join-Path 'C:\ai\bob' ''),
+            (Join-Path (Get-BobiverseProductRoot -Product bob) ''),   # t780u: discovered <drive>:\ai
             (Join-Path $repoRoot 'third_party\bob-tray'),
             (Join-Path (Split-Path -Parent $repoRoot) 'bob\third_party\bob-tray'),   # t773u split repo: jeeves\scripts -> ..\bob
             (Join-Path $repoRoot 'dist\bob-*')

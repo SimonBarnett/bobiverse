@@ -32,7 +32,7 @@ $env:BOB_HOME = $ChairHome
 
 [void](Import-BobiverseErgoPassword -InstallRoot $RepoRoot -HomeDir $ChairHome)
 
-# Fast-forward C:\ai\bobiverse (or BOBIVERSE_REPO) and sync into this install tree.
+# Fast-forward <ai root>\bobiverse (or BOBIVERSE_REPO) and sync into this install tree.
 # Operators may set BOBIVERSE_NO_UPDATE=1 to skip. LocalSystem is allowed to update.
 # v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
 # helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.

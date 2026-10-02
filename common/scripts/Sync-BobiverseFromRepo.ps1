@@ -4,12 +4,12 @@
   Fast-forward the bobiverse git clone, then sync runtime files into a product install tree.
 .DESCRIPTION
   Used by Start-Jeeves / Start-Bob / Start-AircConsole before launch.
-  1) Resolve clone: BOBIVERSE_REPO, else C:\ai\bobiverse / D:\ai\bobiverse
+  1) Resolve clone: BOBIVERSE_REPO, else <ai root>\bobiverse (ai root found on the fixed disks; BOB_AI_ROOT overrides)
   2) git fetch + merge --ff-only origin/main (best-effort; never blocks service start)
   3) Robocopy scripts + third_party into InstallRoot; copy VERSION
   Skips when BOBIVERSE_NO_UPDATE=1. Does not overwrite config\, home\, or secrets.
 .PARAMETER Product
-  jeeves | bob | airc — selects default InstallRoot C:\ai\<product>.
+  jeeves | bob | airc — selects default InstallRoot <ai root>\<product>.
 .PARAMETER InstallRoot
   Product install tree to refresh (MSI layout without its own .git).
 .PARAMETER Branch
@@ -33,9 +33,10 @@ if ($env:BOBIVERSE_NO_UPDATE -eq '1') {
     exit 0
 }
 
+. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')   # t780u: needed up front for the <drive>:\ai discovery
 if (-not $InstallRoot) {
     if (-not $Product) { throw 'Sync-BobiverseFromRepo: pass -InstallRoot or -Product' }
-    $InstallRoot = Join-Path 'C:\ai' $Product
+    $InstallRoot = Get-BobiverseProductRoot -Product $Product   # t780u: discovered <drive>:\ai
 }
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 if (-not (Test-Path -LiteralPath $InstallRoot)) {
@@ -60,7 +61,10 @@ function Resolve-BobiverseGitExe {
 function Resolve-BobiverseClone {
     $clone = $env:BOBIVERSE_REPO
     if ($clone -and (Test-Path -LiteralPath (Join-Path $clone '.git'))) { return [IO.Path]::GetFullPath($clone) }
-    foreach ($c in @('C:\ai\bobiverse', 'D:\ai\bobiverse')) {
+    # t780u: the clone lives under the discovered ai root; other fixed disks' \ai\bobiverse are tried after it.
+    $cands = @((Join-Path (Get-BobiverseAiRoot) 'bobiverse'))
+    foreach ($d in @(Get-BobiverseFixedDisks)) { $cands += (Join-Path ($d.Root + 'ai') 'bobiverse') }
+    foreach ($c in @($cands | Select-Object -Unique)) {
         # #70: a box without a D: drive threw "Cannot find drive 'D'" on every start
         $drive = $c.Substring(0, 2)
         if (-not (Test-Path -LiteralPath ($drive + '\') -ErrorAction SilentlyContinue)) { continue }
@@ -72,7 +76,7 @@ function Resolve-BobiverseClone {
 $git = Resolve-BobiverseGitExe
 $clone = Resolve-BobiverseClone
 if (-not $clone) {
-    Write-Host 'INFO sync-skip no bobiverse clone (set BOBIVERSE_REPO or use C:\ai\bobiverse)'
+    Write-Host 'INFO sync-skip no bobiverse clone (set BOBIVERSE_REPO or clone to <ai root>\bobiverse)'
     exit 2
 }
 if (-not $git) {
@@ -117,7 +121,6 @@ if ($git) {
 }
 
 # t773u: the clone may be a split repo (common\ jeeves\ bob\ airc\) or an older flat one; the INSTALL tree is always flat.
-. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
 $verSrc = Get-BobiverseRepoPath -Root $clone -Rel 'src\VERSION'
 if (-not (Test-Path -LiteralPath $verSrc)) { $verSrc = Join-Path $clone 'VERSION' }
 $cloneVer = if (Test-Path -LiteralPath $verSrc) { (Get-Content -LiteralPath $verSrc -Raw).Trim() } else { '?' }

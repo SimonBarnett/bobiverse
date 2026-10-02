@@ -6,11 +6,11 @@
 [CmdletBinding()]
 param(
     [string]$Nssm = '',
-    [string]$InstallRoot = 'C:\ai\jeeves',
+    [string]$InstallRoot = '',   # '' = <discovered ai root>\jeeves (t780u)
     [string]$ServiceName = 'ircJeeves',
     [string]$Python = '',
     [string]$ChairHome = '',
-    [string]$ErgoRoot = 'C:\ai\ergo',
+    [string]$ErgoRoot = '',   # '' = <discovered ai root>\ergo (t780u)
     [switch]$SkipErgo,
     # v0.1.17: an existing Ergo (ergo.exe + ircd.yaml + BobIrcd service) is left completely alone
     # (an update must never restart or reconfigure the IRC server). -ForceErgo re-runs Install-BobIrcd.
@@ -45,6 +45,10 @@ if ($g -and (Test-Path -LiteralPath (Join-Path $g 'common\VERSION'))) {
     $here = Join-Path $flat 'scripts'
 }
 . (Join-Path $here 'Bobiverse-Common.ps1')
+# t780u: no hard-coded C:\ai - the <drive>:\ai root is discovered on the fixed disks (BOB_AI_ROOT overrides).
+if (-not $InstallRoot) { $InstallRoot = Join-Path (Get-BobiverseAiRoot -Create) 'jeeves' }
+if (-not $ErgoRoot) { $ErgoRoot = Join-Path (Get-BobiverseAiRoot -Create) 'ergo' }
+
 
 if (-not (Test-BobiverseIsAdmin)) {
     Request-BobiverseUacRelaunch -Bound $PSBoundParameters
@@ -130,7 +134,7 @@ if (-not (Test-Path -LiteralPath $ops)) {
     [IO.File]::WriteAllText($ops, "Simon`n", [Text.UTF8Encoding]::new($false))
 }
 
-# Ergo payload: pack lays ergo\ under InstallRoot; BobIrcd AppDirectory is ErgoRoot (C:\ai\ergo)
+# Ergo payload: pack lays ergo\ under InstallRoot; BobIrcd AppDirectory is ErgoRoot (<ai root>\ergo)
 if (-not $SkipErgo -and -not $ForceErgo -and
     (Test-Path -LiteralPath (Join-Path $ErgoRoot 'ergo.exe')) -and
     (Test-Path -LiteralPath (Join-Path $ErgoRoot 'ircd.yaml')) -and

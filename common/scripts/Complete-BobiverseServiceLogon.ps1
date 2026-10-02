@@ -23,7 +23,7 @@ if (-not (Test-BobiverseIsAdmin)) {
     Request-BobiverseUacRelaunch -Bound $PSBoundParameters
 }
 
-if (-not $InstallRoot) { $InstallRoot = Join-Path 'C:\ai' $Product }
+if (-not $InstallRoot) { $InstallRoot = Get-BobiverseProductRoot -Product $Product }
 if (-not $ServiceName) {
     $ServiceName = switch ($Product) {
         'bob' { 'ircBob' }

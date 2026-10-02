@@ -44,7 +44,17 @@ EXIT_NO_AGENT = 4  # nothing to start (no key given / no agent installed)
 EXIT_GAVE_UP = 5  # hang-restart bound exceeded
 EXIT_LAUNCH_FAIL = 6
 
-DEFAULT_INSTALL_ROOT = r"C:\ai\bob"
+def _default_install_root() -> str:
+    """<drive>:\\ai\\bob on the fixed disk that really holds the fleet (t780u); never a hard-coded C:."""
+    try:
+        import ai_root
+
+        return ai_root.product_root("bob")
+    except Exception:  # pragma: no cover - standalone fallback
+        return r"C:\ai\bob"
+
+
+DEFAULT_INSTALL_ROOT = _default_install_root()
 DEFAULT_HOST = "irc.ntsa.uk"
 DEFAULT_PORT = 6697
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -285,7 +295,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to {home}\\outbox.txt, then end the turn. "
         f"ping/pong is answered for you. The program posts !bored for you - NEVER post it yourself. When Jeeves assigns a job, first append "
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append 'PRIVMSG #{machine} :DONE <FR|MRB|UAT> owner/repo#N <PASS|FAIL> <url>' "
-        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. CAST IRON: harvest skills and file every issue/FR/bug with C:\\ai\\bob\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
+        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. CAST IRON: harvest skills and file every issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
         f"Never print or store secrets."
     )
 
@@ -295,7 +305,7 @@ def plan_prompt(plan_dir: str) -> str:
         f"You are a NEW Bobiverse plan agent (fresh session - never resume or continue an older plan). Your working folder is {plan_dir}. "
         f"FIRST read the skills in {plan_dir}\\.grok\\skills and {plan_dir}\\AGENTS.md (start with visionary). "
         f"Plan-mode only: no IRC, no builds. Create this plan's output in a NEW subfolder {plan_dir}\\work\\plan-<yyyyMMdd-HHmmss> and never touch earlier plans. "
-        f"CAST IRON: harvest skills and file every issue/FR/bug with C:\\ai\\bob\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. Never print or store secrets."
+        f"CAST IRON: harvest skills and file every issue/FR/bug with {Path(plan_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. Never print or store secrets."
     )
 
 

@@ -9,7 +9,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallRoot = 'C:\ai\bob',
+    [string]$InstallRoot = '',   # '' = installed root / discovered <ai root>\bob (t780u)
     [string]$MachineId = '',
     [string]$TaskName = 'BobiverseTray',
     [string]$RunAsUser = '',
@@ -20,6 +20,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# t780u: no hard-coded C:\ai. Installed: this script lives in <install>\scripts, so the install root is its parent. Otherwise the
+# <drive>:\ai root is discovered on the fixed disks (Bobiverse-Common.ps1; BOB_AI_ROOT overrides).
+if (-not $InstallRoot) {
+    $selfRoot = Split-Path -Parent $PSScriptRoot
+    $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+    if (Test-Path -LiteralPath (Join-Path $selfRoot 'tools\Watch-BobTray.ps1')) { $InstallRoot = $selfRoot }
+    elseif (Test-Path -LiteralPath $cm) { . $cm; $InstallRoot = Get-BobiverseProductRoot -Product bob }
+    else { $InstallRoot = $selfRoot }
+}
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 $tray = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
 if (-not (Test-Path -LiteralPath $tray)) { throw "missing $tray" }

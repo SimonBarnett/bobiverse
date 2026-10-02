@@ -522,7 +522,7 @@ function Get-BobCapacity {
                 $byId[$tid] = [pscustomobject]@{
                     id       = $tid
                     kind     = 'windows'
-                    cwdRoots = @('C:\ai')
+                    cwdRoots = @($(if ($env:BOB_AI_ROOT) { $env:BOB_AI_ROOT } else { 'C:\ai' }))   # t780u: BOB_AI_ROOT set by Start-BobTray
                     hostname = $tid
                 }
             }

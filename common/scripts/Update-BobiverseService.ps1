@@ -584,7 +584,12 @@ function Invoke-Check {
 try {
     $Product = $Product.Trim().ToLowerInvariant()
     if (@('jeeves', 'bob', 'airc') -notcontains $Product) { Write-Host 'WARN self-update: -Product must be jeeves|bob|airc'; if ($Mode -eq 'Check') { exit 0 } else { exit 2 } }
-    if (-not $InstallRoot) { $InstallRoot = Join-Path 'C:\ai' $Product }
+    if (-not $InstallRoot) {
+        # t780u: <drive>:\ai is discovered on the fixed disks (BOB_AI_ROOT overrides); C:\ai only if Common is missing.
+        $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+        if (Test-Path -LiteralPath $common) { . $common; $InstallRoot = Get-BobiverseProductRoot -Product $Product }
+        else { $InstallRoot = Join-Path 'C:\ai' $Product }
+    }
     if (-not $ServiceName) { $ServiceName = switch ($Product) { 'bob' { 'ircBob' } 'jeeves' { 'ircJeeves' } default { 'Airc' } } }
     if ($Repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Write-Host 'WARN self-update: bad -Repo'; exit 0 }
     $defaultState = -not $PSBoundParameters.ContainsKey('StateDir')

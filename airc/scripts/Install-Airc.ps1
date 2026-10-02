@@ -1,13 +1,13 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Install Airc service (renamed from airc-console). Tree C:\ai\airc, service Airc.
+  Install Airc service (renamed from airc-console). Tree <ai root>\airc (the <drive>:\ai found on the fixed disks), service Airc.
   Nick {machinename}_console — see airc_console_service shop-mode.
 #>
 [CmdletBinding()]
 param(
     [string]$Nssm = '',
-    [string]$InstallRoot = 'C:\ai\airc',
+    [string]$InstallRoot = '',   # '' = <discovered ai root>\airc (t780u)
     [string]$MachineId = '',
     [string]$ConsoleHome = '',
     [string[]]$Operators = @('Simon'),
@@ -32,6 +32,9 @@ if ($g -and (Test-Path -LiteralPath (Join-Path $g 'common\VERSION'))) {
     $here = Join-Path $flat 'scripts'
 }
 . (Join-Path $here 'Bobiverse-Common.ps1')
+# t780u: no hard-coded C:\ai - the <drive>:\ai root is discovered on the fixed disks (BOB_AI_ROOT overrides).
+if (-not $InstallRoot) { $InstallRoot = Join-Path (Get-BobiverseAiRoot -Create) 'airc' }
+
 
 if (-not (Test-BobiverseIsAdmin)) {
     Request-BobiverseUacRelaunch -Bound $PSBoundParameters
@@ -43,7 +46,7 @@ if (Test-Path -LiteralPath $bootstrap) {
     if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
 }
 
-# Stage into C:\ai\airc then call legacy Install-AircConsole with new names
+# Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
