@@ -1,60 +1,54 @@
-# Airc remote control (protocol sketch)
+﻿# Airc remote control (protocol sketch)
 
 See **[feature-request-airc-remote-control-2026-10-01.md](./feature-request-airc-remote-control-2026-10-01.md)** for LOCKED success metrics.
-Ops: **[airc-ops.md](./airc-ops.md)**. Driving-box helper: **`scripts/Invoke-AircRemote.ps1`** (FR #76).
 
-## Today (FR #75 shell ergonomics shipped; PUT/RUN/UPDATE still pending)
+## Today (v0.1.x)
 
-Authenticated PRIVMSG to `{machine}_console` runs a **oneshot** job (default **PowerShell 5.1** `-NoProfile -NonInteractive -EncodedCommand`). Replies are Query-only:
-
-```text
-out id=<job> seq=<n> <chunk>
-err id=<job> seq=<n> <chunk>
-DONE id=<job> exit=<code>
-```
-
-Long lines are chunked to ~350 payload chars (no silent 400 clip). `cmd:` uses COMSPEC `/d /c`; `psb64:` accepts UTF-16LE native or UTF-8 script bytes.
+Authenticated PRIVMSG to `{machine}_console` pipes each line into a **cmd.exe** session. Stdout returns as Query PRIVMSG, clipped to ~400 characters. Multi-line work usually means gist + `irm` + `powershell -File`.
 
 ```text
-PRIVMSG marchhare_console :Write-Output $PSVersionTable.PSVersion
-PRIVMSG marchhare_console :cmd: echo %COMSPEC%
-PRIVMSG marchhare_console :psb64:<utf16le-or-utf8-base64>
+PRIVMSG marchhare_console :sc query Airc
+PRIVMSG marchhare_console :cmd /c type <ai root>\airc\VERSION
 ```
 
-## Helper (FR #76)
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-AircRemote.ps1 -SelfTest
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-AircRemote.ps1 `
-  -MachineId <id> -Action Status|Command|Cmd|Psb64|Put|Run|Job|Cancel|Update `
-  [-Text ...] [-Path ...] [-LocalFile ...] [-Outbox ...] [-WhatIf]
-```
-
-Builds IRC-safe bodies, UTF-16LE `psb64`, PUT chunks + SHA-256, sandbox path checks, reply correlation (`DONE id= exit=`), retries, and secret redaction. Server-side PUT/RUN/STATUS acceptance is FR #78; shell DONE framing is FR #75.
-
-## Target verbs
+## Target verbs (FR)
 
 | Verb | Purpose |
 |------|---------|
-| plain line | PowerShell (default, FR #75) |
+| `STATUS` | Airc Running + VERSION files (bob/airc/jeeves) |
+| plain line | PowerShell (default) |
 | `cmd: …` | COMSPEC escape hatch |
 | `psb64:<b64>` | `powershell -EncodedCommand` |
-| `STATUS` | Airc Running + VERSION files (bob/airc/jeeves) |
-| `PUT` + `CHUNK` + `PUTEND` | Write file (base64 seq + sha256) |
+| `PUT path` + chunks | Write file (base64 seq) |
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
-| `JOB` / `CANCEL` | Job lifecycle |
-| `UPDATE airc\|bob\|jeeves [ver]` | Detached `Update-BobiverseService.ps1` path (FR #77) |
+| `GET path` | hash/size + head/tail |
+| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77) |
+
+## UPDATE (FR #77) — shipped
+
+Authorized PRIVMSG only (`bob-*` / operators):
+
+```text
+PRIVMSG marchhare_console :UPDATE airc
+PRIVMSG marchhare_console :UPDATE airc 0.1.20
+```
+
+- Schedules **Check** mode of `Update-BobiverseService.ps1` with `-ForceCheck` (and optional `-TargetVersion`).
+- Detached helper (scheduled task / WMI) runs **Apply** later; the live airc process never invokes `msiexec`.
+- Reply (`UPDATE accepted status=scheduled …` or `UPDATE skipped-pending …`) is sent **before** the transport is stopped.
+- Assets must be `https://github.com/SimonBarnett/bobiverse/releases/download/...`; foreign URLs are rejected.
+- Pending / loop-guard / rollback / sha256 mismatch behaviour is owned by the updater (same as service-start self-update).
+- Machine id: explicit `-MachineId`, then `AIRC_CONSOLE_MACHINE` / `BOB_MACHINE_ID`; hostname fallback must be conscious (Start-AircConsole warns).
 
 ## Encoding policy
 
 - Short ops: **plain text** (readable in Halloy / irc.log).
 - Scripts / `$` / spaces: **base64** (`psb64` or PUT).
-- Secrets: **never** clear IRC — local files or agentic-file SEAL; helper redacts transcripts.
+- Secrets: **never** clear IRC — local files or agentic-file SEAL.
 - Large logs/MSI: HTTPS allowlist or path drop — IRC is control plane.
 
 ## CAST IRON ops notes
 
-- Do not inline `msiexec` **airc** over the live console transport — use detached `Update-BobiverseService.ps1` Apply.
-- Prefer `start /wait msiexec` and install **airc last/alone**.
+- Prefer `UPDATE airc` over free-form `msiexec` / `Restart-Service Airc` mid-playbook — the transport dies if you kill airc yourself.
 - LocalSystem ConsoleHome must not be `C:\Users\Default\.airc` (see post-install §8b).
 - Reserved nick + wrong GUID → oper `PASSWD {machine}_console <guid>` then restart Airc.

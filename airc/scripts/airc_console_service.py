@@ -3,7 +3,7 @@
 
 ChanServ-registered ``#{machinename}`` → nick ``{machinename}_console``.
 Otherwise lobby on ``#{domain_or_workgroup}`` as ``{machinename}`` / ``_N``.
-Silent in channel; authenticated PRIVMSG → FR #75 PowerShell/cmd/psb64 jobs (NSSM).
+Silent in channel; authenticated PRIVMSG → per-user console pipe (NSSM).
 """
 from __future__ import annotations
 
@@ -159,8 +159,6 @@ class AircConsoleService:
         if not ops and not accts:
             raise SystemExit("airc console: refuse empty operators/accounts (FR #253)")
         cwd = args.cwd or str(self.home)
-        # Legacy interactive pipe kept for --shell override / idle reap; FR #75
-        # oneshot jobs go through ShellJobRunner (PowerShell default).
         self.sessions = ConsoleSessionManager(
             shell=args.shell or resolve_powershell(),
             cwd=cwd,
@@ -172,12 +170,15 @@ class AircConsoleService:
             cwd=cwd,
             wait=False,
         )
+        # Install root = parent of scripts/ (product tree). Used by FR #77 UPDATE.
+        install_root = str(Path(__file__).resolve().parents[1])
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
             sessions=self.sessions,
             nick=self.nick,
             shell_runner=self.shell_runner,
+            install_root=install_root,
         )
         self.core.channel = self.channel
         self.sock: ssl.SSLSocket | socket.socket | None = None
@@ -585,8 +586,11 @@ class AircConsoleService:
             info(f"INFO pong to={hr.nick} {hr.reply}")
         elif hr.action == "deny" and hr.nick and hr.reply:
             self.send_privmsg(hr.nick, hr.reply)
-        elif hr.action in {"help", "close"} and hr.nick and hr.reply:
+        elif hr.action in {"help", "close", "update"} and hr.nick and hr.reply:
+            # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
+            if hr.action == "update":
+                info(f"INFO update-reply to={hr.nick} {hr.reply}")
         elif hr.action == "shell":
             info(f"INFO shell from={hr.nick}")
         elif hr.action == "pipe":
@@ -734,11 +738,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--operators-file", default=None)
     p.add_argument("--accounts", nargs="*", default=[], help="services account allowlist")
     p.add_argument("--require-account", action="store_true")
-    p.add_argument(
-        "--shell",
-        default=None,
-        help="legacy interactive shell binary (FR #75 oneshot default is powershell -NoProfile)",
-    )
+    p.add_argument("--shell", default=None)
     p.add_argument("--cwd", default=None)
     p.add_argument("--idle-sec", type=float, default=3600.0)
     p.add_argument("--selftest", action="store_true", help="offline smoke then exit 0")
