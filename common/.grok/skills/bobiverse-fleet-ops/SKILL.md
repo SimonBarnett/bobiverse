@@ -81,7 +81,15 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
    restart seats/agents, never `Stop-Process` broad names (`powershell`, `python`).
 4. Verify in the log, then run the command/behaviour tests below. Record what you changed (path + hash).
 5. PowerShell only on Windows boxes; never wrap a command in `powershell -Command`; never print a secret.
-6. Do not rebuild/release/bump the version unless the owner says so.
+6. **CAST IRON (FR #147):** never dump `nssm get <svc> AppEnvironmentExtra` raw. That block holds `AGENTIC_IRC_PASSWORD` / Ergo PASS and will land in the agent transcript. Print **key names only** (split each line on the first `=`):
+   ```powershell
+   $nssm = (Get-Command nssm -EA SilentlyContinue).Source
+   foreach ($line in @(& $nssm get ircBob AppEnvironmentExtra 2>$null)) {
+     if ($line -match '^([^=]+)=') { $Matches[1] }
+   }
+   ```
+   Safe to query: `AppDirectory`, `Application`, `AppParameters`, `AppStdout`, `AppStderr` (no secrets).
+7. Do not rebuild/release/bump the version unless the owner says so.
 
 ## Channel privilege rules (enforced by the chair, `chan_privs.py`)
 
@@ -114,3 +122,4 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | `CryptUnprotectData failed` | Service runs as LocalSystem with an Admin-sealed identity | Set the service logon (`Complete-BobiverseServiceLogon.ps1`) |
 | Unverified-WHOIS log line every minute | Verification pending for a nick | Throttled to once per 30 min; a persistent one means the nick has no NickServ account |
 | Tray missing / duplicated | Old installers / session-0 start | One Start Menu folder `Bobiverse`; tray starts only in an interactive session (ONLOGON task / Startup shortcut) |
+| Agent transcript shows Ergo/SASL password after `nssm get` | `AppEnvironmentExtra` dumped raw (FR #147) | Print env **key names only** (split on first `=`); never paste AppEnvironmentExtra values into logs, filings, or chat |
