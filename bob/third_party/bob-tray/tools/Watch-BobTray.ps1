@@ -2189,37 +2189,21 @@ function Invoke-BobTrayStatus {
     Show-BobTrayCard -Reason 'click'
 }
 
-# t794u: the ntsa gut logo badge shown by Acknowledge. The real asset is not in the repo or in agentic_build; drop it at
-# assets\ntsa-gut-logo.png and it is used automatically. Until then a drawn, clearly labelled placeholder is shown
-# (and assets\ntsa-gut-logo-PLACEHOLDER.png is honoured if someone provides a stand-in file).
+# t804u: the ntsa logo badge shown by Acknowledge is assets\ntsa-gut-logo.png (Simon's avatar: braided red/orange/blue/green lines over
+# green ">ntsa" on black; shipped in the repo, the pack and the work-tree sync). If the file is missing or unreadable the dialog simply
+# has no picture; nothing is drawn in its place.
 $script:ntsaGutLogoPath = Join-Path $RepoRoot 'assets\ntsa-gut-logo.png'
-$script:ntsaGutLogoPlaceholderPath = Join-Path $RepoRoot 'assets\ntsa-gut-logo-PLACEHOLDER.png'
 
 function Get-BobTrayLogoImage {
-    foreach ($lp in @($script:ntsaGutLogoPath, $script:ntsaGutLogoPlaceholderPath)) {
-        if (Test-Path -LiteralPath $lp) {
-            try {
-                $bytes = [IO.File]::ReadAllBytes($lp)
-                return [System.Drawing.Image]::FromStream((New-Object System.IO.MemoryStream (, $bytes)))
-            }
-            catch { Write-TrayLog ('logo load failed ' + $lp + ': ' + $_.Exception.Message) }
+    if (Test-Path -LiteralPath $script:ntsaGutLogoPath) {
+        try {
+            $bytes = [IO.File]::ReadAllBytes($script:ntsaGutLogoPath)
+            return [System.Drawing.Image]::FromStream((New-Object System.IO.MemoryStream (, $bytes)))
         }
+        catch { Write-TrayLog ('logo load failed ' + $script:ntsaGutLogoPath + ': ' + $_.Exception.Message) }
     }
-    $bmp = New-Object System.Drawing.Bitmap 96, 96
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    try {
-        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $g.Clear([System.Drawing.Color]::FromArgb(24, 62, 48))
-        $white = [System.Drawing.Brushes]::White
-        $big = New-Object System.Drawing.Font 'Segoe UI', 20, ([System.Drawing.FontStyle]::Bold)
-        $small = New-Object System.Drawing.Font 'Segoe UI', 7
-        $g.DrawString('ntsa', $big, $white, 12, 8)
-        $g.DrawString('gut', $big, $white, 22, 38)
-        $g.DrawString('PLACEHOLDER', $small, [System.Drawing.Brushes]::Gold, 14, 78)
-        $big.Dispose(); $small.Dispose()
-    }
-    finally { $g.Dispose() }
-    return $bmp
+    else { Write-TrayLog ('logo missing: ' + $script:ntsaGutLogoPath) }
+    return $null
 }
 
 # Acknowledge: clears the alert and shows the ntsa gut logo badge, "by Simon Barnett", and every installed product.
@@ -2244,6 +2228,7 @@ function Show-BobTrayAbout {
         try { $form.Icon = $iconIdle } catch { }
         $logo = New-Object System.Windows.Forms.PictureBox
         $logo.Image = Get-BobTrayLogoImage
+        $logo.BackColor = [System.Drawing.Color]::Black
         $logo.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
         $logo.Location = New-Object System.Drawing.Point 16, 16
         $logo.Size = New-Object System.Drawing.Size 96, 96

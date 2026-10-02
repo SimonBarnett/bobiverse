@@ -79,6 +79,11 @@ foreach ($leaf in $ownedTools) {
     $p = Join-Path $OutDir "tools\$leaf"
     if (Test-Path -LiteralPath $p) { $ownedKeep[$leaf] = [IO.File]::ReadAllBytes($p) }
 }
+$ownedAssetKeep = @{}
+foreach ($leaf in @('ntsa-gut-logo.png')) {
+    $ap = Join-Path $OutDir "assets\$leaf"
+    if (Test-Path -LiteralPath $ap) { $ownedAssetKeep[$leaf] = [IO.File]::ReadAllBytes($ap) }
+}
 if (Test-Path -LiteralPath $OutDir) {
     Remove-Item -LiteralPath $OutDir -Recurse -Force
 }
@@ -129,9 +134,8 @@ foreach ($sub in @('Public', 'Private')) {
 $ico = Join-Path $srcRoot 'assets\bob-systray.ico'
 if (-not (Test-Path -LiteralPath $ico)) { throw "missing $ico" }
 Copy-Item -LiteralPath $ico -Destination (Join-Path $OutDir 'assets\bob-systray.ico') -Force
-# t794u: the ntsa gut logo (Acknowledge badge) is not in agentic_build; copy it when someone adds it, else the tray draws a labelled placeholder.
-$logo = Join-Path $srcRoot 'assets\ntsa-gut-logo.png'
-if (Test-Path -LiteralPath $logo) { Copy-Item -LiteralPath $logo -Destination (Join-Path $OutDir 'assets\ntsa-gut-logo.png') -Force }
+# t804u: the ntsa logo (Acknowledge badge) is bobiverse-owned, not in agentic_build: keep the one already vendored across a re-sync.
+if ($ownedAssetKeep.ContainsKey('ntsa-gut-logo.png')) { [IO.File]::WriteAllBytes((Join-Path $OutDir 'assets\ntsa-gut-logo.png'), $ownedAssetKeep['ntsa-gut-logo.png']) }
 
 foreach ($cfg in @('bobiverse.json', 'bob-seats.json', 'default.json', 'fleet-registry.json')) {
     $from = Join-Path $srcRoot "config\$cfg"

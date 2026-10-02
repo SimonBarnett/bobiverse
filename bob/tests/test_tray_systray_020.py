@@ -65,8 +65,25 @@ def test_acknowledge_clears_the_alert_and_shows_the_about_dialog_with_logo_and_c
     assert "by Simon Barnett" in about and "Get-BobTrayLogoImage" in about
     assert "Get-BobInstallInfo" in about and "Format-BobInstallInfo" in about and "Get-BobTrayProductVersionLabel" in about
     logo = _fn(WATCH, "Get-BobTrayLogoImage")
-    assert "ntsa-gut-logo.png" in WATCH and "PLACEHOLDER" in logo      # real asset first, labelled placeholder otherwise
-    assert "assets\\ntsa-gut-logo.png" in _t(SCRIPTS / "Sync-BobTrayFromAgenticBuild.ps1")
+    assert "assets\\ntsa-gut-logo.png" in WATCH and "ReadAllBytes($script:ntsaGutLogoPath)" in logo
+
+
+def test_ntsa_logo_asset_is_a_real_png_referenced_everywhere_and_no_placeholder_remains():
+    logo = TRAY / "assets" / "ntsa-gut-logo.png"
+    data = logo.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 1000
+    w, h = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    assert w == h and 64 <= w <= 256
+    assert not (TRAY / "assets" / "ntsa-gut-logo-PLACEHOLDER.png").exists()
+    for f in (TOOLS / "Watch-BobTray.ps1", SCRIPTS / "Sync-BobTrayFromAgenticBuild.ps1"):
+        assert "PLACEHOLDER" not in _t(f).upper(), f.name
+    pack = ROOT.parent / "common" / "scripts" / "Pack-BobiverseRelease.ps1"
+    if pack.is_file():
+        assert "foreach ($sub in @('tools', 'assets'))" in _t(pack)
+    assert "ntsa-gut-logo.png" in _t(SCRIPTS / "Sync-BobTrayFromAgenticBuild.ps1")
+    repo_sync = ROOT.parent / "common" / "scripts" / "Sync-BobiverseFromRepo.ps1"
+    if repo_sync.is_file():
+        assert "third_party\\bob-tray\\assets" in _t(repo_sync)
 
 
 # ------------------------------------------------------------------------------------------------ 3. install inventory
