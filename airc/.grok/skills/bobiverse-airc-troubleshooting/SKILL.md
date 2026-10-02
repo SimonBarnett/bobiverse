@@ -28,6 +28,6 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | Two consoles fighting | `AircConsole` (agentic_irc) still installed - `Install-Airc` removes it from the SCM; check `Get-Service Airc,AircConsole`. |
 | Service runs an old tree | NSSM path stale - `Install-Airc.cmd -MachineId <id>`. |
 | Console vanished after a broad `Stop-Process powershell` | Airc's host died; `Restart-Service Airc`. |
-| Command reply truncated | PRIVMSG line limit - shorten, or stage a script. |
+| Command reply truncated | Prefer FR #75 chunked `out`/`DONE` framing; use `Invoke-AircRemote.ps1 -Action Psb64` / PUT (FR #76/#78) instead of gist+irm. |
 
 Finish every session with the harvest step.
