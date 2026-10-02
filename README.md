@@ -8,18 +8,40 @@ Fleet IRC product: single-file MSIs for **Jeeves** (Ergo + chair), **Bob** ears,
 | `bob-*.msi` | `ircBob` (+ tray / Watch-AgentHealth) | `Bob-{machinename}` | `C:\ai\bob` |
 | `airc-*.msi` | `Airc` | `{machinename}_console` | `C:\ai\airc` |
 
+## Repository layout
+
+The repo is split per service; each folder holds that service's scripts, skills, agent layer, docs and tests.
+
+```text
+jeeves/   scripts/ (Install-Jeeves, Start-Jeeves, Install-BobIrcd/Chair/Webhooks, Watch-*) .grok/skills/ AGENTS.md docs/ tools/ tests/
+bob/      scripts/ (Install-Bob, Start-Bob*, bob_worker.py, Build-BobWorker) .grok/skills/ AGENTS.md agents/{worker,plan}/ docs/
+          third_party/{bob-tray,Watch-AgentHealth}/ tests/
+airc/     scripts/ (Install-Airc*, Start-AircConsole*, airc_console*.py) .grok/skills/ AGENTS.md docs/ packaging/Product.wxs tests/
+common/   scripts/ (Bobiverse-Common, Pack-BobiverseRelease, Fetch-*, Update/Sync/Check, the shared python engine: irc_agent.py wire.py ...)
+          .grok/skills/ (harvest, fleet-ops) docs/ third_party/{nssm,ergo,wix}/ VERSION tests/ (+ repo_layout.py)
+config/ dist/   not tracked (gitignored secrets / build output)
+```
+
+The **staged and installed trees stay flat** (`<root>\scripts`, `<root>\.grok\skills`, `<root>\docs`, `VERSION`): `Pack-BobiverseRelease.ps1`
+composes `stage\scripts` from all four `*/scripts` dirs, so installers, NSSM services, the updater and the MSIs are unchanged. The python modules
+form one import graph (`irc_agent` imports the chair/shop/talk modules), so they live together in `common/scripts`.
+Dev: run `pytest` from the repo root (`conftest.py` puts every `*/scripts` on `sys.path`); build a runnable flat tree with
+`common\scripts\Pack-BobiverseRelease.ps1 -Product bob -SkipMsi -KeepStage -SkipWorkerExe` and run the installer from `<stage>\scripts`.
+Heads-up: an install that still has the pre-split `Sync-BobiverseFromRepo.ps1` finds no `scripts\` in a split clone and syncs nothing until it has
+taken the next MSI release.
+
 ## Pack
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Pack-BobiverseRelease.ps1 -Product all
+powershell -NoProfile -ExecutionPolicy Bypass -File common\scripts\Pack-BobiverseRelease.ps1 -Product all
 ```
 
 ## Install (elevated / UAC)
 
 ```bat
-scripts\Install-Bob.cmd -MachineId marchhare
-scripts\Install-Jeeves.cmd
-scripts\Install-Airc.cmd -MachineId marchhare
+bob\scripts\Install-Bob.cmd -MachineId marchhare
+jeeves\scripts\Install-Jeeves.cmd
+airc\scripts\Install-Airc.cmd -MachineId marchhare
 ```
 
 Or `msiexec /i bob-0.1.1.msi`.
