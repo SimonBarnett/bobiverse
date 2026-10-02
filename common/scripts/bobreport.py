@@ -882,22 +882,35 @@ def load_digest(home: Path) -> dict:
 
 
 def save_digest(home: Path, doc: dict) -> None:
-    """Atomic write of digest.json (#51).
+    """Atomic write of digest.json (#51 / #36).
 
     Unique tmp name per write (pid + uuid) so concurrent writers never share one
     ``digest.json.tmp``; ``os.replace`` retried with backoff on Windows sharing violations
     (WinError 32) / access denied (WinError 5, AV / indexer holding the target).
+
+    FR #36: if the tmp vanishes between write and replace (WinError 2 / FileNotFoundError —
+    AV quarantine or a racing cleanup), rewrite once under a fresh unique name instead of
+    failing the bobcallback ``report`` route.
     """
     path = digest_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     _cleanup_stale_digest_tmp(path)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
-    try:
-        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-        _replace_with_retry(tmp, path)
-    finally:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+    payload = json.dumps(doc, indent=2) + "\n"
+    last_missing: FileNotFoundError | None = None
+    for _attempt in range(2):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
+        try:
+            tmp.write_text(payload, encoding="utf-8")
+            _replace_with_retry(tmp, path)
+            return
+        except FileNotFoundError as exc:
+            # Source tmp gone before/during replace — try one fresh write (#36).
+            last_missing = exc
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+    assert last_missing is not None
+    raise last_missing
 
 
 _REPLACE_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)
