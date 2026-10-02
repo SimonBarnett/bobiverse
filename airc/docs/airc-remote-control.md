@@ -1,37 +1,40 @@
-﻿# Airc remote control (protocol sketch)
+# Airc remote control (protocol sketch)
 
 See **[feature-request-airc-remote-control-2026-10-01.md](./feature-request-airc-remote-control-2026-10-01.md)** for LOCKED success metrics.
 
-## Today (v0.1.x)
+## Today (FR #75 shell ergonomics shipped; PUT/RUN/UPDATE still pending)
 
-Authenticated PRIVMSG to `{machine}_console` pipes each line into a **cmd.exe** session. Stdout returns as Query PRIVMSG, clipped to ~400 characters. Multi-line work usually means gist + `irm` + `powershell -File`.
+Authenticated PRIVMSG to `{machine}_console` runs a **oneshot** job (default **PowerShell 5.1** `-NoProfile -NonInteractive -EncodedCommand`). Replies are Query-only:
 
 ```text
-PRIVMSG marchhare_console :sc query Airc
-PRIVMSG marchhare_console :cmd /c type <ai root>\airc\VERSION
+out id=<job> seq=<n> <chunk>
+err id=<job> seq=<n> <chunk>
+DONE id=<job> exit=<code>
 ```
 
-## Target verbs (FR)
+Long lines are chunked to ~350 payload chars (no silent 400 clip). Verbs:
 
 | Verb | Purpose |
 |------|---------|
-| `STATUS` | Airc Running + VERSION files (bob/airc/jeeves) |
 | plain line | PowerShell (default) |
-| `cmd: …` | COMSPEC escape hatch |
-| `psb64:<b64>` | `powershell -EncodedCommand` |
-| `PUT path` + chunks | Write file (base64 seq) |
-| `RUN path` | Execute; end with `DONE id=… exit=…` |
-| `GET path` | hash/size + head/tail |
-| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI; airc updates defer self-recycle |
+| `cmd: …` | COMSPEC `/d /c` escape hatch |
+| `psb64:<b64>` | EncodedCommand; UTF-16LE native or UTF-8 script bytes |
+| `STATUS` / `PUT` / `RUN` / `GET` / `UPDATE` | Still FR #78 / #77 — not in #75 |
+
+```text
+PRIVMSG marchhare_console :Write-Output $PSVersionTable.PSVersion
+PRIVMSG marchhare_console :cmd: echo %COMSPEC%
+PRIVMSG marchhare_console :psb64:<utf16le-or-utf8-base64>
+```
 
 ## Encoding policy
 
 - Short ops: **plain text** (readable in Halloy / irc.log).
-- Scripts / `$` / spaces: **base64** (`psb64` or PUT).
+- Scripts / `$` / spaces: **base64** (`psb64`; PUT later).
 - Secrets: **never** clear IRC — local files or agentic-file SEAL.
 - Large logs/MSI: HTTPS allowlist or path drop — IRC is control plane.
 
-## CAST IRON ops notes (until FR ships)
+## CAST IRON ops notes (until UPDATE FR ships)
 
 - Do not `Restart-Service Airc` / msiexec **airc** mid-playbook over airc — the transport dies.
 - Prefer `start /wait msiexec` and install **airc last/alone**.

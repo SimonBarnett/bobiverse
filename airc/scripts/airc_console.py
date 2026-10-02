@@ -11,12 +11,16 @@ Live IRC loop lives in ``airc_console_service.py``.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import fnmatch
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
@@ -25,7 +29,12 @@ from account_map import AccountMap, parse_message_tags
 
 NICK = "console"
 IRC_NICK_MAX = 30
+# Legacy interactive default (cmd). FR #75 default oneshot shell is PowerShell 5.1.
 DEFAULT_SHELL = os.environ.get("COMSPEC") or "cmd.exe"
+IRC_SAFE_PAYLOAD = 350
+PSB64_MAX_CHARS = 24_000
+SHELL_OUTPUT_MAX_BYTES = 64_000
+SHELL_TIMEOUT_S = 120.0
 _PRIVMSG_RE = re.compile(
     r"^:([^!\s]+)(?:![^@\s]*@\S+)?\s+PRIVMSG\s+(\S+)\s+:?(.*)$",
     re.IGNORECASE,
@@ -311,6 +320,263 @@ class AuthPolicy:
         return need_acct
 
 
+class ShellRequestError(ValueError):
+    """Malformed or oversized console shell request (FR #75)."""
+
+
+ShellKind = Literal["ps", "cmd", "psb64"]
+
+
+@dataclass
+class ShellRequest:
+    kind: ShellKind
+    body: str
+    job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+
+
+@dataclass
+class ShellOutcome:
+    job_id: str
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
+def resolve_powershell() -> str:
+    """Windows PowerShell 5.1 host (not pwsh) unless AIRC_POWERSHELL overrides."""
+    env = (os.environ.get("AIRC_POWERSHELL") or "").strip()
+    if env:
+        return env
+    found = shutil.which("powershell.exe") or shutil.which("powershell")
+    return found or "powershell.exe"
+
+
+def resolve_comspec() -> str:
+    return (os.environ.get("COMSPEC") or "").strip() or "cmd.exe"
+
+
+def encode_ps_encoded_command(script: str) -> str:
+    """Base64 of UTF-16LE script text for ``powershell -EncodedCommand``."""
+    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+
+def _looks_like_utf16le_script(raw: bytes) -> bool:
+    """True when bytes look like UTF-16LE (ASCII-heavy scripts have 0x00 on odd indexes)."""
+    if len(raw) < 2 or len(raw) % 2:
+        return False
+    zeros = sum(1 for i in range(1, len(raw), 2) if raw[i] == 0)
+    return zeros >= max(1, len(raw) // 4)
+
+
+def prepare_psb64_encoded_command(payload: str) -> str:
+    """Decode ``psb64:`` payload to an ``-EncodedCommand`` ASCII base64 string.
+
+    Rules (FR #75): prefer native UTF-16LE EncodedCommand bytes when the payload
+    looks like UTF-16LE; otherwise treat decoded bytes as UTF-8 script text and
+    re-encode to UTF-16LE for ``-EncodedCommand``.
+    """
+    text = (payload or "").strip()
+    if not text:
+        raise ShellRequestError("malformed psb64: empty")
+    if len(text) > PSB64_MAX_CHARS:
+        raise ShellRequestError("psb64 too large")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except binascii.Error as exc:
+        raise ShellRequestError("malformed psb64") from exc
+    if _looks_like_utf16le_script(raw):
+        try:
+            raw.decode("utf-16-le")
+            return base64.b64encode(raw).decode("ascii")
+        except UnicodeDecodeError:
+            pass
+    try:
+        script = raw.decode("utf-8")
+        return encode_ps_encoded_command(script)
+    except UnicodeDecodeError:
+        pass
+    if len(raw) % 2 == 0:
+        try:
+            raw.decode("utf-16-le")
+            return base64.b64encode(raw).decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ShellRequestError("malformed psb64") from exc
+    raise ShellRequestError("malformed psb64")
+
+
+def parse_shell_request(text: str) -> ShellRequest:
+    """Parse a console PRIVMSG into ps / cmd: / psb64: (FR #75)."""
+    raw = (text or "").strip()
+    if not raw:
+        raise ShellRequestError("empty command")
+    low = raw.lower()
+    if low.startswith("psb64:"):
+        payload = raw[6:]
+        # Validate early; body stores original payload for argv build.
+        prepare_psb64_encoded_command(payload)
+        return ShellRequest(kind="psb64", body=payload)
+    if low.startswith("cmd:"):
+        body = raw[4:].lstrip()
+        if not body:
+            raise ShellRequestError("empty cmd:")
+        return ShellRequest(kind="cmd", body=body)
+    return ShellRequest(kind="ps", body=raw)
+
+
+def build_shell_argv(req: ShellRequest) -> list[str]:
+    if req.kind == "cmd":
+        return [resolve_comspec(), "/d", "/c", req.body]
+    if req.kind == "psb64":
+        enc = prepare_psb64_encoded_command(req.body)
+    else:
+        enc = encode_ps_encoded_command(req.body)
+    return [
+        resolve_powershell(),
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        enc,
+    ]
+
+
+def _clip_bytes(data: bytes, limit: int = SHELL_OUTPUT_MAX_BYTES) -> tuple[str, bool]:
+    clipped = len(data) > limit
+    chunk = data[:limit]
+    return chunk.decode("utf-8", errors="replace"), clipped
+
+
+def run_shell_request(
+    req: ShellRequest,
+    *,
+    timeout_s: float = SHELL_TIMEOUT_S,
+    cwd: str | None = None,
+) -> ShellOutcome:
+    argv = build_shell_argv(req)
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            timeout=timeout_s,
+            cwd=cwd,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out, _ = _clip_bytes(exc.stdout or b"")
+        err, _ = _clip_bytes(exc.stderr or b"")
+        err = (err + ("\n" if err else "") + f"timeout after {timeout_s:.0f}s").strip()
+        return ShellOutcome(job_id=req.job_id, exit_code=124, stdout=out, stderr=err)
+    out, out_clip = _clip_bytes(proc.stdout or b"")
+    err, err_clip = _clip_bytes(proc.stderr or b"")
+    if out_clip:
+        out += "\n[clipped stdout]"
+    if err_clip:
+        err += "\n[clipped stderr]"
+    return ShellOutcome(
+        job_id=req.job_id,
+        exit_code=int(proc.returncode),
+        stdout=out,
+        stderr=err,
+    )
+
+
+def chunk_irc_text(text: str, *, limit: int = IRC_SAFE_PAYLOAD, prefix: str = "") -> list[str]:
+    """Split ``text`` so each ``prefix + chunk`` fits ``limit`` (IRC-safe)."""
+    room = max(8, limit - len(prefix))
+    raw = text.replace("\r", "").replace("\n", " ")
+    if not raw:
+        return [prefix] if prefix else [""]
+    return [prefix + raw[i : i + room] for i in range(0, len(raw), room)]
+
+
+def format_shell_replies(
+    outcome: ShellOutcome,
+    *,
+    irc_limit: int = IRC_SAFE_PAYLOAD,
+) -> list[str]:
+    """Stable output contract: ordered out/err seq lines + terminal DONE (FR #75)."""
+    lines: list[str] = []
+    seq = 0
+
+    def emit(stream: str, label: str) -> None:
+        nonlocal seq
+        parts = stream.splitlines() if stream else []
+        if stream and not parts:
+            parts = [""]
+        for part in parts:
+            # Reserve prefix room using a provisional seq width, then emit.
+            body = part
+            while True:
+                seq += 1
+                prefix = f"{label} id={outcome.job_id} seq={seq} "
+                room = max(8, irc_limit - len(prefix))
+                piece, body = body[:room], body[room:]
+                lines.append(prefix + piece)
+                if not body:
+                    break
+
+    emit(outcome.stdout, "out")
+    emit(outcome.stderr, "err")
+    lines.append(f"DONE id={outcome.job_id} exit={outcome.exit_code}")
+    return lines
+
+
+class ShellJobRunner:
+    """Run one FR #75 shell request; emit reply lines to the operator Query."""
+
+    def __init__(
+        self,
+        *,
+        on_reply: Callable[[str, str], None] | None = None,
+        cwd: str | None = None,
+        timeout_s: float = SHELL_TIMEOUT_S,
+        wait: bool = False,
+    ) -> None:
+        self.on_reply = on_reply
+        self.cwd = cwd
+        self.timeout_s = timeout_s
+        self.wait = wait
+        self._lock = threading.Lock()
+        self._threads: dict[str, threading.Thread] = {}
+
+    def start(self, nick: str, command: str) -> str:
+        key = nick.strip().lower()
+
+        def worker() -> None:
+            try:
+                try:
+                    req = parse_shell_request(command)
+                except ShellRequestError as exc:
+                    jid = uuid.uuid4().hex[:8]
+                    self._emit(key, f"err id={jid} seq=1 {exc}")
+                    self._emit(key, f"DONE id={jid} exit=2")
+                    return
+                outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
+                for line in format_shell_replies(outcome):
+                    self._emit(key, line)
+            finally:
+                with self._lock:
+                    self._threads.pop(key, None)
+
+        t = threading.Thread(target=worker, name=f"airc-shell-{key}", daemon=True)
+        with self._lock:
+            self._threads[key] = t
+        t.start()
+        if self.wait:
+            t.join(timeout=self.timeout_s + 5)
+        return key
+
+    def _emit(self, nick: str, line: str) -> None:
+        if self.on_reply:
+            self.on_reply(nick, line)
+
+    def close_nick(self, nick: str) -> None:
+        # Oneshoot threads are daemon; nothing durable to kill beyond tracking.
+        with self._lock:
+            self._threads.pop(nick.strip().lower(), None)
+
+
 @dataclass
 class ConsoleSession:
     nick: str
@@ -449,7 +715,7 @@ class HandleResult:
 
 
 class AircConsoleCore:
-    """Pure handler: parse PRIVMSG, gate auth, pipe to console, stay silent on channel."""
+    """Pure handler: parse PRIVMSG, gate auth, run shell jobs, stay silent on channel."""
 
     def __init__(
         self,
@@ -458,12 +724,14 @@ class AircConsoleCore:
         auth: AuthPolicy,
         sessions: ConsoleSessionManager | None = None,
         nick: str = NICK,
+        shell_runner: ShellJobRunner | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
         self.auth = auth
         self.nick = nick
         self.sessions = sessions or ConsoleSessionManager()
+        self.shell_runner = shell_runner
         self.channel_traffic: list[str] = []
 
     def register_commands(self) -> list[str]:
@@ -536,6 +804,8 @@ class AircConsoleCore:
             return HandleResult(action="empty", nick=nick, target=target, text=text)
         if cmd.lower() in {".quit", "!quit", "exit"}:
             self.sessions.close_nick(nick)
+            if self.shell_runner is not None:
+                self.shell_runner.close_nick(nick)
             return HandleResult(action="close", nick=nick, target=target, text=text, reply="console closed")
         if cmd.lower() in {".help", "!help"}:
             return HandleResult(
@@ -543,9 +813,20 @@ class AircConsoleCore:
                 nick=nick,
                 target=target,
                 text=text,
-                reply="airc console: PRIVMSG lines pipe to your shell; .quit closes; silent on channel; answers ping",
+                reply=(
+                    "airc console (FR #75): default PowerShell -NoProfile; "
+                    "cmd: COMSPEC escape; psb64:<base64> EncodedCommand; "
+                    "replies out/err id= seq= then DONE id= exit=; "
+                    ".quit closes; silent on channel; answers ping"
+                ),
             )
 
+        # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.
+        if self.shell_runner is not None:
+            self.shell_runner.start(nick, cmd)
+            return HandleResult(action="shell", nick=nick, target=target, text=text)
+
+        # Legacy interactive pipe (tests / AIRC without runner).
         self.sessions.pipe(nick, cmd)
         return HandleResult(action="pipe", nick=nick, target=target, text=text)
 

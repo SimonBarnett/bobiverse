@@ -3,7 +3,7 @@
 
 ChanServ-registered ``#{machinename}`` → nick ``{machinename}_console``.
 Otherwise lobby on ``#{domain_or_workgroup}`` as ``{machinename}`` / ``_N``.
-Silent in channel; authenticated PRIVMSG → per-user console pipe (NSSM).
+Silent in channel; authenticated PRIVMSG → FR #75 PowerShell/cmd/psb64 jobs (NSSM).
 """
 from __future__ import annotations
 
@@ -25,9 +25,12 @@ if _common.is_dir():
 
 from account_map import AccountMap, account_from_tags, parse_message_tags, parse_prefix_nick
 from airc_console import (
+    IRC_SAFE_PAYLOAD,
     AircConsoleCore,
     AuthPolicy,
     ConsoleSessionManager,
+    ShellJobRunner,
+    chunk_irc_text,
     console_nick,
     domain_channel,
     domain_lobby_nick,
@@ -38,6 +41,7 @@ from airc_console import (
     machine_console_nick,
     machine_id,
     parse_chanserv_info,
+    resolve_powershell,
     resolve_server_password,
     shop_channel,
 )
@@ -154,17 +158,26 @@ class AircConsoleService:
         )
         if not ops and not accts:
             raise SystemExit("airc console: refuse empty operators/accounts (FR #253)")
+        cwd = args.cwd or str(self.home)
+        # Legacy interactive pipe kept for --shell override / idle reap; FR #75
+        # oneshot jobs go through ShellJobRunner (PowerShell default).
         self.sessions = ConsoleSessionManager(
-            shell=args.shell,
-            cwd=args.cwd or str(self.home),
+            shell=args.shell or resolve_powershell(),
+            cwd=cwd,
             on_output=self._on_console_out,
             idle_sec=float(args.idle_sec),
+        )
+        self.shell_runner = ShellJobRunner(
+            on_reply=self._on_console_out,
+            cwd=cwd,
+            wait=False,
         )
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
             sessions=self.sessions,
             nick=self.nick,
+            shell_runner=self.shell_runner,
         )
         self.core.channel = self.channel
         self.sock: ssl.SSLSocket | socket.socket | None = None
@@ -178,7 +191,10 @@ class AircConsoleService:
 
     def _on_console_out(self, nick: str, line: str) -> None:
         # Reply in Query only — never on shop channel (silent).
-        self.send_privmsg(nick, line[:400])
+        # FR #75: chunk deterministically within IRC_SAFE_PAYLOAD (no silent 400 clip).
+        text = (line or "").replace("\n", " ").replace("\r", " ")
+        for piece in chunk_irc_text(text, limit=IRC_SAFE_PAYLOAD, prefix=""):
+            self.send_privmsg(nick, piece)
 
     def connect(self) -> None:
         self._registered = False
@@ -571,6 +587,8 @@ class AircConsoleService:
             self.send_privmsg(hr.nick, hr.reply)
         elif hr.action in {"help", "close"} and hr.nick and hr.reply:
             self.send_privmsg(hr.nick, hr.reply)
+        elif hr.action == "shell":
+            info(f"INFO shell from={hr.nick}")
         elif hr.action == "pipe":
             info(f"INFO pipe from={hr.nick}")
 
@@ -716,7 +734,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--operators-file", default=None)
     p.add_argument("--accounts", nargs="*", default=[], help="services account allowlist")
     p.add_argument("--require-account", action="store_true")
-    p.add_argument("--shell", default=None)
+    p.add_argument(
+        "--shell",
+        default=None,
+        help="legacy interactive shell binary (FR #75 oneshot default is powershell -NoProfile)",
+    )
     p.add_argument("--cwd", default=None)
     p.add_argument("--idle-sec", type=float, default=3600.0)
     p.add_argument("--selftest", action="store_true", help="offline smoke then exit 0")
