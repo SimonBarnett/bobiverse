@@ -154,3 +154,21 @@ Each installed service dir (`<ai root>\bob`, `<ai root>\jeeves`, `<ai root>\airc
 All start with the CAST IRON RULE: harvest skills and file every issue/FR/bug to the intake webhook
 (`scripts\Report-BobiverseIntakeIssue.ps1`, `scripts\Invoke-BobiverseHarvest.ps1`). The installers deploy them
 (`Install-BobiverseAgentLayer`) and the self-updater / `Sync-BobiverseFromRepo.ps1` refresh them. Tests: `tests/test_agent_layer_020.py`.
+
+## MSI RunInstall properties (#70)
+
+Public msiexec properties are forwarded into the deferred `RunInstall` custom action (no MSI transform required):
+
+- **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`
+- **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`
+- **airc**: `MACHINEID=`
+
+Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
+
+Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
+
+## Upgrade and Ergo / BobIrcd (#70)
+
+Jeeves MSI packs mark `third_party\nssm\win64\nssm.exe` and `ergo\ergo.exe` as **Permanent + NeverOverwrite** so an upgrade does not rewrite the service binary or a hard-linked Ergo image. `Install-Jeeves` also runs `Repair-BobiverseErgoHardlink` when `<ai root>\ergo\ergo.exe` still shares a hard link with the pack copy (no service stop).
+
+Complete service logon after quiet MSI: Desktop / Start Menu **Complete bobiverse service logon**, or set `BOBIVERSE_SERVICE_PASSWORD` / `config\service.password` before install (see ObjectName above).

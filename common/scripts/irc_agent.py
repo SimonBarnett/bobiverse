@@ -735,8 +735,10 @@ class Client:
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
         # FR #211: worker QUIT mid-task → idle webhook + job back to unaccepted
+        # FR #69: digest home for roster + digest.json (chair --home is identity only)
+        digest = self._digest_home()
         try:
-            q = shop_listen.handle_shop_worker_quit(self.home, nick=who, briefer=briefer)
+            q = shop_listen.handle_shop_worker_quit(digest, nick=who, briefer=briefer)
             if q.get("handled"):
                 info(
                     f"INFO shop-listen quit nick={who} returned={q.get('returned')} "
@@ -744,7 +746,7 @@ class Client:
                 )
         except Exception as exc:
             info(f"INFO shop-listen quit error {type(exc).__name__}")
-        out = bobreport.apply_quit(self.home, who, briefer)
+        out = bobreport.apply_quit(digest, who, briefer)
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, who)
 
@@ -2288,8 +2290,9 @@ class Client:
             return False
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick or "Jeeves"
         try:
+            # FR #69: digest home holds ChanServ roster + digest.json (not chair --home)
             result = shop_listen.handle_shop_worker_line(
-                self.home,
+                self._digest_home(),
                 nick=src,
                 channel=target,
                 body=body,
@@ -2726,6 +2729,8 @@ class Client:
                 self._maybe_chanserv_sync()
                 self._ensure_chan_ops()
                 self._chan_privs_tick()
+                self.drain_outbox_once()
+                self._maybe_bobiverse_pull()
                 self._chair_jobs_tick()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()

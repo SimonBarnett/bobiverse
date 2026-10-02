@@ -70,13 +70,42 @@ It is the single source of truth for the hook and exits 0 only when:
 3. Items opened before the hook existed are replayed as `opened` events
    (automatic when this run created the hook; else `--replay-missed`).
 4. Jeeves' `GIT ping SimonBarnett/<name>` (and each replayed
-   `GIT issues|pull_request ... opened #N`) line is seen in
-   `~/.agentic-irc-bobiverse/irc.log`, or the replayed item is in the
+   `GIT issues|pull_request ... opened #N`) line is seen in a local
+   `#bobiverse` `irc.log` (default candidates include
+   `~/.agentic-irc-gitannounce/irc.log` and
+   `~/.agentic-irc-bobiverse/irc.log`), or the replayed item is in the
    digest unaccepted queue.
 
 Exit 1 = hook or ping failed; exit 2 = Jeeves announce not seen. Either
 way, **webhook setup is NOT done**. Do not tell the human it is, and do
-not push or open the issue yet.
+not push or open the issue yet. **Do not weaken this gate.**
+
+### FR #88 — local listener nick collision with ircBob
+
+When `ircBob` is Running as `Bob-<machine>` (NickServ `bob-<machine>`), a
+second client that tries `bob-<machine>` / `bob-<machine>_l` without that
+SASL gets `NICKNAME_RESERVED` and never joins. Then
+`~/.agentic-irc-bobiverse/irc.log` only shows 433 loops and
+`bob_git_hook.py` stays exit 2 even after ping 204.
+
+Repair (keep the gate):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\Start-BobiverseGitAnnounceListen.ps1
+# wait until ~/.agentic-irc-gitannounce/irc.log shows JOIN #bobiverse
+python tools/bob_git_hook.py SimonBarnett/<name> --irc-log $env:USERPROFILE\.agentic-irc-gitannounce\irc.log
+```
+
+Use a free nick (`gitannounce-<machine>`). Prefer
+`C:\ai\bob\scripts\irc_agent.py` with `BOB_IRC_PASSWORD` from
+`~/.grok/ergo/connect.password` (and `BOB_IRC_DEBUG=1`). Never mint a
+fresh NickServ GUID for a registered `bob-*` account. Do not skip the
+Jeeves announce check because the ping was 204.
+
+If the listen log shows `JOIN #bobiverse` and no `NICKNAME_RESERVED`, but
+`bob_git_hook.py` still exits 2 with zero `:Jeeves!` lines, the chair is
+not draining `chair-outbox.txt` (see bobiverse **#68**). Fix the chair;
+do not weaken this gate.
 
 Fix for a repo that was already set up late (after the fact):
 

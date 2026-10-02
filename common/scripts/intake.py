@@ -26,6 +26,7 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/agentic_build",
         "SimonBarnett/skills-visionary",
         "SimonBarnett/AgentMonitor",
+        "SimonBarnett/agentic_fomprep",
     }
 )
 _SECRETISH = re.compile(

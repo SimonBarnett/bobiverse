@@ -66,9 +66,14 @@ def roster_machine_ids(home: Path | None = None, *, fold: bool = True) -> tuple[
     Pure file read (cached by the chair's periodic ``ChanServ LIST`` sync, see
     ``registered_machines.sync_from_chanserv``) so the HTTP digest path never talks to IRC.
     An empty/missing registry is an EMPTY roster, not a bootstrap fleet.
+
+    ``home`` may be the chair home (``~/.jeeves``); the ChanServ mirror lives in the digest
+    home (``BOB_DIGEST_HOME`` / ``~/.bobiverse``) — FR #69.
     """
     if home is None:
         home = _default_digest_home()
+    elif home is not None:
+        home = fleet_digest_home(Path(home))
     if home is not None:
         reg = registered_machines.load_registered(Path(home))
         if reg:
@@ -877,22 +882,30 @@ def load_digest(home: Path) -> dict:
 
 
 def save_digest(home: Path, doc: dict) -> None:
-    """Atomic write of digest.json (#51).
+    """Atomically write digest.json with unique-temp and Windows retry handling.
 
-    Unique tmp name per write (pid + uuid) so concurrent writers never share one
-    ``digest.json.tmp``; ``os.replace`` retried with backoff on Windows sharing violations
-    (WinError 32) / access denied (WinError 5, AV / indexer holding the target).
+    The fresh-temp retry also covers AV/racing cleanup removing the temporary file
+    between write and replace (FR #36), while write/replace helpers cover WinError
+    5/32 sharing violations (FR #35/#37).
     """
     path = digest_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     _cleanup_stale_digest_tmp(path)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
-    try:
-        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-        _replace_with_retry(tmp, path)
-    finally:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+    payload = json.dumps(doc, indent=2) + "\n"
+    last_missing: FileNotFoundError | None = None
+    for _attempt in range(2):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp")
+        try:
+            _write_text_with_retry(tmp, payload)
+            _replace_with_retry(tmp, path)
+            return
+        except FileNotFoundError as exc:
+            last_missing = exc
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+    assert last_missing is not None
+    raise last_missing
 
 
 _REPLACE_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)
@@ -903,6 +916,23 @@ def _is_sharing_error(exc: OSError) -> bool:
     if isinstance(exc, PermissionError):
         return True
     return getattr(exc, "winerror", None) in (5, 32)
+
+
+def _write_text_with_retry(path: Path, text: str) -> None:
+    """Write ``path`` retrying Windows sharing / access-denied (intake #37)."""
+    last: OSError | None = None
+    for delay in (0.0,) + _REPLACE_RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            path.write_text(text, encoding="utf-8")
+            return
+        except OSError as exc:
+            if not _is_sharing_error(exc):
+                raise
+            last = exc
+    assert last is not None
+    raise last
 
 
 def _replace_with_retry(src: Path, dst: Path) -> None:
@@ -1621,6 +1651,8 @@ def apply_quit(home: Path, nick: str, briefer_nick: str = "") -> PresenceOutcome
 
 @_digest_locked
 def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> CallbackOutcome:
+    # FR #69: chair --home is ~/.jeeves; digest.json + ChanServ roster live in BOB_DIGEST_HOME.
+    home = fleet_digest_home(Path(home))
     if not isinstance(payload, dict):
         return CallbackOutcome(ok=False, err="malformed")
     if any(k.lower() in ("secret", "x-bob-secret", "password") for k in payload):

@@ -152,6 +152,9 @@ def test_s2_chan_privs_grant_bob_plus_o_shop_and_plus_h_fleet():
     assert "operators only" in irc or "ERR !register denied" in irc
 
 
+# --- S3: recycle / systray restart ------------------------------------------
+
+
 def test_s3_restart_bob_ear_and_tray_wiring():
     ear = _t(S / "Restart-BobEar.ps1")
     assert "Restart-Service" in ear

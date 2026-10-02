@@ -13,6 +13,7 @@ One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker
 * **CWD** `<ai root>\bob\worker` (agent) / `<ai root>\bob\plan` (plan); both folders carry AGENTS.md/CLAUDE.md/GROK.md/.cursor rule + skills, every one starting with the CAST IRON harvest rule.
 * **IRC** (agent mode): nick `<machine>-<pid>`, joins ONLY `#<machine>`, speaks only there, event-driven relay (blocking read thread injects directly into the console input), answers PING/CTCP/fleet `ping`.
   IRC lost -> kill ONLY the agent tree it started, exit 3, no reconnect. Hang (input injected, then no CPU/IO for 300 s) -> kill tree, NEW agent after 5/15/45 s backoff, max 3 per 30 min (then exit 5), every restart logged.
+  Inject logging (FR #86): `worker.log` keeps the **full** `relay: injected FROM ...` line (no mid-URL cut); the same payload is written to `run_dir/last-from.txt` for hang-restart recovery.
 * **`!bored`** (t770u): posted by the exe only, exactly like the agent watcher (`Watch-AgentHealth` FR #100): on ready, right after DONE, idle 120 s then every 180 s, never while an ACK is open (<45 min) or the agent is (re)starting; never after IRC loss; an agent-written `!bored` is refused.
   Jeeves then assigns in `!focus` order; ACK marks the seat doing, DONE marks it idle. Exact lines: `bobiverse-bob-job-irc`.
 * **Exit codes**: 0 ok / window closed, 2 IRC unreachable at start (no agent started), 3 IRC lost, 4 no agent or key cancelled, 5 restart limit, 6 launch failed, 64 usage.
