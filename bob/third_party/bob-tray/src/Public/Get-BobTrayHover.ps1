@@ -100,7 +100,50 @@ function Get-BobWeeklyLogPath {
     return (Join-Path $env:USERPROFILE '.grok\logs\unified.jsonl')
 }
 
+function Step-BobWeeklyPeriodForward {
+    <#
+    .SYNOPSIS
+      A Grok weekly reading whose period has ended is not a current figure (t785u).
+    .NOTES
+      The Grok CLI only logs 'billing: fetched credits config' while it is used. After the weekly period rolls over the
+      last event describes the PREVIOUS period: its % is not this week's, and its period_end is in the past (the tray hid
+      the whole row and the digest carried a stale 8% + a past reset). The weekly clock is exact (7 days), so the
+      reading is rolled to the current period: remaining_pct = $null (unmeasured, never invented), period_end = the next
+      reset, stale = $true (last_remaining_pct / last_period_end keep the old values). Current readings pass through.
+    #>
+    param($Weekly, [datetime]$UtcNow = [datetime]::UtcNow)
+    if (-not $Weekly -or -not $Weekly.period_end) { return $Weekly }
+    $pe = $null
+    try { $pe = [datetime]::Parse([string]$Weekly.period_end, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } catch { return $Weekly }
+    $now = $UtcNow.ToUniversalTime()
+    if ($pe -gt $now) { return $Weekly }
+    $weeks = [int][math]::Ceiling(($now - $pe).TotalDays / 7.0)
+    if ($weeks -lt 1) { $weeks = 1 }
+    $next = $pe.AddDays(7 * $weeks)
+    if ($next -le $now) { $next = $next.AddDays(7) }
+    return [pscustomobject]@{
+        remaining_pct      = $null
+        used_pct           = $null
+        fetched_at         = [string]$Weekly.fetched_at
+        period_end         = $next.ToString('o')
+        source             = ([string]$Weekly.source + ':period-rolled')
+        kind               = 'weekly'
+        format             = [string]$Weekly.format
+        stale              = $true
+        last_remaining_pct = $Weekly.remaining_pct
+        last_period_end    = [string]$Weekly.period_end
+    }
+}
+
 function Get-BobWeeklyRemaining {
+    [CmdletBinding()]
+    param([string]$LogPath, [datetime]$UtcNow = [datetime]::UtcNow)
+    $w = Get-BobWeeklyRemainingRaw -LogPath $LogPath
+    if (-not $w) { return $null }
+    return (Step-BobWeeklyPeriodForward -Weekly $w -UtcNow $UtcNow)
+}
+
+function Get-BobWeeklyRemainingRaw {
     <#
     .SYNOPSIS
       Parse Grok CLI weekly remaining from unified.jsonl billing events.

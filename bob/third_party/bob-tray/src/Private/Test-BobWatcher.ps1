@@ -1,3 +1,11 @@
+function Test-BobWatcherInstalled {
+    # t785u: the legacy Grok-Bot job watcher (tools\Watch-BobJobs.ps1) is not part of the bob MSI. A watcher that is not
+    # installed cannot be 'down' - the tray showed 'alert: watcher' forever on such an install.
+    param([string]$Root)
+    if (-not $Root) { $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
+    return (Test-Path -LiteralPath (Join-Path $Root 'tools\Watch-BobJobs.ps1'))
+}
+
 function Test-BobWatcherUp {
     $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {

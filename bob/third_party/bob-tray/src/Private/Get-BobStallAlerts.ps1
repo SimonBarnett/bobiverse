@@ -26,6 +26,8 @@ function Get-BobStallAlerts {
     $runningNow = @(Get-BobBuilds -Lane running -ErrorAction SilentlyContinue)
     $busy = $runningNow.Count -gt 0
     $watcherDead = (-not $watcherUp) -or ($heartbeatStale -and -not $busy)
+    # t785u: only a watcher that is installed can be down.
+    if ($watcherDead -and -not (Test-BobWatcherInstalled)) { $watcherDead = $false }
     if ($watcherDead) {
         if (-not $Seen.watcher_down) {
             $Seen.watcher_down = $true

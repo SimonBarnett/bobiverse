@@ -273,6 +273,13 @@ function Get-BobGrokAvailability {
     if ($Weekly -and $Weekly.period_end) { $periodEnd = [string]$Weekly.period_end }
 
     $pct = Get-BobRemainingPctValue $Weekly
+    # t785u: a % from a period that has already ended is last week's number - never 'available 8%' for it.
+    if ($null -ne $pct -and $periodEnd) {
+        try {
+            $peChk = [datetime]::Parse($periodEnd, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+            if ($peChk -lt $UtcNow) { $pct = $null }
+        } catch { }
+    }
     if ($null -ne $pct) {
         if ($pct -gt 0) {
             return [pscustomobject]@{
@@ -354,7 +361,7 @@ function Get-BobGrokAvailability {
         # Grok 1.0.41+: null % + current weekly period + local allow_access — verified local seat.
         return [pscustomobject]@{
             state         = 'available'
-            reason        = 'verified-local-auth-weekly-period'
+            reason        = $(if ($Weekly.stale) { 'period-rolled-unmeasured' } else { 'verified-local-auth-weekly-period' })
             remaining_pct = $null
             period_end    = $periodEnd
             checked_at    = $checked
