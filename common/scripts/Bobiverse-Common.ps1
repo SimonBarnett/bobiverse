@@ -97,7 +97,7 @@ function Remove-BobiverseLegacyService {
     <#
       Stop + delete a leftover Windows service by name (NSSM or sc).
       Used to remove agentic_irc AircConsole and gh-Jeeves BobJeeves on bobiverse install.
-      Leaves on-disk trees (C:\ai\ergo, C:\ai\airc-console) for manual rollback.
+      Leaves on-disk trees (<ai root>\ergo, <ai root>\airc-console) for manual rollback.
     #>
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -134,11 +134,12 @@ function Resolve-BobiverseNssm {
     }
     if (-not $ScriptDir) { $ScriptDir = Get-BobiverseScriptDir }
     $pack = Join-Path (Split-Path -Parent $ScriptDir) 'third_party\nssm\win64\nssm.exe'
+    $aiRoot = Get-BobiverseAiRoot   # t780u: discovered <drive>:\ai, never a hard-coded C:\ai
     foreach ($c in @(
             $pack,
-            'C:\ai\ergo\nssm.exe',
-            'C:\ai\bob\third_party\nssm\win64\nssm.exe',
-            'C:\ai\jeeves\third_party\nssm\win64\nssm.exe'
+            (Join-Path $aiRoot 'ergo\nssm.exe'),
+            (Join-Path $aiRoot 'bob\third_party\nssm\win64\nssm.exe'),
+            (Join-Path $aiRoot 'jeeves\third_party\nssm\win64\nssm.exe')
         )) {
         if (Test-Path -LiteralPath $c) { return (Resolve-Path -LiteralPath $c).Path }
     }
@@ -209,6 +210,107 @@ function New-BobiverseShortcut {
 # legacy flat relative paths ('scripts\x.ps1', 'src\VERSION', 'bob-agents\worker', 'AGENTS.bob.md', 'third_party\nssm' ...).
 # ---------------------------------------------------------------------------------------------------------------------------
 $script:BobiverseServiceDirs = @('common', 'jeeves', 'bob', 'airc')
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# The "<drive>:\ai" root (t780u). Fleet boxes keep services/trees under <drive>:\ai, but the drive is NOT always C: (MarchHare had
+# repos + agent homes on D:\ai). Never assume C:\ai: scan the FIXED physical disks (Win32_LogicalDisk DriveType 3; removable,
+# network and CD/DVD are ignored) and use the \ai folder that exists. Several -> prefer the one already holding bob/jeeves/airc/
+# ergo installs, then the one the fleet services (ircBob/ircJeeves/BobIrcd/Airc) already point at, then the system drive, then
+# drive-letter order. None -> <SystemDrive>\ai, created ONLY by -Create. Env BOB_AI_ROOT overrides everything.
+# ---------------------------------------------------------------------------------------------------------------------------
+$script:BobiverseAiProducts = @('bob', 'jeeves', 'airc', 'ergo')
+$script:BobiverseAiServices = @('ircBob', 'ircJeeves', 'BobIrcd', 'Airc')
+
+function Select-BobiverseAiRoot {
+    # Pure selection (tests inject Disks / ServiceDirs). Disks: objects with .Root (e.g. 'D:\') and .DriveType (3 = fixed).
+    param(
+        [object[]]$Disks = @(),
+        [string[]]$ServiceDirs = @(),
+        [string]$SystemDrive = 'C:',
+        [string]$Override = ''
+    )
+    if ($Override) {
+        return [pscustomobject]@{ Path = $Override.TrimEnd('\'); Found = $true; Reason = 'BOB_AI_ROOT override'; Candidates = @() }
+    }
+    $sysRoot = ($SystemDrive.TrimEnd('\') + '\')
+    $fixed = @($Disks | Where-Object { $_ -and [int]$_.DriveType -eq 3 })
+    $cands = @()
+    foreach ($d in $fixed) {
+        $root = ([string]$d.Root)
+        if (-not $root.EndsWith('\')) { $root += '\' }
+        $ai = Join-Path $root 'ai'
+        if (Test-Path -LiteralPath $ai -PathType Container) { $cands += $ai }
+    }
+    if ($cands.Count -eq 0) {
+        return [pscustomobject]@{ Path = ($sysRoot + 'ai'); Found = $false; Reason = 'no fixed disk has an ai folder; default is <SystemDrive>\ai'; Candidates = @() }
+    }
+    if ($cands.Count -eq 1) {
+        return [pscustomobject]@{ Path = $cands[0]; Found = $true; Reason = 'only fixed disk with an ai folder'; Candidates = $cands }
+    }
+    $scored = foreach ($c in $cands) {
+        $inst = @($script:BobiverseAiProducts | Where-Object { Test-Path -LiteralPath (Join-Path $c $_) -PathType Container }).Count
+        $svc = @($ServiceDirs | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $c.TrimEnd('\') -or $_.StartsWith($c.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) }).Count
+        $isSys = [int]((Split-Path -Qualifier $c) -ieq $SystemDrive.TrimEnd('\'))
+        [pscustomobject]@{ Path = $c; Inst = $inst; Svc = $svc; Sys = $isSys }
+    }
+    $best = $scored | Sort-Object @{Expression = 'Inst'; Descending = $true }, @{Expression = 'Svc'; Descending = $true }, @{Expression = 'Sys'; Descending = $true }, @{Expression = 'Path'; Descending = $false } | Select-Object -First 1
+    $why = if ($best.Inst -gt 0) { "holds $($best.Inst) bob/jeeves/airc/ergo install folder(s)" } elseif ($best.Svc -gt 0) { 'fleet services point at it' } elseif ($best.Sys) { 'system drive' } else { 'first by drive letter' }
+    return [pscustomobject]@{ Path = $best.Path; Found = $true; Reason = "several fixed disks have ai; chose: $why"; Candidates = $cands }
+}
+
+function Get-BobiverseFixedDisks {
+    # Fixed physical disks only (DriveType 3). Falls back to [IO.DriveInfo] when CIM is unavailable.
+    $out = @()
+    try {
+        $out = @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ Root = ($_.DeviceID + '\'); DriveType = 3 } })
+    } catch { }
+    if ($out.Count -eq 0) {
+        try { $out = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' } | ForEach-Object { [pscustomobject]@{ Root = $_.Name; DriveType = 3 } }) } catch { }
+    }
+    return $out
+}
+
+function Get-BobiverseServiceAiDirs {
+    # Directories the fleet services already run from (NSSM AppDirectory / service image path), for the tie-break.
+    $dirs = @()
+    foreach ($n in $script:BobiverseAiServices) {
+        try {
+            $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$n"
+            $img = (Get-ItemProperty -LiteralPath $k -ErrorAction Stop).ImagePath
+            if ($img) { $dirs += ([string]$img).Trim('"') }
+            $ad = (Get-ItemProperty -LiteralPath "$k\Parameters" -ErrorAction SilentlyContinue).AppDirectory
+            if ($ad) { $dirs += [string]$ad }
+        } catch { }
+    }
+    return $dirs
+}
+
+function Get-BobiverseAiRoot {
+    # The <drive>:\ai root to use. -Create makes <SystemDrive>\ai ONLY when no fixed disk has one (never when found).
+    param(
+        [switch]$Create,
+        [object[]]$Disks = $null,
+        [string[]]$ServiceDirs = $null,
+        [string]$SystemDrive = '',
+        [string]$Override = $null
+    )
+    # [string]$Override = $null binds as '' (not $null), so test whether the caller passed it.
+    if (-not $PSBoundParameters.ContainsKey('Override')) { $Override = [string]$env:BOB_AI_ROOT }
+    if (-not $SystemDrive) { $SystemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' } }
+    if ($null -eq $Disks) { $Disks = if ($Override) { @() } else { @(Get-BobiverseFixedDisks) } }
+    if ($null -eq $ServiceDirs) { $ServiceDirs = if ($Override) { @() } else { @(Get-BobiverseServiceAiDirs) } }
+    $sel = Select-BobiverseAiRoot -Disks $Disks -ServiceDirs $ServiceDirs -SystemDrive $SystemDrive -Override $Override
+    if ($Create -and -not (Test-Path -LiteralPath $sel.Path)) {
+        New-Item -ItemType Directory -Force -Path $sel.Path | Out-Null
+    }
+    return $sel.Path
+}
+
+function Get-BobiverseProductRoot {
+    # <ai root>\<product>  (bob | jeeves | airc | ergo ...). Does not create anything.
+    param([Parameter(Mandatory)][string]$Product)
+    return [IO.Path]::Combine((Get-BobiverseAiRoot), $Product)   # not Join-Path: it throws for a drive that does not exist (yet)
+}
 
 function Test-BobiverseSplitRepo {
     param([Parameter(Mandatory)][string]$Root)
@@ -616,7 +718,8 @@ function Resolve-BobiverseTrayIcon {
     param([string]$InstallRoot = '')
     $cands = @()
     if ($InstallRoot) { $cands += (Join-Path $InstallRoot 'assets\bob-systray.ico') }
-    $cands += 'C:\ai\bob\assets\bob-systray.ico', 'C:\ai\jeeves\assets\bob-systray.ico', 'C:\ai\airc\assets\bob-systray.ico'
+    $aiRoot = Get-BobiverseAiRoot   # t780u
+    foreach ($p in 'bob', 'jeeves', 'airc') { $cands += (Join-Path $aiRoot "$p\assets\bob-systray.ico") }
     foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { return $c } }
     return ''
 }
@@ -787,10 +890,10 @@ function Sync-BobiverseAgentFolders {
             New-Item -ItemType Directory -Force -Path $to | Out-Null
             Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
         }
-        # The agent runs with cwd = <install>\$n, so the rule's relative '.\scripts\' must point at the install's scripts.
+        # The agent runs with cwd = <install>\$n, so the rule's relative '.\scripts\' becomes '..\scripts\' (install-root independent - t780u: no C:\ai baked into the MSI stage).
         Get-ChildItem -LiteralPath (Join-Path $dest '.grok\skills') -Recurse -Filter 'SKILL.md' | ForEach-Object {
             $t = [IO.File]::ReadAllText($_.FullName)
-            $t2 = $t.Replace('.\scripts\', 'C:\ai\bob\scripts\')
+            $t2 = $t.Replace('.\scripts\', '..\scripts\')
             if ($t2 -ne $t) { [IO.File]::WriteAllText($_.FullName, $t2, $enc) }
         }
         $agents = [IO.File]::ReadAllText((Join-Path $dest 'AGENTS.md'))

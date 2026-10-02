@@ -201,7 +201,7 @@ function Stage-Product([string]$Name) {
         foreach ($c in @(
                 (Join-Path $RepoRoot 'config\ircd.yaml'),
                 $env:BOBIVERSE_IRCD_YAML,
-                'C:\ai\ergo\ircd.yaml'
+                (Join-Path (Get-BobiverseAiRoot) 'ergo\ircd.yaml')   # t780u: discovered ai root
             )) {
             if ($c -and (Test-Path -LiteralPath $c)) {
                 Copy-Item -LiteralPath $c -Destination (Join-Path $ergoStage 'ircd.yaml') -Force
@@ -295,7 +295,11 @@ function Build-Msi([string]$Name, [string]$Stage) {
     New-Item -ItemType Directory -Force -Path $wixWork | Out-Null
 
     $installDirName = $Name
-    $installPath = "C:\ai\$Name"
+    # t780u: the install dir is NOT baked in. An immediate JScript CA (common\packaging\FindAiRoot.js) sets AIROOT from the FIXED disks
+    # at install time; INSTALLDIR = [AIROOT]\<product>. msiexec ... AIROOT=D:\ai overrides. Nothing is created unless no fixed disk has \ai.
+    $findAiJs = [IO.File]::ReadAllText((Get-BobiverseRepoPath -Root $RepoRoot -Rel 'packaging\FindAiRoot.js')).TrimStart([char]0xFEFF)
+    $findAiFile = Join-Path $wixWork 'FindAiRoot.js'
+    [IO.File]::WriteAllText($findAiFile, $findAiJs, [Text.UTF8Encoding]::new($false))
     $cg = "Bobiverse$($Name)Files"
     $harvested = Join-Path $wixWork 'HarvestedFiles.wxs'
     & $heat dir $Stage -cg $cg -gg -sfrag -srd -sreg -scom -dr INSTALLDIR -var var.StageDir -out $harvested
@@ -318,10 +322,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
         # Stable component GUID (per product) so every release refers to the SAME component, not a fresh one.
         $nc.SetAttribute('Guid', '{' + ([guid]::new([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("bobiverse-$Name-nssm-component"))).ToString().ToUpper()) + '}')
     }
-    # #70 (v0.1.20): the same for ergo\ergo.exe. C:\ai\ergo\ergo.exe was found HARD-LINKED to the pack's
-    # C:\ai\jeeves\ergo\ergo.exe, so the MSI rewriting its own copy rewrote the running Ergo binary and Windows
+    # #70 (v0.1.20): the same for ergo\ergo.exe. <ai root>\ergo\ergo.exe was found HARD-LINKED to the pack's
+    # <ai root>\jeeves\ergo\ergo.exe, so the MSI rewriting its own copy rewrote the running Ergo binary and Windows
     # Restart Manager bounced BobIrcd (pid change, every client reconnected). The pack keeps shipping ergo.exe (fresh
-    # installs seed C:\ai\ergo from it) but an upgrade must never remove/rewrite an existing one: Ergo upgrades are
+    # installs seed <ai root>\ergo from it) but an upgrade must never remove/rewrite an existing one: Ergo upgrades are
     # deliberate (Install-BobIrcd -ForceErgo), never a side effect of a jeeves MSI.
     if ($Name -eq 'jeeves') {
         $ergoFiles = @($hx.SelectNodes('//w:File', $wns) | Where-Object { ([string]$_.GetAttribute('Source')) -match '[\\/]ergo[\\/]ergo\.exe$' })
@@ -366,15 +370,25 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="INSTALLDIR" Name="$installDirName" />
     </Directory>
-    <SetDirectory Id="INSTALLDIR" Value="$installPath" />
+    <!-- t780u: <drive>:\ai discovered on the fixed disks (BOB_AI_ROOT / AIROOT= override); no hard-coded C:\ai. -->
+    <Property Id="AIROOT" Secure="yes" />
+    <Binary Id="FindAiRootJs" SourceFile="$findAiFile" />
+    <CustomAction Id="FindAiRoot" BinaryKey="FindAiRootJs" JScriptCall="FindAiRoot" Execute="immediate" Return="check" />
+    <CustomAction Id="SetInstallDirFromAiRoot" Property="INSTALLDIR" Value="[AIROOT]\$Name\" />
     <Component Id="CmpInstallDirMark" Directory="INSTALLDIR" Guid="$guidMark">
       <CreateFolder />
       <RegistryValue Root="HKLM" Key="Software\SimonBarnett\bobiverse\$Name" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
     </Component>
-    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot;" Execute="immediate" />
+    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot;" Execute="immediate" />
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
     <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
+    <InstallUISequence>
+      <Custom Action="FindAiRoot" Before="CostInitialize">NOT AIROOT</Custom>
+      <Custom Action="SetInstallDirFromAiRoot" Before="CostFinalize"></Custom>
+    </InstallUISequence>
     <InstallExecuteSequence>
+      <Custom Action="FindAiRoot" Before="CostInitialize">NOT AIROOT</Custom>
+      <Custom Action="SetInstallDirFromAiRoot" Before="CostFinalize"></Custom>
       <Custom Action="SetInstallCmd" After="InstallFiles">NOT Installed OR REINSTALL</Custom>
       <Custom Action="RunInstall" After="SetInstallCmd">NOT Installed OR REINSTALL</Custom>
     </InstallExecuteSequence>
