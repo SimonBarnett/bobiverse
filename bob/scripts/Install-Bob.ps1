@@ -27,13 +27,26 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+# t773u: a split repo checkout (<repo>\<service>\scripts) -> compose the flat scripts dir this installer expects. A stage / install tree is already flat.
+$splitRepo = ''
+$g = Split-Path -Parent (Split-Path -Parent $here)
+if ($g -and (Test-Path -LiteralPath (Join-Path $g 'common\VERSION'))) {
+    $splitRepo = $g
+    $flat = Join-Path ([IO.Path]::GetTempPath()) ('bobiverse-flat-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path (Join-Path $flat 'scripts') | Out-Null
+    foreach ($s in 'common', 'jeeves', 'bob', 'airc') {
+        $d = Join-Path $g "$s\scripts"
+        if (Test-Path -LiteralPath $d) { Copy-Item -Path (Join-Path $d '*') -Destination (Join-Path $flat 'scripts') -Recurse -Force }
+    }
+    $here = Join-Path $flat 'scripts'
+}
 . (Join-Path $here 'Bobiverse-Common.ps1')
 
 if (-not (Test-BobiverseIsAdmin)) {
     Request-BobiverseUacRelaunch -Bound $PSBoundParameters
 }
 
-$repoRoot = Split-Path -Parent $here
+$repoRoot = if ($splitRepo) { $splitRepo } else { Split-Path -Parent $here }
 $bootstrap = Join-Path $here 'Install-BootstrapTools.ps1'
 if (Test-Path -LiteralPath $bootstrap) {
     if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
@@ -75,7 +88,7 @@ if (-not $SkipCopy) {
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'bob'
 # t762u: worker\ + plan\ agent folders (skills/AGENTS). The MSI lays them (plus worker\bob-worker.exe); repo installs build them here. Never deletes plan\work.
-if ((Test-Path -LiteralPath (Join-Path $repoRoot 'bob-agents\worker\AGENTS.md')) -and ([IO.Path]::GetFullPath($repoRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\'))) {
+if ((Test-Path -LiteralPath (Get-BobiverseRepoPath -Root $repoRoot -Rel 'bob-agents\worker\AGENTS.md')) -and ([IO.Path]::GetFullPath($repoRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\'))) {
     [void](Sync-BobiverseAgentFolders -RepoRoot $repoRoot -Destination $InstallRoot)
     if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'worker\bob-worker.exe'))) {
         Write-Host 'INFO worker\bob-worker.exe not present (repo install): the tray Agent/Plan items need the MSI build (scripts\Build-BobWorker.ps1 builds it)'
@@ -83,7 +96,7 @@ if ((Test-Path -LiteralPath (Join-Path $repoRoot 'bob-agents\worker\AGENTS.md'))
 }
 
 # TipForm tray payload (tools/src/assets/PIN) when installing from repo (MSI heat already staged)
-$trayVendor = Join-Path $repoRoot 'third_party\bob-tray'
+$trayVendor = Get-BobiverseRepoPath -Root $repoRoot -Rel 'third_party\bob-tray'
 if (-not (Test-Path -LiteralPath (Join-Path $trayVendor 'tools\Watch-BobTray.ps1'))) {
     $trayVendor = $null
 }
@@ -129,7 +142,7 @@ if ($trayVendor) {
 } elseif (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'))) {
     Write-Host 'WARN TipForm Watch-BobTray missing under InstallRoot (pack/sync bob-tray)'
 }
-$skillsSrc = Join-Path $repoRoot '.grok\skills'
+$skillsSrc = Get-BobiverseRepoMergedDir -Root $repoRoot -Sub '.grok\skills'
 if (Test-Path $skillsSrc) {
     $skillsDest = Join-Path $InstallRoot '.grok\skills'
     New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
@@ -188,7 +201,7 @@ if (-not $SkipWatchAgentHealth) {
         $wahSrc = Join-Path $repoRoot 'Watch-AgentHealth'
     }
     if (-not (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1'))) {
-        $wahSrc = Join-Path $repoRoot 'third_party\Watch-AgentHealth'
+        $wahSrc = Get-BobiverseRepoPath -Root $repoRoot -Rel 'third_party\Watch-AgentHealth'
     }
     $wahDesk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Watch-AgentHealth'
     if (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1')) {

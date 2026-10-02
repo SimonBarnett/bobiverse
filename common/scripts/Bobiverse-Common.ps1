@@ -202,9 +202,84 @@ function New-BobiverseShortcut {
     Write-Host "INFO shortcut $LinkPath"
 }
 
+# ---------------------------------------------------------------------------------------------------------------------------
+# Repo layout (t773u). The git repo is split per service (common\ jeeves\ bob\ airc\, each with scripts\ .grok\skills\ docs\ ...)
+# but every STAGED / INSTALLED tree stays FLAT (<root>\scripts, <root>\.grok\skills, <root>\docs ...). These helpers let one
+# piece of code read either: a split repo checkout, or a flat tree (a stage dir / an install root). Callers keep using the
+# legacy flat relative paths ('scripts\x.ps1', 'src\VERSION', 'bob-agents\worker', 'AGENTS.bob.md', 'third_party\nssm' ...).
+# ---------------------------------------------------------------------------------------------------------------------------
+$script:BobiverseServiceDirs = @('common', 'jeeves', 'bob', 'airc')
+
+function Test-BobiverseSplitRepo {
+    param([Parameter(Mandatory)][string]$Root)
+    return [bool](Test-Path -LiteralPath (Join-Path $Root 'common\VERSION'))
+}
+
+function Get-BobiverseRepoRoot {
+    # <repo>\<service>\scripts -> <repo> (split checkout);  <root>\scripts -> <root> (flat stage / install tree).
+    param([Parameter(Mandatory)][string]$ScriptDir)
+    $p = Split-Path -Parent $ScriptDir
+    $g = if ($p) { Split-Path -Parent $p } else { '' }
+    if ($g -and (Test-BobiverseSplitRepo -Root $g)) { return $g }
+    return $p
+}
+
+function Get-BobiverseRepoDirs {
+    # Every existing <service>\<Sub> directory of a split repo (common first), or the single <Root>\<Sub> of a flat tree.
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sub)
+    if (Test-BobiverseSplitRepo -Root $Root) {
+        foreach ($s in $script:BobiverseServiceDirs) {
+            $d = Join-Path $Root (Join-Path $s $Sub)
+            if (Test-Path -LiteralPath $d -PathType Container) { $d }
+        }
+    } else {
+        $d = Join-Path $Root $Sub
+        if (Test-Path -LiteralPath $d -PathType Container) { $d }
+    }
+}
+
+function Copy-BobiverseRepoDirs {
+    # Compose <Dest> from every <service>\<Sub> (the staged flat layout is exactly this union).
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sub, [Parameter(Mandatory)][string]$Dest)
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+    foreach ($d in @(Get-BobiverseRepoDirs -Root $Root -Sub $Sub)) {
+        Copy-Item -Path (Join-Path $d '*') -Destination $Dest -Recurse -Force
+    }
+}
+
+function Get-BobiverseRepoPath {
+    # Resolve a LEGACY flat relative path to where it lives now. Flat trees: plain Join-Path. Split repo: alias table, else the
+    # first <service>\<Rel> that exists, else <Root>\<Rel> (config\, dist\ ... stay at the repo root).
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Rel)
+    $r = $Rel.TrimStart('\', '/').Replace('/', '\')
+    if (-not (Test-BobiverseSplitRepo -Root $Root)) { return (Join-Path $Root $r) }
+    $alias = $null
+    if ($r -ieq 'src\VERSION' -or $r -ieq 'VERSION') { $alias = 'common\VERSION' }
+    elseif ($r -imatch '^bob-agents(\\.*)?$') { $alias = 'bob\agents' + $Matches[1] }
+    elseif ($r -imatch '^AGENTS\.(jeeves|bob|airc)\.md$') { $alias = $Matches[1] + '\AGENTS.md' }
+    elseif ($r -imatch '^packaging\\airc\\(.+)$') { $alias = 'airc\packaging\' + $Matches[1] }
+    elseif ($r -imatch '^third_party\\(bob-tray|Watch-AgentHealth)(\\.*)?$') { $alias = 'bob\third_party\' + $Matches[1] + $Matches[2] }
+    elseif ($r -imatch '^third_party\\(nssm|ergo|wix|bootstrap)(\\.*)?$') { $alias = 'common\third_party\' + $Matches[1] + $Matches[2] }
+    if ($alias) { return (Join-Path $Root $alias) }
+    foreach ($s in $script:BobiverseServiceDirs) {
+        $c = Join-Path $Root (Join-Path $s $r)
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    return (Join-Path $Root $r)
+}
+
+function Get-BobiverseRepoMergedDir {
+    # A flat tree: <Root>\<Sub>.  A split repo: a temp dir holding the union of every <service>\<Sub>.
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sub)
+    if (-not (Test-BobiverseSplitRepo -Root $Root)) { return (Join-Path $Root $Sub) }
+    $t = Join-Path ([IO.Path]::GetTempPath()) ('bobiverse-' + ($Sub -replace '[^A-Za-z0-9]', '-') + '-' + [Guid]::NewGuid().ToString('N'))
+    Copy-BobiverseRepoDirs -Root $Root -Sub $Sub -Dest $t
+    return $t
+}
+
 function Copy-BobiverseVersion {
     param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][string]$RepoRoot)
-    $src = Join-Path $RepoRoot 'src\VERSION'
+    $src = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION'
     if (-not (Test-Path -LiteralPath $src)) { throw "missing $src" }
     New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
     Copy-Item -LiteralPath $src -Destination (Join-Path $InstallRoot 'VERSION') -Force
@@ -691,7 +766,7 @@ function Sync-BobiverseAgentFolders {
         [Parameter(Mandatory)][string]$RepoRoot,
         [Parameter(Mandatory)][string]$Destination
     )
-    $skillsRoot = Join-Path $RepoRoot '.grok\skills'
+    $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
     $enc = New-Object System.Text.UTF8Encoding($false)
     $defs = @(
         @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-plan', 'bobiverse-bob-job-irc', 'bobiverse-bob-job-fr', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-uat', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills') },
@@ -700,14 +775,14 @@ function Sync-BobiverseAgentFolders {
     $made = 0
     foreach ($d in $defs) {
         $n = $d.Name
-        $src = Join-Path $RepoRoot "bob-agents\$n"
+        $src = Get-BobiverseRepoPath -Root $RepoRoot -Rel "bob-agents\$n"
         if (-not (Test-Path -LiteralPath (Join-Path $src 'AGENTS.md'))) { Write-Host "WARN agent folder source missing: bob-agents\$n"; continue }
         $dest = Join-Path $Destination $n
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
         Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
         foreach ($sk in $d.Shared) {
-            $from = Join-Path $skillsRoot $sk
-            if (-not (Test-Path -LiteralPath $from)) { throw "agent folder $n needs .grok\skills\$sk" }
+            $from = @($skillsDirs | ForEach-Object { Join-Path $_ $sk } | Where-Object { Test-Path -LiteralPath $_ })[0]
+            if (-not $from) { throw "agent folder $n needs .grok\skills\$sk" }
             $to = Join-Path $dest ".grok\skills\$sk"
             New-Item -ItemType Directory -Force -Path $to | Out-Null
             Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
@@ -750,7 +825,7 @@ function Install-BobiverseAgentLayer {
         $n++
     }
     # script installs stage from the repo: AGENTS.<product>.md is the source of AGENTS.md / CLAUDE.md / GROK.md
-    $agentsSrc = Join-Path $RepoRoot "AGENTS.$Product.md"
+    $agentsSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel "AGENTS.$Product.md"
     if ((-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'AGENTS.md'))) -and (Test-Path -LiteralPath $agentsSrc)) {
         foreach ($d in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) { Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $InstallRoot $d) -Force; $n++ }
     }

@@ -20,22 +20,23 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
+# t773u: the repo is split per service (common\ jeeves\ bob\ airc\); this script lives in common\scripts. The STAGE stays flat.
 if (-not $RepoRoot) {
-    $RepoRoot = Split-Path -Parent $PSScriptRoot
+    $RepoRoot = Get-BobiverseRepoRoot -ScriptDir $PSScriptRoot
 }
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 if (-not $Version) {
-    $Version = (Get-Content (Join-Path $RepoRoot 'src\VERSION') -Raw).Trim()
+    $Version = (Get-Content (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') -Raw).Trim()
 }
 $msiVersion = $Version
 if ($msiVersion -notmatch '^\d+\.\d+\.\d+') { throw "bad VERSION $Version" }
 
-. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
-$fetchNssm = Join-Path $RepoRoot 'scripts\Fetch-Nssm.ps1'
-$fetchWix = Join-Path $RepoRoot 'scripts\Fetch-Wix.ps1'
-$fetchErgo = Join-Path $RepoRoot 'scripts\Fetch-Ergo.ps1'
-$null = & $fetchNssm -OutDir (Join-Path $RepoRoot 'third_party\nssm\win64') -CacheDir (Join-Path $RepoRoot 'third_party\nssm')
+$fetchNssm = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Nssm.ps1')
+$fetchWix = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Wix.ps1')
+$fetchErgo = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Ergo.ps1')
+$null = & $fetchNssm -OutDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64') -CacheDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm')
 
 if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed together with -SkipMsi (an MSI without bob-worker.exe must never ship)' }
 
@@ -43,7 +44,7 @@ $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Pro
 
 function Resolve-WatchAgentHealthSrc {
     foreach ($c in @(
-            (Join-Path $RepoRoot 'third_party\Watch-AgentHealth'),
+            (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\Watch-AgentHealth'),
             $env:BOBIVERSE_WATCH_AGENTHEALTH,
             (Join-Path (Split-Path -Parent $RepoRoot) 'agentic_build\tools\Watch-AgentHealth'),
             (Join-Path $env:USERPROFILE 'agentic_build\tools\Watch-AgentHealth'),
@@ -63,7 +64,7 @@ function Stage-BobAgentFolders([string]$Stage) {
     if ($SkipWorkerExe) {
         Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
     } else {
-        $buildWorker = Join-Path $RepoRoot 'scripts\Build-BobWorker.ps1'
+        $buildWorker = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobWorker.ps1')
         $exe = (& $buildWorker -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
         if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { throw 'Build-BobWorker.ps1 did not produce bob-worker.exe' }
         Copy-Item -LiteralPath $exe -Destination (Join-Path $Stage 'worker\bob-worker.exe') -Force
@@ -75,15 +76,16 @@ function Stage-Product([string]$Name) {
     $stage = Join-Path $OutDir ("$Name-$Version")
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Force -Path "$stage\scripts", "$stage\docs", "$stage\.grok\skills", "$stage\src", "$stage\config", "$stage\third_party\nssm\win64" | Out-Null
-    Copy-Item (Join-Path $RepoRoot 'scripts\*') (Join-Path $stage 'scripts') -Recurse -Force
+    # t773u: the flat staged scripts\ is the UNION of common\scripts + jeeves\scripts + bob\scripts + airc\scripts.
+    Copy-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts' -Dest (Join-Path $stage 'scripts')
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Copy-Item (Join-Path $RepoRoot 'src\VERSION') (Join-Path $stage 'VERSION') -Force
-    Copy-Item (Join-Path $RepoRoot 'src\VERSION') (Join-Path $stage 'src\VERSION') -Force
+    Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') (Join-Path $stage 'VERSION') -Force
+    Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') (Join-Path $stage 'src\VERSION') -Force
 
     # Product AGENTS.md (repo AGENTS.<product>.md -> stage AGENTS.md)
-    $agentsSrc = Join-Path $RepoRoot ("AGENTS.$Name.md")
+    $agentsSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel "AGENTS.$Name.md"
     if (Test-Path -LiteralPath $agentsSrc) {
         Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $stage 'AGENTS.md') -Force
         # Agent-start layer: the same briefing under every agent's well-known name, so Grok / Claude / Cursor started in
@@ -100,8 +102,7 @@ function Stage-Product([string]$Name) {
     }
 
     # Docs: shared map + product-named files + optional docs/<product>/ tree
-    $docsSrc = Join-Path $RepoRoot 'docs'
-    $docsDest = Join-Path $stage 'docs'
+        $docsDest = Join-Path $stage 'docs'
     $sharedDocs = @('post-install.md', 'skill-harvest-log.md', 'vision.md')
     $productDocsMap = @{
         'jeeves' = @('jeeves-admin.md', 'jeeves-commands.md', 'channel-privileges-and-workers.md', 'webhooks.md', 'jira-webhook-customer-guide.md')
@@ -112,12 +113,12 @@ function Stage-Product([string]$Name) {
     foreach ($d in $sharedDocs) { [void]$docsToCopy.Add($d) }
     foreach ($d in @($productDocsMap[$Name])) { if ($d) { [void]$docsToCopy.Add($d) } }
     foreach ($d in $docsToCopy) {
-        $from = Join-Path $docsSrc $d
+        $from = Get-BobiverseRepoPath -Root $RepoRoot -Rel "docs\$d"
         if (Test-Path -LiteralPath $from) {
             Copy-Item -LiteralPath $from -Destination (Join-Path $docsDest $d) -Force
         }
     }
-    $productDocsDir = Join-Path $docsSrc $Name
+    $productDocsDir = Get-BobiverseRepoPath -Root $RepoRoot -Rel "docs\$Name"
     if (Test-Path -LiteralPath $productDocsDir) {
         Copy-Item -Path (Join-Path $productDocsDir '*') -Destination $docsDest -Recurse -Force
         Write-Host "INFO $Name staged docs/$Name/ into docs\"
@@ -125,11 +126,12 @@ function Stage-Product([string]$Name) {
     Write-Host ("INFO $Name staged docs: {0}" -f (($docsToCopy | Sort-Object) -join ', '))
 
     # Skills: product skill + harvest only (do not ship sibling product skills)
-    $skillsRoot = Join-Path $RepoRoot '.grok\skills'
+    $skillsDirs = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub '.grok\skills')
+    function Find-RepoSkill([string]$n) { foreach ($sd in $skillsDirs) { $c = Join-Path $sd $n; if (Test-Path -LiteralPath $c) { return $c } } return (Join-Path $skillsDirs[0] $n) }
     $skillsDest = Join-Path $stage '.grok\skills'
     # This product's whole skill book: bobiverse-<p> + bobiverse-<p>-commands / -troubleshooting / ... + the shared fleet-ops book.
     $productSkill = "bobiverse-$Name"
-    $bookDirs = @(Get-ChildItem -LiteralPath $skillsRoot -Directory -ErrorAction SilentlyContinue |
+    $bookDirs = @($skillsDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue } |
             Where-Object { $_.Name -eq $productSkill -or $_.Name -like "$productSkill-*" -or $_.Name -eq 'bobiverse-fleet-ops' })
     if (-not ($bookDirs | Where-Object { $_.Name -eq $productSkill })) {
         Write-Host "WARN $Name missing .grok/skills/$productSkill"
@@ -139,8 +141,8 @@ function Stage-Product([string]$Name) {
         Copy-Item -Path (Join-Path $bd.FullName '*') -Destination (Join-Path $skillsDest $bd.Name) -Recurse -Force
     }
     Write-Host ("INFO $Name staged skill books: {0}" -f (($bookDirs | ForEach-Object Name) -join ', '))
-    $harvestSrc = Join-Path $skillsRoot 'harvest'
-    $harvestAliasSrc = Join-Path $skillsRoot 'harvest-agent-skills'
+    $harvestSrc = Find-RepoSkill 'harvest'
+    $harvestAliasSrc = Find-RepoSkill 'harvest-agent-skills'
     if (Test-Path -LiteralPath $harvestSrc) {
         New-Item -ItemType Directory -Force -Path (Join-Path $skillsDest 'harvest') | Out-Null
         Copy-Item -Path (Join-Path $harvestSrc '*') -Destination (Join-Path $skillsDest 'harvest') -Recurse -Force
@@ -156,7 +158,7 @@ function Stage-Product([string]$Name) {
     }
 
     # Bobiverse systray icon: every product's Start Menu shortcuts use it (bob also gets it via the tray payload).
-    $trayIcoSrc = Join-Path $RepoRoot 'third_party\bob-tray\assets\bob-systray.ico'
+    $trayIcoSrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\bob-systray.ico')
     if (Test-Path -LiteralPath $trayIcoSrc) {
         New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
         Copy-Item -LiteralPath $trayIcoSrc -Destination (Join-Path $stage 'assets\bob-systray.ico') -Force
@@ -164,7 +166,7 @@ function Stage-Product([string]$Name) {
         Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
     }
 
-    Copy-Item (Join-Path $RepoRoot 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
+    Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
     # Issue #4: do not embed live Ergo PASS into public release assets by default.
     $stageErgo = Join-Path $stage 'config\ergo.password'
     if ($EmbedErgoPassword) {
@@ -191,7 +193,7 @@ function Stage-Product([string]$Name) {
     if ($Name -eq 'jeeves') {
         $ergoStage = Join-Path $stage 'ergo'
         New-Item -ItemType Directory -Force -Path $ergoStage | Out-Null
-        $null = & $fetchErgo -OutDir $ergoStage -CacheDir (Join-Path $RepoRoot 'third_party\ergo')
+        $null = & $fetchErgo -OutDir $ergoStage -CacheDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\ergo')
         if (-not (Test-Path -LiteralPath (Join-Path $ergoStage 'ergo.exe'))) {
             throw 'jeeves pack requires ergo.exe (Fetch-Ergo failed)'
         }
@@ -212,7 +214,7 @@ function Stage-Product([string]$Name) {
         $toolsStage = Join-Path $stage 'tools'
         New-Item -ItemType Directory -Force -Path $toolsStage | Out-Null
         foreach ($tf in @('bob_git_hook.py', 'New-BobGitWebhook.ps1')) {
-            $from = Join-Path $RepoRoot "tools\$tf"
+            $from = Get-BobiverseRepoPath -Root $RepoRoot -Rel "tools\$tf"
             if (-not (Test-Path -LiteralPath $from)) { throw "jeeves pack requires tools\$tf (webhooks, #53)" }
             Copy-Item -LiteralPath $from -Destination (Join-Path $toolsStage $tf) -Force
         }
@@ -233,8 +235,8 @@ function Stage-Product([string]$Name) {
         }
 
         # TipForm companion tray (vendored from agentic_build) -> InstallRoot tools/src/assets
-        $traySrc = Join-Path $RepoRoot 'third_party\bob-tray'
-        $syncTray = Join-Path $RepoRoot 'scripts\Sync-BobTrayFromAgenticBuild.ps1'
+        $traySrc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray')
+        $syncTray = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Sync-BobTrayFromAgenticBuild.ps1')
         if (-not (Test-Path -LiteralPath (Join-Path $traySrc 'tools\Watch-BobTray.ps1'))) {
             if (Test-Path -LiteralPath $syncTray) {
                 Write-Host 'INFO bob tray missing; running Sync-BobTrayFromAgenticBuild.ps1'
@@ -283,7 +285,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
         Write-Host "INFO SkipMsi stage=$Stage"
         return
     }
-    $wixBin = & $fetchWix -CacheDir (Join-Path $RepoRoot 'third_party\wix')
+    $wixBin = & $fetchWix -CacheDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\wix')
     $candle = Join-Path $wixBin 'candle.exe'
     $light = Join-Path $wixBin 'light.exe'
     $heat = Join-Path $wixBin 'heat.exe'

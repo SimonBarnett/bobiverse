@@ -66,6 +66,7 @@ if (-not $env:BOBIVERSE_BOB_VERSION) {
     foreach ($vf in @(
             (Join-Path $InstallRoot 'VERSION'),
             (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\VERSION'),
+            (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\VERSION'),   # t773u split repo
             'C:\ai\bob\VERSION'
         )) {
         if ($vf -and (Test-Path -LiteralPath $vf)) {

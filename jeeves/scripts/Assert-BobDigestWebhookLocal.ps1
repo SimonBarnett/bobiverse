@@ -21,6 +21,7 @@ function Resolve-BobTrayModuleRoot {
             $Preferred,
             (Join-Path 'C:\ai\bob' ''),
             (Join-Path $repoRoot 'third_party\bob-tray'),
+            (Join-Path (Split-Path -Parent $repoRoot) 'bob\third_party\bob-tray'),   # t773u split repo: jeeves\scripts -> ..\bob
             (Join-Path $repoRoot 'dist\bob-*')
         )) {
         if (-not $c) { continue }

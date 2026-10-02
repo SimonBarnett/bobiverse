@@ -16,8 +16,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent $PSScriptRoot }
-if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'third_party\bob-tray' }
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent $PSScriptRoot
+    # t773u: split repo = <repo>\bob\scripts -> <repo>
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $RepoRoot) 'common\VERSION')) { $RepoRoot = Split-Path -Parent $RepoRoot }
+}
+if (-not $OutDir) {
+    $OutDir = if (Test-Path -LiteralPath (Join-Path $RepoRoot 'common\VERSION')) { Join-Path $RepoRoot 'bob\third_party\bob-tray' } else { Join-Path $RepoRoot 'third_party\bob-tray' }
+}
 
 function Resolve-AgenticBuildRoot {
     param([string]$Preferred)

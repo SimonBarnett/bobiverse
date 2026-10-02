@@ -11,13 +11,21 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$RepoRoot = '',
     [Parameter(Mandatory = $true)][string]$OutDir,
     [string]$Python = ''
 )
 $ErrorActionPreference = 'Stop'
-$src = Join-Path $RepoRoot 'scripts\bob_worker.py'
+# t773u: repo is split per service (this script is bob\scripts); a flat stage keeps it next to Bobiverse-Common.ps1.
+$cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $cm)) { $cm = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\scripts\Bobiverse-Common.ps1' }
+. $cm
+if (-not $RepoRoot) { $RepoRoot = Get-BobiverseRepoRoot -ScriptDir $PSScriptRoot }
+$src = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\bob_worker.py'
 if (-not (Test-Path -LiteralPath $src)) { throw "missing $src" }
+# PyInstaller needs every scripts dir on its path (the composed flat layout is the union of <service>\scripts).
+$pyPaths = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts')
+$pathArgs = @(); foreach ($pp in $pyPaths) { $pathArgs += @('--paths', $pp) }
 if (-not $Python) {
     foreach ($c in @((Get-Command python.exe -ErrorAction SilentlyContinue).Source, 'C:\Program Files\Python312\python.exe', 'C:\Python312\python.exe')) {
         if ($c -and (Test-Path -LiteralPath $c)) { $Python = $c; break }
@@ -37,7 +45,7 @@ $dist = Join-Path $work 'dist'
 $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $log = & $Python -m PyInstaller --noconfirm --clean --onefile --console --name bob-worker `
     --distpath $dist --workpath (Join-Path $work 'build') --specpath $work `
-    --paths (Join-Path $RepoRoot 'scripts') --exclude-module tkinter --exclude-module numpy --exclude-module pandas --exclude-module matplotlib `
+    @pathArgs --exclude-module tkinter --exclude-module numpy --exclude-module pandas --exclude-module matplotlib `
     $src 2>&1
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEap

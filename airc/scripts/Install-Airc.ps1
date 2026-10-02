@@ -18,13 +18,26 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+# t773u: a split repo checkout (<repo>\<service>\scripts) -> compose the flat scripts dir this installer expects. A stage / install tree is already flat.
+$splitRepo = ''
+$g = Split-Path -Parent (Split-Path -Parent $here)
+if ($g -and (Test-Path -LiteralPath (Join-Path $g 'common\VERSION'))) {
+    $splitRepo = $g
+    $flat = Join-Path ([IO.Path]::GetTempPath()) ('bobiverse-flat-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path (Join-Path $flat 'scripts') | Out-Null
+    foreach ($s in 'common', 'jeeves', 'bob', 'airc') {
+        $d = Join-Path $g "$s\scripts"
+        if (Test-Path -LiteralPath $d) { Copy-Item -Path (Join-Path $d '*') -Destination (Join-Path $flat 'scripts') -Recurse -Force }
+    }
+    $here = Join-Path $flat 'scripts'
+}
 . (Join-Path $here 'Bobiverse-Common.ps1')
 
 if (-not (Test-BobiverseIsAdmin)) {
     Request-BobiverseUacRelaunch -Bound $PSBoundParameters
 }
 
-$repoRoot = Split-Path -Parent $here
+$repoRoot = if ($splitRepo) { $splitRepo } else { Split-Path -Parent $here }
 $bootstrap = Join-Path $here 'Install-BootstrapTools.ps1'
 if (Test-Path -LiteralPath $bootstrap) {
     if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
@@ -35,7 +48,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (J
 Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'airc'
-$skillsSrc = Join-Path $repoRoot '.grok\skills'
+$skillsSrc = Get-BobiverseRepoMergedDir -Root $repoRoot -Sub '.grok\skills'
 if (Test-Path $skillsSrc) {
     $skillsDest = Join-Path $InstallRoot '.grok\skills'
     New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null

@@ -18,6 +18,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# t773u: in the split repo checkout the shared modules (account_map ...) live in <repo>/common/scripts; a staged/installed tree is flat.
+_common = Path(__file__).resolve().parent.parent.parent / "common" / "scripts"
+if _common.is_dir():
+    sys.path.insert(1, str(_common))
 
 from account_map import AccountMap, account_from_tags, parse_message_tags, parse_prefix_nick
 from airc_console import (

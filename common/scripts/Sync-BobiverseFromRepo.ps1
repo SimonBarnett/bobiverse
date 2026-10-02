@@ -116,7 +116,9 @@ if ($git) {
     }
 }
 
-$verSrc = Join-Path $clone 'src\VERSION'
+# t773u: the clone may be a split repo (common\ jeeves\ bob\ airc\) or an older flat one; the INSTALL tree is always flat.
+. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
+$verSrc = Get-BobiverseRepoPath -Root $clone -Rel 'src\VERSION'
 if (-not (Test-Path -LiteralPath $verSrc)) { $verSrc = Join-Path $clone 'VERSION' }
 $cloneVer = if (Test-Path -LiteralPath $verSrc) { (Get-Content -LiteralPath $verSrc -Raw).Trim() } else { '?' }
 Write-Host "INFO sync-copy clone=$clone ver=$cloneVer -> $InstallRoot pulled=$pulled"
@@ -127,9 +129,8 @@ if ($DryRun) {
 }
 
 foreach ($d in @('scripts', 'third_party')) {
-    $s = Join-Path $clone $d
     $t = Join-Path $InstallRoot $d
-    if (Test-Path -LiteralPath $s) {
+    foreach ($s in @(Get-BobiverseRepoDirs -Root $clone -Sub $d)) {
         & robocopy.exe $s $t /E /XO /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
         $rc = $LASTEXITCODE
         # robocopy 0-7 = success family
@@ -142,17 +143,17 @@ foreach ($d in @('scripts', 'third_party')) {
 }
 
 # Product skills book (shared harvest + product skill) when present in clone.
-$skillsSrc = Join-Path $clone '.grok\skills'
+$skillsDirs = @(Get-BobiverseRepoDirs -Root $clone -Sub '.grok\skills')
 $skillsDst = Join-Path $InstallRoot '.grok\skills'
-if (Test-Path -LiteralPath $skillsSrc) {
+if ($skillsDirs.Count -gt 0) {
     New-Item -ItemType Directory -Force -Path $skillsDst | Out-Null
-    $bookNames = @(Get-ChildItem -LiteralPath $skillsSrc -Directory -ErrorAction SilentlyContinue |
+    $bookNames = @($skillsDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue } |
             Where-Object { $_.Name -in @('harvest', 'harvest-agent-skills', 'bobiverse-fleet-ops') -or
                 ($Product -and ($_.Name -eq "bobiverse-$Product" -or $_.Name -like "bobiverse-$Product-*")) } |
             ForEach-Object { $_.Name })
     foreach ($name in $bookNames) {
-        $s = Join-Path $skillsSrc $name
-        if (Test-Path -LiteralPath $s) {
+        $s = @($skillsDirs | ForEach-Object { Join-Path $_ $name } | Where-Object { Test-Path -LiteralPath $_ })[0]
+        if ($s) {
             $t = Join-Path $skillsDst $name
             & robocopy.exe $s $t /E /XO /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
         }
@@ -162,14 +163,13 @@ if (Test-Path -LiteralPath $skillsSrc) {
 # t762u: bob worker\ + plan\ agent folders (skills + AGENTS; the exe only ever comes via the MSI; plan\work is never touched).
 if ($Product -eq 'bob') {
     try {
-        . (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
         [void](Sync-BobiverseAgentFolders -RepoRoot $clone -Destination $InstallRoot)
     } catch { Write-Host ("WARN sync worker/plan folders: {0}" -f $_.Exception.Message) }
 }
 
 # Agent-start layer for this product (AGENTS.md / CLAUDE.md / GROK.md / .cursor rule) from AGENTS.<product>.md.
 if ($Product) {
-    $agentsSrc = Join-Path $clone "AGENTS.$Product.md"
+    $agentsSrc = Get-BobiverseRepoPath -Root $clone -Rel "AGENTS.$Product.md"
     if (Test-Path -LiteralPath $agentsSrc) {
         foreach ($d in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) { Copy-Item -Force -LiteralPath $agentsSrc -Destination (Join-Path $InstallRoot $d) }
         $ruleDir = Join-Path $InstallRoot '.cursor\rules'
@@ -178,8 +178,7 @@ if ($Product) {
         [IO.File]::WriteAllText((Join-Path $ruleDir "bobiverse-$Product.mdc"), $mdc, [Text.UTF8Encoding]::new($false))
         Write-Host "INFO sync-agent-layer AGENTS.md CLAUDE.md GROK.md .cursor/rules/bobiverse-$Product.mdc"
     }
-    $docsSrc = Join-Path $clone 'docs'
-    if (Test-Path -LiteralPath $docsSrc) {
+    foreach ($docsSrc in @(Get-BobiverseRepoDirs -Root $clone -Sub 'docs')) {
         & robocopy.exe $docsSrc (Join-Path $InstallRoot 'docs') '*.md' /XO /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
     }
 }
