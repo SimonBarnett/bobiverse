@@ -19,7 +19,7 @@ if ($svc.Status -eq 'Running') {
     Write-Host 'INFO BobIrcd Running'
     exit 0
 }
-Write-Host "WARN BobIrcd status=$($svc.Status) — attempting Start-Service"
+Write-Host "WARN BobIrcd status=$($svc.Status) - attempting Start-Service"
 try {
     Start-Service -Name 'BobIrcd' -ErrorAction Stop
     Start-Sleep -Seconds 2

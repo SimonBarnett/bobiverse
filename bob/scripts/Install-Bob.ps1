@@ -22,8 +22,13 @@ param(
 # Watch-AgentHealth). Implied under msiexec/quiet installs; or set env BOBIVERSE_NO_TIDY=1.
 [switch]$SkipTidy,
     [switch]$PromptServicePassword,
-    [switch]$SkipCopy
+    [switch]$SkipCopy,
+    # #70: MSI public property SKIPCOPY=1 arrives via RunInstall as a string.
+    [string]$MsiSkipCopy = ''
 )
+
+# #70: map MSI property strings onto the real switches (empty / unset = no-op).
+if ($MsiSkipCopy -eq '1') { $SkipCopy = $true }
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
