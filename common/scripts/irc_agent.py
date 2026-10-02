@@ -2238,11 +2238,19 @@ class Client:
             line = gitclaim.format_assign_line(src, job)
             self._git_say(target, line)
             info(f"INFO git-claim bored offered {line} nick={src}")
+            try:  # t816u: show the assignment in the digest at once (ACK keeps it; DONE/NACK/GIVEUP clear it)
+                self._workers().on_ack(src, target, shop_listen.activity_description(job))
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN workers assign error {type(exc).__name__}")
             return
         if status == "empty":
             gitclaim.note_worker_activity(self.home, src, now)
             self._git_say(target, gitclaim.format_nothing_queued(src))
             info(f"INFO git-claim bored empty nick={src}")
+            try:  # t816u: a bored seat with nothing to do is idle
+                self._workers().on_done(src, target)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN workers idle error {type(exc).__name__}")
             return
         info(f"INFO git-claim bored offer failed nick={src}")
 
@@ -2296,7 +2304,7 @@ class Client:
         status = result.get("status") or ""
         act = result.get("activity")
         try:
-            if verb == "ACK" and status in ("ok", "duplicate") and act:
+            if verb == "ACK" and status in ("ok", "duplicate", "missing") and act:
                 self._workers().on_ack(src, target, act)
             elif verb in ("DONE", "NACK", "GIVEUP"):
                 self._workers().on_done(src, target)
