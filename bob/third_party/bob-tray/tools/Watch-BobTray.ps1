@@ -1650,6 +1650,7 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
     catch { $proc = [pscustomobject]@{ Id = $childPid; HasExited = $true } }
     Write-TrayLog ('plan: started pid={0} (own console) {1}' -f $childPid, (Split-Path -Leaf $FilePath))
     Register-BobTrayGrokSession -Process $proc -SessionEnv $SessionEnv
+    return $childPid
 }
 
 function Start-BobTrayWorkerExe {
@@ -1685,14 +1686,14 @@ function Start-BobTrayWorkerExe {
         $argv = @('--mode', $Mode, '--install-root', $RepoRoot)
         $mid = Get-BobTrayMachineId
         if ($mid) { $argv += @('--machine-id', $mid) }
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $run
-        $psi.Arguments = (($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
-        $psi.WorkingDirectory = (Join-Path $RepoRoot $(if ($Mode -eq 'plan') { 'plan' } else { 'worker' }))
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $false   # t771u: the exe's console window IS the one and only agent window (agent + IRC relay live inside it)
-        $proc = [System.Diagnostics.Process]::Start($psi)
-        Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} (NEW agent every click; selection cursor>grok>key dialog)' -f $Mode, $proc.Id, $Mode)
+        # t787u: the tray is a hidden powershell that owns a HIDDEN console. ProcessStartInfo UseShellExecute=false +
+        # CreateNoWindow=false does NOT create a console: the exe (and the agent that inherits its console) attached to the
+        # tray's hidden console - the click "did nothing" (MarchHare 2026-10-02: the exe ran, grok started, no window).
+        # CREATE_NEW_CONSOLE gives each click its OWN visible console: the exe's console IS the one agent window.
+        $wd = Join-Path $RepoRoot $(if ($Mode -eq 'plan') { 'plan' } else { 'worker' })
+        $title = ('Bob {0} - starting (closing this window ends the agent)' -f $Mode)
+        $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title)[-1]
+        Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} own visible console (NEW agent every click; selection cursor>grok>key dialog)' -f $Mode, $childPid, $Mode)
     }
     catch {
         Write-TrayLog ('{0}: start failed: {1}' -f $Mode, $_.Exception.Message)

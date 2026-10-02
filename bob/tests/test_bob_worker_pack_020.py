@@ -52,10 +52,11 @@ def test_tray_worker_launch_never_resumes_and_gives_the_exe_its_one_visible_cons
     assert "worker\\bob-worker.exe" in fn and "'--mode', $Mode" in fn and "--install-root" in fn
     assert "Bobiverse\\worker\\bin" in fn                    # per-user run-copy: the installed exe is never locked by a seat
     assert "NEW agent every click" in fn
-    assert "$psi.CreateNoWindow = $false" in fn              # t771u: the exe's console IS the one window (agent inherits it)
-    assert "UseShellExecute = $false" in fn
+    # t787u: ProcessStartInfo + CreateNoWindow=false inherits the tray's HIDDEN console -> invisible agent. Own new console instead.
+    assert "Start-BobTrayVisibleProcessWithSessionEnv" in fn and "CreateNoWindow" not in fn.split("t787u", 1)[1].split("$wd =", 1)[1]
+    assert "New-Object System.Diagnostics.ProcessStartInfo" not in fn and "Process]::Start" not in fn
+    assert fn.count("Start-BobTrayVisibleProcessWithSessionEnv") == 1   # one process per click: no watcher/helper window
     assert "Resume" not in fn and "Attach" not in fn.replace("AttachConsole", "")
-    assert fn.count("Process]::Start") == 1                  # one process per click: no watcher/helper window
 
 
 @WIN
@@ -74,8 +75,9 @@ def test_tray_second_click_starts_a_second_new_process_from_the_same_run_copy(tm
         "function Write-TrayLog($m){ Write-Output ('LOG ' + $m) }\n"
         "function Get-BobTrayMachineId { 'testbox' }\n"
         f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{TRAY}',[ref]$null,[ref]$null)\n"
-        "$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-BobTrayWorkerExe'},$true).Extent.Text\n"
-        "Invoke-Expression $fn\n"
+        "foreach($name in 'ConvertTo-BobTrayProcessArgumentString','Initialize-BobTrayConsoleLauncher','Register-BobTrayGrokSession','Start-BobTrayVisibleProcessWithSessionEnv','Start-BobTrayWorkerExe'){\n"
+        "  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true).Extent.Text\n"
+        "  Invoke-Expression $fn }\n"
         "Start-BobTrayWorkerExe -Mode agent\nStart-BobTrayWorkerExe -Mode agent\nStart-BobTrayWorkerExe -Mode plan\n",
         encoding="utf-8")
     env = dict(os.environ, LOCALAPPDATA=str(tmp_path / "lad"))
@@ -89,9 +91,59 @@ def test_tray_second_click_starts_a_second_new_process_from_the_same_run_copy(tm
     assert len(copies) == 1, copies
 
 
+@WIN
+def test_tray_click_from_a_hidden_tray_opens_one_visible_console_window(tmp_path):
+    """t787u regression: the tray is a HIDDEN powershell; the worker exe must get its OWN visible console (it ran invisibly
+    inside the tray's hidden console before). cmd.exe stands in for the exe: it ignores the tray's flags and stays alive."""
+    import os
+    import time
+
+    if not os.environ.get("SESSIONNAME") and not os.environ.get("USERNAME"):
+        pytest.skip("needs an interactive session")
+    fake = tmp_path / "inst"
+    (fake / "worker").mkdir(parents=True)
+    (fake / "plan").mkdir()
+    shutil.copy(Path(r"C:\Windows\System32\cmd.exe"), fake / "worker" / "bob-worker.exe")
+    out = tmp_path / "out.txt"
+    ps = tmp_path / "t.ps1"
+    ps.write_text(
+        "$ErrorActionPreference='Stop'\n"
+        "Add-Type -AssemblyName System.Windows.Forms\n"
+        f"$RepoRoot='{fake}'\n"
+        f"function Write-TrayLog($m){{ Add-Content '{out}' ('LOG ' + $m) }}\n"
+        "function Get-BobTrayMachineId { 'testbox' }\n"
+        f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{TRAY}',[ref]$null,[ref]$null)\n"
+        "foreach($name in 'ConvertTo-BobTrayProcessArgumentString','Initialize-BobTrayConsoleLauncher','Register-BobTrayGrokSession','Start-BobTrayVisibleProcessWithSessionEnv','Start-BobTrayWorkerExe'){\n"
+        "  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true).Extent.Text\n"
+        "  Invoke-Expression $fn }\n"
+        "Add-Type -TypeDefinition @'\nusing System; using System.Text; using System.Runtime.InteropServices;\npublic class WinProbe {\n"
+        " public delegate bool EP(IntPtr h, IntPtr l);\n"
+        " [DllImport(\"user32.dll\")] static extern bool EnumWindows(EP cb, IntPtr l);\n"
+        " [DllImport(\"user32.dll\")] static extern bool IsWindowVisible(IntPtr h);\n"
+        " [DllImport(\"user32.dll\")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);\n"
+        " [DllImport(\"user32.dll\")] static extern int GetClassName(IntPtr h, StringBuilder s, int n);\n"
+        " public static int Visible(int pid){ int n=0; EnumWindows((h,x)=>{ uint p; GetWindowThreadProcessId(h,out p); var c=new StringBuilder(64); GetClassName(h,c,64);"
+        " if(p==pid && c.ToString()==\"ConsoleWindowClass\" && IsWindowVisible(h)) n++; return true;}, IntPtr.Zero); return n; }\n}\n'@\n"
+        "Start-BobTrayWorkerExe -Mode agent\n"
+        "$log = Get-Content '" + str(out) + "'\n"
+        "$pidv = [int](($log | Select-String 'pid=(\\d+)').Matches[0].Groups[1].Value)\n"
+        "$vis = 0; for($i=0;$i -lt 40 -and $vis -eq 0;$i++){ Start-Sleep -Milliseconds 250; $vis = [WinProbe]::Visible($pidv) }\n"
+        "Add-Content '" + str(out) + "' ('RESULT pid=' + $pidv + ' visible_console_windows=' + $vis)\n"
+        "Stop-Process -Id $pidv -Force -ErrorAction SilentlyContinue\n",
+        encoding="utf-8")
+    env = dict(os.environ, LOCALAPPDATA=str(tmp_path / "lad"))
+    # a HIDDEN parent, exactly like the tray (-WindowStyle Hidden)
+    r = subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(ps)],
+                       capture_output=True, text=True, timeout=120, env=env)
+    txt = out.read_text(encoding="utf-8") if out.exists() else ""
+    assert r.returncode == 0, txt + r.stdout[-500:] + r.stderr[-800:]
+    m = re.search(r"visible_console_windows=(\d+)", txt)
+    assert m and int(m.group(1)) == 1, txt
+
+
 def test_tray_missing_exe_is_logged_not_started():
     fn = _fn(_tray(), "Start-BobTrayWorkerExe")
-    assert "worker exe missing" in fn and fn.index("worker exe missing") < fn.index("Process]::Start")
+    assert "worker exe missing" in fn and fn.index("worker exe missing") < fn.index("Start-BobTrayVisibleProcessWithSessionEnv")
 
 
 # ------------------------------------------------------------------------------------------------ exe command-line surface
