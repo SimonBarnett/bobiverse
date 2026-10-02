@@ -1,12 +1,15 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Fast-forward the bobiverse git clone, then sync runtime files into a product install tree.
+  Fast-forward the install dir (a sparse git work tree of the bobiverse repo), then compose its flat runtime files.
 .DESCRIPTION
-  Used by Start-Jeeves / Start-Bob / Start-AircConsole before launch.
-  1) Resolve clone: BOBIVERSE_REPO, else <ai root>\bobiverse (ai root found on the fixed disks; BOB_AI_ROOT overrides)
-  2) git fetch + merge --ff-only origin/main (best-effort; never blocks service start)
-  3) Robocopy scripts + third_party into InstallRoot; copy VERSION
+  Used by Start-Jeeves / Start-Bob / Start-AircConsole before launch (t781u/t782u).
+  1) Source: BOBIVERSE_REPO (explicit external clone), else the INSTALL DIR itself as a sparse work tree holding only
+     <product>/ + common/ (bootstrapped on first run from BOBIVERSE_REMOTE, default the GitHub repo), else a shared clone
+     <ai root>\bobiverse (ai root found on the fixed disks; BOB_AI_ROOT overrides)
+  2) git fetch + merge --ff-only origin/main, only while on main (best-effort: never destroys local edits/commits/branches,
+     never blocks service start, falls back to the installed files)
+  3) Robocopy scripts + third_party + skills + docs into InstallRoot (never deleting); copy VERSION
   Skips when BOBIVERSE_NO_UPDATE=1. Does not overwrite config\, home\, or secrets.
 .PARAMETER Product
   jeeves | bob | airc — selects default InstallRoot <ai root>\<product>.
@@ -44,26 +47,14 @@ if (-not (Test-Path -LiteralPath $InstallRoot)) {
     exit 1
 }
 
-function Resolve-BobiverseGitExe {
-    foreach ($c in @(
-            (Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-            (Join-Path $env:ProgramFiles 'Git\cmd\git.exe'),
-            (Join-Path $env:ProgramFiles 'Git\bin\git.exe'),
-            (Join-Path ${env:ProgramFiles(x86)} 'Git\cmd\git.exe'),
-            (Join-Path $env:LOCALAPPDATA 'grok\git\2.55.0.windows.5\cmd\git.exe'),
-            'C:\Users\medatech.si\AppData\Local\grok\git\2.55.0.windows.5\cmd\git.exe'
-        )) {
-        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
-    }
-    return $null
-}
-
 function Resolve-BobiverseClone {
     $clone = $env:BOBIVERSE_REPO
     if ($clone -and (Test-Path -LiteralPath (Join-Path $clone '.git'))) { return [IO.Path]::GetFullPath($clone) }
     # t780u: the clone lives under the discovered ai root; other fixed disks' \ai\bobiverse are tried after it.
     $cands = @((Join-Path (Get-BobiverseAiRoot) 'bobiverse'))
-    foreach ($d in @(Get-BobiverseFixedDisks)) { $cands += (Join-Path ($d.Root + 'ai') 'bobiverse') }
+    if (-not $env:BOB_AI_ROOT) {   # an explicit BOB_AI_ROOT means THAT root only
+        foreach ($d in @(Get-BobiverseFixedDisks)) { $cands += (Join-Path ($d.Root + 'ai') 'bobiverse') }
+    }
     foreach ($c in @($cands | Select-Object -Unique)) {
         # #70: a box without a D: drive threw "Cannot find drive 'D'" on every start
         $drive = $c.Substring(0, 2)
@@ -74,17 +65,40 @@ function Resolve-BobiverseClone {
 }
 
 $git = Resolve-BobiverseGitExe
-$clone = Resolve-BobiverseClone
+$pulled = $false
+$clone = $null
+$viaWorkTree = $false
+
+# t781u/t782u source precedence:
+#   1. BOBIVERSE_REPO (explicit dev override): that clone is ff'd and copied into the install tree (legacy behaviour).
+#   2. the INSTALL DIR ITSELF as a sparse git work tree (<product>\ + common\ only): bootstrapped on first run, ff-only after.
+#   3. a shared clone <ai root>obiverse - only when the work tree cannot be used (git missing / offline on first start).
+$explicitRepo = ($env:BOBIVERSE_REPO -and (Test-Path -LiteralPath (Join-Path $env:BOBIVERSE_REPO '.git')))
+if (-not $Product) {
+    $leaf = (Split-Path -Leaf $InstallRoot).ToLowerInvariant()
+    if (@('bob', 'jeeves', 'airc') -contains $leaf) { $Product = $leaf }
+}
+if (-not $explicitRepo -and $Product) {
+    $wt = Sync-BobiverseWorkTree -InstallRoot $InstallRoot -Product $Product -Branch $Branch -GitExe $git -DryRun:$DryRun
+    foreach ($l in @($wt.Log)) { Write-Host $l }
+    Write-Host ("INFO sync-worktree ok={0} pulled={1} branch={2}: {3}" -f $wt.Ok, $wt.Pulled, $wt.Branch, $wt.Reason)
+    if ($wt.Ok -and (Test-Path -LiteralPath (Join-Path $InstallRoot "$Product\scripts"))) {
+        $clone = $InstallRoot
+        $pulled = [bool]$wt.Pulled
+        $viaWorkTree = $true
+    }
+}
+if (-not $clone -and $DryRun -and -not $explicitRepo) { Write-Host 'INFO sync-dry-run done'; exit 0 }
+if (-not $clone) { $clone = Resolve-BobiverseClone }
 if (-not $clone) {
-    Write-Host 'INFO sync-skip no bobiverse clone (set BOBIVERSE_REPO or clone to <ai root>\bobiverse)'
+    Write-Host 'INFO sync-skip no usable work tree and no bobiverse clone (set BOBIVERSE_REPO or clone to <ai root>\bobiverse); keeping the installed files'
     exit 2
 }
-if (-not $git) {
+if (-not $git -and -not $viaWorkTree) {
     Write-Host "INFO sync-skip git.exe missing; will still copy from clone=$clone"
 }
 
-$pulled = $false
-if ($git) {
+if ($git -and -not $viaWorkTree) {
     Write-Host "INFO sync-fetch clone=$clone branch=$Branch"
     if (-not $DryRun) {
         # git writes progress to stderr; do not let native stderr abort under Stop.

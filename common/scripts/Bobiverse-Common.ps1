@@ -312,6 +312,151 @@ function Get-BobiverseProductRoot {
     return [IO.Path]::Combine((Get-BobiverseAiRoot), $Product)   # not Join-Path: it throws for a drive that does not exist (yet)
 }
 
+# ---------------------------------------------------------------------------------------------------------------------------
+# The install dir as a git work tree (t781u/t782u). On every service start (Start-Bob / Start-Jeeves / Start-AircConsole ->
+# Sync-BobiverseFromRepo.ps1 -> Sync-BobiverseWorkTree) <ai root>\<product> is made a SPARSE checkout of the bobiverse repo that holds
+# ONLY that product's subtree plus common\ (bob -> bob\ + common\; jeeves -> jeeves\ + common\; airc -> airc\ + common\) and is
+# fast-forwarded to origin/main. Rules: ff-only; never reset/stash/checkout -f/clean (local edits, commits and branches survive);
+# never blocks or fails the start (timeouts, every error is a WARN and the installed files keep running); the flat runtime files
+# (scripts\ third_party\ docs\ ...) are composed FROM the work tree by Sync-BobiverseFromRepo.ps1 and hidden from git via
+# .git\info\exclude, so `git status` shows only real edits under <product>\ and common\.
+# ---------------------------------------------------------------------------------------------------------------------------
+$script:BobiverseDefaultRemote = 'https://github.com/SimonBarnett/bobiverse.git'
+
+function Resolve-BobiverseGitExe {
+    foreach ($c in @(
+            (Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+            (Join-Path $env:ProgramFiles 'Git\cmd\git.exe'),
+            (Join-Path $env:ProgramFiles 'Git\bin\git.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Git\cmd\git.exe'),
+            (Join-Path $env:LOCALAPPDATA 'grok\git\2.55.0.windows.5\cmd\git.exe')
+        )) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+function Invoke-BobiverseGit {
+    # Run git with a hard timeout and no prompts. Returns Code / Out / TimedOut. Never throws.
+    param(
+        [Parameter(Mandatory)][string]$Git,
+        [Parameter(Mandatory)][string[]]$GitArgs,
+        [string]$WorkDir = '',
+        [int]$TimeoutSec = 60
+    )
+    $q = ($GitArgs | ForEach-Object { if ($_ -match '[\s"]' -or $_ -eq '') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' '
+    $so = [IO.Path]::GetTempFileName(); $se = [IO.Path]::GetTempFileName()
+    $prevPrompt = $env:GIT_TERMINAL_PROMPT; $env:GIT_TERMINAL_PROMPT = '0'
+    try {
+        $sp = @{ FilePath = $Git; ArgumentList = $q; NoNewWindow = $true; PassThru = $true; RedirectStandardOutput = $so; RedirectStandardError = $se }
+        if ($WorkDir) { $sp.WorkingDirectory = $WorkDir }
+        $p = Start-Process @sp
+        $null = $p.Handle   # keep the handle so ExitCode is readable after WaitForExit
+        $timedOut = $false
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            $timedOut = $true
+            try { & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
+        } else { $p.WaitForExit() }
+        $out = @((Get-Content -LiteralPath $so -ErrorAction SilentlyContinue) + (Get-Content -LiteralPath $se -ErrorAction SilentlyContinue)) | Where-Object { "$_".Trim() }
+        return [pscustomobject]@{ Code = $(if ($timedOut) { 124 } else { [int]$p.ExitCode }); Out = @($out); TimedOut = $timedOut }
+    } catch {
+        return [pscustomobject]@{ Code = 125; Out = @($_.Exception.Message); TimedOut = $false }
+    } finally {
+        $env:GIT_TERMINAL_PROMPT = $prevPrompt
+        Remove-Item -LiteralPath $so, $se -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Sync-BobiverseWorkTree {
+    <#
+    .SYNOPSIS
+      Make <InstallRoot> a sparse git work tree of the repo (product subtree + common\) and fast-forward it. Never throws.
+    .OUTPUTS
+      Ok (the work tree is usable as the file source), Pulled (HEAD moved), Bootstrapped, Branch, Reason, Log (lines to print).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
+        [string]$Branch = 'main',
+        [string]$Remote = '',
+        [string]$GitExe = '',
+        [int]$FetchTimeoutSec = 45,
+        [switch]$DryRun
+    )
+    $log = New-Object System.Collections.Generic.List[string]
+    $res = [ordered]@{ Ok = $false; Pulled = $false; Bootstrapped = $false; Branch = ''; Reason = ''; Log = $log }
+    function Done([string]$why) { $res.Reason = $why; return [pscustomobject]$res }
+    try {
+        if ($env:BOBIVERSE_NO_UPDATE -eq '1') { return (Done 'BOBIVERSE_NO_UPDATE=1') }
+        $git = if ($GitExe) { $GitExe } else { Resolve-BobiverseGitExe }
+        if (-not $git) { return (Done 'git.exe missing') }
+        if (-not $Remote) { $Remote = [string]$env:BOBIVERSE_REMOTE }
+        if (-not $Remote) { $Remote = $script:BobiverseDefaultRemote }
+        $root = [IO.Path]::GetFullPath($InstallRoot)
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { return (Done "install root missing: $root") }
+        $G = @('-c', 'safe.directory=*', '-c', 'core.autocrlf=false', '-C', $root)   # services run as another account than the repo owner
+        $hasGit = Test-Path -LiteralPath (Join-Path $root '.git')
+        $created = $false
+        if (-not $hasGit) {
+            if ($DryRun) { $log.Add("INFO worktree-dry-run would bootstrap $root (sparse: $Product + common) from $Remote"); return (Done 'dry-run') }
+            $r = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('init', '-q')) -TimeoutSec 30
+            if ($r.Code -ne 0) { return (Done ("git init failed: " + ($r.Out -join ' '))) }
+            $created = $true
+            foreach ($step in @(
+                    @('remote', 'add', 'origin', $Remote),
+                    @('config', 'core.longpaths', 'true'),
+                    @('sparse-checkout', 'set', '--no-cone', "/$Product/", '/common/'))) {
+                $r = Invoke-BobiverseGit -Git $git -GitArgs ($G + $step) -TimeoutSec 30
+                if ($r.Code -ne 0) { Remove-Item -LiteralPath (Join-Path $root '.git') -Recurse -Force -ErrorAction SilentlyContinue; return (Done ("git $($step[0]) failed: " + ($r.Out -join ' '))) }
+            }
+            # hide the composed flat runtime tree from git: only <product>/ and common/ are tracked/visible
+            $ex = Join-Path $root '.git\info\exclude'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ex) | Out-Null
+            [IO.File]::WriteAllText($ex, "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/\n/*\n!/$Product/\n!/common/\n".Replace('\n', "`n"), (New-Object Text.UTF8Encoding($false)))
+            $log.Add("INFO worktree-bootstrap $root sparse=$Product,common origin=$Remote")
+        }
+        if ($DryRun) { $log.Add('INFO worktree-dry-run skip fetch/merge'); $res.Ok = $true; return (Done 'dry-run') }
+
+        # a merge/rebase/cherry-pick/bisect in progress is somebody's work - leave it completely alone
+        foreach ($m in 'MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD') {
+            if (Test-Path -LiteralPath (Join-Path $root ".git\$m")) { $res.Ok = $true; return (Done "operation in progress ($m); not touching the work tree") }
+        }
+        $f = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=20', 'fetch', '--prune', '-q', 'origin')) -TimeoutSec $FetchTimeoutSec
+        if ($f.Code -ne 0) {
+            foreach ($l in ($f.Out | Select-Object -First 3)) { $log.Add("  $l") }
+            if ($created) { Remove-Item -LiteralPath (Join-Path $root '.git') -Recurse -Force -ErrorAction SilentlyContinue }
+            else { $res.Ok = $true }
+            return (Done $(if ($f.TimedOut) { "fetch timed out after ${FetchTimeoutSec}s" } else { "fetch failed (exit $($f.Code)); keeping the installed version" }))
+        }
+        if ($created) {
+            $c = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('checkout', '-q', '-B', $Branch, '--track', "origin/$Branch")) -TimeoutSec 120
+            if ($c.Code -ne 0) {
+                foreach ($l in ($c.Out | Select-Object -First 3)) { $log.Add("  $l") }
+                Remove-Item -LiteralPath (Join-Path $root '.git') -Recurse -Force -ErrorAction SilentlyContinue
+                return (Done "initial checkout failed (exit $($c.Code)); keeping the installed version")
+            }
+            $res.Bootstrapped = $true; $res.Pulled = $true; $res.Ok = $true; $res.Branch = $Branch
+            return (Done "bootstrapped on $Branch")
+        }
+        $res.Ok = $true
+        $br = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('symbolic-ref', '--short', '-q', 'HEAD')) -TimeoutSec 20
+        $cur = if ($br.Code -eq 0 -and $br.Out.Count) { "$($br.Out[0])".Trim() } else { '' }
+        $res.Branch = $cur
+        if ($cur -ne $Branch) { return (Done $(if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' })) }
+        $before = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
+        $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
+        if ($m.Code -ne 0) {
+            foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
+            return (Done 'ff-only not possible (local commits or edits in the way); local work kept as is')
+        }
+        $after = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
+        $res.Pulled = ("$before" -ne "$after")
+        return (Done $(if ($res.Pulled) { "fast-forwarded origin/$Branch" } else { 'already up to date' }))
+    } catch {
+        $res.Reason = "work tree sync error: $($_.Exception.Message)"
+        return [pscustomobject]$res
+    }
+}
 function Test-BobiverseSplitRepo {
     param([Parameter(Mandatory)][string]$Root)
     return [bool](Test-Path -LiteralPath (Join-Path $Root 'common\VERSION'))

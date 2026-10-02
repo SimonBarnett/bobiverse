@@ -59,19 +59,25 @@ if (Test-Path -LiteralPath $nsFile) {
     Write-Host "WARN missing $nsFile - reserved nick will fail without BOB_IRC_SASL_PASSWORD"
 }
 
+# t781u/t782u start-up update order (dev path first, release path second):
+#   1. repo fast-forward: <InstallRoot> is a sparse git work tree (bob + common) -> fetch + ff-only origin/main, flat runtime files
+#      recomposed from it (Sync-BobiverseFromRepo.ps1). Never destroys local edits/commits, never blocks the start, falls back to the
+#      installed version on any failure. BOBIVERSE_REPO (explicit dev override) syncs from that clone instead.
+#   2. release self-update (Update-BobiverseService.ps1): only when a GitHub release is newer than the VERSION now installed (the
+#      ff'd tree counts), so the MSI path stays the safety net for boxes where git is unavailable.
+#   Opt out of BOTH with BOBIVERSE_NO_UPDATE=1; of the release check only with BOB_AUTOUPDATE=0.
+$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
+if ((Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+    try { & $sync -Product bob -InstallRoot $InstallRoot }
+    catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
+}
 # v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
 # helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.
 # Never blocks or fails the start. Never touches Ergo. Opt out: BOB_AUTOUPDATE=0 (or BOBIVERSE_NO_UPDATE=1).
-# BOBIVERSE_REPO (explicit dev opt-in) still fast-forwards that clone into this tree.
 $updater = Join-Path $scriptDir 'Update-BobiverseService.ps1'
 if (Test-Path -LiteralPath $updater) {
     try { & $updater -Product bob -InstallRoot $InstallRoot -ServiceName ircBob }
     catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
-}
-$sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
-if ($env:BOBIVERSE_REPO -and (Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
-    try { & $sync -Product bob -InstallRoot $InstallRoot }
-    catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
 }
 
 $agent = Join-Path $scriptDir 'irc_agent.py'
