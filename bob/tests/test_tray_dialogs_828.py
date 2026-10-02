@@ -211,3 +211,8 @@ def test_second_launch_is_a_noop_that_brings_the_first_window_forward(dialogs, t
     finally:
         first.kill()
         first.wait(timeout=10)
+
+def test_docs_describe_the_layout_the_tech_choice_and_the_dialog_contract():
+    d = (ROOT / "docs" / "bob-tray-dialogs.md").read_text(encoding="utf-8-sig")
+    for needle in ("bob/tray", "bob/agentwatcher", "csc.exe", "PyInstaller", "tray-status.json", "{irc nick}: {doing|idle}", "Single instance", "-AllowRevendor"):
+        assert needle in d, needle
