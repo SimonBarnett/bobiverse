@@ -215,11 +215,16 @@ def resync_cycle(home: Path, *, token: str, ignored, fetch_json=None, owners: se
                 "Authorization": "Bearer " + _tok})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8"))
+    # FR #180: drop skill/harvest/safe-to-close junk before GitHub merge so they cannot be re-offered.
+    pruned = gitclaim.prune_unassignable_queue(home)
     repos = discover_repos(home, owners, getter, ignored)
     if not repos:
         return {"ok": True, "unaccepted": len(gitclaim.load_unaccepted(home)), "added": 0, "dropped": 0,
-                "repos": [], "failed": [], "note": "no repos"}
-    return gitclaim.resync_from_github(home, repos, fetch_json=getter, token=token, ignored=list(ignored))
+                "repos": [], "failed": [], "note": "no repos", "pruned": pruned.get("dropped", 0)}
+    out = gitclaim.resync_from_github(home, repos, fetch_json=getter, token=token, ignored=list(ignored))
+    if isinstance(out, dict):
+        out["pruned"] = int(pruned.get("dropped") or 0)
+    return out
 
 
 class ChairJobs:
