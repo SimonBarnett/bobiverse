@@ -409,10 +409,13 @@ function Sync-BobiverseWorkTree {
                 $r = Invoke-BobiverseGit -Git $git -GitArgs ($G + $step) -TimeoutSec 30
                 if ($r.Code -ne 0) { Remove-Item -LiteralPath (Join-Path $root '.git') -Recurse -Force -ErrorAction SilentlyContinue; return (Done ("git $($step[0]) failed: " + ($r.Out -join ' '))) }
             }
-            # hide the composed flat runtime tree from git: only <product>/ and common/ are tracked/visible
+            # Hide the composed flat runtime tree from git. Sparse checkout is still only
+            # /$Product/ + /common/, but linked FR worktrees share this .git/info/exclude.
+            # Un-ignore sibling monorepo products so new airc/jeeves tests are not silently
+            # skipped by /* (FR #132). New paths outside these trees still need: git add -f
             $ex = Join-Path $root '.git\info\exclude'
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ex) | Out-Null
-            [IO.File]::WriteAllText($ex, "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/\n/*\n!/$Product/\n!/common/\n".Replace('\n', "`n"), (New-Object Text.UTF8Encoding($false)))
+            [IO.File]::WriteAllText($ex, "# bobiverse install work tree (t781u): runtime files are composed from <product>/ and common/\n# FR worktrees sharing this git dir: sibling products un-ignored; else git add -f (FR #132)\n/*\n!/$Product/\n!/common/\n!/airc/\n!/jeeves/\n".Replace('\n', "`n"), (New-Object Text.UTF8Encoding($false)))
             $log.Add("INFO worktree-bootstrap $root sparse=$Product,common origin=$Remote")
         }
         if ($DryRun) { $log.Add('INFO worktree-dry-run skip fetch/merge'); $res.Ok = $true; return (Done 'dry-run') }
