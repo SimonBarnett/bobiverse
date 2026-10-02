@@ -138,7 +138,7 @@ def test_ack_sets_doing_and_done_sets_idle(chair):
     say(chair, SEAT, "#marchhare", "!bored")
     say(chair, SEAT, "#marchhare", "ACK FR o/r#5 fix the thing")
     w = listed(chair)[0]
-    assert w["state"] == "doing" and w["work"].startswith("FR o/r#5")
+    assert w["state"] == "doing" and w["work"] == "r FR #5"
     say(chair, SEAT, "#marchhare", "DONE FR o/r#5 PASS merged")
     w = listed(chair)[0]
     assert w["state"] == "idle" and w["work"] == ""
@@ -238,3 +238,50 @@ def test_post_fn_gets_payloads_and_roster_gate_still_applies(tmp_path, monkeypat
     assert t.on_bored("ionos-5", "#ionos") is None                            # not a roster channel
     assert t.post({"op": "worker-upsert", "machine": "ionos", "nick": "ionos-5"}) == 403
     assert len(got) == 1
+
+
+# ---- t816u: short worker status "<reponame> FR|MRB|UAT #<num>" on assign, ACK (even unmatched), cleared on DONE/NACK/GIVEUP
+def test_assign_sets_doing_with_short_status_before_ack(chair):
+    queue(chair.home, row(68))
+    say(chair, SEAT, "#marchhare", "!bored")
+    assert any("o/r#68" in t for _, t in chair.said)                  # wire line unchanged
+    w = listed(chair)[0]
+    assert (w["nick"], w["state"], w["work"]) == (SEAT, "doing", "r FR #68")
+    say(chair, SEAT, "#marchhare", "ACK FR o/r#68 long title that must not be in the status")
+    assert listed(chair)[0]["work"] == "r FR #68"
+    say(chair, SEAT, "#marchhare", "DONE FR o/r#68 PASS merged")
+    assert listed(chair)[0]["state"] == "idle"
+
+
+@pytest.mark.parametrize("verb", ["NACK", "GIVEUP"])
+def test_assign_then_nack_or_giveup_clears_to_idle(chair, verb):
+    queue(chair.home, row(9))
+    say(chair, SEAT, "#marchhare", "!bored")
+    assert listed(chair)[0]["state"] == "doing"
+    say(chair, SEAT, "#marchhare", f"{verb} FR o/r#9 cannot")
+    assert listed(chair)[0]["state"] == "idle" and listed(chair)[0]["work"] == ""
+
+
+def test_ack_for_row_no_longer_queued_still_shows_doing(chair):
+    queue(chair.home)                                                 # row gone (re-sync / already accepted)
+    say(chair, SEAT, "#marchhare", "ACK MRB SimonBarnett/bobiverse#12 whatever")
+    w = listed(chair)[0]
+    assert (w["state"], w["work"]) == ("doing", "bobiverse MRB #12")
+    say(chair, SEAT, "#marchhare", "DONE MRB SimonBarnett/bobiverse#12 PASS")
+    assert listed(chair)[0]["state"] == "idle"
+
+
+def test_bored_with_nothing_queued_is_idle(chair):
+    queue(chair.home, row(3))
+    say(chair, SEAT, "#marchhare", "!bored")
+    assert listed(chair)[0]["state"] == "doing"
+    queue(chair.home)                                                 # the offer vanished
+    chair._git_bored(SEAT, "#marchhare", time.time() + 3600, chair=True)
+    assert listed(chair)[0]["state"] == "idle"
+
+
+def test_short_work_format():
+    import shop_listen
+    assert shop_listen.short_work("fr", "SimonBarnett/bobiverse", "#68") == "bobiverse FR #68"
+    assert shop_listen.short_work("UAT", "plain", "7") == "plain UAT #7"
+    assert shop_listen.activity_description({"task": "MRB", "repo": "a/b", "id": "#1", "line": "GIT x"}) == "b MRB #1"

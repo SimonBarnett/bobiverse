@@ -116,23 +116,20 @@ def parse_shop_job_line(body: str) -> ShopJobLine | None:
     )
 
 
+def short_work(task: str, repo: str, ident: str) -> str:
+    """Short worker status for the digest / tray: ``<reponame> FR|MRB|UAT #<num>`` (e.g. ``bobiverse FR #68``)."""
+    name = str(repo or "").strip().rsplit("/", 1)[-1]
+    num = str(ident or "").strip().lstrip("#")
+    kind = str(task or "").strip().upper()
+    return " ".join(p for p in (name, kind, f"#{num}" if num else "") if p)
+
+
 def activity_description(job: dict | ShopJobLine, title: str = "") -> str:
-    """Tray START tile text: ``FR owner/repo#n title``."""
+    """Worker status / tray START tile text: short ``<reponame> FR|MRB|UAT #<num>`` (no title, t816u)."""
+    del title
     if isinstance(job, ShopJobLine):
-        task, repo, ident = job.task, job.repo, job.id
-        tit = title or job.title
-    else:
-        task = str(job.get("task") or "")
-        repo = str(job.get("repo") or "")
-        ident = str(job.get("id") or "")
-        tit = title or _title_from_line(str(job.get("line") or ""))
-    core = f"{task} {repo}{ident}".strip()
-    if tit:
-        # strip secret markers from title for webhook
-        if bobreport.looks_like_secret(tit):
-            tit = "[title redacted]"
-        return f"{core} {tit}".strip()
-    return core
+        return short_work(job.task, job.repo, job.id)
+    return short_work(str(job.get("task") or ""), str(job.get("repo") or ""), str(job.get("id") or ""))
 
 
 def _title_from_line(line: str) -> str:
@@ -460,7 +457,11 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
-        if st in ("ok", "duplicate") and job is not None:
+        if st == "missing":
+            # The seat is working on what it ACKed even when the queue row is gone (re-synced, already
+            # accepted, offered twice): the digest must still show it as doing (t816u).
+            job = {"task": parsed.task, "repo": parsed.repo, "id": parsed.id}
+        if st in ("ok", "duplicate", "missing") and job is not None:
             desc = activity_description(job, parsed.title)
             payload = format_activity_payload(
                 machine=mid, pid=pid, nick=nick, kind=kind, working_on=desc, state="running"
