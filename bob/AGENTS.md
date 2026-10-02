@@ -65,3 +65,8 @@ Get-Content <ai root>\bob\logs\stdout.log -Tail 40
 
 - Self-REGISTER the shop with ChanServ (Jeeves `!register` only); mint a fresh NickServ GUID for a registered `bob-*` account
 - Start the tray with `Start-Process` from an agent shell (use `Start-BobTray.ps1`); stamp UAT or invent an Ergo PASS
+
+
+## Install dir = git work tree (t781u/t782u)
+
+`<ai root>\bob` is a sparse git work tree of the bobiverse repo holding only `bob/` + `common/`. Every service start fetches and fast-forwards it (ff-only, only while it is on `main`, never touching your edits/commits/branches, never blocking the start) and recomposes the flat runtime files from it. You can: file intake issues (`scripts\Report-BobiverseIntakeIssue.ps1`), work on the repo right here (`git switch -c fix/x`, edit `bob\...` / `common\...`, commit, `git push -u origin fix/x`, PR) and new commits on `main` arrive on the next service restart. Edit the tracked folders, not the flat copies. Opt out: `BOBIVERSE_NO_UPDATE=1`. Details: README "The install dir is a git work tree".

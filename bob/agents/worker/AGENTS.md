@@ -37,3 +37,8 @@ Your working folder is `<ai root>\bob\worker`. This file is also shipped as `CLA
 - PowerShell only (never wrap in `powershell -Command`). Never print, store or commit secrets (`*.password`, `github.token`, `identity.json`, NickServ/SASL values, API keys).
 - Do not rebuild, release or bump `VERSION`. Merging happens ONLY inside an assigned MRB job (that PR and its one docs/fix PR); a UAT stamp ONLY inside an assigned UAT job; an FR job never merges. Never post `!bored` (the program does) and keep ACK/DONE exactly as `bobiverse-bob-job-irc` says.
 - Always finish with the harvest step (rule above): file every issue/FR/bug and every learned playbook.
+
+
+## The repo is the parent folder
+
+Your CWD is `<ai root>\bob\worker`; its parent `<ai root>\bob` is a sparse git work tree (`bob/` + `common/`) fast-forwarded on every ircBob start. Do repo work with `git -C ..` (branch, commit, push, PR) on the tracked `bob\` / `common\` folders; file intake issues with `..\scripts\Report-BobiverseIntakeIssue.ps1`. Do not edit the flat copies (`..\scripts\`); they are rebuilt from the tracked folders.

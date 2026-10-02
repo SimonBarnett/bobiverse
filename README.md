@@ -40,6 +40,34 @@ Fleet trees live under `<drive>:\ai` (`<ai root>\bob`, `\jeeves`, `\airc`, `\erg
 4. none found: `<SystemDrive>:\ai`, created **only** by an installer (never when an `ai` folder exists on any fixed disk).
 
 Implementations (same rules, tested together in `common/tests/test_ai_root_020.py`): `Get-BobiverseAiRoot` / `Get-BobiverseProductRoot` in `common/scripts/Bobiverse-Common.ps1`, `common/scripts/ai_root.py` (worker exe, `gh_filer.py`), `common/packaging/FindAiRoot.js` (MSI immediate custom action: sets `AIROOT`, `INSTALLDIR=[AIROOT]\<product>`, and passes `-InstallRoot` to the post-install script). Scripts that run from an installed tree also use their own location (`<install>\scripts`) before scanning.
+## The install dir is a git work tree (repo fast-forward on every start)
+
+On every service start (`ircBob`, `ircJeeves`, `Airc`) `Start-*.ps1` runs `Sync-BobiverseFromRepo.ps1`, which turns `<ai root>\<product>` into a **sparse git work tree** of this repo and fast-forwards it:
+
+| install dir | tracked subtrees (sparse, non-cone) |
+|---|---|
+| `<ai root>\bob` | `bob/` + `common/` |
+| `<ai root>\jeeves` | `jeeves/` + `common/` |
+| `<ai root>\airc` | `airc/` + `common/` |
+
+Nothing else of the repo is checked out (no sibling products, no root files). The flat runtime files the services run (`scripts\`, `third_party\`, `docs\`, `.grok\skills\`, `VERSION`, `worker\`, `plan\` ...) are **composed from those subtrees** (`robocopy /XO`, never deleting) and hidden from git by `.git\info\exclude`, so `git status` shows only real edits under `<product>\` and `common\`.
+
+Rules (`Sync-BobiverseWorkTree` in `common/scripts/Bobiverse-Common.ps1`):
+
+* first start: `git init` + `remote add origin` (env `BOBIVERSE_REMOTE`, default this repo) + sparse checkout + `checkout main`; on any failure the half-made `.git` is removed and the installed files keep running;
+* later starts: `git fetch` (timeout 45 s, no prompts) then `merge --ff-only origin/main` **only when the work tree is on `main`**. Never `reset`/`stash`/`clean`/`checkout -f`; uncommitted edits, local commits, a feature branch, a detached HEAD or a merge/rebase in progress are left exactly as they are (the fetch still happens). A refused ff is a WARN, never a failed start;
+* offline / git missing / auth failure: the installed version runs unchanged.
+
+**Precedence of the update paths** (dev path first, release path second):
+
+1. `BOBIVERSE_REPO=<clone>` (explicit dev override): that clone is ff'd and copied into the install tree instead of the work tree.
+2. The install work tree ff (this section) - new commits on `main` are picked up on the next service restart.
+3. Then the MSI release self-update (`Update-BobiverseService.ps1`): acts only if a GitHub release is **newer than the VERSION now installed** (the ff'd tree counts), so it remains the safety net where git/GitHub-git is unavailable.
+4. A shared clone `<ai root>\bobiverse` is used only when the work tree cannot be used.
+
+**Opt-out:** `BOBIVERSE_NO_UPDATE=1` (machine env) disables the repo ff, the sync *and* the release check. `BOB_AUTOUPDATE=0` / `<install>\config\autoupdate.disabled` disable the release check only.
+
+Working in the install dir (agents and humans): edit under `<product>\` / `common\` (the flat copies are build output and are refreshed from them), then `git switch -c fix/x`, commit, `git push -u origin fix/x`, open the PR. `Sync-BobiverseFromRepo.ps1 -Product <p>` applies your branch to the running flat tree without a restart. Issues go to the intake with `scripts\Report-BobiverseIntakeIssue.ps1`. Services run as another account than the file owner: `git -c safe.directory=* ...` or `git config --global --add safe.directory <install dir>`. The test-suite needs the full repo (root `conftest.py`): run it from a full clone, not from a sparse install dir.
 ## Pack
 
 ```powershell

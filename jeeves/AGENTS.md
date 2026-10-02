@@ -55,3 +55,8 @@ Restart-Service ircJeeves                                          # ONLY this s
 
 - Invent Ergo PASS or stamp UAT; ship or edit bob/airc product skills in this tree
 - Run legacy `BobJeeves` with `ircJeeves`; bump VERSION / pack an MSI unless the operator asked
+
+
+## Install dir = git work tree (t781u/t782u)
+
+`<ai root>\jeeves` is a sparse git work tree of the bobiverse repo holding only `jeeves/` + `common/`. Every service start fetches and fast-forwards it (ff-only, only while it is on `main`, never touching your edits/commits/branches, never blocking the start) and recomposes the flat runtime files from it. You can: file intake issues (`scripts\Report-BobiverseIntakeIssue.ps1`), work on the repo right here (`git switch -c fix/x`, edit `jeeves\...` / `common\...`, commit, `git push -u origin fix/x`, PR) and new commits on `main` arrive on the next service restart. Edit the tracked folders, not the flat copies. Opt out: `BOBIVERSE_NO_UPDATE=1`. Details: README "The install dir is a git work tree".

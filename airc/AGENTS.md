@@ -54,3 +54,8 @@ Restart-Service Airc                          # ONLY this service
 
 - Run Airc and AircConsole as live consoles together; invent an Ergo PASS or stamp UAT
 - Kill broad `powershell.exe` when diagnosing - it can take down Airc's host process
+
+
+## Install dir = git work tree (t781u/t782u)
+
+`<ai root>\airc` is a sparse git work tree of the bobiverse repo holding only `airc/` + `common/`. Every service start fetches and fast-forwards it (ff-only, only while it is on `main`, never touching your edits/commits/branches, never blocking the start) and recomposes the flat runtime files from it. You can: file intake issues (`scripts\Report-BobiverseIntakeIssue.ps1`), work on the repo right here (`git switch -c fix/x`, edit `airc\...` / `common\...`, commit, `git push -u origin fix/x`, PR) and new commits on `main` arrive on the next service restart. Edit the tracked folders, not the flat copies. Opt out: `BOBIVERSE_NO_UPDATE=1`. Details: README "The install dir is a git work tree".
