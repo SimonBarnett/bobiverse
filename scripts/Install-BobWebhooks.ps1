@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
-  (report, git, intake, jira). Site default: irc-ntsa.
+  (report, digest, git, intake, jira). Site default: irc-ntsa.
 #>
 [CmdletBinding()]
 param(
@@ -26,6 +26,7 @@ if (-not (Test-Path -LiteralPath $PhysicalPath)) {
 
 $rules = @(
     @{ Name = 'BobReportWebhook'; Match = '^bob/v1/report$'; Url = "$Backend/bob/v1/report" },
+    @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = "$Backend/bob/v1/digest" },
     @{ Name = 'BobGitWebhook'; Match = '^bob/v1/git$'; Url = "$Backend/bob/v1/git" },
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
     @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" }
@@ -41,6 +42,10 @@ $rewriteXml = @"
         <rule name="BobReportWebhook" stopProcessing="true">
           <match url="^bob/v1/report$" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/report" />
+        </rule>
+        <rule name="BobDigestWebhook" stopProcessing="true">
+          <match url="^bob/v1/digest$" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/bob/v1/digest" />
         </rule>
         <rule name="BobGitWebhook" stopProcessing="true">
           <match url="^bob/v1/git$" ignoreCase="true" />
@@ -92,6 +97,16 @@ if (Test-Path -LiteralPath $webConfig) {
         } else {
             $updated = $rewriteXml
         }
+    }
+    if ($updated -notmatch 'bob/v1/digest' -and $updated -match '</rules>') {
+        # Public GET /bob/v1/digest (same body as /bob/v1/report). Idempotent: only added when missing.
+        $digestRule = @"
+        <rule name="BobDigestWebhook" stopProcessing="true">
+          <match url="^bob/v1/digest$" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/bob/v1/digest" />
+        </rule>
+"@
+        $updated = $updated -replace '</rules>', ($digestRule + '</rules>')
     }
     [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
     Write-Host "INFO updated $webConfig"

@@ -241,6 +241,10 @@ try {
         & icacls $ghTok /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(F)' 'BUILTIN\Administrators:(F)' 2>&1 | Out-Null
         Write-Host "INFO github token present: $ghTok"
     }
+    # Chair background jobs run INSIDE ircJeeves (no extra task/service): webhook health probe every 30 min
+    # (webhook-health.json, announces #bobiverse only on up<->down) and authenticated FR/MRB resync every 15 min
+    # using the token above (source logged once to <chair home>\resync-token-source.log; value never logged).
+    Write-Host 'INFO chair jobs: webhook-health probe 30 min + GitHub resync 15 min (inside ircJeeves; token source logged once)'
     if (-not $NoStart) {
         schtasks /Run /TN BobCallback 2>&1 | Out-Null
     }

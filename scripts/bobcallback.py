@@ -31,6 +31,7 @@ GIT_WEBHOOK_PATH = "/bob/v1/git"
 INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
 DIGEST_PATH = "/bob/v1/digest"
+HEALTH_PROBE_ZEN = "jeeves-health-probe"
 DIGEST_ALIAS = "/digest"
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
@@ -240,6 +241,10 @@ def handle_git_webhook(
     if not owner or not name or owner.lower() not in git_owners():
         _log_git_reject("repo not allowed", event=event, repo=full[:80])
         return 403, b""
+    if event.lower() == "ping" and str(payload.get("zen") or "") == HEALTH_PROBE_ZEN:
+        # Jeeves' own 30-min webhook health probe (chair_health.py): proves the route + owner gate end to end,
+        # but must not enqueue a job or announce on #bobiverse.
+        return 204, b""
     if rate is not None and not rate.allow("git:" + full.lower()):
         _log_git_reject("rate limited", event=event, repo=full[:80])
         return 429, b""

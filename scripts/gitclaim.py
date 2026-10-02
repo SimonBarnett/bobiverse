@@ -1188,26 +1188,46 @@ def resync_from_github(
     repos: list[str],
     *,
     fetch_json=None,
+    token: str = "",
+    ignored=(),
 ) -> dict:
-    """Deterministic rebuild: open FR issues + open PRs as MRB; drop closed/superseded.
+    """Rebuild FR/MRB rows from GitHub: open issues without a closing PR -> FR, open PRs -> MRB.
 
-    fetch_json(url) -> dict|list for tests. Default uses gh api via urllib if available.
+    Merge, not wipe (the chair runs this every 15 min):
+    * rows of other kinds (UAT/BUILD/FIX/PR), ``accepted`` jobs, and rows of repos whose fetch FAILED are kept;
+    * a stale FR/MRB row of a successfully fetched repo (closed/merged/superseded) is dropped;
+    * existing rows keep their seq/offer fields; new items are appended; repos in ``ignored`` are skipped.
+
+    ``token`` (optional) is sent as ``Authorization: Bearer``; it is never logged or returned.
+    ``fetch_json(url) -> dict|list`` is the test seam; default is urllib with the token.
     """
     import urllib.request
 
     def _default_fetch(url: str):
-        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        hdrs = {"Accept": "application/vnd.github+json", "User-Agent": "bobiverse-jeeves"}
+        if token:
+            hdrs["Authorization"] = "Bearer " + token
+        req = urllib.request.Request(url, headers=hdrs)
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     getter = fetch_json or _default_fetch
+    skip = {str(x).strip().lower() for x in (ignored or ()) if str(x).strip()}
     desired: list[GitClaim] = []
+    fetched: list[str] = []
+    failed: list[str] = []
     for repo in repos:
         if not REPO_RE.fullmatch(repo):
             continue
-        # open issues without open PR that closes them -> FR
-        issues = getter(f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100")
-        prs = getter(f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100")
+        if repo.lower() in skip or repo.split("/", 1)[-1].lower() in skip:
+            continue
+        try:
+            issues = getter(f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100")
+            prs = getter(f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100")
+        except Exception:  # noqa: BLE001 - one bad repo (404/403/rate limit) must not wipe its rows
+            failed.append(repo)
+            continue
+        fetched.append(repo)
         if not isinstance(issues, list):
             issues = []
         if not isinstance(prs, list):
@@ -1225,21 +1245,10 @@ def resync_from_github(
             for r in refs:
                 closed_by_pr.add(r)
             desired.append(
-                GitClaim(
-                    repo=repo,
-                    task="MRB",
-                    id=f"#{num}",
-                    event="pull_request",
-                    action="opened",
-                    line="",
-                    refs=refs,
-                )
+                GitClaim(repo=repo, task="MRB", id=f"#{num}", event="pull_request", action="opened", line="", refs=refs)
             )
         for iss in issues:
-            if not isinstance(iss, dict):
-                continue
-            # skip PR-shaped issues
-            if iss.get("pull_request"):
+            if not isinstance(iss, dict) or iss.get("pull_request"):
                 continue
             num = iss.get("number")
             if not isinstance(num, int):
@@ -1248,22 +1257,34 @@ def resync_from_github(
             if ident in closed_by_pr:
                 continue
             desired.append(
-                GitClaim(
-                    repo=repo,
-                    task="FR",
-                    id=ident,
-                    event="issues",
-                    action="opened",
-                    line="",
-                )
+                GitClaim(repo=repo, task="FR", id=ident, event="issues", action="opened", line="")
             )
 
     try:
         with _lock(home):
-            doc = _empty_queue()
+            doc = _load_queue_unlocked(home)
+            want = {(c.repo, c.task, c.id) for c in desired}
+            fetched_set = set(fetched)
+            before = len(doc["unaccepted"])
+            keep = []
+            for row in doc["unaccepted"]:
+                if (
+                    row.get("repo") in fetched_set
+                    and row.get("task") in ("FR", "MRB")
+                    and (row.get("repo"), row.get("task"), row.get("id")) not in want
+                    and not row.get("offered_to")
+                ):
+                    continue  # closed / merged / superseded on GitHub
+                keep.append(row)
+            dropped = before - len(keep)
+            doc["unaccepted"] = keep
+            added = 0
             for claim in desired:
-                _append_unaccepted(doc, claim)
-            # stable sort by repo then numeric id then task
+                if any(_same(r, claim.repo, claim.task, claim.id) for r in doc["accepted"] + doc["unaccepted"]):
+                    continue                      # already queued/claimed: keep its line, seq and offer fields
+                if _append_unaccepted(doc, claim) == "added":
+                    added += 1
+
             def sk(row: dict) -> tuple:
                 ident = str(row.get("id") or "#0")
                 try:
@@ -1279,7 +1300,10 @@ def resync_from_github(
             return {
                 "ok": True,
                 "unaccepted": len(doc["unaccepted"]),
-                "repos": list(repos),
+                "added": added,
+                "dropped": dropped,
+                "repos": list(fetched),
+                "failed": list(failed),
             }
     except (TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}

@@ -39,6 +39,7 @@ import bob_home  # noqa: E402
 import chair_oper  # noqa: E402
 import chan_privs  # noqa: E402
 import chair_commands  # noqa: E402
+import chair_health  # noqa: E402
 import chan_workers  # noqa: E402
 import talk_seat_ghost  # noqa: E402
 import talk_seat_pid  # noqa: E402
@@ -1912,6 +1913,44 @@ class Client:
             self._cc_state = st
         return st
 
+    def _jobs(self):
+        """Chair background jobs: 30-min webhook health probe + 15-min authenticated GitHub resync."""
+        j = getattr(self, "_jobs_obj", None)
+        if j is None:
+            j = chair_health.ChairJobs(
+                self.home, self._digest_home(), log=info,
+                ignored_loader=lambda: focus_ignore.ignored_list(self.home))
+            self._jobs_obj = j
+        return j
+
+    def _jobs_status_lines(self) -> list[str]:
+        out: list[str] = []
+        try:
+            j = self._jobs()
+            r = j.last_resync or {}
+            if r.get("ok"):
+                age = int(time.time() - j.last_resync_at) if j.last_resync_at else -1
+                out.append(f"github_resync: ok {age}s ago repos={len(r.get('repos') or [])} added={r.get('added', 0)} "
+                           f"dropped={r.get('dropped', 0)} token={j.token_source or '?'}")
+            else:
+                out.append(f"github_resync: {r.get('error') or 'not run yet'} (every {int(chair_health.RESYNC_S // 60)} min)")
+            doc = chair_health._read_state(self.home / chair_health.STATE_NAME)
+            tg = doc.get("targets") if isinstance(doc.get("targets"), dict) else {}
+            if tg:
+                out.append("webhooks: " + " ".join(f"{k}={'up' if v.get('up') else 'DOWN'}" for k, v in sorted(tg.items())))
+            else:
+                out.append(f"webhooks: not probed yet (every {int(chair_health.WEBHOOK_PROBE_S // 60)} min)")
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def _chair_jobs_tick(self) -> None:
+        if getattr(self.args, "chair", False):
+            try:
+                self._jobs().tick()
+            except Exception as exc:  # noqa: BLE001 - a probe bug must never kill the outbox loop
+                info(f"WARN chair-jobs tick: {type(exc).__name__}: {exc}")
+
     def _ear_machine(self, nick: str):
         return chan_privs.bob_machine(
             nick,
@@ -1993,8 +2032,9 @@ class Client:
                 return True
         who = None
         if chair_commands.is_status(text):
-            self._cmd_reply(src, "status", chair_commands.status_lines(
-                self._digest_home(), started=self._cc().started))
+            lines = chair_commands.status_lines(self._digest_home(), started=self._cc().started)
+            lines = list(lines) + self._jobs_status_lines()
+            self._cmd_reply(src, "status", lines)
             return True
         if chair_commands.is_resync(text):
             who = self._principal(src)
@@ -2003,6 +2043,7 @@ class Client:
                 self._whois_hint(src)
                 return True
             self._cs_force = True       # ChanServ roster mirror re-read now
+            self._jobs().request_resync()   # authenticated GitHub FR/MRB re-sync on the next tick (<= ~2 s)
             purged = 0
             try:
                 for repo in focus_ignore.ignored_list(self.home):
@@ -2012,8 +2053,8 @@ class Client:
             un = len(gitclaim.load_unaccepted(self.home))
             acc = len(gitclaim.load_accepted(self.home))
             self._cmd_reply(src, "resync", [
-                f"resync: roster refresh requested; queue unaccepted={un} accepted={acc} purged_ignored={purged} "
-                "(webhook model, no GitHub token)"])
+                f"resync: roster refresh requested; GitHub FR/MRB re-sync queued (Jeeves token); "
+                f"queue unaccepted={un} accepted={acc} purged_ignored={purged}"])
             info(f"INFO resync nick={src} kind={who.kind}")
             return True
         ch = chair_commands.parse_sweep(text)
@@ -2624,6 +2665,7 @@ class Client:
                 self._maybe_chanserv_sync()
                 self._ensure_chan_ops()
                 self._chan_privs_tick()
+                self._chair_jobs_tick()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
             except OSError:

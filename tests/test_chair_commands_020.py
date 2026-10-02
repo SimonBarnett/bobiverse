@@ -57,7 +57,7 @@ class FakeChair:
 
     for _n in ("handle_privmsg", "_maybe_chair_commands", "_maybe_git_list", "_maybe_git_help", "_maybe_focus_ignore",
                "_handle_recycle_command", "_handle_bob_local_recycle_command", "_cc", "_ear_machine", "_account_of",
-               "_principal", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
+               "_principal", "_jobs", "_jobs_status_lines", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
                "_on_channel_names", "_workers"):
         locals()[_n] = getattr(irc_agent.Client, _n)
     del _n
@@ -213,7 +213,9 @@ def test_ping_pm(chair, op):
 
 def test_resync(chair, op):
     out = pm(chair, op, "!resync")
-    assert out[0].startswith("resync: roster refresh requested; queue unaccepted=2 accepted=0")
+    assert out[0].startswith("resync: roster refresh requested; GitHub FR/MRB re-sync queued")
+    assert "queue unaccepted=2 accepted=0" in out[0]
+    assert chair._jobs().next_resync == 0.0      # picked up on the next tick
     assert chair._cs_force is True
 
 
