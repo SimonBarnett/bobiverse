@@ -18,11 +18,15 @@ def common_ps1_text() -> str:
 
 def test_install_exclude_template_unignores_sibling_products(common_ps1_text: str):
     # Linked FR worktrees share this exclude; /* would otherwise hide new airc/tests files.
+    assert "function Get-BobiverseInstallGitExcludeText" in common_ps1_text
+    assert "function Write-BobiverseInstallGitExclude" in common_ps1_text
     assert "!/$Product/" in common_ps1_text or '!/$Product/' in common_ps1_text
     assert "!/common/" in common_ps1_text
     assert "!/airc/" in common_ps1_text
     assert "!/jeeves/" in common_ps1_text
     assert "git add -f" in common_ps1_text or "add -f" in common_ps1_text
+    # Existing installs refresh exclude on sync (not only first bootstrap).
+    assert "Refresh exclude on existing installs" in common_ps1_text or "Write-BobiverseInstallGitExclude" in common_ps1_text
 
 
 def test_fr_skill_documents_force_add_for_sparse_exclude():
