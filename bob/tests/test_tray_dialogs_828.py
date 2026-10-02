@@ -138,6 +138,7 @@ $h = [pscustomobject]@{{
 }}
 $m = New-BobTrayStatusModel -Hover $h -AlertKind 'stall' -Alerts @('agent_stall x') -Version 'bob 1.2.3' -Machine 'marchhare' -Short 'bob marchhare tip' -Attention $true -AttentionSeq 7 -Pulse $true
 $p = Write-BobTrayStatusSnapshot -Root '{root}' -Model $m
+$p = Write-BobTrayStatusSnapshot -Root '{root}' -Model $m   # second write = the atomic Replace path
 Write-Output $p
 """
     r = _ps(script)

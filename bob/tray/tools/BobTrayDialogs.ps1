@@ -144,7 +144,8 @@ function Write-BobTrayStatusSnapshot {
         $tmp = $path + '.tmp'
         $json = ConvertTo-Json -InputObject $Model -Depth 8 -Compress
         [IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding $false))
-        if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, $null) } else { [IO.File]::Move($tmp, $path) }
+        # a bare $null becomes '' in PS5 and Replace then throws 'path is not of a legal form' - pass [NullString]::Value
+        if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
         return $path
     }
     catch { return $null }
