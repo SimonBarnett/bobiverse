@@ -1,4 +1,4 @@
-﻿"""#39 gaps 1-3: real seat nicks, focus-ordered FR|MRB|UAT assignment, !focus/strict/!ignore."""
+"""#39 gaps 1-3: real seat nicks, focus-ordered FR|MRB|UAT assignment, !focus/strict/!ignore."""
 from __future__ import annotations
 
 import json
@@ -234,6 +234,62 @@ def test_done_mrb_pass_stamps_author_seat_on_uat(_home):
     assert len(uats) == 1
     assert uats[0]["id"] == "#10"
     assert uats[0]["author_seat"] == "marchhare-16564"
+
+
+
+def test_apply_queue_event_merged_pr_copies_author_seat_onto_uat(_home):
+    """FR #227: PR merged webhook copies MRB author_seat from accepted/done onto UAT."""
+    registered_machines.save_registered(_home, {"marchhare", "ionos"})
+    doc = {
+        "v": 1,
+        "unaccepted": [
+            {
+                "repo": "SimonBarnett/bobiverse",
+                "task": "MRB",
+                "id": "#9",
+                "seq": 1,
+                "ts": "t",
+                "line": "x",
+            }
+        ],
+        "accepted": [
+            {
+                "repo": "SimonBarnett/bobiverse",
+                "task": "MRB",
+                "id": "#9",
+                "seq": 1,
+                "nick": "marchhare-16564",
+                "refs": ["#5"],
+                "ts": "t",
+                "line": "x",
+                "channel": "#marchhare",
+                "accepted_ts": "t",
+            }
+        ],
+        "done": [],
+    }
+    gitclaim._write_queue(gitclaim.queue_path(_home), doc)
+    claim = gitclaim.claim_from_payload(
+        "pull_request",
+        {
+            "action": "closed",
+            "repository": {"full_name": "SimonBarnett/bobiverse"},
+            "pull_request": {
+                "number": 9,
+                "title": "fix",
+                "body": "Closes SimonBarnett/bobiverse#5",
+                "merged": True,
+                "html_url": "u",
+            },
+        },
+    )
+    assert claim.merged and claim.id == "#9" and claim.refs == ("#5",)
+    assert gitclaim.apply_queue_event(_home, claim) == "updated"
+    uats = [r for r in gitclaim.load_unaccepted(_home) if r.get("task") == "UAT"]
+    assert len(uats) == 1
+    assert uats[0]["id"] == "#5"
+    assert uats[0]["author_seat"] == "marchhare-16564"
+    assert ("MRB", "#9") not in [(r["task"], r["id"]) for r in gitclaim.load_unaccepted(_home)]
 
 
 def test_list_uses_same_order(_home):
