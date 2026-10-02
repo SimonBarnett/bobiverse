@@ -811,7 +811,8 @@ def _coerce_machine(mid: str, raw: object) -> dict:
     if isinstance(raw.get("pcent"), dict):
         base["pcent"] = raw["pcent"]
     if isinstance(raw.get("cursor_pools"), list):
-        base["cursor_pools"] = _coerce_cursor_pools(raw["cursor_pools"])
+        # #114: stamp registered identity onto each pool row from the parent machine.
+        base["cursor_pools"] = _coerce_cursor_pools(raw["cursor_pools"], machine_id=mid)
     if raw.get("uptime_since"):
         base["uptime_since"] = str(raw["uptime_since"])
     for key in _MERGE_PEER_FIELDS:
@@ -1231,13 +1232,19 @@ def _store_machine_pool_rows(ent: dict, raw_rows: object) -> None:
     list), and backfill ``pcent`` / ``period_end`` / ``cursor_period_end`` gaps from them so the
     lesser-across-machines pool bars and the expiry masking work for rows-only reporters.
     """
-    rows = _coerce_cursor_pools(raw_rows)
+    mid = str(ent.get("id") or "")
+    rows = _coerce_cursor_pools(raw_rows, machine_id=mid or None)
     if not rows:
         return
-    ent["cursor_pools"] = rows
+    account = str(ent.get("nick") or "") or None
+    channel = str(ent.get("shop") or "") or None
+    stamped: list[dict] = []
+    for row in rows:
+        stamped.append(_stamp_pool_identity(row, mid, account=account, channel=channel))
+    ent["cursor_pools"] = stamped
     pcent = ent.get("pcent") if isinstance(ent.get("pcent"), dict) else {}
     changed = False
-    for row in rows:
+    for row in stamped:
         pid = str(row.get("id") or "")
         rem = row.get("remaining")
         pe = row.get("period_end")
@@ -2027,13 +2034,50 @@ def _coerce_cursor_pool(raw: object) -> dict | None:
         "reset": str(raw.get("reset") or period or "") or None,
         "overage": overage,
     }
+    # #114: registered account/channel identity the tray needs on each pool row.
+    machine_id = raw.get("machine_id") or raw.get("machine")
+    if machine_id is not None and str(machine_id).strip():
+        mid = normalize_machine_id(str(machine_id)) or str(machine_id).strip().lower()
+        entry["machine_id"] = mid
+    account = raw.get("account") or raw.get("nick")
+    if account is not None and str(account).strip():
+        entry["account"] = str(account).strip()
+    channel = raw.get("channel") or raw.get("shop")
+    if channel is not None and str(channel).strip():
+        ch = str(channel).strip()
+        if not ch.startswith("#"):
+            ch = f"#{ch.lstrip('#')}"
+        entry["channel"] = ch
     blob = json.dumps(entry, separators=(",", ":"))
     if looks_like_secret(blob):
         return None
     return entry
 
 
-def _coerce_cursor_pools(raw: object) -> list[dict]:
+def _stamp_pool_identity(row: dict, mid: str, *, account: str | None = None, channel: str | None = None) -> dict:
+    """#114: ensure machine_id / account / channel on a coerced pool row."""
+    if not isinstance(row, dict):
+        return row
+    norm = normalize_machine_id(mid) or (str(mid).strip().lower() if mid else "")
+    if norm and not row.get("machine_id"):
+        row["machine_id"] = norm
+    acct = (account or "").strip() or (nick_for_machine({}, norm) if norm else "")
+    if acct and not row.get("account"):
+        row["account"] = acct
+    ch = (channel or "").strip()
+    if not ch and norm:
+        try:
+            ch = shop_channel(norm)
+        except ValueError:
+            ch = f"#{norm}"
+    if ch and not row.get("channel"):
+        if not ch.startswith("#"):
+            ch = f"#{ch.lstrip('#')}"
+        row["channel"] = ch
+    return row
+
+
+def _coerce_cursor_pools(raw: object, *, machine_id: str | None = None) -> list[dict]:
     if not isinstance(raw, list):
         return []
     out: list[dict] = []
@@ -2042,6 +2086,8 @@ def _coerce_cursor_pools(raw: object) -> list[dict]:
         pool = _coerce_cursor_pool(item)
         if not pool:
             continue
+        if machine_id:
+            pool = _stamp_pool_identity(pool, machine_id)
         pid = str(pool.get("id") or "")
         if pid in seen:
             continue
