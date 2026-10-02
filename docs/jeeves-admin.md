@@ -21,6 +21,8 @@ IRCd: **BobIrcd** → live root `C:\ai\ergo` (MSI stages `ergo\` then Install-Bo
 
 Quiet MSI as LocalSystem must **not** bake `C:\Users\Default\.jeeves` into NSSM.
 
+Home migration (`bob_home.migrate_legacy`) copies legacy `~\.agentic-irc-*` into `~\.jeeves` / `~\.bobiverse` once. Live `*.pos` files are skipped with other process state, but **outbox cursors are sealed** (FR #68): after copying `chair-outbox.txt` / `outbox.txt`, the migrator restores `*.pos` from the old home when present, otherwise writes pos = file size so the chair does not replay thousands of old GIT lines and starve `SAMODE` / ChanServ LIST. The outbox drain also caps lines per tick and runs ChanServ/+o before drain.
+
 ## Operator commands (IRC)
 
 - `!register <machine>` — ChanServ REGISTER `#{machine}` (Simon/operators)

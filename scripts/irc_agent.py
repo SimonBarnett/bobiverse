@@ -45,6 +45,8 @@ import wire  # noqa: E402
 import channel_only  # noqa: E402
 
 FLOOD_S = 0.8
+# FR #68: cap outbox drain per tick so chair +o / ChanServ sync are not starved
+OUTBOX_LINES_PER_TICK = 8
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
 # Safe default for PRIVMSG *text* when LINELEN/prefix unknown (~400 bytes of UTF-8 text).
 DEFAULT_PRIVMSG_TEXT_MAX = 400
@@ -178,7 +180,9 @@ def write_outbox_line(path: Path, text: str, *, channel: str | None = None) -> N
         fh.write(line + "\n")
 
 
-def take_outbox_lines(path: Path, last: int) -> tuple[list[str], int]:
+def take_outbox_lines(
+    path: Path, last: int, max_lines: int | None = None
+) -> tuple[list[str], int]:
     """Complete newline-terminated outbox lines from byte offset `last`.
 
     A poll that lands mid-write must not send a truncated SEAL/FILE line
@@ -186,6 +190,10 @@ def take_outbox_lines(path: Path, last: int) -> tuple[list[str], int]:
 
     FR #226: strip UTF-8 BOM on the file head and per-line; normalize pre-wrapped
     PRIVMSG so drain never double-wraps.
+
+    FR #68: optional ``max_lines`` caps how many non-empty lines are returned so
+    the caller can yield between ticks (chair +o / ChanServ must not wait on a
+    multi-thousand-line backlog at FLOOD_S each).
     """
     try:
         data = path.read_bytes()
@@ -210,7 +218,10 @@ def take_outbox_lines(path: Path, last: int) -> tuple[list[str], int]:
         base = last
     lines: list[str] = []
     consumed = 0
+    limit = None if max_lines is None else max(0, int(max_lines))
     while True:
+        if limit is not None and len(lines) >= limit:
+            break
         nl = buf.find(b"\n", consumed)
         if nl < 0:
             break
@@ -2424,7 +2435,7 @@ class Client:
         if self.sock is None or not path.exists():
             return []
         last = load_outbox_pos(path)
-        lines, new_last = take_outbox_lines(path, last)
+        lines, new_last = take_outbox_lines(path, last, max_lines=OUTBOX_LINES_PER_TICK)
         sent: list[str] = []
         gate_fleet = bobreport.chair_mode_active(self.home)
         for line in lines:
@@ -2476,11 +2487,13 @@ class Client:
             if gen is not None and gen != self._outbox_gen:
                 return
             try:
-                self.drain_outbox_once()
-                self._maybe_bobiverse_pull()
+                # FR #68: ChanServ sync / SAMODE before outbox drain so a migrated
+                # backlog cannot starve +o for tens of minutes (drain is also capped).
                 self._maybe_chanserv_sync()
                 self._ensure_chan_ops()
                 self._chan_privs_tick()
+                self.drain_outbox_once()
+                self._maybe_bobiverse_pull()
                 self._maybe_depart_request()
                 self._maybe_prune_talk_seat_ghosts()
             except OSError:

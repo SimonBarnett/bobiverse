@@ -1,4 +1,4 @@
-﻿r"""Bobiverse home layout + one-time migration from the pre-0.1.15 ``~\.agentic-irc-*`` homes.
+r"""Bobiverse home layout + one-time migration from the pre-0.1.15 ``~\.agentic-irc-*`` homes.
 
 Homes (no agentic_irc dependency):
   chair home   BOB_HOME           default ``~/.jeeves``      (Jeeves identity, operators, accounts)
@@ -23,12 +23,14 @@ CHAIR_NAME = ".jeeves"
 DIGEST_NAME = ".bobiverse"
 LEGACY_CHAIR_NAME = ".agentic-irc-jeeves"
 LEGACY_DIGEST_NAME = ".agentic-irc-bobiverse"
-# never carried over: live state of the old process
+# never carried over: live state of the old process (.pos sealed specially for outboxes — FR #68)
 SKIP_SUFFIXES = (".log", ".pid", ".lock", ".tmp", ".pos")
 SKIP_NAMES = {".agentic-irc-service-start", ".bobiverse-service-start", "agent.quit.request", MARKER}
 SECRET_NAMES = ("report.secret", "github.token", "nickserv.password", "identity.json")
 # the files the fleet cares about most (reported by name in the migration summary)
 KEY_FILES = ("digest.json", "focus.json", "ignored.json", "queue.json", "registered-machines.json")
+# outbox basenames that need a companion cursor after migrate (FR #68)
+OUTBOX_BASENAMES = ("chair-outbox.txt", "outbox.txt")
 
 
 def _admin_profile() -> Path:
@@ -88,6 +90,51 @@ def _skip(p: Path) -> bool:
     return n in SKIP_NAMES or n.lower().endswith(SKIP_SUFFIXES)
 
 
+def _is_outbox_file(name: str) -> bool:
+    n = name.lower()
+    return n in OUTBOX_BASENAMES or n.endswith("outbox.txt")
+
+
+def _seal_outbox_cursors(old: Path, new_home: Path, stats: dict) -> None:
+    """FR #68: after copying outbox bodies, restore or invent ``*.pos`` cursors.
+
+    ``SKIP_SUFFIXES`` drops live ``.pos`` files. Without a cursor, ``load_outbox_pos``
+    returns 0 and the chair replays the whole backlog (flood-starving +o / ChanServ).
+    Prefer the legacy cursor when present; otherwise seal at EOF so history is not resent.
+    """
+    sealed: list[str] = stats.setdefault("outbox_pos_sealed", [])
+    old = Path(old)
+    new_home = Path(new_home)
+    for entry in sorted(new_home.iterdir()):
+        if not entry.is_file() or not _is_outbox_file(entry.name):
+            continue
+        pos_name = entry.name + ".pos"
+        dest_pos = new_home / pos_name
+        if dest_pos.is_file():
+            continue
+        candidates = [
+            old / pos_name,
+            old / (entry.stem + ".pos"),  # chair-outbox.pos next to chair-outbox.txt
+        ]
+        copied = False
+        for src_pos in candidates:
+            if src_pos.is_file():
+                try:
+                    shutil.copy2(src_pos, dest_pos)
+                    sealed.append(pos_name)
+                    copied = True
+                    break
+                except OSError as exc:
+                    stats.setdefault("errors", []).append(f"{pos_name}: {type(exc).__name__}")
+        if copied:
+            continue
+        try:
+            dest_pos.write_text(str(entry.stat().st_size) + "\n", encoding="utf-8")
+            sealed.append(pos_name)
+        except OSError as exc:
+            stats.setdefault("errors", []).append(f"{pos_name}: {type(exc).__name__}")
+
+
 def _copy_tree(src: Path, dst: Path, stats: dict) -> None:
     for entry in sorted(src.iterdir()):
         if _skip(entry):
@@ -130,8 +177,16 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
     if old is None:
         return {"status": "no-legacy", "new": str(new_home)}
     new_home.mkdir(parents=True, exist_ok=True)
-    stats = {"copied": 0, "kept": 0, "names": [], "errors": [], "conflicts": []}
+    stats = {
+        "copied": 0,
+        "kept": 0,
+        "names": [],
+        "errors": [],
+        "conflicts": [],
+        "outbox_pos_sealed": [],
+    }
     _copy_tree(Path(old), new_home, stats)
+    _seal_outbox_cursors(Path(old), new_home, stats)
     summary = {
         "status": "error" if stats["errors"] and not stats["copied"] else "migrated",
         "old": str(old),
@@ -140,6 +195,7 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
         "kept_existing": stats["kept"],
         "key_files": [n for n in KEY_FILES if n in stats["names"]],
         "secret_files": [n for n in SECRET_NAMES if n in stats["names"]],
+        "outbox_pos_sealed": list(stats.get("outbox_pos_sealed") or [])[:20],
         "conflicts": stats["conflicts"][:20],
         "errors": stats["errors"][:10],
         "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
