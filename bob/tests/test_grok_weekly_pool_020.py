@@ -155,3 +155,48 @@ def test_watcher_alert_only_for_an_installed_watcher(tmp_path):
     assert not none                                                       # not installed -> no 'alert: watcher'
     some = _ps_json(tmp_path, stall % "function Test-BobWatcherInstalled { $true }")
     assert some and "watcher_down" in json.dumps(some)                    # installed + not running -> still alerts
+
+@needs_ps
+def test_stale_local_reading_borrows_the_same_account_figure_from_a_seat_mate_for_the_same_period(tmp_path):
+    now = datetime.now(timezone.utc)
+    end = (now + timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+    stale = f"([pscustomobject]@{{stale=$true;remaining_pct=$null;period_end='{end}'}})"
+    seats = "@([pscustomobject]@{id='ntsa';machines=@('marchhare','ce-priority-dev1')})"
+    wk = "@{'ce-priority-dev1'=88}"
+    same = "@{'ce-priority-dev1'='" + end + "'}"
+    other = "@{'ce-priority-dev1'='" + (now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z") + "'}"
+    call = "Resolve-BobSeatMateWeekly -MachineId 'marchhare' -LocalWeek %s -Seats %s -WeeklyBy %s -PeriodEndBy %s"
+    assert _ps_json(tmp_path, call % (stale, seats, wk, same)) == 88      # same account, same period -> same pool
+    assert _ps_json(tmp_path, call % (stale, seats, wk, other)) is None    # a different period is not this week's figure
+    cur = f"([pscustomobject]@{{stale=$false;remaining_pct=8;period_end='{end}'}})"
+    assert _ps_json(tmp_path, call % (cur, seats, wk, same)) is None       # a current local reading stays authoritative
+
+
+@needs_ps
+def test_seat_cache_drops_last_periods_percent_when_the_local_reading_is_stale(tmp_path):
+    bridge = tmp_path / "bridge"
+    bridge.mkdir()
+    env = {"BOB_BRIDGE_HOME": str(bridge), "BOB_MACHINE_ID": "marchhare"}
+    old, new = "2026-09-29T23:41:45.639212+00:00", "2026-10-06T23:41:45.6392120Z"
+    _ps_json(tmp_path, f"Save-BobSeatPeriodEnd -MachineId 'marchhare' -PeriodEnd '{old}' -SeatId 'ntsa' -Weekly 8; 1", env)
+    c = json.loads((bridge / "seat-period-end.json").read_text(encoding="utf-8-sig"))
+    assert c["weekly_by_machine"]["marchhare"] == 8 and c["weekly_by_seat"]["ntsa"] == 8
+    _ps_json(tmp_path, f"Save-BobSeatPeriodEnd -MachineId 'marchhare' -PeriodEnd '{new}' -SeatId 'ntsa' -Weekly $null -ClearWeekly; 1", env)
+    c = json.loads((bridge / "seat-period-end.json").read_text(encoding="utf-8-sig"))
+    assert "marchhare" not in c["weekly_by_machine"] and "ntsa" not in c["weekly_by_seat"]
+    assert c["by_machine"]["marchhare"] == new                             # the new reset is kept
+
+
+def test_chair_drops_last_periods_weekly_when_a_machine_rolls_without_a_new_figure(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    rm.save_registered(home, {"marchhare"})
+    old = "2026-09-29T23:41:45.639212+00:00"
+    assert bobreport.apply_callback(home, {"op": "merge", "machine": "marchhare", "weekly": 8, "period_end": old}, "Jeeves").ok
+    assert bobreport.load_digest(home)["machines"]["marchhare"]["weekly"] == 8
+    new = "2026-10-06T23:41:45.639212+00:00"
+    assert bobreport.apply_callback(home, {"op": "merge", "machine": "marchhare", "period_end": new}, "Jeeves").ok
+    ent = bobreport.load_digest(home)["machines"]["marchhare"]
+    assert "weekly" not in ent and ent["period_end"] == new                # no 8% beside next week's reset
+    assert bobreport.apply_callback(home, {"op": "merge", "machine": "marchhare", "weekly": 97, "period_end": new}, "Jeeves").ok
+    assert bobreport.load_digest(home)["machines"]["marchhare"]["weekly"] == 97

@@ -1287,6 +1287,10 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
     # Period roll (cursor billing or weekly sand) → allow pcent/weekly to rise again (e.g. 100%)
     cursor_rolled = _period_rolled(ent.get("cursor_period_end"), payload.get("cursor_period_end"))
     weekly_rolled = _period_rolled(ent.get("period_end"), payload.get("period_end"))
+    # t785u: the machine moved to a new weekly period but has no measured figure for it yet: last period's % must not
+    # linger next to the new reset (MarchHare showed weekly=8 against a reset 7 days later).
+    if weekly_rolled and payload.get("period_end") and payload.get("weekly") is None:
+        ent.pop("weekly", None)
     if "pcent" in payload and isinstance(payload["pcent"], dict):
         ent["pcent"] = _merge_pcent_lesser(
             ent.get("pcent"), payload["pcent"], replace=(cursor_rolled or weekly_rolled)

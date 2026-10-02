@@ -546,7 +546,8 @@ function Save-BobSeatPeriodEnd {
         [string]$MachineId,
         [string]$PeriodEnd,
         [string]$SeatId,
-        $Weekly
+        $Weekly,
+        [switch]$ClearWeekly
     )
     $p = Get-BobSeatPeriodEndCachePath
     if (-not $p) { return }
@@ -563,10 +564,15 @@ function Save-BobSeatPeriodEnd {
         } catch { }
     }
     if ($SeatId -and $PeriodEnd) { $cache.by_seat[$SeatId] = [string]$PeriodEnd }
+    # t785u: this host's own reading is stale/unmeasured: drop the % cached from the PREVIOUS period (machine and seat).
+    if ($ClearWeekly) {
+        if ($MachineId -and $cache.weekly_by_machine.ContainsKey($MachineId)) { $cache.weekly_by_machine.Remove($MachineId) }
+        if ($SeatId -and $cache.weekly_by_seat.ContainsKey($SeatId)) { $cache.weekly_by_seat.Remove($SeatId) }
+    }
     if ($SeatId -and $null -ne $Weekly -and [string]$Weekly -ne '') {
         try { $cache.weekly_by_seat[$SeatId] = [int]$Weekly } catch { }
     }
-    if (-not $PeriodEnd -and $null -eq $Weekly) { return }
+    if (-not $PeriodEnd -and $null -eq $Weekly -and -not $ClearWeekly) { return }
     $doc = [pscustomobject]@{
         by_machine         = [pscustomobject]$cache.by_machine
         by_seat            = [pscustomobject]$cache.by_seat
@@ -2258,7 +2264,7 @@ function Write-BobIrcStatus {
     }
     catch { }
     $seen = [DateTime]::UtcNow.ToString('o')
-    Save-BobSeatPeriodEnd -MachineId $id -PeriodEnd $periodEnd -Weekly $week
+    Save-BobSeatPeriodEnd -MachineId $id -PeriodEnd $periodEnd -Weekly $week -ClearWeekly:([bool]($w -and $w.stale))
     $cursorLabel = $null
     $cursorPeriodEnd = $null
     $sandPeriodEnd = $null

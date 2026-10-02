@@ -100,6 +100,34 @@ function Get-BobWeeklyLogPath {
     return (Join-Path $env:USERPROFILE '.grok\logs\unified.jsonl')
 }
 
+function Resolve-BobSeatMateWeekly {
+    <#
+    .SYNOPSIS
+      Weekly % for a machine whose own Grok reading is stale/unmeasured (t785u): a seat-mate on the SAME Grok account
+      (seat) whose reading is for the SAME weekly period (identical period_end instant) is the same pool.
+    .OUTPUTS
+      [int] or $null. Never used when the local reading is current (that stays authoritative, CAST IRON #150).
+    #>
+    param([string]$MachineId, $LocalWeek, $Seats, $WeeklyBy, $PeriodEndBy)
+    if (-not $LocalWeek -or -not $LocalWeek.stale -or -not $LocalWeek.period_end) { return $null }
+    $mine = $null
+    try { $mine = [datetime]::Parse([string]$LocalWeek.period_end, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } catch { return $null }
+    foreach ($seat in @($Seats)) {
+        $mates = @($seat.machines | ForEach-Object { [string]$_ })
+        if ($mates -notcontains $MachineId) { continue }
+        foreach ($sm in $mates) {
+            if (-not $sm -or $sm -eq $MachineId) { continue }
+            if (-not $WeeklyBy.ContainsKey($sm) -or $null -eq $WeeklyBy[$sm]) { continue }
+            if (-not $PeriodEndBy.ContainsKey($sm) -or -not $PeriodEndBy[$sm]) { continue }
+            try {
+                $theirs = [datetime]::Parse([string]$PeriodEndBy[$sm], [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+            } catch { continue }
+            if ([math]::Abs(($theirs - $mine).TotalSeconds) -lt 2) { return [int]$WeeklyBy[$sm] }
+        }
+    }
+    return $null
+}
+
 function Step-BobWeeklyPeriodForward {
     <#
     .SYNOPSIS
@@ -1995,7 +2023,7 @@ function Get-BobTrayHover {
         $periodEndBy[$machineId] = [string]$week.period_end
     }
     if ($week) {
-        Save-BobSeatPeriodEnd -MachineId $machineId -PeriodEnd $(if ($week.period_end) { [string]$week.period_end } else { $null }) -Weekly $(if ($null -ne $week.remaining_pct -and (Test-BobTrayRemainingKnown $week.remaining_pct)) { [int]$week.remaining_pct } else { $null })
+        Save-BobSeatPeriodEnd -MachineId $machineId -PeriodEnd $(if ($week.period_end) { [string]$week.period_end } else { $null }) -Weekly $(if ($null -ne $week.remaining_pct -and (Test-BobTrayRemainingKnown $week.remaining_pct)) { [int]$week.remaining_pct } else { $null }) -ClearWeekly:([bool]$week.stale)
     }
     foreach ($pc in @($digestPcentRows)) {
         if (-not $pc) { continue }
@@ -2245,6 +2273,12 @@ function Get-BobTrayHover {
                     }
                 }
             }
+        }
+        # t785u: this host's own reading is stale (the Grok CLI has not refetched billing since the period rolled):
+        # show the same account's figure from a seat-mate that reported for the same period.
+        if ($week -and $week.stale -and ($null -eq $weeklyBy[$machineId])) {
+            $mateWk = Resolve-BobSeatMateWeekly -MachineId $machineId -LocalWeek $week -Seats @(Get-BobSeatConfig) -WeeklyBy $weeklyBy -PeriodEndBy $periodEndBy
+            if ($null -ne $mateWk) { $weeklyBy[$machineId] = $mateWk }
         }
         foreach ($k in @($periodEndBy.Keys)) {
             $wk = $null
