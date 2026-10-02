@@ -201,6 +201,13 @@ if (-not $objectOk) {
             -Description 'Set ircJeeves ObjectName password'
     }
 }
+# ONE all-users Start Menu folder "Bobiverse" (shared with bob/airc); dedupes older scattered entries.
+try {
+    [void](Install-BobiverseStartMenu -Product jeeves -InstallRoot $InstallRoot `
+            -NeedLogon:((-not $objectOk) -and (Test-Path -LiteralPath (Join-Path $InstallRoot 'scripts\Complete-BobiverseServiceLogon.ps1'))))
+} catch {
+    Write-Host ("WARN Start Menu folder: {0}" -f $_.Exception.Message)
+}
 # Prefer Ergo up before chair when both are installed
 # IIS rewrite → bobcallback :7700 (report/git/intake/jira)
 $installWh = Join-Path $here 'Install-BobWebhooks.ps1'

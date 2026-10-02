@@ -123,6 +123,15 @@ function Stage-Product([string]$Name) {
         Copy-Item -Path (Join-Path $harvestAliasSrc '*') -Destination (Join-Path $skillsDest 'harvest-agent-skills') -Recurse -Force
     }
 
+    # Bobiverse systray icon: every product's Start Menu shortcuts use it (bob also gets it via the tray payload).
+    $trayIcoSrc = Join-Path $RepoRoot 'third_party\bob-tray\assets\bob-systray.ico'
+    if (Test-Path -LiteralPath $trayIcoSrc) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
+        Copy-Item -LiteralPath $trayIcoSrc -Destination (Join-Path $stage 'assets\bob-systray.ico') -Force
+    } else {
+        Write-Host 'WARN third_party/bob-tray/assets/bob-systray.ico missing - Start Menu shortcuts fall back to default icons'
+    }
+
     Copy-Item (Join-Path $RepoRoot 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
     # Issue #4: do not embed live Ergo PASS into public release assets by default.
     $stageErgo = Join-Path $stage 'config\ergo.password'

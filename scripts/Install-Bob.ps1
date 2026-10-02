@@ -198,7 +198,6 @@ if (-not $SkipWatchAgentHealth) {
 
 if (-not $SkipIcons) {
     $desk = [Environment]::GetFolderPath('Desktop')
-    $start = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\Bobiverse'
     $restartPs1 = Join-Path $InstallRoot 'scripts\Restart-BobEar.ps1'
     $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
     $trayIco = Join-Path $InstallRoot 'assets\bob-systray.ico'
@@ -208,24 +207,10 @@ if (-not $SkipIcons) {
         -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$restartPs1`"" `
         -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
         -Description 'Restart ircBob (announces departure)'
-    New-BobiverseShortcut -LinkPath (Join-Path $start 'Restart ircBob.lnk') `
-        -TargetPath 'powershell.exe' `
-        -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$restartPs1`"" `
-        -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
-        -Description 'Restart ircBob service'
-    New-BobiverseShortcut -LinkPath (Join-Path $start 'Bob Services.lnk') `
-        -TargetPath 'services.msc' `
-        -Description 'Windows Services'
     if ((-not $SkipTray) -and (Test-Path -LiteralPath $trayPs1)) {
         $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew"
         $trayDesc = 'bob TipForm systray (companion to ircBob; Restart recycles ircBob + Sync/ff)'
         New-BobiverseShortcut -LinkPath (Join-Path $desk 'Bobiverse Tray.lnk') `
-            -TargetPath 'powershell.exe' `
-            -Arguments $trayArgs `
-            -WorkingDirectory $InstallRoot `
-            -Description $trayDesc `
-            -IconLocation $(if ($trayIco) { "$trayIco,0" } else { '' })
-        New-BobiverseShortcut -LinkPath (Join-Path $start 'Bobiverse Tray.lnk') `
             -TargetPath 'powershell.exe' `
             -Arguments $trayArgs `
             -WorkingDirectory $InstallRoot `
@@ -260,11 +245,15 @@ if (-not $SkipIcons) {
             -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$logonPs1`" -Product bob -InstallRoot `"$InstallRoot`"" `
             -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
             -Description 'Set ircBob ObjectName password (required once after MSI)'
-        New-BobiverseShortcut -LinkPath (Join-Path $start 'Complete bobiverse service logon.lnk') `
-            -TargetPath 'powershell.exe' `
-            -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$logonPs1`" -Product bob -InstallRoot `"$InstallRoot`"" `
-            -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
-            -Description 'Set ircBob ObjectName password'
+    }
+    # ONE all-users Start Menu folder "Bobiverse" with every shortcut (t761u); removes the old scattered
+    # "Bob Systray" / "Bobiverse Tray" / per-user "Bobiverse" entries. All carry the systray icon.
+    try {
+        [void](Install-BobiverseStartMenu -Product bob -InstallRoot $InstallRoot -MachineId $MachineId `
+                -NeedLogon:((-not $objectOk) -and (Test-Path -LiteralPath $logonPs1)) `
+                -IncludeTray:((-not $SkipTray) -and (Test-Path -LiteralPath $trayPs1)))
+    } catch {
+        Write-Host ("WARN Start Menu folder: {0}" -f $_.Exception.Message)
     }
 }
 

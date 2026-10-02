@@ -116,4 +116,11 @@ try {
 # Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
 Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
 
+# ONE all-users Start Menu folder "Bobiverse" (shared with bob/jeeves); dedupes older scattered entries.
+try {
+    [void](Install-BobiverseStartMenu -Product airc -InstallRoot $InstallRoot -MachineId $MachineId)
+} catch {
+    Write-Host ("WARN Start Menu folder: {0}" -f $_.Exception.Message)
+}
+
 Write-Host 'INFO Install-Airc done (service Airc)'

@@ -518,3 +518,148 @@ function Repair-BobiverseErgoHardlink {
     Write-Host "INFO ergo.exe was hard-linked ($n names) to the MSI payload: now its own file (#70); Ergo not restarted"
     return $true
 }
+
+# ---------------------------------------------------------------------------------------------------------------
+# Start Menu: ONE all-users folder "Bobiverse" holds every Bobiverse shortcut (t761u). Older installers / the
+# agentic_build tray left top-level "Bob Systray" / "Bobiverse Tray" links and per-user "Bobiverse" folders: those
+# are removed on every install/upgrade. Every shortcut here carries the Bobiverse systray icon when it is available.
+# ---------------------------------------------------------------------------------------------------------------
+function Get-BobiverseProgramsRoot {
+    $p = ''
+    try { $p = [Environment]::GetFolderPath('CommonPrograms') } catch { }
+    if (-not $p) { $p = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs' }
+    return $p
+}
+
+function Get-BobiverseStartMenuDir {
+    param([string]$ProgramsRoot = '')
+    if (-not $ProgramsRoot) { $ProgramsRoot = Get-BobiverseProgramsRoot }
+    return (Join-Path $ProgramsRoot 'Bobiverse')
+}
+
+function Resolve-BobiverseTrayIcon {
+    param([string]$InstallRoot = '')
+    $cands = @()
+    if ($InstallRoot) { $cands += (Join-Path $InstallRoot 'assets\bob-systray.ico') }
+    $cands += 'C:\ai\bob\assets\bob-systray.ico', 'C:\ai\jeeves\assets\bob-systray.ico', 'C:\ai\airc\assets\bob-systray.ico'
+    foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { return $c } }
+    return ''
+}
+
+# Pure data: the shortcuts a product contributes to the single Start Menu folder.
+function Get-BobiverseShortcutSpec {
+    param(
+        [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$MachineId = '',
+        [switch]$NeedLogon,
+        [switch]$IncludeTray,
+        [string]$Icon = ''
+    )
+    $ico = if ($Icon) { "$Icon,0" } else { '' }
+    $ps = 'powershell.exe'
+    $scr = Join-Path $InstallRoot 'scripts'
+    $list = New-Object System.Collections.Generic.List[object]
+    function Add-Spec($name, $target, $cmdArgs, $wd, $desc) {
+        $list.Add([pscustomobject]@{ Name = $name; Target = $target; Arguments = $cmdArgs; WorkingDirectory = $wd; Description = $desc; Icon = $ico })
+    }
+    Add-Spec 'Bob Services' 'services.msc' '' '' 'Windows Services (ircBob, ircJeeves, Airc, BobIrcd)'
+    switch ($Product) {
+        'bob' {
+            if ($IncludeTray) {
+                $tray = Join-Path $scr 'Start-BobTray.ps1'
+                Add-Spec 'Bobiverse Tray' $ps "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew" $InstallRoot 'bob TipForm systray (companion to ircBob)'
+            }
+            Add-Spec 'Restart ircBob' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Restart-BobEar.ps1')`"" $scr 'Restart ircBob (announces departure)'
+        }
+        'jeeves' {
+            Add-Spec 'Restart ircJeeves' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Restart-BobService.ps1')`" -Service ircJeeves" $scr 'Restart ircJeeves only (never BobIrcd/Ergo)'
+            Add-Spec 'Jeeves command reference' (Join-Path $InstallRoot 'docs\jeeves-commands.md') '' $InstallRoot 'Jeeves chair command reference and authorization matrix'
+        }
+        'airc' {
+            Add-Spec 'Restart Airc' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Restart-BobService.ps1')`" -Service Airc" $scr 'Restart the Airc console service'
+        }
+    }
+    if ($NeedLogon) {
+        Add-Spec "Complete bobiverse service logon ($Product)" $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Complete-BobiverseServiceLogon.ps1')`" -Product $Product -InstallRoot `"$InstallRoot`"" $scr "Set the $Product service ObjectName password (required once after MSI)"
+    }
+    Add-Spec "Logs ($Product)" (Join-Path $InstallRoot 'logs') '' $InstallRoot "$Product service logs"
+    Add-Spec "Skill books ($Product)" (Join-Path $InstallRoot '.grok\skills') '' $InstallRoot "$Product agent skill books (cd here and run an agent)"
+    Add-Spec "Agent guide ($Product)" (Join-Path $InstallRoot 'AGENTS.md') '' $InstallRoot "$Product AGENTS.md - start-here for agents"
+    return $list.ToArray()
+}
+
+# Remove the scattered / duplicate Bobiverse Start Menu entries left by older installers. Returns removed paths.
+function Remove-BobiverseStartMenuDuplicates {
+    param([string[]]$ProgramsRoots = @(), [string]$KeepDir = '')
+    if (-not $ProgramsRoots -or $ProgramsRoots.Count -eq 0) {
+        $roots = New-Object System.Collections.Generic.List[string]
+        $roots.Add((Get-BobiverseProgramsRoot))
+        foreach ($u in @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue)) {
+            $p = Join-Path $u.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs'
+            if (Test-Path -LiteralPath $p) { $roots.Add($p) }
+        }
+        $ProgramsRoots = $roots.ToArray()
+    }
+    $legacyTop = '^(Bob Systray.*|Bob Tray.*|Bobiverse Tray.*|Bobiverse.*|Bob Fleet.*|Restart ircBob|Restart ircJeeves|Restart Airc|Bob Services|Complete bobiverse service logon.*)\.lnk$'
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($root in $ProgramsRoots) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+        # 1) top-level links (never inside Startup: that is the tray autostart)
+        foreach ($f in @(Get-ChildItem -LiteralPath $root -File -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
+            if ($f.Name -match $legacyTop) {
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+                $removed.Add($f.FullName)
+            }
+        }
+        # 2) legacy folders: "Bob Systray", and a Bobiverse folder that is NOT the kept all-users one
+        foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+            $isKeep = $KeepDir -and ([IO.Path]::GetFullPath($d.FullName).TrimEnd('\') -ieq [IO.Path]::GetFullPath($KeepDir).TrimEnd('\'))
+            if ($isKeep) { continue }
+            if ($d.Name -match '^(Bob Systray.*|Bob Tray.*|Bobiverse)$') {
+                foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -File -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
+                    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+                    $removed.Add($f.FullName)
+                }
+                if (-not @(Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue)) {
+                    Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
+                    $removed.Add($d.FullName)
+                }
+            }
+        }
+    }
+    foreach ($r in $removed) { Write-Host "INFO start-menu removed duplicate: $r" }
+    return $removed.ToArray()
+}
+
+# Create/refresh this product's shortcuts in the single all-users "Bobiverse" folder and dedupe the rest.
+function Install-BobiverseStartMenu {
+    param(
+        [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$MachineId = '',
+        [switch]$NeedLogon,
+        [switch]$IncludeTray,
+        [string]$StartMenuDir = '',
+        [string[]]$ProgramsRoots = @()
+    )
+    if (-not $StartMenuDir) { $StartMenuDir = Get-BobiverseStartMenuDir }
+    $icon = Resolve-BobiverseTrayIcon -InstallRoot $InstallRoot
+    if (-not $icon) { Write-Host 'WARN bob-systray.ico not found - shortcuts use default icons' }
+    [void](Remove-BobiverseStartMenuDuplicates -ProgramsRoots $ProgramsRoots -KeepDir $StartMenuDir)
+    New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
+    $specs = @(Get-BobiverseShortcutSpec -Product $Product -InstallRoot $InstallRoot -MachineId $MachineId `
+            -NeedLogon:$NeedLogon -IncludeTray:$IncludeTray -Icon $icon)
+    $want = @{}
+    foreach ($s in $specs) {
+        $want[($s.Name + '.lnk').ToLowerInvariant()] = $true
+        New-BobiverseShortcut -LinkPath (Join-Path $StartMenuDir ($s.Name + '.lnk')) -TargetPath $s.Target `
+            -Arguments $s.Arguments -WorkingDirectory $s.WorkingDirectory -Description $s.Description -IconLocation $s.Icon
+    }
+    # A completed ObjectName logon no longer needs its helper link.
+    if (-not $NeedLogon) {
+        $stale = Join-Path $StartMenuDir "Complete bobiverse service logon ($Product).lnk"
+        if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
+    }
+    return $specs
+}
