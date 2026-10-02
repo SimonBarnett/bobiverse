@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob-plan
 description: >
-  How to start a bob PLAN agent: tray Plan click, bob-worker.exe --mode plan, CWD C:\ai\bob\plan, always-new agent rule, automatic cursor->grok->dialog selection, plan skills, logs, troubleshooting.
+  How to start a bob PLAN agent: tray Plan click, bob-worker.exe --mode plan, CWD C:\ai\bob\plan, always-new agent rule, automatic cursor->grok->key-prompt selection, plan skills, logs, troubleshooting.
 ---
 
 # bobiverse bob - plan agent
@@ -29,12 +29,13 @@ How to start a **Plan** agent from the bob install. A Plan is a NEW agent whose 
 
 ## Rules
 
-* **ALWAYS a NEW agent** (t765u): new session id, new console window, no `--resume`/`--continue`/`-r`/`-c`, never an existing window or process. A second click is a second, independent plan.
+* **ALWAYS a NEW agent** (t765u): never resume, continue or attach to an older plan agent; new session id, its own single window, no `--resume`/`--continue`/`-r`/`-c`, never an existing window or process. A second click is a second, independent plan.
   The folder `C:\ai\bob\plan` is shared, so the agent is told to put each plan's output in its OWN new subfolder `C:\ai\bob\plan\work\plan-<yyyyMMdd-HHmmss>` and never to touch earlier ones.
-* **Agent selection is the same automatic token rule as the worker**: Cursor (high or low pool > 0) -> Grok (local weekly > 0) -> dialog for a session `XAI_API_KEY`
+* **Agent selection is the same automatic token rule as the worker**: Cursor (high or low pool > 0) -> Grok (local weekly > 0) -> a hidden-input prompt IN THE SAME WINDOW for a session `XAI_API_KEY`
   (memory only, never saved/printed). See `bobiverse-bob-worker`.
-* Cursor runs with `--plan --model auto --workspace C:\ai\bob\plan`; Grok with `--permission-mode plan --session-id <new-uuid> --cwd C:\ai\bob\plan`.
-* The exe exits as soon as the plan agent is up (fire-and-forget); there is no supervisor, no health restart and no IRC for plans. Closing the plan window ends the plan.
+* Cursor (`agent.cmd`) runs with `--plan --model auto --workspace C:\ai\bob\plan`; Grok (`agent.exe`) with `--permission-mode plan --session-id <new-uuid> --cwd C:\ai\bob\plan`.
+* **ONE window** (t771u): the exe's console window hosts the plan agent (the agent inherits it - no second console, no watcher window). The exe stays alive exactly as long as the agent: closing the window or killing the
+  exe ends the agent (a kill-on-close job object covers a hard kill), and the agent ending ends the exe. There is no IRC, no `!bored`, no health restart for plans.
 
 ## The plan folder
 
@@ -44,7 +45,7 @@ harvest, harvest-agent-skills), `docs\templates\vision.md`, `tools\` (vision-pac
 ## Logs and troubleshooting
 
 * `%LOCALAPPDATA%\Bobiverse\worker\logs\bob-worker-plan.log` (selection, `plan: started NEW <kind> agent pid=... session=...`); tray `Open log`.
-* Exit codes: `0` started, `4` no agent possible / key dialog cancelled, `6` agent died immediately, `64` plan folder missing (bob MSI older than this feature).
+* Exit codes: `0` the plan agent ended, `4` no agent possible / key prompt cancelled, `6` launch failed, `64` plan folder missing (bob MSI older than this feature).
 * Nothing happens on click: `Open log`; run `--mode plan --dry-run`; check `tools\Get-BobAgentFuel.ps1` output.
 
 File every problem you find: CAST IRON rule at the top.

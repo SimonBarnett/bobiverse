@@ -1660,7 +1660,8 @@ function Start-BobTrayWorkerExe {
       One plain click, no submenu. Every click starts a FRESH agent: no resume / continue / attach to any earlier session, window or
       process (t765u). The exe is copied to %LOCALAPPDATA%\Bobiverse\worker\bin\bob-worker-<hash>.exe and THAT copy is run, so a running
       seat never locks <install>\worker\bob-worker.exe and an MSI upgrade / uninstall is never blocked by (or kills) a seat.
-      The exe owns the IRC connection (Agent), its own console agent, IRC-loss exit and hang restarts. Plan = exe --mode plan (no IRC).
+      ONE window per click: the exe's own console hosts the agent (the agent inherits it; no second console, no watcher window); the exe owns the IRC relay, !bored,
+      IRC-loss exit and hang restarts, and ending either the exe or the agent ends both. Plan = exe --mode plan (no IRC).
     #>
     param([ValidateSet('agent', 'plan')][string]$Mode)
     try {
@@ -1689,7 +1690,7 @@ function Start-BobTrayWorkerExe {
         $psi.Arguments = (($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
         $psi.WorkingDirectory = (Join-Path $RepoRoot $(if ($Mode -eq 'plan') { 'plan' } else { 'worker' }))
         $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
+        $psi.CreateNoWindow = $false   # t771u: the exe's console window IS the one and only agent window (agent + IRC relay live inside it)
         $proc = [System.Diagnostics.Process]::Start($psi)
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} (NEW agent every click; selection cursor>grok>key dialog)' -f $Mode, $proc.Id, $Mode)
     }
@@ -2724,7 +2725,7 @@ $notify.Visible = $false
 $notify.Text = ''
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miStatus = $menu.Items.Add('Status')
-# t762u: ONE plain click each (NO submenus, NO DropDownOpening). Every click starts a NEW agent via bob-worker.exe
+# t762u: ONE plain click each (NO submenus). Every click starts a NEW agent via bob-worker.exe
 # (cursor pool > 0 -> agent.cmd; else Grok weekly tokens -> agent.exe; else key dialog). Never resumes/attaches (t765u).
 $miAgents = $menu.Items.Add('Agent')
 $miAgents.Add_Click({ Start-BobTrayWorkerExe -Mode 'agent' })

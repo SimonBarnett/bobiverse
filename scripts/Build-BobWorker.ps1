@@ -5,7 +5,7 @@
 .DESCRIPTION
   The repo toolchain is Python (every service is a .py run by NSSM), so the worker is frozen with PyInstaller rather than
   introducing a second toolchain. Needs Python 3.12 + `pip install pyinstaller` on the BUILD machine only; the target box needs
-  neither (the exe embeds its own interpreter). The exe is a console-subsystem program (the tray starts it hidden).
+  neither (the exe embeds its own interpreter). The exe is a console-subsystem program: its console window IS the one agent window (the tray starts it with a visible console; the agent inherits it).
 .OUTPUTS
   The full path of the built bob-worker.exe.
 #>
@@ -37,7 +37,7 @@ $dist = Join-Path $work 'dist'
 $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $log = & $Python -m PyInstaller --noconfirm --clean --onefile --console --name bob-worker `
     --distpath $dist --workpath (Join-Path $work 'build') --specpath $work `
-    --paths (Join-Path $RepoRoot 'scripts') --exclude-module numpy --exclude-module pandas --exclude-module matplotlib `
+    --paths (Join-Path $RepoRoot 'scripts') --exclude-module tkinter --exclude-module numpy --exclude-module pandas --exclude-module matplotlib `
     $src 2>&1
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEap

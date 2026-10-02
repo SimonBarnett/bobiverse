@@ -593,27 +593,56 @@ def test_outbox_sends_to_own_shop_only(ircd, tmp_path):
 
 # ----------------------------------------------------------------------------------------------- real console injection (Windows)
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console")
-def test_inject_console_types_into_a_real_child_console(tmp_path):
+def test_one_window_agent_shares_our_console_and_gets_injected_input(tmp_path):
+    """t771u: the agent is spawned by default_spawn INSIDE the exe's console (one window, one console, no second console) and
+    inject_console types into that shared console. Run in a throw-away process with its own console so pytest's console is untouched."""
+    import json
     import subprocess
 
-    out = tmp_path / "got.txt"
-    code = "import sys; l=sys.stdin.readline(); open(r'%s','w',encoding='utf-8').write(l)" % out
-    p = subprocess.Popen([sys.executable, "-c", code], creationflags=bw.CREATE_NEW_CONSOLE)
+    got, res, host = tmp_path / "got.txt", tmp_path / "res.json", tmp_path / "host.py"
+    line = 'FROM Jeeves #m run: a&b | c "q" 100%'
+    child = "import sys; l=sys.stdin.readline(); open(%r,'w',encoding='utf-8').write(l)" % str(got)
+    host.write_text(
+        "import sys, os, json, time, ctypes\n"
+        "sys.path.insert(0, %r)\n"
+        "import bob_worker as bw\n"
+        "spec = bw.LaunchSpec(argv=[sys.executable, '-c', %r], cwd='.', session_id='x')\n"
+        "proc = bw.default_spawn(spec, dict(os.environ))\n"
+        "time.sleep(1.5)\n"
+        "k = ctypes.WinDLL('kernel32')\n"
+        "buf = (ctypes.c_uint * 16)()\n"
+        "n = k.GetConsoleProcessList(buf, 16)\n"
+        "ok = bw.inject_console(proc.pid, %r)\n"
+        "try:\n    proc.wait(10)\nexcept Exception:\n    pass\n"
+        "json.dump({'n': n, 'ids': list(buf)[:n], 'child': proc.pid, 'me': os.getpid(), 'inj': ok}, open(%r, 'w'))\n"
+        % (str(Path(bw.__file__).parent), child, line, str(res)), encoding="utf-8")
+    p = subprocess.Popen([sys.executable, str(host)], creationflags=bw.CREATE_NEW_CONSOLE)
     try:
-        time.sleep(1.5)
-        # inject_console detaches/attaches the CALLING process's console, so run it in a throw-away process
-        # (doing it inside pytest strands pytest's own console and breaks later subprocess tests).
-        r = subprocess.run([sys.executable, "-c",
-                            "import sys; sys.path.insert(0, r'%s'); import bob_worker as bw; "
-                            "sys.exit(0 if bw.inject_console(%d, 'FROM Jeeves #m run: a&b | c \"q\" 100%%') else 1)"
-                            % (str(Path(bw.__file__).parent), p.pid)],
-                           creationflags=bw.CREATE_NO_WINDOW, timeout=30)
-        assert r.returncode == 0
-        assert wait_until(out.exists, 5.0)
-        assert out.read_text(encoding="utf-8").strip() == 'FROM Jeeves #m run: a&b | c "q" 100%'
+        assert wait_until(res.exists, 30.0), "host produced no result"
+        r = json.loads(res.read_text())
+        assert r["inj"] is True
+        assert r["child"] in r["ids"] and r["me"] in r["ids"], r      # the agent is attached to OUR console...
+        assert r["n"] == 2, r                                          # ...and there is no third/second console owner
+        assert got.read_text(encoding="utf-8").strip() == line        # typed input reached the agent's stdin
     finally:
         p.kill()
 
+
+def test_agent_is_never_spawned_with_a_new_console(monkeypatch):
+    seen = {}
+
+    class FakePopen:
+        _handle = 0
+        pid = 4242
+
+        def __init__(self, argv, **kw):
+            seen.update(kw)
+
+    monkeypatch.setattr(bw.subprocess, "Popen", FakePopen)
+    spec = bw.build_launch("grok", "agent", r"C:\w", "p", r"C:\g\agent.exe", Path("."), "sid")
+    bw.default_spawn(spec, {})
+    assert seen["creationflags"] & bw.CREATE_NEW_CONSOLE == 0
+    assert seen["creationflags"] & bw.CREATE_NO_WINDOW == 0
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows structs")
 def test_input_record_layout():
@@ -622,3 +651,52 @@ def test_input_record_layout():
 
     assert ctypes.sizeof(REC) == 20
     assert len(bw.build_key_records("ab")) == 4
+
+# ----------------------------------------------------------------------------------------------- one window (t771u)
+def test_plan_mode_is_hosted_in_this_console_and_ends_with_its_agent(tmp_path, monkeypatch):
+    import types
+
+    (tmp_path / "plan").mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+    procs: list = []
+
+    def spawn(spec, env):
+        p = FakeProc()
+        procs.append((p, spec))
+        return p
+
+    monkeypatch.setattr(bw, "default_spawn", spawn)
+    dec = bw.select_agent(bw.Fuel(5, 5, 5, "available"), CUR, GRK)
+    monkeypatch.setattr(bw, "_choose", lambda a, l, f, m: (dec, CUR, GRK, bw.Fuel(5, 5, 5, "available")))
+    hooks: list = []
+    monkeypatch.setattr(bw, "install_ctrl_handler", lambda f: hooks.append(f) or True)
+    out: list = []
+    args = types.SimpleNamespace(install_root=str(tmp_path), mode="plan")
+    th = threading.Thread(target=lambda: out.append(bw.run_plan(args, bw.Log(None))), daemon=True)
+    th.start()
+    assert wait_until(lambda: len(procs) == 1, 3.0)
+    time.sleep(0.3)
+    assert out == [], "the exe must stay alive for as long as its agent lives (it IS the window host)"
+    assert hooks, "closing the console window must end the agent"
+    procs[0][0].finish(0)
+    assert wait_until(lambda: out == [bw.EXIT_OK], 3.0)
+
+
+def test_key_prompt_is_in_the_console_not_a_dialog():
+    src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
+    assert "import tkinter" not in src and "tk.Tk(" not in src
+    assert "msvcrt.getwch" in src and "hidden" in src
+
+
+def test_agent_exit_ends_the_exe_and_exe_end_ends_the_agent(tmp_path):
+    rig = Rig(tmp_path)
+    rig.sup.start_agent()
+    p = rig.procs[0]
+    th = threading.Thread(target=rig.sup.run_forever, daemon=True)
+    th.start()
+    p.finish(0)                                              # agent quits -> exe ends
+    assert wait_until(lambda: rig.sup.done.is_set(), 3.0) and rig.sup.exit_code == bw.EXIT_OK
+    rig2 = Rig(tmp_path / "b")
+    rig2.sup.start_agent()
+    rig2.sup.shutdown("window-closed", bw.EXIT_OK)           # exe ends -> its own agent tree is killed
+    assert rig2.killed == [rig2.procs[0].pid]

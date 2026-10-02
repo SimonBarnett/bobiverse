@@ -237,41 +237,42 @@ def resolve_grok_exe(env: Optional[dict] = None, which: Callable = shutil.which)
 
 
 def ask_session_key(prompt: str, title: str = "Grok session key") -> Optional[str]:
-    """Modal dialog (tkinter, masked). Returns the typed key or None. The key is NOT saved anywhere."""
+    """t771u: asked IN THE WORKER'S OWN CONSOLE (the single window) - no dialog, no second window. Input is hidden, held in
+    memory only, never saved or printed. Enter accepts, Esc cancels. Returns the key or None."""
     try:
-        import tkinter as tk
+        import msvcrt
     except Exception:
-        return None
-    result: list = [None]
-    root = tk.Tk()
-    root.title(title)
-    root.attributes("-topmost", True)
-    root.resizable(False, False)
-    tk.Label(root, text=prompt, justify="left", wraplength=420).pack(padx=12, pady=(12, 6))
-    var = tk.StringVar()
-    ent = tk.Entry(root, textvariable=var, show="*", width=56)
-    ent.pack(padx=12, pady=6)
+        try:
+            import getpass
 
-    def ok(_e=None):
-        result[0] = var.get().strip() or None
-        root.destroy()
-
-    def cancel(_e=None):
-        root.destroy()
-
-    row = tk.Frame(root)
-    row.pack(pady=(6, 12))
-    tk.Button(row, text="OK", width=10, command=ok).pack(side="left", padx=4)
-    tk.Button(row, text="Cancel", width=10, command=cancel).pack(side="left", padx=4)
-    root.bind("<Return>", ok)
-    root.bind("<Escape>", cancel)
-    ent.focus_force()
-    root.mainloop()
+            return getpass.getpass(prompt + " (hidden): ").strip() or None
+        except Exception:
+            return None
+    sys.stdout.write("\n" + prompt + "\nType the key (hidden), Enter = accept, Esc = cancel: ")
+    sys.stdout.flush()
+    chars: list = []
     try:
-        var.set("")
-    except Exception:
-        pass
-    return result[0]
+        while True:
+            ch = msvcrt.getwch()
+            if ch in ("\r", "\n"):
+                break
+            if ch in ("\x1b", "\x03"):
+                chars = []
+                sys.stdout.write("\ncancelled\n")
+                return None
+            if ch in ("\x00", "\xe0"):
+                msvcrt.getwch()  # function-key second code
+                continue
+            if ch == "\x08":
+                if chars:
+                    chars.pop()
+                continue
+            chars.append(ch)
+        sys.stdout.write("\n")
+        key = "".join(chars).strip()
+        return key or None
+    finally:
+        chars.clear()
 
 
 # --------------------------------------------------------------------------------------------- prompts
@@ -282,7 +283,9 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"(start with bobiverse-worker-seat, then bobiverse-bob-worker, harvest). "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to {home}\\outbox.txt, then end the turn. "
-        f"ping/pong is answered for you. CAST IRON: harvest skills and file every issue/FR/bug with C:\\ai\\bob\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
+        f"ping/pong is answered for you. The program posts !bored for you - NEVER post it yourself. When Jeeves assigns a job, first append "
+        f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append 'PRIVMSG #{machine} :DONE <FR|MRB|UAT> owner/repo#N <PASS|FAIL> <url>' "
+        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. CAST IRON: harvest skills and file every issue/FR/bug with C:\\ai\\bob\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
         f"Never print or store secrets."
     )
 
@@ -366,8 +369,15 @@ def default_spawn(spec: LaunchSpec, env: dict) -> ProcHandle:
     for path, text in spec.files.items():
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(text, encoding="utf-8")
-    flags = CREATE_NEW_CONSOLE if os.name == "nt" else 0  # ALWAYS a new console window; never an existing one
-    return ProcHandle(subprocess.Popen(spec.argv, cwd=spec.cwd, env=env, creationflags=flags, close_fds=True))
+    # t771u: ONE window. The agent INHERITS this exe's console (no CREATE_NEW_CONSOLE, no second console); a kill-on-close job object
+    # makes the agent die with us even if we are killed. "New agent every time" is about the SESSION, not the window: the exe's
+    # window IS the agent's window and a new click opens a new exe + window.
+    popen = subprocess.Popen(spec.argv, cwd=spec.cwd, env=env, creationflags=0, close_fds=True)
+    try:
+        owned_job().assign(popen)
+    except Exception:
+        pass
+    return ProcHandle(popen)
 
 
 def kill_tree(pid: int, run: Callable = subprocess.run) -> bool:
@@ -382,7 +392,112 @@ def kill_tree(pid: int, run: Callable = subprocess.run) -> bool:
         return False
 
 
-# --------------------------------------------------------------------------------------------- console injection
+# --------------------------------------------------------------------------------------------- console (one window) + injection
+def ensure_console(title: str = "") -> bool:
+    """t771u: the exe OWNS exactly one console window; the agent and the IRC relay live inside it. If this process was started
+    without a console (e.g. from a service) allocate one. Returns True when a console exists afterwards."""
+    if os.name != "nt":
+        return False
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    buf = (ctypes.c_uint * 4)()
+    if k32.GetConsoleProcessList(buf, 4) == 0:
+        if not k32.AllocConsole():
+            return False
+    if title:
+        k32.SetConsoleTitleW(str(title)[:200])
+    return True
+
+
+_CTRL_KEEP: list = []
+
+
+def install_ctrl_handler(on_close: Callable[[], None]) -> bool:
+    """Console events: Ctrl+C / Ctrl+Break are NOT ours (the agent TUI decides what to do with them; an agent that exits ends us).
+    Closing the window / logoff / shutdown ends the agent tree we started and then us."""
+    if os.name != "nt":
+        return False
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    from ctypes import wintypes
+
+    proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    def handler(ev):
+        if ev in (0, 1):
+            return True
+        if ev in (2, 5, 6):
+            try:
+                on_close()
+            except Exception:
+                pass
+            return True
+        return False
+
+    cb = proto(handler)
+    _CTRL_KEEP.append(cb)
+    return bool(k32.SetConsoleCtrlHandler(cb, True))
+
+
+class OwnedJob:
+    """A Windows job object with KILL_ON_JOB_CLOSE: if this exe dies for ANY reason (killed, crashed) the agent tree it started
+    dies with it - no orphan agent window. Only processes this exe spawns are ever assigned."""
+
+    def __init__(self):
+        self.handle = None
+        if os.name != "nt":
+            return
+        try:
+            from ctypes import wintypes
+
+            class BASIC(ctypes.Structure):
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),
+                            ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t),
+                            ("ActiveProcessLimit", wintypes.DWORD), ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                            ("SchedulingClass", wintypes.DWORD)]
+
+            class IOC(ctypes.Structure):
+                _fields_ = [(n, ctypes.c_ulonglong) for n in ("a", "b", "c", "d", "e", "f")]
+
+            class EXT(ctypes.Structure):
+                _fields_ = [("Basic", BASIC), ("Io", IOC), ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CreateJobObjectW.restype = wintypes.HANDLE
+            k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+            k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+            h = k32.CreateJobObjectW(None, None)
+            if not h:
+                return
+            ext = EXT()
+            ext.Basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not k32.SetInformationJobObject(h, 9, ctypes.byref(ext), ctypes.sizeof(ext)):
+                return
+            self.handle = h
+        except Exception:
+            self.handle = None
+
+    def assign(self, popen) -> bool:
+        if not self.handle or os.name != "nt":
+            return False
+        try:
+            from ctypes import wintypes
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            return bool(k32.AssignProcessToJobObject(self.handle, int(popen._handle)))
+        except Exception:
+            return False
+
+
+_JOB: Optional[OwnedJob] = None
+
+
+def owned_job() -> OwnedJob:
+    global _JOB
+    if _JOB is None:
+        _JOB = OwnedJob()
+    return _JOB
+
 _CONSOLE_LOCK = threading.Lock()
 
 
@@ -461,7 +576,9 @@ def one_line(text: str, maxlen: int = 600) -> str:
 
 
 def inject_console(pid: int, text: str, submit_gap_s: float = 0.06) -> bool:
-    """Type `text` + Enter into the console of process `pid` (the agent's own NEW console). Returns True on success."""
+    """Type `text` + Enter into THIS exe's console input. t771u: the agent is a child that INHERITED this console (one window,
+    one console), so its keyboard input is our CONIN$ - no AttachConsole/FreeConsole dance and no second console. `pid` is
+    kept for the call signature/logging only. Returns True on success."""
     if os.name != "nt":
         return False
     text = one_line(text)
@@ -475,14 +592,10 @@ def inject_console(pid: int, text: str, submit_gap_s: float = 0.06) -> bool:
     k32.WriteConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
     k32.CloseHandle.argtypes = [wintypes.HANDLE]
     with _CONSOLE_LOCK:
-        k32.FreeConsole()
-        h = None
+        h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
+        if not h or h == ctypes.c_void_p(-1).value:
+            return False
         try:
-            if not k32.AttachConsole(int(pid)):
-                return False
-            h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
-            if not h or h == ctypes.c_void_p(-1).value:
-                return False
             written = wintypes.DWORD(0)
             recs = build_key_records(text, u32)
             if not k32.WriteConsoleInputW(h, recs, len(recs), ctypes.byref(written)):
@@ -491,9 +604,7 @@ def inject_console(pid: int, text: str, submit_gap_s: float = 0.06) -> bool:
             enter = build_enter_records()
             return bool(k32.WriteConsoleInputW(h, enter, len(enter), ctypes.byref(written)))
         finally:
-            if h and h != ctypes.c_void_p(-1).value:
-                k32.CloseHandle(h)
-            k32.FreeConsole()
+            k32.CloseHandle(h)
 
 
 # --------------------------------------------------------------------------------------------- relay (IRC -> agent)
@@ -703,6 +814,11 @@ class IrcSeat:
         self.joined = threading.Event()
         self._reader: Optional[threading.Thread] = None
         self._writer: Optional[threading.Thread] = None
+
+    @property
+    def alive(self) -> bool:
+        """False once the link is lost / closed (used to stop !bored and any other speech)."""
+        return self.sock is not None and not self._stop.is_set() and not self._lost_once
 
     # ---- lifecycle
     def connect(self, timeout: float = 45.0) -> None:
@@ -997,6 +1113,161 @@ def sample_tree(root_pid: int) -> Sample:  # pragma: no cover - needs a live Win
         return Sample()
 
 
+# --------------------------------------------------------------------------------------------- !bored (exe-owned)
+_OUT_ACK_RX = re.compile(r"(?i)^ACK\b")
+_OUT_DONE_RX = re.compile(r"(?i)^DONE\b")
+_OUT_FREE_RX = re.compile(r"(?i)^(NACK|GIVEUP)\b")
+_OUT_BORED_RX = re.compile(r"(?i)^!bored\b")
+
+
+def outbox_payload(line: str) -> str:
+    """Chat payload of an outbox line (strip `PRIVMSG <target> :`), same as the watcher's Get-WatchOutboxPayload."""
+    t = (line or "").strip()
+    m = re.match(r"(?is)^PRIVMSG\s+\S+\s+:(.*)$", t)
+    return (m.group(1) if m else t).strip()
+
+
+class BoredEmitter:
+    """t770u: the EXE (never the model) posts `PRIVMSG #<machine> :!bored` exactly like the agent watcher (Watch-AgentHealth FR #100):
+      * on seat start (agent ready), right after a DONE, and while idle: first idle after 120 s, then every 180 s;
+      * never while busy (an open ACK younger than 45 min, or the agent starting/restarting/hung);
+      * any forward / outbox activity resets the idle clock; at most one line per second per reason;
+      * only the seat's own shop (IrcSeat.say refuses anything else); never after IRC loss/shutdown (stop()).
+    Jeeves then assigns in !focus order; ACK marks the seat doing, DONE marks it idle.
+    Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
+
+    def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
+                 ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic):
+        self.send, self.log, self.clock = send, log, clock
+        self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
+        self._cv = threading.Condition()
+        self._ready = False
+        self._stopped = False
+        self._ack_open = False
+        self._ack_at: Optional[float] = None
+        self._idle_since: Optional[float] = None
+        self._last_bored: Optional[float] = None
+        self._last_reason = ""
+        self._done_key = ""
+        self._last_done_key = ""
+        self._start_sent = False
+        self._last_dedupe = None
+        self._retry_at = 0.0
+        self.sent: list = []  # (clock time, reason)
+        self._thread: Optional[threading.Thread] = None
+
+    # ---- lifecycle / events (each wakes the timer thread)
+    def start(self) -> None:
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="bored-timer", daemon=True)
+            self._thread.start()
+
+    def stop(self) -> None:
+        with self._cv:
+            self._stopped = True
+            self._cv.notify_all()
+
+    def set_ready(self, ready: bool) -> None:
+        with self._cv:
+            self._ready = bool(ready)
+            self._idle_since = self.clock() if ready else None
+            self._cv.notify_all()
+
+    def activity(self) -> None:
+        """A message was forwarded to the agent (it is about to work): reset the idle clock."""
+        with self._cv:
+            if self._idle_since is not None:
+                self._idle_since = self.clock()
+            self._cv.notify_all()
+
+    def on_outbox(self, payload: str) -> None:
+        now = self.clock()
+        p = (payload or "").strip()
+        with self._cv:
+            if _OUT_ACK_RX.match(p):
+                self._ack_open, self._ack_at, self._idle_since = True, now, None
+            elif _OUT_DONE_RX.match(p):
+                self._ack_open = False
+                self._done_key = p
+                self._idle_since = now
+            elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP hand the job back: the seat is free again (the watcher only closes on DONE)
+                self._ack_open = False
+                self._idle_since = now
+            elif self._ack_open:
+                self._ack_at = now  # outbox activity keeps an open ACK fresh (the watcher uses the outbox mtime)
+            else:
+                self._idle_since = now
+            self._cv.notify_all()
+
+    # ---- decision
+    def _busy(self, now: float) -> bool:
+        return (not self._ready) or (self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s)
+
+    def _reason(self, now: float) -> Optional[str]:
+        if self._stopped or not self._ready or now < self._retry_at:
+            return None
+        if self._busy(now):
+            self._idle_since = None
+            return None
+        if self._idle_since is None:
+            self._idle_since = now
+        if not self._start_sent:
+            return "start"
+        if self._done_key and self._done_key != self._last_done_key:
+            return "done"
+        since = (now - self._last_bored) if self._last_bored is not None else 1e12
+        thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
+        if now - self._idle_since >= self.idle_s and since >= thr:
+            return "idle"
+        return None
+
+    def _next_due(self, now: float) -> Optional[float]:
+        if self._stopped or not self._ready:
+            return None
+        if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
+            return self._ack_at + self.ack_stale_s  # busy until the ACK goes stale (or DONE/NACK wakes us sooner)
+        if now < self._retry_at:
+            return self._retry_at
+        base = self._idle_since if self._idle_since is not None else now
+        thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
+        due = base + self.idle_s
+        if self._last_bored is not None:
+            due = max(due, self._last_bored + thr)
+        return due
+
+    def _fire(self, reason: str, now: float) -> None:
+        key = (reason, int(now))
+        if key == self._last_dedupe:
+            self._retry_at = now + 1.0
+            return
+        ok = False
+        try:
+            ok = bool(self.send())
+        except Exception as e:
+            self.log(f"bored: send error {type(e).__name__}")
+        if not ok:
+            self._retry_at = now + self.retry_s
+            self.log(f"bored: not sent ({reason}) - retry in {self.retry_s:.0f}s")
+            return
+        self._last_dedupe, self._last_bored, self._last_reason, self._idle_since = key, now, reason, now
+        if reason == "start":
+            self._start_sent = True
+        if reason == "done":
+            self._last_done_key = self._done_key
+        self.sent.append((now, reason))
+        self.log(f"bored -> shop reason={reason}")
+
+    def _run(self) -> None:
+        with self._cv:
+            while not self._stopped:
+                now = self.clock()
+                r = self._reason(now)
+                if r:
+                    self._fire(r, now)
+                    continue
+                due = self._next_due(now)
+                self._cv.wait(None if due is None else max(0.0, due - now))
+
 # --------------------------------------------------------------------------------------------- supervisor
 class Supervisor:
     """Owns: the IRC seat, the relay, ONE agent at a time. Everything funnels through shutdown()."""
@@ -1007,7 +1278,7 @@ class Supervisor:
                  inject: Callable[[int, str], bool] = inject_console, detector: Optional[HangDetector] = None,
                  health_interval_s: float = 5.0, startup_grace_s: float = 6.0, clock: Callable[[], float] = time.monotonic,
                  backoff: tuple = RULE_BACKOFF_S, restart_max: int = RULE_RESTART_MAX, restart_window_s: float = RULE_RESTART_WINDOW_S,
-                 base_env: Optional[dict] = None):
+                 base_env: Optional[dict] = None, bored: Optional["BoredEmitter"] = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
         self.run_dir, self.irc, self.relay, self.log = Path(run_dir), irc, relay, log
         self.secret = env_secret
@@ -1027,9 +1298,21 @@ class Supervisor:
         self._owned: set = set()
         self._shutting = False
         self._grace_timer: Optional[threading.Timer] = None
-        relay.on_inject = lambda: self.detector.note_inject(self.clock())
+        self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
+        relay.on_inject = self._on_inject
         if irc:
             irc.on_lost = lambda why: self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
+
+    def _on_inject(self) -> None:
+        self.detector.note_inject(self.clock())
+        if self.bored:
+            self.bored.activity()
+
+    def post_bored(self) -> bool:
+        """The ONLY place !bored is sent: the exe, own shop, never during shutdown / after IRC loss."""
+        if self._shutting or self.stop.is_set() or not self.irc or not self.irc.alive:
+            return False
+        return bool(self.irc.say(self.irc.shop, "!bored"))
 
     # ---- agent
     def _prompt(self) -> str:
@@ -1039,6 +1322,8 @@ class Supervisor:
         with self._lock:
             if self._shutting:
                 return False
+            if self.bored:
+                self.bored.set_ready(False)  # a (re)starting agent is not idle
             spec = build_launch(self.kind, "agent", self.cwd, self._prompt() + (" " + note if note else ""), self.exe, self.run_dir)
             env = dict(self.base_env)
             if self.secret is not None and self.kind == "grok":
@@ -1064,6 +1349,8 @@ class Supervisor:
                 if self.proc is not proc or self._shutting:
                     return
             self.relay.set_target(lambda line, p=proc: self._inject_line(p, line))
+            if self.bored:
+                self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
 
         if self.startup_grace_s <= 0:
             ready()
@@ -1127,6 +1414,8 @@ class Supervisor:
             return
         self.log(f"agent: HUNG ({reason}); restart {n + 1}/{self.restart_max} after {delay:.0f}s backoff (old pid={old.pid}) - NEW agent, no resume")
         self.relay.set_target(None)
+        if self.bored:
+            self.bored.set_ready(False)
         self.kill(old.pid)
         if delay > 0 and self.stop.wait(delay):
             return
@@ -1148,6 +1437,8 @@ class Supervisor:
                 self._expected_exit.add(proc.pid)
         self.log(f"worker: shutting down ({reason}) exit={code}")
         self.stop.set()
+        if self.bored:
+            self.bored.stop()  # no !bored after IRC loss / shutdown
         self.relay.close()
         if self._grace_timer:
             self._grace_timer.cancel()
@@ -1160,13 +1451,15 @@ class Supervisor:
         self.done.set()
 
     def run_forever(self) -> int:
+        if self.bored:
+            self.bored.start()
         threading.Thread(target=self.health_loop, name="health", daemon=True).start()
         self.done.wait()
         return self.exit_code if self.exit_code is not None else EXIT_OK
 
 
 # --------------------------------------------------------------------------------------------- outbox
-def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None]) -> int:
+def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payload: Optional[Callable[[str], None]] = None) -> int:
     """Move outbox.txt aside atomically, send each line to the shop channel. Plain text or `PRIVMSG #shop :text`."""
     if not path.is_file():
         return 0
@@ -1183,8 +1476,16 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None]) -> int:
                 continue
             m = re.match(r"(?i)^PRIVMSG\s+(\S+)\s+:?(.*)$", ln)
             target, text = (m.group(1), m.group(2)) if m else (irc.shop, ln)
+            if _OUT_BORED_RX.match(text.strip()):  # t770u: !bored is posted by the exe ONLY, never by the model
+                log("outbox: refused agent-written !bored (the exe posts it)")
+                continue
             if irc.say(target, text):
                 n += 1
+                if on_payload:
+                    try:
+                        on_payload(text)  # ACK / DONE / NACK drive busy-idle for !bored
+                    except Exception:
+                        pass
     finally:
         try:
             tmp.unlink()
@@ -1193,10 +1494,11 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None]) -> int:
     return n
 
 
-def outbox_loop(path: Path, irc: IrcSeat, stop: threading.Event, log: Callable[[str], None]) -> None:
+def outbox_loop(path: Path, irc: IrcSeat, stop: threading.Event, log: Callable[[str], None],
+                on_payload: Optional[Callable[[str], None]] = None) -> None:
     while not stop.wait(0.5):  # outbound only; inbound relay is NOT polled
         try:
-            drain_outbox(path, irc, log)
+            drain_outbox(path, irc, log, on_payload)
         except Exception as e:  # pragma: no cover
             log(f"outbox: {type(e).__name__}")
 
@@ -1266,11 +1568,14 @@ def run_plan(args, log: Log) -> int:
     except Exception as e:
         log(f"plan: launch failed {type(e).__name__}")
         return EXIT_LAUNCH_FAIL
-    log(f"plan: started NEW {kind} agent pid={proc.pid} session={spec.session_id} cwd={folder}")
-    time.sleep(1.5)
-    if proc.poll() is not None and proc.poll() != 0:
-        log(f"plan: agent died immediately code={proc.poll()}")
-        return EXIT_LAUNCH_FAIL
+    log(f"plan: started NEW {kind} agent pid={proc.pid} session={spec.session_id} cwd={folder} (hosted in this console; ending either ends both)")
+    install_ctrl_handler(lambda: kill_tree(proc.pid))
+
+    try:
+        code = proc.wait()
+    except Exception:
+        code = -1
+    log(f"plan: agent ended code={code}")
     return EXIT_OK
 
 
@@ -1301,6 +1606,7 @@ def run_agent(args, log: Log) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     log.path = run_dir / "worker.log"
     log(f"worker: pid={pid} nick={nick} shop=#{machine} kind={kind} run_dir={run_dir}")
+    ensure_console(f"Bob worker {nick} ({kind}) - closing this window ends the agent")
     pw = find_ergo_password(Path(args.install_root))
     sasl = None
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):
@@ -1317,7 +1623,9 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
-    threading.Thread(target=outbox_loop, args=(run_dir / "outbox.txt", irc, sup.stop, log), name="outbox", daemon=True).start()
+    threading.Thread(target=outbox_loop, args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.bored.on_outbox if sup.bored else None),
+                     name="outbox", daemon=True).start()
+    install_ctrl_handler(lambda: sup.shutdown("console-closed", EXIT_OK))
     import signal
 
     for name in ("SIGINT", "SIGBREAK", "SIGTERM"):
@@ -1349,6 +1657,7 @@ def main(argv: Optional[list] = None) -> int:
                           "fuel": fuel.__dict__, "cwd": str(Path(args.install_root) / ("plan" if args.mode == "plan" else "worker"))}))
         return EXIT_OK
     try:
+        ensure_console("Bob %s - starting" % args.mode)  # the ONE window for this agent
         return run_plan(args, log) if args.mode == "plan" else run_agent(args, log)
     except Exception as e:  # never a traceback dialog
         log(f"fatal: {type(e).__name__}: {str(e)[:200]}")

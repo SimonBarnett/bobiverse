@@ -19,6 +19,8 @@ Your working folder is `C:\ai\bob\worker`. This file is also shipped as `CLAUDE.
 
 - `.grok/skills/bobiverse-worker-seat/SKILL.md` - how you receive and answer IRC messages, what you may and must not touch
 - `.grok/skills/bobiverse-bob-worker/SKILL.md` - how the worker program starts you, selects the agent, restarts you if hung
+- `.grok/skills/bobiverse-bob-job-irc/SKILL.md` - EXACT ACK / DONE / NACK / GIVEUP lines, `!bored`, which channel, when to send each (read before any job)
+- `.grok/skills/bobiverse-bob-job-fr/SKILL.md`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat` - one skill per job type, each with its process diagram, evidence and owners
 - `.grok/skills/bobiverse-bob/SKILL.md` and `.grok/skills/bobiverse-fleet-ops/SKILL.md` - the bob service and fleet rules
 - `.grok/skills/harvest/SKILL.md` and `.grok/skills/harvest-agent-skills/SKILL.md` - harvest + intake
 
@@ -33,5 +35,5 @@ Your working folder is `C:\ai\bob\worker`. This file is also shipped as `CLAUDE.
 
 - Hotpatch safely: back up first, change only what the task needs, restart ONLY the one service concerned; never touch Ergo (`C:\ai\ergo`, `ircd.yaml`) or `BobIrcd`, never kill other seats/agents/tray.
 - PowerShell only (never wrap in `powershell -Command`). Never print, store or commit secrets (`*.password`, `github.token`, `identity.json`, NickServ/SASL values, API keys).
-- Do not rebuild, release, bump `VERSION` or merge unless the owner says so. Do not stamp UAT.
+- Do not rebuild, release or bump `VERSION`. Merging happens ONLY inside an assigned MRB job (that PR and its one docs/fix PR); a UAT stamp ONLY inside an assigned UAT job; an FR job never merges. Never post `!bored` (the program does) and keep ACK/DONE exactly as `bobiverse-bob-job-irc` says.
 - Always finish with the harvest step (rule above): file every issue/FR/bug and every learned playbook.
