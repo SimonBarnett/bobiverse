@@ -88,6 +88,30 @@ def _skip(p: Path) -> bool:
     return n in SKIP_NAMES or n.lower().endswith(SKIP_SUFFIXES)
 
 
+def _unreadable_protected(path: Path) -> bool:
+    """True for a user-bound DPAPI file (``AIRC1``) this account cannot decrypt.
+
+    The legacy ``~\\.agentic-irc-*`` homes belong to ANOTHER account (typically Administrator) than the LocalSystem service that
+    runs the migration. Copying their DPAPI-protected ``identity.json`` into the service home makes the ear crash on every start
+    (``CryptUnprotectData failed``, 0.1.19 on MarchHare), so such files are skipped (the service creates its own identity).
+    Machine-bound ``AIRC2`` files and plain files are readable here and are copied as before.
+    """
+    try:
+        import protect
+
+        with open(path, "rb") as fh:
+            head = fh.read(len(protect.MAGIC))
+            if head != protect.MAGIC:
+                return False
+            rest = fh.read()
+        protect._dpapi_unprotect(rest)
+        return False
+    except OSError:
+        return True
+    except Exception:  # not Windows / protect unavailable: nothing is DPAPI-bound here
+        return False
+
+
 def _copy_tree(src: Path, dst: Path, stats: dict) -> None:
     for entry in sorted(src.iterdir()):
         if _skip(entry):
@@ -100,6 +124,9 @@ def _copy_tree(src: Path, dst: Path, stats: dict) -> None:
                 target.mkdir(parents=True, exist_ok=True)
                 _copy_tree(entry, target, stats)
             elif entry.is_file():
+                if _unreadable_protected(entry):
+                    stats["skipped_protected"].append(entry.name)
+                    continue
                 if target.exists():
                     stats["kept"] += 1
                     try:  # never lose the old copy when the new home already has a different file
@@ -130,7 +157,7 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
     if old is None:
         return {"status": "no-legacy", "new": str(new_home)}
     new_home.mkdir(parents=True, exist_ok=True)
-    stats = {"copied": 0, "kept": 0, "names": [], "errors": [], "conflicts": []}
+    stats = {"copied": 0, "kept": 0, "names": [], "errors": [], "conflicts": [], "skipped_protected": []}
     _copy_tree(Path(old), new_home, stats)
     summary = {
         "status": "error" if stats["errors"] and not stats["copied"] else "migrated",
@@ -141,6 +168,7 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
         "key_files": [n for n in KEY_FILES if n in stats["names"]],
         "secret_files": [n for n in SECRET_NAMES if n in stats["names"]],
         "conflicts": stats["conflicts"][:20],
+        "skipped_protected": stats["skipped_protected"][:20],
         "errors": stats["errors"][:10],
         "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "note": "old home left untouched as backup",
@@ -199,6 +227,11 @@ def ensure_homes(chair: Path | None = None, digest: Path | None = None, log=prin
                 f"key={','.join(res['key_files']) or '-'} secrets={','.join(res['secret_files']) or '-'} "
                 "(old home kept as backup)"
             )
+            if res.get("skipped_protected"):
+                log(
+                    f"INFO home-migration skipped DPAPI-bound files this account cannot decrypt: "
+                    f"{','.join(res['skipped_protected'])} (a fresh one is created)"
+                )
         elif res["status"] == "error":
             log(f"WARN home-migration {res.get('old')} -> {res['new']} errors={res['errors']}")
     return out
