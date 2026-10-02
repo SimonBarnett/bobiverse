@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from account_map import AccountMap, parse_message_tags
+from airc_jobs import JobProtocol, parse_job_verb
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -1068,6 +1069,7 @@ class AircConsoleCore:
         shell_runner: ShellJobRunner | None = None,
         update_scheduler: Callable[..., UpdateScheduleResult] | None = None,
         install_root: str | None = None,
+        job_protocol: JobProtocol | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -1078,6 +1080,7 @@ class AircConsoleCore:
         self.channel_traffic: list[str] = []
         self.update_scheduler = update_scheduler or schedule_fleet_update
         self.install_root = install_root
+        self.job_protocol = job_protocol
 
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
@@ -1160,6 +1163,7 @@ class AircConsoleCore:
                     "airc console (FR #75): default PowerShell -NoProfile; "
                     "cmd: COMSPEC escape; psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit=; "
+                    "STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update; "
                     ".quit closes; silent on channel; answers ping"
                 ),
@@ -1189,6 +1193,13 @@ class AircConsoleCore:
                 text=text,
                 reply=result.reply_line(),
             )
+
+        # FR #78: PUT/RUN/JOB/STATUS protocol (before plain shell).
+        parsed = parse_job_verb(cmd)
+        if parsed is not None and self.job_protocol is not None:
+            verb, kv = parsed
+            self.job_protocol.handle_async(nick, verb, kv)
+            return HandleResult(action="job", nick=nick, target=target, text=text)
 
         # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.
         if self.shell_runner is not None:

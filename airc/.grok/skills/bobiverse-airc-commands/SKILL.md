@@ -18,27 +18,25 @@ description: >
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-## Remote shell protocol (today)
+## Remote shell protocol (FR #75)
 
 An authorized sender (`bob-*` ear) PRIVMSGs the console:
 
 ```text
-PRIVMSG <machine>_console :sc query ircJeeves
+PRIVMSG <machine>_console :Get-Service Airc
+PRIVMSG <machine>_console :cmd: sc query ircJeeves
+PRIVMSG <machine>_console :psb64:<base64>
 ```
 
-- The command runs in **cmd.exe** under the Airc service account (often SYSTEM); the reply comes back as PRIVMSG lines from
-  `<machine>_console` (visible in the sender's `irc.log` with `BOB_IRC_DEBUG=1`).
-- Keep each command SHORT (IRC line limit). Multi-line PowerShell does not survive: stage a script with
-  `irm <raw-url> -OutFile <ai root>\drop\x.ps1` then `powershell -File <ai root>\drop\x.ps1`.
+- Default is **PowerShell 5.1** (`-NoProfile`); `cmd:` uses COMSPEC; `psb64:` is `-EncodedCommand` (UTF-16LE or UTF-8 payload).
+- Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
 - Allowlist: `bob-*` ears may always PRIVMSG `*_console`. Nothing else is authorized.
-- Planned extension (partial): PowerShell default + PUT/RUN - see `docs/airc-remote-control.md`.
-- **UPDATE (FR #77, shipped):** `UPDATE airc|bob|jeeves [X.Y.Z]` schedules the detached `Update-BobiverseService.ps1` helper (never inline `msiexec` in the airc process). Reply returns before the service stops; pending/loop-guard/sha allowlist apply.
+- PUT/RUN/JOB/UPDATE are separate FRs — see `docs/airc-remote-control.md`.
 
 ## Safe diagnostic commands
 
 `sc query <svc>`, `sc qc <svc>`, `type <ai root>\<product>\VERSION`, `dir <ai root>\<product>\logs`, `tasklist /fi "imagename eq python.exe"`.
 Do NOT: kill broad `powershell.exe`/`python.exe`, `sc stop BobIrcd`, edit Ergo files, print secrets.
-Prefer `UPDATE airc` over remote `msiexec` against the live console.
 
 ## Verify the console
 
