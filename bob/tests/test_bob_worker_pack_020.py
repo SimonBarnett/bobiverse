@@ -336,7 +336,7 @@ def test_worker_agents_file_lists_the_job_skills():
 def test_tray_does_not_spawn_a_missing_watch_bobjobs():
     """t784u: Watch-BobJobs.ps1 is not shipped; the tray used to start a hidden powershell for it every 30 s."""
     from repo_layout import REPO
-    tray = (REPO / "bob/third_party/bob-tray/tools/Watch-BobTray.ps1").read_text(encoding="utf-8-sig")
+    tray = (REPO / "bob/tray/tools/Watch-BobTray.ps1").read_text(encoding="utf-8-sig")
     start = tray.split("function Start-JobsWatcher")[1].split("function Set-Attention")[0]
     guard = start.index("Test-Path -LiteralPath $watchJobs")
     assert guard < start.index("Start-Process"), "the existence check must come before Start-Process"

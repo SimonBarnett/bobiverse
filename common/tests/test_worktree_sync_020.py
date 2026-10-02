@@ -42,10 +42,10 @@ def world(tmp_path):
     write(seed / "common/scripts/c1.ps1", "# common 1\n")
     write(seed / "bob/scripts/b1.ps1", "# bob 1\n")
     write(seed / "bob/scripts/b2.ps1", "# bob 2\n")
-    write(seed / "bob/third_party/bob-tray/tools/Watch-BobTray.ps1", "# tray v1\n")
-    write(seed / "bob/third_party/bob-tray/src/BobBridge.psm1", "# bridge v1\n")
-    write(seed / "bob/third_party/bob-tray/src/VERSION", "0.0.0-tray\n")
-    write(seed / "bob/third_party/bob-tray/assets/icon.txt", "icon\n")
+    write(seed / "bob/tray/tools/Watch-BobTray.ps1", "# tray v1\n")
+    write(seed / "bob/tray/src/BobBridge.psm1", "# bridge v1\n")
+    write(seed / "bob/tray/src/VERSION", "0.0.0-tray\n")
+    write(seed / "bob/tray/assets/icon.txt", "icon\n")
     write(seed / "jeeves/scripts/j1.ps1", "# jeeves 1\n")
     write(seed / "airc/scripts/a1.ps1", "# airc 1\n")
     write(seed / "README.md", "root readme\n")
@@ -288,6 +288,6 @@ def test_tray_runtime_dirs_follow_the_work_tree(world):
     assert (r / "src/BobBridge.psm1").read_text() == "# bridge v1\n"
     assert (r / "assets/icon.txt").is_file()
     assert (r / "src/VERSION").read_text().strip() == "0.1.19"           # the product VERSION is never replaced by the tray's
-    world.upstream("bob/third_party/bob-tray/tools/Watch-BobTray.ps1", "# tray v2\n")
+    world.upstream("bob/tray/tools/Watch-BobTray.ps1", "# tray v2\n")
     assert world.sync("bob").returncode == 0
     assert (r / "tools/Watch-BobTray.ps1").read_text() == "# tray v2\n"

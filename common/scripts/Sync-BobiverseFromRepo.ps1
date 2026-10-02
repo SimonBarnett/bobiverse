@@ -166,6 +166,7 @@ if ($Product -eq 'bob') {
     $mirror += @(
         @{ Rel = 'third_party\bob-tray\tools'; Dst = 'tools'; Xf = @() },
         @{ Rel = 'third_party\bob-tray\assets'; Dst = 'assets'; Xf = @() },
+        @{ Rel = 'third_party\bob-tray\dialogs'; Dst = 'dialogs'; Xf = @() },
         @{ Rel = 'third_party\bob-tray\src'; Dst = 'src'; Xf = @('VERSION') },
         @{ Rel = 'third_party\Watch-AgentHealth'; Dst = 'Watch-AgentHealth'; Xf = @() })
 }
@@ -177,6 +178,27 @@ foreach ($m in $mirror) {
     if ($m.Xf.Count) { $roboArgs += @('/XF') + $m.Xf }
     & robocopy.exe @roboArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok" -f $m.Dst) }
+}
+
+# t828u: compile the Acknowledge/Status dialog exes into <install>\tools when missing or older than their sources (csc.exe is in-box on Windows;
+# a running dialog is replaced by rename). Failure only warns: the tray then uses its PowerShell dialogs.
+if ($Product -eq 'bob') {
+    try {
+        $dlgDir = Join-Path $InstallRoot 'dialogs'
+        $dlgNewest = $null
+        if (Test-Path -LiteralPath $dlgDir) { $dlgNewest = (Get-ChildItem -LiteralPath $dlgDir -File | Measure-Object LastWriteTimeUtc -Maximum).Maximum }
+        $needBuild = $false
+        foreach ($x in 'bob-about.exe', 'bob-status.exe') {
+            $xp = Join-Path $InstallRoot ('tools\' + $x)
+            if (-not (Test-Path -LiteralPath $xp)) { $needBuild = $true }
+            elseif ($dlgNewest -and (Get-Item -LiteralPath $xp).LastWriteTimeUtc -lt $dlgNewest) { $needBuild = $true }
+        }
+        $bd = Join-Path $InstallRoot 'scripts\Build-BobDialogs.ps1'
+        if ($needBuild -and $dlgNewest -and (Test-Path -LiteralPath $bd)) {
+            [void](& $bd -RepoRoot $InstallRoot -OutDir (Join-Path $InstallRoot 'tools') -SourceDir $dlgDir)
+            Write-Host 'INFO sync compiled bob-about.exe + bob-status.exe'
+        }
+    } catch { Write-Host ("WARN sync dialogs not compiled: {0}" -f $_.Exception.Message) }
 }
 
 # t794u: the tray no longer updates itself; drop the update scripts older installs still carry in tools\ (the sync never deletes).
