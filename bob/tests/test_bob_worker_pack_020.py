@@ -374,3 +374,40 @@ def test_uat_release_exception_is_stated_in_the_worker_rules_and_the_wire_skill_
     assert "ACK <TYPE> <owner/repo>#<N>" in irc and re.search(r"(?i)a FAIL means an FR per gap and NO release", irc)
     doc = (ROOT / "docs" / "bob-worker.md").read_text(encoding="utf-8-sig")
     assert "## UAT job flow" in doc and "no release" in doc.lower() and "`gh release create`" in doc
+# ---- t826u: a successful MRB / an FR PR closes the issue that created it -------------------------------------------------------
+def _skill(name: str) -> str:
+    return (SK / f"bobiverse-bob-job-{name}" / "SKILL.md").read_text(encoding="utf-8-sig")
+
+
+def test_fr_skill_requires_closes_owner_repo_n_and_verifies_it_before_done():
+    t = _skill("fr")
+    assert "Closes <owner>/<repo>#N" in t
+    assert "closingIssuesReferences" in t
+    assert t.index("Verify the link before DONE") < t.index("Send **DONE**")
+    assert "Fixes #N" not in t
+    low = t.lower()
+    assert "one pr" in low and ("never merge" in low or "no merge" in low or "do not merge" in low)
+
+
+def test_mrb_skill_merges_if_authorised_else_confirms_closes_and_closes_issue_itself():
+    t = _skill("mrb")
+    low = t.lower()
+    assert "authoris" in low and "merge" in low
+    assert "Closes <owner>/<repo>#N" in t
+    assert "gh issue close" in t and "--comment" in t
+    assert "non-default branch" in low
+    assert "gh issue view" in t and "--json state" in t
+    assert "verified" in low  # DONE only after the issue is verified closed / linked
+
+
+def test_uat_and_irc_skills_carry_the_closed_issue_check():
+    assert "closed" in _skill("uat").lower() and "originating issue" in _skill("uat").lower()
+    irc = _skill("irc")
+    assert "verify before DONE" in irc and "closingIssuesReferences" in irc
+
+
+def test_worker_agents_and_docs_state_the_issue_closing_rule():
+    for p in (ROOT / "bob-agents" / "worker" / "AGENTS.md", ROOT / "docs" / "bob-worker.md"):
+        t = p.read_text(encoding="utf-8-sig")
+        assert "Closes <owner>/<repo>#N" in t, p
+    assert "t826u" in (ROOT / "docs" / "bob-worker.md").read_text(encoding="utf-8-sig")

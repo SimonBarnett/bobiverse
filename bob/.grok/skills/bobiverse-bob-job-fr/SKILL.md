@@ -31,8 +31,10 @@ flowchart TD
   E --> F["Implement the smallest change; run existing + new tests"]
   F -->|red| F
   F -->|green| G["Self-review: diff, docs/usage text, encoding UTF-8 no BOM, no secrets"]
-  G --> H["Open ONE PR: Fixes #N, evidence in the body"]
-  H --> I["DONE FR owner/repo#N pr-url  (nothing after the url)"]
+  G --> H["Open ONE PR: body has Closes owner/repo#N for the originating issue + evidence"]
+  H --> V["Verify the link: gh pr view --json closingIssuesReferences lists issue N"]
+  V -->|"missing / wrong base branch"| H
+  V -->|"linked"| I["DONE FR owner/repo#N pr-url  (nothing after the url)"]
   I --> J["STOP - never merge. Program posts !bored; MRB is a different review"]
   B -. cannot or blocked .-> X["NACK / GIVEUP FR owner/repo#N + reason on its own line"]
 ```
@@ -41,11 +43,12 @@ flowchart TD
 
 1. **ACK** the assign line (exact id). 2. Read the issue, linked FRs and the vision/README so you serve the intent, not just the letter. 3. Work in a temporary worktree/branch, never on `main`.
 4. **Tests first**: new tests that fail for the right reason, then the implementation. 5. Run the whole suite (not just yours). 6. Update docs/usage/skills your change makes stale.
-7. Open exactly **one** PR against the repo's default branch, title referencing the FR, body `Fixes #N` plus the evidence block below. 8. Send **DONE** (PR url last, nothing after it). 9. Stop.
+7. Open exactly **one** PR against the repo's default branch, title referencing the FR, body containing the line **`Closes <owner>/<repo>#N`** (the full form, the originating issue - not just `#N`, not only in a comment) plus the evidence block below. A PR that targets a non-default branch does not auto-close the issue: say so in the body so the MRB closes it by hand.
+8. **Verify the link before DONE**: `gh pr view <pr> --repo <owner>/<repo> --json body,baseRefName,closingIssuesReferences` must list issue N in `closingIssuesReferences` (or, for a non-default base, the body must carry the `Closes` line and say it needs a manual close). Fix the body and re-check if not. 9. Send **DONE** (PR url last, nothing after it). 10. Stop.
 
 ## Evidence required (in the PR body)
 
-* What changed and why (one paragraph) and the files touched. * The new tests (names) and the full-suite result (`N passed`). * How you verified it for real (command + short output) and **what you could not test live**.
+* The line `Closes <owner>/<repo>#N` for the originating issue. * What changed and why (one paragraph) and the files touched. * The new tests (names) and the full-suite result (`N passed`). * How you verified it for real (command + short output) and **what you could not test live**.
 * Assumptions and risks. * Links: the FR, related issues. No secrets, tokens, private hosts or credential files in the body, the diff or the logs.
 
 ## Who owns what
@@ -59,5 +62,5 @@ flowchart TD
 
 ## Rules
 
-* One FR = one PR. A fix that needs more work goes to a new FR through intake, not into this PR. * Never touch Ergo config, never restart `BobIrcd`, never disturb other seats, PowerShell only.
+* **Every FR PR body contains `Closes <owner>/<repo>#N`** and you verified it (step 8) before DONE. * One FR = one PR. A fix that needs more work goes to a new FR through intake, not into this PR. * Never touch Ergo config, never restart `BobIrcd`, never disturb other seats, PowerShell only.
 * Do not rebuild/release/bump the version unless the FR says so. * CAST IRON harvest rule at the top: file every issue, FR, bug and learned playbook in the same turn.

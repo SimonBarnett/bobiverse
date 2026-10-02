@@ -37,8 +37,11 @@ flowchart TD
   J --> K
   H --> L["Post the MRB board: verdict, drift line, evidence, links"]
   K --> L
-  L --> M["Close the source issue; hand off to UAT"]
-  M --> N["DONE MRB owner/repo#N PASS-or-FAIL pr-url  (nothing after the url)"]
+  L --> M["Verify the originating issue: closed by the merge, or the PR carries Closes owner/repo#N"]
+  M -->|"not closed (non-default branch / link missing)"| M2["Worker closes the issue with a comment: PR url + verdict"]
+  M -->|"closed, or linked and merge pending"| P["Hand off to UAT"]
+  M2 --> P
+  P --> N["DONE MRB owner/repo#N PASS-or-FAIL pr-url  (nothing after the url)"]
   N --> O["Program posts !bored - next job"]
   B -. cannot or blocked .-> X["NACK / GIVEUP MRB owner/repo#N + reason on its own line"]
 ```
@@ -49,7 +52,9 @@ flowchart TD
 No vision found: record "no vision source found", review against README + FR, and file ONE FR asking for a `VISION.md`. If the PR shows the vision itself should change, do not edit it - file an FR tagged `vision` for the owner.
 4. **Tests before verdict**: add the new tests the PR needs, then run existing + new. 5. Hostile review + **drift check** (separate verdict line): serves the stated vision? contradicts CAST IRON / earlier decisions? scope creep? under-delivery (letter, not intent; code never wired)? Drift is a FAIL like a red test.
 6. Encoding: changed `*.md` are UTF-8 without BOM (no mojibake). 7. **PASS** -> review docs/skills/usage text for staleness; if stale open exactly ONE **separate** `docs/mrb-<N>-...` PR (never push onto the PR under review) and merge both; if not, merge the PR.
-**FAIL** -> exactly ONE separate fix PR, then merge original + fix (not several fix PRs). Never merge UNSTABLE/red. 8. Post the MRB board, close the source issue, hand off to UAT. 9. **DONE**.
+**FAIL** -> exactly ONE separate fix PR, then merge original + fix (not several fix PRs). Never merge UNSTABLE/red. 8. Post the MRB board. **Issue closure (t826u):** the assigned MRB authorises you to merge that PR (and its one docs/fix PR). On merge, the PR's **`Closes <owner>/<repo>#N`** line closes the originating issue - confirm that line is in the PR body (add it by editing the body if the FR author missed it; a fix/docs PR gets `Refs`, never a second `Closes`). If you are **not authorised to merge**, still confirm the `Closes` link so the issue closes when the owner merges, and say so on the board.
+After the merge check `gh issue view N --repo <owner>/<repo> --json state`: if it is still open (PR merged into a non-default branch, or the link was missing) **close it yourself with a comment** (`gh issue close N --comment "Closed by <PR url> (merged into <branch>). MRB: <verdict>"`). A FAIL that ends without a merge leaves the issue open.
+9. Hand off to UAT. 10. **DONE** - only after the issue is verified closed, or (not merged yet) verified linked via `closingIssuesReferences`.
 
 ## Evidence required (the MRB board comment on the PR/issue)
 
@@ -67,5 +72,5 @@ No vision found: record "no vision source found", review against README + FR, an
 
 ## Rules
 
-* Different seat/session than the author. One docs PR at most; one fix PR at most. No release, no version bump, no Ergo changes, no secrets, PowerShell only.
+* **A successful MRB closes the originating issue**: merge -> `Closes` auto-closes it; otherwise you close it with a comment (never leave a merged PR's issue open, never close it for a FAIL that did not merge). * Different seat/session than the author. One docs PR at most; one fix PR at most. No release, no version bump, no Ergo changes, no secrets, PowerShell only.
 * Report which agent and model did the review. * CAST IRON harvest rule at the top: file every issue/FR/bug you find in the same turn - findings that are not part of this PR become new intake items.
