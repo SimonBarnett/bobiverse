@@ -34,8 +34,8 @@ If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write 
 ## Tray / recycle
 
 - Product Sync/ff runs on **ircBob Start-Bob** only — TipForm Start never updates the tree.
-- TipForm **Restart ircBob** → `Restart-BobEar` (service recycle → Start-Bob Sync/ff) then relaunches TipForm in the interactive session.
-- Desktop **Bob Fleet Restart** / `Restart-BobEar.ps1` is the same service recycle path.
+- TipForm menu **Restart** → `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches TipForm in the interactive session so Sync/ff runs on ear start).
+- Ear-only: Desktop / Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` (announce → `Restart-Service ircBob`).
 - Quiet MSI: `Start-BobTrayInteractive.ps1` registers ONLOGON `/IT` task `BobiverseTray` (no session-0 TipForm).
 - `!recycle` / `!recycle {machine}`: announce → restart tray + `ircBob`.
 

@@ -130,9 +130,10 @@ From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.
 
 - **Durable start (0.1.8+):** `Start-BobFleetTray` starts the seat wrapper with **WMI `Win32_Process.Create`** so TipForm survives agent/console job-object teardown. Do not rely on `Start-Process -PassThru` from a Grok Build shell.
 - **Digest webhook:** TipForm calls `Write-BobIrcStatus` about every 30s and POSTs usage to `reportUrl` (`https://irc.ntsa.uk/bob/v1/report` from `config\bobiverse.json`). No password/secret is used: the digest accepts the POST because this machine id is on the roster Jeeves publishes (ChanServ mirror).
-- **Restart** on the TipForm menu recycles the **tray watcher** (and IRC logout announce), not `nssm restart ircBob`. Use Desktop **Bob Fleet Restart** / `scripts\Restart-BobEar.ps1` to recycle the ear service.
+- **Restart** on the TipForm menu (label **Restart**, not "Restart ircBob") calls `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew`, which restarts `ircBob` via `Restart-BobTrayService` / `Invoke-BobTrayServiceControl.ps1` and relaunches TipForm in the interactive session. Do not confuse this with raw `nssm restart ircBob`.
+- **Ear-only recycle:** Desktop / Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` announces departure then `Restart-Service ircBob` (no tray relaunch by itself).
 - Product updates on **service** start only: `scripts\Sync-BobiverseFromRepo.ps1` fast-forwards the bobiverse clone (`<ai root>\bobiverse` or `BOBIVERSE_REPO`) and syncs into `<ai root>\<product>`; MSI `Check-BobiverseUpdate.ps1` is the fallback when no clone exists. Skip with `BOBIVERSE_NO_UPDATE=1`.
-- TipForm systray is a **watcher**: ordinary tray Start does **not** Sync/ff. TipForm **Restart ircBob** calls `Restart-BobEar` (service recycle â†’ Start-Bob Sync/ff) then relaunches the tray in the interactive session. Quiet MSI registers logon task `BobiverseTray` (`Start-BobTrayInteractive.ps1`) so TipForm is not started in session 0.
+- TipForm systray is a **watcher**: ordinary tray Start does **not** Sync/ff; TipForm **Restart** recycles the ear (so Start-Bob Sync/ff runs) and brings the tray back. Quiet MSI registers logon task `BobiverseTray` (`Start-BobTrayInteractive.ps1`) so TipForm is not started in session 0.
 - Vendored pin: `<ai root>\bob\PIN.txt` (agentic_build SHA used at pack time). TipForm footer shows `bob {VERSION}`.
 
 Smoke (optional): `scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot <ai root>\bob`.

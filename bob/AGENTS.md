@@ -56,7 +56,7 @@ Docs in `docs\`:
 ```powershell
 Get-Service ircBob
 Get-Content <ai root>\bob\logs\stdout.log -Tail 40
-.\scripts\Restart-BobEar.ps1                 # announce departure, restart ircBob only
+.\scripts\Restart-BobEar.ps1                 # ear-only: announce departure, restart ircBob (TipForm Restart uses Start-BobFleetTray -ForceNew)
 .\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot <ai root>\bob
 .\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...'   # end of every session
 ```

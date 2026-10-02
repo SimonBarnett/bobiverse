@@ -50,7 +50,7 @@ VERSION â†’ **0.1.9**.
 | Lesson | Fix |
 |--------|-----|
 | Tray + service both looked like updaters | Tray Start skips product update; Sync/ff only on Start-Bob |
-| TipForm Restart only relaunched UI | Restart ircBob → Restart-BobEar then Start-BobTray |
+| TipForm Restart only relaunched UI | TipForm **Restart** → `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
 | Quiet MSI TipForm in session 0 (invisible) | Start-BobTrayInteractive ONLOGON /IT; no session-0 Start-Process |
 | Jeeves missing from #win-mpre… | ChanServ !register required for chair_channels |
 

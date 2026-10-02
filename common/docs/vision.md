@@ -72,6 +72,7 @@ Systray is the Bob UI surface; HTML mocks document tray states for UAT later.
 
 - Jeeves MSI stages Ergo under payload `ergo\` (`ergo.exe`, `default.yaml`, languages…).
   Install copies/seeds **`<ai root>\ergo`** and registers service **`BobIrcd`** (NSSM in Ergo root).
-- Bob MSI stages **`Watch-AgentHealth\`** (Desktop install IF MISSING) + **`Start-BobTray.ps1`**
-  (Restart → `Restart-BobEar.ps1` → `ircBob`).
+- Bob MSI stages **`Watch-AgentHealth\`** (Desktop install IF MISSING) + **`Start-BobTray.ps1`**.
+  TipForm menu **Restart** → `Start-BobFleetTray -ForceNew` (restarts `ircBob` then relaunches tray).
+  Ear-only shortcut: **Restart ircBob** / `Restart-BobEar.ps1`.
 - `!recycle jeeves` restarts **`ircJeeves` only** (does not bounce `BobIrcd`).
