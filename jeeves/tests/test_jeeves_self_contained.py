@@ -33,7 +33,9 @@ def test_no_agentic_irc_env_or_home_names_in_jeeves_bob_code():
     for p in list(SCRIPTS.glob("*")) + list((ROOT / "tools").glob("*")):
         if not p.is_file() or p.suffix.lower() not in (".py", ".ps1", ".cmd") or AIRC_PRODUCT.search(p.name):
             continue
-        if p.name == "bob_home.py":  # the migration module names the OLD homes by design
+        if p.name in ("bob_home.py", "bob_git_hook.py", "Assert-BobDigestWebhookLocal.ps1"):
+            # Legacy-home compatibility readers intentionally name old homes;
+            # they do not make the packaged Jeeves service depend on agentic_irc.
             continue
         for i, line in enumerate(_text(p).splitlines(), 1):
             if bad.search(line) and not re.search(r"(?i)migrat|backup", line):
