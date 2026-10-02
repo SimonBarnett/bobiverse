@@ -193,8 +193,25 @@ def announce_needle(event: str, repo: str, number=None, action: str = "opened") 
 
 
 def default_log_paths() -> list:
+    """Candidate #bobiverse irc.log paths (exist-check happens later).
+
+    FR #88: include dedicated git-announce home and optional ear homes; legacy
+    ``~/.agentic-irc-bobiverse`` often loops NICKNAME_RESERVED under ircBob.
+    """
     home = Path(os.environ.get("USERPROFILE") or Path.home())
-    return [home / ".bobiverse" / "irc.log"]
+    paths = [
+        home / ".bobiverse" / "irc.log",
+        home / ".agentic-irc-gitannounce" / "irc.log",
+        home / ".agentic-irc-bobiverse" / "irc.log",
+    ]
+    bob_home = (os.environ.get("BOB_HOME") or "").strip()
+    if bob_home:
+        paths.append(Path(bob_home) / "irc.log")
+    install = (os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+    if install:
+        paths.append(Path(install) / "home" / "irc.log")
+        paths.append(Path(install) / "bob" / "home" / "irc.log")
+    return paths
 
 
 def _tail_lines(path: Path, max_bytes: int = 2_000_000) -> list:
@@ -217,6 +234,52 @@ def announce_seen(needle: str, log_paths: Iterable) -> str | None:
             if "PRIVMSG #bobiverse :" in ln and ln.startswith(":Jeeves!") and needle in ln:
                 hit = ln
     return hit
+
+
+def diagnose_listener_logs(log_paths: Iterable, sample: int = 200) -> str | None:
+    """Return a short diagnosis when logs show a dead nick loop (FR #88)."""
+    reserved_hits = 0
+    reserved_nicks: set[str] = set()
+    jeeves_privmsg = 0
+    scanned = 0
+    for p in log_paths:
+        lines = _tail_lines(Path(p))
+        if not lines:
+            continue
+        for ln in lines[-sample:]:
+            scanned += 1
+            if "NICKNAME_RESERVED" in ln or (" 433 " in ln and "Nickname is reserved" in ln):
+                reserved_hits += 1
+                parts = ln.split()
+                for i, tok in enumerate(parts):
+                    if tok in ("*", "NICKNAME_RESERVED") and i + 1 < len(parts):
+                        cand = parts[i + 1].lstrip(":")
+                        if cand.startswith("bob-") or cand.endswith("_l"):
+                            reserved_nicks.add(cand)
+            if ln.startswith(":Jeeves!") and "PRIVMSG #bobiverse :" in ln:
+                jeeves_privmsg += 1
+    if scanned == 0:
+        return None
+    if jeeves_privmsg == 0 and reserved_hits >= max(5, scanned // 10):
+        nicks = ", ".join(sorted(reserved_nicks)[:6]) or "bob-<machine>"
+        return (
+            f"NICKNAME_RESERVED loop for {nicks} — local irc.log is not joined to "
+            "#bobiverse (ear NickServ nick without matching SASL, or stale agentic-irc). "
+            "Start tools/Start-BobiverseGitAnnounceListen.ps1 (free nick) or pass "
+            "--irc-log to a healthy log; do not weaken the announce gate."
+        )
+    return None
+
+
+def format_announce_fail(missing: list, logs: list, listener_diag: str | None = None) -> str:
+    where = ", ".join(str(p) for p in logs) or "no local #bobiverse irc.log"
+    msg = (
+        f"FAIL Jeeves announce not seen for: {missing} (checked {where}). "
+        "Check #bobiverse; do not declare webhook setup done."
+    )
+    if listener_diag:
+        msg += f" Listener diagnosis: {listener_diag}"
+    return msg
 
 
 def digest_has(repo: str, ident: str, digest: dict | None) -> bool:
@@ -311,9 +374,8 @@ def main(argv=None, gh: GhRunner = default_gh, post: Poster = default_post) -> i
                 print(f"OK digest queue has {repo} #{num} (Jeeves announced it; no local irc.log line)")
                 missing.remove(n)
     if missing:
-        where = ", ".join(str(p) for p in logs) or "no local #bobiverse irc.log"
-        print(f"FAIL Jeeves announce not seen for: {missing} (checked {where}). "
-              "Check #bobiverse; do not declare webhook setup done.")
+        diag = diagnose_listener_logs(logs) if logs else None
+        print(format_announce_fail(missing, logs, diag))
         return 2
     print(f"DONE {repo} webhook wired and announced by Jeeves.")
     return 0
