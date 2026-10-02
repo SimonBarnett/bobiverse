@@ -1,0 +1,377 @@
+﻿diff --git a/third_party/bob-tray/tools/Watch-BobTray.ps1 b/third_party/bob-tray/tools/Watch-BobTray.ps1
+index b64657c..39d7393 100644
+--- a/third_party/bob-tray/tools/Watch-BobTray.ps1
++++ b/third_party/bob-tray/tools/Watch-BobTray.ps1
+@@ -11,9 +11,8 @@
+ # Exactly one TipForm; never Form.Show after ShowParkedAt.
+ # Empty fuel: Agents start / Plan may prompt for session XAI_API_KEY or CURSOR_API_KEY
+ # (child process env only; never persist User/Machine env or auth.json).
+-# Plan -> Grok|Cursor (top-level, sibling of Agents): visionary skills-visionary plan seat (no IRC / no build).
+-# Every Plan click is a NEW session in a NEW empty folder %USERPROFILE%\BobPlans\plan-yyyyMMdd-HHmmss
+-# (fresh skill-book copy; never -r/--resume/--continue; previous plans left untouched).
++# Agent / Plan (top-level, single click, no submenu; t762u): bob-worker.exe --mode agent|plan, cwd <install>\worker | <install>\plan.
++# Every click = a NEW agent (never resume/continue/attach; previous agents left running). Agent selection is automatic (cursor > grok > key dialog).
+ # Replaces the blank Interactive PowerShell window.
+ # Not a Windows service. Requires powershell.exe -STA.
+ [CmdletBinding()]
+@@ -1536,120 +1535,6 @@ function Sync-BobTrayVisionarySkills {
+     throw 'skills-visionary clone not found after sync'
+ }
+ 
+-function Get-BobTrayPlanRules {
+-    # VisionRoot = skills-visionary clone (skill book source). Workspace = this plan's NEW folder.
+-    param([string]$VisionRoot, [string]$Workspace)
+-    if (-not $Workspace) { $Workspace = $VisionRoot }
+-    $skillPath = Join-Path $Workspace '.grok\skills\visionary\SKILL.md'
+-    if (-not (Test-Path -LiteralPath $skillPath)) { $skillPath = Join-Path $env:USERPROFILE '.grok\skills\visionary\SKILL.md' }
+-    if (-not (Test-Path -LiteralPath $skillPath) -and $VisionRoot) {
+-        $skillPath = Join-Path $VisionRoot '.grok\skills\visionary\SKILL.md'
+-    }
+-    return @(
+-        'PLAN SEAT ONLY. Follow the visionary skill book (skills-visionary).',
+-        'This is a NEW plan in a NEW empty folder: do not resume, reopen or continue any previous plan, session or repo.',
+-        'Do NOT join IRC / shop channels. Do NOT start Watch-Bobiverse, bob ear, or builds.',
+-        'Do NOT use agentic_build or agentic_irc as the work repo.',
+-        "Visionary skill path: $skillPath",
+-        "Workspace: $Workspace"
+-    ) -join ' '
+-}
+-
+-function Get-BobTrayPlanRoot {
+-    return (Join-Path $env:USERPROFILE 'BobPlans')
+-}
+-
+-function New-BobTrayPlanWorkspace {
+-    # Plan MUST always be a brand-new planning session (Simon 2026-09-25). The seat used to run
+-    # with cwd = the shared skills-visionary clone, so every Plan click reopened the same folder:
+-    # the previous plan's files (e.g. docs/club-madeira-skill/) were still there and the agent CLI
+-    # keys its session history / memory / title-resume to the cwd, so it came back to the old plan.
+-    # Now: one NEW empty folder per click, <PlanRoot>\plan-yyyyMMdd-HHmmss (suffix -2, -3.. if two
+-    # clicks share a second), with a fresh copy of the skill book only (committed HEAD of
+-    # .grok/skills, tools, docs/templates - no docs/vision.md, mocks or untracked leftovers).
+-    # Never reuses, cleans or deletes previous plan folders.
+-    param(
+-        [Parameter(Mandatory = $true)][string]$VisionRoot,
+-        [string]$PlanRoot,
+-        [datetime]$Now = (Get-Date)
+-    )
+-    if (-not $PlanRoot) { $PlanRoot = Get-BobTrayPlanRoot }
+-    New-Item -ItemType Directory -Force -Path $PlanRoot | Out-Null
+-    $base = 'plan-' + $Now.ToString('yyyyMMdd-HHmmss')
+-    $dir = $null
+-    for ($n = 1; $n -le 1000 -and -not $dir; $n++) {
+-        $name = if ($n -eq 1) { $base } else { '{0}-{1}' -f $base, $n }
+-        $cand = Join-Path $PlanRoot $name
+-        if (Test-Path -LiteralPath $cand) { continue }
+-        try {
+-            # No -Force: if another click created it first this throws and we take the next name.
+-            New-Item -ItemType Directory -Path $cand -ErrorAction Stop | Out-Null
+-            $dir = [IO.Path]::GetFullPath($cand)
+-        }
+-        catch { }
+-    }
+-    if (-not $dir) { throw "could not create a new plan folder under $PlanRoot" }
+-    $parts = @('.grok/skills', 'tools', 'docs/templates')
+-    $copied = $false
+-    $git = Get-Command git -ErrorAction SilentlyContinue
+-    if ($git -and (Test-Path -LiteralPath (Join-Path $VisionRoot '.git'))) {
+-        $zip = Join-Path ([IO.Path]::GetTempPath()) ('bob-plan-skills-' + [guid]::NewGuid().ToString('N') + '.zip')
+-        try {
+-            $prev = $ErrorActionPreference
+-            $ErrorActionPreference = 'Continue'
+-            try { $null = & $git.Source -C $VisionRoot archive --format=zip -o $zip HEAD @parts 2>&1; $code = $LASTEXITCODE }
+-            finally { $ErrorActionPreference = $prev }
+-            if ($code -eq 0 -and (Test-Path -LiteralPath $zip)) {
+-                Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+-                $copied = $true
+-            }
+-        }
+-        catch { $copied = $false }
+-        finally { Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue }
+-    }
+-    if (-not $copied) {
+-        foreach ($rel in $parts) {
+-            $src = Join-Path $VisionRoot $rel
+-            if (-not (Test-Path -LiteralPath $src)) { continue }
+-            $dst = Join-Path $dir $rel
+-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+-            Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
+-        }
+-    }
+-    return $dir
+-}
+-
+-function Get-BobTrayPlanLaunchArgs {
+-    # Command line for a Plan seat. ALWAYS a new session: never -r / --resume / -c / --continue.
+-    # Grok gets a fresh --session-id UUID (grok: "Use a specific session UUID for a NEW conversation").
+-    param(
+-        [Parameter(Mandatory = $true)][ValidateSet('grok', 'cursor')][string]$Kind,
+-        [Parameter(Mandatory = $true)][string]$Workspace,
+-        [string]$Rules,
+-        [Parameter(Mandatory = $true)][string]$Prompt,
+-        [string]$SessionId
+-    )
+-    if ($Kind -eq 'grok') {
+-        if (-not $SessionId) { $SessionId = [guid]::NewGuid().ToString() }
+-        # permission-mode plan; cwd = this plan's new folder (not agentic_build). No Watch-AgentHealth / IRC.
+-        return @(
+-            '--permission-mode', 'plan',
+-            '--session-id', $SessionId,
+-            '--cwd', $Workspace,
+-            '--rules', $Rules,
+-            $Prompt
+-        )
+-    }
+-    # --plan; workspace = this plan's new folder. No IRC watch seat. cursor-agent without
+-    # --resume/--continue starts a new chat.
+-    return @(
+-        '--plan',
+-        '--model', 'auto',
+-        '--workspace', $Workspace,
+-        $Prompt
+-    )
+-}
+-
+ function Resolve-BobTrayGrokCliExe {
+     $p = Join-Path $env:USERPROFILE '.grok\bin\agent.exe'
+     if (Test-Path -LiteralPath $p) { return $p }
+@@ -1767,177 +1652,50 @@ function Start-BobTrayVisibleProcessWithSessionEnv {
+     Register-BobTrayGrokSession -Process $proc -SessionEnv $SessionEnv
+ }
+ 
+-function Start-BobTrayPlanAgent {
+-    param($Kind)
+-    $kind = ([string]$Kind).ToLowerInvariant()
+-    if ($kind -ne 'grok' -and $kind -ne 'cursor') {
+-        Write-TrayLog ('plan: unknown kind ' + $kind)
+-        return
+-    }
+-    $visionRoot = $null
++function Start-BobTrayWorkerExe {
++    <#
++    .SYNOPSIS
++      Tray Agent / Plan click (t762u): start a NEW bob-worker.exe, which picks cursor > grok > key-dialog by token availability.
++    .DESCRIPTION
++      One plain click, no submenu. Every click starts a FRESH agent: no resume / continue / attach to any earlier session, window or
++      process (t765u). The exe is copied to %LOCALAPPDATA%\Bobiverse\worker\bin\bob-worker-<hash>.exe and THAT copy is run, so a running
++      seat never locks <install>\worker\bob-worker.exe and an MSI upgrade / uninstall is never blocked by (or kills) a seat.
++      ONE window per click: the exe's own console hosts the agent (the agent inherits it; no second console, no watcher window); the exe owns the IRC relay, !bored,
++      IRC-loss exit and hang restarts, and ending either the exe or the agent ends both. Plan = exe --mode plan (no IRC).
++    #>
++    param([ValidateSet('agent', 'plan')][string]$Mode)
+     try {
+-        $visionRoot = Sync-BobTrayVisionarySkills
+-    }
+-    catch {
+-        Write-TrayLog ('plan: visionary sync failed: ' + $_.Exception.Message)
+-        [void][System.Windows.Forms.MessageBox]::Show(
+-            ("Could not sync skills-visionary:`r`n{0}" -f $_.Exception.Message),
+-            'Plan seat',
+-            [System.Windows.Forms.MessageBoxButtons]::OK,
+-            [System.Windows.Forms.MessageBoxIcon]::Error
+-        )
+-        return
+-    }
+-    $sessionEnv = $null
+-    if ($kind -eq 'grok') {
+-        # Same start-once rule as Agents > Grok (local weekly; unknown => stop).
+-        $fuel = Resolve-BobTrayGrokFuelAtStart
+-        if ($fuel.action -eq 'stop-unknown') {
+-            $why = if ($fuel.reason) { [string]$fuel.reason } else { 'unknown' }
+-            Write-TrayLog ('plan: grok fuel_mode=unknown reason={0} - refusing keyless Plan start' -f $why)
+-            try { Publish-BobTrayFuelMode -FuelMode 'unknown' } catch { }
+-            [void][System.Windows.Forms.MessageBox]::Show(
+-                ("Grok Build availability is {0} ({1}). Not exhausted - fix local auth/billing freshness, then retry." -f $(if ($fuel.availability) { $fuel.availability } else { 'unknown' }), $why),
+-                'Plan seat',
+-                [System.Windows.Forms.MessageBoxButtons]::OK,
+-                [System.Windows.Forms.MessageBoxIcon]::Warning
+-            )
++        $exe = Join-Path $RepoRoot 'worker\bob-worker.exe'
++        if (-not (Test-Path -LiteralPath $exe)) {
++            Write-TrayLog ('{0}: worker exe missing: {1} (reinstall the bob MSI)' -f $Mode, $exe)
++            try { [void][System.Windows.Forms.MessageBox]::Show(('bob-worker.exe is missing:{0}{1}{0}{0}Reinstall or upgrade the bob MSI.' -f "`n", $exe), 'Bobiverse', 'OK', 'Warning') } catch { }
+             return
+         }
+-        if ($fuel.action -eq 'prompt-session') {
+-            Write-TrayLog 'plan: grok fuel 0 - session XAI_API_KEY dialog'
+-            $key = Show-BobTraySessionApiKeyDialog -Title 'Grok plan session API key' -Prompt "No Grok tokens remaining.`r`nEnter XAI_API_KEY for this Plan start only (not saved)."
+-            if (-not $key) { Write-TrayLog 'plan: grok aborted (no key)'; return }
+-            $sessionEnv = New-BobTrayGrokSessionEnv -ApiKey $key
+-            try { Publish-BobTrayFuelMode -FuelMode 'session-key' } catch { }
+-        }
+-        else {
+-            try { Publish-BobTrayFuelMode -FuelMode 'pool' } catch { }
+-        }
+-    }
+-    elseif (Test-BobTrayAgentFuelExhausted -Kind $kind) {
+-        Write-TrayLog 'plan: cursor fuel 0 - session CURSOR_API_KEY dialog'
+-        $key = Show-BobTraySessionApiKeyDialog -Title 'Cursor plan session API key' -Prompt "No Cursor tokens remaining.`r`nEnter CURSOR_API_KEY for this Plan start only (not saved)."
+-        if (-not $key) { Write-TrayLog 'plan: cursor aborted (no key)'; return }
+-        $sessionEnv = @{ CURSOR_API_KEY = $key }
+-    }
+-    $prompt = 'Follow the visionary skill. NEW plan in a NEW empty folder: do not resume any previous plan. Plan-mode only: no IRC, no build, no agentic_build/agentic_irc work repo.'
+-    if ($kind -eq 'grok') {
+-        $exe = Resolve-BobTrayGrokCliExe
+-        if (-not $exe) {
+-            Write-TrayLog 'plan: grok agent.exe missing'
+-            [void][System.Windows.Forms.MessageBox]::Show(
+-                'Grok agent.exe not found (~/.grok/bin/agent.exe).',
+-                'Plan seat',
+-                [System.Windows.Forms.MessageBoxButtons]::OK,
+-                [System.Windows.Forms.MessageBoxIcon]::Warning
+-            )
+-            return
+-        }
+-        $planDir = New-BobTrayPlanWorkspaceOrWarn -VisionRoot $visionRoot
+-        if (-not $planDir) { return }
+-        $rules = Get-BobTrayPlanRules -VisionRoot $visionRoot -Workspace $planDir
+-        $sid = [guid]::NewGuid().ToString()
+-        $launchArgs = Get-BobTrayPlanLaunchArgs -Kind 'grok' -Workspace $planDir -Rules $rules -Prompt $prompt -SessionId $sid
+-        Write-TrayLog ('plan: launch grok plan seat NEW session={0} cwd={1} skills={2} sessionKey={3}' -f $sid, $planDir, $visionRoot, $(if ($sessionEnv) { 'yes' } else { 'no' }))
+-        Start-BobTrayVisibleProcessWithSessionEnv -FilePath $exe -ArgumentList $launchArgs -WorkingDirectory $planDir -SessionEnv $sessionEnv -Title 'Grok plan seat (visionary)'
+-        return
+-    }
+-    $cmd = Resolve-BobTrayCursorAgentCmd
+-    if (-not $cmd) {
+-        Write-TrayLog 'plan: cursor agent.cmd missing'
+-        [void][System.Windows.Forms.MessageBox]::Show(
+-            'Cursor agent.cmd not found (%LOCALAPPDATA%\cursor-agent\agent.cmd).',
+-            'Plan seat',
+-            [System.Windows.Forms.MessageBoxButtons]::OK,
+-            [System.Windows.Forms.MessageBoxIcon]::Warning
+-        )
+-        return
+-    }
+-    $planDir = New-BobTrayPlanWorkspaceOrWarn -VisionRoot $visionRoot
+-    if (-not $planDir) { return }
+-    $launchArgs = Get-BobTrayPlanLaunchArgs -Kind 'cursor' -Workspace $planDir -Prompt $prompt
+-    Write-TrayLog ('plan: launch cursor plan seat NEW workspace={0} skills={1} sessionKey={2}' -f $planDir, $visionRoot, $(if ($sessionEnv) { 'yes' } else { 'no' }))
+-    Start-BobTrayVisibleProcessWithSessionEnv -FilePath $cmd -ArgumentList $launchArgs -WorkingDirectory $planDir -SessionEnv $sessionEnv -Title 'Cursor plan seat (visionary)'
+-}
+-
+-function New-BobTrayPlanWorkspaceOrWarn {
+-    param([string]$VisionRoot)
+-    try {
+-        $d = New-BobTrayPlanWorkspace -VisionRoot $VisionRoot
+-        Write-TrayLog ('plan: new plan folder ' + $d)
+-        return $d
+-    }
+-    catch {
+-        Write-TrayLog ('plan: new plan folder failed: ' + $_.Exception.Message)
+-        [void][System.Windows.Forms.MessageBox]::Show(
+-            ("Could not create a new plan folder:`r`n{0}" -f $_.Exception.Message),
+-            'Plan seat',
+-            [System.Windows.Forms.MessageBoxButtons]::OK,
+-            [System.Windows.Forms.MessageBoxIcon]::Error
+-        )
+-        return $null
+-    }
+-}
+-
+-function Build-BobTrayAgentsMenu {
+-    param([System.Windows.Forms.ToolStripMenuItem]$Parent)
+-    $Parent.DropDownItems.Clear()
+-    foreach ($a in Get-BobTrayAgentDefs) {
+-        $installed = Test-BobTrayAgentInstalled $a
+-        $item = New-Object System.Windows.Forms.ToolStripMenuItem
+-        $item.Text = $(if ($installed) { $a.name } else { ('{0} (set up)' -f $a.name) })
+-        try { $item.Image = Get-BobTrayAgentImage -Agent $a -Installed $installed } catch { }
+-        $item.Tag = $a
+-        $item.Add_Click({ param($s, $e) Invoke-BobTrayAgent $s.Tag })
+-        [void]$Parent.DropDownItems.Add($item)
+-    }
+-    # FR #345: list each live seat separately (nick + slot) so two seats are obvious
+-    try {
+-        $slotHelpers = Join-Path $RepoRoot 'tools\Bob-WatchSeatSlot.ps1'
+-        if (-not (Test-Path -LiteralPath $slotHelpers)) {
+-            $slotHelpers = Join-Path $PSScriptRoot 'Bob-WatchSeatSlot.ps1'
+-        }
+-        if (Test-Path -LiteralPath $slotHelpers) {
+-            . $slotHelpers
+-            $seats = @(Get-BobWatchLiveSeatSummaries -Kind all)
+-            if ($seats.Count -gt 0) {
+-                [void]$Parent.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+-                foreach ($s in $seats) {
+-                    $label = '{0} seat {1}: {2}' -f $s.kind, $s.slot, $(if ($s.nick) { $s.nick } else { '(no nick yet)' })
+-                    $si = New-Object System.Windows.Forms.ToolStripMenuItem
+-                    $si.Text = $label
+-                    $si.Tag = $s
+-                    $si.Add_Click({
+-                            param($sender, $e)
+-                            $t = $sender.Tag
+-                            if ($t) { Stop-BobTrayAgentWatchSeat -Kind $t.kind -Slot ([int]$t.slot) }
+-                        })
+-                    [void]$Parent.DropDownItems.Add($si)
+-                }
+-            }
+-        }
++        $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
++        $binDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\bin'
++        New-Item -ItemType Directory -Force -Path $binDir | Out-Null
++        $run = Join-Path $binDir ('bob-worker-{0}.exe' -f $hash)
++        if (-not (Test-Path -LiteralPath $run)) {
++            Copy-Item -LiteralPath $exe -Destination $run -Force
++            # best effort: drop run-copies of older builds that no seat is using (a locked one just stays)
++            Get-ChildItem -LiteralPath $binDir -Filter 'bob-worker-*.exe' -ErrorAction SilentlyContinue |
++                Where-Object { $_.FullName -ne $run } |
++                ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { } }
++        }
++        $argv = @('--mode', $Mode, '--install-root', $RepoRoot)
++        $mid = Get-BobTrayMachineId
++        if ($mid) { $argv += @('--machine-id', $mid) }
++        $psi = New-Object System.Diagnostics.ProcessStartInfo
++        $psi.FileName = $run
++        $psi.Arguments = (($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
++        $psi.WorkingDirectory = (Join-Path $RepoRoot $(if ($Mode -eq 'plan') { 'plan' } else { 'worker' }))
++        $psi.UseShellExecute = $false
++        $psi.CreateNoWindow = $false   # t771u: the exe's console window IS the one and only agent window (agent + IRC relay live inside it)
++        $proc = [System.Diagnostics.Process]::Start($psi)
++        Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} (NEW agent every click; selection cursor>grok>key dialog)' -f $Mode, $proc.Id, $Mode)
+     }
+     catch {
+-        Write-TrayLog ('agents: seat list error ' + $_.Exception.Message)
+-    }
+-}
+-
+-function Build-BobTrayPlanMenu {
+-    # Top-level Plan -> Grok / Cursor, same level as Agents (Simon 2026-09-24).
+-    # Visionary plan seat; no IRC / no build. Every click = NEW session in a NEW BobPlans folder.
+-    param([System.Windows.Forms.ToolStripMenuItem]$Parent)
+-    $Parent.DropDownItems.Clear()
+-    foreach ($pk in @('Grok', 'Cursor')) {
+-        $pi = New-Object System.Windows.Forms.ToolStripMenuItem
+-        $pi.Text = $pk
+-        $pi.Tag = $pk.ToLowerInvariant()
+-        try {
+-            $def = @(Get-BobTrayAgentDefs | Where-Object { $_.kind -eq $pi.Tag } | Select-Object -First 1)
+-            if ($def) { $pi.Image = Get-BobTrayAgentImage -Agent $def[0] -Installed (Test-BobTrayAgentInstalled $def[0]) }
+-        } catch { }
+-        $pi.Add_Click({ param($s, $e) Start-BobTrayPlanAgent $s.Tag })
+-        [void]$Parent.DropDownItems.Add($pi)
++        Write-TrayLog ('{0}: start failed: {1}' -f $Mode, $_.Exception.Message)
+     }
+ }
+ 
+@@ -2967,16 +2725,12 @@ $notify.Visible = $false
+ $notify.Text = ''
+ $menu = New-Object System.Windows.Forms.ContextMenuStrip
+ $miStatus = $menu.Items.Add('Status')
+-$miAgents = New-Object System.Windows.Forms.ToolStripMenuItem
+-$miAgents.Text = 'Agents'
+-[void]$menu.Items.Add($miAgents)
+-Build-BobTrayAgentsMenu -Parent $miAgents
+-$miAgents.Add_DropDownOpening({ Build-BobTrayAgentsMenu -Parent $miAgents })
+-$miPlan = New-Object System.Windows.Forms.ToolStripMenuItem
+-$miPlan.Text = 'Plan'
+-[void]$menu.Items.Add($miPlan)
+-Build-BobTrayPlanMenu -Parent $miPlan
+-$miPlan.Add_DropDownOpening({ Build-BobTrayPlanMenu -Parent $miPlan })
++# t762u: ONE plain click each (NO submenus). Every click starts a NEW agent via bob-worker.exe
++# (cursor pool > 0 -> agent.cmd; else Grok weekly tokens -> agent.exe; else key dialog). Never resumes/attaches (t765u).
++$miAgents = $menu.Items.Add('Agent')
++$miAgents.Add_Click({ Start-BobTrayWorkerExe -Mode 'agent' })
++$miPlan = $menu.Items.Add('Plan')
++$miPlan.Add_Click({ Start-BobTrayWorkerExe -Mode 'plan' })
+ $miAck = $menu.Items.Add('Acknowledge')
+ $miLog = $menu.Items.Add('Open log')
+ [void]$menu.Items.Add('-')

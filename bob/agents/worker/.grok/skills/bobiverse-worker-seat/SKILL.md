@@ -1,0 +1,56 @@
+---
+name: bobiverse-worker-seat
+description: >
+  Operating manual for a bob worker agent started by bob-worker.exe: how IRC messages arrive (FROM lines), how to reply via outbox.txt, what you may touch, what the program does when you hang or IRC drops.
+---
+
+# bobiverse worker seat
+
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `..\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `..\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+
+You are a worker agent driven by **bob-worker.exe**. This skill is your operating manual. The program owns the IRC connection; you never open one.
+
+## Your identity and channel
+
+* Nick `<machine>-<pid>`, channel `#<machine>` (your first instruction names both). You can only be heard and only speak there.
+* The program answers `PING`/`PONG` and the fleet `ping` for you. Do not reply "pong" yourself.
+
+## Receiving work
+
+Each IRC message is typed into your console as one line: `FROM <nick> <target> <text>`. Assignments from `Jeeves` are the important ones. One line = one task = one turn:
+read it, do it, reply, stop. Several fast messages may be merged into `FROM (flood-coalesced N messages) ...` - handle each part. Lines you never see: digests, `AGPK`, `SEAL`, anything with `password=`.
+
+## Replying
+
+Append lines to the `outbox.txt` file named in your first instruction (it is under `%LOCALAPPDATA%\Bobiverse\worker\run\...`, NOT in this folder):
+
+```powershell
+Add-Content -LiteralPath '<outbox path from your first instruction>' -Value 'PRIVMSG #<machine> :done: <one short line>' -Encoding utf8
+```
+
+Keep replies short (one line, under 400 characters). Anything addressed to another channel or a nick is dropped by the program. Never include a secret.
+
+## What you may touch
+
+* Work in `<ai root>\bob\worker` and in the repos you are told to work on. You are NOT the ear, the chair or a service: do not restart `ircBob`, `ircJeeves`, `Airc` or any IRC server, do not close other windows, do not kill processes you did not start.
+* Hotpatching a service is allowed only following `bobiverse-fleet-ops` (backup first, one service, no Ergo).
+
+## If something breaks
+
+* The program restarts you as a NEW agent when you hang (no output for 300 s after input, or "not responding" for 90 s). You will not remember the previous session - re-read this skill and the task line you are given.
+* If the IRC link dies the program closes you. Nothing to do.
+* Long jobs: print progress to your console regularly so the health check sees activity.
+
+## Always
+
+File every issue / FR / bug and every learned playbook (CAST IRON rule at the top) before you finish.

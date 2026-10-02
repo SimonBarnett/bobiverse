@@ -1,0 +1,115 @@
+﻿#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Public launcher for the TipForm Bob systray shipped in the bob MSI.
+.DESCRIPTION
+  Sets BOB_MACHINE_ID / BOB_BRIDGE_HOME / IRC home, then starts tools\Watch-BobTray.ps1
+  under InstallRoot (STA). Companion to the ircBob Windows service — not a BobFleet task.
+.NOTES
+  t794u: the tray never updates. Product Sync/ff and the release self-update run only on ircBob service start (Start-Bob).
+  Starting the tray (this launcher, the 'Start Systray' shortcut, logon autostart, tray Restart) restarts ircBob via
+  Start-BobFleetTray, so a start also applies a pending update. Tray Exit stops ircBob (detached).
+#>
+[CmdletBinding()]
+param(
+    [string]$InstallRoot = '',   # '' = installed root / discovered <ai root>\bob (t780u)
+    [string]$ServiceName = 'ircBob',
+    [string]$BobHome = '',
+    [string]$MachineId = '',
+    [switch]$ForceNew,
+    # #32: do not run Stop-BobSystrayPriorAgents (kills grok.exe seats, Grok Bot, Watch-AgentHealth).
+    # Also honoured via env BOBIVERSE_NO_TIDY=1 (set by Install-Bob for quiet/MSI installs).
+    [switch]$SkipTidy
+)
+
+$ErrorActionPreference = 'Continue'
+
+# t780u: no hard-coded C:\ai. Installed: this script lives in <install>\scripts, so the install root is its parent. Otherwise the
+# <drive>:\ai root is discovered on the fixed disks (Bobiverse-Common.ps1; BOB_AI_ROOT overrides).
+if (-not $InstallRoot) {
+    $selfRoot = Split-Path -Parent $PSScriptRoot
+    $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+    if (Test-Path -LiteralPath (Join-Path $selfRoot 'tools\Watch-BobTray.ps1')) { $InstallRoot = $selfRoot }
+    elseif (Test-Path -LiteralPath $cm) { . $cm; $InstallRoot = Get-BobiverseProductRoot -Product bob }
+    else { $InstallRoot = $selfRoot }
+}
+$InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
+# The tray (vendored Watch-BobTray.ps1) resolves sibling products through BOB_AI_ROOT instead of a baked-in C:\ai.
+if (-not $env:BOB_AI_ROOT -and (Split-Path -Leaf $InstallRoot) -ieq 'bob') { $env:BOB_AI_ROOT = Split-Path -Parent $InstallRoot }
+
+$tray = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
+if (-not (Test-Path -LiteralPath $tray)) {
+    # Dev fallback: vendored tree next to scripts\
+    $repo = Split-Path -Parent $PSScriptRoot
+    $alt = Join-Path $repo 'third_party\bob-tray\tools\Watch-BobTray.ps1'
+    if (Test-Path -LiteralPath $alt) {
+        $InstallRoot = [IO.Path]::GetFullPath((Join-Path $repo 'third_party\bob-tray'))
+        $tray = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
+    }
+}
+if (-not (Test-Path -LiteralPath $tray)) {
+    Write-Error "missing TipForm tray: $InstallRoot\tools\Watch-BobTray.ps1 (run Sync-BobTrayFromAgenticBuild / pack bob)"
+    exit 1
+}
+
+if (-not $MachineId) {
+    $MachineId = ([string]$env:BOB_MACHINE_ID).Trim()
+}
+if (-not $MachineId) {
+    $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+} else {
+    $MachineId = ($MachineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+}
+
+if (-not $BobHome) {
+    $BobHome = Join-Path $env:USERPROFILE '.bobiverse'
+}
+$bridge = Join-Path $env:USERPROFILE '.grok\bob-bridge'
+New-Item -ItemType Directory -Force -Path $BobHome, $bridge | Out-Null
+
+$env:BOB_MACHINE_ID = $MachineId
+$env:BOB_BRIDGE_HOME = $bridge
+$env:BOB_IRC_HOME = $BobHome
+$env:BOB_HOME = $BobHome
+if (-not $env:BOBIVERSE_BOB_VERSION) {
+    foreach ($vf in @(
+            (Join-Path $InstallRoot 'VERSION'),
+            (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\VERSION'),
+            (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\VERSION')   # t773u split repo
+        )) {
+        if ($vf -and (Test-Path -LiteralPath $vf)) {
+            $env:BOBIVERSE_BOB_VERSION = ([string](Get-Content -LiteralPath $vf -TotalCount 1)).Trim()
+            break
+        }
+    }
+}
+
+# One TipForm only: stop other Watch-BobTray / seat wrappers (and legacy minimal Start-BobTray hosts).
+$prior = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and [int]$_.ProcessId -ne $PID -and (
+            $_.CommandLine -match 'Watch-BobTray\.ps1' -or
+            $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+            ($_.CommandLine -match 'Start-BobTray\.ps1' -and $_.CommandLine -notmatch [regex]::Escape($MyInvocation.MyCommand.Path))
+        )
+    })
+if ($ForceNew -or $prior.Count -gt 0) {
+    foreach ($p in $prior) {
+        try {
+            Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction SilentlyContinue
+            Write-Host ("INFO stopped prior tray pid={0}" -f $p.ProcessId)
+        } catch { }
+    }
+    Start-Sleep -Milliseconds 600
+}
+
+# Prefer Start-BobFleetTray when present (tidy + ircBob restart); else Watch-BobTray direct.
+$fleetStart = Join-Path $InstallRoot 'tools\Start-BobFleetTray.ps1'
+if (Test-Path -LiteralPath $fleetStart) {
+    $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1'
+    if ($noTidy) { Write-Host 'INFO tray start: SkipTidy (seats and Grok Bot are left running)' }
+    & $fleetStart -RepoRoot $InstallRoot -ForceNew:$ForceNew -SkipTidy:$noTidy
+    exit $LASTEXITCODE
+}
+
+& $tray -RepoRoot $InstallRoot
+exit $LASTEXITCODE
