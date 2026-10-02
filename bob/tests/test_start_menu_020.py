@@ -15,12 +15,11 @@ SCRIPTS = ROOT / "scripts"
 ICO = ROOT / "third_party" / "bob-tray" / "assets" / "bob-systray.ico"
 WIN = pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="needs Windows PowerShell")
 
+# t794u: ONE Start Menu entry, "Start Systray" (bob). jeeves / airc contribute nothing but the transient logon helper.
 EXPECTED = {
-    "bob": {"Bob Services", "Bobiverse Tray", "Restart ircBob", "Complete bobiverse service logon (bob)",
-            "Logs (bob)", "Skill books (bob)", "Agent guide (bob)"},
-    "jeeves": {"Bob Services", "Restart ircJeeves", "Jeeves command reference", "Logs (jeeves)",
-               "Skill books (jeeves)", "Agent guide (jeeves)"},
-    "airc": {"Bob Services", "Restart Airc", "Logs (airc)", "Skill books (airc)", "Agent guide (airc)"},
+    "bob": {"Start Systray", "Complete bobiverse service logon (bob)"},
+    "jeeves": set(),
+    "airc": set(),
 }
 
 
@@ -61,6 +60,8 @@ New-Dummy (Join-Path $all 'Bob Systray\Bob Systray.lnk')
 New-Dummy (Join-Path $user 'Bob Systray (2).lnk'); New-Dummy (Join-Path $user 'Bobiverse\Bob Services.lnk'); New-Dummy (Join-Path $user 'Bobiverse\Bobiverse Tray.lnk')
 New-Dummy (Join-Path $user 'Startup\Bobiverse Tray.lnk'); New-Dummy (Join-Path $all 'Notepad Unrelated.lnk')
 $smd = Get-BobiverseStartMenuDir -ProgramsRoot $all
+New-Item -ItemType Directory -Force -Path $smd | Out-Null
+foreach ($n in 'Bob Services', 'Restart ircBob', 'Restart Airc', 'Jeeves command reference', 'Logs (bob)', 'Skill books (jeeves)', 'Agent guide (airc)', 'Bobiverse Tray') {{ New-Dummy (Join-Path $smd ($n + '.lnk')) }}
 foreach ($prod in 'bob', 'jeeves', 'airc') {{
     $ir = Join-Path $base "ai\$prod"
     New-Item -ItemType Directory -Force -Path (Join-Path $ir 'assets'), (Join-Path $ir 'scripts'), (Join-Path $ir 'logs'), (Join-Path $ir '.grok\skills') | Out-Null
@@ -99,12 +100,11 @@ def test_install_creates_one_folder_dedupes_legacy_and_uses_the_tray_icon(tmp_pa
     assert out["startup"] == ["Bobiverse Tray.lnk"]              # tray autostart untouched
     names = {s["name"] for s in out["shortcuts"]}
     # after the idempotent bob re-run (no NeedLogon) the logon helper is removed; all other products remain
-    want = set().union(*EXPECTED.values()) - {"Complete bobiverse service logon (bob)"}
-    assert names == want
-    assert len([s for s in out["shortcuts"] if s["name"] == "Bobiverse Tray"]) == 1
+    assert names == {"Start Systray"}                           # the older per-product links inside the folder were pruned too
+    assert len([s for s in out["shortcuts"] if s["name"] == "Start Systray"]) == 1
     for s in out["shortcuts"]:
         assert s["icon"].lower().endswith("bob-systray.ico,0"), s    # every shortcut on the systray icon
-    tray = [s for s in out["shortcuts"] if s["name"] == "Bobiverse Tray"][0]
+    tray = [s for s in out["shortcuts"] if s["name"] == "Start Systray"][0]
     assert tray["target"].lower().endswith("powershell.exe")
 
 
@@ -117,5 +117,21 @@ def test_spec_inventory_per_product(tmp_path):
                          capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     got = {ln.split("=")[0]: set(ln.split("=", 1)[1].split("|")) for ln in run.stdout.splitlines() if "=" in ln}
-    assert got == {p: s | {f"Complete bobiverse service logon ({p})"} for p, s in EXPECTED.items()}
+    assert got == {"bob": EXPECTED["bob"], "jeeves": {"Complete bobiverse service logon (jeeves)"},
+                   "airc": {"Complete bobiverse service logon (airc)"}}
+
+
+@WIN
+def test_start_systray_is_the_only_entry_and_launches_the_tray_launcher(tmp_path):
+    ps1 = tmp_path / "s.ps1"
+    ps1.write_text('. "%s"\n$s = @(Get-BobiverseShortcutSpec -Product bob -InstallRoot "C:\\ai\\bob" -MachineId m -IncludeTray -Icon "C:\\x\\bob-systray.ico"); $s | ConvertTo-Json -Compress\n'
+                   % (SCRIPTS / "Bobiverse-Common.ps1"), encoding="utf-8-sig")
+    run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
+                         capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    spec = json.loads(run.stdout)
+    spec = spec if isinstance(spec, list) else [spec]
+    assert [s["Name"] for s in spec] == ["Start Systray"]
+    assert "Start-BobTray.ps1" in spec[0]["Arguments"] and "-ForceNew" in spec[0]["Arguments"]
+    assert spec[0]["Icon"].endswith("bob-systray.ico,0")
 

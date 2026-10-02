@@ -197,6 +197,8 @@ if ($env:BOB_IRC_PASSWORD) {
     $envExtra += "BOB_IRC_PASSWORD=$($env:BOB_IRC_PASSWORD)"
 }
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
+# t794u: the systray (interactive user) stops ircBob on Exit and restarts it on Start Systray.
+[void](Grant-BobiverseServiceUserControl -Name $ServiceName)
 # Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)
 if (-not $SkipWatchAgentHealth) {
     $wahSrc = Join-Path $InstallRoot 'Watch-AgentHealth'

@@ -870,6 +870,9 @@ function Resolve-BobiverseTrayIcon {
 }
 
 # Pure data: the shortcuts a product contributes to the single Start Menu folder.
+# t794u: the Bobiverse folder holds ONE entry, "Start Systray" (bob only; it restarts ircBob and starts the tray). No Bob Services,
+# Restart *, Logs, Skill books, Agent guide or per-product tray entries: those were duplicates of what the tray already does. The only
+# other link is the transient "Complete bobiverse service logon (<product>)" helper while a service still needs its password.
 function Get-BobiverseShortcutSpec {
     param(
         [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
@@ -886,30 +889,55 @@ function Get-BobiverseShortcutSpec {
     function Add-Spec($name, $target, $cmdArgs, $wd, $desc) {
         $list.Add([pscustomobject]@{ Name = $name; Target = $target; Arguments = $cmdArgs; WorkingDirectory = $wd; Description = $desc; Icon = $ico })
     }
-    Add-Spec 'Bob Services' 'services.msc' '' '' 'Windows Services (ircBob, ircJeeves, Airc, BobIrcd)'
-    switch ($Product) {
-        'bob' {
-            if ($IncludeTray) {
-                $tray = Join-Path $scr 'Start-BobTray.ps1'
-                Add-Spec 'Bobiverse Tray' $ps "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew" $InstallRoot 'bob TipForm systray (companion to ircBob)'
-            }
-            Add-Spec 'Restart ircBob' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Restart-BobEar.ps1')`"" $scr 'Restart ircBob (announces departure)'
-        }
-        'jeeves' {
-            Add-Spec 'Restart ircJeeves' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Restart-BobService.ps1')`" -Service ircJeeves" $scr 'Restart ircJeeves only (never BobIrcd/Ergo)'
-            Add-Spec 'Jeeves command reference' (Join-Path $InstallRoot 'docs\jeeves-commands.md') '' $InstallRoot 'Jeeves chair command reference and authorization matrix'
-        }
-        'airc' {
-            Add-Spec 'Restart Airc' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Restart-BobService.ps1')`" -Service Airc" $scr 'Restart the Airc console service'
-        }
+    if ($Product -eq 'bob' -and $IncludeTray) {
+        $tray = Join-Path $scr 'Start-BobTray.ps1'
+        Add-Spec 'Start Systray' $ps "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew" $InstallRoot 'Start the Bobiverse systray (restarts the ircBob service)'
     }
     if ($NeedLogon) {
         Add-Spec "Complete bobiverse service logon ($Product)" $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Complete-BobiverseServiceLogon.ps1')`" -Product $Product -InstallRoot `"$InstallRoot`"" $scr "Set the $Product service ObjectName password (required once after MSI)"
     }
-    Add-Spec "Logs ($Product)" (Join-Path $InstallRoot 'logs') '' $InstallRoot "$Product service logs"
-    Add-Spec "Skill books ($Product)" (Join-Path $InstallRoot '.grok\skills') '' $InstallRoot "$Product agent skill books (cd here and run an agent)"
-    Add-Spec "Agent guide ($Product)" (Join-Path $InstallRoot 'AGENTS.md') '' $InstallRoot "$Product AGENTS.md - start-here for agents"
     return $list.ToArray()
+}
+
+# t794u: the systray runs as the interactive user and must be able to stop/start ircBob (Exit stops it, Start Systray restarts
+# it). Services default to read-only for interactive users, so the installer adds start/stop/pause/interrogate for IU to the SDDL.
+# Pure: Sddl in, Sddl out (unchanged when IU already has the rights).
+function Get-BobiverseServiceSddlWithUserControl {
+    param([Parameter(Mandatory)][string]$Sddl)
+    $need = @('RP', 'WP', 'DT', 'LO', 'LC', 'CR')   # start, stop, pause/continue, interrogate, query status, read control
+    $m = [regex]::Match($Sddl, '\(A;;([A-Z]+);;;IU\)')
+    if ($m.Success) {
+        $have = @(); $r = $m.Groups[1].Value
+        for ($i = 0; $i + 1 -lt $r.Length; $i += 2) { $have += $r.Substring($i, 2) }
+        $all = @($have)
+        foreach ($n in $need) { if ($all -notcontains $n) { $all += $n } }
+        if ($all.Count -eq $have.Count) { return $Sddl }
+        return $Sddl.Substring(0, $m.Index) + '(A;;' + ($all -join '') + ';;;IU)' + $Sddl.Substring($m.Index + $m.Length)
+    }
+    $ace = '(A;;' + ($need -join '') + ';;;IU)'
+    $s = $Sddl.IndexOf('S:')
+    if ($s -ge 0) { return $Sddl.Substring(0, $s) + $ace + $Sddl.Substring($s) }
+    return $Sddl + $ace
+}
+
+# Needs an elevated caller (installer / hotpatch). Returns $true when the service now grants the interactive user start/stop.
+function Grant-BobiverseServiceUserControl {
+    param([Parameter(Mandatory)][string]$Name)
+    try {
+        if ($Name -notmatch '^[A-Za-z0-9_.-]{1,64}$') { return $false }
+        $sc = Join-Path $env:SystemRoot 'System32\sc.exe'
+        $cur = (@(& $sc sdshow $Name 2>&1) | Where-Object { $_ -match '^D:' } | Select-Object -First 1)
+        if (-not $cur) { return $false }
+        $new = Get-BobiverseServiceSddlWithUserControl -Sddl ([string]$cur).Trim()
+        if ($new -ceq ([string]$cur).Trim()) { return $true }
+        $out = & $sc sdset $Name $new 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Write-Host ("WARN service ACL for {0}: {1}" -f $Name, ($out -replace '\s+', ' ').Trim()); return $false }
+        Write-Host "INFO $Name : interactive users may start/stop the service (systray Exit / Start Systray)"
+        return $true
+    } catch {
+        Write-Host ("WARN service ACL for {0}: {1}" -f $Name, $_.Exception.Message)
+        return $false
+    }
 }
 
 # Remove the scattered / duplicate Bobiverse Start Menu entries left by older installers. Returns removed paths.
@@ -924,7 +952,8 @@ function Remove-BobiverseStartMenuDuplicates {
         }
         $ProgramsRoots = $roots.ToArray()
     }
-    $legacyTop = '^(Bob Systray.*|Bob Tray.*|Bobiverse Tray.*|Bobiverse.*|Bob Fleet.*|Restart ircBob|Restart ircJeeves|Restart Airc|Bob Services|Complete bobiverse service logon.*)\.lnk$'
+    $legacyTop = '^(Bob Systray.*|Bob Tray.*|Bobiverse Tray.*|Bobiverse.*|Bob Fleet.*|Restart ircBob|Restart ircJeeves|Restart Airc|Bob Services|Start Systray|Complete bobiverse service logon.*)\.lnk$'
+    $legacyInKeep = '^(Bob Services|Bobiverse Tray|Bob Systray.*|Restart (ircBob|ircJeeves|Airc)|Jeeves command reference|Logs \(.+\)|Skill books \(.+\)|Agent guide \(.+\))\.lnk$'
     $removed = New-Object System.Collections.Generic.List[string]
     foreach ($root in $ProgramsRoots) {
         if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
@@ -938,7 +967,16 @@ function Remove-BobiverseStartMenuDuplicates {
         # 2) legacy folders: "Bob Systray", and a Bobiverse folder that is NOT the kept all-users one
         foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
             $isKeep = $KeepDir -and ([IO.Path]::GetFullPath($d.FullName).TrimEnd('\') -ieq [IO.Path]::GetFullPath($KeepDir).TrimEnd('\'))
-            if ($isKeep) { continue }
+            if ($isKeep) {
+                # t794u: the kept folder holds ONE entry; drop every older per-product / duplicate link inside it
+                foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -File -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
+                    if ($f.Name -match $legacyInKeep) {
+                        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+                        $removed.Add($f.FullName)
+                    }
+                }
+                continue
+            }
             if ($d.Name -match '^(Bob Systray.*|Bob Tray.*|Bobiverse)$') {
                 foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -File -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
                     Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue

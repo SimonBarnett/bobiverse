@@ -26,6 +26,12 @@ if (-not (Test-Path -LiteralPath $src)) { throw "missing $src" }
 # PyInstaller needs every scripts dir on its path (the composed flat layout is the union of <service>\scripts).
 $pyPaths = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts')
 $pathArgs = @(); foreach ($pp in $pyPaths) { $pathArgs += @('--paths', $pp) }
+# t794u: the systray icon (assets\bob-systray.ico) is the exe's own icon (--icon) and is embedded as data so the worker
+# window can show it too (bob_worker.set_console_icon).
+$icoArgs = @()
+$ico = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\bob-tray\assets\bob-systray.ico'
+if ($ico -and (Test-Path -LiteralPath $ico)) { $icoArgs = @('--icon', $ico, '--add-data', "$ico;assets") }
+else { Write-Host 'WARN bob-systray.ico not found - bob-worker.exe gets the default icon' }
 if (-not $Python) {
     foreach ($c in @((Get-Command python.exe -ErrorAction SilentlyContinue).Source, 'C:\Program Files\Python312\python.exe', 'C:\Python312\python.exe')) {
         if ($c -and (Test-Path -LiteralPath $c)) { $Python = $c; break }
@@ -45,7 +51,7 @@ $dist = Join-Path $work 'dist'
 $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $log = & $Python -m PyInstaller --noconfirm --clean --onefile --console --name bob-worker `
     --distpath $dist --workpath (Join-Path $work 'build') --specpath $work `
-    @pathArgs --exclude-module tkinter --exclude-module numpy --exclude-module pandas --exclude-module matplotlib `
+    @pathArgs @icoArgs --exclude-module tkinter --exclude-module numpy --exclude-module pandas --exclude-module matplotlib `
     $src 2>&1
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEap

@@ -317,6 +317,15 @@ function Write-TrayLog([string]$m) {
     Add-Content -Path $logPath -Value ('{0:o} {1}' -f [datetime]::UtcNow, $m) -ErrorAction SilentlyContinue
 }
 
+# t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
+foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1')) {
+    $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
+    if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
+}
+$script:trayServiceName = 'ircBob'
+$script:trayExitReason = ''
+$script:aboutForm = $null
+
 function Test-BobTrayTipAlive {
     try {
         return ($null -ne $script:tip -and -not $script:tip.IsDisposed)
@@ -2174,6 +2183,133 @@ function Hide-BobTrayCard {
     Clear-BobNativeTip
 }
 
+# t795u: Status is THE default action of the icon: the menu item (bold = default), left click and double click all run it.
+function Invoke-BobTrayStatus {
+    Update-Hover
+    Show-BobTrayCard -Reason 'click'
+}
+
+# t794u: the ntsa gut logo badge shown by Acknowledge. The real asset is not in the repo or in agentic_build; drop it at
+# assets\ntsa-gut-logo.png and it is used automatically. Until then a drawn, clearly labelled placeholder is shown
+# (and assets\ntsa-gut-logo-PLACEHOLDER.png is honoured if someone provides a stand-in file).
+$script:ntsaGutLogoPath = Join-Path $RepoRoot 'assets\ntsa-gut-logo.png'
+$script:ntsaGutLogoPlaceholderPath = Join-Path $RepoRoot 'assets\ntsa-gut-logo-PLACEHOLDER.png'
+
+function Get-BobTrayLogoImage {
+    foreach ($lp in @($script:ntsaGutLogoPath, $script:ntsaGutLogoPlaceholderPath)) {
+        if (Test-Path -LiteralPath $lp) {
+            try {
+                $bytes = [IO.File]::ReadAllBytes($lp)
+                return [System.Drawing.Image]::FromStream((New-Object System.IO.MemoryStream (, $bytes)))
+            }
+            catch { Write-TrayLog ('logo load failed ' + $lp + ': ' + $_.Exception.Message) }
+        }
+    }
+    $bmp = New-Object System.Drawing.Bitmap 96, 96
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    try {
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.Clear([System.Drawing.Color]::FromArgb(24, 62, 48))
+        $white = [System.Drawing.Brushes]::White
+        $big = New-Object System.Drawing.Font 'Segoe UI', 20, ([System.Drawing.FontStyle]::Bold)
+        $small = New-Object System.Drawing.Font 'Segoe UI', 7
+        $g.DrawString('ntsa', $big, $white, 12, 8)
+        $g.DrawString('gut', $big, $white, 22, 38)
+        $g.DrawString('PLACEHOLDER', $small, [System.Drawing.Brushes]::Gold, 14, 78)
+        $big.Dispose(); $small.Dispose()
+    }
+    finally { $g.Dispose() }
+    return $bmp
+}
+
+# Acknowledge: clears the alert and shows the ntsa gut logo badge, "by Simon Barnett", and every installed product.
+function Show-BobTrayAbout {
+    try {
+        if ($script:aboutForm -and -not $script:aboutForm.IsDisposed) {
+            $script:aboutForm.Activate()
+            $script:aboutForm.BringToFront()
+            return
+        }
+        $rows = @(Get-BobInstallInfo -RepoRoot $RepoRoot)
+        $text = Format-BobInstallInfo -Rows $rows
+        $mid = [string]$env:BOB_MACHINE_ID
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = 'Bobiverse systray - about'
+        $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+        $form.ClientSize = New-Object System.Drawing.Size 580, 440
+        $form.MaximizeBox = $false
+        $form.MinimizeBox = $false
+        $form.TopMost = $true
+        try { $form.Icon = $iconIdle } catch { }
+        $logo = New-Object System.Windows.Forms.PictureBox
+        $logo.Image = Get-BobTrayLogoImage
+        $logo.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+        $logo.Location = New-Object System.Drawing.Point 16, 16
+        $logo.Size = New-Object System.Drawing.Size 96, 96
+        $title = New-Object System.Windows.Forms.Label
+        $title.Text = 'Bobiverse systray'
+        $title.Font = New-Object System.Drawing.Font 'Segoe UI', 15, ([System.Drawing.FontStyle]::Bold)
+        $title.AutoSize = $true
+        $title.Location = New-Object System.Drawing.Point 128, 16
+        $by = New-Object System.Windows.Forms.Label
+        $by.Text = 'by Simon Barnett'
+        $by.Font = New-Object System.Drawing.Font 'Segoe UI', 11
+        $by.AutoSize = $true
+        $by.Location = New-Object System.Drawing.Point 130, 52
+        $ver = New-Object System.Windows.Forms.Label
+        $ver.Text = ((Get-BobTrayProductVersionLabel) + '    machine: ' + $(if ($mid) { $mid } else { $env:COMPUTERNAME.ToLowerInvariant() }))
+        $ver.Font = New-Object System.Drawing.Font 'Segoe UI', 9
+        $ver.AutoSize = $true
+        $ver.Location = New-Object System.Drawing.Point 130, 84
+        $box = New-Object System.Windows.Forms.TextBox
+        $box.Multiline = $true
+        $box.ReadOnly = $true
+        $box.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+        $box.Font = New-Object System.Drawing.Font 'Consolas', 9
+        $box.Text = $text
+        $box.Location = New-Object System.Drawing.Point 16, 128
+        $box.Size = New-Object System.Drawing.Size 548, 256
+        $ok = New-Object System.Windows.Forms.Button
+        $ok.Text = 'Close'
+        $ok.Location = New-Object System.Drawing.Point 474, 398
+        $ok.Add_Click({ $script:aboutForm.Close() })
+        foreach ($c in @($logo, $title, $by, $ver, $box, $ok)) { $form.Controls.Add($c) }
+        $form.AcceptButton = $ok
+        $form.Add_FormClosed({ $script:aboutForm = $null })
+        $script:aboutForm = $form
+        $form.Show()
+        Write-TrayLog ('about dialog shown: ' + $rows.Count + ' install folder(s)')
+    }
+    catch { Write-TrayLog ('about dialog error: ' + $_.Exception.Message) }
+}
+
+# Close every dialog the tray owns: the pools card and the about dialog. Never throws.
+function Close-BobTrayDialogs {
+    try { if ($script:aboutForm -and -not $script:aboutForm.IsDisposed) { $script:aboutForm.Close(); $script:aboutForm.Dispose() } } catch { }
+    $script:aboutForm = $null
+    try {
+        if (Test-BobTrayTipAlive) {
+            try { [void]$script:tip.TryHide() } catch { try { $script:tip.Hide() } catch { } }
+            $script:tip.Dispose()
+        }
+    }
+    catch { }
+    $script:tip = $null
+}
+
+# t798u: Exit. 1) close dialogs + dispose the icon immediately, 2) leave the UI loop, 3) start the service stop detached
+# (fire and forget: sc.exe in its own process, never waited for). Nothing else runs before the icon is gone.
+function Invoke-BobTrayExit {
+    $script:trayExitReason = 'Exit'
+    Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI, stop ircBob (detached)'
+    [void](Invoke-BobTrayExitSequence `
+            -CloseDialogs { Close-BobTrayDialogs } `
+            -DisposeIcon { $notify.Visible = $false; $notify.Dispose() } `
+            -ExitUi { $ctx.ExitThread() } `
+            -StopService { [void](Stop-BobTrayService -ServiceName $script:trayServiceName) })
+}
+
 function Get-BobTrayCursorHelpTooltip {
     return (Get-BobTrayCursorGroupHelpTooltip -GroupId '')
 }
@@ -2732,6 +2868,7 @@ $notify.Visible = $false
 $notify.Text = ''
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miStatus = $menu.Items.Add('Status')
+$miStatus.Font = New-Object System.Drawing.Font($miStatus.Font, [System.Drawing.FontStyle]::Bold)   # t795u: bold = the default item
 # t762u: ONE plain click each (NO submenus). Every click starts a NEW agent via bob-worker.exe
 # (cursor pool > 0 -> agent.cmd; else Grok weekly tokens -> agent.exe; else key dialog). Never resumes/attaches (t765u).
 $miAgents = $menu.Items.Add('Agent')
@@ -2745,24 +2882,25 @@ $miRestart = $menu.Items.Add('Restart')
 $miExit = $menu.Items.Add('Exit')
 $notify.ContextMenuStrip = $menu
 
-$miStatus.Add_Click({
-        Update-Hover
-        Show-BobTrayCard -Reason 'click'
+$miStatus.Add_Click({ Invoke-BobTrayStatus })
+$miAck.Add_Click({
+        Clear-Attention
+        Show-BobTrayAbout
     })
-$miAck.Add_Click({ Clear-Attention })
 $miLog.Add_Click({ if (Test-Path $logPath) { Start-Process notepad.exe $logPath } })
 $ctx = New-Object System.Windows.Forms.ApplicationContext
 $miRestart.Add_Click({ Restart-BobTrayWatcher })
-$miExit.Add_Click({
-        try { Request-BobTrayIrcLogout -Reason Exit } catch { Write-TrayLog ('exit irc logout: ' + $_.Exception.Message) }
-        $ctx.ExitThread()
-    })
+$miExit.Add_Click({ Invoke-BobTrayExit })
 $notify.Add_MouseClick({
         param($s, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             if ($script:attention) { Clear-Attention }
-            Show-BobTrayCard -Reason 'click'
+            Invoke-BobTrayStatus
         }
+    })
+$notify.Add_MouseDoubleClick({
+        param($s, $e)
+        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Invoke-BobTrayStatus }
     })
 
 $flash = New-Object System.Windows.Forms.Timer
@@ -2857,7 +2995,10 @@ Write-TrayLog 'tray up'
 [System.Windows.Forms.Application]::Run($ctx)
 $poll.Stop(); $flash.Stop(); $pulse.Stop(); $pulseOff.Stop()
 # Exit path (menu Exit/Restart already announced+logout). Idempotent; skip second announce.
-try { Request-BobTrayIrcLogout -Reason Exit -SkipAnnounce } catch { Write-TrayLog ('final irc logout: ' + $_.Exception.Message) }
+# t798u: Exit already stopped ircBob (detached); the slow logout/kill path is only for Restart and external stops.
+if ($script:trayExitReason -ne 'Exit') {
+    try { Request-BobTrayIrcLogout -Reason Exit -SkipAnnounce } catch { Write-TrayLog ('final irc logout: ' + $_.Exception.Message) }
+}
 if (Test-BobTrayTipAlive) {
     try { [void]$script:tip.TryHide() } catch { try { $script:tip.Hide() } catch { } }
     try { $script:tip.Dispose() } catch { }

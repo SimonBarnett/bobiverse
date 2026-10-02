@@ -454,6 +454,55 @@ def ensure_console(title: str = "") -> bool:
     return True
 
 
+def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
+    """t794u: the systray icon (assets\\bob-systray.ico) for the worker window: the install, then the copy PyInstaller embedded."""
+    cands: list = []
+    if install_root:
+        cands.append(Path(install_root) / "assets" / "bob-systray.ico")
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        cands.append(Path(mei) / "assets" / "bob-systray.ico")
+    cands.append(Path(__file__).resolve().parent.parent / "assets" / "bob-systray.ico")
+    cands.append(Path(__file__).resolve().parent.parent / "third_party" / "bob-tray" / "assets" / "bob-systray.ico")
+    for c in cands:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            pass
+    return None
+
+
+def set_console_icon(install_root: Optional[Path] = None) -> bool:
+    """t794u: put the systray icon on the worker's console window (title bar + taskbar). The exe itself carries the same icon
+    (PyInstaller --icon). Typed ctypes (HWND/HICON are pointers); never raises, never prints."""
+    if os.name != "nt":
+        return False
+    try:
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        k32.GetConsoleWindow.restype = ctypes.c_void_p
+        u32.LoadImageW.restype = ctypes.c_void_p
+        u32.LoadImageW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u32.SendMessageW.restype = ctypes.c_ssize_t
+        u32.SendMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
+        hwnd = k32.GetConsoleWindow()
+        ico = find_window_icon(install_root)
+        if not hwnd or not ico:
+            return False
+        done = False
+        for which, px in ((0, 16), (1, 32)):   # ICON_SMALL, ICON_BIG ; LR_LOADFROMFILE
+            h = u32.LoadImageW(None, str(ico), 1, px, px, 0x10)
+            if h:
+                u32.SendMessageW(hwnd, 0x80, which, h)   # WM_SETICON
+                done = True
+        return done
+    except Exception:
+        return False
+
+
 _CTRL_KEEP: list = []
 
 
@@ -1672,6 +1721,7 @@ def run_agent(args, log: Log) -> int:
     log.path = run_dir / "worker.log"
     log(f"worker: pid={pid} nick={nick} shop=#{machine} kind={kind} run_dir={run_dir}")
     ensure_console(f"Bob worker {nick} ({kind}) - closing this window ends the agent")
+    set_console_icon(Path(args.install_root))
     pw = find_ergo_password(Path(args.install_root))
     sasl = None
     if os.environ.get("BOB_IRC_SASL_USER") and os.environ.get("BOB_IRC_SASL_PASSWORD"):

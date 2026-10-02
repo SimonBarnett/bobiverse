@@ -1,14 +1,16 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Bob Systray launcher (Start Menu / Desktop shortcut target).
-# CAST IRON: always check git for updates and install via scripts (no LLM)
-# before starting the tray. Show Updating dialog when behind origin.
+# t794u: the tray does NOT update anything. Updating is the ircBob service's job (Start-Bob -> Update-BobiverseService / work-tree
+# sync). Starting the tray RESTARTS the ircBob service (detached, never waited for), so a tray start also picks up a pending update.
 # Prefer tools\_Watch-BobTray-<machineId>.ps1 (sets BOB_MACHINE_ID + IRC home).
 # ASCII-only for Windows PowerShell 5.1 UTF-8 no BOM.
 [CmdletBinding()]
 param(
     [string]$RepoRoot,
     [switch]$ForceNew,
-    [switch]$SkipUpdate,
+    [switch]$SkipUpdate,            # accepted and ignored: older launchers still pass it (the tray has no update logic any more)
+    [switch]$SkipServiceRestart,    # tests / service-driven recycles: do not restart ircBob
+    [string]$ServiceName = 'ircBob',
     [switch]$SkipTidy,
     [switch]$WhatIf
 )
@@ -88,23 +90,6 @@ function Get-BobSystrayTrayProcesses {
                 $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1'
             )
         })
-}
-
-# --- deterministic update gate (start + restart) ---
-if (-not $SkipUpdate) {
-    $updater = Join-Path $RepoRoot 'tools\Update-BobSystrayFromGit.ps1'
-    if (Test-Path -LiteralPath $updater) {
-        $ps = (Get-Command powershell.exe).Source
-        $updArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $updater, '-RepoRoot', $RepoRoot)
-        if ($WhatIf) { $updArgs += '-WhatIf' }
-        $updOut = & $ps @updArgs 2>&1
-        $updCode = $LASTEXITCODE
-        if ($null -eq $updCode) { $updCode = 0 }
-        Write-Output (@($updOut) -join "`n")
-        if ($updCode -ne 0) {
-            Write-Warning "Bob Systray update exited $updCode - starting tray from current tree"
-        }
-    }
 }
 
 function Invoke-BobSystrayTidy {
@@ -232,6 +217,17 @@ if ($hits.Count -gt 0 -and -not $ForceNew) {
 if ($WhatIf) {
     Write-Output 'would-tidy-and-start-tray'
     exit 0
+}
+
+# t794u: starting the systray restarts the service (fire and forget: a detached helper stops, waits for STOPPED, starts).
+if (-not $SkipServiceRestart -and ([string]$env:BOBIVERSE_NO_SERVICE_RESTART).Trim() -ne '1') {
+    $lifecycle = Join-Path $PSScriptRoot 'BobTrayLifecycle.ps1'
+    if (Test-Path -LiteralPath $lifecycle) {
+        . $lifecycle
+        $svcPid = Restart-BobTrayService -ServiceName $ServiceName -ToolsDir $PSScriptRoot
+        Write-Output ('restarting service {0} (detached helper pid={1})' -f $ServiceName, $svcPid)
+    }
+    else { Write-Warning "missing $lifecycle - ircBob not restarted" }
 }
 
 $mid = Get-BobSystrayMachineId

@@ -83,6 +83,11 @@ function Stage-Product([string]$Name) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') (Join-Path $stage 'VERSION') -Force
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') (Join-Path $stage 'src\VERSION') -Force
+    # t797u: BUILD.json = what the tray About dialog shows as version / build date / commit for this install folder.
+    $buildCommit = ''
+    try { $buildCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
+    ([ordered]@{ product = $Name; version = $Version; built_utc = [datetime]::UtcNow.ToString('o'); commit = $buildCommit.Trim() } |
+        ConvertTo-Json -Compress) | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding ascii
 
     # Product AGENTS.md (repo AGENTS.<product>.md -> stage AGENTS.md)
     $agentsSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel "AGENTS.$Name.md"

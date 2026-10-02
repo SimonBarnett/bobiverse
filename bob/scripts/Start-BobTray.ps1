@@ -6,10 +6,9 @@
   Sets BOB_MACHINE_ID / BOB_BRIDGE_HOME / IRC home, then starts tools\Watch-BobTray.ps1
   under InstallRoot (STA). Companion to the ircBob Windows service — not a BobFleet task.
 .NOTES
-  CAST IRON: product Sync/ff runs only on ircBob service start (Start-Bob).
-  This launcher always passes -SkipUpdate to Start-BobFleetTray.
-  TipForm menu Restart calls Restart-BobEar (service recycle -> Start-Bob Sync/ff),
-  then relaunches the tray watcher in the interactive session.
+  t794u: the tray never updates. Product Sync/ff and the release self-update run only on ircBob service start (Start-Bob).
+  Starting the tray (this launcher, the 'Start Systray' shortcut, logon autostart, tray Restart) restarts ircBob via
+  Start-BobFleetTray, so a start also applies a pending update. Tray Exit stops ircBob (detached).
 #>
 [CmdletBinding()]
 param(
@@ -103,12 +102,12 @@ if ($ForceNew -or $prior.Count -gt 0) {
     Start-Sleep -Milliseconds 600
 }
 
-# Prefer Start-BobFleetTray when present (tidy + MSI update stub); else Watch-BobTray direct.
+# Prefer Start-BobFleetTray when present (tidy + ircBob restart); else Watch-BobTray direct.
 $fleetStart = Join-Path $InstallRoot 'tools\Start-BobFleetTray.ps1'
 if (Test-Path -LiteralPath $fleetStart) {
     $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1'
     if ($noTidy) { Write-Host 'INFO tray start: SkipTidy (seats and Grok Bot are left running)' }
-    & $fleetStart -RepoRoot $InstallRoot -SkipUpdate -ForceNew:$ForceNew -SkipTidy:$noTidy
+    & $fleetStart -RepoRoot $InstallRoot -ForceNew:$ForceNew -SkipTidy:$noTidy
     exit $LASTEXITCODE
 }
 

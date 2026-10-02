@@ -1,10 +1,10 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Vendor TipForm Watch-BobTray + BobBridge into third_party/bob-tray for bob MSI.
 .NOTES
   Copies allowlisted files from a local agentic_build tree. Writes PIN.txt = git SHA.
-  Does NOT ship Update-BobSystrayFromGit git-pull; MSI updates use Check-BobiverseUpdate.
+  The tray has NO update logic (t794u): no git-pull / Update-BobSystrayFromGit / Updating dialog / Bootstrap; the ircBob service updates.
   ASCII-only for Windows PowerShell 5.1.
 #>
 [CmdletBinding()]
@@ -60,9 +60,7 @@ $PinSha = ([string]$PinSha).Trim()
 $toolFiles = @(
     'Watch-BobTray.ps1',
     'Start-BobFleetTray.ps1',
-    'Bootstrap-BobSystray.ps1',
     'Install-VisionarySkills.ps1',
-    'Show-BobSystrayUpdatingDialog.ps1',
     'Stop-BobSystrayPriorAgents.ps1',
     'Get-BobBoxUsage.ps1'
 )
@@ -75,7 +73,7 @@ $optionalTools = @(
 
 # #60: bobiverse-owned tools that upstream does not ship (or ships a machine-specific copy of).
 # They are preserved across a re-sync so the vendored tray keeps working on every machine.
-$ownedTools = @('Get-CursorAgentUsage.py')
+$ownedTools = @('Get-CursorAgentUsage.py', 'BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'Invoke-BobTrayServiceControl.ps1')
 $ownedKeep = @{}
 foreach ($leaf in $ownedTools) {
     $p = Join-Path $OutDir "tools\$leaf"
@@ -131,6 +129,9 @@ foreach ($sub in @('Public', 'Private')) {
 $ico = Join-Path $srcRoot 'assets\bob-systray.ico'
 if (-not (Test-Path -LiteralPath $ico)) { throw "missing $ico" }
 Copy-Item -LiteralPath $ico -Destination (Join-Path $OutDir 'assets\bob-systray.ico') -Force
+# t794u: the ntsa gut logo (Acknowledge badge) is not in agentic_build; copy it when someone adds it, else the tray draws a labelled placeholder.
+$logo = Join-Path $srcRoot 'assets\ntsa-gut-logo.png'
+if (Test-Path -LiteralPath $logo) { Copy-Item -LiteralPath $logo -Destination (Join-Path $OutDir 'assets\ntsa-gut-logo.png') -Force }
 
 foreach ($cfg in @('bobiverse.json', 'bob-seats.json', 'default.json', 'fleet-registry.json')) {
     $from = Join-Path $srcRoot "config\$cfg"
@@ -139,59 +140,6 @@ foreach ($cfg in @('bobiverse.json', 'bob-seats.json', 'default.json', 'fleet-re
         Copy-Item -LiteralPath $from -Destination (Join-Path $OutDir "config\$cfg") -Force
     }
 }
-
-# MSI companion: no agentic_build git-pull. Restart uses Check-BobiverseUpdate when present.
-$msiUpdate = @'
-#Requires -Version 5.1
-# Vendored for bob MSI TipForm tray. Does NOT git-pull agentic_build.
-# Product updates: scripts\Check-BobiverseUpdate.ps1 (GitHub Releases MSI).
-[CmdletBinding()]
-param(
-    [string]$RepoRoot,
-    [string]$Branch = 'main',
-    [switch]$Force,
-    [switch]$WhatIf,
-    [switch]$SkipDialog,
-    [string]$GitExe = 'git'
-)
-
-$ErrorActionPreference = 'Continue'
-if (-not $RepoRoot) { $RepoRoot = Split-Path $PSScriptRoot -Parent }
-$RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
-
-$result = [ordered]@{
-    ok      = $true
-    updated = $false
-    behind  = $false
-    count   = 0
-    dialog  = $false
-    error   = $null
-    summary = 'msi-tray: skip agentic_build git-pull (use Check-BobiverseUpdate)'
-}
-
-$checker = Join-Path $RepoRoot 'scripts\Check-BobiverseUpdate.ps1'
-if (-not (Test-Path -LiteralPath $checker)) {
-    $checker = Join-Path (Split-Path $RepoRoot -Parent) 'bob\scripts\Check-BobiverseUpdate.ps1'
-}
-if ($Force -and (Test-Path -LiteralPath $checker) -and -not $WhatIf) {
-    try {
-        $ps = (Get-Command powershell.exe).Source
-        & $ps -NoProfile -ExecutionPolicy Bypass -File $checker -Product bob -InstallRoot $RepoRoot -DryRun 2>&1 | Out-Null
-        $result.summary = 'msi-tray: Check-BobiverseUpdate -DryRun invoked'
-    } catch {
-        $result.error = $_.Exception.Message
-        $result.summary = 'msi-tray: Check-BobiverseUpdate dry-run failed (non-fatal)'
-    }
-}
-
-$result | ConvertTo-Json -Compress
-exit 0
-'@
-[IO.File]::WriteAllText(
-    (Join-Path $OutDir 'tools\Update-BobSystrayFromGit.ps1'),
-    $msiUpdate.TrimStart() + "`r`n",
-    [Text.UTF8Encoding]::new($false)
-)
 
 [IO.File]::WriteAllText(
     (Join-Path $OutDir 'PIN.txt'),

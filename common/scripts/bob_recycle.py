@@ -345,6 +345,8 @@ def _default_recycle_tray(build_root: Path) -> None:
                 "-RepoRoot",
                 str(build_root),
                 "-ForceNew",
+                # t794u: this runs INSIDE the ircBob service; starting the tray must not restart (kill) its own caller
+                "-SkipServiceRestart",
             ],
             cwd=str(build_root),
             creationflags=subprocess.CREATE_NO_WINDOW
