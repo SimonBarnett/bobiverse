@@ -66,9 +66,14 @@ def roster_machine_ids(home: Path | None = None, *, fold: bool = True) -> tuple[
     Pure file read (cached by the chair's periodic ``ChanServ LIST`` sync, see
     ``registered_machines.sync_from_chanserv``) so the HTTP digest path never talks to IRC.
     An empty/missing registry is an EMPTY roster, not a bootstrap fleet.
+
+    ``home`` may be the chair home (``~/.jeeves``); the ChanServ mirror lives in the digest
+    home (``BOB_DIGEST_HOME`` / ``~/.bobiverse``) — FR #69.
     """
     if home is None:
         home = _default_digest_home()
+    elif home is not None:
+        home = fleet_digest_home(Path(home))
     if home is not None:
         reg = registered_machines.load_registered(Path(home))
         if reg:
@@ -1621,6 +1626,8 @@ def apply_quit(home: Path, nick: str, briefer_nick: str = "") -> PresenceOutcome
 
 @_digest_locked
 def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> CallbackOutcome:
+    # FR #69: chair --home is ~/.jeeves; digest.json + ChanServ roster live in BOB_DIGEST_HOME.
+    home = fleet_digest_home(Path(home))
     if not isinstance(payload, dict):
         return CallbackOutcome(ok=False, err="malformed")
     if any(k.lower() in ("secret", "x-bob-secret", "password") for k in payload):

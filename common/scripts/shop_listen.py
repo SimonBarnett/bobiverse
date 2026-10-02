@@ -200,8 +200,12 @@ def format_activity_payload(
 
 
 def apply_activity_local(home: Path, payload: dict, briefer: str = "Jeeves"):
-    """Apply activity to local digest (tests / same-box chair)."""
-    return bobreport.apply_callback(home, payload, briefer)
+    """Apply activity to local digest (tests / same-box chair).
+
+    FR #69: resolve ``BOB_DIGEST_HOME`` so a chair ``--home`` (~/.jeeves) still updates
+    the ChanServ-mirrored digest home, not a stale chair-home roster copy.
+    """
+    return bobreport.apply_callback(bobreport.fleet_digest_home(Path(home)), payload, briefer)
 
 
 def post_activity(

@@ -1,4 +1,4 @@
-﻿r"""Bobiverse home layout + one-time migration from the pre-0.1.15 ``~\.agentic-irc-*`` homes.
+r"""Bobiverse home layout + one-time migration from the pre-0.1.15 ``~\.agentic-irc-*`` homes.
 
 Homes (no agentic_irc dependency):
   chair home   BOB_HOME           default ``~/.jeeves``      (Jeeves identity, operators, accounts)
@@ -29,6 +29,8 @@ SKIP_NAMES = {".agentic-irc-service-start", ".bobiverse-service-start", "agent.q
 SECRET_NAMES = ("report.secret", "github.token", "nickserv.password", "identity.json")
 # the files the fleet cares about most (reported by name in the migration summary)
 KEY_FILES = ("digest.json", "focus.json", "ignored.json", "queue.json", "registered-machines.json")
+# FR #69: digest-only files must never land in the chair home (stale second roster -> webhook 400)
+DIGEST_ONLY_FILES = frozenset(KEY_FILES)
 
 
 def _admin_profile() -> Path:
@@ -83,8 +85,10 @@ def legacy_candidates(new_home: Path, role: str = "") -> list[Path]:
     return out
 
 
-def _skip(p: Path) -> bool:
+def _skip(p: Path, extra_skip: frozenset[str] | None = None) -> bool:
     n = p.name
+    if extra_skip and n in extra_skip:
+        return True
     return n in SKIP_NAMES or n.lower().endswith(SKIP_SUFFIXES)
 
 
@@ -112,9 +116,9 @@ def _unreadable_protected(path: Path) -> bool:
         return False
 
 
-def _copy_tree(src: Path, dst: Path, stats: dict) -> None:
+def _copy_tree(src: Path, dst: Path, stats: dict, extra_skip: frozenset[str] | None = None) -> None:
     for entry in sorted(src.iterdir()):
-        if _skip(entry):
+        if _skip(entry, extra_skip):
             continue
         target = dst / entry.name
         try:
@@ -122,7 +126,7 @@ def _copy_tree(src: Path, dst: Path, stats: dict) -> None:
                 if entry.name == "__pycache__":
                     continue
                 target.mkdir(parents=True, exist_ok=True)
-                _copy_tree(entry, target, stats)
+                _copy_tree(entry, target, stats, extra_skip)
             elif entry.is_file():
                 if _unreadable_protected(entry):
                     stats["skipped_protected"].append(entry.name)
@@ -158,7 +162,12 @@ def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: st
         return {"status": "no-legacy", "new": str(new_home)}
     new_home.mkdir(parents=True, exist_ok=True)
     stats = {"copied": 0, "kept": 0, "names": [], "errors": [], "conflicts": [], "skipped_protected": []}
-    _copy_tree(Path(old), new_home, stats)
+    # Infer chair role from folder name when caller omits role (FR #69)
+    role_l = (role or "").strip().lower()
+    if not role_l and new_home.name.lower() == CHAIR_NAME:
+        role_l = "chair"
+    extra_skip = DIGEST_ONLY_FILES if role_l == "chair" else None
+    _copy_tree(Path(old), new_home, stats, extra_skip)
     summary = {
         "status": "error" if stats["errors"] and not stats["copied"] else "migrated",
         "old": str(old),
@@ -227,6 +236,11 @@ def ensure_homes(chair: Path | None = None, digest: Path | None = None, log=prin
                 f"key={','.join(res['key_files']) or '-'} secrets={','.join(res['secret_files']) or '-'} "
                 "(old home kept as backup)"
             )
+            if res.get("skipped_protected"):
+                log(
+                    f"INFO home-migration skipped DPAPI-bound files this account cannot decrypt: "
+                    f"{','.join(res['skipped_protected'])} (a fresh one is created)"
+                )
             if res.get("skipped_protected"):
                 log(
                     f"INFO home-migration skipped DPAPI-bound files this account cannot decrypt: "
