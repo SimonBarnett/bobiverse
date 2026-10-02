@@ -759,7 +759,7 @@ def accept_for_agent(src: str, target: str, text: str, own_nick: str, jeeves: st
     return addressed_to(text, own_nick)
 
 
-def format_from(nick: str, target: str, text: str, maxlen: int = 350) -> str:
+def format_from(nick: str, target: str, text: str, maxlen: int = 2000) -> str:
     return "FROM %s %s %s" % (nick, target, one_line(text, maxlen))
 
 
