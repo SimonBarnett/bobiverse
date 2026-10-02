@@ -36,3 +36,9 @@ Console input injection into the raw-mode Cursor / Grok TUIs; a real Ergo regist
 The worker's `UAT` job (skill `bobiverse-bob-job-uat`, with its mermaid diagram) verifies the merged product against the **VISION** (`docs/vision.md`) and any specs, then branches on the gaps:
 **gaps** -> one FR per gap filed through the intake (`Report-BobiverseIntakeIssue.ps1 -Kind fr`), verdict `UAT FAIL`, **no release**; **no gaps** -> documentation and READMEs updated (one docs PR), `VERSION` bumped, `Pack-BobiverseRelease.ps1`, `gh release create`, verdict `UAT PASS`.
 The wire contract is unchanged: `ACK UAT owner/repo#N`, then `DONE UAT owner/repo#N PASS|FAIL [url]` (or `NACK` / `GIVEUP`) in the worker's own `#<machine>`; Jeeves/the chair only does queue bookkeeping and never verifies, files or releases.
+
+## Issues close with their PR (t826u)
+
+* **FR**: the PR body carries `Closes <owner>/<repo>#N` (full form) for the originating issue; the worker checks `closingIssuesReferences` before `DONE FR`.
+* **MRB**: PASS merges the PR (and its one docs/fix PR) when the assigned MRB authorises it; otherwise it confirms the `Closes` link. If the issue is still open after the merge (non-default base branch, missing link) the worker closes it with a comment (PR url + verdict). `DONE MRB` only once the issue is closed or linked.
+* **Queue (chair)**: an `issues closed` webhook drops the issue's FR/PR rows (FR #180 point 4, also the 15-minute GitHub resync); the UAT row a merged PR queued is kept, because the merge itself closes the issue. `gitclaim.extract_closes_issue_ids` understands `Closes #N` and `Closes owner/repo#N` (another repo's link is ignored).

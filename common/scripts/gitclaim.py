@@ -45,8 +45,9 @@ CLAIM_ACTIONS: dict[tuple[str, str], str] = {
     ("pull_request", "opened"): "MRB",
     ("pull_request", "ready_for_review"): "MRB",
 }
+# t826u: `Closes #N` and the full `Closes owner/repo#N` form (what the worker FR skill mandates in every FR PR body).
 CLOSES_RE = re.compile(
-    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+#(\d+)\b"
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<num>\d+)\b"
 )
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -412,13 +413,19 @@ def _payload_number(event: str, payload: dict) -> str | None:
 
 
 
-def extract_closes_issue_ids(*texts: str) -> tuple[str, ...]:
-    """Issue ids referenced via Closes/Fixes/Resolves/Refs #n (deterministic)."""
+def extract_closes_issue_ids(*texts: str, repo: str = "") -> tuple[str, ...]:
+    """Issue ids referenced via Closes/Fixes/Resolves/Refs #n or ``Closes owner/repo#n`` (deterministic).
+
+    With ``repo`` given, a link that names ANOTHER repo is ignored (it closes an issue elsewhere, not a row of this repo's queue).
+    """
     found: list[str] = []
     seen: set[str] = set()
     for text in texts:
         for m in CLOSES_RE.finditer(text or ""):
-            ident = f"#{int(m.group(1))}"
+            named = (m.group("repo") or "").lower()
+            if repo and named and named != repo.lower():
+                continue
+            ident = f"#{int(m.group('num'))}"
             if ident not in seen:
                 seen.add(ident)
                 found.append(ident)
@@ -471,7 +478,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         pr = _pr_blob(payload)
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
-        refs = extract_closes_issue_ids(title, body, src)
+        refs = extract_closes_issue_ids(title, body, src, repo=repo)
         task = "MRB" if action in ("opened", "ready_for_review") else "MRB"
         return GitClaim(
             repo=repo, task=task, id=ident, event=ev, action=action, line=src, refs=refs
@@ -484,7 +491,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         pr = _pr_blob(payload)
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
-        refs = extract_closes_issue_ids(title, body, src)
+        refs = extract_closes_issue_ids(title, body, src, repo=repo)
         merged = bool(pr.get("merged"))
         return GitClaim(
             repo=repo,
@@ -589,7 +596,16 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 changed = _append_unaccepted(doc, claim)
 
             elif ev == "issues" and action == "closed":
-                n = _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"FR", "PR", "UAT"})
+                # t826u: a closed issue drops its FR/PR rows (FR #180 point 4). A UAT row queued BY A MERGED PR is kept: every FR PR
+                # carries `Closes owner/repo#N`, so the merge itself closes the issue and the UAT of that merge must still be assigned.
+                n = _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"FR", "PR"})
+                before = len(doc["unaccepted"])
+                doc["unaccepted"] = [
+                    r for r in doc["unaccepted"]
+                    if not (r.get("repo") == claim.repo and r.get("id") == claim.id and r.get("task") == "UAT"
+                            and r.get("action") != "uat")
+                ]
+                n += before - len(doc["unaccepted"])
                 changed = "removed" if n else "noop"
 
             elif ev == "pull_request" and action in ("opened", "ready_for_review", "edited"):
@@ -1241,7 +1257,7 @@ def resync_from_github(
                 continue
             title = str(pr.get("title") or "")
             body = str(pr.get("body") or "")
-            refs = extract_closes_issue_ids(title, body)
+            refs = extract_closes_issue_ids(title, body, repo=repo)
             for r in refs:
                 closed_by_pr.add(r)
             desired.append(
