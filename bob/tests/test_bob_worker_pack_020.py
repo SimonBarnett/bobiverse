@@ -74,6 +74,7 @@ def test_tray_second_click_starts_a_second_new_process_from_the_same_run_copy(tm
         f"$RepoRoot='{fake}'\n"
         "function Write-TrayLog($m){ Write-Output ('LOG ' + $m) }\n"
         "function Get-BobTrayMachineId { 'testbox' }\n"
+        "function Get-BobTrayWorkerCapRefusal { '' }  # t815u: the harness must not depend on the live process table\n"
         f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{TRAY}',[ref]$null,[ref]$null)\n"
         "foreach($name in 'ConvertTo-BobTrayProcessArgumentString','Initialize-BobTrayConsoleLauncher','Register-BobTrayGrokSession','Start-BobTrayVisibleProcessWithSessionEnv','Start-BobTrayWorkerExe'){\n"
         "  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true).Extent.Text\n"
@@ -112,6 +113,7 @@ def test_tray_click_from_a_hidden_tray_opens_one_visible_console_window(tmp_path
         f"$RepoRoot='{fake}'\n"
         f"function Write-TrayLog($m){{ Add-Content '{out}' ('LOG ' + $m) }}\n"
         "function Get-BobTrayMachineId { 'testbox' }\n"
+        "function Get-BobTrayWorkerCapRefusal { '' }  # t815u: the harness must not depend on the live process table\n"
         f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{TRAY}',[ref]$null,[ref]$null)\n"
         "foreach($name in 'ConvertTo-BobTrayProcessArgumentString','Initialize-BobTrayConsoleLauncher','Register-BobTrayGrokSession','Start-BobTrayVisibleProcessWithSessionEnv','Start-BobTrayWorkerExe'){\n"
         "  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true).Extent.Text\n"
@@ -339,3 +341,36 @@ def test_tray_does_not_spawn_a_missing_watch_bobjobs():
     guard = start.index("Test-Path -LiteralPath $watchJobs")
     assert guard < start.index("Start-Process"), "the existence check must come before Start-Process"
     assert "return" in start[guard:start.index("Start-Process")]
+
+# ------------------------------------------------------------------------------------------------ t820u: the UAT flow = verify vs VISION/specs -> FR per gap (no release) | docs + release
+def test_uat_skill_is_the_vision_gap_flow_with_fr_per_gap_or_docs_and_release():
+    t = (SK / "bobiverse-bob-job-uat" / "SKILL.md").read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+    mer = t.split("```mermaid\n", 1)[1].split("```", 1)[0]
+    assert t.count("```mermaid") == 1
+    # diagram: assign -> ACK -> read VISION/specs -> verify -> gaps? -> (FR per gap, no release, FAIL) | (docs/READMEs, release, PASS) -> DONE
+    for needle in ("VISION", "specs", "Any gaps?", "FR per gap", "NO release", "documentation and READMEs", "Create the release", "gh release create"):
+        assert needle in mer, needle
+    assert mer.index("ACK UAT") < mer.index("VISION") < mer.index("Any gaps?") < mer.index("FR per gap") < mer.index("DONE UAT")
+    assert mer.index("Any gaps?") < mer.index("documentation and READMEs") < mer.index("Create the release") < mer.rindex("DONE UAT")
+    assert "-->|\"gaps\"|" in mer.replace(" ", "") .replace('-->|"gaps"|', '-->|"gaps"|') or '|"gaps"|' in mer
+    assert '|"no gaps"|' in mer
+    # the FAIL branch never reaches the release node: nothing between 'gaps' and its DONE mentions the release
+    fail = mer[mer.index('|"gaps"|'):mer.index('|"no gaps"|')]
+    assert "release" not in fail.lower().replace("no release", "")
+    # text: steps, evidence, owners, rules
+    assert re.search(r"(?i)one FR per gap", t) and re.search(r"(?i)gaps => no release", t)
+    assert "Report-BobiverseIntakeIssue.ps1 -Repo owner/name -Kind fr" in t
+    assert re.search(r"(?i)update the docs and READMEs", t) and "Pack-BobiverseRelease.ps1 -Product all" in t and "gh release create" in t
+    assert re.search(r"(?i)never by Jeeves", t) and re.search(r"(?i)Jeeves / the chair .*never verifies", t)
+    assert "DONE UAT owner/repo#N FAIL" in t and "DONE UAT owner/repo#N PASS" in t              # wire contract unchanged
+    assert re.search(r"(?i)NACK UAT", t) and "GIVEUP" in t
+    assert re.search(r"(?i)evidence before stamp", t)
+
+
+def test_uat_release_exception_is_stated_in_the_worker_rules_and_the_wire_skill_and_docs():
+    a = (ROOT / "bob-agents" / "worker" / "AGENTS.md").read_text(encoding="utf-8-sig")
+    assert re.search(r"(?i)EXCEPT in an assigned UAT job that finds NO gaps", a) and "any gap = an FR each via intake and NO release" in a
+    irc = (SK / "bobiverse-bob-job-irc" / "SKILL.md").read_text(encoding="utf-8-sig")
+    assert "ACK <TYPE> <owner/repo>#<N>" in irc and re.search(r"(?i)a FAIL means an FR per gap and NO release", irc)
+    doc = (ROOT / "docs" / "bob-worker.md").read_text(encoding="utf-8-sig")
+    assert "## UAT job flow" in doc and "no release" in doc.lower() and "`gh release create`" in doc

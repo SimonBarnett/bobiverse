@@ -209,7 +209,7 @@ def test_pack_writes_build_json_and_tray_ships_the_about_helpers():
     pack = _t(ROOT.parent / "common" / "scripts" / "Pack-BobiverseRelease.ps1") if (ROOT.parent / "common").is_dir() else ""
     if pack:
         assert "BUILD.json" in pack and "built_utc" in pack
-    for f in ("Get-BobInstallInfo.ps1", "BobTrayLifecycle.ps1", "Invoke-BobTrayServiceControl.ps1"):
+    for f in ("Get-BobInstallInfo.ps1", "BobTrayLifecycle.ps1", "Invoke-BobTrayServiceControl.ps1", "BobTrayStartWorker.ps1"):
         assert (TOOLS / f).is_file()
         assert f in _t(SCRIPTS / "Sync-BobTrayFromAgenticBuild.ps1")      # preserved across a vendor re-sync
 

@@ -43,6 +43,7 @@ EXIT_IRC_LOST = 3  # connection lost while running: agent tree killed
 EXIT_NO_AGENT = 4  # nothing to start (no key given / no agent installed)
 EXIT_GAVE_UP = 5  # hang-restart bound exceeded
 EXIT_LAUNCH_FAIL = 6
+EXIT_REFUSED = 7  # t815u: already the maximum number of workers running
 
 def _default_install_root() -> str:
     """<drive>:\\ai\\bob on the fixed disk that really holds the fleet (t780u); never a hard-coded C:."""
@@ -707,13 +708,55 @@ _DROP_RX = re.compile(r"(?i)\b(POINT|DIGEST|AGPK|SEAL)\b|is busy\.|password=|XAI
 _DROP_PREFIX = ("MOOT v1 ", "BOB DIGEST v1", "AGPK v1 ")
 
 
+_FLOW_RX = re.compile(r"(?i)^(?:@?[\w.\-\[\]\\`^{}|]+[:,]\s*)?(?:!bored\b|NAK\b|NACK\b)")
+
+
+def inbound_kind(text: str, own_nick: str) -> str:
+    """t817u: 'nak' | 'bored' | 'agent'. !bored and NAK/NACK are shop flow control handled by the exe itself; the model never sees them
+    (an optional leading ``<nick>:`` address is ignored when classifying)."""
+    t = (text or "").strip()
+    n = (own_nick or "").strip()
+    if n and re.match(r"(?i)^@?" + re.escape(n) + r"\s*[:,]\s*", t):
+        t = re.sub(r"(?i)^@?" + re.escape(n) + r"\s*[:,]\s*", "", t, count=1)
+    if re.match(r"(?i)^(NAK|NACK)\b", t):
+        return "nak"
+    if re.match(r"(?i)^!bored\b", t):
+        return "bored"
+    return "agent"
+
+
 def drop_text(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return True
+    if _FLOW_RX.match(t):  # t817u: !bored / NAK / NACK never reach the agent, from anyone
+        return True
     if t.startswith(_DROP_PREFIX) or t.startswith("\x01ACTION lost "):
         return True
     return bool(_DROP_RX.search(t))
+
+
+JEEVES_NICK = "Jeeves"
+
+
+def addressed_to(text: str, nick: str) -> bool:
+    """t812u: the text starts with this worker's own nick as an address (``<nick>: ...`` / ``<nick>, ...`` / ``<nick> ...``).
+    The boundary matters: marchhare-135 is not addressed by ``marchhare-13576: ...``."""
+    n = (nick or "").strip()
+    if not n:
+        return False
+    return re.match(r"(?i)^\s*@?" + re.escape(n) + r"(?:\s*[:,]|\s|$)", text or "") is not None
+
+
+def accept_for_agent(src: str, target: str, text: str, own_nick: str, jeeves: str = JEEVES_NICK) -> bool:
+    """t812u (token saving): the model only ever sees lines FROM Jeeves (exact nick) addressed to THIS worker - either a PM to
+    its nick or a channel line starting with its nick. Other workers' ACK/DONE lines, channel chatter and other bots never
+    reach the agent. (PING/PONG and the fleet ping are answered by the exe before this gate, without the model.)"""
+    if (src or "").strip().lower() != jeeves.lower():
+        return False
+    if (target or "").strip().lower() == (own_nick or "").strip().lower():
+        return True
+    return addressed_to(text, own_nick)
 
 
 def format_from(nick: str, target: str, text: str, maxlen: int = 350) -> str:
@@ -894,6 +937,8 @@ class IrcSeat:
         self.password, self.sasl, self.tls, self.log = password, sasl, tls, log
         self.ping_every, self.ping_grace, self.send_gap_s = ping_every, ping_grace, send_gap_s
         self.pm_allowed = tuple(p.lower() for p in pm_allowed)
+        self.ignored = 0
+        self.on_nak: Callable[[], None] = lambda: None  # t817u: Jeeves NAK addressed to this seat
         self._connect = connect
         self.sock: Optional[socket.socket] = None
         self.on_message: Callable[[str, str, str], None] = lambda n, t, x: None
@@ -1094,6 +1139,19 @@ class IrcSeat:
                     self._last_pong[target.lower()] = now
                     self.say(self.shop, "pong")
             return
+        if not accept_for_agent(src, target, text, self.nick):
+            self.ignored += 1  # t812u: not Jeeves, or not addressed to this worker: never wakes the model
+            return
+        kind = inbound_kind(text, self.nick)
+        if kind != "agent":  # t817u: shop flow control is the exe's business, never the model's
+            self.ignored += 1
+            if kind == "nak":
+                self.log("irc: NAK from Jeeves -> !bored again in the NAK timer (exe-handled, not relayed)")
+                try:
+                    self.on_nak()
+                except Exception as e:
+                    self.log(f"irc: on_nak error {type(e).__name__}")
+            return
         self.on_message(src, target, text)
 
 
@@ -1251,9 +1309,12 @@ class BoredEmitter:
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
-                 ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic):
+                 ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
+                 nak_s: float = 120.0):
         self.send, self.log, self.clock = send, log, clock
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
+        self.nak_s = nak_s  # t817u: fixed timer from a Jeeves NAK to the next !bored (never while busy)
+        self._nak_due: Optional[float] = None
         self._cv = threading.Condition()
         self._ready = False
         self._stopped = False
@@ -1294,6 +1355,14 @@ class BoredEmitter:
                 self._idle_since = self.clock()
             self._cv.notify_all()
 
+    def nak(self) -> None:
+        """t817u: Jeeves answered our !bored with a NAK addressed to us: send !bored again after a FIXED nak_s (120 s). A second NAK
+        does not push the timer out; if the seat is busy when it falls due the timer is dropped (DONE brings its own !bored)."""
+        with self._cv:
+            if self._nak_due is None:
+                self._nak_due = self.clock() + self.nak_s
+            self._cv.notify_all()
+
     def on_outbox(self, payload: str) -> None:
         now = self.clock()
         p = (payload or "").strip()
@@ -1322,6 +1391,8 @@ class BoredEmitter:
             return None
         if self._busy(now):
             self._idle_since = None
+            if self._nak_due is not None and now >= self._nak_due:
+                self._nak_due = None  # busy at due time: never send; the DONE !bored covers it
             return None
         if self._idle_since is None:
             self._idle_since = now
@@ -1329,6 +1400,8 @@ class BoredEmitter:
             return "start"
         if self._done_key and self._done_key != self._last_done_key:
             return "done"
+        if self._nak_due is not None and now >= self._nak_due:
+            return "nak"
         since = (now - self._last_bored) if self._last_bored is not None else 1e12
         thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
         if now - self._idle_since >= self.idle_s and since >= thr:
@@ -1339,7 +1412,8 @@ class BoredEmitter:
         if self._stopped or not self._ready:
             return None
         if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
-            return self._ack_at + self.ack_stale_s  # busy until the ACK goes stale (or DONE/NACK wakes us sooner)
+            wake = self._ack_at + self.ack_stale_s  # busy until the ACK goes stale (or DONE/NACK wakes us sooner)
+            return min(wake, self._nak_due) if self._nak_due is not None else wake
         if now < self._retry_at:
             return self._retry_at
         base = self._idle_since if self._idle_since is not None else now
@@ -1347,6 +1421,8 @@ class BoredEmitter:
         due = base + self.idle_s
         if self._last_bored is not None:
             due = max(due, self._last_bored + thr)
+        if self._nak_due is not None:
+            due = min(due, self._nak_due)
         return due
 
     def _fire(self, reason: str, now: float) -> None:
@@ -1364,6 +1440,7 @@ class BoredEmitter:
             self.log(f"bored: not sent ({reason}) - retry in {self.retry_s:.0f}s")
             return
         self._last_dedupe, self._last_bored, self._last_reason, self._idle_since = key, now, reason, now
+        self._nak_due = None  # any !bored satisfies a pending NAK timer
         if reason == "start":
             self._start_sent = True
         if reason == "done":
@@ -1414,6 +1491,8 @@ class Supervisor:
         self._grace_timer: Optional[threading.Timer] = None
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
         relay.on_inject = self._on_inject
+        if irc and self.bored:
+            irc.on_nak = self.bored.nak  # t817u
         if irc:
             irc.on_lost = lambda why: self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
 
@@ -1752,6 +1831,78 @@ def run_agent(args, log: Log) -> int:
     return sup.run_forever()
 
 
+# --------------------------------------------------------------------------------------------- t815u: hard cap of live workers
+HARD_MAX_WORKERS = 2          # slowness: never more than 2 worker seats (agent or plan) per machine; BOB_WORKER_MAX may only LOWER it
+_WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
+
+
+def max_workers() -> int:
+    try:
+        return max(0, min(HARD_MAX_WORKERS, int(os.environ.get("BOB_WORKER_MAX", HARD_MAX_WORKERS))))
+    except ValueError:
+        return HARD_MAX_WORKERS
+
+
+def snapshot_procs() -> list:
+    """(pid, ppid, exe name) of every live process (Toolhelp32); [] when it can not be read."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PE(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                        ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                        ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                        ("szExeFile", ctypes.c_wchar * 260)]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE)]
+        k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        snap = k32.CreateToolhelp32Snapshot(0x2, 0)
+        if not snap or snap == wintypes.HANDLE(-1).value:
+            return []
+        out = []
+        try:
+            e = PE()
+            e.dwSize = ctypes.sizeof(PE)
+            ok = k32.Process32FirstW(snap, ctypes.byref(e))
+            while ok:
+                out.append((int(e.th32ProcessID), int(e.th32ParentProcessID), str(e.szExeFile)))
+                ok = k32.Process32NextW(snap, ctypes.byref(e))
+        finally:
+            k32.CloseHandle(snap)
+        return out
+    except Exception:
+        return []
+
+
+def other_live_workers(procs: list, my_pid: int) -> int:
+    """Live worker SEATS other than this one: root bob-worker*.exe processes (a onefile exe is a bootloader plus a same-named
+    child, and a plan/agent seat is one root). Counted from the live process table, never from run dirs."""
+    rows = {int(p): (int(pp), str(n)) for p, pp, n in procs}
+    workers = {p for p, (_pp, n) in rows.items() if _WORKER_EXE_RX.match(n)}
+    mine = my_pid
+    while mine in rows and rows[mine][0] in workers:       # walk up to the root of OUR tree
+        mine = rows[mine][0]
+    roots = {p for p in workers if rows[p][0] not in workers}
+    roots.discard(mine)
+    roots.discard(my_pid)
+    return len(roots)
+
+
+def worker_cap_refusal(procs: list, my_pid: int) -> str:
+    """'' = free to start, else the refusal text."""
+    n, cap = other_live_workers(procs, my_pid), max_workers()
+    if n >= cap:
+        return "max %d workers (%d already running on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
+    return ""
+
+
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, or plan) chosen by token availability.")
     p.add_argument("--mode", choices=("agent", "plan"), default="agent")
@@ -1771,6 +1922,16 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps({"decision": dec.kind, "reason": dec.reason, "cursor_cmd": bool(cc), "grok_exe": bool(ge),
                           "fuel": fuel.__dict__, "cwd": str(Path(args.install_root) / ("plan" if args.mode == "plan" else "worker"))}))
         return EXIT_OK
+    refusal = worker_cap_refusal(snapshot_procs(), os.getpid())  # t815u: hard cap, before any window/agent/IRC
+    if refusal:
+        log("refused: " + refusal)
+        try:
+            ensure_console("Bob worker - refused")
+            print("\nBob worker: " + refusal + ".\nClose a running worker window first.\n")
+            time.sleep(8)
+        except Exception:
+            pass
+        return EXIT_REFUSED
     if not args.echo:
         silence_console(log)  # t787u: the console belongs to the agent TUI; errors go to the log file only
     try:

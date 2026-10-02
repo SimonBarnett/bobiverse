@@ -318,7 +318,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -1673,13 +1673,20 @@ function Start-BobTrayWorkerExe {
       ONE window per click: the exe's own console hosts the agent (the agent inherits it; no second console, no watcher window); the exe owns the IRC relay, !bored,
       IRC-loss exit and hang restarts, and ending either the exe or the agent ends both. Plan = exe --mode plan (no IRC).
     #>
-    param([ValidateSet('agent', 'plan')][string]$Mode)
+    param([ValidateSet('agent', 'plan')][string]$Mode, [switch]$Quiet)
     try {
+        # t815u: hard cap of 2 live workers per machine (tray click and remote !startworker alike)
+        $capRefusal = Get-BobTrayWorkerCapRefusal
+        if ($capRefusal) {
+            Write-TrayLog ('{0}: refused: {1}' -f $Mode, $capRefusal)
+            if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($capRefusal, 'Bobiverse', 'OK', 'Information') } catch { } }
+            return 0
+        }
         $exe = Join-Path $RepoRoot 'worker\bob-worker.exe'
         if (-not (Test-Path -LiteralPath $exe)) {
             Write-TrayLog ('{0}: worker exe missing: {1} (reinstall the bob MSI)' -f $Mode, $exe)
-            try { [void][System.Windows.Forms.MessageBox]::Show(('bob-worker.exe is missing:{0}{1}{0}{0}Reinstall or upgrade the bob MSI.' -f "`n", $exe), 'Bobiverse', 'OK', 'Warning') } catch { }
-            return
+            if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show(('bob-worker.exe is missing:{0}{1}{0}{0}Reinstall or upgrade the bob MSI.' -f "`n", $exe), 'Bobiverse', 'OK', 'Warning') } catch { } }
+            return 0
         }
         $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
         $binDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\bin'
@@ -1703,9 +1710,11 @@ function Start-BobTrayWorkerExe {
         $title = ('Bob {0} - starting (closing this window ends the agent)' -f $Mode)
         $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title)[-1]
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} own visible console (NEW agent every click; selection cursor>grok>key dialog)' -f $Mode, $childPid, $Mode)
+        return [int]$childPid   # t810u: the remote !startworker path reports it
     }
     catch {
         Write-TrayLog ('{0}: start failed: {1}' -f $Mode, $_.Exception.Message)
+        return 0
     }
 }
 
@@ -2936,6 +2945,20 @@ $poll.Add_Tick({
         }
     })
 
+# t810u: remote "!startworker" - heartbeat + consume the ear's queued requests (the ear runs in session 0 and cannot open a window).
+$script:startWorkerDir = Get-BobTrayStartWorkerDir -Root $RepoRoot
+$startWorkerTimer = New-Object System.Windows.Forms.Timer
+$startWorkerTimer.Interval = 2000
+$startWorkerTimer.Add_Tick({
+        try {
+            [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
+                    -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
+                    -Log { param($m) Write-TrayLog $m })
+        }
+        catch [System.Management.Automation.PipelineStoppedException] { return }
+        catch { Write-TrayLog ('startworker queue: ' + $_.Exception.Message) }
+    })
+
 $pulse = New-Object System.Windows.Forms.Timer
 $pulse.Interval = 60000
 $pulseOff = New-Object System.Windows.Forms.Timer
@@ -2977,9 +3000,12 @@ $notify.Visible = $true
 $flash.Start()
 $poll.Start()
 $pulse.Start()
+[void](Write-BobTrayAlive -Dir $script:startWorkerDir)
+$startWorkerTimer.Start()
 Write-TrayLog 'tray up'
 [System.Windows.Forms.Application]::Run($ctx)
-$poll.Stop(); $flash.Stop(); $pulse.Stop(); $pulseOff.Stop()
+$poll.Stop(); $flash.Stop(); $pulse.Stop(); $pulseOff.Stop(); $startWorkerTimer.Stop()
+try { Remove-Item -LiteralPath (Join-Path $script:startWorkerDir 'tray.alive') -Force -ErrorAction SilentlyContinue } catch { }
 # Exit path (menu Exit/Restart already announced+logout). Idempotent; skip second announce.
 # t798u: Exit already stopped ircBob (detached); the slow logout/kill path is only for Restart and external stops.
 if ($script:trayExitReason -ne 'Exit') {

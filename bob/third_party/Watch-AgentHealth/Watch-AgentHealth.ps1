@@ -740,16 +740,26 @@ function Send-IrcLineToSession {
 }
 
 function Convert-IrcRawLineToFromLine {
-    param([string]$Raw)
+    # t812u (token saving): the agent only sees lines FROM Jeeves (exact nick). When the agent's own nick is known
+    # (-OwnNick / $env:BOB_AGENT_NICK) the line must also be addressed to it (PM, or text starting with the nick).
+    # Other workers' ACK/DONE, channel chatter and other bots are never forwarded into the model.
+    param([string]$Raw, [string]$OwnNick = $env:BOB_AGENT_NICK)
     $line = $Raw.TrimEnd("`r", "`n").TrimStart([char]0xFEFF)
     if (-not $line) { return $null }
     if ($line -match '^PING ') { return $null }
     if ($line -match '^:\S+ \d{3} ') { return $null }
     if ($line -notmatch '^:(?<nick>[^\s!]+)![^\s]+ PRIVMSG (?<target>\S+) :(?<text>.*)$') { return $null }
     $text = $Matches['text']
+    $fromNick = $Matches['nick']
+    $toTarget = $Matches['target']
+    if ($fromNick -ine 'Jeeves') { return $null }
+    if ($OwnNick) {
+        $toMe = ($toTarget -ieq $OwnNick) -or ($text -match ('(?i)^\s*@?' + [regex]::Escape($OwnNick) + '(\s*[:,]|\s|$)'))
+        if (-not $toMe) { return $null }
+    }
     if ($text -match '^(MOOT v1 POINT|BOB DIGEST v1|AGPK v1 |MOOT v1 JOIN)') { return $null }
     if ($text -match '^\x01ACTION lost ') { return $null }
-    return ('FROM {0} {1} {2}' -f $Matches['nick'], $Matches['target'], $text)
+    return ('FROM {0} {1} {2}' -f $fromNick, $toTarget, $text)
 }
 
 function Initialize-IrcLogTail {

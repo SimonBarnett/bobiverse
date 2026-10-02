@@ -45,6 +45,7 @@ import talk_seat_ghost  # noqa: E402
 import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
 import channel_only  # noqa: E402
+import startworker  # noqa: E402
 
 FLOOD_S = 0.8
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
@@ -1228,6 +1229,56 @@ class Client:
         time.sleep(FLOOD_S)
         info(f"INFO recycle wire machine={mid} scope={dec.scope}")
 
+    def _install_root(self) -> Path:
+        """Product root of this ear (``<root>\\scripts\\irc_agent.py``); BOB_INSTALL_ROOT overrides."""
+        env = (os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+        return Path(env) if env else Path(__file__).resolve().parent.parent
+
+    def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
+        """t810u: ``!startworker [agent|plan] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
+
+        Replies ACK/NACK on the channel it was asked in (PM when asked by PM). Another machine's ear stays silent.
+        """
+        if getattr(self.args, "chair", False) or not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return False
+        if startworker.parse(body) is None:
+            return False
+        who = (src or "").strip()
+        if not who or who.lower() in self._mine_nicks():
+            return True
+        local = self._local_machine_id() or ""
+        gate = getattr(self, "_sw_gate", None)
+        if gate is None:
+            gate = self._sw_gate = startworker.StartGate()
+        try:
+            chair = {"jeeves", (bobreport.digest_chair_nick(self.home) or "").strip().lower()} - {""}
+        except Exception:
+            chair = {"jeeves"}
+        chan = bobreport.normalize_channel(target) if to_channel else ""
+        try:
+            dec = startworker.decide(
+                body=body, nick=who, account=self._account_of(who), channel=chan, local_machine=local, gate=gate,
+                qdir=startworker.queue_dir(self._install_root()), home=self.home,
+                machine_of_nick=bobreport.machine_from_nick, chair_nicks=chair,
+            )
+        except Exception as e:  # never let a command kill the reader
+            info(f"WARN startworker decide failed: {type(e).__name__}: {e}")
+            return True
+        if dec is None:
+            return True
+        info(f"INFO startworker nick={who} kind={dec.kind or '-'} ok={dec.ok} reason={dec.reason} mode={dec.mode} machine={local} chan={chan or 'pm'}")
+        if dec.reason == "unverified":
+            try:
+                self._whois_hint(who)
+            except Exception:
+                pass
+        if to_channel and chan:
+            self.send_privmsg_lines("PRIVMSG " + chan + " :" + dec.line)
+            time.sleep(FLOOD_S)
+        else:
+            self.whisper(who, dec.line)
+        return True
+
     def _announce_departure(self, reason: str) -> None:
         """Announce leaving #bobiverse and #{machine} before recycle/restart."""
         mid = self._local_machine_id() or ""
@@ -2288,6 +2339,8 @@ class Client:
                 if pulled is not None:
                     self._on_digest_whisper(src, pulled)
                     return
+        if self._maybe_startworker(src, target, body, to_channel=bool(to_channel), to_me=to_me):
+            return
         if self._handle_register_command(src, body):
             return
         if bobtalk.parse_recycle_command(body):

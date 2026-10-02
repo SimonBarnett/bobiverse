@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob-job-uat
 description: >
-  The single skill for UAT jobs - process diagram from Jeeves assign through ACK, testing the merged build against the FR acceptance criteria and capturing evidence to the PASS/FAIL stamp and the DONE line; steps, evidence required, who owns what (the originating agent owns UAT).
+  The single skill for UAT jobs - process diagram from Jeeves assign through ACK, verifying the merged product against the VISION and any specs, then either one FR per gap (no release) or, with no gaps, docs/READMEs updated and a release created, to the DONE line; evidence required, who owns what (the originating agent owns UAT).
 ---
 
 # bobiverse bob - UAT job (acceptance)
@@ -18,47 +18,55 @@ description: >
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-**Job type `UAT`** - user acceptance of a change that has passed MRB and is merged: prove with real evidence that the shipped behaviour meets the FR. Wire format and timing: `bobiverse-bob-job-irc`. The **originating agent owns the UAT** (the requester of the FR, not the implementer); a UAT stamp is only given inside an assigned UAT job.
+**Job type `UAT`** - acceptance of a change that has passed MRB and is merged. The worker **verifies the product against the VISION** (`docs\vision.md`, its success table S1..Sn) **and any specs** (`docs\*spec*`, the FR acceptance criteria), with real evidence, then decides **by the gaps it found**: gaps -> an FR per gap and **no release**; no gaps -> update the documentation and READMEs and **create a release**. Wire format and timing are unchanged: `bobiverse-bob-job-irc` (ACK / DONE / NACK / GIVEUP in your own `#<machine>`). The **originating agent owns the UAT** (the requester of the FR, not the implementer); a UAT stamp, the docs update and the release happen only inside an assigned UAT job, by the worker - never by Jeeves / the chair.
 
 ## Process
 
 ```mermaid
 flowchart TD
   A["Jeeves assign: nick: UAT owner/repo#N url"] --> B["ACK UAT owner/repo#N (outbox, at once)"]
-  B --> C["Read the FR acceptance criteria + the MRB board"]
+  B --> C["Read the VISION + any specs + the FR acceptance criteria"]
   C --> D["Get the merged build: pull main / install the artefact on a real machine"]
-  D --> E["Exercise each acceptance criterion the way a user would"]
+  D --> E["Verify the product against the VISION and the specs, criterion by criterion"]
   E --> F["Capture evidence: command, output, log excerpt, version (no secrets)"]
-  F -->|"every criterion met"| G["Stamp UAT PASS: evidence comment on the FR"]
-  F -->|"any criterion missed"| H["UAT FAIL: evidence comment, reopen, file a new FR/bug through intake"]
-  G --> I["DONE UAT owner/repo#N PASS  (optional url)"]
-  H --> J["DONE UAT owner/repo#N FAIL  (optional url)"]
-  I --> K["Program posts !bored - next job"]
-  J --> K
+  F --> G{"Any gaps?"}
+  G -->|"gaps"| H["File an FR per gap via intake (Report-BobiverseIntakeIssue -Kind fr)"]
+  H --> I["UAT FAIL evidence comment on the FR - NO release"]
+  I --> J["DONE UAT owner/repo#N FAIL  (url of the evidence)"]
+  G -->|"no gaps"| K["Update the documentation and READMEs (docs PR, merged)"]
+  K --> L["Create the release: VERSION bump, Pack-BobiverseRelease, gh release create"]
+  L --> M["UAT PASS evidence comment incl. the release tag"]
+  M --> N["DONE UAT owner/repo#N PASS  (url of the release)"]
+  J --> O["Program posts !bored - next job"]
+  N --> O
   B -. cannot or blocked .-> X["NACK / GIVEUP UAT owner/repo#N + reason on its own line"]
 ```
 
 ## Steps
 
-1. **ACK.** 2. Read the FR's acceptance criteria and the MRB board (what was reviewed, what could not be tested live). If the FR has no criteria, derive them from its text and say so in the evidence.
-3. Test the **merged** result - not the branch - on a real machine/install, exactly as a user or operator would. 4. For each criterion record: the action, the actual result, pass/fail. Include negative cases and the rollback/uninstall path if the change touches install or services.
-5. All met -> **UAT PASS**: post the evidence comment on the FR and apply the repo's UAT convention (label/comment) - state which in the comment. Any missed -> **UAT FAIL**: post the evidence, reopen/keep the FR open, and file the gap as a NEW intake item. 6. **DONE**.
+1. **ACK.** 2. Read the **VISION** (`docs\vision.md`: objective, success table with how each metric is measured, fail-when) and every spec that applies, plus the FR's acceptance criteria and the MRB board. If there is no VISION/spec for the area, derive criteria from the FR text and say so in the evidence.
+3. Test the **merged** result - not the branch - on a real machine/install, exactly as a user or operator would. 4. For each VISION success metric / spec requirement / FR criterion record: the action, the actual result, pass/fail. Include negative cases and the rollback/uninstall path if the change touches install or services.
+5. **Decide on the gaps** (anything the product does not yet do or does wrongly against the VISION / specs / criteria):
+   * **Gaps found -> NO release.** File **one FR per gap** through the intake (`.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo owner/name -Kind fr -Title "<the gap>" -Body "vision/spec ref / expected / observed / evidence"`), post the evidence comment with the verdict line `UAT FAIL` and links to every new FR, keep the originating FR open, then `DONE UAT owner/repo#N FAIL <url>`.
+   * **No gaps -> update the docs and READMEs, then create the release.** (a) Bring the documentation and every affected README up to date with what you verified (behaviour, commands, versions) in a docs PR and merge it (that one PR only). (b) Create the release: bump `VERSION` to the next version in that PR/merge, build with `.\scripts\Pack-BobiverseRelease.ps1 -Product all`, publish with `gh release create <tag> <the msi assets> --repo owner/name --notes "<what changed + UAT evidence link>"`, and check `gh release view <tag>` lists every asset the VISION's S1 names. (c) Post the evidence comment with `UAT PASS` and the release tag, then `DONE UAT owner/repo#N PASS <release url>`.
+6. A failed docs merge, build or publish is **not** a PASS: file the problem as an issue through the intake, post what happened, and send `NACK UAT owner/repo#N` / `GIVEUP` with the reason (never leave a half-made release: delete a draft you created).
 
 ## Evidence required (the UAT comment)
 
-* The version/commit/artefact you tested and the machine. * Per criterion: steps, observed result, PASS/FAIL. * Raw proof: command lines and trimmed output, log excerpts with timestamps (no secrets, tokens, passwords, private hosts), screenshots only if text is not enough.
-* What you could not test and why. * The final verdict line `UAT PASS` / `UAT FAIL` and links to any new FR/bug.
+* The version/commit/artefact you tested and the machine. * Per VISION metric / spec / criterion: steps, observed result, PASS/FAIL. * Raw proof: command lines and trimmed output, log excerpts with timestamps (no secrets, tokens, passwords, private hosts), screenshots only if text is not enough.
+* What you could not test and why. * The final verdict line `UAT PASS` / `UAT FAIL`; on FAIL the links to every FR filed (one per gap); on PASS the docs PR and the release tag/url.
 
 ## Who owns what
 
 | Who | Owns |
 |---|---|
-| The originating agent | the UAT: executing it, the evidence, the PASS/FAIL stamp. |
+| The originating agent (the worker running the UAT job) | the UAT: the verification against the VISION / specs, the evidence, the FR per gap, and - when there are no gaps - the docs/README update and the release. |
 | The implementer and the MRB seat | their PR/review only - they never stamp UAT on their own work. |
-| Jeeves | queue bookkeeping (ACK busy, DONE idle). |
-| The owner (Simon) | releases and version bumps - a UAT PASS does not release anything by itself. |
+| Jeeves / the chair | queue bookkeeping (ACK busy, DONE idle); never verifies, files the gap FRs, updates docs or releases. |
+| The owner (Simon) | the VISION and the specs; may veto / roll back a release. |
 
 ## Rules
 
-* Evidence before stamp; never stamp from the PR diff alone. * No release, no version bump, no Ergo changes, PowerShell only, never print secrets.
+* Evidence before stamp; never stamp from the PR diff alone. * **Gaps => no release, ever**; a release exists only after a UAT with zero gaps. * One FR per gap, filed through the intake (explicit `-Repo`), never a bundle.
+* No Ergo changes, PowerShell only, never print or commit secrets (no tokens in release notes, evidence or FRs). * The release is created only inside an assigned UAT job (the general "no release / no VERSION bump" rule is lifted for that case only).
 * CAST IRON harvest rule at the top: file every defect, gap and improvement you notice during UAT in the same turn.

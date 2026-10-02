@@ -69,7 +69,7 @@ DONE <TYPE> <owner/repo>#<N> [PASS|FAIL] <url>
 ```
 
 * `TYPE` and `owner/repo#N` = the **assigned** values, even if the work turned into something else.
-* At most one `PASS`/`FAIL`. FR: the PR url (no PASS/FAIL). MRB: `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional - the UAT evidence comment).
+* At most one `PASS`/`FAIL`. FR: the PR url (no PASS/FAIL). MRB: `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
 * **One line, nothing after the url.** Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment, never on the DONE line.
 * Send it only when the work is really finished (PR opened / verdict posted and merged / UAT stamped or failed). Send it **after** the evidence is in place, never before.
 * Examples:
