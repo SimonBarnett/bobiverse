@@ -163,6 +163,79 @@ def test_mrb_not_offered_to_author_seat_when_other_seat_live(_home):
     assert job["id"] == "#5"                                  # other seat may review it
 
 
+def test_uat_not_offered_to_author_seat_when_other_seat_live(_home):
+    """FR #227: UAT of an MRB-fix PR must not go to the MRB author while another seat is live."""
+    doc = bobreport.empty_digest()
+    doc["machines"]["ionos"] = bobreport._empty_machine("ionos")
+    doc["machines"]["ionos"]["workers"] = {"1": {"state": "idle"}, "2": {"state": "idle"}}
+    bobreport.save_digest(_home, doc)
+    _queue(_home, [
+        _row("o/r", "UAT", 106, 1, author_seat="ionos-1"),
+        _row("o/r", "FR", 7, 2),
+    ])
+    st, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos")
+    assert st == "ok"
+    assert job["id"] == "#7"  # skipped own UAT
+    _queue(_home, [_row("o/r", "UAT", 106, 1, author_seat="ionos-1")])
+    st, job = gitclaim.offer_focus_top(_home, "ionos-2", "#ionos")
+    assert st == "ok" and job["id"] == "#106"
+
+
+def test_uat_not_offered_to_sibling_seat_on_same_machine(_home):
+    """FR #227: same machine, different pid still blocked when another machine is live."""
+    doc = bobreport.empty_digest()
+    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    doc["machines"]["marchhare"]["workers"] = {"16564": {"state": "idle"}, "41912": {"state": "idle"}}
+    doc["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
+    doc["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
+    bobreport.save_digest(_home, doc)
+    registered_machines.save_registered(_home, {"marchhare", "flamingo", "ionos"})
+    _queue(_home, [_row("o/r", "UAT", 106, 1, author_seat="marchhare-16564")])
+    st, job = gitclaim.offer_focus_top(_home, "marchhare-41912", "#marchhare")
+    assert st == "empty"  # sibling seat blocked; flamingo not asking
+    st2, job2 = gitclaim.offer_focus_top(_home, "flamingo-9", "#flamingo")
+    assert st2 == "ok" and job2["id"] == "#106"
+
+
+def test_done_mrb_pass_stamps_author_seat_on_uat(_home):
+    """FR #227: DONE MRB PASS queues UAT with author_seat = MRB seat nick."""
+    registered_machines.save_registered(_home, {"marchhare", "ionos"})
+    doc = {
+        "v": 1,
+        "unaccepted": [],
+        "accepted": [
+            {
+                "repo": "o/r",
+                "task": "MRB",
+                "id": "#12",
+                "seq": 1,
+                "nick": "marchhare-16564",
+                "refs": ["#10"],
+                "ts": "t",
+                "line": "x",
+                "channel": "#marchhare",
+                "accepted_ts": "t",
+            }
+        ],
+        "done": [],
+    }
+    gitclaim._write_queue(gitclaim.queue_path(_home), doc)
+    st, job = shop_listen.complete_job_by_ref(
+        _home,
+        repo="o/r",
+        task="MRB",
+        ident="#12",
+        nick="marchhare-16564",
+        result="PASS",
+        url="https://example/pull/12",
+    )
+    assert st == "ok"
+    uats = [r for r in gitclaim.load_unaccepted(_home) if r.get("task") == "UAT"]
+    assert len(uats) == 1
+    assert uats[0]["id"] == "#10"
+    assert uats[0]["author_seat"] == "marchhare-16564"
+
+
 def test_list_uses_same_order(_home):
     _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/b", "FR", 2, 2)])
     fi.handle_focus_cmd(_home, "o/b")
