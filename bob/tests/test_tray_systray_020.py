@@ -306,6 +306,10 @@ def test_tray_has_no_update_logic_and_the_update_scripts_are_gone():
             continue
         text = re.sub(r"(?m)^\s*#.*$", "", _t(f))        # comments may say what the tray no longer does
         assert not pat.search(text), f.name
+    repo_sync = _t(ROOT.parent / "common" / "scripts" / "Sync-BobiverseFromRepo.ps1") if (ROOT.parent / "common").is_dir() else ""
+    if repo_sync:       # older installs still carry the update scripts: the work-tree sync removes them
+        for gone in ("Update-BobSystrayFromGit.ps1", "Show-BobSystrayUpdatingDialog.ps1", "Bootstrap-BobSystray.ps1"):
+            assert gone in repo_sync
     sync = _t(SCRIPTS / "Sync-BobTrayFromAgenticBuild.ps1")
     assert "Update-BobSystrayFromGit.ps1'" not in sync.replace("Update-BobSystrayFromGit / ", "")
     assert "-SkipUpdate" not in _t(SCRIPTS / "Start-BobTray.ps1").replace("-SkipUpdate to", "")

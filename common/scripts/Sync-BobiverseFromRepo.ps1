@@ -179,6 +179,14 @@ foreach ($m in $mirror) {
     if ($LASTEXITCODE -ge 8) { Write-Host ("WARN sync-robocopy {0} exit={1}" -f $m.Dst, $LASTEXITCODE) } else { Write-Host ("INFO sync-robocopy {0} ok" -f $m.Dst) }
 }
 
+# t794u: the tray no longer updates itself; drop the update scripts older installs still carry in tools\ (the sync never deletes).
+if ($Product -eq 'bob') {
+    foreach ($obsolete in 'Update-BobSystrayFromGit.ps1', 'Show-BobSystrayUpdatingDialog.ps1', 'Bootstrap-BobSystray.ps1') {
+        $op = Join-Path $InstallRoot ('tools\' + $obsolete)
+        if (Test-Path -LiteralPath $op) { Remove-Item -LiteralPath $op -Force -ErrorAction SilentlyContinue; Write-Host "INFO sync removed obsolete tray script $obsolete" }
+    }
+}
+
 # Product skills book (shared harvest + product skill) when present in clone.
 $skillsDirs = @(Get-BobiverseRepoDirs -Root $clone -Sub '.grok\skills')
 $skillsDst = Join-Path $InstallRoot '.grok\skills'
