@@ -63,7 +63,10 @@ if (-not $env:BOB_BRIDGE_HOME) {
     $env:BOB_BRIDGE_HOME = Join-Path $env:USERPROFILE '.grok\bob-bridge'
 }
 if (-not $env:BOB_IRC_HOME) {
-    $env:BOB_IRC_HOME = Join-Path $env:USERPROFILE '.bobiverse'
+    # Prefer the tray seat home when present (Watch-BobTray / BOB_IRC_HOME), else .bobiverse.
+    $trayHome = Join-Path $env:USERPROFILE '.agentic-irc-bobiverse'
+    if (Test-Path -LiteralPath $trayHome) { $env:BOB_IRC_HOME = $trayHome }
+    else { $env:BOB_IRC_HOME = Join-Path $env:USERPROFILE '.bobiverse' }
 }
 New-Item -ItemType Directory -Force -Path $env:BOB_BRIDGE_HOME, $env:BOB_IRC_HOME | Out-Null
 
@@ -71,7 +74,9 @@ if (-not $CapturePath) {
     $CapturePath = Join-Path $env:TEMP ("bob-digest-capture-{0}.ndjson" -f [datetime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
 }
 if (Test-Path -LiteralPath $CapturePath) { Remove-Item -LiteralPath $CapturePath -Force }
+# FR #113: set both names; Write-BobIrcStatus / Send honour either via Get-BobDigestWebhookCapturePath.
 $env:BOB_DIGEST_WEBHOOK_CAPTURE = $CapturePath
+$env:BOB_DIGEST_CAPTURE = $CapturePath
 
 $weekBefore = $null
 try { $weekBefore = Get-BobWeeklyRemaining } catch { $weekBefore = $null }
