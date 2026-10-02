@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -141,3 +141,84 @@ def test_marchhare_real_row_shape_end_to_end(home):
     by = {r["id"]: r for r in m["cursor_pools"]}
     assert by["grok-weekly"]["remaining"] is None and by["grok-weekly"]["period_end"].startswith("2026-09-30")
     assert by["other-models"]["remaining"] is None              # null stays unknown, never 0
+
+
+def test_coerce_preserves_pool_identity_fields():
+    """#114: account/channel/machine_id survive coerce (tray needs them on each row)."""
+    raw = {
+        "group_id": "auto",
+        "group_label": "Low cost models",
+        "remaining_pct": 40,
+        "period_end": FUT,
+        "machine_id": "marchhare",
+        "account": "bob-marchhare",
+        "channel": "#marchhare",
+    }
+    row = bobreport._coerce_cursor_pool(raw)
+    assert row is not None
+    assert row["machine_id"] == "marchhare"
+    assert row["account"] == "bob-marchhare"
+    assert row["channel"] == "#marchhare"
+    assert row["id"] == "cursor-models"
+    assert row["remaining"] == 40
+
+
+def test_merge_stamps_identity_when_bob_omits_it(home):
+    """#114: digest merge backfills machine_id/account/channel from the parent machine."""
+    merge(home, "marchhare", cursor_pools=bob_rows(grok=12), weekly=12, period_end=WK)
+    rows = bobreport.load_digest(home)["machines"]["marchhare"]["cursor_pools"]
+    assert rows, "expected stored pool rows"
+    for r in rows:
+        assert r["machine_id"] == "marchhare"
+        assert r["account"] == "bob-marchhare"
+        assert r["channel"] == "#marchhare"
+
+
+def test_build_digest_exports_identity_on_machine_pools(home):
+    """#114: GET /report machines.<id>.cursor_pools carry registered identity."""
+    merge(
+        home,
+        "flamingo",
+        cursor_pools=[
+            {
+                "group_id": "grok-chat",
+                "group_label": "grok chat",
+                "remaining_pct": 55,
+                "period_end": WK,
+                "machine_id": "flamingo",
+                "account": "bob-flamingo",
+                "channel": "#flamingo",
+            }
+        ],
+        weekly=55,
+        period_end=WK,
+    )
+    out = bobreport.build_digest_object(home, "Jeeves", now=NOW)
+    by = {r["id"]: r for r in out["machines"]["flamingo"]["cursor_pools"]}
+    gw = by["grok-weekly"]
+    assert gw["machine_id"] == "flamingo"
+    assert gw["account"] == "bob-flamingo"
+    assert gw["channel"] == "#flamingo"
+
+
+def test_write_bob_irc_status_stamps_pool_identity_fields():
+    """#114: Write-BobIrcStatus / ConvertTo-BobDigestCursorPoolRows stamp identity."""
+    from pathlib import Path
+
+    t = (ROOT / "third_party" / "bob-tray" / "src" / "Private" / "Get-BobIrc.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+    assert "function ConvertTo-BobDigestCursorPoolRows" in t
+    assert "machine_id" in t
+    assert "Get-BobIrcShopChannel" in t
+    # ConvertTo accepts / emits the three identity fields.
+    convert_idx = t.index("function ConvertTo-BobDigestCursorPoolRows")
+    convert_body = t[convert_idx : convert_idx + 1800]
+    assert "machine_id" in convert_body
+    assert "account" in convert_body
+    assert "channel" in convert_body
+    # Write-BobIrcStatus passes MachineId into ConvertTo for the slim digest rows.
+    write_idx = t.index("function Write-BobIrcStatus")
+    write_body = t[write_idx : write_idx + 12000]
+    assert "ConvertTo-BobDigestCursorPoolRows" in write_body
+    assert "-MachineId" in write_body or "MachineId" in write_body
