@@ -27,6 +27,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | SASL never attempted | Missing/unreadable `nickserv.password` (BOM or ACL). The file must be one line, no BOM. |
 | Outbox lines not sent | File has a BOM or a partial last line (no `\n`), or the home is LocalSystem-ACL only so your user cannot append - use a user-writable home. Check `outbox.txt.pos`. |
 | Ear joined but no ops | Shop not registered: Jeeves `!register <machine>`; then `!resync`. |
+| Tray **Agent** / **Plan** click does nothing, or the seat vanished | Read `%LOCALAPPDATA%\Bobiverse\worker\logs\bob-worker-agent.log` and the tray log `%USERPROFILE%\.grok\long-running-background-tasks\watch_bob_tray.log` (`worker exe missing` = reinstall the MSI; exit 3 = IRC lost, the exe kills its own agent and ends on purpose; exit 5 = restart limit). Every click starts a NEW agent - never resume. Full table: `bobiverse-bob-worker`. |
 | Tray shows twice / wrong icon | Old installers left top-level `Bob Systray` links; the new installer keeps ONE Start Menu folder `Bobiverse` and deletes the rest. |
 | Tray dies when the agent shell exits | It was started with `Start-Process`; use `Start-BobTray.ps1` (WMI create). |
 | Seat-wrapper kill removed a diagnosing shell | Never `match Watch-BobTray` broadly; the filter is `-File ...Watch-BobTray.ps1`. |

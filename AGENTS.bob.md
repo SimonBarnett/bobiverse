@@ -24,11 +24,21 @@ The Bob ear is this box's presence on IRC (`#bobiverse` + `#<machine>`): shop ch
 - `.grok/skills/bobiverse-bob/SKILL.md` - architecture, paths, config, tray, install/hotpatch
 - `.grok/skills/bobiverse-bob-commands/SKILL.md` - what the ear handles; typing as the ear via outbox.txt
 - `.grok/skills/bobiverse-bob-troubleshooting/SKILL.md` - restart loops (--host), SASL, outbox BOM, tray
+- `.grok/skills/bobiverse-bob-worker/SKILL.md` - the tray **Agent** item / `bob-worker.exe`: how a worker seat starts (cursor > grok > key dialog), IRC relay, IRC-loss exit, hang restarts, logs
+- `.grok/skills/bobiverse-bob-plan/SKILL.md` - the tray **Plan** item: `bob-worker.exe --mode plan` in `C:\ai\bob\plan` (visionary / plan skills)
 - `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
 - `.grok/skills/harvest/SKILL.md` - harvest + intake
 
 Docs in `docs\`:
 - `bob-ear.md` (channels, homes, recycle, talk seats), `post-install.md` (secrets, ObjectName, tray/digest), `jeeves-commands.md` is on the Jeeves box
+
+## Agent and Plan (tray, single click each)
+
+- The tray has two plain items, **Agent** and **Plan** (no submenus). Each click runs `bob-worker.exe` (`C:\ai\bob\worker`) which starts a **NEW** agent
+  every time - it NEVER resumes, continues or attaches to an existing agent session, window or process (no `--resume`/`--continue`).
+- The agent is chosen automatically by token availability: Cursor pool > 0 -> `agent.cmd`; else local Grok weekly tokens -> `agent.exe`; else a dialog asks for a Grok session key.
+- Agent CWD is `C:\ai\bob\worker`; Plan CWD is `C:\ai\bob\plan`. Both folders have their own AGENTS.md + skills with the CAST IRON harvest rule on top.
+- Full start / troubleshooting guide: `bobiverse-bob-worker` and `bobiverse-bob-plan`.
 
 ## Hard rules (CAST IRON)
 

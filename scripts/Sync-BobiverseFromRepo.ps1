@@ -159,6 +159,14 @@ if (Test-Path -LiteralPath $skillsSrc) {
     }
 }
 
+# t762u: bob worker\ + plan\ agent folders (skills + AGENTS; the exe only ever comes via the MSI; plan\work is never touched).
+if ($Product -eq 'bob') {
+    try {
+        . (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
+        [void](Sync-BobiverseAgentFolders -RepoRoot $clone -Destination $InstallRoot)
+    } catch { Write-Host ("WARN sync worker/plan folders: {0}" -f $_.Exception.Message) }
+}
+
 # Agent-start layer for this product (AGENTS.md / CLAUDE.md / GROK.md / .cursor rule) from AGENTS.<product>.md.
 if ($Product) {
     $agentsSrc = Join-Path $clone "AGENTS.$Product.md"

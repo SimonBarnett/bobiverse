@@ -74,6 +74,13 @@ if (-not $SkipCopy) {
 }
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'bob'
+# t762u: worker\ + plan\ agent folders (skills/AGENTS). The MSI lays them (plus worker\bob-worker.exe); repo installs build them here. Never deletes plan\work.
+if ((Test-Path -LiteralPath (Join-Path $repoRoot 'bob-agents\worker\AGENTS.md')) -and ([IO.Path]::GetFullPath($repoRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\'))) {
+    [void](Sync-BobiverseAgentFolders -RepoRoot $repoRoot -Destination $InstallRoot)
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'worker\bob-worker.exe'))) {
+        Write-Host 'INFO worker\bob-worker.exe not present (repo install): the tray Agent/Plan items need the MSI build (scripts\Build-BobWorker.ps1 builds it)'
+    }
+}
 
 # TipForm tray payload (tools/src/assets/PIN) when installing from repo (MSI heat already staged)
 $trayVendor = Join-Path $repoRoot 'third_party\bob-tray'

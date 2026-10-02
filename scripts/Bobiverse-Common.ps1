@@ -678,6 +678,59 @@ function Get-BobiverseSkillNames {
             ForEach-Object { $_.Name })
 }
 
+function Sync-BobiverseAgentFolders {
+    <#
+    .SYNOPSIS
+      Build/refresh the bob agent working folders <Destination>\worker and <Destination>\plan from the repo (bob-agents\<n> + shared skills).
+    .DESCRIPTION
+      Used by Pack-BobiverseRelease (Destination = the MSI stage), Install-Bob (repo installs) and Sync-BobiverseFromRepo (dev sync).
+      Writes AGENTS.md + CLAUDE.md + GROK.md + .cursor\rules\bobiverse-<n>.mdc + .grok\skills\* (every skill carries the CAST IRON harvest rule) and
+      NEVER deletes anything: plan\work\* (the plans' outputs) and a running worker\bob-worker.exe are left alone. The exe is built by Build-BobWorker.ps1.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$Destination
+    )
+    $skillsRoot = Join-Path $RepoRoot '.grok\skills'
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    $defs = @(
+        @{ Name = 'worker'; Shared = @('bobiverse-bob', 'bobiverse-bob-worker', 'bobiverse-bob-plan', 'bobiverse-fleet-ops', 'harvest', 'harvest-agent-skills') },
+        @{ Name = 'plan';   Shared = @('harvest', 'harvest-agent-skills') }
+    )
+    $made = 0
+    foreach ($d in $defs) {
+        $n = $d.Name
+        $src = Join-Path $RepoRoot "bob-agents\$n"
+        if (-not (Test-Path -LiteralPath (Join-Path $src 'AGENTS.md'))) { Write-Host "WARN agent folder source missing: bob-agents\$n"; continue }
+        $dest = Join-Path $Destination $n
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
+        foreach ($sk in $d.Shared) {
+            $from = Join-Path $skillsRoot $sk
+            if (-not (Test-Path -LiteralPath $from)) { throw "agent folder $n needs .grok\skills\$sk" }
+            $to = Join-Path $dest ".grok\skills\$sk"
+            New-Item -ItemType Directory -Force -Path $to | Out-Null
+            Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
+        }
+        # The agent runs with cwd = <install>\$n, so the rule's relative '.\scripts\' must point at the install's scripts.
+        Get-ChildItem -LiteralPath (Join-Path $dest '.grok\skills') -Recurse -Filter 'SKILL.md' | ForEach-Object {
+            $t = [IO.File]::ReadAllText($_.FullName)
+            $t2 = $t.Replace('.\scripts\', 'C:\ai\bob\scripts\')
+            if ($t2 -ne $t) { [IO.File]::WriteAllText($_.FullName, $t2, $enc) }
+        }
+        $agents = [IO.File]::ReadAllText((Join-Path $dest 'AGENTS.md'))
+        [IO.File]::WriteAllText((Join-Path $dest 'CLAUDE.md'), $agents, $enc)
+        [IO.File]::WriteAllText((Join-Path $dest 'GROK.md'), $agents, $enc)
+        $ruleDir = Join-Path $dest '.cursor\rules'
+        New-Item -ItemType Directory -Force -Path $ruleDir | Out-Null
+        $mdc = "---`ndescription: Bobiverse $n agent folder briefing (CAST IRON harvest rule, always-new agent, skills first)`nalwaysApply: true`n---`n`n" + $agents
+        [IO.File]::WriteAllText((Join-Path $ruleDir "bobiverse-$n.mdc"), $mdc, $enc)
+        Write-Host ("INFO agent folder {0}\ refreshed ({1} skills)" -f $n, @(Get-ChildItem -LiteralPath (Join-Path $dest '.grok\skills') -Directory).Count)
+        $made++
+    }
+    return $made
+}
+
 function Install-BobiverseAgentLayer {
     param(
         [Parameter(Mandatory)][string]$RepoRoot,

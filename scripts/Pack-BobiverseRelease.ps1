@@ -14,7 +14,9 @@ param(
     [switch]$SkipMsi,
     # Issue #4: public GitHub Release MSIs must NOT embed the live Ergo PASS.
     # Pass -EmbedErgoPassword only for private/offline packs.
-    [switch]$EmbedErgoPassword
+    [switch]$EmbedErgoPassword,
+    # Tests only (needs -SkipMsi): stage the worker/plan folders without compiling bob-worker.exe (PyInstaller, ~40 s).
+    [switch]$SkipWorkerExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,10 +31,13 @@ if (-not $Version) {
 $msiVersion = $Version
 if ($msiVersion -notmatch '^\d+\.\d+\.\d+') { throw "bad VERSION $Version" }
 
+. (Join-Path $PSScriptRoot 'Bobiverse-Common.ps1')
 $fetchNssm = Join-Path $RepoRoot 'scripts\Fetch-Nssm.ps1'
 $fetchWix = Join-Path $RepoRoot 'scripts\Fetch-Wix.ps1'
 $fetchErgo = Join-Path $RepoRoot 'scripts\Fetch-Ergo.ps1'
 $null = & $fetchNssm -OutDir (Join-Path $RepoRoot 'third_party\nssm\win64') -CacheDir (Join-Path $RepoRoot 'third_party\nssm')
+
+if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed together with -SkipMsi (an MSI without bob-worker.exe must never ship)' }
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -49,6 +54,21 @@ function Resolve-WatchAgentHealthSrc {
         }
     }
     return $null
+}
+
+function Stage-BobAgentFolders([string]$Stage) {
+    # t762u: bob MSI payload gains worker\ (bob-worker.exe + AGENTS/skills) and plan\ (plan-mode skills); built by the shared Common function.
+    $made = Sync-BobiverseAgentFolders -RepoRoot $RepoRoot -Destination $Stage
+    if ($made -lt 2) { throw 'bob pack requires bob-agents\worker and bob-agents\plan' }
+    if ($SkipWorkerExe) {
+        Write-Host 'WARN bob pack: -SkipWorkerExe (test stage; no bob-worker.exe)'
+    } else {
+        $buildWorker = Join-Path $RepoRoot 'scripts\Build-BobWorker.ps1'
+        $exe = (& $buildWorker -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+        if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { throw 'Build-BobWorker.ps1 did not produce bob-worker.exe' }
+        Copy-Item -LiteralPath $exe -Destination (Join-Path $Stage 'worker\bob-worker.exe') -Force
+        Write-Host 'INFO bob staged worker\bob-worker.exe'
+    }
 }
 
 function Stage-Product([string]$Name) {
@@ -252,6 +272,7 @@ function Stage-Product([string]$Name) {
         if ((-not $EmbedErgoPassword) -and (Test-Path -LiteralPath $stageErgoGuard)) {
             Remove-Item -LiteralPath $stageErgoGuard -Force
         }
+        Stage-BobAgentFolders -Stage $stage
         Write-Host ("INFO bob staged TipForm tray from {0} pin={1}" -f $traySrc, ((Get-Content (Join-Path $traySrc 'PIN.txt') -TotalCount 1).Trim()))
     }
     return $stage

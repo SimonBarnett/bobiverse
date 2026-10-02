@@ -115,7 +115,7 @@ def test_installers_and_updaters_refresh_the_layer():
 def test_pack_stages_the_agent_layer_for_each_product(tmp_path, prod):
     out = tmp_path / "dist"
     run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                          str(ROOT / "scripts" / "Pack-BobiverseRelease.ps1"), "-Product", prod, "-SkipMsi", "-KeepStage",
+                          str(ROOT / "scripts" / "Pack-BobiverseRelease.ps1"), "-Product", prod, "-SkipMsi", "-KeepStage", "-SkipWorkerExe",
                           "-OutDir", str(out)], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stdout[-1500:] + run.stderr[-1500:]
     ver = (ROOT / "src" / "VERSION").read_text().strip()
