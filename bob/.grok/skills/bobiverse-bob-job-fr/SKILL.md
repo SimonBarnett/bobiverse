@@ -54,6 +54,20 @@ Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude
 * New untracked files under paths still masked by exclude are skipped by plain `git add` — use **`git add -f`** (or `git check-ignore -v` to confirm).
 * Bootstrap exclude un-ignores `/$Product/`, `/common/`, `/airc/`, `/jeeves/`; paths outside those still need `-f`.
 
+## DONE URL — capture `gh pr create` output (FR #108)
+
+Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns.
+
+```powershell
+$url = (gh pr create --repo owner/name --base main --head fr-N --title '...' --body-file $pr 2>&1 |
+  Select-String -Pattern 'https://github.com/\S+/pull/\d+').Matches.Value |
+  Select-Object -First 1
+if (-not $url) { throw 'gh pr create did not print a pull URL' }
+Add-Content -LiteralPath $outbox -Value "PRIVMSG #shop :DONE FR owner/repo#N $url" -Encoding utf8
+```
+
+On Windows PowerShell 5.1, keep the PR body in `--body-file` (multiline `--body` argv splits). If a bad DONE already went out, append a corrected `DONE` line with the real URL immediately.
+
 ## Evidence required (in the PR body)
 
 * The line `Closes <owner>/<repo>#N` for the originating issue. * What changed and why (one paragraph) and the files touched. * The new tests (names) and the full-suite result (`N passed`). * How you verified it for real (command + short output) and **what you could not test live**.
