@@ -26,16 +26,24 @@ An authorized sender (`bob-*` ear) PRIVMSGs the console:
 PRIVMSG <machine>_console :Get-Service Airc
 PRIVMSG <machine>_console :cmd: sc query ircJeeves
 PRIVMSG <machine>_console :psb64:<base64>
+PRIVMSG <machine>_console :STATUS
 ```
 
-- Default is **PowerShell 5.1** (`-NoProfile`); `cmd:` uses COMSPEC; `psb64:` is `-EncodedCommand` (UTF-16LE or UTF-8 payload).
-- Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
+- Default is **PowerShell 5.1** (`-NoProfile`) once FR #75 is deployed; `cmd:` uses COMSPEC; `psb64:` is EncodedCommand.
+- Replies (FR #75): `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…` (chunked ~350).
 - Allowlist: `bob-*` ears may always PRIVMSG `*_console`. Nothing else is authorized.
-- PUT/RUN/JOB/UPDATE are separate FRs — see `docs/airc-remote-control.md`.
+- Driving-box helper: `scripts\Invoke-AircRemote.ps1` (FR #76) builds bodies, PUT chunks+sha256, redacts secrets, optional `-Outbox`.
+- PUT/RUN/JOB server-side: FR #78. UPDATE safety: FR #77 + `Update-BobiverseService.ps1` detached Apply.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-AircRemote.ps1 -SelfTest
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-AircRemote.ps1 `
+  -MachineId <id> -Action Command -Text 'Write-Output ping' -Outbox <ear-outbox>
+```
 
 ## Safe diagnostic commands
 
-`sc query <svc>`, `sc qc <svc>`, `type <ai root>\<product>\VERSION`, `dir <ai root>\<product>\logs`, `tasklist /fi "imagename eq python.exe"`.
+`Get-Service Airc`, `cmd: sc query <svc>`, `Get-Content <ai root>\<product>\VERSION`, `Get-ChildItem <ai root>\<product>\logs`.
 Do NOT: kill broad `powershell.exe`/`python.exe`, `sc stop BobIrcd`, edit Ergo files, print secrets.
 
 ## Verify the console
