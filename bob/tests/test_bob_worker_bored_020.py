@@ -6,6 +6,7 @@ import threading
 import time
 
 import bob_worker as bw
+from repo_layout import ROOT
 from test_bob_worker_020 import Rig, ircd, make_seat, wait_until  # noqa: F401  (ircd is a fixture)
 
 IDLE, REPEAT = 0.3, 0.5
@@ -183,3 +184,99 @@ def test_wire_agent_restart_is_not_idle_so_no_bored_until_the_new_agent_is_ready
     time.sleep(IDLE + REPEAT)
     assert len(bored_lines(ircd)) == 1
     rig.sup.shutdown("test", bw.EXIT_OK)
+
+# ------------------------------------------------------------------------------------------------ t817u: !bored / NAK are the exe's business
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("text,kind", [
+    ("NAK !BORED wait", "nak"), ("marchhare-4242: NAK !BORED wait", "nak"), ("marchhare-4242, nack nothing for you", "nak"),
+    ("NACK x", "nak"), ("!bored", "bored"), ("marchhare-4242: !bored", "bored"), ("!BORED", "bored"),
+    ("marchhare-4242: FR o/r#1 https://x", "agent"), ("please nak this typo", "agent"), ("naked truth", "agent"),
+    ("marchhare-4242: UAT o/r#2 https://x", "agent"), ("boredom is relative", "agent"),
+])
+def test_inbound_kind(text, kind):
+    assert bw.inbound_kind(text, "marchhare-4242") == kind
+
+
+def test_relay_never_injects_bored_or_nak_lines_from_anyone():
+    for t in ("!bored", "NAK !BORED wait", "NACK x", "marchhare-1: NAK !BORED wait", "w-2: !bored", "nak"):
+        assert bw.drop_text(t), t
+    for t in ("marchhare-1: FR o/r#1 https://x", "do the thing", "naked"):
+        assert not bw.drop_text(t), t
+
+
+def test_seat_swallows_bored_and_nak_and_runs_the_nak_timer_only_for_a_jeeves_nak_addressed_to_it(ircd):
+    seat = make_seat(ircd)
+    got, naks = [], []
+    seat.on_message = lambda n, t, x: got.append(x)
+    seat.on_nak = lambda: naks.append(time.monotonic())
+    seat.connect(timeout=5)
+    ircd.send(":marchhare-3556!w@h PRIVMSG #marchhare :!bored")                       # another worker's !bored
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :NAK !BORED wait")                       # unaddressed NAK: not ours
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-3556: NAK !BORED wait")       # NAK for another worker
+    ircd.send(":marchhare-3556!w@h PRIVMSG #marchhare :marchhare-4242: NAK !BORED")    # NAK from a non-Jeeves
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-4242: !bored")                # even Jeeves-addressed !bored
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-4242: NAK !BORED wait")       # THE one: Jeeves NAK to me
+    ircd.send(":Jeeves!j@h PRIVMSG marchhare-4242 :nack not now")                      # PM NAK to me
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-4242: FR o/r#5 https://x")    # a real assignment still reaches the model
+    assert wait_until(lambda: got == ["marchhare-4242: FR o/r#5 https://x"])
+    assert len(naks) == 2
+    seat.close()
+
+
+def test_default_nak_timer_is_a_fixed_120_seconds():
+    e = bw.BoredEmitter(lambda: True, lambda m: None)
+    assert e.nak_s == 120.0
+
+
+def test_nak_schedules_one_bored_after_the_fixed_timer_and_a_second_nak_does_not_move_it():
+    sent: list = []
+    e = emitter(sent, idle_s=30.0, repeat_s=30.0, nak_s=0.4)        # idle logic far away: only the NAK timer can fire
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)                  # start
+    t = time.monotonic()
+    e.nak()
+    time.sleep(0.2)
+    e.nak()                                                         # a repeated NAK must not extend the fixed timer
+    assert not wait_until(lambda: len(sent) > 1, 0.1)               # not early
+    assert wait_until(lambda: len(sent) == 2, 1.0)
+    assert 0.35 <= sent[-1] - t <= 0.7, sent[-1] - t
+    assert e.sent[-1][1] == "nak"
+    time.sleep(0.6)
+    assert len(sent) == 2                                           # one-shot: no repeat from the NAK timer
+    e.stop()
+
+
+def test_nak_timer_never_sends_while_busy():
+    sent: list = []
+    e = emitter(sent, idle_s=30.0, repeat_s=30.0, nak_s=0.3, ack_stale_s=60.0)
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.on_outbox("ACK FR o/r#7 working")                              # busy
+    e.nak()
+    time.sleep(0.8)
+    assert len(sent) == 1, "busy at the NAK due time: nothing sent"
+    e.on_outbox("DONE FR o/r#7 PASS http://x")                      # idle again -> the normal DONE !bored, and the stale NAK timer is gone
+    assert wait_until(lambda: len(sent) == 2, 1.0)
+    time.sleep(0.6)
+    assert [r for _, r in e.sent] == ["start", "done"]
+    e.stop()
+
+
+def test_a_regular_bored_satisfies_a_pending_nak_timer():
+    sent: list = []
+    e = emitter(sent, idle_s=0.2, repeat_s=0.2, nak_s=0.6)
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.nak()
+    assert wait_until(lambda: len(sent) >= 2, 1.0)                  # the idle bored fires first (0.2 s)
+    assert e.sent[1][1] == "idle"
+    time.sleep(0.8)
+    assert "nak" not in [r for _, r in e.sent]
+    e.stop()
+
+
+def test_supervisor_wires_the_seat_nak_to_the_emitter():
+    src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
+    assert "irc.on_nak = self.bored.nak" in src

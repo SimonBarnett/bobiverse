@@ -383,8 +383,8 @@ def test_own_messages_are_not_relayed(ircd):
     seat.on_message = lambda n, t, x: got.append(x)
     seat.connect(timeout=5)
     ircd.send(":marchhare-4242!u@h PRIVMSG #marchhare :echo")
-    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :real")
-    assert wait_until(lambda: got == ["real"])
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-4242: real")
+    assert wait_until(lambda: got == ["marchhare-4242: real"])
     seat.close()
 
 
@@ -404,11 +404,11 @@ def test_relay_injects_from_the_socket_read_thread_with_no_polling_delay(ircd, t
     seat.connect(timeout=5)
     assert rig.sup.start_agent()
     t_send = time.monotonic()
-    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :assign: build the thing now")
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-4242: assign: build the thing now")
     assert wait_until(lambda: rig.injected, 2.0)
     latency = rig.injected[0][3] - t_send
     pid, text, thread, _ = rig.injected[0]
-    assert text == "FROM Jeeves #marchhare assign: build the thing now"
+    assert text == "FROM Jeeves #marchhare marchhare-4242: assign: build the thing now"
     assert pid == rig.procs[0].pid
     assert thread == "irc-read"            # injected BY the blocking read thread itself: no queue hop, no poll/timer thread
     assert latency < 0.25, latency          # network -> agent input in well under a poll interval
@@ -747,3 +747,125 @@ def test_sample_tree_callback_cannot_raise():
     src = Path(bw.__file__).read_text(encoding="utf-8")
     body = src.split("def cb(hwnd, _l):", 1)[1].split("return True", 1)[0]
     assert "try:" in body and "except Exception" in body
+
+# ----------------------------------------------------------------------------------------------- t812u: only Jeeves, only to me
+@pytest.mark.parametrize("src,target,text,ok", [
+    ("Jeeves", "#marchhare", "marchhare-4242: FR o/r#1 https://x", True),          # the one allowed shape
+    ("Jeeves", "#marchhare", "marchhare-4242, do it", True),
+    ("jeeves", "#marchhare", "MarchHare-4242: case-insensitive IRC nick", True),
+    ("Jeeves", "marchhare-4242", "private assignment", True),                       # PM to my nick
+    ("marchhare-3556", "#marchhare", "ACK FR o/r#1", False),                       # another worker (the t812u bug)
+    ("marchhare-3556", "#marchhare", "marchhare-4242: hi", False),                 # another worker even if addressed to me
+    ("Bob-marchhare", "#marchhare", "marchhare-4242: hi", False),                  # other bots
+    ("Jeeves_", "#marchhare", "marchhare-4242: hi", False),                        # not the exact nick
+    ("simon", "#marchhare", "marchhare-4242: hi", False),
+    ("Jeeves", "#marchhare", "chatter for everyone", False),                       # channel chatter
+    ("Jeeves", "#marchhare", "marchhare-3556: FR o/r#2", False),                   # addressed to a different worker
+    ("Jeeves", "#marchhare", "marchhare-42420: prefix collision", False),
+    ("Jeeves", "#marchhare", "see marchhare-4242: later", False),                  # not at the start
+    ("Jeeves", "marchhare-3556", "private for the other worker", False),
+])
+def test_accept_for_agent_only_jeeves_addressed_to_this_worker(src, target, text, ok):
+    assert bw.accept_for_agent(src, target, text, "marchhare-4242") is ok
+
+
+def test_seat_injects_only_jeeves_lines_addressed_to_it_and_still_answers_ping_without_the_model(ircd):
+    seat = make_seat(ircd)
+    got = []
+    seat.on_message = lambda n, t, x: got.append((n, x))
+    seat.connect(timeout=5)
+    ircd.send(":marchhare-3556!w@h PRIVMSG #marchhare :ACK FR o/r#1")
+    ircd.send(":Bob-marchhare!b@h PRIVMSG #marchhare :marchhare-4242: from a bot")
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :broadcast chatter")
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-3556: for someone else")
+    ircd.send(":simon!s@h PRIVMSG #marchhare :ping")                                 # fleet ping: answered, never injected
+    ircd.send(":Jeeves!j@h PRIVMSG #marchhare :marchhare-4242: FR o/r#9 https://x")
+    assert wait_until(lambda: got == [("Jeeves", "marchhare-4242: FR o/r#9 https://x")])
+    assert wait_until(lambda: any(l.endswith(":pong") or " :pong" in l for l in ircd.received))
+    assert seat.ignored >= 4
+    seat.close()
+
+
+def test_relay_inbound_path_has_the_jeeves_gate_after_ping_handling():
+    src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
+    i = src.index("def _on_privmsg")
+    body = src[i:src.index("# ----", i)]
+    assert body.index("parse_ping(text)") < body.index("accept_for_agent(src, target, text, self.nick)") < body.index("self.on_message(")
+
+# ----------------------------------------------------------------------------------------------- t812u: the legacy watcher forwards only Jeeves too
+WATCH_AH = ROOT / "third_party" / "Watch-AgentHealth" / "Watch-AgentHealth.ps1"
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not __import__("shutil").which("powershell"), reason="needs Windows PowerShell")
+def test_legacy_watcher_forwards_only_jeeves_and_only_to_the_agent_when_its_nick_is_known(tmp_path):
+    import shutil as _sh, subprocess
+    text = WATCH_AH.read_text(encoding="utf-8-sig")
+    i = text.index("function Convert-IrcRawLineToFromLine")
+    j = text.index("\nfunction ", i + 10)
+    f = tmp_path / "t.ps1"
+    f.write_text(text[i:j] + r'''
+function T($raw, $nick) { $r = Convert-IrcRawLineToFromLine -Raw $raw -OwnNick $nick; if ($r) { 'OUT=' + $r } else { 'OUT=<none>' } }
+T ':Jeeves!j@h PRIVMSG #m :w-1: FR o/r#1' 'w-1'
+T ':w-2!w@h PRIVMSG #m :ACK FR o/r#1' 'w-1'
+T ':Jeeves!j@h PRIVMSG #m :w-2: for the other one' 'w-1'
+T ':Jeeves!j@h PRIVMSG w-1 :pm to me' 'w-1'
+T ':Jeeves!j@h PRIVMSG #m :broadcast' ''
+T ':Bob-m!b@h PRIVMSG #m :hello' ''
+T ':Jeeves!j@h PRIVMSG #m :BOB DIGEST v1 x' ''
+''', encoding="utf-8-sig")
+    out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(f)], capture_output=True, text=True, timeout=60).stdout
+    assert out.split() == ["OUT=FROM", "Jeeves", "#m", "w-1:", "FR", "o/r#1", "OUT=<none>", "OUT=<none>",
+                           "OUT=FROM", "Jeeves", "w-1", "pm", "to", "me", "OUT=FROM", "Jeeves", "#m", "broadcast", "OUT=<none>", "OUT=<none>"]
+
+
+# ----------------------------------------------------------------------------------------------- t815u: hard cap of 2 live workers
+def _seats(*roots):
+    rows = []
+    for r in roots:
+        rows += [(r, 1, "bob-worker-aaa.exe"), (r + 1, r, "bob-worker-aaa.exe")]      # onefile: bootloader + child
+    return rows + [(900, 1, "grok.exe"), (901, 900, "python.exe")]
+
+
+def test_cap_counts_live_seats_other_than_my_own_tree():
+    assert bw.HARD_MAX_WORKERS == 2
+    assert bw.other_live_workers([], 5) == 0
+    me = _seats(100)                                                      # I am the only one (root 100, child 101)
+    assert bw.other_live_workers(me, 101) == 0 and bw.other_live_workers(me, 100) == 0
+    assert bw.other_live_workers(_seats(100, 200), 101) == 1
+    assert bw.other_live_workers(_seats(100, 200, 300), 101) == 2        # two others => I must not start
+    assert bw.other_live_workers(_seats(100, 200) + [(777, 1, "bob-worker.exe")], 101) == 2
+
+
+def test_third_worker_is_refused_two_are_fine_and_env_can_only_lower(monkeypatch):
+    monkeypatch.delenv("BOB_WORKER_MAX", raising=False)
+    assert bw.worker_cap_refusal(_seats(200, 300), 5000) != "" and "max 2 workers" in bw.worker_cap_refusal(_seats(200, 300), 5000)
+    assert bw.worker_cap_refusal(_seats(200), 5000) == ""                 # one other running: I am the 2nd
+    assert bw.worker_cap_refusal([], 5000) == ""
+    monkeypatch.setenv("BOB_WORKER_MAX", "9")
+    assert bw.max_workers() == 2 and bw.worker_cap_refusal(_seats(200, 300), 5000) != ""
+    monkeypatch.setenv("BOB_WORKER_MAX", "1")
+    assert bw.worker_cap_refusal(_seats(200), 5000) != ""
+    monkeypatch.setenv("BOB_WORKER_MAX", "junk")
+    assert bw.max_workers() == 2
+
+
+def test_main_refuses_to_start_when_two_workers_are_already_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(bw, "snapshot_procs", lambda: _seats(200, 300))
+    monkeypatch.setattr(bw, "_state_root", lambda: tmp_path)
+    monkeypatch.setattr(bw, "ensure_console", lambda *a, **k: True)
+    monkeypatch.setattr(bw.time, "sleep", lambda s: None)
+    started = []
+    monkeypatch.setattr(bw, "run_agent", lambda *a, **k: started.append("agent") or 0)
+    monkeypatch.setattr(bw, "run_plan", lambda *a, **k: started.append("plan") or 0)
+    assert bw.main(["--mode", "agent", "--install-root", str(tmp_path)]) == bw.EXIT_REFUSED
+    assert bw.main(["--mode", "plan", "--install-root", str(tmp_path)]) == bw.EXIT_REFUSED
+    assert started == []
+    monkeypatch.setattr(bw, "snapshot_procs", lambda: _seats(200))
+    assert bw.main(["--mode", "agent", "--install-root", str(tmp_path)]) == 0 and started == ["agent"]
+
+
+def test_snapshot_procs_sees_this_process():
+    rows = bw.snapshot_procs()
+    assert isinstance(rows, list)
+    if sys.platform == "win32":
+        assert any(p == __import__("os").getpid() for p, _pp, _n in rows)

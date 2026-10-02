@@ -1,4 +1,4 @@
-﻿# Jeeves chair commands (gh-Jeeves parity) and who may run them
+# Jeeves chair commands (gh-Jeeves parity) and who may run them
 
 The bobiverse chair (`irc_agent.py --chair`, service `ircJeeves`) carries every command the old Python
 `gh-Jeeves` service handled in IRC (reference: `SimonBarnett/gh-Jeeves` @ `8d76d9a`, `src/jeeves/commands.py` +
@@ -82,3 +82,18 @@ per 30 minutes per nick (with a count of suppressed repeats); the WHOIS itself k
 | GitHub FR/MRB merge-resync | 15 min | Authenticated (existing Jeeves token, source logged once per process in `resync-token-source.log`, value never logged). Merges open FR/MRB issues into the queue; keeps accepted jobs, other task kinds, offered rows, failed and ignored repos; drops closed FR/MRB rows. Repos: `JEEVES_RESYNC_REPOS` or `resync-repos.txt` in the chair home, else queued repos plus the token owner's repos. No token = run skipped, queue untouched. |
 
 `!resync` triggers the roster refresh and the GitHub resync immediately; `!status` reports both.
+
+## Remote worker start: `!startworker` (Bob ear, t810u)
+
+Not a chair command: it is handled by the **Bob ear of the target machine** (`bob-<machine>`), never by Jeeves (Jeeves runs no host ops).
+Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_startworker`) + `bob/third_party/bob-tray/tools/BobTrayStartWorker.ps1` (tray side).
+
+| Syntax | Where | Reply |
+|---|---|---|
+| `!startworker [agent\|plan] [machine]` | in `#<machine>` (machine optional) or `#bobiverse` (machine **required**) or PM to the ear | `ACK startworker agent on <machine> (queued <id>; workers N/CAP; by <nick>)` or `NACK startworker: <reason>` on the same channel (PM for a PM) |
+
+* **Who**: a *verified* services account only. `simon` (`JEEVES_OWNER_ACCOUNT` / `BOB_OP_ACCOUNTS`), `Jeeves`, or a `bob-<machine>` ear logged in to the account of the same name. A nick alone, a look-alike nick under another account, or a worker seat (`<machine>-<pid>`) is refused (`NACK ... denied`); an unknown account is `NACK ... not verified` and triggers a WHOIS so the retry works. An ear for another machine stays silent.
+* **How it launches**: the ear runs as a service in session 0 and cannot open a window. It only authorises, caps and writes `<install>\run\startworker\req-<id>.json` (`{id, mode, by, kind, ts, expires}`, no secrets). The tray (interactive session) heartbeats `tray.alive` and, every 2 s, consumes requests (deleted before launch = at-most-once, dropped after 60 s) and runs the **same function as the Agent / Plan click** (`Start-BobTrayWorkerExe`), so the worker gets its own visible console and a fresh `<machine>-<pid>` nick, joins `#<machine>` and posts `!bored`. Audit: `res-<id>.json`.
+* **Nobody logged in** (no fresh `tray.alive`, i.e. no interactive user with the tray running): `NACK startworker: nobody is logged in with the Bob tray running (...)`.
+* **Limits**: at most `BOB_STARTWORKER_MAX` worker seats (default 4; root `bob-worker*.exe` processes, plan windows included) -> `NACK ... N/CAP workers already running`; `BOB_STARTWORKER_COOLDOWN_S` (default 30) between accepted starts -> `NACK ... cooldown Ns`. Kill switch: file `<ear home>\startworker.disabled` or `BOB_STARTWORKER_DISABLE=1` -> `NACK ... disabled`.
+* **Worker input (t812u)**: a worker only injects lines **FROM `Jeeves` (exact nick) addressed to its own nick** (PM, or text starting `<nick>:`); other workers' lines, channel chatter and other bots never reach the model. PING/PONG and the fleet `ping` are answered by the exe.

@@ -1,4 +1,4 @@
-﻿"""Chair command surface = gh-Jeeves @8d76d9a parity (inventory, !help, authorization matrix, replies) via the real
+"""Chair command surface = gh-Jeeves @8d76d9a parity (inventory, !help, authorization matrix, replies) via the real
 Client methods on a fake chair. The ear (bob-<machine>) and the verified owner must both work."""
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class FakeChair:
     def _is_briefer(self): return False
 
     for _n in ("handle_privmsg", "_maybe_chair_commands", "_maybe_git_list", "_maybe_git_help", "_maybe_focus_ignore",
-               "_handle_recycle_command", "_handle_bob_local_recycle_command", "_cc", "_ear_machine", "_account_of",
+               "_handle_recycle_command", "_handle_bob_local_recycle_command", "_maybe_startworker", "_cc", "_ear_machine", "_account_of",
                "_principal", "_jobs", "_jobs_status_lines", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
                "_on_channel_names", "_workers"):
         locals()[_n] = getattr(irc_agent.Client, _n)

@@ -30,3 +30,9 @@ added `Start-BobTrayWorkerExe`; the menu is two plain items. New file `tools/Get
 ## Not verified live (needs a person at a desktop)
 
 Console input injection into the raw-mode Cursor / Grok TUIs; a real Ergo registration with a `<machine>-<pid>` nick and PASS only; a real hung agent; MSI upgrade/uninstall with a running seat; Windows Terminal as the console host.
+
+## UAT job flow (t820u)
+
+The worker's `UAT` job (skill `bobiverse-bob-job-uat`, with its mermaid diagram) verifies the merged product against the **VISION** (`docs/vision.md`) and any specs, then branches on the gaps:
+**gaps** -> one FR per gap filed through the intake (`Report-BobiverseIntakeIssue.ps1 -Kind fr`), verdict `UAT FAIL`, **no release**; **no gaps** -> documentation and READMEs updated (one docs PR), `VERSION` bumped, `Pack-BobiverseRelease.ps1`, `gh release create`, verdict `UAT PASS`.
+The wire contract is unchanged: `ACK UAT owner/repo#N`, then `DONE UAT owner/repo#N PASS|FAIL [url]` (or `NACK` / `GIVEUP`) in the worker's own `#<machine>`; Jeeves/the chair only does queue bookkeeping and never verifies, files or releases.

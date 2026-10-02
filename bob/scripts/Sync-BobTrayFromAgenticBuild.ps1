@@ -73,7 +73,7 @@ $optionalTools = @(
 
 # #60: bobiverse-owned tools that upstream does not ship (or ships a machine-specific copy of).
 # They are preserved across a re-sync so the vendored tray keeps working on every machine.
-$ownedTools = @('Get-CursorAgentUsage.py', 'BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'Invoke-BobTrayServiceControl.ps1')
+$ownedTools = @('Get-CursorAgentUsage.py', 'BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'Invoke-BobTrayServiceControl.ps1', 'BobTrayStartWorker.ps1')
 $ownedKeep = @{}
 foreach ($leaf in $ownedTools) {
     $p = Join-Path $OutDir "tools\$leaf"
