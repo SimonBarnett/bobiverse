@@ -869,7 +869,8 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
             return None
         return GitClaim(repo=repo, task="FR", id=ident, event=ev, action=action, line=src)
 
-    if ev == "pull_request" and action in ("opened", "ready_for_review", "edited"):
+    # FR #924: include synchronize so author_seat backfill runs on push without waiting for edited.
+    if ev == "pull_request" and action in ("opened", "ready_for_review", "edited", "synchronize"):
         ident = _payload_number(ev, payload)
         if ident is None:
             return None
@@ -1090,7 +1091,12 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 n += before - len(doc["unaccepted"])
                 changed = "removed" if n else "noop"
 
-            elif ev == "pull_request" and action in ("opened", "ready_for_review", "edited"):
+            elif ev == "pull_request" and action in (
+                "opened",
+                "ready_for_review",
+                "edited",
+                "synchronize",  # FR #924: push events also backfill author_seat
+            ):
                 # Supersede linked FRs with this MRB
                 # FR #593: stamp author_seat from FR implementer before dropping FR rows.
                 implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
