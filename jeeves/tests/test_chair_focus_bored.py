@@ -170,25 +170,23 @@ def test_mrb_not_offered_to_author_seat_when_other_seat_live(_home):
 
 
 def test_uat_not_offered_to_author_seat_when_other_seat_live(_home):
-    """FR #227: UAT of an MRB-fix PR must not go to the MRB author while another seat is live."""
+    """FR #227 / #818: repo-level UAT (#0) must not go to the implementer while another seat is live."""
     doc = bobreport.empty_digest()
     doc["machines"]["ionos"] = bobreport._empty_machine("ionos")
     doc["machines"]["ionos"]["workers"] = {"1": {"state": "idle"}, "2": {"state": "idle"}}
     bobreport.save_digest(_home, doc)
-    _queue(_home, [
-        _row("o/r", "UAT", 106, 1, author_seat="ionos-1"),
-        _row("o/r", "FR", 7, 2),
-    ])
+    uat = _row("o/r", "UAT", 0, 1, author_seat="ionos-1", repo_uat=True, url="https://github.com/o/r")
+    _queue(_home, [uat, _row("o/r", "FR", 7, 2)])
     st, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos")
     assert st == "ok"
     assert job["id"] == "#7"  # skipped own UAT
-    _queue(_home, [_row("o/r", "UAT", 106, 1, author_seat="ionos-1")])
+    _queue(_home, [_row("o/r", "UAT", 0, 1, author_seat="ionos-1", repo_uat=True, url="https://github.com/o/r")])
     st, job = gitclaim.offer_focus_top(_home, "ionos-2", "#ionos")
-    assert st == "ok" and job["id"] == "#106"
+    assert st == "ok" and job["id"] == "#0" and job.get("repo_uat") is True
 
 
 def test_uat_not_offered_to_sibling_seat_on_same_machine(_home):
-    """FR #227: same machine, different pid still blocked when another machine is live."""
+    """FR #227 / #818: same machine, different pid still blocked for repo UAT #0 when another machine is live."""
     doc = bobreport.empty_digest()
     doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
     doc["machines"]["marchhare"]["workers"] = {"16564": {"state": "idle"}, "41912": {"state": "idle"}}
@@ -196,11 +194,14 @@ def test_uat_not_offered_to_sibling_seat_on_same_machine(_home):
     doc["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
     bobreport.save_digest(_home, doc)
     registered_machines.save_registered(_home, {"marchhare", "flamingo", "ionos"})
-    _queue(_home, [_row("o/r", "UAT", 106, 1, author_seat="marchhare-16564")])
+    _queue(
+        _home,
+        [_row("o/r", "UAT", 0, 1, author_seat="marchhare-16564", repo_uat=True, url="https://github.com/o/r")],
+    )
     st, job = gitclaim.offer_focus_top(_home, "marchhare-41912", "#marchhare")
     assert st == "empty"  # sibling seat blocked; flamingo not asking
     st2, job2 = gitclaim.offer_focus_top(_home, "flamingo-9", "#flamingo")
-    assert st2 == "ok" and job2["id"] == "#106"
+    assert st2 == "ok" and job2["id"] == "#0" and job2.get("repo_uat") is True
 
 
 def test_done_mrb_pass_stamps_author_seat_on_uat(_home):

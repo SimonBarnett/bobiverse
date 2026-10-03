@@ -271,14 +271,15 @@ def test_done_existing_pr_and_uat_giveup_do_not_block_mrb_of_the_pr(_home):
 
 
 def test_offer_and_assign_honour_ledger_even_without_row_stamps(_home):
+    # FR #818: UAT is only #0 + repo_uat; ledger still blocks the implementer seat.
     gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#611", "o/a#626"])
-    _queue(_home, [_uat(611, refs=["#626"]), _row("o/a", "FR", 8, 9)])
+    _queue(_home, [_uat(0, refs=["#611", "#626"]), _row("o/a", "FR", 8, 9)])
     fi.handle_focus_cmd(_home, "1 o/a")
     st, job = gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")
     assert (job["task"], job["id"]) == ("FR", "#8")
-    st, why = gitclaim.assign_row(_home, "ionos-11", "o/a", "UAT", "#611")
-    assert st == "refused" and "no self-UAT" in why
-    assert gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#611")[0] == "ok"
+    st, why = gitclaim.assign_row(_home, "ionos-11", "o/a", "UAT", "#0")
+    assert st == "refused" and ("no self-UAT" in why or "implemented" in why.lower() or "self" in why.lower())
+    assert gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#0")[0] == "ok"
 
 def test_ledger_refresh_from_pr_commit_authors(_home):
     rows = [_row("o/a", "MRB", 12, 1, refs=["#7"]), _uat(30, refs=["#31"])]

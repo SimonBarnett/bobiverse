@@ -1287,8 +1287,13 @@ def _coerce_row(row: dict) -> dict | None:
 
 
 def is_repo_uat(row: dict) -> bool:
-    """t853u: UAT is per REPO. Only the single repo-level UAT row (``repo_uat``) is real work."""
-    return _canon_task(row) == "UAT" and bool(row.get("repo_uat"))
+    """t853u / FR #818: UAT is per REPO only — ``repo_uat`` and id ``#0`` (never per-PR / per-issue)."""
+    if _canon_task(row) != "UAT":
+        return False
+    if not bool(row.get("repo_uat")):
+        return False
+    ident = str(row.get("id") or "").strip().lstrip("#")
+    return ident == "0"
 
 
 def is_mrb_fix_pr_title(title: str) -> bool:
@@ -1943,6 +1948,9 @@ def offer_top(
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
                     continue  # FR #254
+                # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
+                if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
+                    continue
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     continue
                 if row_blocked_for_machine(row, nick or ""):
@@ -2339,6 +2347,9 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
+            # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
+            if task_u == "UAT" and not is_repo_uat(cand):
+                return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real pull URL"
             if review_blocked_for_author(cand, me, live):
@@ -2446,8 +2457,9 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
                 if task == "MRB" and not mrb_row_offerable(row):
                     continue
-                if task == "UAT" and not row.get("repo_uat"):
-                    continue  # t853u: no per-PR / per-issue UAT rows; only the single repo-level UAT
+                # FR #818 / t853u: drop any UAT that is not the single repo-level #0 row.
+                if task == "UAT" and not is_repo_uat(row):
+                    continue
                 keep.append(row)
             doc["unaccepted"] = keep
             dropped = before - len(keep)
@@ -2617,11 +2629,11 @@ def resync_from_github(
             keep = []
             for row in doc["unaccepted"]:
                 if str(row.get("task") or "").upper() == "UAT":
-                    if not row.get("repo_uat"):
-                        continue  # t853u: legacy per-PR / per-issue UAT rows are gone (even if offered, unACKed)
+                    # FR #818 / t853u: only keep real repo-level UAT (#0 + repo_uat).
+                    if not is_repo_uat(row):
+                        continue
                     if (
-                        row.get("repo_uat")
-                        and row.get("repo") in fetched_set
+                        row.get("repo") in fetched_set
                         and not repo_clear.get(str(row.get("repo")), True)
                         and not row.get("offered_to")
                     ):
