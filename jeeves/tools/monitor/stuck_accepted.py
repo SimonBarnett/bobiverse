@@ -7,13 +7,13 @@ import sys
 import time
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from _common import EXIT_FINDING, EXIT_OK, queue_bucket_rows, resolve_homes, run_check
 
 DEFAULT_MAX_AGE_SEC = 7200  # 2 h
 
 
 def _age_sec(row: dict) -> float | None:
-    for k in ("accepted_at", "accepted_ts", "claimed_at", "ts", "updated"):
+    for k in ("accepted_ts", "accepted_at", "claimed_at", "ts", "updated", "offered_ts"):
         v = row.get(k)
         if isinstance(v, (int, float)):
             if v > 1_000_000_000_000:
@@ -21,7 +21,6 @@ def _age_sec(row: dict) -> float | None:
             if v > 1_000_000_000:
                 return time.time() - float(v)
         if isinstance(v, str) and v:
-            # ISO-ish: leave to agent if parse fails
             try:
                 from datetime import datetime
 
@@ -30,6 +29,12 @@ def _age_sec(row: dict) -> float | None:
             except Exception:
                 pass
     return None
+
+
+def _row_label(row: dict) -> str:
+    ident = row.get("id") or row.get("number") or "?"
+    repo = row.get("repo") or row.get("owner_repo") or "?"
+    return f"{repo}{ident if str(ident).startswith('#') else '#' + str(ident)}"
 
 
 def check(args):
@@ -41,34 +46,23 @@ def check(args):
         findings.append(f"queue.json missing: {qpath}")
         return ({"ok": False, "findings": findings}, EXIT_FINDING)
     queue = json.loads(qpath.read_text(encoding="utf-8-sig"))
-    rows = []
-    if isinstance(queue, dict):
-        for key in ("accepted", "rows", "items", "queue"):
-            v = queue.get(key)
-            if isinstance(v, list):
-                rows.extend(v)
-            elif isinstance(v, dict):
-                rows.extend(v.values())
+    # gitclaim: every row in the accepted bucket is accepted (stamp is ``nick``).
+    rows = queue_bucket_rows(queue, "accepted")
+    # Also accept legacy shapes that stamp accepted_by on mixed buckets.
+    for r in queue_bucket_rows(queue, "rows", "items", "queue"):
+        if r.get("accepted_by") or r.get("accepted") or r.get("owner_seat") or r.get("nick"):
+            if r not in rows:
+                rows.append(r)
     for r in rows:
-        if not isinstance(r, dict):
-            continue
         if r.get("done"):
             continue
-        if not (r.get("accepted_by") or r.get("accepted") or r.get("owner_seat")):
-            continue
+        by = r.get("nick") or r.get("accepted_by") or r.get("owner_seat") or ""
         age = _age_sec(r)
         if age is None:
-            # accepted without timestamp: still report soft stuck candidate
-            stuck.append({"row": r.get("row_key") or r.get("id"), "age_sec": None, "by": r.get("accepted_by")})
+            stuck.append({"row": _row_label(r), "age_sec": None, "by": by})
             continue
         if age > DEFAULT_MAX_AGE_SEC:
-            stuck.append(
-                {
-                    "row": r.get("row_key") or f"{r.get('repo')}#{r.get('number')}",
-                    "age_sec": int(age),
-                    "by": r.get("accepted_by"),
-                }
-            )
+            stuck.append({"row": _row_label(r), "age_sec": int(age), "by": by})
     for s in stuck:
         findings.append(f"stuck accepted {s.get('row')} by {s.get('by')} age_sec={s.get('age_sec')}")
     ok = not findings

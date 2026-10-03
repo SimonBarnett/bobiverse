@@ -6,7 +6,14 @@ import json
 import sys
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from _common import (
+    EXIT_FINDING,
+    EXIT_OK,
+    iter_worker_entries,
+    queue_bucket_rows,
+    resolve_homes,
+    run_check,
+)
 
 
 def _load_json(path: Path):
@@ -20,21 +27,18 @@ def check(args):
     findings = []
     dig = _load_json(digest / "digest.json") or {}
     queue = _load_json(chair / "queue.json") or {}
-    unaccepted = []
-    if isinstance(queue, dict):
-        rows = queue.get("unaccepted") or queue.get("rows") or queue.get("items") or []
-        if isinstance(rows, list):
-            unaccepted = [r for r in rows if isinstance(r, dict) and not r.get("accepted_by") and not r.get("done")]
-        elif isinstance(rows, dict):
-            unaccepted = [r for r in rows.values() if isinstance(r, dict) and not r.get("accepted_by")]
+    unaccepted = queue_bucket_rows(queue, "unaccepted")
     idle = []
     machines = dig.get("machines") if isinstance(dig, dict) else None
-    if isinstance(machines, dict):
-        for mid, m in machines.items():
-            workers = (m or {}).get("workers") or []
-            for w in workers:
-                if isinstance(w, dict) and str(w.get("state", "")).lower() == "idle":
-                    idle.append({"machine": mid, "nick": w.get("nick") or w.get("name")})
+    for w in iter_worker_entries(machines):
+        if str(w.get("state", "")).lower() == "idle":
+            idle.append(
+                {
+                    "machine": w.get("machine"),
+                    "nick": w.get("nick") or w.get("name"),
+                    "pid": w.get("pid"),
+                }
+            )
     if idle and unaccepted:
         findings.append(f"{len(idle)} idle seat(s) with {len(unaccepted)} unaccepted row(s)")
     ok = not findings

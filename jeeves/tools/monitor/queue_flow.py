@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Queue-flow check: unoffered open issues, empty offer queue, rows without pull url."""
+"""Queue-flow check: empty offer queue, MRB rows without pull url."""
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from _common import (
+    EXIT_FINDING,
+    EXIT_OK,
+    queue_bucket_rows,
+    resolve_homes,
+    row_has_pull_url,
+    row_task,
+    run_check,
+)
 
 
 def _load_json(path: Path):
@@ -25,32 +33,26 @@ def check(args):
             {"ok": False, "findings": findings, "chair_home": str(chair)},
             EXIT_FINDING,
         )
-    rows = []
-    if isinstance(queue, dict):
-        for key in ("unaccepted", "accepted", "rows", "items", "queue"):
-            v = queue.get(key)
-            if isinstance(v, list):
-                rows.extend([r for r in v if isinstance(r, dict)])
-            elif isinstance(v, dict):
-                rows.extend([r for r in v.values() if isinstance(r, dict)])
-    offerable = [r for r in rows if not r.get("done") and not r.get("accepted_by") and not r.get("ignored")]
-    missing_url = [
-        r for r in rows
-        if str(r.get("kind") or r.get("type") or "").upper() in ("MRB", "FR")
-        and not (r.get("url") or r.get("pull_url") or r.get("pr_url"))
-        and not r.get("done")
+    unaccepted = queue_bucket_rows(queue, "unaccepted")
+    # Offerable = unaccepted rows not needs_human / not ignored.
+    offerable = [
+        r
+        for r in unaccepted
+        if not r.get("ignored")
+        and not r.get("needs_human")
+        and str(r.get("needs_human") or "").lower() not in ("1", "true", "yes")
     ]
-    if not offerable and rows:
-        # empty offer side while rows exist elsewhere may still be ok; flag only if all done empty
-        pass
+    missing_url = [
+        r
+        for r in unaccepted
+        if row_task(r) == "MRB" and not row_has_pull_url(r)
+    ]
     if not offerable:
-        # soft: report empty offer queue (agent decides whether open GitHub issues exist)
         findings.append("offer queue empty (no unaccepted offerable rows)")
     for r in missing_url[:20]:
-        findings.append(
-            f"row missing pull url: {r.get('repo') or r.get('owner_repo') or '?'}#{r.get('number') or r.get('id') or '?'}"
-        )
-    # empty offer alone is informational finding (exit 1) so agent reasons about it
+        ident = r.get("id") or r.get("number") or "?"
+        repo = r.get("repo") or r.get("owner_repo") or "?"
+        findings.append(f"row missing pull url: {repo}{ident if str(ident).startswith('#') else '#' + str(ident)}")
     ok = not findings
     return (
         {

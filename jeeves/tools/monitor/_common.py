@@ -84,3 +84,65 @@ def resolve_homes(args: argparse.Namespace) -> tuple[Path, Path]:
     ch = Path(args.chair_home) if args.chair_home else chair_home()
     dh = Path(args.digest_home) if args.digest_home else digest_home()
     return ch, dh
+
+
+def iter_worker_entries(machines: object) -> list[dict[str, Any]]:
+    """Yield worker dicts from digest ``machines`` (pid-keyed dict or list)."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(machines, dict):
+        return out
+    for mid, m in machines.items():
+        if not isinstance(m, dict):
+            continue
+        workers = m.get("workers")
+        if isinstance(workers, dict):
+            items = workers.items()
+            for pid, w in items:
+                if isinstance(w, dict):
+                    row = dict(w)
+                    row.setdefault("machine", mid)
+                    row.setdefault("pid", str(pid))
+                    if not row.get("nick"):
+                        row["nick"] = f"{mid}-{pid}"
+                    out.append(row)
+        elif isinstance(workers, list):
+            for w in workers:
+                if isinstance(w, dict):
+                    row = dict(w)
+                    row.setdefault("machine", mid)
+                    out.append(row)
+        # optional chair export: worker_list
+        wlist = m.get("worker_list")
+        if isinstance(wlist, list):
+            for w in wlist:
+                if isinstance(w, dict):
+                    row = dict(w)
+                    row.setdefault("machine", mid)
+                    out.append(row)
+    return out
+
+
+def queue_bucket_rows(queue: object, *keys: str) -> list[dict[str, Any]]:
+    """Rows from named queue.json buckets (list or dict values)."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(queue, dict):
+        return out
+    for key in keys:
+        v = queue.get(key)
+        if isinstance(v, list):
+            out.extend([r for r in v if isinstance(r, dict)])
+        elif isinstance(v, dict):
+            out.extend([r for r in v.values() if isinstance(r, dict)])
+    return out
+
+
+def row_task(row: dict) -> str:
+    return str(row.get("task") or row.get("kind") or row.get("type") or "").upper()
+
+
+def row_has_pull_url(row: dict) -> bool:
+    for k in ("url", "pull_url", "pr_url"):
+        u = str(row.get(k) or "")
+        if "/pull/" in u:
+            return True
+    return bool(str(row.get("pr_id") or row.get("pr") or "").strip())
