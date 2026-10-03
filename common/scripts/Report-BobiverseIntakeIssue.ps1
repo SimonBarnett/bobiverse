@@ -1,12 +1,15 @@
 <#
 .SYNOPSIS
-  POST kind=issue to https://irc.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
+  POST kind=issue|fr|skill|harvest to https://irc.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
 
 .DESCRIPTION
   Intake is open: NO password/secret is sent or needed. (Optional X-Bob-Intake-Key
   only when BOB_INTAKE_KEY is set by the host.) On network/HTTP failure, writes the
   payload JSON under report-outbox and/or install-outbox for later retry
   (same idempotency_key).
+
+  FR #611: POST body is UTF-8 bytes; HTTP error responses surface the intake JSON
+  ``error`` field (e.g. bad_title) instead of only "(400) Bad Request".
 #>
 [CmdletBinding()]
 param(
@@ -31,10 +34,57 @@ if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
     throw "Repo must be owner/name (got '$Repo'). Intake requires an explicit target repo."
 }
 
+$titleTrim = $Title.Trim()
+if (-not $titleTrim) {
+    throw "Title is empty after trim (intake rejects bad_title)."
+}
+if ($titleTrim.Length -gt 200) {
+    throw ("Title length {0} exceeds intake max 200 (bad_title). Shorten the title." -f $titleTrim.Length)
+}
+
+function Get-BobiverseIntakeErrorDetail {
+    param($ErrorRecord)
+    $detail = ''
+    if ($ErrorRecord -and $ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $detail = [string]$ErrorRecord.ErrorDetails.Message
+    }
+    if (-not $detail -and $ErrorRecord -and $ErrorRecord.Exception -and $ErrorRecord.Exception.Response) {
+        try {
+            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            if ($stream) {
+                # Response stream may already be consumed; best-effort.
+                $reader = New-Object System.IO.StreamReader($stream)
+                $detail = $reader.ReadToEnd()
+            }
+        } catch { }
+    }
+    $intakeError = $null
+    if ($detail -match '"error"\s*:\s*"([^"]+)"') {
+        $intakeError = $Matches[1]
+    }
+    $status = $null
+    $ex = if ($ErrorRecord) { $ErrorRecord.Exception } else { $null }
+    while ($null -ne $ex) {
+        if ($ex.Response -and $ex.Response.StatusCode) {
+            try { $status = [int]$ex.Response.StatusCode; break } catch { }
+            try { $status = [int]$ex.Response.StatusCode.value__; break } catch { }
+        }
+        $ex = $ex.InnerException
+    }
+    if ($null -eq $status -and $ErrorRecord -and $ErrorRecord.Exception.Message -match '\((\d{3})\)') {
+        $status = [int]$Matches[1]
+    }
+    return [pscustomobject]@{
+        Status      = $status
+        Body        = $detail
+        IntakeError = $intakeError
+    }
+}
+
 function New-BobiverseIntakePayload {
     $idem = $IdempotencyKey
     if (-not $idem) {
-        $raw = ('{0}|{1}|{2}|{3}' -f $Kind, $Repo, $Title, $Body)
+        $raw = ('{0}|{1}|{2}|{3}' -f $Kind, $Repo, $titleTrim, $Body)
         $sha = [Security.Cryptography.SHA256]::Create()
         try {
             $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($raw))
@@ -50,7 +100,7 @@ function New-BobiverseIntakePayload {
     return [ordered]@{
         kind             = $Kind
         repo             = $Repo
-        title            = $Title.Trim()
+        title            = $titleTrim
         body             = $Body
         idempotency_key  = $idem
         source           = [ordered]@{
@@ -72,7 +122,7 @@ function Write-BobiverseIntakeOutbox {
     $digest = $idem
     if ($digest.Length -gt 16) { $digest = $digest.Substring(0, 16) }
     $name = 'report-{0}.json' -f $digest
-    $json = ($Payload | ConvertTo-Json -Depth 6)
+    $json = ($Payload | ConvertTo-Json -Depth 6 -Compress)
     foreach ($dir in $Dirs) {
         if (-not $dir) { continue }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -99,16 +149,18 @@ else {
 }
 
 $headers = @{
-    'Content-Type' = 'application/json'
+    'Content-Type' = 'application/json; charset=utf-8'
 }
 if ($env:BOB_INTAKE_KEY) {
     $headers['X-Bob-Intake-Key'] = [string]$env:BOB_INTAKE_KEY
 }
 
-$bodyJson = ($payload | ConvertTo-Json -Depth 6)
+$bodyJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
+# FR #611: always POST UTF-8 bytes (WinPS string -Body can be UTF-16 on some hosts).
+$bodyBytes = [Text.Encoding]::UTF8.GetBytes($bodyJson)
 try {
     $resp = Invoke-RestMethod -Method Post -Uri $IntakeUrl -Headers $headers `
-        -Body $bodyJson -TimeoutSec $TimeoutSec
+        -Body $bodyBytes -TimeoutSec $TimeoutSec
     return [pscustomobject]@{
         ok              = $true
         queued_local    = $false
@@ -117,10 +169,22 @@ try {
         queued          = [bool]$resp.queued
         idempotency_key = $payload.idempotency_key
         outbox          = @()
+        error           = $null
+        intake_error    = $null
+        http_status     = 202
     }
 }
 catch {
+    $info = Get-BobiverseIntakeErrorDetail -ErrorRecord $_
     $paths = Write-BobiverseIntakeOutbox -Payload $payload -Dirs ($outDirs | Select-Object -Unique)
+    $msg = [string]$_.Exception.Message
+    if ($info.IntakeError) {
+        $msg = "HTTP {0} intake error={1}" -f $(if ($info.Status) { $info.Status } else { '?' }), $info.IntakeError
+        if ($info.Body) { $msg = "$msg body=$($info.Body)" }
+    }
+    elseif ($info.Body) {
+        $msg = "$msg body=$($info.Body)"
+    }
     return [pscustomobject]@{
         ok              = $false
         queued_local    = $true
@@ -129,6 +193,8 @@ catch {
         queued          = $true
         idempotency_key = $payload.idempotency_key
         outbox          = $paths
-        error           = [string]$_.Exception.Message
+        error           = $msg
+        intake_error    = $info.IntakeError
+        http_status     = $info.Status
     }
 }
