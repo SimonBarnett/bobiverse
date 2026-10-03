@@ -64,6 +64,10 @@ any still open that the implementer missed: comment **`Duplicate of #N / fixed b
 fixes needs its own full-form `Closes <owner>/<repo>#D` line. A PR with no `Duplicates closed:` line is a review nit; a PR that leaves an obvious open duplicate is a FAIL
 once the implementer cannot be reached. Never close `needs-human` / `board` issues as duplicates.
 
+
+## Pytest / sparse worktrees (FR #963)
+
+`repo_layout` lives in `common/scripts/repo_layout.py`. Prefer `git sparse-checkout disable` in the MRB temp tree. Partial sparse sets must include `common/scripts`; do not rely on `PYTHONPATH=common/tests`. Service `*/tests/conftest.py` puts `common/scripts` on `sys.path`.
 ## Evidence required (the MRB board comment on the PR/issue)
 
 * **Verdict** `PASS`/`FAIL`, plus the **drift verdict** line and the quoted vision line(s). * Tests: which new tests you added, the exact commands run, pass/fail counts, any flaky/skipped.

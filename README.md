@@ -17,8 +17,8 @@ jeeves/   scripts/ (Install-Jeeves, Start-Jeeves, Install-BobIrcd/Chair/Webhooks
 bob/      scripts/ (Install-Bob, Start-Bob*, bob_worker.py, Build-BobWorker) .grok/skills/ AGENTS.md agents/{worker,plan} docs/
           tray/ (the systray: tools/ src/ assets/ config/ dialogs/ = bob-about + bob-status exes) agentwatcher/ (Watch-AgentHealth) tests/   (t829u: first-class bob sources; staged/installed trees stay flat)
 airc/     scripts/ (Install-Airc*, Start-AircConsole*, airc_console*.py) .grok/skills/ AGENTS.md docs/ packaging/Product.wxs tests/
-common/   scripts/ (Bobiverse-Common, Pack-BobiverseRelease, Fetch-*, Update/Sync/Check, the shared python engine: irc_agent.py wire.py ...)
-          .grok/skills/ (harvest, fleet-ops) docs/ third_party/{nssm,ergo,wix}/ VERSION tests/ (+ repo_layout.py)
+common/   scripts/ (Bobiverse-Common, Pack-BobiverseRelease, Fetch-*, Update/Sync/Check, repo_layout.py, the shared python engine: irc_agent.py wire.py ...)
+          .grok/skills/ (harvest, fleet-ops) docs/ third_party/{nssm,ergo,wix}/ VERSION tests/ (tests only; repo_layout.py lives in common/scripts — FR #963)
 config/ dist/   not tracked (gitignored secrets / build output)
 ```
 
@@ -67,7 +67,7 @@ Rules (`Sync-BobiverseWorkTree` in `common/scripts/Bobiverse-Common.ps1`):
 
 **Opt-out:** `BOBIVERSE_NO_UPDATE=1` (machine env) disables the repo ff, the sync *and* the release check. `BOB_AUTOUPDATE=0` / `<install>\config\autoupdate.disabled` disable the release check only.
 
-Working in the install dir (agents and humans): edit under `<product>\` / `common\` (the flat copies are build output and are refreshed from them), then `git switch -c fix/x`, commit, `git push -u origin fix/x`, open the PR. `Sync-BobiverseFromRepo.ps1 -Product <p>` applies your branch to the running flat tree without a restart. Issues go to the intake with `scripts\Report-BobiverseIntakeIssue.ps1`. Services run as another account than the file owner: `git -c safe.directory=* ...` or `git config --global --add safe.directory <install dir>`. The test-suite needs the full repo (root `conftest.py`): run it from a full clone, not from a sparse install dir.
+Working in the install dir (agents and humans): edit under `<product>\` / `common\` (the flat copies are build output and are refreshed from them), then `git switch -c fix/x`, commit, `git push -u origin fix/x`, open the PR. `Sync-BobiverseFromRepo.ps1 -Product <p>` applies your branch to the running flat tree without a restart. Issues go to the intake with `scripts\Report-BobiverseIntakeIssue.ps1`. Services run as another account than the file owner: `git -c safe.directory=* ...` or `git config --global --add safe.directory <install dir>`. The test-suite needs the full repo (root `conftest.py`): run it from a full clone or a job worktree with `git sparse-checkout disable`, not from a sparse install dir. Sparse FR/MRB trees that keep a partial cone must include `common/scripts` so `repo_layout` imports (FR #963); `*/tests/conftest.py` also adds that path.
 ## Pack
 
 ```powershell
