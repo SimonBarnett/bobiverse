@@ -270,3 +270,68 @@ def test_prune_drops_mrb_verdict_and_fake_mrb_rows(tmp_path, monkeypatch):
     assert res["ok"]
     left = gitclaim.load_unaccepted(tmp_path)
     assert [r["id"] for r in left] == ["#1", "#240"]
+
+def test_skip_fr_underscore_verdict_aliases():
+    for lab in ("mrb_pass", "mrb_fail"):
+        assert lab in gitclaim.SKIP_FR_LABELS
+        assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=(lab,)).startswith("label:")
+
+
+def test_line_only_mrb_fail_text_skips_without_labels(tmp_path, monkeypatch):
+    """MRB #603: empty labels + line text 'mrb-fail' must skip (legacy queue shape)."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    assert gitclaim.row_skip_fr_reason(
+        {"line": "mrb-fail board for agentic_fomprep#9", "labels": (), "title": ""}
+    )
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/agentic_fomprep",
+                    "task": "FR",
+                    "id": "#9",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "mrb-fail board for agentic_fomprep#9",
+                    # no labels, no title
+                },
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#595",
+                    "seq": 2,
+                    "ts": "t",
+                    "line": "FR: harden MRB/FR routing",
+                    "title": "FR: harden MRB/FR routing: reject fake pull URLs",
+                    "labels": ["feature-request"],
+                },
+            ],
+            "accepted": [],
+        },
+    )
+    st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-1", "#marchhare")
+    assert st == "ok"
+    assert job["id"] == "#595"
+
+
+def test_real_fr_title_with_mrb_slash_not_skipped():
+    """Bare 'MRB' in a real FR title must not trip text skip (labels-only for bare mrb)."""
+    assert (
+        gitclaim.issue_skip_fr_reason(
+            title="FR: harden MRB/FR routing: reject fake pull URLs",
+            labels=("feature-request",),
+        )
+        is None
+    )
+
+
+def test_mrb_cross_repo_pull_url_not_offerable():
+    row = {
+        "task": "MRB",
+        "repo": "SimonBarnett/bobiverse",
+        "id": "#240",
+        "url": "https://github.com/other/owner/pull/999",
+    }
+    assert gitclaim.mrb_row_offerable(row) is False

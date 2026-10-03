@@ -31,7 +31,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 
 `gitclaim` never offers junk or fake work, even when `!focus` would otherwise select it:
 
-* **FR skip labels** (`SKIP_FR_LABELS`): `skill`, `umbrella`, `parent-fr`, `mrb-home` / `mrb_home`, `evergreen` / `evergreen-mrb`, and verdict boards `mrb`, `mrb-pass`, `mrb-fail`. Matched at enqueue, claim, offer, prune, and resync. Legacy rows with an empty `title` still skip when `labels` or `line` carry the board shape.
+* **FR skip labels** (`SKIP_FR_LABELS`): `skill`, `umbrella`, `parent-fr`, `mrb-home` / `mrb_home`, `evergreen` / `evergreen-mrb`, and verdict boards `mrb`, `mrb-pass`/`mrb_pass`, `mrb-fail`/`mrb_fail`. Matched at enqueue, claim, offer, prune, and resync. Legacy rows with an empty `title` still skip when `labels` or `line`/`title` text carry board tokens (`mrb-fail`, `mrb-pass`, `mrb-home`, …; bare `mrb` is labels-only so real titles like “harden MRB/FR …” stay offerable). Pull URLs must match the row `repo`.
 * **MRB pull URL** (FR #595 / #247): assign lines and offers use only a real `https://github.com/{repo}/pull/N` URL or an explicit `pr_id` / `pr`. The chair never invents `/pull/{issue_id}` from a bare row id. Rows with an issues-shaped URL, missing pull URL, or a pull that 404s (when a GitHub token is available) are skipped at offer and dropped by prune; a real `/pull/240`-style row stays offerable. Author-seat / same-machine self-MRB blocking is unchanged.
 
 ## Authorization matrix
