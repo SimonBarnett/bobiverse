@@ -572,18 +572,23 @@ def issue_skip_fr_reason(
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
-    # bobiverse#258 / FR #133: evergreen MRB-home boards (label or title shape).
-    if EVERGREEN_MRB_HOME_TITLE_RE.search(title_s) or EVERGREEN_MRB_HOME_TITLE_RE.search(blob):
+    # bobiverse#258 / FR #133 / FR #987: evergreen MRB-home boards by title shape only
+    # (label mrb-home/evergreen already returned above). Do not scan the body — real FRs
+    # that mention "MRB home" in prose must stay assignable.
+    if EVERGREEN_MRB_HOME_TITLE_RE.search(title_s):
         return "evergreen_mrb_home"
-    # FR #595 / MRB #603: legacy queue rows may only put board labels in line/title
-    # text (empty labels). Match hyphen/underscore board tokens; not bare ``mrb``.
-    blob_l = blob.lower()
-    text_hits = []
-    for lab in sorted(SKIP_FR_LABELS_IN_TEXT, key=len, reverse=True):
-        if re.search(rf"(?<![a-z0-9]){re.escape(lab)}(?![a-z0-9])", blob_l):
-            text_hits.append(lab)
-    if text_hits:
-        return f"label_text:{text_hits[0]}"
+    # FR #595 / MRB #603 / FR #987: legacy queue rows may only put board labels in
+    # title/line text (empty labels). Never run this scan when GitHub/labels are present
+    # (false-positive on titles like "skip for stale mrb-home rows" / bodies saying
+    # "evergreen"). Title/line only — never the body.
+    if not labs:
+        title_l = title_s.lower()
+        text_hits = []
+        for lab in sorted(SKIP_FR_LABELS_IN_TEXT, key=len, reverse=True):
+            if re.search(rf"(?<![a-z0-9]){re.escape(lab)}(?![a-z0-9])", title_l):
+                text_hits.append(lab)
+        if text_hits:
+            return f"label_text:{text_hits[0]}"
     return None
 
 
