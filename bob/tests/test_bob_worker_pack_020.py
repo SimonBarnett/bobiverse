@@ -369,6 +369,22 @@ def test_uat_skill_is_the_vision_gap_flow_with_fr_per_gap_or_docs_and_release():
     assert re.search(r"(?i)evidence before stamp", t)
 
 
+def test_uat_skill_wires_design_uat_companion_with_g1_g2_g3():
+    """FR #780 / MRB #783: design-UAT must be absorbed into the UAT skill tree and linked from SKILL.md."""
+    skill = (SK / "bobiverse-bob-job-uat" / "SKILL.md").read_text(encoding="utf-8-sig")
+    companion = SK / "bobiverse-bob-job-uat" / "design-uat.md"
+    assert companion.is_file(), "design-uat.md companion must ship beside bobiverse-bob-job-uat/SKILL.md"
+    assert "design-uat.md" in skill
+    assert re.search(r"(?i)Visual UAT", skill)
+    for gate in ("G1", "G2", "G3"):
+        assert gate in skill, gate
+    body = companion.read_text(encoding="utf-8-sig")
+    assert "G1" in body and "G2" in body and "G3" in body
+    assert re.search(r"(?i)ready for human UAT", body)
+    assert "bob-design-uat" in body
+    assert "delta_px" in body and "NOT_IN_BRIEF" in body
+
+
 def test_uat_release_exception_is_stated_in_the_worker_rules_and_the_wire_skill_and_docs():
     a = (ROOT / "bob-agents" / "worker" / "AGENTS.md").read_text(encoding="utf-8-sig")
     assert re.search(r"(?i)EXCEPT in an assigned UAT job that finds NO gaps", a) and "any gap = an FR each via intake and NO release" in a

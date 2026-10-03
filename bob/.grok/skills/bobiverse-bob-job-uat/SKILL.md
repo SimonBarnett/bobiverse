@@ -20,6 +20,16 @@ description: >
 
 **Job type `UAT`** - acceptance of a **whole repository** (t853u): UAT is per REPO, never per PR or per issue. Jeeves assigns it as `UAT owner/repo#0 https://github.com/owner/repo` and only after **every issue of the repo is closed** (excluding `needs-human`, boards/`mrb-home`, harvest/skill records) **and every PR is merged by MRB**; the row lists the PRs merged this cycle. Jeeves gives it to a seat that implemented **none** of those PRs whenever such a seat exists (if every live seat implemented something it may go to any seat - then say so in the evidence). Acceptance of the merged work of the cycle: The worker **verifies the product against the VISION** (`docs\vision.md`, its success table S1..Sn) **and any specs** (`docs\*spec*`, the FR acceptance criteria), with real evidence, then decides **by the gaps it found**: gaps -> an FR per gap and **no release**; no gaps -> update the documentation and READMEs and **create a release**. Wire format and timing are unchanged: `bobiverse-bob-job-irc` (ACK / DONE / NACK / GIVEUP in your own `#<machine>`). The **originating agent owns the UAT** (the requester of the FR, not the implementer); a UAT stamp, the docs update and the release happen only inside an assigned UAT job, by the worker - never by Jeeves / the chair.
 
+## Visual UAT (design companion)
+
+When the product under UAT has UI, screenshots, mocks, PDF pages, artboards, or other rendered artifacts, also run the absorbed design-UAT gates in [`design-uat.md`](design-uat.md) (ported from `SimonBarnett/bob-design-uat`):
+
+* **G1** - spelling in image (OCR/read every visible word; typos are blockers).
+* **G2** - layout and pixel deltas (measurable `delta_px` / `delta_hex`).
+* **G3** - hallucination and invented chrome (`in_brief` vs `NOT_IN_BRIEF`).
+
+Emit the required nit table. Workers do **not** stamp `ready for human UAT` or final `PASS-UAT`; Bob alone owns the human stamp. Fixture calibration and companion skills (`playwright-design`, `pdf-design`, `illustrator-design`, `graphics-design`, `uat-video-pack`) are documented in that companion.
+
 ## Process
 
 ```mermaid
