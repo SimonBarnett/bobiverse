@@ -347,6 +347,10 @@ def complete_job_by_ref(
             doc.setdefault("done", []).append(job)
             if len(doc["done"]) > gitclaim.ACCEPTED_CAP:
                 doc["done"] = doc["done"][-gitclaim.ACCEPTED_CAP :]
+            # FR #740 / #738: DONE MRB (PASS or FAIL) purges any lingering unaccepted duplicate
+            # so the next !bored cannot re-offer the same PR.
+            if str(job.get("task") or "").upper() == "MRB":
+                gitclaim._remove_unaccepted_tasks(doc, repo, ident, {"MRB"})
             # supersede light: DONE FR with PR url → queue MRB if url has /pull/ (FR #254).
             if str(job.get("task") or "").upper() == "FR" and (
                 result.upper().startswith("PR") or "/pull/" in (url or result)

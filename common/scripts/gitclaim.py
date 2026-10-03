@@ -1521,6 +1521,32 @@ def row_url(row: dict) -> str:
     return resolve_assign_url(row)
 
 
+def mrb_already_done(doc: dict, row: dict) -> bool:
+    """FR #740: True when ``done`` already has an MRB for the same repo+#id.
+
+    After DONE PASS/FAIL the row must not be re-offered (even if a duplicate
+    lingered in ``unaccepted`` or GitHub still returns HTTP 200 for a merged PR).
+    """
+    if _canon_task(row) != "MRB":
+        return False
+    repo = str(row.get("repo") or "").strip()
+    ident = str(row.get("id") or "").strip()
+    if not repo or not ident:
+        return False
+    want = ident if ident.startswith("#") else f"#{ident.lstrip('#')}"
+    for r in doc.get("done") or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("task") or "").upper() != "MRB":
+            continue
+        if str(r.get("repo") or "").strip() != repo:
+            continue
+        rid = str(r.get("id") or "").strip()
+        if rid == want or rid.lstrip("#") == want.lstrip("#"):
+            return True
+    return False
+
+
 def mrb_row_offerable(
     row: dict,
     *,
@@ -1529,9 +1555,12 @@ def mrb_row_offerable(
     """True when an MRB row has a resolvable pull URL (and optional live PR check).
 
     FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
+    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed → False).
     """
     if _canon_task(row) != "MRB":
         return True
+    if row.get("merged") in (True, "true", "1", 1):
+        return False
     raw = str(row.get("url") or "").strip()
     if ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw):
         return False
@@ -1560,10 +1589,11 @@ def github_pr_exists_checker(
     home: Path | None = None,
     cache: dict | None = None,
 ):
-    """Return ``pr_exists(repo, num)`` when a GitHub token is available (FR #595 / #247).
+    """Return ``pr_exists(repo, num)`` → True only for an **open** pull (FR #595 / #740).
 
-    Returns None when offline / no token (structural URL checks in
-    ``mrb_row_offerable`` still apply).
+    Merged or closed PRs still return HTTP 200 from GitHub; those must be False so
+    seats are not re-offered MRB after DONE PASS/FAIL. Returns None when offline /
+    no token (structural URL checks in ``mrb_row_offerable`` still apply).
     """
     try:
         import gh_filer
@@ -1594,9 +1624,17 @@ def github_pr_exists_checker(
             },
             method="GET",
         )
+        ok = False
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
-                ok = 200 <= int(getattr(resp, "status", 200) or 200) < 300
+                if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
+                    raw = resp.read()
+                    try:
+                        body = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+                    except (TypeError, ValueError, UnicodeDecodeError):
+                        body = {}
+                    # FR #740 / #738: only open pulls are offerable MRB targets.
+                    ok = str((body or {}).get("state") or "").lower() == "open"
         except urllib.error.HTTPError as e:
             ok = False
             if int(getattr(e, "code", 0) or 0) not in (404, 410):
@@ -1607,6 +1645,24 @@ def github_pr_exists_checker(
         return ok
 
     return _check
+
+
+def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None) -> int:
+    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740)."""
+    before = len(doc.get("unaccepted") or [])
+    kept: list[dict] = []
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) == "MRB":
+            if mrb_already_done(doc, row):
+                continue
+            # Always apply structural / merged-flag checks; live open-state when checker given.
+            if not mrb_row_offerable(row, pr_exists=pr_exists):
+                continue
+        kept.append(row)
+    doc["unaccepted"] = kept
+    return before - len(kept)
 
 
 def format_assign_line(nick: str, row: dict) -> str:
@@ -1809,6 +1865,8 @@ def offer_focus_top(
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return "error", None
+            # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
+            purged = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists)
             order = ordered_unaccepted(home, doc["unaccepted"])
             pick = None
             for cand in order:
@@ -1825,7 +1883,10 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     continue  # FR #254
-                # FR #595 / #247: skip MRB without a real pull URL (or PR 404).
+                # FR #740: never re-offer an MRB already in done (local, no token).
+                if mrb_already_done(doc, cand):
+                    continue
+                # FR #595 / #247 / #740: skip MRB without a real open pull URL.
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     continue
                 to = str(cand.get("offered_to") or "").strip()
@@ -1846,6 +1907,11 @@ def offer_focus_top(
                 pick = cand
                 break
             if pick is None:
+                if purged:
+                    try:
+                        _write_queue(queue_path(home), doc)
+                    except OSError:
+                        return "error", None
                 return "empty", None
             for i, row in enumerate(doc["unaccepted"]):
                 if row is pick or _same(row, str(pick.get("repo") or ""), str(pick.get("task") or ""), str(pick.get("id") or "")):
@@ -1890,6 +1956,7 @@ def offer_top(
                 return "error", None
             if not doc["unaccepted"]:
                 return "empty", None
+            purged = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists)
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):
@@ -1899,6 +1966,8 @@ def offer_top(
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
                     continue  # FR #254
+                if mrb_already_done(doc, row):
+                    continue
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     continue
                 if row_blocked_for_machine(row, nick or ""):
@@ -1906,6 +1975,11 @@ def offer_top(
                 pick_i = i
                 break
             if pick_i is None:
+                if purged:
+                    try:
+                        _write_queue(queue_path(home), doc)
+                    except OSError:
+                        return "error", None
                 return "empty", None
             job = dict(doc["unaccepted"][pick_i])
             job["offered_to"] = (nick or "").strip()
