@@ -1949,8 +1949,10 @@ def related_mrb_rows(doc: dict, uat_row: dict) -> list[dict]:
 def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
     """Copy UAT row with author stamps filled from related MRB rows when missing (FR #618).
 
-    Chair often offers ``UAT owner/repo#<PR>`` while DONE MRB stamped ``UAT #<issue>``.
-    Without enrichment, the MRB reviewer / fix author is offered their own UAT.
+    Used for repo-level UAT ``#0`` (t853u) when stamps are missing after DONE MRB
+    stamped a Closes issue id or after resync dropped them. Without enrichment,
+    ``review_blocked_for_author`` can miss the MRB reviewer / fix / implementer seats.
+    Per-PR UAT is never offered (``is_repo_uat`` gate runs before enrich).
     """
     if _canon_task(row) != "UAT":
         return row
