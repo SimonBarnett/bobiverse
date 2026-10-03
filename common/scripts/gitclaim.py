@@ -1040,7 +1040,7 @@ def _coerce_row(row: dict) -> dict | None:
     # FR #265: implementer_seat + mrb_author_seat survive reload for UAT dual-seat block.
     # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
     for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel",
-                "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat",
+                "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
                 "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
         if row.get(key):
@@ -1476,7 +1476,7 @@ def row_author_seats(row: dict) -> list[str]:
         seen.add(key)
         found.append(nick)
 
-    for k in ("implementer_seat", "mrb_author_seat", "author_seat", "author_nick", "author"):
+    for k in ("implementer_seat", "mrb_author_seat", "mrb_fix_author_seat", "author_seat", "author_nick", "author"):
         _add(str(row.get(k) or ""))
     multi = row.get("author_seats")
     if isinstance(multi, (list, tuple)):
@@ -1526,6 +1526,75 @@ def uat_block_extras_from_mrb_row(mrb_row: dict, *, mrb_nick: str = "") -> dict:
         out["implementer_seat"] = implementer
         if not out.get("author_seat"):
             out["author_seat"] = implementer
+    return out
+
+
+
+# FR #618 / #635: UAT of a PR number often lacks stamps (DONE MRB stamps the Closes issue id).
+MRB_PARENT_RE = re.compile(r"(?i)\bmrb-(\d+)\b")
+
+
+def _row_refs_list(row: dict) -> list[str]:
+    refs = row.get("refs") or []
+    if isinstance(refs, str):
+        refs = [p.strip() for p in refs.replace(";", ",").split(",") if p.strip()]
+    out: list[str] = []
+    for r in refs:
+        s = str(r).strip()
+        if not s:
+            continue
+        if not s.startswith("#"):
+            s = f"#{s}"
+        out.append(s)
+    return out
+
+
+def related_mrb_rows(doc: dict, uat_row: dict) -> list[dict]:
+    """Find MRB accepted/done rows related to a UAT row (FR #618 / #635)."""
+    repo = str(uat_row.get("repo") or "")
+    uid = str(uat_row.get("id") or "")
+    urefs = set(_row_refs_list(uat_row))
+    blob = f"{uat_row.get('line') or ''}\n{uat_row.get('title') or ''}\n{uid}"
+    for m in MRB_PARENT_RE.finditer(blob):
+        urefs.add(f"#{m.group(1)}")
+    found: list[dict] = []
+    for bucket in ("accepted", "done"):
+        for row in doc.get(bucket) or []:
+            if str(row.get("repo") or "") != repo:
+                continue
+            if str(row.get("task") or "").upper() != "MRB":
+                continue
+            mid = str(row.get("id") or "")
+            mrefs = set(_row_refs_list(row))
+            if mid == uid or uid in mrefs or mid in urefs or (urefs & mrefs):
+                found.append(row)
+    return found
+
+
+def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
+    """Copy UAT row with author stamps filled from related MRB rows when missing (FR #618 / #635).
+
+    Chair often offers `UAT owner/repo#<PR>` while DONE MRB stamped `UAT #<issue>`.
+    Without enrichment, the FR implementer / MRB reviewer is offered their own UAT.
+    """
+    if _canon_task(row) != "UAT":
+        return row
+    out = dict(row)
+    extras: dict[str, str] = {}
+    for mrb in related_mrb_rows(doc, out):
+        piece = uat_block_extras_from_mrb_row(
+            mrb, mrb_nick=str(mrb.get("nick") or mrb.get("done_by") or "")
+        )
+        for k, v in piece.items():
+            if v and not out.get(k):
+                extras[k] = v
+        fix_nick = _canon_seat_nick(str(mrb.get("nick") or mrb.get("done_by") or ""))
+        if fix_nick and not out.get("mrb_fix_author_seat") and not extras.get("mrb_fix_author_seat"):
+            blob = f"{out.get('line') or ''}\n{out.get('title') or ''}\n{out.get('id') or ''}".lower()
+            mid = str(mrb.get("id") or "").lstrip("#")
+            if mid and (f"mrb-{mid}" in blob or "nits" in blob or "fix(mrb" in blob):
+                extras["mrb_fix_author_seat"] = fix_nick
+    out.update(extras)
     return out
 
 
@@ -1624,15 +1693,17 @@ def offer_focus_top(
                         age = OFFER_TIMEOUT_S + 1
                     if age < OFFER_TIMEOUT_S:
                         continue
-                if review_blocked_for_author(cand, me, live):
+                cand_eff = enrich_uat_author_fields(doc, cand)
+                if review_blocked_for_author(cand_eff, me, live):
                     continue
-                pick = cand
+                pick = cand_eff
                 break
             if pick is None:
                 return "empty", None
             for i, row in enumerate(doc["unaccepted"]):
                 if row is pick or _same(row, str(pick.get("repo") or ""), str(pick.get("task") or ""), str(pick.get("id") or "")):
-                    job = dict(row)
+                    # FR #618 / #635: persist enriched author stamps (pick may be enrich copy).
+                    job = dict(pick)
                     job["offered_to"] = me
                     job["offered_ts"] = _utc_now()
                     job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
@@ -1684,7 +1755,14 @@ def offer_top(
                     continue  # FR #254
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     continue
+                row_eff = enrich_uat_author_fields(doc, row)
+                live = live_seat_nicks(home)
+                if review_blocked_for_author(row_eff, (nick or "").strip(), live):
+                    continue
                 pick_i = i
+                # Persist enrichment onto the queued row when we filled stamps.
+                if row_eff is not row:
+                    doc["unaccepted"][i] = dict(row_eff)
                 break
             if pick_i is None:
                 return "empty", None
