@@ -587,6 +587,41 @@ def issue_skip_fr_reason(
     return None
 
 
+# FR #838: conventional-commit / Fixes PR titles are never implementable FR issues.
+_PR_SHAPED_FR_TITLE_RE = re.compile(
+    r"(?i)^(fix|docs|chore|feat|refactor|test|build|ci|perf|style)(?:\([^)]*\))?:",
+)
+
+
+def fr_row_is_pull_request(row: dict, *, pr_exists=None) -> bool:
+    """FR #838: True when an FR queue row is actually a GitHub pull request.
+
+    Closed (or open) Fixes PRs must never be offered as FR — same class as
+    mrb-home / harvest skips. Structural signals first; optional ``pr_exists``
+    covers ambiguous titles when the chair has a GitHub token.
+    """
+    if _canon_task(row) != "FR":
+        return False
+    if str(row.get("event") or "").strip().lower() == "pull_request":
+        return True
+    url = str(row.get("url") or "").strip()
+    if PULL_URL_RE.search(url):
+        return True
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    if _PR_SHAPED_FR_TITLE_RE.match(title):
+        return True
+    if pr_exists is None:
+        return False
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return False
+    try:
+        return bool(pr_exists(repo, num))
+    except Exception:
+        return False
+
+
 def row_skip_fr_reason(row: dict) -> str | None:
     labels = row.get("labels") or ()
     if isinstance(labels, str):
@@ -835,6 +870,10 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         if ident is None:
             return None
         issue = _issue_blob(payload)
+        # FR #838: GitHub issue payloads for pull requests include ``pull_request``.
+        # Those are MRB material (or nothing), never FR.
+        if issue.get("pull_request"):
+            return None
         title = str(issue.get("title") or "")
         body = str(issue.get("body") or "")
         labels = _label_names(issue.get("labels"))
@@ -966,6 +1005,19 @@ def fr_implementer_seat_from_doc(doc: dict, repo: str, refs) -> str:
 def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
     if claim.task == "FR" and issue_skip_fr_reason(
         title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
+    ):
+        return "skipped"
+    # FR #838: never enqueue a pull-shaped id/title as FR (Fixes PR numbers etc.).
+    if claim.task == "FR" and fr_row_is_pull_request(
+        {
+            "task": "FR",
+            "repo": claim.repo,
+            "id": claim.id,
+            "title": claim.title,
+            "body": claim.body,
+            "event": claim.event,
+            "url": extra.get("url") or "",
+        }
     ):
         return "skipped"
     if claim.task == "FR" and fr_is_superseded(doc, claim.repo, claim.id):
@@ -1878,6 +1930,9 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     continue  # FR #254
+                # FR #838: never offer a pull request number as FR (closed Fixes PR incident).
+                if fr_row_is_pull_request(cand, pr_exists=pr_exists):
+                    continue
                 # bobiverse#768 / #781 / t853u: never offer legacy per-PR UAT.
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
                     continue
@@ -1960,6 +2015,8 @@ def offer_top(
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     continue
+                if fr_row_is_pull_request(row, pr_exists=pr_exists):
+                    continue  # FR #838
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     continue
                 if row_blocked_for_machine(row, nick or ""):
@@ -2359,6 +2416,8 @@ def assign_row(
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
+            if fr_row_is_pull_request(cand, pr_exists=pr_exists):
+                return "refused", "row is a pull request (not an FR; FR #838)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real pull URL"
             if review_blocked_for_author(cand, me, live):
@@ -2459,6 +2518,9 @@ def prune_unassignable_queue(home: Path) -> dict:
             for row in doc["unaccepted"]:
                 task = str(row.get("task") or "").upper()
                 if task == "FR" and row_skip_fr_reason(row):
+                    continue
+                # FR #838: drop FR rows that are actually pull requests (closed Fixes PR etc.).
+                if task == "FR" and fr_row_is_pull_request(row):
                     continue
                 # FR #785: drop rows whose repo is archived / superseded (e.g. gh-Jeeves).
                 if repo_archived_for_queue(str(row.get("repo") or "")):
@@ -2649,6 +2711,8 @@ def resync_from_github(
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
                 if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
                     continue  # FR #180 local junk
+                if str(row.get("task") or "").upper() == "FR" and fr_row_is_pull_request(row):
+                    continue  # FR #838: closed/open Fixes PRs are not FR jobs
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc,
                     str(row.get("repo") or ""),
