@@ -1,4 +1,4 @@
-﻿# Jeeves chair commands (gh-Jeeves parity) and who may run them
+# Jeeves chair commands (gh-Jeeves parity) and who may run them
 
 The bobiverse chair (`irc_agent.py --chair`, service `ircJeeves`) carries every command the old Python
 `gh-Jeeves` service handled in IRC (reference: `SimonBarnett/gh-Jeeves` @ `8d76d9a`, `src/jeeves/commands.py` +
@@ -126,3 +126,7 @@ Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_sta
 - An `issues closed` webhook drops that issue's FR/PR rows (and a manually queued UAT row). The UAT row a **merged PR** queued (`action=uat`) is kept: every FR PR carries `Closes <owner>/<repo>#N`, so the merge closes the issue and its UAT must still be assigned.
 - The 15-minute GitHub resync also drops FR/MRB rows whose issue is closed, so a missed webhook self-heals. No separate prune job is needed.
 - `Closes #N` and `Closes owner/repo#N` both link a PR to its issue; a link naming another repo is ignored for this repo's queue.
+
+### UAT of PR numbers (FR #618)
+
+When the chair offers `UAT owner/repo#<PR>`, author stamps may be missing because DONE MRB stamped `UAT #<issue>` (Closes target). At offer time, `enrich_uat_author_fields` copies `implementer_seat` / `mrb_author_seat` / `mrb_fix_author_seat` from related accepted/done MRB rows (same PR id, refs, or `mrb-N` in the UAT title/line). `offer_top` also applies the author block.
