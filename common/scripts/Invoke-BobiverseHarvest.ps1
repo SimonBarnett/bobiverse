@@ -229,6 +229,28 @@ if (-not $Summary.Trim()) { throw '-Summary is required (what broke / what you f
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) { throw "Repo must be owner/name (got '$Repo')" }
 if (-not $Machine) { $Machine = if ($env:BOB_MACHINE_ID) { [string]$env:BOB_MACHINE_ID } else { [string]$env:COMPUTERNAME } }
 
+# FR #936: do not file harvest skill issues for GIVEUP-of-skill sessions — live chair
+# (pre-recompose) re-offers them as FR and each GIVEUP+harvest creates another skill issue.
+function Test-HarvestSkillGiveupLoop([string]$SummaryText, [string[]]$LessonLines) {
+    $s = [string]$SummaryText
+    $joined = (@($s) + @($LessonLines)) -join "`n"
+    if ($s -match '(?i)^\s*GIVEUP\b' -and $joined -match '(?i)\bskill(\s|-)?(labeled\s+)?harvest\b') {
+        return $true
+    }
+    if ($s -match '(?i)skill\s+harvest' -and $s -match '(?i)\bGIVEUP\b') {
+        return $true
+    }
+    if ($joined -match '(?i)Harvest-of-harvest skill issues offered as FR') {
+        return $true
+    }
+    return $false
+}
+
+if (Test-HarvestSkillGiveupLoop -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest skill GIVEUP loop (FR #936): not filing GitHub skill issue for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
+
 $files = @()
 foreach ($sf in $SkillFile) {
     if (-not (Test-Path -LiteralPath $sf)) { throw "skill file not found: $sf" }
