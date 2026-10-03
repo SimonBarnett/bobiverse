@@ -69,3 +69,9 @@ def test_agentwatcher_readme_points_at_bobiverse():
     text = (AGENTWATCHER / "README.md").read_text(encoding="utf-8-sig")
     assert "SimonBarnett/bobiverse" in text
     assert "SimonBarnett/AgentMonitor" not in text
+
+def test_fleet_peek_legacy_leaf_maps_to_bobiverse():
+    text = (TRAY_PRIVATE / "Get-BobFleetPeek.ps1").read_text(encoding="utf-8-sig")
+    assert "return 'SimonBarnett/bobiverse'" in text
+    assert "return 'SimonBarnett/agentic_build'" not in text
+    assert "return 'SimonBarnett/agentic_irc'" not in text

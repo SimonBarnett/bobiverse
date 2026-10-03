@@ -318,8 +318,7 @@ function Get-BobJobRepoStamp {
         try {
             $leaf = Split-Path $cwd -Leaf
             if ($leaf -and -not (Test-BobTrayLooksLikeSha $leaf)) {
-                if ($leaf -match '^agentic_build') { return 'SimonBarnett/agentic_build' }
-                if ($leaf -match '^agentic_irc') { return 'SimonBarnett/agentic_irc' }
+                if ($leaf -match '^(agentic_build|agentic_irc|AgentMonitor|gh-Jeeves)') { return 'SimonBarnett/bobiverse' }
                 return $leaf
             }
         }
