@@ -26,8 +26,9 @@ def test_watch_webhooks_cooldown_param_name_matches_use():
 
 def test_install_jeeves_registers_webhook_task_and_notes_optional_token():
     t = (SCRIPTS / "Install-Jeeves.ps1").read_text(encoding="utf-8-sig")
-    assert "/TN BobCallback" in t and "Install-BobWebhooks.ps1" in t
+    assert ("/TN BobCallback" in t or "Register-BobCallbackTask.ps1" in t) and "Install-BobWebhooks.ps1" in t
     assert "report.secret" not in t and "github.token" in t  # token optional; no webhook secret
+    assert "/RU SYSTEM" not in t  # FR #1316: never SYSTEM against Admin .bobiverse home
 
 
 def test_recycle_prefers_installer_task_then_falls_back(monkeypatch, tmp_path):

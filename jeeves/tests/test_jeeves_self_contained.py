@@ -179,7 +179,8 @@ def test_install_jeeves_needs_and_generates_no_webhook_secret():
     t = _text(SCRIPTS / "Install-Jeeves.ps1")
     assert "RandomNumberGenerator" not in t and "report.secret" not in t and "--secret-file" not in t
     assert "no password/secret required" in t
-    assert "/TN BobCallback" in t and "Install-BobWebhooks.ps1" in t
+    assert ("/TN BobCallback" in t or "Register-BobCallbackTask.ps1" in t) and "Install-BobWebhooks.ps1" in t
+    assert "/RU SYSTEM" not in t  # FR #1316
     assert "BOB_CONFIG_DIR=$cfgDir" in t and "BOB_HOME=$ChairHome" in t
     assert "bob_home.py" in t and "migrate" in t
 
@@ -188,7 +189,8 @@ def test_pack_stages_tools_for_jeeves_and_webhook_files_exist():
     pack = _text(SCRIPTS / "Pack-BobiverseRelease.ps1")
     assert "bob_git_hook.py" in pack and "New-BobGitWebhook.ps1" in pack
     for n in ("bobcallback.py", "gh_filer.py", "intake.py", "jira_webhook.py", "webhook_queue.py",
-              "Install-BobWebhooks.ps1", "Watch-BobWebhooks.ps1", "Start-BobCallback.cmd", "bob_home.py", "chair_oper.py"):
+              "Install-BobWebhooks.ps1", "Watch-BobWebhooks.ps1", "Start-BobCallback.cmd", "bob_home.py", "chair_oper.py",
+              "Register-BobCallbackTask.ps1"):
         assert (SCRIPTS / n).is_file(), n
     for n in ("bob_git_hook.py", "New-BobGitWebhook.ps1"):
         assert (ROOT / "tools" / n).is_file()

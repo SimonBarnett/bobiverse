@@ -21,6 +21,16 @@ Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
 BobCallback / `bobreport.digest_lock` self-heals a wedged `digest.lock` (empty, older than `BOB_DIGEST_LOCK_STALE_S` default 30s, or dead holder PID): logs `lock-broken age=… pid=…`, bounded acquire + one break-and-retry, then HTTP **503** instead of hanging. A daemon thread probes loopback `GET /health` every `BOB_CALLBACK_HEALTH_S` (default 30s) and breaks a stale lock on failure. Fresh locks held by a live PID are never broken.
 
+### Task principal must match digest home (FR #1316)
+
+Scheduled task **BobCallback** must run as the same Windows account that owns `--home` (typically Administrator / Interactive for `C:\Users\Administrator\.bobiverse`). Registering it as **SYSTEM** (`S-1-5-18`) against an Admin profile home causes cross-principal `digest.lock` / ACL fights: the process can sit **Running** with no LISTEN on `:7700`, or LISTEN while HTTP hangs. `Install-Jeeves.ps1` calls `Register-BobCallbackTask.ps1` (Interactive home owner, never `/RU SYSTEM`). Startup refuses a non-writable home (exit 2) and bind failure (exit 1) so Task Scheduler can restart. `Start-Jeeves.ps1` treats task Running + no LISTEN after ~15–20s as a wedge and falls back to user-context `Start-Process`.
+
+```powershell
+.\scripts\Register-BobCallbackTask.ps1 -Start
+Get-ScheduledTask BobCallback | Select-Object TaskName, State, @{n='RunAs';e={$_.Principal.UserId}}
+Invoke-WebRequest http://127.0.0.1:7700/health -UseBasicParsing
+```
+
 ## Placeholder curls
 
 Replace the host as needed. Bodies are minimal scaffolds.

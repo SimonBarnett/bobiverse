@@ -804,6 +804,25 @@ def serve(
     return httpd
 
 
+def assert_home_usable(home: Path) -> None:
+    """FR #1316: refuse to run when digest home is not writable (SYSTEM vs Admin wedge)."""
+    import getpass
+
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        probe = home / f".bobcallback-write-probe.{os.getpid()}"
+        probe.write_text("ok\n", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"ERROR home not writable path={home} err={exc}", flush=True)
+        raise SystemExit(2) from exc
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or "?"
+    print(f"INFO principal user={user} pid={os.getpid()} home={home}", flush=True)
+
+
 def main() -> None:
     import argparse
 
@@ -823,7 +842,13 @@ def main() -> None:
     )
     args = p.parse_args()
     home = Path(args.home).expanduser() if args.home else bobreport.digest_path(Path(".")).parent
-    httpd = serve(home, host=args.bind, port=args.port)
+    assert_home_usable(home)
+    try:
+        httpd = serve(home, host=args.bind, port=args.port)
+    except OSError as exc:
+        # Bind failure must be non-zero so Task Scheduler RestartCount can recover (FR #1316).
+        print(f"ERROR bind failed host={args.bind} port={args.port} err={exc}", flush=True)
+        raise SystemExit(1) from exc
     host, port = httpd.server_address[:2]
     print(
         f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH} "
