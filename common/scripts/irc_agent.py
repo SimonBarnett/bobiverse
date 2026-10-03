@@ -2185,13 +2185,15 @@ class Client:
             return True
         wnick, repo, task, ident = parsed
         self._refresh_ledger()
+        _gh_cache: dict = {}
         status, res = gitclaim.assign_row(
             self.home,
             wnick,
             repo,
             task,
             ident,
-            pr_exists=gitclaim.github_pr_exists_checker(home=self.home),
+            pr_exists=gitclaim.github_pr_exists_checker(home=self.home, cache=_gh_cache),
+            is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
         )
         if status != "ok" or not isinstance(res, dict):
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
@@ -2294,12 +2296,14 @@ class Client:
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).
         # FR #595 / #247: skip MRB rows whose /pull/N 404s when a token is available.
+        _gh_cache: dict = {}
         status, job = gitclaim.offer_focus_top(
             self.home,
             src,
             bobreport.normalize_channel(target),
             now=now,
-            pr_exists=gitclaim.github_pr_exists_checker(home=self.home),
+            pr_exists=gitclaim.github_pr_exists_checker(home=self.home, cache=_gh_cache),
+            is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
         )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)
