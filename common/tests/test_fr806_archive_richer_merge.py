@@ -48,3 +48,12 @@ def test_manifest_marks_fr806_merges():
     text = MANIFEST.read_text(encoding="utf-8")
     assert text.count("FR #806") >= 10
     assert "archive richer / newer\" marks documents to merge by hand" not in text
+
+
+def test_manifest_keeps_fr795_live_reference_and_no_bel_escape():
+    text = MANIFEST.read_text(encoding="utf-8")
+    assert "FR #795" in text
+    assert "DEFAULT_ALLOW_REPOS" in text
+    assert "\x07" not in text
+    # path example must be backslash-ai, not BEL-escaped "\a" + "i"
+    assert "\\ai\\..." in text
