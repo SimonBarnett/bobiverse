@@ -884,8 +884,8 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
                 if claim.merged:
                     # PASS path: UAT for each linked open issue (queue UAT rows).
-                    # FR #227: carry MRB author_seat from accepted/done row when present.
-                    author = ""
+                    # FR #227 / #265: carry MRB reviewer + FR implementer seats.
+                    mrb_src: dict = {}
                     for bucket in ("accepted", "done"):
                         for row in doc.get(bucket) or []:
                             if (
@@ -893,13 +893,11 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                                 and str(row.get("task") or "").upper() == "MRB"
                                 and str(row.get("id") or "") == claim.id
                             ):
-                                author = str(
-                                    row.get("nick") or row.get("done_by") or row.get("author_seat") or ""
-                                ).strip()
-                                if author:
-                                    break
-                        if author:
+                                mrb_src = dict(row)
+                                break
+                        if mrb_src:
                             break
+                    extra = uat_block_extras_from_mrb_row(mrb_src) if mrb_src else {}
                     for ref in claim.refs:
                         _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB"})
                         uat = GitClaim(
@@ -911,7 +909,6 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                             line=claim.line,
                             refs=(claim.id,),
                         )
-                        extra = {"author_seat": author} if author else {}
                         _append_unaccepted(doc, uat, **extra)
                     changed = "updated"
                 else:
@@ -1040,9 +1037,11 @@ def _coerce_row(row: dict) -> dict | None:
     except (TypeError, ValueError):
         out["seq"] = 0
     # author_seat/url: written by gh-Jeeves-style producers; needed by the MRB author rule and wire url (#39).
+    # FR #265: implementer_seat + mrb_author_seat survive reload for UAT dual-seat block.
     # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
     for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel",
-                "author_seat", "author_nick", "author", "url", "title", "body", "state",
+                "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat",
+                "author_seats", "url", "title", "body", "state",
                 "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
         if row.get(key):
             out[key] = str(row.get(key))
@@ -1451,50 +1450,127 @@ def live_seat_nicks(home: Path) -> set[str]:
     return out
 
 
+def _canon_seat_nick(raw: str) -> str:
+    v = str(raw or "").strip()
+    if not v or not bobreport.parse_seat_nick(v):
+        return ""
+    return canonical_worker_nick(v) or v
+
+
+def row_author_seats(row: dict) -> list[str]:
+    """All seat nicks that must not self-review / self-UAT this row (FR #227 / #265).
+
+    Collects ``implementer_seat``, ``mrb_author_seat``, legacy ``author_seat`` /
+    ``author_nick`` / ``author``, and optional ``author_seats`` (comma list).
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        nick = _canon_seat_nick(raw)
+        if not nick:
+            return
+        key = nick.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(nick)
+
+    for k in ("implementer_seat", "mrb_author_seat", "author_seat", "author_nick", "author"):
+        _add(str(row.get(k) or ""))
+    multi = row.get("author_seats")
+    if isinstance(multi, (list, tuple)):
+        for item in multi:
+            _add(str(item or ""))
+    elif multi:
+        for part in str(multi).replace(";", ",").split(","):
+            _add(part)
+    return found
+
+
 def _row_author_seat(row: dict) -> str:
-    """Seat nick that authored/reviewed the PR (MRB) or must not self-UAT (FR #227)."""
-    for k in ("author_seat", "author_nick", "author"):
-        v = str(row.get(k) or "").strip()
-        if v and bobreport.parse_seat_nick(v):
-            return canonical_worker_nick(v) or v
-    return ""
+    """Primary blocked seat (legacy single-value API; prefer ``row_author_seats``)."""
+    seats = row_author_seats(row)
+    return seats[0] if seats else ""
+
+
+def uat_block_extras_from_mrb_row(mrb_row: dict, *, mrb_nick: str = "") -> dict:
+    """Build UAT stamp fields from an MRB accepted/done row (FR #265).
+
+    ``implementer_seat`` = FR implementer (MRB ``implementer_seat`` or legacy ``author_seat``).
+    ``mrb_author_seat`` = MRB reviewer nick.
+    ``author_seat`` = MRB reviewer (FR #227 back-compat primary).
+    """
+    implementer = _canon_seat_nick(
+        str(
+            mrb_row.get("implementer_seat")
+            or mrb_row.get("author_seat")
+            or mrb_row.get("author_nick")
+            or ""
+        )
+    )
+    mrb_author = _canon_seat_nick(
+        mrb_nick
+        or str(mrb_row.get("nick") or mrb_row.get("done_by") or mrb_row.get("mrb_author_seat") or "")
+    )
+    # Prefer implementer from author_seat only when it is not the same as the MRB nick
+    # (DONE FR stamps author_seat=implementer; accepted MRB nick is the reviewer).
+    if implementer and mrb_author and implementer.lower() == mrb_author.lower():
+        # Same seat did both: still stamp once via author_seat.
+        return {"author_seat": mrb_author, "mrb_author_seat": mrb_author, "implementer_seat": mrb_author}
+    out: dict[str, str] = {}
+    if mrb_author:
+        out["author_seat"] = mrb_author
+        out["mrb_author_seat"] = mrb_author
+    if implementer:
+        out["implementer_seat"] = implementer
+        if not out.get("author_seat"):
+            out["author_seat"] = implementer
+    return out
 
 
 def mrb_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
     """Do not hand an MRB/UAT to the author seat (or sibling on same machine) while another machine is live.
 
-    FR #39 / #227: MRB and UAT of an MRB-fix PR must go to a different machine/seat than the
-    implementer/MRB author when at least one other machine has a live seat.
+    FR #39 / #227 / #265: MRB and UAT must go to a different machine/seat than the
+    FR implementer and/or MRB author when at least one other machine has a live seat.
     """
     return review_blocked_for_author(row, nick, live)
 
 
 def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
-    """Shared MRB+UAT author block (FR #39 / #227)."""
+    """Shared MRB+UAT author block (FR #39 / #227 / #265).
+
+    Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat) while another
+    seat is live, or is a sibling on the same machine while another machine is live.
+    """
     if _canon_task(row) not in ("MRB", "UAT"):
         return False
-    author = _row_author_seat(row)
-    if not author:
+    authors = row_author_seats(row)
+    if not authors:
         return False
     me = canonical_worker_nick(nick) or nick
     live_c = {(canonical_worker_nick(n) or n).lower() for n in live}
     me_l = me.lower()
-    author_l = author.lower()
-    # Exact author seat: block while any other seat is live (legacy MRB rule).
-    if author_l == me_l:
-        return bool(live_c - {me_l})
-    author_p = bobreport.parse_seat_nick(author)
     me_p = bobreport.parse_seat_nick(me)
-    # Sibling seat on the same machine: block when another machine has a live seat.
-    # Fold legacy aliases (ionos -> win-mpre8vi4u6u) so digest live nicks compare fairly.
-    if author_p and me_p:
-        author_mid = bobreport.fold_machine_id(author_p[0])
-        me_mid = bobreport.fold_machine_id(me_p[0])
-        if author_mid == me_mid:
-            for n in live_c:
-                p = bobreport.parse_seat_nick(n)
-                if p and bobreport.fold_machine_id(p[0]) != author_mid:
-                    return True
+    me_mid = bobreport.fold_machine_id(me_p[0]) if me_p else ""
+
+    for author in authors:
+        author_l = author.lower()
+        # Exact author seat: block while any other seat is live (legacy MRB rule).
+        if author_l == me_l:
+            if live_c - {me_l}:
+                return True
+            continue
+        author_p = bobreport.parse_seat_nick(author)
+        # Sibling seat on the same machine: block when another machine has a live seat.
+        if author_p and me_p:
+            author_mid = bobreport.fold_machine_id(author_p[0])
+            if author_mid == me_mid:
+                for n in live_c:
+                    p = bobreport.parse_seat_nick(n)
+                    if p and bobreport.fold_machine_id(p[0]) != author_mid:
+                        return True
     return False
 
 

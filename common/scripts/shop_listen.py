@@ -372,17 +372,22 @@ def complete_job_by_ref(
                         line=str(job.get("line") or ""),
                         refs=(ident,),
                     )
-                    # FR implementer becomes MRB author_seat (different seat must review).
+                    # FR implementer becomes MRB author_seat / implementer_seat (FR #265).
                     fr_author = str(job.get("nick") or job.get("done_by") or "").strip()
-                    extra = {"author_seat": fr_author} if fr_author else {}
+                    extra = {}
+                    if fr_author:
+                        extra["author_seat"] = fr_author
+                        extra["implementer_seat"] = fr_author
                     extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
                     gitclaim._append_unaccepted(doc, claim, **extra)
             if str(job.get("task") or "").upper() == "MRB" and "PASS" in (result or "").upper():
-                # UAT for refs if any; stamp MRB author so UAT is not re-offered to them (FR #227).
+                # UAT for refs; stamp MRB reviewer + FR implementer (FR #227 / #265).
                 refs = job.get("refs") or []
                 if isinstance(refs, str):
                     refs = [refs]
-                author = str(job.get("nick") or job.get("done_by") or "").strip()
+                extra = gitclaim.uat_block_extras_from_mrb_row(
+                    job, mrb_nick=str(job.get("nick") or job.get("done_by") or nick or "")
+                )
                 for ref in refs:
                     ref_s = str(ref)
                     if not ref_s.startswith("#"):
@@ -396,7 +401,6 @@ def complete_job_by_ref(
                         line=str(job.get("line") or ""),
                         refs=(ident,),
                     )
-                    extra = {"author_seat": author} if author else {}
                     gitclaim._append_unaccepted(doc, uat, **extra)
             try:
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
