@@ -1,4 +1,4 @@
-﻿# Jeeves chair commands (gh-Jeeves parity) and who may run them
+# Jeeves chair commands (gh-Jeeves parity) and who may run them
 
 The bobiverse chair (`irc_agent.py --chair`, service `ircJeeves`) carries every command the old Python
 `gh-Jeeves` service handled in IRC (reference: `SimonBarnett/gh-Jeeves` @ `8d76d9a`, `src/jeeves/commands.py` +
@@ -33,7 +33,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 `gitclaim` never offers junk or fake work, even when `!focus` would otherwise select it:
 
 * **FR skip labels** (`SKIP_FR_LABELS`): `skill`, `umbrella`, `parent-fr`, `mrb-home` / `mrb_home`, `evergreen` / `evergreen-mrb`, and verdict boards `mrb`, `mrb-pass`/`mrb_pass`, `mrb-fail`/`mrb_fail`. Matched at enqueue, claim, offer, prune, and resync. Legacy rows with an empty `title` still skip when `labels` or `line`/`title` text carry board tokens (`mrb-fail`, `mrb-pass`, `mrb-home`, â€¦; bare `mrb` is labels-only so real titles like â€œharden MRB/FR â€¦â€ stay offerable). Pull URLs must match the row `repo`.
-* **UAT dual-seat block** (FR #265 / #227): UAT rows stamp `implementer_seat` (FR DONE) and `mrb_author_seat` (MRB PASS); `review_blocked_for_author` skips either seat (and same-machine siblings) while another machine is live. Legacy `author_seat` still works.
+* **UAT dual-seat block** (FR #265 / #227 / #635 / #649 / #665): UAT rows stamp `implementer_seat` (FR DONE) and `mrb_author_seat` (MRB PASS); `review_blocked_for_author` skips either seat (and same-machine siblings) while another machine is live. Legacy `author_seat` still works. When the chair offers `UAT #<PR>` without stamps, `enrich_uat_author_fields` fills seats from related MRB rows at offer time so the FR implementer is not offered UAT of their own PR. Nits/fix PRs titled `mrb-N` / `test(mrb-N)` inherit the parent MRB's `implementer_seat` so the parent product implementer is not offered UAT of those nits either. mrb-*-fix rows also inherit `mrb_fix_author_seat` so the fix/MRB author is not offered UAT.
 * **Self-MRB block** (FR #593 / #227): PR-opened / ready_for_review MRB rows stamp `author_seat` / `implementer_seat` from the linked accepted/done FR implementer nick (not only DONE FR enqueue), so the chair skips offering MRB to that seat while another machine is live.
 * **UAT is per REPO (t853u)**: there are no per-PR / per-issue UAT rows. A merge (webhook or MRB PASS) queues nothing; legacy per-PR UAT rows are pruned on every resync. The 15-minute GitHub resync queues exactly ONE repo-level UAT row (UAT owner/repo#0, 
 epo_uat, url https://github.com/owner/repo, merged_prs = the PRs merged this cycle) once the repo is **clear**: every open issue is closed or excluded (
@@ -126,3 +126,7 @@ Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_sta
 - An `issues closed` webhook drops that issue's FR/PR rows (and a manually queued UAT row). The UAT row a **merged PR** queued (`action=uat`) is kept: every FR PR carries `Closes <owner>/<repo>#N`, so the merge closes the issue and its UAT must still be assigned.
 - The 15-minute GitHub resync also drops FR/MRB rows whose issue is closed, so a missed webhook self-heals. No separate prune job is needed.
 - `Closes #N` and `Closes owner/repo#N` both link a PR to its issue; a link naming another repo is ignored for this repo's queue.
+
+### UAT of PR numbers (FR #618)
+
+When the chair offers `UAT owner/repo#<PR>`, author stamps may be missing because DONE MRB stamped `UAT #<issue>` (Closes target). At offer time, `enrich_uat_author_fields` copies `implementer_seat` / `mrb_author_seat` / `mrb_fix_author_seat` from related accepted/done MRB rows (same PR id, refs, or `mrb-N` in the UAT title/line). `offer_top` also applies the author block.
