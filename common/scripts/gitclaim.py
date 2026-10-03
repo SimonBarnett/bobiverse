@@ -123,8 +123,9 @@ SKIP_FR_LABELS = frozenset(
         "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
-        # Vision / MRB1 human gate — must NOT become require_machine=mrb1 (#1080).
-        "needs-mrb1",
+        # needs-mrb1 is a vision cue only - must NOT skip-FR and must NOT become
+        # require_machine=mrb1 (#1080/#1122/#1174). Skipping it emptied bobiverse offers
+        # under focus.strict. Workers still GIVEUP on the label per seat playbook.
         "blocked",
         "release-gate",
     }
@@ -135,7 +136,7 @@ SKIP_FR_LABELS = frozenset(
 SKIP_FR_LABELS_IN_TEXT = frozenset(
     lab
     for lab in SKIP_FR_LABELS
-    if lab not in {"mrb", "skill", "needs-human", "needs-mrb1", "blocked", "release-gate"}
+    if lab not in {"mrb", "skill", "needs-human", "blocked", "release-gate"}
 )
 
 
@@ -2162,8 +2163,10 @@ def offer_focus_top(
                     return None
                 return cand_eff
 
-            # Prefer focus order; if strict focus hides every eligible row, fall back to
-            # the full unaccepted list so idle seats still get work (keep-the-flow).
+            # Prefer focus order. If empty: strict => only focused repos (do not leak
+            # Club-Madeira etc when operator focused bobiverse); else full list.
+            import focus_ignore  # lazy: avoid import cycle at module load
+
             order = ordered_unaccepted(home, doc["unaccepted"])
             pick = None
             for cand in order:
@@ -2171,10 +2174,33 @@ def offer_focus_top(
                 if pick is not None:
                     break
             if pick is None:
-                fallback = [
-                    r for r in (doc.get("unaccepted") or [])
-                    if isinstance(r, dict)
-                ]
+                if focus_ignore.is_strict(home):
+                    focused = set()
+                    try:
+                        fdoc = focus_ignore.load_focus(home)
+                        focused |= {str(k) for k in (fdoc.get("repos") or {}).keys()}
+                        for meta in (fdoc.get("items") or {}).values():
+                            if isinstance(meta, dict) and meta.get("repo"):
+                                focused.add(str(meta["repo"]))
+                    except Exception:
+                        focused = set()
+                    fallback = [
+                        r for r in (doc.get("unaccepted") or [])
+                        if isinstance(r, dict)
+                        and (
+                            not focused
+                            or any(
+                                focus_ignore.repo_match(str(r.get("repo") or ""), fr)
+                                or focus_ignore.repo_match(fr, str(r.get("repo") or ""))
+                                for fr in focused
+                            )
+                        )
+                    ]
+                else:
+                    fallback = [
+                        r for r in (doc.get("unaccepted") or [])
+                        if isinstance(r, dict)
+                    ]
                 fallback.sort(key=_sort_key)
                 for cand in fallback:
                     pick = _eligible(cand)
