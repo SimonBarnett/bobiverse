@@ -130,3 +130,7 @@ Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_sta
 ### UAT author enrich (FR #618)
 
 UAT is per repo only (`UAT owner/repo#0` + `repo_uat`; t853u). Author stamps on that row can still be missing when DONE MRB stamped a Closes issue id or when stamps were dropped on resync. At offer time, `enrich_uat_author_fields` copies `implementer_seat` / `mrb_author_seat` / `mrb_fix_author_seat` from related accepted/done MRB rows (matching `refs` / `merged_prs` / `mrb-N` in title/line). `offer_focus_top` and `offer_top` both apply the author block after enrich. First related MRB wins (accepted before done).
+
+## Live deploy evidence
+
+- FR #1016 ionos chair/queue verification: [fr-1016-ionos-live-evidence.md](./fr-1016-ionos-live-evidence.md)
