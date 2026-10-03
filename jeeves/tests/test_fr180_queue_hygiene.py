@@ -57,14 +57,13 @@ def test_umbrella_label_skips_fr_enqueue():
 
 def test_apply_queue_skips_unassignable_and_stores_title(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
-    # FR #1080: needs-mrb1 is a skip label (vision gate), not enqueueable FR work.
-    assert (
-        gitclaim.claim_from_payload(
-            "issues",
-            _issue_payload(30, title="FR: ship it", labels=["feature-request", "needs-mrb1"]),
-        )
-        is None
+    # PR #1236: needs-mrb1 is enqueueable (vision cue); still not require_machine=mrb1.
+    claim_mrb1 = gitclaim.claim_from_payload(
+        "issues",
+        _issue_payload(30, title="FR: ship it", labels=["feature-request", "needs-mrb1"]),
     )
+    assert claim_mrb1 is not None
+    assert "needs-mrb1" in claim_mrb1.labels
     claim = gitclaim.claim_from_payload(
         "issues",
         _issue_payload(31, title="FR: ship it", labels=["feature-request"]),
@@ -143,7 +142,14 @@ def test_second_giveup_marks_needs_human(tmp_path, monkeypatch):
     st, job = shop_listen.return_job_to_unaccepted(tmp_path, repo="o/r", task="FR", ident="#1", now=time.time())
     assert st == "ok"
     assert job.get("needs_human") is True
-    assert gitclaim.offer_focus_top(tmp_path, "b-2", "#b", now=time.time() + 10_000)[0] == "empty"
+    # PR #1236: with giveup_seats set, only those seats are blocked — other seats may take it.
+    seats = str(job.get("giveup_seats") or "")
+    if seats.strip():
+        assert gitclaim.offer_focus_top(tmp_path, "a-1", "#a", now=time.time() + 10_000)[0] == "empty"
+        assert gitclaim.offer_focus_top(tmp_path, "b-2", "#b", now=time.time() + 10_000)[0] == "ok"
+    else:
+        # Bare needs_human with no giveup_seats remains a global gate.
+        assert gitclaim.offer_focus_top(tmp_path, "b-2", "#b", now=time.time() + 10_000)[0] == "empty"
 
 
 def test_prune_drops_skill_and_safe_to_close_rows(tmp_path, monkeypatch):
