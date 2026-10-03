@@ -1,6 +1,6 @@
 function Get-BobProductRepo {
     if ($env:BOB_PRODUCT_REPO) { return [string]$env:BOB_PRODUCT_REPO.Trim() }
-    return 'SimonBarnett/agentic_build'
+    return 'SimonBarnett/bobiverse'
 }
 
 function Get-BobGhExe {

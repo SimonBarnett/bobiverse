@@ -587,7 +587,7 @@ function Disconnect-WatchIrc {
 function Get-CursorSeedPrompt {
     param([string]$ResolvedIrcHome)
     return @(
-        'Watch seat online. Skills: agent-monitor, watch-seat, agentic-irc + agentic_build (harvest-agent-skills; IRC playbooks to agentic_irc).'
+        'Watch seat online. Skills: agent-monitor, watch-seat, bobiverse-bob-worker / harvest (CAST IRON to SimonBarnett/bobiverse).'
         "IRC home $ResolvedIrcHome - you own irc_agent and irc_listen on this home only. Do not share another seat's listener (that doubles traffic into every connected agent). Monitor tails this home's irc.log and forwards FROM lines into this session."
         'Event-driven: act on monitor payloads; reply on outbox; ping->pong. No UAT.'
     ) -join ' '
@@ -599,7 +599,7 @@ function Get-AgentPrompt {
         'You are a fleet agent on this Windows box (watch seat).'
         'Split: Watch-AgentHealth.ps1 is the deterministic monitor (health, tail irc.log, resume-forward each IRC PRIVMSG into this session). You do not run, restart, or reimplement the monitor.'
         'You are event-driven only off what the monitor forwards (a FROM line) or what Simon types in this IDE turn. Do not idle-wait in chat for the monitor; finish the turn after acting.'
-        'Follow skills: agent-monitor + watch-seat (this repo .grok/skills), agentic-irc (join/talk Ergo; no !bobiverse from this seat) and agentic_build. Harvest: harvest-agent-skills for build/fleet; IRC playbooks to SimonBarnett/agentic_irc .grok/skills; AgentMonitor playbooks stay in this repo.'
+        'Follow skills: agent-monitor + watch-seat (this repo .grok/skills) and bobiverse worker/harvest skills. Harvest CAST IRON to SimonBarnett/bobiverse (agentic_irc / AgentMonitor / agentic_build playbooks live there now — FR #836). No !bobiverse from this seat.'
         "IRC home: $ResolvedIrcHome. You own irc_agent and irc_listen on this home only (one listen per client). Sharing a listener copies every PRIVMSG into every connected agent. Monitor tails this home's irc.log and forwards PRIVMSG; you do not tail IRC in-session."
         'Forbidden homes: ~/.agentic-irc-cursor, cursor-2, bobiverse Watch.'
         'On each wake: treat the payload as the task; reply on outbox if addressed or Simon asked the box; ping -> pong on that target. Then end turn.'
@@ -609,7 +609,7 @@ function Get-AgentPrompt {
 
 function Get-GrokRules {
     $skills = Join-Path $env:USERPROFILE '.grok\skills'
-    return "Skills live at $skills. Follow agent-monitor, watch-seat, agentic-irc and agentic_build (including harvest-agent-skills). CAST IRON harvest AgentMonitor playbooks to this repo; fleet to agentic_build; IRC to agentic_irc."
+    return "Skills live at $skills. Follow agent-monitor, watch-seat, and bobiverse harvest skills. CAST IRON harvest to SimonBarnett/bobiverse (FR #836)."
 }
 
 function Get-DescendantPids {
