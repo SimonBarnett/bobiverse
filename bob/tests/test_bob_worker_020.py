@@ -305,11 +305,59 @@ def test_cursor_prompt_never_lands_on_a_command_line(tmp_path):
 # ----------------------------------------------------------------------------------------------- IRC seat (fake ircd)
 def test_nick_and_channel_rules(ircd):
     seat = make_seat(ircd, pid=4242)
+    logs = []
+    seat.log = logs.append
     seat.connect(timeout=5)
     assert wait_until(lambda: "JOIN #marchhare" in ircd.received)
     assert "NICK marchhare-4242" in ircd.received
     assert [r for r in ircd.received if r.startswith("JOIN ")] == ["JOIN #marchhare"]  # ONLY its own shop
+    assert seat.joined.is_set()
+    assert any(m == "irc: JOIN #marchhare" for m in logs)
+    assert any(m == "irc: joined #marchhare" for m in logs)
     seat.close()
+
+
+def test_fr1002_join_refuse_numeric_fails_connect():
+    """FR #1002: 403 after JOIN unblocks connect with ConnectionError."""
+    class RefuseJoinIrcd(FakeIrcd):
+        def _accept(self):
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            self.conn = c
+            buf = b""
+            nick = "x"
+            while True:
+                try:
+                    d = c.recv(4096)
+                except OSError:
+                    return
+                if not d:
+                    return
+                buf += d
+                while b"\n" in buf:
+                    ln, buf = buf.split(b"\n", 1)
+                    s = ln.decode().rstrip("\r")
+                    self.received.append(s)
+                    if self.silent:
+                        continue
+                    if s.startswith("NICK "):
+                        nick = s[5:]
+                    if s.startswith("USER ") and self.auto_welcome:
+                        self.send(f":srv 001 {nick} :Welcome")
+                    if s.startswith("JOIN "):
+                        self.send(f":srv 403 {nick} {s[5:]} :No such channel")
+                    if s.startswith("PING "):
+                        self.send(f":srv PONG srv {s[5:]}")
+
+    d = RefuseJoinIrcd()
+    try:
+        seat = make_seat(d, pid=4243)
+        with pytest.raises(ConnectionError, match="JOIN refused|403"):
+            seat.connect(timeout=5)
+    finally:
+        d.close()
 
 
 def test_seat_only_speaks_in_its_own_shop(ircd):
@@ -587,7 +635,8 @@ def test_outbox_sends_to_own_shop_only(ircd, tmp_path):
     assert "PRIVMSG #marchhare :done with task" in ircd.received
     assert not any("#bobiverse" in r and r.startswith("PRIVMSG") for r in ircd.received)
     assert not any(r.startswith("PRIVMSG simon") for r in ircd.received)
-    assert not ob.exists()
+    # FR #866: drain recreates an empty outbox so the path stays writable.
+    assert ob.is_file() and ob.read_text(encoding="utf-8") == ""
     seat.close()
 
 
