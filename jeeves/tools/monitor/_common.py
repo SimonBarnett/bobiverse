@@ -87,35 +87,44 @@ def resolve_homes(args: argparse.Namespace) -> tuple[Path, Path]:
 
 
 def ops_home(chair: Path, digest: Path) -> Path:
-    """FR #1043: live queue/focus may live under digest home while NSSM -ChairHome is ~/.jeeves.
+    """FR #1043 / MRB #1234: best-effort ops root when queue+focus share a home.
 
-    Prefer chair when it already has queue.json or focus.json; else fall back to digest home
-    when those files exist there (ionos: BOB_DIGEST_HOME=~/.bobiverse).
+    Prefer the home that has ``queue.json`` (authoritative). Do not let a lone
+    ``focus.json`` on chair hide a live ``queue.json`` under digest.
     """
     chair = Path(chair)
     digest = Path(digest)
-    if (chair / "queue.json").is_file() or (chair / "focus.json").is_file():
+    if (chair / "queue.json").is_file():
         return chair
-    if (digest / "queue.json").is_file() or (digest / "focus.json").is_file():
+    if (digest / "queue.json").is_file():
+        return digest
+    if (chair / "focus.json").is_file():
+        return chair
+    if (digest / "focus.json").is_file():
         return digest
     return chair
 
 
 def resolve_queue_path(chair: Path, digest: Path) -> Path:
-    ops = ops_home(chair, digest)
-    return ops / "queue.json"
+    """Per-file resolve: chair queue wins if present, else digest (MRB #1234)."""
+    chair = Path(chair)
+    digest = Path(digest)
+    if (chair / "queue.json").is_file():
+        return chair / "queue.json"
+    if (digest / "queue.json").is_file():
+        return digest / "queue.json"
+    return ops_home(chair, digest) / "queue.json"
 
 
 def resolve_focus_path(chair: Path, digest: Path) -> Path:
-    ops = ops_home(chair, digest)
-    # Prefer focus in ops home; if ops is digest but focus only on chair (unlikely), still ops.
-    if (ops / "focus.json").is_file():
-        return ops / "focus.json"
+    """Per-file resolve: chair focus wins if present, else digest (MRB #1234)."""
+    chair = Path(chair)
+    digest = Path(digest)
     if (chair / "focus.json").is_file():
         return chair / "focus.json"
     if (digest / "focus.json").is_file():
         return digest / "focus.json"
-    return ops / "focus.json"
+    return ops_home(chair, digest) / "focus.json"
 
 
 def iter_worker_entries(machines: object) -> list[dict[str, Any]]:

@@ -32,6 +32,35 @@ def test_ops_home_falls_back_to_digest_when_chair_queue_missing(tmp_path):
     assert _common.ops_home(chair, digest) == chair
 
 
+def test_chair_focus_only_does_not_hide_digest_queue(tmp_path):
+    """MRB #1234: lone focus.json on ~/.jeeves must not poison queue resolve."""
+    chair = tmp_path / ".jeeves"
+    digest = tmp_path / ".bobiverse"
+    chair.mkdir()
+    digest.mkdir()
+    (chair / "focus.json").write_text(
+        json.dumps({"strict": True, "repos": {"SimonBarnett/bobiverse": {}}}),
+        encoding="utf-8",
+    )
+    (digest / "queue.json").write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "unaccepted": [{"repo": "SimonBarnett/bobiverse", "task": "FR", "id": "#1"}],
+                "accepted": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _common.resolve_queue_path(chair, digest) == digest / "queue.json"
+    assert _common.resolve_focus_path(chair, digest) == chair / "focus.json"
+    assert _common.ops_home(chair, digest) == digest
+    args = type("A", (), {"chair_home": str(chair), "digest_home": str(digest)})()
+    payload, code = queue_flow.check(args)
+    assert code == 0, payload
+    assert payload.get("ok") is True
+
+
 def test_queue_flow_uses_digest_fallback(tmp_path, monkeypatch):
     chair = tmp_path / "jeeves"
     digest = tmp_path / "bobiverse"
