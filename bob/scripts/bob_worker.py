@@ -758,6 +758,21 @@ def drop_text(text: str) -> bool:
     return bool(_DROP_RX.search(t))
 
 
+_NOTHING_QUEUED_RX = re.compile(r"(?i)^nothing\s+queued\b")
+
+
+def is_nothing_queued(text: str, own_nick: str = "") -> bool:
+    """FR #994: Jeeves idle reply ``<nick>: nothing queued`` (optional address strip)."""
+    t = (text or "").strip()
+    n = (own_nick or "").strip()
+    if n and re.match(r"(?i)^@?" + re.escape(n) + r"\s*[:,]\s*", t):
+        t = re.sub(r"(?i)^@?" + re.escape(n) + r"\s*[:,]\s*", "", t, count=1)
+    else:
+        # deliver() may not know own_nick; strip a generic ``nick:`` / ``nick,`` address.
+        t = re.sub(r"(?i)^@?[\w.\-\[\]\\`^{}|]+\s*[:,]\s*", "", t, count=1)
+    return bool(_NOTHING_QUEUED_RX.match(t))
+
+
 JEEVES_NICK = "Jeeves"
 
 
@@ -821,7 +836,10 @@ class Relay:
                 self._do_inject(line)
 
     def deliver(self, nick: str, target: str, text: str) -> str:
+        nq = is_nothing_queued(text)
         if drop_text(text):
+            if nq:
+                self.log("relay: skipped nothing-queued (dropped by filter — unexpected)")
             return "dropped"
         line = format_from(nick, target, text)
         with self._lock:
@@ -832,6 +850,10 @@ class Relay:
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
+                if nq:
+                    # FR #994: operators must see the wire even during startup grace (no inject target yet).
+                    self.log("relay: held nothing-queued (agent not ready)")
+                    self._persist_last_from(line)
                 return "held"
             now = self.clock()
             self._sent = [t for t in self._sent if now - t < self.window_s]
@@ -844,12 +866,12 @@ class Relay:
                     self._timer.start()
                 return "coalescing"
             self._sent.append(now)
-        self._do_inject(line)
-        return "injected"
+        return self._do_inject(line)
 
-    def _do_inject(self, line: str) -> None:
+    def _do_inject(self, line: str) -> str:
         fn = self._inject
         ok = False
+        nq = "nothing queued" in (line or "").lower()
         if fn:
             try:
                 ok = bool(fn(line))
@@ -866,12 +888,19 @@ class Relay:
                     self.on_inject()
                 except Exception:
                     pass
+            return "injected"
+        # FR #994: console inject can fail on an idle TUI; still persist last-from for nothing-queued
+        # so Halloy-visible replies are auditable in the run dir.
+        if nq:
+            self.log("relay: inject failed for nothing-queued (persisted last-from); holding " + line[:80])
+            self._persist_last_from(line)
         else:
             self.log("relay: inject failed, holding " + line[:80])
-            with self._lock:
-                self._pending.append(line)
-                if len(self._pending) > self.max_pending:
-                    del self._pending[0]
+        with self._lock:
+            self._pending.append(line)
+            if len(self._pending) > self.max_pending:
+                del self._pending[0]
+        return "inject_failed"
 
     def _persist_last_from(self, line: str) -> None:
         if not self.persist_dir or not line:
