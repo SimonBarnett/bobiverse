@@ -70,10 +70,12 @@ def test_offer_blocks_implementer_on_unstamped_uat_of_own_pr(tmp_path, monkeypat
                 {
                     "repo": "SimonBarnett/bobiverse",
                     "task": "UAT",
-                    "id": "#623",
+                    "id": "#0",
+                    "repo_uat": True,
+                    "refs": ["#623"],
                     "seq": 1,
                     "ts": "t",
-                    "line": "UAT SimonBarnett/bobiverse#623",
+                    "line": "UAT owner/repo#0",
                 }
             ],
             "accepted": [],
@@ -96,7 +98,7 @@ def test_offer_blocks_implementer_on_unstamped_uat_of_own_pr(tmp_path, monkeypat
     st, job = gitclaim.offer_focus_top(home, "marchhare-41928", "#marchhare")
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(home, "ionos-1", "#ionos")
-    assert st2 == "ok" and job2["id"] == "#623"
+    assert st2 == "ok" and job2["id"] == "#0"
     assert job2.get("implementer_seat") == "marchhare-41928"
 
 

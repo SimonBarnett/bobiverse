@@ -31,11 +31,13 @@ def test_offer_blocks_parent_implementer_on_mrb_626_fix_uat(tmp_path, monkeypatc
                 {
                     "repo": "SimonBarnett/bobiverse",
                     "task": "UAT",
-                    "id": "#640",
+                    "id": "#0",
+                    "repo_uat": True,
+                    "refs": ["#640"],
                     "seq": 1,
                     "ts": "t",
-                    "line": "UAT SimonBarnett/bobiverse#640",
-                    "title": "fix(mrb-626): ASCII-only intake.py for WinPS BOM gate",
+                    "line": "UAT owner/repo#0",
+                    "title": "UAT owner/repo#0: mrb-626 patch",
                 }
             ],
             "accepted": [],
@@ -58,6 +60,6 @@ def test_offer_blocks_parent_implementer_on_mrb_626_fix_uat(tmp_path, monkeypatc
     st, _ = gitclaim.offer_focus_top(home, "marchhare-35600", "#marchhare")
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(home, "flamingo-9", "#flamingo")
-    assert st2 == "ok" and job2["id"] == "#640"
+    assert st2 == "ok" and job2["id"] == "#0"
     assert job2.get("implementer_seat") == "marchhare-35600"
     assert job2.get("mrb_fix_author_seat") == "marchhare-41928"

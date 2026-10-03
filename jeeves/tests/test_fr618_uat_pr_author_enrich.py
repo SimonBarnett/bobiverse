@@ -63,10 +63,12 @@ def test_offer_blocks_mrb_author_on_unstamped_uat_pr(tmp_path, monkeypatch):
                 {
                     "repo": "SimonBarnett/bobiverse",
                     "task": "UAT",
-                    "id": "#603",
+                    "id": "#0",
+                    "repo_uat": True,
+                    "refs": ["#603"],
                     "seq": 1,
                     "ts": "t",
-                    "line": "UAT #603",
+                    "line": "UAT owner/repo#0",
                 }
             ],
             "accepted": [],
@@ -89,7 +91,7 @@ def test_offer_blocks_mrb_author_on_unstamped_uat_pr(tmp_path, monkeypatch):
     st, job = gitclaim.offer_focus_top(home, "marchhare-41928", "#marchhare")
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(home, "flamingo-9", "#flamingo")
-    assert st2 == "ok" and job2["id"] == "#603"
+    assert st2 == "ok" and job2["id"] == "#0"
     assert job2.get("mrb_author_seat") == "marchhare-41928"
 
 

@@ -71,11 +71,13 @@ def test_offer_blocks_parent_implementer_on_nits_uat(tmp_path, monkeypatch):
                 {
                     "repo": "SimonBarnett/bobiverse",
                     "task": "UAT",
-                    "id": "#631",
+                    "id": "#0",
+                    "repo_uat": True,
+                    "refs": ["#631"],
                     "seq": 1,
                     "ts": "t",
-                    "line": "UAT SimonBarnett/bobiverse#631",
-                    "title": "test(mrb-623): /XO third_party guard + post-install ComposeOnly assert",
+                    "line": "UAT owner/repo#0",
+                    "title": "UAT owner/repo#0: test mrb-623 nits",
                 }
             ],
             "accepted": [],
@@ -98,5 +100,5 @@ def test_offer_blocks_parent_implementer_on_nits_uat(tmp_path, monkeypatch):
     st, job = gitclaim.offer_focus_top(home, "marchhare-41928", "#marchhare")
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(home, "ionos-1", "#ionos")
-    assert st2 == "ok" and job2["id"] == "#631"
+    assert st2 == "ok" and job2["id"] == "#0"
     assert job2.get("implementer_seat") == "marchhare-41928"
