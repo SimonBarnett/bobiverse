@@ -17,7 +17,7 @@
 .PARAMETER ComposeOnly
   Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
-  jeeves | bob | airc — selects default InstallRoot <ai root>\<product>.
+  jeeves | bob | airc - selects default InstallRoot <ai root>\<product>.
 .PARAMETER InstallRoot
   Product install tree to refresh (MSI layout without its own .git).
 .PARAMETER Branch
@@ -75,7 +75,7 @@ $pulled = $false
 $clone = $null
 $viaWorkTree = $false
 
-# FR #269: operator/UAT hook — recompose flat scripts from the current tree without service restart or fetch.
+# FR #269: operator/UAT hook - recompose flat scripts from the current tree without service restart or fetch.
 if ($ComposeOnly) {
     if (-not $Product) {
         $leaf = (Split-Path -Leaf $InstallRoot).ToLowerInvariant()
@@ -173,7 +173,7 @@ if ($DryRun) {
 foreach ($d in @('scripts', 'third_party')) {
     $t = Join-Path $InstallRoot $d
     foreach ($s in @(Get-BobiverseRepoDirs -Root $clone -Sub $d)) {
-        # FR #269: never /XO on scripts — git checkout mtimes are often older than the flat copy from a
+        # FR #269: never /XO on scripts - git checkout mtimes are often older than the flat copy from a
         # previous compose, so /XO left scripts\gitclaim.py stale after ff-only.
         if ($d -eq 'scripts') {
             $roboArgs = @($s, $t, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
