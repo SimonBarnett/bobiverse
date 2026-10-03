@@ -1109,9 +1109,16 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 changed = _append_unaccepted(doc, claim, **extra)
                 # t860u: a row that already existed (webhook race / earlier issues event) must still get the
                 # real pull URL, else mrb_row_offerable is False and the seats sit idle until the next resync.
+                # FR #811 / #831: also backfill author_seat / implementer_seat when the MRB was enqueued
+                # before the FR implementer was known (self-MRB offers to the writer).
                 for r in doc["unaccepted"]:
-                    if _same(r, claim.repo, "MRB", claim.id) and not PULL_URL_RE.search(str(r.get("url") or "")):
+                    if not _same(r, claim.repo, "MRB", claim.id):
+                        continue
+                    if not PULL_URL_RE.search(str(r.get("url") or "")):
                         r["url"] = extra["url"]
+                    if implementer and not row_author_seats(r):
+                        r["author_seat"] = implementer
+                        r["implementer_seat"] = implementer
 
             elif ev == "pull_request" and action == "closed":
                 _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
