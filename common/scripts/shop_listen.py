@@ -347,17 +347,24 @@ def complete_job_by_ref(
             doc.setdefault("done", []).append(job)
             if len(doc["done"]) > gitclaim.ACCEPTED_CAP:
                 doc["done"] = doc["done"][-gitclaim.ACCEPTED_CAP :]
-            # supersede light: DONE FR with PR url → queue MRB if url has /pull/
+            # supersede light: DONE FR with PR url → queue MRB if url has /pull/ (FR #254).
             if str(job.get("task") or "").upper() == "FR" and (
                 result.upper().startswith("PR") or "/pull/" in (url or result)
             ):
+                pr_repo = repo
                 pr_id = ""
-                m = re.search(r"/pull/(\d+)", url or result or "")
-                if m:
-                    pr_id = f"#{m.group(1)}"
+                parsed = gitclaim.parse_github_pull_url(url or result or "")
+                if parsed:
+                    pr_repo, pr_id = parsed
+                else:
+                    m = re.search(r"/pull/(\d+)", url or result or "")
+                    if m:
+                        pr_id = f"#{m.group(1)}"
+                # Drop any lingering unaccepted FR for this issue (resync / duplicate).
+                gitclaim._remove_unaccepted_tasks(doc, repo, ident, {"FR"})
                 if pr_id:
                     claim = gitclaim.GitClaim(
-                        repo=repo,
+                        repo=pr_repo,
                         task="MRB",
                         id=pr_id,
                         event="pull_request",
@@ -368,6 +375,7 @@ def complete_job_by_ref(
                     # FR implementer becomes MRB author_seat (different seat must review).
                     fr_author = str(job.get("nick") or job.get("done_by") or "").strip()
                     extra = {"author_seat": fr_author} if fr_author else {}
+                    extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
                     gitclaim._append_unaccepted(doc, claim, **extra)
             if str(job.get("task") or "").upper() == "MRB" and "PASS" in (result or "").upper():
                 # UAT for refs if any; stamp MRB author so UAT is not re-offered to them (FR #227).
