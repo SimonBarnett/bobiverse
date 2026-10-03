@@ -291,3 +291,66 @@ def test_tray_runtime_dirs_follow_the_work_tree(world):
     world.upstream("bob/tray/tools/Watch-BobTray.ps1", "# tray v2\n")
     assert world.sync("bob").returncode == 0
     assert (r / "tools/Watch-BobTray.ps1").read_text() == "# tray v2\n"
+
+
+def test_fr269_scripts_recompose_ignores_older_source_mtime(world):
+    """FR #269: after ff, flat scripts/ must refresh even when git mtimes are older than the flat copy."""
+    r = world.root("bob")
+    seed_install(r)
+    assert world.sync("bob").returncode == 0
+    flat = r / "scripts" / "c1.ps1"
+    assert flat.is_file()
+    # Make the flat copy look newer than the tracked common script (simulates post-compose vs git checkout mtime).
+    future = time.time() + 86400
+    os.utime(flat, (future, future))
+    world.upstream("common/scripts/c1.ps1", "# common 1 FR269\n", msg="fr269")
+    # Also stamp the tracked file in the install worktree older after sync would ff — sync itself does ff+compose.
+    out = world.sync("bob")
+    assert out.returncode == 0, out.text
+    assert (r / "common/scripts/c1.ps1").read_text() == "# common 1 FR269\n"
+    assert flat.read_text() == "# common 1 FR269\n", "flat scripts must refresh without /XO"
+    assert "forced, no /XO" in out.text
+
+
+def test_fr269_compose_only_refreshes_flat_without_fetch(world):
+    """FR #269: -ComposeOnly recomposes flat scripts from the current tree (no service restart)."""
+    r = world.root("bob")
+    seed_install(r)
+    assert world.sync("bob").returncode == 0
+    # Simulate manual edit to tracked common script without pushing (operator ff already done).
+    write(r / "common/scripts/c1.ps1", "# common composed locally\n")
+    future = time.time() + 86400
+    os.utime(r / "scripts" / "c1.ps1", (future, future))
+    env = {k: v for k, v in os.environ.items() if k not in ("BOBIVERSE_REPO", "BOBIVERSE_NO_UPDATE", "BOB_AI_ROOT", "BOBIVERSE_REMOTE")}
+    env["BOB_AI_ROOT"] = str(world.ai)
+    env["BOBIVERSE_REMOTE"] = str(world.bare)
+    proc = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SYNC),
+            "-Product",
+            "bob",
+            "-InstallRoot",
+            str(r),
+            "-ComposeOnly",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    text = proc.stdout + proc.stderr
+    assert proc.returncode == 0, text
+    assert "compose-only" in text.lower()
+    assert (r / "scripts/c1.ps1").read_text() == "# common composed locally\n"
+
+
+def test_fr269_sync_script_documents_compose_only_and_no_xo_scripts():
+    t = SYNC.read_text(encoding="utf-8")
+    assert "ComposeOnly" in t
+    assert "FR #269" in t
+    assert "forced, no /XO" in t or "never /XO on scripts" in t

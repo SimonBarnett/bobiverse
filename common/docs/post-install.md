@@ -173,3 +173,7 @@ Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 Jeeves MSI packs mark `third_party\nssm\win64\nssm.exe` and `ergo\ergo.exe` as **Permanent + NeverOverwrite** so an upgrade does not rewrite the service binary or a hard-linked Ergo image. `Install-Jeeves` also runs `Repair-BobiverseErgoHardlink` when `<ai root>\ergo\ergo.exe` still shares a hard link with the pack copy (no service stop).
 
 Complete service logon after quiet MSI: Desktop / Start Menu **Complete bobiverse service logon**, or set `BOBIVERSE_SERVICE_PASSWORD` / `config\service.password` before install (see ObjectName above).
+
+## Flat scripts after git ff (FR #269)
+
+After a manual `git pull --ff-only` on the install work tree, run `Sync-BobiverseFromRepo.ps1 -Product bob -ComposeOnly` (or the matching product) so `scripts\` matches `common\scripts` / `<product>\scripts` without restarting the service. Service start already ff+recomposes; `-ComposeOnly` is the no-bounce hook. Scripts compose no longer uses robocopy `/XO` (git checkout mtimes can be older than the flat copy).
