@@ -88,11 +88,13 @@ COMMANDS: tuple = (
     CommandSpec("unignore", "!unignore {repo}", "resume handling a previously ignored repo (simon/ops)", OPS_ROLES,
                 "!unignore old-sandbox", "Removes the repo from ignored.json; new events are handled again.",
                 ("ignore", "ignored")),
-    CommandSpec("focus", "!focus [strict on|off]|[n|high|medium|low] {repo|owner/repo#N}",
+    CommandSpec("focus", "!focus [strict on|off]|[n|high|medium|low] {repo|owner/repo#N}|auto {repo}",
                 "priority-sort !list and assign-on-!bored (simon/ops)", OPS_ROLES, "!focus strict on",
                 "focus.json beside the queue. Items (owner/repo#N) rank ahead of repo focus. Lower number first. "
                 "Bare !focus lists strict flag, items, repos (read is open). !focus strict on|off: when on, "
-                "!list and !bored only use focused work.", ("unfocus", "list")),
+                "!list and !bored only use focused work. FR #628: repo focus / !focus auto stamps since=now; "
+                "strict admits that repo's rows with ts>=since (new MRB/UAT ids) without per-id !focus.",
+                ("unfocus", "list")),
     CommandSpec("unfocus", "!unfocus {repo|owner/repo#N}|all", "remove repo/item focus or clear all (simon/ops)",
                 OPS_ROLES, "!unfocus SimonBarnett/gh-Jeeves#110", "Drops focus entries; !unfocus all clears all.",
                 ("focus", "list")),

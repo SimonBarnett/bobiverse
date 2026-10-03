@@ -3,7 +3,7 @@
 Behaviour and on-disk formats follow gh-Jeeves (read-only reference @ 8d76d9a) so the
 ``focus.json`` / ``ignored.json`` already sitting in the digest home keep working:
 
-  focus.json   {"v":1,"repos":{name:{"priority","label","ts"}},
+  focus.json   {"v":1,"repos":{name:{"priority","label","ts","since"}},
                 "items":{"owner/repo#N":{"rank","repo","id","label","ts"}},
                 "item_seq":N,"strict":bool,"updated":ts}
   ignored.json {"v":1,"repos":[...],"updated":ts}
@@ -11,6 +11,10 @@ Behaviour and on-disk formats follow gh-Jeeves (read-only reference @ 8d76d9a) s
 Order used by !list and !bored:
   1. item-focused rows by rank, 2. repo-focused rows by priority, 3. queue seq.
 Strict mode keeps only focused rows. Ignored repos are dropped everywhere.
+FR #628: repo focus stores ``since`` (set on each ``!focus`` / ``!focus auto``).
+In strict mode, repo-matched rows are admitted only when ``row.ts >= since``
+(pipeline MRB/UAT for new PR ids). Item ranks always win; repos without ``since``
+keep legacy admit-all behaviour.
 
 This is a clean re-implementation of the subset needed, NOT a vendored copy of the
 gh-Jeeves package (no pinned tag exists to vendor). Left out: purge of closed item focus
@@ -139,11 +143,15 @@ def load_focus(home: Path) -> dict[str, Any]:
         except (TypeError, ValueError):
             pr = DEFAULT_PRIORITY
         pr = max(1, pr)
-        doc["repos"][key] = {
+        entry = {
             "priority": pr,
             "label": str(v.get("label") or _label(pr)) if isinstance(v, dict) else _label(pr),
             "ts": str(v.get("ts") or "") if isinstance(v, dict) else "",
         }
+        # FR #628: optional since watermark for strict pipeline admission.
+        if isinstance(v, dict) and str(v.get("since") or "").strip():
+            entry["since"] = str(v.get("since") or "").strip()
+        doc["repos"][key] = entry
     items = raw.get("items") if isinstance(raw.get("items"), dict) else {}
     for k, v in items.items():
         parsed = normalize_item_ref(str(k))
@@ -212,8 +220,66 @@ def item_rank(doc: dict, row: dict) -> int | None:
     return None
 
 
+def _parse_focus_ts(raw: str) -> float | None:
+    """Parse focus/queue ISO timestamps to epoch seconds (FR #628)."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def repo_since(doc: dict, repo: str) -> str | None:
+    """Earliest non-empty ``since`` among matching repo focus keys (FR #628)."""
+    best: str | None = None
+    best_t: float | None = None
+    for key, meta in (doc.get("repos") or {}).items():
+        if not repo_match(key, repo):
+            continue
+        since = str(meta.get("since") or "").strip()
+        if not since:
+            continue
+        t = _parse_focus_ts(since)
+        if t is None:
+            continue
+        if best_t is None or t < best_t:
+            best_t = t
+            best = since
+    return best
+
+
 def row_is_focused(doc: dict, row: dict) -> bool:
+    """True when the row has item or repo focus (ignores since watermark)."""
     return item_rank(doc, row) is not None or repo_priority(doc, str(row.get("repo") or "")) is not None
+
+
+def row_admitted_under_strict(doc: dict, row: dict) -> bool:
+    """Strict-mode admission (FR #628).
+
+    * Item-focused rows always admitted.
+    * Repo-focused rows admitted when the repo has no ``since``, or ``row.ts >= since``.
+    * Unfocused rows rejected.
+    """
+    if item_rank(doc, row) is not None:
+        return True
+    repo = str(row.get("repo") or "").strip()
+    if repo_priority(doc, repo) is None:
+        return False
+    since = repo_since(doc, repo)
+    if not since:
+        return True  # legacy repo focus: admit all rows of the repo
+    since_t = _parse_focus_ts(since)
+    if since_t is None:
+        return True
+    row_t = _parse_focus_ts(str(row.get("ts") or ""))
+    if row_t is None:
+        # No usable ts: treat as new enough to keep the pipeline moving.
+        return True
+    return row_t + 1e-9 >= since_t
 
 
 # ---------------------------------------------------------------- ignore store
@@ -253,7 +319,8 @@ def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
         if isinstance(r, dict) and not any(repo_match(ig, str(r.get("repo") or "")) for ig in ignored)
     ]
     if doc.get("strict"):
-        kept = [r for r in kept if row_is_focused(doc, r)]
+        # FR #628: repo focus + since admits pipeline-new rows only.
+        kept = [r for r in kept if row_admitted_under_strict(doc, r)]
 
     def key(r: dict) -> tuple:
         try:
@@ -327,17 +394,25 @@ def _set_item(home: Path, token: str, rank: int | None, label: str | None) -> li
     return [f"focus: item {key} rank={max(1, rank)}"]
 
 
-def _set_repo(home: Path, token: str, pr: int, label: str) -> list[str]:
+def _set_repo(home: Path, token: str, pr: int, label: str, *, since: str | None = None) -> list[str]:
     canon = normalize_repo(token)
     if not canon:
         return ["focus: usage !focus [n|high|medium|low] {repo|owner/repo#N}"]
     doc = load_focus(home)
     repos = {k: v for k, v in doc["repos"].items() if k.lower() != canon.lower()
              and not (_short(k) == _short(canon) and (("/" in k) != ("/" in canon)))}
-    repos[canon] = {"priority": max(1, pr), "label": label, "ts": _now()}
+    now = _now()
+    # FR #628: stamp since on every repo focus so strict admits new MRB/UAT pipeline rows.
+    since_s = (since or "").strip() or now
+    repos[canon] = {
+        "priority": max(1, pr),
+        "label": label,
+        "ts": now,
+        "since": since_s,
+    }
     doc["repos"] = repos
     save_focus(home, doc)
-    return [f"focus: {canon} priority={max(1, pr)} ({label})"]
+    return [f"focus: {canon} priority={max(1, pr)} ({label}) since={since_s}"]
 
 
 def format_focus_lines(home: Path) -> list[str]:
@@ -352,7 +427,9 @@ def format_focus_lines(home: Path) -> list[str]:
     if doc["repos"]:
         out.append(f"focus repos ({len(doc['repos'])}):")
         for k, v in sorted(doc["repos"].items(), key=lambda kv: (kv[1]["priority"], kv[0].lower())):
-            out.append(f"  {v['priority']} ({v['label']}) {k}")
+            since = str(v.get("since") or "").strip()
+            since_bit = f" since={since}" if since else ""
+            out.append(f"  {v['priority']} ({v['label']}) {k}{since_bit}")
     return out
 
 
@@ -371,6 +448,11 @@ def handle_focus_cmd(home: Path, arg: str) -> list[str]:
             save_focus(home, doc)
             return [f"focus strict: {'on' if doc['strict'] else 'off'}"]
         return ["focus: usage !focus strict on|off"]
+    # FR #628: !focus auto <repo> — repo focus with since=now (pipeline admission).
+    if parts[0].lower() == "auto":
+        if len(parts) < 2:
+            return ["focus: usage !focus auto {repo|owner/repo}"]
+        return _set_repo(home, " ".join(parts[1:]), DEFAULT_PRIORITY, "high")
     pri = _priority_token(parts[0])
     if pri is not None and len(parts) > 1:
         rest = " ".join(parts[1:]).strip()

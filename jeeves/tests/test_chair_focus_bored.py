@@ -96,9 +96,16 @@ def test_item_rank_ordering_between_items(_home):
 
 
 def test_strict_focus_hides_unfocused(_home):
-    _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/b", "FR", 2, 2)])
+    # FR #628: repo focus stamps since=now; use row ts at/after since so the focused repo still admits.
     fi.handle_focus_cmd(_home, "o/b")
     fi.handle_focus_cmd(_home, "strict on")
+    doc = fi.load_focus(_home)
+    since = str((doc.get("repos") or {}).get("o/b", {}).get("since") or "")
+    assert since
+    _queue(_home, [
+        _row("o/a", "FR", 1, 1, ts="2020-01-01T00:00:00Z"),
+        _row("o/b", "FR", 2, 2, ts=since),
+    ])
     assert [r["id"] for r in gitclaim.ordered_unaccepted(_home)] == ["#2"]
     fi.handle_unfocus_cmd(_home, "o/b")
     assert gitclaim.ordered_unaccepted(_home) == []     # strict + nothing focused => nothing queued
@@ -403,3 +410,72 @@ def test_chair_wiring_present():
     assert "gitclaim.offer_focus_top" in t
     assert "gitclaim.format_assign_line(src, job)" in t
     assert "ASSIGN {line}" not in t
+
+
+# ------------------------------------------------------------ FR #628: repo since
+def test_fr628_repo_focus_stamps_since(_home):
+    lines = fi.handle_focus_cmd(_home, "high SimonBarnett/bobiverse")
+    assert any("since=" in x for x in lines)
+    doc = fi.load_focus(_home)
+    meta = doc["repos"]["SimonBarnett/bobiverse"]
+    assert meta.get("since")
+    assert meta.get("priority") == 1
+
+
+def test_fr628_focus_auto_stamps_since(_home):
+    lines = fi.handle_focus_cmd(_home, "auto o/b")
+    assert any("focus: o/b" in x and "since=" in x for x in lines)
+    assert fi.load_focus(_home)["repos"]["o/b"]["since"]
+
+
+def test_fr628_strict_admits_new_mrb_uat_hides_older(_home):
+    """Repo focus + since: new MRB/UAT ids offered; rows older than since stay hidden."""
+    fi.handle_focus_cmd(_home, "auto SimonBarnett/bobiverse")
+    fi.handle_focus_cmd(_home, "strict on")
+    since = fi.load_focus(_home)["repos"]["SimonBarnett/bobiverse"]["since"]
+    # Simulate pipeline: stale UAT before focus, then new MRB/UAT after FR DONE / merge.
+    _queue(_home, [
+        _row("SimonBarnett/bobiverse", "UAT", 10, 1, ts="2020-01-01T00:00:00Z"),  # old
+        _row("SimonBarnett/bobiverse", "MRB", 623, 2, ts=since, url="https://github.com/SimonBarnett/bobiverse/pull/623"),
+        _row("SimonBarnett/other", "FR", 1, 3, ts=since),  # other repo
+    ])
+    got = gitclaim.ordered_unaccepted(_home)
+    assert [r["id"] for r in got] == ["#623"]
+    st, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos")
+    assert st == "ok" and job["id"] == "#623" and job["task"] == "MRB"
+    # After MRB would merge, UAT with new id and fresh ts is offered without !focus of that id.
+    _queue(_home, [
+        _row("SimonBarnett/bobiverse", "UAT", 10, 1, ts="2020-01-01T00:00:00Z"),
+        _row("SimonBarnett/bobiverse", "UAT", 623, 2, ts=since),
+    ])
+    st2, job2 = gitclaim.offer_focus_top(_home, "ionos-2", "#ionos")
+    assert st2 == "ok" and job2["id"] == "#623" and job2["task"] == "UAT"
+
+
+def test_fr628_item_focus_beats_since_watermark(_home):
+    """Item ranks still win and admit even when row.ts is older than repo since."""
+    fi.handle_focus_cmd(_home, "auto o/a")
+    fi.handle_focus_cmd(_home, "strict on")
+    fi.handle_focus_cmd(_home, "o/a#99")  # item focus on old id
+    _queue(_home, [
+        _row("o/a", "FR", 99, 1, ts="2019-01-01T00:00:00Z"),
+        _row("o/a", "MRB", 100, 2, ts="2019-01-01T00:00:00Z"),  # older than since, no item focus
+    ])
+    got = [r["id"] for r in gitclaim.ordered_unaccepted(_home)]
+    assert got == ["#99"]
+
+
+def test_fr628_legacy_repo_without_since_admits_all(_home):
+    """Repos without since keep admit-all (no change)."""
+    fi.save_focus(_home, {
+        "v": 1,
+        "repos": {"o/b": {"priority": 1, "label": "high", "ts": "2026-01-01T00:00:00Z"}},
+        "items": {},
+        "item_seq": 0,
+        "strict": True,
+    })
+    _queue(_home, [
+        _row("o/b", "UAT", 1, 1, ts="2020-01-01T00:00:00Z"),
+        _row("o/a", "FR", 2, 2, ts="2026-10-01T00:00:00Z"),
+    ])
+    assert [r["id"] for r in gitclaim.ordered_unaccepted(_home)] == ["#1"]
