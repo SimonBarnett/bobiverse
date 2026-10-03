@@ -1961,7 +1961,8 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
             mrb, mrb_nick=str(mrb.get("nick") or mrb.get("done_by") or "")
         )
         for k, v in piece.items():
-            if v and not out.get(k):
+            # First related MRB wins (accepted before done); do not let a later row clobber.
+            if v and not out.get(k) and not extras.get(k):
                 extras[k] = v
         # mrb-*-fix / nits author is typically the MRB reviewer; stamp explicitly when
         # this UAT targets a fix/nits PR related to that MRB.
