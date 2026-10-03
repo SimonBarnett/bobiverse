@@ -1699,9 +1699,29 @@ class Supervisor:
 
 
 # --------------------------------------------------------------------------------------------- outbox
+def ensure_outbox(path: Path) -> Path:
+    """FR #866: keep the seat outbox path creatable for the whole session.
+
+    ``drain_outbox`` atomically moves ``outbox.txt`` aside, so the file is often
+    missing between writes. Agents (and PowerShell ``Add-Content`` /
+    ``Set-Content``) still need the parent run dir — and a present empty file is
+    friendlier when tools probe the path. Never deletes the run dir.
+    """
+    p = Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.is_file():
+            p.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+    return p
+
+
 def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payload: Optional[Callable[[str], None]] = None) -> int:
     """Move outbox.txt aside atomically, send each line to the shop channel. Plain text or `PRIVMSG #shop :text`."""
+    path = Path(path)
     if not path.is_file():
+        ensure_outbox(path)
         return 0
     tmp = path.with_suffix(".sending")
     try:
@@ -1742,11 +1762,14 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
             tmp.unlink()
         except OSError:
             pass
+        # FR #866: recreate empty outbox so the path stays available for the next agent write.
+        ensure_outbox(path)
     return n
 
 
 def outbox_loop(path: Path, irc: IrcSeat, stop: threading.Event, log: Callable[[str], None],
                 on_payload: Optional[Callable[[str], None]] = None) -> None:
+    ensure_outbox(path)
     while not stop.wait(0.5):  # outbound only; inbound relay is NOT polled
         try:
             drain_outbox(path, irc, log, on_payload)
@@ -1918,6 +1941,7 @@ def run_agent(args, log: Log) -> int:
     nick = seat_nick(machine, pid)
     run_dir = _new_run_dir(machine, "worker")
     run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_outbox(run_dir / "outbox.txt")  # FR #866: path must exist before first agent write
     log.path = run_dir / "worker.log"
     log(f"worker: pid={pid} nick={nick} shop=#{machine} kind={kind} run_dir={run_dir}")
     ensure_console(f"Bob worker {nick} ({kind}) - closing this window ends the agent")

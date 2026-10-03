@@ -60,6 +60,10 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 Prunes job trees when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-MaxExtraJobTrees 0`. Seat-disk `-WhatIf` reports without deleting. Never delete Ergo, secrets, the install root, or the live session id. Details: `bobiverse-bob-job-fr`.
 
 
+## Outbox path (FR #866)
+
+Append ``PRIVMSG #<machine> :<text>`` to the ``outbox.txt`` path from the first instruction. The worker drains by moving the file aside, then recreates an empty ``outbox.txt`` so the path stays writable for the whole seat lifetime. If a write ever fails with PathNotFound, recreate the parent run dir and retry once.
+
 ## If something breaks
 
 * The program restarts you as a NEW agent when you hang (no output for 300 s after input, or "not responding" for 90 s). You will not remember the previous session - re-read this skill and the task line you are given.
