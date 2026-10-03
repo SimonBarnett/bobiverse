@@ -4,6 +4,7 @@ connection for that agent and relays IRC -> agent the instant a message arrives.
 Modes
   --mode agent   worker seat: cwd <install>\worker, IRC nick <machine>-<pid>, joins ONLY #<machine>
   --mode plan    plan agent: cwd <install>\plan, no IRC, fire-and-forget launch
+  --mode monitor Jeeves MONITORING agent: cwd --work-root (default <ai>\\jeeves), no IRC; same fuel pick as agent
 
 Rules (CAST IRON, Simon t762u-t765u)
   * Agent choice is ALWAYS automatic by token availability: Cursor (high or low pool > 0) -> Grok (local weekly > 0)
@@ -346,10 +347,28 @@ def plan_prompt(plan_dir: str) -> str:
     )
 
 
+def monitor_prompt(jeeves_dir: str) -> str:
+    return (
+        f"You are a NEW Bobiverse Jeeves MONITORING agent (fresh session - never resume or continue an older one). "
+        f"Your working folder is {jeeves_dir}. FIRST read {jeeves_dir}\\AGENTS.md and "
+        f"{jeeves_dir}\\.grok\\skills\\bobiverse-jeeves-monitor\\SKILL.md (then harvest). "
+        f"You are NOT the chair and NOT a worker: never !assign/!focus/queue edits; report delays via intake only. "
+        f"Prefer token-free scripts under {jeeves_dir}\\scripts\\Test-JeevesMonitor*.ps1 / tools\\monitor\\ "
+        f"(exit 0=ok, 1=finding, 2=error; one JSON line) and only reason about failures. "
+        f"After every finding, self-harvest the learning back into bobiverse (Invoke-BobiverseHarvest.ps1 + intake). "
+        f"CAST IRON: harvest skills and file every issue/FR/bug with {jeeves_dir}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
+        f"in the same turn. Never print or store secrets."
+    )
+
+
 def rules_text(folder: str, kind: str) -> str:
+    extra = {
+        "plan": "PLAN SEAT ONLY: no IRC, no builds.",
+        "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; never act as chair; prefer token-free monitor scripts; self-harvest after every finding.",
+    }.get(kind, "Worker seat: IRC is handled for you.")
     return (f"NEW session. Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
-            + ("PLAN SEAT ONLY: no IRC, no builds." if kind == "plan" else "Worker seat: IRC is handled for you."))
+            + extra)
 
 
 # --------------------------------------------------------------------------------------------- launching (always NEW)
@@ -456,9 +475,10 @@ def ensure_console(title: str = "") -> bool:
 
 
 def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
-    """t794u: the systray icon (assets\\bob-systray.ico) for the worker window: the install, then the copy PyInstaller embedded."""
+    """Window icon: jeeves-butler.ico (monitor) or bob-systray.ico; install then PyInstaller embed."""
     cands: list = []
     if install_root:
+        cands.append(Path(install_root) / "assets" / "jeeves-butler.ico")
         cands.append(Path(install_root) / "assets" / "bob-systray.ico")
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
@@ -1810,6 +1830,69 @@ def run_plan(args, log: Log) -> int:
     return EXIT_OK
 
 
+def _default_jeeves_root(install_root: Path) -> Path:
+    """Sibling <ai>\\jeeves next to bob install-root, else install-root itself when it looks like jeeves."""
+    if (install_root / "AGENTS.md").is_file() and (install_root / ".grok" / "skills" / "bobiverse-jeeves-monitor").is_dir():
+        return install_root
+    sib = install_root.parent / "jeeves"
+    return sib
+
+
+def run_monitor(args, log: Log) -> int:
+    """FR #787: Jeeves MONITORING seat — same fuel pick as Agent, CWD = jeeves install, no IRC, never resume."""
+    work = Path(getattr(args, "work_root", "") or "") if getattr(args, "work_root", None) else None
+    folder = work if work and str(work) else _default_jeeves_root(Path(args.install_root))
+    folder = Path(folder)
+    if not folder.is_dir():
+        log(f"monitor: folder missing {folder}")
+        return EXIT_USAGE
+    if not (folder / "AGENTS.md").is_file():
+        log(f"monitor: AGENTS.md missing in {folder}")
+        return EXIT_USAGE
+    dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "monitor")
+    secret = None
+    kind = dec.kind
+    if kind == "none":
+        return EXIT_NO_AGENT
+    if kind == "dialog":
+        key = ask_session_key(
+            "No Cursor or Grok tokens remain. Enter an XAI_API_KEY for this Jeeves Monitor only (kept in memory, never saved).",
+            "Grok monitor session key",
+        )
+        if not key:
+            log("monitor: no key given - not starting")
+            return EXIT_NO_AGENT
+        secret, kind = SecretStr(key), "grok"
+    exe = cursor_cmd if kind == "cursor" else grok_exe
+    run_dir = _new_run_dir("monitor", "monitor")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_console("Jeeves Monitor (%s) - closing this window ends the agent" % kind)
+    # Prefer butler icon when present on the work root
+    butler = folder / "assets" / "jeeves-butler.ico"
+    if butler.is_file():
+        try:
+            set_console_icon(folder)  # find_window_icon only knows bob-systray; still set title
+        except Exception:
+            pass
+    spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir)
+    env = dict(os.environ)
+    if secret and kind == "grok":
+        env["XAI_API_KEY"] = secret.reveal()
+    try:
+        proc = default_spawn(spec, env)
+    except Exception as e:
+        log(f"monitor: launch failed {type(e).__name__}")
+        return EXIT_LAUNCH_FAIL
+    log(f"monitor: started NEW {kind} agent pid={proc.pid} session={spec.session_id} cwd={folder} (no IRC; ending either ends both)")
+    install_ctrl_handler(lambda: kill_tree(proc.pid))
+    try:
+        code = proc.wait()
+    except Exception:
+        code = -1
+    log(f"monitor: agent ended code={code}")
+    return EXIT_OK
+
+
 def run_agent(args, log: Log) -> int:
     machine = normalize_machine_id(args.machine_id) if args.machine_id else default_machine_id()
     if not machine:
@@ -1942,9 +2025,10 @@ def worker_cap_refusal(procs: list, my_pid: int) -> str:
 
 
 def main(argv: Optional[list] = None) -> int:
-    p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, or plan) chosen by token availability.")
-    p.add_argument("--mode", choices=("agent", "plan"), default="agent")
+    p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, plan, or Jeeves monitor) chosen by token availability.")
+    p.add_argument("--mode", choices=("agent", "plan", "monitor"), default="agent")
     p.add_argument("--install-root", default=DEFAULT_INSTALL_ROOT)
+    p.add_argument("--work-root", default="", help="monitor mode: Jeeves install CWD (default sibling <ai>\\jeeves)")
     p.add_argument("--machine-id", default="")
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -1957,24 +2041,36 @@ def main(argv: Optional[list] = None) -> int:
         cc, ge = resolve_cursor_cmd(), resolve_grok_exe()
         fuel = read_fuel(Path(args.install_root))
         dec = select_agent(fuel, cc, ge)
+        if args.mode == "plan":
+            cwd = str(Path(args.install_root) / "plan")
+        elif args.mode == "monitor":
+            cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
+        else:
+            cwd = str(Path(args.install_root) / "worker")
         print(json.dumps({"decision": dec.kind, "reason": dec.reason, "cursor_cmd": bool(cc), "grok_exe": bool(ge),
-                          "fuel": fuel.__dict__, "cwd": str(Path(args.install_root) / ("plan" if args.mode == "plan" else "worker"))}))
+                          "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
         return EXIT_OK
-    refusal = worker_cap_refusal(snapshot_procs(), os.getpid())  # t815u: hard cap, before any window/agent/IRC
-    if refusal:
-        log("refused: " + refusal)
-        try:
-            ensure_console("Bob worker - refused")
-            print("\nBob worker: " + refusal + ".\nClose a running worker window first.\n")
-            time.sleep(8)
-        except Exception:
-            pass
-        return EXIT_REFUSED
+    # Monitor seats do not consume the worker hard-cap (they are not shop workers).
+    if args.mode != "monitor":
+        refusal = worker_cap_refusal(snapshot_procs(), os.getpid())  # t815u: hard cap, before any window/agent/IRC
+        if refusal:
+            log("refused: " + refusal)
+            try:
+                ensure_console("Bob worker - refused")
+                print("\nBob worker: " + refusal + ".\nClose a running worker window first.\n")
+                time.sleep(8)
+            except Exception:
+                pass
+            return EXIT_REFUSED
     if not args.echo:
         silence_console(log)  # t787u: the console belongs to the agent TUI; errors go to the log file only
     try:
         ensure_console("Bob %s - starting" % args.mode)  # the ONE window for this agent
-        return run_plan(args, log) if args.mode == "plan" else run_agent(args, log)
+        if args.mode == "plan":
+            return run_plan(args, log)
+        if args.mode == "monitor":
+            return run_monitor(args, log)
+        return run_agent(args, log)
     except Exception as e:  # never a traceback dialog
         log(f"fatal: {type(e).__name__}: {str(e)[:200]}")
         return EXIT_LAUNCH_FAIL

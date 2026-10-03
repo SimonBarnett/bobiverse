@@ -1,5 +1,4 @@
-﻿"""Start Menu inventory (t761u): ONE all-users 'Bobiverse' folder with every shortcut, legacy duplicates removed,
-every shortcut on the systray icon."""
+﻿"""Start Menu inventory (t761u / FR #787): ONE all-users 'Bobiverse' folder; bob Start Systray + jeeves Start Jeeves Monitor."""
 from __future__ import annotations
 
 import json
@@ -10,16 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
+from repo_layout import REPO, ROOT  # t773u: split repo; legacy flat paths resolve per service
 SCRIPTS = ROOT / "scripts"
 ICO = ROOT / "third_party" / "bob-tray" / "assets" / "bob-systray.ico"
+BUTLER = REPO / "jeeves" / "assets" / "jeeves-butler.ico"
 WIN = pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="needs Windows PowerShell")
 
-# t794u: ONE Start Menu entry, "Start Systray" (bob). jeeves / airc contribute nothing but the transient logon helper.
+# t794u / FR #787: bob = Start Systray; jeeves = Start Jeeves Monitor; airc = none (logon helper is transient).
 EXPECTED = {
     "bob": {"Start Systray", "Complete bobiverse service logon (bob)"},
-    "jeeves": set(),
-    "airc": set(),
+    "jeeves": {"Start Jeeves Monitor", "Complete bobiverse service logon (jeeves)"},
+    "airc": {"Complete bobiverse service logon (airc)"},
 }
 
 
@@ -66,7 +66,9 @@ foreach ($prod in 'bob', 'jeeves', 'airc') {{
     $ir = Join-Path $base "ai\$prod"
     New-Item -ItemType Directory -Force -Path (Join-Path $ir 'assets'), (Join-Path $ir 'scripts'), (Join-Path $ir 'logs'), (Join-Path $ir '.grok\skills') | Out-Null
     Copy-Item "{ico}" (Join-Path $ir 'assets\bob-systray.ico') -Force
+    if (Test-Path -LiteralPath "{butler}") {{ Copy-Item "{butler}" (Join-Path $ir 'assets\jeeves-butler.ico') -Force }}
     Set-Content (Join-Path $ir 'AGENTS.md') 'x'
+    Set-Content (Join-Path $ir 'scripts\Start-JeevesMonitor.ps1') '# stub'
     $p = @{{ Product = $prod; InstallRoot = $ir; MachineId = 'testbox'; StartMenuDir = $smd; ProgramsRoots = @($all, $user) }}
     if ($prod -eq 'bob') {{ $p.NeedLogon = $true; $p.IncludeTray = $true }}
     [void](Install-BobiverseStartMenu @p)
@@ -89,7 +91,11 @@ $out | ConvertTo-Json -Depth 5 -Compress | Set-Content "{res}" -Encoding UTF8
 def test_install_creates_one_folder_dedupes_legacy_and_uses_the_tray_icon(tmp_path):
     res = tmp_path / "out.json"
     ps1 = tmp_path / "h.ps1"
-    ps1.write_text(HARNESS.format(common=SCRIPTS / "Bobiverse-Common.ps1", base=tmp_path, ico=ICO, res=res), encoding="utf-8-sig")
+    assert BUTLER.is_file() and BUTLER.stat().st_size > 100
+    ps1.write_text(
+        HARNESS.format(common=SCRIPTS / "Bobiverse-Common.ps1", base=tmp_path, ico=ICO, butler=BUTLER, res=res),
+        encoding="utf-8-sig",
+    )
     run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
                          capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stdout + run.stderr
@@ -99,13 +105,15 @@ def test_install_creates_one_folder_dedupes_legacy_and_uses_the_tray_icon(tmp_pa
     assert out["userTop"] == [] and out["userFolders"] == ["Startup"]     # per-user dupes + per-user Bobiverse folder gone
     assert out["startup"] == ["Bobiverse Tray.lnk"]              # tray autostart untouched
     names = {s["name"] for s in out["shortcuts"]}
-    # after the idempotent bob re-run (no NeedLogon) the logon helper is removed; all other products remain
-    assert names == {"Start Systray"}                           # the older per-product links inside the folder were pruned too
+    # after the idempotent bob re-run (no NeedLogon) the logon helper is removed; bob + jeeves remain
+    assert names == {"Start Systray", "Start Jeeves Monitor"}
     assert len([s for s in out["shortcuts"] if s["name"] == "Start Systray"]) == 1
-    for s in out["shortcuts"]:
-        assert s["icon"].lower().endswith("bob-systray.ico,0"), s    # every shortcut on the systray icon
     tray = [s for s in out["shortcuts"] if s["name"] == "Start Systray"][0]
+    assert tray["icon"].lower().endswith("bob-systray.ico,0"), tray
     assert tray["target"].lower().endswith("powershell.exe")
+    mon = [s for s in out["shortcuts"] if s["name"] == "Start Jeeves Monitor"][0]
+    assert mon["icon"].lower().endswith("jeeves-butler.ico,0"), mon
+    assert mon["target"].lower().endswith("powershell.exe")
 
 
 @WIN
@@ -117,12 +125,11 @@ def test_spec_inventory_per_product(tmp_path):
                          capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     got = {ln.split("=")[0]: set(ln.split("=", 1)[1].split("|")) for ln in run.stdout.splitlines() if "=" in ln}
-    assert got == {"bob": EXPECTED["bob"], "jeeves": {"Complete bobiverse service logon (jeeves)"},
-                   "airc": {"Complete bobiverse service logon (airc)"}}
+    assert got == {"bob": EXPECTED["bob"], "jeeves": EXPECTED["jeeves"], "airc": EXPECTED["airc"]}
 
 
 @WIN
-def test_start_systray_is_the_only_entry_and_launches_the_tray_launcher(tmp_path):
+def test_start_systray_is_the_only_bob_entry_and_launches_the_tray_launcher(tmp_path):
     ps1 = tmp_path / "s.ps1"
     ps1.write_text('. "%s"\n$s = @(Get-BobiverseShortcutSpec -Product bob -InstallRoot "C:\\ai\\bob" -MachineId m -IncludeTray -Icon "C:\\x\\bob-systray.ico"); $s | ConvertTo-Json -Compress\n'
                    % (SCRIPTS / "Bobiverse-Common.ps1"), encoding="utf-8-sig")
@@ -134,4 +141,30 @@ def test_start_systray_is_the_only_entry_and_launches_the_tray_launcher(tmp_path
     assert [s["Name"] for s in spec] == ["Start Systray"]
     assert "Start-BobTray.ps1" in spec[0]["Arguments"] and "-ForceNew" in spec[0]["Arguments"]
     assert spec[0]["Icon"].endswith("bob-systray.ico,0")
+
+
+@WIN
+def test_start_jeeves_monitor_shortcut_uses_butler_and_launcher(tmp_path):
+    ps1 = tmp_path / "s.ps1"
+    # Stage a fake butler next to a temp install root so Icon resolves
+    ir = tmp_path / "ai" / "jeeves"
+    (ir / "assets").mkdir(parents=True)
+    (ir / "scripts").mkdir(parents=True)
+    shutil.copy(BUTLER, ir / "assets" / "jeeves-butler.ico")
+    (ir / "scripts" / "Start-JeevesMonitor.ps1").write_text("# stub\n", encoding="utf-8")
+    ps1.write_text(
+        '. "%s"\n$s = @(Get-BobiverseShortcutSpec -Product jeeves -InstallRoot "%s" -MachineId m -Icon "C:\\x\\bob-systray.ico"); $s | ConvertTo-Json -Compress -Depth 5\n'
+        % (SCRIPTS / "Bobiverse-Common.ps1", ir),
+        encoding="utf-8-sig",
+    )
+    run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
+                         capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    spec = json.loads(run.stdout)
+    spec = spec if isinstance(spec, list) else [spec]
+    assert [s["Name"] for s in spec] == ["Start Jeeves Monitor"]
+    assert "Start-JeevesMonitor.ps1" in spec[0]["Arguments"]
+    assert "--resume" not in spec[0]["Arguments"].lower()
+    assert spec[0]["Icon"].lower().endswith("jeeves-butler.ico,0")
+    assert str(spec[0]["WorkingDirectory"]).lower().rstrip("\\") == str(ir).lower().rstrip("\\")
 

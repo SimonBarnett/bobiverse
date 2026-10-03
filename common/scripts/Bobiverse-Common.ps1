@@ -893,9 +893,8 @@ function Resolve-BobiverseTrayIcon {
 }
 
 # Pure data: the shortcuts a product contributes to the single Start Menu folder.
-# t794u: the Bobiverse folder holds ONE entry, "Start Systray" (bob only; it restarts ircBob and starts the tray). No Bob Services,
-# Restart *, Logs, Skill books, Agent guide or per-product tray entries: those were duplicates of what the tray already does. The only
-# other link is the transient "Complete bobiverse service logon (<product>)" helper while a service still needs its password.
+# t794u / FR #787: Bobiverse folder holds "Start Systray" (bob) and "Start Jeeves Monitor" (jeeves, butler icon).
+# The only other link is the transient "Complete bobiverse service logon (<product>)" helper while a service still needs its password.
 function Get-BobiverseShortcutSpec {
     param(
         [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
@@ -906,18 +905,29 @@ function Get-BobiverseShortcutSpec {
         [string]$Icon = ''
     )
     $ico = if ($Icon) { "$Icon,0" } else { '' }
+    $butler = Join-Path $InstallRoot 'assets\jeeves-butler.ico'
+    if (-not (Test-Path -LiteralPath $butler)) {
+        $aiRoot = Split-Path -Parent $InstallRoot
+        $alt = Join-Path $aiRoot 'jeeves\assets\jeeves-butler.ico'
+        if (Test-Path -LiteralPath $alt) { $butler = $alt }
+    }
+    $butlerIco = if (Test-Path -LiteralPath $butler) { "$butler,0" } else { $ico }
     $ps = 'powershell.exe'
     $scr = Join-Path $InstallRoot 'scripts'
     $list = New-Object System.Collections.Generic.List[object]
-    function Add-Spec($name, $target, $cmdArgs, $wd, $desc) {
-        $list.Add([pscustomobject]@{ Name = $name; Target = $target; Arguments = $cmdArgs; WorkingDirectory = $wd; Description = $desc; Icon = $ico })
+    function Add-Spec($name, $target, $cmdArgs, $wd, $desc, $iconLoc = $ico) {
+        $list.Add([pscustomobject]@{ Name = $name; Target = $target; Arguments = $cmdArgs; WorkingDirectory = $wd; Description = $desc; Icon = $iconLoc })
     }
     if ($Product -eq 'bob' -and $IncludeTray) {
         $tray = Join-Path $scr 'Start-BobTray.ps1'
-        Add-Spec 'Start Systray' $ps "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew" $InstallRoot 'Start the Bobiverse systray (restarts the ircBob service)'
+        Add-Spec 'Start Systray' $ps "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew" $InstallRoot 'Start the Bobiverse systray (restarts the ircBob service)' $ico
+    }
+    if ($Product -eq 'jeeves') {
+        $mon = Join-Path $scr 'Start-JeevesMonitor.ps1'
+        Add-Spec 'Start Jeeves Monitor' $ps "-NoProfile -ExecutionPolicy Bypass -File `"$mon`" -InstallRoot `"$InstallRoot`"" $InstallRoot 'Start a NEW Jeeves MONITORING agent (never resume; CWD = Jeeves install)' $butlerIco
     }
     if ($NeedLogon) {
-        Add-Spec "Complete bobiverse service logon ($Product)" $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Complete-BobiverseServiceLogon.ps1')`" -Product $Product -InstallRoot `"$InstallRoot`"" $scr "Set the $Product service ObjectName password (required once after MSI)"
+        Add-Spec "Complete bobiverse service logon ($Product)" $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $scr 'Complete-BobiverseServiceLogon.ps1')`" -Product $Product -InstallRoot `"$InstallRoot`"" $scr "Set the $Product service ObjectName password (required once after MSI)" $ico
     }
     return $list.ToArray()
 }
@@ -986,7 +996,7 @@ function Remove-BobiverseStartMenuDuplicates {
         try { $cu = [Environment]::GetFolderPath('Programs'); if ($cu -and (Test-Path -LiteralPath $cu) -and -not $roots.Contains($cu)) { $roots.Add($cu) } } catch { }
         $ProgramsRoots = $roots.ToArray()
     }
-    $legacyTop = '^(Bob Systray.*|Bob Tray.*|Bobiverse Tray.*|Bobiverse.*|Bob Fleet.*|Restart ircBob|Restart ircJeeves|Restart Airc|Bob Services|Start Systray|Complete bobiverse service logon.*)\.lnk$'
+    $legacyTop = '^(Bob Systray.*|Bob Tray.*|Bobiverse Tray.*|Bobiverse.*|Bob Fleet.*|Restart ircBob|Restart ircJeeves|Restart Airc|Bob Services|Start Systray|Start Jeeves Monitor|Complete bobiverse service logon.*)\.lnk$'
     $legacyInKeep = '^(Bob Services|Bobiverse Tray|Bob Systray.*|Restart (ircBob|ircJeeves|Airc)|Jeeves command reference|Logs \(.+\)|Skill books \(.+\)|Agent guide \(.+\))\.lnk$'
     $removed = New-Object System.Collections.Generic.List[string]
     foreach ($root in $ProgramsRoots) {

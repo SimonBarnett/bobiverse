@@ -223,6 +223,18 @@ function Stage-Product([string]$Name) {
             Copy-Item -LiteralPath $from -Destination (Join-Path $toolsStage $tf) -Force
         }
         Write-Host "INFO jeeves staged tools\bob_git_hook.py + New-BobGitWebhook.ps1"
+        # FR #787: token-free MONITORING checks + butler Start Menu icon
+        $monSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\tools\monitor'
+        if (-not (Test-Path -LiteralPath $monSrc)) { throw 'jeeves pack requires jeeves\tools\monitor (FR #787)' }
+        $monDest = Join-Path $toolsStage 'monitor'
+        New-Item -ItemType Directory -Force -Path $monDest | Out-Null
+        Copy-Item -Path (Join-Path $monSrc '*') -Destination $monDest -Recurse -Force
+        Write-Host "INFO jeeves staged tools\monitor (FR #787)"
+        $butlerSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\assets\jeeves-butler.ico'
+        if (-not (Test-Path -LiteralPath $butlerSrc)) { throw 'jeeves pack requires jeeves\assets\jeeves-butler.ico (FR #787)' }
+        New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
+        Copy-Item -LiteralPath $butlerSrc -Destination (Join-Path $stage 'assets\jeeves-butler.ico') -Force
+        Write-Host "INFO jeeves staged assets\jeeves-butler.ico"
     }
     if ($Name -eq 'bob') {
         $wahSrc = Resolve-WatchAgentHealthSrc

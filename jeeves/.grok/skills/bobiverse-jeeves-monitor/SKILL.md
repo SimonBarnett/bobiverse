@@ -30,8 +30,17 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 |---|---|
 | Watch health, queue, seats, digest, webhooks | Act as chair (`!assign`, `!focus`, `!ignore`, queue edits) |
 | File / comment intake FRs (de-dup first) | Touch Ergo / `ircd.yaml` / BobIrcd |
-| Harvest at end of session | Print or commit secrets |
-| Point operators at `!status` / logs | Speak as Jeeves or claim shop jobs as a worker |
+| Harvest at end of session **and after every finding** (self-harvest) | Print or commit secrets |
+| Run token-free `Test-JeevesMonitor*.ps1` / `tools\monitor\` first | Speak as Jeeves or claim shop jobs as a worker |
+| Point operators at `!status` / logs | Soften exit-1 findings without filing |
+
+## Prefer token-free scripts (t865u)
+
+Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus` (Python under `tools\monitor\`). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
+
+## Self-harvest loop (t865u)
+
+After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest — do not keep private notes.
 
 ## Architecture (chair is deterministic)
 

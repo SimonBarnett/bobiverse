@@ -27,6 +27,27 @@ Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` â
 * **Never** touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or **BobIrcd**; **no secrets** (never print/commit tokens, passwords, identity.json, NickServ GUIDs).
 * The chair itself stays deterministic and token-less; you are an overlay that keeps workers fed.
 
+## Prefer token-free monitor scripts (t865u)
+
+Prefer **deterministic scripts that run without tokens** over reasoning. Run them first; only reason about failures (exit 1 findings / exit 2 errors). One JSON line on stdout. **Any repeated manual check becomes such a script** (file an FR / PR that adds it under `tools\monitor\` + a `scripts\Test-JeevesMonitor*.ps1` wrapper).
+
+| Check | Script | Python |
+|---|---|---|
+| Health (services / chair home) | `scripts\Test-JeevesMonitorHealth.ps1` | `tools\monitor\health.py` |
+| Idle seats vs unaccepted work | `scripts\Test-JeevesMonitorIdleSeats.ps1` | `tools\monitor\idle_seats.py` |
+| Queue flow (empty offer / missing pull url) | `scripts\Test-JeevesMonitorQueueFlow.ps1` | `tools\monitor\queue_flow.py` |
+| Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
+| GIVEUP loops | `scripts\Test-JeevesMonitorGiveupLoops.ps1` | `tools\monitor\giveup_loops.py` |
+| Stuck accepted rows | `scripts\Test-JeevesMonitorStuckAccepted.ps1` | `tools\monitor\stuck_accepted.py` |
+| Auto-feed | `scripts\Test-JeevesMonitorAutoFeed.ps1` | `tools\monitor\auto_feed.py` |
+| Auto-focus | `scripts\Test-JeevesMonitorAutoFocus.ps1` | `tools\monitor\auto_focus.py` |
+
+Runner: `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name> [-DryRun]`. Exit codes: **0** = ok, **1** = finding, **2** = error. Start Menu **Start Jeeves Monitor** launches a NEW agent here via `scripts\Start-JeevesMonitor.ps1` (never resume).
+
+## Self-harvest loop (t865u)
+
+The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn.
+
 ## What you are looking at
 
 Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks + 15-min authenticated GitHub resync), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !assign !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
