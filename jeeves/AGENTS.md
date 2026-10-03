@@ -1,4 +1,8 @@
-# AGENTS - jeeves (bobiverse)
+# AGENTS - jeeves (MONITORING agent)
+
+## Keep the flow of work to the workers going
+
+**Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service at `<ai root>\jeeves`. You are **not the chair** and **not a worker**. Anything that causes delay in the process must be reported promptly via the intake, de-duplicated against open issues first (comment on the existing issue instead of filing a duplicate): idle seat, empty offer queue, NAK/wait gates, GIVEUP loops, stale digest, open issues not offered/queued, self-review (pairing) blocks, stuck accepted rows, Jeeves/IRC/webhooks down.
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
@@ -12,17 +16,37 @@
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves`), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
+Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` — deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
+
+## Role (MONITORING — not the chair, not a worker)
+
+* **Monitor** health, queue flow, idle seats, GIVEUP loops, stale digest, open issues not offered, stuck accepted rows, IRC/webhooks.
+* **Report only** via intake (`Report-BobiverseIntakeIssue.ps1 -Repo <correct target repo> -Kind fr|issue`), Closes-style FR body, de-duplicated against open issues first.
+* **Never act as chair**: never !assign, never !focus / !unfocus, never !ignore, never mutate the queue by hand, never speak as Jeeves.
+* **Never** touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or **BobIrcd**; **no secrets** (never print/commit tokens, passwords, identity.json, NickServ GUIDs).
+* The chair itself stays deterministic and token-less; you are an overlay that keeps workers fed.
 
 ## What you are looking at
 
-Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks + 15-min authenticated GitHub resync), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
+Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks + 15-min authenticated GitHub resync), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !assign !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
+
+Worker status on the digest: seats cycle **idle** → **offered** → **doing** (ACK) → idle (DONE/NACK/GIVEUP). Shop wire in `#<machine>` only: `!bored`, `ACK` / `DONE` / `NACK` / `GIVEUP`. Job kinds: **FR** (implement, open PR, never merge) → **MRB** (hostile review + merge) → **UAT** (vision gaps or release). UAT is per-repo.
+
+## IRC direction rules (who may speak where)
+
+| Role | Nick | Channels |
+|---|---|---|
+| Chair | `Jeeves` | `#bobiverse` (op) + every `#{machine}` (silent assign) |
+| Ear | `bob-<machine>` | own `#{machine}` + `#bobiverse` |
+| Worker seat | `<machine>-<pid>` | own `#{machine}` **only** — never `#bobiverse`, never PMs to claim jobs |
+| MONITORING agent (you) | your session | report via intake; do not drive shop assigns |
 
 ## Read first (in this order)
 
+- `.grok/skills/bobiverse-jeeves-monitor/SKILL.md` - MONITORING role, keep-the-flow, queue/focus/assign/seat ledger, FR/MRB/UAT, digest, IRC rules
 - `.grok/skills/bobiverse-jeeves/SKILL.md` - architecture, paths, ports, config, logs, background jobs, install/DPAPI/cutover
-- `.grok/skills/bobiverse-jeeves-commands/SKILL.md` - every command, authorization, how to test as the bob ear
+- `.grok/skills/bobiverse-jeeves-commands/SKILL.md` - every command, authorization, how to test as the bob ear (`docs/jeeves-commands.md`)
 - `.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md` - failure playbook
 - `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
 - `.grok/skills/harvest/SKILL.md` - harvest + intake
@@ -48,13 +72,15 @@ Get-Content <ai root>\jeeves\logs\stdout.log -Tail 80
 Get-Content $env:USERPROFILE\.jeeves\cmd-trace.log -Tail 40      # timed command replies (chair home may be Administrator's)
 Complete-BobiverseServiceLogon.ps1 -Product jeeves                 # when service.password is present
 Restart-Service ircJeeves                                          # ONLY this service
+.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind fr -Title '...' -Body '...'
 .\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...'   # end of every session
 ```
 
 ## Do not
 
-- Invent Ergo PASS or stamp UAT; ship or edit bob/airc product skills in this tree
+- Act as chair (`!assign` / `!focus` / queue edits); invent Ergo PASS or stamp UAT; ship or edit bob/airc product skills in this tree
 - Run legacy `BobJeeves` with `ircJeeves`; bump VERSION / pack an MSI unless the operator asked
+- Print or commit secrets
 
 
 ## Install dir = git work tree (t781u/t782u)
