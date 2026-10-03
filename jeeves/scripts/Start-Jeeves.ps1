@@ -78,28 +78,63 @@ if (Test-Path -LiteralPath $watchIrcd) {
 }
 
 # Ensure bobcallback listens on 127.0.0.1:7700 (digest + intake + jira).
+# FR #1014: ARR on irc.ntsa.uk returns IIS 502.3 when nothing listens on :7700.
 function Test-BobCallbackListening {
     try {
-        $conns = Get-NetTCPConnection -LocalPort 7700 -State Listen -ErrorAction SilentlyContinue
+        $conns = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 7700 -State Listen -ErrorAction SilentlyContinue
         return [bool]$conns
     } catch {
         return $false
     }
 }
+function Wait-BobCallbackListening {
+    param([int]$TimeoutSec = 20)
+    $deadline = [datetime]::UtcNow.AddSeconds([math]::Max(1, $TimeoutSec))
+    while ([datetime]::UtcNow -lt $deadline) {
+        if (Test-BobCallbackListening) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return (Test-BobCallbackListening)
+}
 $callback = Join-Path $scriptDir 'bobcallback.py'
 if ((Test-Path -LiteralPath $callback) -and -not (Test-BobCallbackListening)) {
     Write-Host 'INFO starting bobcallback on 127.0.0.1:7700'
-    $cbArgs = @(
-        '-u', $callback,
-        '--home', $env:BOB_DIGEST_HOME,
-        '--bind', '127.0.0.1',
-        '--port', '7700'
-    )
-    try {
-        Start-Process -FilePath $Python -ArgumentList $cbArgs -WorkingDirectory $scriptDir -WindowStyle Hidden | Out-Null
-        Start-Sleep -Seconds 2
-    } catch {
-        Write-Host "WARN bobcallback start failed: $($_.Exception.Message)"
+    $started = $false
+    # Prefer the durable scheduled task when present (survives service recycle better than a naked Start-Process).
+    $cbTask = Get-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
+    if ($cbTask) {
+        try {
+            if ($cbTask.State -eq 'Running') {
+                Stop-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 1
+            }
+            Start-ScheduledTask -TaskName 'BobCallback'
+            $started = $true
+            Write-Host 'INFO bobcallback via scheduled task BobCallback'
+        } catch {
+            Write-Host "WARN BobCallback task start failed: $($_.Exception.Message)"
+        }
+    }
+    if (-not $started) {
+        $cbArgs = @(
+            '-u', $callback,
+            '--home', $env:BOB_DIGEST_HOME,
+            '--bind', '127.0.0.1',
+            '--port', '7700'
+        )
+        try {
+            Start-Process -FilePath $Python -ArgumentList $cbArgs -WorkingDirectory $scriptDir -WindowStyle Hidden | Out-Null
+            $started = $true
+        } catch {
+            Write-Host "WARN bobcallback start failed: $($_.Exception.Message)"
+        }
+    }
+    if ($started) {
+        if (Wait-BobCallbackListening -TimeoutSec 20) {
+            Write-Host 'INFO bobcallback listening on 127.0.0.1:7700'
+        } else {
+            Write-Host 'WARN bobcallback not listening on 127.0.0.1:7700 after start (ARR intake will 502.3)'
+        }
     }
 }
 
