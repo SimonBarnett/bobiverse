@@ -24,10 +24,12 @@ Duplicates were **closed** (never deleted) with a comment pointing at the canoni
 | UAT author_seat / self-UAT | [#265](https://github.com/SimonBarnett/bobiverse/issues/265) | Also covers MRB-seat self-UAT |
 | Self-MRB to implementer seat | [#593](https://github.com/SimonBarnett/bobiverse/issues/593) | |
 | require_machine for WP0 live (ce-priority-dev1) | [#587](https://github.com/SimonBarnett/bobiverse/issues/587) | |
-| Harden MRB/FR routing (fake pull + verdict skip) | [#595](https://github.com/SimonBarnett/bobiverse/issues/595) | |
+| Harden MRB/FR routing (fake pull + verdict skip) | [#595](https://github.com/SimonBarnett/bobiverse/issues/595) | Implementer PR [#603](https://github.com/SimonBarnett/bobiverse/pull/603) (open) |
 | Install flat scripts lag after ff | [#269](https://github.com/SimonBarnett/bobiverse/issues/269) | |
 | Intake allow-list agentic_fomprep | [#285](https://github.com/SimonBarnett/bobiverse/issues/285) | |
 | Re-queue MRB on already-merged MRB-fix | [#224](https://github.com/SimonBarnett/bobiverse/issues/224) | |
+| UAT #271 live ionos compose/recycle | [#610](https://github.com/SimonBarnett/bobiverse/issues/610) | Post-snapshot; related [#269](https://github.com/SimonBarnett/bobiverse/issues/269) [#298](https://github.com/SimonBarnett/bobiverse/issues/298) |
+| Intake webhook 400 on gap filing | [#611](https://github.com/SimonBarnett/bobiverse/issues/611) | Post-snapshot |
 
 ## Already fixed (closed as done / duplicate during #602)
 
