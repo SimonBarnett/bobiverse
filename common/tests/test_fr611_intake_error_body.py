@@ -90,3 +90,14 @@ def test_harvest_flush_documents_permanent_400_drop():
         "GetBytes",
     ):
         assert needle in text, needle
+
+
+def test_intake_py_is_ascii_or_bom():
+    """MRB #626: intake.py must stay WinPS-safe (ASCII or UTF-8 BOM)."""
+    from pathlib import Path
+    from repo_layout import ROOT
+
+    raw = (ROOT / "scripts" / "intake.py").read_bytes()
+    non_ascii = any(b > 127 for b in raw)
+    assert (not non_ascii) or raw.startswith(b"\xef\xbb\xbf")
+    assert b"\xe2\x80\xa6" not in raw  # U+2026

@@ -161,7 +161,7 @@ def validate_payload(
     cfg: IntakeConfig | None = None,
     keyed: bool = False,
 ) -> tuple[str | None, dict[str, Any]]:
-    """Return (error, normalized). error set → 4xx."""
+    """Return (error, normalized). error set -> 4xx."""
     cfg = cfg or IntakeConfig()
     if not isinstance(payload, dict):
         return "malformed", {}
@@ -279,7 +279,7 @@ def outbox_drop_reason(
 
     Returns a short reason, or None when Flush should keep/retry the file (transient errors).
     Permanent rejects: missing/bad repo, allow-list, HTTP 403, and HTTP 400 validation errors
-    (``bad_title``, ``bad_kind``, ``payload_too_large``, …).
+    (``bad_title``, ``bad_kind``, ``payload_too_large``, ...).
     """
     allow = DEFAULT_ALLOW_REPOS if allow_repos is None else allow_repos
     err = (error or "").strip().lower()
@@ -341,7 +341,7 @@ def _provenance_footer(norm: dict, intake_id: str, *, quarantine: bool) -> str:
         f"book=`{src.get('skill_book') or '-'}` ver=`{src.get('version') or '-'}`_",
     ]
     if quarantine:
-        bits.append("_quarantine: unkeyed source — triage before FR queue_")
+        bits.append("_quarantine: unkeyed source - triage before FR queue_")
     if norm.get("contact_public") and norm.get("contact"):
         bits.append(f"_contact: {_redact(str(norm['contact']))}_")
     return "\n".join(bits)
@@ -608,7 +608,7 @@ def drain_intake_outbox(
 
 
 def harvest_should_use_intake(*, gh_available: bool, gh_authenticated: bool) -> bool:
-    """Route order: gh auth → gh; else intake (FR #26)."""
+    """Route order: gh auth -> gh; else intake (FR #26)."""
     if gh_available and gh_authenticated:
         return False
     return True
