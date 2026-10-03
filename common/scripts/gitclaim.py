@@ -789,6 +789,45 @@ def _remove_unaccepted_tasks(doc: dict, repo: str, ident: str, tasks: set[str]) 
     return before - len(doc["unaccepted"])
 
 
+def fr_implementer_seat_from_doc(doc: dict, repo: str, refs) -> str:
+    """FR #593 / #227: seat nick that implemented linked FR(s), if known.
+
+    Looks at accepted/done FR rows matching ``repo`` + ``refs`` (``#N``), then
+    unaccepted FR rows (rare). Used when a PR-opened webhook creates an MRB
+    without going through DONE FR (which already stamps author_seat).
+    """
+    ref_set = set()
+    if isinstance(refs, str):
+        refs = [refs]
+    for r in refs or ():
+        s = str(r or "").strip()
+        if not s:
+            continue
+        if not s.startswith("#"):
+            s = f"#{s.lstrip('#')}"
+        ref_set.add(s)
+    if not ref_set or not repo:
+        return ""
+    for bucket in ("accepted", "done", "unaccepted"):
+        for row in doc.get(bucket) or []:
+            if str(row.get("repo") or "") != repo:
+                continue
+            if str(row.get("task") or "").upper() != "FR":
+                continue
+            if str(row.get("id") or "") not in ref_set:
+                continue
+            nick = str(
+                row.get("nick")
+                or row.get("done_by")
+                or row.get("implementer_seat")
+                or row.get("author_seat")
+                or ""
+            ).strip()
+            if nick and bobreport.parse_seat_nick(nick):
+                return canonical_worker_nick(nick) or nick
+    return ""
+
+
 def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
     if claim.task == "FR" and issue_skip_fr_reason(
         title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
@@ -890,11 +929,20 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
 
             elif ev == "pull_request" and action in ("opened", "ready_for_review", "edited"):
                 # Supersede linked FRs with this MRB
+                # FR #593: stamp author_seat from FR implementer before dropping FR rows.
+                implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
                 for ref in claim.refs:
                     _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "UAT"})
-                extra = {}
+                extra: dict[str, str] = {}
                 if claim.refs:
                     extra["refs"] = ",".join(claim.refs)
+                # Real pull URL so MRB offerability never invents from a bare id (FR #595).
+                extra["url"] = (
+                    f"https://github.com/{claim.repo}/pull/{str(claim.id).lstrip('#')}"
+                )
+                if implementer:
+                    extra["author_seat"] = implementer
+                    extra["implementer_seat"] = implementer
                 changed = _append_unaccepted(doc, claim, **extra)
 
             elif ev == "pull_request" and action == "closed":
