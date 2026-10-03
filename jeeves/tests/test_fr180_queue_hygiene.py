@@ -57,9 +57,17 @@ def test_umbrella_label_skips_fr_enqueue():
 
 def test_apply_queue_skips_unassignable_and_stores_title(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    # FR #1080: needs-mrb1 is a skip label (vision gate), not enqueueable FR work.
+    assert (
+        gitclaim.claim_from_payload(
+            "issues",
+            _issue_payload(30, title="FR: ship it", labels=["feature-request", "needs-mrb1"]),
+        )
+        is None
+    )
     claim = gitclaim.claim_from_payload(
         "issues",
-        _issue_payload(30, title="FR: ship it", labels=["feature-request", "needs-mrb1"]),
+        _issue_payload(31, title="FR: ship it", labels=["feature-request"]),
     )
     assert claim is not None
     assert gitclaim.apply_queue_event(tmp_path, claim) == "added"
@@ -111,13 +119,12 @@ def test_giveup_sets_cooldown_and_offer_skips_until_expired(tmp_path, monkeypatc
     assert int(job.get("giveup_count") or 0) == 1
     assert not job.get("needs_human")
 
-    st2, offered = gitclaim.offer_focus_top(tmp_path, "marchhare-2", "#marchhare", now=t0 + 10)
-    assert st2 == "empty" and offered is None
+    # FR #1080 / #1122: cooldown is per giveup seat — other seats may take the row immediately.
+    st_giver, offered_giver = gitclaim.offer_focus_top(tmp_path, "marchhare-1", "#marchhare", now=t0 + 10)
+    assert st_giver == "empty" and offered_giver is None
 
-    st3, offered2 = gitclaim.offer_focus_top(
-        tmp_path, "marchhare-2", "#marchhare", now=t0 + gitclaim.GIVEUP_COOLDOWN_S + 5
-    )
-    assert st3 == "ok" and offered2["id"] == "#118"
+    st2, offered = gitclaim.offer_focus_top(tmp_path, "marchhare-2", "#marchhare", now=t0 + 10)
+    assert st2 == "ok" and offered["id"] == "#118"
 
 
 def test_second_giveup_marks_needs_human(tmp_path, monkeypatch):
