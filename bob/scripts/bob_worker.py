@@ -1044,9 +1044,24 @@ class IrcSeat:
             self._raw("CAP REQ :sasl")
         self._raw("NICK " + self.nick)
         self._raw(f"USER {self.nick} 0 * :bobiverse worker seat")
-        if not self.registered.wait(timeout):
+        deadline = time.monotonic() + float(timeout)
+        left = max(0.1, deadline - time.monotonic())
+        if not self.registered.wait(left):
             self.close()
             raise ConnectionError("IRC registration timed out")
+        if self.failed:
+            err = self.failed
+            self.close()
+            raise ConnectionError(err)
+        # FR #1002: register alone is not enough — seat must JOIN #<machine> before !bored.
+        left = max(0.1, deadline - time.monotonic())
+        if not self.joined.wait(left):
+            self.close()
+            raise ConnectionError("IRC JOIN timed out")
+        if self.failed:
+            err = self.failed
+            self.close()
+            raise ConnectionError(err)
 
     def connect_with_retries(
         self,
@@ -1200,9 +1215,18 @@ class IrcSeat:
             self._lost("server ERROR " + (params[-1][:80] if params else ""))
         elif cmd == "001":
             self.registered.set()
+            # FR #1002: JOIN shop immediately after welcome (was missing — nick online, zero channels).
+            self._raw("JOIN " + self.shop)
+            self.log("irc: JOIN " + self.shop)
+        elif cmd in ("403", "405", "471", "473", "474", "475", "476", "477"):
+            # JOIN / channel refuse numerics — unblock connect() waiters.
+            self.failed = f"IRC JOIN refused ({cmd})"
+            self.joined.set()
+            self.log(f"irc: JOIN refused ({cmd}) " + (params[-1][:80] if params else ""))
         elif cmd == "JOIN" and nick.lower() == self.nick.lower():
             if params and params[0].lower() == self.shop.lower():
                 self.joined.set()
+                self.log("irc: joined " + self.shop)
             else:
                 self.log("irc: forced join elsewhere, parting " + (params[0] if params else "?"))
                 if params:

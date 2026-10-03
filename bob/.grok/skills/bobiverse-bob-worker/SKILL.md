@@ -69,6 +69,9 @@ An unknown reading is "not available" (falls through), never "available". Readin
 
 ## IRC (owned by the exe, not by the agent)
 
+**FR #1002:** after numeric `001`, the seat must `JOIN #<machine>` and wait for the JOIN echo (`irc: JOIN` / `irc: joined` in worker.log) before `!bored`. A nick that is registered but has no WHOIS 319 channels is deaf to shop assigns.
+
+
 * Nick `<machine>-<pid>` (the exe's own pid, the talk-seat rule in `talk_seat_pid.py`); joins **only `#<machine>`**; speaks only there (FR #224: never PRIVMSG a nick or `#bobiverse`).
   Registration: TLS to `irc.ntsa.uk:6697` with the Ergo server PASS (found like the ear's: `home\ergo.password`, `config\ergo.password`, `BOB_IRC_PASSWORD`); SASL only if
   `BOB_IRC_SASL_USER`/`BOB_IRC_SASL_PASSWORD` are already in the environment. The seat does NOT use the ear's NickServ account.
