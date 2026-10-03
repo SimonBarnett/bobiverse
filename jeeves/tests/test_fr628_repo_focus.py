@@ -58,12 +58,12 @@ def test_repo_focus_admits_new_rows_in_strict_without_item_focus(_home):
     fi.handle_focus_cmd(_home, "1 o/a")
     assert _ids(_home) == [("FR", "#1")]
     # a brand-new MRB / UAT / FR arrives for o/a: offerable without any per-number focus
-    _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/a", "UAT", 3, 3), _row("o/a", "MRB", 4, 4), _row("o/b", "MRB", 5, 5)])
+    _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/a", "UAT", 3, 3, repo_uat=True), _row("o/a", "MRB", 4, 4), _row("o/b", "MRB", 5, 5)])
     assert _ids(_home) == [("MRB", "#4"), ("UAT", "#3"), ("FR", "#1")]
 
 
 def test_repo_focus_orders_repos_by_priority_then_entry_time(_home):
-    _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 4, 4)])
+    _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 4, 4, repo_uat=True)])
     fi.handle_focus_cmd(_home, "2 o/b")
     fi.handle_focus_cmd(_home, "1 o/a")
     fi.handle_focus_cmd(_home, "2 o/c")
@@ -79,8 +79,8 @@ def test_item_rank_beats_repo_order(_home):
 
 def test_stale_uat_and_skip_rows_not_admitted_by_repo_focus(_home):
     _queue(_home, [
-        _row("o/a", "UAT", 1, 1, age_s=3 * 86400),                     # old merge history
-        _row("o/a", "UAT", 2, 2, age_s=3600),
+        _row("o/a", "UAT", 1, 1),                                      # legacy per-PR UAT (t853u): never real work
+        _row("o/a", "UAT", 2, 2, repo_uat=True),                       # the single repo-level UAT
         _row("o/a", "FR", 3, 3, labels=["mrb-home"]),
         _row("o/a", "FR", 4, 4, labels=["needs-human"]),
         _row("o/a", "FR", 5, 5, needs_human=True),
@@ -268,3 +268,129 @@ def test_ledger_refresh_from_pr_commit_authors(_home):
     calls.clear()
     gitclaim.ledger_refresh_authors(_home, rows, fetch)
     assert calls == ["31"] or calls == ["7", "31"] or "12" not in calls    # cached keys are not re-fetched
+
+# ------------------------------------------------------------ t853u: UAT is per REPO
+def _gh(issues=(), open_prs=(), merged=(), repo="o/a"):
+    """fetch_json seam: open issues / open PRs / closed PRs for one repo."""
+    def get(url):
+        if f"/repos/{repo}/issues?" in url:
+            return list(issues)
+        if f"/repos/{repo}/pulls?state=open" in url:
+            return list(open_prs)
+        if f"/repos/{repo}/pulls?state=closed" in url:
+            return list(merged)
+        raise RuntimeError("404 " + url)
+    return get
+
+
+def _merged_pr(num, closes=None, age_s=600):
+    return {"number": num, "title": f"pr {num}", "body": f"Closes #{closes}" if closes else "", "merged_at": _now_iso(age_s)}
+
+
+def _uats(home):
+    return [r for r in gitclaim.load_unaccepted(home) if r["task"] == "UAT"]
+
+
+def test_merge_webhook_queues_no_per_pr_uat(_home):
+    gitclaim.apply_queue_event(_home, gitclaim.claim_from_payload("pull_request", {
+        "action": "closed", "repository": {"full_name": "o/a"},
+        "pull_request": {"number": 9, "title": "t", "body": "Closes #5", "merged": True, "html_url": "u"}}))
+    assert _uats(_home) == []
+
+
+def test_repo_uat_row_created_once_when_repo_is_clear(_home):
+    get = _gh(merged=[_merged_pr(10, closes=3), _merged_pr(11)])
+    res = gitclaim.resync_from_github(_home, ["o/a"], fetch_json=get)
+    assert res["ok"]
+    (u,) = _uats(_home)
+    assert (u["id"], u["repo"]) == ("#0", "o/a") and u["repo_uat"] is True
+    assert u["merged_prs"] == ["#10", "#11"] and "#3" in u["refs"]
+    assert u["url"] == "https://github.com/o/a"
+    assert gitclaim.format_assign_line("ionos-1", u) == "ionos-1: UAT o/a#0 https://github.com/o/a"
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=get)       # idempotent: still ONE row
+    assert len(_uats(_home)) == 1
+
+
+def test_open_issue_or_open_pr_holds_uat_back_but_excluded_issues_do_not(_home):
+    merged = [_merged_pr(10)]
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=_gh(issues=[{"number": 1, "title": "real work"}], merged=merged))
+    assert _uats(_home) == []
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=_gh(open_prs=[{"number": 12, "title": "x", "body": ""}], merged=merged))
+    assert _uats(_home) == []
+    excluded = [
+        {"number": 2, "title": "evergreen", "labels": [{"name": "mrb-home"}]},
+        {"number": 3, "title": "human only", "labels": [{"name": "needs-human"}]},
+        {"number": 4, "title": "harvest: skill notes"},
+        {"number": 5, "title": "a PR", "pull_request": {"url": "x"}},
+    ]
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=_gh(issues=excluded, merged=merged))
+    assert len(_uats(_home)) == 1
+
+
+def test_no_merges_this_cycle_no_uat_and_done_resets_the_cycle(_home):
+    import shop_listen
+
+    old = [_merged_pr(10, age_s=5 * 86400)]
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=_gh(merged=old))
+    assert _uats(_home) == []                                           # merged before the 48 h window: not this cycle
+    get = _gh(merged=[_merged_pr(10, age_s=3600)])
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=get)
+    assert len(_uats(_home)) == 1
+    gitclaim._write_queue(gitclaim.queue_path(_home), {"v": 1, "unaccepted": [], "accepted": [
+        {**_uats(_home)[0], "nick": "ionos-3", "channel": "#ionos"}]})
+    shop_listen.handle_shop_worker_line(_home, nick="ionos-3", channel="#ionos", body="DONE UAT o/a#0 PASS", post_fn=lambda p: 204)
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=get)         # same merge, new cycle has started
+    assert _uats(_home) == []
+
+
+def test_repo_uat_dropped_when_repo_stops_being_clear(_home):
+    merged = [_merged_pr(10)]
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=_gh(merged=merged))
+    assert len(_uats(_home)) == 1
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=_gh(issues=[{"number": 7, "title": "new bug"}], merged=merged))
+    assert _uats(_home) == []
+
+
+def test_legacy_per_pr_uat_rows_are_pruned(_home):
+    _queue(_home, [_row("o/a", "UAT", 269, 1), _row("o/a", "UAT", 611, 2), _row("o/a", "UAT", 0, 3, repo_uat=True), _row("o/a", "FR", 5, 4)])
+    gitclaim.prune_unassignable_queue(_home)
+    assert sorted((r["task"], r["id"]) for r in gitclaim.load_unaccepted(_home)) == [("FR", "#5"), ("UAT", "#0")]
+
+
+def _repo_uat_row(**kw):
+    r = _row("o/a", "UAT", 0, 1, repo_uat=True, merged_prs=["#10", "#11"], refs=["#10", "#11"], url="https://github.com/o/a")
+    r.update(kw)
+    return r
+
+
+def test_repo_uat_goes_to_a_seat_that_implemented_none_of_the_merged_prs(_home, monkeypatch):
+    gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#10"])
+    gitclaim.ledger_touch(_home, "ionos-12", "o/a", "MRB", ["o/a#10"])         # a reviewer may still run the UAT
+    monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {"ionos-11", "ionos-12", "ionos-13"})
+    _queue(_home, [_repo_uat_row()])
+    fi.handle_focus_cmd(_home, "1 o/a")
+    assert gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")[0] == "empty"
+    st, job = gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")
+    assert st == "ok" and (job["task"], job["id"]) == ("UAT", "#0")
+
+
+def test_repo_uat_fallback_when_every_live_seat_implemented_something(_home, monkeypatch):
+    gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#10"])
+    gitclaim.ledger_touch(_home, "ionos-12", "o/a", "FR", ["o/a#11"])
+    monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {"ionos-11", "ionos-12"})
+    _queue(_home, [_repo_uat_row()])
+    fi.handle_focus_cmd(_home, "1 o/a")
+    assert gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")[0] == "ok"
+    # ... but a seat that already gave the repo UAT up never gets it back
+    gitclaim.ledger_giveup(_home, "ionos-12", "o/a", "UAT", "#0")
+    assert gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")[0] == "empty"
+
+
+def test_repo_uat_pr_authors_are_not_smeared_across_merged_prs(_home):
+    row = _repo_uat_row()
+    gitclaim.ledger_refresh_authors(_home, [row], lambda repo, num: {"ionos-11"} if num == "10" else set())
+    led = gitclaim.ledger_load(_home)
+    assert led["touch"]["o/a#10"]["ionos-11"] == ["FR"]
+    assert "ionos-11" not in led["touch"].get("o/a#11", {})              # wrote PR 10 only
+    assert gitclaim.ledger_blocks(led, row, "ionos-11")
+    assert not gitclaim.ledger_blocks(led, _row("o/a", "MRB", 11, 2), "ionos-11")

@@ -912,19 +912,11 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                                 break
                         if mrb_src:
                             break
-                    extra = uat_block_extras_from_mrb_row(mrb_src) if mrb_src else {}
+                    # t853u: UAT is per REPO (one row once every issue is closed and every PR merged,
+                    # see resync_from_github); a merge never queues a per-PR / per-issue UAT any more.
+                    del mrb_src
                     for ref in claim.refs:
-                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB"})
-                        uat = GitClaim(
-                            repo=claim.repo,
-                            task="UAT",
-                            id=ref,
-                            event="issues",
-                            action="uat",
-                            line=claim.line,
-                            refs=(claim.id,),
-                        )
-                        _append_unaccepted(doc, uat, **extra)
+                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
                     changed = "updated"
                 else:
                     # closed without merge: restore FR for linked issues
@@ -1077,9 +1069,19 @@ def _coerce_row(row: dict) -> dict | None:
             out["giveup_count"] = int(row.get("giveup_count") or 0)
     except (TypeError, ValueError):
         pass
+    if row.get("repo_uat"):
+        out["repo_uat"] = True
+    if row.get("merged_prs"):
+        mp = row.get("merged_prs")
+        out["merged_prs"] = [str(x) for x in mp] if isinstance(mp, list) else [str(mp)]
     if row_needs_human(row):
         out["needs_human"] = True
     return out
+
+
+def is_repo_uat(row: dict) -> bool:
+    """t853u: UAT is per REPO. Only the single repo-level UAT row (``repo_uat``) is real work."""
+    return _canon_task(row) == "UAT" and bool(row.get("repo_uat"))
 
 
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
@@ -1648,7 +1650,7 @@ def offer_focus_top(
                 # FR #628: never hand out a row that is bound to GIVEUP for this seat.
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
                     continue
-                if ledger_blocks(ledger, cand, me):
+                if ledger_blocks(ledger, cand, me, live):
                     continue  # t852u: durable self-MRB/UAT + GIVEUP memory (survives GitHub resync)
                 if str(cand.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
@@ -1778,7 +1780,18 @@ def ledger_load(home: Path) -> dict:
         return _ledger_empty()
     doc.setdefault("touch", {})
     doc.setdefault("giveup", {})
+    doc.setdefault("uat_cycle", {})
     return doc
+
+
+def ledger_uat_cycle_done(home: Path, repo: str) -> None:
+    """A repo-level UAT finished: the next UAT cycle only counts PRs merged after now (t853u)."""
+    def _f(doc: dict) -> None:
+        doc.setdefault("uat_cycle", {})[(repo or "").strip().lower()] = _utc_now()
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        pass
 
 
 def _ledger_update(home: Path, fn) -> None:
@@ -1855,7 +1868,18 @@ def _row_link_keys(row: dict) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
-def ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
+def ledger_blocks(ledger: dict, row: dict, nick: str, live=None) -> str:
+    """See ``_ledger_blocks``. For the repo-level UAT (t853u) a seat that implemented any merged PR of the
+    cycle is skipped, unless EVERY live seat did (then nobody could ever run it, so anyone may)."""
+    why = _ledger_blocks(ledger, row, nick)
+    if why and is_repo_uat(row) and "implemented" in why and live:
+        seats = {s for s in live} | {nick}
+        if all(_ledger_blocks(ledger, row, s) for s in seats):
+            return ""
+    return why
+
+
+def _ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
     """Why this seat must not get this row ('' = ok), from the durable ledger.
 
     * a seat that gave up the row (or its linked PR/issue) in the same MRB/UAT/FR family never gets it again;
@@ -1869,14 +1893,17 @@ def ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
     keys = _row_link_keys(row)
     gu = ledger.get("giveup") or {}
     own = _lkey(str(row.get("repo") or ""), row.get("id"))
+    repo_level = is_repo_uat(row)
     for k in keys:
         tl = (gu.get(k) or {}).get(me) or []
         if k == own and tl:
             return f"{nick} already gave up {k}"
-        if task in ("MRB", "UAT") and any(x in ("MRB", "UAT") for x in tl):
+        if not repo_level and task in ("MRB", "UAT") and any(x in ("MRB", "UAT") for x in tl):
             return f"{nick} already gave up linked {k}"
     if task in ("MRB", "UAT"):
         bad = {"FR", "MRB"} if task == "UAT" else {"FR"}
+        if repo_level:
+            bad = {"FR"}          # t853u: only seats that implemented a merged PR of the cycle are excluded
         tc = ledger.get("touch") or {}
         for k in keys:
             roles = (tc.get(k) or {}).get(me) or []
@@ -1898,6 +1925,8 @@ def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, id
             refs = [x for x in re.split(r"[,\s]+", refs) if x]
         ledger_giveup(home, nick, repo, task_u, ident, refs)
         return
+    if verb_u == "DONE" and task_u == "UAT" and (job.get("repo_uat") or str(ident) == "#0"):
+        ledger_uat_cycle_done(home, repo)
     if verb_u in ("ACK", "DONE") and task_u in ("FR", "MRB"):
         ledger_touch(home, nick, repo, task_u, keys)
     if verb_u == "DONE" and task_u == "FR":
@@ -1969,7 +1998,8 @@ def ledger_refresh_authors(home: Path, rows, fetch, *, limit: int = 8, ttl_s: fl
             if k in fetched and now_f - float(fetched[k]) < ttl_s:
                 continue
             if all(k != t[0] for t in todo):
-                todo.append((k, repo, keys))
+                # repo-level UAT: a seat that wrote PR A must not look like the author of PR B
+                todo.append((k, repo, [k, keys[0]] if is_repo_uat(row) else keys))
     done = 0
     for k, repo, keys in todo[:limit]:
         num = k.rsplit("#", 1)[1]
@@ -2067,7 +2097,7 @@ def assign_row(
                 return "refused", f"row is pinned to another machine than {me}"
             if row_gave_up_by(cand, me):
                 return "refused", f"{me} already gave this row up"
-            why = ledger_blocks(ledger_load(home), cand, me)
+            why = ledger_blocks(ledger_load(home), cand, me, live)
             if why:
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
@@ -2176,6 +2206,8 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
                 if task == "MRB" and not mrb_row_offerable(row):
                     continue
+                if task == "UAT" and not row.get("repo_uat") and not row.get("offered_to"):
+                    continue  # t853u: no per-PR / per-issue UAT rows; only the single repo-level UAT
                 keep.append(row)
             doc["unaccepted"] = keep
             dropped = before - len(keep)
@@ -2224,6 +2256,9 @@ def resync_from_github(
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
     supersede_keys: set[str] = set()  # FR #254 owner/repo#N closed by open PR Closes
+    repo_clear: dict[str, bool] = {}   # t853u: no open non-excluded issue and no open PR
+    uat_plan: dict[str, tuple[list[str], list[str]]] = {}   # repo -> (merged PRs this cycle, issues they closed)
+    cycles = ledger_load(home).get("uat_cycle") or {}
     for repo in repos:
         if not REPO_RE.fullmatch(repo):
             continue
@@ -2240,6 +2275,35 @@ def resync_from_github(
             issues = []
         if not isinstance(prs, list):
             prs = []
+        # t853u: repo-level UAT gate. Excluded issues (needs-human, boards/mrb-home, harvest/skill records,
+        # CRITICAL spam, safe-to-close) never hold a repo back; every other open issue or any open PR does.
+        blocking = [
+            i for i in issues
+            if isinstance(i, dict) and not i.get("pull_request") and not issue_skip_fr_reason(
+                title=str(i.get("title") or ""), body=str(i.get("body") or ""),
+                labels=_label_names(i.get("labels")), state=str(i.get("state") or "open"))
+        ]
+        repo_clear[repo] = not blocking and not [p for p in prs if isinstance(p, dict)]
+        if repo_clear[repo]:
+            try:
+                closed_prs = getter(f"https://api.github.com/repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50")
+            except Exception:  # noqa: BLE001
+                closed_prs = None
+            since = _parse_iso_ts(str(cycles.get(repo.lower()) or "")) or (time.time() - UAT_MAX_AGE_S)
+            merged: list[str] = []
+            linked: list[str] = []
+            for pr in closed_prs if isinstance(closed_prs, list) else []:
+                if not isinstance(pr, dict) or not pr.get("merged_at") or not isinstance(pr.get("number"), int):
+                    continue
+                mts = _parse_iso_ts(str(pr.get("merged_at")))
+                if mts is None or mts <= since:
+                    continue
+                merged.append(f"#{pr['number']}")
+                for r in extract_closes_issue_ids(str(pr.get("title") or ""), str(pr.get("body") or ""), repo=repo):
+                    if r not in linked:
+                        linked.append(r)
+            if merged:
+                uat_plan[repo] = (merged, linked)
         closed_by_pr: set[str] = set()
         for pr in prs:
             if not isinstance(pr, dict):
@@ -2302,6 +2366,16 @@ def resync_from_github(
             before = len(doc["unaccepted"])
             keep = []
             for row in doc["unaccepted"]:
+                if str(row.get("task") or "").upper() == "UAT":
+                    if not row.get("repo_uat") and not row.get("offered_to"):
+                        continue  # t853u: legacy per-PR / per-issue UAT rows are gone
+                    if (
+                        row.get("repo_uat")
+                        and row.get("repo") in fetched_set
+                        and not repo_clear.get(str(row.get("repo")), True)
+                        and not row.get("offered_to")
+                    ):
+                        continue  # new issue / PR opened: the repo is no longer clear, UAT waits
                 if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
                     continue  # FR #180 local junk
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
@@ -2336,6 +2410,22 @@ def resync_from_github(
                 if any(_same(r, claim.repo, claim.task, claim.id) for r in doc["accepted"] + doc["unaccepted"]):
                     continue                      # already queued/claimed: keep its line, seq and offer fields
                 if _append_unaccepted(doc, claim) == "added":
+                    added += 1
+            for urepo, (merged, linked) in uat_plan.items():
+                if any(
+                    str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
+                    for r in doc["accepted"] + doc["unaccepted"]
+                ):
+                    continue                      # one repo UAT at a time
+                uat = GitClaim(repo=urepo, task="UAT", id="#0", event="repo", action="uat",
+                               line=f"UAT {urepo}: all issues closed, all PRs merged ({len(merged)} merged this cycle)",
+                               refs=tuple(merged) + tuple(x for x in linked if x not in merged))
+                if _append_unaccepted(doc, uat) == "added":
+                    for r in doc["unaccepted"]:
+                        if _same(r, urepo, "UAT", "#0"):
+                            r["repo_uat"] = True
+                            r["merged_prs"] = list(merged)
+                            r["url"] = f"https://github.com/{urepo}"
                     added += 1
 
             def sk(row: dict) -> tuple:
