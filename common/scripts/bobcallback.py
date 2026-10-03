@@ -17,8 +17,10 @@ chair is the only ChanServ client.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,8 +34,11 @@ GIT_WEBHOOK_PATH = "/bob/v1/git"
 INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
 DIGEST_PATH = "/bob/v1/digest"
+HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
 DIGEST_ALIAS = "/digest"
+HEALTH_WATCHDOG_ENV = "BOB_CALLBACK_HEALTH_S"
+DEFAULT_HEALTH_WATCHDOG_S = 30.0
 # Public readers (IIS / browsers / UAT): use reportUrl. Local bobcallback still answers DIGEST_*.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
@@ -115,6 +120,32 @@ def handle_digest_get(home: Path, briefer_nick: str = "") -> tuple[int, bytes]:
     body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
     return 200, body
 
+
+def handle_health_get(home: Path) -> tuple[int, bytes]:
+    """FR #1136: liveness + lock age + last digest write (local loopback / monitors)."""
+    bobreport.break_stale_digest_lock(home)
+    age = bobreport.digest_lock_age_s(home)
+    last = bobreport.last_digest_write_iso(home)
+    stale_limit = bobreport.digest_lock_stale_s()
+    lock_ok = age is None or age < stale_limit
+    writable = True
+    try:
+        dig = bobreport.digest_path(home)
+        dig.parent.mkdir(parents=True, exist_ok=True)
+        probe = dig.with_name(f".health-write-probe.{os.getpid()}")
+        probe.write_text("ok\n", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError:
+        writable = False
+    ok = bool(lock_ok and writable)
+    doc = {
+        "ok": ok,
+        "lock_age_s": age,
+        "lock_stale_s": stale_limit,
+        "last_digest_write": last,
+        "digest_writable": writable,
+    }
+    return (200 if ok else 503), json.dumps(doc, separators=(",", ":")).encode("utf-8")
 
 def _parse_json_body(body: bytes | str, *, scan_secret: bool = True) -> dict | None:
     """Parse JSON object. scan_secret=True rejects bodies that look like secrets (report path).
@@ -357,6 +388,11 @@ def handle_report_post(
     eid = str(env.get("id") or "")
     try:
         out = bobreport.apply_callback(home, payload, briefer_nick)
+    except bobreport.DigestLockBusy as exc:
+        print(f"INFO report reject 503 digest.lock busy err={exc}", flush=True)
+        if eid:
+            webhook_queue.mark_done(home, eid, result={"ok": False, "err": "digest_lock_busy"})
+        return 503, b'{"ok":false,"err":"digest_lock_busy"}'
     except Exception as exc:  # noqa: BLE001 — surface as 500 + failure intake
         _try_report_handler_failure(home, filer, route="report", err=str(exc))
         return 500, b""
@@ -497,6 +533,12 @@ def handle_request(
     """Pure request handler. No sockets, no secret, no ChanServ. Public GET digest; POST validated."""
     verb = (method or "").upper()
     route = (path or "").split("?", 1)[0]
+    # FR #1136: local health (lock age / digest writable); not the public IIS front-door.
+    if verb in ("GET", "HEAD") and route == HEALTH_PATH:
+        code, payload = handle_health_get(home)
+        if verb == "HEAD":
+            return code, b""
+        return code, payload
     # GET/HEAD digest: local paths include /digest aliases; public front-door is REPORT_PATH only (#149).
     if verb in ("GET", "HEAD") and route in DIGEST_GET_PATHS:
         code, payload = handle_digest_get(home, briefer_nick)
@@ -682,6 +724,44 @@ def make_handler(
     return _Handler
 
 
+def _health_watchdog_s() -> float:
+    try:
+        return max(5.0, float(os.environ.get(HEALTH_WATCHDOG_ENV) or DEFAULT_HEALTH_WATCHDOG_S))
+    except ValueError:
+        return DEFAULT_HEALTH_WATCHDOG_S
+
+
+def _start_health_watchdog(home: Path, host: str, port: int) -> None:
+    """FR #1136: periodic loopback /health; break stale lock on failure (self-heal)."""
+    import threading
+    import urllib.request
+
+    interval = _health_watchdog_s()
+
+    def _loop() -> None:
+        url = f"http://{host}:{port}{HEALTH_PATH}"
+        while True:
+            try:
+                time.sleep(interval)
+            except Exception:
+                return
+            try:
+                bobreport.break_stale_digest_lock(home)
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    raw = resp.read()
+                doc = json.loads(raw.decode("utf-8") or "{}")
+                if not doc.get("ok"):
+                    print(f"WARN health-watchdog not-ok body={raw[:200]!r}", flush=True)
+                    bobreport.break_stale_digest_lock(home)
+            except Exception as exc:  # noqa: BLE001 — heal and keep looping
+                print(f"WARN health-watchdog err={exc}; breaking digest.lock", flush=True)
+                with contextlib.suppress(Exception):
+                    bobreport.break_stale_digest_lock(home)
+
+    threading.Thread(target=_loop, name="bobcallback-health-watchdog", daemon=True).start()
+
+
 def serve(
     home: Path,
     host: str = "127.0.0.1",
@@ -715,9 +795,12 @@ def serve(
             use_filer = gh_filer.default_filer()
         except Exception:
             use_filer = None
+    # Heal before accept: empty/stale digest.lock must not wedge the first requests.
+    bobreport.break_stale_digest_lock(home)
     drain_pending(home, briefer_nick=briefer_nick, filer=use_filer)
     handler = make_handler(home, allow, briefer_nick, filer=use_filer)
     httpd = ThreadingHTTPServer((host, listen_port), handler)
+    _start_health_watchdog(home, host, listen_port)
     return httpd
 
 

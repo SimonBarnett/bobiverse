@@ -1049,14 +1049,181 @@ def _cleanup_stale_digest_tmp(path: Path, max_age_s: float | None = None) -> int
 _DIGEST_THREAD_LOCK = threading.RLock()
 _LOCK_STATE = threading.local()
 
+DIGEST_LOCK_STALE_ENV = "BOB_DIGEST_LOCK_STALE_S"
+DEFAULT_DIGEST_LOCK_STALE_S = 30.0
+DEFAULT_DIGEST_LOCK_TIMEOUT_S = 2.0
+
+
+class DigestLockBusy(Exception):
+    """digest.lock could not be acquired after break-and-retry (FR #1136). Map to HTTP 503."""
+
+
+def digest_lock_path(home: Path) -> Path:
+    return digest_path(home).with_name("digest.lock")
+
+
+def digest_lock_stale_s() -> float:
+    try:
+        return max(1.0, float(os.environ.get(DIGEST_LOCK_STALE_ENV) or DEFAULT_DIGEST_LOCK_STALE_S))
+    except ValueError:
+        return DEFAULT_DIGEST_LOCK_STALE_S
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            # SYNCHRONIZE — OpenProcess succeeds for live PIDs we can see; ACCESS_DENIED (5) often
+            # means the process exists but we lack rights.
+            h = ctypes.windll.kernel32.OpenProcess(0x00100000, 0, int(pid))
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return int(ctypes.windll.kernel32.GetLastError()) == 5
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _read_lock_meta(lock_path: Path) -> tuple[int | None, float | None, float]:
+    """Return (pid, stamped_ts, mtime_age_s). Missing file → (None, None, 0)."""
+    try:
+        st = lock_path.stat()
+    except OSError:
+        return None, None, 0.0
+    age = max(0.0, time.time() - float(st.st_mtime))
+    pid = None
+    stamped = None
+    try:
+        raw = lock_path.read_bytes()
+    except OSError:
+        return None, None, age
+    if not raw:
+        return None, None, age
+    try:
+        text = raw.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return None, None, age
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if lines and lines[0].isdigit():
+        pid = int(lines[0])
+    if len(lines) >= 2:
+        with contextlib.suppress(ValueError):
+            stamped = float(lines[1])
+    return pid, stamped, age
+
+
+def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict | None:
+    """Unlink ``digest.lock`` when empty, older than ``max_age_s``, or holder PID is dead (FR #1136).
+
+    Never breaks a fresh lock held by a live PID. Returns a small info dict when broken, else None.
+    Logs ``lock-broken age=... pid=...``.
+    """
+    lock_path = digest_lock_path(Path(home))
+    if not lock_path.exists():
+        return None
+    max_age = digest_lock_stale_s() if max_age_s is None else float(max_age_s)
+    pid, stamped, age = _read_lock_meta(lock_path)
+    size = 0
+    with contextlib.suppress(OSError):
+        size = lock_path.stat().st_size
+    reason = None
+    if size == 0:
+        reason = "empty"
+    elif age >= max_age:
+        reason = "stale"
+    elif pid is not None and not _pid_alive(pid):
+        reason = "dead-pid"
+    if reason is None:
+        return None
+    with contextlib.suppress(OSError):
+        lock_path.unlink()
+    info = {"age": round(age, 3), "pid": pid, "reason": reason, "stamped": stamped}
+    print(f"lock-broken age={info['age']} pid={pid} reason={reason}", flush=True)
+    return info
+
+
+def digest_lock_age_s(home: Path) -> float | None:
+    """Age in seconds of ``digest.lock`` mtime, or None if absent."""
+    lock_path = digest_lock_path(Path(home))
+    try:
+        return max(0.0, time.time() - lock_path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def last_digest_write_iso(home: Path) -> str:
+    path = digest_path(Path(home))
+    try:
+        ts = path.stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(ts, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _try_advisory_lock(fh, timeout_s: float) -> bool:
+    deadline = time.monotonic() + max(0.05, float(timeout_s))
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _write_lock_holder(fh) -> None:
+    payload = f"{os.getpid()}\n{time.time():.3f}\n".encode("utf-8")
+    with contextlib.suppress(OSError):
+        fh.seek(0)
+        fh.truncate(0)
+        fh.write(payload)
+        fh.flush()
+
+
+def _unlock_advisory(fh) -> None:
+    with contextlib.suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
 
 @contextlib.contextmanager
-def digest_lock(home: Path, timeout_s: float = 15.0):
-    """Serialise digest read-modify-write across threads AND processes (#51).
+def digest_lock(
+    home: Path,
+    timeout_s: float | None = None,
+    *,
+    raise_busy: bool = True,
+):
+    """Serialise digest read-modify-write across threads AND processes (#51 / FR #1136).
 
-    Re-entrant per thread. Cross-process part is an advisory lock on ``digest.lock``;
-    if it cannot be taken within ``timeout_s`` we proceed (never wedge the webhook) -
-    the unique-tmp + replace retry still keeps the file consistent.
+    Re-entrant per thread. Cross-process part is an advisory lock on ``digest.lock``.
+    Before waiting: break empty/stale/dead-PID locks. Bounded wait, then break-and-retry once;
+    still busy → ``DigestLockBusy`` (HTTP 503) when ``raise_busy`` else proceed unlocked.
     """
     depth = getattr(_LOCK_STATE, "depth", 0)
     if depth > 0:
@@ -1066,33 +1233,53 @@ def digest_lock(home: Path, timeout_s: float = 15.0):
         finally:
             _LOCK_STATE.depth -= 1
         return
-    with _DIGEST_THREAD_LOCK:
-        fh = None
-        locked = False
+
+    wait_s = DEFAULT_DIGEST_LOCK_TIMEOUT_S if timeout_s is None else float(timeout_s)
+    root = Path(home)
+    break_stale_digest_lock(root)
+
+    fh = None
+    locked = False
+    _DIGEST_THREAD_LOCK.acquire()
+    try:
         try:
-            lock_path = digest_path(home).with_name("digest.lock")
+            lock_path = digest_lock_path(root)
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             fh = open(lock_path, "a+b")
-            deadline = time.monotonic() + timeout_s
-            while True:
+            locked = _try_advisory_lock(fh, wait_s)
+            if not locked:
+                # Release thread lock while we break+retry so other requests are not serialized
+                # behind a full wait (the historic hang mode).
+                _DIGEST_THREAD_LOCK.release()
                 try:
-                    if os.name == "nt":
-                        import msvcrt
-
-                        fh.seek(0)
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-                    else:
-                        import fcntl
-
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    locked = True
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.02)
+                    with contextlib.suppress(OSError):
+                        fh.close()
+                    fh = None
+                    break_stale_digest_lock(root)
+                    time.sleep(0.05)
+                finally:
+                    _DIGEST_THREAD_LOCK.acquire()
+                lock_path = digest_lock_path(root)
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                fh = open(lock_path, "a+b")
+                locked = _try_advisory_lock(fh, wait_s)
+            if locked:
+                _write_lock_holder(fh)
+            elif raise_busy:
+                with contextlib.suppress(OSError):
+                    if fh is not None:
+                        fh.close()
+                fh = None
+                raise DigestLockBusy("digest.lock busy after break-and-retry")
+        except DigestLockBusy:
+            raise
         except OSError:
-            pass
+            with contextlib.suppress(OSError):
+                if fh is not None:
+                    fh.close()
+            fh = None
+            if raise_busy:
+                raise DigestLockBusy("digest.lock open/lock failed") from None
         _LOCK_STATE.depth = 1
         try:
             yield
@@ -1100,19 +1287,12 @@ def digest_lock(home: Path, timeout_s: float = 15.0):
             _LOCK_STATE.depth = 0
             if fh is not None:
                 if locked:
-                    with contextlib.suppress(OSError):
-                        if os.name == "nt":
-                            import msvcrt
-
-                            fh.seek(0)
-                            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-                        else:
-                            import fcntl
-
-                            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    _unlock_advisory(fh)
                 with contextlib.suppress(OSError):
                     fh.close()
-
+    finally:
+        with contextlib.suppress(RuntimeError):
+            _DIGEST_THREAD_LOCK.release()
 
 def _digest_locked(fn):
     """Decorator: run a ``fn(home, ...)`` digest mutator under :func:`digest_lock`."""
