@@ -120,3 +120,10 @@ def test_job_skills_mention_sparse_repo_layout():
         t = p.read_text(encoding="utf-8")
         assert "repo_layout" in t or "common/scripts" in t
         assert "963" in t or "sparse" in t.lower()
+
+def test_service_conftests_end_with_newline():
+    """MRB #965 hostile: */tests/conftest.py must end with a newline."""
+    for name in ("bob", "jeeves", "airc"):
+        p = REPO / name / "tests" / "conftest.py"
+        assert p.is_file()
+        assert p.read_bytes().endswith(b"\n"), name
