@@ -687,6 +687,11 @@ _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bqueue\.json\b.{0,80}\b(?:prune|on\s+ionos)\b"), "ionos"),
 )
 
+# Hard pins for known WP0 / machine-gated issues (FR #1093): survive empty title/body on stale rows.
+_REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
+    ("simonbarnett/agentic_fomprep", "#56"): "ce-priority-dev1",
+}
+
 
 def infer_require_machine(
     *,
@@ -694,6 +699,8 @@ def infer_require_machine(
     body: str = "",
     labels=(),
     line: str = "",
+    repo: str = "",
+    ident: str = "",
 ) -> str:
     """Return a fleet machine id the job must run on, or '' (FR #587).
 
@@ -704,6 +711,13 @@ def infer_require_machine(
     labs = labels or ()
     if isinstance(labs, str):
         labs = [labs]
+    repo_l = str(repo or "").strip().lower()
+    id_l = str(ident or "").strip()
+    if id_l and not id_l.startswith("#"):
+        id_l = f"#{id_l}"
+    pin = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l))
+    if pin:
+        return pin
     for lab in labs:
         s = str(lab or "").strip()
         m = _REQUIRE_MACHINE_LABEL_RE.match(s)
@@ -742,6 +756,8 @@ def row_require_machine(row: dict) -> str:
         body=str(row.get("body") or ""),
         labels=tuple(str(x) for x in labels),
         line=str(row.get("line") or ""),
+        repo=str(row.get("repo") or ""),
+        ident=str(row.get("id") or ""),
     )
 
 
@@ -1089,7 +1105,11 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     labels = list(claim.labels) if claim and claim.labels else (row.get("labels") or [])
     if isinstance(labels, str):
         labels = [labels]
-    req = infer_require_machine(title=title, body=body, labels=labels, line=line)
+    repo = str((claim.repo if claim else "") or row.get("repo") or "")
+    ident = str((claim.id if claim else "") or row.get("id") or "")
+    req = infer_require_machine(
+        title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
+    )
     if req:
         row["require_machine"] = req
 
@@ -2159,6 +2179,8 @@ def offer_focus_top(
                 cand_eff = enrich_uat_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live):
                     return None
+                # FR #1093: stamp WP0/issue pins before the machine gate (stale rows).
+                _stamp_require_machine(cand_eff)
                 if row_blocked_for_machine(cand_eff, me):
                     return None
                 return cand_eff
@@ -3066,6 +3088,18 @@ def resync_from_github(
                         for r in doc["unaccepted"]:
                             if _same(r, claim.repo, "MRB", claim.id) and not PULL_URL_RE.search(str(r.get("url") or "")):
                                 r["url"] = mrb_url
+                    # FR #1093: refresh title/body/labels and stamp require_machine on stale rows
+                    # (resync used to skip already-queued FRs, so WP0 pins never landed).
+                    for r in doc["unaccepted"]:
+                        if not _same(r, claim.repo, claim.task, claim.id):
+                            continue
+                        if claim.title:
+                            r["title"] = claim.title
+                        if claim.body:
+                            r["body"] = claim.body
+                        if claim.labels:
+                            r["labels"] = list(claim.labels)
+                        _stamp_require_machine(r, claim)
                     # Clear *stale* needs_human (keep-the-flow) but keep the intentional
                     # FR #180 gate after GIVEUP_NEEDS_HUMAN_COUNT giveups.
                     for r in doc["unaccepted"]:
