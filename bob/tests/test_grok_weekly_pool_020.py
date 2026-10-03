@@ -129,7 +129,10 @@ def test_digest_for_a_stale_grok_reading_carries_the_rolled_reset_and_no_fake_pe
     _billing_log(log, end)
     p = _post_with_log(tmp_path, log)
     assert p["machine"] == "marchhare"
-    assert "weekly" not in p                                              # not the old 8
+    # FR #976: unknown weekly is published as null + weekly_known:false (not the old 8;
+    # omit-null used to leave a stuck lesser-ratchet 0 on the chair).
+    assert p.get("weekly") in (None, "")
+    assert p.get("weekly_known") is False
     nxt = datetime.fromisoformat(p["period_end"].replace("Z", "+00:00"))
     assert nxt > now                                                      # a reset that is in the future
     home = tmp_path / "home"

@@ -2102,7 +2102,21 @@ function Build-BobDigestWebhookMergePayload {
     }
     # Report lastSeen only advances when the merge carries it (heartbeat).
     if ($Doc.lastSeen) { $payload.lastSeen = [string]$Doc.lastSeen }
-    if ($null -ne $Doc.weekly -and [string]$Doc.weekly -ne '') { $payload.weekly = [int]$Doc.weekly }
+    # FR #976: always publish weekly + weekly_known so the chair can clear a stuck 0
+    # when xAI weekly is unknown (omit-null used to leave the lesser-ratchet 0 forever).
+    $weeklyKnown = $false
+    if ($null -ne $Doc.weekly -and [string]$Doc.weekly -ne '') {
+        try {
+            $payload.weekly = [int]$Doc.weekly
+            $weeklyKnown = $true
+        } catch { }
+    } else {
+        $payload.weekly = $null
+    }
+    if ($null -ne $Doc.weekly_known -and [string]$Doc.weekly_known -ne '') {
+        try { $weeklyKnown = [bool]$Doc.weekly_known } catch { }
+    }
+    $payload.weekly_known = $weeklyKnown
     if ($Doc.cursor_label) { $payload.cursor_label = [string]$Doc.cursor_label }
     if ($Doc.cursor_period_end) { $payload.cursor_period_end = [string]$Doc.cursor_period_end }
     # #456: Sand / grok-chat weekly reset — distinct from Cursor billingCycleEnd.
@@ -2388,6 +2402,8 @@ function Write-BobIrcStatus {
         online                 = $true
         status                 = 'operational'
         weekly                 = $week
+        # FR #976: false when Get-BobWeeklyRemaining could not measure (clears stuck 0 on chair).
+        weekly_known           = ($null -ne $week)
         period_end             = $periodEnd
         cursor_label           = $cursorLabel
         cursor_period_end      = $cursorPeriodEnd
