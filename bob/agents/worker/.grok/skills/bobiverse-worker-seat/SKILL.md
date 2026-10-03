@@ -45,6 +45,16 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 * Work in `<ai root>\bob\worker` and in the repos you are told to work on. You are NOT the ear, the chair or a service: do not restart `ircBob`, `ircJeeves`, `Airc` or any IRC server, do not close other windows, do not kill processes you did not start.
 * Hotpatching a service is allowed only following `bobiverse-fleet-ops` (backup first, one service, no Ergo).
 
+## Job worktrees and disk space (FR #877)
+
+FR/MRB temp trees under `%TEMP%\bobiverse-*` fill `C:` until `git worktree add` fails (**No space left on device**). Before a new worktree, and after DONE:
+
+```powershell
+..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob -KeepPath <current-job-wt>
+```
+
+Prunes when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-MaxExtraJobTrees 0`. Details: `bobiverse-bob-job-fr`.
+
 ## If something breaks
 
 * The program restarts you as a NEW agent when you hang (no output for 300 s after input, or "not responding" for 90 s). You will not remember the previous session - re-read this skill and the task line you are given.
