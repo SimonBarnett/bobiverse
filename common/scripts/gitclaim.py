@@ -3040,11 +3040,16 @@ def resync_from_github(
                         for r in doc["unaccepted"]:
                             if _same(r, claim.repo, "MRB", claim.id) and not PULL_URL_RE.search(str(r.get("url") or "")):
                                 r["url"] = mrb_url
-                    # Clear stale needs_human so giveup-gated open issues can be offered again
-                    # to seats that are not in giveup_seats (keep-the-flow).
+                    # Clear *stale* needs_human (keep-the-flow) but keep the intentional
+                    # FR #180 gate after GIVEUP_NEEDS_HUMAN_COUNT giveups.
                     for r in doc["unaccepted"]:
-                        if _same(r, claim.repo, claim.task, claim.id) and r.get("needs_human"):
-                            r.pop("needs_human", None)
+                        if not _same(r, claim.repo, claim.task, claim.id):
+                            continue
+                        if not r.get("needs_human"):
+                            continue
+                        if int(r.get("giveup_count") or 0) >= GIVEUP_NEEDS_HUMAN_COUNT:
+                            continue
+                        r.pop("needs_human", None)
                     continue
                 if _append_unaccepted(doc, claim, **({"url": mrb_url} if mrb_url else {})) == "added":
                     added += 1
