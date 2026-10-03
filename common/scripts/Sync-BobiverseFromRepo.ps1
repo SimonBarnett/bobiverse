@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Fast-forward the install dir (a sparse git work tree of the bobiverse repo), then compose its flat runtime files.
@@ -11,8 +11,13 @@
      never blocks service start, falls back to the installed files)
   3) Robocopy scripts + third_party + skills + docs into InstallRoot (never deleting); copy VERSION
   Skips when BOBIVERSE_NO_UPDATE=1. Does not overwrite config\, home\, or secrets.
+  FR #269: flat scripts/ is always refreshed from the split-repo script dirs (no robocopy /XO on scripts).
+  Git checkout mtimes are often older than a previous flat compose, so /XO left scripts/gitclaim.py stale after ff.
+  Use -ComposeOnly after a manual git pull --ff-only to recompose without restarting the service.
+.PARAMETER ComposeOnly
+  Skip fetch/ff; only recompose flat runtime files from the current work tree / clone (FR #269 operator hook).
 .PARAMETER Product
-  jeeves | bob | airc — selects default InstallRoot <ai root>\<product>.
+  jeeves | bob | airc - selects default InstallRoot <ai root>\<product>.
 .PARAMETER InstallRoot
   Product install tree to refresh (MSI layout without its own .git).
 .PARAMETER Branch
@@ -26,7 +31,8 @@ param(
     [string]$Product = '',
     [string]$InstallRoot = '',
     [string]$Branch = 'main',
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$ComposeOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +75,23 @@ $pulled = $false
 $clone = $null
 $viaWorkTree = $false
 
+# FR #269: operator/UAT hook - recompose flat scripts from the current tree without service restart or fetch.
+if ($ComposeOnly) {
+    if (-not $Product) {
+        $leaf = (Split-Path -Leaf $InstallRoot).ToLowerInvariant()
+        if (@('bob', 'jeeves', 'airc') -contains $leaf) { $Product = $leaf }
+    }
+    $clone = $InstallRoot
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'common\scripts')) -and
+        -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'scripts'))) {
+        Write-Host "WARN compose-only missing scripts under $InstallRoot"
+        exit 1
+    }
+    $viaWorkTree = Test-Path -LiteralPath (Join-Path $InstallRoot '.git')
+    Write-Host "INFO compose-only install=$InstallRoot product=$Product"
+}
+
+if (-not $ComposeOnly) {
 # t781u/t782u source precedence:
 #   1. BOBIVERSE_REPO (explicit dev override): that clone is ff'd and copied into the install tree (legacy behaviour).
 #   2. the INSTALL DIR ITSELF as a sparse git work tree (<product>\ + common\ only): bootstrapped on first run, ff-only after.
@@ -134,6 +157,8 @@ if ($git -and -not $viaWorkTree) {
     }
 }
 
+}
+
 # t773u: the clone may be a split repo (common\ jeeves\ bob\ airc\) or an older flat one; the INSTALL tree is always flat.
 $verSrc = Get-BobiverseRepoPath -Root $clone -Rel 'src\VERSION'
 if (-not (Test-Path -LiteralPath $verSrc)) { $verSrc = Join-Path $clone 'VERSION' }
@@ -148,13 +173,20 @@ if ($DryRun) {
 foreach ($d in @('scripts', 'third_party')) {
     $t = Join-Path $InstallRoot $d
     foreach ($s in @(Get-BobiverseRepoDirs -Root $clone -Sub $d)) {
-        & robocopy.exe $s $t /E /XO /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+        # FR #269: never /XO on scripts - git checkout mtimes are often older than the flat copy from a
+        # previous compose, so /XO left scripts\gitclaim.py stale after ff-only.
+        if ($d -eq 'scripts') {
+            $roboArgs = @($s, $t, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+        } else {
+            $roboArgs = @($s, $t, '/E', '/XO', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np')
+        }
+        & robocopy.exe @roboArgs | Out-Null
         $rc = $LASTEXITCODE
         # robocopy 0-7 = success family
         if ($rc -ge 8) {
             Write-Host "WARN sync-robocopy $d exit=$rc"
         } else {
-            Write-Host "INFO sync-robocopy $d ok"
+            Write-Host ("INFO sync-robocopy {0} ok{1}" -f $d, $(if ($d -eq 'scripts') { ' (forced, no /XO)' } else { '' }))
         }
     }
 }
