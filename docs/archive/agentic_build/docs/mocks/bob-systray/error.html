@@ -1,0 +1,22 @@
+<!-- ARCHIVED COPY - source: SimonBarnett/agentic_build @ 12f8758, path docs/mocks/bob-systray/error.html, last changed 2026-09-27. Ported verbatim by bobiverse FR #794; the live equivalent is listed in docs/ARCHIVED_REPOS.md. Statements here may be stale (paths such as \ai\... pre-date bobiverse). -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bob Systray — Update failed</title>
+  <style>
+    body { font: 14px Segoe UI, sans-serif; background: #0d1117; color: #e6edf3; margin: 0; display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+    .dlg { background: #161b22; border: 1px solid #f85149; border-radius: 8px; padding: 20px 24px; width: 360px; }
+    .title { font-size: 15px; font-weight: 600; margin: 0 0 8px; color: #f85149; }
+    .msg { color: #e6edf3; margin: 0 0 8px; }
+    .hint { font-size: 12px; color: #8b949e; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="dlg" role="alertdialog" aria-label="Update failed">
+    <p class="title">Bob Systray — update failed</p>
+    <p class="msg">Git pull or install script failed. See Desktop\Watch-AgentHealth\tray-reinstall.log.</p>
+    <p class="hint">Tray may still start from the previous tree. Fix git/dirty tree, then Restart.</p>
+  </div>
+</body>
+</html>

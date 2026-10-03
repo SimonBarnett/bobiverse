@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "health",
+  "type": "object",
+  "required": ["ok", "grok_installed", "logged_in", "grok_version", "worker_count", "leader_up", "machine", "watcher_up", "last_seen"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "grok_installed": { "type": "boolean" },
+    "logged_in": { "type": "boolean" },
+    "grok_version": { "type": ["string", "null"] },
+    "worker_count": { "type": "integer", "minimum": 0 },
+    "leader_up": { "type": ["string", "null"] },
+    "machine": { "type": "string" },
+    "watcher_up": { "type": "boolean" },
+    "last_seen": { "type": ["string", "null"] },
+    "last_seen_age_sec": { "type": ["integer", "null"] }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "overlay",
+  "type": "object",
+  "required": ["workers"],
+  "properties": {
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sessionId", "title", "cwd", "kind", "profile", "createdAt"],
+        "properties": {
+          "sessionId": { "type": "string" },
+          "title": { "type": "string" },
+          "cwd": { "type": "string" },
+          "kind": { "type": "string", "enum": ["oneshot", "live", "grokbot", "fleet"] },
+          "profile": { "type": "string" },
+          "createdAt": { "type": "string" }
+        }
+      }
+    }
+  }
+}
