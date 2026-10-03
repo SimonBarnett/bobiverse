@@ -1017,6 +1017,43 @@ class IrcSeat:
         if not self.registered.wait(timeout):
             self.close()
             raise ConnectionError("IRC registration timed out")
+
+    def connect_with_retries(
+        self,
+        attempts: int = 3,
+        timeout: float = 45.0,
+        backoff_s: tuple = (2.0, 5.0, 10.0),
+    ) -> None:
+        """FR #955: retry IRC registration with backoff before giving up; log each failure."""
+        last: Optional[BaseException] = None
+        n = max(1, int(attempts))
+        for i in range(n):
+            try:
+                # Reset per-attempt state after a prior failed connect/close.
+                self.registered.clear()
+                self.joined.clear()
+                self.failed = None
+                self._lost_once = False
+                self._stop.clear()
+                self.connect(timeout=timeout)
+                if i > 0:
+                    self.log(f"IRC: connected on attempt {i + 1}/{n}")
+                return
+            except BaseException as e:
+                last = e
+                self.log(
+                    f"IRC: connect attempt {i + 1}/{n} failed ({type(e).__name__}: {str(e)[:120]})"
+                )
+                try:
+                    self.close()
+                except Exception:
+                    pass
+                if i + 1 >= n:
+                    break
+                delay = float(backoff_s[min(i, len(backoff_s) - 1)]) if backoff_s else 2.0
+                time.sleep(delay)
+        assert last is not None
+        raise last
         if self.failed:
             self.close()
             raise ConnectionError(self.failed)
@@ -1514,7 +1551,7 @@ class Supervisor:
                  log: Callable[[str], None], env_secret: Optional[SecretStr] = None, spawn: Callable = default_spawn,
                  kill: Callable[[int], bool] = kill_tree, probe: Callable[[int], Sample] = sample_tree,
                  inject: Callable[[int, str], bool] = inject_console, detector: Optional[HangDetector] = None,
-                 health_interval_s: float = 5.0, startup_grace_s: float = 6.0, clock: Callable[[], float] = time.monotonic,
+                 health_interval_s: float = 5.0, startup_grace_s: float = 60.0, clock: Callable[[], float] = time.monotonic,
                  backoff: tuple = RULE_BACKOFF_S, restart_max: int = RULE_RESTART_MAX, restart_window_s: float = RULE_RESTART_WINDOW_S,
                  base_env: Optional[dict] = None, bored: Optional["BoredEmitter"] = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
@@ -1536,6 +1573,7 @@ class Supervisor:
         self._owned: set = set()
         self._shutting = False
         self._grace_timer: Optional[threading.Timer] = None
+        self._agent_started_at: Optional[float] = None
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
         relay.on_inject = self._on_inject
         if irc and self.bored:
@@ -1576,7 +1614,13 @@ class Supervisor:
             self.proc = proc
             self._owned.add(proc.pid)
             self.sessions.append(spec.session_id)
+            self._agent_started_at = self.clock()
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            if self.startup_grace_s > 0:
+                self.log(
+                    f"agent: holding inject/!bored for startup_grace_s={self.startup_grace_s:.0f}s "
+                    f"(FR #955: wait for TUI boot before first assign)"
+                )
             self.detector.reset(self.clock())
             self.relay.set_target(None)
             self._arm_ready(proc)
@@ -1591,6 +1635,7 @@ class Supervisor:
             self.relay.set_target(lambda line, p=proc: self._inject_line(p, line))
             if self.bored:
                 self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
+            self.log(f"agent: ready (startup_grace_s={self.startup_grace_s:.0f}); inject + !bored enabled")
 
         if self.startup_grace_s <= 0:
             ready()
@@ -1613,9 +1658,23 @@ class Supervisor:
         with self._lock:
             expected = proc.pid in self._expected_exit
             current = self.proc is proc
+            started = getattr(self, "_agent_started_at", None)
         if expected or not current:
             return
-        self.log(f"agent: exited by itself code={code}; leaving (a closed agent ends the seat)")
+        # FR #955: when the TUI dies seconds after an early inject, log the cause.
+        age = (self.clock() - started) if started is not None else None
+        last = ""
+        try:
+            last = str(getattr(self.relay, "last_unacked", "") or "")
+        except Exception:
+            last = ""
+        if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
+            self.log(
+                f"agent: early exit code={code} after {age:.1f}s "
+                f"(startup_grace_s={self.startup_grace_s:.0f}); last_injected={last[:200]!r}"
+            )
+        else:
+            self.log(f"agent: exited by itself code={code}; leaving (a closed agent ends the seat)")
         self.shutdown("agent-exited", EXIT_OK)
 
     # ---- health
@@ -1954,11 +2013,29 @@ def run_agent(args, log: Log) -> int:
     relay = Relay(log, persist_dir=run_dir)
     irc.on_message = relay.deliver
     try:
-        irc.connect()
+        # FR #955: 2-3 registration attempts with backoff before fail-closed.
+        irc.connect_with_retries(attempts=3, timeout=45.0, backoff_s=(2.0, 5.0, 10.0))
     except Exception as e:
         log(f"worker: IRC connect failed ({type(e).__name__}: {str(e)[:100]}) - NOT starting an agent")
         return EXIT_IRC_FAIL
-    sup = Supervisor(kind=kind, exe=exe, cwd=str(folder), machine=machine, nick=nick, run_dir=run_dir, irc=irc, relay=relay, log=log, env_secret=secret)
+    grace = float(getattr(args, "startup_grace_s", 60.0) or 60.0)
+    if kind == "grok" and grace < 60.0:
+        # Grok TUI session.create often needs 30-60s on slower boxes (FR #955 ionos evidence).
+        grace = 60.0
+    log(f"worker: startup_grace_s={grace:.0f}")
+    sup = Supervisor(
+        kind=kind,
+        exe=exe,
+        cwd=str(folder),
+        machine=machine,
+        nick=nick,
+        run_dir=run_dir,
+        irc=irc,
+        relay=relay,
+        log=log,
+        env_secret=secret,
+        startup_grace_s=grace,
+    )
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
@@ -2059,7 +2136,19 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--no-tls", action="store_true", help="tests only")
     p.add_argument("--dry-run", action="store_true", help="print the agent selection as JSON and exit (starts nothing)")
     p.add_argument("--echo", action="store_true", help="also print the log to stdout")
+    p.add_argument(
+        "--startup-grace-s",
+        type=float,
+        default=None,
+        help="seconds to hold inject/!bored after agent spawn (FR #955; default 60, or BOB_WORKER_STARTUP_GRACE_S)",
+    )
     args = p.parse_args(argv)
+    if args.startup_grace_s is None:
+        env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()
+        try:
+            args.startup_grace_s = float(env_grace) if env_grace else 60.0
+        except ValueError:
+            args.startup_grace_s = 60.0
     log = Log(_state_root() / "logs" / f"bob-worker-{args.mode}.log", echo=args.echo)
     if args.dry_run:
         cc, ge = resolve_cursor_cmd(), resolve_grok_exe()
