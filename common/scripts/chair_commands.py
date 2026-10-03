@@ -64,7 +64,7 @@ COMMANDS: tuple = (
                 "!help list", "Replies by private message only. Bare !help is one line per visible command.",
                 ("list", "status")),
     CommandSpec("list", "!list [all|<repo>|fr|mrb|uat]", "queue by PM: one line per job (type in channel; reply is PM)",
-                ALL_ROLES, "!list SimonBarnett/gh-Jeeves",
+                ALL_ROLES, "!list SimonBarnett/bobiverse",
                 "In-channel or PM. !list all includes the whole queue; !list <repo> / fr / mrb / uat filter it.",
                 ("filter", "help", "status", "resync")),
     CommandSpec("filter", "!filter [all|<repo>|fr|mrb|uat]", "alias of !list with a filter (PM reply)", ALL_ROLES,
@@ -94,7 +94,7 @@ COMMANDS: tuple = (
                 "Bare !focus lists strict flag, items, repos (read is open). !focus strict on|off: when on, "
                 "!list and !bored only use focused work.", ("unfocus", "list")),
     CommandSpec("unfocus", "!unfocus {repo|owner/repo#N}|all", "remove repo/item focus or clear all (simon/ops)",
-                OPS_ROLES, "!unfocus SimonBarnett/gh-Jeeves#110", "Drops focus entries; !unfocus all clears all.",
+                OPS_ROLES, "!unfocus SimonBarnett/bobiverse#110", "Drops focus entries; !unfocus all clears all.",
                 ("focus", "list")),
     CommandSpec("assign", "!assign {worker-nick} {repo} {FR|MRB|UAT} {num}",
                 "Jeeves posts the normal assign line to one idle seat (simon/ops)", OPS_ROLES,

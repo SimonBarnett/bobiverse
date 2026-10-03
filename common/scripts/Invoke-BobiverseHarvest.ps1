@@ -66,12 +66,10 @@ function Get-IntakeErrorName {
 
 function Get-IntakeAllowRepos {
     # Mirror common/scripts/intake.py DEFAULT_ALLOW_REPOS (FR #139 pre-check before POST).
+    # FR #795: mirror intake.py live allow-list only (no archived superseded repos).
     $fallback = @(
         'SimonBarnett/bobiverse',
-        'SimonBarnett/gh-Jeeves',
-        'SimonBarnett/agentic_build',
         'SimonBarnett/skills-visionary',
-        'SimonBarnett/AgentMonitor',
         'SimonBarnett/agentic_fomprep'
     )
     $candidates = @(
