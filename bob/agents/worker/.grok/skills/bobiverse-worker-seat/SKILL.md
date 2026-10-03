@@ -45,15 +45,20 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 * Work in `<ai root>\bob\worker` and in the repos you are told to work on. You are NOT the ear, the chair or a service: do not restart `ircBob`, `ircJeeves`, `Airc` or any IRC server, do not close other windows, do not kill processes you did not start.
 * Hotpatching a service is allowed only following `bobiverse-fleet-ops` (backup first, one service, no Ergo).
 
-## Job worktrees and disk space (FR #877)
+## Disk headroom (FR #877 / #890)
 
-FR/MRB temp trees under `%TEMP%\bobiverse-*` fill `C:` until `git worktree add` fails (**No space left on device**). Before a new worktree, and after DONE:
+`git worktree add` fails with **No space left on device** when FreeGB is near 0. Before a new job tree / when FreeGB < 2:
 
 ```powershell
+# Linked FR/MRB trees (FR #877)
 ..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob -KeepPath <current-job-wt>
+
+# Non-worktree seat caches: ~/.grok/sessions|downloads, pip/npm, aged Temp (FR #890)
+..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId <this-session-guid> -IncludeAiBackups
 ```
 
-Prunes when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-MaxExtraJobTrees 0`. Details: `bobiverse-bob-job-fr`.
+Prunes job trees when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-MaxExtraJobTrees 0`. Seat-disk `-WhatIf` reports without deleting. Never delete Ergo, secrets, the install root, or the live session id. Details: `bobiverse-bob-job-fr`.
+
 
 ## If something breaks
 
