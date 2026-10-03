@@ -1853,6 +1853,10 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
             is_job = bool(_OUT_ACK_RX.match(payload) or _OUT_DONE_RX.match(payload) or _OUT_FREE_RX.match(payload))
             if ok:
                 n += 1
+                # FR #995: successful drains were silent in worker.log (looked stuck at last bored).
+                # Char-count form avoids echoing secrets; scrub a short preview for operators.
+                preview = _scrub(one_line(payload, 80))
+                log(f"outbox: sent PRIVMSG {target} ({len(payload)} chars): {preview}")
                 if on_payload:
                     try:
                         on_payload(text)  # ACK / DONE / NACK / GIVEUP drive busy-idle for !bored
