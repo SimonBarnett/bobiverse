@@ -590,6 +590,99 @@ def row_needs_human(row: dict) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes")
 
 
+# FR #587: machine-affinity for seats that cannot do the work (WP0 live / chair-outbox).
+_REQUIRE_MACHINE_LABEL_RE = re.compile(
+    r"(?i)^(?:needs|require[_-]?machine)[-_:=]([a-z0-9][a-z0-9_.-]*)$"
+)
+# Explicit cue → fleet machine id (normalized lowercase).
+_REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # agentic_fomprep WP0 live proof must run on DEV1
+    (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
+    (re.compile(r"(?i)\bce-priority-dev1\b"), "ce-priority-dev1"),
+    (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
+    (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
+    (re.compile(r"(?i)\bAllowedComputer\s*[:=]\s*CE-PRIORITY-DEV1\b"), "ce-priority-dev1"),
+    # chair-outbox / ionos-only FRs (same pattern as needs-ionos)
+    (re.compile(r"(?i)\bneeds-ionos\b"), "ionos"),
+    (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
+    (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
+)
+
+
+def infer_require_machine(
+    *,
+    title: str = "",
+    body: str = "",
+    labels=(),
+    line: str = "",
+) -> str:
+    """Return a fleet machine id the job must run on, or '' (FR #587).
+
+    Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
+    title/body/line cues (WP0 live → ce-priority-dev1, needs-ionos → ionos).
+    """
+    labs = labels or ()
+    if isinstance(labs, str):
+        labs = [labs]
+    for lab in labs:
+        s = str(lab or "").strip()
+        m = _REQUIRE_MACHINE_LABEL_RE.match(s)
+        if m:
+            mid = bobreport.normalize_machine_id(m.group(1)) or m.group(1).strip().lower()
+            if mid:
+                return mid
+        # bare needs-ionos style already covered by cue regex below via label join
+    blob = "\n".join(
+        [
+            str(title or ""),
+            str(body or ""),
+            str(line or ""),
+            " ".join(str(x) for x in labs),
+        ]
+    )
+    for rx, mid in _REQUIRE_MACHINE_CUES:
+        if rx.search(blob):
+            return mid
+    return ""
+
+
+def row_require_machine(row: dict) -> str:
+    """Machine id required for this queue row, if any (FR #587)."""
+    stamped = str(row.get("require_machine") or "").strip().lower()
+    if stamped:
+        return bobreport.normalize_machine_id(stamped) or stamped
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    return infer_require_machine(
+        title=str(row.get("title") or ""),
+        body=str(row.get("body") or ""),
+        labels=tuple(str(x) for x in labels),
+        line=str(row.get("line") or ""),
+    )
+
+
+def seat_matches_require_machine(nick: str, required: str) -> bool:
+    """True when nick's machine matches ``required`` (or required is empty)."""
+    req = (required or "").strip().lower()
+    if not req:
+        return True
+    req_mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(req) or req)
+    parsed = bobreport.parse_seat_nick(nick)
+    if not parsed:
+        return False
+    seat_mid = bobreport.fold_machine_id(parsed[0])
+    return bool(seat_mid) and seat_mid == req_mid
+
+
+def row_blocked_for_machine(row: dict, nick: str) -> bool:
+    """True when this seat must not be offered the row (FR #587 require_machine)."""
+    req = row_require_machine(row)
+    if not req:
+        return False
+    return not seat_matches_require_machine(nick, req)
+
+
 def parse_github_pull_url(url: str) -> tuple[str, str] | None:
     """Return (owner/repo, #N) for a GitHub pull URL, else None (FR #254)."""
     m = PULL_URL_RE.search(str(url or ""))
@@ -851,6 +944,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
                 for k, v in extra.items():
                     if v:
                         row[k] = v
+                _stamp_require_machine(row, claim)
                 return "duplicate"
         return "duplicate"
     seq = 1
@@ -884,8 +978,24 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
             row["refs"] = [x for x in v.split(",") if x]
         else:
             row[k] = v
+    _stamp_require_machine(row, claim)
     doc["unaccepted"].append(row)
     return "added"
+
+
+def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
+    """FR #587: persist require_machine on enqueue/refresh when cues match."""
+    if str(row.get("require_machine") or "").strip():
+        return
+    title = str((claim.title if claim else "") or row.get("title") or "")
+    body = str((claim.body if claim else "") or row.get("body") or "")
+    line = str((claim.line if claim else "") or row.get("line") or "")
+    labels = list(claim.labels) if claim and claim.labels else (row.get("labels") or [])
+    if isinstance(labels, str):
+        labels = [labels]
+    req = infer_require_machine(title=title, body=body, labels=labels, line=line)
+    if req:
+        row["require_machine"] = req
 
 
 def apply_queue_event(home: Path, claim: GitClaim) -> str:
@@ -1730,6 +1840,9 @@ def offer_focus_top(
                         continue
                 if review_blocked_for_author(cand, me, live):
                     continue
+                # FR #587: skip seats whose machine does not match require_machine.
+                if row_blocked_for_machine(cand, me):
+                    continue
                 pick = cand
                 break
             if pick is None:
@@ -1787,6 +1900,8 @@ def offer_top(
                 ):
                     continue  # FR #254
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
+                    continue
+                if row_blocked_for_machine(row, nick or ""):
                     continue
                 pick_i = i
                 break
