@@ -90,7 +90,7 @@ def test_evergreen_title_shape_title_only_not_body():
     )
 
 
-def test_assign_row_accepts_labeled_fr_with_mrb_home_mention(tmp_path, monkeypatch):
+def test_offer_focus_top_accepts_labeled_fr_with_mrb_home_mention(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
@@ -117,3 +117,59 @@ def test_assign_row_accepts_labeled_fr_with_mrb_home_mention(tmp_path, monkeypat
     st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-41928", "#marchhare")
     assert st == "ok"
     assert job["id"] == "#782"
+
+
+def test_assign_row_accepts_labeled_fr_with_mrb_home_mention(tmp_path, monkeypatch):
+    """FR #987 acceptance: manual !assign must not refuse label_text on labeled FRs."""
+    import registered_machines
+
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    registered_machines.save_registered(tmp_path, {"ionos", "marchhare"})
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#610",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "FR SimonBarnett/bobiverse#610",
+                    "title": "FR: seats idle while open issues mention evergreen boards",
+                    "body": "These boards are evergreen and must stay open.",
+                    "labels": ["feature-request", "via-intake"],
+                    "state": "open",
+                }
+            ],
+            "accepted": [],
+        },
+    )
+    st, job = gitclaim.assign_row(
+        tmp_path, "ionos-7", "SimonBarnett/bobiverse", "FR", "#610"
+    )
+    assert st == "ok", job
+    assert job["id"] == "#610"
+
+
+def test_labeled_fr_mentioning_evergreen_in_title_is_kept():
+    """Hostile: word evergreen in a labeled FR title must not trigger label_text."""
+    assert (
+        gitclaim.issue_skip_fr_reason(
+            title="FR: document evergreen board skip without hiding real work",
+            body="fix text scan",
+            labels=("feature-request",),
+        )
+        is None
+    )
+
+
+def test_skill_label_still_skips_even_when_title_mentions_mrb_home():
+    """Hostile: real skip labels remain authoritative when present."""
+    why = gitclaim.issue_skip_fr_reason(
+        title="harvest: note about mrb-home skip",
+        body="",
+        labels=("skill", "via-intake"),
+    )
+    assert why in ("label:skill", "harvest_title") or (why or "").startswith("label:")
