@@ -891,9 +891,11 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
             id=ident,
             event=ev,
             action=action,
-            line=src,
+            line=src or title,
             refs=refs,
             merged=merged,
+            title=title,
+            body=body,
         )
 
     # legacy allowlist map for anything else
@@ -1104,6 +1106,9 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
 
             elif ev == "pull_request" and action == "closed":
                 _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
+                # FR #848 / t853u: never leave a per-PR UAT row for this pull number
+                # (leftovers from pre-t853u or poisoned repo_uat + wrong id, e.g. UAT #835).
+                _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
                 if claim.merged:
                     # PASS path: UAT for each linked open issue (queue UAT rows).
                     # FR #227 / #265: carry MRB reviewer + FR implementer seats.
@@ -1124,6 +1129,9 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                     del mrb_src
                     for ref in claim.refs:
                         _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
+                    # FR #848: mrb-*-fix merges must also clear any UAT stamped with the PR title.
+                    if is_mrb_fix_pr_title(str(claim.title or claim.line or "")):
+                        _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "MRB", "FR", "PR"})
                     changed = "updated"
                 else:
                     # closed without merge: restore FR for linked issues
