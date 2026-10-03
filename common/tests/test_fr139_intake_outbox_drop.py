@@ -25,6 +25,44 @@ def test_outbox_drop_reason_rejects_disallowed_and_403():
     assert intake.outbox_drop_reason({"title": "t"}) == "missing_repo"
 
 
+def test_flush_drops_bad_title_without_post(tmp_path: Path):
+    outbox = tmp_path / "report-outbox"
+    outbox.mkdir()
+    stuck = {
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": "",
+        "body": "x",
+        "idempotency_key": "ps-fr611-bad-title-0001",
+    }
+    path = outbox / "report-ps-fr611-bad-ti.json"
+    path.write_text(json.dumps(stuck) + "\n", encoding="utf-8")
+    r = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(HARVEST),
+            "-Flush",
+            "-OutboxDir",
+            str(outbox),
+            "-NoDefaultOutboxes",
+            "-IntakeUrl",
+            "http://127.0.0.1:9/bob/v1/intake",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(tmp_path),
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DROPPED" in r.stdout
+    assert "bad_title" in r.stdout
+    assert not path.exists()
+
+
 def test_agentic_fomprep_is_on_default_allowlist_after_pr99():
     # PR #99 is included in the combined release, so this target is now allowed.
     assert "SimonBarnett/agentic_fomprep" in intake.DEFAULT_ALLOW_REPOS

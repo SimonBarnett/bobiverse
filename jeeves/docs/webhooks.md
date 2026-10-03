@@ -75,3 +75,8 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/jira" \
 ## Offline / resume
 
 When the handler is offline, webhook intakes should be cached and processed on resume (chair/cache policy — expand when listener lands).
+
+## Intake errors (FR #611)
+
+`POST /bob/v1/intake` returns JSON `{"error":"<code>"}` on 400/403. `Report-BobiverseIntakeIssue.ps1` surfaces that `error` in `intake_error` / `error` (not only `(400) Bad Request`). Permanent validation codes (`bad_title`, `bad_kind`, `payload_too_large`, …) are dropped on `Invoke-BobiverseHarvest -Flush` instead of retrying forever. Titles must be 1–200 characters.
+

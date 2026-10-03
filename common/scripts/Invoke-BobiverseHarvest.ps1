@@ -36,11 +36,32 @@ $ErrorActionPreference = 'Stop'
 $secretRx = '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:(password|passwd|secret|token|apikey|api_key)\s*[:=]\s*[A-Za-z0-9/+_.-]{8,}))'
 $home1 = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 if (-not $OutboxDir) { $OutboxDir = Join-Path $home1 '.grok\bob\harvest-outbox' }
-$headers = @{ 'Content-Type' = 'application/json' }
+$headers = @{ 'Content-Type' = 'application/json; charset=utf-8' }
 if ($env:BOB_INTAKE_KEY) { $headers['X-Bob-Intake-Key'] = [string]$env:BOB_INTAKE_KEY }
 
+# FR #611: permanent intake validation errors (mirror intake.PERMANENT_INTAKE_ERRORS).
+$script:PermanentIntakeErrors = @(
+    'malformed', 'bad_kind', 'missing_repo', 'bad_repo', 'repo_not_allowed',
+    'bad_title', 'bad_files', 'too_many_files', 'bad_file_path', 'file_too_large',
+    'payload_too_large', 'empty_harvest', 'bad_idempotency_key', 'unauthorized'
+)
+
 function Send-Payload([string]$Json) {
-    return Invoke-RestMethod -Method Post -Uri $IntakeUrl -Headers $headers -Body $Json -TimeoutSec $TimeoutSec
+    # Always UTF-8 bytes (WinPS string -Body can be UTF-16 on some hosts).
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Json)
+    return Invoke-RestMethod -Method Post -Uri $IntakeUrl -Headers $headers -Body $bytes -TimeoutSec $TimeoutSec
+}
+
+function Get-IntakeErrorName {
+    param($ErrorRecord)
+    $detail = ''
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $detail = [string]$ErrorRecord.ErrorDetails.Message
+    }
+    if ($detail -match '"error"\s*:\s*"([^"]+)"') {
+        return $Matches[1].ToLowerInvariant()
+    }
+    return ''
 }
 
 function Get-IntakeAllowRepos {
@@ -50,7 +71,8 @@ function Get-IntakeAllowRepos {
         'SimonBarnett/gh-Jeeves',
         'SimonBarnett/agentic_build',
         'SimonBarnett/skills-visionary',
-        'SimonBarnett/AgentMonitor'
+        'SimonBarnett/AgentMonitor',
+        'SimonBarnett/agentic_fomprep'
     )
     $candidates = @(
         (Join-Path $PSScriptRoot 'intake.py'),
@@ -87,6 +109,11 @@ function Get-IntakeHttpStatus {
         return 403
     }
     if ($ErrorRecord.Exception.Message -match '\(403\)') { return 403 }
+    if ($ErrorRecord.Exception.Message -match '\(400\)') { return 400 }
+    if ($ErrorRecord.Exception.Message -match '\(401\)') { return 401 }
+    if ($detail -match '"error"\s*:\s*"(bad_title|bad_kind|payload_too_large|malformed)"') {
+        return 400
+    }
     return $null
 }
 
@@ -144,6 +171,24 @@ if ($Flush) {
                 $dropped++
                 continue
             }
+            # FR #611: drop locally if title/kind already permanently invalid.
+            $title = ''
+            if ($payload.PSObject.Properties.Name -contains 'title') { $title = [string]$payload.title }
+            $kind = 'issue'
+            if ($payload.PSObject.Properties.Name -contains 'kind') {
+                $k = [string]$payload.kind
+                if ($k) { $kind = $k.ToLowerInvariant() }
+            }
+            if (-not $title.Trim() -or $title.Trim().Length -gt 200) {
+                Move-OutboxDropped -Path $f.FullName -Reason 'bad_title'
+                $dropped++
+                continue
+            }
+            if (@('issue', 'fr', 'skill', 'harvest') -notcontains $kind) {
+                Move-OutboxDropped -Path $f.FullName -Reason 'bad_kind'
+                $dropped++
+                continue
+            }
             try {
                 $r = Send-Payload $raw
                 Remove-Item -LiteralPath $f.FullName -Force
@@ -151,11 +196,27 @@ if ($Flush) {
                 Write-Host "SENT $($f.Name) intake_id=$($r.intake_id)"
             } catch {
                 $status = Get-IntakeHttpStatus -ErrorRecord $_
+                $intakeErr = Get-IntakeErrorName -ErrorRecord $_
                 $msg = [string]$_.Exception.Message
-                if ($status -eq 403 -or $msg -match 'repo_not_allowed') {
+                if ($intakeErr) { $msg = "HTTP $status intake error=$intakeErr ($msg)" }
+                $permanent = $false
+                if ($status -eq 403 -or $msg -match 'repo_not_allowed' -or $intakeErr -eq 'repo_not_allowed') {
                     Move-OutboxDropped -Path $f.FullName -Reason 'http_403_repo_not_allowed'
                     $dropped++
-                } else {
+                    $permanent = $true
+                }
+                elseif ($intakeErr -and ($script:PermanentIntakeErrors -contains $intakeErr)) {
+                    Move-OutboxDropped -Path $f.FullName -Reason ("http_{0}_{1}" -f $(if ($status) { $status } else { 400 }), $intakeErr)
+                    $dropped++
+                    $permanent = $true
+                }
+                elseif ($status -eq 400) {
+                    # FR #611: bare 400 without body still permanent (validation); do not retry forever.
+                    Move-OutboxDropped -Path $f.FullName -Reason 'http_400'
+                    $dropped++
+                    $permanent = $true
+                }
+                if (-not $permanent) {
                     $kept++
                     Write-Host "KEPT $($f.FullName): $msg"
                 }

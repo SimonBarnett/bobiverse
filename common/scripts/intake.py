@@ -231,6 +231,43 @@ def validate_payload(
     return None, norm
 
 
+# Validation / allow-list rejects that must never be retried from a local outbox (FR #139 / #611).
+PERMANENT_INTAKE_ERRORS = frozenset(
+    {
+        "malformed",
+        "bad_kind",
+        "missing_repo",
+        "bad_repo",
+        "repo_not_allowed",
+        "bad_title",
+        "bad_files",
+        "too_many_files",
+        "bad_file_path",
+        "file_too_large",
+        "payload_too_large",
+        "empty_harvest",
+        "bad_idempotency_key",
+        "unauthorized",
+    }
+)
+
+
+def parse_intake_error_body(text: str) -> str | None:
+    """Extract ``error`` from an intake JSON error body (FR #611)."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        doc = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        m = re.search(r'"error"\s*:\s*"([^"]+)"', raw)
+        return m.group(1).strip().lower() if m else None
+    if isinstance(doc, dict):
+        err = str(doc.get("error") or "").strip().lower()
+        return err or None
+    return None
+
+
 def outbox_drop_reason(
     payload: Any,
     *,
@@ -238,15 +275,28 @@ def outbox_drop_reason(
     http_status: int | None = None,
     error: str | None = None,
 ) -> str | None:
-    """FR #139: why a local report/harvest outbox JSON must be dropped (not retried forever).
+    """FR #139 / #611: why a local report/harvest outbox JSON must be dropped (not retried forever).
 
     Returns a short reason, or None when Flush should keep/retry the file (transient errors).
-    Permanent rejects: missing/bad repo, repo outside DEFAULT_ALLOW_REPOS, HTTP 403 / repo_not_allowed.
+    Permanent rejects: missing/bad repo, allow-list, HTTP 403, and HTTP 400 validation errors
+    (``bad_title``, ``bad_kind``, ``payload_too_large``, …).
     """
     allow = DEFAULT_ALLOW_REPOS if allow_repos is None else allow_repos
     err = (error or "").strip().lower()
-    if http_status == 403 or err == "repo_not_allowed":
+    if err in PERMANENT_INTAKE_ERRORS:
+        return err
+    if http_status == 403:
         return "repo_not_allowed"
+    if http_status == 401:
+        return "unauthorized"
+    if http_status == 400 and err:
+        # Unknown 400 string still permanent if it matches a known token in the message.
+        for token in PERMANENT_INTAKE_ERRORS:
+            if token in err:
+                return token
+        return "http_400"
+    if http_status == 400 and not err:
+        return "http_400"
     if not isinstance(payload, dict):
         return "malformed"
     repo = str(payload.get("repo") or "").strip()
@@ -256,6 +306,12 @@ def outbox_drop_reason(
         return "bad_repo"
     if repo not in allow:
         return "repo_not_allowed"
+    title = str(payload.get("title") or "").strip()
+    if not title or len(title) > 200:
+        return "bad_title"
+    kind = str(payload.get("kind") or "issue").strip().lower() or "issue"
+    if kind not in KINDS:
+        return "bad_kind"
     return None
 
 
