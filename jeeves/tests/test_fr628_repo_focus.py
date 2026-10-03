@@ -394,3 +394,21 @@ def test_repo_uat_pr_authors_are_not_smeared_across_merged_prs(_home):
     assert "ionos-11" not in led["touch"].get("o/a#11", {})              # wrote PR 10 only
     assert gitclaim.ledger_blocks(led, row, "ionos-11")
     assert not gitclaim.ledger_blocks(led, _row("o/a", "MRB", 11, 2), "ionos-11")
+
+def test_resync_made_mrb_rows_carry_a_real_pull_url_and_are_offerable(_home):
+    """t855u: resync-created MRB rows had no url, so mrb_row_offerable() hid EVERY open PR and seats sat idle."""
+    pr = {"number": 21, "title": "x", "body": "Closes #5"}
+    get = _gh(open_prs=[pr])
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=get)
+    (m,) = [r for r in gitclaim.load_unaccepted(_home) if r["task"] == "MRB"]
+    assert m["url"] == "https://github.com/o/a/pull/21" and gitclaim.mrb_row_offerable(m)
+    # a legacy url-less row is healed on the next resync
+    q = gitclaim.load_queue(_home)
+    for r in q["unaccepted"]:
+        r.pop("url", None)
+    gitclaim._write_queue(gitclaim.queue_path(_home), q)
+    assert not gitclaim.mrb_row_offerable(gitclaim.load_unaccepted(_home)[0])
+    gitclaim.resync_from_github(_home, ["o/a"], fetch_json=get)
+    fi.handle_focus_cmd(_home, "1 o/a")
+    st, job = gitclaim.offer_focus_top(_home, "ionos-9", "#ionos")
+    assert st == "ok" and (job["task"], job["id"]) == ("MRB", "#21")

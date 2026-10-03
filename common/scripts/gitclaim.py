@@ -2407,9 +2407,18 @@ def resync_from_github(
                     fetched_repos=fetched_set2,
                 ):
                     continue  # FR #254
+                mrb_url = (
+                    f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
+                )
                 if any(_same(r, claim.repo, claim.task, claim.id) for r in doc["accepted"] + doc["unaccepted"]):
-                    continue                      # already queued/claimed: keep its line, seq and offer fields
-                if _append_unaccepted(doc, claim) == "added":
+                    # already queued/claimed: keep its line, seq and offer fields; but an MRB row with no real pull
+                    # URL is never offerable (FR #595), so heal it (t855u: resync-made MRB rows were all unofferable)
+                    if mrb_url:
+                        for r in doc["unaccepted"]:
+                            if _same(r, claim.repo, "MRB", claim.id) and not PULL_URL_RE.search(str(r.get("url") or "")):
+                                r["url"] = mrb_url
+                    continue
+                if _append_unaccepted(doc, claim, **({"url": mrb_url} if mrb_url else {})) == "added":
                     added += 1
             for urepo, (merged, linked) in uat_plan.items():
                 if any(
