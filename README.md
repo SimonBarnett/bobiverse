@@ -14,7 +14,7 @@ The repo is split per service; each folder holds that service's scripts, skills,
 
 ```text
 jeeves/   scripts/ (Install-Jeeves, Start-Jeeves, Install-BobIrcd/Chair/Webhooks, Watch-*) .grok/skills/ AGENTS.md docs/ tools/ tests/
-bob/      scripts/ (Install-Bob, Start-Bob*, bob_worker.py, Build-BobWorker) .grok/skills/ AGENTS.md agents/{worker,plan}/ docs/
+bob/      scripts/ (Install-Bob, Start-Bob*, bob_worker.py, Build-BobWorker) .grok/skills/ AGENTS.md agents/{worker,plan} docs/
           tray/ (the systray: tools/ src/ assets/ config/ dialogs/ = bob-about + bob-status exes) agentwatcher/ (Watch-AgentHealth) tests/   (t829u: first-class bob sources; staged/installed trees stay flat)
 airc/     scripts/ (Install-Airc*, Start-AircConsole*, airc_console*.py) .grok/skills/ AGENTS.md docs/ packaging/Product.wxs tests/
 common/   scripts/ (Bobiverse-Common, Pack-BobiverseRelease, Fetch-*, Update/Sync/Check, the shared python engine: irc_agent.py wire.py ...)
@@ -101,5 +101,9 @@ Or `msiexec /i bob-0.1.1.msi`.
 ## Post-install
 
 See **[docs/post-install.md](docs/post-install.md)** (ObjectName password, Ergo PASS, NickServ SASL, verify ear/airc).
+
+## Archived repositories
+
+The canonical archive manifest and replacement map live in [docs/ARCHIVED_REPOS.md](docs/ARCHIVED_REPOS.md). Superseded repositories remain linked there for historical issue/PR provenance; they are never deleted.
 
 Repo: https://github.com/SimonBarnett/bobiverse
