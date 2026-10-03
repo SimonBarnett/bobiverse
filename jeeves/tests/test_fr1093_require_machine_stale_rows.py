@@ -73,6 +73,27 @@ def test_offer_skips_win_mpre_even_when_row_unstamped(tmp_path, monkeypatch):
     assert job2.get("require_machine") == "ce-priority-dev1"
 
 
+def test_hard_pin_wins_over_require_machine_any(tmp_path, monkeypatch):
+    """Hostile MRB #1244: unpin token must not defeat agentic_fomprep#56 hard pin."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    registered_machines.save_registered(
+        tmp_path, {"marchhare", "ce-priority-dev1", "win-mpre8vi4u6u"}
+    )
+    row = {
+        "repo": "SimonBarnett/agentic_fomprep",
+        "task": "FR",
+        "id": "#56",
+        "require_machine": "any",
+        "title": "",
+        "body": "",
+        "labels": ["feature-request"],
+    }
+    assert gitclaim.row_require_machine(row) == "ce-priority-dev1"
+    assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-15656")
+    gitclaim._stamp_require_machine(row)
+    assert row.get("require_machine") == "ce-priority-dev1"
+
+
 def test_resync_restamps_already_queued_row(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
