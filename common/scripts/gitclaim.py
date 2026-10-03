@@ -26,7 +26,16 @@ from pathlib import Path
 
 import bobreport
 
-IDLE_S = 120.0
+# FR #628: the per-seat "wait" NAK after DONE/GIVEUP is off by default (0 = never NAK a seat that
+# has work offerable). Set BOB_BORED_IDLE_S to restore a gate. Seat busy/cooldown rules still apply.
+try:
+    IDLE_S = max(0.0, float(os.environ.get("BOB_BORED_IDLE_S", "0")))
+except ValueError:
+    IDLE_S = 0.0
+# FR #628: under repo-level focus a UAT row only counts as real work for this long after its merge.
+UAT_MAX_AGE_S = 48 * 3600.0
+# t856u: an FR a seat already DONE (its PR waits for MRB/merge) is not re-offered for this long.
+FR_DONE_HOLD_S = 24 * 3600.0
 QUEUE_NAME = "queue.json"
 LEGACY_UNACCEPTED = "git-unaccepted.json"
 LEGACY_ACCEPTED = "git-accepted.jsonl"
@@ -77,6 +86,8 @@ GIVEUP_COOLDOWN_S = 600.0
 GIVEUP_NEEDS_HUMAN_COUNT = 2
 SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
+# FR #628: chair-spam records (re-offer / drain loops filed by seats) are never real FR work.
+CRITICAL_SPAM_TITLE_RE = re.compile(r"(?i)^CRITICAL:|\bdrain FR-unaccepted\b|\b\d+(st|nd|rd|th)\+? re-offer\b")
 # FR #133 / bobiverse#258: evergreen MRB-home boards are not FR jobs.
 EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
     r"(?i)\bMRB\s+home\b|\bHostile\s+MRB\s+home\b|\bMRB:\s+\S+.*\bhandoff\b",
@@ -96,13 +107,17 @@ SKIP_FR_LABELS = frozenset(
         "mrb-fail",
         "mrb_pass",
         "mrb_fail",
+        # FR #628: held for a human / ionos / release gate.
+        "needs-human",
+        "blocked",
+        "release-gate",
     }
 )
 
 # Labels safe to detect in free text (title/line/body). Bare ``mrb`` is labels-only —
 # otherwise titles like "harden MRB/FR routing" (#595) would false-positive.
 SKIP_FR_LABELS_IN_TEXT = frozenset(
-    lab for lab in SKIP_FR_LABELS if lab not in {"mrb", "skill"}
+    lab for lab in SKIP_FR_LABELS if lab not in {"mrb", "skill", "needs-human", "blocked", "release-gate"}
 )
 
 
@@ -518,6 +533,8 @@ def issue_skip_fr_reason(
     title_s = (title or "").strip()
     if HARVEST_TITLE_RE.match(title_s):
         return "harvest_title"
+    if CRITICAL_SPAM_TITLE_RE.search(title_s):
+        return "critical_spam_title"
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
@@ -897,19 +914,11 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                                 break
                         if mrb_src:
                             break
-                    extra = uat_block_extras_from_mrb_row(mrb_src) if mrb_src else {}
+                    # t853u: UAT is per REPO (one row once every issue is closed and every PR merged,
+                    # see resync_from_github); a merge never queues a per-PR / per-issue UAT any more.
+                    del mrb_src
                     for ref in claim.refs:
-                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB"})
-                        uat = GitClaim(
-                            repo=claim.repo,
-                            task="UAT",
-                            id=ref,
-                            event="issues",
-                            action="uat",
-                            line=claim.line,
-                            refs=(claim.id,),
-                        )
-                        _append_unaccepted(doc, uat, **extra)
+                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
                     changed = "updated"
                 else:
                     # closed without merge: restore FR for linked issues
@@ -1042,7 +1051,7 @@ def _coerce_row(row: dict) -> dict | None:
     for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel",
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat",
                 "author_seats", "url", "title", "body", "state",
-                "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
+                "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -1062,9 +1071,19 @@ def _coerce_row(row: dict) -> dict | None:
             out["giveup_count"] = int(row.get("giveup_count") or 0)
     except (TypeError, ValueError):
         pass
+    if row.get("repo_uat"):
+        out["repo_uat"] = True
+    if row.get("merged_prs"):
+        mp = row.get("merged_prs")
+        out["merged_prs"] = [str(x) for x in mp] if isinstance(mp, list) else [str(mp)]
     if row_needs_human(row):
         out["needs_human"] = True
     return out
+
+
+def is_repo_uat(row: dict) -> bool:
+    """t853u: UAT is per REPO. Only the single repo-level UAT row (``repo_uat``) is real work."""
+    return _canon_task(row) == "UAT" and bool(row.get("repo_uat"))
 
 
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
@@ -1557,11 +1576,9 @@ def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
 
     for author in authors:
         author_l = author.lower()
-        # Exact author seat: block while any other seat is live (legacy MRB rule).
+        # Exact author seat: never self-MRB / self-UAT (FR #628, even if it is the only live seat).
         if author_l == me_l:
-            if live_c - {me_l}:
-                return True
-            continue
+            return True
         author_p = bobreport.parse_seat_nick(author)
         # Sibling seat on the same machine: block when another machine has a live seat.
         if author_p and me_p:
@@ -1572,6 +1589,30 @@ def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
                     if p and bobreport.fold_machine_id(p[0]) != author_mid:
                         return True
     return False
+
+
+def row_machine_mismatch(row: dict, nick: str) -> bool:
+    """FR #628: rows pinned to a machine (``require_machine`` field or ``machine:<id>`` label)
+    are never offered to a seat on another machine (they would only GIVEUP)."""
+    want = str(row.get("require_machine") or "").strip().lower()
+    if not want:
+        for lab in row.get("labels") or ():
+            m = re.match(r"(?i)^(?:machine|require-machine)[:=-](.+)$", str(lab).strip())
+            if m:
+                want = m.group(1).strip().lower()
+                break
+    if not want:
+        return False
+    p = bobreport.parse_seat_nick(canonical_worker_nick(nick) or nick)
+    if not p:
+        return True
+    return bobreport.fold_machine_id(p[0]).lower() != bobreport.fold_machine_id(want).lower()
+
+
+def row_gave_up_by(row: dict, nick: str) -> bool:
+    seats = {x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()}
+    me = (canonical_worker_nick(nick) or nick).strip().lower()
+    return bool(seats) and (me in seats or nick.strip().lower() in seats)
 
 
 def offer_focus_top(
@@ -1594,6 +1635,7 @@ def offer_focus_top(
     now_f = _time.time() if now is None else float(now)
     live = live_seat_nicks(home)
     me = (nick or "").strip()
+    ledger = ledger_load(home)
     try:
         with _lock(home):
             try:
@@ -1607,6 +1649,11 @@ def offer_focus_top(
                     continue  # FR #180: GIVEUP/NACK cooldown / needs-human
                 if row_skip_fr_reason(cand):
                     continue
+                # FR #628: never hand out a row that is bound to GIVEUP for this seat.
+                if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
+                    continue
+                if ledger_blocks(ledger, cand, me, live):
+                    continue  # t852u: durable self-MRB/UAT + GIVEUP memory (survives GitHub resync)
                 if str(cand.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
@@ -1705,6 +1752,401 @@ def offer_top(
         return "error", None
 
 
+# ---------------------------------------------------------------- seat ledger (t852u)
+# queue.json rows are rebuilt by GitHub resync (cooldown / giveup / author stamps are lost) and the
+# done/accepted history is tiny, so author-seat stamps on rows are unreliable. This ledger is durable,
+# outside queue.json, and is the authority for "this seat touched / gave up this work".
+LEDGER_NAME = "seat-ledger.json"
+_LEDGER_MUTEX = None
+
+
+def ledger_path(home: Path) -> Path:
+    return _root(home) / LEDGER_NAME
+
+
+def _lkey(repo: str, ident) -> str:
+    num = str(ident or "").strip().lstrip("#")
+    return f"{(repo or '').strip().lower()}#{num}"
+
+
+def _ledger_empty() -> dict:
+    return {"v": 1, "touch": {}, "giveup": {}}
+
+
+def ledger_load(home: Path) -> dict:
+    try:
+        doc = json.loads(ledger_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _ledger_empty()
+    if not isinstance(doc, dict):
+        return _ledger_empty()
+    doc.setdefault("touch", {})
+    doc.setdefault("giveup", {})
+    doc.setdefault("uat_cycle", {})
+    doc.setdefault("fr_done", {})
+    return doc
+
+
+def ledger_uat_cycle_done(home: Path, repo: str) -> None:
+    """A repo-level UAT finished: the next UAT cycle only counts PRs merged after now (t853u)."""
+    def _f(doc: dict) -> None:
+        doc.setdefault("uat_cycle", {})[(repo or "").strip().lower()] = _utc_now()
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        pass
+
+
+def _ledger_update(home: Path, fn) -> None:
+    import threading
+
+    global _LEDGER_MUTEX
+    if _LEDGER_MUTEX is None:
+        _LEDGER_MUTEX = threading.Lock()
+    with _LEDGER_MUTEX:
+        doc = ledger_load(home)
+        fn(doc)
+        p = ledger_path(home)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(p)
+
+
+def _canon_ledger_nick(nick: str) -> str:
+    return (canonical_worker_nick(nick) or (nick or "").strip()).lower()
+
+
+def ledger_touch(home: Path, nick: str, repo: str, task: str, keys: list[str]) -> None:
+    """Record that ``nick`` did ``task`` (FR implement / MRB review / UAT) on each ``owner/repo#N`` key."""
+    me = _canon_ledger_nick(nick)
+    t = (task or "").upper()
+    if not me or not t or not keys:
+        return
+
+    def _f(doc: dict) -> None:
+        for k in keys:
+            roles = doc["touch"].setdefault(k, {}).setdefault(me, [])
+            if t not in roles:
+                roles.append(t)
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        pass
+
+
+def ledger_giveup(home: Path, nick: str, repo: str, task: str, ident: str, refs=()) -> None:
+    """``nick`` gave up (GIVEUP/NACK) this row: never offer it, or its linked PR/issue UAT/MRB, to that seat again."""
+    me = _canon_ledger_nick(nick)
+    if not me:
+        return
+    keys = [_lkey(repo, ident)] + [_lkey(repo, r) for r in (refs or ()) if str(r).strip()]
+
+    def _f(doc: dict) -> None:
+        for k in keys:
+            gu = doc["giveup"].setdefault(k, {})
+            tl = gu.setdefault(me, [])
+            if (task or "").upper() not in tl:
+                tl.append((task or "").upper())
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        pass
+
+
+def _row_link_keys(row: dict) -> list[str]:
+    repo = str(row.get("repo") or "")
+    refs = row.get("refs") or []
+    if isinstance(refs, str):
+        refs = [x for x in re.split(r"[,\s]+", refs) if x]
+    keys = [_lkey(repo, row.get("id"))]
+    for r in refs:
+        if str(r).strip():
+            keys.append(_lkey(repo, r))
+    sup = str(row.get("supersedes") or "").strip()
+    if "#" in sup:
+        keys.append(sup.lower())
+    return list(dict.fromkeys(keys))
+
+
+def ledger_blocks(ledger: dict, row: dict, nick: str, live=None) -> str:
+    """See ``_ledger_blocks``. For the repo-level UAT (t853u) a seat that implemented any merged PR of the
+    cycle is skipped, unless EVERY live seat did (then nobody could ever run it, so anyone may)."""
+    why = _ledger_blocks(ledger, row, nick)
+    if why and is_repo_uat(row) and "implemented" in why and live:
+        seats = {s for s in live} | {nick}
+        if all(_ledger_blocks(ledger, row, s) for s in seats):
+            return ""
+    return why
+
+
+def _ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
+    """Why this seat must not get this row ('' = ok), from the durable ledger.
+
+    * a seat that gave up the row (or its linked PR/issue) in the same MRB/UAT/FR family never gets it again;
+    * UAT: blocked for the FR implementer and the MRB reviewer of any linked issue/PR;
+    * MRB: blocked for the FR implementer of any linked issue/PR.
+    """
+    me = _canon_ledger_nick(nick)
+    if not me:
+        return ""
+    task = _canon_task(row)
+    keys = _row_link_keys(row)
+    if task == "FR":
+        done_ts = _parse_iso_ts(str((ledger.get("fr_done") or {}).get(_lkey(str(row.get("repo") or ""), row.get("id"))) or ""))
+        if done_ts is not None and (time.time() - done_ts) < FR_DONE_HOLD_S:
+            return "FR already delivered (PR pending merge)"
+    gu = ledger.get("giveup") or {}
+    own = _lkey(str(row.get("repo") or ""), row.get("id"))
+    repo_level = is_repo_uat(row)
+    for k in keys:
+        tl = (gu.get(k) or {}).get(me) or []
+        if k == own and tl:
+            return f"{nick} already gave up {k}"
+        if not repo_level and task in ("MRB", "UAT") and any(x in ("MRB", "UAT") for x in tl):
+            return f"{nick} already gave up linked {k}"
+    if task in ("MRB", "UAT"):
+        bad = {"FR", "MRB"} if task == "UAT" else {"FR"}
+        if repo_level:
+            bad = {"FR"}          # t853u: only seats that implemented a merged PR of the cycle are excluded
+        tc = ledger.get("touch") or {}
+        for k in keys:
+            roles = (tc.get(k) or {}).get(me) or []
+            if bad & set(roles):
+                return f"{nick} implemented/reviewed {k} (no self-{task})"
+    return ""
+
+
+def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, ident: str, job: dict | None = None,
+                      result: str = "", url: str = "") -> None:
+    """Hook for the shop wire: ACK/DONE/NACK/GIVEUP of ``task repo#ident`` by ``nick``."""
+    verb_u = (verb or "").upper()
+    task_u = (task or "").upper()
+    job = job or {}
+    keys = _row_link_keys({"repo": repo, "id": ident, "refs": job.get("refs") or [], "supersedes": job.get("supersedes") or ""})
+    if verb_u in ("GIVEUP", "NACK"):
+        refs = job.get("refs") or []
+        if isinstance(refs, str):
+            refs = [x for x in re.split(r"[,\s]+", refs) if x]
+        ledger_giveup(home, nick, repo, task_u, ident, refs)
+        return
+    if verb_u == "DONE" and task_u == "UAT" and (job.get("repo_uat") or str(ident) == "#0"):
+        ledger_uat_cycle_done(home, repo)
+    if verb_u == "DONE" and task_u == "FR":
+        def _fd(doc: dict) -> None:   # t856u: FR delivered (PR open elsewhere): do not re-offer the issue while it waits for the merge
+            doc.setdefault("fr_done", {})[_lkey(repo, ident)] = _utc_now()
+        try:
+            _ledger_update(home, _fd)
+        except OSError:
+            pass
+    if verb_u in ("ACK", "DONE") and task_u in ("FR", "MRB"):
+        ledger_touch(home, nick, repo, task_u, keys)
+    if verb_u == "DONE" and task_u == "FR":
+        parsed = parse_github_pull_url(url or result or "")
+        if parsed:
+            ledger_touch(home, nick, parsed[0], "FR", [_lkey(parsed[0], parsed[1])])
+
+
+def github_pr_seat_fetcher(*, home: Path | None = None):
+    """Return ``fetch(repo, num) -> set[str] | None`` of seat nicks that authored commits on a PR.
+
+    Seats commit as their nick (``marchhare-41928``), so the PR's commit authors are the ground truth for
+    "who wrote this" - independent of queue history. ``set()`` = not a PR / no seat commits; ``None`` =
+    could not tell (offline / no token / transient error; not cached)."""
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    if home is not None:
+        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
+    if gh_filer.ensure_gh_token_env() == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+
+    def _fetch(repo: str, num: str):
+        api = f"https://api.github.com/repos/{repo}/pulls/{str(num).lstrip('#')}/commits?per_page=100"
+        req = urllib.request.Request(api, headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-gitclaim"}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            return set() if int(getattr(e, "code", 0) or 0) in (404, 410, 422) else None
+        except Exception:
+            return None
+        out: set[str] = set()
+        for c in data if isinstance(data, list) else []:
+            for who in ((c.get("commit") or {}).get("author") or {}, (c.get("commit") or {}).get("committer") or {}):
+                name = str(who.get("name") or "").strip().lower()
+                if name and bobreport.parse_seat_nick(name):
+                    out.add(name)
+        return out
+
+    return _fetch
+
+
+def ledger_refresh_authors(home: Path, rows, fetch, *, limit: int = 8, ttl_s: float = 6 * 3600.0) -> int:
+    """Stamp the seat ledger with the commit authors of every PR behind the MRB/UAT ``rows`` (bounded).
+
+    The PR key and every linked key of the row get ``FR`` for each seat that committed (so that seat can
+    neither review nor UAT it). Results are cached per PR key for ``ttl_s``. Returns lookups done."""
+    if fetch is None:
+        return 0
+    import time as _time
+
+    now_f = _time.time()
+    led = ledger_load(home)
+    fetched = led.get("fetched") or {}
+    todo: list[tuple[str, str, list[str]]] = []
+    for row in rows:
+        if _canon_task(row) not in ("MRB", "UAT"):
+            continue
+        repo = str(row.get("repo") or "")
+        keys = _row_link_keys(row)
+        for k in keys:
+            if k in fetched and now_f - float(fetched[k]) < ttl_s:
+                continue
+            if all(k != t[0] for t in todo):
+                # repo-level UAT: a seat that wrote PR A must not look like the author of PR B
+                todo.append((k, repo, [k, keys[0]] if is_repo_uat(row) else keys))
+    done = 0
+    for k, repo, keys in todo[:limit]:
+        num = k.rsplit("#", 1)[1]
+        try:
+            seats = fetch(repo, num)
+        except Exception:
+            seats = None
+        if seats is None:
+            continue
+        done += 1
+        def _f(doc: dict, k=k, seats=seats, keys=keys) -> None:
+            doc.setdefault("fetched", {})[k] = _time.time()
+            for s in seats:
+                for kk in keys:
+                    roles = doc["touch"].setdefault(kk, {}).setdefault(s, [])
+                    if "FR" not in roles:
+                        roles.append("FR")
+        try:
+            _ledger_update(home, _f)
+        except OSError:
+            pass
+    return done
+
+
+_ASSIGN_CMD = re.compile(
+    r"(?is)^\s*!assign\s+(\S+)\s+(\S+)\s+(FR|MRB|UAT)\s+#?(\d+)\s*$"
+)
+
+
+def parse_assign_cmd(body: str) -> tuple[str, str, str, str] | None:
+    """``!assign <worker-nick> <repo> <FR|MRB|UAT> <num>`` -> (nick, repo, TASK, '#N') or None (t849u)."""
+    m = _ASSIGN_CMD.match(body or "")
+    if not m:
+        return None
+    return m.group(1), m.group(2).strip().strip("{}"), m.group(3).upper(), f"#{int(m.group(4))}"
+
+
+def assign_row(
+    home: Path,
+    nick: str,
+    repo: str,
+    task: str,
+    ident: str,
+    *,
+    now: float | None = None,
+    pr_exists=None,
+) -> tuple[str, dict | str]:
+    """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
+
+    Returns ("ok", job) -> caller posts ``format_assign_line`` in the worker's shop channel as Jeeves
+    and the worker's ACK accepts it (``accept_offered``); or ("refused", reason).
+    The same eligibility as ``offer_focus_top`` applies: real seat nick, not busy, row queued and
+    unaccepted, no self-MRB/UAT, not needs-human/skip/cooldown/machine-pinned/already given up by
+    this seat, not offered to another seat inside OFFER_TIMEOUT_S.
+    """
+    import time as _time
+
+    from focus_ignore import repo_match  # lazy: avoids an import cycle at module load
+
+    now_f = _time.time() if now is None else float(now)
+    me = canonical_worker_nick(nick) or (nick or "").strip()
+    shop = worker_shop_channel(me)
+    if shop is None:
+        return "refused", f"{nick}: not a worker seat nick (<machine>-<pid>)"
+    if worker_working_on(home, me):
+        return "refused", f"{me}: busy ({worker_working_on(home, me)[:60]})"
+    task_u = (task or "").upper()
+    num = str(ident or "").strip().lstrip("#")
+    live = live_seat_nicks(home)
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return "refused", "queue unreadable"
+            idx = None
+            for i, row in enumerate(doc["unaccepted"]):
+                if (
+                    str(row.get("task") or "").upper() == task_u
+                    and str(row.get("id") or "").strip().lstrip("#") == num
+                    and repo_match(repo, str(row.get("repo") or ""))
+                ):
+                    idx = i
+                    break
+            if idx is None:
+                return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
+            cand = doc["unaccepted"][idx]
+            if row_needs_human(cand):
+                return "refused", "row is needs-human"
+            if row_on_cooldown(cand, now_f):
+                return "refused", "row is on GIVEUP/NACK cooldown"
+            if row_skip_fr_reason(cand):
+                return "refused", f"row skipped: {row_skip_fr_reason(cand)}"
+            if row_machine_mismatch(cand, me):
+                return "refused", f"row is pinned to another machine than {me}"
+            if row_gave_up_by(cand, me):
+                return "refused", f"{me} already gave this row up"
+            why = ledger_blocks(ledger_load(home), cand, me, live)
+            if why:
+                return "refused", why
+            if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
+                return "refused", "FR superseded by an open PR"
+            if not mrb_row_offerable(cand, pr_exists=pr_exists):
+                return "refused", "MRB has no real pull URL"
+            if review_blocked_for_author(cand, me, live):
+                return "refused", f"{me} authored/implemented this (no self-{task_u})"
+            to = str(cand.get("offered_to") or "").strip()
+            if to and to.lower() != me.lower():
+                try:
+                    age = now_f - datetime.fromisoformat(
+                        str(cand.get("offered_ts") or "").replace("Z", "+00:00")
+                    ).timestamp()
+                except ValueError:
+                    age = OFFER_TIMEOUT_S + 1
+                if age < OFFER_TIMEOUT_S:
+                    return "refused", f"already offered to {to}"
+            job = dict(cand)
+            job["offered_to"] = me
+            job["offered_ts"] = _utc_now()
+            job["offered_channel"] = shop
+            resolved = resolve_assign_url(job)
+            if resolved:
+                job["url"] = resolved
+            doc["unaccepted"][idx] = job
+            try:
+                _write_queue(queue_path(home), doc)
+            except OSError:
+                return "refused", "queue write failed"
+            return "ok", job
+    except (TimeoutError, OSError):
+        return "refused", "queue busy"
+
+
 def parse_worker_ack(body: str) -> bool:
     """True if shop line is an ACK (not FILE v1 ACCEPT)."""
     text = (body or "").strip()
@@ -1778,6 +2220,8 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
                 if task == "MRB" and not mrb_row_offerable(row):
                     continue
+                if task == "UAT" and not row.get("repo_uat"):
+                    continue  # t853u: no per-PR / per-issue UAT rows; only the single repo-level UAT
                 keep.append(row)
             doc["unaccepted"] = keep
             dropped = before - len(keep)
@@ -1826,6 +2270,9 @@ def resync_from_github(
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
     supersede_keys: set[str] = set()  # FR #254 owner/repo#N closed by open PR Closes
+    repo_clear: dict[str, bool] = {}   # t853u: no open non-excluded issue and no open PR
+    uat_plan: dict[str, tuple[list[str], list[str]]] = {}   # repo -> (merged PRs this cycle, issues they closed)
+    cycles = ledger_load(home).get("uat_cycle") or {}
     for repo in repos:
         if not REPO_RE.fullmatch(repo):
             continue
@@ -1842,6 +2289,35 @@ def resync_from_github(
             issues = []
         if not isinstance(prs, list):
             prs = []
+        # t853u: repo-level UAT gate. Excluded issues (needs-human, boards/mrb-home, harvest/skill records,
+        # CRITICAL spam, safe-to-close) never hold a repo back; every other open issue or any open PR does.
+        blocking = [
+            i for i in issues
+            if isinstance(i, dict) and not i.get("pull_request") and not issue_skip_fr_reason(
+                title=str(i.get("title") or ""), body=str(i.get("body") or ""),
+                labels=_label_names(i.get("labels")), state=str(i.get("state") or "open"))
+        ]
+        repo_clear[repo] = not blocking and not [p for p in prs if isinstance(p, dict)]
+        if repo_clear[repo]:
+            try:
+                closed_prs = getter(f"https://api.github.com/repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50")
+            except Exception:  # noqa: BLE001
+                closed_prs = None
+            since = _parse_iso_ts(str(cycles.get(repo.lower()) or "")) or (time.time() - UAT_MAX_AGE_S)
+            merged: list[str] = []
+            linked: list[str] = []
+            for pr in closed_prs if isinstance(closed_prs, list) else []:
+                if not isinstance(pr, dict) or not pr.get("merged_at") or not isinstance(pr.get("number"), int):
+                    continue
+                mts = _parse_iso_ts(str(pr.get("merged_at")))
+                if mts is None or mts <= since:
+                    continue
+                merged.append(f"#{pr['number']}")
+                for r in extract_closes_issue_ids(str(pr.get("title") or ""), str(pr.get("body") or ""), repo=repo):
+                    if r not in linked:
+                        linked.append(r)
+            if merged:
+                uat_plan[repo] = (merged, linked)
         closed_by_pr: set[str] = set()
         for pr in prs:
             if not isinstance(pr, dict):
@@ -1904,6 +2380,16 @@ def resync_from_github(
             before = len(doc["unaccepted"])
             keep = []
             for row in doc["unaccepted"]:
+                if str(row.get("task") or "").upper() == "UAT":
+                    if not row.get("repo_uat"):
+                        continue  # t853u: legacy per-PR / per-issue UAT rows are gone (even if offered, unACKed)
+                    if (
+                        row.get("repo_uat")
+                        and row.get("repo") in fetched_set
+                        and not repo_clear.get(str(row.get("repo")), True)
+                        and not row.get("offered_to")
+                    ):
+                        continue  # new issue / PR opened: the repo is no longer clear, UAT waits
                 if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
                     continue  # FR #180 local junk
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
@@ -1935,9 +2421,34 @@ def resync_from_github(
                     fetched_repos=fetched_set2,
                 ):
                     continue  # FR #254
+                mrb_url = (
+                    f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
+                )
                 if any(_same(r, claim.repo, claim.task, claim.id) for r in doc["accepted"] + doc["unaccepted"]):
-                    continue                      # already queued/claimed: keep its line, seq and offer fields
-                if _append_unaccepted(doc, claim) == "added":
+                    # already queued/claimed: keep its line, seq and offer fields; but an MRB row with no real pull
+                    # URL is never offerable (FR #595), so heal it (t855u: resync-made MRB rows were all unofferable)
+                    if mrb_url:
+                        for r in doc["unaccepted"]:
+                            if _same(r, claim.repo, "MRB", claim.id) and not PULL_URL_RE.search(str(r.get("url") or "")):
+                                r["url"] = mrb_url
+                    continue
+                if _append_unaccepted(doc, claim, **({"url": mrb_url} if mrb_url else {})) == "added":
+                    added += 1
+            for urepo, (merged, linked) in uat_plan.items():
+                if any(
+                    str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
+                    for r in doc["accepted"] + doc["unaccepted"]
+                ):
+                    continue                      # one repo UAT at a time
+                uat = GitClaim(repo=urepo, task="UAT", id="#0", event="repo", action="uat",
+                               line=f"UAT {urepo}: all issues closed, all PRs merged ({len(merged)} merged this cycle)",
+                               refs=tuple(merged) + tuple(x for x in linked if x not in merged))
+                if _append_unaccepted(doc, uat) == "added":
+                    for r in doc["unaccepted"]:
+                        if _same(r, urepo, "UAT", "#0"):
+                            r["repo_uat"] = True
+                            r["merged_prs"] = list(merged)
+                            r["url"] = f"https://github.com/{urepo}"
                     added += 1
 
             def sk(row: dict) -> tuple:

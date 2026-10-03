@@ -380,28 +380,8 @@ def complete_job_by_ref(
                         extra["implementer_seat"] = fr_author
                     extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
                     gitclaim._append_unaccepted(doc, claim, **extra)
-            if str(job.get("task") or "").upper() == "MRB" and "PASS" in (result or "").upper():
-                # UAT for refs; stamp MRB reviewer + FR implementer (FR #227 / #265).
-                refs = job.get("refs") or []
-                if isinstance(refs, str):
-                    refs = [refs]
-                extra = gitclaim.uat_block_extras_from_mrb_row(
-                    job, mrb_nick=str(job.get("nick") or job.get("done_by") or nick or "")
-                )
-                for ref in refs:
-                    ref_s = str(ref)
-                    if not ref_s.startswith("#"):
-                        continue
-                    uat = gitclaim.GitClaim(
-                        repo=repo,
-                        task="UAT",
-                        id=ref_s,
-                        event="issues",
-                        action="uat",
-                        line=str(job.get("line") or ""),
-                        refs=(ident,),
-                    )
-                    gitclaim._append_unaccepted(doc, uat, **extra)
+            # t853u: an MRB PASS no longer queues per-PR / per-issue UAT rows; UAT is one row per repo,
+            # created by the GitHub resync once every issue is closed and every PR is merged.
             try:
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except OSError:
@@ -434,6 +414,7 @@ def return_job_to_unaccepted(
             if ai is None:
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
+            gave_up_by = str(job.get("nick") or "").strip()
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
@@ -442,6 +423,12 @@ def return_job_to_unaccepted(
                 count = 1
             job["giveup_count"] = count
             job["giveup_ts"] = gitclaim._utc_now()
+            # FR #628: never hand this row back to a seat that already gave it up.
+            seats = [x for x in str(job.get("giveup_seats") or "").split(",") if x.strip()]
+            if gave_up_by and gave_up_by.lower() not in {x.lower() for x in seats}:
+                seats.append(gave_up_by)
+            if seats:
+                job["giveup_seats"] = ",".join(seats)
             until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                 seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
             )
@@ -497,6 +484,10 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        try:  # t852u: durable seat ledger (survives resync)
+            gitclaim.ledger_note_event(home, nick, "ACK", parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
+        except Exception:  # noqa: BLE001
+            pass
         if st == "missing":
             # The seat is working on what it ACKed even when the queue row is gone (re-synced, already
             # accepted, offered twice): the digest must still show it as doing (t816u).
@@ -517,6 +508,10 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        try:  # t852u: remember who gave this up, forever (resync drops row stamps)
+            gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
+        except Exception:  # noqa: BLE001
+            pass
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )
@@ -536,6 +531,13 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        try:
+            gitclaim.ledger_note_event(
+                home, nick, "DONE", parsed.task, parsed.repo, parsed.id,
+                job if isinstance(job, dict) else None, result=parsed.result, url=parsed.url,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )

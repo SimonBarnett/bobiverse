@@ -96,6 +96,13 @@ COMMANDS: tuple = (
     CommandSpec("unfocus", "!unfocus {repo|owner/repo#N}|all", "remove repo/item focus or clear all (simon/ops)",
                 OPS_ROLES, "!unfocus SimonBarnett/gh-Jeeves#110", "Drops focus entries; !unfocus all clears all.",
                 ("focus", "list")),
+    CommandSpec("assign", "!assign {worker-nick} {repo} {FR|MRB|UAT} {num}",
+                "Jeeves posts the normal assign line to one idle seat (simon/ops)", OPS_ROLES,
+                "!assign marchhare-41928 SimonBarnett/bobiverse MRB 637",
+                "Chair stamps that queued row offered to the seat and posts the usual assign line in its shop "
+                "channel as Jeeves; the seat's ACK accepts it. Same checks as !bored: seat must be idle, no "
+                "self-MRB/UAT, row unaccepted and not needs-human/cooldown/given-up. UAT is per repo: use num 0. Reply by PM.",
+                ("focus", "list")),
     CommandSpec("recycle", "!recycle [machine|all|dry-run [machine|all]]",
                 "route recycle to bob seats: bare/all = fleet; machine = one box; dry-run = plan only", OPS_ROLES,
                 "!recycle marchhare",

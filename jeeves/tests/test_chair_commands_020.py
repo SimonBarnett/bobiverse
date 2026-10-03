@@ -21,7 +21,7 @@ CHANS = ["#bobiverse", "#marchhare", "#win-mpre8vi4u6u", "#flamingo"]
 
 GH_JEEVES_COMMANDS = {"help", "list", "status", "resync", "sweep", "ignore", "ignored", "unignore",
                       "focus", "unfocus", "recycle"}          # gh-Jeeves/src/jeeves/commands.py @ 8d76d9a
-OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep"}
+OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign"}
 
 
 class FakeChair:
@@ -54,8 +54,9 @@ class FakeChair:
     def _handle_register_command(self, *a): return False
     def _mark_pm_open(self, n): pass
     def _is_briefer(self): return False
+    def _refresh_ledger(self): pass          # no GitHub lookups in unit tests
 
-    for _n in ("handle_privmsg", "_maybe_chair_commands", "_maybe_git_list", "_maybe_git_help", "_maybe_focus_ignore",
+    for _n in ("handle_privmsg", "_maybe_chair_commands", "_maybe_git_list", "_maybe_git_help", "_maybe_focus_ignore", "_maybe_assign", "_git_say",
                "_handle_recycle_command", "_handle_bob_local_recycle_command", "_maybe_startworker", "_cc", "_ear_machine", "_account_of",
                "_principal", "_jobs", "_jobs_status_lines", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
                "_on_channel_names", "_workers"):
@@ -302,3 +303,46 @@ def test_replies_are_traced_for_audit(chair):
 def test_ear_bare_recycle_is_left_to_the_chair_route():
     t = (irc_agent.Path(irc_agent.__file__).read_text("utf-8-sig"))
     assert 'if kind == "refuse" and machine_id is None:' not in t
+
+# ------------------------------------------------------------------ !assign (t849u)
+def test_assign_owner_and_ear_post_normal_line_as_jeeves(chair):
+    chair.acct["simon"] = "simon"
+    out = pm(chair, "simon", "!assign marchhare-41928 o/a FR 1")
+    assert out == ["assign: sent marchhare-41928: FR o/a#1 https://github.com/o/a/issues/1"], out
+    assert chair.sent[-1] == "PRIVMSG #marchhare :marchhare-41928: FR o/a#1 https://github.com/o/a/issues/1"
+    # ACK in the shop accepts it (same path as !bored)
+    st, job = gitclaim.accept_offered(chair.home, "marchhare-41928", "#marchhare")
+    assert st == "ok" and job["id"] == "#1"
+    # the Bob-* ear can do it too, from the channel; reply stays a PM
+    out = chan(chair, EAR, "!assign marchhare-5 o/b MRB 2")
+    assert chair.said == [] and out and out[0].startswith("assign: ")
+
+
+def test_assign_denied_for_strangers_and_bad_usage(chair):
+    out = pm(chair, "mallory", "!assign marchhare-41928 o/a FR 1")
+    assert out[0].startswith("assign: denied")
+    assert not any(s.startswith("PRIVMSG #marchhare") for s in chair.sent)
+    chair.acct["simon"] = "simon"
+    assert pm(chair, "simon", "!assign marchhare-41928 o/a")[0].startswith("assign: usage")
+    assert pm(chair, "simon", "!assign Jeeves o/a FR 1")[0].startswith("assign: refused")
+    assert not any(s.startswith("PRIVMSG #") for s in chair.sent)
+
+
+def test_assign_refuses_busy_and_unknown_rows(chair, monkeypatch):
+    chair.acct["simon"] = "simon"
+    assert pm(chair, "simon", "!assign marchhare-9 o/a FR 77")[0].startswith("assign: refused")
+    monkeypatch.setattr(gitclaim, "worker_working_on", lambda h, n: "doing FR o/zzz#1")
+    assert "busy" in pm(chair, "simon", "!assign marchhare-9 o/a FR 1")[0]
+    assert not any(s.startswith("PRIVMSG #marchhare") for s in chair.sent)
+
+def test_help_lists_assign_with_usage_and_rules(chair):
+    chair.acct["simon"] = "simon"
+    for nick in ("simon", EAR):
+        text = "\n".join(pm(chair, nick, "!help"))
+        assert "!assign {worker-nick} {repo} {FR|MRB|UAT} {num}" in text, nick
+    detail = pm(chair, MH_EAR, "!help assign")
+    blob = "\n".join(detail)
+    assert detail[0].startswith("syntax: !assign")
+    assert "self-MRB/UAT" in blob and "idle" in blob and "simon" in blob
+    # strangers do not see it
+    assert not any(l.startswith("!assign") for l in pm(chair, "mallory", "!help"))

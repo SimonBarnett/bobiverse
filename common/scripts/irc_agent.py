@@ -2159,6 +2159,56 @@ class Client:
         info(f"INFO git-help pm nick={src} kind={who.kind} lines={len(lines)} from_chan={to_channel}")
         return True
 
+    def _maybe_assign(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
+        """Chair only (t849u): ``!assign <worker-nick> <repo> <FR|MRB|UAT> <num>`` from verified simon or a Bob-* ear.
+
+        Posts the normal assign line to the worker's shop channel as Jeeves (same path and eligibility
+        as !bored); the worker's ACK accepts the offered row. Reply by PM, never in channel.
+        """
+        if not getattr(self.args, "chair", False):
+            return False
+        if not body.lstrip().lower().startswith("!assign"):
+            return False
+        if to_channel and not self._joined_channel(target):
+            return False
+        if src.lower() in self._mine_nicks():
+            return True
+        who = self._principal(src)
+        if not who.ops:
+            self._cmd_reply(src, "assign", ["assign: denied (simon or bob-* ops only)"])
+            self._whois_hint(src)
+            info(f"INFO git-assign denied nick={src} kind={who.kind}")
+            return True
+        parsed = gitclaim.parse_assign_cmd(body)
+        if parsed is None:
+            self._cmd_reply(src, "assign", ["assign: usage !assign {worker-nick} {repo} {FR|MRB|UAT} {num}"])
+            return True
+        wnick, repo, task, ident = parsed
+        self._refresh_ledger()
+        status, res = gitclaim.assign_row(
+            self.home,
+            wnick,
+            repo,
+            task,
+            ident,
+            pr_exists=gitclaim.github_pr_exists_checker(home=self.home),
+        )
+        if status != "ok" or not isinstance(res, dict):
+            self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
+            info(f"INFO git-assign refused nick={src} worker={wnick} {repo}{ident} {task}: {res}"[:200])
+            return True
+        shop = bobreport.normalize_channel(str(res.get("offered_channel") or ""))
+        line = gitclaim.format_assign_line(res.get("offered_to") or wnick, res)
+        self._git_say(shop, line)
+        gitclaim.note_worker_activity(self.home, str(res.get("offered_to") or wnick), time.time())
+        try:  # show the assignment in the digest at once, like !bored (ACK keeps it; DONE/NACK/GIVEUP clear it)
+            self._workers().on_ack(str(res.get("offered_to") or wnick), shop, shop_listen.activity_description(res))
+        except Exception as exc:  # noqa: BLE001
+            info(f"WARN workers assign error {type(exc).__name__}")
+        self._cmd_reply(src, "assign", [f"assign: sent {line}"])
+        info(f"INFO git-assign sent {line} by={src} kind={who.kind}")
+        return True
+
     def _maybe_focus_ignore(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
         """Chair only (#39 gap 3): !focus / !unfocus / !focus strict / !ignore / !unignore / !ignored.
 
@@ -2240,6 +2290,7 @@ class Client:
             self._git_say(target, gitclaim.NAK_BORED_BUSY)
             info(f"INFO git-claim bored nak busy nick={src}")
             return
+        self._refresh_ledger()
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).
         # FR #595 / #247: skip MRB rows whose /pull/N 404s when a token is available.
@@ -2270,6 +2321,18 @@ class Client:
                 info(f"WARN workers idle error {type(exc).__name__}")
             return
         info(f"INFO git-claim bored offer failed nick={src}")
+
+    def _refresh_ledger(self) -> None:
+        """t852u: learn PR commit authors (seat nicks) for the rows that could be offered next; bounded + cached."""
+        try:
+            fetch = gitclaim.github_pr_seat_fetcher(home=self.home)
+            if fetch is None:
+                return
+            doc = gitclaim.load_queue(self.home)
+            rows = focus_ignore.sort_unaccepted_rows(self.home, doc.get("unaccepted") or [])[:25]
+            gitclaim.ledger_refresh_authors(self.home, rows, fetch)
+        except Exception as exc:  # noqa: BLE001 - never block an offer on a lookup
+            info(f"WARN ledger refresh error {type(exc).__name__}"[:120])
 
     def _git_ack(self, src: str, target: str, now: float) -> None:
         """ACK in #{machine} marks the offered job accepted on the webhook mirror."""
@@ -2351,6 +2414,8 @@ class Client:
         if self._maybe_git_list(src, target, body, to_channel=to_channel):
             return
         if self._maybe_git_help(src, target, body, to_channel=to_channel):
+            return
+        if self._maybe_assign(src, target, body, to_channel=to_channel):
             return
         if self._maybe_focus_ignore(src, target, body, to_channel=to_channel):
             return
