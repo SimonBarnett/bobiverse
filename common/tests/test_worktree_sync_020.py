@@ -354,3 +354,19 @@ def test_fr269_sync_script_documents_compose_only_and_no_xo_scripts():
     assert "ComposeOnly" in t
     assert "FR #269" in t
     assert "forced, no /XO" in t or "never /XO on scripts" in t
+
+def test_fr269_third_party_still_uses_xo_in_script():
+    """Regression: only scripts/ drop /XO; third_party and mirrors keep it."""
+    t = SYNC.read_text(encoding="utf-8")
+    # scripts branch must not pass /XO
+    assert "if ($d -eq 'scripts')" in t
+    assert "/XO" in t  # still used for third_party / mirrors / skills / docs
+    # Ensure the scripts arm omits /XO in its robocopy arg list construction
+    assert "never /XO on scripts" in t or "no /XO" in t
+
+
+def test_fr269_post_install_documents_compose_only():
+    from repo_layout import ROOT
+    doc = (ROOT / "docs" / "post-install.md").read_text(encoding="utf-8")
+    assert "ComposeOnly" in doc
+    assert "FR #269" in doc
