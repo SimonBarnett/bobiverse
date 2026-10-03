@@ -4,7 +4,9 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
+import bobreport
 import gitclaim
+import registered_machines
 import shop_listen
 
 
@@ -57,9 +59,17 @@ def test_umbrella_label_skips_fr_enqueue():
 
 def test_apply_queue_skips_unassignable_and_stores_title(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    # needs-mrb1 is SKIP_FR_LABELS (#1080) — must not enqueue as assignable FR.
+    blocked = gitclaim.claim_from_payload(
+        "issues",
+        _issue_payload(31, title="FR: waiting vision", labels=["feature-request", "needs-mrb1"]),
+    )
+    assert blocked is None or gitclaim.apply_queue_event(tmp_path, blocked) == "noop"
+    assert gitclaim.load_unaccepted(tmp_path) == []
+
     claim = gitclaim.claim_from_payload(
         "issues",
-        _issue_payload(30, title="FR: ship it", labels=["feature-request", "needs-mrb1"]),
+        _issue_payload(30, title="FR: ship it", labels=["feature-request"]),
     )
     assert claim is not None
     assert gitclaim.apply_queue_event(tmp_path, claim) == "added"
@@ -83,7 +93,16 @@ def test_apply_queue_skips_unassignable_and_stores_title(tmp_path, monkeypatch):
 
 
 def test_giveup_sets_cooldown_and_offer_skips_until_expired(tmp_path, monkeypatch):
+    """Per-seat cooldown (#1080 / #1122): giver blocked; other seats may take immediately."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    registered_machines.save_registered(tmp_path, {"marchhare"})
+    digest = bobreport.empty_digest()
+    digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    digest["machines"]["marchhare"]["workers"] = {
+        "1": {"state": "idle"},
+        "2": {"state": "idle"},
+    }
+    bobreport.save_digest(tmp_path, digest)
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
         {
@@ -110,14 +129,17 @@ def test_giveup_sets_cooldown_and_offer_skips_until_expired(tmp_path, monkeypatc
     assert job.get("cooldown_until")
     assert int(job.get("giveup_count") or 0) == 1
     assert not job.get("needs_human")
+    assert "marchhare-1" in str(job.get("giveup_seats") or "")
 
-    st2, offered = gitclaim.offer_focus_top(tmp_path, "marchhare-2", "#marchhare", now=t0 + 10)
-    assert st2 == "empty" and offered is None
-
-    st3, offered2 = gitclaim.offer_focus_top(
-        tmp_path, "marchhare-2", "#marchhare", now=t0 + gitclaim.GIVEUP_COOLDOWN_S + 5
+    # Giver still blocked during cooldown (and via giveup_seats / ledger).
+    st_giver, offered_giver = gitclaim.offer_focus_top(
+        tmp_path, "marchhare-1", "#marchhare", now=t0 + 10
     )
-    assert st3 == "ok" and offered2["id"] == "#118"
+    assert st_giver == "empty" and offered_giver is None
+
+    # Other seat on same machine can take immediately (no global 600s block).
+    st2, offered = gitclaim.offer_focus_top(tmp_path, "marchhare-2", "#marchhare", now=t0 + 10)
+    assert st2 == "ok" and offered is not None and offered["id"] == "#118"
 
 
 def test_second_giveup_marks_needs_human(tmp_path, monkeypatch):
