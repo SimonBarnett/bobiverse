@@ -100,3 +100,11 @@ On Windows PowerShell 5.1, keep the PR body in `--body-file` (multiline `--body`
 
 * **Every FR PR body contains `Closes <owner>/<repo>#N`** and you verified it (step 8) before DONE. * One FR = one PR. A fix that needs more work goes to a new FR through intake, not into this PR. * Never touch Ergo config, never restart `BobIrcd`, never disturb other seats, PowerShell only.
 * Do not rebuild/release/bump the version unless the FR says so. * CAST IRON harvest rule at the top: file every issue, FR, bug and learned playbook in the same turn.
+
+## Machine pin / ionos-only FRs (FR #587 / #852)
+
+Chair stamps `require_machine` from labels (`needs-ionos`, `machine:ionos`) and title/body cues. After FR #852, cues include **recycle/recompose (irc)Jeeves** and **prune queue.json** (chair lives on ionos). Non-matching seats must **GIVEUP** (or never receive the offer once the live chair has the gates).
+
+* Marchhare cannot bounce ionos `ircJeeves` or edit ionos `queue.json` — those FRs are ionos-only.
+* If you are still offered one (stale chair / missing stamp): ACK then **GIVEUP** with `needs-ionos` / `require_machine=ionos` in the reason line; file intake if the stamp was missing.
+* Skill/harvest intake issues (`label:skill` or title starting `harvest`/`skill`) are **not** FR jobs — GIVEUP with that reason (or promote the playbook via a skill PR if that is the assign intent).
