@@ -428,9 +428,23 @@ def return_job_to_unaccepted(
             job["giveup_count"] = count
             job["giveup_ts"] = gitclaim._utc_now()
             # FR #628: never hand this row back to a seat that already gave it up.
-            seats = [x for x in str(job.get("giveup_seats") or "").split(",") if x.strip()]
-            if gave_up_by and gave_up_by.lower() not in {x.lower() for x in seats}:
-                seats.append(gave_up_by)
+            # Store canonical <machine>-<pid> so w-io-* / w-mh-* match later offers.
+            seats = []
+            seen_seats: set[str] = set()
+            for raw in str(job.get("giveup_seats") or "").split(","):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                canon = (gitclaim.canonical_worker_nick(raw) or raw).strip()
+                key = canon.lower()
+                if key in seen_seats:
+                    continue
+                seen_seats.add(key)
+                seats.append(canon)
+            if gave_up_by:
+                canon_g = (gitclaim.canonical_worker_nick(gave_up_by) or gave_up_by).strip()
+                if canon_g and canon_g.lower() not in seen_seats:
+                    seats.append(canon_g)
             if seats:
                 job["giveup_seats"] = ",".join(seats)
             until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(

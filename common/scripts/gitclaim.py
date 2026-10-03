@@ -629,15 +629,17 @@ def row_on_cooldown(row: dict, now: float, nick: str = "") -> bool:
     ``GIVEUP_COOLDOWN_S``, which left the fleet idle while other live seats
     could have taken the work. Ledger / ``giveup_seats`` already prevent
     re-offer to the giver; other seats skip the global wait.
+    Compare seats via ``canonical_worker_nick`` so ``w-io-<pid>`` matches
+    ``win-mpre8vi4u6u-<pid>`` stored after GIVEUP.
     """
     until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
     if until is None or float(now) >= until:
         return False
-    me = (nick or "").strip().lower()
+    me = (nick or "").strip()
     if not me:
         return True
-    seats = {x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()}
-    if seats and me not in seats:
+    seats = giveup_seat_set(row)
+    if seats and not nick_in_giveup_seats(row, me):
         return False
     return True
 
@@ -650,6 +652,7 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
     given up (bobiverse backlog NAK). When ``giveup_seats`` is set, only those
     seats are blocked; other live seats may still be offered the row. A bare
     ``needs_human`` with no giveup_seats stays a global human/vision gate.
+    Seat match is canonical (``w-io-*`` == ``win-mpre8vi4u6u-*``).
     """
     v = row.get("needs_human")
     if isinstance(v, bool):
@@ -658,9 +661,9 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
         flag = str(v or "").strip().lower() in ("1", "true", "yes")
     if not flag:
         return False
-    seats = {x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()}
-    me = (nick or "").strip().lower()
-    if seats and me and me not in seats:
+    seats = giveup_seat_set(row)
+    me = (nick or "").strip()
+    if seats and me and not nick_in_giveup_seats(row, me):
         return False
     return True
 
@@ -1131,6 +1134,9 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     """FR #587 / #1093: persist require_machine on enqueue/refresh when cues match.
 
     Hard issue pins always overwrite empty/unpin tokens. A real machine stamp is kept.
+    Operator unpin (``any`` / ``none`` / ``*`` / ``-``) must survive title/body cues that
+    merely *mention* ``require_machine=ce-priority-dev1`` as evidence (e.g. #1116) —
+    otherwise monitor clears are wiped on the next offer/resync stamp.
     """
     title = str((claim.title if claim else "") or row.get("title") or "")
     body = str((claim.body if claim else "") or row.get("body") or "")
@@ -1140,17 +1146,23 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         labels = [labels]
     repo = str((claim.repo if claim else "") or row.get("repo") or "")
     ident = str((claim.id if claim else "") or row.get("id") or "")
-    req = infer_require_machine(
-        title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
-    )
-    if not req:
-        return
+    repo_l = repo.strip().lower()
+    id_l = f"#{str(ident or '').strip().lstrip('#')}"
+    hard = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l), "")
     stamped = str(row.get("require_machine") or "").strip().lower()
-    if stamped and stamped not in {"*", "any", "none", "-"}:
+    if stamped in {"*", "any", "none", "-"}:
+        if hard:
+            row["require_machine"] = hard
+        return
+    if stamped:
         mid = bobreport.normalize_machine_id(stamped) or stamped
         if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
             return
-    row["require_machine"] = req
+    req = infer_require_machine(
+        title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
+    )
+    if req:
+        row["require_machine"] = req
 
 
 def apply_queue_event(home: Path, claim: GitClaim) -> str:
@@ -1284,17 +1296,47 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
 
 
 def canonical_worker_nick(nick: str) -> str | None:
-    """Legacy ``w-<short>-<pid>`` or real seat nick ``<machine>-<pid>`` (#39 gap 1)."""
-    legacy = bobreport.parse_worker_nick(nick)
-    if legacy:
-        try:
-            return bobreport.worker_nick(legacy[0], legacy[1])
-        except ValueError:
-            return None
+    """Always ``<machine>-<pid>`` for legacy ``w-<short>-<pid>`` or real seat nicks (#39 gap 1).
+
+    Must NOT return the short ``w-io-<pid>`` form: ledger ``giveup`` keys and row
+    ``giveup_seats`` store ``<machine>-<pid>``. Returning the short form made
+    ``w-io-*`` / ``w-mh-*`` !bored seats bypass GIVEUP / needs_human / ledger
+    blocks and re-offer needs-mrb1 FRs forever while full-form seats got empty.
+    """
     seat = bobreport.parse_seat_nick(nick)
     if seat:
         return f"{seat[0]}-{seat[1]}"
+    legacy = bobreport.parse_worker_nick(nick)
+    if legacy:
+        return f"{legacy[0]}-{legacy[1]}"
     return None
+
+
+def giveup_seat_set(row: dict) -> set[str]:
+    """Canonical lowercase seat nicks from ``row['giveup_seats']`` (comma list)."""
+    out: set[str] = set()
+    for raw in str(row.get("giveup_seats") or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        out.add((canonical_worker_nick(raw) or raw).strip().lower())
+    return out
+
+
+def nick_in_giveup_seats(row: dict, nick: str) -> bool:
+    """True when ``nick`` (any form) is listed in the row's giveup_seats."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+    seats = giveup_seat_set(row)
+    if not seats:
+        return False
+    if me in seats:
+        return True
+    # also match raw nick if a non-canonical token was stored historically
+    return (nick or "").strip().lower() in {
+        x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()
+    }
 
 
 def _channel(target: str) -> str:
@@ -1893,6 +1935,38 @@ def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None) -> int:
     return before - len(kept)
 
 
+def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None) -> bool:
+    """True when an MRB row should leave the live queues (merged/closed/already-done)."""
+    if _canon_task(row) != "MRB":
+        return False
+    if mrb_already_done(doc, row):
+        return True
+    return not mrb_row_offerable(row, pr_exists=pr_exists)
+
+
+def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None) -> int:
+    """Move accepted MRB rows whose PR is already merged/closed into done.
+
+    Without this, seats stay ``doing`` on MERGED PRs (#1171/#1236 class) and
+    never !bored for new work — looks like an empty offer queue to monitors.
+    """
+    before = len(doc.get("accepted") or [])
+    kept: list[dict] = []
+    done = doc.setdefault("done", [])
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if _mrb_is_dead(doc, row, pr_exists=pr_exists):
+            fin = dict(row)
+            fin["result"] = "MERGED"
+            fin["done_ts"] = _utc_now()
+            done.append(fin)
+            continue
+        kept.append(row)
+    doc["accepted"] = kept
+    return before - len(kept)
+
+
 def format_assign_line(nick: str, row: dict) -> str:
     """Wire line the seats and Watch-AgentHealth parse: ``<nick>: FR|MRB|UAT owner/repo#N url``."""
     num = str(row.get("id") or "").strip().lstrip("#")
@@ -2129,9 +2203,7 @@ def row_machine_mismatch(row: dict, nick: str) -> bool:
 
 
 def row_gave_up_by(row: dict, nick: str) -> bool:
-    seats = {x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()}
-    me = (canonical_worker_nick(nick) or nick).strip().lower()
-    return bool(seats) and (me in seats or nick.strip().lower() in seats)
+    return nick_in_giveup_seats(row, nick)
 
 
 def offer_focus_top(
@@ -2153,7 +2225,8 @@ def offer_focus_top(
 
     now_f = _time.time() if now is None else float(now)
     live = live_seat_nicks(home)
-    me = (nick or "").strip()
+    me_raw = (nick or "").strip()
+    me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
     try:
         with _lock(home):
@@ -2162,7 +2235,9 @@ def offer_focus_top(
             except (OSError, json.JSONDecodeError, ValueError):
                 return "error", None
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
-            purged = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists)
+            # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists)) or purged
             # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
             for cand in doc.get("unaccepted") or []:
                 if not isinstance(cand, dict):
@@ -2181,6 +2256,11 @@ def offer_focus_top(
                     cand.pop("offered_ts", None)
                     cand.pop("offered_channel", None)
                     purged = True
+
+            def _same_seat(a: str, b: str) -> bool:
+                ca = (canonical_worker_nick(a) or a or "").strip().lower()
+                cb = (canonical_worker_nick(b) or b or "").strip().lower()
+                return bool(ca) and ca == cb
 
             def _eligible(cand: dict) -> dict | None:
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me):
@@ -2206,7 +2286,7 @@ def offer_focus_top(
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     return None
                 to = str(cand.get("offered_to") or "").strip()
-                if to and to.lower() != me.lower():
+                if to and not _same_seat(to, me):
                     try:
                         age = now_f - datetime.fromisoformat(
                             str(cand.get("offered_ts") or "").replace("Z", "+00:00")
@@ -2318,7 +2398,8 @@ def offer_top(
                 return "error", None
             if not doc["unaccepted"]:
                 return "empty", None
-            purged = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists)
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists)) or purged
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):

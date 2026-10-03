@@ -47,7 +47,8 @@ def _queue(home, rows):
 def test_real_seat_nicks_parse(nick, mid, pid):
     assert bobreport.parse_seat_nick(nick) == (mid, pid)
     assert gitclaim.worker_shop_channel(nick) == f"#{mid}"
-    assert gitclaim.canonical_worker_nick(nick)
+    # Always <machine>-<pid> (never legacy w-<short>-<pid>) so giveup_seats match.
+    assert gitclaim.canonical_worker_nick(nick) == f"{mid}-{pid}"
 
 
 @pytest.mark.parametrize("nick", ["bob-ionos", "Jeeves", "simon", "ionos-", "ionos-abc", "ionos-0",
