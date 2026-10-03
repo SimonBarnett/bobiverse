@@ -102,6 +102,10 @@ CRITICAL_SPAM_TITLE_RE = re.compile(r"(?i)^CRITICAL:|\bdrain FR-unaccepted\b|\b\
 EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
     r"(?i)\bMRB\s+home\b|\bHostile\s+MRB\s+home\b|\bMRB:\s+\S+.*\bhandoff\b",
 )
+# bobiverse#224 / #765 / #781: FAIL-fix PRs (fix(mrb-N) / mrb-N-fix) are not MRB/UAT targets.
+_MRB_FIX_TITLE_RE = re.compile(
+    r"(?i)(?:^|\b)(?:fix\s*\(\s*mrb[-_]?\d+|mrb[-_]?\d+[-_]fix\b)"
+)
 SKIP_FR_LABELS = frozenset(
     {
         "skill",
@@ -863,6 +867,9 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         pr = _pr_blob(payload)
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
+        # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB.
+        if action in ("opened", "ready_for_review") and is_mrb_fix_pr_title(title):
+            return None
         refs = extract_closes_issue_ids(title, body, src, repo=repo)
         task = "MRB" if action in ("opened", "ready_for_review") else "MRB"
         return GitClaim(
@@ -1282,6 +1289,11 @@ def _coerce_row(row: dict) -> dict | None:
 def is_repo_uat(row: dict) -> bool:
     """t853u: UAT is per REPO. Only the single repo-level UAT row (``repo_uat``) is real work."""
     return _canon_task(row) == "UAT" and bool(row.get("repo_uat"))
+
+
+def is_mrb_fix_pr_title(title: str) -> bool:
+    """True for titles like ``fix(mrb-105):…`` or ``mrb-105-fix:…`` (bobiverse#224 / #781)."""
+    return bool(_MRB_FIX_TITLE_RE.search(str(title or "")))
 
 
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
@@ -1852,6 +1864,9 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     continue  # FR #254
+                # bobiverse#768 / #781 / t853u: never offer legacy per-PR UAT.
+                if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
+                    continue
                 # FR #595 / #247: skip MRB without a real pull URL (or PR 404).
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     continue
@@ -2526,8 +2541,12 @@ def resync_from_github(
                 mts = _parse_iso_ts(str(pr.get("merged_at")))
                 if mts is None or mts <= since:
                     continue
+                title = str(pr.get("title") or "")
+                # bobiverse#765 / #781: mrb-*-fix merges are not UAT cycle inputs.
+                if is_mrb_fix_pr_title(title):
+                    continue
                 merged.append(f"#{pr['number']}")
-                for r in extract_closes_issue_ids(str(pr.get("title") or ""), str(pr.get("body") or ""), repo=repo):
+                for r in extract_closes_issue_ids(title, str(pr.get("body") or ""), repo=repo):
                     if r not in linked:
                         linked.append(r)
             if merged:
@@ -2551,6 +2570,9 @@ def resync_from_github(
                 n = m.group("num")
                 if rname and n:
                     supersede_keys.add(f"{rname}#{n}")
+            # bobiverse#224 / #781: open mrb-*-fix PRs are not MRB queue jobs.
+            if is_mrb_fix_pr_title(title):
+                continue
             desired.append(
                 GitClaim(repo=repo, task="MRB", id=f"#{num}", event="pull_request", action="opened", line="", refs=refs)
             )
