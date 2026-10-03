@@ -236,9 +236,11 @@ def test_done_mrb_pass_stamps_author_seat_on_uat(_home):
         url="https://example/pull/12",
     )
     assert st == "ok"
-    # t853u: UAT is per REPO - an MRB PASS never queues a per-issue UAT row
-    assert [r for r in gitclaim.load_unaccepted(_home) if r.get("task") == "UAT"] == []
-
+    # mrb-664-fix / FR #628: DONE MRB PASS queues per-issue UAT with author_seat
+    uats = [r for r in gitclaim.load_unaccepted(_home) if r.get("task") == "UAT"]
+    assert len(uats) == 1
+    assert uats[0]["id"] == "#10"
+    assert uats[0]["author_seat"] == "marchhare-16564"
 
 
 def test_apply_queue_event_merged_pr_copies_author_seat_onto_uat(_home):
@@ -289,7 +291,11 @@ def test_apply_queue_event_merged_pr_copies_author_seat_onto_uat(_home):
     )
     assert claim.merged and claim.id == "#9" and claim.refs == ("#5",)
     assert gitclaim.apply_queue_event(_home, claim) == "updated"
-    assert [r for r in gitclaim.load_unaccepted(_home) if r.get("task") == "UAT"] == []   # t853u: no per-PR UAT
+    # mrb-664-fix / FR #628: merge queues per-issue UAT with author_seat from MRB
+    uats = [r for r in gitclaim.load_unaccepted(_home) if r.get("task") == "UAT"]
+    assert len(uats) == 1
+    assert uats[0]["id"] == "#5"
+    assert uats[0]["author_seat"] == "marchhare-16564"
     assert ("MRB", "#9") not in [(r["task"], r["id"]) for r in gitclaim.load_unaccepted(_home)]
 
 

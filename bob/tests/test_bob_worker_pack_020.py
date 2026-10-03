@@ -362,9 +362,7 @@ def test_uat_skill_is_the_vision_gap_flow_with_fr_per_gap_or_docs_and_release():
     assert "Report-BobiverseIntakeIssue.ps1 -Repo owner/name -Kind fr" in t
     assert re.search(r"(?i)update the docs and READMEs", t) and "Pack-BobiverseRelease.ps1 -Product all" in t and "gh release create" in t
     assert re.search(r"(?i)never by Jeeves", t) and re.search(r"(?i)Jeeves / the chair .*never verifies", t)
-    assert "DONE UAT owner/repo#0 FAIL" in t and "DONE UAT owner/repo#0 PASS" in t              # t853u: UAT is per REPO (#0)
-    assert re.search(r"(?i)UAT is per REPO", t) and re.search(r"(?i)never per PR", t)
-    assert "every issue" in mer or "all issues closed" in mer and "all PRs merged" in mer
+    assert "DONE UAT owner/repo#N FAIL" in t and "DONE UAT owner/repo#N PASS" in t              # wire contract unchanged
     assert re.search(r"(?i)NACK UAT", t) and "GIVEUP" in t
     assert re.search(r"(?i)evidence before stamp", t)
 

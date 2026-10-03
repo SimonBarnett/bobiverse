@@ -132,8 +132,14 @@ def test_done_mrb_pass_stamps_both_implementer_and_mrb_on_uat(tmp_path, monkeypa
         url="https://example/pull/12",
     )
     assert st == "ok"
-    # t853u: no per-issue UAT row any more (repo-level UAT only); the seat ledger records who did what
-    assert [r for r in gitclaim.load_unaccepted(home) if r.get("task") == "UAT"] == []
+    # mrb-664-fix / FR #628: DONE MRB PASS queues per-issue UAT with both seat stamps
+    uats = [r for r in gitclaim.load_unaccepted(home) if r.get("task") == "UAT"]
+    assert len(uats) == 1
+    assert uats[0]["id"] == "#10"
+    assert uats[0].get("implementer_seat") == "marchhare-1"
+    assert uats[0].get("mrb_author_seat") == "ionos-2"
+    # legacy author_seat remains set (MRB author for back-compat)
+    assert uats[0].get("author_seat") == "ionos-2"
 
 
 def test_done_fr_stamps_implementer_on_mrb(tmp_path, monkeypatch):
@@ -225,7 +231,11 @@ def test_merged_pr_copies_both_seats_onto_uat(tmp_path, monkeypatch):
         },
     )
     assert gitclaim.apply_queue_event(home, claim) == "updated"
-    assert [r for r in gitclaim.load_unaccepted(home) if r.get("task") == "UAT"] == []   # t853u
+    # mrb-664-fix / FR #628: merge queues per-issue UAT with both seat stamps
+    uats = [r for r in gitclaim.load_unaccepted(home) if r.get("task") == "UAT"]
+    assert len(uats) == 1
+    assert uats[0].get("implementer_seat") == "marchhare-1"
+    assert uats[0].get("mrb_author_seat") == "ionos-2"
 
 
 def test_uat_blocks_same_machine_sibling_of_implementer(tmp_path, monkeypatch):

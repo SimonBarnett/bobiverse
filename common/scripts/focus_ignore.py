@@ -275,7 +275,10 @@ def repo_row_admitted(row: dict, now: float | None = None) -> bool:
     if gitclaim.row_skip_fr_reason(row) or gitclaim.row_needs_human(row):
         return False
     if str(row.get("task") or "").strip().upper() == "UAT":
-        return bool(row.get("repo_uat"))   # t853u: only the single per-repo UAT is real work
+        ts = gitclaim._parse_iso_ts(str(row.get("ts") or ""))
+        now_f = time.time() if now is None else float(now)
+        if ts is None or (now_f - ts) > gitclaim.UAT_MAX_AGE_S:
+            return False
     return True
 
 

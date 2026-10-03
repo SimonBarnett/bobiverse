@@ -33,8 +33,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 `gitclaim` never offers junk or fake work, even when `!focus` would otherwise select it:
 
 * **FR skip labels** (`SKIP_FR_LABELS`): `skill`, `umbrella`, `parent-fr`, `mrb-home` / `mrb_home`, `evergreen` / `evergreen-mrb`, and verdict boards `mrb`, `mrb-pass`/`mrb_pass`, `mrb-fail`/`mrb_fail`. Matched at enqueue, claim, offer, prune, and resync. Legacy rows with an empty `title` still skip when `labels` or `line`/`title` text carry board tokens (`mrb-fail`, `mrb-pass`, `mrb-home`, â€¦; bare `mrb` is labels-only so real titles like â€œharden MRB/FR â€¦â€ stay offerable). Pull URLs must match the row `repo`.
-* **UAT is per REPO (t853u)**: there are no per-PR / per-issue UAT rows. A merge (webhook or MRB PASS) queues nothing; legacy per-PR UAT rows are pruned on every resync. The 15-minute GitHub resync queues exactly ONE repo-level UAT row (`UAT owner/repo#0`, `repo_uat`, url `https://github.com/owner/repo`, `merged_prs` = the PRs merged this cycle) once the repo is **clear**: every open issue is closed or excluded (`needs-human`, `blocked`, `release-gate`, boards/`mrb-home`, harvest/skill records, CRITICAL spam, safe-to-close) AND no PR is open, AND at least one PR was merged since the last repo UAT finished (cycle start = last `DONE UAT`, default 48 h). A new open issue/PR before the row is offered withdraws it. Eligible seat: one that implemented none of the cycle's merged PRs (PR commit authors are read from GitHub into the seat ledger); if every live seat implemented something, any seat may take it. A seat that gave the repo UAT up never gets it again. `DONE UAT` starts the next cycle.
-* **Seat ledger (t852u)**: `seat-ledger.json` beside `queue.json` is durable (GitHub resync rebuilds queue rows and drops their stamps). It records, per `owner/repo#N`, which seat did FR (implement; also PR commit authors) / MRB, and per row which seats gave it up. MRB is never offered to the implementer of the PR or its linked issues; nothing is re-offered to a seat that GIVEUP/NACKed it.
+* **UAT dual-seat block** (FR #265 / #227): UAT rows stamp `implementer_seat` (FR DONE) and `mrb_author_seat` (MRB PASS); `review_blocked_for_author` skips either seat (and same-machine siblings) while another machine is live. Legacy `author_seat` still works.
 * **MRB pull URL** (FR #595 / #247): assign lines and offers use only a real `https://github.com/{repo}/pull/N` URL or an explicit `pr_id` / `pr`. The chair never invents `/pull/{issue_id}` from a bare row id. Rows with an issues-shaped URL, missing pull URL, or a pull that 404s (when a GitHub token is available) are skipped at offer and dropped by prune; a real `/pull/240`-style row stays offerable. Author-seat / same-machine self-MRB blocking is unchanged.
 
 ## Authorization matrix
@@ -55,8 +54,6 @@ A **principal** is derived per message from the nick plus the services account t
 | `!ignore` `!unignore` | yes | yes | no | no |
 | `!focus ..` `!unfocus ..` (write) | yes | yes | yes | no |
 | `!resync` `!sweep` `!recycle` `!assign` | yes | yes | no | no |
-
-`!assign <nick> <owner/repo> UAT 0` hands out the repo-level UAT row (`#0`).
 
 Denial replies (gh-Jeeves strings): `ignore: denied (simon or bob-* ops only)`, `unignore: denied (simon or bob-* ops only)`,
 `focus: denied (owner account required)`, `unfocus: denied (owner account required)`,

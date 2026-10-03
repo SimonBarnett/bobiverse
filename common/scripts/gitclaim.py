@@ -914,11 +914,20 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                                 break
                         if mrb_src:
                             break
-                    # t853u: UAT is per REPO (one row once every issue is closed and every PR merged,
-                    # see resync_from_github); a merge never queues a per-PR / per-issue UAT any more.
-                    del mrb_src
+                    # FR #628 / mrb-664-fix: restore per-issue UAT after merge (not repo-only UAT #0).
+                    extra = uat_block_extras_from_mrb_row(mrb_src) if mrb_src else {}
                     for ref in claim.refs:
-                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
+                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB"})
+                        uat = GitClaim(
+                            repo=claim.repo,
+                            task="UAT",
+                            id=ref,
+                            event="issues",
+                            action="uat",
+                            line=claim.line,
+                            refs=(claim.id,),
+                        )
+                        _append_unaccepted(doc, uat, **extra)
                     changed = "updated"
                 else:
                     # closed without merge: restore FR for linked issues
@@ -2220,8 +2229,7 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
                 if task == "MRB" and not mrb_row_offerable(row):
                     continue
-                if task == "UAT" and not row.get("repo_uat"):
-                    continue  # t853u: no per-PR / per-issue UAT rows; only the single repo-level UAT
+                # mrb-664-fix: keep per-issue UAT rows (FR #628); do not drop non-repo_uat.
                 keep.append(row)
             doc["unaccepted"] = keep
             dropped = before - len(keep)
@@ -2381,15 +2389,14 @@ def resync_from_github(
             keep = []
             for row in doc["unaccepted"]:
                 if str(row.get("task") or "").upper() == "UAT":
-                    if not row.get("repo_uat"):
-                        continue  # t853u: legacy per-PR / per-issue UAT rows are gone (even if offered, unACKed)
+                    # mrb-664-fix: keep per-issue UAT; drop only stale repo_uat when repo is no longer clear.
                     if (
                         row.get("repo_uat")
                         and row.get("repo") in fetched_set
                         and not repo_clear.get(str(row.get("repo")), True)
                         and not row.get("offered_to")
                     ):
-                        continue  # new issue / PR opened: the repo is no longer clear, UAT waits
+                        continue
                 if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
                     continue  # FR #180 local junk
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
