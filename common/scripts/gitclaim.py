@@ -2465,6 +2465,7 @@ def offer_top(
     *,
     now: float | None = None,
     pr_exists=None,
+    is_pull=None,
 ) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
     import time as _time
