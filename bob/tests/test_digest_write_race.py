@@ -96,7 +96,12 @@ def test_replace_gives_up_after_retries_and_non_sharing_errors_raise_at_once(tmp
         n["c"] += 1
         raise PermissionError(13, "denied")
 
+    def copy_denied(s, d):
+        raise PermissionError(13, "denied")
+
     monkeypatch.setattr(bobreport.os, "replace", always)
+    # FR #951: copyfile fallback must also fail for "gives up" assertion.
+    monkeypatch.setattr(bobreport.shutil, "copyfile", copy_denied)
     monkeypatch.setattr(bobreport, "_REPLACE_RETRY_DELAYS", (0.0, 0.0))
     with pytest.raises(PermissionError):
         bobreport._replace_with_retry(src, tmp_path / "a")

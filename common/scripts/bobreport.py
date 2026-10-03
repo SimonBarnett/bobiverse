@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -952,7 +953,9 @@ def save_digest(home: Path, doc: dict) -> None:
 
     The fresh-temp retry also covers AV/racing cleanup removing the temporary file
     between write and replace (FR #36), while write/replace helpers cover WinError
-    5/32 sharing violations (FR #35/#37).
+    5/32 sharing violations (FR #35/#37). FR #951: after replace retries exhaust,
+    fall back to ``shutil.copyfile`` so open readers without FILE_SHARE_DELETE
+    do not fail the webhook report route.
     """
     path = digest_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1013,8 +1016,15 @@ def _replace_with_retry(src: Path, dst: Path) -> None:
             if not _is_sharing_error(exc):
                 raise
             last = exc
-    assert last is not None
-    raise last
+    # FR #951: sustained Access denied on replace (open handle without DELETE share).
+    # Overwriting bytes via copyfile often succeeds when replace cannot unlink dst.
+    try:
+        shutil.copyfile(src, dst)
+        return
+    except OSError as exc:
+        if last is not None:
+            raise last from exc
+        raise
 
 
 def _cleanup_stale_digest_tmp(path: Path, max_age_s: float | None = None) -> int:
