@@ -63,8 +63,13 @@ REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ID_RE = re.compile(r"^#\d+$")
 # FR #785: archived / superseded repos must not be offered or enqueued.
 # Keys are lower-case owner/name; values are the live successor for resync discovery.
+# Keep in sync with docs/ARCHIVED_REPOS.md (all five archived 2026-10-03).
 ARCHIVED_REPO_SUCCESSORS: dict[str, str] = {
     "simonbarnett/gh-jeeves": "SimonBarnett/bobiverse",
+    "simonbarnett/agentic_build": "SimonBarnett/bobiverse",
+    "simonbarnett/agentic_irc": "SimonBarnett/bobiverse",
+    "simonbarnett/agentmonitor": "SimonBarnett/bobiverse",
+    "simonbarnett/bob-design-uat": "SimonBarnett/bobiverse",
 }
 # FR #254: DONE FR URL -> real PR repo/id (cross-repo implement PRs).
 PULL_URL_RE = re.compile(

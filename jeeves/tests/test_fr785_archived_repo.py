@@ -32,6 +32,19 @@ def test_canonical_queue_repo_rewrites_gh_jeeves():
     assert gitclaim.repo_archived_for_queue(BOB) is False
 
 
+def test_archived_map_covers_all_docs_archived_repos():
+    """MRB #798: map must match docs/ARCHIVED_REPOS.md so allow-list resync cannot re-hit archives."""
+    for repo in (
+        "SimonBarnett/gh-Jeeves",
+        "SimonBarnett/agentic_build",
+        "SimonBarnett/agentic_irc",
+        "SimonBarnett/AgentMonitor",
+        "SimonBarnett/bob-design-uat",
+    ):
+        assert gitclaim.repo_archived_for_queue(repo) is True, repo
+        assert gitclaim.canonical_queue_repo(repo) == BOB, repo
+
+
 def test_claim_from_payload_skips_archived_open_events():
     payload = {
         "action": "opened",
@@ -128,3 +141,37 @@ def test_discover_queue_rows_rewrite_archived_source(tmp_path, monkeypatch):
     got = ch.discover_repos(tmp_path, {"simonbarnett"}, getter, ignored=[])
     assert BOB in got
     assert GHJ not in got
+
+
+def test_offer_and_prune_skip_other_archived_repos(tmp_path):
+    """Non-gh-Jeeves archived sources must also be unofferable / pruned (MRB #798)."""
+    other = "SimonBarnett/agentic_build"
+    _seed(
+        tmp_path,
+        [
+            {
+                "repo": other,
+                "task": "FR",
+                "id": "#1",
+                "title": "old",
+                "url": f"https://github.com/{other}/issues/1",
+                "seq": 1,
+            },
+            {
+                "repo": BOB,
+                "task": "FR",
+                "id": "#785",
+                "title": "live",
+                "url": f"https://github.com/{BOB}/issues/785",
+                "seq": 2,
+            },
+        ],
+    )
+    st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-1", "#marchhare")
+    assert st == "ok"
+    assert job["repo"] == BOB
+    out = gitclaim.prune_unassignable_queue(tmp_path)
+    assert out["dropped"] >= 1
+    doc = gitclaim.load_queue(tmp_path)
+    assert other not in {r["repo"] for r in doc["unaccepted"]}
+    assert BOB in {r["repo"] for r in doc["unaccepted"]}
