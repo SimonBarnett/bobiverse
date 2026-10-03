@@ -119,3 +119,15 @@ Chair stamps `require_machine` from labels (`needs-ionos`, `machine:ionos`) and 
 * Marchhare cannot bounce ionos `ircJeeves` or edit ionos `queue.json` — those FRs are ionos-only.
 * If you are still offered one (stale chair / missing stamp): ACK then **GIVEUP** with `needs-ionos` / `require_machine=ionos` in the reason line; file intake if the stamp was missing.
 * Skill/harvest intake issues (`label:skill` or title starting `harvest`/`skill`) are **not** FR jobs — GIVEUP with that reason (or promote the playbook via a skill PR if that is the assign intent).
+
+## Twin / already-fixed FRs (FR #751 / #905 harvest)
+
+Older open FRs that **restate a defect already fixed** on main (e.g. closed-PR-as-FR twins of #838/#846 after #854+#867 merged) must **not** be re-implemented:
+
+1. ACK.
+2. Find the merged fix PR (`gh pr list --state merged --search "…"`, or the FR body / related issues).
+3. Confirm the fix is on `main` and covers this issue’s acceptance.
+4. **DONE** with that **existing merged PR URL** (or the open PR that already `Closes` this issue). Comment on the issue: no duplicate.
+5. If GitHub did not auto-close this twin, close it with a comment pointing at the fix PR (`Duplicate of #N / fixed by PR #M` when it is a pure duplicate).
+
+Never open a second PR that re-lands the same gates.
