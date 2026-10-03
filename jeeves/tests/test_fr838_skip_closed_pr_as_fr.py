@@ -206,9 +206,13 @@ def test_issues_claim_skips_pull_request_blob():
 
 def test_assign_row_refuses_pr_shaped_fr(tmp_path, monkeypatch):
     """MRB #850 fix: assign_row keeps FR #838 refuse after rebase onto t853u main."""
+    import registered_machines
+
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    registered_machines.save_registered(tmp_path, {"marchhare", "ionos"})
     monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda home: {"marchhare-35600"})
     monkeypatch.setattr(gitclaim, "ledger_load", lambda home: {})
+    monkeypatch.setattr(gitclaim, "worker_working_on", lambda h, n: "")
     _queue(
         tmp_path,
         [
