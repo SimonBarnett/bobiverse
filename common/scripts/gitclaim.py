@@ -1287,13 +1287,22 @@ def _coerce_row(row: dict) -> dict | None:
 
 
 def is_repo_uat(row: dict) -> bool:
-    """t853u / FR #818: UAT is per REPO only — ``repo_uat`` and id ``#0`` (never per-PR / per-issue)."""
+    """t853u / FR #818 / #821: UAT is per REPO only.
+
+    Requires task=UAT, ``repo_uat``, id ``#0``, and a title/line that is not an
+    mrb-*-fix / fix(mrb-N) PR title (poisoned leftover rows).
+    """
     if _canon_task(row) != "UAT":
         return False
     if not bool(row.get("repo_uat")):
         return False
     ident = str(row.get("id") or "").strip().lstrip("#")
-    return ident == "0"
+    if ident != "0":
+        return False
+    titleish = " ".join([str(row.get("line") or ""), str(row.get("title") or "")])
+    if is_mrb_fix_pr_title(titleish):
+        return False
+    return True
 
 
 def is_mrb_fix_pr_title(title: str) -> bool:

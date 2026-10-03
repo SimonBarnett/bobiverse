@@ -168,3 +168,31 @@ def test_prune_drops_per_pr_uat_and_poisoned_repo_uat_flag(tmp_path: Path):
     left = gitclaim.load_unaccepted(home)
     assert len(left) == 1
     assert gitclaim.is_repo_uat(left[0]) is True
+
+def test_is_repo_uat_rejects_mrb_fix_titled_zero_row():
+    """#821 / mrb-828: even #0 + repo_uat must not look like fix(mrb-N)."""
+    assert gitclaim.is_repo_uat(
+        _uat("#0", repo_uat=True, line="fix(mrb-802): should never be repo UAT", title="fix(mrb-802)")
+    ) is False
+    assert gitclaim.is_repo_uat(
+        _uat("#0", repo_uat=True, line=f"UAT {REPO}: clear")
+    ) is True
+
+
+def test_focus_admission_requires_is_repo_uat_not_flag_alone(tmp_path: Path):
+    import focus_ignore as fi
+
+    home = _home(tmp_path)
+    bad = _uat("#802", repo_uat=True, seq=1)
+    good = _uat("#0", repo_uat=True, seq=2, url=f"https://github.com/{REPO}")
+    assert fi.repo_row_admitted(bad) is False
+    assert fi.repo_row_admitted(good) is True
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {"v": 1, "unaccepted": [bad, good], "accepted": [], "done": [], "workers": {}},
+    )
+    fi.handle_focus_cmd(home, "strict on")
+    fi.handle_focus_cmd(home, "1 SimonBarnett/bobiverse")
+    ids = [(r["task"], r["id"]) for r in gitclaim.ordered_unaccepted(home)]
+    assert ("UAT", "#0") in ids
+    assert ("UAT", "#802") not in ids

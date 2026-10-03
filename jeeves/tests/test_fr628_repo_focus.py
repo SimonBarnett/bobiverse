@@ -58,16 +58,17 @@ def test_repo_focus_admits_new_rows_in_strict_without_item_focus(_home):
     fi.handle_focus_cmd(_home, "1 o/a")
     assert _ids(_home) == [("FR", "#1")]
     # a brand-new MRB / UAT / FR arrives for o/a: offerable without any per-number focus
-    _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/a", "UAT", 3, 3, repo_uat=True), _row("o/a", "MRB", 4, 4), _row("o/b", "MRB", 5, 5)])
-    assert _ids(_home) == [("MRB", "#4"), ("UAT", "#3"), ("FR", "#1")]
+    # (#818/#821: only UAT #0 with repo_uat is admitted)
+    _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/a", "UAT", 0, 3, repo_uat=True), _row("o/a", "MRB", 4, 4), _row("o/b", "MRB", 5, 5)])
+    assert _ids(_home) == [("MRB", "#4"), ("UAT", "#0"), ("FR", "#1")]
 
 
 def test_repo_focus_orders_repos_by_priority_then_entry_time(_home):
-    _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 4, 4, repo_uat=True)])
+    _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 0, 4, repo_uat=True)])
     fi.handle_focus_cmd(_home, "2 o/b")
     fi.handle_focus_cmd(_home, "1 o/a")
     fi.handle_focus_cmd(_home, "2 o/c")
-    assert _ids(_home) == [("FR", "#2"), ("UAT", "#4"), ("FR", "#3"), ("MRB", "#1")]
+    assert _ids(_home) == [("FR", "#2"), ("UAT", "#0"), ("FR", "#3"), ("MRB", "#1")]
 
 
 def test_item_rank_beats_repo_order(_home):
@@ -80,7 +81,8 @@ def test_item_rank_beats_repo_order(_home):
 def test_stale_uat_and_skip_rows_not_admitted_by_repo_focus(_home):
     _queue(_home, [
         _row("o/a", "UAT", 1, 1),                                      # legacy per-PR UAT (t853u): never real work
-        _row("o/a", "UAT", 2, 2, repo_uat=True),                       # the single repo-level UAT
+        _row("o/a", "UAT", 2, 2, repo_uat=True),                       # #818: non-#0 even with flag is not real
+        _row("o/a", "UAT", 0, 8, repo_uat=True),                       # the single repo-level UAT
         _row("o/a", "FR", 3, 3, labels=["mrb-home"]),
         _row("o/a", "FR", 4, 4, labels=["needs-human"]),
         _row("o/a", "FR", 5, 5, needs_human=True),
@@ -89,7 +91,7 @@ def test_stale_uat_and_skip_rows_not_admitted_by_repo_focus(_home):
     ])
     fi.handle_focus_cmd(_home, "strict on")
     fi.handle_focus_cmd(_home, "1 o/a")
-    assert _ids(_home) == [("UAT", "#2"), ("FR", "#7")]
+    assert _ids(_home) == [("UAT", "#0"), ("FR", "#7")]
 
 
 def test_unfocused_repo_stays_hidden_in_strict(_home):
