@@ -181,7 +181,8 @@ $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
-[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
+# FR #1055: Restart on Default and on exit 0 (graceful quit) — same pin as ircJeeves.
+Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $ServiceName -RestartDelayMs 2000
 
 # Issue #6: msiexec /qn is UserInteractive=$true but has no console - never Get-Credential unless -PromptServicePassword
 # and not under MSI/quiet.

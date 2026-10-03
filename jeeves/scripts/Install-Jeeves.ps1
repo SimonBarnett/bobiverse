@@ -190,7 +190,8 @@ $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome 
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', 'bobiverse Jeeves chair'))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
-[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
+# FR #1055: Restart on Default and on exit 0 (graceful quit).
+Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $ServiceName -RestartDelayMs 2000
 # Keep crash loops out of the airc console pipe — always log to files.
 $logsDir = Join-Path $InstallRoot 'logs'
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
