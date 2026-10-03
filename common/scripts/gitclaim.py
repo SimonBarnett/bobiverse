@@ -757,7 +757,19 @@ def infer_require_machine(
 
 
 def row_require_machine(row: dict) -> str:
-    """Machine id required for this queue row, if any (FR #587)."""
+    """Machine id required for this queue row, if any (FR #587 / #1093)."""
+    # Hard issue pins win over unpin tokens (any/none) — FR #1093 WP0 must not leak
+    # back to win-mpre after a monitor ``require_machine=any`` clear.
+    hard = infer_require_machine(
+        title="",
+        body="",
+        labels=(),
+        line="",
+        repo=str(row.get("repo") or ""),
+        ident=str(row.get("id") or ""),
+    )
+    if hard:
+        return hard
     stamped = str(row.get("require_machine") or "").strip().lower()
     # Operator/monitor unpin: "*" / "any" / "none" means do not re-infer from title/body
     # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
@@ -1116,9 +1128,10 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
 
 
 def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
-    """FR #587: persist require_machine on enqueue/refresh when cues match."""
-    if str(row.get("require_machine") or "").strip():
-        return
+    """FR #587 / #1093: persist require_machine on enqueue/refresh when cues match.
+
+    Hard issue pins always overwrite empty/unpin tokens. A real machine stamp is kept.
+    """
     title = str((claim.title if claim else "") or row.get("title") or "")
     body = str((claim.body if claim else "") or row.get("body") or "")
     line = str((claim.line if claim else "") or row.get("line") or "")
@@ -1130,8 +1143,14 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     req = infer_require_machine(
         title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
     )
-    if req:
-        row["require_machine"] = req
+    if not req:
+        return
+    stamped = str(row.get("require_machine") or "").strip().lower()
+    if stamped and stamped not in {"*", "any", "none", "-"}:
+        mid = bobreport.normalize_machine_id(stamped) or stamped
+        if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
+            return
+    row["require_machine"] = req
 
 
 def apply_queue_event(home: Path, claim: GitClaim) -> str:
