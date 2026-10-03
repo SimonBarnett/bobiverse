@@ -61,6 +61,15 @@ if (-not $Python) { $Python = 'python' }
 if (-not $RunAsUser) {
     $RunAsUser = if ($env:USERNAME) { $env:USERNAME } else { 'Administrator' }
 }
+# FR #1316 / MRB #1353: never re-register as LocalSystem / SYSTEM (S-1-5-18) against a user profile home.
+$ruNorm = ($RunAsUser -replace '^.*\\', '').Trim()
+if (
+    $ruNorm -match '^(SYSTEM|LOCALSYSTEM|LOCAL SERVICE|NETWORK SERVICE)$' -or
+    $RunAsUser -match 'S-1-5-18' -or
+    $RunAsUser -match '(?i)NT AUTHORITY\\SYSTEM'
+) {
+    throw ("Refuse RunAsUser={0}: BobCallback must not run as LocalSystem/SYSTEM (FR #1316). Pass the digest-home owner (e.g. Administrator)." -f $RunAsUser)
+}
 
 $arg = '-u "{0}" --home "{1}" --bind 127.0.0.1 --port {2}' -f $ScriptPath, $DigestHome, $Port
 $action = New-ScheduledTaskAction -Execute $Python -Argument $arg
