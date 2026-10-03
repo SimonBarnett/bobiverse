@@ -123,6 +123,8 @@ SKIP_FR_LABELS = frozenset(
         "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
+        # Vision / MRB1 human gate — must NOT become require_machine=mrb1 (#1080).
+        "needs-mrb1",
         "blocked",
         "release-gate",
     }
@@ -131,7 +133,9 @@ SKIP_FR_LABELS = frozenset(
 # Labels safe to detect in free text (title/line/body). Bare ``mrb`` is labels-only —
 # otherwise titles like "harden MRB/FR routing" (#595) would false-positive.
 SKIP_FR_LABELS_IN_TEXT = frozenset(
-    lab for lab in SKIP_FR_LABELS if lab not in {"mrb", "skill", "needs-human", "blocked", "release-gate"}
+    lab
+    for lab in SKIP_FR_LABELS
+    if lab not in {"mrb", "skill", "needs-human", "needs-mrb1", "blocked", "release-gate"}
 )
 
 
@@ -617,9 +621,24 @@ def _parse_iso_ts(raw: str) -> float | None:
         return None
 
 
-def row_on_cooldown(row: dict, now: float) -> bool:
+def row_on_cooldown(row: dict, now: float, nick: str = "") -> bool:
+    """True when this seat must wait out ``cooldown_until``.
+
+    Global row cooldown after GIVEUP used to block *every* seat for
+    ``GIVEUP_COOLDOWN_S``, which left the fleet idle while other live seats
+    could have taken the work. Ledger / ``giveup_seats`` already prevent
+    re-offer to the giver; other seats skip the global wait.
+    """
     until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
-    return until is not None and float(now) < until
+    if until is None or float(now) >= until:
+        return False
+    me = (nick or "").strip().lower()
+    if not me:
+        return True
+    seats = {x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()}
+    if seats and me not in seats:
+        return False
+    return True
 
 
 def row_needs_human(row: dict) -> bool:
@@ -633,6 +652,20 @@ def row_needs_human(row: dict) -> bool:
 # FR #628 / #732: also accept bare ``machine:<id>`` (legacy pin label).
 _REQUIRE_MACHINE_LABEL_RE = re.compile(
     r"(?i)^(?:needs|require[_-]?machine|machine)[-_:=]([a-z0-9][a-z0-9_.-]*)$"
+)
+# Tokens that match needs-<x> but are human/process gates, not fleet machine ids.
+# needs-mrb1 was wrongly stamped require_machine=mrb1 and stranded the offer queue (#1080).
+_REQUIRE_MACHINE_NON_MACHINE = frozenset(
+    {
+        "mrb1",
+        "mrb",
+        "human",
+        "vision",
+        "blocked",
+        "release",
+        "release-gate",
+        "gate",
+    }
 )
 # Explicit cue → fleet machine id (normalized lowercase).
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -675,7 +708,7 @@ def infer_require_machine(
         m = _REQUIRE_MACHINE_LABEL_RE.match(s)
         if m:
             mid = bobreport.normalize_machine_id(m.group(1)) or m.group(1).strip().lower()
-            if mid:
+            if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
                 return mid
         # bare needs-ionos style already covered by cue regex below via label join
     blob = "\n".join(
@@ -696,7 +729,10 @@ def row_require_machine(row: dict) -> str:
     """Machine id required for this queue row, if any (FR #587)."""
     stamped = str(row.get("require_machine") or "").strip().lower()
     if stamped:
-        return bobreport.normalize_machine_id(stamped) or stamped
+        mid = bobreport.normalize_machine_id(stamped) or stamped
+        # Ignore corrupt stamps like mrb1 from needs-mrb1 (#1080).
+        if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
+            return mid
     labels = row.get("labels") or ()
     if isinstance(labels, str):
         labels = [labels]
@@ -2067,37 +2103,48 @@ def offer_focus_top(
                 return "error", None
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
             purged = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists)
-            order = ordered_unaccepted(home, doc["unaccepted"])
-            pick = None
-            for cand in order:
-                if row_needs_human(cand) or row_on_cooldown(cand, now_f):
-                    continue  # FR #180: GIVEUP/NACK cooldown / needs-human
+            # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                if not to:
+                    continue
+                try:
+                    age = now_f - datetime.fromisoformat(
+                        str(cand.get("offered_ts") or "").replace("Z", "+00:00")
+                    ).timestamp()
+                except ValueError:
+                    age = OFFER_TIMEOUT_S + 1
+                if age >= OFFER_TIMEOUT_S:
+                    cand.pop("offered_to", None)
+                    cand.pop("offered_ts", None)
+                    cand.pop("offered_channel", None)
+                    purged = True
+
+            def _eligible(cand: dict) -> dict | None:
+                if row_needs_human(cand) or row_on_cooldown(cand, now_f, me):
+                    return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_skip_fr_reason(cand):
-                    continue
-                # FR #785: never offer rows whose repo is archived / superseded.
+                    return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
-                    continue
-                # FR #628: never hand out a row that is bound to GIVEUP for this seat.
+                    return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
-                    continue
+                    return None
                 if ledger_blocks(ledger, cand, me, live):
-                    continue  # t852u: durable self-MRB/UAT + GIVEUP memory (survives GitHub resync)
+                    return None
                 if str(cand.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
-                    continue  # FR #254
-                # FR #846 / #838: never offer a pull request number as FR.
+                    return None
                 if not fr_row_offerable(cand, pr_exists=pr_exists):
-                    continue
-                # bobiverse#768 / #781 / t853u: never offer legacy per-PR UAT.
+                    return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
-                    continue
-                # FR #740: never re-offer an MRB already in done (local, no token).
+                    return None
                 if mrb_already_done(doc, cand):
-                    continue
-                # FR #595 / #247 / #740: skip MRB without a real open pull URL.
+                    return None
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
-                    continue
+                    return None
                 to = str(cand.get("offered_to") or "").strip()
                 if to and to.lower() != me.lower():
                     try:
@@ -2107,15 +2154,32 @@ def offer_focus_top(
                     except ValueError:
                         age = OFFER_TIMEOUT_S + 1
                     if age < OFFER_TIMEOUT_S:
-                        continue
+                        return None
                 cand_eff = enrich_uat_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live):
-                    continue
-                # FR #587: skip seats whose machine does not match require_machine.
+                    return None
                 if row_blocked_for_machine(cand_eff, me):
-                    continue
-                pick = cand_eff
-                break
+                    return None
+                return cand_eff
+
+            # Prefer focus order; if strict focus hides every eligible row, fall back to
+            # the full unaccepted list so idle seats still get work (keep-the-flow).
+            order = ordered_unaccepted(home, doc["unaccepted"])
+            pick = None
+            for cand in order:
+                pick = _eligible(cand)
+                if pick is not None:
+                    break
+            if pick is None:
+                fallback = [
+                    r for r in (doc.get("unaccepted") or [])
+                    if isinstance(r, dict)
+                ]
+                fallback.sort(key=_sort_key)
+                for cand in fallback:
+                    pick = _eligible(cand)
+                    if pick is not None:
+                        break
             if pick is None:
                 if purged:
                     try:
@@ -2130,7 +2194,6 @@ def offer_focus_top(
                     job["offered_to"] = me
                     job["offered_ts"] = _utc_now()
                     job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
-                    # Stamp resolved pull URL so the wire line never invents one.
                     resolved = resolve_assign_url(job)
                     if resolved:
                         job["url"] = resolved
@@ -2171,7 +2234,7 @@ def offer_top(
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):
-                if row_needs_human(row) or row_on_cooldown(row, now_f) or row_skip_fr_reason(row):
+                if row_needs_human(row) or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
                     continue
                 if repo_archived_for_queue(str(row.get("repo") or "")):
                     continue  # FR #785
@@ -2577,7 +2640,7 @@ def assign_row(
             cand = doc["unaccepted"][idx]
             if row_needs_human(cand):
                 return "refused", "row is needs-human"
-            if row_on_cooldown(cand, now_f):
+            if row_on_cooldown(cand, now_f, me):
                 return "refused", "row is on GIVEUP/NACK cooldown"
             if row_skip_fr_reason(cand):
                 return "refused", f"row skipped: {row_skip_fr_reason(cand)}"
