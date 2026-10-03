@@ -58,16 +58,17 @@ def test_repo_focus_admits_new_rows_in_strict_without_item_focus(_home):
     fi.handle_focus_cmd(_home, "1 o/a")
     assert _ids(_home) == [("FR", "#1")]
     # a brand-new MRB / UAT / FR arrives for o/a: offerable without any per-number focus
-    _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/a", "UAT", 3, 3, repo_uat=True), _row("o/a", "MRB", 4, 4), _row("o/b", "MRB", 5, 5)])
-    assert _ids(_home) == [("MRB", "#4"), ("UAT", "#3"), ("FR", "#1")]
+    # (#821: only UAT #0 with repo_uat is admitted)
+    _queue(_home, [_row("o/a", "FR", 1, 1), _row("o/a", "UAT", 0, 3, repo_uat=True), _row("o/a", "MRB", 4, 4), _row("o/b", "MRB", 5, 5)])
+    assert _ids(_home) == [("MRB", "#4"), ("UAT", "#0"), ("FR", "#1")]
 
 
 def test_repo_focus_orders_repos_by_priority_then_entry_time(_home):
-    _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 4, 4, repo_uat=True)])
+    _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 0, 4, repo_uat=True)])
     fi.handle_focus_cmd(_home, "2 o/b")
     fi.handle_focus_cmd(_home, "1 o/a")
     fi.handle_focus_cmd(_home, "2 o/c")
-    assert _ids(_home) == [("FR", "#2"), ("UAT", "#4"), ("FR", "#3"), ("MRB", "#1")]
+    assert _ids(_home) == [("FR", "#2"), ("UAT", "#0"), ("FR", "#3"), ("MRB", "#1")]
 
 
 def test_item_rank_beats_repo_order(_home):
@@ -80,7 +81,8 @@ def test_item_rank_beats_repo_order(_home):
 def test_stale_uat_and_skip_rows_not_admitted_by_repo_focus(_home):
     _queue(_home, [
         _row("o/a", "UAT", 1, 1),                                      # legacy per-PR UAT (t853u): never real work
-        _row("o/a", "UAT", 2, 2, repo_uat=True),                       # the single repo-level UAT
+        _row("o/a", "UAT", 2, 2, repo_uat=True),                       # #821: non-#0 even with flag is not real
+        _row("o/a", "UAT", 0, 8, repo_uat=True),                       # the single repo-level UAT
         _row("o/a", "FR", 3, 3, labels=["mrb-home"]),
         _row("o/a", "FR", 4, 4, labels=["needs-human"]),
         _row("o/a", "FR", 5, 5, needs_human=True),
@@ -89,7 +91,7 @@ def test_stale_uat_and_skip_rows_not_admitted_by_repo_focus(_home):
     ])
     fi.handle_focus_cmd(_home, "strict on")
     fi.handle_focus_cmd(_home, "1 o/a")
-    assert _ids(_home) == [("UAT", "#2"), ("FR", "#7")]
+    assert _ids(_home) == [("UAT", "#0"), ("FR", "#7")]
 
 
 def test_unfocused_repo_stays_hidden_in_strict(_home):
@@ -204,9 +206,12 @@ def test_giveup_records_seat_and_blocks_reoffer_after_cooldown(_home):
     assert gitclaim.offer_focus_top(_home, "ionos-12", "#ionos", now=later)[0] == "ok"
 
 # ------------------------------------------------------------ t852u: durable seat ledger
-def _uat(num, refs=(), **kw):
-    # Default repo-level UAT (#781 / t853u); callers may override id via num=0 + repo_uat.
-    r = _row("o/a", "UAT", num, num, refs=list(refs), repo_uat=True)
+def _uat(num=0, refs=(), **kw):
+    # Default repo-level UAT (#781 / t853u / #821): id #0 + repo_uat.
+    # Callers that pass a non-zero num get a legacy per-PR shape (not offerable).
+    r = _row("o/a", "UAT", num, num if num else 1, refs=list(refs), repo_uat=(num == 0))
+    if num == 0:
+        r["repo_uat"] = True
     r.update(kw)
     return r
 
@@ -271,14 +276,19 @@ def test_done_existing_pr_and_uat_giveup_do_not_block_mrb_of_the_pr(_home):
 
 
 def test_offer_and_assign_honour_ledger_even_without_row_stamps(_home):
-    gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#611", "o/a#626"])
-    _queue(_home, [_uat(611, refs=["#626"]), _row("o/a", "FR", 8, 9)])
+    gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#10", "o/a#11"])
+    # #821: per-PR UAT is refused for every seat; use repo #0 for the self-UAT ledger check.
+    _queue(_home, [_uat(0, refs=["#10", "#11"], merged_prs=["#10"]), _row("o/a", "FR", 8, 9)])
     fi.handle_focus_cmd(_home, "1 o/a")
     st, job = gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")
     assert (job["task"], job["id"]) == ("FR", "#8")
-    st, why = gitclaim.assign_row(_home, "ionos-11", "o/a", "UAT", "#611")
-    assert st == "refused" and "no self-UAT" in why
-    assert gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#611")[0] == "ok"
+    st, why = gitclaim.assign_row(_home, "ionos-11", "o/a", "UAT", "#0")
+    assert st == "refused" and ("no self-UAT" in why or "implemented" in why)
+    assert gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#0")[0] == "ok"
+    # Per-PR UAT id is refused outright (t853u / #821), even to a clean seat.
+    _queue(_home, [_uat(611, refs=["#626"], repo_uat=True)])
+    st2, why2 = gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#611")
+    assert st2 == "refused" and ("#0" in why2 or "per-repo" in why2 or "repo" in why2.lower())
 
 def test_ledger_refresh_from_pr_commit_authors(_home):
     rows = [_row("o/a", "MRB", 12, 1, refs=["#7"]), _uat(30, refs=["#31"])]

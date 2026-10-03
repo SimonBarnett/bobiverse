@@ -275,7 +275,7 @@ def repo_row_admitted(row: dict, now: float | None = None) -> bool:
     if gitclaim.row_skip_fr_reason(row) or gitclaim.row_needs_human(row):
         return False
     if str(row.get("task") or "").strip().upper() == "UAT":
-        return bool(row.get("repo_uat"))   # t853u: only the single per-repo UAT is real work
+        return gitclaim.is_repo_uat(row)  # t853u / #821: only UAT owner/repo#0 with repo_uat
     return True
 
 
