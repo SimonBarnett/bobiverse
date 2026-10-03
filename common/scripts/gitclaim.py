@@ -642,11 +642,27 @@ def row_on_cooldown(row: dict, now: float, nick: str = "") -> bool:
     return True
 
 
-def row_needs_human(row: dict) -> bool:
+def row_needs_human(row: dict, nick: str = "") -> bool:
+    """True when this seat must not take a needs_human row.
+
+    After GIVEUP loops the chair stamps ``needs_human`` *and* ``giveup_seats``.
+    That used to block *every* seat, so marchhare sat idle while only ionos had
+    given up (bobiverse backlog NAK). When ``giveup_seats`` is set, only those
+    seats are blocked; other live seats may still be offered the row. A bare
+    ``needs_human`` with no giveup_seats stays a global human/vision gate.
+    """
     v = row.get("needs_human")
     if isinstance(v, bool):
-        return v
-    return str(v or "").strip().lower() in ("1", "true", "yes")
+        flag = v
+    else:
+        flag = str(v or "").strip().lower() in ("1", "true", "yes")
+    if not flag:
+        return False
+    seats = {x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()}
+    me = (nick or "").strip().lower()
+    if seats and me and me not in seats:
+        return False
+    return True
 
 
 # FR #587: machine-affinity for seats that cannot do the work (WP0 live / chair-outbox).
@@ -729,6 +745,10 @@ def infer_require_machine(
 def row_require_machine(row: dict) -> str:
     """Machine id required for this queue row, if any (FR #587)."""
     stamped = str(row.get("require_machine") or "").strip().lower()
+    # Operator/monitor unpin: "*" / "any" / "none" means do not re-infer from title/body
+    # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
+    if stamped in {"*", "any", "none", "-"}:
+        return ""
     if stamped:
         mid = bobreport.normalize_machine_id(stamped) or stamped
         # Ignore corrupt stamps like mrb1 from needs-mrb1 (#1080).
@@ -2124,7 +2144,7 @@ def offer_focus_top(
                     purged = True
 
             def _eligible(cand: dict) -> dict | None:
-                if row_needs_human(cand) or row_on_cooldown(cand, now_f, me):
+                if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_skip_fr_reason(cand):
                     return None
@@ -2261,7 +2281,7 @@ def offer_top(
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):
-                if row_needs_human(row) or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
+                if row_needs_human(row, nick or "") or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
                     continue
                 if repo_archived_for_queue(str(row.get("repo") or "")):
                     continue  # FR #785
@@ -2665,7 +2685,7 @@ def assign_row(
             if idx is None:
                 return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
-            if row_needs_human(cand):
+            if row_needs_human(cand, me):
                 return "refused", "row is needs-human"
             if row_on_cooldown(cand, now_f, me):
                 return "refused", "row is on GIVEUP/NACK cooldown"
@@ -3018,6 +3038,25 @@ def resync_from_github(
             doc["unaccepted"] = keep
             added = 0
             fetched_set2 = set(fetched)
+            ledger_now = ledger_load(home)
+
+            def _fr_done_hold(repo: str, ident: str) -> bool:
+                # Ledger fr_done means a PR was already opened for this FR — do not re-offer
+                # (resync kept re-adding #1201-class rows that every seat ledger-blocked).
+                done_ts = _parse_iso_ts(
+                    str((ledger_now.get("fr_done") or {}).get(_lkey(repo, ident)) or "")
+                )
+                return done_ts is not None and (time.time() - done_ts) < FR_DONE_HOLD_S
+
+            doc["unaccepted"] = [
+                r
+                for r in doc["unaccepted"]
+                if not (
+                    isinstance(r, dict)
+                    and str(r.get("task") or "").upper() == "FR"
+                    and _fr_done_hold(str(r.get("repo") or ""), str(r.get("id") or ""))
+                )
+            ]
             for claim in desired:
                 if claim.task == "FR" and fr_is_superseded(
                     doc,
@@ -3027,6 +3066,8 @@ def resync_from_github(
                     fetched_repos=fetched_set2,
                 ):
                     continue  # FR #254
+                if claim.task == "FR" and _fr_done_hold(claim.repo, claim.id):
+                    continue
                 mrb_url = (
                     f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
                 )
