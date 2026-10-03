@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, queue_bucket_rows, resolve_homes, run_check
+from _common import EXIT_FINDING, EXIT_OK, queue_bucket_rows, resolve_focus_path, resolve_homes, resolve_queue_path, run_check
 
 REQUIRED_REPO = "simonbarnett/bobiverse"
 # Soft expectation for healthy multi-repo focus (reported, not hard-fail alone).
@@ -43,11 +43,11 @@ def _load_json(path: Path):
 
 
 def check(args):
-    chair, _digest = resolve_homes(args)
+    chair, digest = resolve_homes(args)
     findings = []
     remediation = []
-    focus_path = chair / "focus.json"
-    queue_path = chair / "queue.json"
+    focus_path = resolve_focus_path(chair, digest)
+    queue_path = resolve_queue_path(chair, digest)
     focus = _load_json(focus_path) if focus_path.is_file() else None
     queue = _load_json(queue_path) if queue_path.is_file() else {}
     unaccepted = queue_bucket_rows(queue or {}, "unaccepted")

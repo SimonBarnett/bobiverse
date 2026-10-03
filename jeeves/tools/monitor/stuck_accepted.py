@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, queue_bucket_rows, resolve_homes, run_check
+from _common import EXIT_FINDING, EXIT_OK, queue_bucket_rows, resolve_homes, resolve_queue_path, run_check
 
 DEFAULT_MAX_AGE_SEC = 7200  # 2 h
 
@@ -38,10 +38,10 @@ def _row_label(row: dict) -> str:
 
 
 def check(args):
-    chair, _digest = resolve_homes(args)
+    chair, digest = resolve_homes(args)
     findings = []
     stuck = []
-    qpath = chair / "queue.json"
+    qpath = resolve_queue_path(chair, digest)
     if not qpath.is_file():
         findings.append(f"queue.json missing: {qpath}")
         return ({"ok": False, "findings": findings}, EXIT_FINDING)

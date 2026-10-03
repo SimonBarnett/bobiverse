@@ -11,7 +11,9 @@ from _common import (
     EXIT_OK,
     iter_worker_entries,
     queue_bucket_rows,
+    ops_home,
     resolve_homes,
+    resolve_queue_path,
     run_check,
 )
 
@@ -26,7 +28,7 @@ def check(args):
     chair, digest = resolve_homes(args)
     findings = []
     dig = _load_json(digest / "digest.json") or {}
-    queue = _load_json(chair / "queue.json") or {}
+    queue = _load_json(resolve_queue_path(chair, digest)) or {}
     unaccepted = queue_bucket_rows(queue, "unaccepted")
     idle = []
     machines = dig.get("machines") if isinstance(dig, dict) else None

@@ -7,17 +7,17 @@ import re
 import sys
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from _common import EXIT_FINDING, EXIT_OK, resolve_homes, resolve_queue_path, run_check
 
 GIVEUP_RX = re.compile(r"\bGIVEUP\b", re.I)
 
 
 def check(args):
-    chair, _digest = resolve_homes(args)
+    chair, digest = resolve_homes(args)
     findings = []
     counts = {}
     # queue giveup_count fields
-    qpath = chair / "queue.json"
+    qpath = resolve_queue_path(chair, digest)
     if qpath.is_file():
         try:
             queue = json.loads(qpath.read_text(encoding="utf-8-sig"))

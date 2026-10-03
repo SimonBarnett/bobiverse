@@ -14,6 +14,7 @@ from _common import (
     iter_worker_entries,
     queue_bucket_rows,
     resolve_homes,
+    resolve_queue_path,
     run_check,
 )
 
@@ -82,7 +83,7 @@ def check(args):
     ]
     stuck = []
     dig = _load_json(digest / "digest.json") or {}
-    queue = _load_json(chair / "queue.json") or {}
+    queue = _load_json(resolve_queue_path(chair, digest)) or {}
     accepted = queue_bucket_rows(queue, "accepted")
     machines = dig.get("machines") if isinstance(dig, dict) else None
     workers = [w for w in iter_worker_entries(machines) if _worker_busy(w)]
