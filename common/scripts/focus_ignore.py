@@ -244,8 +244,47 @@ def is_ignored(home: Path, repo: str) -> bool:
 
 
 # ---------------------------------------------------------------- ordering
+_TASK_ORDER = {"MRB": 0, "UAT": 1, "FR": 2}
+
+
+def _task_order(row: dict) -> int:
+    return _TASK_ORDER.get(str(row.get("task") or "").strip().upper(), 3)
+
+
+def _repo_entry(doc: dict, repo: str) -> tuple[int, str] | None:
+    """(priority, ts) of the best matching repo-level focus entry (lowest priority number, then
+    earliest focused), or None."""
+    best = None
+    for key, meta in (doc.get("repos") or {}).items():
+        if repo_match(key, repo):
+            cand = (int(meta.get("priority") or DEFAULT_PRIORITY), str(meta.get("ts") or ""))
+            if best is None or cand < best:
+                best = cand
+    return best
+
+
+def repo_row_admitted(row: dict, now: float | None = None) -> bool:
+    """FR #628: under a repo-level focus a row is real work unless a skip filter hits.
+
+    FR rows: open issue, not a board/harvest/CRITICAL-spam/needs-human row. MRB rows: any open PR
+    row. UAT rows: only for PRs merged within ``gitclaim.UAT_MAX_AGE_S`` (older UAT history stays
+    hidden). Cooldown / author-seat / superseded-FR checks happen at offer time.
+    """
+    import gitclaim
+
+    if gitclaim.row_skip_fr_reason(row) or gitclaim.row_needs_human(row):
+        return False
+    if str(row.get("task") or "").strip().upper() == "UAT":
+        ts = gitclaim._parse_iso_ts(str(row.get("ts") or ""))
+        now_f = time.time() if now is None else float(now)
+        if ts is None or (now_f - ts) > gitclaim.UAT_MAX_AGE_S:
+            return False
+    return True
+
+
 def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
-    """Drop ignored rows; strict drops unfocused rows; then item rank > repo priority > seq."""
+    """Drop ignored rows; strict drops unfocused rows; then item rank > repo priority (focus order)
+    > MRB, UAT, FR > seq. A repo-level focus admits every real offerable row of that repo (FR #628)."""
     ignored = ignored_list(home)
     doc = load_focus(home)
     kept = [
@@ -253,7 +292,11 @@ def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
         if isinstance(r, dict) and not any(repo_match(ig, str(r.get("repo") or "")) for ig in ignored)
     ]
     if doc.get("strict"):
-        kept = [r for r in kept if row_is_focused(doc, r)]
+        kept = [
+            r for r in kept
+            if item_rank(doc, r) is not None
+            or (repo_priority(doc, str(r.get("repo") or "")) is not None and repo_row_admitted(r))
+        ]
 
     def key(r: dict) -> tuple:
         try:
@@ -262,9 +305,11 @@ def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
             seq = 0
         ir = item_rank(doc, r)
         if ir is not None:
-            return (0, ir, seq)
-        pr = repo_priority(doc, str(r.get("repo") or ""))
-        return (1, pr if pr is not None else UNFOCUSED_RANK, seq)
+            return (0, ir, "", "", 0, seq)
+        ent = _repo_entry(doc, str(r.get("repo") or ""))
+        if ent is None:
+            return (1, UNFOCUSED_RANK, "", "", 0, seq)
+        return (1, ent[0], ent[1], str(r.get("repo") or "").lower(), _task_order(r), seq)
 
     return sorted(kept, key=key)
 

@@ -22,6 +22,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `!ignore {repo}` / `!unignore {repo}` / `!ignored` | `ignore: now ignoring X (purged N queued)` / `unignore: resumed X (new events only)` / `ignored: (none)` or `ignored (N):` + `  repo` | bare: `ignore: usage !ignore {repo}` |
 | `!focus [strict on\|off]\|[n\|high\|medium\|low] {repo\|owner/repo#N}` | `focus: owner/repo priority=1 (high)`, `focus: item o/r#5 rank=2`, `focus strict: on`; bare lists strict flag, items, repos | reading (`!focus`, `!focus strict`) is open to anyone |
 | `!unfocus {repo\|owner/repo#N}\|all` | `unfocus: removed X` / `unfocus: cleared R repo + I item entries` / `unfocus: X was not focused` | |
+| `!assign {worker-nick} {repo} {FR\|MRB\|UAT} {num}` | `assign: sent <nick>: FR o/r#N <url>` (PM to the caller) or `assign: refused - <reason>` / `assign: usage ...` / `assign: denied (simon or bob-* ops only)` | **simon (verified account) or a Bob-\* ear only.** Jeeves stamps that queued row offered to the seat and posts the normal assign line (`format_assign_line`) in the seat's shop channel as Jeeves; the seat's `ACK` accepts it exactly like a `!bored` offer. Eligibility is the `!bored` rules: seat must be idle (not busy in the digest), no self-MRB/UAT (the author/implementer seat is refused), row must be queued and unaccepted, not needs-human / on GIVEUP cooldown / already given up by that seat / pinned to another machine, and not offered to another seat inside the offer timeout. Seats only obey lines from Jeeves, so manual feeding goes through this command. Works from PM or a joined channel; the reply is always a PM |
 | `!recycle [machine\|all]` | bare / `all` = every roster seat: `Recycling all seats (a, b, ..).` then `recycle: routed to bob seat(s) (fleet fleet); Jeeves runs no host ops`, `recycle: steps=..`, `recycle: bob must announce restarting then execute (deterministic)`; `!recycle <machine>` = `Recycling <machine>.` | Jeeves only **routes**: a `RECYCLE` wire line goes to `#bobiverse` (fleet: `RECYCLE machine=fleet by=<nick> scope=fleet exec=local-bob-seat`; one machine: `RECYCLE v1 <machine>`) and the target `bob-<machine>` announces and executes. The chair's own machine recycles locally; `!recycle jeeves` restarts the chair. 120 s duplicate cooldown per target: `recycle: cooldown Ns (duplicate prevented)`; unknown: `recycle: unknown machine X (want: .., all)` |
 | `!recycle dry-run [machine\|all]` | `recycle dry-run: would recycle X (scope) as <owner\|ear>; nothing sent` + the route and steps | authorises and plans, sends nothing, no cooldown. Safe for tests (`dry`, `plan`, `check` also work) |
 | `ping` / `ping <glob>` (no `!`) | `pong` | in a channel or by PM |
@@ -52,11 +53,11 @@ A **principal** is derived per message from the nick plus the services account t
 | `!help` `!list` `!filter` `!status` `!ignored` `ping`, `!focus` / `!focus strict` (read) | yes | yes | yes | yes |
 | `!ignore` `!unignore` | yes | yes | no | no |
 | `!focus ..` `!unfocus ..` (write) | yes | yes | yes | no |
-| `!resync` `!sweep` `!recycle` | yes | yes | no | no |
+| `!resync` `!sweep` `!recycle` `!assign` | yes | yes | no | no |
 
 Denial replies (gh-Jeeves strings): `ignore: denied (simon or bob-* ops only)`, `unignore: denied (simon or bob-* ops only)`,
 `focus: denied (owner account required)`, `unfocus: denied (owner account required)`,
-`recycle: denied (authorised operator + services account required)`; `!resync` / `!sweep` reply
+`assign: denied (simon or bob-* ops only)`, `recycle: denied (authorised operator + services account required)`; `!resync` / `!sweep` reply
 `resync: denied (simon or bob-* ops only)` / `sweep: denied (simon or bob-* ops only)` (gh-Jeeves stayed silent).
 A denied command from a nick whose account is still unknown also triggers a rate-limited `WHOIS` so the next try works.
 
