@@ -2818,6 +2818,20 @@ def resync_from_github(
             return json.loads(resp.read().decode("utf-8"))
 
     getter = fetch_json or _default_fetch
+
+    def _fetch_all_pages(url_base: str, *, per_page: int = 100, max_pages: int = 20) -> list:
+        """Follow GitHub list pagination. One page left the queue empty while 120+ issues stayed open."""
+        out: list = []
+        for page in range(1, max_pages + 1):
+            sep = "&" if "?" in url_base else "?"
+            chunk = getter(f"{url_base}{sep}per_page={per_page}&page={page}")
+            if not isinstance(chunk, list):
+                break
+            out.extend(chunk)
+            if len(chunk) < per_page:
+                break
+        return out
+
     skip = {str(x).strip().lower() for x in (ignored or ()) if str(x).strip()}
     desired: list[GitClaim] = []
     fetched: list[str] = []
@@ -2836,8 +2850,12 @@ def resync_from_github(
         if repo_archived_for_queue(repo):
             continue
         try:
-            issues = getter(f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100")
-            prs = getter(f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100")
+            issues = _fetch_all_pages(
+                f"https://api.github.com/repos/{repo}/issues?state=open"
+            )
+            prs = _fetch_all_pages(
+                f"https://api.github.com/repos/{repo}/pulls?state=open"
+            )
         except Exception:  # noqa: BLE001 - one bad repo (404/403/rate limit) must not wipe its rows
             failed.append(repo)
             continue
@@ -2991,6 +3009,18 @@ def resync_from_github(
             doc["unaccepted"] = keep
             added = 0
             fetched_set2 = set(fetched)
+            # Premature DONE while GitHub issue/PR still open left seats NAK/empty: pull those
+            # rows out of done so resync can re-queue them.
+            if isinstance(doc.get("done"), list):
+                doc["done"] = [
+                    r
+                    for r in doc["done"]
+                    if not (
+                        isinstance(r, dict)
+                        and (str(r.get("repo") or ""), str(r.get("task") or ""), str(r.get("id") or ""))
+                        in {(c.repo, c.task, c.id) for c in desired}
+                    )
+                ]
             for claim in desired:
                 if claim.task == "FR" and fr_is_superseded(
                     doc,
@@ -3010,6 +3040,11 @@ def resync_from_github(
                         for r in doc["unaccepted"]:
                             if _same(r, claim.repo, "MRB", claim.id) and not PULL_URL_RE.search(str(r.get("url") or "")):
                                 r["url"] = mrb_url
+                    # Clear stale needs_human so giveup-gated open issues can be offered again
+                    # to seats that are not in giveup_seats (keep-the-flow).
+                    for r in doc["unaccepted"]:
+                        if _same(r, claim.repo, claim.task, claim.id) and r.get("needs_human"):
+                            r.pop("needs_human", None)
                     continue
                 if _append_unaccepted(doc, claim, **({"url": mrb_url} if mrb_url else {})) == "added":
                     added += 1
