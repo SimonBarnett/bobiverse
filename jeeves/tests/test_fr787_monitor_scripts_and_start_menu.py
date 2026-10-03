@@ -29,6 +29,8 @@ CHECKS = (
     "stuck_accepted",
     "auto_feed",
     "auto_focus",
+    "focus_present",
+    "seats_stuck_doing",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
@@ -39,6 +41,8 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorStuckAccepted.ps1",
     "Test-JeevesMonitorAutoFeed.ps1",
     "Test-JeevesMonitorAutoFocus.ps1",
+    "Test-JeevesMonitorFocusPresent.ps1",
+    "Test-JeevesMonitorSeatsStuckDoing.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",
 )
@@ -108,6 +112,8 @@ def test_agents_and_monitor_skill_name_scripts_and_self_harvest():
             "Test-JeevesMonitorStuckAccepted",
             "Test-JeevesMonitorAutoFeed",
             "Test-JeevesMonitorAutoFocus",
+            "Test-JeevesMonitorFocusPresent",
+            "Test-JeevesMonitorSeatsStuckDoing",
             "Start Jeeves Monitor",
         ):
             assert w in blob, w

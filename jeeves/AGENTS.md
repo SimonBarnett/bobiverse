@@ -8,7 +8,7 @@
 
 **On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
 
-Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present** via `auto_focus`, stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus), report delays via intake only, then loop on a schedule.
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus), report delays via intake only, then loop on a schedule.
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
@@ -47,6 +47,8 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Stuck accepted rows | `scripts\Test-JeevesMonitorStuckAccepted.ps1` | `tools\monitor\stuck_accepted.py` |
 | Auto-feed | `scripts\Test-JeevesMonitorAutoFeed.ps1` | `tools\monitor\auto_feed.py` |
 | Auto-focus | `scripts\Test-JeevesMonitorAutoFocus.ps1` | `tools\monitor\auto_focus.py` |
+| Focus present (bobiverse under strict) | `scripts\Test-JeevesMonitorFocusPresent.ps1` | `tools\monitor\focus_present.py` |
+| Seats stuck doing / NAK busy | `scripts\Test-JeevesMonitorSeatsStuckDoing.ps1` | `tools\monitor\seats_stuck_doing.py` |
 
 Runner: `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name> [-DryRun]`. Exit codes: **0** = ok, **1** = finding, **2** = error. Start Menu **Start Jeeves Monitor** launches a NEW agent here via `scripts\Start-JeevesMonitor.ps1` (never resume).
 
