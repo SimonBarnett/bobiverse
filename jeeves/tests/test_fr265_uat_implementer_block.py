@@ -61,11 +61,13 @@ def test_uat_blocks_implementer_even_when_mrb_author_differs(tmp_path, monkeypat
             _row(
                 "o/r",
                 "UAT",
-                10,
+                0,
                 1,
                 implementer_seat="marchhare-1",
                 mrb_author_seat="ionos-2",
                 author_seat="ionos-2",  # legacy primary = MRB only
+                repo_uat=True,
+                url="https://github.com/o/r",
             ),
             _row("o/r", "FR", 99, 2),
         ],
@@ -80,11 +82,13 @@ def test_uat_blocks_implementer_even_when_mrb_author_differs(tmp_path, monkeypat
             _row(
                 "o/r",
                 "UAT",
-                10,
+                0,
                 1,
                 implementer_seat="marchhare-1",
                 mrb_author_seat="ionos-2",
                 author_seat="ionos-2",
+                repo_uat=True,
+                url="https://github.com/o/r",
             )
         ],
     )
@@ -92,7 +96,7 @@ def test_uat_blocks_implementer_even_when_mrb_author_differs(tmp_path, monkeypat
     assert st2 == "empty"
     # Third machine may take it
     st3, job3 = gitclaim.offer_focus_top(home, "flamingo-9", "#flamingo")
-    assert st3 == "ok" and job3["id"] == "#10"
+    assert st3 == "ok" and job3["id"] == "#0" and job3.get("repo_uat") is True
 
 
 def test_done_mrb_pass_stamps_both_implementer_and_mrb_on_uat(tmp_path, monkeypatch):
@@ -247,15 +251,17 @@ def test_uat_blocks_same_machine_sibling_of_implementer(tmp_path, monkeypatch):
             _row(
                 "o/r",
                 "UAT",
-                10,
+                0,
                 1,
                 implementer_seat="marchhare-1",
                 mrb_author_seat="ionos-2",
                 author_seat="ionos-2",
+                repo_uat=True,
+                url="https://github.com/o/r",
             )
         ],
     )
     st, job = gitclaim.offer_focus_top(home, "marchhare-2", "#marchhare")
     assert st == "empty"
     st2, job2 = gitclaim.offer_focus_top(home, "flamingo-9", "#flamingo")
-    assert st2 == "ok" and job2["id"] == "#10"
+    assert st2 == "ok" and job2["id"] == "#0" and job2.get("repo_uat") is True
