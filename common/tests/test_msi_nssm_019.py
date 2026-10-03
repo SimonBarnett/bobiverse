@@ -3,12 +3,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
+from repo_layout import ROOT, scripts_dirs  # t773u: split repo; legacy flat paths resolve per service
 S = ROOT / "scripts"
 
 
 def _t(name):
     return (S / name).read_text(encoding="utf-8-sig")
+
+
+def _all_ps1_scripts():
+    """Every *.ps1 under common/jeeves/bob/airc scripts/ (split-repo union)."""
+    out = []
+    for d in scripts_dirs():
+        out.extend(sorted(d.rglob("*.ps1")))
+    return out
 
 
 def test_pack_marks_nssm_component_permanent_neveroverwrite_with_stable_guid():
@@ -22,15 +30,30 @@ def test_pack_marks_nssm_component_permanent_neveroverwrite_with_stable_guid():
 def test_watch_bobircd_param_typo_fixed_and_file_has_bom_for_ps51():
     raw = (S / "Watch-BobIrcd.ps1").read_bytes()
     t = raw.decode("utf-8-sig")
-    assert "$AnnounceDownCooldownMinutes" in t and "CooldownDownCooldownMinutes" not in t
+    assert "$AnnounceDownCooldownMinutes" in t and "AnnounceDownCoolownMinutes" not in t
     non_ascii = any(b > 127 for b in raw)
     assert (not non_ascii) or raw.startswith(b"\xef\xbb\xbf"), "BOM-less UTF-8 with non-ASCII breaks Windows PowerShell 5.1"
 
 
 def test_every_script_with_non_ascii_has_a_bom():
-    bad = [p.name for p in S.rglob("*.ps1")
-           if any(b > 127 for b in p.read_bytes()) and not p.read_bytes().startswith(b"\xef\xbb\xbf")]
+    # mrb-273: ROOT/"scripts" resolves only to common/scripts; must union all service script dirs
+    # or airc (etc.) non-ASCII without BOM stays invisible to the gate (FR #238 / PR #273).
+    bad = []
+    for p in _all_ps1_scripts():
+        raw = p.read_bytes()
+        if any(b > 127 for b in raw) and not raw.startswith(b"\xef\xbb\xbf"):
+            bad.append(f"{p.parent.parent.name}/{p.parent.name}/{p.name}")
     assert bad == []
+
+
+def test_invoke_airc_remote_is_ascii_or_bom():
+    """FR #238: Invoke-AircRemote.ps1 must be WinPS 5.1-safe (ASCII or UTF-8 BOM)."""
+    matches = [p for p in _all_ps1_scripts() if p.name == "Invoke-AircRemote.ps1"]
+    assert matches, "Invoke-AircRemote.ps1 missing from service scripts/"
+    raw = matches[0].read_bytes()
+    non_ascii = any(b > 127 for b in raw)
+    assert (not non_ascii) or raw.startswith(b"\xef\xbb\xbf")
+    assert b"\xe2\x80\xa6" not in raw  # U+2026 ellipsis must not return
 
 
 def test_sync_from_repo_skips_missing_drive():
