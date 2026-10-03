@@ -55,7 +55,7 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
 
 Use a **single** `/bob/v1/intake` for harvest; do not add `/bob/v1/harvest`.
 
-Intake `repo` must be on the default allow-list in `scripts/intake.py` (`DEFAULT_ALLOW_REPOS`) or the POST returns **403** `repo_not_allowed`. Current defaults: `SimonBarnett/bobiverse`, `gh-Jeeves`, `agentic_build`, `skills-visionary`, `AgentMonitor`, `agentic_fomprep` (FR #94).
+Intake `repo` must be on the default allow-list in `scripts/intake.py` (`DEFAULT_ALLOW_REPOS`) or the POST returns **403** `repo_not_allowed`. Current defaults: `SimonBarnett/bobiverse`, `skills-visionary`, `agentic_fomprep` (FR #94; FR #795 retired archived `gh-Jeeves` / `agentic_build` / `AgentMonitor` / `bob-design-uat` / `agentic_irc`).
 
 ### POST jira — no secret
 

@@ -18,4 +18,4 @@ The source URLs above are intentionally retained for historical issue, PR, and p
 
 ## Live-reference follow-up
 
-Jeeves roster/allow-list entries, clone/update scripts, and intake `DEFAULT_ALLOW_REPOS` must be updated through a reviewed FR/PR. The live Ionos chair is not edited by this documentation change.
+**FR #795:** intake `DEFAULT_ALLOW_REPOS` (and the harvest script fallback mirror) drop the five archived repos; help examples use `bobiverse`. The live Ionos chair is still not edited by documentation or allow-list PRs — deploy when the operator chooses.

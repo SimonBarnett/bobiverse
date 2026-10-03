@@ -19,13 +19,12 @@ MAX_BODY_BYTES = 256 * 1024
 MAX_FILES = 32
 MAX_FILE_BYTES = 128 * 1024
 DEFAULT_RATE_PER_MIN = 30
+# FR #795: drop archived superseded repos (gh-Jeeves, agentic_build, AgentMonitor,
+# bob-design-uat, agentic_irc). New work intakes to bobiverse (or live siblings).
 DEFAULT_ALLOW_REPOS = frozenset(
     {
         "SimonBarnett/bobiverse",
-        "SimonBarnett/gh-Jeeves",
-        "SimonBarnett/agentic_build",
         "SimonBarnett/skills-visionary",
-        "SimonBarnett/AgentMonitor",
         "SimonBarnett/agentic_fomprep",
     }
 )

@@ -43,12 +43,11 @@ if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed t
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
 function Resolve-WatchAgentHealthSrc {
+    # FR #795: prefer bobiverse paths; do not fall back to archived agentic_build.
     foreach ($c in @(
+            (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'bob\agentwatcher'),
             (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\Watch-AgentHealth'),
-            $env:BOBIVERSE_WATCH_AGENTHEALTH,
-            (Join-Path (Split-Path -Parent $RepoRoot) 'agentic_build\tools\Watch-AgentHealth'),
-            (Join-Path $env:USERPROFILE 'agentic_build\tools\Watch-AgentHealth'),
-            'C:\Users\Administrator\agentic_build\tools\Watch-AgentHealth'
+            $env:BOBIVERSE_WATCH_AGENTHEALTH
         )) {
         if ($c -and (Test-Path -LiteralPath (Join-Path $c 'Watch-AgentHealth.ps1'))) {
             return $c
