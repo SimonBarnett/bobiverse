@@ -1926,6 +1926,38 @@ def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None) -> int:
     return before - len(kept)
 
 
+def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None) -> bool:
+    """True when an MRB row should leave the live queues (merged/closed/already-done)."""
+    if _canon_task(row) != "MRB":
+        return False
+    if mrb_already_done(doc, row):
+        return True
+    return not mrb_row_offerable(row, pr_exists=pr_exists)
+
+
+def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None) -> int:
+    """Move accepted MRB rows whose PR is already merged/closed into done.
+
+    Without this, seats stay ``doing`` on MERGED PRs (#1171/#1236 class) and
+    never !bored for new work — looks like an empty offer queue to monitors.
+    """
+    before = len(doc.get("accepted") or [])
+    kept: list[dict] = []
+    done = doc.setdefault("done", [])
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if _mrb_is_dead(doc, row, pr_exists=pr_exists):
+            fin = dict(row)
+            fin["result"] = "MERGED"
+            fin["done_ts"] = _utc_now()
+            done.append(fin)
+            continue
+        kept.append(row)
+    doc["accepted"] = kept
+    return before - len(kept)
+
+
 def format_assign_line(nick: str, row: dict) -> str:
     """Wire line the seats and Watch-AgentHealth parse: ``<nick>: FR|MRB|UAT owner/repo#N url``."""
     num = str(row.get("id") or "").strip().lstrip("#")
@@ -2194,7 +2226,9 @@ def offer_focus_top(
             except (OSError, json.JSONDecodeError, ValueError):
                 return "error", None
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
-            purged = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists)
+            # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists)) or purged
             # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
             for cand in doc.get("unaccepted") or []:
                 if not isinstance(cand, dict):
@@ -2355,7 +2389,8 @@ def offer_top(
                 return "error", None
             if not doc["unaccepted"]:
                 return "empty", None
-            purged = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists)
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists)) or purged
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):

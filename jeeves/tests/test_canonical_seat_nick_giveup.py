@@ -55,6 +55,40 @@ def test_row_gave_up_by_short_matches_full():
     assert gitclaim.row_gave_up_by(row, "w-io-15656") is False
 
 
+def test_purge_dead_mrb_accepted_moves_merged_to_done(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [],
+            "accepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "MRB",
+                    "id": "#1236",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "MRB #1236",
+                    "url": "https://github.com/SimonBarnett/bobiverse/pull/1236",
+                    "nick": "win-mpre8vi4u6u-1",
+                    "merged": True,
+                }
+            ],
+            "done": [],
+        },
+    )
+    with gitclaim._lock(tmp_path):
+        doc = gitclaim._load_queue_unlocked(tmp_path)
+        # queue serialize drops ``merged``; live open-check is required (same as chair).
+        n = gitclaim._purge_dead_mrb_accepted(doc, pr_exists=lambda repo, num: False)
+        assert n == 1
+        assert doc["accepted"] == []
+        assert doc["done"][0]["id"] == "#1236"
+        assert doc["done"][0]["result"] == "MERGED"
+        gitclaim._write_queue(gitclaim.queue_path(tmp_path), doc)
+
+
 def test_offer_blocks_short_nick_after_full_form_giveup(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim._write_queue(
