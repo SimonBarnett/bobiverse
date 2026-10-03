@@ -1526,12 +1526,19 @@ def mrb_row_offerable(
     *,
     pr_exists=None,
 ) -> bool:
-    """True when an MRB row has a resolvable pull URL (and optional live PR check).
+    """True when an MRB row has a resolvable **open** pull URL (and optional live PR check).
 
     FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
+    FR #738: never offer MRB when the PR is already CLOSED (FAIL close / superseded) —
+    GitHub still returns HTTP 200 for closed PRs, so existence alone is not enough.
     """
     if _canon_task(row) != "MRB":
         return True
+    # FR #738: stamped closed / closed-without-merge from webhooks.
+    if str(row.get("state") or "").strip().lower() == "closed":
+        return False
+    if row.get("merged") is False:
+        return False
     raw = str(row.get("url") or "").strip()
     if ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw):
         return False
@@ -1560,10 +1567,11 @@ def github_pr_exists_checker(
     home: Path | None = None,
     cache: dict | None = None,
 ):
-    """Return ``pr_exists(repo, num)`` when a GitHub token is available (FR #595 / #247).
+    """Return ``pr_exists(repo, num)`` when a GitHub token is available (FR #595 / #247 / #738).
 
-    Returns None when offline / no token (structural URL checks in
-    ``mrb_row_offerable`` still apply).
+    True only when the pull exists **and** ``state == open``. Closed (FAIL) and
+    merged PRs must not be re-offered as MRB. Returns None when offline / no token
+    (structural URL + row ``state``/``merged`` checks in ``mrb_row_offerable`` still apply).
     """
     try:
         import gh_filer
@@ -1596,7 +1604,16 @@ def github_pr_exists_checker(
         )
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
-                ok = 200 <= int(getattr(resp, "status", 200) or 200) < 300
+                if not (200 <= int(getattr(resp, "status", 200) or 200) < 300):
+                    ok = False
+                else:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    try:
+                        body = json.loads(raw) if raw else {}
+                    except json.JSONDecodeError:
+                        body = {}
+                    # FR #738: CLOSED FAIL / merged PRs still 200 — require open.
+                    ok = str((body or {}).get("state") or "").strip().lower() == "open"
         except urllib.error.HTTPError as e:
             ok = False
             if int(getattr(e, "code", 0) or 0) not in (404, 410):

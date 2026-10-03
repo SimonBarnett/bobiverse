@@ -1,4 +1,4 @@
-﻿# Jeeves chair commands (gh-Jeeves parity) and who may run them
+# Jeeves chair commands (gh-Jeeves parity) and who may run them
 
 The bobiverse chair (`irc_agent.py --chair`, service `ircJeeves`) carries every command the old Python
 `gh-Jeeves` service handled in IRC (reference: `SimonBarnett/gh-Jeeves` @ `8d76d9a`, `src/jeeves/commands.py` +
@@ -35,7 +35,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 * **FR skip labels** (`SKIP_FR_LABELS`): `skill`, `umbrella`, `parent-fr`, `mrb-home` / `mrb_home`, `evergreen` / `evergreen-mrb`, and verdict boards `mrb`, `mrb-pass`/`mrb_pass`, `mrb-fail`/`mrb_fail`. Matched at enqueue, claim, offer, prune, and resync. Legacy rows with an empty `title` still skip when `labels` or `line`/`title` text carry board tokens (`mrb-fail`, `mrb-pass`, `mrb-home`, â€¦; bare `mrb` is labels-only so real titles like â€œharden MRB/FR â€¦â€ stay offerable). Pull URLs must match the row `repo`.
 * **UAT dual-seat block** (FR #265 / #227): UAT rows stamp `implementer_seat` (FR DONE) and `mrb_author_seat` (MRB PASS); `review_blocked_for_author` skips either seat (and same-machine siblings) while another machine is live. Legacy `author_seat` still works.
 * **Self-MRB block** (FR #593 / #227): PR-opened / ready_for_review MRB rows stamp `author_seat` / `implementer_seat` from the linked accepted/done FR implementer nick (not only DONE FR enqueue), so the chair skips offering MRB to that seat while another machine is live.
-* **MRB pull URL** (FR #595 / #247): assign lines and offers use only a real `https://github.com/{repo}/pull/N` URL or an explicit `pr_id` / `pr`. The chair never invents `/pull/{issue_id}` from a bare row id. Rows with an issues-shaped URL, missing pull URL, or a pull that 404s (when a GitHub token is available) are skipped at offer and dropped by prune; a real `/pull/240`-style row stays offerable. Author-seat / same-machine self-MRB blocking is unchanged.
+* **MRB pull URL** (FR #595 / #247 / #738): assign lines and offers use only a real `https://github.com/{repo}/pull/N` URL or an explicit `pr_id` / `pr`. The chair never invents `/pull/{issue_id}` from a bare row id. Rows with an issues-shaped URL, missing pull URL, or a pull that 404s (when a GitHub token is available) are skipped at offer and dropped by prune; a real `/pull/240`-style row stays offerable. Author-seat / same-machine self-MRB blocking is unchanged.
 * **require_machine** (FR #587): enqueue infers `require_machine` from labels (`needs-<machine>`, `require_machine:<machine>`) or title/body cues (`PRIORITY_WP0_INSTANCE=ce-priority-dev`, `WP0 live`, `ce-priority-dev` → `ce-priority-dev1`; `needs-ionos` / `chair-outbox` → `ionos`). `offer_focus_top` skips seats whose machine does not match.
 
 ## Authorization matrix
@@ -114,3 +114,5 @@ Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_sta
 - An `issues closed` webhook drops that issue's FR/PR rows (and a manually queued UAT row). The UAT row a **merged PR** queued (`action=uat`) is kept: every FR PR carries `Closes <owner>/<repo>#N`, so the merge closes the issue and its UAT must still be assigned.
 - The 15-minute GitHub resync also drops FR/MRB rows whose issue is closed, so a missed webhook self-heals. No separate prune job is needed.
 - `Closes #N` and `Closes owner/repo#N` both link a PR to its issue; a link naming another repo is ignored for this repo's queue.
+
+* **MRB closed PR skip** (FR #738): `mrb_row_offerable` / `github_pr_exists_checker` require the pull to be **open** (CLOSED FAIL / merged PRs are not re-offered as MRB even though GitHub returns HTTP 200).
