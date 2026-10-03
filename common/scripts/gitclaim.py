@@ -36,6 +36,8 @@ except ValueError:
 UAT_MAX_AGE_S = 48 * 3600.0
 # t856u: an FR a seat already DONE (its PR waits for MRB/merge) is not re-offered for this long.
 FR_DONE_HOLD_S = 24 * 3600.0
+# FR #1323: DONE MRB (PASS/FAIL) must not be re-offered after done[] rotates or resync races.
+MRB_DONE_HOLD_S = 7 * 24 * 3600.0
 QUEUE_NAME = "queue.json"
 LEGACY_UNACCEPTED = "git-unaccepted.json"
 LEGACY_ACCEPTED = "git-accepted.jsonl"
@@ -1758,11 +1760,33 @@ def row_url(row: dict) -> str:
     return resolve_assign_url(row)
 
 
-def mrb_already_done(doc: dict, row: dict) -> bool:
-    """FR #740: True when ``done`` already has an MRB for the same repo+#id.
+def mrb_ledger_done_hold(home: Path, repo: str, ident: str) -> bool:
+    """FR #1323: True when ledger ``mrb_done`` still holds this MRB row_key."""
+    try:
+        led = ledger_load(home)
+    except OSError:
+        return False
+    done_ts = _parse_iso_ts(str((led.get("mrb_done") or {}).get(_lkey(repo, ident)) or ""))
+    return done_ts is not None and (time.time() - done_ts) < MRB_DONE_HOLD_S
+
+
+def stamp_mrb_done(home: Path, repo: str, ident: str) -> None:
+    """Record DONE MRB so re-offers stay blocked after ``done[]`` trim (FR #1323)."""
+
+    def _upd(doc: dict) -> None:
+        doc.setdefault("mrb_done", {})[_lkey(repo, ident)] = _utc_now()
+
+    try:
+        _ledger_update(home, _upd)
+    except OSError:
+        pass
+
+
+def mrb_already_done(doc: dict, row: dict, *, home: Path | None = None) -> bool:
+    """FR #740 / #1323: True when ``done`` or ledger ``mrb_done`` covers this MRB.
 
     After DONE PASS/FAIL the row must not be re-offered (even if a duplicate
-    lingered in ``unaccepted`` or GitHub still returns HTTP 200 for a merged PR).
+    lingered in ``unaccepted``, ``done[]`` rotated, or GitHub still returns HTTP 200).
     """
     if _canon_task(row) != "MRB":
         return False
@@ -1781,6 +1805,34 @@ def mrb_already_done(doc: dict, row: dict) -> bool:
         rid = str(r.get("id") or "").strip()
         if rid == want or rid.lstrip("#") == want.lstrip("#"):
             return True
+    if home is not None and mrb_ledger_done_hold(home, repo, want):
+        return True
+    return False
+
+
+def mrb_row_should_survive_resync(
+    row: dict,
+    *,
+    want: set,
+    fetched: set,
+) -> bool:
+    """FR #1323: MERGED/closed MRB must drop even when ``offered_to`` is set.
+
+    Previously resync kept MRB rows with ``offered_to`` that were no longer in the
+    open-pull want set — those phantoms got re-offered after DONE PASS.
+    """
+    if not isinstance(row, dict):
+        return False
+    repo = str(row.get("repo") or "")
+    task = str(row.get("task") or "").upper()
+    ident = str(row.get("id") or "")
+    if repo not in fetched:
+        return True
+    if task not in ("FR", "MRB"):
+        return True
+    if (repo, task, ident) in want:
+        return True
+    # FR/MRB not open on GitHub anymore — never keep (offered_to does not save it).
     return False
 
 
@@ -1924,15 +1976,15 @@ def github_pr_exists_checker(
     return _check
 
 
-def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None) -> int:
-    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740)."""
+def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None, home: Path | None = None) -> int:
+    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323)."""
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
     for row in doc.get("unaccepted") or []:
         if not isinstance(row, dict):
             continue
         if _canon_task(row) == "MRB":
-            if mrb_already_done(doc, row):
+            if mrb_already_done(doc, row, home=home):
                 continue
             # Always apply structural / merged-flag checks; live open-state when checker given.
             if not mrb_row_offerable(row, pr_exists=pr_exists):
@@ -1942,16 +1994,16 @@ def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None) -> int:
     return before - len(kept)
 
 
-def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None) -> bool:
+def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None, home: Path | None = None) -> bool:
     """True when an MRB row should leave the live queues (merged/closed/already-done)."""
     if _canon_task(row) != "MRB":
         return False
-    if mrb_already_done(doc, row):
+    if mrb_already_done(doc, row, home=home):
         return True
     return not mrb_row_offerable(row, pr_exists=pr_exists)
 
 
-def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None) -> int:
+def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None, home: Path | None = None) -> int:
     """Move accepted MRB rows whose PR is already merged/closed into done.
 
     Without this, seats stay ``doing`` on MERGED PRs (#1171/#1236 class) and
@@ -1963,11 +2015,13 @@ def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None) -> int:
     for row in doc.get("accepted") or []:
         if not isinstance(row, dict):
             continue
-        if _mrb_is_dead(doc, row, pr_exists=pr_exists):
+        if _mrb_is_dead(doc, row, pr_exists=pr_exists, home=home):
             fin = dict(row)
             fin["result"] = "MERGED"
             fin["done_ts"] = _utc_now()
             done.append(fin)
+            if home is not None:
+                stamp_mrb_done(home, str(fin.get("repo") or ""), str(fin.get("id") or ""))
             continue
         kept.append(row)
     doc["accepted"] = kept
@@ -2243,8 +2297,8 @@ def offer_focus_top(
                 return "error", None
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
             # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
-            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists))
-            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists)) or purged
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
             # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
             for cand in doc.get("unaccepted") or []:
                 if not isinstance(cand, dict):
@@ -2288,7 +2342,7 @@ def offer_focus_top(
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
                     return None
-                if mrb_already_done(doc, cand):
+                if mrb_already_done(doc, cand, home=home):
                     return None
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     return None
@@ -2405,8 +2459,8 @@ def offer_top(
                 return "error", None
             if not doc["unaccepted"]:
                 return "empty", None
-            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists))
-            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists)) or purged
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):
@@ -2423,7 +2477,7 @@ def offer_top(
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     continue
-                if mrb_already_done(doc, row):
+                if mrb_already_done(doc, row, home=home):
                     continue  # FR #740
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     continue
@@ -2651,6 +2705,9 @@ def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, id
             _ledger_update(home, _fd)
         except OSError:
             pass
+    if verb_u == "DONE" and task_u == "MRB":
+        # FR #1323: survive done[] trim / resync races — do not re-offer this MRB.
+        stamp_mrb_done(home, repo, ident)
     # t860u: working an FR (ACK/DONE, "DONE existing PR, no duplicate", URL of a PR that already existed) is
     # NOT authorship: it is recorded as the informational role "FRW" and never blocks review. Only the PR's
     # real commit authors (``ledger_refresh_authors`` -> role "FR") and the MRB reviewer block review/UAT.
@@ -2837,7 +2894,7 @@ def assign_row(
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
             # FR #740 / #738: refuse manual assign of already-DONE or closed/merged MRB.
-            if task_u == "MRB" and mrb_already_done(doc, cand):
+            if task_u == "MRB" and mrb_already_done(doc, cand, home=home):
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real open pull URL"
@@ -3159,9 +3216,20 @@ def resync_from_github(
                     row.get("repo") in fetched_set
                     and row.get("task") in ("FR", "MRB")
                     and (row.get("repo"), row.get("task"), row.get("id")) not in want
-                    and not row.get("offered_to")
+                    and not mrb_row_should_survive_resync(
+                        row, want=want, fetched=fetched_set
+                    )
                 ):
-                    continue  # closed / merged / superseded on GitHub (MRB still honours offered_to)
+                    # FR #1323: drop MERGED/closed even when offered_to is set
+                    continue
+                # FR #1323: also drop MRB held by ledger mrb_done
+                if (
+                    str(row.get("task") or "").upper() == "MRB"
+                    and mrb_ledger_done_hold(
+                        home, str(row.get("repo") or ""), str(row.get("id") or "")
+                    )
+                ):
+                    continue
                 keep.append(row)
             dropped = before - len(keep)
             doc["unaccepted"] = keep
