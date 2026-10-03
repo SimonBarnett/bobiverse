@@ -2,6 +2,15 @@
 
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
+## 2026-10-03 - worker JOIN-after-001 (FR #1002)
+
+Harvested into `bob/scripts/bob_worker.py` + `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`:
+
+| Lesson | Fix |
+|--------|-----|
+| Worker nick TCP/WHOIS online but not in `#<machine>` (no WHOIS 319); Jeeves cannot deliver assigns | `IrcSeat` sends `JOIN #<machine>` on `001`, waits for JOIN echo (fail closed on refuse/timeout); log `irc: JOIN` / `irc: joined` |
+| Operator sees "connected" from TCP/`!bored` while seat is deaf | Diagnose with WHOIS 319 + NAMES + `worker.log` JOIN lines before trusting outbox/`!bored` |
+
 ## 2026-10-03 - FR #806 archive-richer hand-merge
 
 | Lesson | Fix |

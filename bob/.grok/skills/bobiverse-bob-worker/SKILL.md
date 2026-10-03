@@ -72,6 +72,7 @@ An unknown reading is "not available" (falls through), never "available". Readin
 * Nick `<machine>-<pid>` (the exe's own pid, the talk-seat rule in `talk_seat_pid.py`); joins **only `#<machine>`**; speaks only there (FR #224: never PRIVMSG a nick or `#bobiverse`).
   Registration: TLS to `irc.ntsa.uk:6697` with the Ergo server PASS (found like the ear's: `home\ergo.password`, `config\ergo.password`, `BOB_IRC_PASSWORD`); SASL only if
   `BOB_IRC_SASL_USER`/`BOB_IRC_SASL_PASSWORD` are already in the environment. The seat does NOT use the ear's NickServ account.
+  After numeric `001`, the exe **must** `JOIN #<machine>` and wait for the JOIN echo before starting the agent / posting `!bored`. A nick that is registered but not in the shop is deaf to Jeeves assigns (WHOIS has no `319` channels).
 * **Event-driven relay**: a blocking socket read thread receives a line and injects it into the agent's console input from that same thread (WriteConsoleInput into the
   shared worker console) - no poll, no timer. The agent sees `FROM <nick> <target> <text>` as typed input. Ordering/limits: max 8 injections per 30 s, extra messages are
   coalesced into one `FROM (flood-coalesced N messages) ...`; identical consecutive lines are dropped; `POINT/DIGEST/AGPK/SEAL`, `is busy.`, `password=`, `XAI_API_KEY` lines are
@@ -123,7 +124,8 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 |---|---|
 | Click does nothing | `Open log` -> `worker: exe missing` = bob MSI older than this feature; reinstall. `--dry-run` shows what would start. |
 | Key prompt appears although you have tokens | the reading is unknown/stale: run `tools\Get-BobAgentFuel.ps1 -InstallRoot <ai root>\bob` and read the JSON (`null` = unknown). |
-| Exit 2, no agent | Ergo PASS missing/wrong or `irc.ntsa.uk:6697` unreachable; check `worker.log` (`IRC refused (464)` = bad PASS, `433` = nick clash - start again). |
+| Exit 2, no agent | Ergo PASS missing/wrong or `irc.ntsa.uk:6697` unreachable; check `worker.log` (`IRC refused (464)` = bad PASS, `433` = nick clash - start again). Also `IRC JOIN #<machine> timed out` / `IRC JOIN refused (NNN)` = registered but shop join failed. |
+| Nick online but Jeeves cannot assign / Halloy NAMES missing worker | Seat registered without JOIN (pre-fix) or JOIN failed. Confirm WHOIS has `319 #<machine>` and `worker.log` has `irc: JOIN` then `irc: joined` before `bored -> shop`. Rebuild/hotpatch `bob-worker.exe` and tray-Agent a new seat. |
 | Exit 3 soon after start | IRC dropped; this is by design. Check Ergo/network; start a new seat. |
 | Two windows appear for one click | should never happen: report it (intake). The agent must be a child of the exe's console; look for `CREATE_NEW_CONSOLE` in `worker.log` / a second `bob-worker.exe`. |
 | `!bored` never posts | open ACK without DONE/NACK/GIVEUP (busy), agent restarting, or IRC lost. Look for `bored -> shop` / `bored: free-rx matched` / `bored: not sent` in `worker.log`. |

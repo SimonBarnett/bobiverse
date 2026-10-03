@@ -1018,6 +1018,17 @@ class IrcSeat:
         if not self.registered.wait(timeout):
             self.close()
             raise ConnectionError("IRC registration timed out")
+        if self.failed:
+            self.close()
+            raise ConnectionError(self.failed)
+        # 001 handler sends JOIN; without it the nick is on IRC but deaf to shop assigns.
+        join_timeout = max(15.0, min(45.0, float(timeout)))
+        if not self.joined.wait(join_timeout):
+            self.close()
+            raise ConnectionError(f"IRC JOIN {self.shop} timed out")
+        if self.failed:
+            self.close()
+            raise ConnectionError(self.failed)
 
     def connect_with_retries(
         self,
@@ -1171,9 +1182,23 @@ class IrcSeat:
             self._lost("server ERROR " + (params[-1][:80] if params else ""))
         elif cmd == "001":
             self.registered.set()
+            # CAST IRON: seat must be IN the shop channel or Jeeves assigns never arrive.
+            try:
+                self._raw("JOIN " + self.shop)
+                self.log(f"irc: JOIN {self.shop}")
+            except OSError as e:
+                self.failed = f"IRC JOIN send failed ({type(e).__name__})"
+                self.joined.set()
+        elif cmd in ("403", "405", "471", "473", "474", "475", "476", "477") and not self.joined.is_set():
+            # JOIN refused (invite-only / banned / key / registered-only / no such channel, …)
+            ch = (params[0] if params else "").lower()
+            if not ch or ch == self.shop.lower():
+                self.failed = f"IRC JOIN refused ({cmd})"
+                self.joined.set()
         elif cmd == "JOIN" and nick.lower() == self.nick.lower():
             if params and params[0].lower() == self.shop.lower():
                 self.joined.set()
+                self.log(f"irc: joined {self.shop}")
             else:
                 self.log("irc: forced join elsewhere, parting " + (params[0] if params else "?"))
                 if params:
