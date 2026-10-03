@@ -57,3 +57,31 @@ def test_drain_does_not_log_sent_when_say_fails(tmp_path):
     logs: list[str] = []
     assert bw.drain_outbox(path, FakeIrc(ok=False), logs.append) == 0
     assert not any(m.startswith("outbox: sent ") for m in logs), logs
+
+
+def test_drain_refused_bored_does_not_log_sent(tmp_path):
+    """MRB #1006: agent-written !bored is refused before say(); must not look like a send."""
+    path = tmp_path / "outbox.txt"
+    path.write_text("PRIVMSG #win-mpre8vi4u6u :!bored\n", encoding="utf-8")
+    irc = FakeIrc()
+    logs: list[str] = []
+    assert bw.drain_outbox(path, irc, logs.append) == 0
+    assert irc.sent == []
+    assert any("refused agent-written !bored" in m for m in logs), logs
+    assert not any(m.startswith("outbox: sent ") for m in logs), logs
+
+
+def test_drain_logs_sent_per_line_multiline(tmp_path):
+    """MRB #1006: each successful line gets its own outbox: sent line."""
+    path = tmp_path / "outbox.txt"
+    path.write_text(
+        "PRIVMSG #win-mpre8vi4u6u :ACK FR o/r#1\n"
+        "PRIVMSG #win-mpre8vi4u6u :progress ok\n",
+        encoding="utf-8",
+    )
+    logs: list[str] = []
+    assert bw.drain_outbox(path, FakeIrc(), logs.append) == 2
+    hits = [m for m in logs if m.startswith("outbox: sent PRIVMSG ")]
+    assert len(hits) == 2, logs
+    assert "ACK FR o/r#1" in hits[0]
+    assert "progress ok" in hits[1]
