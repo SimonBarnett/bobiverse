@@ -1612,6 +1612,21 @@ def mrb_row_offerable(
         return False
 
 
+def fr_row_offerable(row: dict) -> bool:
+    """True when an FR row may be offered (FR #846).
+
+    Rejects FR rows whose URL is a pull request (``/pull/N``) — closed/superseded
+    implementer PRs must never be assigned as FR (e.g. bobiverse#833).
+    Non-FR rows return True.
+    """
+    if _canon_task(row) != "FR":
+        return True
+    raw = str(row.get("url") or "").strip()
+    if PULL_URL_RE.search(raw):
+        return False
+    return True
+
+
 def github_pr_exists_checker(
     *,
     home: Path | None = None,
@@ -1878,6 +1893,9 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     continue  # FR #254
+                # FR #846: never offer FR whose URL is a pull (closed PR as FR).
+                if not fr_row_offerable(cand):
+                    continue
                 # bobiverse#768 / #781 / t853u: never offer legacy per-PR UAT.
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
                     continue
@@ -1957,6 +1975,8 @@ def offer_top(
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
                     continue  # FR #254
+                if not fr_row_offerable(row):
+                    continue  # FR #846
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     continue
@@ -2356,6 +2376,8 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
+            if task_u == "FR" and not fr_row_offerable(cand):
+                return "refused", "FR URL is a pull request (closed/superseded PR is not an FR; #846)"
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
@@ -2459,6 +2481,9 @@ def prune_unassignable_queue(home: Path) -> dict:
             for row in doc["unaccepted"]:
                 task = str(row.get("task") or "").upper()
                 if task == "FR" and row_skip_fr_reason(row):
+                    continue
+                # FR #846: drop FR rows whose URL is a pull request.
+                if task == "FR" and not fr_row_offerable(row):
                     continue
                 # FR #785: drop rows whose repo is archived / superseded (e.g. gh-Jeeves).
                 if repo_archived_for_queue(str(row.get("repo") or "")):
@@ -2649,6 +2674,8 @@ def resync_from_github(
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
                 if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
                     continue  # FR #180 local junk
+                if str(row.get("task") or "").upper() == "FR" and not fr_row_offerable(row):
+                    continue  # FR #846: /pull/ URL is never an FR
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc,
                     str(row.get("repo") or ""),
@@ -2657,13 +2684,26 @@ def resync_from_github(
                     fetched_repos=set(fetched),
                 ):
                     continue  # FR #254
+                # FR #846: drop FR whose id is an open pull number for this repo.
+                if str(row.get("task") or "").upper() == "FR":
+                    urepo = str(row.get("repo") or "")
+                    ident = str(row.get("id") or "")
+                    if ident in (open_pulls_map.get(urepo) or set()):
+                        continue
+                if (
+                    row.get("repo") in fetched_set
+                    and str(row.get("task") or "").upper() == "FR"
+                    and (row.get("repo"), row.get("task"), row.get("id")) not in want
+                ):
+                    # FR #846: do not preserve closed-issue / closed-PR phantoms via offered_to.
+                    continue
                 if (
                     row.get("repo") in fetched_set
                     and row.get("task") in ("FR", "MRB")
                     and (row.get("repo"), row.get("task"), row.get("id")) not in want
                     and not row.get("offered_to")
                 ):
-                    continue  # closed / merged / superseded on GitHub
+                    continue  # closed / merged / superseded on GitHub (MRB still honours offered_to)
                 keep.append(row)
             dropped = before - len(keep)
             doc["unaccepted"] = keep

@@ -141,11 +141,13 @@ def fetcher(table, seen=None):
 
 def seed(home):
     doc = {"v": 1, "accepted": [{"repo": "o/a", "task": "FR", "id": "#9", "nick": "bob-x"}], "unaccepted": [
-        {"repo": "o/a", "task": "FR", "id": "#1", "seq": 1, "line": "keep-me"},
+        # Still-open issue that is offered: kept (in want) — FR #846 preserves in-flight only when real.
+        {"repo": "o/a", "task": "FR", "id": "#1", "seq": 1, "line": "keep-me", "offered_to": "bob-z"},
         {"repo": "o/a", "task": "FR", "id": "#2", "seq": 2},                     # closed on GitHub -> dropped
-        {"repo": "o/a", "task": "UAT", "id": "#3", "seq": 3},                    # other kind -> kept
+        {"repo": "o/a", "task": "UAT", "id": "#3", "seq": 3},                    # other kind -> pruned (t853u)
         {"repo": "o/bad", "task": "FR", "id": "#4", "seq": 4},                   # fetch fails -> kept
-        {"repo": "o/a", "task": "FR", "id": "#5", "seq": 5, "offered_to": "bob-y"},   # offered -> kept
+        # FR #846: offered_to must NOT keep an FR that is gone from GitHub (closed PR phantom class).
+        {"repo": "o/a", "task": "FR", "id": "#5", "seq": 5, "offered_to": "bob-y"},
     ]}
     gitclaim._write_queue(gitclaim.queue_path(home), doc)
 
@@ -160,8 +162,10 @@ def test_resync_merges_keeps_accepted_and_failed_repos(tmp_path):
     assert "SECRET-TOKEN-123" not in json.dumps(res)
     rows = {(r["repo"], r["task"], r["id"]): r for r in gitclaim.load_unaccepted(tmp_path)}
     assert ("o/a", "FR", "#1") in rows and rows[("o/a", "FR", "#1")]["line"] == "keep-me"
-    assert ("o/a", "FR", "#2") not in rows and res["dropped"] == 2      # + the legacy per-PR UAT row (t853u)
-    assert ("o/a", "UAT", "#3") not in rows and ("o/bad", "FR", "#4") in rows and ("o/a", "FR", "#5") in rows
+    assert rows[("o/a", "FR", "#1")]["offered_to"] == "bob-z"
+    assert ("o/a", "FR", "#2") not in rows
+    assert ("o/a", "FR", "#5") not in rows                    # FR #846: offered phantom dropped
+    assert ("o/a", "UAT", "#3") not in rows and ("o/bad", "FR", "#4") in rows
     assert ("o/a", "MRB", "#8") in rows
     assert ("o/a", "FR", "#7") not in rows                    # superseded by the closing PR
     assert ("o/a", "FR", "#9") not in rows                    # already accepted by a bob: not re-offered
