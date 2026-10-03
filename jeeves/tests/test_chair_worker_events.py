@@ -288,15 +288,27 @@ def test_short_work_format():
     assert shop_listen.activity_description({"task": "MRB", "repo": "a/b", "id": "#1", "line": "GIT x"}) == "b MRB #1"
 
 def test_self_uat_giveup_loop_ends_idle_not_stuck_doing(chair):
-    """t852u: a seat that GIVEUPs a self-UAT is never offered it again (ledger survives a row rebuild)
-    and the digest goes to idle (not stuck on 'doing UAT #269')."""
-    uat = {"repo": "o/r", "task": "UAT", "id": "#269", "seq": 1, "ts": "2026-10-03T09:21:37Z", "line": "x", "refs": ["#623"],
-           "url": "https://github.com/o/r/issues/269"}
+    """t852u / FR #859: GIVEUP on repo UAT #0 is never re-offered after resync (ledger survives).
+
+    Legacy per-PR UAT (#269) is refused by is_repo_uat (t853u / #818); fixture uses #0 + repo_uat.
+    """
+    uat = {
+        "repo": "o/r",
+        "task": "UAT",
+        "id": "#0",
+        "seq": 1,
+        "ts": "2026-10-03T09:21:37Z",
+        "line": "UAT o/r: clear",
+        "title": "UAT o/r",
+        "refs": ["#623"],
+        "repo_uat": True,
+        "url": "https://github.com/o/r",
+    }
     queue(chair.home, dict(uat))
     say(chair, SEAT, "#marchhare", "!bored")
     assert listed(chair)[0]["state"] == "offered"
-    say(chair, SEAT, "#marchhare", "ACK UAT o/r#269 x")
-    say(chair, SEAT, "#marchhare", "GIVEUP UAT o/r#269 self-UAT forbidden")
+    say(chair, SEAT, "#marchhare", "ACK UAT o/r#0 x")
+    say(chair, SEAT, "#marchhare", "GIVEUP UAT o/r#0 self-UAT forbidden")
     assert listed(chair)[0]["state"] == "idle" and listed(chair)[0]["work"] == ""
     queue(chair.home, dict(uat))                       # resync rebuilt the row without any stamp
     chair.said.clear()
