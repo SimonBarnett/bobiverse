@@ -1,10 +1,12 @@
 <#
 .SYNOPSIS
-  Start a NEW Jeeves MONITORING agent (FR #787 Start Menu 'Start Jeeves Monitor').
+  Start a NEW Jeeves MONITORING agent (FR #787 / #954 Start Menu 'Start Jeeves Monitor').
 .DESCRIPTION
   Same fuel selection as the Bob Fleet systray Agent item (cursor > grok > key prompt)
   via bob-worker.exe --mode monitor. CWD is this Jeeves install root. Never resumes.
-  Looks for bob-worker.exe under sibling <ai root>\bob\worker (or -BobInstallRoot).
+  The monitor_prompt tells the agent to read AGENTS.md and run the monitor-start skill
+  immediately (do not wait for Simon). Looks for bob-worker.exe under sibling
+  <ai root>\bob\worker (or -BobInstallRoot).
 #>
 [CmdletBinding()]
 param(

@@ -38,6 +38,10 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 
 Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus` (Python under `tools\monitor\`). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
 
+## Auto-start (FR #954)
+
+On launch, **run `.grok/skills/monitor-start/SKILL.md` immediately** (AGENTS.md first-turn rule). Do not wait for a human prompt. Skills are under `.grok\skills` only (no top-level `.\skills`). The Start Menu shortcut / `monitor_prompt` tells the agent to run `monitor-start` now.
+
 ## Self-harvest loop (t865u)
 
 After every finding: file/de-dup via intake, then `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...` (+ `-Flush`) so the learning lands back in bobiverse skills. The monitor improves itself through harvest — do not keep private notes.

@@ -135,8 +135,12 @@ function Stage-Product([string]$Name) {
     $skillsDest = Join-Path $stage '.grok\skills'
     # This product's whole skill book: bobiverse-<p> + bobiverse-<p>-commands / -troubleshooting / ... + the shared fleet-ops book.
     $productSkill = "bobiverse-$Name"
+    # FR #954: jeeves also stages monitor-start (first-turn auto-start skill).
     $bookDirs = @($skillsDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue } |
-            Where-Object { $_.Name -eq $productSkill -or $_.Name -like "$productSkill-*" -or $_.Name -eq 'bobiverse-fleet-ops' })
+            Where-Object {
+                $_.Name -eq $productSkill -or $_.Name -like "$productSkill-*" -or $_.Name -eq 'bobiverse-fleet-ops' -or
+                ($Name -eq 'jeeves' -and $_.Name -eq 'monitor-start')
+            })
     if (-not ($bookDirs | Where-Object { $_.Name -eq $productSkill })) {
         Write-Host "WARN $Name missing .grok/skills/$productSkill"
     }
