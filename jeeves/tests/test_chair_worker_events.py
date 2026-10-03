@@ -247,7 +247,7 @@ def test_assign_sets_doing_with_short_status_before_ack(chair):
     say(chair, SEAT, "#marchhare", "!bored")
     assert any("o/r#68" in t for _, t in chair.said)                  # wire line unchanged
     w = listed(chair)[0]
-    assert (w["nick"], w["state"], w["work"]) == (SEAT, "doing", "r FR #68")
+    assert (w["nick"], w["state"], w["work"]) == (SEAT, "offered", "r FR #68")   # FR #663: offered until the ACK
     say(chair, SEAT, "#marchhare", "ACK FR o/r#68 long title that must not be in the status")
     assert listed(chair)[0]["work"] == "r FR #68"
     say(chair, SEAT, "#marchhare", "DONE FR o/r#68 PASS merged")
@@ -258,7 +258,7 @@ def test_assign_sets_doing_with_short_status_before_ack(chair):
 def test_assign_then_nack_or_giveup_clears_to_idle(chair, verb):
     queue(chair.home, row(9))
     say(chair, SEAT, "#marchhare", "!bored")
-    assert listed(chair)[0]["state"] == "doing"
+    assert listed(chair)[0]["state"] == "offered"
     say(chair, SEAT, "#marchhare", f"{verb} FR o/r#9 cannot")
     assert listed(chair)[0]["state"] == "idle" and listed(chair)[0]["work"] == ""
 
@@ -275,7 +275,7 @@ def test_ack_for_row_no_longer_queued_still_shows_doing(chair):
 def test_bored_with_nothing_queued_is_idle(chair):
     queue(chair.home, row(3))
     say(chair, SEAT, "#marchhare", "!bored")
-    assert listed(chair)[0]["state"] == "doing"
+    assert listed(chair)[0]["state"] == "offered"
     queue(chair.home)                                                 # the offer vanished
     chair._git_bored(SEAT, "#marchhare", time.time() + 3600, chair=True)
     assert listed(chair)[0]["state"] == "idle"
@@ -294,7 +294,7 @@ def test_self_uat_giveup_loop_ends_idle_not_stuck_doing(chair):
            "url": "https://github.com/o/r/issues/269"}
     queue(chair.home, dict(uat))
     say(chair, SEAT, "#marchhare", "!bored")
-    assert listed(chair)[0]["state"] == "doing"
+    assert listed(chair)[0]["state"] == "offered"
     say(chair, SEAT, "#marchhare", "ACK UAT o/r#269 x")
     say(chair, SEAT, "#marchhare", "GIVEUP UAT o/r#269 self-UAT forbidden")
     assert listed(chair)[0]["state"] == "idle" and listed(chair)[0]["work"] == ""

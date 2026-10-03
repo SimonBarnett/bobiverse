@@ -1055,6 +1055,11 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                     extra["author_seat"] = implementer
                     extra["implementer_seat"] = implementer
                 changed = _append_unaccepted(doc, claim, **extra)
+                # t860u: a row that already existed (webhook race / earlier issues event) must still get the
+                # real pull URL, else mrb_row_offerable is False and the seats sit idle until the next resync.
+                for r in doc["unaccepted"]:
+                    if _same(r, claim.repo, "MRB", claim.id) and not PULL_URL_RE.search(str(r.get("url") or "")):
+                        r["url"] = extra["url"]
 
             elif ev == "pull_request" and action == "closed":
                 _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
@@ -1073,20 +1078,11 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                                 break
                         if mrb_src:
                             break
-                    # FR #628 / mrb-664-fix: restore per-issue UAT after merge (not repo-only UAT #0).
-                    extra = uat_block_extras_from_mrb_row(mrb_src) if mrb_src else {}
+                    # t853u: UAT is per REPO (one row once every issue is closed and every PR merged,
+                    # see resync_from_github); a merge never queues a per-PR / per-issue UAT any more.
+                    del mrb_src
                     for ref in claim.refs:
-                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB"})
-                        uat = GitClaim(
-                            repo=claim.repo,
-                            task="UAT",
-                            id=ref,
-                            event="issues",
-                            action="uat",
-                            line=claim.line,
-                            refs=(claim.id,),
-                        )
-                        _append_unaccepted(doc, uat, **extra)
+                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
                     changed = "updated"
                 else:
                     # closed without merge: restore FR for linked issues
@@ -2069,9 +2065,11 @@ def _ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
     repo_level = is_repo_uat(row)
     for k in keys:
         tl = (gu.get(k) or {}).get(me) or []
-        if k == own and tl:
+        if k == own and task in tl:
             return f"{nick} already gave up {k}"
-        if not repo_level and task in ("MRB", "UAT") and any(x in ("MRB", "UAT") for x in tl):
+        # t860u: a GIVEUP on a LINKED row only blocks the same job kind (a seat that gave up the UAT of a
+        # linked issue as "self-UAT" can still review the PR); only the row's own key blocks any kind.
+        if not repo_level and task in ("MRB", "UAT") and task in tl:
             return f"{nick} already gave up linked {k}"
     if task in ("MRB", "UAT"):
         bad = {"FR", "MRB"} if task == "UAT" else {"FR"}
@@ -2107,12 +2105,15 @@ def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, id
             _ledger_update(home, _fd)
         except OSError:
             pass
+    # t860u: working an FR (ACK/DONE, "DONE existing PR, no duplicate", URL of a PR that already existed) is
+    # NOT authorship: it is recorded as the informational role "FRW" and never blocks review. Only the PR's
+    # real commit authors (``ledger_refresh_authors`` -> role "FR") and the MRB reviewer block review/UAT.
     if verb_u in ("ACK", "DONE") and task_u in ("FR", "MRB"):
-        ledger_touch(home, nick, repo, task_u, keys)
+        ledger_touch(home, nick, repo, "FRW" if task_u == "FR" else task_u, keys)
     if verb_u == "DONE" and task_u == "FR":
         parsed = parse_github_pull_url(url or result or "")
         if parsed:
-            ledger_touch(home, nick, parsed[0], "FR", [_lkey(parsed[0], parsed[1])])
+            ledger_touch(home, nick, parsed[0], "FRW", [_lkey(parsed[0], parsed[1])])
 
 
 def github_pr_seat_fetcher(*, home: Path | None = None):
@@ -2386,7 +2387,8 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
                 if task == "MRB" and not mrb_row_offerable(row):
                     continue
-                # mrb-664-fix: keep per-issue UAT rows (FR #628); do not drop non-repo_uat.
+                if task == "UAT" and not row.get("repo_uat"):
+                    continue  # t853u: no per-PR / per-issue UAT rows; only the single repo-level UAT
                 keep.append(row)
             doc["unaccepted"] = keep
             dropped = before - len(keep)
@@ -2546,14 +2548,15 @@ def resync_from_github(
             keep = []
             for row in doc["unaccepted"]:
                 if str(row.get("task") or "").upper() == "UAT":
-                    # mrb-664-fix: keep per-issue UAT; drop only stale repo_uat when repo is no longer clear.
+                    if not row.get("repo_uat"):
+                        continue  # t853u: legacy per-PR / per-issue UAT rows are gone (even if offered, unACKed)
                     if (
                         row.get("repo_uat")
                         and row.get("repo") in fetched_set
                         and not repo_clear.get(str(row.get("repo")), True)
                         and not row.get("offered_to")
                     ):
-                        continue
+                        continue  # new issue / PR opened: the repo is no longer clear, UAT waits
                 if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
                     continue  # FR #180 local junk
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(

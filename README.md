@@ -89,7 +89,7 @@ Or `msiexec /i bob-0.1.1.msi`.
 - `!register <machine>` (Jeeves, Simon/operators) → ChanServ REGISTER
 - Registered `Bob-*` gets +o on shop, +h on `#bobiverse`
 - Systray/shortcut Restart → departure announce → `Restart-Service ircBob`
-- `!assign <worker-nick> <repo> <FR|MRB|UAT> <num>` (Jeeves, verified simon or a Bob-* ear only): Jeeves posts the normal assign line to that idle seat (no self-MRB/UAT, seat not busy, row queued and unaccepted); ACK accepts it. See `jeeves/docs/jeeves-commands.md`
+- `!assign <worker-nick> <repo> <FR|MRB|UAT> <num>` (Jeeves, verified simon or a Bob-* ear only): Jeeves posts the normal assign line to that idle seat (no self-MRB/UAT, seat not busy, row queued and unaccepted); ACK accepts it. UAT is per repo (`UAT owner/repo#0`): Jeeves queues ONE repo-level UAT only when every issue is closed (excluding needs-human/boards/harvest records) and every PR is merged. See `jeeves/docs/jeeves-commands.md`
 - `!recycle` / `!recycle {mid}` on Bob; `!recycle jeeves` on chair (ircJeeves only)
 - Service start self-updates to the latest GitHub release (`Update-BobiverseService.ps1`, v0.1.17): token-less check, detached helper downloads + sha256-verifies the MSI, backs up, installs, rolls back on failure, logs to `%ProgramData%\bobiverse\update\<product>\update.log`. Opt out with `BOB_AUTOUPDATE=0` (or `BOBIVERSE_NO_UPDATE=1`, or a `config\autoupdate.disabled` file). Never touches Ergo or seats; always starts the installed version if the check fails.
 - ObjectName = fleet user (DPAPI): interactive prompt, `BOBIVERSE_SERVICE_PASSWORD`, `config\service.password`, or **Complete bobiverse service logon**

@@ -36,8 +36,7 @@ def test_pr_payload_with_full_closes_form_carries_the_ref():
     assert c.refs == ()
 
 
-def test_pr_open_supersedes_fr_then_merge_queues_per_issue_uat(tmp_path):
-    # mrb-664-fix / FR #628: merge queues UAT #<issue>; MRB row is removed.
+def test_pr_open_supersedes_fr_then_merge_queues_no_per_pr_uat(tmp_path):
     apply_queue_event(tmp_path, GitClaim(repo=REPO, task="FR", id="#5", event="issues", action="opened", line="l"))
     assert ("FR", "#5") in _rows(tmp_path)
     apply_queue_event(tmp_path, claim_from_payload("pull_request", _pr_payload(body=f"Closes {REPO}#5")))
@@ -45,11 +44,9 @@ def test_pr_open_supersedes_fr_then_merge_queues_per_issue_uat(tmp_path):
     assert ("FR", "#5") not in rows and ("MRB", "#9") in rows
     apply_queue_event(tmp_path, claim_from_payload("pull_request", _pr_payload("closed", f"Closes {REPO}#5", merged=True)))
     rows = _rows(tmp_path)
-    assert ("UAT", "#5") in rows and ("MRB", "#9") not in rows
-    # Issue-closed still drops a manually opened UAT that was not merge-sourced (t826u).
-    apply_queue_event(tmp_path, GitClaim(repo=REPO, task="UAT", id="#6", event="issues", action="opened", line="l"))
-    apply_queue_event(tmp_path, GitClaim(repo=REPO, task="FR", id="#6", event="issues", action="closed", line="l"))
-    assert ("UAT", "#6") not in _rows(tmp_path)
+    assert ("UAT", "#5") not in rows and ("MRB", "#9") not in rows        # t853u: UAT is per repo, not per merge
+    apply_queue_event(tmp_path, GitClaim(repo=REPO, task="FR", id="#5", event="issues", action="closed", line="l"))
+    assert not [r for r in _rows(tmp_path) if r[0] == "UAT"]
 
 
 def test_issue_closed_drops_fr_and_pr_rows_and_manual_uat_rows(tmp_path):
