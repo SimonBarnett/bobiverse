@@ -115,7 +115,12 @@ def test_assign_wire_line_format():
     row = _row("SimonBarnett/bobiverse", "FR", 39, 1)
     assert gitclaim.format_assign_line("ionos-12916", row) == \
         "ionos-12916: FR SimonBarnett/bobiverse#39 https://github.com/SimonBarnett/bobiverse/issues/39"
-    mrb = _row("o/r", "MRB", 7, 1)
+    # FR #595: MRB without url/pr_id must not invent /pull/{id}.
+    mrb_bare = _row("o/r", "MRB", 7, 1)
+    bare_line = gitclaim.format_assign_line("ionos-1", mrb_bare)
+    assert "pull/7" not in bare_line
+    assert bare_line.startswith("ionos-1: MRB o/r#7")
+    mrb = _row("o/r", "MRB", 7, 1, url="https://github.com/o/r/pull/7")
     assert gitclaim.format_assign_line("ionos-1", mrb).endswith("o/r#7 https://github.com/o/r/pull/7")
     legacy_pr = _row("o/r", "PR", 8, 1)
     assert gitclaim.format_assign_line("ionos-1", legacy_pr).startswith("ionos-1: FR o/r#8 ")
@@ -155,10 +160,11 @@ def test_mrb_not_offered_to_author_seat_when_other_seat_live(_home):
     doc["machines"]["ionos"] = bobreport._empty_machine("ionos")
     doc["machines"]["ionos"]["workers"] = {"1": {"state": "idle"}, "2": {"state": "idle"}}
     bobreport.save_digest(_home, doc)
-    _queue(_home, [_row("o/r", "MRB", 5, 1, author_seat="ionos-1"), _row("o/r", "FR", 6, 2)])
+    mrb = _row("o/r", "MRB", 5, 1, author_seat="ionos-1", url="https://github.com/o/r/pull/5")
+    _queue(_home, [mrb, _row("o/r", "FR", 6, 2)])
     st, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos")
     assert job["id"] == "#6"                                  # skipped own MRB
-    _queue(_home, [_row("o/r", "MRB", 5, 1, author_seat="ionos-1")])
+    _queue(_home, [_row("o/r", "MRB", 5, 1, author_seat="ionos-1", url="https://github.com/o/r/pull/5")])
     st, job = gitclaim.offer_focus_top(_home, "ionos-2", "#ionos")
     assert job["id"] == "#5"                                  # other seat may review it
 

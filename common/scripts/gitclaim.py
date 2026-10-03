@@ -57,6 +57,11 @@ PULL_URL_RE = re.compile(
     r"https?://github\.com/(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(?P<num>\d+)",
     re.I,
 )
+# FR #595 / #247: detect issues-shaped URLs so MRB never treats them as pull targets.
+ISSUE_URL_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)",
+    re.I,
+)
 
 NAK_BORED_WAIT = "NAK !BORED wait"
 NAK_BORED_BUSY = "NAK !BORED busy"
@@ -85,6 +90,10 @@ SKIP_FR_LABELS = frozenset(
         "mrb_home",
         "evergreen",
         "evergreen-mrb",
+        # FR #595: verdict / board labels are not implementable FRs.
+        "mrb",
+        "mrb-pass",
+        "mrb-fail",
     }
 )
 
@@ -1280,22 +1289,124 @@ def _canon_task(row: dict) -> str:
     return task if task in ("FR", "MRB", "UAT") else "FR"
 
 
-def row_url(row: dict) -> str:
+def resolve_assign_url(row: dict) -> str:
+    """URL for an assign line (FR #595 / #247).
+
+    FR/UAT may invent ``/issues/{id}`` when url is missing.
+    MRB may only use an existing ``/pull/N`` url, or invent from explicit
+    ``pr_id`` / ``pr`` — never from the bare row/issue id alone.
+    """
+    task = _canon_task(row)
+    repo = str(row.get("repo") or "").strip()
     url = str(row.get("url") or "").strip()
+    if task == "MRB":
+        if PULL_URL_RE.search(url):
+            return url
+        pr = str(row.get("pr_id") or row.get("pr") or "").strip().lstrip("#")
+        if repo and pr:
+            return f"https://github.com/{repo}/pull/{pr}"
+        return ""
     if url:
         return url
-    repo = str(row.get("repo") or "").strip()
     num = str(row.get("id") or "").strip().lstrip("#")
-    if not repo or not num:
-        return ""
-    kind = "pull" if _canon_task(row) == "MRB" else "issues"
-    return f"https://github.com/{repo}/{kind}/{num}"
+    if repo and num:
+        return f"https://github.com/{repo}/issues/{num}"
+    return ""
+
+
+def row_url(row: dict) -> str:
+    """Backward-compatible alias for ``resolve_assign_url``."""
+    return resolve_assign_url(row)
+
+
+def mrb_row_offerable(
+    row: dict,
+    *,
+    pr_exists=None,
+) -> bool:
+    """True when an MRB row has a resolvable pull URL (and optional live PR check).
+
+    FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
+    """
+    if _canon_task(row) != "MRB":
+        return True
+    raw = str(row.get("url") or "").strip()
+    if ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw):
+        return False
+    url = resolve_assign_url(row)
+    if not url or not PULL_URL_RE.search(url):
+        return False
+    if pr_exists is None:
+        return True
+    m = PULL_URL_RE.search(url)
+    if not m:
+        return False
+    repo, num = m.group("repo"), m.group("num")
+    try:
+        return bool(pr_exists(repo, num))
+    except Exception:
+        # Fail closed for MRB: do not offer a possibly-fake pull URL.
+        return False
+
+
+def github_pr_exists_checker(
+    *,
+    home: Path | None = None,
+    cache: dict | None = None,
+):
+    """Return ``pr_exists(repo, num)`` when a GitHub token is available (FR #595 / #247).
+
+    Returns None when offline / no token (structural URL checks in
+    ``mrb_row_offerable`` still apply).
+    """
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    if home is not None:
+        # Prefer digest-home token when present (chair / LocalSystem).
+        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
+    src = gh_filer.ensure_gh_token_env()
+    if src == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    store: dict = cache if cache is not None else {}
+
+    def _check(repo: str, num: str) -> bool:
+        key = f"{repo}#{num}"
+        if key in store:
+            return store[key]
+        api = f"https://api.github.com/repos/{repo}/pulls/{num}"
+        req = urllib.request.Request(
+            api,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-gitclaim",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                ok = 200 <= int(getattr(resp, "status", 200) or 200) < 300
+        except urllib.error.HTTPError as e:
+            ok = False
+            if int(getattr(e, "code", 0) or 0) not in (404, 410):
+                pass  # non-404: still fail closed for offer
+        except Exception:
+            ok = False
+        store[key] = ok
+        return ok
+
+    return _check
 
 
 def format_assign_line(nick: str, row: dict) -> str:
     """Wire line the seats and Watch-AgentHealth parse: ``<nick>: FR|MRB|UAT owner/repo#N url``."""
     num = str(row.get("id") or "").strip().lstrip("#")
-    line = f"{nick}: {_canon_task(row)} {row.get('repo') or ''}#{num} {row_url(row)}"
+    line = f"{nick}: {_canon_task(row)} {row.get('repo') or ''}#{num} {resolve_assign_url(row)}"
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", line)).strip()
 
 
@@ -1367,13 +1478,19 @@ def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
 
 
 def offer_focus_top(
-    home: Path, nick: str, channel: str, *, now: float | None = None
+    home: Path,
+    nick: str,
+    channel: str,
+    *,
+    now: float | None = None,
+    pr_exists=None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
 
     "ok" job | "empty" (nothing queued / nothing eligible under strict focus or ignore) | "error".
     A row offered to another seat within OFFER_TIMEOUT_S is skipped; a row already offered to
     this nick is re-offered (rebroadcast) instead of burning a second job.
+    ``pr_exists`` (optional) skips MRB rows whose pull URL 404s (FR #595 / #247).
     """
     import time as _time
 
@@ -1397,6 +1514,9 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     continue  # FR #254
+                # FR #595 / #247: skip MRB without a real pull URL (or PR 404).
+                if not mrb_row_offerable(cand, pr_exists=pr_exists):
+                    continue
                 to = str(cand.get("offered_to") or "").strip()
                 if to and to.lower() != me.lower():
                     try:
@@ -1419,6 +1539,10 @@ def offer_focus_top(
                     job["offered_to"] = me
                     job["offered_ts"] = _utc_now()
                     job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
+                    # Stamp resolved pull URL so the wire line never invents one.
+                    resolved = resolve_assign_url(job)
+                    if resolved:
+                        job["url"] = resolved
                     doc["unaccepted"][i] = job
                     break
             else:
@@ -1432,7 +1556,14 @@ def offer_focus_top(
         return "error", None
 
 
-def offer_top(home: Path, nick: str, channel: str, *, now: float | None = None) -> tuple[str, dict | None]:
+def offer_top(
+    home: Path,
+    nick: str,
+    channel: str,
+    *,
+    now: float | None = None,
+    pr_exists=None,
+) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
     import time as _time
 
@@ -1454,6 +1585,8 @@ def offer_top(home: Path, nick: str, channel: str, *, now: float | None = None) 
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
                     continue  # FR #254
+                if not mrb_row_offerable(row, pr_exists=pr_exists):
+                    continue
                 pick_i = i
                 break
             if pick_i is None:
@@ -1462,6 +1595,9 @@ def offer_top(home: Path, nick: str, channel: str, *, now: float | None = None) 
             job["offered_to"] = (nick or "").strip()
             job["offered_ts"] = _utc_now()
             job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
+            resolved = resolve_assign_url(job)
+            if resolved:
+                job["url"] = resolved
             doc["unaccepted"][pick_i] = job
             try:
                 _write_queue(queue_path(home), doc)
@@ -1525,7 +1661,7 @@ def accept_offered(home: Path, nick: str, channel: str) -> tuple[str, dict | Non
 
 
 def prune_unassignable_queue(home: Path) -> dict:
-    """FR #180: drop unaccepted FR rows that are skill/harvest/safe-to-close/umbrella (local metadata).
+    """FR #180 / #595: drop unaccepted FR verdict/junk rows and MRB rows without a real pull URL.
 
     Does not call GitHub. Closed-issue drops still come from webhooks + ``resync_from_github``.
     ``needs_human`` rows are kept but never offered (see ``offer_focus_top``).
@@ -1539,7 +1675,11 @@ def prune_unassignable_queue(home: Path) -> dict:
             before = len(doc["unaccepted"])
             keep = []
             for row in doc["unaccepted"]:
-                if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
+                task = str(row.get("task") or "").upper()
+                if task == "FR" and row_skip_fr_reason(row):
+                    continue
+                # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
+                if task == "MRB" and not mrb_row_offerable(row):
                     continue
                 keep.append(row)
             doc["unaccepted"] = keep
