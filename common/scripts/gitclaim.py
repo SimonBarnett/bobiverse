@@ -1309,6 +1309,13 @@ def canonical_worker_nick(nick: str) -> str | None:
     legacy = bobreport.parse_worker_nick(nick)
     if legacy:
         return f"{legacy[0]}-{legacy[1]}"
+    # Fallback when machine is not yet in seat_machine_ids() (cold digest / tests):
+    # still accept already-canonical ``<machine>-<pid>`` (MRB #1278).
+    n = (nick or "").strip().lower()
+    if n and not n.startswith("bob-") and not n.startswith("w-"):
+        m = re.match(r"^([a-z0-9][a-z0-9_.-]*)-(\d+)$", n)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}"
     return None
 
 
