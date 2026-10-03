@@ -1270,19 +1270,21 @@ function Apply-BobIrcDigestCursorPools {
             else { $label = $ov }
         }
         if (-not $groupId -and $label) { $groupId = Normalize-BobCursorSpendingGroupId $label }
-        # Cursor spending groups are fleet-shared (MarchHare has no local Cursor login).
-        # Digest pool ids are cursor-models/other-models/grok-weekly - fan out to every seat.
+        # Cursor Models / Other Models are fleet-shared (fan out). Cursor Sand
+        # (grok-weekly / cursor-grok-chat) is per Cursor seat — FR #663: never fan
+        # Sand remaining to every seat (last-writer-wins wrong machine figures).
         $seatTargets = @()
+        $isSand = ($groupId -match '^(grok-weekly|cursor-grok-chat|sand|grok-chat)$')
         if ($seatId -match '^(smart-catalogue|club-madeira|ntsa)$') {
             $seatTargets += ,$seatId
         }
-        else {
+        elseif (-not $isSand) {
             foreach ($seat in @(Get-BobSeatConfig)) {
                 if ($seat -and $seat.id) { $seatTargets += ,[string]$seat.id }
             }
-            if ($seatTargets.Count -eq 0 -and $seatId -match '^(smart-catalogue|club-madeira|ntsa)$') {
-                $seatTargets += ,$seatId
-            }
+        }
+        elseif ($seatId) {
+            $seatTargets += ,[string]$seatId
         }
         foreach ($sid in $seatTargets) {
             if (-not $sid) { continue }

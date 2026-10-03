@@ -2306,10 +2306,10 @@ class Client:
             line = gitclaim.format_assign_line(src, job)
             self._git_say(target, line)
             info(f"INFO git-claim bored offered {line} nick={src}")
-            try:  # t816u: show the assignment in the digest at once (ACK keeps it; DONE/NACK/GIVEUP clear it)
-                self._workers().on_ack(src, target, shop_listen.activity_description(job))
+            try:  # FR #663: offer is offered (not doing); ACK promotes; DONE/NACK/GIVEUP clear
+                self._workers().on_offer(src, target, shop_listen.activity_description(job))
             except Exception as exc:  # noqa: BLE001
-                info(f"WARN workers assign error {type(exc).__name__}")
+                info(f"WARN workers offer error {type(exc).__name__}")
             return
         if status == "empty":
             gitclaim.note_worker_activity(self.home, src, now)
@@ -2367,6 +2367,10 @@ class Client:
         if not shop_listen.is_shop_worker_nick(src, target):
             return False
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick or "Jeeves"
+        verb = ""
+        status = ""
+        act = None
+        result: dict = {}
         try:
             # FR #69: digest home holds ChanServ roster + digest.json (not chair --home)
             result = shop_listen.handle_shop_worker_line(
@@ -2377,7 +2381,15 @@ class Client:
                 briefer=briefer,
             )
         except Exception as exc:
+            # FR #663: shop-listen error must not leave the seat stuck as doing/offered.
             info(f"INFO shop-listen error {type(exc).__name__}")
+            try:
+                if shop_listen.parse_shop_job_line(body):
+                    parsed = shop_listen.parse_shop_job_line(body)
+                    if parsed and parsed.verb in ("DONE", "NACK", "GIVEUP"):
+                        self._workers().on_done(src, target)
+            except Exception as clear_exc:  # noqa: BLE001
+                info(f"WARN workers clear-after-error {type(clear_exc).__name__}")
             return True
         if not result.get("handled"):
             return False
@@ -2391,6 +2403,11 @@ class Client:
                 self._workers().on_done(src, target)
         except Exception as exc:  # noqa: BLE001
             info(f"WARN workers {verb} error {type(exc).__name__}")
+            if verb in ("DONE", "NACK", "GIVEUP"):
+                try:
+                    self._workers().on_done(src, target)
+                except Exception as clear_exc:  # noqa: BLE001
+                    info(f"WARN workers clear-retry {type(clear_exc).__name__}")
         info(
             f"INFO shop-listen {verb} status={status} nick={src} "
             f"activity={act!r} webhook={result.get('webhook')}"

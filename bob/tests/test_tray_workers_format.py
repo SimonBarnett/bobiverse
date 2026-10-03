@@ -71,9 +71,10 @@ Format-BobTrayWorkerLine ([pscustomobject]@{nick='marchhare-101';state='doing';w
 Format-BobTrayWorkerLine ([pscustomobject]@{nick='marchhare-102';state='idle';work=''})
 Format-BobTrayWorkerLine ([pscustomobject]@{nick='marchhare-103';state='idle';work='stale text'})
 Format-BobTrayWorkerLine ([pscustomobject]@{nick='marchhare-104';state='doing';work="two`nlines"})
+Format-BobTrayWorkerLine ([pscustomobject]@{nick='marchhare-105';state='offered';work='bobiverse UAT #629'})
 """, tmp_path)
     assert out == ["marchhare-101: FR o/r#5 fix the thing", "marchhare-102: idle", "marchhare-103: idle",
-                   "marchhare-104: two lines"]
+                   "marchhare-104: two lines", "marchhare-105: offered: bobiverse UAT #629"]
 
 
 @needs_ps

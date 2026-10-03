@@ -4,9 +4,11 @@ Deterministic and token-less. Jeeves (the chair) hears the machine channel ``#<m
 ``machines.<id>.workers = [{nick, state: doing|idle, work, updated}]`` current:
 
 * ``!bored`` from a nick in ``#<machine>``  -> worker-upsert (idle)
+* assign / offer (FR #663)                   -> worker-work  (offered + description)
 * ACK                                        -> worker-work  (doing + description)
 * DONE / NACK / GIVEUP                       -> worker-work  (idle)
 * PART / KICK / QUIT / NICK / NAMES reconcile -> worker-remove for nicks no longer in the channel
+* Un-ACKed ``offered`` expires to idle after ``OFFERED_TIMEOUT_S`` (bobreport)
 
 Every op passes the SAME schema + roster gate as an HTTP POST (``bobcallback.validate_report_payload``)
 and is applied with ``bobreport.apply_callback``; no secret or header is involved. ``post_fn`` lets a
@@ -110,6 +112,13 @@ class WorkerTracker:
         if not mid:
             return None
         return self.post(payload_for("worker-upsert", mid, nick))
+
+    def on_offer(self, nick: str, channel: str, work: str) -> int | None:
+        """FR #663: assign line sets offered (not doing); ACK promotes to doing."""
+        mid = speaker_machine(self.home, nick, channel)
+        if not mid:
+            return None
+        return self.post(payload_for("worker-work", mid, nick, "offered", work or "offered"))
 
     def on_ack(self, nick: str, channel: str, work: str) -> int | None:
         mid = speaker_machine(self.home, nick, channel)
