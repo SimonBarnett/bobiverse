@@ -13,8 +13,13 @@ Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
+| GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
+
+### Digest lock watchdog (FR #1136)
+
+BobCallback / `bobreport.digest_lock` self-heals a wedged `digest.lock` (empty, older than `BOB_DIGEST_LOCK_STALE_S` default 30s, or dead holder PID): logs `lock-broken age=… pid=…`, bounded acquire + one break-and-retry, then HTTP **503** instead of hanging. A daemon thread probes loopback `GET /health` every `BOB_CALLBACK_HEALTH_S` (default 30s) and breaks a stale lock on failure. Fresh locks held by a live PID are never broken.
 
 ## Placeholder curls
 
