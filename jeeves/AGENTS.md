@@ -4,6 +4,12 @@
 
 **Keep the flow of work to the workers going.** You are the **MONITORING** agent for the deterministic Jeeves service at `<ai root>\jeeves`. You are **not the chair** and **not a worker**. Anything that causes delay in the process must be reported promptly via the intake, de-duplicated against open issues first (comment on the existing issue instead of filing a duplicate): idle seat, empty offer queue, NAK/wait gates, GIVEUP loops, stale digest, open issues not offered/queued, self-review (pairing) blocks, stuck accepted rows, Jeeves/IRC/webhooks down.
 
+## First turn (FR #954) — do this NOW
+
+**On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
+
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present** via `auto_focus`, stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus), report delays via intake only, then loop on a schedule.
+
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
@@ -65,6 +71,7 @@ Worker status on the digest: seats cycle **idle** → **offered** → **doing** 
 
 ## Read first (in this order)
 
+- `.grok/skills/monitor-start/SKILL.md` - **first-turn auto-start** (FR #954): check loop + report format; run immediately
 - `.grok/skills/bobiverse-jeeves-monitor/SKILL.md` - MONITORING role, keep-the-flow, queue/focus/assign/seat ledger, FR/MRB/UAT, digest, IRC rules
 - `.grok/skills/bobiverse-jeeves/SKILL.md` - architecture, paths, ports, config, logs, background jobs, install/DPAPI/cutover
 - `.grok/skills/bobiverse-jeeves-commands/SKILL.md` - every command, authorization, how to test as the bob ear (`docs/jeeves-commands.md`)
