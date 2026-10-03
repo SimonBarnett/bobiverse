@@ -61,6 +61,11 @@ CLOSES_RE = re.compile(
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ID_RE = re.compile(r"^#\d+$")
+# FR #785: archived / superseded repos must not be offered or enqueued.
+# Keys are lower-case owner/name; values are the live successor for resync discovery.
+ARCHIVED_REPO_SUCCESSORS: dict[str, str] = {
+    "simonbarnett/gh-jeeves": "SimonBarnett/bobiverse",
+}
 # FR #254: DONE FR URL -> real PR repo/id (cross-repo implement PRs).
 PULL_URL_RE = re.compile(
     r"https?://github\.com/(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(?P<num>\d+)",
@@ -475,6 +480,26 @@ def _payload_number(event: str, payload: dict) -> str | None:
 
 
 
+def canonical_queue_repo(repo: str) -> str:
+    """FR #785: map archived/legacy repos to their live successor (identity otherwise)."""
+    key = (repo or "").strip()
+    if not key:
+        return key
+    return ARCHIVED_REPO_SUCCESSORS.get(key.lower(), key)
+
+
+def repo_archived_for_queue(repo: str, *, payload: dict | None = None) -> bool:
+    """FR #785: True when the repo is a known archived source or the payload marks it archived."""
+    key = (repo or "").strip()
+    if key and key.lower() in ARCHIVED_REPO_SUCCESSORS:
+        return True
+    if isinstance(payload, dict):
+        blob = payload.get("repository")
+        if isinstance(blob, dict) and blob.get("archived"):
+            return True
+    return False
+
+
 def extract_closes_issue_ids(*texts: str, repo: str = "") -> tuple[str, ...]:
     """Issue ids referenced via Closes/Fixes/Resolves/Refs #n or ``Closes owner/repo#n`` (deterministic).
 
@@ -791,6 +816,10 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
     if not repo or not REPO_RE.fullmatch(repo):
         return None
     src = (line or "").strip()
+    # FR #785: never enqueue new work from an archived repo (closed still flows for prune).
+    enqueue_action = action in ("opened", "reopened", "ready_for_review", "edited")
+    if enqueue_action and repo_archived_for_queue(repo, payload=payload):
+        return None
 
     if ev == "issues" and action in ("opened", "reopened"):
         ident = _payload_number(ev, payload)
@@ -1806,6 +1835,9 @@ def offer_focus_top(
                     continue  # FR #180: GIVEUP/NACK cooldown / needs-human
                 if row_skip_fr_reason(cand):
                     continue
+                # FR #785: never offer rows whose repo is archived / superseded.
+                if repo_archived_for_queue(str(cand.get("repo") or "")):
+                    continue
                 # FR #628: never hand out a row that is bound to GIVEUP for this seat.
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
                     continue
@@ -1885,6 +1917,8 @@ def offer_top(
             for i, row in enumerate(doc["unaccepted"]):
                 if row_needs_human(row) or row_on_cooldown(row, now_f) or row_skip_fr_reason(row):
                     continue
+                if repo_archived_for_queue(str(row.get("repo") or "")):
+                    continue  # FR #785
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
@@ -2274,6 +2308,8 @@ def assign_row(
                 return "refused", "row is on GIVEUP/NACK cooldown"
             if row_skip_fr_reason(cand):
                 return "refused", f"row skipped: {row_skip_fr_reason(cand)}"
+            if repo_archived_for_queue(str(cand.get("repo") or "")):
+                return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
                 return "refused", f"row is pinned to another machine than {me}"
             if row_gave_up_by(cand, me):
@@ -2384,6 +2420,9 @@ def prune_unassignable_queue(home: Path) -> dict:
                 task = str(row.get("task") or "").upper()
                 if task == "FR" and row_skip_fr_reason(row):
                     continue
+                # FR #785: drop rows whose repo is archived / superseded (e.g. gh-Jeeves).
+                if repo_archived_for_queue(str(row.get("repo") or "")):
+                    continue
                 # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
                 if task == "MRB" and not mrb_row_offerable(row):
                     continue
@@ -2444,6 +2483,9 @@ def resync_from_github(
         if not REPO_RE.fullmatch(repo):
             continue
         if repo.lower() in skip or repo.split("/", 1)[-1].lower() in skip:
+            continue
+        # FR #785: never resync an archived/superseded source (use successor via discover rewrite).
+        if repo_archived_for_queue(repo):
             continue
         try:
             issues = getter(f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100")
