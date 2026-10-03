@@ -123,7 +123,7 @@ SKIP_FR_LABELS = frozenset(
         "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
-        # needs-mrb1 is a vision cue only - must NOT skip-FR and must NOT become
+        # needs-mrb1 is a vision cue only — must NOT skip-FR and must NOT become
         # require_machine=mrb1 (#1080/#1122/#1174). Skipping it emptied bobiverse offers
         # under focus.strict. Workers still GIVEUP on the label per seat playbook.
         "blocked",
@@ -131,7 +131,7 @@ SKIP_FR_LABELS = frozenset(
     }
 )
 
-# Labels safe to detect in free text (title/line/body). Bare ``mrb`` is labels-only —
+# Labels safe to detect in free text (title/line/body). Bare ``mrb`` is labels-only ΓÇö
 # otherwise titles like "harden MRB/FR routing" (#595) would false-positive.
 SKIP_FR_LABELS_IN_TEXT = frozenset(
     lab
@@ -327,7 +327,7 @@ def _job_title(row: dict) -> str:
     if str(row.get("title") or "").strip():
         return str(row.get("title")).strip()
     line = str(row.get("line") or "")
-    # GIT issues repo opened #N title by user — title is mid tokens
+    # GIT issues repo opened #N title by user ΓÇö title is mid tokens
     if " by " in line:
         mid = line.rsplit(" by ", 1)[0]
         parts = mid.split()
@@ -372,7 +372,7 @@ def format_list_line(
     line_max: int = LIST_LINE_MAX,
     now: float | None = None,
 ) -> str:
-    """One PM line: ``#1 FR owner/repo#n 2h title…`` (title truncated only)."""
+    """One PM line: ``#1 FR owner/repo#n 2h titleΓÇª`` (title truncated only)."""
     task = str(row.get("task") or "?")
     repo = str(row.get("repo") or "?")
     ident = str(row.get("id") or "?")
@@ -388,13 +388,13 @@ def format_list_line(
             cut = title
             while cut and len(cut.encode("utf-8")) > budget - 1:
                 cut = cut[:-1]
-            title = cut + "…"
+            title = cut + "ΓÇª"
         line = f"{head} {title}"
     else:
         line = head
     # hard cap (should already fit)
     while len(line.encode("utf-8")) > line_max and len(line) > 1:
-        line = line[:-2] + "…"
+        line = line[:-2] + "ΓÇª"
     return line
 
 
@@ -431,7 +431,7 @@ def format_unaccepted_list(
         out.append(f"{total} unaccepted (showing {len(show)})")
     elif total > 1:
         out.append(f"{total} unaccepted (showing {len(show)})")
-    # single job: no summary spam — just the job line
+    # single job: no summary spam ΓÇö just the job line
     for i, row in enumerate(show, start=1):
         out.append(format_list_line(i, row, line_max=line_max, now=now))
     more = total - len(show)
@@ -452,7 +452,7 @@ def parse_accept(body: str) -> tuple[str, str, str] | None:
 
 
 def parse_git_announce(line: str) -> GitClaim | None:
-    """Parse a Jeeves `GIT …` line. None for ping, push, and other noise."""
+    """Parse a Jeeves `GIT ΓÇª` line. None for ping, push, and other noise."""
     text = (line or "").strip()
     if not text.startswith(bobreport.GIT_ANNOUNCE_PREFIX):
         return None
@@ -578,14 +578,14 @@ def issue_skip_fr_reason(
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
     # bobiverse#258 / FR #133 / FR #987: evergreen MRB-home boards by title shape only
-    # (label mrb-home/evergreen already returned above). Do not scan the body — real FRs
+    # (label mrb-home/evergreen already returned above). Do not scan the body ΓÇö real FRs
     # that mention "MRB home" in prose must stay assignable.
     if EVERGREEN_MRB_HOME_TITLE_RE.search(title_s):
         return "evergreen_mrb_home"
     # FR #595 / MRB #603 / FR #987: legacy queue rows may only put board labels in
     # title/line text (empty labels). Never run this scan when GitHub/labels are present
     # (false-positive on titles like "skip for stale mrb-home rows" / bodies saying
-    # "evergreen"). Title/line only — never the body.
+    # "evergreen"). Title/line only ΓÇö never the body.
     if not labs:
         title_l = title_s.lower()
         text_hits = []
@@ -642,11 +642,27 @@ def row_on_cooldown(row: dict, now: float, nick: str = "") -> bool:
     return True
 
 
-def row_needs_human(row: dict) -> bool:
+def row_needs_human(row: dict, nick: str = "") -> bool:
+    """True when this seat must not take a needs_human row.
+
+    After GIVEUP loops the chair stamps ``needs_human`` *and* ``giveup_seats``.
+    That used to block *every* seat, so marchhare sat idle while only ionos had
+    given up (bobiverse backlog NAK). When ``giveup_seats`` is set, only those
+    seats are blocked; other live seats may still be offered the row. A bare
+    ``needs_human`` with no giveup_seats stays a global human/vision gate.
+    """
     v = row.get("needs_human")
     if isinstance(v, bool):
-        return v
-    return str(v or "").strip().lower() in ("1", "true", "yes")
+        flag = v
+    else:
+        flag = str(v or "").strip().lower() in ("1", "true", "yes")
+    if not flag:
+        return False
+    seats = {x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()}
+    me = (nick or "").strip().lower()
+    if seats and me and me not in seats:
+        return False
+    return True
 
 
 # FR #587: machine-affinity for seats that cannot do the work (WP0 live / chair-outbox).
@@ -668,7 +684,7 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
         "gate",
     }
 )
-# Explicit cue → fleet machine id (normalized lowercase).
+# Explicit cue ΓåÆ fleet machine id (normalized lowercase).
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # agentic_fomprep WP0 live proof must run on DEV1
     (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
@@ -705,8 +721,8 @@ def infer_require_machine(
     """Return a fleet machine id the job must run on, or '' (FR #587).
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
-    title/body/line cues (WP0 live → ce-priority-dev1; needs-ionos / chair-outbox /
-    recycle|recompose Jeeves / prune queue.json → ionos; FR #587 / #852).
+    title/body/line cues (WP0 live ΓåÆ ce-priority-dev1; needs-ionos / chair-outbox /
+    recycle|recompose Jeeves / prune queue.json ΓåÆ ionos; FR #587 / #852).
     """
     labs = labels or ()
     if isinstance(labs, str):
@@ -743,6 +759,10 @@ def infer_require_machine(
 def row_require_machine(row: dict) -> str:
     """Machine id required for this queue row, if any (FR #587)."""
     stamped = str(row.get("require_machine") or "").strip().lower()
+    # Operator/monitor unpin: "*" / "any" / "none" means do not re-infer from title/body
+    # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
+    if stamped in {"*", "any", "none", "-"}:
+        return ""
     if stamped:
         mid = bobreport.normalize_machine_id(stamped) or stamped
         # Ignore corrupt stamps like mrb1 from needs-mrb1 (#1080).
@@ -876,7 +896,7 @@ def fr_is_superseded(
 def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim | None:
     """Build a claim from the GitHub webhook body. None if not a queue-driving event.
 
-    issues opened/reopened -> FR (skipped for skill/harvest/safe-to-close/umbrella/closed — FR #180)
+    issues opened/reopened -> FR (skipped for skill/harvest/safe-to-close/umbrella/closed ΓÇö FR #180)
     pull_request opened/ready_for_review -> MRB (with refs to linked issues)
     pull_request closed -> MRB row used for supersede (merged flag set)
     issues closed -> FR/UAT removal via apply_queue_event (task FR id)
@@ -899,7 +919,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         if ident is None:
             return None
         issue = _issue_blob(payload)
-        # FR #838 / #846: issue payloads for pulls include ``pull_request`` — never FR.
+        # FR #838 / #846: issue payloads for pulls include ``pull_request`` ΓÇö never FR.
         if issue.get("pull_request"):
             return None
         title = str(issue.get("title") or "")
@@ -1398,7 +1418,7 @@ def is_repo_uat(row: dict) -> bool:
 
 
 def is_mrb_fix_pr_title(title: str) -> bool:
-    """True for titles like ``fix(mrb-105):…`` or ``mrb-105-fix:…`` (bobiverse#224 / #781)."""
+    """True for titles like ``fix(mrb-105):ΓÇª`` or ``mrb-105-fix:ΓÇª`` (bobiverse#224 / #781)."""
     return bool(_MRB_FIX_TITLE_RE.search(str(title or "")))
 
 
@@ -1645,7 +1665,7 @@ def resolve_assign_url(row: dict) -> str:
 
     FR/UAT may invent ``/issues/{id}`` when url is missing.
     MRB may only use an existing ``/pull/N`` url, or invent from explicit
-    ``pr_id`` / ``pr`` — never from the bare row/issue id alone.
+    ``pr_id`` / ``pr`` ΓÇö never from the bare row/issue id alone.
     """
     task = _canon_task(row)
     repo = str(row.get("repo") or "").strip()
@@ -1704,7 +1724,7 @@ def mrb_row_offerable(
     """True when an MRB row has a resolvable pull URL (and optional live PR check).
 
     FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
-    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed → False).
+    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed ΓåÆ False).
     """
     if _canon_task(row) != "MRB":
         return True
@@ -1747,7 +1767,7 @@ def fr_row_offerable(row: dict, *, pr_exists=None) -> bool:
     * event is ``pull_request``
     * title looks like a conventional Fixes/docs PR
     * optional ``pr_exists(repo, num)`` is true (covers ``/issues/N`` URLs that
-      still resolve to a PR page — the #833 incident shape)
+      still resolve to a PR page ΓÇö the #833 incident shape)
 
     Non-FR rows return True.
     """
@@ -1778,7 +1798,7 @@ def github_pr_exists_checker(
     home: Path | None = None,
     cache: dict | None = None,
 ):
-    """Return ``pr_exists(repo, num)`` → True only for an **open** pull (FR #595 / #740).
+    """Return ``pr_exists(repo, num)`` ΓåÆ True only for an **open** pull (FR #595 / #740).
 
     Merged or closed PRs still return HTTP 200 from GitHub; those must be False so
     seats are not re-offered MRB after DONE PASS/FAIL. Returns None when offline /
@@ -2082,7 +2102,7 @@ def row_machine_mismatch(row: dict, nick: str) -> bool:
     """FR #628 / #732: machine pin via stamp, ``machine:<id>`` label, or title/body cues.
 
     Delegates to ``row_blocked_for_machine`` / ``row_require_machine`` so ``!assign``
-    (``assign_row``) re-infers WP0/ionos cues the same way ``offer_focus_top`` does —
+    (``assign_row``) re-infers WP0/ionos cues the same way ``offer_focus_top`` does ΓÇö
     legacy rows that never got ``_stamp_require_machine`` must not be force-assigned
     to the wrong machine.
     """
@@ -2144,7 +2164,7 @@ def offer_focus_top(
                     purged = True
 
             def _eligible(cand: dict) -> dict | None:
-                if row_needs_human(cand) or row_on_cooldown(cand, now_f, me):
+                if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_skip_fr_reason(cand):
                     return None
@@ -2185,8 +2205,9 @@ def offer_focus_top(
                     return None
                 return cand_eff
 
-            # Prefer focus order. If empty: strict => only focused repos (do not leak
-            # Club-Madeira etc when operator focused bobiverse); else full list.
+            # Prefer focus order. If that yields nothing, fall back only within focused
+            # repos when strict (operator asked to focus bobiverse — do not leak Club-Madeira
+            # etc.). When strict is off, fall back to the full unaccepted list.
             import focus_ignore  # lazy: avoid import cycle at module load
 
             order = ordered_unaccepted(home, doc["unaccepted"])
@@ -2282,7 +2303,7 @@ def offer_top(
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):
-                if row_needs_human(row) or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
+                if row_needs_human(row, nick or "") or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
                     continue
                 if repo_archived_for_queue(str(row.get("repo") or "")):
                     continue  # FR #785
@@ -2686,7 +2707,7 @@ def assign_row(
             if idx is None:
                 return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
-            if row_needs_human(cand):
+            if row_needs_human(cand, me):
                 return "refused", "row is needs-human"
             if row_on_cooldown(cand, now_f, me):
                 return "refused", "row is on GIVEUP/NACK cooldown"
@@ -2866,20 +2887,6 @@ def resync_from_github(
             return json.loads(resp.read().decode("utf-8"))
 
     getter = fetch_json or _default_fetch
-
-    def _fetch_all_pages(url_base: str, *, per_page: int = 100, max_pages: int = 20) -> list:
-        """Follow GitHub list pagination. One page left the queue empty while 120+ issues stayed open."""
-        out: list = []
-        for page in range(1, max_pages + 1):
-            sep = "&" if "?" in url_base else "?"
-            chunk = getter(f"{url_base}{sep}per_page={per_page}&page={page}")
-            if not isinstance(chunk, list):
-                break
-            out.extend(chunk)
-            if len(chunk) < per_page:
-                break
-        return out
-
     skip = {str(x).strip().lower() for x in (ignored or ()) if str(x).strip()}
     desired: list[GitClaim] = []
     fetched: list[str] = []
@@ -2898,12 +2905,8 @@ def resync_from_github(
         if repo_archived_for_queue(repo):
             continue
         try:
-            issues = _fetch_all_pages(
-                f"https://api.github.com/repos/{repo}/issues?state=open"
-            )
-            prs = _fetch_all_pages(
-                f"https://api.github.com/repos/{repo}/pulls?state=open"
-            )
+            issues = getter(f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100")
+            prs = getter(f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100")
         except Exception:  # noqa: BLE001 - one bad repo (404/403/rate limit) must not wipe its rows
             failed.append(repo)
             continue
@@ -3057,18 +3060,25 @@ def resync_from_github(
             doc["unaccepted"] = keep
             added = 0
             fetched_set2 = set(fetched)
-            # Premature DONE while GitHub issue/PR still open left seats NAK/empty: pull those
-            # rows out of done so resync can re-queue them.
-            if isinstance(doc.get("done"), list):
-                doc["done"] = [
-                    r
-                    for r in doc["done"]
-                    if not (
-                        isinstance(r, dict)
-                        and (str(r.get("repo") or ""), str(r.get("task") or ""), str(r.get("id") or ""))
-                        in {(c.repo, c.task, c.id) for c in desired}
-                    )
-                ]
+            ledger_now = ledger_load(home)
+
+            def _fr_done_hold(repo: str, ident: str) -> bool:
+                # Ledger fr_done means a PR was already opened for this FR — do not re-offer
+                # (resync kept re-adding #1201-class rows that every seat ledger-blocked).
+                done_ts = _parse_iso_ts(
+                    str((ledger_now.get("fr_done") or {}).get(_lkey(repo, ident)) or "")
+                )
+                return done_ts is not None and (time.time() - done_ts) < FR_DONE_HOLD_S
+
+            doc["unaccepted"] = [
+                r
+                for r in doc["unaccepted"]
+                if not (
+                    isinstance(r, dict)
+                    and str(r.get("task") or "").upper() == "FR"
+                    and _fr_done_hold(str(r.get("repo") or ""), str(r.get("id") or ""))
+                )
+            ]
             for claim in desired:
                 if claim.task == "FR" and fr_is_superseded(
                     doc,
@@ -3078,6 +3088,8 @@ def resync_from_github(
                     fetched_repos=fetched_set2,
                 ):
                     continue  # FR #254
+                if claim.task == "FR" and _fr_done_hold(claim.repo, claim.id):
+                    continue
                 mrb_url = (
                     f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
                 )
