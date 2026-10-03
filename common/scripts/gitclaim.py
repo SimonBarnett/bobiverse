@@ -1904,11 +1904,7 @@ def uat_block_extras_from_mrb_row(mrb_row: dict, *, mrb_nick: str = "") -> dict:
 
 
 
-<<<<<<< HEAD
 # FR #618: UAT of a PR number often lacks stamps (DONE MRB stamps the Closes issue id).
-=======
-# FR #618 / #635: UAT of a PR number often lacks stamps (DONE MRB stamps the Closes issue id).
->>>>>>> 088017a (FR #635: enrich UAT of PR ids so implementer is not offered self-UAT)
 MRB_PARENT_RE = re.compile(r"(?i)\bmrb-(\d+)\b")
 
 
@@ -1928,18 +1924,11 @@ def _row_refs_list(row: dict) -> list[str]:
 
 
 def related_mrb_rows(doc: dict, uat_row: dict) -> list[dict]:
-<<<<<<< HEAD
     """Find MRB accepted/done rows related to a UAT row (FR #618)."""
     repo = str(uat_row.get("repo") or "")
     uid = str(uat_row.get("id") or "")
     urefs = set(_row_refs_list(uat_row))
     # fix(mrb-603) / mrb-619-nits in line/title/id
-=======
-    """Find MRB accepted/done rows related to a UAT row (FR #618 / #635)."""
-    repo = str(uat_row.get("repo") or "")
-    uid = str(uat_row.get("id") or "")
-    urefs = set(_row_refs_list(uat_row))
->>>>>>> 088017a (FR #635: enrich UAT of PR ids so implementer is not offered self-UAT)
     blob = f"{uat_row.get('line') or ''}\n{uat_row.get('title') or ''}\n{uid}"
     for m in MRB_PARENT_RE.finditer(blob):
         urefs.add(f"#{m.group(1)}")
@@ -1958,17 +1947,10 @@ def related_mrb_rows(doc: dict, uat_row: dict) -> list[dict]:
 
 
 def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
-<<<<<<< HEAD
     """Copy UAT row with author stamps filled from related MRB rows when missing (FR #618).
 
     Chair often offers ``UAT owner/repo#<PR>`` while DONE MRB stamped ``UAT #<issue>``.
     Without enrichment, the MRB reviewer / fix author is offered their own UAT.
-=======
-    """Copy UAT row with author stamps filled from related MRB rows when missing (FR #618 / #635).
-
-    Chair often offers `UAT owner/repo#<PR>` while DONE MRB stamped `UAT #<issue>`.
-    Without enrichment, the FR implementer / MRB reviewer is offered their own UAT.
->>>>>>> 088017a (FR #635: enrich UAT of PR ids so implementer is not offered self-UAT)
     """
     if _canon_task(row) != "UAT":
         return row
@@ -1981,11 +1963,8 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
         for k, v in piece.items():
             if v and not out.get(k):
                 extras[k] = v
-<<<<<<< HEAD
         # mrb-*-fix / nits author is typically the MRB reviewer; stamp explicitly when
         # this UAT targets a fix/nits PR related to that MRB.
-=======
->>>>>>> 088017a (FR #635: enrich UAT of PR ids so implementer is not offered self-UAT)
         fix_nick = _canon_seat_nick(str(mrb.get("nick") or mrb.get("done_by") or ""))
         if fix_nick and not out.get("mrb_fix_author_seat") and not extras.get("mrb_fix_author_seat"):
             blob = f"{out.get('line') or ''}\n{out.get('title') or ''}\n{out.get('id') or ''}".lower()
@@ -2129,12 +2108,9 @@ def offer_focus_top(
                 cand_eff = enrich_uat_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live):
                     continue
-<<<<<<< HEAD
                 # FR #587: skip seats whose machine does not match require_machine.
                 if row_blocked_for_machine(cand_eff, me):
                     continue
-=======
->>>>>>> 088017a (FR #635: enrich UAT of PR ids so implementer is not offered self-UAT)
                 pick = cand_eff
                 break
             if pick is None:
@@ -2146,11 +2122,7 @@ def offer_focus_top(
                 return "empty", None
             for i, row in enumerate(doc["unaccepted"]):
                 if row is pick or _same(row, str(pick.get("repo") or ""), str(pick.get("task") or ""), str(pick.get("id") or "")):
-<<<<<<< HEAD
                     # FR #618: persist enriched author stamps (pick may be enrich_uat_author_fields copy).
-=======
-                    # FR #618 / #635: persist enriched author stamps (pick may be enrich copy).
->>>>>>> 088017a (FR #635: enrich UAT of PR ids so implementer is not offered self-UAT)
                     job = dict(pick)
                     job["offered_to"] = me
                     job["offered_ts"] = _utc_now()
@@ -2215,11 +2187,7 @@ def offer_top(
                     continue
                 row_eff = enrich_uat_author_fields(doc, row)
                 live = live_seat_nicks(home)
-<<<<<<< HEAD
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(row_eff, (nick or "").strip(), live):
-=======
-                if review_blocked_for_author(row_eff, (nick or "").strip(), live):
->>>>>>> 088017a (FR #635: enrich UAT of PR ids so implementer is not offered self-UAT)
                     continue
                 pick_i = i
                 # Persist enrichment onto the queued row when we filled stamps.
