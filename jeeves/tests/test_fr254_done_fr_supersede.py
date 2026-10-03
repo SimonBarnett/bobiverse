@@ -95,7 +95,8 @@ def test_offer_skips_fr_while_superseding_mrb_present(tmp_path, monkeypatch):
                     "line": "x",
                 },
                 {
-                    "repo": "SimonBarnett/gh-Jeeves",
+                    # FR #785: use a live repo here — archived gh-Jeeves rows are never offered.
+                    "repo": "SimonBarnett/bobiverse",
                     "task": "MRB",
                     "id": "#227",
                     "seq": 2,
@@ -104,7 +105,7 @@ def test_offer_skips_fr_while_superseding_mrb_present(tmp_path, monkeypatch):
                     "refs": ["#224"],
                     "supersedes": "SimonBarnett/bobiverse#224",
                     # FR #595: real pull URL required (never invent from issue id).
-                    "url": "https://github.com/SimonBarnett/gh-Jeeves/pull/227",
+                    "url": "https://github.com/SimonBarnett/bobiverse/pull/227",
                 },
             ],
             "accepted": [],

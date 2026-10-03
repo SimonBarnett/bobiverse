@@ -166,7 +166,13 @@ def configured_repos(home: Path) -> list[str]:
                       if ln.strip() and not ln.strip().startswith("#")]
         except OSError:
             pass
-    return [n for n in dict.fromkeys(names) if gitclaim.REPO_RE.fullmatch(n)]
+    # FR #785: rewrite archived sources (gh-Jeeves -> bobiverse) before returning.
+    out: list[str] = []
+    for n in names:
+        if not gitclaim.REPO_RE.fullmatch(n):
+            continue
+        out.append(gitclaim.canonical_queue_repo(n))
+    return list(dict.fromkeys(out))
 
 
 def discover_repos(home: Path, owners: set[str], getter, ignored) -> list[str]:
@@ -180,7 +186,8 @@ def discover_repos(home: Path, owners: set[str], getter, ignored) -> list[str]:
             for row in list(doc.get("unaccepted") or []) + list(doc.get("accepted") or []):
                 r = str(row.get("repo") or "")
                 if gitclaim.REPO_RE.fullmatch(r):
-                    repos.append(r)
+                    # FR #785: rewrite archived queue sources to their live successor.
+                    repos.append(gitclaim.canonical_queue_repo(r))
         except Exception:  # noqa: BLE001
             pass
         for page in (1, 2):
@@ -195,9 +202,12 @@ def discover_repos(home: Path, owners: set[str], getter, ignored) -> list[str]:
                     continue
                 full = str(r.get("full_name") or "")
                 if full.partition("/")[0].lower() in owners:
-                    repos.append(full)
+                    repos.append(gitclaim.canonical_queue_repo(full))
     out = []
     for r in dict.fromkeys(repos):
+        # FR #785: never keep a known-archived source name after rewrite.
+        if gitclaim.repo_archived_for_queue(r):
+            continue
         if gitclaim.REPO_RE.fullmatch(r) and r.lower() not in skip and r.split("/", 1)[-1].lower() not in skip:
             out.append(r)
     return out[:MAX_REPOS]
