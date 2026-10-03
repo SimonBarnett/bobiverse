@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "completion",
+  "type": "object",
+  "required": ["id", "session", "status", "summary", "evidence", "needs_human", "next_suggested"],
+  "properties": {
+    "id": { "type": "string" },
+    "session": { "type": "string" },
+    "status": { "type": "string", "enum": ["ok", "failed", "blocked", "stopped"] },
+    "summary": { "type": "string" },
+    "evidence": { "type": "object" },
+    "needs_human": { "type": "boolean" },
+    "next_suggested": { "type": ["string", "null"] }
+  }
+}

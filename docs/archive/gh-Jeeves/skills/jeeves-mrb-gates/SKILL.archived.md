@@ -1,0 +1,54 @@
+<!-- ARCHIVED COPY - source: SimonBarnett/gh-Jeeves @ 4ff29b5, path skills/jeeves-mrb-gates/SKILL.md, last changed 2026-09-27. Ported verbatim by bobiverse FR #794; the live equivalent is listed in docs/ARCHIVED_REPOS.md. Statements here may be stale (paths such as \ai\... pre-date bobiverse). -->
+---
+name: jeeves-mrb-gates
+description: >
+  Two-gate MRB for agent-submitted work: MRB #1 vision/fit on issues before
+  engineering, MRB #2 implementation fidelity on PRs (FR #92). Use when an
+  agent files an issue/FR, triage needs-mrb1, or someone conflates fit review
+  with PR hostile review. Also /jeeves-mrb-gates.
+---
+
+# jeeves-mrb-gates
+
+FR #151. Agents propose; humans judge fit; seats hostile-review PRs.
+
+Agentic control is an overlay: the token-less path must never depend on this skill.
+
+## Flow
+
+1. **Agent proposes** — opens an issue/FR (or `/bob/v1/intake`). Label `needs-mrb1` (intake adds it).
+2. **MRB #1 (fit)** — Simon judges vision fit. Pass → `mrb1-pass`. Fail → `mrb1-reject` (no engineering PR).
+3. **Engineering** — only after MRB #1 pass; worker opens a PR with `Seat: {nick}`.
+4. **MRB #2 (implementation)** — other seat runs FR #92 hostile MRB + `mrb/verdict`. Pass → merge. Fail → one fix PR.
+
+## Who stamps what
+
+| Gate | Stamps | Does not |
+|------|--------|----------|
+| MRB #1 | Simon (human) | Fleet seats, LLMs |
+| MRB #2 | Other seat via `mrb/verdict` | PR author seat (except one-seat CAST IRON) |
+| UAT (FR #187) | UAT worker via `DONE UAT … PASS\|FAIL` | MRB worker on the same merge; not a Bob-only stamp |
+
+## Do not conflate
+
+- MRB #1 is **not** a code review.
+- MRB #2 is **not** a second vision debate — check fidelity to the approved issue.
+- Do not open implementation PRs for issues still labeled `needs-mrb1` or `mrb1-reject`.
+
+## Labels
+
+| Label | Meaning |
+|-------|---------|
+| `needs-mrb1` | Awaiting fit check |
+| `mrb1-pass` | Fit approved — engineering allowed |
+| `mrb1-reject` | Fit rejected — no PR |
+
+Ensure on the repo before intake uses them:
+
+`python tools/ensure_mrb1_labels.py --repo SimonBarnett/gh-Jeeves`
+
+## Related
+
+- `docs/mrb-gates.md` (SoT for FR #151)
+- `docs/mrb-enforcement.md` (MRB #2 / FR #92)
+- `jeeves-task-modes` (FR/MRB/UAT worker contract)

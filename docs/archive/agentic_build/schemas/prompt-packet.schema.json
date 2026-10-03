@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "prompt-packet",
+  "type": "object",
+  "required": ["id", "from", "to_session", "goal", "constraints", "success", "reply_channel"],
+  "properties": {
+    "id": { "type": "string" },
+    "from": { "type": "string" },
+    "to_session": { "type": "string" },
+    "goal": { "type": "string" },
+    "constraints": { "type": "array", "items": { "type": "string" } },
+    "success": { "type": "string" },
+    "reply_channel": { "type": "string" },
+    "machine": { "type": "string" },
+    "cwd": { "type": "string" },
+    "profile": { "type": "string" },
+    "task": { "type": "string", "enum": ["git", "fleet"] },
+    "fuel": { "type": "string", "enum": ["cursor-models", "grok-build", "copilot", "grok-bot", "on-demand"] },
+    "repo": { "type": "string" },
+    "branch": { "type": "string" },
+    "docs": { "type": "string" },
+    "plan": { "type": "string" },
+    "mrb": { "type": "string" },
+    "mrbIssue": { "type": "string" },
+    "prUrl": { "type": "string" },
+    "kind": { "type": "string", "enum": ["mrb", "build"] },
+    "model": { "type": "string" }
+  }
+}

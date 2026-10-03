@@ -1,0 +1,26 @@
+<!-- ARCHIVED COPY - source: SimonBarnett/agentic_build @ 12f8758, path docs/mocks/bob-systray/home.html, last changed 2026-09-27. Ported verbatim by bobiverse FR #794; the live equivalent is listed in docs/ARCHIVED_REPOS.md. Statements here may be stale (paths such as \ai\... pre-date bobiverse). -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bob Systray — Updating</title>
+  <style>
+    body { font: 14px Segoe UI, sans-serif; background: #0d1117; color: #e6edf3; margin: 0; display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+    .dlg { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px 24px; width: 360px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+    .title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+    .msg { color: #8b949e; margin: 0 0 16px; }
+    .bar { height: 8px; background: #30363d; border-radius: 4px; overflow: hidden; }
+    .fill { height: 8px; width: 55%; background: #58a6ff; border-radius: 4px; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: .7 } 50% { opacity: 1 } }
+    .hint { margin-top: 12px; font-size: 12px; color: #8b949e; }
+  </style>
+</head>
+<body>
+  <div class="dlg" role="dialog" aria-label="Updating Bob Systray">
+    <p class="title">Bob Systray</p>
+    <p class="msg">Updating from git… installing scripts (no LLM).</p>
+    <div class="bar"><div class="fill"></div></div>
+    <p class="hint">Please wait. The tray starts when this finishes.</p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+    "ok":  true,
+    "id":  "ce-priority-dev1",
+    "weekly":  8,
+    "period_end":  "2026-09-22T23:41:45.639212+00:00",
+    "cursor_label":  "25%",
+    "cursor_period_end":  "2026-10-16T17:23:01Z",
+    "remaining_pct":  25,
+    "account_remaining_pct":  25,
+    "cursor_remaining_pct":  25,
+    "running":  1,
+    "queued":  1,
+    "lastSeen":  "2026-09-22T18:38:45.7870241Z",
+    "jobs":  [
+
+             ],
+    "model":  "Cursor Models",
+    "kind":  null,
+    "repo":  null,
+    "sha":  null,
+    "started_at":  null,
+    "responding":  null,
+    "source":  "irc"
+}

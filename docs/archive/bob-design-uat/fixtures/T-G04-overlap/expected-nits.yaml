@@ -1,0 +1,23 @@
+# ARCHIVED COPY - source: SimonBarnett/bob-design-uat @ 1acf2a3, path fixtures/T-G04-overlap/expected-nits.yaml, last changed 2026-09-22. Ported verbatim by bobiverse FR #794; the live equivalent is listed in docs/ARCHIVED_REPOS.md. Statements here may be stale (paths such as \ai\... pre-date bobiverse).
+case: T-G04-overlap
+brief: brief.md
+artifact: screenshot.png
+nits:
+  - gate: G2
+    class: layout
+    brief_field: layout.no_overlap
+    where: screenshot.png title vs CTA
+    expected: zero bbox intersection
+    actual: title and CTA rectangles overlap
+    severity: major
+    delta_px: 36
+inventory:
+  - item: Club Madeira
+    kind: chrome
+    in_brief: yes
+  - item: Episode 01
+    kind: copy
+    in_brief: yes
+  - item: Start campaign
+    kind: copy
+    in_brief: yes
