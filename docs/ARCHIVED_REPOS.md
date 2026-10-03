@@ -22,7 +22,7 @@ Jeeves roster/allow-list entries, clone/update scripts, and intake `DEFAULT_ALLO
 
 ## Archived document map (FR #794)
 
-Every document in the five archived repositories (README, docs/, specs, briefs, runbooks, templates, skills, mocks, diagrams, screenshots, PDFs, schemas) is listed below with the archived commit it was read from and where it now lives in bobiverse. Documents are ported verbatim under `docs/archive/<repo>/<original path>` with a provenance header (`SKILL.md` copies are named `SKILL.archived.md` so skill discovery never loads them). Nothing was deleted or rewritten; where a live counterpart exists it is named, and "archive richer / newer" marks documents to merge by hand in a follow-up (archived text may still use pre-bobiverse paths such as `\ai\...`).
+Every document in the five archived repositories (README, docs/, specs, briefs, runbooks, templates, skills, mocks, diagrams, screenshots, PDFs, schemas) is listed below with the archived commit it was read from and where it now lives in bobiverse. Documents are ported verbatim under `docs/archive/<repo>/<original path>` with a provenance header (`SKILL.md` copies are named `SKILL.archived.md` so skill discovery never loads them). Nothing was deleted or rewritten; where a live counterpart exists it is named, FR #806 hand-merged the ten flagged "archive richer" live counterparts (honesty-box skill, README pointers, harvest log index, functional-spec, Ergo README); remaining archive text may still use pre-bobiverse paths such as \i\...\.
 
 | Archived repository | Commit read | Documents | Already identical in bobiverse | Ported |
 |---|---|---|---|---|
@@ -63,7 +63,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `.grok/skills/cursor-sand-billing/SKILL.md` | `12f8758` | 2026-09-20 | `docs/archive/agentic_build/.grok/skills/cursor-sand-billing/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/github-irc-webhooks/SKILL.md` | `12f8758` | 2026-09-24 | `docs/archive/agentic_build/.grok/skills/github-irc-webhooks/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/grok-build-fleet/SKILL.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/.grok/skills/grok-build-fleet/SKILL.archived.md` | no live counterpart |
-| `.grok/skills/harvest-agent-skills/SKILL.md` | `12f8758` | 2026-09-29 | `docs/archive/agentic_build/.grok/skills/harvest-agent-skills/SKILL.archived.md` | live counterpart `common/.grok/skills/harvest-agent-skills/SKILL.md`. **archive richer (92 vs 30 lines)** |
+| `.grok/skills/harvest-agent-skills/SKILL.md` | `12f8758` | 2026-09-29 | `docs/archive/agentic_build/.grok/skills/harvest-agent-skills/SKILL.archived.md` | merged into `common/.grok/skills/harvest-agent-skills/SKILL.md` by FR #806 / PR pending |
 | `.grok/skills/killproc/SKILL.md` | `12f8758` | 2026-09-24 | `docs/archive/agentic_build/.grok/skills/killproc/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/reinstall-agentic-build-skills/SKILL.md` | `12f8758` | 2026-09-20 | `docs/archive/agentic_build/.grok/skills/reinstall-agentic-build-skills/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/setup-bob-aider/SKILL.md` | `12f8758` | 2026-09-24 | `docs/archive/agentic_build/.grok/skills/setup-bob-aider/SKILL.archived.md` | no live counterpart |
@@ -77,7 +77,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `.grok/skills/visionary/SKILL.md` | `12f8758` | 2026-09-24 | `docs/archive/agentic_build/.grok/skills/visionary/SKILL.archived.md` | live counterpart `bob/agents/plan/.grok/skills/visionary/SKILL.md`. |
 | `.grok/skills/watch-agent-health/SKILL.md` | `12f8758` | 2026-09-23 | `docs/archive/agentic_build/.grok/skills/watch-agent-health/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/wix-msi-pack/SKILL.md` | `12f8758` | 2026-09-29 | `docs/archive/agentic_build/.grok/skills/wix-msi-pack/SKILL.archived.md` | no live counterpart |
-| `README.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/README.md` | live counterpart `README.md`. **archive richer (215 vs 79 lines)** |
+| `README.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/README.md` | merged into `README.md` by FR #806 / PR pending |
 | `agent_readme.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/agent_readme.md` | no live counterpart |
 | `docs/Bob_GrokBuild_Connector_Plan.pdf` | `12f8758` | 2026-09-16 | `docs/archive/agentic_build/docs/Bob_GrokBuild_Connector_Plan.pdf` | no live counterpart |
 | `docs/bob-fleet-peer-peek.md` | `12f8758` | 2026-09-20 | `docs/archive/agentic_build/docs/bob-fleet-peer-peek.md` | no live counterpart |
@@ -212,7 +212,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `docs/screenshots/bob-fleet-tray-crap-card-over-good-tip-1.png` | `12f8758` | 2026-09-19 | `docs/archive/agentic_build/docs/screenshots/bob-fleet-tray-crap-card-over-good-tip-1.png` | no live counterpart |
 | `docs/screenshots/bob-fleet-tray-crap-card-over-good-tip-2.png` | `12f8758` | 2026-09-19 | `docs/archive/agentic_build/docs/screenshots/bob-fleet-tray-crap-card-over-good-tip-2.png` | no live counterpart |
 | `docs/screenshots/bob-fleet-tray-single-bar-bogus-unreachable-2026-09-20.png` | `12f8758` | 2026-09-20 | `docs/archive/agentic_build/docs/screenshots/bob-fleet-tray-single-bar-bogus-unreachable-2026-09-20.png` | no live counterpart |
-| `docs/skill-harvest-log.md` | `12f8758` | 2026-09-29 | `docs/archive/agentic_build/docs/skill-harvest-log.md` | live counterpart `common/docs/skill-harvest-log.md`. **archive richer (400 vs 60 lines)** |
+| `docs/skill-harvest-log.md` | `12f8758` | 2026-09-29 | `docs/archive/agentic_build/docs/skill-harvest-log.md` | merged into `common/docs/skill-harvest-log.md` by FR #806 / PR pending |
 | `docs/smoke-systray-session-api-key-and-plan-2026-09-24.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/docs/smoke-systray-session-api-key-and-plan-2026-09-24.md` | no live counterpart |
 | `docs/templates/vision.md` | `12f8758` | 2026-09-23 | `bob/agents/plan/docs/templates/vision.md` (already present) | identical copy already in bobiverse |
 | `docs/test-pack-no-live-irc-fr329.md` | `12f8758` | 2026-09-26 | `docs/archive/agentic_build/docs/test-pack-no-live-irc-fr329.md` | no live counterpart |
@@ -239,11 +239,11 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `.grok/skills/airc-console/SKILL.md` | `b92be96` | 2026-09-29 | `docs/archive/agentic_irc/.grok/skills/airc-console/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/bob-irc/SKILL.md` | `b92be96` | 2026-09-29 | `docs/archive/agentic_irc/.grok/skills/bob-irc/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/connect-bobiverse/SKILL.md` | `b92be96` | 2026-09-24 | `docs/archive/agentic_irc/.grok/skills/connect-bobiverse/SKILL.archived.md` | no live counterpart |
-| `.grok/skills/harvest-agent-skills/SKILL.md` | `b92be96` | 2026-09-24 | `docs/archive/agentic_irc/.grok/skills/harvest-agent-skills/SKILL.archived.md` | live counterpart `common/.grok/skills/harvest-agent-skills/SKILL.md`. **archive richer (83 vs 30 lines)** |
+| `.grok/skills/harvest-agent-skills/SKILL.md` | `b92be96` | 2026-09-24 | `docs/archive/agentic_irc/.grok/skills/harvest-agent-skills/SKILL.archived.md` | merged into `common/.grok/skills/harvest-agent-skills/SKILL.md` by FR #806 / PR pending |
 | `.grok/skills/invite-airc/SKILL.md` | `b92be96` | 2026-09-24 | `docs/archive/agentic_irc/.grok/skills/invite-airc/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/jeeves-git-webhook/SKILL.md` | `b92be96` | 2026-09-26 | `docs/archive/agentic_irc/.grok/skills/jeeves-git-webhook/SKILL.archived.md` | no live counterpart |
 | `README.md` | `b92be96` | 2026-09-25 | `docs/archive/agentic_irc/README.md` | live counterpart `README.md`. |
-| `config/README.txt` | `b92be96` | 2026-09-28 | `docs/archive/agentic_irc/config/README.txt` | live counterpart `common/third_party/ergo/README.txt`. **archive richer (10 vs 4 lines)** |
+| `config/README.txt` | `b92be96` | 2026-09-28 | `docs/archive/agentic_irc/config/README.txt` | merged into `common/third_party/ergo/README.txt` by FR #806 / PR pending |
 | `docs/README.md` | `b92be96` | 2026-09-29 | `docs/archive/agentic_irc/docs/README.md` | live counterpart `README.md`. |
 | `docs/airc-console-domain-lobby.md` | `b92be96` | 2026-09-29 | `docs/archive/agentic_irc/docs/airc-console-domain-lobby.md` | no live counterpart |
 | `docs/airc-console-fr253.md` | `b92be96` | 2026-09-29 | `docs/archive/agentic_irc/docs/airc-console-fr253.md` | no live counterpart |
@@ -378,7 +378,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `docs/post-merge-talk-seat-pid-restart.md` | `b92be96` | 2026-09-25 | `docs/archive/agentic_irc/docs/post-merge-talk-seat-pid-restart.md` | no live counterpart |
 | `docs/prior-irc-clean.md` | `b92be96` | 2026-09-24 | `docs/archive/agentic_irc/docs/prior-irc-clean.md` | no live counterpart |
 | `docs/retire-ear-bored-offer-fr233.md` | `b92be96` | 2026-09-26 | `docs/archive/agentic_irc/docs/retire-ear-bored-offer-fr233.md` | no live counterpart |
-| `docs/skill-harvest-log.md` | `b92be96` | 2026-09-29 | `docs/archive/agentic_irc/docs/skill-harvest-log.md` | live counterpart `common/docs/skill-harvest-log.md`. **archive richer (195 vs 60 lines)** |
+| `docs/skill-harvest-log.md` | `b92be96` | 2026-09-29 | `docs/archive/agentic_irc/docs/skill-harvest-log.md` | merged into `common/docs/skill-harvest-log.md` by FR #806 / PR pending |
 | `docs/start-irc-pair-fr238.md` | `b92be96` | 2026-09-26 | `docs/archive/agentic_irc/docs/start-irc-pair-fr238.md` | no live counterpart |
 | `docs/start-talkseat-fresh-home-fr237.md` | `b92be96` | 2026-09-26 | `docs/archive/agentic_irc/docs/start-talkseat-fresh-home-fr237.md` | no live counterpart |
 | `docs/tofu-rotation.md` | `b92be96` | 2026-09-21 | `docs/archive/agentic_irc/docs/tofu-rotation.md` | no live counterpart |
@@ -455,7 +455,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | Archived path | Commit | Last changed | Now lives at | Live counterpart / note |
 |---|---|---|---|---|
 | `.grok/skills/harvest-agent-skills/SKILL.md` | `4ff29b5` | 2026-09-25 | `docs/archive/gh-Jeeves/.grok/skills/harvest-agent-skills/SKILL.archived.md` | live counterpart `common/.grok/skills/harvest-agent-skills/SKILL.md`. |
-| `README.md` | `4ff29b5` | 2026-10-03 | `docs/archive/gh-Jeeves/README.md` | live counterpart `README.md`. **archive richer (191 vs 79 lines)** |
+| `README.md` | `4ff29b5` | 2026-10-03 | `docs/archive/gh-Jeeves/README.md` | merged into `README.md` by FR #806 / PR pending |
 | `docs/brief/JEEVES_BRIEF.md` | `4ff29b5` | 2026-09-27 | `docs/archive/gh-Jeeves/docs/brief/JEEVES_BRIEF.md` | no live counterpart |
 | `docs/endpoint-smoke-fr204.md` | `4ff29b5` | 2026-09-27 | `docs/archive/gh-Jeeves/docs/endpoint-smoke-fr204.md` | no live counterpart |
 | `docs/exception-report.md` | `4ff29b5` | 2026-09-26 | `docs/archive/gh-Jeeves/docs/exception-report.md` | no live counterpart |
@@ -470,7 +470,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `docs/feature-request-recycle-local-bob-fr197-2026-09-27.md` | `4ff29b5` | 2026-09-27 | `docs/archive/gh-Jeeves/docs/feature-request-recycle-local-bob-fr197-2026-09-27.md` | no live counterpart |
 | `docs/feature-request-recycle-machine-scope-fr211-2026-09-28.md` | `4ff29b5` | 2026-09-28 | `docs/archive/gh-Jeeves/docs/feature-request-recycle-machine-scope-fr211-2026-09-28.md` | no live counterpart |
 | `docs/feature-request-uat-worker-vision-fidelity-fr187-2026-09-27.md` | `4ff29b5` | 2026-09-27 | `docs/archive/gh-Jeeves/docs/feature-request-uat-worker-vision-fidelity-fr187-2026-09-27.md` | no live counterpart |
-| `docs/functional-spec.md` | `4ff29b5` | 2026-09-27 | `docs/archive/gh-Jeeves/docs/functional-spec.md` | live counterpart `common/docs/functional-spec.md`. **archive richer (47 vs 13 lines)** |
+| `docs/functional-spec.md` | `4ff29b5` | 2026-09-27 | `docs/archive/gh-Jeeves/docs/functional-spec.md` | merged into `common/docs/functional-spec.md` by FR #806 / PR pending |
 | `docs/g2-live-smoke-checklist.md` | `4ff29b5` | 2026-09-27 | `docs/archive/gh-Jeeves/docs/g2-live-smoke-checklist.md` | no live counterpart |
 | `docs/jira-webhook-customer-guide.md` | `4ff29b5` | 2026-09-28 | `docs/archive/gh-Jeeves/docs/jira-webhook-customer-guide.md` | live counterpart `jeeves/docs/jira-webhook-customer-guide.md`. |
 | `docs/migration-plan.md` | `4ff29b5` | 2026-09-26 | `docs/archive/gh-Jeeves/docs/migration-plan.md` | no live counterpart |
@@ -505,7 +505,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 |---|---|---|---|---|
 | `.grok/skills/design-uat/SKILL.md` | `1acf2a3` | 2026-09-24 | `docs/archive/bob-design-uat/.grok/skills/design-uat/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/graphics-design/SKILL.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/.grok/skills/graphics-design/SKILL.archived.md` | no live counterpart |
-| `.grok/skills/harvest-agent-skills/SKILL.md` | `1acf2a3` | 2026-09-24 | `docs/archive/bob-design-uat/.grok/skills/harvest-agent-skills/SKILL.archived.md` | live counterpart `common/.grok/skills/harvest-agent-skills/SKILL.md`. **archive richer (83 vs 30 lines)** |
+| `.grok/skills/harvest-agent-skills/SKILL.md` | `1acf2a3` | 2026-09-24 | `docs/archive/bob-design-uat/.grok/skills/harvest-agent-skills/SKILL.archived.md` | merged into `common/.grok/skills/harvest-agent-skills/SKILL.md` by FR #806 / PR pending |
 | `.grok/skills/illustrator-design/SKILL.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/.grok/skills/illustrator-design/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/mrb-project-management/SKILL.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/.grok/skills/mrb-project-management/SKILL.archived.md` | no live counterpart |
 | `.grok/skills/pdf-design/SKILL.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/.grok/skills/pdf-design/SKILL.archived.md` | no live counterpart |
@@ -524,7 +524,7 @@ Not treated as docs (stay only in the archived repos, which remain readable): `r
 | `docs/feature-request-playwright-visual-uat-2026-09-22.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/docs/feature-request-playwright-visual-uat-2026-09-22.md` | no live counterpart |
 | `docs/feature-request-screen-layout-overlap-2026-09-22.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/docs/feature-request-screen-layout-overlap-2026-09-22.md` | no live counterpart |
 | `docs/feature-request-three-gates-2026-09-22.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/docs/feature-request-three-gates-2026-09-22.md` | no live counterpart |
-| `docs/functional-spec.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/docs/functional-spec.md` | live counterpart `common/docs/functional-spec.md`. **archive richer (59 vs 13 lines)** |
+| `docs/functional-spec.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/docs/functional-spec.md` | merged into `common/docs/functional-spec.md` by FR #806 / PR pending |
 | `docs/jester-uat-video-pack-harvest-2026-09-24.md` | `1acf2a3` | 2026-09-24 | `docs/archive/bob-design-uat/docs/jester-uat-video-pack-harvest-2026-09-24.md` | no live counterpart |
 | `docs/skill-harvest-log.md` | `1acf2a3` | 2026-09-24 | `docs/archive/bob-design-uat/docs/skill-harvest-log.md` | live counterpart `common/docs/skill-harvest-log.md`. |
 | `docs/templates/design-uat-report.md` | `1acf2a3` | 2026-09-22 | `docs/archive/bob-design-uat/docs/templates/design-uat-report.md` | no live counterpart |

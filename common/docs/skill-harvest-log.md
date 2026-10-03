@@ -1,6 +1,14 @@
 # Skill harvest log
 
-## 2026-09-29 â€” WIN-MPRE8VI4U6U airc/bob/jeeves cutover
+Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
+
+## 2026-10-03 - FR #806 archive-richer hand-merge
+
+| Lesson | Fix |
+|--------|-----|
+| Ten "archive richer" docs flagged in ARCHIVED_REPOS after #802 | Merged useful honesty-box / chair / design-uat / Ergo describe-only content into live files; left verbatim archive copies untouched; dropped stale archived-repo homes and old pack tool names |
+
+## 2026-09-29 — WIN-MPRE8VI4U6U airc/bob/jeeves cutover
 
 Harvested into `.grok/skills/bobiverse-{jeeves,bob,airc}` + `docs/post-install.md` + install scripts:
 

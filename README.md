@@ -102,6 +102,14 @@ Or `msiexec /i bob-0.1.1.msi`.
 
 See **[docs/post-install.md](docs/post-install.md)** (ObjectName password, Ergo PASS, NickServ SASL, verify ear/airc).
 
+## Harvest (honesty box)
+
+Using fleet skills binds you to report what you learned or what broke. CAST IRON harvest + intake live in `common/.grok/skills/harvest-agent-skills/SKILL.md` and `common/.grok/skills/harvest/SKILL.md`. Prefer `common\scripts\Report-BobiverseIntakeIssue.ps1` / `Invoke-BobiverseHarvest.ps1`. Never file against archived superseded repos.
+
+## Historical fleet playbooks
+
+Pre-bobiverse READMEs, chair diagrams, and skill books from `agentic_build` / `gh-Jeeves` / `agentic_irc` / `AgentMonitor` / `bob-design-uat` are preserved under [docs/archive/](docs/archive/). They are **not** live runbooks (paths and commands may be stale). Prefer this README, `jeeves/docs/`, `bob/docs/`, and product skills for current behaviour.
+
 ## Archived repositories
 
 The canonical archive manifest and replacement map live in [docs/ARCHIVED_REPOS.md](docs/ARCHIVED_REPOS.md). Superseded repositories remain linked there for historical issue/PR provenance; they are never deleted.
