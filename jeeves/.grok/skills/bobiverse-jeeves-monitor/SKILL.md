@@ -58,6 +58,10 @@ Install root `<ai root>\jeeves`. Chair home `~\.jeeves` (queue, focus, ignore, c
 
 Monitor for: empty offer queue while open FRs exist; seats idle with unaccepted work; accepted rows stuck; GIVEUP loops; machine-pin / author-seat blocks leaving work stranded.
 
+**Machine pin (FR #587 / #852):** recycle/recompose Jeeves and prune-`queue.json` FRs must stamp `require_machine=ionos` so marchhare seats are not offered ionos-only deploy work. If non-ionos seats keep getting those assigns after the cue merge, the live chair needs recompose/recycle — file/de-dup intake (same class as per-PR UAT leftovers).
+
+**Skill/harvest rows:** issues labeled `skill` (or harvest titles) must not be offered as FR (`issue_skip_fr_reason` → `label:skill`). Offering them is a chair/queue hygiene finding.
+
 ## FR / MRB / UAT flow (UAT per repo)
 
 ```text
