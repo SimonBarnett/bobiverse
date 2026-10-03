@@ -38,14 +38,45 @@ def check(args):
             EXIT_FINDING,
         )
     unaccepted = queue_bucket_rows(queue, "unaccepted")
-    # Offerable = unaccepted rows not needs_human / not ignored.
-    offerable = [
-        r
-        for r in unaccepted
-        if not r.get("ignored")
-        and not r.get("needs_human")
-        and str(r.get("needs_human") or "").lower() not in ("1", "true", "yes")
-    ]
+    # FR #1116: prefer gitclaim gates when available; else needs_human/ignored only.
+    offerable = []
+    try:
+        import idle_seats as _idle
+
+        # Without digest idle nicks, treat "offerable" as rows any registered seat
+        # could theoretically take via the same gates (empty idle list → 0).
+        # queue_flow only needs a non-empty offerable set for "work exists".
+        dig = _load_json(digest / "digest.json") or {}
+        from _common import iter_worker_entries
+
+        nicks = []
+        machines = dig.get("machines") if isinstance(dig, dict) else None
+        for w in iter_worker_entries(machines):
+            nick = w.get("nick") or w.get("name")
+            if nick:
+                nicks.append(str(nick))
+        if not nicks:
+            # Fallback: coarse filter when digest has no workers yet.
+            offerable = [
+                r
+                for r in unaccepted
+                if not r.get("ignored")
+                and not r.get("needs_human")
+                and str(r.get("needs_human") or "").lower() not in ("1", "true", "yes")
+            ]
+        else:
+            home = qpath.parent
+            n = _idle.count_offerable_for_live_seats(home, unaccepted, nicks)
+            # Materialize placeholder list for count compatibility.
+            offerable = list(range(n))
+    except Exception:
+        offerable = [
+            r
+            for r in unaccepted
+            if not r.get("ignored")
+            and not r.get("needs_human")
+            and str(r.get("needs_human") or "").lower() not in ("1", "true", "yes")
+        ]
     missing_url = [
         r
         for r in unaccepted
