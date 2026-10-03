@@ -2,11 +2,14 @@
 """Health check: ircJeeves service, local chair logs, webhook probe stamp (token-free)."""
 from __future__ import annotations
 
+import socket
 import subprocess
 import sys
 from pathlib import Path
 
 from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+
+BOBCALLBACK_PORT = 7700
 
 
 def _service_state(name: str) -> str:
@@ -24,17 +27,66 @@ def _service_state(name: str) -> str:
         return f"error:{type(e).__name__}"
 
 
+def _scheduled_task_state(name: str) -> str:
+    """FR #1043: BobCallback on ionos is a Scheduled Task, not Get-Service."""
+    if sys.platform != "win32":
+        return "skipped"
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue).State",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        s = (r.stdout or "").strip()
+        return s or "missing"
+    except Exception as e:
+        return f"error:{type(e).__name__}"
+
+
+def _port_listening(port: int, host: str = "127.0.0.1") -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+def _bobcallback_ok() -> tuple[str, bool]:
+    """Accept service Running, scheduled task Running/Ready, or :7700 listen."""
+    st = _service_state("BobCallback")
+    if st.lower() == "running":
+        return st, True
+    if st.lower() == "skipped":
+        return st, True
+    task = _scheduled_task_state("BobCallback")
+    if task.lower() in ("running", "ready"):
+        return f"task:{task}", True
+    if _port_listening(BOBCALLBACK_PORT):
+        return f"listen:{BOBCALLBACK_PORT}", True
+    return st if st != "missing" else f"missing/task:{task}", False
+
+
 def check(args):
     chair, _digest = resolve_homes(args)
     findings = []
     services = {}
-    for svc in ("ircJeeves", "BobIrcd", "BobCallback"):
+    for svc in ("ircJeeves", "BobIrcd"):
         st = _service_state(svc)
         services[svc] = st
         if st.lower() not in ("running", "skipped"):
             findings.append(f"service {svc}={st}")
-    stdout_log = chair.parent / ".."  # unused; prefer install logs when present
-    # Chair home presence is soft: missing home is a finding only when service claims running
+    bc_label, bc_ok = _bobcallback_ok()
+    services["BobCallback"] = bc_label
+    if not bc_ok:
+        findings.append(
+            f"BobCallback={bc_label} (expect Get-Service Running, Scheduled Task Running, or :{BOBCALLBACK_PORT} listen)"
+        )
     if services.get("ircJeeves", "").lower() == "running" and not chair.is_dir():
         findings.append(f"chair home missing: {chair}")
     ok = not findings
@@ -59,6 +111,5 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    # Allow running as script from tools/monitor without package install
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     raise SystemExit(main())

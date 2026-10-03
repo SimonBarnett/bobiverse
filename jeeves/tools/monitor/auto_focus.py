@@ -7,13 +7,26 @@ import sys
 import time
 from pathlib import Path
 
-from _common import EXIT_FINDING, EXIT_OK, resolve_homes, run_check
+from _common import EXIT_FINDING, EXIT_OK, resolve_focus_path, resolve_homes, run_check
+
+
+def _repo_count(repos) -> int:
+    """FR #1043: focus.repos may be a list or a dict of repo -> meta."""
+    if isinstance(repos, list):
+        return len(repos)
+    if isinstance(repos, dict):
+        return len(repos)
+    return 0
+
+
+def _repos_empty(repos) -> bool:
+    return _repo_count(repos) == 0
 
 
 def check(args):
-    chair, _digest = resolve_homes(args)
+    chair, digest = resolve_homes(args)
     findings = []
-    focus_path = chair / "focus.json"
+    focus_path = resolve_focus_path(chair, digest)
     if not focus_path.is_file():
         # Missing focus is informational: chair may use empty focus (all repos)
         return (
@@ -23,6 +36,7 @@ def check(args):
                 "findings": [],
                 "note": "focus.json absent (chair may offer all repos)",
                 "path": str(focus_path),
+                "ops_home": str(focus_path.parent),
             },
             EXIT_OK,
         )
@@ -39,7 +53,7 @@ def check(args):
         repos = data.get("repos") or data.get("focus") or data.get("items") or []
     elif isinstance(data, list):
         repos = data
-    if strict and not repos:
+    if strict and _repos_empty(repos):
         findings.append("focus strict with empty repo list — assigns will starve")
     ok = not findings
     return (
@@ -47,9 +61,10 @@ def check(args):
             "ok": ok,
             "configured": True,
             "strict": strict,
-            "repo_count": len(repos) if isinstance(repos, list) else 0,
+            "repo_count": _repo_count(repos),
             "age_sec": int(age),
             "path": str(focus_path),
+            "ops_home": str(focus_path.parent),
             "findings": findings,
         },
         EXIT_OK if ok else EXIT_FINDING,

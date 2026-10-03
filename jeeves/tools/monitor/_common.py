@@ -86,6 +86,38 @@ def resolve_homes(args: argparse.Namespace) -> tuple[Path, Path]:
     return ch, dh
 
 
+def ops_home(chair: Path, digest: Path) -> Path:
+    """FR #1043: live queue/focus may live under digest home while NSSM -ChairHome is ~/.jeeves.
+
+    Prefer chair when it already has queue.json or focus.json; else fall back to digest home
+    when those files exist there (ionos: BOB_DIGEST_HOME=~/.bobiverse).
+    """
+    chair = Path(chair)
+    digest = Path(digest)
+    if (chair / "queue.json").is_file() or (chair / "focus.json").is_file():
+        return chair
+    if (digest / "queue.json").is_file() or (digest / "focus.json").is_file():
+        return digest
+    return chair
+
+
+def resolve_queue_path(chair: Path, digest: Path) -> Path:
+    ops = ops_home(chair, digest)
+    return ops / "queue.json"
+
+
+def resolve_focus_path(chair: Path, digest: Path) -> Path:
+    ops = ops_home(chair, digest)
+    # Prefer focus in ops home; if ops is digest but focus only on chair (unlikely), still ops.
+    if (ops / "focus.json").is_file():
+        return ops / "focus.json"
+    if (chair / "focus.json").is_file():
+        return chair / "focus.json"
+    if (digest / "focus.json").is_file():
+        return digest / "focus.json"
+    return ops / "focus.json"
+
+
 def iter_worker_entries(machines: object) -> list[dict[str, Any]]:
     """Yield worker dicts from digest ``machines`` (pid-keyed dict or list)."""
     out: list[dict[str, Any]] = []

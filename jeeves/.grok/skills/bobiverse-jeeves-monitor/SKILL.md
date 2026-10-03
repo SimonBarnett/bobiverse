@@ -100,3 +100,7 @@ Shop wire (workers in `#{machine}` only): `!bored` → assign → `ACK` → work
 - `!assign` / `!focus` / mutate queue as the agent
 - Restart BobIrcd or edit Ergo to "fix" chair problems
 - Stamp UAT, invent Ergo PASS, print secrets
+
+## Chair home vs digest home (FR #1043 / ionos)
+
+On ionos, NSSM `ircJeeves` may use `-ChairHome ~/.jeeves` while live `queue.json` / `focus.json` live under `BOB_DIGEST_HOME` (`~/.bobiverse`). Monitor checks resolve ops files via `ops_home`: prefer chair when those files exist there, else fall back to digest home. Pass `-ChairHome` / `--digest-home` explicitly when verifying. `BobCallback` may be a Scheduled Task (or `:7700` listen), not `Get-Service`.

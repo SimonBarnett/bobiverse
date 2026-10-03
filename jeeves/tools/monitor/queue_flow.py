@@ -9,8 +9,10 @@ from pathlib import Path
 from _common import (
     EXIT_FINDING,
     EXIT_OK,
+    ops_home,
     queue_bucket_rows,
     resolve_homes,
+    resolve_queue_path,
     row_has_pull_url,
     row_task,
     run_check,
@@ -24,11 +26,13 @@ def _load_json(path: Path):
 
 
 def check(args):
-    chair, _digest = resolve_homes(args)
+    chair, digest = resolve_homes(args)
     findings = []
-    queue = _load_json(chair / "queue.json")
+    qpath = resolve_queue_path(chair, digest)
+    ops = ops_home(chair, digest)
+    queue = _load_json(qpath)
     if queue is None:
-        findings.append(f"queue.json missing at {chair}")
+        findings.append(f"queue.json missing at {ops} (chair={chair} digest={digest})")
         return (
             {"ok": False, "findings": findings, "chair_home": str(chair)},
             EXIT_FINDING,
@@ -57,6 +61,8 @@ def check(args):
     return (
         {
             "ok": ok,
+            "ops_home": str(ops),
+            "queue_path": str(qpath),
             "offerable_count": len(offerable),
             "missing_pull_url_count": len(missing_url),
             "findings": findings,
