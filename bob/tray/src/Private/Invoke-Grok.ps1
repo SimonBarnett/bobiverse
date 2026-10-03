@@ -125,7 +125,7 @@ function Get-BobArgv {
     $rules = $null
     if ($Profile -and -not $Profile.Yolo -and $Profile.Rules) {
         $rules = ([string]$Profile.Rules).Trim()
-        if ($skillHint -and $rules -notmatch 'SimonBarnett/agentic_build') {
+        if ($skillHint -and $rules -notmatch 'SimonBarnett/bobiverse') {
             $rules = $rules + ' ' + $skillHint
         }
     }
@@ -179,7 +179,7 @@ function Get-BobRepoPairArgv {
         $pr = ([string]$Profile.Rules).Trim()
         if ($pr) { $rules = ($rules + ' ' + $pr).Trim() }
     }
-    if ($skillHint -and $rules -notmatch 'SimonBarnett/agentic_build') {
+    if ($skillHint -and $rules -notmatch 'SimonBarnett/bobiverse') {
         $rules = ($rules + ' ' + $skillHint).Trim()
     }
     if ($rules) {

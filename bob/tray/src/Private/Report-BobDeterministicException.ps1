@@ -7,17 +7,9 @@ function Get-BobDeterministicExceptionOwningRepo {
         [string]$Site = '',
         [string]$ScriptPath = ''
     )
-    $blob = ('{0} {1}' -f $Site, $ScriptPath).ToLowerInvariant()
-    if ($blob -match 'watch-agenthealth|agentmonitor') {
-        return 'SimonBarnett/AgentMonitor'
-    }
-    if ($blob -match 'agentic.irc|irc_agent|irc_listen|\\agentic_irc') {
-        return 'SimonBarnett/agentic_irc'
-    }
-    if ($blob -match 'gh-jeeves|jeeves|digest\.py|bobjeeves') {
-        return 'SimonBarnett/gh-Jeeves'
-    }
-    return 'SimonBarnett/agentic_build'
+    # FR #836: all deterministic Bob exception reports go to bobiverse
+    # (AgentMonitor / agentic_irc / gh-Jeeves / agentic_build are archived here).
+    return 'SimonBarnett/bobiverse'
 }
 
 function Get-BobDeterministicExceptionFingerprint {

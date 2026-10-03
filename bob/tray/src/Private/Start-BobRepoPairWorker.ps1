@@ -343,7 +343,7 @@ while (`$true) {
     }
     $skillHint = ''
     try { $skillHint = (Get-BobProjectSkillsHint).Replace("'", "''") } catch { }
-    if ($skillHint -and $pairRules -notmatch 'SimonBarnett/agentic_build') {
+    if ($skillHint -and $pairRules -notmatch 'SimonBarnett/bobiverse') {
         $pairRules = ($pairRules + ' ' + $skillHint).Trim()
     }
     if ($InvokeMode -eq 'cursor-cli' -and $cursorAgent) {

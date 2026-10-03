@@ -3,8 +3,8 @@ function Get-BobProjectSkillsRoot {
 }
 
 function Copy-BobProjectSkills {
-    # Put github.com/SimonBarnett/agentic_build .grok/skills into ~/.grok/skills
-    # so grok.exe discovers them even when --cwd is another repo.
+    # Put github.com/SimonBarnett/bobiverse .grok/skills into ~/.grok/skills
+    # so grok.exe discovers them even when --cwd is another repo. (FR #836)
     if (Test-BobUsesFakeGrok) { return @() }
     $skillRoot = Get-BobProjectSkillsRoot
     if (-not (Test-Path $skillRoot)) { return @() }
@@ -23,5 +23,5 @@ function Copy-BobProjectSkills {
 
 function Get-BobProjectSkillsHint {
     $root = Get-BobProjectSkillsRoot
-    return "Skills from https://github.com/SimonBarnett/agentic_build live at $root (copied to ~/.grok/skills). Follow those SKILL.md files."
+    return "Skills from https://github.com/SimonBarnett/bobiverse live at $root (copied to ~/.grok/skills). Follow those SKILL.md files."
 }
