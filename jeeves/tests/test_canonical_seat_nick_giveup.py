@@ -117,6 +117,12 @@ def test_purge_dead_mrb_accepted_moves_merged_to_done(tmp_path, monkeypatch):
         gitclaim._write_queue(gitclaim.queue_path(tmp_path), doc)
 
 
+def test_canonical_full_form_without_registered_machine():
+    """MRB #1278: cold digest must still canonicalize machine-pid nicks."""
+    assert gitclaim.canonical_worker_nick("win-mpre8vi4u6u-15656") == "win-mpre8vi4u6u-15656"
+    assert gitclaim.canonical_worker_nick("marchhare-35600") == "marchhare-35600"
+
+
 def test_offer_blocks_short_nick_after_full_form_giveup(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim._write_queue(
