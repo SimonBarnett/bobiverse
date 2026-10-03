@@ -1,4 +1,4 @@
-﻿"""Agent-start layer (t759u): every installed service dir ships AGENTS.md / CLAUDE.md / GROK.md / .cursor rule and a
+"""Agent-start layer (t759u): every installed service dir ships AGENTS.md / CLAUDE.md / GROK.md / .cursor rule and a
 product skill book, each starting with the CAST IRON harvest rule; nothing secret; the pack stages it all."""
 from __future__ import annotations
 
@@ -15,7 +15,16 @@ SKILLS = ROOT / ".grok" / "skills"
 PRODUCTS = ("jeeves", "bob", "airc")
 RULE_MARKERS = ("CAST IRON RULE - HARVEST AND FILE EVERYTHING", "Report-BobiverseIntakeIssue.ps1",
                 "Invoke-BobiverseHarvest.ps1", "https://irc.ntsa.uk/bob/v1/intake", "-Repo SimonBarnett/bobiverse")
-BOOKS = {p: [f"bobiverse-{p}", f"bobiverse-{p}-commands", f"bobiverse-{p}-troubleshooting"] for p in PRODUCTS}
+BOOKS = {
+    "jeeves": [
+        "bobiverse-jeeves",
+        "bobiverse-jeeves-commands",
+        "bobiverse-jeeves-troubleshooting",
+        "bobiverse-jeeves-monitor",  # FR #756 MONITORING overlay
+    ],
+    "bob": ["bobiverse-bob", "bobiverse-bob-commands", "bobiverse-bob-troubleshooting"],
+    "airc": ["bobiverse-airc", "bobiverse-airc-commands", "bobiverse-airc-troubleshooting"],
+}
 SHARED = ["bobiverse-fleet-ops", "harvest", "harvest-agent-skills"]
 WIN = pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="needs Windows PowerShell")
 
@@ -40,12 +49,22 @@ def test_every_skill_book_exists_and_has_matching_frontmatter():
 def test_cast_iron_rule_is_in_every_skill_and_every_agents_file():
     files = _all_skill_files() + [ROOT / f"AGENTS.{p}.md" for p in PRODUCTS]
     assert len(files) >= 9 + 3 + 3
+    keep_flow = "## Keep the flow of work to the workers going"
     for f in files:
         t = f.read_text(encoding="utf-8-sig")
         for mk in RULE_MARKERS:
             assert mk in t, f"{f.name}: missing {mk!r}"
-        # the rule is at the TOP: before the first section heading (## ...)
-        assert t.replace("\r\n", "\n").index("CAST IRON RULE - HARVEST AND FILE EVERYTHING") < (t.find("\n## ") if "\n## " in t else 10**9), f
+        # CAST IRON near the top. FR #756 (jeeves MONITORING): optional keep-the-flow
+        # ## section may precede the CAST IRON blockquote; otherwise CAST IRON is before the first ##.
+        norm = t.replace("\r\n", "\n")
+        iron = norm.index("CAST IRON RULE - HARVEST AND FILE EVERYTHING")
+        first_h2 = norm.find("\n## ")
+        if first_h2 >= 0 and keep_flow in norm:
+            # allow keep-the-flow as the first ##; CAST IRON must still appear before any later ##
+            after_flow = norm.find("\n## ", norm.find(keep_flow) + len(keep_flow))
+            assert iron < (after_flow if after_flow >= 0 else 10**9), f
+        else:
+            assert iron < (first_h2 if first_h2 >= 0 else 10**9), f
 
 
 def test_rule_commands_are_real_script_parameters():
