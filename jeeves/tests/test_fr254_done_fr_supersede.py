@@ -258,3 +258,114 @@ def test_append_fr_skipped_when_superseded(tmp_path, monkeypatch):
     )
     assert gitclaim.apply_queue_event(home, claim) in ("noop", "skipped", "duplicate")
     assert not any(r.get("task") == "FR" for r in gitclaim.load_unaccepted(home))
+
+
+def test_offer_skips_fr_when_only_done_fr_has_pull_url(tmp_path, monkeypatch):
+    """Hostile MRB #275: no MRB row left, but DONE FR URL must still block re-offer."""
+    home = _home(tmp_path, monkeypatch)
+    doc = bobreport.empty_digest()
+    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    doc["machines"]["marchhare"]["workers"] = {"35600": {"state": "idle"}}
+    bobreport.save_digest(home, doc)
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#224",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "x",
+                },
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#10",
+                    "seq": 2,
+                    "ts": "t",
+                    "line": "other",
+                },
+            ],
+            "accepted": [],
+            "done": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#224",
+                    "nick": "marchhare-41912",
+                    "url": "https://github.com/SimonBarnett/gh-Jeeves/pull/227",
+                    "done_ts": "t",
+                }
+            ],
+        },
+    )
+    st, job = gitclaim.offer_focus_top(home, "marchhare-35600", "#marchhare")
+    assert st == "ok"
+    assert job["id"] == "#10"
+    assert job["task"] == "FR"
+
+
+def test_done_fr_not_superseded_when_pr_closed_and_repo_fetched():
+    """When implement PR repo was fetched and PR is no longer open, do not block."""
+    doc = {
+        "done": [
+            {
+                "repo": "SimonBarnett/bobiverse",
+                "task": "FR",
+                "id": "#224",
+                "url": "https://github.com/SimonBarnett/gh-Jeeves/pull/227",
+            }
+        ],
+        "unaccepted": [],
+        "accepted": [],
+    }
+    assert (
+        gitclaim.fr_superseded_by_done_pr(
+            doc,
+            "SimonBarnett/bobiverse",
+            "#224",
+            open_pulls={"SimonBarnett/gh-Jeeves": set()},
+            fetched_repos={"SimonBarnett/gh-Jeeves"},
+        )
+        is False
+    )
+    assert (
+        gitclaim.fr_superseded_by_done_pr(
+            doc,
+            "SimonBarnett/bobiverse",
+            "#224",
+            open_pulls={"SimonBarnett/gh-Jeeves": {"#227"}},
+            fetched_repos={"SimonBarnett/gh-Jeeves"},
+        )
+        is True
+    )
+
+
+def test_load_queue_preserves_done_pull_url(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [],
+            "accepted": [],
+            "done": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#224",
+                    "url": "https://github.com/SimonBarnett/gh-Jeeves/pull/227",
+                    "done_ts": "t",
+                    "done_by": "marchhare-41912",
+                }
+            ],
+        },
+    )
+    loaded = gitclaim.load_queue(home)
+    done = loaded.get("done") or []
+    assert len(done) == 1
+    assert done[0]["url"].endswith("/pull/227")
+    assert done[0].get("done_by") == "marchhare-41912"
