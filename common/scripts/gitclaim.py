@@ -94,7 +94,15 @@ SKIP_FR_LABELS = frozenset(
         "mrb",
         "mrb-pass",
         "mrb-fail",
+        "mrb_pass",
+        "mrb_fail",
     }
+)
+
+# Labels safe to detect in free text (title/line/body). Bare ``mrb`` is labels-only —
+# otherwise titles like "harden MRB/FR routing" (#595) would false-positive.
+SKIP_FR_LABELS_IN_TEXT = frozenset(
+    lab for lab in SKIP_FR_LABELS if lab not in {"mrb", "skill"}
 )
 
 
@@ -516,6 +524,15 @@ def issue_skip_fr_reason(
     # bobiverse#258 / FR #133: evergreen MRB-home boards (label or title shape).
     if EVERGREEN_MRB_HOME_TITLE_RE.search(title_s) or EVERGREEN_MRB_HOME_TITLE_RE.search(blob):
         return "evergreen_mrb_home"
+    # FR #595 / MRB #603: legacy queue rows may only put board labels in line/title
+    # text (empty labels). Match hyphen/underscore board tokens; not bare ``mrb``.
+    blob_l = blob.lower()
+    text_hits = []
+    for lab in sorted(SKIP_FR_LABELS_IN_TEXT, key=len, reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(lab)}(?![a-z0-9])", blob_l):
+            text_hits.append(lab)
+    if text_hits:
+        return f"label_text:{text_hits[0]}"
     return None
 
 
@@ -1336,12 +1353,16 @@ def mrb_row_offerable(
     url = resolve_assign_url(row)
     if not url or not PULL_URL_RE.search(url):
         return False
-    if pr_exists is None:
-        return True
     m = PULL_URL_RE.search(url)
     if not m:
         return False
     repo, num = m.group("repo"), m.group("num")
+    # FR #595: pull URL must target the row's repository (no cross-repo bait-and-switch).
+    row_repo = str(row.get("repo") or "").strip().lower()
+    if row_repo and repo.lower() != row_repo:
+        return False
+    if pr_exists is None:
+        return True
     try:
         return bool(pr_exists(repo, num))
     except Exception:
