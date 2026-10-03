@@ -216,7 +216,7 @@ function ConvertFrom-AircRemoteReply {
         }
     }
     if (-not $done) {
-        throw 'malformed replies: missing DONE id=… exit=… (fail closed)'
+        throw 'malformed replies: missing DONE id=... exit=... (fail closed)'
     }
     if ($ExpectJobId -and $done.Id -ne $ExpectJobId) {
         throw ("correlation mismatch: expected id={0} got id={1}" -f $ExpectJobId, $done.Id)
