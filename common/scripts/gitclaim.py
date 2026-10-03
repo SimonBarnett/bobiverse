@@ -641,6 +641,11 @@ _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bneeds-ionos\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
     (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
+    # FR #852: recycle/recompose live ircJeeves / prune chair queue on ionos
+    (re.compile(r"(?i)\b(?:recycle|recompose)\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\b(?:recycle|recompose|recycled)\b"), "ionos"),
+    (re.compile(r"(?i)\bprune\b.{0,80}\bqueue\.json\b"), "ionos"),
+    (re.compile(r"(?i)\bqueue\.json\b.{0,80}\b(?:prune|on\s+ionos)\b"), "ionos"),
 )
 
 
@@ -654,7 +659,8 @@ def infer_require_machine(
     """Return a fleet machine id the job must run on, or '' (FR #587).
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
-    title/body/line cues (WP0 live → ce-priority-dev1, needs-ionos → ionos).
+    title/body/line cues (WP0 live → ce-priority-dev1; needs-ionos / chair-outbox /
+    recycle|recompose Jeeves / prune queue.json → ionos; FR #587 / #852).
     """
     labs = labels or ()
     if isinstance(labs, str):
