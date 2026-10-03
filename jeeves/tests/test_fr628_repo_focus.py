@@ -252,3 +252,19 @@ def test_offer_and_assign_honour_ledger_even_without_row_stamps(_home):
     st, why = gitclaim.assign_row(_home, "ionos-11", "o/a", "UAT", "#611")
     assert st == "refused" and "no self-UAT" in why
     assert gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#611")[0] == "ok"
+
+def test_ledger_refresh_from_pr_commit_authors(_home):
+    rows = [_row("o/a", "MRB", 12, 1, refs=["#7"]), _uat(30, refs=["#31"])]
+    calls = []
+
+    def fetch(repo, num):
+        calls.append(num)
+        return {"ionos-11"} if num == "12" else (set() if num == "30" else None)
+
+    assert gitclaim.ledger_refresh_authors(_home, rows, fetch) == 3 - 1     # #31 unknown -> retried later
+    led = gitclaim.ledger_load(_home)
+    assert led["touch"]["o/a#12"]["ionos-11"] == ["FR"] and led["touch"]["o/a#7"]["ionos-11"] == ["FR"]
+    assert gitclaim.ledger_blocks(led, rows[0], "ionos-11") and not gitclaim.ledger_blocks(led, rows[0], "ionos-12")
+    calls.clear()
+    gitclaim.ledger_refresh_authors(_home, rows, fetch)
+    assert calls == ["31"] or calls == ["7", "31"] or "12" not in calls    # cached keys are not re-fetched

@@ -2184,6 +2184,7 @@ class Client:
             self._cmd_reply(src, "assign", ["assign: usage !assign {worker-nick} {repo} {FR|MRB|UAT} {num}"])
             return True
         wnick, repo, task, ident = parsed
+        self._refresh_ledger()
         status, res = gitclaim.assign_row(
             self.home,
             wnick,
@@ -2289,6 +2290,7 @@ class Client:
             self._git_say(target, gitclaim.NAK_BORED_BUSY)
             info(f"INFO git-claim bored nak busy nick={src}")
             return
+        self._refresh_ledger()
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).
         # FR #595 / #247: skip MRB rows whose /pull/N 404s when a token is available.
@@ -2319,6 +2321,18 @@ class Client:
                 info(f"WARN workers idle error {type(exc).__name__}")
             return
         info(f"INFO git-claim bored offer failed nick={src}")
+
+    def _refresh_ledger(self) -> None:
+        """t852u: learn PR commit authors (seat nicks) for the rows that could be offered next; bounded + cached."""
+        try:
+            fetch = gitclaim.github_pr_seat_fetcher(home=self.home)
+            if fetch is None:
+                return
+            doc = gitclaim.load_queue(self.home)
+            rows = focus_ignore.sort_unaccepted_rows(self.home, doc.get("unaccepted") or [])[:25]
+            gitclaim.ledger_refresh_authors(self.home, rows, fetch)
+        except Exception as exc:  # noqa: BLE001 - never block an offer on a lookup
+            info(f"WARN ledger refresh error {type(exc).__name__}"[:120])
 
     def _git_ack(self, src: str, target: str, now: float) -> None:
         """ACK in #{machine} marks the offered job accepted on the webhook mirror."""

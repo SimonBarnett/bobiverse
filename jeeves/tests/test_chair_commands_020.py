@@ -54,6 +54,7 @@ class FakeChair:
     def _handle_register_command(self, *a): return False
     def _mark_pm_open(self, n): pass
     def _is_briefer(self): return False
+    def _refresh_ledger(self): pass          # no GitHub lookups in unit tests
 
     for _n in ("handle_privmsg", "_maybe_chair_commands", "_maybe_git_list", "_maybe_git_help", "_maybe_focus_ignore", "_maybe_assign", "_git_say",
                "_handle_recycle_command", "_handle_bob_local_recycle_command", "_maybe_startworker", "_cc", "_ear_machine", "_account_of",

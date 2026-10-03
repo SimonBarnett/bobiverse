@@ -1,4 +1,4 @@
-﻿"""v0.1.18: chair-side IRC events -> worker list (fake IRC, real Client methods, real digest)."""
+"""v0.1.18: chair-side IRC events -> worker list (fake IRC, real Client methods, real digest)."""
 from __future__ import annotations
 
 import threading
@@ -59,6 +59,7 @@ class FakeChair:
     _chair_wire = irc_agent.Client._chair_wire
     _maybe_git_claim = irc_agent.Client._maybe_git_claim
     _maybe_shop_listen = irc_agent.Client._maybe_shop_listen
+    def _refresh_ledger(self): pass          # no GitHub lookups in unit tests
     _git_bored = irc_agent.Client._git_bored
     _git_ack = irc_agent.Client._git_ack
     _git_accept = irc_agent.Client._git_accept
@@ -285,3 +286,20 @@ def test_short_work_format():
     assert shop_listen.short_work("fr", "SimonBarnett/bobiverse", "#68") == "bobiverse FR #68"
     assert shop_listen.short_work("UAT", "plain", "7") == "plain UAT #7"
     assert shop_listen.activity_description({"task": "MRB", "repo": "a/b", "id": "#1", "line": "GIT x"}) == "b MRB #1"
+
+def test_self_uat_giveup_loop_ends_idle_not_stuck_doing(chair):
+    """t852u: a seat that GIVEUPs a self-UAT is never offered it again (ledger survives a row rebuild)
+    and the digest goes to idle (not stuck on 'doing UAT #269')."""
+    uat = {"repo": "o/r", "task": "UAT", "id": "#269", "seq": 1, "ts": "2026-10-03T09:21:37Z", "line": "x", "refs": ["#623"],
+           "url": "https://github.com/o/r/issues/269"}
+    queue(chair.home, dict(uat))
+    say(chair, SEAT, "#marchhare", "!bored")
+    assert listed(chair)[0]["state"] == "doing"
+    say(chair, SEAT, "#marchhare", "ACK UAT o/r#269 x")
+    say(chair, SEAT, "#marchhare", "GIVEUP UAT o/r#269 self-UAT forbidden")
+    assert listed(chair)[0]["state"] == "idle" and listed(chair)[0]["work"] == ""
+    queue(chair.home, dict(uat))                       # resync rebuilt the row without any stamp
+    chair.said.clear()
+    say(chair, SEAT, "#marchhare", "!bored")
+    assert not any("UAT" in t for _, t in chair.said) and any("nothing queued" in t for _, t in chair.said)
+    assert listed(chair)[0]["state"] == "idle"

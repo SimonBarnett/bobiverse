@@ -1906,6 +1906,94 @@ def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, id
             ledger_touch(home, nick, parsed[0], "FR", [_lkey(parsed[0], parsed[1])])
 
 
+def github_pr_seat_fetcher(*, home: Path | None = None):
+    """Return ``fetch(repo, num) -> set[str] | None`` of seat nicks that authored commits on a PR.
+
+    Seats commit as their nick (``marchhare-41928``), so the PR's commit authors are the ground truth for
+    "who wrote this" - independent of queue history. ``set()`` = not a PR / no seat commits; ``None`` =
+    could not tell (offline / no token / transient error; not cached)."""
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    if home is not None:
+        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
+    if gh_filer.ensure_gh_token_env() == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+
+    def _fetch(repo: str, num: str):
+        api = f"https://api.github.com/repos/{repo}/pulls/{str(num).lstrip('#')}/commits?per_page=100"
+        req = urllib.request.Request(api, headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-gitclaim"}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            return set() if int(getattr(e, "code", 0) or 0) in (404, 410, 422) else None
+        except Exception:
+            return None
+        out: set[str] = set()
+        for c in data if isinstance(data, list) else []:
+            for who in ((c.get("commit") or {}).get("author") or {}, (c.get("commit") or {}).get("committer") or {}):
+                name = str(who.get("name") or "").strip().lower()
+                if name and bobreport.parse_seat_nick(name):
+                    out.add(name)
+        return out
+
+    return _fetch
+
+
+def ledger_refresh_authors(home: Path, rows, fetch, *, limit: int = 8, ttl_s: float = 6 * 3600.0) -> int:
+    """Stamp the seat ledger with the commit authors of every PR behind the MRB/UAT ``rows`` (bounded).
+
+    The PR key and every linked key of the row get ``FR`` for each seat that committed (so that seat can
+    neither review nor UAT it). Results are cached per PR key for ``ttl_s``. Returns lookups done."""
+    if fetch is None:
+        return 0
+    import time as _time
+
+    now_f = _time.time()
+    led = ledger_load(home)
+    fetched = led.get("fetched") or {}
+    todo: list[tuple[str, str, list[str]]] = []
+    for row in rows:
+        if _canon_task(row) not in ("MRB", "UAT"):
+            continue
+        repo = str(row.get("repo") or "")
+        keys = _row_link_keys(row)
+        for k in keys:
+            if k in fetched and now_f - float(fetched[k]) < ttl_s:
+                continue
+            if all(k != t[0] for t in todo):
+                todo.append((k, repo, keys))
+    done = 0
+    for k, repo, keys in todo[:limit]:
+        num = k.rsplit("#", 1)[1]
+        try:
+            seats = fetch(repo, num)
+        except Exception:
+            seats = None
+        if seats is None:
+            continue
+        done += 1
+        def _f(doc: dict, k=k, seats=seats, keys=keys) -> None:
+            doc.setdefault("fetched", {})[k] = _time.time()
+            for s in seats:
+                for kk in keys:
+                    roles = doc["touch"].setdefault(kk, {}).setdefault(s, [])
+                    if "FR" not in roles:
+                        roles.append("FR")
+        try:
+            _ledger_update(home, _f)
+        except OSError:
+            pass
+    return done
+
+
 _ASSIGN_CMD = re.compile(
     r"(?is)^\s*!assign\s+(\S+)\s+(\S+)\s+(FR|MRB|UAT)\s+#?(\d+)\s*$"
 )
