@@ -22,7 +22,7 @@ The source URLs above are intentionally retained for historical issue, PR, and p
 
 ## Archived document map (FR #794)
 
-Every document in the five archived repositories (README, docs/, specs, briefs, runbooks, templates, skills, mocks, diagrams, screenshots, PDFs, schemas) is listed below with the archived commit it was read from and where it now lives in bobiverse. Documents are ported verbatim under `docs/archive/<repo>/<original path>` with a provenance header (`SKILL.md` copies are named `SKILL.archived.md` so skill discovery never loads them). Nothing was deleted or rewritten; where a live counterpart exists it is named, FR #806 hand-merged the ten flagged "archive richer" live counterparts (honesty-box skill, README pointers, harvest log index, functional-spec, Ergo README); remaining archive text may still use pre-bobiverse paths such as \i\...\.
+Every document in the five archived repositories (README, docs/, specs, briefs, runbooks, templates, skills, mocks, diagrams, screenshots, PDFs, schemas) is listed below with the archived commit it was read from and where it now lives in bobiverse. Documents are ported verbatim under `docs/archive/<repo>/<original path>` with a provenance header (`SKILL.md` copies are named `SKILL.archived.md` so skill discovery never loads them). Nothing was deleted or rewritten; where a live counterpart exists it is named, FR #806 hand-merged the ten flagged "archive richer" live counterparts (honesty-box skill, README pointers, harvest log index, functional-spec, Ergo README); remaining archive text may still use pre-bobiverse paths such as `\ai\...`
 
 | Archived repository | Commit read | Documents | Already identical in bobiverse | Ported |
 |---|---|---|---|---|
