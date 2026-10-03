@@ -80,6 +80,8 @@ Add-Content -LiteralPath $outbox -Value "PRIVMSG #shop :DONE FR owner/repo#N $ur
 
 On Windows PowerShell 5.1, keep the PR body in `--body-file` (multiline `--body` argv splits). If a bad DONE already went out, append a corrected `DONE` line with the real URL immediately.
 
+**FR #791 / gh issue close:** `gh issue close N --body-file` is an **unknown flag** on current `gh` — it does not accept `--body-file`. Close with a comment via `-c` / `--comment` only, e.g. `gh issue close <dup> --repo <owner>/<repo> --reason "not planned" --comment "Duplicate of #N / fixed by PR #M"`. Use `--body-file` for `gh pr create` / `gh pr edit` / `gh issue create`, never for `gh issue close`.
+
 ## Evidence required (in the PR body)
 
 * The line `Closes <owner>/<repo>#N` for the originating issue. * What changed and why (one paragraph) and the files touched. * The new tests (names) and the full-suite result (`N passed`). * How you verified it for real (command + short output) and **what you could not test live**.
