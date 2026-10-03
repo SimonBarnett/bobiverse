@@ -163,6 +163,8 @@ def _period_expired(end: object, now: datetime | None = None) -> bool:
 CURSOR_SPENDING_POOLS: tuple[tuple[str, str], ...] = (
     ("cursor-models", "Cursor Models"),
     ("other-models", "Other Models"),
+    # FR #663: storage id stays grok-weekly; cursor-grok-chat is the preferred alias
+    # so readers do not confuse Cursor Sand with xAI weekly.
     ("grok-weekly", "Grok chat (Cursor)"),
     ("on-demand", "On-demand"),
 )
@@ -181,6 +183,7 @@ _CURSOR_POOL_ID_ALIASES: dict[str, str] = {
     "grok-chat": "grok-weekly",
     "grok_chat": "grok-weekly",
     "grok_weekly": "grok-weekly",
+    "cursor-grok-chat": "grok-weekly",  # FR #663 preferred name -> storage id
     "sand": "grok-weekly",
     "on_demand": "on-demand",
 }
@@ -194,7 +197,15 @@ _PCENT_KEYS_BY_POOL: dict[str, tuple[str, ...]] = {
         "low-cost-models",
     ),
     "other-models": ("other-models", "other_models", "high cost models", "high-cost-models"),
-    "grok-weekly": ("grok-weekly", "grok_weekly", "grok-chat", "grok_chat", "grok chat", "sand"),
+    "grok-weekly": (
+        "grok-weekly",
+        "grok_weekly",
+        "grok-chat",
+        "grok_chat",
+        "grok chat",
+        "sand",
+        "cursor-grok-chat",
+    ),
     "on-demand": ("on-demand", "on_demand"),
 }
 # #40: pcent keys that follow the Grok weekly clock but are not Cursor pools.
@@ -737,9 +748,12 @@ def _coerce_workers(mid: str, raw: object) -> dict:
 # ---- v0.1.18: chair-maintained worker list (machines.<id>.workers on the wire) ----------------
 # Stored as ``worker_list`` (list of {nick,state,work,updated}); the legacy pid-keyed ``workers``
 # dict (merge op / gitclaim seat lookup) is untouched. Export publishes the list as ``workers``.
-WORKER_STATES = ("doing", "idle")
+# FR #663: offer sets ``offered`` (not ``doing``); only ACK promotes to ``doing``.
+WORKER_STATES = ("doing", "idle", "offered")
 WORKER_WORK_MAX = 160
 WORKER_LIST_MAX = 32
+# Un-ACKed offers expire back to idle (digest export + worker-work path).
+OFFERED_TIMEOUT_S = 120.0
 _WORKER_NICK_RE = re.compile(r"^[A-Za-z_\[\]\\`^{|}][A-Za-z0-9_\-\[\]\\`^{|}]{0,31}$")
 _NOT_WORKER_NICKS = frozenset(
     {"jeeves", "chanserv", "nickserv", "operserv", "hostserv", "memoserv", "botserv",
@@ -769,9 +783,31 @@ def clean_worker_work(text: object) -> str:
     return s[:WORKER_WORK_MAX]
 
 
-def _coerce_worker_list(raw: object) -> list[dict]:
+def _parse_worker_updated_ts(raw: object) -> float | None:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime
+
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        return None
+
+
+def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
+    """Normalize worker_list; FR #663 expires stale ``offered`` rows to idle."""
+    import time as _time
+
     if not isinstance(raw, list):
         return []
+    now_f = _time.time() if now is None else float(now)
     out: list[dict] = []
     seen: set[str] = set()
     for ent in raw:
@@ -784,11 +820,40 @@ def _coerce_worker_list(raw: object) -> list[dict]:
         state = str(ent.get("state") or "idle").strip().lower()
         if state not in WORKER_STATES:
             state = "idle"
-        work = clean_worker_work(ent.get("work")) if state == "doing" else ""
+        updated = str(ent.get("updated") or "")
+        if state == "offered":
+            ts = _parse_worker_updated_ts(updated)
+            if ts is not None and (now_f - ts) >= float(OFFERED_TIMEOUT_S):
+                state = "idle"
+        # Keep work text for doing and offered (tray shows offered:<work>).
+        work = clean_worker_work(ent.get("work")) if state in ("doing", "offered") else ""
         out.append(
-            {"nick": nick, "state": state, "work": work, "updated": str(ent.get("updated") or "")}
+            {"nick": nick, "state": state, "work": work, "updated": updated}
         )
     return out[:WORKER_LIST_MAX]
+
+
+def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
+    """FR #663: machines.<id>.working_on / jobs follow worker_list; clear when none doing."""
+    rows = _coerce_worker_list(ent.get("worker_list"))
+    best = ""
+    best_ts = ""
+    for r in rows:
+        if str(r.get("state") or "") != "doing":
+            continue
+        work = clean_worker_work(r.get("work"))
+        if not work:
+            continue
+        upd = str(r.get("updated") or "")
+        if not best or upd >= best_ts:
+            best = work
+            best_ts = upd
+    ent["working_on"] = best
+    if not best:
+        # Drop stale machine-level jobs when every seat is idle/offered.
+        jobs = ent.get("jobs")
+        if isinstance(jobs, list) and jobs:
+            ent["jobs"] = []
 
 
 def worker_list_for_export(ent: dict) -> list[dict]:
@@ -1535,6 +1600,15 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
             return CallbackOutcome(ok=True, changed=False)
         rows.pop(idx)
         event = "worker-remove"
+        after_rows = _coerce_worker_list(rows)
+        ent["worker_list"] = after_rows
+        _refresh_machine_activity_from_worker_list(ent)
+        if briefer_nick:
+            doc["briefer"] = briefer_nick
+        doc["ts"] = now_iso
+        _note_event(doc, event, machine=mid, nick=nick)
+        save_digest(home, doc)
+        return CallbackOutcome(ok=True, changed=True)
     else:
         if idx < 0:
             if len(rows) >= WORKER_LIST_MAX:
@@ -1545,21 +1619,26 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
             row = rows[idx]
         if state:
             row["state"] = state
-        if row["state"] == "doing":
+        if row["state"] in ("doing", "offered"):
             if work_raw is not None:
                 row["work"] = clean_worker_work(work_raw)
             if not row["work"]:
-                row["work"] = "working"
+                row["work"] = "working" if row["state"] == "doing" else "offered"
         else:
             row["work"] = ""
         event = op
     after_rows = _coerce_worker_list(rows)
     if _sig(after_rows) == before:
+        # Still refresh machine activity (timeout may have expired offered -> idle).
+        ent["worker_list"] = after_rows
+        _refresh_machine_activity_from_worker_list(ent)
+        save_digest(home, doc)
         return CallbackOutcome(ok=True, changed=False)
     for r in after_rows:
         if r["nick"].lower() == touched.lower():
             r["updated"] = now_iso
     ent["worker_list"] = after_rows
+    _refresh_machine_activity_from_worker_list(ent)
     if briefer_nick:
         doc["briefer"] = briefer_nick
     doc["ts"] = now_iso
@@ -2246,7 +2325,7 @@ def _cursor_pool_period(ent: dict, pool_id: str | None = None) -> tuple[str | No
     """Per-pool reset clock: grok-weekly/sand = Cursor Sand period end (NOT the xAI weekly ``period_end``,
     #80); else Cursor billing."""
     pid = str(pool_id or "").strip().lower()
-    if pid in ("grok-weekly", "grok-chat", "sand"):
+    if pid in ("grok-weekly", "grok-chat", "sand", "cursor-grok-chat"):
         weekly = ent.get("sand_period_end") or ent.get("period_end")
         if weekly not in (None, ""):
             period_s = str(weekly)

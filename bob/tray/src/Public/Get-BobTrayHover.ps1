@@ -877,7 +877,7 @@ function Resolve-BobTrayLivePeriod {
 }
 
 function Format-BobTrayWorkerLine {
-    # Exactly "{irc nick}: {doing|idle}" - doing is the current work description.
+    # "{irc nick}: {work|offered:<work>|idle}" - FR #663: offered is not doing.
     param($Worker)
     if (-not $Worker) { return $null }
     $nick = ([string]$Worker.nick).Trim()
@@ -889,6 +889,12 @@ function Format-BobTrayWorkerLine {
         $w = $w.Trim()
         if (-not $w) { $w = 'working' }
         $text = $w
+    }
+    elseif ($state -eq 'offered') {
+        $w = ([string]$Worker.work) -replace '[\r\n\t]+', ' '
+        $w = $w.Trim()
+        if ($w -and $w -ne 'offered') { $text = ('offered: {0}' -f $w) }
+        else { $text = 'offered' }
     }
     return ('{0}: {1}' -f $nick, $text)
 }
@@ -906,7 +912,7 @@ function Get-BobTrayDigestWorkers {
     foreach ($w in @($ent.workers)) {
         if (-not $w -or -not ($w.PSObject.Properties.Name -contains 'nick')) { continue }
         $st = ([string]$w.state).Trim().ToLowerInvariant()
-        if ($st -ne 'doing' -and $st -ne 'idle') { continue }
+        if ($st -ne 'doing' -and $st -ne 'idle' -and $st -ne 'offered') { continue }
         $out += ,[pscustomobject]@{ nick = [string]$w.nick; state = $st; work = [string]$w.work; updated = [string]$w.updated }
     }
     return @($out | Sort-Object -Property nick)
