@@ -1396,16 +1396,22 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         ent["status"] = "I am online" if ent["online"] else "I am offline"
     if payload.get("status"):
         ent["status"] = str(payload["status"])
-    # Period roll (cursor billing or weekly sand) → allow pcent/weekly to rise again (e.g. 100%)
-    cursor_rolled = _period_rolled(ent.get("cursor_period_end"), payload.get("cursor_period_end"))
+    # Period roll (weekly sand) → clear last period's weekly when the new window has no figure yet.
     weekly_rolled = _period_rolled(ent.get("period_end"), payload.get("period_end"))
     # t785u: the machine moved to a new weekly period but has no measured figure for it yet: last period's % must not
     # linger next to the new reset (MarchHare showed weekly=8 against a reset 7 days later).
     if weekly_rolled and payload.get("period_end") and payload.get("weekly") is None:
         ent.pop("weekly", None)
+    # FR #976: reporter says weekly is unknown — clear a stuck 0 (lesser ratchet left 0 forever).
+    weekly_known = payload.get("weekly_known")
+    if weekly_known is False or (
+        "weekly_known" in payload and weekly_known in (0, "false", "False", "0", "")
+    ):
+        ent.pop("weekly", None)
     if "pcent" in payload and isinstance(payload["pcent"], dict):
+        # FR #976: per-machine pcent is replace-latest (reporter's current reading), not min-ratchet.
         ent["pcent"] = _merge_pcent_lesser(
-            ent.get("pcent"), payload["pcent"], replace=(cursor_rolled or weekly_rolled)
+            ent.get("pcent"), payload["pcent"], replace=True
         )
     if payload.get("uptime_since"):
         ent["uptime_since"] = str(payload["uptime_since"])
@@ -1452,10 +1458,13 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
         if key == "pcent" and isinstance(val, dict):
             continue
         if key in ("weekly",) and val is not None:
-            if weekly_rolled:
-                ent[key] = val
-            else:
-                ent[key] = _lesser_int(ent.get(key), val)
+            # FR #976: skip write when reporter marked weekly unknown (cleared above).
+            if weekly_known is False or (
+                "weekly_known" in payload and weekly_known in (0, "false", "False", "0", "")
+            ):
+                continue
+            # Per-machine weekly is replace-latest (not min-ratchet).
+            ent[key] = val
             continue
         ent[key] = val
     if "running" in ent:
@@ -2175,15 +2184,38 @@ def _coerce_cursor_pool(raw: object) -> dict | None:
     return entry
 
 
+def _canonical_pool_account(mid: str) -> str:
+    """FR #976: pool account is bob-<canonical-mid>, never a legacy NICK_TO_MACHINE alias (bob-ionos)."""
+    norm = normalize_machine_id(mid) or (str(mid).strip().lower() if mid else "")
+    if not norm:
+        return ""
+    if norm == "ce-priority-dev1":
+        return "bob-dev1"
+    return f"bob-{norm}"
+
+
 def _stamp_pool_identity(row: dict, mid: str, *, account: str | None = None, channel: str | None = None) -> dict:
-    """#114: ensure machine_id / account / channel on a coerced pool row."""
+    """#114: ensure machine_id / account / channel on a coerced pool row.
+
+    FR #976: always stamp bob-<canonical-mid> (overwrite legacy aliases such as
+    bob-ionos left on the row by older reporters / nick_for_machine).
+    """
     if not isinstance(row, dict):
         return row
     norm = normalize_machine_id(mid) or (str(mid).strip().lower() if mid else "")
     if norm and not row.get("machine_id"):
         row["machine_id"] = norm
-    acct = (account or "").strip() or (nick_for_machine({}, norm) if norm else "")
-    if acct and not row.get("account"):
+    canonical = _canonical_pool_account(norm) if norm else ""
+    explicit = (account or "").strip()
+    # Drop legacy aliases even when passed as the explicit account from ent.nick.
+    if explicit and explicit in NICK_TO_MACHINE:
+        explicit = ""
+    if explicit and canonical and explicit.startswith("bob-") and explicit != canonical:
+        # Explicit bob-* that is not the canonical mid nick is a legacy alias — ignore.
+        if NICK_TO_MACHINE.get(explicit) == norm or explicit == "bob-ionos":
+            explicit = ""
+    acct = explicit or canonical
+    if acct:
         row["account"] = acct
     ch = (channel or "").strip()
     if not ch and norm:
