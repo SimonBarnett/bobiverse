@@ -43,6 +43,24 @@ function Invoke-BobiverseNssmChecked {
     return $r
 }
 
+function Set-BobiverseNssmAppExitRestart {
+    <#
+    FR #1055: pin NSSM to Restart on Default AND exit code 0.
+    Graceful chair quit exits 0; without an explicit AppExit 0=Restart some installs
+    leave ircJeeves Stopped after a clean exit even when Default=Restart.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Nssm,
+        [Parameter(Mandatory)][string]$ServiceName,
+        [int]$RestartDelayMs = 2000
+    )
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppExit', '0', 'Restart'))
+    if ($RestartDelayMs -gt 0) {
+        [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppRestartDelay', ([string]$RestartDelayMs)))
+    }
+}
+
 function Test-BobiverseServiceDeletePending {
     param([Parameter(Mandatory)][string]$Name)
     $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"

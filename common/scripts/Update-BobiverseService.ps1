@@ -487,6 +487,27 @@ function Invoke-Apply {
             }
         }
 
+        # FR #1055: re-pin NSSM AppExit so graceful quit (exit 0) still Restart.
+        try {
+            $common = Join-Path $InstallRoot 'scripts\Bobiverse-Common.ps1'
+            if (-not (Test-Path -LiteralPath $common)) {
+                $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+            }
+            if (Test-Path -LiteralPath $common) {
+                . $common
+                $nssmExe = Join-Path $InstallRoot 'third_party\nssm\win64\nssm.exe'
+                if (-not (Test-Path -LiteralPath $nssmExe)) { $nssmExe = Join-Path $InstallRoot 'scripts\nssm.exe' }
+                if (Test-Path -LiteralPath $nssmExe) {
+                    Set-BobiverseNssmAppExitRestart -Nssm $nssmExe -ServiceName $ServiceName -RestartDelayMs 2000
+                    Write-UpdLog "post-upgrade-appexit-restart $ServiceName"
+                } else {
+                    Write-UpdLog "post-upgrade-appexit-skip nssm missing"
+                }
+            }
+        } catch {
+            Write-UpdLog "post-upgrade-appexit-warn $($_.Exception.Message)"
+        }
+
         $st = Get-State
         $st.pending = $null
         $st.lastResult = 'updated'
