@@ -591,8 +591,9 @@ def row_needs_human(row: dict) -> bool:
 
 
 # FR #587: machine-affinity for seats that cannot do the work (WP0 live / chair-outbox).
+# FR #628 / #732: also accept bare ``machine:<id>`` (legacy pin label).
 _REQUIRE_MACHINE_LABEL_RE = re.compile(
-    r"(?i)^(?:needs|require[_-]?machine)[-_:=]([a-z0-9][a-z0-9_.-]*)$"
+    r"(?i)^(?:needs|require[_-]?machine|machine)[-_:=]([a-z0-9][a-z0-9_.-]*)$"
 )
 # Explicit cue → fleet machine id (normalized lowercase).
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -1759,21 +1760,14 @@ def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
 
 
 def row_machine_mismatch(row: dict, nick: str) -> bool:
-    """FR #628: rows pinned to a machine (``require_machine`` field or ``machine:<id>`` label)
-    are never offered to a seat on another machine (they would only GIVEUP)."""
-    want = str(row.get("require_machine") or "").strip().lower()
-    if not want:
-        for lab in row.get("labels") or ():
-            m = re.match(r"(?i)^(?:machine|require-machine)[:=-](.+)$", str(lab).strip())
-            if m:
-                want = m.group(1).strip().lower()
-                break
-    if not want:
-        return False
-    p = bobreport.parse_seat_nick(canonical_worker_nick(nick) or nick)
-    if not p:
-        return True
-    return bobreport.fold_machine_id(p[0]).lower() != bobreport.fold_machine_id(want).lower()
+    """FR #628 / #732: machine pin via stamp, ``machine:<id>`` label, or title/body cues.
+
+    Delegates to ``row_blocked_for_machine`` / ``row_require_machine`` so ``!assign``
+    (``assign_row``) re-infers WP0/ionos cues the same way ``offer_focus_top`` does —
+    legacy rows that never got ``_stamp_require_machine`` must not be force-assigned
+    to the wrong machine.
+    """
+    return row_blocked_for_machine(row, nick)
 
 
 def row_gave_up_by(row: dict, nick: str) -> bool:
