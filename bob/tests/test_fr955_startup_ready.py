@@ -178,3 +178,14 @@ def test_early_exit_logs_last_injected(tmp_path, monkeypatch):
     clock["t"] = 5.0  # early
     sup._wait_exit(sup.proc)
     assert any("early exit" in m and "last_injected=" in m for m in logs)
+
+
+def test_connect_with_retries_has_no_dead_code_after_raise():
+    """MRB #956 hostile: unreachable JOIN/failed after raise last must not remain."""
+    import inspect
+    src = inspect.getsource(bw.IrcSeat.connect_with_retries)
+    assert "raise last" in src
+    # Nothing after the final raise in the function body.
+    tail = src.split("raise last", 1)[1]
+    assert "JOIN" not in tail
+    assert "self.failed" not in tail

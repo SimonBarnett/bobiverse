@@ -1054,10 +1054,6 @@ class IrcSeat:
                 time.sleep(delay)
         assert last is not None
         raise last
-        if self.failed:
-            self.close()
-            raise ConnectionError(self.failed)
-        self._raw("JOIN " + self.shop)  # ONLY the machine's own shop channel
 
     def close(self, quit_msg: str = "worker stop") -> None:
         self._stop.set()
