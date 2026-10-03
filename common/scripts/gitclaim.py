@@ -1134,6 +1134,9 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     """FR #587 / #1093: persist require_machine on enqueue/refresh when cues match.
 
     Hard issue pins always overwrite empty/unpin tokens. A real machine stamp is kept.
+    Operator unpin (``any`` / ``none`` / ``*`` / ``-``) must survive title/body cues that
+    merely *mention* ``require_machine=ce-priority-dev1`` as evidence (e.g. #1116) —
+    otherwise monitor clears are wiped on the next offer/resync stamp.
     """
     title = str((claim.title if claim else "") or row.get("title") or "")
     body = str((claim.body if claim else "") or row.get("body") or "")
@@ -1143,17 +1146,23 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         labels = [labels]
     repo = str((claim.repo if claim else "") or row.get("repo") or "")
     ident = str((claim.id if claim else "") or row.get("id") or "")
-    req = infer_require_machine(
-        title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
-    )
-    if not req:
-        return
+    repo_l = repo.strip().lower()
+    id_l = f"#{str(ident or '').strip().lstrip('#')}"
+    hard = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l), "")
     stamped = str(row.get("require_machine") or "").strip().lower()
-    if stamped and stamped not in {"*", "any", "none", "-"}:
+    if stamped in {"*", "any", "none", "-"}:
+        if hard:
+            row["require_machine"] = hard
+        return
+    if stamped:
         mid = bobreport.normalize_machine_id(stamped) or stamped
         if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
             return
-    row["require_machine"] = req
+    req = infer_require_machine(
+        title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
+    )
+    if req:
+        row["require_machine"] = req
 
 
 def apply_queue_event(home: Path, claim: GitClaim) -> str:

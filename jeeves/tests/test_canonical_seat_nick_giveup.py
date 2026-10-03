@@ -55,6 +55,34 @@ def test_row_gave_up_by_short_matches_full():
     assert gitclaim.row_gave_up_by(row, "w-io-15656") is False
 
 
+def test_stamp_require_machine_keeps_any_unpin_despite_body_cue():
+    """#1116-class: body mentions require_machine=ce-priority-dev1 as evidence only."""
+    row = {
+        "repo": "SimonBarnett/bobiverse",
+        "id": "#1116",
+        "require_machine": "any",
+        "title": "FR: idle_seats monitor must count offerable work",
+        "body": "Evidence: #1093 require_machine=ce-priority-dev1 with no live seat.",
+        "labels": ["feature-request"],
+        "line": "",
+    }
+    gitclaim._stamp_require_machine(row)
+    assert row["require_machine"] == "any"
+    assert gitclaim.row_require_machine(row) == ""
+    # hard pin still wins over unpin
+    pinned = {
+        "repo": "SimonBarnett/agentic_fomprep",
+        "id": "#56",
+        "require_machine": "any",
+        "title": "x",
+        "body": "",
+        "labels": [],
+        "line": "",
+    }
+    gitclaim._stamp_require_machine(pinned)
+    assert pinned["require_machine"] == "ce-priority-dev1"
+
+
 def test_purge_dead_mrb_accepted_moves_merged_to_done(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim._write_queue(
