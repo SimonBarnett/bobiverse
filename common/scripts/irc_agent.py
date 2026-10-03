@@ -2194,7 +2194,7 @@ class Client:
         )
         if status != "ok" or not isinstance(res, dict):
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
-            info(f"INFO git-assign refused nick={src} worker={wnick} {repo}#{ident} {task}: {res}"[:200])
+            info(f"INFO git-assign refused nick={src} worker={wnick} {repo}{ident} {task}: {res}"[:200])
             return True
         shop = bobreport.normalize_channel(str(res.get("offered_channel") or ""))
         line = gitclaim.format_assign_line(res.get("offered_to") or wnick, res)
