@@ -469,6 +469,24 @@ function Invoke-Apply {
         Start-Sleep -Seconds 10
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { throw "service $ServiceName not running after install" }
 
+        # FR #1018: MSI upgrade left BobCallback on old code (digest PermissionError / seats stuck doing).
+        if ($Product -eq 'jeeves') {
+            foreach ($tn in @('BobCallback', 'BobAutoFeed', 'BobAutoFocus')) {
+                try {
+                    $tq = Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue
+                    if (-not $tq) {
+                        Write-UpdLog "post-upgrade-task-skip missing=$tn"
+                        continue
+                    }
+                    try { Stop-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue } catch { }
+                    Start-ScheduledTask -TaskName $tn -ErrorAction Stop
+                    Write-UpdLog "post-upgrade-task-restarted $tn"
+                } catch {
+                    Write-UpdLog "post-upgrade-task-warn $tn $($_.Exception.Message)"
+                }
+            }
+        }
+
         $st = Get-State
         $st.pending = $null
         $st.lastResult = 'updated'
@@ -505,13 +523,29 @@ function Invoke-Check {
     $st = Get-State
     if ($st.pending) {
         $at = ConvertTo-UtcDate $st.pending.atUtc
-        if ($at -and (((Get-Date).ToUniversalTime() - $at).TotalMinutes -lt $script:PendingMinutes)) {
+        $pendingAgeMin = if ($at) { ((Get-Date).ToUniversalTime() - $at).TotalMinutes } else { [double]::PositiveInfinity }
+        # FR #1018: clear orphan pending when the helper scheduled task is not Running
+        # (do not block 40 min when apply never started). Ignore our own Check-mode process.
+        $helperTask = "bobiverse-update-$Product"
+        $taskAlive = $false
+        try {
+            $t = Get-ScheduledTask -TaskName $helperTask -ErrorAction SilentlyContinue
+            if ($t -and $t.State -eq 'Running') { $taskAlive = $true }
+        } catch { }
+        if (-not $taskAlive -and $pendingAgeMin -ge 2) {
+            Write-UpdLog "pending-orphan tag=$($st.pending.tag) ageMin=$([int]$pendingAgeMin) - helper task not running; clearing pending"
+            $st.pending = $null
+            $st.lastResult = 'pending-orphan-cleared'
+            Save-State $st
+            $st = Get-State
+        } elseif ($pendingAgeMin -lt $script:PendingMinutes) {
             Write-UpdLog "check result=skipped-pending tag=$($st.pending.tag)"
             return
+        } else {
+            Write-UpdLog "pending-stale tag=$($st.pending.tag) - counted as a failed attempt"
+            Set-Failure -Tag $st.pending.tag -Result 'stale-pending'
+            $st = Get-State
         }
-        Write-UpdLog "pending-stale tag=$($st.pending.tag) - counted as a failed attempt"
-        Set-Failure -Tag $st.pending.tag -Result 'stale-pending'
-        $st = Get-State
     }
 
     # A crash-looping service restarts every few seconds: do not hammer the unauthenticated GitHub API

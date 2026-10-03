@@ -165,6 +165,20 @@ if (-not (Test-Path -LiteralPath $verSrc)) { $verSrc = Join-Path $clone 'VERSION
 $cloneVer = if (Test-Path -LiteralPath $verSrc) { (Get-Content -LiteralPath $verSrc -Raw).Trim() } else { '?' }
 Write-Host "INFO sync-copy clone=$clone ver=$cloneVer -> $InstallRoot pulled=$pulled"
 
+# FR #1018: do not robocopy an older clone over a newer MSI-installed VERSION (caused 0.1.21 -> 0.1.20 rollback).
+$installVerFile = Join-Path $InstallRoot 'VERSION'
+$installVerText = if (Test-Path -LiteralPath $installVerFile) { (Get-Content -LiteralPath $installVerFile -Raw).Trim() } else { '' }
+function ConvertTo-BobiverseVersion([string]$Text) {
+    if ($Text -match '(\d+)\.(\d+)\.(\d+)') { return [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])" }
+    return $null
+}
+$installVer = ConvertTo-BobiverseVersion $installVerText
+$cloneVerObj = ConvertTo-BobiverseVersion $cloneVer
+if ($installVer -and $cloneVerObj -and $installVer -gt $cloneVerObj) {
+    Write-Host "WARN sync-skip-newer-install install=$($installVer.ToString()) clone=$($cloneVerObj.ToString()) - refusing to overwrite MSI tree with older clone"
+    exit 0
+}
+
 if ($DryRun) {
     Write-Host 'INFO sync-dry-run done'
     exit 0

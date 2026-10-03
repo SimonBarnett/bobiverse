@@ -148,6 +148,25 @@ def test_pending_update_blocks_a_second_helper(env):
     assert p.returncode == 0 and "skipped-pending" in log
 
 
+@win
+def test_pending_orphan_clears_when_helper_gone(env):
+    """FR #1018: pending must not block 40 min when the helper task/process never started."""
+    from datetime import datetime, timedelta, timezone
+    env.state.mkdir()
+    old = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    (env.state / "state.json").write_text(json.dumps({
+        "pending": {"tag": "v0.1.17", "atUtc": old},
+        "lastResult": "scheduled",
+        "lastTag": "v0.1.17",
+    }))
+    p, log = env("-DryRun", release=_release("0.1.17"))
+    assert p.returncode == 0
+    assert "pending-orphan" in log, log
+    assert "skipped-pending" not in log
+    st = json.loads((env.state / "state.json").read_text(encoding="utf-8-sig"))
+    assert not st.get("pending")
+
+
 def _plan(env, msi_bytes: bytes, sha_text: str):
     d = env.tmp / "assets"
     d.mkdir(exist_ok=True)

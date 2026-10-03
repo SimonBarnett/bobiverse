@@ -1122,9 +1122,21 @@ class IrcSeat:
             self.sock.sendall(data)
 
     def say(self, target: str, text: str) -> bool:
-        """Queue a PRIVMSG. Seats speak ONLY in their own shop channel (FR #224); anything else is refused."""
+        """Queue a PRIVMSG. Seats speak ONLY in their own shop channel (FR #224); anything else is refused.
+
+        FR #1018: return False (and mark the link lost) when the writer thread is dead so
+        ``bored -> shop`` is not logged as sent while nothing reaches IRC.
+        """
         if (target or "").lower() != self.shop.lower():
             self.log(f"irc: refused PRIVMSG to {target!r} (seat may only speak in {self.shop})")
+            return False
+        if self._lost_once or self._stop.is_set() or self.sock is None:
+            self.log("irc: say refused (link already lost/closed)")
+            return False
+        w = self._writer
+        if w is None or not w.is_alive():
+            self.log("irc: say refused (writer thread dead)")
+            self._lost("writer thread dead")
             return False
         self._outq.put(("PRIVMSG " + self.shop + " :" + one_line(text, 400)))
         return True
@@ -1140,7 +1152,9 @@ class IrcSeat:
                 self._stop.wait(gap)
             try:
                 self._raw(item)
-            except OSError:
+            except OSError as e:
+                # FR #1018: silent exit left say() returning True forever; surface LOST.
+                self._lost(f"write OSError {type(e).__name__}")
                 return
             last = time.monotonic()
 
