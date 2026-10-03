@@ -67,7 +67,21 @@ GIVEUP_COOLDOWN_S = 600.0
 GIVEUP_NEEDS_HUMAN_COUNT = 2
 SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
-SKIP_FR_LABELS = frozenset({"skill", "umbrella", "parent-fr"})
+# FR #133 / bobiverse#258: evergreen MRB-home boards are not FR jobs.
+EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
+    r"(?i)\bMRB\s+home\b|\bHostile\s+MRB\s+home\b|\bMRB:\s+\S+.*\bhandoff\b",
+)
+SKIP_FR_LABELS = frozenset(
+    {
+        "skill",
+        "umbrella",
+        "parent-fr",
+        "mrb-home",
+        "mrb_home",
+        "evergreen",
+        "evergreen-mrb",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -472,7 +486,7 @@ def issue_skip_fr_reason(
     labels: tuple[str, ...] | list[str] = (),
     state: str = "",
 ) -> str | None:
-    """FR #180: why an issue must not become (or stay) an assignable FR row; None = ok."""
+    """FR #180 / #258: why an issue must not become (or stay) an assignable FR row; None = ok."""
     if (state or "").strip().lower() == "closed":
         return "closed"
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
@@ -485,6 +499,9 @@ def issue_skip_fr_reason(
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
+    # bobiverse#258 / FR #133: evergreen MRB-home boards (label or title shape).
+    if EVERGREEN_MRB_HOME_TITLE_RE.search(title_s) or EVERGREEN_MRB_HOME_TITLE_RE.search(blob):
+        return "evergreen_mrb_home"
     return None
 
 
@@ -492,8 +509,11 @@ def row_skip_fr_reason(row: dict) -> str | None:
     labels = row.get("labels") or ()
     if isinstance(labels, str):
         labels = [labels]
+    # Queue rows often store the issue title in ``line`` (offer/list); fall back so
+    # mrb-home / harvest title skips still fire when ``title`` was never stamped.
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
     return issue_skip_fr_reason(
-        title=str(row.get("title") or ""),
+        title=title,
         body=str(row.get("body") or ""),
         labels=tuple(str(x) for x in labels),
         state=str(row.get("state") or ""),

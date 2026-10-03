@@ -192,6 +192,103 @@ def test_resync_does_not_readd_skill_or_safe_to_close(tmp_path, monkeypatch):
     assert ids == ["#1"]
 
 
+def test_mrb_home_label_and_handoff_title_do_not_become_fr_claims():
+    """bobiverse#258: evergreen MRB-home boards must not enqueue as FR."""
+    labeled = gitclaim.claim_from_payload(
+        "issues",
+        _issue_payload(
+            3,
+            title="MRB: agentic_fomprep origin/main (Cursor/Grok handoff)",
+            labels=["feature-request", "mrb-home", "mrb-pass"],
+        ),
+    )
+    assert labeled is None
+    title_only = gitclaim.claim_from_payload(
+        "issues",
+        _issue_payload(
+            4,
+            title="Hostile MRB home for HEAD of this repo",
+            labels=["feature-request"],
+        ),
+    )
+    assert title_only is None
+    assert gitclaim.issue_skip_fr_reason(title="x", labels=("mrb-home",)) == "label:mrb-home"
+    assert (
+        gitclaim.issue_skip_fr_reason(
+            title="MRB: agentic_fomprep origin/main (Cursor/Grok handoff)"
+        )
+        == "evergreen_mrb_home"
+    )
+
+
+def test_offer_focus_skips_mrb_home_row_even_when_only_line_set(tmp_path, monkeypatch):
+    """Stale queue rows with labels/line but empty title must still be skipped at offer."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/agentic_fomprep",
+                    "task": "FR",
+                    "id": "#3",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "MRB: agentic_fomprep origin/main (Cursor/Grok handoff)",
+                    "labels": ["mrb-home", "feature-request"],
+                    # title intentionally missing (legacy row shape)
+                },
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#258",
+                    "seq": 2,
+                    "ts": "t",
+                    "line": "FR: real",
+                    "title": "FR: real",
+                    "labels": ["feature-request"],
+                },
+            ],
+            "accepted": [],
+        },
+    )
+    st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-1", "#marchhare")
+    assert st == "ok"
+    assert job["id"] == "#258"
+    assert "agentic_fomprep" not in str(job.get("repo") or "")
+
+
+def test_prune_drops_mrb_home_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    rows = [
+        {
+            "repo": "o/r",
+            "task": "FR",
+            "id": "#1",
+            "seq": 1,
+            "ts": "t",
+            "line": "keep",
+            "title": "FR: keep",
+        },
+        {
+            "repo": "o/r",
+            "task": "FR",
+            "id": "#3",
+            "seq": 2,
+            "ts": "t",
+            "line": "MRB: x handoff",
+            "labels": ["mrb-home"],
+        },
+    ]
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path), {"v": 1, "unaccepted": rows, "accepted": []}
+    )
+    res = gitclaim.prune_unassignable_queue(tmp_path)
+    assert res["ok"] and res["dropped"] == 1
+    assert [r["id"] for r in gitclaim.load_unaccepted(tmp_path)] == ["#1"]
+
+
 def test_coerce_preserves_cooldown_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     row = {
