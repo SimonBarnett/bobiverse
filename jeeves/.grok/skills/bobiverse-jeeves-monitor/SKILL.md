@@ -45,7 +45,7 @@ Install root `<ai root>\jeeves`. Chair home `~\.jeeves` (queue, focus, ignore, c
 | Focus | `!focus` / `!unfocus` / strict — sorts `!list` and assign-on-`!bored` |
 | Ignore | `!ignore` / `!unignore` — suppress a repo fleet-wide |
 | Assign | On `!bored`, Jeeves offers next row in focus order; optional owner/ear `!assign` |
-| Seat ledger | Digest `machines.<id>.workers[]` with state **idle** / **doing**; TipForm `working_on` |
+| Seat ledger | Digest `machines.<id>.workers[]` with state **idle** / **offered** / **doing**; TipForm `working_on` |
 
 Monitor for: empty offer queue while open FRs exist; seats idle with unaccepted work; accepted rows stuck; GIVEUP loops; machine-pin / author-seat blocks leaving work stranded.
 
