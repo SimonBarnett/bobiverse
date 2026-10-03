@@ -412,3 +412,16 @@ def test_resync_made_mrb_rows_carry_a_real_pull_url_and_are_offerable(_home):
     fi.handle_focus_cmd(_home, "1 o/a")
     st, job = gitclaim.offer_focus_top(_home, "ionos-9", "#ionos")
     assert st == "ok" and (job["task"], job["id"]) == ("MRB", "#21")
+
+def test_fr_done_is_not_reoffered_while_its_pr_waits(_home):
+    import shop_listen
+
+    gitclaim._write_queue(gitclaim.queue_path(_home), {"v": 1, "unaccepted": [], "accepted": [
+        {**_row("o/a", "FR", 7, 1), "nick": "ionos-11", "channel": "#ionos"}]})
+    shop_listen.handle_shop_worker_line(_home, nick="ionos-11", channel="#ionos",
+                                        body="DONE FR o/a#7 https://github.com/o/other/pull/3", post_fn=lambda p: 204)
+    _queue(_home, [_row("o/a", "FR", 7, 1), _row("o/a", "FR", 8, 2)])   # resync re-added the still-open issue
+    fi.handle_focus_cmd(_home, "1 o/a")
+    st, job = gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")
+    assert (job["task"], job["id"]) == ("FR", "#8")
+    assert gitclaim.assign_row(_home, "ionos-12", "o/a", "FR", "#7")[0] == "refused"

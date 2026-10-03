@@ -34,6 +34,8 @@ except ValueError:
     IDLE_S = 0.0
 # FR #628: under repo-level focus a UAT row only counts as real work for this long after its merge.
 UAT_MAX_AGE_S = 48 * 3600.0
+# t856u: an FR a seat already DONE (its PR waits for MRB/merge) is not re-offered for this long.
+FR_DONE_HOLD_S = 24 * 3600.0
 QUEUE_NAME = "queue.json"
 LEGACY_UNACCEPTED = "git-unaccepted.json"
 LEGACY_ACCEPTED = "git-accepted.jsonl"
@@ -1781,6 +1783,7 @@ def ledger_load(home: Path) -> dict:
     doc.setdefault("touch", {})
     doc.setdefault("giveup", {})
     doc.setdefault("uat_cycle", {})
+    doc.setdefault("fr_done", {})
     return doc
 
 
@@ -1891,6 +1894,10 @@ def _ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
         return ""
     task = _canon_task(row)
     keys = _row_link_keys(row)
+    if task == "FR":
+        done_ts = _parse_iso_ts(str((ledger.get("fr_done") or {}).get(_lkey(str(row.get("repo") or ""), row.get("id"))) or ""))
+        if done_ts is not None and (time.time() - done_ts) < FR_DONE_HOLD_S:
+            return "FR already delivered (PR pending merge)"
     gu = ledger.get("giveup") or {}
     own = _lkey(str(row.get("repo") or ""), row.get("id"))
     repo_level = is_repo_uat(row)
@@ -1927,6 +1934,13 @@ def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, id
         return
     if verb_u == "DONE" and task_u == "UAT" and (job.get("repo_uat") or str(ident) == "#0"):
         ledger_uat_cycle_done(home, repo)
+    if verb_u == "DONE" and task_u == "FR":
+        def _fd(doc: dict) -> None:   # t856u: FR delivered (PR open elsewhere): do not re-offer the issue while it waits for the merge
+            doc.setdefault("fr_done", {})[_lkey(repo, ident)] = _utc_now()
+        try:
+            _ledger_update(home, _fd)
+        except OSError:
+            pass
     if verb_u in ("ACK", "DONE") and task_u in ("FR", "MRB"):
         ledger_touch(home, nick, repo, task_u, keys)
     if verb_u == "DONE" and task_u == "FR":
