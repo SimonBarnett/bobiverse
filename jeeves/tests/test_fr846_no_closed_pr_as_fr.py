@@ -42,6 +42,47 @@ def test_fr_row_offerable_rejects_pull_url():
     )
 
 
+def test_fr_row_offerable_rejects_issues_url_when_pr_exists():
+    """Incident #833/#808 shape: assign URL is /issues/N but the number is a pull."""
+    row = {
+        "task": "FR",
+        "repo": "SimonBarnett/bobiverse",
+        "id": "#833",
+        "url": "https://github.com/SimonBarnett/bobiverse/issues/833",
+        "title": "fix(fr-818): refuse per-PR UAT; only UAT #0 + repo_uat",
+    }
+    # Structural title alone rejects.
+    assert not gitclaim.fr_row_offerable(row)
+    # Ambiguous title + live pr_exists also rejects.
+    ambiguous = {
+        "task": "FR",
+        "repo": "SimonBarnett/bobiverse",
+        "id": "#833",
+        "url": "https://github.com/SimonBarnett/bobiverse/issues/833",
+        "title": "Chair gap follow-up",
+    }
+    assert gitclaim.fr_row_offerable(ambiguous)
+    assert not gitclaim.fr_row_offerable(
+        ambiguous, pr_exists=lambda r, n: str(n) == "833"
+    )
+
+
+def test_issues_claim_skips_pull_request_blob():
+    payload = {
+        "action": "opened",
+        "repository": {"full_name": "SimonBarnett/bobiverse"},
+        "issue": {
+            "number": 833,
+            "title": "fix(fr-818): refuse per-PR UAT",
+            "body": "Closes #821",
+            "state": "open",
+            "labels": [],
+            "pull_request": {"url": "https://api.github.com/repos/SimonBarnett/bobiverse/pulls/833"},
+        },
+    }
+    assert gitclaim.claim_from_payload("issues", payload) is None
+
+
 def test_offer_focus_top_skips_fr_with_pull_url(tmp_path: Path):
     home = _home(tmp_path)
     gitclaim._write_queue(

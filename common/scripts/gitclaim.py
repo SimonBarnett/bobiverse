@@ -835,6 +835,9 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         if ident is None:
             return None
         issue = _issue_blob(payload)
+        # FR #838 / #846: issue payloads for pulls include ``pull_request`` — never FR.
+        if issue.get("pull_request"):
+            return None
         title = str(issue.get("title") or "")
         body = str(issue.get("body") or "")
         labels = _label_names(issue.get("labels"))
@@ -1612,19 +1615,44 @@ def mrb_row_offerable(
         return False
 
 
-def fr_row_offerable(row: dict) -> bool:
-    """True when an FR row may be offered (FR #846).
+# FR #846 / #838: conventional-commit Fixes PR titles are never FR issues.
+_PR_SHAPED_FR_TITLE_RE = re.compile(
+    r"(?i)^(fix|docs|chore|feat|refactor|test|build|ci|perf|style)(?:\([^)]*\))?:",
+)
 
-    Rejects FR rows whose URL is a pull request (``/pull/N``) — closed/superseded
-    implementer PRs must never be assigned as FR (e.g. bobiverse#833).
+
+def fr_row_offerable(row: dict, *, pr_exists=None) -> bool:
+    """True when an FR row may be offered (FR #846 / hostile MRB #854).
+
+    Rejects FR rows that are actually pull requests:
+    * URL is ``/pull/N``
+    * event is ``pull_request``
+    * title looks like a conventional Fixes/docs PR
+    * optional ``pr_exists(repo, num)`` is true (covers ``/issues/N`` URLs that
+      still resolve to a PR page — the #833 incident shape)
+
     Non-FR rows return True.
     """
     if _canon_task(row) != "FR":
         return True
+    if str(row.get("event") or "").strip().lower() == "pull_request":
+        return False
     raw = str(row.get("url") or "").strip()
     if PULL_URL_RE.search(raw):
         return False
-    return True
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    if _PR_SHAPED_FR_TITLE_RE.match(title):
+        return False
+    if pr_exists is None:
+        return True
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return True
+    try:
+        return not bool(pr_exists(repo, num))
+    except Exception:
+        return True
 
 
 def github_pr_exists_checker(
@@ -1893,8 +1921,8 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     continue  # FR #254
-                # FR #846: never offer FR whose URL is a pull (closed PR as FR).
-                if not fr_row_offerable(cand):
+                # FR #846 / #838: never offer a pull request number as FR.
+                if not fr_row_offerable(cand, pr_exists=pr_exists):
                     continue
                 # bobiverse#768 / #781 / t853u: never offer legacy per-PR UAT.
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
@@ -1975,8 +2003,8 @@ def offer_top(
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
                     continue  # FR #254
-                if not fr_row_offerable(row):
-                    continue  # FR #846
+                if not fr_row_offerable(row, pr_exists=pr_exists):
+                    continue  # FR #846 / #838
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     continue
@@ -2376,8 +2404,8 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
-            if task_u == "FR" and not fr_row_offerable(cand):
-                return "refused", "FR URL is a pull request (closed/superseded PR is not an FR; #846)"
+            if task_u == "FR" and not fr_row_offerable(cand, pr_exists=pr_exists):
+                return "refused", "row is a pull request (not an FR; #846/#838)"
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
