@@ -103,6 +103,8 @@ def test_offer_skips_fr_while_superseding_mrb_present(tmp_path, monkeypatch):
                     "line": "x",
                     "refs": ["#224"],
                     "supersedes": "SimonBarnett/bobiverse#224",
+                    # FR #595: real pull URL required (never invent from issue id).
+                    "url": "https://github.com/SimonBarnett/gh-Jeeves/pull/227",
                 },
             ],
             "accepted": [],

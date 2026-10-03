@@ -2242,8 +2242,13 @@ class Client:
             return
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).
+        # FR #595 / #247: skip MRB rows whose /pull/N 404s when a token is available.
         status, job = gitclaim.offer_focus_top(
-            self.home, src, bobreport.normalize_channel(target), now=now
+            self.home,
+            src,
+            bobreport.normalize_channel(target),
+            now=now,
+            pr_exists=gitclaim.github_pr_exists_checker(home=self.home),
         )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)
