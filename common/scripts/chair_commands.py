@@ -101,7 +101,7 @@ COMMANDS: tuple = (
                 "!assign marchhare-41928 SimonBarnett/bobiverse MRB 637",
                 "Chair stamps that queued row offered to the seat and posts the usual assign line in its shop "
                 "channel as Jeeves; the seat's ACK accepts it. Same checks as !bored: seat must be idle, no "
-                "self-MRB/UAT, row unaccepted and not needs-human/cooldown/given-up. UAT is per repo: use num 0. Reply by PM.",
+                "self-MRB/UAT, row unaccepted and not needs-human/cooldown/given-up. Reply by PM.",
                 ("focus", "list")),
     CommandSpec("recycle", "!recycle [machine|all|dry-run [machine|all]]",
                 "route recycle to bob seats: bare/all = fleet; machine = one box; dry-run = plan only", OPS_ROLES,

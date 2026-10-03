@@ -160,8 +160,9 @@ def test_resync_merges_keeps_accepted_and_failed_repos(tmp_path):
     assert "SECRET-TOKEN-123" not in json.dumps(res)
     rows = {(r["repo"], r["task"], r["id"]): r for r in gitclaim.load_unaccepted(tmp_path)}
     assert ("o/a", "FR", "#1") in rows and rows[("o/a", "FR", "#1")]["line"] == "keep-me"
-    assert ("o/a", "FR", "#2") not in rows and res["dropped"] == 2      # + the legacy per-PR UAT row (t853u)
-    assert ("o/a", "UAT", "#3") not in rows and ("o/bad", "FR", "#4") in rows and ("o/a", "FR", "#5") in rows
+    # mrb-664-fix / FR #628: per-issue UAT rows are kept; only closed FR #2 is dropped here.
+    assert ("o/a", "FR", "#2") not in rows and res["dropped"] == 1
+    assert ("o/a", "UAT", "#3") in rows and ("o/bad", "FR", "#4") in rows and ("o/a", "FR", "#5") in rows
     assert ("o/a", "MRB", "#8") in rows
     assert ("o/a", "FR", "#7") not in rows                    # superseded by the closing PR
     assert ("o/a", "FR", "#9") not in rows                    # already accepted by a bob: not re-offered

@@ -380,8 +380,28 @@ def complete_job_by_ref(
                         extra["implementer_seat"] = fr_author
                     extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
                     gitclaim._append_unaccepted(doc, claim, **extra)
-            # t853u: an MRB PASS no longer queues per-PR / per-issue UAT rows; UAT is one row per repo,
-            # created by the GitHub resync once every issue is closed and every PR is merged.
+            if str(job.get("task") or "").upper() == "MRB" and "PASS" in (result or "").upper():
+                # UAT for refs; stamp MRB reviewer + FR implementer (FR #227 / #265).
+                refs = job.get("refs") or []
+                if isinstance(refs, str):
+                    refs = [refs]
+                extra = gitclaim.uat_block_extras_from_mrb_row(
+                    job, mrb_nick=str(job.get("nick") or job.get("done_by") or nick or "")
+                )
+                for ref in refs:
+                    ref_s = str(ref)
+                    if not ref_s.startswith("#"):
+                        continue
+                    uat = gitclaim.GitClaim(
+                        repo=repo,
+                        task="UAT",
+                        id=ref_s,
+                        event="issues",
+                        action="uat",
+                        line=str(job.get("line") or ""),
+                        refs=(ident,),
+                    )
+                    gitclaim._append_unaccepted(doc, uat, **extra)
             try:
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except OSError:
