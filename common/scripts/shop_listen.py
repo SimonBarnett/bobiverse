@@ -504,6 +504,10 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        try:  # t852u: durable seat ledger (survives resync)
+            gitclaim.ledger_note_event(home, nick, "ACK", parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
+        except Exception:  # noqa: BLE001
+            pass
         if st == "missing":
             # The seat is working on what it ACKed even when the queue row is gone (re-synced, already
             # accepted, offered twice): the digest must still show it as doing (t816u).
@@ -524,6 +528,10 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        try:  # t852u: remember who gave this up, forever (resync drops row stamps)
+            gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
+        except Exception:  # noqa: BLE001
+            pass
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )
@@ -543,6 +551,13 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        try:
+            gitclaim.ledger_note_event(
+                home, nick, "DONE", parsed.task, parsed.repo, parsed.id,
+                job if isinstance(job, dict) else None, result=parsed.result, url=parsed.url,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )

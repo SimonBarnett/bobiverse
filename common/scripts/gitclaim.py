@@ -1631,6 +1631,7 @@ def offer_focus_top(
     now_f = _time.time() if now is None else float(now)
     live = live_seat_nicks(home)
     me = (nick or "").strip()
+    ledger = ledger_load(home)
     try:
         with _lock(home):
             try:
@@ -1647,6 +1648,8 @@ def offer_focus_top(
                 # FR #628: never hand out a row that is bound to GIVEUP for this seat.
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
                     continue
+                if ledger_blocks(ledger, cand, me):
+                    continue  # t852u: durable self-MRB/UAT + GIVEUP memory (survives GitHub resync)
                 if str(cand.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
@@ -1745,6 +1748,164 @@ def offer_top(
         return "error", None
 
 
+# ---------------------------------------------------------------- seat ledger (t852u)
+# queue.json rows are rebuilt by GitHub resync (cooldown / giveup / author stamps are lost) and the
+# done/accepted history is tiny, so author-seat stamps on rows are unreliable. This ledger is durable,
+# outside queue.json, and is the authority for "this seat touched / gave up this work".
+LEDGER_NAME = "seat-ledger.json"
+_LEDGER_MUTEX = None
+
+
+def ledger_path(home: Path) -> Path:
+    return _root(home) / LEDGER_NAME
+
+
+def _lkey(repo: str, ident) -> str:
+    num = str(ident or "").strip().lstrip("#")
+    return f"{(repo or '').strip().lower()}#{num}"
+
+
+def _ledger_empty() -> dict:
+    return {"v": 1, "touch": {}, "giveup": {}}
+
+
+def ledger_load(home: Path) -> dict:
+    try:
+        doc = json.loads(ledger_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _ledger_empty()
+    if not isinstance(doc, dict):
+        return _ledger_empty()
+    doc.setdefault("touch", {})
+    doc.setdefault("giveup", {})
+    return doc
+
+
+def _ledger_update(home: Path, fn) -> None:
+    import threading
+
+    global _LEDGER_MUTEX
+    if _LEDGER_MUTEX is None:
+        _LEDGER_MUTEX = threading.Lock()
+    with _LEDGER_MUTEX:
+        doc = ledger_load(home)
+        fn(doc)
+        p = ledger_path(home)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(p)
+
+
+def _canon_ledger_nick(nick: str) -> str:
+    return (canonical_worker_nick(nick) or (nick or "").strip()).lower()
+
+
+def ledger_touch(home: Path, nick: str, repo: str, task: str, keys: list[str]) -> None:
+    """Record that ``nick`` did ``task`` (FR implement / MRB review / UAT) on each ``owner/repo#N`` key."""
+    me = _canon_ledger_nick(nick)
+    t = (task or "").upper()
+    if not me or not t or not keys:
+        return
+
+    def _f(doc: dict) -> None:
+        for k in keys:
+            roles = doc["touch"].setdefault(k, {}).setdefault(me, [])
+            if t not in roles:
+                roles.append(t)
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        pass
+
+
+def ledger_giveup(home: Path, nick: str, repo: str, task: str, ident: str, refs=()) -> None:
+    """``nick`` gave up (GIVEUP/NACK) this row: never offer it, or its linked PR/issue UAT/MRB, to that seat again."""
+    me = _canon_ledger_nick(nick)
+    if not me:
+        return
+    keys = [_lkey(repo, ident)] + [_lkey(repo, r) for r in (refs or ()) if str(r).strip()]
+
+    def _f(doc: dict) -> None:
+        for k in keys:
+            gu = doc["giveup"].setdefault(k, {})
+            tl = gu.setdefault(me, [])
+            if (task or "").upper() not in tl:
+                tl.append((task or "").upper())
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        pass
+
+
+def _row_link_keys(row: dict) -> list[str]:
+    repo = str(row.get("repo") or "")
+    refs = row.get("refs") or []
+    if isinstance(refs, str):
+        refs = [x for x in re.split(r"[,\s]+", refs) if x]
+    keys = [_lkey(repo, row.get("id"))]
+    for r in refs:
+        if str(r).strip():
+            keys.append(_lkey(repo, r))
+    sup = str(row.get("supersedes") or "").strip()
+    if "#" in sup:
+        keys.append(sup.lower())
+    return list(dict.fromkeys(keys))
+
+
+def ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
+    """Why this seat must not get this row ('' = ok), from the durable ledger.
+
+    * a seat that gave up the row (or its linked PR/issue) in the same MRB/UAT/FR family never gets it again;
+    * UAT: blocked for the FR implementer and the MRB reviewer of any linked issue/PR;
+    * MRB: blocked for the FR implementer of any linked issue/PR.
+    """
+    me = _canon_ledger_nick(nick)
+    if not me:
+        return ""
+    task = _canon_task(row)
+    keys = _row_link_keys(row)
+    gu = ledger.get("giveup") or {}
+    own = _lkey(str(row.get("repo") or ""), row.get("id"))
+    for k in keys:
+        tl = (gu.get(k) or {}).get(me) or []
+        if k == own and tl:
+            return f"{nick} already gave up {k}"
+        if task in ("MRB", "UAT") and any(x in ("MRB", "UAT") for x in tl):
+            return f"{nick} already gave up linked {k}"
+    if task in ("MRB", "UAT"):
+        bad = {"FR", "MRB"} if task == "UAT" else {"FR"}
+        tc = ledger.get("touch") or {}
+        for k in keys:
+            roles = (tc.get(k) or {}).get(me) or []
+            if bad & set(roles):
+                return f"{nick} implemented/reviewed {k} (no self-{task})"
+    return ""
+
+
+def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, ident: str, job: dict | None = None,
+                      result: str = "", url: str = "") -> None:
+    """Hook for the shop wire: ACK/DONE/NACK/GIVEUP of ``task repo#ident`` by ``nick``."""
+    verb_u = (verb or "").upper()
+    task_u = (task or "").upper()
+    job = job or {}
+    keys = _row_link_keys({"repo": repo, "id": ident, "refs": job.get("refs") or [], "supersedes": job.get("supersedes") or ""})
+    if verb_u in ("GIVEUP", "NACK"):
+        refs = job.get("refs") or []
+        if isinstance(refs, str):
+            refs = [x for x in re.split(r"[,\s]+", refs) if x]
+        ledger_giveup(home, nick, repo, task_u, ident, refs)
+        return
+    if verb_u in ("ACK", "DONE") and task_u in ("FR", "MRB"):
+        ledger_touch(home, nick, repo, task_u, keys)
+    if verb_u == "DONE" and task_u == "FR":
+        parsed = parse_github_pull_url(url or result or "")
+        if parsed:
+            ledger_touch(home, nick, parsed[0], "FR", [_lkey(parsed[0], parsed[1])])
+
+
 _ASSIGN_CMD = re.compile(
     r"(?is)^\s*!assign\s+(\S+)\s+(\S+)\s+(FR|MRB|UAT)\s+#?(\d+)\s*$"
 )
@@ -1818,6 +1979,9 @@ def assign_row(
                 return "refused", f"row is pinned to another machine than {me}"
             if row_gave_up_by(cand, me):
                 return "refused", f"{me} already gave this row up"
+            why = ledger_blocks(ledger_load(home), cand, me)
+            if why:
+                return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):

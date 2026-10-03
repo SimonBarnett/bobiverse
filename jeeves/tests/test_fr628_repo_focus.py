@@ -195,3 +195,60 @@ def test_giveup_records_seat_and_blocks_reoffer_after_cooldown(_home):
     later = t0 + gitclaim.GIVEUP_COOLDOWN_S + 5
     assert gitclaim.offer_focus_top(_home, "ionos-11", "#ionos", now=later)[0] == "empty"
     assert gitclaim.offer_focus_top(_home, "ionos-12", "#ionos", now=later)[0] == "ok"
+
+# ------------------------------------------------------------ t852u: durable seat ledger
+def _uat(num, refs=(), **kw):
+    r = _row("o/a", "UAT", num, num, refs=list(refs))
+    r.update(kw)
+    return r
+
+
+def test_ledger_giveup_survives_row_rebuild_and_blocks_reoffer(_home):
+    """GitHub resync rebuilds rows (no giveup stamps): the seat must still never get the row back."""
+    import shop_listen
+
+    _queue(_home, [_uat(5, refs=["#9"], offered_to="ionos-11", offered_ts=_now_iso(30), offered_channel="#ionos")])
+    gitclaim.accept_offered(_home, "ionos-11", "#ionos")
+    shop_listen.handle_shop_worker_line(_home, nick="ionos-11", channel="#ionos",
+                                        body="GIVEUP UAT o/a#5 self-UAT", post_fn=lambda p: 204)
+    _queue(_home, [_uat(5, refs=["#9"])])                      # resync wiped every stamp
+    fi.handle_focus_cmd(_home, "1 o/a")
+    assert gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")[0] == "empty"
+    assert gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")[0] == "ok"
+
+
+def test_ledger_blocks_fr_implementer_and_mrb_reviewer_for_uat_family(_home):
+    gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#269"])        # implemented FR #269
+    gitclaim.ledger_touch(_home, "ionos-12", "o/a", "MRB", ["o/a#623", "o/a#269"])   # reviewed PR #623 closing #269
+    led = gitclaim.ledger_load(_home)
+    uat = _uat(269, refs=["#623"])
+    assert "no self-UAT" in gitclaim.ledger_blocks(led, uat, "ionos-11")
+    assert "no self-UAT" in gitclaim.ledger_blocks(led, uat, "ionos-12")
+    assert gitclaim.ledger_blocks(led, uat, "ionos-13") == ""
+    mrb = _row("o/a", "MRB", 623, 1, refs=["#269"])
+    assert gitclaim.ledger_blocks(led, mrb, "ionos-11")          # implementer can't review own PR
+    assert gitclaim.ledger_blocks(led, mrb, "ionos-12") == ""     # reviewer may re-review
+
+
+def test_done_fr_with_pr_url_records_implementer_for_pr_family(_home):
+    import shop_listen
+
+    _queue(_home, [], )
+    gitclaim._write_queue(gitclaim.queue_path(_home), {"v": 1, "unaccepted": [], "accepted": [
+        {**_row("o/a", "FR", 7, 1), "nick": "ionos-11", "channel": "#ionos"}]})
+    shop_listen.handle_shop_worker_line(_home, nick="ionos-11", channel="#ionos",
+                                        body="DONE FR o/a#7 https://github.com/o/a/pull/12", post_fn=lambda p: 204)
+    led = gitclaim.ledger_load(_home)
+    assert led["touch"]["o/a#12"]["ionos-11"] == ["FR"] and led["touch"]["o/a#7"]["ionos-11"] == ["FR"]
+    assert gitclaim.ledger_blocks(led, _row("o/a", "MRB", 12, 2, refs=["#7"]), "ionos-11")
+
+
+def test_offer_and_assign_honour_ledger_even_without_row_stamps(_home):
+    gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#611", "o/a#626"])
+    _queue(_home, [_uat(611, refs=["#626"]), _row("o/a", "FR", 8, 9)])
+    fi.handle_focus_cmd(_home, "1 o/a")
+    st, job = gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")
+    assert (job["task"], job["id"]) == ("FR", "#8")
+    st, why = gitclaim.assign_row(_home, "ionos-11", "o/a", "UAT", "#611")
+    assert st == "refused" and "no self-UAT" in why
+    assert gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#611")[0] == "ok"
