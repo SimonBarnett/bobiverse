@@ -255,13 +255,35 @@ if (Test-Path -LiteralPath $operPy) {
         Write-Host "WARN oper provisioning: $($_.Exception.Message)"
     }
 }
-# Supervised BobCallback (ONSTART) — adopts/replaces ad-hoc tasks
+# Supervised BobCallback (ONSTART) — FR #1316: same account as digest home owner (not SYSTEM).
+# SYSTEM + --home C:\Users\Administrator\.bobiverse wedges :7700 via cross-principal digest.lock/ACL.
 try {
     $pyCb = if ($Python) { $Python } else { Resolve-BobiversePython }
     $cbScript = Join-Path $InstallRoot 'scripts\bobcallback.py'
-    $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --bind 127.0.0.1 --port 7700"
-    schtasks /Create /TN BobCallback /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR $tr | Out-Null
-    Write-Host 'INFO registered scheduled task BobCallback'
+    $regCb = Join-Path $InstallRoot 'scripts\Register-BobCallbackTask.ps1'
+    if (-not (Test-Path -LiteralPath $regCb)) {
+        $regCb = Join-Path $PSScriptRoot 'Register-BobCallbackTask.ps1'
+    }
+    if (Test-Path -LiteralPath $regCb) {
+        $regArgs = @{
+            DigestHome = $digestHome
+            Python     = $pyCb
+            ScriptPath = $cbScript
+            RunAsUser  = $env:USERNAME
+            Port       = 7700
+        }
+        if (-not $NoStart) { $regArgs['Start'] = $true }
+        & $regCb @regArgs
+    } else {
+        # Fallback: Interactive current user (never SYSTEM against Admin home).
+        $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --bind 127.0.0.1 --port 7700"
+        $ru = if ($env:USERNAME) { $env:USERNAME } else { 'Administrator' }
+        schtasks /Create /TN BobCallback /SC ONSTART /RU $ru /IT /RL HIGHEST /F /TR $tr | Out-Null
+        Write-Host ("INFO registered scheduled task BobCallback runAs={0} (FR #1316 fallback)" -f $ru)
+        if (-not $NoStart) {
+            schtasks /Run /TN BobCallback 2>&1 | Out-Null
+        }
+    }
     # v0.1.16: webhooks need NO password/secret (no shared secret is generated or copied). The digest
     # accepts POSTs from machine ids on the roster this Jeeves publishes (registered-machines.json).
     Write-Host 'INFO webhooks: no password/secret required (roster-gated by the machine list Jeeves publishes)'
@@ -278,9 +300,6 @@ try {
     # (webhook-health.json, announces #bobiverse only on up<->down) and authenticated FR/MRB resync every 15 min
     # using the token above (source logged once to <chair home>\resync-token-source.log; value never logged).
     Write-Host 'INFO chair jobs: webhook-health probe 30 min + GitHub resync 15 min (inside ircJeeves; token source logged once)'
-    if (-not $NoStart) {
-        schtasks /Run /TN BobCallback 2>&1 | Out-Null
-    }
 } catch {
     Write-Host "WARN BobCallback task: $($_.Exception.Message)"
 }
