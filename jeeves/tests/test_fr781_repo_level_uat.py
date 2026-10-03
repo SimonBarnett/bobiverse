@@ -10,7 +10,7 @@ from pathlib import Path
 import gitclaim
 
 
-REPO = "SimonBarnett/gh-Jeeves"
+REPO = "SimonBarnett/bobiverse"
 
 
 def _home(tmp_path: Path) -> Path:
