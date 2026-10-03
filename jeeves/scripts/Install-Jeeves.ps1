@@ -264,12 +264,22 @@ try {
     if (-not (Test-Path -LiteralPath $regCb)) {
         $regCb = Join-Path $PSScriptRoot 'Register-BobCallbackTask.ps1'
     }
+    # MRB #1353: when digest home is Admin .bobiverse (or install is LocalSystem), force RunAsUser=Administrator
+    # — never pass $env:USERNAME blindly (MSI/LocalSystem can yield SYSTEM / machine$ and recreate the wedge).
+    $cbRunAs = if ($env:USERNAME) { $env:USERNAME } else { 'Administrator' }
+    $adminDigestNorm = (Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse')
+    if (
+        (Test-BobiverseIsLocalSystem) -or
+        ($digestHome -and ([string]$digestHome).Equals($adminDigestNorm, [System.StringComparison]::OrdinalIgnoreCase))
+    ) {
+        $cbRunAs = 'Administrator'
+    }
     if (Test-Path -LiteralPath $regCb) {
         $regArgs = @{
             DigestHome = $digestHome
             Python     = $pyCb
             ScriptPath = $cbScript
-            RunAsUser  = $env:USERNAME
+            RunAsUser  = $cbRunAs
             Port       = 7700
         }
         if (-not $NoStart) { $regArgs['Start'] = $true }
@@ -277,7 +287,7 @@ try {
     } else {
         # Fallback: Interactive current user (never SYSTEM against Admin home).
         $tr = "`"$pyCb`" -u `"$cbScript`" --home `"$digestHome`" --bind 127.0.0.1 --port 7700"
-        $ru = if ($env:USERNAME) { $env:USERNAME } else { 'Administrator' }
+        $ru = $cbRunAs
         schtasks /Create /TN BobCallback /SC ONSTART /RU $ru /IT /RL HIGHEST /F /TR $tr | Out-Null
         Write-Host ("INFO registered scheduled task BobCallback runAs={0} (FR #1316 fallback)" -f $ru)
         if (-not $NoStart) {
