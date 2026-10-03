@@ -66,6 +66,17 @@ Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude
 * New untracked files under paths still masked by exclude are skipped by plain `git add` — use **`git add -f`** (or `git check-ignore -v` to confirm).
 * Bootstrap exclude un-ignores `/$Product/`, `/common/`, `/airc/`, `/jeeves/`; paths outside those still need `-f`.
 
+## Job worktree cleanup (FR #877)
+
+Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` until `git worktree add` fails with **No space left on device**.
+
+* **Before** creating a new job tree, and **after DONE** (once the PR is up): run
+  `..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob -KeepPath <current-job-wt>`
+  (or `-Force` to prune even when FreeGB ≥ 2).
+* Default gate: prune when **FreeGB < 2** (`-MinFreeGB 2`). Cap extras with `-MaxExtraJobTrees 0` (keep only `-KeepPath` + install root).
+* Manual one-liner if the script is missing: `git -C <install> worktree remove --force <old-wt>; git -C <install> worktree prune`.
+* Never delete the install root (`C:\ai\bob`) or Ergo.
+
 ## DONE URL — capture `gh pr create` output (FR #108)
 
 Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns.
