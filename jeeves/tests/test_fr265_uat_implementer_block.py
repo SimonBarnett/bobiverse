@@ -234,3 +234,36 @@ def test_merged_pr_copies_both_seats_onto_uat(tmp_path, monkeypatch):
     assert len(uats) == 1
     assert uats[0].get("implementer_seat") == "marchhare-1"
     assert uats[0].get("mrb_author_seat") == "ionos-2"
+
+
+def test_uat_blocks_same_machine_sibling_of_implementer(tmp_path, monkeypatch):
+    """PASS-nits MRB #619: marchhare-2 must not UAT when implementer is marchhare-1 and another machine is live."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    home = tmp_path
+    registered_machines.save_registered(home, {"marchhare", "ionos", "flamingo"})
+    doc = bobreport.empty_digest()
+    doc["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    doc["machines"]["marchhare"]["workers"] = {"1": {"state": "idle"}, "2": {"state": "idle"}}
+    doc["machines"]["ionos"] = bobreport._empty_machine("ionos")
+    doc["machines"]["ionos"]["workers"] = {"2": {"state": "idle"}}
+    doc["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
+    doc["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
+    bobreport.save_digest(home, doc)
+    _queue(
+        home,
+        [
+            _row(
+                "o/r",
+                "UAT",
+                10,
+                1,
+                implementer_seat="marchhare-1",
+                mrb_author_seat="ionos-2",
+                author_seat="ionos-2",
+            )
+        ],
+    )
+    st, job = gitclaim.offer_focus_top(home, "marchhare-2", "#marchhare")
+    assert st == "empty"
+    st2, job2 = gitclaim.offer_focus_top(home, "flamingo-9", "#flamingo")
+    assert st2 == "ok" and job2["id"] == "#10"
