@@ -2220,7 +2220,7 @@ def prune_unassignable_queue(home: Path) -> dict:
                 # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
                 if task == "MRB" and not mrb_row_offerable(row):
                     continue
-                if task == "UAT" and not row.get("repo_uat") and not row.get("offered_to"):
+                if task == "UAT" and not row.get("repo_uat"):
                     continue  # t853u: no per-PR / per-issue UAT rows; only the single repo-level UAT
                 keep.append(row)
             doc["unaccepted"] = keep
@@ -2381,8 +2381,8 @@ def resync_from_github(
             keep = []
             for row in doc["unaccepted"]:
                 if str(row.get("task") or "").upper() == "UAT":
-                    if not row.get("repo_uat") and not row.get("offered_to"):
-                        continue  # t853u: legacy per-PR / per-issue UAT rows are gone
+                    if not row.get("repo_uat"):
+                        continue  # t853u: legacy per-PR / per-issue UAT rows are gone (even if offered, unACKed)
                     if (
                         row.get("repo_uat")
                         and row.get("repo") in fetched_set
