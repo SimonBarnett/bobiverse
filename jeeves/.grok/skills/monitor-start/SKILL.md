@@ -27,12 +27,13 @@ You are the **MONITORING** agent — not the chair, not a worker. Never `!assign
 | Health | `health` | ircJeeves / chair home / webhook surface |
 | Idle seats | `idle_seats` | seats idle while unaccepted work exists |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
-| Focus present | `auto_focus` | repo focus missing ⇒ strict focus hides the queue (t869u idle cause) |
+| Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
+| Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019) |
 | Stale digest | `stale_digest` | digest not updating |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
 | Stuck accepted | `stuck_accepted` | accepted rows not progressing |
 | Auto-feed | `auto_feed` | BobAutoFeed / auto-offer liveness |
-| Auto-focus | `auto_focus` | auto-focus job liveness |
+| Auto-focus | `auto_focus` | auto-focus / focus.json sanity |
 
 Exit codes: **0** ok, **1** finding, **2** error. One JSON line on stdout.
 

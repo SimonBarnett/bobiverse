@@ -5,14 +5,14 @@
   Runs one named check under tools\monitor\*.py. Exit 0=ok, 1=finding, 2=error.
   Prints one JSON line on stdout. Prefer these scripts over reasoning.
 .PARAMETER Check
-  health | idle_seats | queue_flow | stale_digest | giveup_loops | stuck_accepted | auto_feed | auto_focus
+  health | idle_seats | queue_flow | stale_digest | giveup_loops | stuck_accepted | auto_feed | auto_focus | focus_present | seats_stuck_doing
 .PARAMETER DryRun
   Offline: scripts emit ok JSON and exit 0.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('health','idle_seats','queue_flow','stale_digest','giveup_loops','stuck_accepted','auto_feed','auto_focus')]
+    [ValidateSet('health','idle_seats','queue_flow','stale_digest','giveup_loops','stuck_accepted','auto_feed','auto_focus','focus_present','seats_stuck_doing')]
     [string]$Check,
     [switch]$DryRun,
     [string]$InstallRoot = '',
