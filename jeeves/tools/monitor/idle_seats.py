@@ -110,8 +110,15 @@ def count_offerable_for_live_seats(
     live = { (gc.canonical_worker_nick(n) or n).strip() for n in idle_nicks if n }
     live |= set(gc.live_seat_nicks(home) or [])
     live = {n for n in live if n}
+    # Match !bored: focus.strict drops unfocused repos (plan-smoke vs bobiverse focus).
+    try:
+        import focus_ignore
+
+        rows = focus_ignore.sort_unaccepted_rows(home, list(unaccepted))
+    except Exception:
+        rows = list(unaccepted)
     n = 0
-    for row in unaccepted:
+    for row in rows:
         if any(_row_offerable_to_nick(gc, doc, ledger, live, row, nick, now_f) for nick in idle_nicks):
             n += 1
     return n
