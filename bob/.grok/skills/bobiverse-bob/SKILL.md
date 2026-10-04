@@ -64,6 +64,7 @@ Common failure chain:
 Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
 
 - Never let `Get-BobTrayHover` block TipForm worker refresh.
+- Stale `working_on` after DONE with empty queue `accepted` can trip `seats_stuck_doing` (harvest #1712) — false busy; next digest POST clears it.
 - `Sync-BobTrayStatusWorkersFromDigest` — report/digest-only sync (bounded timeout) rewrites `grok[].workers` without calling hover.
 - Call sync **before** `Update-Hover` on each poll; keep a **non-UI** timer (~10s, `SynchronizingObject=$null`) so worker lines keep moving while hover is stuck.
 - When BobCallback is down, still prefer local chair files (`digest.json` + queue ACC) over a hung hover path.
