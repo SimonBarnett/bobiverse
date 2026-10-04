@@ -7,10 +7,22 @@ Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) → staged by `Pack-Bobiver
 
 ## Channels and homes
 
-- JOIN `#bobiverse` + `#{MachineId}`
+- JOIN `#bobiverse` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#<machine>` on every box — Ionos, MarchHare, Flamingo, …)
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
 - Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
+
+## Listen (inbound transcript) — FR #2174
+
+Every running ear always appends scrubbed inbound PRIVMSG lines to:
+
+```text
+<bob home>\inbound-transcript.log
+```
+
+Each line is `UTC-timestamp channel nick text` (secrets redacted). The file rotates by size (`inbound-transcript.log.1` …). This is **always on** — it does not need `BOB_IRC_DEBUG`. Raw wire dump (`irc.log`) remains opt-in via `BOB_IRC_DEBUG=1`.
+
+Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_worker.accept_for_agent`); other PRIVMSG stay in the transcript for Shell/operators.
 
 ## Secrets
 
@@ -23,15 +35,27 @@ Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) → staged by `Pack-Bobiver
 
 Do **not** mint a fresh GUID for an already-registered NickServ account.
 
-## Outbox → airc
+## Outbox (send) — identical on every machine
 
-UTF-8 **no BOM**. Only lines starting with `PRIVMSG ` are sent raw:
+UTF-8 **no BOM**. Append one complete line per send to `<bob home>\outbox.txt`. Only lines starting with `PRIVMSG ` are sent raw (same interface on Ionos / MarchHare / Flamingo):
 
 ```text
+PRIVMSG <target> :<text>
+PRIVMSG #<machine> :<shop line>
+PRIVMSG #bobiverse :!help
 PRIVMSG {machine}_console :<short-cmd>
 ```
 
-If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox — use a talk-seat home.
+Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox — use a talk-seat / worker run home for agent replies.
+
+## Absent / stale ear recovery
+
+| State | Action |
+|-------|--------|
+| No `ircBob` / service Stopped | `Install-Bob.ps1` (or MSI) then `Start-Service ircBob` |
+| Leftover `irc_listen.py` only (Flamingo-style) | Retire it; install/start `ircBob` ear above |
+| Running but no `inbound-transcript.log` | `Restart-BobEar.ps1` after this FR is deployed |
+| Missing `outbox.txt` | Ear recreates home on start; ensure service ObjectName/home path |
 
 ## Tray / recycle
 
@@ -45,8 +69,10 @@ If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write 
 
 ```powershell
 Get-Service ircBob
-Get-Content <ai root>\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content <ai root>\bob\home\inbound-transcript.log -Tail 40 -ErrorAction SilentlyContinue
+Get-Content <ai root>\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue  # only when BOB_IRC_DEBUG=1
 # Expect: SASL user=bob-<machine>, joined #bobiverse,#<machine> as Bob-<machine>
+# Expect: inbound-transcript.log lines like: 2026-10-04T12:00:00Z #marchhare Jeeves …
 ```
 
 ## Related

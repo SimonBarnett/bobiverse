@@ -25,8 +25,9 @@ description: >
 | `!recycle` / `!recycle <this machine>` typed in a channel | Jeeves (the chair) authorizes and routes it (`RECYCLE v1 <machine>` wire / fleet route); the ear announces the departure, restarts the tray and `ircBob`. Bare `!recycle` and `!recycle all` are fleet-wide: chair-routed only (the ear no longer acts on bare `!recycle` itself) |
 | `!recycle dry-run [machine\|all]` | Chair prints the plan; nothing is sent to seats |
 | Shop wire in `#<machine>`: `!bored`, `ACK`, `DONE`, `NACK`, `GIVEUP` | Worker <-> Jeeves job assignment (workers JOIN the shop only) |
-| `home\outbox.txt` lines `PRIVMSG <target> :<text>` | Sent verbatim (UTF-8, NO BOM, newline-terminated; only complete lines are consumed, offset in `outbox.txt.pos`). This is how you "type as the ear" |
+| `home\outbox.txt` lines `PRIVMSG <target> :<text>` | Sent verbatim (UTF-8, NO BOM, newline-terminated; only complete lines are consumed, offset in `outbox.txt.pos`). Identical send interface on every machine (FR #2174). This is how you "type as the ear" |
 | `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted) |
+| Incoming channel/PM PRIVMSG | FR #2174: always appended (scrubbed) to `home\inbound-transcript.log` as `UTC channel nick text` — listen without `BOB_IRC_DEBUG` |
 | Incoming `*_console` Query `out`/`err`/`DONE` PMs | FR #1546: ear appends them to `<bob home>\airc-replies.jsonl` so `Invoke-AircRemote -ReplyFile` can poll until DONE (skips digest for those lines) |
 | `FILE v1 ...` | File transfer handshake via `filexfer.py` (accept/refuse over the outbox) |
 | Depart request file | Tray/shortcut writes it; the ear announces departure then quits so the service can restart |
@@ -48,6 +49,7 @@ Quiet-MSI/SYSTEM installs never start TipForm in session 0 (invisible ghost).
 
 ```powershell
 Get-Service ircBob
+Get-Content <ai root>\bob\home\inbound-transcript.log -Tail 40 -ErrorAction SilentlyContinue
 Get-Content <ai root>\bob\logs\stdout.log -Tail 40
 Get-CimInstance Win32_Process | ? CommandLine -match 'irc_agent.py --nick Bob-' | Select ProcessId,CommandLine   # must contain --host
 .\scripts\Assert-BobDigestWebhookLocal.ps1 -InstallRoot <ai root>\bob
