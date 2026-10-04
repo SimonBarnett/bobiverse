@@ -730,17 +730,22 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
     }
 )
 # Explicit cue ΓåÆ fleet machine id (normalized lowercase).
-_REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
-    # agentic_fomprep WP0 live proof must run on DEV1
-    (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
+# FR #1508: title/label cues vs body cues. Bare machine names / require_machine=
+# in an issue body often appear as evidence about *other* pins and must not
+# re-pin the filing itself (#1507 class).
+_REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bce-priority-dev1\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
-    (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
-    (re.compile(r"(?i)\bAllowedComputer\s*[:=]\s*CE-PRIORITY-DEV1\b"), "ce-priority-dev1"),
-    # chair-outbox / ionos-only FRs (same pattern as needs-ionos)
+    (re.compile(r"(?i)\brequire_machine\s*=\s*ce-priority-dev1\b"), "ce-priority-dev1"),
+    (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
     (re.compile(r"(?i)\bneeds-ionos\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
-    (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
+)
+_REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # agentic_fomprep WP0 live proof must run on DEV1
+    (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
+    (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
+    (re.compile(r"(?i)\bAllowedComputer\s*[:=]\s*CE-PRIORITY-DEV1\b"), "ce-priority-dev1"),
     # FR #852: recycle/recompose live ircJeeves / prune chair queue on ionos
     (re.compile(r"(?i)\b(?:recycle|recompose)\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\b(?:recycle|recompose|recycled)\b"), "ionos"),
@@ -751,6 +756,10 @@ _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bSYSTEM\b.{0,120}\bBobCallback\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,160}\.bobiverse\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,80}\bprincipal\b"), "ionos"),
+)
+# Back-compat for tests importing the combined name.
+_REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    _REQUIRE_MACHINE_TITLE_CUES + _REQUIRE_MACHINE_BODY_CUES
 )
 
 # Hard pins for known WP0 / machine-gated issues (FR #1093): survive empty title/body on stale rows.
@@ -792,16 +801,21 @@ def infer_require_machine(
             if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
                 return mid
         # bare needs-ionos style already covered by cue regex below via label join
-    blob = "\n".join(
+    # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
+    title_blob = "\n".join(
         [
             str(title or ""),
-            str(body or ""),
             str(line or ""),
             " ".join(str(x) for x in labs),
         ]
     )
-    for rx, mid in _REQUIRE_MACHINE_CUES:
-        if rx.search(blob):
+    for rx, mid in _REQUIRE_MACHINE_TITLE_CUES:
+        if rx.search(title_blob):
+            return mid
+    # Body: only strong WP0 / ionos-ops cues (not bare machine name mentions).
+    body_blob = str(body or "")
+    for rx, mid in _REQUIRE_MACHINE_BODY_CUES:
+        if rx.search(body_blob) or rx.search(title_blob):
             return mid
     return ""
 
@@ -2119,6 +2133,72 @@ def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None, home: Path | None = No
     return not mrb_row_offerable(row, pr_exists=pr_exists)
 
 
+
+_MRB_DOING_RX = re.compile(
+    r"(?i)\bMRB\b(?:\s+(?:SimonBarnett/)?([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?))?\s*#\s*(\d+)"
+)
+
+
+def clear_orphan_digest_mrb_doing(
+    home: Path,
+    *,
+    pr_exists=None,
+    default_repo: str = "SimonBarnett/bobiverse",
+) -> int:
+    """Idle seats whose digest still says doing MRB #N after the PR is dead (FR #1508).
+
+    FR #1430 clears doing when an *accepted* MERGED row is purged. When the ACC
+    row is already gone (DONE lost / webhook race), seats stay nak-busy forever.
+    Call from !bored / offer paths with the live `pr_exists` checker.
+    """
+    if pr_exists is None or home is None:
+        return 0
+    import bobreport
+
+    doc = bobreport.load_digest(home)
+    machines = doc.get("machines") if isinstance(doc, dict) else None
+    if not isinstance(machines, dict):
+        return 0
+    cleared = 0
+    for mid, ent in list(machines.items()):
+        if not isinstance(ent, dict):
+            continue
+        rows = list(ent.get("worker_list") or [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("state") or "").lower() != "doing":
+                continue
+            work = str(row.get("work") or "")
+            m = _MRB_DOING_RX.search(work)
+            if not m:
+                continue
+            repo_part = (m.group(1) or "").strip()
+            num = str(int(m.group(2)))
+            if repo_part and "/" in repo_part:
+                repo = repo_part
+            elif repo_part:
+                repo = f"SimonBarnett/{repo_part}"
+            else:
+                repo = default_repo
+            try:
+                still_open = bool(pr_exists(repo, num))
+            except Exception:
+                continue
+            if still_open:
+                continue
+            nick = str(row.get("nick") or "").strip()
+            if not nick:
+                continue
+            with contextlib.suppress(Exception):
+                out = bobreport.clear_seat_doing(
+                    home, nick, only_if_work_contains=num
+                )
+                if getattr(out, "ok", False):
+                    cleared += 1
+    return cleared
+
+
 def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None, home: Path | None = None) -> int:
     """Move accepted MRB rows whose PR is already merged/closed into done.
 
@@ -2481,6 +2561,11 @@ def offer_focus_top(
             purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
             purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc, is_pull=is_pull)) or purged
+            # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
+            if pr_exists is not None:
+                with contextlib.suppress(Exception):
+                    if clear_orphan_digest_mrb_doing(home, pr_exists=pr_exists):
+                        purged = True
             # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
             for cand in doc.get("unaccepted") or []:
                 if not isinstance(cand, dict):
@@ -2647,6 +2732,11 @@ def offer_top(
             purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
             purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc, is_pull=is_pull)) or purged
+            # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
+            if pr_exists is not None:
+                with contextlib.suppress(Exception):
+                    if clear_orphan_digest_mrb_doing(home, pr_exists=pr_exists):
+                        purged = True
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             for i, row in enumerate(doc["unaccepted"]):
@@ -3609,6 +3699,21 @@ def resync_from_github(
             doc["unaccepted"].sort(key=sk)
             for i, row in enumerate(doc["unaccepted"], start=1):
                 row["seq"] = i
+            # FR #1508: drop focus items for closed issues/PRs so strict focus
+            # reflects open ungated work (not a graveyard of closed ranks).
+            try:
+                import focus_ignore as _fi
+
+                open_keys = set()
+                for c in desired:
+                    open_keys.add(f"{c.repo}{c.id}".lower())
+                for repo, nums in (open_pulls_map or {}).items():
+                    for num in nums or ():
+                        n = str(num).lstrip("#")
+                        open_keys.add(f"{repo}#{n}".lower())
+                focus_pruned = _fi.prune_closed_focus_items(home, open_keys)
+            except Exception:
+                focus_pruned = 0
             _write_queue(queue_path(home), doc)
             if cleared_fr_done:
                 def _clear_stale_fr_done(led: dict) -> None:
@@ -3623,6 +3728,7 @@ def resync_from_github(
                 "unaccepted": len(doc["unaccepted"]),
                 "added": added,
                 "dropped": dropped,
+                "focus_pruned": int(focus_pruned),
                 "repos": list(fetched),
                 "failed": list(failed),
             }

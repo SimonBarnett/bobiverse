@@ -13,8 +13,8 @@ Order used by !list and !bored:
 Strict mode keeps only focused rows. Ignored repos are dropped everywhere.
 
 This is a clean re-implementation of the subset needed, NOT a vendored copy of the
-gh-Jeeves package (no pinned tag exists to vendor). Left out: purge of closed item focus
-(needs the gh-Jeeves ``done`` bucket), retarget_item_focus.
+gh-Jeeves package (no pinned tag exists to vendor). Closed item focus is pruned on
+resync via ``prune_closed_focus_items`` (FR #1508). Left out: retarget_item_focus.
 """
 
 from __future__ import annotations
@@ -183,6 +183,50 @@ def save_focus(home: Path, doc: dict[str, Any]) -> None:
         },
     )
 
+
+
+def prune_closed_focus_items(home: Path, open_keys: set[str] | frozenset[str]) -> int:
+    """Drop focus *items* whose owner/repo#N is not in `open_keys` (FR #1508).
+
+    Repo-level focus lives in ``focus.repos`` and is never touched here.
+    Only runs when ``open_keys`` is non-empty (empty set = resync saw nothing /
+    API miss — keep focus as-is). ``open_keys`` should be lower-case
+    ``owner/repo#n`` for every still-open issue and pull the resync fetched.
+    """
+    doc = load_focus(home)
+    items = doc.get("items") if isinstance(doc.get("items"), dict) else {}
+    if not items:
+        return 0
+    open_l = {str(k).strip().lower() for k in (open_keys or set()) if str(k).strip()}
+    if not open_l:
+        return 0
+    keep: dict[str, Any] = {}
+    dropped = 0
+    for key, meta in items.items():
+        kl = str(key).strip().lower()
+        # Defensive: keys without '#' are not issue/PR items — keep them.
+        if "#" not in kl:
+            keep[key] = meta
+            continue
+        if kl in open_l:
+            keep[key] = meta
+            continue
+        # Reconstruct from meta when the map key spelling differs.
+        if isinstance(meta, dict):
+            repo = str(meta.get("repo") or "").strip().lower()
+            ident = str(meta.get("id") or "").strip().lower()
+            if ident and not ident.startswith("#"):
+                ident = f"#{ident}"
+            alt = f"{repo}{ident}" if repo and ident else ""
+            if alt and alt in open_l:
+                keep[key] = meta
+                continue
+        dropped += 1
+    if dropped:
+        doc["items"] = keep
+        doc["updated"] = _now()
+        save_focus(home, doc)
+    return dropped
 
 def is_strict(home: Path) -> bool:
     return bool(load_focus(home).get("strict"))

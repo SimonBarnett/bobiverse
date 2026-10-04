@@ -83,7 +83,48 @@ def check(args):
         if row_task(r) == "MRB" and not row_has_pull_url(r)
     ]
     if not offerable:
-        findings.append("offer queue empty (no unaccepted offerable rows)")
+        # FR #1508: distinguish gated-empty (pins / no seats) from true empty.
+        pin_rows = []
+        for r in unaccepted:
+            rm = str(r.get("require_machine") or "").strip()
+            if rm and rm.lower() not in ("*", "any", "none", "-"):
+                pin_rows.append(r)
+        live_unacc = [r for r in unaccepted if not r.get("ignored")]
+        if pin_rows and len(pin_rows) == len(live_unacc):
+            # Fold hosting labels (ionos→win-mpre8vi4u6u, dev1→ce-priority-dev1)
+            # so zero-seat detection matches digest machine keys (FR #1508 / #79).
+            try:
+                import bobreport as _br
+
+                def _fold(mid: str) -> str:
+                    return _br.fold_machine_id(mid) or str(mid).strip().lower()
+            except Exception:
+                def _fold(mid: str) -> str:
+                    return str(mid).strip().lower()
+
+            machines: dict[str, int] = {}
+            dig = _load_json(digest / "digest.json") or {}
+            for mid, ent in ((dig.get("machines") or {}) if isinstance(dig, dict) else {}).items():
+                wl = (ent or {}).get("worker_list") if isinstance(ent, dict) else None
+                n = len(wl) if isinstance(wl, list) else 0
+                key = _fold(str(mid))
+                machines[key] = machines.get(key, 0) + n
+            missing = sorted({
+                _fold(str(r.get("require_machine") or ""))
+                for r in pin_rows
+                if machines.get(_fold(str(r.get("require_machine") or "")), 0) == 0
+            } - {""})
+            if missing:
+                findings.append(
+                    "offer queue gated: require_machine pins only; no seats on "
+                    + ",".join(missing)
+                )
+            else:
+                findings.append(
+                    "offer queue gated: require_machine pins only (seats present on pin machines)"
+                )
+        else:
+            findings.append("offer queue empty (no unaccepted offerable rows)")
     for r in missing_url[:20]:
         ident = r.get("id") or r.get("number") or "?"
         repo = r.get("repo") or r.get("owner_repo") or "?"
