@@ -99,7 +99,7 @@ Skill-intake consolidation: when a worker takes an FR from skill intake (label:s
 
 **CONFLICTING alone is not an automatic FAIL.** If this PR is still the unique fix: merge `origin/main` into the tip, resolve markers, re-run tests + `check_conflict_markers.py`, then continue the normal PASS/FAIL review.
 
-**skill-harvest-log.md (FR #1757 / #1750):** harvest/promote PRs that append dated sections to common/docs/skill-harvest-log.md race each other. Rebase onto main before merge; when both sides added sections, **keep both dated sections** in the one fix/rebase PR (MRB #1741 -> #1750). Dropping the other promote's section is a FAIL.
+**skill-harvest-log.md (FR #1757 / #1750 / harvest #2274):** harvest/promote PRs that append dated sections to common/docs/skill-harvest-log.md race each other. Rebase onto main before merge; when both sides added sections, **keep both dated sections** in the one fix/rebase PR (MRB #1741 -> #1750). Dropping the other promote's section is a FAIL. If the **fix PR itself** goes CONFLICTING against newer `main` before you REST/`gh pr merge`, merge `origin/main` into the fix tip and **keep-both again**, then re-check markers/tests, then merge (do not REST-merge a dirty tip). Example: MRB #2241 → fix #2272.
 
 When the assigned PR is already **closed**, or a **duplicate/superseded** of work already on main (twin FR closed by another merge) — including when that duplicate head is also CONFLICTING:
 
