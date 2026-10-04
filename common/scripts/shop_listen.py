@@ -7,9 +7,10 @@ START tiles show busy/idle descriptions.
 Grammar (single line, case-insensitive verb):
   ACK  <TYPE> <owner/repo>#<n> [title...]
   DONE <TYPE> <owner/repo>#<n> <result> [url|rest...]
-  NACK|GIVEUP <TYPE> <owner/repo>#<n>
+  NACK|GIVEUP <TYPE> <owner/repo>#<n> [reason...]
 
 TYPE is FR|MRB|UAT|PR|FIX|BUILD. result examples: PASS merged | FAIL fix#m | PR <url>
+GIVEUP/NACK optional trailing reason is logged on the shop-listen INFO line (FR #1701).
 """
 from __future__ import annotations
 
@@ -21,6 +22,12 @@ from typing import Callable
 import bobreport
 import gitclaim
 import talk_seat_pid
+
+# FR #1701: keep chair stdout / cmd-trace readable; reason is diagnostic only.
+_GIVEUP_REASON_MAX = 120
+_SECRETISH = re.compile(
+    r"(?i)(password|token|secret|api[_-]?key|authorization)\s*[:=]\s*\S+"
+)
 
 _VERB_RE = re.compile(
     r"(?is)^\s*(?:@?\S+[:\s]+)?(?P<verb>ACK|DONE|NACK|GIVEUP)\s+"
@@ -122,6 +129,34 @@ def short_work(task: str, repo: str, ident: str) -> str:
     num = str(ident or "").strip().lstrip("#")
     kind = str(task or "").strip().upper()
     return " ".join(p for p in (name, kind, f"#{num}" if num else "") if p)
+
+
+def truncate_giveup_reason(raw: str, max_len: int = _GIVEUP_REASON_MAX) -> str:
+    """Collapse whitespace, redact secretish tokens, truncate for shop-listen logs (FR #1701)."""
+    text = " ".join(str(raw or "").split())
+    if not text:
+        return ""
+    text = _SECRETISH.sub(r"\1=[redacted]", text)
+    limit = max(8, int(max_len or _GIVEUP_REASON_MAX))
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def format_shop_listen_info(result: dict, *, nick: str) -> str:
+    """INFO shop-listen line for chair stdout. Includes reason= on NACK/GIVEUP (FR #1701)."""
+    verb = str((result or {}).get("verb") or "")
+    status = str((result or {}).get("status") or "")
+    act = (result or {}).get("activity")
+    webhook = (result or {}).get("webhook")
+    line = (
+        f"INFO shop-listen {verb} status={status} nick={nick} "
+        f"activity={act!r} webhook={webhook}"
+    )
+    if verb in ("NACK", "GIVEUP"):
+        reason = truncate_giveup_reason(str((result or {}).get("reason") or ""))
+        line = f"{line} reason={reason!r}"
+    return line
 
 
 def activity_description(job: dict | ShopJobLine, title: str = "") -> str:
@@ -529,6 +564,8 @@ def handle_shop_worker_line(
         )
         out["status"] = st
         out["job"] = job
+        # FR #1701: trailing reason from the GIVEUP/NACK PRIVMSG for chair stdout/cmd-trace.
+        out["reason"] = truncate_giveup_reason(parsed.rest or parsed.title or "")
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001
