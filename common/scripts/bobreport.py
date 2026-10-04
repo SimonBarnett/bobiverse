@@ -1152,10 +1152,17 @@ def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict 
         size = lock_path.stat().st_size
     reason = None
     me = os.getpid()
+    own_live = pid is not None and int(pid) == int(me) and _pid_alive(pid)
     if size == 0:
         reason = "empty"
     elif age >= max_age:
-        reason = "stale"
+        # Never unlink a lock still held by *this* live process — health-watchdog
+        # GET timeouts used to break our own 30s+ holder (mtime not refreshed) and
+        # cascade ConnectionAbortedError + foreign-stale fights with the chair.
+        if own_live:
+            reason = None
+        else:
+            reason = "stale"
     elif pid is not None and not _pid_alive(pid):
         reason = "dead-pid"
     elif (
@@ -1310,6 +1317,10 @@ def digest_lock(
             if raise_busy:
                 raise DigestLockBusy("digest.lock open/lock failed") from None
         _LOCK_STATE.depth = 1
+        # Refresh holder stamp so long holds do not look "stale" to the watchdog.
+        if locked and fh is not None:
+            with contextlib.suppress(OSError):
+                _write_lock_holder(fh)
         try:
             yield
         finally:
