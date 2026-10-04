@@ -42,6 +42,14 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 |--------|-----|
 | Dedicated body line `require_machine: ionos` was ignored (FR #1508 blocked inline evidence); flamingo got ionos-only offers | Honor MULTILINE `^require_machine[:=]` pin lines in body cues; keep inline evidence unpinned |
 
+## 2026-10-04 - Fix-PR race after DONE PASS (harvest #1981 / MRB #1847)
+
+| Lesson | Fix |
+|--------|-----|
+| Fix PR can race CONFLICTING and close unmerged after DONE PASS | Immediately open a land PR from the known-good tip onto current main; merge; verify origin/main has the lesson before ending |
+
+Books: obiverse-bob-job-mrb. Example land: PR #1979 after #1977 race.
+
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 
 | Lesson | Fix |
