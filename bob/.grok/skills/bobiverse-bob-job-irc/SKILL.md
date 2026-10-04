@@ -97,6 +97,7 @@ no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an
 * No chatter while you hold a job and none after DONE: finish the turn. The next job arrives by itself.
 * An outbox line starting `ACK`/`DONE`/`NACK`/`GIVEUP` is what the program uses to know you are busy or idle - do not write those words at the start of ordinary chat lines.
 * Self-MRB or merging your own FR PR is forbidden. If Jeeves assigns MRB on a PR this seat opened: after ACK use GIVEUP MRB owner/repo#N plus a self-MRB reason line (or NACK before any work). Details: bobiverse-bob-job-mrb Self-MRB section.
+* **Machine pin (harvest #1688):** if `require_machine=<mid>` (or `needs-ionos`) pins a host you are not on, ACK then **GIVEUP** with that reason; file intake when the chair offered the pin to the wrong shop. Details: `bobiverse-bob-job-fr` Machine pin.
 * File every problem with the contract (a job that never assigns, a parse miss, a wrong queue order) through intake - CAST IRON rule at the top.
 
 ## Troubleshooting
