@@ -17,6 +17,7 @@ github: https://github.com/SimonBarnett/bobiverse
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+>    Worker status receipts (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or FR/MRB/UAT `#N`) are not issue/FR findings: use `Invoke-BobiverseHarvest.ps1`/`kind: harvest`, and never file the `harvest:` receipt itself as a GitHub issue.
 > 3. BEFORE finishing ANY debugging session run the harvest step:
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
@@ -24,10 +25,6 @@ github: https://github.com/SimonBarnett/bobiverse
 
 
 ## Cost of use (CAST IRON)
-
-Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
-
-One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
 
 Using any skill from this book obliges you to report back here, in the same
 turn you learn or fix something. Do not ask permission. Do not defer.
@@ -98,10 +95,6 @@ When you have `gh` write (same turn or on a skill-promote assign):
 
 Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts → promote PR**.
 
-### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
-
-When intake `kind: skill|harvest` (or a harvest summary) already names a GitHub **pull** URL in the title/body, the intake host must **`linked_existing_pr`** — comment on / attach that PR — and must **not** open a second fallback `label:skill` issue. Log `draft_pr_error` when draft-PR creation fails. `Invoke-BobiverseHarvest` / `issue_skip_fr_reason` should treat via-intake+skill "PR opened" receipts as `harvest_pr_summary` (skip re-offer as product FR). Product code: PR #2012.
-
 Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), **`repo`
 (required `owner/name` — never omit; no default)**, `title`, `body`, optional
 `files[]` (`path` + `content`, small), `source` (machine, agent/tool, skill
@@ -125,6 +118,9 @@ PowerShell:
 # close a session (summary + lessons, secret-scanned, queued offline):
 .\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...' [-SkillFile path]
 .\scripts\Invoke-BobiverseHarvest.ps1 -Flush
+# FR #2237: skip Invoke-BobiverseHarvest when the ONLY lesson is a twin/already-fixed
+# DONE playbook (Duplicate of #N + DONE citing covering PR). Filing those creates nested
+# skill twins that the chair re-offers as FR. Real new playbooks still harvest normally.
 # or:
 Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
   -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
@@ -152,17 +148,6 @@ Prefer `gh` and repo scripts over free-form reasoning.
 
 **CAST IRON (FR #1526 / harvest #1717):** never create, stamp, or apply GitHub label `needs-mrb1` / `mrb1`. That label was an offer hallucination. The real human gate is `needs-human`. Leftover repo labels are inert for offers (`gated_counts.needs-mrb1=0`, `row_awaits_mrb1` always false). Intake must omit `needs-mrb1`.
 
-
-
-### Living product FR when intake vanishes into harvest-only (harvest #2001)
-
-`Invoke-BobiverseHarvest` / intake `kind: skill|harvest` creates **receipts** (`label:skill`). They are not the product work item. If a real product plan/FR was meant to live on the board but only harvest receipts exist (or the product FR was closed/superseded into harvest noise):
-
-1. Create a **canonical living FR** with `gh issue create -R owner/repo --label feature-request` (and `via-intake` only if still filing via intake `kind: fr`).
-2. Treat **that** issue number as the living FR - append WP evidence / comments there.
-3. Point harvest receipts at it with `Refs #N` / close as superseded operational report; do not implement the product plan on a `label:skill` harvest issue.
-
-Example: jeeves.exe chair+HTTP one-process plan lives at #1993, not on harvest receipts.
 
 Default `repo` for this book: `SimonBarnett/bobiverse`.
 

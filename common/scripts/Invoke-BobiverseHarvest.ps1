@@ -44,7 +44,7 @@ if ($env:BOB_INTAKE_KEY) { $headers['X-Bob-Intake-Key'] = [string]$env:BOB_INTAK
 $script:PermanentIntakeErrors = @(
     'malformed', 'bad_kind', 'missing_repo', 'bad_repo', 'repo_not_allowed',
     'bad_title', 'bad_files', 'too_many_files', 'bad_file_path', 'file_too_large',
-    'payload_too_large', 'empty_harvest', 'bad_idempotency_key', 'unauthorized'
+    'payload_too_large', 'empty_harvest', 'bad_idempotency_key', 'unauthorized', 'worker_receipt_not_issue'
 )
 
 function Send-Payload([string]$Json) {
@@ -269,8 +269,38 @@ function Test-HarvestSkillGiveupLoop([string]$SummaryText, [string[]]$LessonLine
     return $false
 }
 
+# FR #2237: twin/already-fixed DONE harvests that only restate Duplicate-of / DONE-citing
+# covering-PR playbooks re-enter the FR queue as nested skill twins. Skip filing those.
+function Test-HarvestTwinDoneLoop([string]$SummaryText, [string[]]$LessonLines) {
+    $s = [string]$SummaryText
+    $joined = (@($s) + @($LessonLines)) -join "`n"
+    $hasTwin = ($joined -match '(?i)\b(Duplicate of|twin of|nested twin|meta-twin|already[- ]CLOSED|already closed)\b')
+    $hasDoneCite = (
+        ($joined -match '(?i)\bDONE\b.*\b(citing|cites)\b') -or
+        ($joined -match '(?i)\bciting\b.*(#\d+|pull/\d+|PR\s*#?\d+)')
+    )
+    $hasTwinPlaybook = (
+        ($joined -match '(?i)Closed skill-harvest twin') -or
+        ($joined -match '(?i)ACK then DONE citing covering PR') -or
+        ($joined -match '(?i)close as Duplicate of #?N') -or
+        ($joined -match '(?i)never open a second promote') -or
+        ($joined -match '(?i)one issue per issue')
+    )
+    if ($hasTwin -and ($hasDoneCite -or $hasTwinPlaybook)) {
+        return $true
+    }
+    if ($hasTwinPlaybook -and ($hasTwin -or $hasDoneCite)) {
+        return $true
+    }
+    return $false
+}
+
 if (Test-HarvestSkillGiveupLoop -SummaryText $Summary -LessonLines $Lesson) {
     Write-Host "SKIPPED harvest skill GIVEUP loop (FR #936): not filing GitHub skill issue for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
+if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest twin-DONE loop (FR #2237): not filing GitHub skill issue for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 
