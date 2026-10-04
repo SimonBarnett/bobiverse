@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Skill-offer idle_seats expected + callback timeout recover (harvest #1705)
+
+| Lesson | Fix |
+|--------|-----|
+| BobCallback curl timeout with LISTEN can recover 200 without restart; skill flood in ungated_offerable after FR #1682 is expected until consolidate PRs land; exclude w-mh-* from idle_seats | Folded into jeeves-monitor + troubleshooting (with #1568 heal cluster). |
+
 ## 2026-10-04 - MRB #1696 docs: skill offers are promote FRs (not SKIP_FR/GIVEUP)
 
 | Lesson | Fix |
