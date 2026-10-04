@@ -81,19 +81,6 @@ flowchart TD
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
-### Open skill / harvest receipts → consolidate then PR (FR #1684)
-
-Intake `kind: skill|harvest` creates `label:skill` issues. The chair **SKIP_FR**s them (they are not product FR jobs). Without a promote PR they never reach MRB merge.
-
-When you have `gh` write (same turn or on a skill-promote assign):
-
-1. Group open `label:skill` issues **by owner skill book** (see `harvest-agent-skills` table).
-2. **Close duplicate** receipts for the same book/lesson.
-3. Open **one** `harvest/…` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes …` / `Duplicates closed: …`.
-4. Leave merge to hostile **MRB**. Never push `main`.
-
-Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts → promote PR**.
-
 Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), **`repo`
 (required `owner/name` — never omit; no default)**, `title`, `body`, optional
 `files[]` (`path` + `content`, small), `source` (machine, agent/tool, skill
@@ -138,8 +125,8 @@ Prefer `gh` and repo scripts over free-form reasoning.
 
 | `kind` | Meaning | Labels from intake |
 |--------|---------|--------------------|
-| `issue` | Bug / gap | `via-intake`, `needs-mrb1` |
-| `fr` | Feature request | `via-intake`, `feature-request`, `needs-mrb1` |
+| `issue` | Bug / gap | `via-intake` (do **not** stamp `needs-mrb1` — offer hallucination) |
+| `fr` | Feature request | `via-intake`, `feature-request` (do **not** stamp `needs-mrb1`) |
 | `skill` / `harvest` | Skill harvest files | `via-intake`, `skill` |
 
 Default `repo` for this book: `SimonBarnett/bobiverse`.
