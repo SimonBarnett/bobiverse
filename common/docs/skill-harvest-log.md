@@ -131,3 +131,12 @@ Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/sk
 | Source patch alone | Does not update frozen bob-worker-*.exe already running |
 
 Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md`. Canonical #1605; twin #1614.
+
+## 2026-10-04 - external-kill parent cache + deferred bin delete (harvest #1678)
+
+| Lesson | Fix / book |
+|---|---|
+| parent_of after proc.wait() empty | Capture create-parent at start_agent (FR #1643 / PR #1658) |
+| Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
+
+Books: `bobiverse-bob-worker`, `bobiverse-bob-troubleshooting`.
