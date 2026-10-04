@@ -93,6 +93,8 @@ Product FR jobs stay separate. Do not GIVEUP a real FR just because skill receip
 
 ## Do not
 
+Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
+
 - Push harvest to `main`.
 - Commit "nothing found".
 - Force-push, secrets, or live credentials into skills.

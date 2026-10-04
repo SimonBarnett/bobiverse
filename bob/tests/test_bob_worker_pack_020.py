@@ -476,3 +476,23 @@ def test_worker_agents_and_docs_state_the_issue_closing_rule():
         t = p.read_text(encoding="utf-8-sig")
         assert "Closes <owner>/<repo>#N" in t, p
     assert "t826u" in (ROOT / "docs" / "bob-worker.md").read_text(encoding="utf-8-sig")
+
+def test_skill_intake_consolidates_every_issue_for_the_book():
+    rule = ("Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), "
+            "it must close all open issues for that skill book (every harvest/skill issue targeting the same book), "
+            "open one consolidated PR for them, and cite every issue it closes (Closes #N for each); "
+            "no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.")
+    files = (
+        "bob/.grok/skills/bobiverse-bob-job-fr/SKILL.md",
+        "bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md",
+        "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
+        "common/.grok/skills/harvest-agent-skills/SKILL.md",
+        "common/.grok/skills/harvest/SKILL.md",
+        "jeeves/docs/jeeves-commands.md",
+    )
+    for rel in files:
+        assert rule in (ROOT / rel).read_text(encoding="utf-8-sig"), rel
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import bob_worker
+    assert rule in bob_worker.worker_prompt("C:\\worker", "C:\\home", "testbox", "Bob-testbox")
+    assert rule in bob_worker.rules_text("C:\\worker", "worker")

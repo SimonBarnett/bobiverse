@@ -133,4 +133,6 @@ UAT is per repo only (`UAT owner/repo#0` + `repo_uat`; t853u). Author stamps on 
 
 ## Live deploy evidence
 
+Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
+
 - FR #1016 ionos chair/queue verification: [fr-1016-ionos-live-evidence.md](./fr-1016-ionos-live-evidence.md)

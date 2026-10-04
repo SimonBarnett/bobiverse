@@ -25,6 +25,8 @@ github: https://github.com/SimonBarnett/bobiverse
 
 ## Cost of use (CAST IRON)
 
+Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
+
 One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
 
 Using any skill from this book obliges you to report back here, in the same
