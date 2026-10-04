@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - CONFLICTING fix PR re-merge before REST (harvest #2274)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest/MRB fix PRs CONFLICTING on `skill-harvest-log.md`: one fix PR from `origin/main` keep-both; if that fix PR itself conflicts with newer main before merge, merge `origin/main` keep-both into the fix tip **again** before REST/`gh pr merge` | Documented in `bobiverse-bob-job-mrb` + `harvest-agent-skills`. Example: MRB #2241 → #2272 (`64e09e1` keep-both then merge) |
+
+Books: bobiverse-bob-job-mrb, harvest-agent-skills.
+
 ## 2026-10-04 - twin-DONE harvest loop skip (FR #2237)
 
 | Lesson | Fix |
