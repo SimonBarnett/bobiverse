@@ -1750,6 +1750,10 @@ class Supervisor:
         self._shutting = False
         self._grace_timer: Optional[threading.Timer] = None
         self._agent_started_at: Optional[float] = None
+        # FR #1643 / MRB #1658: capture create-parent while agent is still live (post-wait Toolhelp often misses it).
+        self._agent_parent_pid: int = 0
+        self._agent_parent_image: str = ''
+        self._agent_parent_cmd: str = ''
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
         relay.on_inject = self._on_inject
         if irc and self.bored:
@@ -1798,6 +1802,18 @@ class Supervisor:
             self._owned.add(proc.pid)
             self.sessions.append(spec.session_id)
             self._agent_started_at = self.clock()
+            # FR #1643 / MRB #1658: snapshot create-parent now; after wait() the agent PID is usually gone from Toolhelp.
+            try:
+                self._agent_parent_pid = int(parent_of(int(proc.pid)) or 0)
+            except Exception:
+                self._agent_parent_pid = 0
+            self._agent_parent_image = ''
+            self._agent_parent_cmd = ''
+            if self._agent_parent_pid > 0:
+                try:
+                    _pp, self._agent_parent_image, self._agent_parent_cmd = describe_process(self._agent_parent_pid)
+                except Exception:
+                    self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
             if self.startup_grace_s > 0:
                 self.log(
@@ -1859,7 +1875,7 @@ class Supervisor:
             last = str(getattr(self.relay, "last_unacked", "") or "")
         except Exception:
             last = ""
-        # FR #1643: log parent/killer when the agent dies unexpectedly (external kill / tray tidy).
+        # FR #1643 / MRB #1658: prefer live parent_of; fall back to spawn-time snapshot (post-wait Toolhelp often empty).
         parent_pid = 0
         parent_image = ""
         parent_cmd = ""
@@ -1872,6 +1888,10 @@ class Supervisor:
                 _pp, parent_image, parent_cmd = describe_process(parent_pid)
             except Exception:
                 parent_image, parent_cmd = "", ""
+        if parent_pid <= 0:
+            parent_pid = int(getattr(self, "_agent_parent_pid", 0) or 0)
+            parent_image = str(getattr(self, "_agent_parent_image", "") or "")
+            parent_cmd = str(getattr(self, "_agent_parent_cmd", "") or "")
         kill_line = format_external_kill_log(
             agent_pid=int(proc.pid),
             agent_code=int(code) if code is not None else -1,
