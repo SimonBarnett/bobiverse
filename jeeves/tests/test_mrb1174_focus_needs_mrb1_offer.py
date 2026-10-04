@@ -1,4 +1,4 @@
-"""MRB #1174: offer needs-mrb1 under bobiverse focus; strict stays in-focus; keep pagination."""
+"""MRB #1174: strict focus stays in-focus; FR #1363 skips needs-mrb1 offers; keep pagination."""
 from __future__ import annotations
 
 import re
@@ -21,7 +21,8 @@ def _fr(repo: str, n: int, labels=None, title: str = "FR: x"):
     }
 
 
-def test_strict_offers_needs_mrb1_bobiverse_not_club(tmp_path, monkeypatch):
+def test_strict_skips_needs_mrb1_and_does_not_leak_club(tmp_path, monkeypatch):
+    """FR #1363: needs-mrb1 is not offered; strict still refuses Club-Madeira leak."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     (home / "focus.json").write_text(
@@ -46,10 +47,38 @@ def test_strict_offers_needs_mrb1_bobiverse_not_club(tmp_path, monkeypatch):
         },
     )
     st, job = gitclaim.offer_focus_top(home, "marchhare-35600", "#marchhare")
+    assert st == "empty"
+    assert job is None
+
+
+def test_strict_offers_clear_bobiverse_not_club(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    home = tmp_path
+    (home / "focus.json").write_text(
+        '{"v":1,"repos":["SimonBarnett/bobiverse"],"strict":true}',
+        encoding="utf-8",
+    )
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [
+                _fr("SimonBarnett/Club-Madeira", 2, ["feature-request"]),
+                _fr(
+                    "SimonBarnett/bobiverse",
+                    1055,
+                    ["feature-request", "via-intake"],
+                    title="FR: ionos fleet id pin",
+                ),
+            ],
+            "accepted": [],
+            "done": [],
+        },
+    )
+    st, job = gitclaim.offer_focus_top(home, "marchhare-35600", "#marchhare")
     assert st == "ok"
     assert job["id"] == "#1055"
     assert "bobiverse" in job["repo"]
-    assert "needs-mrb1" in (job.get("labels") or [])
 
 
 def test_non_strict_fallback_still_keeps_the_flow(tmp_path, monkeypatch):
