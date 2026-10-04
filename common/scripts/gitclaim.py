@@ -2318,20 +2318,27 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
     return out
 
 
-def mrb_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
+def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None) -> bool:
     """Do not hand an MRB/UAT to the author seat (or sibling on same machine) while another machine is live.
 
     FR #39 / #227 / #265: MRB and UAT must go to a different machine/seat than the
     FR implementer and/or MRB author when at least one other machine has a live seat.
     """
-    return review_blocked_for_author(row, nick, live)
+    return review_blocked_for_author(row, nick, live, ledger=ledger)
 
 
-def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
-    """Shared MRB+UAT author block (FR #39 / #227 / #265).
+def review_blocked_for_author(
+    row: dict, nick: str, live: set[str], ledger: dict | None = None
+) -> bool:
+    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407).
 
-    Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat) while another
-    seat is live, or is a sibling on the same machine while another machine is live.
+    Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat), or is a
+    sibling on the same machine while another machine has a *viable* live seat.
+
+    Viable other-machine seats (FR #1407): not already in ``giveup_seats``, and for
+    repo-level UAT when ``ledger`` is provided, not themselves FR-implementer blocked
+    (``_ledger_blocks``). Giveup / fellow-implementer seats must not strand siblings
+    of the stamped author after self-UAT GIVEUP loops.
     """
     if _canon_task(row) not in ("MRB", "UAT"):
         return False
@@ -2339,10 +2346,10 @@ def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
     if not authors:
         return False
     me = canonical_worker_nick(nick) or nick
-    live_c = {(canonical_worker_nick(n) or n).lower() for n in live}
     me_l = me.lower()
     me_p = bobreport.parse_seat_nick(me)
     me_mid = bobreport.fold_machine_id(me_p[0]) if me_p else ""
+    repo_uat = is_repo_uat(row)
 
     for author in authors:
         author_l = author.lower()
@@ -2350,14 +2357,22 @@ def review_blocked_for_author(row: dict, nick: str, live: set[str]) -> bool:
         if author_l == me_l:
             return True
         author_p = bobreport.parse_seat_nick(author)
-        # Sibling seat on the same machine: block when another machine has a live seat.
+        # Sibling seat on the same machine: block when another machine has a viable live seat.
         if author_p and me_p:
             author_mid = bobreport.fold_machine_id(author_p[0])
             if author_mid == me_mid:
-                for n in live_c:
-                    p = bobreport.parse_seat_nick(n)
-                    if p and bobreport.fold_machine_id(p[0]) != author_mid:
-                        return True
+                for n in live:
+                    n_c = (canonical_worker_nick(n) or n or "").strip()
+                    if not n_c or row_gave_up_by(row, n_c):
+                        continue
+                    p = bobreport.parse_seat_nick(n_c)
+                    if not p or bobreport.fold_machine_id(p[0]) == author_mid:
+                        continue
+                    if ledger is not None and repo_uat:
+                        other_why = _ledger_blocks(ledger, row, n_c)
+                        if other_why and "implemented" in other_why:
+                            continue
+                    return True
     return False
 
 
@@ -2470,7 +2485,7 @@ def offer_focus_top(
                     if age < OFFER_TIMEOUT_S:
                         return None
                 cand_eff = enrich_uat_author_fields(doc, cand)
-                if review_blocked_for_author(cand_eff, me, live):
+                if review_blocked_for_author(cand_eff, me, live, ledger=ledger):
                     return None
                 # FR #1093: stamp WP0/issue pins before the machine gate (stale rows).
                 _stamp_require_machine(cand_eff)
@@ -2600,7 +2615,10 @@ def offer_top(
                     continue
                 row_eff = enrich_uat_author_fields(doc, row)
                 live = live_seat_nicks(home)
-                if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(row_eff, (nick or "").strip(), live):
+                led = ledger_load(home)
+                if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(
+                    row_eff, (nick or "").strip(), live, ledger=led
+                ):
                     continue
                 pick_i = i
                 # Persist enrichment onto the queued row when we filled stamps.
@@ -2750,14 +2768,44 @@ def _row_link_keys(row: dict) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
+def _uat_cycle_fr_touch_count(ledger: dict, row: dict, nick: str) -> int:
+    """How many link keys of this repo UAT the seat holds role ``FR`` on (FR #1407)."""
+    me = _canon_ledger_nick(nick)
+    if not me:
+        return 0
+    tc = ledger.get("touch") or {}
+    n = 0
+    for k in _row_link_keys(row):
+        roles = (tc.get(k) or {}).get(me) or []
+        if "FR" in roles:
+            n += 1
+    return n
+
+
 def ledger_blocks(ledger: dict, row: dict, nick: str, live=None) -> str:
     """See ``_ledger_blocks``. For the repo-level UAT (t853u) a seat that implemented any merged PR of the
-    cycle is skipped, unless EVERY live seat did (then nobody could ever run it, so anyone may)."""
+    cycle is skipped, unless EVERY *active* live seat did (then escape hatch).
+
+    FR #1407: seats already in ``giveup_seats`` do not count toward "all blocked". When the
+    escape hatch would fire, prefer the less-involved seat (fewer cycle ``FR`` touches) —
+    a heavy MRB-fix author stays blocked while a lighter implementer may take UAT.
+    """
     why = _ledger_blocks(ledger, row, nick)
     if why and is_repo_uat(row) and "implemented" in why and live:
         seats = {s for s in live} | {nick}
-        if all(_ledger_blocks(ledger, row, s) for s in seats):
-            return ""
+        active = {s for s in seats if not row_gave_up_by(row, s)}
+        pool = active if active else seats
+        if not all(_ledger_blocks(ledger, row, s) for s in pool):
+            return why
+        my_n = _uat_cycle_fr_touch_count(ledger, row, nick)
+        me_l = (canonical_worker_nick(nick) or nick or "").strip().lower()
+        for s in pool:
+            s_l = (canonical_worker_nick(s) or s or "").strip().lower()
+            if s_l == me_l:
+                continue
+            if _uat_cycle_fr_touch_count(ledger, row, s) < my_n:
+                return why
+        return ""
     return why
 
 
@@ -3017,7 +3065,7 @@ def assign_row(
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real open pull URL"
-            if review_blocked_for_author(cand, me, live):
+            if review_blocked_for_author(cand, me, live, ledger=ledger_load(home)):
                 return "refused", f"{me} authored/implemented this (no self-{task_u})"
             to = str(cand.get("offered_to") or "").strip()
             if to and to.lower() != me.lower():
