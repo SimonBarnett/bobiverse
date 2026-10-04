@@ -87,3 +87,58 @@ def test_fr1643_csharp_defers_locked_bin_delete():
     text = cs.read_text(encoding="utf-8")
     assert "FR #1643" in text or "WorkerBinInUse" in text or "IsWorkerExeInUse" in text
     assert "File.Delete" in text
+
+
+def test_fr1643_spawn_cached_parent_used_when_live_lookup_empty(monkeypatch, tmp_path):
+    """MRB #1658 hostile: after wait(), parent_of often returns 0; spawn-time cache must still log."""
+    logs: list[str] = []
+
+    class FakeProc:
+        pid = 5151
+
+        def wait(self):
+            return 1
+
+        def poll(self):
+            return 1
+
+    class FakeRelay:
+        last_unacked = ""
+        on_inject = None
+
+        def close(self):
+            pass
+
+        def set_target(self, *a, **k):
+            pass
+
+    class FakeIrc:
+        shop = "#m"
+        alive = True
+        on_nak = None
+        on_lost = None
+
+        def close(self, *a, **k):
+            pass
+
+        def say(self, *a, **k):
+            return True
+
+    # Live lookup empty (post-wait); spawn cache must supply parent.
+    monkeypatch.setattr(bw, "parent_of", lambda pid: 0)
+    monkeypatch.setattr(bw, "describe_process", lambda pid: (pid, "", ""))
+    sup = bw.Supervisor(
+        kind="grok", exe="x", cwd=str(tmp_path), machine="m", nick="m-1",
+        run_dir=tmp_path, irc=FakeIrc(), relay=FakeRelay(), log=logs.append,
+        bored=None, startup_grace_s=0.0,
+    )
+    sup.proc = FakeProc()
+    sup._agent_started_at = bw.time.monotonic() - 120.0
+    sup._agent_parent_pid = 77
+    sup._agent_parent_image = "bob-worker.exe"
+    sup._agent_parent_cmd = "bob-worker.exe --mode agent"
+    sup._wait_exit(FakeProc())
+    joined = "\n".join(logs)
+    assert "terminated-by-external-kill" in joined
+    assert "parent_pid=77" in joined
+    assert "bob-worker.exe" in joined
