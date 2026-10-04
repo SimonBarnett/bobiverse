@@ -1,5 +1,6 @@
-"""t770u: the worker exe posts `!bored` exactly like the agent watcher (Watch-AgentHealth FR #100) - by itself, never the model,
-only when idle, same channel/format, same throttle; ACK = busy, DONE = idle (and an immediate !bored); never after IRC loss."""
+"""t770u / FR #1611: the worker exe posts `!bored` by itself, never the model,
+only when idle; ACK / inject-pending / harvest-hold = busy; DONE/NACK/GIVEUP release after harvest hold
+(default production hold; unit tests here use harvest_hold_s=0 unless testing the hold); never after IRC loss."""
 from __future__ import annotations
 
 import threading
@@ -16,6 +17,7 @@ def emitter(sent, **kw):
     kw.setdefault("idle_s", IDLE)
     kw.setdefault("repeat_s", REPEAT)
     kw.setdefault("ack_stale_s", 60.0)
+    kw.setdefault("harvest_hold_s", 0.0)  # legacy immediate DONE/free path unless a test opts in
     e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, lambda m: None, **kw)
     e.start()
     return e
@@ -75,10 +77,14 @@ def test_a_busy_agent_is_silent_when_it_is_not_ready_or_the_ack_is_fresh_but_sta
 
 
 def test_nack_and_giveup_free_the_seat():
-    """FR #161: GIVEUP/NACK clear busy and post !bored immediately (reason=free), with a free-rx log line."""
+    """FR #161: GIVEUP/NACK clear busy and post !bored (reason=free), with a free-rx log line.
+    harvest_hold_s=0 keeps the legacy immediate path for this unit test; FR #1611 covers the hold."""
     sent: list = []
     logs: list = []
-    e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, logs.append, idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0)
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0, harvest_hold_s=0.0,
+    )
     e.start()
     e.set_ready(True)
     assert wait_until(lambda: len(sent) == 1, 1.0)
@@ -112,7 +118,10 @@ def test_drain_applies_job_bookkeeping_when_say_fails(tmp_path):
         def say(self, target, text):
             return False
 
-    e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, logs.append, idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0)
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0, harvest_hold_s=0.0,
+    )
     e.start()
     e.set_ready(True)
     assert wait_until(lambda: len(sent) == 1, 1.0)
@@ -158,12 +167,82 @@ def test_stopped_emitter_never_sends_again():
 
 def test_failed_send_is_retried_later_not_in_a_tight_loop():
     calls: list = []
-    e = bw.BoredEmitter(lambda: calls.append(time.monotonic()) or False, lambda m: None, idle_s=IDLE, repeat_s=REPEAT, retry_s=0.3)
+    e = bw.BoredEmitter(
+        lambda: calls.append(time.monotonic()) or False, lambda m: None,
+        idle_s=IDLE, repeat_s=REPEAT, retry_s=0.3, harvest_hold_s=0.0,
+    )
     e.start()
     e.set_ready(True)
     time.sleep(1.0)
     e.stop()
     assert 1 <= len(calls) <= 5, calls
+
+
+def test_fr1611_done_holds_bored_until_harvest_window_ends():
+    """FR #1611: DONE must not !bored immediately; agent harvests first."""
+    sent: list = []
+    logs: list = []
+    hold = 0.45
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=30.0, repeat_s=30.0, ack_stale_s=60.0, harvest_hold_s=hold,
+    )
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.on_outbox("ACK FR o/r#9")
+    t = time.monotonic()
+    e.on_outbox("DONE FR o/r#9 PASS https://example.com/p/1")
+    assert any("harvest hold" in m for m in logs)
+    time.sleep(0.2)
+    assert len(sent) == 1, "must not !bored during harvest hold"
+    assert wait_until(lambda: len(sent) == 2, 2.0)
+    assert sent[-1] - t >= hold * 0.85
+    assert e.sent[-1][1] == "done"
+    e.stop()
+
+
+def test_fr1611_outbox_during_harvest_extends_hold():
+    sent: list = []
+    hold = 0.35
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, lambda m: None,
+        idle_s=30.0, repeat_s=30.0, harvest_hold_s=hold,
+    )
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.on_outbox("ACK FR o/r#10")
+    e.on_outbox("DONE FR o/r#10 PASS https://example.com/p/2")
+    time.sleep(0.15)
+    e.on_outbox("PRIVMSG note: harvested skill")  # payload without ACK/DONE — extends hold
+    # Without extension, !bored would be due ~0.2s after this sleep; with extension need another hold.
+    time.sleep(0.25)
+    assert len(sent) == 1, "outbox during harvest must extend the hold"
+    assert wait_until(lambda: len(sent) == 2, 2.0)
+    assert e.sent[-1][1] == "done"
+    e.stop()
+
+
+def test_fr1611_inject_pending_blocks_bored_until_ack_or_grace():
+    sent: list = []
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, lambda m: None,
+        idle_s=0.2, repeat_s=0.2, harvest_hold_s=0.0, assign_grace_s=0.5,
+    )
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.activity()  # Jeeves line injected; agent working before ACK
+    time.sleep(0.35)
+    assert len(sent) == 1, "inject-pending must silence idle !bored"
+    e.on_outbox("ACK FR o/r#11")
+    time.sleep(0.15)
+    assert len(sent) == 1, "open ACK still busy"
+    e.on_outbox("DONE FR o/r#11 PASS https://example.com/p/3")
+    assert wait_until(lambda: len(sent) == 2, 1.0)
+    assert e.sent[-1][1] == "done"
+    e.stop()
 
 
 # ------------------------------------------------------------------------------------------------ on the wire (fake IRC, real seat + supervisor)
@@ -177,7 +256,9 @@ def rig_with_bored(ircd, tmp_path):
     seat.log = rig.logs.append
     seat.on_message = rig.relay.deliver
     seat.connect(timeout=5)
-    rig.sup.bored = bw.BoredEmitter(rig.sup.post_bored, rig.logs.append, idle_s=IDLE, repeat_s=REPEAT)
+    rig.sup.bored = bw.BoredEmitter(
+        rig.sup.post_bored, rig.logs.append, idle_s=IDLE, repeat_s=REPEAT, harvest_hold_s=0.0,
+    )
     rig.sup.bored.start()
     return seat, rig
 
