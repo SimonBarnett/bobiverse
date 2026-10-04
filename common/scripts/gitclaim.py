@@ -733,6 +733,9 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
     (re.compile(r"(?i)\bneeds-ionos\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
+    # FR #1559: monitor filings about ircJeeves StartPending belong on the chair host
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,40}\bStartPending\b"), "ionos"),
+    (re.compile(r"(?i)\bStartPending\b.{0,40}\b(?:irc)?jeeves\b"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # agentic_fomprep WP0 live proof must run on DEV1
@@ -749,6 +752,14 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bSYSTEM\b.{0,120}\bBobCallback\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,160}\.bobiverse\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,80}\bprincipal\b"), "ionos"),
+    # FR #1559: StartPending / chair-outbox monitor delay (not bare machine names)
+    (re.compile(r"(?i)\b(?:irc)?jeeves\s*=\s*StartPending\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,40}\bStartPending\b"), "ionos"),
+    (re.compile(r"(?i)\bStartPending\b.{0,40}\b(?:irc)?jeeves\b"), "ionos"),
+    (re.compile(r"(?i)\bchair[- ]outbox\b.{0,120}\b(?:idle[_\s-]?seats?|offer(?:able)?|ungated)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:idle[_\s-]?seats?|offer(?:able)?|ungated)\b.{0,120}\bchair[- ]outbox\b"), "ionos"),
+    (re.compile(r"(?i)\bInvoke-JeevesMonitorCheck\b.{0,100}\bidle_seats\b"), "ionos"),
+    (re.compile(r"(?i)\bidle_seats\b.{0,100}\bInvoke-JeevesMonitorCheck\b"), "ionos"),
 )
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -773,8 +784,9 @@ def infer_require_machine(
     """Return a fleet machine id the job must run on, or '' (FR #587).
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
-    title/body/line cues (WP0 live ΓåÆ ce-priority-dev1; needs-ionos / chair-outbox /
-    recycle|recompose Jeeves / prune queue.json ΓåÆ ionos; FR #587 / #852).
+    title/body/line cues (WP0 live → ce-priority-dev1; needs-ionos / chair-outbox /
+    recycle|recompose Jeeves / prune queue.json / ircJeeves StartPending → ionos;
+    FR #587 / #852 / #1559).
     """
     labs = labels or ()
     if isinstance(labs, str):
