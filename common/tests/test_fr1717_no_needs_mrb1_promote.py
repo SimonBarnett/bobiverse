@@ -10,10 +10,10 @@ LOG = ROOT / "common/docs/skill-harvest-log.md"
 
 def test_fr1717_harvest_omits_stamp():
     text = HARVEST.read_text(encoding="utf-8")
-    assert "1717" in text or "never" in text.lower()
+    assert "1717" in text
     assert "needs-human" in text
-    # table should not instruct stamping needs-mrb1 as a required label
-    assert "never `needs-mrb1`" in text or "FORBIDDEN" in text or "never stamp" in text.lower() or "Never create" in text
+    low = text.lower()
+    assert "do **not** stamp" in text or "never create" in low or "omit" in low
 
 
 def test_fr1717_job_fr_cast_iron():
@@ -25,7 +25,7 @@ def test_fr1717_job_fr_cast_iron():
 def test_fr1717_monitor_ban():
     text = MON.read_text(encoding="utf-8")
     assert "needs-mrb1" in text
-    assert "1717" in text or "1526" in text or "never recreate" in text.lower() or "CAST IRON" in text
+    assert "1717" in text or "1526" in text or "cast iron" in text.lower()
 
 
 def test_fr1717_skill_harvest_log():
@@ -35,5 +35,5 @@ def test_fr1717_skill_harvest_log():
 
 
 def test_fr1717_files_end_with_newline():
-    for p in (HARVEST, FR, MON, LOG, Path(__file__)):
-        assert p.read_bytes().endswith(b"\n"), p
+    for path in (HARVEST, FR, MON, LOG, Path(__file__)):
+        assert path.read_bytes().endswith(b"\n"), path
