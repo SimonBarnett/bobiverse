@@ -36,6 +36,7 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 | Config | `config\ergo.password` (server PASS), `home\nickserv.password` (SASL), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon) |
 | Tray | `scripts\Start-BobTray.ps1 -> tools\Start-BobFleetTray.ps1`; HKCU `Run\BobiverseTray`; per-user Startup shortcut; quiet MSI uses the ONLOGON `/IT` task `BobiverseTray` |
 | TipForm **Restart** | Menu label **Restart** → `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
+| TipForm worker lines | Paint from digest/`tray-status` worker activity. Nick-map and digest-workers readers must accept the same fields (`.work` / `.job` / `.working_on`) — when Jeeves renames an export field, grep every tray reader (FR #1547 / PR #1555). Empty peer-merge `working_on` must roll from `worker_list`. Never let `Get-BobTrayHover` block refresh: sync workers from local `/bob/v1/report` (or `digest.json` / queue ACC when BobCallback is down) on a non-UI timer (FR #1553). |
 | Agent / Plan | Tray items **Agent** and **Plan** (single click, no submenu) run `worker\bob-worker.exe` (via a per-user run-copy) -> a NEW agent each click, never resumed. Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
 | Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
 

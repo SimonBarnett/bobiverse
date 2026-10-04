@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - TipForm nick-map / digest worker fields (harvest #1573)
+
+| Lesson | Fix |
+|--------|-----|
+| TipForm nick-map and digest-workers paths must accept the same activity fields (`.work`/`.job`/`.working_on`); when Jeeves renames an export field, grep every tray reader | Promoted into `bob/.grok/skills/bobiverse-bob` + `bobiverse-bob-troubleshooting` (code on main via PR #1555); also absorbed hover-sync / peer-merge TipForm lessons from related open skill receipts |
+
 ## 2026-10-04 - MRB #1696 docs: skill offers are promote FRs (not SKIP_FR/GIVEUP)
 
 | Lesson | Fix |
