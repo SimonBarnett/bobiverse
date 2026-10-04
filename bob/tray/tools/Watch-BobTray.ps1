@@ -2943,6 +2943,14 @@ $poll.Add_Tick({
             Start-JobsWatcher
             $alerts = @(Get-BobStallAlerts -Seen $seen -StallSec $StallSec -HeartbeatStaleSec $HeartbeatStaleSec)
             if ($alerts.Count -gt 0) { Set-Attention $alerts }
+            # FR #1553: refresh TipForm workers from digest BEFORE Get-BobTrayHover (8s bound).
+            # Hover can hang on peer DNS/UNC; this keeps tray-status.json worker lines moving.
+            try {
+                if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
+                    [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
+                }
+            }
+            catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
             Update-Hover
             # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook every tick.
             if (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) {
@@ -2969,6 +2977,30 @@ $poll.Add_Tick({
             catch { }
         }
     })
+
+# FR #1553: ThreadPool (non-UI) 10s timer — TipForm workers keep updating even when the
+# WinForms poll is stuck inside Get-BobTrayHover peer DNS/UNC.
+# Event Action runs in its own runspace: re-dot BobTrayDialogs each tick.
+$script:trayWorkerSyncTimer = New-Object System.Timers.Timer
+$script:trayWorkerSyncTimer.Interval = 10000
+$script:trayWorkerSyncTimer.AutoReset = $true
+$script:trayWorkerSyncTimer.SynchronizingObject = $null
+$script:trayWorkerSyncMsg = [pscustomobject]@{
+    Root    = $RepoRoot
+    Dialogs = (Join-Path $RepoRoot 'tools\BobTrayDialogs.ps1')
+}
+$script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorkerSyncTimer -EventName Elapsed -Action {
+    try {
+        $msg = $Event.MessageData
+        if (-not $msg -or -not $msg.Root) { return }
+        if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) { . $msg.Dialogs }
+        if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
+            [void](Sync-BobTrayStatusWorkersFromDigest -Root ([string]$msg.Root) -TimeoutSec 8)
+        }
+    }
+    catch { }
+} -MessageData $script:trayWorkerSyncMsg
+$script:trayWorkerSyncTimer.Start()
 
 # t810u: remote "!startworker" - heartbeat + consume the ear's queued requests (the ear runs in session 0 and cannot open a window).
 $script:startWorkerDir = Get-BobTrayStartWorkerDir -Root $RepoRoot
@@ -3036,6 +3068,11 @@ $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
 [System.Windows.Forms.Application]::Run($ctx)
 $poll.Stop(); $flash.Stop(); $pulse.Stop(); $pulseOff.Stop(); $startWorkerTimer.Stop()
+try {
+    if ($script:trayWorkerSyncTimer) { $script:trayWorkerSyncTimer.Stop(); $script:trayWorkerSyncTimer.Dispose() }
+    if ($script:trayWorkerSyncSub) { Unregister-Event -SourceIdentifier $script:trayWorkerSyncSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayWorkerSyncSub -Force -ErrorAction SilentlyContinue }
+}
+catch { }
 try { Remove-Item -LiteralPath (Join-Path $script:startWorkerDir 'tray.alive') -Force -ErrorAction SilentlyContinue } catch { }
 # Exit path (menu Exit/Restart already announced+logout). Idempotent; skip second announce.
 # t798u: Exit already stopped ircBob (detached); the slow logout/kill path is only for Restart and external stops.
