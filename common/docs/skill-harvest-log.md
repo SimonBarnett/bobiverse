@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - job-uat drop needs-mrb1 GIVEUP gate (FR #1830)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvested UAT gates must not teach ACK/GIVEUP wait-for-needs-mrb1 | bobiverse-bob-job-uat: CAST IRON ban; human gate is needs-human only (with #1717/#1526). |
+
 ## 2026-10-04 - Harvest intake links existing PR (FR #1812)
 
 | Lesson | Fix |
@@ -270,4 +276,4 @@ Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #
 | parent_of after proc.wait() empty | Capture create-parent at start_agent (FR #1643 / PR #1658) |
 | Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
 
-Books: obiverse-bob-worker, obiverse-bob-troubleshooting.
+Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
