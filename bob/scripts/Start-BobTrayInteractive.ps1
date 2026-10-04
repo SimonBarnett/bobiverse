@@ -15,7 +15,8 @@ param(
     [string]$RunAsUser = '',
     [switch]$RunNow,
     [switch]$RegisterOnly,
-    # #32: RunNow must not kill seats / Grok Bot. The persistent logon task keeps the normal tidy.
+    # #32 / FR #1636: SkipTidy is the default for ONLOGON + Startup shortcuts so logon/autostart
+    # does not kill seats / Grok Bot. TipForm menu Restart remains the explicit "tidy everything" path.
     [switch]$SkipTidy
 )
 
@@ -41,7 +42,9 @@ if (-not $MachineId) {
 }
 
 $ps = (Get-Command powershell.exe).Source
-$tr = ('"{0}" -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File "{1}" -InstallRoot "{2}" -MachineId {3} -ForceNew' -f $ps, $tray, $InstallRoot, $MachineId)
+# FR #1636: persistent ONLOGON / Startup always -ForceNew -SkipTidy (replace prior tray only; keep seats).
+$trayArgsPersistent = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId {0} -ForceNew -SkipTidy" -f $MachineId
+$tr = ('"{0}" {1}' -f $ps, $trayArgsPersistent)
 
 # Prefer explicit user; else Administrator when present; else current user.
 if (-not $RunAsUser) {
@@ -57,12 +60,12 @@ cmd /c "schtasks /Delete /TN `"$TaskName`" /F >nul 2>&1" | Out-Null
 # Workgroup Admin ONLOGON may need a password; prefer Register-ScheduledTask when available.
 $created = $false
 try {
-    $action = New-ScheduledTaskAction -Execute $ps -Argument ("-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId {0} -ForceNew" -f $MachineId)
+    $action = New-ScheduledTaskAction -Execute $ps -Argument $trayArgsPersistent
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $RunAsUser
     $principal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
     $created = $true
-    Write-Host ("INFO Register-ScheduledTask {0} user={1}" -f $TaskName, $RunAsUser)
+    Write-Host ("INFO Register-ScheduledTask {0} user={1} (ForceNew+SkipTidy FR #1636)" -f $TaskName, $RunAsUser)
 } catch {
     Write-Host ("WARN Register-ScheduledTask: {0}" -f $_.Exception.Message)
     $create = cmd /c "schtasks /Create /TN `"$TaskName`" /SC ONLOGON /RU `"$RunAsUser`" /RL LIMITED /IT /F /TR $tr"
@@ -70,23 +73,8 @@ try {
     if ($LASTEXITCODE -eq 0) { $created = $true }
 }
 if ($RunNow -and -not $RegisterOnly) {
-    if ($created -and $SkipTidy) {
-        # One-shot interactive task with -SkipTidy (deleting a task does not stop its running process).
-        $onceName = "$TaskName-once"
-        try {
-            $onceArg = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId {0} -ForceNew -SkipTidy" -f $MachineId
-            $onceAct = New-ScheduledTaskAction -Execute $ps -Argument $onceArg
-            $oncePri = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
-            Register-ScheduledTask -TaskName $onceName -Action $onceAct -Principal $oncePri -Force | Out-Null
-            Start-ScheduledTask -TaskName $onceName
-            Write-Host ("INFO started {0} (SkipTidy)" -f $onceName)
-            Start-Sleep -Seconds 8
-        } catch {
-            Write-Host ("WARN one-shot SkipTidy tray start failed: {0}" -f $_.Exception.Message)
-        } finally {
-            Unregister-ScheduledTask -TaskName $onceName -Confirm:$false -ErrorAction SilentlyContinue
-        }
-    } elseif ($created) {
+    if ($created) {
+        # Persistent task already has SkipTidy; RunNow just starts it (seats/Grok Bot kept).
         $run = cmd /c "schtasks /Run /TN `"$TaskName`""
         Write-Host ("INFO schtasks run {0}: {1}" -f $TaskName, (($run | Out-String).Trim()))
     }
@@ -97,11 +85,11 @@ if ($RunNow -and -not $RegisterOnly) {
         $ws = New-Object -ComObject WScript.Shell
         $s = $ws.CreateShortcut($lnk)
         $s.TargetPath = $ps
-        $s.Arguments = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew"
+        $s.Arguments = $trayArgsPersistent
         $s.WorkingDirectory = $InstallRoot
-        $s.Description = 'bob TipForm (interactive)'
+        $s.Description = 'bob TipForm (interactive; SkipTidy FR #1636)'
         $s.Save()
-        Write-Host "INFO Startup shortcut $lnk"
+        Write-Host "INFO Startup shortcut $lnk (SkipTidy)"
     }
 }
 $ErrorActionPreference = $prevEap
