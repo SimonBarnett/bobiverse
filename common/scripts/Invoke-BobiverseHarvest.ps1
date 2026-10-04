@@ -93,14 +93,25 @@ function Get-IntakeHttpStatus {
     param($ErrorRecord)
     $ex = $ErrorRecord.Exception
     while ($null -ne $ex) {
-        if ($ex.Response -and $ex.Response.StatusCode) {
-            try { return [int]$ex.Response.StatusCode } catch { }
-            try { return [int]$ex.Response.StatusCode.value__ } catch { }
+        # FR #1842: under Set-StrictMode, bare $ex.Response throws when the property is absent.
+        $resp = $null
+        if ($null -ne $ex.PSObject -and $ex.PSObject.Properties['Response']) {
+            try { $resp = $ex.Response } catch { $resp = $null }
+        }
+        if ($resp) {
+            $code = $null
+            if ($resp.PSObject.Properties['StatusCode']) {
+                try { $code = $resp.StatusCode } catch { $code = $null }
+            }
+            if ($null -ne $code) {
+                try { return [int]$code } catch { }
+                try { return [int]$code.value__ } catch { }
+            }
         }
         $ex = $ex.InnerException
     }
     $detail = ''
-    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+    if ($null -ne $ErrorRecord.PSObject -and $ErrorRecord.PSObject.Properties['ErrorDetails'] -and $ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.PSObject.Properties['Message']) {
         $detail = [string]$ErrorRecord.ErrorDetails.Message
     }
     if ($detail -match '"error"\s*:\s*"repo_not_allowed"' -or $detail -match 'repo_not_allowed') {
