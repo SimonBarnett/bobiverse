@@ -1,4 +1,4 @@
-﻿# FR #345 (pairs AgentMonitor #97): tray-side watch seat slot / IRC home helpers.
+ï»¿# FR #345 (pairs AgentMonitor #97): tray-side watch seat slot / IRC home helpers.
 # Dot-source from Watch-BobTray / Start-BobWatchWorker / tests.
 # Never starts live monitors from this file alone.
 
@@ -343,13 +343,14 @@ function Build-BobWatchSeatLaunchArgs {
     # Watch host stays Hidden (tray child). Agent TUI must be visible for human
     # interaction: AgentMonitor -Windows on => AgentTuiWindowStyle Normal.
     # CAST IRON (Simon 2026-09-27): never -Windows off from the tray Agents menu.
-    $args = @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-        '-File', $ScriptPath,
-        '-WatchWorker', $kindFlag,
-        '-Windows', 'on',
-        '-IrcHome', $IrcHome
-    )
+    if ($ScriptPath -match '\.exe$') {
+        $args = @('-WatchWorker', $kindFlag, '-Windows', 'on', '-IrcHome', $IrcHome)
+    } else {
+        $args = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', $ScriptPath, '-WatchWorker', $kindFlag, '-Windows', 'on', 'IrcHome', $IrcHome
+        )
+    }
     if ($New) { $args += '-New' }
     if ($Cwd) { $args += @('-Cwd', $Cwd) }
     if ($Kind -eq 'cursor') {

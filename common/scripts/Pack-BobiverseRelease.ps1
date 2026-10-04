@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+ï»¿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Stage + WiX-pack jeeves, bob, and/or airc MSIs for SimonBarnett/bobiverse releases.
@@ -265,6 +265,11 @@ function Stage-Product([string]$Name) {
             # Drop binary .lnk shortcuts from foreign trees (recreated by Install if needed)
             Get-ChildItem -Path $wahDest -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
                 Remove-Item -Force -ErrorAction SilentlyContinue
+            $buildWatcher = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobWatcher.ps1')
+            $watcherExe = (& $buildWatcher -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+            if (-not $watcherExe -or -not (Test-Path -LiteralPath $watcherExe)) { throw 'Build-BobWatcher.ps1 did not produce Watch-AgentHealth.exe' }
+            Copy-Item -LiteralPath $watcherExe -Destination (Join-Path $wahDest 'Watch-AgentHealth.exe') -Force
+            Write-Host 'INFO bob staged Watch-AgentHealth.exe'
             Write-Host "INFO bob staged Watch-AgentHealth from $wahSrc"
         } else {
             Write-Host 'WARN bob pack: Watch-AgentHealth source missing (Desktop install will skip)'
