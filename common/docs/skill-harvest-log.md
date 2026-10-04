@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Conflict-marker CAST IRON before merge (FR #1634 / harvest #1657)
+
+| Lesson | Fix |
+|--------|-----|
+| Run check_conflict_markers.py before every gh pr merge; merge origin/main into behind FR branches first; close harvest twins as not planned; Duplicates closed body nit OK without a fix PR when tests green | Documented in `bobiverse-bob-job-mrb` + FR pointer. Product/CI: PR #1640 |
+
 ## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
 
 | Lesson | Fix |
