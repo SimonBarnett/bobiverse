@@ -2,7 +2,7 @@ r"""FR #1704: the agent-folder skill sync must rewrite only a bare `.\scripts\`,
 
 `$t.Replace('.\scripts\', '..\scripts\')` turned an already-correct `..\scripts\` into `...\scripts\`
 (broken Clear-BobiverseJobWorktrees path in the installed worker skills). Also pins the PowerShell BOMs
-(a double-encoded BOM `ï»¿` made Pack-BobiverseRelease.ps1 unparsable on Windows PowerShell 5.1).
+(a double-encoded BOM made Pack-BobiverseRelease.ps1 unparsable on Windows PowerShell 5.1).
 """
 import re
 import subprocess
@@ -41,4 +41,25 @@ def test_powershell_sources_have_no_double_encoded_bom():
     bad = [str(p.relative_to(ROOT)) for p in ROOT.rglob("*.ps1")
            if "docs" not in p.relative_to(ROOT).parts[:2] and ".git" not in p.parts
            and p.read_bytes()[:6] == MOJIBAKE_BOM]
-    assert not bad, f"double-encoded BOM (ï»¿) in: {bad}"
+    assert not bad, f"double-encoded BOM (c3afc2bbc2bf) in: {bad}"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="runs Windows PowerShell")
+def test_skill_scripts_path_rewrite_is_idempotent_and_leaves_triple_alone():
+    """Hostile: second pass must not grow dots; existing ...\\scripts\\ must not become ....\\scripts\\."""
+    expr = _rewrite_expr()
+    sample = r".\scripts\A.ps1 ..\scripts\B.ps1 ...\scripts\C.ps1"
+    ps = (
+        "$t = '" + sample.replace("'", "''") + "'; "
+        "$t = " + expr + "; "
+        "$t = " + expr + "; "
+        "$t | Write-Output"
+    )
+    run = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    out = run.stdout.strip()
+    assert "....\\scripts\\" not in out, out
+    assert "..\\scripts\\A.ps1" in out, out
+    assert "..\\scripts\\B.ps1" in out, out
+    assert "...\\scripts\\C.ps1" in out, out
+    assert not re.search(r"(?<!\.)\.\\scripts\\A", out), out
