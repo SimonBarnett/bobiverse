@@ -153,3 +153,11 @@ Books: `bobiverse-jeeves-monitor`, `bobiverse-bob`.
 | MSI upgrade invents ConsoleHome | Read live AppParameters, then airc-install.json, before profile defaults (FR #1552 / PR #1570) |
 
 Books: `airc/.grok/skills/bobiverse-airc/SKILL.md`, `airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md`.
+## 2026-10-04 - Sync ARP VERSION truth (harvest #1589 / FR #1565)
+
+| Lesson | Fix / book |
+|---|---|
+| Clone VERSION clobbers MSI stamp on sync | ARP DisplayVersion is truth; Sync heals InstallRoot VERSION and skips newer clone stamps (PR #1577) |
+| Tests poisoned by live ARP | Use -ArpVersionOverride none (or equivalent) in unit tests |
+
+Book: `common/.grok/skills/bobiverse-fleet-ops/SKILL.md`. Canonical #1589; twin #1595.
