@@ -36,7 +36,7 @@ Console input injection into the raw-mode Cursor / Grok TUIs; a real Ergo regist
 
 ## UAT job flow (t820u, per repo since t853u)
 
-UAT is per **repo**: Jeeves assigns `UAT owner/repo#0` once - and only when - every issue of the repo is closed (excluding needs-human, boards/mrb-home, harvest/skill records) and every PR is merged; never one UAT per PR. The seat should have implemented none of the cycle's merged PRs. The worker's `UAT` job (skill `bobiverse-bob-job-uat`, with its mermaid diagram) verifies the merged product against the **VISION** (`docs/vision.md`) and any specs, then branches on the gaps:
+UAT is per **repo**: Jeeves assigns `UAT owner/repo#0` once - and only when - every issue of the repo is closed (excluding needs-human, boards/mrb-home, harvest/skill records) and every PR is merged; never one UAT per PR. The seat should have implemented none of the cycle's merged PRs. The worker's `UAT` job (skill `bobiverse-bob-job-uat`, with its mermaid diagram) verifies the merged product against the **VISION** (`bob/VISION.md`, FR #1615; fleet umbrella remains `common/docs/vision.md`) and any specs, then branches on the gaps:
 **gaps** -> one FR per gap filed through the intake (`Report-BobiverseIntakeIssue.ps1 -Kind fr`), verdict `UAT FAIL`, **no release**; **no gaps** -> documentation and READMEs updated (one docs PR), `VERSION` bumped, `Pack-BobiverseRelease.ps1`, `gh release create`, verdict `UAT PASS`.
 The wire contract is unchanged: `ACK UAT owner/repo#0`, then `DONE UAT owner/repo#0 PASS|FAIL [url]` (or `NACK` / `GIVEUP`) in the worker's own `#<machine>`; Jeeves/the chair only does queue bookkeeping and never verifies, files or releases.
 

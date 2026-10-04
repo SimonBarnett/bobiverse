@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bob tray tip — error</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; background: #1e1e1e; color: #eee; margin: 2rem; }
+    .tip { background: #2d2d2d; border: 1px solid #a44; padding: 1rem 1.25rem; max-width: 22rem; }
+    h1 { font-size: 1rem; margin: 0 0 0.75rem; color: #f88; }
+    .row { font-size: 0.9rem; margin: 0.25rem 0; color: #faa; }
+  </style>
+</head>
+<body>
+  <div class="tip" data-state="error">
+    <h1>Bob Fleet — digest stale</h1>
+    <div class="row">Hover/status sync timed out (peer digest).</div>
+    <div class="row">Worker lines may be stale until Sync-BobTrayStatusWorkersFromDigest runs.</div>
+  </div>
+</body>
+</html>
