@@ -45,18 +45,18 @@ Harvested into `.grok/skills/bobiverse-{jeeves,bob,airc}` + `docs/post-install.m
 | Lesson | Fix |
 |--------|-----|
 | `Start-Jeeves` / `--channel` + PowerShell `#` comment | `irc_agent.py`: `--channel` optional when `--chair` |
-| MSI LocalSystem ChairHome â†’ `C:\Users\Default\â€¦` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
+| MSI LocalSystem ChairHome → `C:\Users\Default\â€¦` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
 | Legacy `BobJeeves` + `ircJeeves` both Running | `Disable-BobiverseLegacyBobJeeves` on install |
 | `CryptUnprotectData` with LocalSystem + Admin identity | post-install + skill: ObjectName / park identity interim |
-| Crash-loop stderr flooding airc console | NSSM AppStdout/AppStderr â†’ `C:\ai\jeeves\logs\` |
+| Crash-loop stderr flooding airc console | NSSM AppStdout/AppStderr → `C:\ai\jeeves\logs\` |
 | Leftover `AircConsole` beside bobiverse `Airc` | `Install-Airc` **removes** `AircConsole` from SCM |
 | Legacy `BobJeeves` left Stopped/Disabled in services.msc | `Remove-BobiverseLegacyService` deletes SCM entry (tree kept) |
 | Remote ops via bob outbox PRIVMSG to `*_console` | bobiverse-bob / bobiverse-airc skills |
 | Duplicate MSI tray vs Watch-BobTray | already 0.1.5 (#14); documented again |
 
-VERSION â†’ **0.1.6** (pack when shipping).
+VERSION → **0.1.6** (pack when shipping).
 
-## 2026-09-30 â€” DEV1 TipForm companion durable start
+## 2026-09-30 — DEV1 TipForm companion durable start
 
 Harvested into .grok/skills/bobiverse-bob + docs/post-install.md + tray launcher:
 
@@ -69,9 +69,9 @@ Harvested into .grok/skills/bobiverse-bob + docs/post-install.md + tray launcher
 | TipForm recycle JIT `PipelineStoppedException` | CatchException before Controls; swallow on ticks (agentic_build Watch-BobTray) |
 | Version visible on card | TipForm footer `bob {ver}` |
 
-VERSION â†’ **0.1.8** (pack when shipping).
+VERSION → **0.1.8** (pack when shipping).
 
-## 2026-09-30 â€” Jeeves webhooks + digest roster + start ff-only (0.1.9)
+## 2026-09-30 — Jeeves webhooks + digest roster + start ff-only (0.1.9)
 
 | Lesson | Fix |
 |--------|-----|
@@ -79,10 +79,10 @@ VERSION â†’ **0.1.8** (pack when shipping).
 | Intake/jira on ionos | `bobcallback` `/bob/v1/intake` + `/bob/v1/jira`; durable `webhook_queue`; announce `#bobiverse` |
 | Harvest without GitHub | shared `.grok/skills/harvest` in every MSI; intake `kind` default `issue` |
 | Product MSI books split | Pack stages per-product docs/skills/AGENTS; jeeves has no bob seat/TipForm |
-| Start-time update | `Sync-BobiverseFromRepo` ff-only clone â†’ sync install tree; MSI update is fallback |
+| Start-time update | `Sync-BobiverseFromRepo` ff-only clone → sync install tree; MSI update is fallback |
 | Install start failures | `Report-BobiverseIntakeIssue` from Install-Jeeves/Bob/Airc |
 
-VERSION â†’ **0.1.9**.
+VERSION → **0.1.9**.
 ## 2026-09-30 — TipForm Restart→ircBob; tray never Sync/ff (0.1.10)
 
 | Lesson | Fix |
