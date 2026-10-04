@@ -30,6 +30,7 @@ CHECKS = (
     "auto_feed",
     "auto_focus",
     "focus_present",
+    "focus_redundant_items",
     "seats_stuck_doing",
 )
 PS_WRAPPERS = (
@@ -42,6 +43,7 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorAutoFeed.ps1",
     "Test-JeevesMonitorAutoFocus.ps1",
     "Test-JeevesMonitorFocusPresent.ps1",
+    "Test-JeevesMonitorFocusRedundantItems.ps1",
     "Test-JeevesMonitorSeatsStuckDoing.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",

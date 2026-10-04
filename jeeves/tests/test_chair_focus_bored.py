@@ -329,9 +329,13 @@ def test_existing_ionos_style_files_are_read(_home):
 
 
 def test_bare_unfocus_and_all(_home):
-    fi.handle_focus_cmd(_home, "o/b")
+    # FR #1520: item focus only sticks when the repo is not already focused.
     fi.handle_focus_cmd(_home, "o/b#1")
     assert "removed" in fi.handle_unfocus_cmd(_home, "o/b#1")[0]
+    fi.handle_focus_cmd(_home, "o/b")
+    # Item under an already-focused repo is skipped (per-repo policy).
+    skipped = fi.handle_focus_cmd(_home, "o/b#1")
+    assert any("skipped" in ln.lower() or "1520" in ln for ln in skipped)
     assert "removed" in fi.handle_unfocus_cmd(_home, "o/b")[0]
     fi.handle_focus_cmd(_home, "o/q")
     assert "cleared" in fi.handle_unfocus_cmd(_home, "all")[0]

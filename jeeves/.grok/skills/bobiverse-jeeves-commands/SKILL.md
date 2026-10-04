@@ -35,7 +35,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!resync` | owner, ears | refresh roster from ChanServ + run the authenticated GitHub FR/MRB resync now; purges ignored repos |
 | `!sweep [#chan]` | owner, ears | re-plan +h/+o grants in a channel |
 | `!ignore <repo>`, `!unignore <repo>`, `!ignored` | owner/ears (ignored: anyone) | suppress/resume a repo for the whole chair |
-| `!focus [strict on\|off]\|[n\|high\|medium\|low] <repo\|owner/repo#N>`, `!unfocus <repo\|owner/repo#N\|all>` | owner, ears, allowlist (`JEEVES_FOCUS_MUTATORS`) | priority-sort `!list` and assign-on-`!bored` |
+| `!focus [strict on\|off]\|[n\|high\|medium\|low] <repo\|owner/repo#N>`, `!unfocus <repo\|owner/repo#N\|all>` | owner, ears, allowlist (`JEEVES_FOCUS_MUTATORS`) | priority-sort `!list` and assign-on-`!bored`. Prefer **repo-level** `!focus high owner/repo` (FR #1520); item `owner/repo#N` is skipped when that repo is already focused, and `!resync` prunes leftover items |
 | `!assign <worker-nick> <repo> <FR\|MRB\|UAT> <num>` | owner, ears | make Jeeves post the normal assign line to one idle seat (seats only obey Jeeves); the seat's ACK accepts it. Rules: seat not busy, no self-MRB/UAT (seat ledger), row queued + unaccepted, not needs-human/cooldown/given-up/machine-pinned. UAT is per repo: `UAT 0` = the repo-level UAT, queued only when every issue is closed and every PR merged. Reply by PM |
 | `!recycle [machine\|all\|dry-run [machine\|all]]` | owner, ears | route a seat recycle (bare/all = fleet; 120 s cooldown). `dry-run` only prints the plan. `!recycle jeeves` restarts `ircJeeves` only |
 | `!register <machine>` | operators | ChanServ REGISTER `#<machine>` |
