@@ -1,5 +1,21 @@
 # Skill harvest log
 
+## 2026-10-04 - Skills-only promote from worktree (harvest #2318)
+
+| Lesson | Fix |
+|--------|-----|
+| Promote Jeeves maintenance skills while install main tip is dirty with local gitclaim/callback experiments | Worktree from `origin/main`; skills/docs only; leave dirty product scripts uncommitted on the install tip. Sibling playbook PR #2317 |
+
+Books: harvest-agent-skills.
+
+## 2026-10-04 - Jeeves silent to operator / unverified WHOIS (harvest #2179)
+
+| Lesson | Fix |
+|--------|-----|
+| Operator sees Jeeves "not responding" while shop still assigns | Check `chan-privs` for unverified WHOIS on the operator nick; `Restart-Service ircJeeves` to refresh; do not restart BobIrcd; leave worker seats alone |
+
+Books: bobiverse-jeeves-troubleshooting.
+
 ## 2026-10-04 - Harvest promote MRB merge order (harvest #2296)
 
 | Lesson | Fix |
@@ -414,3 +430,14 @@ Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
 | Lesson | Fix |
 |--------|-----|
 | When open PRs are missing from the MRB queue because git-claim.lock / token 403 blocked resync: enqueue_unaccepted via gh pr list; clear_seat_doing stale busy | Documented in jeeves-troubleshooting + jeeves-monitor. Product root #1811 → #1993. |
+
+## 2026-10-04 - nothing queued under strict focus + ledger giveup (harvest #2309 / #2314)
+
+| Lesson | Fix / book |
+|--------|------------|
+| `nothing queued` / `bored empty` while queue.json has dozens of unaccepted rows | Diff unaccepted vs in-focus vs `offer_focus_top` per nick: strict OOF, self-MRB, same-machine `review_blocked`, `require_machine`, and `seat-ledger.json` giveups. |
+| Clearing only queue `giveup_seats`/`needs_human` leaves seat empty | Also clear that seat under durable `seat-ledger.json` giveup keys. |
+| Immediate ACK then GIVEUP after ledger clear | Do **not** re-clear ledger — that feeds a GIVEUP loop; leave stamp and file the loop. |
+| Sticky MRB `offered_to` rebroadcast with no ACK | Other-machine non-ACK blocks same-machine siblings via `review_blocked`; report/recycle that seat. |
+
+Books: `bobiverse-jeeves-monitor`, `bobiverse-jeeves-troubleshooting`. Issues: #2309, #2314; living FR #1993 append.

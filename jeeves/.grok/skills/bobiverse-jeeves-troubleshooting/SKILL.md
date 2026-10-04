@@ -28,8 +28,12 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Symptom | Diagnosis / fix |
 |---|---|
 | Commands "do nothing" for the ear | The ear is only recognised as `bob-<machine>` for a machine on the roster. Check `!status roster:`; `!resync`; confirm the SASL account is logged in (`chan-privs` logs). |
+| Operator: Jeeves "not responding" but shop still assigns | Service can be healthy and offering while the **operator nick** is stuck unverified (WHOIS / account not linked). Check `chan-privs` / chair logs for unverified WHOIS on that nick; `Restart-Service ircJeeves` to refresh account/priv state. Leave seats alone; **never** restart `BobIrcd`/Ergo (harvest #2179). Dual BobCallback / `DigestLockBusy` is a separate heal path. |
 | Replies never arrive | Replies go by PM (not the channel). The chair logs `git-help pm nick=... kind=ear`; `cmd-trace.log` has the text. Rate limit: `!help`/`!list` 30 s per nick. |
 | `!list` says "queue empty" but `!status` has unaccepted items | `!focus strict on` hides everything not focused. `!focus strict off` (and restore afterwards). |
+| Operator: `nothing queued` / `bored empty` but queue.json is full | Strict focus + per-seat gates. Count in-focus unaccepted, then `offer_focus_top` per idle nick. Common blockers: self-MRB, same-machine `review_blocked`, `require_machine`, row+`seat-ledger.json` giveups, sticky `offered_to` with no ACK (harvest #2243 / #2309). |
+| Cleared row `giveup_seats` but seat still empty | Also clear that seat under `seat-ledger.json` → `giveup` → `owner/repo#N`. After immediate ACK+GIVEUP, **stop** clearing — leave ledger and report the loop (harvest #2314). |
+| Sibling seat empty while other-machine holds sticky MRB offer | Same-machine MRB block while another live machine exists is correct; unblock is ACK/recycle on the offered machine, not self-MRB (harvest #2309). |
 | Operator: many open GitHub issues/PRs "not assigning" | Raw open counts are not the chair queue. Check `ungated_offerable` + shop `!bored` traces before claiming the chair is broken (harvest #1581). Monitor must not `!assign`. |
 | `GRANT +h` repeated every 30-60 s | Not the chair: the ear is reconnecting. See the ear restart loop (missing `--host`). The chair caps at 3 grants/10 min then WARNs once; `removed by ChanServ` WARN = a ChanServ/AMODE fight. |
 | `chanserv-sync timeout; keeping last good roster` | Two forced syncs overlapped or Ergo was slow; the last roster stays. Harmless once. |
