@@ -118,3 +118,53 @@ def test_ledger_giveup_seats_excluded_from_escape_pool(tmp_path, monkeypatch):
     assert not gitclaim.review_blocked_for_author(
         enriched, "win-mpre8vi4u6u-20596", live, ledger=led
     )
+
+
+def test_exact_author_stays_blocked_when_one_other_not_giveup(tmp_path, monkeypatch):
+    """Hostile (MRB #1422): exact-author escape requires EVERY other live seat gave up."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _digest(tmp_path)
+    uat = _uat_row()
+    # Only two of three non-author seats gave up; 15656 is still eligible-ish.
+    for nick in ("marchhare-41928", "marchhare-35600"):
+        gitclaim.ledger_giveup(tmp_path, nick, REPO, "UAT", "#0")
+    gitclaim.ledger_touch(
+        tmp_path, "win-mpre8vi4u6u-20596", REPO, "FR",
+        ["simonbarnett/bobiverse#1010", "simonbarnett/bobiverse#0"],
+    )
+    led = gitclaim.ledger_load(tmp_path)
+    live = gitclaim.live_seat_nicks(tmp_path)
+    enriched = dict(uat)
+    enriched["author_seat"] = "win-mpre8vi4u6u-20596"
+    enriched["implementer_seat"] = "win-mpre8vi4u6u-20596"
+    assert gitclaim.review_blocked_for_author(
+        enriched, "win-mpre8vi4u6u-20596", live, ledger=led
+    )
+
+
+def test_sole_live_exact_author_still_blocked(tmp_path, monkeypatch):
+    """Hostile (MRB #1422): FR #628 — sole live exact author stays blocked for repo UAT."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _roster(tmp_path)
+    doc = bobreport.empty_digest()
+    doc["machines"]["win-mpre8vi4u6u"] = {
+        "id": "win-mpre8vi4u6u",
+        "online": True,
+        "workers": {},
+        "worker_list": [
+            {"nick": "win-mpre8vi4u6u-20596", "state": "idle", "work": "", "updated": "2026-10-04T03:00:00Z"},
+        ],
+    }
+    bobreport.save_digest(tmp_path, doc)
+    uat = _uat_row()
+    gitclaim.ledger_touch(
+        tmp_path, "win-mpre8vi4u6u-20596", REPO, "FR",
+        ["simonbarnett/bobiverse#1010", "simonbarnett/bobiverse#0"],
+    )
+    led = gitclaim.ledger_load(tmp_path)
+    live = gitclaim.live_seat_nicks(tmp_path)
+    enriched = dict(uat)
+    enriched["author_seat"] = "win-mpre8vi4u6u-20596"
+    assert gitclaim.review_blocked_for_author(
+        enriched, "win-mpre8vi4u6u-20596", live, ledger=led
+    )
