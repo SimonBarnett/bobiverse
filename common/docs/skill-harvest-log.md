@@ -1,6 +1,12 @@
 # Skill harvest log
 
 
+## 2026-10-04 - living FR re-file when intake is harvest-only (harvest #2001)
+
+| Lesson | Fix |
+|--------|-----|
+| If intake FR vanishes into harvest-only receipts, re-file with gh issue create --label feature-request and treat that number as the living FR | Documented in harvest + harvest-agent-skills. Example living FR: #1993 jeeves.exe. |
+
 ## 2026-10-04 - Quiet MSI Node soft-fail under SYSTEM (FR #1825 / harvest #2020)
 
 | Lesson | Fix |
