@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Honor require_machine stamps with ACK/GIVEUP (harvest #1688)
+
+| Lesson | Fix |
+|--------|-----|
+| Chair offered require_machine=ionos work to marchhare/flamingo; seats must not attempt it | ACK then GIVEUP with require_machine=<mid> in the reason; file intake for wrong-shop offers (class of #1687). Documented in bob-job-fr + bob-job-irc. |
+
 ## 2026-10-04 - Agent-folder path rewrite lookbehind + Pack BOM (FR #1704 / harvest #1711)
 
 | Lesson | Fix |
