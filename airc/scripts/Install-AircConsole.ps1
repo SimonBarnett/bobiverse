@@ -89,21 +89,42 @@ if ($commonPs1 -and (Test-Path -LiteralPath $commonPs1) -and -not (Get-Command G
 
 # FR #1552: capture existing service AppParameters BEFORE tear-down so upgrade/reinstall
 # keeps ConsoleHome / MachineId / PasswordFile (never default to the invoking profile).
+# Fall back to InstallRoot\config\airc-install.json when the service registry is empty.
 $priorAppParams = ''
 $priorId = $null
 if (Get-Command Get-BobiverseServiceAppParameters -ErrorAction SilentlyContinue) {
     $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName $ServiceName
     $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
-    if ($priorAppParams) {
-        Write-Host "INFO FR #1552: preserving identity from existing $ServiceName AppParameters"
-        if (-not $ConsoleHome -and $priorId.ConsoleHome) { $ConsoleHome = $priorId.ConsoleHome }
-        if (-not $MachineId -and $priorId.MachineId) { $MachineId = $priorId.MachineId }
-        if (-not $PasswordFile -and $priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
-            $PasswordFile = $priorId.PasswordFile
+}
+if ((-not $priorAppParams) -and $scriptDirEarly) {
+    $installRootGuess = Split-Path -Parent $scriptDirEarly
+    $snapPath = Join-Path $installRootGuess 'config\airc-install.json'
+    if (Test-Path -LiteralPath $snapPath) {
+        try {
+            $snap = Get-Content -LiteralPath $snapPath -Raw -Encoding utf8 | ConvertFrom-Json
+            $priorId = [pscustomobject]@{
+                ConsoleHome   = [string]($snap.ConsoleHome)
+                MachineId     = [string]($snap.MachineId)
+                PasswordFile  = [string]($snap.PasswordFile)
+                OperatorsFile = [string]($snap.OperatorsFile)
+                Launcher      = [string]($snap.Launcher)
+                Raw           = ''
+            }
+            Write-Host "INFO FR #1552: no AppParameters — using $snapPath"
+        } catch {
+            Write-Host ("WARN airc-install.json read: {0}" -f $_.Exception.Message)
         }
-        if (-not $Launcher -and $priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) {
-            $Launcher = $priorId.Launcher
-        }
+    }
+}
+if ($priorId -and ($priorId.ConsoleHome -or $priorId.MachineId -or $priorId.PasswordFile -or $priorId.Launcher -or $priorId.OperatorsFile)) {
+    Write-Host "INFO FR #1552: preserving identity from prior $ServiceName install"
+    if (-not $ConsoleHome -and $priorId.ConsoleHome) { $ConsoleHome = $priorId.ConsoleHome }
+    if (-not $MachineId -and $priorId.MachineId) { $MachineId = $priorId.MachineId }
+    if (-not $PasswordFile -and $priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
+        $PasswordFile = $priorId.PasswordFile
+    }
+    if (-not $Launcher -and $priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) {
+        $Launcher = $priorId.Launcher
     }
 }
 
