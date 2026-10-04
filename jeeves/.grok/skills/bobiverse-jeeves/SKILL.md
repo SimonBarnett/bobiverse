@@ -48,6 +48,8 @@ Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (com
 `registered_machines.py` (ChanServ roster mirror), `bobreport.py` (digest + chair outbox), `bobcallback.py` (webhooks),
 `intake.py` (intake + filing), `chair_health.py` (background jobs), `bob_recycle.py`.
 
+**Living architecture FR (harvest #1989 / FR #1993):** approved ionos chair plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: ionos` (and `needs-ionos` when stamped). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
+
 ## Chair background jobs (inside ircJeeves, no extra task)
 
 1. **Webhook health probe, every 30 min** (`chair_health.probe_cycle`): for BOTH `http://127.0.0.1:7700` and

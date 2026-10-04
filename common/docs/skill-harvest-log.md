@@ -19,6 +19,15 @@ Books: `common/scripts/gitclaim.py`. Related body-line pin: FR #1824.
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Living ionos architecture FR (harvest #1989 / FR #1993)
+
+| Lesson | Fix |
+|--------|-----|
+| Approved chair+HTTP / self-test plans for ionos | One bobiverse FR with require_machine: ionos; append WP evidence to the same body; do not twin FRs |
+
+Books: obiverse-jeeves. Living FR: #1993.
+
+
 ## 2026-10-04 - skill-harvest-log rebase keep-both (FR #1757 / #1750)
 
 | Lesson | Fix |
