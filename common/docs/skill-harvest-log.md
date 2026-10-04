@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - skill-harvest-log rebase keep-both (FR #1757 / #1750)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest PRs that touch skill-harvest-log.md must rebase onto main before MRB merge when parallel promotes landed; one fix PR must keep both dated sections | Documented in harvest-agent-skills + bobiverse-bob-job-mrb. Evidence: MRB #1741 FAIL-fixed via #1750 (TipForm + ionos-pin sections both kept). |
+
 ## 2026-10-04 - job-uat drop needs-mrb1 GIVEUP gate (FR #1830)
 
 | Lesson | Fix |
