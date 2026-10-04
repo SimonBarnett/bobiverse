@@ -8,6 +8,11 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 | Lesson | Fix |
 |--------|-----|
 | kind=harvest/skill with no files but body/title cites pull/N filed a second skill issue (filed_issue_fallback) and queued duplicate FR work | intake links existing PR (`linked_existing_pr`); log draft_pr_error; skip_fr `harvest_pr_summary` for via-intake+skill PR-opened receipts; harvest `-ExistingPrUrl` |
+## 2026-10-04 - Body-line require_machine pin (FR #1824 / #1843)
+
+| Lesson | Fix |
+|--------|-----|
+| Dedicated body line `require_machine: ionos` was ignored (FR #1508 blocked inline evidence); flamingo got ionos-only offers | Honor MULTILINE `^require_machine[:=]` pin lines in body cues; keep inline evidence unpinned |
 
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 

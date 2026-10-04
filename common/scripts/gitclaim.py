@@ -747,10 +747,12 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
         "gate",
     }
 )
-# Explicit cue ΓåÆ fleet machine id (normalized lowercase).
+# Explicit cue -> fleet machine id (normalized lowercase).
 # FR #1508: title/label cues vs body cues. Bare machine names / require_machine=
 # in an issue body often appear as evidence about *other* pins and must not
 # re-pin the filing itself (#1507 class).
+# FR #1824 / #1843: a *dedicated body line* ``require_machine: ionos`` (or ``=``)
+# is an intentional pin — honor it. Inline evidence prose still must not pin.
 _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bce-priority-dev1\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
@@ -765,6 +767,12 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bungated offerable\b.{0,120}\bidle seats?\b"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ionos\b"), "ionos"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ce-priority-dev1\b"), "ce-priority-dev1"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ce-priority-dev\b"), "ce-priority-dev1"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
     # agentic_fomprep WP0 live proof must run on DEV1
     (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
     (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
@@ -813,8 +821,8 @@ def infer_require_machine(
     """Return a fleet machine id the job must run on, or '' (FR #587).
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
-    title/body/line cues (WP0 live ΓåÆ ce-priority-dev1; needs-ionos / chair-outbox /
-    recycle|recompose Jeeves / prune queue.json ΓåÆ ionos; FR #587 / #852).
+    title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
+    recycle|recompose Jeeves / prune queue.json -> ionos; FR #587 / #852).
     """
     labs = labels or ()
     if isinstance(labs, str):
@@ -2092,7 +2100,7 @@ def mrb_row_offerable(
     """True when an MRB row has a resolvable pull URL (and optional live PR check).
 
     FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
-    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed ΓåÆ False).
+    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed -> False).
     """
     if _canon_task(row) != "MRB":
         return True
@@ -2169,7 +2177,7 @@ def github_pr_exists_checker(
     home: Path | None = None,
     cache: dict | None = None,
 ):
-    """Return ``pr_exists(repo, num)`` ΓåÆ True only for an **open** pull (FR #595 / #740).
+    """Return ``pr_exists(repo, num)`` -> True only for an **open** pull (FR #595 / #740).
 
     Merged or closed PRs still return HTTP 200 from GitHub; those must be False so
     seats are not re-offered MRB after DONE PASS/FAIL. Returns None when offline /
