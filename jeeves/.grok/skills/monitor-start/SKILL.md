@@ -5,6 +5,11 @@ description: >
 ---
 
 # monitor-start (FR #954)
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap to the intake webhook in the SAME turn.
+> 2. Use `scripts\Report-BobiverseIntakeIssue.ps1 -Repo <owner/name>` with what/where/evidence/fix; never put secrets in a filing.
+> 3. Before finishing a monitoring session run `Invoke-BobiverseHarvest.ps1 -Summary ... -Lesson ...`, then `-Flush`.
+> 4. Monitoring observes and reports; it never acts as chair, assigns seats, or edits the queue.
 
 **On start, with no user prompt, run this skill NOW.** Do not wait for Simon. Do not only list skills.
 
@@ -46,3 +51,6 @@ Title: short delay symptom. Body: what / where / evidence (script JSON / exit) /
 - Wait for a human prompt before the first check cycle
 - Act as chair or claim shop jobs
 - Conclude “no skills” because `.\skills` is missing — use `.grok\skills`
+
+- Use the intake webhook `https://irc.ntsa.uk/bob/v1/intake` (or the repo script) with what/where/evidence/fix; never put secrets in a filing.
+- Use the Bobiverse filing command with explicit `-Repo SimonBarnett/bobiverse`; never put secrets in a filing.

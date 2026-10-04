@@ -60,7 +60,7 @@ try {
     $action = New-ScheduledTaskAction -Execute $ps -Argument ("-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId {0} -ForceNew" -f $MachineId)
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $RunAsUser
     $principal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
     $created = $true
     Write-Host ("INFO Register-ScheduledTask {0} user={1}" -f $TaskName, $RunAsUser)
 } catch {

@@ -123,3 +123,9 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Unverified-WHOIS log line every minute | Verification pending for a nick | Throttled to once per 30 min; a persistent one means the nick has no NickServ account |
 | Tray missing / duplicated | Old installers / session-0 start | One Start Menu folder `Bobiverse`; tray starts only in an interactive session (ONLOGON task / Startup shortcut) |
 | Agent transcript shows Ergo/SASL password after `nssm get` | `AppEnvironmentExtra` dumped raw (FR #147) | Print env **key names only** (split on first `=`); never paste AppEnvironmentExtra values into logs, filings, or chat |
+
+## Harvested fleet-operation rules (skill records #1215-#1460)
+
+- Honor `require_machine` pins literally: a DEV1/ionos operation must be assigned to that capable seat, never to a convenient but incapable worker. Hard pins beat `any`; do not derive a pin from an ambiguous title.
+- On live Windows hosts, restart only the affected BobCallback task or `ircJeeves` service. Never restart BobIrcd/Ergo as a shortcut, and preserve queue/outbox evidence while recovering a callback or worker.
+- For upgrades and resync, verify the installed VERSION, clean/main worktree, fetch result, service/task state, and endpoint health; record an ALERT when fetch/ff/worktree state is stale.

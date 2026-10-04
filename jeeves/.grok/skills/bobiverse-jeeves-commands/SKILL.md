@@ -55,3 +55,9 @@ Append `PRIVMSG #bobiverse :!help` (UTF-8 no BOM, `\n`) to the ear's `home\outbo
 Read `<chair home>\cmd-trace.log` for timed replies and `logs\stdout.log` for `kind=ear` lines. Safe set: `!help`, `!status`,
 `!list`, `!filter fr`, `!ignored`, `!ignore zz-test/none` + `!unignore zz-test/none`, `!focus`, `!recycle dry-run`, `ping`.
 Restore any state you changed (`!focus strict on` if it was on). Never send `!recycle`, `!recycle <machine>` or `!bored` for real.
+
+## Harvested resync and deployment rules (skill records #1221-#1460)
+
+- Resync all GitHub issue pages, not only the newest 100; a pagination regression silently starves older FRs. Keep fetch timeout/retry and stale/off-main alerts enabled.
+- Before copying live scripts, ensure the install worktree is on `main` and clean; never let a leftover feature branch or failed fetch silently drift the live chair behind `origin/main`.
+- After a merged PR, fast-forward main, sync the installed tree, and restart only `ircJeeves`/the affected scheduled task. Verify the live endpoint and the relevant queue/monitor smoke before declaring success.
