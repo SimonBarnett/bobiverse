@@ -25,8 +25,15 @@ def test_bob_vision_has_required_sections():
         "harvest",
         "!bored",
         "relay",
+        "harvest hold",  # FR #1611 / MRB #1619 nits: align with bob-worker BoredEmitter
     ):
         assert needle in lower, f"VISION.md must mention {needle!r}"
+
+
+def test_bob_vision_utf8_no_bom():
+    raw = VISION.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), "VISION.md must be UTF-8 without BOM"
+    VISION.read_text(encoding="utf-8")  # round-trip
 
 
 def test_bob_vision_pack_validates():

@@ -16,7 +16,7 @@ LOCKED
 | S1 | Ear present | `ircBob` Running; nick `Bob-{mid}` on `#bobiverse` + `#{mid}` | `Get-Service ircBob`; `bob/home/irc.log` JOIN lines | Service stopped or shop not joined |
 | S2 | One-window worker | Tray **Agent** starts one `bob-worker.exe` = one console = one agent | `pytest bob/tests/test_bob_worker_020.py` one-window cases; no `CREATE_NEW_CONSOLE` for agent | Second console / orphan agent |
 | S3 | Inject submits | Jeeves `FROM` lines auto-submit in the TUI (no manual Enter) | `inject_console` gap ≥ 0.20s + double Enter; `test_fr1601_inject_submit_gap.py` | Line sits waiting for Enter (`relay: injected` but agent idle) |
-| S4 | Shop wire | Program posts `!bored`; agent writes ACK/DONE only to `#{mid}` outbox | `bobiverse-bob-job-irc`; worker.log `bored -> shop` | Model posts `!bored` or PRIVMSG nick/`#bobiverse` |
+| S4 | Shop wire | Program posts `!bored` (after DONE/NACK/GIVEUP harvest hold, FR #1611); agent writes ACK/DONE only to `#{mid}` outbox | `bobiverse-bob-job-irc`; worker.log `bored -> shop` / `harvest-hold` | Model posts `!bored` or PRIVMSG nick/`#bobiverse`; immediate `!bored` before harvest |
 | S5 | CAST IRON harvest | Every gap/skill filed same turn via intake | `Report-BobiverseIntakeIssue.ps1`; AGENTS.md / skills lead with harvest rule | Findings left unfiled |
 
 LOCKED
@@ -79,8 +79,8 @@ Tray is the bob UI surface. HTML mocks document tip states for visual UAT later 
 - Ear nick `Bob-{machinename}`; worker nick `{machine}-{pid}`
 - Always-new agent (no `--resume` / `--continue`); one window per seat
 - Event-driven inject/relay; submit gap (`BOB_WORKER_SUBMIT_GAP_S`, default 0.20s) + second Enter
-- Shop wire: program `!bored`; agent ACK/DONE/NACK/GIVEUP on `#{machine}` only
-- CAST IRON harvest + intake every session; never print secrets
+- Shop wire: program `!bored` after harvest hold on DONE/NACK/GIVEUP (FR #1611); agent ACK/DONE/NACK/GIVEUP on `#{machine}` only
+- CAST IRON harvest + intake every session (before the program's next `!bored`); never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only the product service concerned
 
 ## UNKNOWN
