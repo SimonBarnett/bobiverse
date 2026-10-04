@@ -2368,6 +2368,48 @@ def github_is_pull_checker(
     return _check
 
 
+def github_issue_closed_checker(
+    *,
+    home: Path | None = None,
+    cache: dict | None = None,
+):
+    """Return ``closed(repo, num)`` -> True when the GitHub issue is CLOSED; None when offline / no token."""
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    if home is not None:
+        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
+    if gh_filer.ensure_gh_token_env() == 'none':
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    store: dict = cache if cache is not None else {}
+
+    def _closed(repo: str, num: str) -> bool:
+        key = f"issue_closed:{repo}#{num}"
+        if key in store:
+            return store[key]
+        api = f"https://api.github.com/repos/{repo}/issues/{num}"
+        req = urllib.request.Request(api, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-gitclaim",
+        }, method='GET')
+        closed = False
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                closed = json.loads(resp.read().decode('utf-8', 'replace')).get('state') == 'closed'
+        except Exception:
+            return False  # unknown -> keep offering (never block on a network blip)
+        store[key] = closed
+        return closed
+
+    return _closed
+
+
+
 def _purge_fr_that_are_pulls(doc: dict, *, is_pull=None) -> int:
     """Drop unaccepted FR rows whose id is a GitHub pull (any state) - FR #1313."""
     before = len(doc.get("unaccepted") or [])
@@ -3026,6 +3068,11 @@ def review_blocked_for_author(
                     p = bobreport.parse_seat_nick(n_c)
                     if not p or bobreport.fold_machine_id(p[0]) == author_mid:
                         continue
+                    # Jeeves must hand out work: an other-machine seat the row's require_machine pin
+                    # (or needs-human/giveup) forbids is NOT a viable reviewer; blocking the sibling on it
+                    # strands the row forever (MRB #2319 pinned ionos, author ionos-14452, marchhare live).
+                    if row_blocked_for_machine(row, n_c) or row_machine_mismatch(row, n_c):
+                        continue
                     if ledger is not None and repo_uat:
                         other_why = _ledger_blocks(ledger, row, n_c)
                         if other_why and "implemented" in other_why:
@@ -3057,6 +3104,7 @@ def offer_focus_top(
     now: float | None = None,
     pr_exists=None,
     is_pull=None,
+    issue_closed=None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
 
@@ -3132,6 +3180,13 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     return None
+                # Jeeves hands out LIVE work only: a CLOSED issue is never offered.
+                if issue_closed is not None and str(cand.get('task') or '').upper() == 'FR':
+                    try:
+                        if issue_closed(str(cand.get('repo') or ''), str(cand.get('id') or '').lstrip('#')):
+                            return None
+                    except Exception:  # noqa: BLE001
+                        pass
                 if not fr_row_offerable(cand, is_pull=is_pull, pr_exists=pr_exists):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):

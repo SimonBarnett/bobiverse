@@ -2360,6 +2360,7 @@ class Client:
             now=now,
             pr_exists=_pr_exists,
             is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
+            issue_closed=gitclaim.github_issue_closed_checker(home=self.home, cache=_gh_cache),
         )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)

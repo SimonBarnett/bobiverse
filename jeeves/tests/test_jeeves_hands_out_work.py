@@ -79,3 +79,42 @@ def test_hi_repo_outranks_lo_repo(_home):
     status, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos")
     assert job["repo"].endswith("bobiverse")
 
+
+
+def test_pinned_mrb_not_stranded_when_only_other_machine_seats_are_pinned_out(_home):
+    """MRB #2319 class: pin=ionos, author ionos seat A, sibling ionos seat B must get it even
+    though a marchhare seat is live (marchhare is forbidden by the pin, so it is not viable)."""
+    registered_machines.save_registered(_home, {"ionos", "win-mpre8vi4u6u", "marchhare"})
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
+    row = _row("SimonBarnett/bobiverse", "MRB", 2319, 1, require_machine="ionos",
+               author_seat="win-mpre8vi4u6u-14452", implementer_seat="win-mpre8vi4u6u-14452",
+               url="https://github.com/SimonBarnett/bobiverse/pull/2319")
+    _queue(_home, [row])
+    live = {"win-mpre8vi4u6u-14452", "win-mpre8vi4u6u-7764", "marchhare-35016"}
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-7764", live) is False
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-14452", live) is True  # no self-MRB
+
+
+def test_unpinned_mrb_sibling_still_deferred_to_other_machine(_home):
+    registered_machines.save_registered(_home, {"win-mpre8vi4u6u", "marchhare"})
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
+    row = _row("SimonBarnett/bobiverse", "MRB", 5, 1, author_seat="win-mpre8vi4u6u-14452")
+    live = {"win-mpre8vi4u6u-14452", "win-mpre8vi4u6u-7764", "marchhare-35016"}
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-7764", live) is True
+
+
+def test_closed_issue_row_is_never_offered(_home):
+    _queue(_home, [_row("SimonBarnett/bobiverse", "FR", 2218, 1), _row("SimonBarnett/bobiverse", "FR", 2400, 2)])
+    closed = lambda repo, num: num == "2218"  # noqa: E731
+    status, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos", issue_closed=closed)
+    assert status == "ok" and job["id"] == "#2400"
+
+
+def test_issue_closed_hook_error_does_not_block_offer(_home):
+    _queue(_home, [_row("SimonBarnett/bobiverse", "FR", 7, 1)])
+
+    def boom(repo, num):
+        raise RuntimeError("network")
+
+    status, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos", issue_closed=boom)
+    assert status == "ok" and job["id"] == "#7"
