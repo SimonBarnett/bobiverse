@@ -338,6 +338,7 @@ function Get-BobiverseProductRoot {
 # never blocks or fails the start (timeouts, every error is a WARN and the installed files keep running); the flat runtime files
 # (scripts\ third_party\ docs\ ...) are composed FROM the work tree by Sync-BobiverseFromRepo.ps1 and hidden from git via
 # .git\info\exclude, so `git status` shows only real edits under <product>\ and common\.
+# FR #1157: clean leftover fix/* tips (merged / upstream gone) auto-switch back to main before ff; BOBIVERSE_KEEP_BRANCH=1 opts out.
 # ---------------------------------------------------------------------------------------------------------------------------
 $script:BobiverseDefaultRemote = 'https://github.com/SimonBarnett/bobiverse.git'
 
@@ -460,7 +461,35 @@ function Sync-BobiverseWorkTree {
         $br = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('symbolic-ref', '--short', '-q', 'HEAD')) -TimeoutSec 20
         $cur = if ($br.Code -eq 0 -and $br.Out.Count) { "$($br.Out[0])".Trim() } else { '' }
         $res.Branch = $cur
-        if ($cur -ne $Branch) { return (Done $(if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' })) }
+        if ($cur -ne $Branch) {
+            # FR #1157: install trees left on a merged/deleted feature branch skip ff forever and robocopy
+            # drifts from that tip. When safe, return to main (never destroys dirty work or never-pushed branches).
+            # Opt out: BOBIVERSE_KEEP_BRANCH=1 (or BOBIVERSE_NO_UPDATE=1 already returned above).
+            $keepBranch = ($env:BOBIVERSE_KEEP_BRANCH -eq '1')
+            $st = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('status', '--porcelain')) -TimeoutSec 20
+            $dirty = ($st.Code -eq 0 -and (@($st.Out | Where-Object { "$_".Trim() }).Count -gt 0))
+            $anc = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge-base', '--is-ancestor', 'HEAD', "origin/$Branch")) -TimeoutSec 20
+            $mergedOrBehind = ($anc.Code -eq 0)
+            $cfgRemote = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('config', '--get', "branch.$cur.remote")) -TimeoutSec 15
+            $hadUpstream = ($cfgRemote.Code -eq 0 -and @($cfgRemote.Out | Where-Object { "$_".Trim() }).Count -gt 0)
+            $up = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', '--abbrev-ref', '@{u}')) -TimeoutSec 15
+            $upstreamGone = ($hadUpstream -and $up.Code -ne 0)
+            if (-not $keepBranch -and -not $dirty -and ($mergedOrBehind -or $upstreamGone)) {
+                $whyReturn = if ($upstreamGone) { "upstream gone" } else { "HEAD ancestor of origin/$Branch" }
+                $log.Add("INFO worktree-return-$Branch from '$cur' (clean; $whyReturn) FR#1157")
+                $sw = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('switch', '-q', $Branch)) -TimeoutSec 60
+                if ($sw.Code -eq 0) {
+                    $res.Branch = $Branch
+                    $cur = $Branch
+                } else {
+                    foreach ($l in ($sw.Out | Select-Object -First 3)) { $log.Add("  $l") }
+                    $log.Add("WARN worktree-return-$Branch switch failed; staying on '$cur'")
+                }
+            }
+            if ($cur -ne $Branch) {
+                return (Done $(if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' }))
+            }
+        }
         $before = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
         $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
         if ($m.Code -ne 0) {

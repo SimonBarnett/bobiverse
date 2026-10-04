@@ -79,7 +79,8 @@ def world(tmp_path):
         git(seed, "push", "-q", "origin", "main")
 
     def sync(product, extra_env=None, remote=None, root_dir=None):
-        env = {k: v for k, v in os.environ.items() if k not in ("BOBIVERSE_REPO", "BOBIVERSE_NO_UPDATE", "BOB_AI_ROOT", "BOBIVERSE_REMOTE")}
+        env = {k: v for k, v in os.environ.items() if k not in (
+            "BOBIVERSE_REPO", "BOBIVERSE_NO_UPDATE", "BOBIVERSE_KEEP_BRANCH", "BOB_AI_ROOT", "BOBIVERSE_REMOTE")}
         env["BOB_AI_ROOT"] = str(w.ai)
         env["BOBIVERSE_REMOTE"] = str(remote or bare)
         env.update(extra_env or {})
@@ -196,6 +197,64 @@ def test_agent_branch_is_left_alone_but_origin_is_fetched(world):
     # the running (flat) copy is built from the agent's branch work
     assert (r / "scripts/j1.ps1").read_text() == "# agent change\n"
     assert "fix/my-work" in out.text
+
+
+def test_fr1157_stale_behind_branch_returns_to_main(world):
+    """FR #1157: clean tip that is an ancestor of origin/main auto-switches back to main + ff."""
+    r = world.root("jeeves")
+    assert world.sync("jeeves").returncode == 0
+    git(r, "switch", "-q", "-c", "fix/stale-behind")
+    world.upstream("jeeves/scripts/j1.ps1", "# upstream after branch\n", version="9.9.10")
+    out = world.sync("jeeves")
+    assert out.returncode == 0, out.text
+    assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "main"
+    assert "worktree-return-main" in out.text
+    assert (r / "scripts/j1.ps1").read_text() == "# upstream after branch\n"
+    assert (r / "VERSION").read_text().strip() == "9.9.10"
+
+
+def test_fr1157_upstream_gone_returns_to_main(world):
+    """FR #1157: clean branch whose remote-tracking upstream was deleted returns to main."""
+    r = world.root("jeeves")
+    assert world.sync("jeeves").returncode == 0
+    git(r, "switch", "-q", "-c", "fix/resync-paginate-open-issues")
+    write(r / "jeeves/scripts/j1.ps1", "# local tip after squash-style unique commit\n")
+    git(r, "commit", "-q", "-am", "agent tip")
+    git(r, "push", "-q", "-u", "origin", "fix/resync-paginate-open-issues")
+    # Remote branch deleted (typical after PR merge); local still tracks gone upstream.
+    git(world.bare, "branch", "-D", "fix/resync-paginate-open-issues")
+    git(r, "fetch", "-q", "--prune", "origin", check=False)
+    world.upstream("jeeves/scripts/j1.ps1", "# main after merge\n", version="9.9.11")
+    out = world.sync("jeeves")
+    assert out.returncode == 0, out.text
+    assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "main"
+    assert "worktree-return-main" in out.text
+    assert "upstream gone" in out.text
+    assert (r / "VERSION").read_text().strip() == "9.9.11"
+
+
+def test_fr1157_keep_branch_opt_out(world):
+    r = world.root("jeeves")
+    assert world.sync("jeeves").returncode == 0
+    git(r, "switch", "-q", "-c", "fix/keep-me")
+    world.upstream("jeeves/scripts/j1.ps1", "# upstream\n")
+    out = world.sync("jeeves", {"BOBIVERSE_KEEP_BRANCH": "1"})
+    assert out.returncode == 0, out.text
+    assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "fix/keep-me"
+    assert "worktree-return-main" not in out.text
+
+
+def test_fr1157_dirty_off_main_left_alone(world):
+    r = world.root("jeeves")
+    assert world.sync("jeeves").returncode == 0
+    git(r, "switch", "-q", "-c", "fix/dirty-stale")
+    world.upstream("jeeves/scripts/j1.ps1", "# upstream\n")
+    write(r / "jeeves/scripts/j1.ps1", "# dirty local\n")  # uncommitted
+    out = world.sync("jeeves")
+    assert out.returncode == 0, out.text
+    assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "fix/dirty-stale"
+    assert (r / "jeeves/scripts/j1.ps1").read_text() == "# dirty local\n"
+    assert "fetched only" in out.text
 
 
 def test_agent_can_branch_commit_and_push_from_the_install_dir(world):

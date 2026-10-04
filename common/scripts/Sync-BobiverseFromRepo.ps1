@@ -8,7 +8,11 @@
      <product>/ + common/ (bootstrapped on first run from BOBIVERSE_REMOTE, default the GitHub repo), else a shared clone
      <ai root>\bobiverse (ai root found on the fixed disks; BOB_AI_ROOT overrides)
   2) git fetch + merge --ff-only origin/main, only while on main (best-effort: never destroys local edits/commits/branches,
-     never blocks service start, falls back to the installed files)
+     never blocks service start, falls back to the installed files). FR #1157: if HEAD is on another branch but the tree is
+     clean and either HEAD is already an ancestor of origin/main or that branch's upstream was deleted (gone), auto
+     ``git switch main`` then ff — so a leftover fix/* after hotpatch cannot strand robocopy on a stale tip. Active agent
+     work (dirty tree, never-pushed branch, or unique commits with a live upstream) is left alone. Opt out:
+     BOBIVERSE_KEEP_BRANCH=1 (or BOBIVERSE_NO_UPDATE=1).
   3) Robocopy scripts + third_party + skills + docs into InstallRoot (never deleting); copy VERSION
   Skips when BOBIVERSE_NO_UPDATE=1. Does not overwrite config\, home\, or secrets.
   FR #269: flat scripts/ is always refreshed from the split-repo script dirs (no robocopy /XO on scripts).
