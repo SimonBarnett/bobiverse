@@ -43,7 +43,7 @@ if ($env:BOB_INTAKE_KEY) { $headers['X-Bob-Intake-Key'] = [string]$env:BOB_INTAK
 $script:PermanentIntakeErrors = @(
     'malformed', 'bad_kind', 'missing_repo', 'bad_repo', 'repo_not_allowed',
     'bad_title', 'bad_files', 'too_many_files', 'bad_file_path', 'file_too_large',
-    'payload_too_large', 'empty_harvest', 'bad_idempotency_key', 'unauthorized'
+    'payload_too_large', 'empty_harvest', 'bad_idempotency_key', 'unauthorized', 'worker_receipt_not_issue'
 )
 
 function Send-Payload([string]$Json) {
