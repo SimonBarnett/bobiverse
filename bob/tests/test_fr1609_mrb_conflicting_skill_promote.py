@@ -1,5 +1,6 @@
 """Harvest #1609: CONFLICTING/superseded MRB FAIL playbook in job skills."""
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[2]
 MRB = ROOT / "bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md"
@@ -22,6 +23,9 @@ def test_fr1609_irc_troubleshooting_row():
     text = IRC.read_text(encoding="utf-8")
     assert "CONFLICTING" in text
     assert "force-merge" in text.lower() or "DONE FAIL" in text
+    assert "bobiverse-bob-job-mrb" in text
+    assert "bbobiverse" not in text
+    assert re.search(r"(?<![b])obiverse-bob-job", text) is None
 
 
 def test_fr1609_skill_harvest_log():
@@ -29,6 +33,7 @@ def test_fr1609_skill_harvest_log():
     assert "1609" in text
     assert "CONFLICTING" in text or "force-merge" in text
     assert "<<<<<<< HEAD" not in text
+    assert "bbobiverse" not in text
 
 
 def test_fr1609_files_end_with_newline():

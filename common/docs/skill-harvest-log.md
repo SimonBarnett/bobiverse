@@ -19,7 +19,7 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 
 | Lesson | Fix |
 |--------|-----|
-| Never self-MRB a PR this seat opened; GIVEUP with self-MRB reason so another seat can hostile-review (and rebase if DIRTY) | Documented wire in bbobiverse-bob-job-mrb + bbobiverse-bob-job-irc. NACK only if spotted before ACK/work. |
+| Never self-MRB a PR this seat opened; GIVEUP with self-MRB reason so another seat can hostile-review (and rebase if DIRTY) | Documented wire in bobiverse-bob-job-mrb + bobiverse-bob-job-irc. NACK only if spotted before ACK/work. |
 
 ## 2026-10-04 - TipForm stale worker lines (FR #1553 / harvest #1562)
 
@@ -41,7 +41,7 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 
 | Lesson | Fix |
 |--------|-----|
-| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/Ã¢â‚¬Â¦` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bbobiverse-bob-job-fr` |
+| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/Ã¢â‚¬Â¦` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bobiverse-bob-job-fr` |
 
 ## 2026-10-03 - FR #806 archive-richer hand-merge
 
