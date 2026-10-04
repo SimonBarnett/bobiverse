@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - nothing queued = focus + require_machine gate (harvest #2285)
+
+| Lesson | Fix |
+|--------|-----|
+| Jeeves `nothing queued` / empty hand-out while dozens of unaccepted FRs exist | Count focus-repo unaccepted vs offerable-to-live-seats after `require_machine` / author-seat gates; file often full, offer set tiny under strict focus. Extends #2243. Documented in bobiverse-jeeves-monitor + bob-job-irc |
+
+Books: bobiverse-jeeves-monitor, bobiverse-bob-job-irc.
+
 ## 2026-10-04 - Ear channel_list DIGEST_ID_FOLD (harvest #2280 / MRB #2262 / #2279)
 
 | Lesson | Fix |

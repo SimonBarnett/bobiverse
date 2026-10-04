@@ -106,7 +106,7 @@ no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an
 
 | Symptom | Cause / fix |
 |---|---|
-| No assign after `!bored` | Jeeves says `nothing queued`, the repo is ignored, or `!focus strict` excludes it. Ask the owner; PM `!status` / `!list` is read-only. |
+| No assign after `!bored` | Jeeves says `nothing queued`: often focus + `require_machine` gates — unaccepted can be large while offerable-to-live-seats is tiny (harvest #2285 / #2243). Also: repo ignored, or `!focus strict` excludes it. Ask the owner; PM `!status` / `!list` is read-only. |
 | Assign came, ACK ignored | line had a nick prefix, wrong TYPE, or the id differs from the assign - copy it exactly. Check `cmd-trace.log` on the chair if you can. |
 | MRB PR CONFLICTING / already fixed on main | Twin merged elsewhere | FAIL board, close duplicate PR, DONE FAIL; do not force-merge (bobiverse-bob-job-mrb CONFLICTING section) |
 | Two assigns at once | you forgot the ACK (looked idle). ACK the first, `NACK` the second. |
