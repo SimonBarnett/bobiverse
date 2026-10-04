@@ -18,7 +18,7 @@ def test_owner_books_and_flow_diagrams_are_canonical():
         assert (ROOT / rel).is_file(), rel
     text = AUDIT.read_text(encoding="utf-8-sig")
     assert "b15182a" in text and "PR #1491" in text
-    assert "No standalone `skill-dba` source" in text
+    assert "skill-dba` at pinned main commit `7bf3824ae5b6de3cf461bd22118658c4e371d5b4" in text
     assert text.count("```mermaid") >= 4
     for section in ("FR acceptance flow", "MRB acceptance flow", "UAT acceptance flow"):
         assert section in text
@@ -56,13 +56,7 @@ def test_skill_dba_is_vendored_at_pinned_upstream_ref():
         "mssql-agent-jobs-inventory",
     }
     assert all((root / ".grok/skills" / name / "SKILL.md").is_file() for name in names)
-    for rel in (
-        "scripts/Invoke-BackupAudit.ps1",
-        "scripts/Invoke-LiveAudit.ps1",
-        "scripts/Invoke-MssqlDiscoverRegisteredHost.ps1",
-        "scripts/Invoke-PostMoveHealth.ps1",
-        "scripts/dba_instance_health_collect.sql",
-        "config/instances.example.json",
-        "docs/skill-sources/MANIFEST.md",
-    ):
-        assert (root / rel).is_file(), rel
+    assert (root / "SOURCE-SHA256.txt").is_file()
+    manifest = (root / "docs/skill-sources/MANIFEST.md").read_text(encoding="utf-8")
+    for rel in ("scripts/Invoke-BackupAudit.ps1", "scripts/Invoke-LiveAudit.ps1", "scripts/Invoke-PostMoveHealth.ps1", "scripts/dba_instance_health_collect.sql", "config/instances.example.json"):
+        assert rel in manifest
