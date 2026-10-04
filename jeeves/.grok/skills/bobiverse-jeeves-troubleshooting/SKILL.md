@@ -59,7 +59,8 @@ Probe together: scheduled-task state, `:7700` LISTEN, and a fresh GET `http://12
 7. **Orphan python still serving** — after a heal, if only orphan `bobcallback.py` remains with HTTP 200, do not stack supervised; wait until report drops, then start one clean supervised.
 8. **Brief timeout with LISTEN** — connect timeout while LISTEN is present: re-probe curl once; do not immediate restart. If the re-probe returns HTTP 200, leave the single supervised owner alone (harvest #1705/#1706).
 9. **`digest.lock`** — leave a non-empty fresh lock alone when the holder PID is live (`bobcallback` or `irc_agent`). Clear only empty/stale foreign locks.
-10. **After heal** — `Invoke-BobiverseHarvest.ps1 -Flush` so intake queued during IIS/ARR 502 while `:7700` was down can drain.
+10. **`git-claim.lock` / `GIT fail err=queue*` (FR #1811)** — webhook enqueue failures are now `queue-lock-timeout` / `queue-read` / `queue-write` (not opaque `queue`). Claims spool to `git-claim-pending.jsonl` and drain on the next lock; raise wait via `BOB_GITCLAIM_LOCK_S` (default 30). Not the same bug as multi-supervisor BobCallback (#1767). Stuck 0-byte chair-held `git-claim.lock` still needs `Restart-Service ircJeeves` only (never BobIrcd).
+11. **After heal** — `Invoke-BobiverseHarvest.ps1 -Flush` so intake queued during IIS/ARR 502 while `:7700` was down can drain.
 
 Always finish with the harvest step (see rule above) - every row here was learned the hard way and is only useful if the next
 agent files what it finds.
