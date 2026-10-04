@@ -2476,8 +2476,92 @@ def format_assign_line(nick: str, row: dict) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", line)).strip()
 
 
-def format_nothing_queued(nick: str) -> str:
-    return f"{nick}: nothing queued"
+def summarize_empty_offer(home: Path, nick: str = "") -> dict:
+    """Operator counts when !bored yields empty under focus (FR #1993 WP2).
+
+    Returns unaccepted / out_of_focus / require_machine / offerable estimates.
+    ``offerable`` is rows that pass focus (when strict) and are not machine-blocked
+    for ``nick`` (empty nick = any require_machine counts as blocked).
+    """
+    out = {
+        "unaccepted": 0,
+        "out_of_focus": 0,
+        "require_machine": 0,
+        "offerable": 0,
+        "strict": False,
+    }
+    try:
+        path = queue_path(home)
+        raw = json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
+        rows = [r for r in (raw.get("unaccepted") or []) if isinstance(r, dict)]
+    except Exception:
+        return out
+    out["unaccepted"] = len(rows)
+    try:
+        import focus_ignore
+
+        strict = bool(focus_ignore.is_strict(home))
+        out["strict"] = strict
+        focused: set[str] = set()
+        if strict:
+            try:
+                fdoc = focus_ignore.load_focus(home)
+                focused |= {str(k) for k in (fdoc.get("repos") or {}).keys()}
+                for meta in (fdoc.get("items") or {}).values():
+                    if isinstance(meta, dict) and meta.get("repo"):
+                        focused.add(str(meta["repo"]))
+            except Exception:
+                focused = set()
+        offerable = 0
+        out_of_focus = 0
+        req_machine = 0
+        me = (nick or "").strip()
+        for r in rows:
+            repo = str(r.get("repo") or "")
+            if strict and focused:
+                in_focus = any(
+                    focus_ignore.repo_match(repo, fr) or focus_ignore.repo_match(fr, repo)
+                    for fr in focused
+                )
+                if not in_focus:
+                    out_of_focus += 1
+                    continue
+            # machine gate
+            row = dict(r)
+            _stamp_require_machine(row)
+            rm = str(row.get("require_machine") or "").strip()
+            if rm and rm.lower() not in ("*", "any", "none", "-", ""):
+                if not me or row_blocked_for_machine(row, me):
+                    req_machine += 1
+                    continue
+            offerable += 1
+        out["out_of_focus"] = out_of_focus
+        out["require_machine"] = req_machine
+        out["offerable"] = offerable
+    except Exception:
+        # Best-effort without focus_ignore: treat all as offerable candidate.
+        out["offerable"] = out["unaccepted"]
+    return out
+
+
+def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
+    """Shop empty reply. With stats (FR #1993 WP2): show focus/machine gate breakdown."""
+    if not stats:
+        return f"{nick}: nothing queued"
+    try:
+        unaccepted = int(stats.get("unaccepted") or 0)
+        out_of_focus = int(stats.get("out_of_focus") or 0)
+        req = int(stats.get("require_machine") or 0)
+        offerable = int(stats.get("offerable") or 0)
+    except (TypeError, ValueError):
+        return f"{nick}: nothing queued"
+    if unaccepted <= 0:
+        return f"{nick}: nothing queued"
+    return (
+        f"{nick}: {offerable} offerable under focus "
+        f"({unaccepted} unaccepted, {out_of_focus} out-of-focus, "
+        f"{req} require_machine)"
+    )
 
 
 def live_seat_nicks(home: Path) -> set[str]:
