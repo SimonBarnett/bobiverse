@@ -40,7 +40,8 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 1. **Playbook / fix with write access** -> branch + **pull request** to bobiverse. Never `git push origin main` for harvest.
 2. **No GitHub write / API fail** -> intake webhook (`Report-BobiverseIntakeIssue.ps1`) or local `report-outbox/` retry (`Invoke-BobiverseHarvest.ps1 -Flush`).
 3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request`). Do **not** stamp `needs-mrb1` (FORBIDDEN - use `needs-human`).
-4. Prefer `.\scripts\Invoke-BobiverseHarvest.ps1` / `Report-BobiverseIntakeIssue.ps1` over free-form chat.
+4. **Living product FR lost in harvest-only receipts (harvest #2001):** re-file with `gh issue create --label feature-request` and treat that number as the living FR (append WP evidence there). Close/supersede harvest receipts with `Refs #N`. Example: #1993 for jeeves.exe.
+5. Prefer `.\scripts\Invoke-BobiverseHarvest.ps1` / `Report-BobiverseIntakeIssue.ps1` over free-form chat.
 
 ## Where to put lessons
 

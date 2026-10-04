@@ -144,6 +144,15 @@ Prefer `gh` and repo scripts over free-form reasoning.
 
 **CAST IRON (FR #1526 / harvest #1717):** never create, stamp, or apply GitHub label `needs-mrb1` / `mrb1`. That label was an offer hallucination. The real human gate is `needs-human`. Leftover repo labels are inert for offers (`gated_counts.needs-mrb1=0`, `row_awaits_mrb1` always false). Intake must omit `needs-mrb1`.
 
+### Living product FR when intake vanishes into harvest-only (harvest #2001)
+
+`Invoke-BobiverseHarvest` / intake `kind: skill|harvest` creates **receipts** (`label:skill`). They are not the product work item. If a real product plan/FR was meant to live on the board but only harvest receipts exist (or the product FR was closed/superseded into harvest noise):
+
+1. Create a **canonical living FR** with `gh issue create -R owner/repo --label feature-request` (and `via-intake` only if still filing via intake `kind: fr`).
+2. Treat **that** issue number as the living FR — append WP evidence / comments there.
+3. Point harvest receipts at it with `Refs #N` / close as superseded operational report; do not implement the product plan on a `label:skill` harvest issue.
+
+Example: jeeves.exe chair+HTTP one-process plan lives at #1993, not on harvest receipts.
 
 Default `repo` for this book: `SimonBarnett/bobiverse`.
 
