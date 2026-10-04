@@ -39,7 +39,7 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 
 1. **Playbook / fix with write access** -> branch + **pull request** to bobiverse. Never `git push origin main` for harvest.
 2. **No GitHub write / API fail** -> intake webhook (`Report-BobiverseIntakeIssue.ps1`) or local `report-outbox/` retry (`Invoke-BobiverseHarvest.ps1 -Flush`).
-3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request`). Do **not** stamp `needs-mrb1`.
+3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request`). Do **not** stamp ``needs-mrb1` (FORBIDDEN — use `needs-human`)`.
 4. Prefer `.\scripts\Invoke-BobiverseHarvest.ps1` / `Report-BobiverseIntakeIssue.ps1` over free-form chat.
 
 ## Where to put lessons
@@ -87,7 +87,7 @@ When a worker is assigned a skill-promote / harvest-backlog job, or when finishi
 6. **PR body** — `Closes SimonBarnett/bobiverse#N` for issues fully absorbed; `Duplicates closed: …` for the rest; name every book file touched. Implementer never merges.
 7. **DONE** with the PR URL; another seat runs hostile **MRB** to merge.
 
-Product FR jobs stay separate. Do not GIVEUP a real FR just because skill receipts exist. Do not stamp `needs-mrb1` on skill issues.
+Product FR jobs stay separate. Do not GIVEUP a real FR just because skill receipts exist. Do not stamp ``needs-mrb1` (FORBIDDEN — use `needs-human`)` on skill issues.
 
 ## Do not
 
@@ -112,3 +112,7 @@ Every bobiverse product skill book SHOULD keep CAST IRON + a one-line pointer:
 Closed `skill` issues and `Skill harvest` GIVEUP/FR records are evidence, not disposable learning. Repeated records may be deduplicated against a canonical FR/merged PR, but every unique `Lessons:` line must be promoted to its owner book. In this pass, the owner books are the Bob worker/UAT/MRB books, Jeeves commands/monitor, fleet ops, and the shared harvest book; no MSSQL-specific lesson was present, so no skill-dba book was changed.
 
 Workers using these books owe a PR back to this repository. Preserve source issue/PR references in the PR body, keep secrets and private tokens out of books, and do not turn a harvest/GIVEUP record itself into a new FR. The 2026-10-04 promotion covered the closed skill corpus through #1460, including the repeated operational lessons from #1211-#1275 and later BobCallback, resync, UAT, machine-pin, MRB, worker-outbox, and monitor records.
+
+## needs-mrb1 ban (harvest #1717 / FR #1526)
+
+Never create or stamp `needs-mrb1`/`mrb1`. Human gate is `needs-human` only.

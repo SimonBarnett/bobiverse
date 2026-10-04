@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Never stamp needs-mrb1 (harvest #1717 / FR #1526)
+
+| Lesson | Fix |
+|--------|-----|
+| CAST IRON: do not create, stamp, or apply needs-mrb1/mrb1. needs-human is the real human gate. Leftover label on the repo is inert for offers | Updated harvest + job-fr + jeeves-monitor. Product already on main via PR #1526 |
+
 ## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
 
 | Lesson | Fix |

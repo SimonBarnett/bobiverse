@@ -142,6 +142,9 @@ Prefer `gh` and repo scripts over free-form reasoning.
 | `fr` | Feature request | `via-intake`, `feature-request` (do **not** stamp `needs-mrb1`) |
 | `skill` / `harvest` | Skill harvest files | `via-intake`, `skill` |
 
+**CAST IRON (FR #1526 / harvest #1717):** never create, stamp, or apply GitHub label `needs-mrb1` / `mrb1`. That label was an offer hallucination. The real human gate is `needs-human`. Leftover repo labels are inert for offers (`gated_counts.needs-mrb1=0`, `row_awaits_mrb1` always false). Intake must omit `needs-mrb1`.
+
+
 Default `repo` for this book: `SimonBarnett/bobiverse`.
 
 ## Do not
