@@ -2372,10 +2372,31 @@ def review_blocked_for_author(
     me_mid = bobreport.fold_machine_id(me_p[0]) if me_p else ""
     repo_uat = is_repo_uat(row)
 
+    def _seat_gave_up_uat(n_c: str) -> bool:
+        if row_gave_up_by(row, n_c):
+            return True
+        if ledger is not None and repo_uat:
+            other_why = _ledger_blocks(ledger, row, n_c)
+            if other_why and "gave up" in other_why:
+                return True
+        return False
+
     for author in authors:
         author_l = author.lower()
-        # Exact author seat: never self-MRB / self-UAT (FR #628, even if it is the only live seat).
+        # Exact author seat: never self-MRB / self-UAT (FR #628), except repo UAT when
+        # every *other* live seat already GIVEUP'd (FR #1416). Otherwise ledger_blocks
+        # escape lifts the implementer and enrich_uat_author_fields re-blocks them.
         if author_l == me_l:
+            if not repo_uat or ledger is None:
+                return True
+            others = [
+                (canonical_worker_nick(n) or n or "").strip()
+                for n in live
+                if (canonical_worker_nick(n) or n or "").strip()
+                and (canonical_worker_nick(n) or n).strip().lower() != me_l
+            ]
+            if others and all(_seat_gave_up_uat(o) for o in others):
+                continue  # sole non-giveup seat may take stranded repo UAT
             return True
         author_p = bobreport.parse_seat_nick(author)
         # Sibling seat on the same machine: block when another machine has a viable live seat.
@@ -2384,7 +2405,7 @@ def review_blocked_for_author(
             if author_mid == me_mid:
                 for n in live:
                     n_c = (canonical_worker_nick(n) or n or "").strip()
-                    if not n_c or row_gave_up_by(row, n_c):
+                    if not n_c or _seat_gave_up_uat(n_c):
                         continue
                     p = bobreport.parse_seat_nick(n_c)
                     if not p or bobreport.fold_machine_id(p[0]) == author_mid:
