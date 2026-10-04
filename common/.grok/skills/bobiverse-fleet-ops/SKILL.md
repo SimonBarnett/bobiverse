@@ -71,6 +71,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
   `.sha256`, stops ONLY that service, backs up the tree (`<ProgramData>\bobiverse\update\<product>\backup`), runs the MSI, refreshes
   skills, starts. Any failure = automatic rollback + loop guard. Log: `...\update\<product>\update.log`.
   Opt out: `BOBIVERSE_NO_UPDATE=1` or `<InstallRoot>\config\autoupdate.disabled`.
+- **Get-Asset download (FR #1545 / PR #1561):** MSI asset fetch must **fail-closed**. `Get-Asset` uses `Invoke-WebRequest -TimeoutSec` (default 120), retries, then `curl.exe --max-time` fallback. A hang on a half-open GitHub TLS socket (0-byte OutFile) used to hold the update mutex forever — throw so Apply can `Set-Failure download-failed` and release the mutex. Prefer named splat vars (e.g. `$launchArgs`); **never** splat PowerShell automatic `$args` in wrappers (MRB nits PR #1588).
 - Rollback by hand: stop the one service, restore the newest backup `tree\` over `<InstallRoot>`, re-run
   `Install-<Product>.ps1 -SkipCopy`, start. Never touch `ergo\`.
 
@@ -124,6 +125,8 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Unverified-WHOIS log line every minute | Verification pending for a nick | Throttled to once per 30 min; a persistent one means the nick has no NickServ account |
 | Tray missing / duplicated | Old installers / session-0 start | One Start Menu folder `Bobiverse`; tray starts only in an interactive session (ONLOGON task / Startup shortcut) |
 | Agent transcript shows Ergo/SASL password after `nssm get` | `AppEnvironmentExtra` dumped raw (FR #147) | Print env **key names only** (split on first `=`); never paste AppEnvironmentExtra values into logs, filings, or chat |
+| Self-update Apply hung / 0-byte MSI / mutex stuck | `Get-Asset` stalled on GitHub download without timeout | FR #1545: IWR TimeoutSec + curl `--max-time` fallback; throw → `download-failed` + mutex release (PR #1561). Check `...\update\<product>\update.log` |
+| Wrapper splat behaves oddly / wrong args | Script used automatic `$args` for splatting | Rename to an explicit array (e.g. `$launchArgs`) before `@splat` (PR #1588) |
 | InstallRoot `VERSION` jumps after sync / disagrees with ARP | Sync copied a newer clone `VERSION` over the MSI stamp | ARP `DisplayVersion` wins; Sync heals InstallRoot to ARP and skips clone clobber (FR #1565 / #1589 / PR #1577) |
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
