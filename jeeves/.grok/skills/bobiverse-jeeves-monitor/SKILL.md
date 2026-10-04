@@ -61,6 +61,7 @@ Install root `<ai root>\jeeves`. Chair home `~\.jeeves` (queue, focus, ignore, c
 | Seat ledger | Digest `machines.<id>.workers[]` with state **idle** / **offered** / **doing**; TipForm `working_on` |
 
 Monitor for: empty offer queue while open FRs exist; seats idle with unaccepted work; accepted rows stuck; GIVEUP loops; machine-pin / author-seat blocks leaving work stranded.
+**giveup_loops (FR #1622):** EXIT 1 only for `giveup_count>=2` on **unaccepted/accepted** rows still offerable to a live seat. Historical `done[]` hotspots are noted and ignored. `require_machine` pins with **zero live seats** on that machine are gated (skipped), not loops.
 
 **Machine pin (FR #587 / #852):** recycle/recompose Jeeves and prune-`queue.json` FRs must stamp `require_machine=ionos` so marchhare seats are not offered ionos-only deploy work. If non-ionos seats keep getting those assigns after the cue merge, the live chair needs recompose/recycle — file/de-dup intake (same class as per-PR UAT leftovers).
 

@@ -43,7 +43,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Idle seats vs unaccepted work | `scripts\Test-JeevesMonitorIdleSeats.ps1` | `tools\monitor\idle_seats.py` |
 | Queue flow (empty offer / missing pull url) | `scripts\Test-JeevesMonitorQueueFlow.ps1` | `tools\monitor\queue_flow.py` |
 | Stale digest | `scripts\Test-JeevesMonitorStaleDigest.ps1` | `tools\monitor\stale_digest.py` |
-| GIVEUP loops | `scripts\Test-JeevesMonitorGiveupLoops.ps1` | `tools\monitor\giveup_loops.py` |
+| GIVEUP loops | `scripts\Test-JeevesMonitorGiveupLoops.ps1` | `tools\monitor\giveup_loops.py` (FR #1622: active unaccepted/accepted only; ignore `done[]`; skip require_machine pins with zero live seats) |
 | Stuck accepted rows | `scripts\Test-JeevesMonitorStuckAccepted.ps1` | `tools\monitor\stuck_accepted.py` |
 | Auto-feed | `scripts\Test-JeevesMonitorAutoFeed.ps1` | `tools\monitor\auto_feed.py` |
 | Auto-focus | `scripts\Test-JeevesMonitorAutoFocus.ps1` | `tools\monitor\auto_focus.py` |
