@@ -7,7 +7,7 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 
 | Lesson | Fix |
 |--------|-----|
-| MRB of CONFLICTING PR when twin FR already closed by another merge: FAIL board, close the duplicate PR, DONE FAIL; do not force-merge | Documented in bobiverse-bob-job-mrb + troubleshooting row in bobiverse-bob-job-irc. Absorbs #1756/#1736/#1730 twins. |
+| MRB of CONFLICTING PR when twin FR already closed by another merge: FAIL board, close the duplicate PR, DONE FAIL; do not force-merge. CONFLICTING with open acceptance still uses one fix/rebase PR. | Documented in bobiverse-bob-job-mrb + troubleshooting row in bobiverse-bob-job-irc. Absorbs #1756/#1736/#1730 twins. |
 
 ## 2026-10-04 - FR #1546 / PR #1560 Airc ReplyFile + console logs (harvest #1567)
 
