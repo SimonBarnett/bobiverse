@@ -116,9 +116,20 @@ Wire (preferred after you already ACK'd):
 
 If you spot self-MRB **before** any review work and have not ACK'd yet, NACK MRB owner/repo#N with the same reason is also valid (job-irc: NACK = decline before work). After ACK, always **GIVEUP** — never go silent.
 
+## Skill / markdown diff hygiene (harvest #1616)
+
+Hostile-read **skill and docs diffs line-by-line**, not only the code/tests. A mid-bullet or mid-paragraph insert that truncates a list item and leaves **orphan continuation text** (dangling clause on the next line, broken markdown list, severed mermaid/code fence) is an MRB **FAIL** even when pytest is green (MRB #1608 / fix #1610).
+
+Checks:
+1. Every changed SKILL.md / docs bullet still reads as a complete sentence/item.
+2. Inserted bullets did not splice into the middle of an existing bullet.
+3. No orphan lines that only make sense as the tail of a removed/split bullet.
+4. Prefer a regression test that asserts a distinctive phrase from the restored bullet remains contiguous.
+
 ## Harvested MRB discipline (skill records #1223-#1457)
 
 - CONFLICTING/superseded duplicate PR: FAIL board, close the PR, DONE FAIL; never force-merge (harvest #1609). CONFLICTING with open acceptance still uses one fix/rebase PR. Mere CONFLICTING unique heads: merge main, resolve, re-test.
+- Skill/docs diffs: mid-bullet insert leaving orphan continuation text is FAIL even when code is green (harvest #1616 / MRB #1608).
 - The implementing seat must GIVEUP self-MRB and ask the chair for a different seat; a green local test run is not a non-author MRB. Full wire: **Self-MRB** section above.
 
 - MRB PASS requires the claimed tests, a clean/rebased branch, and the merged PR's `Closes` lines. When an acceptance contract changes, expect a focused fix/nits PR and rerun the hostile tests rather than accepting stale evidence.

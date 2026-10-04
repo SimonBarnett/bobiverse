@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Skill diff orphan continuation FAIL (harvest #1616)
+
+| Lesson | Fix |
+|--------|-----|
+| Hostile-read skill diffs line-by-line: a mid-bullet insert that leaves orphan continuation text is an MRB FAIL even when code is green | Documented in bobiverse-bob-job-mrb. Product restore: PR #1610 after #1608 |
+
 ## 2026-10-04 - CONFLICTING/superseded MRB FAIL (harvest #1609)
 
 | Lesson | Fix |
