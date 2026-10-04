@@ -122,6 +122,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | `CryptUnprotectData failed` | Service runs as LocalSystem with an Admin-sealed identity | Set the service logon (`Complete-BobiverseServiceLogon.ps1`) |
 | Unverified-WHOIS log line every minute | Verification pending for a nick | Throttled to once per 30 min; a persistent one means the nick has no NickServ account |
 | Tray missing / duplicated | Old installers / session-0 start | One Start Menu folder `Bobiverse`; tray starts only in an interactive session (ONLOGON task / Startup shortcut) |
+| `PropertyNotFoundException` / StrictMode `.Count` on `Sort-Object`/`Where-Object` | Pipeline of one item is a **scalar**, not an array | Wrap with `@(...)` before `.Count` / index ops (FR #1664 / PR #1672 / harvest #1689). Leave separate FreeGB capacity FRs open when they are distinct from the StrictMode bug |
 | Agent transcript shows Ergo/SASL password after `nssm get` | `AppEnvironmentExtra` dumped raw (FR #147) | Print env **key names only** (split on first `=`); never paste AppEnvironmentExtra values into logs, filings, or chat |
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
