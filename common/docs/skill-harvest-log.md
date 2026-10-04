@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
+
+| Lesson | Fix |
+|--------|-----|
+| Never self-MRB a PR this seat opened; GIVEUP with self-MRB reason so another seat can hostile-review (and rebase if DIRTY) | Documented wire in obiverse-bob-job-mrb + obiverse-bob-job-irc. NACK only if spotted before ACK/work. |
+
 ## 2026-10-04 - TipForm stale worker lines (FR #1553 / harvest #1562)
 
 | Lesson | Fix |
