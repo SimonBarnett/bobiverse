@@ -857,6 +857,51 @@ def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
             ent["jobs"] = []
 
 
+def _mirror_worker_list_to_legacy_workers(ent: dict, mid: str, nick: str) -> None:
+    """Keep pid-keyed ``workers`` in sync with chair ``worker_list`` for one nick.
+
+    Merge heartbeats and older monitors still read ``workers``; without this mirror,
+    a seat can show ``doing`` on the tray export while the pid row stays idle (or
+    the reverse after a peer merge clears ``working_on``).
+    """
+    n = str(nick or "").strip()
+    if not n:
+        return
+    parsed = parse_seat_nick(n)
+    if not parsed:
+        return
+    seat_mid, pid_s = parsed
+    if normalize_machine_id(seat_mid) != normalize_machine_id(mid):
+        return
+    rows = _coerce_worker_list(ent.get("worker_list"))
+    row = next((r for r in rows if str(r.get("nick") or "").lower() == n.lower()), None)
+    workers = ent.setdefault("workers", {})
+    if not isinstance(workers, dict):
+        workers = {}
+        ent["workers"] = workers
+    prev = workers.get(pid_s) if isinstance(workers.get(pid_s), dict) else {}
+    if row is None:
+        if pid_s in workers:
+            workers.pop(pid_s, None)
+        return
+    state = str(row.get("state") or "idle").strip().lower()
+    work = clean_worker_work(row.get("work"))
+    idle = state == "idle"
+    # Legacy pid rows historically used ``running`` for active; keep ``idle`` as idle.
+    legacy_state = "idle" if idle else ("running" if state in ("doing", "offered") else state)
+    workers[pid_s] = _coerce_worker(
+        mid,
+        pid_s,
+        {
+            **prev,
+            "state": legacy_state,
+            "working_on": "" if idle else work,
+            "nick": n,
+            "key": worker_key(mid, pid_s),
+        },
+    )
+
+
 def worker_list_for_export(ent: dict) -> list[dict]:
     rows = _coerce_worker_list(ent.get("worker_list"))
     return sorted(rows, key=lambda r: r["nick"].lower())
@@ -1360,13 +1405,21 @@ def _note_event(doc: dict, kind: str, **fields: object) -> None:
 
 
 def _roll_working_on(ent: dict) -> None:
+    """Refresh machines.<id>.working_on from legacy pid workers, else worker_list.
+
+    Peer merge heartbeats often touch the pid-keyed ``workers`` dict with empty
+    ``working_on``. Blanking machine activity in that case wiped the chair
+    ``worker_list`` feed (ACK/DONE via worker-work), so the public digest looked
+    idle while seats were still doing.
+    """
     workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
     for w in workers.values():
         text = str((w or {}).get("working_on") or "").strip()
         if text:
             ent["working_on"] = text
             return
-    ent["working_on"] = ""
+    # Fall back to chair-maintained worker_list (FR #663); do not blank activity.
+    _refresh_machine_activity_from_worker_list(ent)
 
 
 def _machine_entry(doc: dict, machine_id: str) -> dict:
@@ -1904,6 +1957,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         after_rows = _coerce_worker_list(rows)
         ent["worker_list"] = after_rows
         _refresh_machine_activity_from_worker_list(ent)
+        _mirror_worker_list_to_legacy_workers(ent, mid, nick)
         if briefer_nick:
             doc["briefer"] = briefer_nick
         doc["ts"] = now_iso
@@ -1933,6 +1987,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         # Still refresh machine activity (timeout may have expired offered -> idle).
         ent["worker_list"] = after_rows
         _refresh_machine_activity_from_worker_list(ent)
+        _mirror_worker_list_to_legacy_workers(ent, mid, nick)
         save_digest(home, doc)
         return CallbackOutcome(ok=True, changed=False)
     for r in after_rows:
@@ -1940,6 +1995,7 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
             r["updated"] = now_iso
     ent["worker_list"] = after_rows
     _refresh_machine_activity_from_worker_list(ent)
+    _mirror_worker_list_to_legacy_workers(ent, mid, nick)
     if briefer_nick:
         doc["briefer"] = briefer_nick
     doc["ts"] = now_iso
