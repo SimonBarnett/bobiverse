@@ -29,7 +29,7 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 
 | Piece | Where |
 |---|---|
-| Install root | `<ai root>\bob` (`scripts\`, `tools\` TipForm, `src\` BobBridge, `assets\bob-systray.ico`, `config\`, `logs\`, `.grok\skills\`, `PIN.txt`, `VERSION`) |
+| Install root | `<ai root>\bob` (`scripts\`, `tools\` TipForm, `src\` BobBridge, `assets\bob-systray.ico`, `config\`, `logs\`, `.grok\skills\`, `PIN.txt`, `VERSION`, **`VISION.md`** for MRB/UAT — FR #1615) |
 | Ear home | `<ai root>\bob\home` (LocalSystem) else `~\.bobiverse`; `outbox.txt` (+`.pos`), `irc.log` (with `BOB_IRC_DEBUG=1`), `nickserv.password`, `accounts.json`, `digest.json` |
 | Logs | `<ai root>\bob\logs\stdout.log` / `stderr.log` (rotated `ircBob-*` files) |
 | IRC | channels `#bobiverse` + `#<machine>`; nick `Bob-<machine>`; SASL user `bob-<machine>`; host passed explicitly with `--host` (Start-Bob `-IrcHost`, default `irc.ntsa.uk`) |

@@ -179,3 +179,11 @@ VERSION -> **0.1.20** (packaged MSIs and release archives).
 | Lesson | Fix |
 |--------|-----|
 | BobCallback curl timeout with LISTEN can recover 200 without restart; skill flood in ungated_offerable after FR #1682 is expected until consolidate PRs land; exclude w-mh-* from idle_seats | Folded into jeeves-monitor + troubleshooting (with #1568 heal cluster). |
+
+## 2026-10-04 - bob product vision path (harvest #1632 / FR #1615)
+
+| Lesson | Fix / book |
+|---|---|
+| bob MRB/UAT vision-first | Read `bob/VISION.md`; fleet umbrella stays `common/docs/vision.md` |
+
+Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #1639.
