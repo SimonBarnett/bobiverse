@@ -7,7 +7,7 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 
 | Lesson | Fix |
 |--------|-----|
-| MRB of CONFLICTING PR when twin FR already closed by another merge: FAIL board, close the duplicate PR, DONE FAIL; do not force-merge. CONFLICTING with open acceptance still uses one fix/rebase PR. | Documented in bobiverse-bob-job-mrb + troubleshooting row in bobiverse-bob-job-irc. Absorbs #1756/#1736/#1730 twins. |
+| MRB of CONFLICTING PR when twin FR already closed by another merge: FAIL board, close the duplicate PR, DONE FAIL; do not force-merge. CONFLICTING with open acceptance still uses one fix/rebase PR. | Documented in bobiverse-bob-job-mrb + troubleshooting row in bobiverse-bob-job-irc. Absorbs #1756/#1736/#1730 twins. |
 
 ## 2026-10-04 - FR #1546 / PR #1560 Airc ReplyFile + console logs (harvest #1567)
 
@@ -19,7 +19,7 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 
 | Lesson | Fix |
 |--------|-----|
-| Never self-MRB a PR this seat opened; GIVEUP with self-MRB reason so another seat can hostile-review (and rebase if DIRTY) | Documented wire in bbobiverse-bob-job-mrb + bbobiverse-bob-job-irc. NACK only if spotted before ACK/work. |
+| Never self-MRB a PR this seat opened; GIVEUP with self-MRB reason so another seat can hostile-review (and rebase if DIRTY) | Documented wire in bobiverse-bob-job-mrb + bobiverse-bob-job-irc. NACK only if spotted before ACK/work. |
 
 ## 2026-10-04 - TipForm stale worker lines (FR #1553 / harvest #1562)
 
@@ -32,6 +32,12 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 | Lesson | Fix |
 |--------|-----|
 | Monitor filings about ircJeeves StartPending or idle seats + ungated offerable were offered to marchhare | gitclaim title/body cues stamp require_machine=ionos (PR #1574). Document in jeeves-monitor + bob-job-fr; put cue words in intake titles. |
+
+## 2026-10-04 - Skill-offer idle_seats expected + callback timeout recover (harvest #1705)
+
+| Lesson | Fix |
+|--------|-----|
+| BobCallback curl timeout with LISTEN can recover 200 without restart; skill flood in ungated_offerable after FR #1682 is expected until consolidate PRs land; exclude w-mh-* from idle_seats | Folded into jeeves-monitor + troubleshooting (with #1568 heal cluster). |
 ## 2026-10-04 - MRB #1696 docs: skill offers are promote FRs (not SKIP_FR/GIVEUP)
 
 | Lesson | Fix |
@@ -41,7 +47,7 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 
 | Lesson | Fix |
 |--------|-----|
-| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/Ã¢â‚¬Â¦` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bbobiverse-bob-job-fr` |
+| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/...` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bobiverse-bob-job-fr` |
 
 ## 2026-10-03 - FR #806 archive-richer hand-merge
 
@@ -101,7 +107,7 @@ VERSION Ã¢â€ â€™ **0.1.9**.
 | Tray + service both looked like updaters | Tray Start skips product update; Sync/ff only on Start-Bob |
 | TipForm Restart only relaunched UI | TipForm **Restart** Ã¢â€ â€™ `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
 | Quiet MSI TipForm in session 0 (invisible) | Start-BobTrayInteractive ONLOGON /IT; no session-0 Start-Process |
-| Jeeves missing from #win-mpreÃ¢â‚¬Â¦ | ChanServ !register required for chair_channels |
+| Jeeves missing from #win-mpre... | ChanServ !register required for chair_channels |
 
 VERSION Ã¢â€ â€™ **0.1.10**.
 
@@ -126,51 +132,38 @@ VERSION Ã¢â€ â€™ **0.1.10**.
 
 VERSION -> **0.1.20** (packaged MSIs and release archives).
 
-## 2026-10-04 - chair "not assigning" vs open GitHub counts (harvest #1581)
+## 2026-10-04 - CONFLICTING/superseded MRB FAIL (harvest #1609)
 
-| Lesson | Fix / book |
-|---|---|
-| Large open-issue totals look like chair failure | Mostly skill/harvest (+ needs-human); check ungated_offerable and !bored first |
-| Monitor cannot !assign | By design; diagnose queue/bored/gates, do not act as chair |
+| Lesson | Fix |
+|--------|-----|
+| MRB of CONFLICTING PR when twin FR already closed by another merge: FAIL board, close the duplicate PR, DONE FAIL; do not force-merge. CONFLICTING with open acceptance still uses one fix/rebase PR. | Documented in bobiverse-bob-job-mrb + troubleshooting row in bobiverse-bob-job-irc. Absorbs #1756/#1736/#1730 twins. |
 
-Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md`. Canonical #1581; duplicate #1483.
-## 2026-10-04 - stale bob-worker.exe waits for Enter after inject (harvest #1605)
+## 2026-10-04 - FR #1546 / PR #1560 Airc ReplyFile + console logs (harvest #1567)
 
-| Lesson | Fix / book |
-|---|---|
-| worker.log relay:injected but TUI waits for Enter | Live PyInstaller exe stale vs FR #1601; press Enter once; Build-BobWorker + new tray Agent seat |
-| Source patch alone | Does not update frozen bob-worker-*.exe already running |
+| Lesson | Fix |
+|--------|-----|
+| `Invoke-AircRemote -ReplyFile` needs ear capture of `*_console` Query lines to `home/airc-replies.jsonl` plus helper poll until DONE; NSSM AppStdout under install logs with timestamps and keepalive rate-limit | Promoted into `airc/.grok/skills/bobiverse-airc`, `bobiverse-airc-troubleshooting`, and `bob/.grok/skills/bobiverse-bob-commands` (code already on main via PR #1560) |
 
-Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md`. Canonical #1605; twin #1614.
+## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
 
-## 2026-10-04 - NAK busy from stale workers map (harvest #1715)
+| Lesson | Fix |
+|--------|-----|
+| Never self-MRB a PR this seat opened; GIVEUP with self-MRB reason so another seat can hostile-review (and rebase if DIRTY) | Documented wire in bobiverse-bob-job-mrb + bobiverse-bob-job-irc. NACK only if spotted before ACK/work. |
 
-| Lesson | Fix / book |
-|---|---|
-| nak busy with idle worker_list | machines.workers.<pid>.working_on still set after lost DONE |
-| clear_orphan | Must idle workers map + machine working_on, not only worker_list |
-| Product | FR #1714 |
+## 2026-10-04 - TipForm stale worker lines (FR #1553 / harvest #1562)
 
-Books: `bobiverse-jeeves-monitor`, `bobiverse-bob`.
-## 2026-10-04 - Airc MSI AppParameters identity preserve (harvest #1583)
+| Lesson | Fix |
+|--------|-----|
+| TipForm looks stuck while seats are busy: BobCallback flaps + Get-BobTrayHover hung WinForms poll + lagging worker_list | Sync workers from digest/report on a non-UI timer; never block refresh on hover; roll working_on from worker_list; heal callback with Start-BobCallbackSupervised. Documented in bobiverse-bob + troubleshooting. Product: PR #1576 / #1495 / #1555 |
 
-| Lesson | Fix / book |
-|---|---|
-| MSI upgrade invents ConsoleHome | Read live AppParameters, then airc-install.json, before profile defaults (FR #1552 / PR #1570) |
+## 2026-10-04 - Monitor StartPending/idle+ungated -> require_machine=ionos (FR #1550 / harvest #1580)
 
-Books: `airc/.grok/skills/bobiverse-airc/SKILL.md`, `airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md`.
-## 2026-10-04 - Sync ARP VERSION truth (harvest #1589 / FR #1565)
+| Lesson | Fix |
+|--------|-----|
+| Monitor filings about ircJeeves StartPending or idle seats + ungated offerable were offered to marchhare | gitclaim title/body cues stamp require_machine=ionos (PR #1574). Document in jeeves-monitor + bob-job-fr; put cue words in intake titles. |
 
-| Lesson | Fix / book |
-|---|---|
-| Clone VERSION clobbers MSI stamp on sync | ARP DisplayVersion is truth; Sync heals InstallRoot VERSION and skips newer clone stamps (PR #1577) |
-| Tests poisoned by live ARP | Use -ArpVersionOverride none (or equivalent) in unit tests |
+## 2026-10-04 - Skill-offer idle_seats expected + callback timeout recover (harvest #1705)
 
-Book: `common/.grok/skills/bobiverse-fleet-ops/SKILL.md`. Canonical #1589; twin #1595.
-## 2026-10-04 - open-PR MRB survives stale mrb_done on resync (harvest #1613)
-
-| Lesson | Fix / book |
-|---|---|
-| Premature mrb_done purged open pulls | mrb_already_done(pr_exists) open wins; resync clears stale mrb_done like fr_done (FR #1585 / PR #1606) |
-
-Books: `jeeves/.grok/skills/bobiverse-jeeves/SKILL.md`, troubleshooting, `bobiverse-bob-job-mrb`.
+| Lesson | Fix |
+|--------|-----|
+| BobCallback curl timeout with LISTEN can recover 200 without restart; skill flood in ungated_offerable after FR #1682 is expected until consolidate PRs land; exclude w-mh-* from idle_seats | Folded into jeeves-monitor + troubleshooting (with #1568 heal cluster). |
