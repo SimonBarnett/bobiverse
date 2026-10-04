@@ -35,17 +35,21 @@ def test_install_airc_reads_existing_appparameters_before_defaults():
     assert "Get-BobiverseServiceAppParameters" in t
     assert "Get-BobiverseAircIdentityFromAppParameters" in t
     assert t.index("Get-BobiverseServiceAppParameters") < t.index("LocalSystem using existing Admin ConsoleHome")
-    assert "preserving ConsoleHome from service AppParameters" in t
+    assert "preserving" in t and "ConsoleHome" in t
     assert "airc-install.json" in t
     assert "FR #1552" in t
+    # MRB #1570: json fallback when AppParameters empty (FR letter "or install.json").
+    assert "ConvertFrom-Json" in t
+    assert t.index("airc-install.json") < t.index("LocalSystem using existing Admin ConsoleHome")
 
 
 def test_install_aircconsole_captures_before_teardown():
     t = _txt(INSTALL_CONSOLE)
     assert "Get-BobiverseServiceAppParameters" in t
     # Capture must happen before Remove-AircConsoleService tear-down.
-    assert t.index("preserving identity from existing") < t.index("Remove-AircConsoleService")
+    assert t.index("preserving identity from prior") < t.index("Remove-AircConsoleService")
     assert "priorId.OperatorsFile" in t or "OperatorsFile" in t
+    assert "ConvertFrom-Json" in t  # airc-install.json fallback
 
 
 def test_ops_doc_upgrade_preserves_identity():
@@ -53,6 +57,8 @@ def test_ops_doc_upgrade_preserves_identity():
     assert "FR #1552" in t
     assert "AppParameters" in t
     assert "SASL 904" in t or "NickServ" in t
+    assert "airc-install.json" in t
+    assert "fallback" in t.lower() or "read that json" in t.lower()
 
 
 @win
@@ -115,3 +121,40 @@ if ($id.ConsoleHome -or $id.MachineId -or $id.Launcher) {{ throw 'expected empty
     )
     assert r.returncode == 0, r.stderr
     assert "ok" in r.stdout
+
+
+@win
+def test_parse_unquoted_file_and_operators(tmp_path: Path):
+    """MRB #1570: unquoted -File and OperatorsFile must parse (fleet AppParameters shape)."""
+    script = tmp_path / "parse2.ps1"
+    sample = (
+        r'-NoProfile -ExecutionPolicy Bypass -File C:\ai\airc\scripts\Start-AircConsole-Fleet.ps1 '
+        r'-ServiceMode -ConsoleHome C:\Users\Default\.airc '
+        r'-OperatorsFile C:\Users\Default\.airc\operators.txt '
+        r'-MachineId win-mpre8vi4u6u'
+    )
+    body = f"""
+$ErrorActionPreference = 'Stop'
+. '{COMMON}'
+$raw = @'
+{sample}
+'@
+$id = Get-BobiverseAircIdentityFromAppParameters -AppParameters $raw
+'ch=' + $id.ConsoleHome
+'of=' + $id.OperatorsFile
+'ln=' + $id.Launcher
+'mid=' + $id.MachineId
+"""
+    script.write_text(body, encoding="utf-8")
+    r = subprocess.run(
+        [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    assert "ch=C:\\Users\\Default\\.airc" in lines
+    assert "of=C:\\Users\\Default\\.airc\\operators.txt" in lines
+    assert "mid=win-mpre8vi4u6u" in lines
+    assert any(ln.startswith("ln=") and "Start-AircConsole-Fleet.ps1" in ln for ln in lines)

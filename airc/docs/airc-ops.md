@@ -13,8 +13,8 @@ Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / 
 
 **Never** default to the invoking user's profile when the `Airc` service is already registered — that resets identity and causes SASL 904 / NickServ 433.
 **Never** invent a fresh ConsoleHome on MSI upgrade when AppParameters already name one (including a deliberate `Default\.airc` fleet bake).
-`Install-Airc.ps1` / `Install-AircConsole.ps1` read `HKLM\...\Services\Airc\Parameters\AppParameters` first; they also write `<ai root>\airc\config\airc-install.json` (paths only, no secrets).
-Fresh installs still migrate legacy `.airc-console` / Default homes when no prior service exists.
+`Install-Airc.ps1` / `Install-AircConsole.ps1` read `HKLM\...\Services\Airc\Parameters\AppParameters` first; they also write `<ai root>\airc\config\airc-install.json` (paths only, no secrets) and **read that json as fallback** when AppParameters are missing (service already removed).
+Fresh installs still migrate legacy `.airc-console` / Default homes when no prior service / json exists.
 
 ## Shop vs lobby
 

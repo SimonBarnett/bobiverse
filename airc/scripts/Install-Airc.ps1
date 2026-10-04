@@ -75,17 +75,37 @@ if (-not (Test-Path $destErgo)) {
 # FR #1552: MSI / reinstall must keep the live service identity (ConsoleHome, MachineId,
 # PasswordFile, OperatorsFile). Never default to the invoking user's profile when Airc
 # is already registered — that caused SASL 904 / NickServ 433 after 0.1.20->0.1.21.
+# Prefer live AppParameters; fall back to config\airc-install.json when the service is gone.
 $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName 'Airc'
 $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
-if ($priorAppParams) {
-    Write-Host 'INFO FR #1552: existing Airc AppParameters found — preserving identity fields'
+if (-not $priorAppParams) {
+    $snapPath = Join-Path $InstallRoot 'config\airc-install.json'
+    if (Test-Path -LiteralPath $snapPath) {
+        try {
+            $snap = Get-Content -LiteralPath $snapPath -Raw -Encoding utf8 | ConvertFrom-Json
+            $priorId = [pscustomobject]@{
+                ConsoleHome   = [string]($snap.ConsoleHome)
+                MachineId     = [string]($snap.MachineId)
+                PasswordFile  = [string]($snap.PasswordFile)
+                OperatorsFile = [string]($snap.OperatorsFile)
+                Launcher      = [string]($snap.Launcher)
+                Raw           = ''
+            }
+            Write-Host "INFO FR #1552: no AppParameters — using $snapPath"
+        } catch {
+            Write-Host ("WARN airc-install.json read: {0}" -f $_.Exception.Message)
+        }
+    }
+}
+if ($priorId -and ($priorId.ConsoleHome -or $priorId.MachineId -or $priorId.PasswordFile -or $priorId.Launcher)) {
+    Write-Host 'INFO FR #1552: preserving identity fields from prior install'
     if (-not $ConsoleHome -and $priorId.ConsoleHome) {
         $ConsoleHome = $priorId.ConsoleHome
-        Write-Host "INFO preserving ConsoleHome from service AppParameters"
+        Write-Host "INFO preserving ConsoleHome"
     }
     if (-not $MachineId -and $priorId.MachineId) {
         $MachineId = $priorId.MachineId
-        Write-Host "INFO preserving MachineId from service AppParameters"
+        Write-Host "INFO preserving MachineId"
     }
 }
 
@@ -153,13 +173,15 @@ if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }
 if ($Python) { $args.Python = $Python }
 if ($NoStart) { $args.NoStart = $true }
-# FR #1552: pass through prior PasswordFile when still on disk (keeps NickServ GUID path).
-if ($priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
+# FR #1552: pass through prior PasswordFile / OperatorsFile / Launcher when still on disk.
+if ($priorId -and $priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
     $args.PasswordFile = $priorId.PasswordFile
 }
-if ($priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) {
+if ($priorId -and $priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) {
     $args.Launcher = $priorId.Launcher
 }
+# OperatorsFile is not a direct Install-AircConsole param; Install-AircConsole re-reads
+# AppParameters / opsFile. Snapshot still records OperatorsFile for the json fallback.
 
 # Patch launcher path expectation: Install-AircConsole looks beside itself
 try {
