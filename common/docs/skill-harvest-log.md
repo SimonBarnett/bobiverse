@@ -131,3 +131,13 @@ Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/sk
 | Source patch alone | Does not update frozen bob-worker-*.exe already running |
 
 Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md`. Canonical #1605; twin #1614.
+
+## 2026-10-04 - NAK busy from stale workers map (harvest #1715)
+
+| Lesson | Fix / book |
+|---|---|
+| nak busy with idle worker_list | machines.workers.<pid>.working_on still set after lost DONE |
+| clear_orphan | Must idle workers map + machine working_on, not only worker_list |
+| Product | FR #1714 |
+
+Books: `bobiverse-jeeves-monitor`, `bobiverse-bob`.
