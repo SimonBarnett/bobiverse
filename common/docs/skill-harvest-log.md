@@ -260,3 +260,9 @@ Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #
 | Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
 
 Books: obiverse-bob-worker, obiverse-bob-troubleshooting.
+
+## 2026-10-04 - MRB enqueue when resync blocked (harvest #1927)
+
+| Lesson | Fix |
+|--------|-----|
+| When open PRs are missing from the MRB queue because git-claim.lock / token 403 blocked resync: enqueue_unaccepted via gh pr list; clear_seat_doing stale busy | Documented in jeeves-troubleshooting + jeeves-monitor. Product root #1811 → #1993. |
