@@ -3,15 +3,6 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
-## 2026-10-04 - seats_stuck_doing false busy after DONE (harvest #1712)
-
-| Lesson | Fix / book |
-|---|---|
-| digest doing + accepted empty after DONE | Stale working_on; do not !assign or kill seat |
-| Remediation | Next TipForm/digest POST; optional clear workers.*.working_on |
-
-Books: `bobiverse-jeeves-monitor`, TipForm note in `bobiverse-bob`. Twin #1713.
-
 ## 2026-10-04 - Never Closes skill harvest from unrelated PR (harvest #1674)
 
 | Lesson | Fix |
@@ -75,7 +66,12 @@ Book: `bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md`.
 
 | Lesson | Fix |
 |--------|-----|
-| PowerShell StrictMode: Sort-Object/Where-Object of one item is a scalar — wrap with @() before .Count; leave separate FreeGB capacity FRs open | Documented in `bobiverse-fleet-ops` + `bobiverse-bob-job-fr`. Product: PR #1672. Related soft-cap conflict playbook: harvest #1694 |
+| PowerShell StrictMode: Sort-Object/Where-Object of one item is a scalar - wrap with @() before .Count; leave separate FreeGB capacity FRs open | Documented in `bobiverse-fleet-ops` + `bobiverse-bob-job-fr`. Product: PR #1672. Related soft-cap conflict playbook: harvest #1694 |
+## 2026-10-04 - Never stamp needs-mrb1 (harvest #1717 / FR #1526)
+
+| Lesson | Fix |
+|--------|-----|
+| CAST IRON: do not create, stamp, or apply needs-mrb1/mrb1. needs-human is the real human gate. Leftover label on the repo is inert for offers | Updated harvest + job-fr + jeeves-monitor. Product already on main via PR #1526 |
 
 ## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
 

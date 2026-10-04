@@ -39,7 +39,7 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 
 1. **Playbook / fix with write access** -> branch + **pull request** to bobiverse. Never `git push origin main` for harvest.
 2. **No GitHub write / API fail** -> intake webhook (`Report-BobiverseIntakeIssue.ps1`) or local `report-outbox/` retry (`Invoke-BobiverseHarvest.ps1 -Flush`).
-3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request`). Do **not** stamp `needs-mrb1`.
+3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request`). Do **not** stamp `needs-mrb1` (FORBIDDEN - use `needs-human`).
 4. Prefer `.\scripts\Invoke-BobiverseHarvest.ps1` / `Report-BobiverseIntakeIssue.ps1` over free-form chat.
 
 ## Where to put lessons
@@ -54,9 +54,9 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 | This harvest index | `common/docs/skill-harvest-log.md` |
 | Pre-bobiverse historical harvest notes | `docs/archive/*/docs/skill-harvest-log.md` (read-only) |
 
-Live siblings that still take product FRs: `SimonBarnett/skills-visionary`, `SimonBarnett/agentic_fomprep`. Archived repos (`agentic_build`, `agentic_irc`, `gh-Jeeves`, `AgentMonitor`, `bob-design-uat`) are **not** intake targets — see `docs/ARCHIVED_REPOS.md`.
+Live siblings that still take product FRs: `SimonBarnett/skills-visionary`, `SimonBarnett/agentic_fomprep`. Archived repos (`agentic_build`, `agentic_irc`, `gh-Jeeves`, `AgentMonitor`, `bob-design-uat`) are **not** intake targets - see `docs/ARCHIVED_REPOS.md`.
 
-Branch `harvest/…` or `fix/…` → PR to `main`. Bump `common/VERSION` only when the change must ship in the next MSI pack.
+Branch `harvest/…` or `fix/…` -> PR to `main`. Bump `common/VERSION` only when the change must ship in the next MSI pack.
 
 ## Token efficiency
 
@@ -67,27 +67,27 @@ Branch `harvest/…` or `fix/…` → PR to `main`. Bump `common/VERSION` only w
 
 ## Scan then write
 
-1. Diff local installed skills vs repo `.grok/skills/` — promote repeatable playbooks.
+1. Diff local installed skills vs repo `.grok/skills/` - promote repeatable playbooks.
 2. Run `Invoke-BobiverseHarvest.ps1` / pack skill tests; do not reinvent them.
 3. Append a dated line to `common/docs/skill-harvest-log.md` when the lesson is new.
 4. Skip one-off incident notes and noisy chat.
 
-## Worker: consolidate open skill receipts → promote PR (FR #1684 / #1682)
+## Worker: consolidate open skill receipts -> promote PR (FR #1684 / #1682)
 
-`label:skill` / titles `harvest:` / `skill:` are **offerable FR promote jobs** (FR #1682): the chair hands them out so workers consolidate and open a **promote PR** for hostile MRB. They are not product code FRs and still do **not** block repo UAT. Intake alone is a receipt, not a merge — do **not** GIVEUP when offered.
+`label:skill` / titles `harvest:` / `skill:` are **offerable FR promote jobs** (FR #1682): the chair hands them out so workers consolidate and open a **promote PR** for hostile MRB. They are not product code FRs and still do **not** block repo UAT. Intake alone is a receipt, not a merge - do **not** GIVEUP when offered.
 
 When a worker is assigned a skill-promote / harvest-backlog job, or when finishing a session with `gh` write access and open skill receipts for books you touched:
 
 1. **List** open skill receipts:
    `gh issue list -R SimonBarnett/bobiverse --state open --label skill --limit 200 --json number,title,body,labels`
-2. **Consolidate by skill book** — map each issue to one owner book from the table above (title/body/Lesson). Default only to `common/.grok/skills/harvest-agent-skills` when no product book fits. Do **not** open one PR per receipt.
-3. **Dedupe lessons** — for each book, keep unique durable Lesson lines; skip one-off incident noise already present in that `SKILL.md`.
-4. **Close duplicate skill-book requests** — for redundant receipts of the same book/lesson, close as duplicates when the promote PR opens (`gh issue close N --comment "Duplicate of #<canonical> / absorbed by <pr-url>"`). PR body must list `Duplicates closed: #a #b #c`.
+2. **Consolidate by skill book** - map each issue to one owner book from the table above (title/body/Lesson). Default only to `common/.grok/skills/harvest-agent-skills` when no product book fits. Do **not** open one PR per receipt.
+3. **Dedupe lessons** - for each book, keep unique durable Lesson lines; skip one-off incident noise already present in that `SKILL.md`.
+4. **Close duplicate skill-book requests** - for redundant receipts of the same book/lesson, close as duplicates when the promote PR opens (`gh issue close N --comment "Duplicate of #<canonical> / absorbed by <pr-url>"`). PR body must list `Duplicates closed: #a #b #c`.
 5. **One promote PR per book** (or one PR covering N books with clear file ownership): branch `harvest/…`, edit only those `.grok/skills/**` paths + one `common/docs/skill-harvest-log.md` line. Never `git push origin main`.
-6. **PR body** — `Closes SimonBarnett/bobiverse#N` for issues fully absorbed; `Duplicates closed: …` for the rest; name every book file touched. Implementer never merges.
+6. **PR body** - `Closes SimonBarnett/bobiverse#N` for issues fully absorbed; `Duplicates closed: …` for the rest; name every book file touched. Implementer never merges.
 7. **DONE** with the PR URL; another seat runs hostile **MRB** to merge.
 
-Product FR jobs stay separate. Do not GIVEUP a real FR just because skill receipts exist. Do not stamp `needs-mrb1` on skill issues.
+Product FR jobs stay separate. Do not GIVEUP a real FR just because skill receipts exist. Do not stamp `needs-mrb1` (FORBIDDEN - use `needs-human`) on skill issues.
 
 ## Do not
 
@@ -116,3 +116,6 @@ Workers using these books owe a PR back to this repository. Preserve source issu
 ## Closing skill harvest issues (harvest #1674)
 
 A product/docs/vendor PR must **not** use `Closes` on a `label:skill` / `harvest:` receipt unless that PR **is** the skill-promote that absorbs the lesson. Otherwise: `Refs #N`, and close the harvest issue separately when lessons are already on main (or leave it for the promote PR).
+## needs-mrb1 ban (harvest #1717 / FR #1526)
+
+Never create or stamp `needs-mrb1`/`mrb1`. Human gate is `needs-human` only.
