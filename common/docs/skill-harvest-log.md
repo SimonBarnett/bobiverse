@@ -3,6 +3,17 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Harvest intake links existing PR (FR #1812)
+
+| Lesson | Fix |
+|--------|-----|
+| kind=harvest/skill with no files but body/title cites pull/N filed a second skill issue (filed_issue_fallback) and queued duplicate FR work | intake links existing PR (`linked_existing_pr`); log draft_pr_error; skip_fr `harvest_pr_summary` for via-intake+skill PR-opened receipts; harvest `-ExistingPrUrl` |
+## 2026-10-04 - Body-line require_machine pin (FR #1824 / #1843)
+
+| Lesson | Fix |
+|--------|-----|
+| Dedicated body line `require_machine: ionos` was ignored (FR #1508 blocked inline evidence); flamingo got ionos-only offers | Honor MULTILINE `^require_machine[:=]` pin lines in body cues; keep inline evidence unpinned |
+
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 
 | Lesson | Fix |
@@ -259,4 +270,4 @@ Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #
 | parent_of after proc.wait() empty | Capture create-parent at start_agent (FR #1643 / PR #1658) |
 | Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
 
-Books: obiverse-bob-worker, obiverse-bob-troubleshooting.
+Books: obiverse-bob-worker, obiverse-bob-troubleshooting.

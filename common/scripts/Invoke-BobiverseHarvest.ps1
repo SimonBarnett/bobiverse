@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Harvest step for any Bobiverse debugging/maintenance session: file what you learned to the intake webhook.
@@ -22,6 +22,7 @@ param(
     [string[]]$Lesson = @(),
     [string[]]$SkillFile = @(),
     [string]$Repo = 'SimonBarnett/bobiverse',
+    [string]$ExistingPrUrl = '',  # FR #1812: when set / already in Summary, intake links PR (no fallback skill issue)
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
     [string]$Machine = '',
     [string]$OutboxDir = '',
@@ -274,9 +275,17 @@ $body = "Session summary:`n$Summary`n`nLessons:`n$lessonText`n"
 $scan = $body + (($files | ForEach-Object { $_.content }) -join "`n")
 if ($scan -match $secretRx) { throw 'refusing to send: text looks like it contains a secret/token/password. Remove it and retry.' }
 
+if ($ExistingPrUrl) {
+    $eu = $ExistingPrUrl.Trim()
+    if ($eu -and $body -notmatch [regex]::Escape($eu)) {
+        $body = $body + "`nExisting PR: $eu`n"
+    }
+}
 $title = 'harvest: ' + $Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length))
 $sha = [Security.Cryptography.SHA256]::Create()
 $idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$Repo|$title|$body"))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
+
+# FR #1812: when -Summary/-Lesson already cite https://github.com/.../pull/N (or pass -ExistingPrUrl), intake links that PR and does not file a fallback skill issue.
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
     source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = 'harvest'; version = '' }

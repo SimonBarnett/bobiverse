@@ -50,8 +50,8 @@
    3. `Restart-Service Airc` and confirm `joined #{machine} as {machine}_console` without a `433` loop.  
    `ERASE` also works (`/msg NickServ ERASE {machine}_console` then confirm with the code) but requires the same oper cap; without `/OPER`, NickServ replies `Command restricted` (easy to miss in Halloy Notices).
 
-9. **Bootstrap tools (issue #10)**  
-   Quiet MSI runs install as LocalSystem. `Install-BootstrapTools.ps1` resolves well-known per-user paths for `gh` / Python before winget. Missing `gh` soft-fails (update-check limited); missing git/python/node still fails the install.
+9. **Bootstrap tools (issue #10 / FR #1825)**  
+   Quiet MSI runs install as LocalSystem. `Install-BootstrapTools.ps1` resolves well-known per-user paths for `gh` / Python / Node before winget. Node prefers a pinned **nodejs.org** x64 MSI (`ALLUSERS=1`) because per-user WindowsApps `winget` is unusable under SYSTEM. Missing `gh` / `git` / `python` / `node` soft-fail with `WARN tool-missing …` so the product MSI does not 1603; install machine-wide prerequisites afterward if a tool is required at runtime.
 
 10. **Airc vs airc-console UpgradeCode (issue #12)**  
     bobiverse `airc` MSI uses UpgradeCode `B7E3C9A1-4F2D-4E8B-9C11-A1BC00A1C001`, distinct from agentic_irc `airc-console`. They can coexist (`<ai root>\airc` / service `Airc` vs `<ai root>\airc-console` / `AircConsole`). Prefer one console per box.

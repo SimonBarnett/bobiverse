@@ -2301,8 +2301,10 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
     claim = gitclaim.claim_from_payload(event, payload, line=line)
     if claim is not None:
         queued = gitclaim.enqueue_unaccepted(home, claim)
-        if queued == "error":
-            return GitWebhookOutcome(ok=False, err="queue")
+        # FR #1811: surface queue-lock-timeout / queue-read / queue-write (claim also spooled).
+        if isinstance(queued, str) and queued.startswith("error"):
+            err = queued.split(":", 1)[1] if ":" in queued else "queue"
+            return GitWebhookOutcome(ok=False, err=err or "queue")
     if not enqueue_chair_fleet_privmsg(home, line):
         return GitWebhookOutcome(ok=False, err="outbox")
     return GitWebhookOutcome(ok=True, announced=True)
