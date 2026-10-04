@@ -57,7 +57,7 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 
 Live siblings that still take product FRs: `SimonBarnett/skills-visionary`, `SimonBarnett/agentic_fomprep`. Archived repos (`agentic_build`, `agentic_irc`, `gh-Jeeves`, `AgentMonitor`, `bob-design-uat`) are **not** intake targets - see `docs/ARCHIVED_REPOS.md`.
 
-Branch `harvest/…` or `fix/…` -> PR to `main`. Bump `common/VERSION` only when the change must ship in the next MSI pack.
+Branch `harvest/â€¦` or `fix/â€¦` -> PR to `main`. Bump `common/VERSION` only when the change must ship in the next MSI pack.
 
 ## Token efficiency
 
@@ -79,7 +79,7 @@ common/docs/skill-harvest-log.md is a shared append-only index. Parallel harvest
 
 * Before MRB merge (and before DONE on a harvest PR that touches this file): rebase or merge origin/main onto the tip.
 * When resolving the conflict: **keep both dated sections** (and both lesson rows). Do not drop the other promote's section to "win" the merge.
-* If the **fix/rebase PR itself** conflicts with newer main before REST/`gh pr merge`: merge `origin/main` into that fix tip and **keep-both again**, re-run marker/tests, then merge (harvest #2274; MRB #2241 → #2272).
+* If the **fix/rebase PR itself** conflicts with newer main before REST/`gh pr merge`: merge `origin/main` into that fix tip and **keep-both again**, re-run marker/tests, then merge (harvest #2274; MRB #2241 â†’ #2272).
 * One focused fix/rebase PR is enough when the unique head is still the right acceptance (see bobiverse-bob-job-mrb CONFLICTING). Example: MRB #1741 FAIL-fixed via #1750 keeping TipForm + ionos-pin sections.
 
 ## Worker: consolidate open skill receipts -> promote PR (FR #1684 / #1682)
@@ -95,8 +95,8 @@ When a worker is assigned a skill-promote / harvest-backlog job, or when finishi
 2. **Consolidate by skill book** - map each issue to one owner book from the table above (title/body/Lesson). Default only to `common/.grok/skills/harvest-agent-skills` when no product book fits. Do **not** open one PR per receipt.
 3. **Dedupe lessons** - for each book, keep unique durable Lesson lines; skip one-off incident noise already present in that `SKILL.md`.
 4. **Close duplicate skill-book requests** - for redundant receipts of the same book/lesson, close as duplicates when the promote PR opens (`gh issue close N --comment "Duplicate of #<canonical> / absorbed by <pr-url>"`). PR body must list `Duplicates closed: #a #b #c`.
-5. **One promote PR per book** (or one PR covering N books with clear file ownership): branch `harvest/…`, edit only those `.grok/skills/**` paths + one `common/docs/skill-harvest-log.md` line. Never `git push origin main`.
-6. **PR body** - `Closes SimonBarnett/bobiverse#N` for issues fully absorbed; `Duplicates closed: …` for the rest; name every book file touched. Implementer never merges.
+5. **One promote PR per book** (or one PR covering N books with clear file ownership): branch `harvest/â€¦`, edit only those `.grok/skills/**` paths + one `common/docs/skill-harvest-log.md` line. Never `git push origin main`.
+6. **PR body** - `Closes SimonBarnett/bobiverse#N` for issues fully absorbed; `Duplicates closed: â€¦` for the rest; name every book file touched. Implementer never merges.
 7. **DONE** with the PR URL; another seat runs hostile **MRB** to merge.
 
 Product FR jobs stay separate. Do not GIVEUP a real FR just because skill receipts exist. Do not stamp `needs-mrb1` (FORBIDDEN - use `needs-human`) on skill issues.
@@ -132,6 +132,7 @@ Workers using these books owe a PR back to this repository. Preserve source issu
 Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.
 
 A product/docs/vendor PR must **not** use `Closes` on a `label:skill` / `harvest:` receipt unless that PR **is** the skill-promote that absorbs the lesson. Otherwise: `Refs #N`, and close the harvest issue separately when lessons are already on main (or leave it for the promote PR).
+
 ## Linked existing harvest PR (FR #1812 / harvest #2013)
 
 If a harvest/skill intake already cites a pull URL, intake returns **`linked_existing_pr`** and must not file a duplicate skill issue. Prefer that PR for MRB; skip re-offering `harvest_pr_summary` receipts as new FRs. Product: PR #2012.
@@ -139,3 +140,14 @@ If a harvest/skill intake already cites a pull URL, intake returns **`linked_exi
 ## needs-mrb1 ban (harvest #1717 / FR #1526)
 
 Never create or stamp `needs-mrb1`/`mrb1`. Human gate is `needs-human` only.
+
+## Skills-only promote from worktree (harvest #2318)
+
+When the **install** git tip (<ai root>\bob / jeeves) is dirty with local product experiments (gitclaim.py, obcallback.py, ...) that must not ship:
+
+1. Create a job worktree from **origin/main** (not the dirty install tip).
+2. Promote **skills/docs only** on that branch (harvest/...).
+3. Leave the dirty product scripts uncommitted on the install main tip (or stash/revert later).
+4. Open the promote PR from the worktree tip; do not git add the install-tree dirty scripts into the harvest PR.
+
+Sibling example: harvest/maint-skills-nothing-queued (#2317) for monitor/troubleshooting nothing-queued playbooks.

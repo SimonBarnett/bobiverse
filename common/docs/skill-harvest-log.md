@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - Skills-only promote from worktree (harvest #2318)
+
+| Lesson | Fix |
+|--------|-----|
+| Promote jeeves maintenance skills while install main tip is dirty with local gitclaim/callback experiments | Worktree from `origin/main`; skills/docs only; leave dirty product scripts uncommitted on the install tip. Sibling playbook PR #2317 |
+
+Books: harvest-agent-skills.
+
 ## 2026-10-04 - Jeeves silent to operator / unverified WHOIS (harvest #2179)
 
 | Lesson | Fix |
@@ -36,7 +44,7 @@ Books: bobiverse-bob, bob/docs/bob-ear.md, inbound_transcript.
 
 | Lesson | Fix |
 |--------|-----|
-| Harvest/MRB fix PRs CONFLICTING on `skill-harvest-log.md`: one fix PR from `origin/main` keep-both; if that fix PR itself conflicts with newer main before merge, merge `origin/main` keep-both into the fix tip **again** before REST/`gh pr merge` | Documented in `bobiverse-bob-job-mrb` + `harvest-agent-skills`. Example: MRB #2241 → #2272 (`64e09e1` keep-both then merge) |
+| Harvest/MRB fix PRs CONFLICTING on `skill-harvest-log.md`: one fix PR from `origin/main` keep-both; if that fix PR itself conflicts with newer main before merge, merge `origin/main` keep-both into the fix tip **again** before REST/`gh pr merge` | Documented in `bobiverse-bob-job-mrb` + `harvest-agent-skills`. Example: MRB #2241 â†’ #2272 (`64e09e1` keep-both then merge) |
 
 Books: bobiverse-bob-job-mrb, harvest-agent-skills.
 
@@ -162,7 +170,7 @@ Books: obiverse-bob-job-mrb. Example land: PR #1979 after #1977 race.
 
 | Lesson | Fix |
 |--------|-----|
-| Two Start-BobCallbackSupervised parents fight digest.lock → public INTAKE 502 | Wrapper refuses second parent; Start-Jeeves/Register count parents and prefer schtasks /Run; health treats Ready without LISTEN as finding |
+| Two Start-BobCallbackSupervised parents fight digest.lock â†’ public INTAKE 502 | Wrapper refuses second parent; Start-Jeeves/Register count parents and prefer schtasks /Run; health treats Ready without LISTEN as finding |
 
 ## 2026-10-04 - Honor require_machine stamps with ACK/GIVEUP (harvest #1688)
 
@@ -286,40 +294,40 @@ Book: `bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md`.
 |--------|-----|
 | Ten "archive richer" docs flagged in ARCHIVED_REPOS after #802 | Merged useful honesty-box / chair / design-uat / Ergo describe-only content into live files; left verbatim archive copies untouched; dropped stale archived-repo homes and old pack tool names |
 
-## 2026-09-29 — WIN-MPRE8VI4U6U airc/bob/jeeves cutover
+## 2026-09-29 â€” WIN-MPRE8VI4U6U airc/bob/jeeves cutover
 
 Harvested into `.grok/skills/bobiverse-{jeeves,bob,airc}` + `docs/post-install.md` + install scripts:
 
 | Lesson | Fix |
 |--------|-----|
 | `Start-Jeeves` / `--channel` + PowerShell `#` comment | `irc_agent.py`: `--channel` optional when `--chair` |
-| MSI LocalSystem ChairHome → `C:\Users\Default\…` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
+| MSI LocalSystem ChairHome â†’ `C:\Users\Default\â€¦` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
 | Legacy `BobJeeves` + `ircJeeves` both Running | `Disable-BobiverseLegacyBobJeeves` on install |
 | `CryptUnprotectData` with LocalSystem + Admin identity | post-install + skill: ObjectName / park identity interim |
-| Crash-loop stderr flooding airc console | NSSM AppStdout/AppStderr → `C:\ai\jeeves\logs\` |
+| Crash-loop stderr flooding airc console | NSSM AppStdout/AppStderr â†’ `C:\ai\jeeves\logs\` |
 | Leftover `AircConsole` beside bobiverse `Airc` | `Install-Airc` **removes** `AircConsole` from SCM |
 | Legacy `BobJeeves` left Stopped/Disabled in services.msc | `Remove-BobiverseLegacyService` deletes SCM entry (tree kept) |
 | Remote ops via bob outbox PRIVMSG to `*_console` | bobiverse-bob / bobiverse-airc skills |
 | Duplicate MSI tray vs Watch-BobTray | already 0.1.5 (#14); documented again |
 
-VERSION → **0.1.6** (pack when shipping).
+VERSION â†’ **0.1.6** (pack when shipping).
 
-## 2026-09-30 — DEV1 TipForm companion durable start
+## 2026-09-30 â€” DEV1 TipForm companion durable start
 
 Harvested into .grok/skills/bobiverse-bob + docs/post-install.md + tray launcher:
 
 | Lesson | Fix |
 |--------|-----|
 | Tray logs `tray up` then dies when started from Grok agent shell | `Start-BobFleetTray` uses WMI `Win32_Process.Create` (job-object breakaway) |
-| Broad seat-wrapper `match Watch-BobTray` kills diagnosing shells | Kill filter requires `-File …Watch-BobTray.ps1` / `_Watch-BobTray-*.ps1` |
+| Broad seat-wrapper `match Watch-BobTray` kills diagnosing shells | Kill filter requires `-File â€¦Watch-BobTray.ps1` / `_Watch-BobTray-*.ps1` |
 | Product is service + companion, not BobFleet task | HKCU `Run\BobiverseTray`; disable `BobFleet-<id>` |
 | LocalSystem skipped update-check | `Start-Bob` no longer forces `BOBIVERSE_NO_UPDATE`; `Check-BobiverseUpdate` resolves `gh` + Releases API |
 | TipForm recycle JIT `PipelineStoppedException` | CatchException before Controls; swallow on ticks (agentic_build Watch-BobTray) |
 | Version visible on card | TipForm footer `bob {ver}` |
 
-VERSION → **0.1.8** (pack when shipping).
+VERSION â†’ **0.1.8** (pack when shipping).
 
-## 2026-09-30 — Jeeves webhooks + digest roster + start ff-only (0.1.9)
+## 2026-09-30 â€” Jeeves webhooks + digest roster + start ff-only (0.1.9)
 
 | Lesson | Fix |
 |--------|-----|
@@ -327,20 +335,20 @@ VERSION → **0.1.8** (pack when shipping).
 | Intake/jira on ionos | `bobcallback` `/bob/v1/intake` + `/bob/v1/jira`; durable `webhook_queue`; announce `#bobiverse` |
 | Harvest without GitHub | shared `.grok/skills/harvest` in every MSI; intake `kind` default `issue` |
 | Product MSI books split | Pack stages per-product docs/skills/AGENTS; jeeves has no bob seat/TipForm |
-| Start-time update | `Sync-BobiverseFromRepo` ff-only clone → sync install tree; MSI update is fallback |
+| Start-time update | `Sync-BobiverseFromRepo` ff-only clone â†’ sync install tree; MSI update is fallback |
 | Install start failures | `Report-BobiverseIntakeIssue` from Install-Jeeves/Bob/Airc |
 
-VERSION → **0.1.9**.
-## 2026-09-30 — TipForm Restart→ircBob; tray never Sync/ff (0.1.10)
+VERSION â†’ **0.1.9**.
+## 2026-09-30 â€” TipForm Restartâ†’ircBob; tray never Sync/ff (0.1.10)
 
 | Lesson | Fix |
 |--------|-----|
 | Tray + service both looked like updaters | Tray Start skips product update; Sync/ff only on Start-Bob |
-| TipForm Restart only relaunched UI | TipForm **Restart** → `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
+| TipForm Restart only relaunched UI | TipForm **Restart** â†’ `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
 | Quiet MSI TipForm in session 0 (invisible) | Start-BobTrayInteractive ONLOGON /IT; no session-0 Start-Process |
-| Jeeves missing from #win-mpre… | ChanServ !register required for chair_channels |
+| Jeeves missing from #win-mpreâ€¦ | ChanServ !register required for chair_channels |
 
-VERSION → **0.1.10**.
+VERSION â†’ **0.1.10**.
 
 ## 2026-10-02 - chair commands, Start Menu, agent-start layer (PR #83)
 
@@ -421,4 +429,4 @@ Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
 
 | Lesson | Fix |
 |--------|-----|
-| When open PRs are missing from the MRB queue because git-claim.lock / token 403 blocked resync: enqueue_unaccepted via gh pr list; clear_seat_doing stale busy | Documented in jeeves-troubleshooting + jeeves-monitor. Product root #1811 → #1993. |
+| When open PRs are missing from the MRB queue because git-claim.lock / token 403 blocked resync: enqueue_unaccepted via gh pr list; clear_seat_doing stale busy | Documented in jeeves-troubleshooting + jeeves-monitor. Product root #1811 â†’ #1993. |
