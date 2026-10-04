@@ -53,3 +53,28 @@ def test_set_repo_prunes_existing_redundant_items(tmp_path):
     assert any("pruned" in ln.lower() or "1520" in ln for ln in lines)
     doc = fi.load_focus(home)
     assert not (doc.get("items") or {})
+
+
+def test_prune_keeps_items_for_other_repos(tmp_path):
+    home = tmp_path
+    fi.dispatch(home, "simon", "simon", "!focus high SimonBarnett/bobiverse", ops=True)
+    doc = fi.load_focus(home)
+    doc["items"]["SimonBarnett/bobiverse#1"] = {
+        "rank": 1,
+        "repo": "SimonBarnett/bobiverse",
+        "id": "#1",
+        "label": "1",
+        "ts": "2026-10-04T00:00:00Z",
+    }
+    doc["items"]["SimonBarnett/Club-Madeira#9"] = {
+        "rank": 2,
+        "repo": "SimonBarnett/Club-Madeira",
+        "id": "#9",
+        "label": "2",
+        "ts": "2026-10-04T00:00:00Z",
+    }
+    fi.save_focus(home, doc)
+    assert fi.prune_redundant_focus_items(home) == 1
+    left = fi.load_focus(home)["items"]
+    assert "SimonBarnett/bobiverse#1" not in left
+    assert any(k.lower().endswith("#9") for k in left)

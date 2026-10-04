@@ -38,7 +38,14 @@ def check(args):
     focus = _load_json(focus_path) if focus_path.is_file() else None
     redundant: list[str] = []
     if isinstance(focus, dict):
-        repos = focus.get("repos") if isinstance(focus.get("repos"), dict) else {}
+        raw_repos = focus.get("repos")
+        # load_focus normalizes list→dict; monitor must too (legacy focus.json).
+        if isinstance(raw_repos, dict):
+            repos = raw_repos
+        elif isinstance(raw_repos, list):
+            repos = {str(r): {"priority": 1} for r in raw_repos if str(r).strip()}
+        else:
+            repos = {}
         items = focus.get("items") if isinstance(focus.get("items"), dict) else {}
         for key, meta in items.items():
             item_repo = ""
