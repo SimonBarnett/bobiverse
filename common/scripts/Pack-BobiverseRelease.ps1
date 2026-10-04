@@ -16,7 +16,9 @@ param(
     # Pass -EmbedErgoPassword only for private/offline packs.
     [switch]$EmbedErgoPassword,
     # Tests only (needs -SkipMsi): stage the worker/plan folders without compiling bob-worker.exe (PyInstaller, ~40 s).
-    [switch]$SkipWorkerExe
+    [switch]$SkipWorkerExe,
+    # Tests only (needs -SkipMsi): skip bob-ear.exe (FR #1481 PyInstaller, ~40 s).
+    [switch]$SkipEarExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +41,7 @@ $fetchErgo = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Ergo.ps1
 $null = & $fetchNssm -OutDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64') -CacheDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm')
 
 if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed together with -SkipMsi (an MSI without bob-worker.exe must never ship)' }
+if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -58,6 +61,7 @@ function Resolve-WatchAgentHealthSrc {
 
 function Stage-BobAgentFolders([string]$Stage) {
     # t762u: bob MSI payload gains worker\ (bob-worker.exe + AGENTS/skills) and plan\ (plan-mode skills); built by the shared Common function.
+    # FR #1481: also stage scripts\bob-ear.exe (frozen irc_agent) so ircBob does not need system Python for the ear.
     $made = Sync-BobiverseAgentFolders -RepoRoot $RepoRoot -Destination $Stage
     if ($made -lt 2) { throw 'bob pack requires bob-agents\worker and bob-agents\plan' }
     if ($SkipWorkerExe) {
@@ -68,6 +72,18 @@ function Stage-BobAgentFolders([string]$Stage) {
         if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { throw 'Build-BobWorker.ps1 did not produce bob-worker.exe' }
         Copy-Item -LiteralPath $exe -Destination (Join-Path $Stage 'worker\bob-worker.exe') -Force
         Write-Host 'INFO bob staged worker\bob-worker.exe'
+    }
+    if ($SkipEarExe) {
+        Write-Host 'WARN bob pack: -SkipEarExe (test stage; no bob-ear.exe)'
+    } else {
+        $buildEar = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-BobEar.ps1')
+        if (-not (Test-Path -LiteralPath $buildEar)) { throw "missing Build-BobEar.ps1 (FR #1481): $buildEar" }
+        $ear = (& $buildEar -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+        if (-not $ear -or -not (Test-Path -LiteralPath $ear)) { throw 'Build-BobEar.ps1 did not produce bob-ear.exe' }
+        $earDest = Join-Path $Stage 'scripts\bob-ear.exe'
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $earDest) | Out-Null
+        Copy-Item -LiteralPath $ear -Destination $earDest -Force
+        Write-Host 'INFO bob staged scripts\bob-ear.exe (FR #1481)'
     }
 }
 
