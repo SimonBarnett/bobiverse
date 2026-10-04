@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Body-line require_machine pin (FR #1824 / #1843)
+
+| Lesson | Fix |
+|--------|-----|
+| Dedicated body line `require_machine: ionos` was ignored (FR #1508 blocked inline evidence); flamingo got ionos-only offers | Honor MULTILINE `^require_machine[:=]` pin lines in body cues; keep inline evidence unpinned |
+
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 
 | Lesson | Fix |
