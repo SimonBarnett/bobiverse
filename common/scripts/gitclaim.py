@@ -111,7 +111,9 @@ _MRB_FIX_TITLE_RE = re.compile(
 )
 SKIP_FR_LABELS = frozenset(
     {
-        "skill",
+        # FR #1682 / #1684 / operator 2026-10-04: skill is offerable (promote PR /
+        # consolidate-by-book). Kept out of this set so intake harvests are handed out.
+        # Still excluded from repo-UAT blocking via issue_blocks_repo_uat.
         "umbrella",
         "parent-fr",
         "mrb-home",
@@ -140,7 +142,7 @@ SKIP_FR_LABELS = frozenset(
 SKIP_FR_LABELS_IN_TEXT = frozenset(
     lab
     for lab in SKIP_FR_LABELS
-    if lab not in {"mrb", "skill", "needs-human", "blocked", "release-gate"}
+    if lab not in {"mrb", "needs-human", "blocked", "release-gate"}
 )
 
 
@@ -574,8 +576,8 @@ def issue_skip_fr_reason(
     if hit:
         return f"label:{sorted(hit)[0]}"
     title_s = (title or "").strip()
-    if HARVEST_TITLE_RE.match(title_s):
-        return "harvest_title"
+    # FR #1682 / #1684: harvest:/skill: titles are offerable promote jobs (workers
+    # consolidate by skill book then open a harvest/* PR). Do not SKIP_FR them.
     if CRITICAL_SPAM_TITLE_RE.search(title_s):
         return "critical_spam_title"
     blob = f"{title_s}\n{body or ''}"
@@ -694,11 +696,18 @@ def issue_blocks_repo_uat(
     ``needs-mrb1`` must not prevent repo UAT (#1416) and must not block offers
     (operator 2026-10-04: label is a hallucination). Kept as a non-blocking
     open-issue class for UAT clearance only.
+
+    FR #1682 / #1684: skill / harvest: / skill: receipts are offerable
+    promote jobs but must not hold repo UAT (honesty-box backlog is not product work).
     """
     if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
         return False
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     if "needs-mrb1" in labs:
+        return False
+    if "skill" in labs:
+        return False
+    if HARVEST_TITLE_RE.match((title or "").strip()):
         return False
     return True
 
@@ -3407,7 +3416,8 @@ def resync_from_github(
     Merge, not wipe (the chair runs this every 15 min):
     * rows of other kinds (UAT/BUILD/FIX/PR), ``accepted`` jobs, and rows of repos whose fetch FAILED are kept;
     * a stale FR/MRB row of a successfully fetched repo (closed/merged/superseded) is dropped;
-    * skill/harvest/safe-to-close/umbrella issues are never (re)added and are pruned from unaccepted (FR #180);
+    * safe-to-close/umbrella/board issues are never (re)added and are pruned from unaccepted (FR #180);
+    * skill/harvest receipts ARE added as FR promote jobs (FR #1682 / #1684; operator 2026-10-04);
     * existing rows keep their seq/offer fields; new items are appended; repos in ``ignored`` are skipped.
 
     ``token`` (optional) is sent as ``Authorization: Bearer``; it is never logged or returned.
