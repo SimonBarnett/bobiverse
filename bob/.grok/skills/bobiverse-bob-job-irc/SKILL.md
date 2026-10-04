@@ -91,6 +91,8 @@ Same grammar, same effect: Jeeves returns the row to the unaccepted queue and ma
 no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an ACK (blocked, out of time/tokens, the task is impossible). Put the reason on a separate line or a GitHub comment, then harvest it
 (CAST IRON rule: file it). Never go silent on an ACKed job - a seat that ends is returned to the queue by Jeeves on QUIT, but a NACK/GIVEUP is faster and tells the next worker why.
 
+**Receipt rule:** a DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or FR/MRB/UAT `#N` worker-status receipt is not a new issue. Never file the `harvest:` receipt itself as `kind: issue`/`fr`; only file a separate genuine defect or gap.
+
 ## Rules
 
 * ACK before work, DONE after work, one line each, assigned TYPE and id, nothing after the url, own shop only, never a PM, never `!bored`.

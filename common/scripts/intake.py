@@ -33,6 +33,22 @@ _SECRETISH = re.compile(
     r"sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+|bearer\s+\S{8,})"
 )
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_WORKER_RECEIPT_MARKER = re.compile(
+    r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|CLOSED|duplicate|merged)\b"
+    r"|\b(?:FR|MRB|UAT)\s*#\d+\b"
+)
+
+
+def is_worker_receipt_issue(*, kind: str, title: str, body: str) -> bool:
+    """Keep DONE/GIVEUP/SKIP/self-MRB harvest receipts out of GitHub issues."""
+    if kind not in ("issue", "fr"):
+        return False
+    if not re.match(r"(?i)^\s*harvest:", title or ""):
+        return False
+    if not re.search(r"(?i)Session summary:|_via-intake.*Invoke-BobiverseHarvest", body or ""):
+        return False
+    return bool(_WORKER_RECEIPT_MARKER.search(f"{title}\n{body}"))
+
 
 
 _PR_URL_RE = re.compile(
@@ -206,6 +222,8 @@ def validate_payload(
     if not title or len(title) > 200:
         return "bad_title", {}
     body = str(payload.get("body") or "")
+    if is_worker_receipt_issue(kind=kind, title=title, body=body):
+        return "worker_receipt_not_issue", {}
     files = payload.get("files") or []
     if not isinstance(files, list):
         return "bad_files", {}
@@ -273,6 +291,7 @@ PERMANENT_INTAKE_ERRORS = frozenset(
         "empty_harvest",
         "bad_idempotency_key",
         "unauthorized",
+        "worker_receipt_not_issue",
     }
 )
 
@@ -337,6 +356,8 @@ def outbox_drop_reason(
     kind = str(payload.get("kind") or "issue").strip().lower() or "issue"
     if kind not in KINDS:
         return "bad_kind"
+    if is_worker_receipt_issue(kind=kind, title=title, body=str(payload.get("body") or "")):
+        return "worker_receipt_not_issue"
     return None
 
 
@@ -492,7 +513,27 @@ def file_submission(
                 except Exception as exc:
                     # Log why draft PR failed (was swallowed silently before FR #1812).
                     rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
-                    # fallback issue with file list (no raw huge dump if empty)
+                    if kind == "harvest":
+                        # MRB #2269 / follow-up #2181: harvest receipts must never become
+                        # GitHub issues when draft-PR filing fails — queue for retry.
+                        rec["state"] = "queued"
+                        rec["queued"] = True
+                        outbox = intake_root(home) / "outbox" / f"{iid}.json"
+                        safe_norm = dict(norm)
+                        safe_norm["contact"] = ""
+                        if norm.get("contact_public") and norm.get("contact"):
+                            safe_norm["contact"] = _redact(str(norm["contact"]))
+                        outbox.write_text(
+                            json.dumps(
+                                {"norm": safe_norm, "intake_id": iid, "quarantine": quarantine},
+                                indent=2,
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
+                        _save_record(home, rec)
+                        raise GitHubDown("harvest draft PR filing failed") from exc
+                    # Non-harvest skill payloads retain the issue fallback with a file list.
                     listing = "\n".join(f"- `{f.get('path')}`" for f in files) or "- (no files)"
                     issue_body = body + "\n\n### Files\n" + listing
                     out = filer.create_issue(repo, title, issue_body, labels)

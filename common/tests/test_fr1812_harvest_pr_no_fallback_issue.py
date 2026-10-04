@@ -48,7 +48,10 @@ def test_fr1812_harvest_with_pr_url_links_no_issue():
     assert filer.prs == []
 
 
-def test_fr1812_harvest_without_pr_still_falls_back_to_issue():
+def test_fr1812_harvest_without_pr_queues_not_issue_fallback():
+    """MRB #2269 / follow-up #2181: harvest draft-PR failure queues; never issue-fallback."""
+    import pytest
+
     filer = RaisingDraftFiler()
     home = _home("_tmp_intake_fr1812_issue")
     norm = {
@@ -62,11 +65,10 @@ def test_fr1812_harvest_without_pr_still_falls_back_to_issue():
         "contact": "",
         "contact_public": False,
     }
-    rec = intake.file_submission(home, norm, filer, intake_id="in_fr1812b")
-    assert rec["state"] == "filed_issue_fallback"
-    assert len(filer.issues) == 1
-    assert "via-intake" in filer.issues[0]["labels"]
-    assert "skill" in filer.issues[0]["labels"]
+    with pytest.raises(intake.GitHubDown):
+        intake.file_submission(home, norm, filer, intake_id="in_fr1812b")
+    assert filer.issues == []
+    assert (home / "intake" / "outbox" / "in_fr1812b.json").is_file()
 
 
 def test_fr1812_draft_pr_exception_is_logged_on_record():
