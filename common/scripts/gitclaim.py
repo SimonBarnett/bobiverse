@@ -2134,7 +2134,14 @@ def format_nothing_queued(nick: str) -> str:
 
 
 def live_seat_nicks(home: Path) -> set[str]:
-    """Seat nicks present in the digest (``<machine>-<pid>``), for the MRB author rule."""
+    """Seat nicks present in the digest for MRB/UAT author rules (FR #1401).
+
+    Prefer canonical ``worker_list`` (tray / shop feed). Legacy pid-keyed
+    ``workers`` often keeps ghost seats that never ``!bored``; counting them as
+    live blocked the repo-UAT escape hatch (when every *real* live seat is
+    ledger-blocked, anyone may take UAT). Fall back to ``workers`` only when
+    ``worker_list`` is empty.
+    """
     out: set[str] = set()
     try:
         doc = bobreport.load_digest(_root(home))
@@ -2142,6 +2149,14 @@ def live_seat_nicks(home: Path) -> set[str]:
         return out
     for mid, ent in (doc.get("machines") or {}).items():
         if not isinstance(ent, dict):
+            continue
+        rows = bobreport._coerce_worker_list(ent.get("worker_list"))
+        if rows:
+            for r in rows:
+                nick = str(r.get("nick") or "").strip()
+                if not nick:
+                    continue
+                out.add(canonical_worker_nick(nick) or nick)
             continue
         for pid in (ent.get("workers") or {}):
             if str(pid).isdigit():
