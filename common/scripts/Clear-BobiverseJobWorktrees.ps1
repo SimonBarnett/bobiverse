@@ -8,9 +8,13 @@
   a new job tree), seats run this helper:
 
   - If FreeGB on the repo drive is below MinFreeGB (default 2), remove other job
-    worktrees (keep the install root and optional -KeepPath).
+    worktrees (keep the install root and optional -KeepPath) and orphan TEMP dirs.
+  - FR #1661 earlier prune / soft cap: even when FreeGB >= MinFreeGB, remove job
+    worktrees beyond -MaxExtraJobTrees (default 0 = keep only -KeepPath + install
+    root) so seats do not wait until FreeGB is critical.
   - Always `git worktree prune` when removals happened (or with -Force).
-  - Orphan %TEMP%\bobiverse-* directories not registered as worktrees are removed too.
+  - Orphan %TEMP%\bobiverse-* directories not registered as worktrees are removed
+    on low disk / -Force (full reclaim).
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
 
@@ -79,11 +83,8 @@ if ($KeepPath) {
 $freeGb = Get-FreeGB $rootFull
 Write-Host ("FreeGB={0} MinFreeGB={1} RepoRoot={2} KeepPath={3}" -f $freeGb, $MinFreeGB, $rootFull, $keepFull)
 
-$need = $Force -or ($freeGb -lt $MinFreeGB)
-if (-not $need) {
-    Write-Host "OK: free space above MinFreeGB; pass -Force to prune job trees anyway."
-    return
-}
+# FR #1661: low-disk / -Force = full reclaim; soft cap still runs when FreeGB is healthy.
+$lowDisk = $Force -or ($freeGb -lt $MinFreeGB)
 
 $list = & git -C $rootFull worktree list --porcelain 2>&1
 if ($LASTEXITCODE -ne 0) {
@@ -98,25 +99,34 @@ foreach ($line in $list) {
 }
 
 $removed = 0
-$jobTrees = @()
-foreach ($p in $paths) {
-    if (Test-IsJobWorktreePath $p $rootFull $keepFull) {
-        $jobTrees += $p
-    }
+# FR #1664: pipeline/filter of one path is a scalar string; always force Object[] before .Count (StrictMode).
+$jobTrees = @($paths | Where-Object { Test-IsJobWorktreePath $_ $rootFull $keepFull })
+
+# Cap: remove extras beyond MaxExtraJobTrees (oldest first by path mtime when possible).
+# FR #1661 soft cap: enforce this even when FreeGB >= MinFreeGB (earlier prune gate).
+$softCapNeeded = ($MaxExtraJobTrees -ge 0 -and $jobTrees.Count -gt $MaxExtraJobTrees)
+if (-not $lowDisk -and -not $softCapNeeded) {
+    Write-Host "OK: free space above MinFreeGB and job-tree count within MaxExtraJobTrees; pass -Force to prune anyway."
+    return
 }
 
-# Cap: remove extras beyond MaxExtraJobTrees (oldest first by path mtime when possible)
-if ($MaxExtraJobTrees -ge 0 -and $jobTrees.Count -gt $MaxExtraJobTrees) {
-    $sorted = $jobTrees | Sort-Object {
+if ($lowDisk) {
+    # Full reclaim: remove every job tree (KeepPath / install root already excluded).
+    $toRemove = @($jobTrees)
+    Write-Host ("FR #1661 full reclaim: lowDisk/Force removing {0} job worktree(s)" -f $toRemove.Count)
+} elseif ($softCapNeeded) {
+    # FR #1664: Sort-Object of a single path returns a scalar; wrap with @() before .Count.
+    $sorted = @($jobTrees | Sort-Object {
         if (Test-Path -LiteralPath $_) {
             (Get-Item -LiteralPath $_).LastWriteTimeUtc
         } else {
             [datetime]::MinValue
         }
-    }
+    })
     $toRemove = @($sorted | Select-Object -First ([Math]::Max(0, $sorted.Count - $MaxExtraJobTrees)))
+    Write-Host ("FR #1661 earlier prune / soft cap: removing {0} extra job worktree(s) (MaxExtraJobTrees={1})" -f $toRemove.Count, $MaxExtraJobTrees)
 } else {
-    $toRemove = @($jobTrees)
+    $toRemove = @()
 }
 
 foreach ($p in $toRemove) {
@@ -138,9 +148,9 @@ foreach ($p in $toRemove) {
     }
 }
 
-# Orphan TEMP bobiverse-* dirs
+# Orphan TEMP bobiverse-* dirs (full reclaim only — FR #1661 soft cap leaves orphans alone)
 $tempRoot = $env:TEMP
-if ($tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
+if ($lowDisk -and $tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
     Get-ChildItem -LiteralPath $tempRoot -Directory -Filter 'bobiverse-*' -ErrorAction SilentlyContinue | ForEach-Object {
         $full = $_.FullName
         if ($keepFull -and ($full.TrimEnd('\') -ieq $keepFull.TrimEnd('\'))) { return }
