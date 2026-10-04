@@ -1,5 +1,13 @@
 # Skill harvest log
 
+
+## 2026-10-04 - intake/BobCallback/ARR 502 ops pin ionos (FR #1899)
+
+| Lesson | Fix / book |
+|---|---|
+| Chair offered intake 502 / BobCallback / ARR reverse-proxy FRs to flamingo | Stamp require_machine=ionos from title/body cues (intake+502, BobCallback+:7700, ARR/reverse-proxy+/bob/v1) |
+
+Books: `common/scripts/gitclaim.py`. Related body-line pin: FR #1824.
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
