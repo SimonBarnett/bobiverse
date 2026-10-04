@@ -1,5 +1,11 @@
 # Skill harvest log
 
+## 2026-10-04 - twin-DONE harvest loop skip (FR #2237)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest of twin/already-fixed DONE sessions re-files skill twins that Jeeves re-offers as FR (nested stack) | `Invoke-BobiverseHarvest` skips twin-DONE-only summaries (like FR #936 GIVEUP loop); harvest skill documents skip |
+
 ## 2026-10-04 - Hand-out empty under focus (harvest #2243)
 
 | Lesson | Fix |
