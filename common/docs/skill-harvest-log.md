@@ -117,3 +117,10 @@ VERSION -> **0.1.20** (packaged MSIs and release archives).
 | Monitor cannot !assign | By design; diagnose queue/bored/gates, do not act as chair |
 
 Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md`. Canonical #1581; duplicate #1483.
+## 2026-10-04 - open-PR MRB survives stale mrb_done on resync (harvest #1613)
+
+| Lesson | Fix / book |
+|---|---|
+| Premature mrb_done purged open pulls | mrb_already_done(pr_exists) open wins; resync clears stale mrb_done like fr_done (FR #1585 / PR #1606) |
+
+Books: `jeeves/.grok/skills/bobiverse-jeeves/SKILL.md`, troubleshooting, `bobiverse-bob-job-mrb`.
