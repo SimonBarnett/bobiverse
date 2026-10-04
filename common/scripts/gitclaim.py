@@ -19,6 +19,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+import contextlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -2137,6 +2138,19 @@ def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None, home: Path | None = N
             done.append(fin)
             if home is not None:
                 stamp_mrb_done(home, str(fin.get("repo") or ""), str(fin.get("id") or ""))
+                # FR #1430: ACC purge must idle the seat in digest or !bored stays nak busy.
+                seat = str(
+                    fin.get("nick")
+                    or fin.get("accepted_by")
+                    or fin.get("offered_to")
+                    or ""
+                ).strip()
+                ident = str(fin.get("id") or "").lstrip("#")
+                if seat:
+                    with contextlib.suppress(Exception):
+                        bobreport.clear_seat_doing(
+                            home, seat, only_if_work_contains=ident or "MRB"
+                        )
             continue
         kept.append(row)
     doc["accepted"] = kept

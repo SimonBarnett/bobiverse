@@ -1698,6 +1698,68 @@ def apply_report(home: Path, sender_nick: str, briefer_nick: str, body: str) -> 
 
 
 @_digest_locked
+def clear_seat_doing(
+    home: Path,
+    nick: str,
+    *,
+    briefer_nick: str = "",
+    only_if_work_contains: str = "",
+) -> PresenceOutcome:
+    """Set a seat idle in digest ``worker_list`` + ``workers`` (FR #1430).
+
+    Used when an accepted MERGED MRB is purged from the queue while the seat's
+    digest still shows ``doing bobiverse MRB #N`` — that false busy made every
+    !bored return ``nak busy`` and stranded the next offer (e.g. repo UAT).
+    When ``only_if_work_contains`` is set, clear only if current work/working_on
+    mentions that needle (PR number / task id).
+    """
+    parsed = parse_seat_nick(nick)
+    if not parsed:
+        return PresenceOutcome(ok=False, err="bad nick")
+    mid, pid = parsed
+    pid_s = str(pid)
+    needle = str(only_if_work_contains or "").strip().lstrip("#").lower()
+    doc = load_digest(home)
+    ent = _machine_entry(doc, mid)
+    changed = False
+    rows = list(ent.get("worker_list") or [])
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != str(nick).strip().lower():
+            # also match short w-io-* forms via pid suffix
+            if not str(row.get("nick") or "").endswith(f"-{pid_s}"):
+                continue
+        work = str(row.get("work") or "")
+        if needle and needle not in work.lower() and f"#{needle}" not in work.lower():
+            continue
+        if str(row.get("state") or "") != "idle" or work:
+            row["state"] = "idle"
+            row["work"] = ""
+            row["updated"] = _utc_now_iso()
+            changed = True
+    workers = ent.setdefault("workers", {})
+    w = workers.get(pid_s) if isinstance(workers.get(pid_s), dict) else None
+    if isinstance(w, dict):
+        wo = str(w.get("working_on") or "")
+        if (not needle) or (needle in wo.lower()) or (f"#{needle}" in wo.lower()):
+            if str(w.get("state") or "") != "idle" or wo:
+                w["state"] = "idle"
+                w["working_on"] = ""
+                changed = True
+    if not changed:
+        return PresenceOutcome(ok=True, machine_id=mid)
+    ent["worker_list"] = _coerce_worker_list(rows)
+    _refresh_machine_activity_from_worker_list(ent)
+    if briefer_nick:
+        doc["briefer"] = briefer_nick
+    doc["ts"] = _utc_now_iso()
+    _note_event(doc, "worker-idle-purge", machine=mid, nick=nick, pid=pid_s)
+    save_digest(home, doc)
+    return PresenceOutcome(ok=True, machine_id=mid)
+
+
+@_digest_locked
 def merge_worker_working_on(
     home: Path,
     machine_id: str,
