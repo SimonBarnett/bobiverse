@@ -7,7 +7,8 @@ Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) → staged by `Pack-Bobiver
 
 ## Channels and homes
 
-- JOIN `#bobiverse` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#<machine>` on every box — Ionos, MarchHare, Flamingo, …)
+- JOIN `#bobiverse` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#<machine>` on every box — Ionos host, MarchHare, Flamingo, …)
+- **DIGEST_ID_FOLD (harvest #2280 / PR #2279):** digest aliases fold to the real shop id — `ionos` → `win-mpre8vi4u6u`, `dev1` → `ce-priority-dev1`. Helpers (`inbound_transcript.channel_list_for_machine` / `canonical_machine_id`) must never emit `#ionos` or `#dev1` as the shop channel.
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
 - Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
