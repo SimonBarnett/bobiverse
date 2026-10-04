@@ -40,7 +40,10 @@ jobs:
       - name: Resync pagination gate (FR #1150 / #1454)
         run: |
           $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\jeeves"
-          python -m pytest jeeves/tests/test_fr1150_resync_paginate.py -q --tb=short
+          python -m pytest `
+            jeeves/tests/test_fr1454_ci_gitclaim_gate.py `
+            jeeves/tests/test_fr1150_resync_paginate.py `
+            -q --tb=short
 
       - name: Broader gitclaim / chair offer suite
         run: |
