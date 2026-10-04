@@ -240,12 +240,14 @@ def test_queue_flow_alerts_zero_seat_require_machine_pins(tmp_path):
         encoding="utf-8",
     )
     code, payload = _run_queue_flow(chair, digest)
-    assert code == 1, payload
-    assert payload["ok"] is False
-    joined = " ".join(payload.get("findings") or [])
+    # FR #1518: gated-empty is exit 0 with a note (not a false starvation finding).
+    assert code == 0, payload
+    assert payload["ok"] is True
+    joined = " ".join(payload.get("notes") or payload.get("findings") or [])
     assert "require_machine pins only" in joined
     assert "no seats on" in joined
     assert "ce-priority-dev1" in joined
+    assert int(payload.get("ungated_offerable_count") or 0) == 0
 
 
 def test_queue_flow_folds_ionos_pin_to_digest_machine(tmp_path):
