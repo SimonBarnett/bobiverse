@@ -101,6 +101,10 @@ if ((Test-Path -LiteralPath (Get-BobiverseRepoPath -Root $repoRoot -Rel 'bob-age
     if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'worker\bob-worker.exe'))) {
         Write-Host 'INFO worker\bob-worker.exe not present (repo install): the tray Agent/Plan items need the MSI build (scripts\Build-BobWorker.ps1 builds it)'
     }
+    # FR #1481: MSI ships scripts\bob-ear.exe; repo/dev trees fall back to python irc_agent.py until built.
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'scripts\bob-ear.exe'))) {
+        Write-Host 'INFO scripts\bob-ear.exe not present (repo install): ircBob uses python irc_agent.py until MSI or Build-BobEar.ps1 + Install-BobEarExe.ps1 (FR #1481)'
+    }
 }
 
 # TipForm tray payload (tools/src/assets/PIN) when installing from repo (MSI heat already staged)
