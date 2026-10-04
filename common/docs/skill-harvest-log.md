@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Never Closes skill harvest from unrelated PR (harvest #1674)
+
+| Lesson | Fix |
+|--------|-----|
+| Never Closes a label:skill harvest issue from an unrelated docs/vendor PR; use Refs and close the harvest record separately when lessons are already on main | Documented in job-fr, job-mrb, harvest-agent-skills. MRB #1660 FAIL-fixed via #1670 |
+
 ## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
 
 | Lesson | Fix |

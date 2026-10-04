@@ -112,3 +112,7 @@ Every bobiverse product skill book SHOULD keep CAST IRON + a one-line pointer:
 Closed `skill` issues and `Skill harvest` GIVEUP/FR records are evidence, not disposable learning. Repeated records may be deduplicated against a canonical FR/merged PR, but every unique `Lessons:` line must be promoted to its owner book. In this pass, the owner books are the Bob worker/UAT/MRB books, Jeeves commands/monitor, fleet ops, and the shared harvest book; no MSSQL-specific lesson was present, so no skill-dba book was changed.
 
 Workers using these books owe a PR back to this repository. Preserve source issue/PR references in the PR body, keep secrets and private tokens out of books, and do not turn a harvest/GIVEUP record itself into a new FR. The 2026-10-04 promotion covered the closed skill corpus through #1460, including the repeated operational lessons from #1211-#1275 and later BobCallback, resync, UAT, machine-pin, MRB, worker-outbox, and monitor records.
+
+## Closing skill harvest issues (harvest #1674)
+
+A product/docs/vendor PR must **not** use `Closes` on a `label:skill` / `harvest:` receipt unless that PR **is** the skill-promote that absorbs the lesson. Otherwise: `Refs #N`, and close the harvest issue separately when lessons are already on main (or leave it for the promote PR).
