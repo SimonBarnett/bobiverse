@@ -131,3 +131,12 @@ Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/sk
 | Source patch alone | Does not update frozen bob-worker-*.exe already running |
 
 Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md`. Canonical #1605; twin #1614.
+
+## 2026-10-04 - tray SkipTidy autostart + ACCEPTABLE partial-FR drift (harvest #1663)
+
+| Lesson | Fix / book |
+|---|---|
+| ONLOGON/shortcuts kill seats | Autostart uses -ForceNew -SkipTidy; TipForm Restart still tidies (FR #1636 / PR #1645) |
+| Partial FR with follow-ups | ACCEPTABLE drift for MRB PASS when follow-up issues are explicit |
+
+Books: `bobiverse-bob`, troubleshooting, `bobiverse-bob-job-mrb`. Twin #1681 (watchdog SkipTidy).
