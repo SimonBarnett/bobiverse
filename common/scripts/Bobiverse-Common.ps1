@@ -1030,7 +1030,9 @@ function Get-BobiverseShortcutSpec {
     }
     if ($Product -eq 'bob' -and $IncludeTray) {
         $tray = Join-Path $scr 'Start-BobTray.ps1'
-        Add-Spec 'Start Systray' $ps "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew" $InstallRoot 'Start the Bobiverse systray (restarts the ircBob service)' $ico
+        # FR #1636: Start Menu shortcut uses -SkipTidy so operators do not wipe seats/Grok Bot.
+        # TipForm menu Restart remains the explicit tidy path (Start-BobFleetTray -ForceNew without SkipTidy).
+        Add-Spec 'Start Systray' $ps "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew -SkipTidy" $InstallRoot 'Start the Bobiverse systray (ForceNew tray only; SkipTidy keeps seats)' $ico
     }
     if ($Product -eq 'jeeves') {
         $mon = Join-Path $scr 'Start-JeevesMonitor.ps1'

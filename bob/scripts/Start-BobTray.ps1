@@ -7,8 +7,10 @@
   under InstallRoot (STA). Companion to the ircBob Windows service — not a BobFleet task.
 .NOTES
   t794u: the tray never updates. Product Sync/ff and the release self-update run only on ircBob service start (Start-Bob).
-  Starting the tray (this launcher, the 'Start Systray' shortcut, logon autostart, tray Restart) restarts ircBob via
+  Starting the tray (this launcher, the 'Start Systray' shortcut, logon autostart) restarts ircBob via
   Start-BobFleetTray, so a start also applies a pending update. Tray Exit stops ircBob (detached).
+  FR #1636: autostart/shortcuts pass -SkipTidy (ForceNew replaces the prior tray only). TipForm Restart
+  still tidies seats. Lifecycle lines append to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log.
 #>
 [CmdletBinding()]
 param(
@@ -17,10 +19,27 @@ param(
     [string]$BobHome = '',
     [string]$MachineId = '',
     [switch]$ForceNew,
-    # #32: do not run Stop-BobSystrayPriorAgents (kills grok.exe seats, Grok Bot, Watch-AgentHealth).
+    # #32 / FR #1636: do not run Stop-BobSystrayPriorAgents (kills grok.exe seats, Grok Bot, Watch-AgentHealth).
     # Also honoured via env BOBIVERSE_NO_TIDY=1 (set by Install-Bob for quiet/MSI installs).
     [switch]$SkipTidy
 )
+
+function Write-BobTrayLifecycle {
+    param([string]$Event, [hashtable]$Fields = @{})
+    try {
+        $dir = Join-Path $env:LOCALAPPDATA 'Bobiverse'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $line = [ordered]@{
+            ts     = (Get-Date).ToUniversalTime().ToString('o')
+            event  = $Event
+            pid    = $PID
+            user   = $env:USERNAME
+        }
+        foreach ($k in $Fields.Keys) { $line[$k] = $Fields[$k] }
+        $json = ($line | ConvertTo-Json -Compress)
+        Add-Content -LiteralPath (Join-Path $dir 'tray-lifecycle.log') -Value $json -Encoding utf8
+    } catch { }
+}
 
 $ErrorActionPreference = 'Continue'
 
@@ -111,9 +130,27 @@ $fleetStart = Join-Path $InstallRoot 'tools\Start-BobFleetTray.ps1'
 if (Test-Path -LiteralPath $fleetStart) {
     $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1'
     if ($noTidy) { Write-Host 'INFO tray start: SkipTidy (seats and Grok Bot are left running)' }
+    Write-BobTrayLifecycle -Event 'start' -Fields @{
+        installRoot = $InstallRoot
+        machineId   = $MachineId
+        forceNew    = [bool]$ForceNew
+        skipTidy    = [bool]$noTidy
+        via         = 'Start-BobFleetTray'
+    }
     & $fleetStart -RepoRoot $InstallRoot -ForceNew:$ForceNew -SkipTidy:$noTidy
-    exit $LASTEXITCODE
+    $code = $LASTEXITCODE
+    Write-BobTrayLifecycle -Event 'start-exit' -Fields @{ exitCode = $code; skipTidy = [bool]$noTidy }
+    exit $code
 }
 
+Write-BobTrayLifecycle -Event 'start' -Fields @{
+    installRoot = $InstallRoot
+    machineId   = $MachineId
+    forceNew    = [bool]$ForceNew
+    skipTidy    = [bool]$SkipTidy
+    via         = 'Watch-BobTray-direct'
+}
 & $tray -RepoRoot $InstallRoot
-exit $LASTEXITCODE
+$code = $LASTEXITCODE
+Write-BobTrayLifecycle -Event 'start-exit' -Fields @{ exitCode = $code }
+exit $code
