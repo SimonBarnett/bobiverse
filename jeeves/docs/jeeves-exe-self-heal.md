@@ -77,10 +77,32 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 | WP0 | This spec + acceptance (docs) | landed (PR #2270; append evidence on living #1993) |
 | WP1 | In-process HTTP + chair entry (`jeeves_main`) + in-proc queue RLock | landed (PR #2270 foundation) |
 | WP2 | Diagnostics + heal CLI + monitor scripts as libraries; empty-offer wording | landed (CLI; service-loop rebind stays in-process when exe is the service) |
-| WP3 | `Build-Jeeves.ps1` + MSI/NSSM cutover | this PR (FR #2301; Refs #1993) |
-| WP4 | Ionos cutover + storm test | next - append on #1993 (`require_machine: ionos`) |
+| WP3 | `Build-Jeeves.ps1` + MSI/NSSM cutover | landed (FR #2301; Refs #1993) |
+| WP4 | Deterministic two-worker queue storm harness + ionos cutover checklist | harness landed (`jeeves_wp4_storm.py` / FR #2302); live ionos cutover still append on #1993 |
 
-CAST IRON: living FR #1993 stays open until E1 - E5 + cutover are done. Partial WP PRs use **Refs** `#1993`, never `Closes`.
+CAST IRON: living FR #1993 stays open until E1-E5 + cutover are done. Partial WP PRs use **Refs** `#1993`, never `Closes` (except dedicated child FRs like #2302 for the offline harness, which do not replace #1993).
+
+## WP4 storm harness (FR #2302)
+
+Any machine can run the offline harness (no `require_machine` pin on #2302):
+
+```text
+python common/scripts/jeeves_wp4_storm.py --home %TEMP%\wp4-storm --seed 1 --pings 50 --machines marchhare,flamingo --workers-per-machine 2 --out storm-summary.json
+```
+
+Acceptance the harness proves offline:
+
+- Same seed -> same enqueue id schedule and exact done-id multiset (50/50 accounted, no duplicates/lost).
+- With in-process queue RLock enabled: zero `error:queue-*` / lock-timeout under concurrent enqueue + two workers per machine claim/DONE.
+- Machine-readable JSON summary (`ok`, `failures`, `event_log`, `done_ids`).
+
+### Final ionos verification checklist (live seat; append evidence on living #1993)
+
+1. Back up install tree, queue/digest state, NSSM parameters.
+2. WP3 MSI/exe cutover: one Jeeves PID, LISTEN `127.0.0.1:7700`, intake 202, no supervised Python callback leftover.
+3. Run harness against the live digest home (or mirror) with `--pings 50` and two workers per machine; then repeat after controlled Jeeves restart.
+4. Confirm zero `err=queue` / lock-timeout, zero unaccounted ACK/DONE/NACK/GIVEUP rows; attach `storm-summary.json` + logs.
+5. Leave Ergo / `BobIrcd` untouched. Append evidence on living #1993.
 
 ## Heal allowlist
 
