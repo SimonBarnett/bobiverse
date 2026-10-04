@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - CONFLICTING/superseded MRB FAIL (harvest #1609)
+
+| Lesson | Fix |
+|--------|-----|
+| MRB of CONFLICTING PR when twin FR already closed by another merge: FAIL board, close the duplicate PR, DONE FAIL; do not force-merge | Documented in obiverse-bob-job-mrb + troubleshooting row in obiverse-bob-job-irc. Absorbs #1756/#1736/#1730 twins. |
+
 ## 2026-10-04 - TipForm stale worker lines (FR #1553 / harvest #1562)
 
 | Lesson | Fix |

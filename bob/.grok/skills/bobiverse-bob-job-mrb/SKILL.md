@@ -87,8 +87,22 @@ once the implementer cannot be reached. Never close `needs-human` / `board` issu
 * **A successful MRB closes the originating issue**: merge -> `Closes` auto-closes it; otherwise you close it with a comment (never leave a merged PR's issue open, never close it for a FAIL that did not merge). * Different seat/session than the author. One docs PR at most; one fix PR at most. No release, no version bump, no Ergo changes, no secrets, PowerShell only.
 * **Never merge conflict markers (FR #1634):** tip must be clean of `<<<<<<<` / `=======` / `>>>>>>>`; use `common/scripts/check_conflict_markers.py`. * Report which agent and model did the review. * CAST IRON harvest rule at the top: file every issue/FR/bug you find in the same turn - findings that are not part of this PR become new intake items.
 
+## CONFLICTING / superseded MRB (harvest #1609)
+
+When the assigned PR is **CONFLICTING**, already **closed**, or a **duplicate** of work already on main (twin FR closed by another merge):
+
+1. Confirm the superseding merge: gh pr view / gh issue view — lessons and originating issues already landed (Closes / merged PR URLs).
+2. Do **not** force-merge, rebase-to-revive, or re-open the duplicate head.
+3. Post an MRB board with verdict **FAIL** (or FAIL-superseded): cite the merged PR(s) that already satisfy acceptance.
+4. Close the duplicate/conflicting PR with a comment pointing at the superseding merge.
+5. If the originating issue is still open only because this duplicate never merged, close it citing the merged fix URLs (not this PR).
+6. **DONE MRB owner/repo#N FAIL <assigned-pr-url>** — nothing after the URL.
+
+Self-MRB remains a separate hand-back (GIVEUP / NACK); this section is for hostile review of a head that lost the race to main.
+
 ## Harvested MRB discipline (skill records #1223-#1457)
 
+- CONFLICTING/superseded duplicate PR: FAIL board, close the PR, DONE FAIL; never force-merge (harvest #1609).
 - The implementing seat must GIVEUP self-MRB and ask the chair for a different seat; a green local test run is not a non-author MRB.
 - MRB PASS requires the claimed tests, a clean/rebased branch, and the merged PR's `Closes` lines. When an acceptance contract changes, expect a focused fix/nits PR and rerun the hostile tests rather than accepting stale evidence.
 - After merge: switch to `main`, fast-forward from `origin/main`, sync the installed tree, and restart only the relevant service. Do not treat a harvest/MRB record as a new FR row.
