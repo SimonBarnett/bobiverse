@@ -30,6 +30,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Commands "do nothing" for the ear | The ear is only recognised as `bob-<machine>` for a machine on the roster. Check `!status roster:`; `!resync`; confirm the SASL account is logged in (`chan-privs` logs). |
 | Replies never arrive | Replies go by PM (not the channel). The chair logs `git-help pm nick=... kind=ear`; `cmd-trace.log` has the text. Rate limit: `!help`/`!list` 30 s per nick. |
 | `!list` says "queue empty" but `!status` has unaccepted items | `!focus strict on` hides everything not focused. `!focus strict off` (and restore afterwards). |
+| Operator: many open GitHub issues/PRs "not assigning" | Raw open counts are not the chair queue. Check `ungated_offerable` + shop `!bored` traces before claiming the chair is broken (harvest #1581). Monitor must not `!assign`. |
 | `GRANT +h` repeated every 30-60 s | Not the chair: the ear is reconnecting. See the ear restart loop (missing `--host`). The chair caps at 3 grants/10 min then WARNs once; `removed by ChanServ` WARN = a ChanServ/AMODE fight. |
 | `chanserv-sync timeout; keeping last good roster` | Two forced syncs overlapped or Ergo was slow; the last roster stays. Harmless once. |
 | `ERROR chanserv LIST DENIED` | The Jeeves IRC oper lacks the `chanreg` capability (do not edit the Ergo config from here; tell the Ergo owner). |
