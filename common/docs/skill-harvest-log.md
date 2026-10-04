@@ -3,6 +3,15 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - BobCallback report probe >=20s (harvest #2057 / FR #1993)
+
+| Lesson | Fix |
+|--------|-----|
+| curl/IWR max-time 4s false-alarms under digest.lock while LISTEN+longer probe is 200 | Use --max-time / -TimeoutSec >= 20 for /bob/v1/report; Watch-BobWebhooks.ps1 = 20s |
+
+Books: obiverse-jeeves-monitor, obiverse-jeeves-troubleshooting. Living architecture FR #1993.
+
+
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 
 | Lesson | Fix |
