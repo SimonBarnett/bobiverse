@@ -2239,6 +2239,7 @@ class Client:
             ident,
             pr_exists=gitclaim.github_pr_exists_checker(home=self.home, cache=_gh_cache),
             is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
+            issue_open=gitclaim.github_issue_open_checker(home=self.home, cache=_gh_cache),
         )
         if status != "ok" or not isinstance(res, dict):
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
@@ -2360,6 +2361,7 @@ class Client:
             now=now,
             pr_exists=_pr_exists,
             is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
+            issue_open=gitclaim.github_issue_open_checker(home=self.home, cache=_gh_cache),
         )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)

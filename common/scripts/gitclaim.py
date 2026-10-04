@@ -1055,6 +1055,8 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         body = str(issue.get("body") or "")
         labels = _label_names(issue.get("labels"))
         state = str(issue.get("state") or "open")
+        # FR #180 / #2340: closed issues must never become FR rows (opened/reopened
+        # with state=closed, or backfill synthesising opened for a closed issue).
         if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
             return None
         return GitClaim(
@@ -1202,6 +1204,8 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
                     row["title"] = claim.title
                 if claim.labels:
                     row["labels"] = list(claim.labels)
+                if claim.state:
+                    row["state"] = str(claim.state).strip().lower()
                 for k, v in extra.items():
                     if v:
                         row[k] = v
@@ -1232,6 +1236,9 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
         row["body"] = claim.body[:500]
     if claim.labels:
         row["labels"] = list(claim.labels)
+    # FR #2340: persist issue state so closed rows can be purged/skipped offline.
+    if claim.state:
+        row["state"] = str(claim.state).strip().lower()
     for k, v in extra.items():
         if not v:
             continue
@@ -2214,8 +2221,8 @@ _PR_SHAPED_FR_TITLE_RE = re.compile(
 )
 
 
-def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None) -> bool:
-    """True when an FR row may be offered (FR #846 / #1313).
+def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None) -> bool:
+    """True when an FR row may be offered (FR #846 / #1313 / #2340).
 
     Rejects FR rows that are actually pull requests:
     * URL is ``/pull/N``
@@ -2225,6 +2232,10 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None) -> bool:
       - covers ``/issues/N`` URLs that still resolve to a PR page (#833 / #1313)
     * ``pr_exists`` kept as a deprecated alias for ``is_pull`` (do **not** pass the
       open-only ``github_pr_exists_checker`` here - MERGED PRs would stay offerable)
+
+    FR #2340: also rejects when the issue is CLOSED:
+    * row ``state`` is ``closed`` (stamped on enqueue)
+    * optional ``issue_open(repo, num)`` returns False (live GitHub open-state check)
 
     Non-FR rows return True.
     """
@@ -2238,17 +2249,24 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None) -> bool:
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
     if _PR_SHAPED_FR_TITLE_RE.match(title):
         return False
+    if str(row.get("state") or "").strip().lower() == "closed":
+        return False
     checker = is_pull if is_pull is not None else pr_exists
-    if checker is None:
-        return True
     repo = str(row.get("repo") or "").strip()
     num = str(row.get("id") or "").strip().lstrip("#")
-    if not repo or not num:
-        return True
-    try:
-        return not bool(checker(repo, num))
-    except Exception:
-        return True
+    if checker is not None and repo and num:
+        try:
+            if bool(checker(repo, num)):
+                return False
+        except Exception:
+            pass
+    if issue_open is not None and repo and num:
+        try:
+            if not bool(issue_open(repo, num)):
+                return False
+        except Exception:
+            pass
+    return True
 
 
 def github_pr_exists_checker(
@@ -2368,15 +2386,111 @@ def github_is_pull_checker(
     return _check
 
 
-def _purge_fr_that_are_pulls(doc: dict, *, is_pull=None) -> int:
-    """Drop unaccepted FR rows whose id is a GitHub pull (any state) - FR #1313."""
+def github_issue_open_checker(
+    *,
+    home: Path | None = None,
+    cache: dict | None = None,
+):
+    """Return ``issue_open(repo, num)`` -> True only for an **open** issue (FR #2340).
+
+    Closed issues and 404s return False so seats are not offered dead FR work.
+    Pull-request numbers that still appear under ``/issues/N`` also return False
+    when ``state`` is not open (``is_pull`` remains the primary PR gate). Returns
+    None when offline / no token (structural / stamped-state checks still apply).
+    """
+    try:
+        import gh_filer
+    except Exception:
+        return None
+    if home is not None:
+        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
+    src = gh_filer.ensure_gh_token_env()
+    if src == "none":
+        return None
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return None
+    store: dict = cache if cache is not None else {}
+
+    def _check(repo: str, num: str) -> bool:
+        key = f"issue_open:{repo}#{num}"
+        if key in store:
+            return store[key]
+        api = f"https://api.github.com/repos/{repo}/issues/{num}"
+        req = urllib.request.Request(
+            api,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-gitclaim",
+            },
+            method="GET",
+        )
+        ok = False
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
+                    raw = resp.read()
+                    try:
+                        body = json.loads(
+                            raw.decode("utf-8")
+                            if isinstance(raw, (bytes, bytearray))
+                            else raw
+                        )
+                    except (TypeError, ValueError, UnicodeDecodeError):
+                        body = {}
+                    ok = str((body or {}).get("state") or "").lower() == "open"
+        except urllib.error.HTTPError as e:
+            ok = False
+            if int(getattr(e, "code", 0) or 0) not in (404, 410):
+                pass
+        except Exception:
+            ok = False
+        store[key] = ok
+        return ok
+
+    return _check
+
+
+def _purge_fr_that_are_pulls(doc: dict, *, is_pull=None, issue_open=None) -> int:
+    """Drop unaccepted FR rows whose id is a GitHub pull (any state) - FR #1313 / #2340."""
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
     for row in doc.get("unaccepted") or []:
         if not isinstance(row, dict):
             continue
-        if _canon_task(row) == "FR" and not fr_row_offerable(row, is_pull=is_pull):
+        if _canon_task(row) == "FR" and not fr_row_offerable(
+            row, is_pull=is_pull, issue_open=issue_open
+        ):
             continue
+        kept.append(row)
+    doc["unaccepted"] = kept
+    return before - len(kept)
+
+
+def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None) -> int:
+    """Drop unaccepted FR rows whose GitHub issue is CLOSED (FR #2340).
+
+    Mirrors ``_purge_dead_mrb_unaccepted`` for FR: stamped ``state=closed`` and/or
+    live ``issue_open(repo, num) is False`` remove the row before offer.
+    """
+    before = len(doc.get("unaccepted") or [])
+    kept: list[dict] = []
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if _canon_task(row) == "FR":
+            if str(row.get("state") or "").strip().lower() == "closed":
+                continue
+            if issue_open is not None:
+                repo = str(row.get("repo") or "").strip()
+                num = str(row.get("id") or "").strip().lstrip("#")
+                if repo and num:
+                    try:
+                        if not bool(issue_open(repo, num)):
+                            continue
+                    except Exception:
+                        pass
         kept.append(row)
     doc["unaccepted"] = kept
     return before - len(kept)
@@ -3057,6 +3171,7 @@ def offer_focus_top(
     now: float | None = None,
     pr_exists=None,
     is_pull=None,
+    issue_open=None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
 
@@ -3066,6 +3181,7 @@ def offer_focus_top(
     FR #2309: same-nick rebroadcast does not refresh ``offered_ts``; after OFFER_STICKY_MAX
     attempts the pin clears and the nick is added to ``sticky_skip_seats`` so another seat can take it.
     ``pr_exists`` (optional) skips MRB rows whose pull URL 404s (FR #595 / #247).
+    ``issue_open`` (optional) purges/skips FR rows whose issue is CLOSED (FR #2340).
     """
     import time as _time
 
@@ -3084,7 +3200,11 @@ def offer_focus_top(
             # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
             purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
             purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
-            purged = bool(_purge_fr_that_are_pulls(doc, is_pull=is_pull)) or purged
+            purged = bool(
+                _purge_fr_that_are_pulls(doc, is_pull=is_pull, issue_open=issue_open)
+            ) or purged
+            # FR #2340: drop CLOSED-issue FR rows before picking (stamped state + live check).
+            purged = bool(_purge_closed_fr_unaccepted(doc, issue_open=issue_open)) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
             if pr_exists is not None:
                 with contextlib.suppress(Exception):
@@ -3132,7 +3252,9 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     return None
-                if not fr_row_offerable(cand, is_pull=is_pull, pr_exists=pr_exists):
+                if not fr_row_offerable(
+                    cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=issue_open
+                ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
                     return None
@@ -3283,6 +3405,7 @@ def offer_top(
     now: float | None = None,
     pr_exists=None,
     is_pull=None,
+    issue_open=None,
 ) -> tuple[str, dict | None]:
     """Peek oldest eligible unaccepted and stamp offered_to without accepting (FR #207 / #180)."""
     import time as _time
@@ -3298,7 +3421,10 @@ def offer_top(
                 return "empty", None
             purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
             purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
-            purged = bool(_purge_fr_that_are_pulls(doc, is_pull=is_pull)) or purged
+            purged = bool(
+                _purge_fr_that_are_pulls(doc, is_pull=is_pull, issue_open=issue_open)
+            ) or purged
+            purged = bool(_purge_closed_fr_unaccepted(doc, issue_open=issue_open)) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
             if pr_exists is not None:
                 with contextlib.suppress(Exception):
@@ -3317,8 +3443,10 @@ def offer_top(
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
                     continue  # FR #254
-                if not fr_row_offerable(row, is_pull=is_pull, pr_exists=pr_exists):
-                    continue  # FR #846 / #838
+                if not fr_row_offerable(
+                    row, is_pull=is_pull, pr_exists=pr_exists, issue_open=issue_open
+                ):
+                    continue  # FR #846 / #838 / #2340
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     continue
@@ -3721,7 +3849,7 @@ def assign_row(
     ident: str,
     *,
     now: float | None = None,
-    pr_exists=None, is_pull=None,
+    pr_exists=None, is_pull=None, issue_open=None,
 ) -> tuple[str, dict | str]:
     """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
 
@@ -3783,8 +3911,10 @@ def assign_row(
                 return "refused", why
             if task_u == "FR" and fr_is_superseded(doc, str(cand.get("repo") or ""), str(cand.get("id") or "")):
                 return "refused", "FR superseded by an open PR"
-            if task_u == "FR" and not fr_row_offerable(cand, is_pull=is_pull, pr_exists=pr_exists):
-                return "refused", "row is a pull request (not an FR; #846/#838)"
+            if task_u == "FR" and not fr_row_offerable(
+                cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=issue_open
+            ):
+                return "refused", "row is a pull or CLOSED issue (not an offerable FR; #846/#838/#2340)"
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
