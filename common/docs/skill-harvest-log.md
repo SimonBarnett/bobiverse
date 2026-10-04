@@ -117,3 +117,11 @@ VERSION -> **0.1.20** (packaged MSIs and release archives).
 | Monitor cannot !assign | By design; diagnose queue/bored/gates, do not act as chair |
 
 Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md`. Canonical #1581; duplicate #1483.
+## 2026-10-04 - stale bob-worker.exe waits for Enter after inject (harvest #1605)
+
+| Lesson | Fix / book |
+|---|---|
+| worker.log relay:injected but TUI waits for Enter | Live PyInstaller exe stale vs FR #1601; press Enter once; Build-BobWorker + new tray Agent seat |
+| Source patch alone | Does not update frozen bob-worker-*.exe already running |
+
+Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md`. Canonical #1605; twin #1614.
