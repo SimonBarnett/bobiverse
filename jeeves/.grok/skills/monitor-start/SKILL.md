@@ -33,11 +33,11 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Check | Script / name | Why |
 |---|---|---|
 | Health | `health` | ircJeeves / chair home / webhook surface |
-| Idle seats | `idle_seats` | seats idle while unaccepted work exists |
+| Idle seats | `idle_seats` | seats idle while unaccepted work exists (**report only** - keep seats busy; no `clear_seat_doing`) |
 | Queue flow | `queue_flow` | empty offer queue, missing pull URLs, unoffered open issues |
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |
-| Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019) |
+| Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019). **Report only** unless explicit `--force-orphan-busy` and `accepted` empty (harvest #1967 keep seats busy) |
 | Stale digest | `stale_digest` | digest not updating |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
 | Stuck accepted | `stuck_accepted` | accepted rows not progressing |

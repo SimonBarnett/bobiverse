@@ -41,6 +41,21 @@ Books: `common/scripts/gitclaim.py`. Related body-line pin: FR #1824.
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Keep seats busy / no casual clear_seat_doing (harvest #1967)
+
+| Lesson | Fix |
+|--------|-----|
+| Operator: stop clearing digest busy on working seats; only clear true stale busy (accepted empty + orphan blocking !bored) | CAST IRON in bobiverse-jeeves-monitor + monitor-start report-only defaults; seats_stuck_doing remediation requires --force-orphan-busy |
+
+## 2026-10-04 - seats_stuck_doing false busy after DONE (harvest #1712)
+
+| Lesson | Fix / book |
+|---|---|
+| digest doing + accepted empty after DONE | Stale working_on; do not !assign or kill seat |
+| Remediation | Report-only by default (see #1967 keep seats busy); force-orphan clear only when accepted empty |
+
+Books: `bobiverse-jeeves-monitor`, TipForm note in `bobiverse-bob`. Twin #1713.
+
 ## 2026-10-04 - skill-harvest-log rebase keep-both (FR #1757 / #1750)
 
 | Lesson | Fix |
