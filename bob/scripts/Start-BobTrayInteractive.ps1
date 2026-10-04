@@ -107,5 +107,3 @@ if ($RunNow -and -not $RegisterOnly) {
 $ErrorActionPreference = $prevEap
 
 Write-Host "INFO Start-BobTrayInteractive done user=$RunAsUser machine=$MachineId"
-
-\n
