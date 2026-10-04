@@ -693,7 +693,24 @@ def one_line(text: str, maxlen: int = 600) -> str:
     return t[:maxlen]
 
 
-def inject_console(pid: int, text: str, submit_gap_s: float = 0.06) -> bool:
+def _submit_gap_s(default: float = 0.20) -> float:
+    """Gap after typing before Enter so TUI paste-mode ends (FR #1601).
+
+    Too-short gaps (0.06s) let Enter insert a newline instead of submitting; the
+    worker console then shows the Jeeves FROM line waiting for a manual Enter.
+    Override: ``BOB_WORKER_SUBMIT_GAP_S`` (seconds, clamped 0.05..2.0).
+    """
+    raw = (os.environ.get("BOB_WORKER_SUBMIT_GAP_S") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        v = float(raw)
+    except ValueError:
+        return float(default)
+    return max(0.05, min(2.0, v))
+
+
+def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bool:
     """Type `text` + Enter into THIS exe's console input. t771u: the agent is a child that INHERITED this console (one window,
     one console), so its keyboard input is our CONIN$ - no AttachConsole/FreeConsole dance and no second console. `pid` is
     kept for the call signature/logging only. Returns True on success."""
@@ -702,6 +719,7 @@ def inject_console(pid: int, text: str, submit_gap_s: float = 0.06) -> bool:
     text = one_line(text)
     if not text:
         return False
+    gap = _submit_gap_s() if submit_gap_s is None else max(0.05, float(submit_gap_s))
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     u32 = ctypes.WinDLL("user32", use_last_error=True)
     wintypes, _ = _win_structs()
@@ -718,9 +736,15 @@ def inject_console(pid: int, text: str, submit_gap_s: float = 0.06) -> bool:
             recs = build_key_records(text, u32)
             if not k32.WriteConsoleInputW(h, recs, len(recs), ctypes.byref(written)):
                 return False
-            time.sleep(submit_gap_s)  # lets a TUI end its "paste" chunk so Enter SUBMITS instead of inserting a newline
+            # End paste chunk so Enter SUBMITS (not a literal newline in the buffer).
+            time.sleep(gap)
             enter = build_enter_records()
-            return bool(k32.WriteConsoleInputW(h, enter, len(enter), ctypes.byref(written)))
+            if not k32.WriteConsoleInputW(h, enter, len(enter), ctypes.byref(written)):
+                return False
+            # Second Enter covers TUIs that consume the first as newline after a long paste.
+            time.sleep(min(0.08, gap))
+            enter2 = build_enter_records()
+            return bool(k32.WriteConsoleInputW(h, enter2, len(enter2), ctypes.byref(written)))
         finally:
             k32.CloseHandle(h)
 
