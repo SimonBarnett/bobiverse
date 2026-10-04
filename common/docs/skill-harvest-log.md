@@ -167,3 +167,10 @@ Books: `airc/.grok/skills/bobiverse-airc/SKILL.md`, `airc/.grok/skills/bobiverse
 | Tests poisoned by live ARP | Use -ArpVersionOverride none (or equivalent) in unit tests |
 
 Book: `common/.grok/skills/bobiverse-fleet-ops/SKILL.md`. Canonical #1589; twin #1595.
+## 2026-10-04 - open-PR MRB survives stale mrb_done on resync (harvest #1613)
+
+| Lesson | Fix / book |
+|---|---|
+| Premature mrb_done purged open pulls | mrb_already_done(pr_exists) open wins; resync clears stale mrb_done like fr_done (FR #1585 / PR #1606) |
+
+Books: `jeeves/.grok/skills/bobiverse-jeeves/SKILL.md`, troubleshooting, `bobiverse-bob-job-mrb`.

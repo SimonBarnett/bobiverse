@@ -37,6 +37,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Webhook down alert in #bobiverse | `webhook-health.json` says which target/check. `local` down = `BobCallback` task not running (`schtasks /Run /TN BobCallback`, port 7700 free?). `public` down only = IIS site/ARR/rewrite (`Install-BobWebhooks.ps1`). |
 | BobCallback cannot write the digest | The task runs as SYSTEM; the digest home must grant SYSTEM and the service user. Writes use unique `*.tmp` names and orphan cleanup; never delete `digest.json`. |
 | `github_resync: no token` | Put the token in `config\github.token` (one line, ACL SYSTEM+Administrators). Handling is unchanged; only the source is logged. |
+| Open PR disappeared from MRB queue after resync | Stale premature `mrb_done` purged the row. Open `pr_exists` must win; clear stale `mrb_done` like `fr_done` (FR #1585 / #1613 / PR #1606). |
 | Chair keeps losing the nick `Jeeves` | Legacy `BobJeeves` (gh-Jeeves) still installed - remove it from the SCM. |
 | `error: the following arguments are required: --channel` | An unquoted `#bobiverse` in a PowerShell command line. Quote it. |
 | Mojibake / parse failure in a ps1 | Keep the BOM on existing ps1 files; write Python/JSON/outbox without BOM. |
