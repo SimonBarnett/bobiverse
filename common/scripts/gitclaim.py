@@ -818,7 +818,40 @@ _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
 # Hard pins for known WP0 / machine-gated issues (FR #1093): survive empty title/body on stale rows.
 _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     ("simonbarnett/agentic_fomprep", "#56"): "ce-priority-dev1",
+    # FR #2312 / #1714: ionos orphan workers-map / nak-busy — body pin is past the
+    # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
+    ("simonbarnett/bobiverse", "#1714"): "ionos",
 }
+
+# Queue rows keep a short body for size; trailing dedicated require_machine pins must
+# survive (FR #2312 — #1714 pin sat after char 500 and was dropped on enqueue).
+QUEUE_BODY_LIMIT = 500
+_REQUIRE_MACHINE_PIN_LINE_RE = re.compile(
+    r"(?im)^[ \t]*require_machine\s*[:=]\s*[a-z0-9][a-z0-9_.-]*\b"
+)
+
+
+def _body_for_queue(body: str, *, limit: int | None = None) -> str:
+    """Store issue/PR body for queue rows without dropping require_machine pin lines."""
+    text = str(body or "")
+    lim = QUEUE_BODY_LIMIT if limit is None else int(limit)
+    if lim < 1:
+        lim = QUEUE_BODY_LIMIT
+    if len(text) <= lim:
+        return text
+    pins: list[str] = []
+    for m in _REQUIRE_MACHINE_PIN_LINE_RE.finditer(text):
+        line = m.group(0).strip()
+        if line and line not in pins:
+            pins.append(line)
+    head = text[:lim].rstrip()
+    if not pins:
+        return head
+    # Prefer pins that are not already intact inside the head window.
+    missing = [p for p in pins if p not in head]
+    if not missing:
+        return head
+    return head + "\n" + "\n".join(missing)
 
 
 def infer_require_machine(
@@ -1233,7 +1266,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
     if claim.title:
         row["title"] = claim.title
     if claim.body:
-        row["body"] = claim.body[:500]
+        row["body"] = _body_for_queue(claim.body)
     if claim.labels:
         row["labels"] = list(claim.labels)
     # FR #2340: persist issue state so closed rows can be purged/skipped offline.
