@@ -144,7 +144,11 @@ def truncate_giveup_reason(raw: str, max_len: int = _GIVEUP_REASON_MAX) -> str:
 
 
 def format_shop_listen_info(result: dict, *, nick: str) -> str:
-    """INFO shop-listen line for chair stdout. Includes reason= on NACK/GIVEUP (FR #1701)."""
+    """INFO shop-listen line for chair stdout. Includes reason= on NACK/GIVEUP (FR #1701).
+
+    FR #1714: always emit DONE lines even when status=missing (ACC already gone) so
+    wire evidence exists for orphan workers-map / nak-busy diagnosis.
+    """
     verb = str((result or {}).get("verb") or "")
     status = str((result or {}).get("status") or "")
     act = (result or {}).get("activity")
@@ -156,6 +160,8 @@ def format_shop_listen_info(result: dict, *, nick: str) -> str:
     if verb in ("NACK", "GIVEUP"):
         reason = truncate_giveup_reason(str((result or {}).get("reason") or ""))
         line = f"{line} reason={reason!r}"
+    if verb == "DONE" and status == "missing":
+        line = f"{line} note=missing-acc-still-idle-seat"
     return line
 
 
