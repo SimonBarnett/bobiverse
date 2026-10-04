@@ -140,6 +140,8 @@ File every problem you find: CAST IRON rule at the top.
 
 ## Skill harvest backlog (FR #1682 / FR #1684) - consolidate by book, then PR
 
+Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.
+
 Chair **offers** `label:skill` / `harvest:` / `skill:` intake receipts as FR promote jobs (FR #1682). They are not product code FRs; do **not** GIVEUP. Workers consolidate by skill book and open one promote PR so MRB can merge lessons into `.grok/skills`.
 
 When assigned a skill-promote job, or when you have `gh` write and open skill receipts for books you own:
@@ -152,6 +154,10 @@ When assigned a skill-promote job, or when you have `gh` write and open skill re
 Details: skills `harvest` + `harvest-agent-skills` (Worker: consolidate open skill receipts -> promote PR). Job wiring: `bobiverse-bob-job-fr`.
 
 ## Harvested reliability rules (closed skill records #1201-#1460)
+
+Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
+
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
 
 - Treat `outbox.txt` as a durable hand-off: create its parent/file before a drain, append atomically, and never delete the file merely because one drain reached EOF. A later worker/relay must be able to recreate and append safely. See #1201 and the related harvest records.
 - `IrcSeat.say()` must report a dead writer as failure and trigger the normal lost-IRC path; never log a successful send when `_write_loop` has already died. Confirm `001` + shop JOIN before posting `!bored`. See the worker-liveness lessons around #1018 and #1201.

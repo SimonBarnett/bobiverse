@@ -23,6 +23,8 @@ How to start a **Plan** agent from the bob install. A Plan is a NEW agent whose 
 
 ## Start it
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 1. **Tray: click `Plan`** - single menu item, NO sub-menu. One click = one NEW plan agent.
 2. **Command line**: `& <ai root>\bob\worker\bob-worker.exe --mode plan --install-root <ai root>\bob` (the same exe as the worker; the tray runs its per-user run copy).
 3. Preview: `--mode plan --dry-run` prints the automatic selection and the cwd, starts nothing.

@@ -22,6 +22,8 @@ You are a worker agent driven by **bob-worker.exe**. This skill is your operatin
 
 ## Your identity and channel
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 * Nick `<machine>-<pid>`, channel `#<machine>` (your first instruction names both). You can only be heard and only speak there.
 * The program answers `PING`/`PONG` and the fleet `ping` for you. Do not reply "pong" yourself.
 

@@ -48,6 +48,12 @@ flowchart TD
 
 ## Duplicates: find and close them before DONE (t857u)
 
+Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.
+
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
+An FR worker who finds the assigned issue is a duplicate/twin or already done must comment the reference to the first issue or covering PR and close the issue itself before sending DONE; never merely report it.
+
 When your PR fixes something, **search the repo's open issues/FRs for duplicates of what the PR fixes** before you send DONE
 (`gh issue list --repo <owner>/<repo> --state open --search "<keywords>" --json number,title,labels`; also the harvest/CRITICAL re-offer
 records that describe the same defect). For every duplicate (never the originating issue itself, never `needs-human` / `board` issues):
@@ -59,6 +65,8 @@ records that describe the same defect). For every duplicate (never the originati
 * No duplicate found: write `Duplicates closed: none (searched: <keywords>)` in the PR body. The MRB checks this line.
 
 ## Install work tree / sparse exclude (FR #132)
+
+Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
 
 Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude` starts with `/*` so composed flat runtime files stay invisible. Linked `git worktree add` FR trees **share that exclude**.
 
