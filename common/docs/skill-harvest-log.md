@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Post-DONE harvest_hold is not starve (harvest #1665)
+
+| Lesson | Fix |
+|--------|-----|
+| idle+ungated during BoredEmitter harvest_hold (~90s after DONE) is not true starve; expect !bored after hold; suppress orphan/giveup/queue_flow false alarms | Documented in `bobiverse-jeeves-monitor` + `bobiverse-bob-worker`. Related false-starve gates: FR #1622/#1625/#1652 / PR #1654 |
+
 ## 2026-10-04 - MRB behind-main + body/docs nits (harvest #1647)
 
 | Lesson | Fix / book |
