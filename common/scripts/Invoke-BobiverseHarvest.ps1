@@ -94,9 +94,15 @@ function Get-IntakeHttpStatus {
     param($ErrorRecord)
     $ex = $ErrorRecord.Exception
     while ($null -ne $ex) {
-        if ($ex.Response -and $ex.Response.StatusCode) {
-            try { return [int]$ex.Response.StatusCode } catch { }
-            try { return [int]$ex.Response.StatusCode.value__ } catch { }
+        # FR #1842: StrictMode — only touch .Response when the property exists.
+        $respProp = $ex.PSObject.Properties['Response']
+        if ($null -ne $respProp -and $null -ne $respProp.Value) {
+            $resp = $respProp.Value
+            $codeProp = $resp.PSObject.Properties['StatusCode']
+            if ($null -ne $codeProp -and $null -ne $codeProp.Value) {
+                try { return [int]$codeProp.Value } catch { }
+                try { return [int]$codeProp.Value.value__ } catch { }
+            }
         }
         $ex = $ex.InnerException
     }
@@ -118,13 +124,26 @@ function Get-IntakeHttpStatus {
 
 function Move-OutboxDropped {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Reason)
+    # FR #1910: concurrent Flush may have already removed/moved the source — treat as success.
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "DROPPED $Path (already gone; $Reason)"
+        return
+    }
     $dir = Split-Path -Parent $Path
     $dropDir = Join-Path $dir 'dropped'
     New-Item -ItemType Directory -Force -Path $dropDir | Out-Null
     $dest = Join-Path $dropDir (Split-Path -Leaf $Path)
     if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
-    Move-Item -LiteralPath $Path -Destination $dest -Force
-    Write-Host "DROPPED $Path -> $dest ($Reason)"
+    try {
+        Move-Item -LiteralPath $Path -Destination $dest -Force
+        Write-Host "DROPPED $Path -> $dest ($Reason)"
+    } catch {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            Write-Host "DROPPED $Path (race; already gone; $Reason)"
+            return
+        }
+        throw
+    }
 }
 
 if ($Flush) {
@@ -190,7 +209,10 @@ if ($Flush) {
             }
             try {
                 $r = Send-Payload $raw
-                Remove-Item -LiteralPath $f.FullName -Force
+                # FR #1910: another Flush may have archived the file after SENT — do not fail the cycle.
+                if (Test-Path -LiteralPath $f.FullName) {
+                    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+                }
                 $sent++
                 Write-Host "SENT $($f.Name) intake_id=$($r.intake_id)"
             } catch {
