@@ -1,4 +1,7 @@
-"""FR #1080 / #1122 / PR #1236: needs-mrb1 is a vision cue — offerable, never require_machine=mrb1."""
+"""FR #1080 / #1122 / PR #1236: needs-mrb1 is not SKIP_FR / not require_machine=mrb1.
+
+FR #1363: offer paths refuse needs-mrb1 until the label is cleared (still enqueueable).
+"""
 from __future__ import annotations
 
 import time
@@ -8,7 +11,7 @@ import gitclaim
 
 
 def test_needs_mrb1_is_not_skip_but_not_require_machine():
-    # PR #1236: skipping needs-mrb1 emptied the bobiverse focus queue — do not SKIP_FR.
+    # PR #1236: SKIP_FR for needs-mrb1 emptied the bobiverse focus queue — do not SKIP_FR.
     assert "needs-mrb1" not in gitclaim.SKIP_FR_LABELS
     assert gitclaim.issue_skip_fr_reason(title="FR: something", labels=("needs-mrb1", "via-intake")) is None
     assert gitclaim.infer_require_machine(labels=["needs-mrb1", "feature-request"]) in (None, "")
@@ -16,6 +19,8 @@ def test_needs_mrb1_is_not_skip_but_not_require_machine():
     # Corrupt stamp ignored
     row = {"require_machine": "mrb1", "labels": ["feature-request"], "title": "x", "body": "", "task": "FR"}
     assert not gitclaim.row_require_machine(row)
+    # FR #1363: offer gate (separate from SKIP_FR)
+    assert gitclaim.row_awaits_mrb1({"labels": ["needs-mrb1"]}) is True
 
 
 def test_row_on_cooldown_is_per_giveup_seat():
@@ -82,7 +87,8 @@ def test_strict_focus_fallback_offers_in_focus_when_order_misses(tmp_path, monke
                     "ts": "t",
                     "line": "FR SimonBarnett/bobiverse#1074",
                     "title": "FR: sync timeout",
-                    "labels": ["feature-request", "needs-mrb1"],
+                    # FR #1363: needs-mrb1 is not offerable; use a clearable vision-free FR.
+                    "labels": ["feature-request", "via-intake"],
                     "state": "open",
                 }
             ],
@@ -93,3 +99,37 @@ def test_strict_focus_fallback_offers_in_focus_when_order_misses(tmp_path, monke
     st, job = gitclaim.offer_focus_top(home, "win-mpre8vi4u6u-1", "#win-mpre8vi4u6u")
     assert st == "ok"
     assert job["id"] == "#1074"
+
+
+def test_strict_focus_skips_needs_mrb1_under_focus(tmp_path, monkeypatch):
+    """FR #1363 supersedes #1080 offerability: needs-mrb1 stays queued, not offered."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    home = tmp_path
+    (home / "focus.json").write_text(
+        '{"v":1,"repos":{"SimonBarnett/bobiverse":{"priority":1}},"strict":true}',
+        encoding="utf-8",
+    )
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#1074",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "FR SimonBarnett/bobiverse#1074",
+                    "title": "FR: sync timeout",
+                    "labels": ["feature-request", "needs-mrb1"],
+                    "state": "open",
+                }
+            ],
+            "accepted": [],
+            "done": [],
+        },
+    )
+    st, job = gitclaim.offer_focus_top(home, "win-mpre8vi4u6u-1", "#win-mpre8vi4u6u")
+    assert st == "empty"
+    assert job is None

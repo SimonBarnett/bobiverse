@@ -125,9 +125,10 @@ SKIP_FR_LABELS = frozenset(
         "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
-        # needs-mrb1 is a vision cue only — must NOT skip-FR and must NOT become
-        # require_machine=mrb1 (#1080/#1122/#1174). Skipping it emptied bobiverse offers
-        # under focus.strict. Workers still GIVEUP on the label per seat playbook.
+        # needs-mrb1 must NOT be a SKIP_FR label (#1080/#1122/#1174 / PR #1236): that
+        # emptied bobiverse offers under focus.strict and dropped rows on resync.
+        # FR #1363: offer paths still refuse needs-mrb1 via ``row_awaits_mrb1`` until
+        # the label is cleared (workers would only ACK+GIVEUP anyway).
         "blocked",
         "release-gate",
     }
@@ -670,6 +671,23 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
     return True
 
 
+def row_awaits_mrb1(row: dict) -> bool:
+    """True when the FR still carries label ``needs-mrb1`` (FR #1363).
+
+    Rows stay enqueueable (not ``SKIP_FR_LABELS`` — see #1080/#1122/#1174) but
+    must not be offered: every seat would only ACK then GIVEUP until a human
+    clears the vision label. Re-offering after GIVEUP burned fleet cycles
+    (e.g. #1316 → marchhare while still needs-mrb1).
+    """
+    labs = row.get("labels") or ()
+    if isinstance(labs, str):
+        labs = [labs]
+    for lab in labs:
+        if str(lab or "").strip().lower() == "needs-mrb1":
+            return True
+    return False
+
+
 # FR #587: machine-affinity for seats that cannot do the work (WP0 live / chair-outbox).
 # FR #628 / #732: also accept bare ``machine:<id>`` (legacy pin label).
 _REQUIRE_MACHINE_LABEL_RE = re.compile(
@@ -706,6 +724,11 @@ _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\b(?:recycle|recompose|recycled)\b"), "ionos"),
     (re.compile(r"(?i)\bprune\b.{0,80}\bqueue\.json\b"), "ionos"),
     (re.compile(r"(?i)\bqueue\.json\b.{0,80}\b(?:prune|on\s+ionos)\b"), "ionos"),
+    # FR #1363: BobCallback principal / SYSTEM vs Admin .bobiverse lives on the chair host
+    (re.compile(r"(?i)\bBobCallback\b.{0,120}\bSYSTEM\b"), "ionos"),
+    (re.compile(r"(?i)\bSYSTEM\b.{0,120}\bBobCallback\b"), "ionos"),
+    (re.compile(r"(?i)\bBobCallback\b.{0,160}\.bobiverse\b"), "ionos"),
+    (re.compile(r"(?i)\bBobCallback\b.{0,80}\bprincipal\b"), "ionos"),
 )
 
 # Hard pins for known WP0 / machine-gated issues (FR #1093): survive empty title/body on stale rows.
@@ -2399,6 +2422,8 @@ def offer_focus_top(
             def _eligible(cand: dict) -> dict | None:
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
+                if row_awaits_mrb1(cand):
+                    return None  # FR #1363: needs-mrb1 not offerable until cleared
                 if row_skip_fr_reason(cand):
                     return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
@@ -2541,6 +2566,8 @@ def offer_top(
             for i, row in enumerate(doc["unaccepted"]):
                 if row_needs_human(row, nick or "") or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
                     continue
+                if row_awaits_mrb1(row):
+                    continue  # FR #1363
                 if repo_archived_for_queue(str(row.get("repo") or "")):
                     continue  # FR #785
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
@@ -2948,6 +2975,8 @@ def assign_row(
             cand = doc["unaccepted"][idx]
             if row_needs_human(cand, me):
                 return "refused", "row is needs-human"
+            if row_awaits_mrb1(cand):
+                return "refused", "row awaits needs-mrb1 clear (FR #1363)"
             if row_on_cooldown(cand, now_f, me):
                 return "refused", "row is on GIVEUP/NACK cooldown"
             if row_skip_fr_reason(cand):

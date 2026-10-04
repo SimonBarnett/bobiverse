@@ -451,8 +451,14 @@ def return_job_to_unaccepted(
             until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                 seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
             )
+            # FR #180 / #1363: always stamp cooldown_until after GIVEUP/NACK.
             job["cooldown_until"] = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
             if count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
+                job["needs_human"] = True
+            # FR #1363: mark needs_human when the row still has needs-mrb1 (ops signal).
+            # Offer blocking for every seat is ``row_awaits_mrb1`` (giveup_seats alone
+            # would still let other machines take it under per-seat needs_human).
+            if gitclaim.row_awaits_mrb1(job):
                 job["needs_human"] = True
             doc.setdefault("unaccepted", []).append(job)
             try:
