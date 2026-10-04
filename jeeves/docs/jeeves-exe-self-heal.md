@@ -78,7 +78,7 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 | WP1 | In-process HTTP + chair entry (`jeeves_main`) + in-proc queue RLock | landed (PR #2270 foundation) |
 | WP2 | Diagnostics + heal CLI + monitor scripts as libraries; empty-offer wording | landed (CLI; service-loop rebind stays in-process when exe is the service) |
 | WP3 | `Build-Jeeves.ps1` + MSI/NSSM cutover | landed (FR #2301; Refs #1993) |
-| WP4 | Deterministic two-worker queue storm harness + ionos cutover checklist | harness landed (`jeeves_wp4_storm.py` / FR #2302); live ionos cutover still append on #1993 |
+| WP4 | Deterministic two-worker queue storm harness + ionos cutover checklist | harness landed (`jeeves_wp4_storm.py` / FR #2302); live ionos cutover evidence 2026-10-04 in `jeeves/docs/evidence/fr1993-ionos-cutover-2026-10-04.md` |
 
 CAST IRON: living FR #1993 stays open until E1-E5 + cutover are done. Partial WP PRs use **Refs** `#1993`, never `Closes` (except dedicated child FRs like #2302 for the offline harness, which do not replace #1993).
 
@@ -103,6 +103,9 @@ Acceptance the harness proves offline:
 3. Run harness against the live digest home (or mirror) with `--pings 50` and two workers per machine; then repeat after controlled Jeeves restart.
 4. Confirm zero `err=queue` / lock-timeout, zero unaccounted ACK/DONE/NACK/GIVEUP rows; attach `storm-summary.json` + logs.
 5. Leave Ergo / `BobIrcd` untouched. Append evidence on living #1993.
+
+Live evidence (win-mpre8vi4u6u / ionos fold, 2026-10-04): see `jeeves/docs/evidence/fr1993-ionos-cutover-2026-10-04.md` and `fr1993-wp4-storm-summary.json`. Sticky same-seat no-ACK rebroadcast fixed in gitclaim (`offered_count` / preserve first `offered_ts`; FR #2309).
+
 
 ## Heal allowlist
 

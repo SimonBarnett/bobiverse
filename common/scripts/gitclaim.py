@@ -1729,6 +1729,11 @@ def _coerce_row(row: dict) -> dict | None:
             out["giveup_count"] = int(row.get("giveup_count") or 0)
     except (TypeError, ValueError):
         pass
+    try:
+        if row.get("offered_count") is not None:
+            out["offered_count"] = int(row.get("offered_count") or 0)
+    except (TypeError, ValueError):
+        pass
     if row.get("repo_uat"):
         out["repo_uat"] = True
     if row.get("merged_prs"):
@@ -2007,6 +2012,9 @@ def last_worker_activity(home: Path, nick: str) -> float | None:
 
 
 OFFER_TIMEOUT_S = 90.0
+# FR #1993 / #2309: same-seat rebroadcast must not refresh offered_ts forever.
+# After this many same-seat offers without ACK, clear the sticky stamp so another seat can take it.
+STICKY_OFFER_MAX = 5
 
 
 def ordered_unaccepted(home: Path, rows: list[dict] | None = None) -> list[dict]:
@@ -2978,6 +2986,8 @@ def offer_focus_top(
                     if clear_orphan_digest_mrb_doing(home, pr_exists=pr_exists):
                         purged = True
             # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
+            # FR #2309: also drop when same-seat sticky rebroadcast count exceeds STICKY_OFFER_MAX
+            # (rebroadcast must not refresh offered_ts - see stamp block below).
             for cand in doc.get("unaccepted") or []:
                 if not isinstance(cand, dict):
                     continue
@@ -2990,10 +3000,15 @@ def offer_focus_top(
                     ).timestamp()
                 except ValueError:
                     age = OFFER_TIMEOUT_S + 1
-                if age >= OFFER_TIMEOUT_S:
+                try:
+                    sticky_n = int(cand.get("offered_count") or 0)
+                except (TypeError, ValueError):
+                    sticky_n = 0
+                if age >= OFFER_TIMEOUT_S or sticky_n >= STICKY_OFFER_MAX:
                     cand.pop("offered_to", None)
                     cand.pop("offered_ts", None)
                     cand.pop("offered_channel", None)
+                    cand.pop("offered_count", None)
                     purged = True
 
             def _same_seat(a: str, b: str) -> bool:
@@ -3100,8 +3115,19 @@ def offer_focus_top(
                 if row is pick or _same(row, str(pick.get("repo") or ""), str(pick.get("task") or ""), str(pick.get("id") or "")):
                     # FR #618: persist enriched author stamps (pick may be enrich_uat_author_fields copy).
                     job = dict(pick)
+                    prev_to = str(pick.get("offered_to") or "").strip()
+                    same = bool(prev_to) and _same_seat(prev_to, me)
                     job["offered_to"] = me
-                    job["offered_ts"] = _utc_now()
+                    # FR #2309: do not refresh offered_ts on same-seat rebroadcast (keeps OFFER_TIMEOUT_S honest).
+                    if same and pick.get("offered_ts"):
+                        job["offered_ts"] = pick.get("offered_ts")
+                        try:
+                            job["offered_count"] = int(pick.get("offered_count") or 1) + 1
+                        except (TypeError, ValueError):
+                            job["offered_count"] = 2
+                    else:
+                        job["offered_ts"] = _utc_now()
+                        job["offered_count"] = 1
                     job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
                     resolved = resolve_assign_url(job)
                     if resolved:
