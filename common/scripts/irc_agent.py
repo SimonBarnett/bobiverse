@@ -2455,10 +2455,19 @@ class Client:
                     self._workers().on_done(src, target)
                 except Exception as clear_exc:  # noqa: BLE001
                     info(f"WARN workers clear-retry {type(clear_exc).__name__}")
-        info(
-            f"INFO shop-listen {verb} status={status} nick={src} "
-            f"activity={act!r} webhook={result.get('webhook')}"
-        )
+        # FR #1701: NACK/GIVEUP include truncated reason= so monitors can diagnose
+        # require_machine / self-MRB / skill-skip without IRC capture.
+        info(shop_listen.format_shop_listen_info(result, nick=src))
+        if verb in ("NACK", "GIVEUP"):
+            reason = shop_listen.truncate_giveup_reason(str(result.get("reason") or ""))
+            try:
+                self._cmd_trace(
+                    src,
+                    f"shop-{verb.lower()}",
+                    [f"status={status} reason={reason}"],
+                )
+            except Exception as trace_exc:  # noqa: BLE001
+                info(f"WARN shop-listen cmd-trace {type(trace_exc).__name__}")
         # Never PRIVMSG the shop channel (FR #211).
         return True
 
