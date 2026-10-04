@@ -1,4 +1,4 @@
-# jeeves.exe â€” chair + BobCallback one process (FR #1993)
+# jeeves.exe - chair + BobCallback one process (FR #1993)
 
 Living architecture FR: https://github.com/SimonBarnett/bobiverse/issues/1993
 
@@ -50,7 +50,7 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 
 ### WP2 self-test / heal (landed)
 
-### WP3 pack + MSI cutover (landed — FR #2301)
+### WP3 pack + MSI cutover (landed - FR #2301)
 
 - `Build-Jeeves.ps1` freezes `jeeves_main.py` to `jeeves.exe` (hidden imports for chair/shop/callback/monitor).
 - `Pack-BobiverseRelease` stages `jeeves\jeeves.exe` (`-SkipJeevesExe` only with `-SkipMsi`).
@@ -76,11 +76,11 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 |----|-------|--------|
 | WP0 | This spec + acceptance (docs) | landed (PR #2270; append evidence on living #1993) |
 | WP1 | In-process HTTP + chair entry (`jeeves_main`) + in-proc queue RLock | landed (PR #2270 foundation) |
-| WP2 | Diagnostics + heal CLI + monitor scripts as libraries; empty-offer wording | this PR (landed CLI; service-loop rebind stays in-process when exe is the service) |
+| WP2 | Diagnostics + heal CLI + monitor scripts as libraries; empty-offer wording | landed (CLI; service-loop rebind stays in-process when exe is the service) |
 | WP3 | `Build-Jeeves.ps1` + MSI/NSSM cutover | this PR (FR #2301; Refs #1993) |
-| WP4 | Ionos cutover + storm test | next â€” append on #1993 (`require_machine: ionos`) |
+| WP4 | Ionos cutover + storm test | next - append on #1993 (`require_machine: ionos`) |
 
-CAST IRON: living FR #1993 stays open until E1â€“E5 + cutover are done. Partial WP PRs use **Refs** `#1993`, never `Closes`.
+CAST IRON: living FR #1993 stays open until E1 - E5 + cutover are done. Partial WP PRs use **Refs** `#1993`, never `Closes`.
 
 ## Heal allowlist
 
@@ -100,7 +100,7 @@ CAST IRON: living FR #1993 stays open until E1â€“E5 + cutover are done. Par
 - Embedding Ergo / touching `BobIrcd`
 - LLM inside the service
 - Monitor `clear_seat_doing` as default heal (CAST IRON keep seats busy #1967)
-- Removing IIS ARR in WP1â€“WP3 (keep ARR; harden backend)
+- Removing IIS ARR in WP1 - WP3 (keep ARR; harden backend)
 
 ## Success definition
 
