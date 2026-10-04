@@ -1454,6 +1454,18 @@ _OUT_ACK_RX = re.compile(r"(?i)^ACK\b")
 _OUT_DONE_RX = re.compile(r"(?i)^DONE\b")
 _OUT_FREE_RX = re.compile(r"(?i)^(NACK|GIVEUP)\b")
 _OUT_BORED_RX = re.compile(r"(?i)^!bored\b")
+# FR #1732: job id on ACK/DONE/NACK/GIVEUP — TYPE + owner/repo#N (ignore trailing PASS/url/reason).
+_OUT_JOB_KEY_RX = re.compile(
+    r"(?i)^(ACK|DONE|NACK|GIVEUP)\s+(FR|MRB|UAT)\s+(\S+#\d+)\b"
+)
+
+
+def outbox_job_key(payload: str) -> Optional[str]:
+    """Normalize `FR owner/repo#N` from a shop wire line; None if not a typed job line."""
+    m = _OUT_JOB_KEY_RX.match((payload or "").strip())
+    if not m:
+        return None
+    return f"{m.group(2).upper()} {m.group(3)}"
 
 
 def outbox_payload(line: str) -> str:
@@ -1506,6 +1518,7 @@ class BoredEmitter:
         self._stopped = False
         self._ack_open = False
         self._ack_at: Optional[float] = None
+        self._ack_job_key: Optional[str] = None  # FR #1732: open ACK job id
         self._idle_since: Optional[float] = None
         self._last_bored: Optional[float] = None
         self._last_reason = ""
@@ -1586,19 +1599,36 @@ class BoredEmitter:
         with self._cv:
             if _OUT_ACK_RX.match(p):
                 self._ack_open, self._ack_at, self._idle_since = True, now, None
+                self._ack_job_key = outbox_job_key(p)
                 self._inject_pending = False
                 self._inject_at = None
                 self._harvest_until = None
             elif _OUT_DONE_RX.match(p):
-                self._ack_open = False
-                self._done_key = p
-                self._begin_harvest_hold(now)
+                job = outbox_job_key(p)
+                # FR #1732: DONE for another id must not clear an open ACK.
+                if self._ack_open and self._ack_job_key and job and job != self._ack_job_key:
+                    self.log(
+                        f"bored: ignore DONE for {job} while ACK open on {self._ack_job_key}"
+                    )
+                else:
+                    self._ack_open = False
+                    self._ack_job_key = None
+                    self._done_key = p
+                    self._begin_harvest_hold(now)
             elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP: free, then harvest hold before !bored (FR #161 / #1611)
                 verb = (p.split(None, 1)[0] if p else "FREE").upper()
-                self._ack_open = False
-                self._free_key = p
-                self._begin_harvest_hold(now)
-                self.log(f"bored: free-rx matched ({verb}) - harvest hold then !bored")
+                job = outbox_job_key(p)
+                # FR #1732: NACK/GIVEUP of a concurrent assign must not free while another ACK is open.
+                if self._ack_open and self._ack_job_key and job and job != self._ack_job_key:
+                    self.log(
+                        f"bored: ignore free-rx ({verb}) for {job} while ACK open on {self._ack_job_key}"
+                    )
+                else:
+                    self._ack_open = False
+                    self._ack_job_key = None
+                    self._free_key = p
+                    self._begin_harvest_hold(now)
+                    self.log(f"bored: free-rx matched ({verb}) - harvest hold then !bored")
             elif self._ack_open:
                 self._ack_at = now  # outbox activity keeps an open ACK fresh (the watcher uses the outbox mtime)
             elif self._harvest_until is not None and now < self._harvest_until:

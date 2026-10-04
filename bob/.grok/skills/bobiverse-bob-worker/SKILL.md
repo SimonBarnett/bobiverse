@@ -45,7 +45,7 @@ Every launch - tray click, command line, or the automatic restart after a hang -
 - there is no second console, no separate watcher window, no hidden helper window. The IRC connection, the relay, `!bored` and the health checks run as threads of the same exe. One tray `Agent`
 click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no IRC).
 * **Ending the exe ends the agent**: closing the window, `Ctrl+Break`-ing the exe, killing it or IRC loss all end the agent tree it started (a kill-on-close job object covers a hard kill of the exe, so no orphan agent).
-* **External kill parent log (FR #1643 / harvest #1678):** after `proc.wait()` the OS parent is usually gone — capture the create-parent cmdline at `start_agent` time and log it on unexpected exit (`terminated-by-external-kill`). Do not expect `parent_of` after wait to still resolve.
+* **External kill parent log (FR #1643 / harvest #1678):** after `proc.wait()` the OS parent is usually gone - capture the create-parent cmdline at `start_agent` time and log it on unexpected exit (`terminated-by-external-kill`). Do not expect `parent_of` after wait to still resolve.
 * **The agent ending ends the exe** (exit 0; IRC QUIT).
 * Ctrl+C is the agent's own key (the exe ignores it). The relay types into this same console's input, so you can also type in the window yourself.
 * The Grok key prompt (when no tokens remain) appears **inside this same window**, input hidden - no dialog.
@@ -80,6 +80,7 @@ An unknown reading is "not available" (falls through), never "available". Readin
   shared worker console) - no poll, no timer. The agent sees `FROM <nick> <target> <text>` as typed input. Ordering/limits: max 8 injections per 30 s, extra messages are
   coalesced into one `FROM (flood-coalesced N messages) ...`; identical consecutive lines are dropped; `POINT/DIGEST/AGPK/SEAL`, `is busy.`, `password=`, `XAI_API_KEY` lines are
   never relayed; messages arriving during the 6 s agent start-up are held and injected the moment it is ready. PMs are relayed only from `Jeeves`.
+* **NACK of a second assign (FR #1732):** free-rx / harvest hold only for NACK/GIVEUP/DONE that match the open ACK job id; concurrent NACK while another ACK is open keeps the seat busy.
 * **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline. Live seats need a rebuilt `bob-worker.exe` (`Build-BobWorker` / MSI) - source-only patches do not update the frozen PyInstaller binary already running from the tray.
 * **Liveness answered by the exe**: server `PING`->`PONG` at once, CTCP PING/VERSION, and the fleet `ping` / `ping <selector>` in `#<machine>` -> `pong` (selector matches the
   nick or the machine id; prefix/substring/`*`/`?`). Pings are never forwarded to the agent (no wake, no flood).
@@ -100,7 +101,7 @@ by a **NEW agent** (never a resume) after a backoff of 5 s, then 15 s, then 45 s
 
 ## `!bored`, ACK and DONE (the program posts `!bored`, you write ACK/DONE)
 
-The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - (FR #100 / #1611): when the agent is ready (seat start), after DONE/NACK/GIVEUP **once the harvest hold ends** (default 90 s, `BOB_WORKER_HARVEST_HOLD_S`; outbox activity extends it — harvest before the next `!bored`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: open `ACK` (younger than 45 min), inject-pending assign work until ACK/grace (`BOB_WORKER_ASSIGN_GRACE_S`, default 600 s), harvest hold, or the agent starting/restarting/hung. Jeeves `nothing queued` resets the idle clock but does **not** arm inject-pending (MRB #1617). Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161), and logs `bored: free-rx matched (...)` / `bored: harvest hold`. Monitor/intake: idle+ungated during this hold is **not** starve (harvest #1665) — wait for `!bored`. At most one `!bored` per second. It stops for good on IRC loss/shutdown.
+The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - (FR #100 / #1611): when the agent is ready (seat start), after DONE/NACK/GIVEUP **once the harvest hold ends** (default 90 s, `BOB_WORKER_HARVEST_HOLD_S`; outbox activity extends it - harvest before the next `!bored`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: open `ACK` (younger than 45 min), inject-pending assign work until ACK/grace (`BOB_WORKER_ASSIGN_GRACE_S`, default 600 s), harvest hold, or the agent starting/restarting/hung. Jeeves `nothing queued` resets the idle clock but does **not** arm inject-pending (MRB #1617). Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161), and logs `bored: free-rx matched (...)` / `bored: harvest hold`. Monitor/intake: idle+ungated during this hold is **not** starve (harvest #1665) - wait for `!bored`. At most one `!bored` per second. It stops for good on IRC loss/shutdown.
 A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by assigning in `!focus` order; you ACK; DONE/NACK/GIVEUP mark the seat idle. Exact lines: skill
 `bobiverse-bob-job-irc`; per job type: `bobiverse-bob-job-fr`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
 
@@ -117,7 +118,7 @@ A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by 
 ## Upgrade / uninstall / seats
 
 The MSI installs `worker\bob-worker.exe`, `worker\AGENTS.md`, `worker\.grok\skills\*`, `plan\...`; the self-updater and `Sync-BobiverseFromRepo.ps1` refresh them. Running seats use the
-per-user run copy, so replacing the installed exe never kills or locks a seat; an uninstall leaves running seats alone (they end when their IRC link or window ends). Tray bin refresh **defers** delete of a hashed run-copy while exclusive-open shows it locked by a live seat (FR #1643 / #1678) — that defer is correct, not a stuck cleanup bug.
+per-user run copy, so replacing the installed exe never kills or locks a seat; an uninstall leaves running seats alone (they end when their IRC link or window ends). Tray bin refresh **defers** delete of a hashed run-copy while exclusive-open shows it locked by a live seat (FR #1643 / #1678) - that defer is correct, not a stuck cleanup bug.
 
 ## Troubleshooting
 
@@ -132,7 +133,7 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 | Messages do not reach the agent | agent not ready yet (6 s) or `inject failed` in `worker.log`; raw-mode TUIs may need the window to exist - never minimise-kill the console. |
 | `relay: injected` in `worker.log` but TUI waits for Enter | Live `bob-worker-*.exe` is **stale** (pre-FR #1601 submit gap / double Enter). Press Enter once to unblock this line; durable fix = rebuild exe + start a **new** tray Agent seat (harvest #1605). |
 | Agent restarted repeatedly | `HUNG` lines in `worker.log`; after 3 restarts in 30 min the seat ends (exit 5). |
-| Seat died mid-job; need who killed it | Look for external-kill / create-parent log from FR #1643. Parent after `wait()` is empty by design — spawn-time cache is the evidence (harvest #1678). |
+| Seat died mid-job; need who killed it | Look for external-kill / create-parent log from FR #1643. Parent after `wait()` is empty by design - spawn-time cache is the evidence (harvest #1678). |
 | Wrong agent chosen | selection is automatic; fix the fuel readings, do not edit the exe. |
 
 File every problem you find: CAST IRON rule at the top.
