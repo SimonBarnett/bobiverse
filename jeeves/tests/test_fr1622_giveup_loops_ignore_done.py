@@ -137,3 +137,59 @@ def test_gated_pin_no_live_seats_skipped(tmp_path):
     assert payload["ok"] is True
     assert int(payload.get("skipped_gated_hotspots") or 0) >= 1
     assert payload.get("hotspots") == {}
+
+
+def test_accepted_high_giveup_still_exits_1(tmp_path):
+    """MRB #1629 hostile: accepted[] high giveup_count remains an active hotspot."""
+    chair = tmp_path / "jeeves"
+    digest = tmp_path / "bobiverse"
+    _write_queue(
+        chair,
+        accepted=[
+            {
+                "repo": "SimonBarnett/bobiverse",
+                "id": "#8888",
+                "giveup_count": 2,
+                "task": "FR",
+                "title": "accepted loop",
+            }
+        ],
+        done=[{"repo": "SimonBarnett/bobiverse", "id": "#1043", "giveup_count": 3}],
+    )
+    _write_digest(digest, {"marchhare": {"worker_list": [{"nick": "marchhare-1", "state": "idle"}]}})
+    code, payload = _run(chair, digest)
+    assert code == 1, payload
+    assert payload["ok"] is False
+    assert any("8888" in f for f in payload.get("findings") or [])
+    assert not any("1043" in f for f in payload.get("findings") or [])
+
+
+def test_gated_pin_with_live_seats_still_exits_1(tmp_path):
+    """MRB #1629 hostile: require_machine pin with live seats on that machine still alerts."""
+    chair = tmp_path / "jeeves"
+    digest = tmp_path / "bobiverse"
+    _write_queue(
+        chair,
+        unaccepted=[
+            {
+                "repo": "SimonBarnett/agentic_fomprep",
+                "id": "#56",
+                "giveup_count": 2,
+                "task": "FR",
+                "require_machine": "ce-priority-dev1",
+            }
+        ],
+    )
+    _write_digest(
+        digest,
+        {
+            "ce-priority-dev1": {
+                "worker_list": [{"nick": "ce-priority-dev1-1", "state": "idle"}]
+            }
+        },
+    )
+    code, payload = _run(chair, digest)
+    assert code == 1, payload
+    assert payload["ok"] is False
+    assert any("56" in f for f in payload.get("findings") or [])
+    assert int(payload.get("skipped_gated_hotspots") or 0) == 0
