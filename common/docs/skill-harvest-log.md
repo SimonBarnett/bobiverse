@@ -1,5 +1,11 @@
 # Skill harvest log
 
+## 2026-10-04 - twin-DONE harvest loop skip (FR #2237)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest of twin/already-fixed DONE sessions re-files skill twins that Jeeves re-offers as FR (nested stack) | `Invoke-BobiverseHarvest` skips twin-DONE-only summaries (like FR #936 GIVEUP loop); harvest skill documents skip |
+
 ## 2026-10-04 - jeeves.exe chair+HTTP foundation (FR #1993)
 
 | Lesson | Fix |
@@ -7,6 +13,7 @@
 | Dual BobCallback/chair processes fight git-claim.lock / digest.lock | WP0 spec `jeeves/docs/jeeves-exe-self-heal.md`; WP1 `jeeves_main` + in-proc RLock + instance mutex; append WP2+ on living #1993 with Refs only (never Closes / never twin WPs) |
 
 Books: `jeeves_main`, `jeeves_locks`, bobiverse-jeeves. Living FR: #1993.
+
 
 ## 2026-10-04 - Hand-out empty under focus (harvest #2243)
 
