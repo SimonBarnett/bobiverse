@@ -34,3 +34,22 @@ def test_inject_console_source_has_double_enter_and_no_006_default():
     assert "default: float = 0.20" in src
     # FR #1601 comment trail
     assert "FR #1601" in src or "Too-short gaps (0.06s)" in src
+
+def test_skill_event_driven_bullet_not_split_by_submit_gap():
+    """MRB #1608: Submit gap must be its own bullet; Event-driven must keep shared-console clause."""
+    from pathlib import Path
+
+    skill = Path(__file__).resolve().parents[1] / ".grok/skills/bobiverse-bob-worker/SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    i = text.index("* **Event-driven relay**:")
+    j = text.index("* **Submit gap (FR #1601)**:")
+    k = text.index("* **Liveness answered by the exe**:")
+    event = text[i:j]
+    submit = text[j:k]
+    assert "WriteConsoleInput into the" in event
+    assert "shared worker console)" in event
+    assert "no poll, no timer" in event
+    assert "shared worker console)" not in submit
+    assert "BOB_WORKER_SUBMIT_GAP_S" in submit
+    assert "Enter twice" in submit
+
