@@ -448,3 +448,55 @@ def test_a_regular_bored_satisfies_a_pending_nak_timer():
 def test_supervisor_wires_the_seat_nak_to_the_emitter():
     src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
     assert "irc.on_nak = self.bored.nak" in src
+
+def test_fr1732_nack_other_job_does_not_free_open_ack():
+    """NACK of a concurrent assign must not free the seat while an earlier ACK is open."""
+    sent: list = []
+    logs: list = []
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0, harvest_hold_s=0.0,
+    )
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.on_outbox("ACK FR SimonBarnett/bobiverse#1562")
+    time.sleep(0.15)
+    n = len(sent)
+    e.on_outbox("NACK MRB SimonBarnett/bobiverse#1725")
+    time.sleep(IDLE + REPEAT + 0.3)
+    assert len(sent) == n, "NACK of another job must keep the seat busy"
+    assert any("ignore free-rx (NACK)" in m for m in logs)
+    assert any("ACK open on FR SimonBarnett/bobiverse#1562" in m for m in logs)
+    e.on_outbox("DONE FR SimonBarnett/bobiverse#1562 PASS https://example.com/p/1")
+    assert wait_until(lambda: len(sent) == n + 1, 1.0)
+    assert e.sent[-1][1] == "done"
+    e.stop()
+
+
+def test_fr1732_matching_nack_still_frees():
+    sent: list = []
+    logs: list = []
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0, harvest_hold_s=0.0,
+    )
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.on_outbox("ACK FR o/r#9")
+    n = len(sent)
+    e.on_outbox("NACK FR o/r#9")
+    assert wait_until(lambda: len(sent) == n + 1, 1.0)
+    assert e.sent[-1][1] == "free"
+    assert any("free-rx matched (NACK)" in m for m in logs)
+    e.stop()
+
+
+def test_fr1732_outbox_job_key():
+    assert bw.outbox_job_key("ACK FR SimonBarnett/bobiverse#1562") == "FR SimonBarnett/bobiverse#1562"
+    assert bw.outbox_job_key("NACK MRB SimonBarnett/bobiverse#1725") == "MRB SimonBarnett/bobiverse#1725"
+    assert bw.outbox_job_key(
+        "DONE FR SimonBarnett/bobiverse#7 PASS https://github.com/x/y/pull/1"
+    ) == "FR SimonBarnett/bobiverse#7"
+    assert bw.outbox_job_key("reason self-MRB") is None
