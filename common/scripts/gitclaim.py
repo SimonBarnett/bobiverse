@@ -2725,7 +2725,17 @@ def clamp_empty_reply_stats(stats: dict | None) -> dict:
 
 
 def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
-    """Shop empty reply. Seat-relative (FR #2333): focus + per-nick gate breakdown."""
+    """Shop empty reply to a !bored seat: ONE short line, never a summary list.
+
+    ``stats`` is accepted for backward compatibility and ignored: the focus/gate breakdown
+    (FR #1993 WP2 / FR #2309 / FR #2333) goes to the chair log via ``format_empty_offer_detail``,
+    not the channel. Simon: Jeeves MUST hand out work — empty reply stays short.
+    """
+    return f"{nick}: nothing queued"
+
+
+def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
+    """Operator/log line for an empty offer: focus + per-nick gate breakdown (FR #1993 WP2 / #2309 / #2333)."""
     if not stats:
         return f"{nick}: nothing queued"
     try:
@@ -2758,7 +2768,6 @@ def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
     if extra:
         return base + ", " + ", ".join(extra) + ")"
     return base + ")"
-
 
 
 def live_seat_nicks(home: Path) -> set[str]:

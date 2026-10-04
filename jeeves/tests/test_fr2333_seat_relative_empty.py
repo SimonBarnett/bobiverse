@@ -17,14 +17,15 @@ def test_fr2333_clamp_empty_reply_zeros_offerable():
     clamped = gitclaim.clamp_empty_reply_stats(stats)
     assert clamped["offerable"] == 0
     assert clamped["blocked_other"] == 1
-    line = gitclaim.format_nothing_queued("win-mpre8vi4u6u-14452", clamped)
+    line = gitclaim.format_empty_offer_detail("win-mpre8vi4u6u-14452", clamped)
     assert "0 offerable for you under focus" in line
     assert "blocked_other=1" in line
     assert "1 offerable" not in line.split("for you")[0]  # no positive claim before for you
 
 
 def test_fr2333_format_says_for_you():
-    line = gitclaim.format_nothing_queued(
+    assert gitclaim.format_nothing_queued("marchhare-1", {"unaccepted": 10}) == "marchhare-1: nothing queued"
+    line = gitclaim.format_empty_offer_detail(
         "marchhare-1",
         {
             "unaccepted": 10,
