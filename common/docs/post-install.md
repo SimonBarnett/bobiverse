@@ -126,7 +126,9 @@ Keep commands short; stage longer fixes with `irm` + `powershell -File`.
 
 ## Tray (ircBob companion TipForm)
 
-From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.ps1` + BobBridge under `<ai root>\bob`), launched by `scripts\Start-BobTray.ps1` â†’ `tools\Start-BobFleetTray.ps1` as an **interactive companion** to the `ircBob` Windows service (Desktop / Start Menu / per-user Startup + HKCU `Run\BobiverseTray`). It is **not** a `BobFleet-*` scheduled task â€” disable any leftover `BobFleet-<MachineId>` task after upgrade.
+From **0.1.7** the bob MSI ships the full TipForm systray (`tools\Watch-BobTray.ps1` + BobBridge under `<ai root>\bob`), launched by `scripts\Start-BobTray.ps1` → `tools\Start-BobFleetTray.ps1` as an **interactive companion** to the `ircBob` Windows service (Desktop / Start Menu / per-user Startup + HKCU `Run\BobiverseTray`). It is **not** a `BobFleet-*` scheduled task — disable any leftover `BobFleet-<MachineId>` task after upgrade.
+
+From FR #1636 / #1642: ONLOGON `BobiverseTray` and Start Menu / Startup shortcuts use `-ForceNew -SkipTidy` (replace prior tray only; seats stay up). TipForm **Restart** still tidies. Lifecycle lines append to `%LOCALAPPDATA%\Bobiverse\tray-lifecycle.log`. Scheduled task `BobiverseTrayWatchdog` runs `Ensure-BobTrayRunning.ps1` every minute and relaunches with `-ForceNew -SkipTidy` after unexpected tray death; intentional TipForm **Exit** writes `tray-watchdog.suppress` so the watchdog does not fight the operator. Opt out: `BOBIVERSE_TRAY_WATCHDOG=0`. Re-register with `Start-BobTrayInteractive.ps1 -RegisterOnly` after upgrade.
 
 - **Durable start (0.1.8+):** `Start-BobFleetTray` starts the seat wrapper with **WMI `Win32_Process.Create`** so TipForm survives agent/console job-object teardown. Do not rely on `Start-Process -PassThru` from a Grok Build shell.
 - **Digest webhook:** TipForm calls `Write-BobIrcStatus` about every 30s and POSTs usage to `reportUrl` (`https://irc.ntsa.uk/bob/v1/report` from `config\bobiverse.json`). No password/secret is used: the digest accepts the POST because this machine id is on the roster Jeeves publishes (ChanServ mirror).
