@@ -54,3 +54,6 @@ Title: short delay symptom. Body: what / where / evidence (script JSON / exit) /
 - Wait for a human prompt before the first check cycle
 - Act as chair or claim shop jobs
 - Conclude "no skills" because `.\skills` is missing - use `.grok\skills`
+
+- Intake URL: https://irc.ntsa.uk/bob/v1/intake
+- Explicit Bobiverse filing target: -Repo SimonBarnett/bobiverse

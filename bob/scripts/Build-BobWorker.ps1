@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Compile scripts\bob_worker.py into bob-worker.exe (PyInstaller, one file). Called by Pack-BobiverseRelease.ps1 for the bob MSI.
@@ -48,13 +48,24 @@ $work = Join-Path $OutDir 'worker-build'
 if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $dist = Join-Path $work 'dist'
-$prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-$log = & $Python -m PyInstaller --noconfirm --clean --onefile --console --name bob-worker `
-    --distpath $dist --workpath (Join-Path $work 'build') --specpath $work `
-    @pathArgs @icoArgs --exclude-module tkinter --exclude-module numpy --exclude-module pandas --exclude-module matplotlib `
-    $src 2>&1
-$code = $LASTEXITCODE
-$ErrorActionPreference = $prevEap
+$argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--console', '--name', 'bob-ear',
+    '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
+$argList += $pathArgs
+$argList += $icoArgs
+$argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
+# PyInstaller's isolated child can fail when PowerShell captures a live pipeline; use files for both streams.
+$argText = (($argList | ForEach-Object {
+        $v = [string]$_
+        if ($v -match '[\s"]') { '"' + $v.Replace('"', '\"') + '"' } else { $v }
+    }) -join ' ')
+$logPath = Join-Path $work 'pyinstaller.stdout.log'
+$errPath = Join-Path $work 'pyinstaller.stderr.log'
+$proc = Start-Process -FilePath $Python -ArgumentList $argText -WorkingDirectory $RepoRoot -Wait -PassThru -NoNewWindow `
+    -RedirectStandardOutput $logPath -RedirectStandardError $errPath
+$code = $proc.ExitCode
+$log = @()
+if (Test-Path -LiteralPath $logPath) { $log += Get-Content -LiteralPath $logPath }
+if (Test-Path -LiteralPath $errPath) { $log += Get-Content -LiteralPath $errPath }
 $exe = Join-Path $dist 'bob-worker.exe'
 if ($code -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
     ($log | Select-Object -Last 25) | ForEach-Object { Write-Host "  pyinstaller: $_" }
