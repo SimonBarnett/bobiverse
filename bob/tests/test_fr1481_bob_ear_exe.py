@@ -38,6 +38,11 @@ def test_fr1481_start_bob_prefers_ear_exe():
     assert "via=bob-ear.exe" in t
     assert "irc_agent.py" in t  # fallback
     assert t.index("bob-ear.exe") < t.index("irc_agent.py") or "useEarExe" in t
+    # MRB #1488: resolve exe after sync/self-update so a just-staged binary is preferred.
+    i_sync = t.find("Sync-BobiverseFromRepo.ps1")
+    i_upd = t.find("Update-BobiverseService.ps1")
+    i_use = t.find("$useEarExe = Test-Path -LiteralPath $earExe")
+    assert i_sync > 0 and i_upd > 0 and i_use > i_upd
 
 
 def test_fr1481_pack_stages_ear_exe():
