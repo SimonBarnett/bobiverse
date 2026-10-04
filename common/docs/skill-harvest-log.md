@@ -9,16 +9,33 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 |--------|-----|
 | `Invoke-AircRemote -ReplyFile` needs ear capture of `*_console` Query lines to `home/airc-replies.jsonl` plus helper poll until DONE; NSSM AppStdout under install logs with timestamps and keepalive rate-limit | Promoted into `airc/.grok/skills/bobiverse-airc`, `bobiverse-airc-troubleshooting`, and `bob/.grok/skills/bobiverse-bob-commands` (code already on main via PR #1560) |
 
+## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
+
+| Lesson | Fix |
+|--------|-----|
+| Never self-MRB a PR this seat opened; GIVEUP with self-MRB reason so another seat can hostile-review (and rebase if DIRTY) | Documented wire in bobiverse-bob-job-mrb + bobiverse-bob-job-irc. NACK only if spotted before ACK/work. |
+
+## 2026-10-04 - TipForm stale worker lines (FR #1553 / harvest #1562)
+
+| Lesson | Fix |
+|--------|-----|
+| TipForm looks stuck while seats are busy: BobCallback flaps + Get-BobTrayHover hung WinForms poll + lagging worker_list | Sync workers from digest/report on a non-UI timer; never block refresh on hover; roll working_on from worker_list; heal callback with Start-BobCallbackSupervised. Documented in bobiverse-bob + troubleshooting. Product: PR #1576 / #1495 / #1555 |
+
+## 2026-10-04 - Monitor StartPending/idle+ungated -> require_machine=ionos (FR #1550 / harvest #1580)
+
+| Lesson | Fix |
+|--------|-----|
+| Monitor filings about ircJeeves StartPending or idle seats + ungated offerable were offered to marchhare | gitclaim title/body cues stamp require_machine=ionos (PR #1574). Document in jeeves-monitor + bob-job-fr; put cue words in intake titles. |
 ## 2026-10-04 - MRB #1696 docs: skill offers are promote FRs (not SKIP_FR/GIVEUP)
 
 | Lesson | Fix |
 |--------|-----|
 | Stale skills still said chair SKIP_FR / GIVEUP if offered skill intakes, causing live ACK/GIVEUP loops after FR #1682 hotpatch | Rewrite job-fr, bob-worker, harvest, harvest-agent-skills, jeeves-commands, jeeves-monitor: offers are intentional promote FRs; consolidate-by-book; do not GIVEUP |
-## 2026-10-04 - FR #1684 skill consolidate → promote PR
+## 2026-10-04 - FR #1684 skill consolidate -> promote PR
 
 | Lesson | Fix |
 |--------|-----|
-| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/…` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bobiverse-bob-job-fr` |
+| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/â€¦` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bobiverse-bob-job-fr` |
 
 ## 2026-10-03 - FR #806 archive-richer hand-merge
 
@@ -26,14 +43,14 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 |--------|-----|
 | Ten "archive richer" docs flagged in ARCHIVED_REPOS after #802 | Merged useful honesty-box / chair / design-uat / Ergo describe-only content into live files; left verbatim archive copies untouched; dropped stale archived-repo homes and old pack tool names |
 
-## 2026-09-29 — WIN-MPRE8VI4U6U airc/bob/jeeves cutover
+## 2026-09-29 â€” WIN-MPRE8VI4U6U airc/bob/jeeves cutover
 
 Harvested into `.grok/skills/bobiverse-{jeeves,bob,airc}` + `docs/post-install.md` + install scripts:
 
 | Lesson | Fix |
 |--------|-----|
 | `Start-Jeeves` / `--channel` + PowerShell `#` comment | `irc_agent.py`: `--channel` optional when `--chair` |
-| MSI LocalSystem ChairHome â†’ `C:\Users\Default\â€¦` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
+| MSI LocalSystem ChairHome â†’ `C:\Users\Default\Ã¢â‚¬Â¦` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
 | Legacy `BobJeeves` + `ircJeeves` both Running | `Disable-BobiverseLegacyBobJeeves` on install |
 | `CryptUnprotectData` with LocalSystem + Admin identity | post-install + skill: ObjectName / park identity interim |
 | Crash-loop stderr flooding airc console | NSSM AppStdout/AppStderr â†’ `C:\ai\jeeves\logs\` |
@@ -51,7 +68,7 @@ Harvested into .grok/skills/bobiverse-bob + docs/post-install.md + tray launcher
 | Lesson | Fix |
 |--------|-----|
 | Tray logs `tray up` then dies when started from Grok agent shell | `Start-BobFleetTray` uses WMI `Win32_Process.Create` (job-object breakaway) |
-| Broad seat-wrapper `match Watch-BobTray` kills diagnosing shells | Kill filter requires `-File â€¦Watch-BobTray.ps1` / `_Watch-BobTray-*.ps1` |
+| Broad seat-wrapper `match Watch-BobTray` kills diagnosing shells | Kill filter requires `-File Ã¢â‚¬Â¦Watch-BobTray.ps1` / `_Watch-BobTray-*.ps1` |
 | Product is service + companion, not BobFleet task | HKCU `Run\BobiverseTray`; disable `BobFleet-<id>` |
 | LocalSystem skipped update-check | `Start-Bob` no longer forces `BOBIVERSE_NO_UPDATE`; `Check-BobiverseUpdate` resolves `gh` + Releases API |
 | TipForm recycle JIT `PipelineStoppedException` | CatchException before Controls; swallow on ticks (agentic_build Watch-BobTray) |
@@ -71,16 +88,16 @@ VERSION â†’ **0.1.8** (pack when shipping).
 | Install start failures | `Report-BobiverseIntakeIssue` from Install-Jeeves/Bob/Airc |
 
 VERSION â†’ **0.1.9**.
-## 2026-09-30 — TipForm Restart→ircBob; tray never Sync/ff (0.1.10)
+## 2026-09-30 â€” TipForm Restartâ†’ircBob; tray never Sync/ff (0.1.10)
 
 | Lesson | Fix |
 |--------|-----|
 | Tray + service both looked like updaters | Tray Start skips product update; Sync/ff only on Start-Bob |
-| TipForm Restart only relaunched UI | TipForm **Restart** → `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
+| TipForm Restart only relaunched UI | TipForm **Restart** â†’ `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
 | Quiet MSI TipForm in session 0 (invisible) | Start-BobTrayInteractive ONLOGON /IT; no session-0 Start-Process |
-| Jeeves missing from #win-mpre… | ChanServ !register required for chair_channels |
+| Jeeves missing from #win-mpreâ€¦ | ChanServ !register required for chair_channels |
 
-VERSION → **0.1.10**.
+VERSION â†’ **0.1.10**.
 
 ## 2026-10-02 - chair commands, Start Menu, agent-start layer (PR #83)
 
@@ -102,3 +119,30 @@ VERSION → **0.1.10**.
 | Combined release (#196) | Consolidates the remaining 0.1.20 fixes and documentation across intake, chair/outbox, relay persistence, digest/reporting, airc remote control and durable jobs, tray packaging, sparse checkout, NSSM safety, and cursor-pool stamping. |
 
 VERSION -> **0.1.20** (packaged MSIs and release archives).
+
+## 2026-10-04 - chair "not assigning" vs open GitHub counts (harvest #1581)
+
+| Lesson | Fix / book |
+|---|---|
+| Large open-issue totals look like chair failure | Mostly skill/harvest (+ needs-human); check ungated_offerable and !bored first |
+| Monitor cannot !assign | By design; diagnose queue/bored/gates, do not act as chair |
+
+Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md`. Canonical #1581; duplicate #1483.
+## 2026-10-04 - stale bob-worker.exe waits for Enter after inject (harvest #1605)
+
+| Lesson | Fix / book |
+|---|---|
+| worker.log relay:injected but TUI waits for Enter | Live PyInstaller exe stale vs FR #1601; press Enter once; Build-BobWorker + new tray Agent seat |
+| Source patch alone | Does not update frozen bob-worker-*.exe already running |
+
+Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md`. Canonical #1605; twin #1614.
+
+## 2026-10-04 - NAK busy from stale workers map (harvest #1715)
+
+| Lesson | Fix / book |
+|---|---|
+| nak busy with idle worker_list | machines.workers.<pid>.working_on still set after lost DONE |
+| clear_orphan | Must idle workers map + machine working_on, not only worker_list |
+| Product | FR #1714 |
+
+Books: `bobiverse-jeeves-monitor`, `bobiverse-bob`.

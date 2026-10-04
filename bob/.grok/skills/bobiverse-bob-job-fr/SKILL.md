@@ -116,11 +116,17 @@ On Windows PowerShell 5.1, keep the PR body in `--body-file` (multiline `--body`
 * **Every FR PR body contains `Closes <owner>/<repo>#N`** and you verified it (step 8) before DONE. * One FR = one PR. A fix that needs more work goes to a new FR through intake, not into this PR. * Never touch Ergo config, never restart `BobIrcd`, never disturb other seats, PowerShell only.
 * Do not rebuild/release/bump the version unless the FR says so. * CAST IRON harvest rule at the top: file every issue, FR, bug and learned playbook in the same turn.
 
-## Machine pin / ionos-only FRs (FR #587 / #852)
+## Machine pin / ionos-only FRs (FR #587 / #852 / #1550)
 
-Chair stamps `require_machine` from labels (`needs-ionos`, `machine:ionos`) and title/body cues. After FR #852, cues include **recycle/recompose (irc)Jeeves** and **prune queue.json** (chair lives on ionos). Non-matching seats must **GIVEUP** (or never receive the offer once the live chair has the gates).
+Chair stamps `require_machine` from labels (`needs-ionos`, `machine:ionos`) and title/body cues. After FR #852 / #1550 / #1559 (PR #1574), cues include:
 
-* Marchhare cannot bounce ionos `ircJeeves` or edit ionos `queue.json` — those FRs are ionos-only.
+* **recycle/recompose (irc)Jeeves** and **prune queue.json**
+* Title: **ircJeeves↔StartPending**, **idle seats↔ungated offerable**
+* Body (ops context only): `Invoke-JeevesMonitorCheck` near idle_seats/StartPending/offerable/no shop OFFER
+
+Chair lives on ionos (folds to win-mpre*). Non-matching seats must **GIVEUP** (or never receive the offer once the live chair has the gates).
+
+* Marchhare cannot bounce ionos `ircJeeves`, edit ionos `queue.json`, or diagnose StartPending/idle+ungated on the chair host — those FRs are ionos-only.
 * If you are still offered one (stale chair / missing stamp): ACK then **GIVEUP** with `needs-ionos` / `require_machine=ionos` in the reason line; file intake if the stamp was missing.
 * **Skill-promote / harvest-backlog assigns (FR #1682 / FR #1684)** — chair **offers** `label:skill` / `harvest:` / `skill:` intakes as FR promote jobs (not product code FRs). Do **not** GIVEUP. Consolidate open skill receipts **by owner skill book**, close duplicate skill-book requests, open **one** `harvest/…` promote PR (`Closes` / `Duplicates closed:`), then DONE with the PR URL for hostile MRB. Full steps: `harvest-agent-skills` → **Worker: consolidate open skill receipts → promote PR**. Never one PR per receipt; never merge yourself. Skill/harvest still do **not** block repo UAT.
 

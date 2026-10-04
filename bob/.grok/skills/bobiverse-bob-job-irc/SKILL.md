@@ -20,7 +20,7 @@ description: >
 
 You are a bob **worker seat**. This skill is the exact wire contract between you, the worker program (`bob-worker.exe`) and Jeeves for taking and finishing jobs.
 It matches `docs/jeeves-commands.md` (row "shop wire") and Jeeves' shop listener grammar (`shop_listen.py`, FR #211). The three job skills build on it:
-`bobiverse-bob-job-fr`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
+`bobiverse-bob-job-fr`, `bbobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
 
 ## Where you speak
 
@@ -71,7 +71,7 @@ DONE <TYPE> <owner/repo>#<N> [PASS|FAIL] <url>
 * `TYPE` and `owner/repo#N` = the **assigned** values, even if the work turned into something else.
 * At most one `PASS`/`FAIL`. FR: the PR url (no PASS/FAIL). MRB: `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
 * **FR / MRB: verify before DONE (t826u)** - FR: the PR body has `Closes <owner>/<repo>#N` and `closingIssuesReferences` lists N; MRB: the originating issue is closed (by the merge, or by you with a comment) or, if not merged yet, linked. Never DONE with an unlinked, still-open issue.
-* **Duplicates first (t857u)** - before FR DONE the PR body has `Duplicates closed:` (each duplicate FR/issue of what the PR fixes already commented `Duplicate of #N / fixed by PR #M` and closed as not planned; real extra issues get a `Closes <owner>/<repo>#D` line). MRB re-checks it before PASS. See `bobiverse-bob-job-fr` / `bobiverse-bob-job-mrb`.
+* **Duplicates first (t857u)** - before FR DONE the PR body has `Duplicates closed:` (each duplicate FR/issue of what the PR fixes already commented `Duplicate of #N / fixed by PR #M` and closed as not planned; real extra issues get a `Closes <owner>/<repo>#D` line). MRB re-checks it before PASS. See `bobiverse-bob-job-fr` / `bbobiverse-bob-job-mrb`.
 * **One line, nothing after the url.** Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment, never on the DONE line.
 * **FR #108:** capture the URL printed by `gh pr create` into a variable, then write DONE with that exact URL. Do not invent `pull/N` before create returns (see `bobiverse-bob-job-fr`).
 * Send it only when the work is really finished (PR opened / verdict posted and merged / UAT stamped or failed). Send it **after** the evidence is in place, never before.
@@ -96,7 +96,7 @@ no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an
 * ACK before work, DONE after work, one line each, assigned TYPE and id, nothing after the url, own shop only, never a PM, never `!bored`.
 * No chatter while you hold a job and none after DONE: finish the turn. The next job arrives by itself.
 * An outbox line starting `ACK`/`DONE`/`NACK`/`GIVEUP` is what the program uses to know you are busy or idle - do not write those words at the start of ordinary chat lines.
-* Self-MRB or merging your own FR PR is forbidden; see the job skills for who owns what.
+* Self-MRB or merging your own FR PR is forbidden. If Jeeves assigns MRB on a PR this seat opened: after ACK use GIVEUP MRB owner/repo#N plus a self-MRB reason line (or NACK before any work). Details: bobiverse-bob-job-mrb Self-MRB section.
 * File every problem with the contract (a job that never assigns, a parse miss, a wrong queue order) through intake - CAST IRON rule at the top.
 
 ## Troubleshooting
