@@ -399,9 +399,17 @@ function Sync-BobiverseWorkTree {
         [string]$Branch = 'main',
         [string]$Remote = '',
         [string]$GitExe = '',
-        [int]$FetchTimeoutSec = 45,
+        [int]$FetchTimeoutSec = 120,
+        [int]$FetchRetries = 2,
         [switch]$DryRun
     )
+    # FR #1074: allow ops override without editing the script (seconds / retry count).
+    if ($env:BOBIVERSE_FETCH_TIMEOUT_SEC -match '^\d+$') {
+        $FetchTimeoutSec = [int]$env:BOBIVERSE_FETCH_TIMEOUT_SEC
+    }
+    if ($env:BOBIVERSE_FETCH_RETRIES -match '^\d+$') {
+        $FetchRetries = [int]$env:BOBIVERSE_FETCH_RETRIES
+    }
     $log = New-Object System.Collections.Generic.List[string]
     $res = [ordered]@{ Ok = $false; Pulled = $false; Bootstrapped = $false; Branch = ''; Reason = ''; Log = $log }
     function Done([string]$why) { $res.Reason = $why; return [pscustomobject]$res }
@@ -440,12 +448,26 @@ function Sync-BobiverseWorkTree {
         foreach ($m in 'MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD') {
             if (Test-Path -LiteralPath (Join-Path $root ".git\$m")) { $res.Ok = $true; return (Done "operation in progress ($m); not touching the work tree") }
         }
-        $f = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=20', 'fetch', '--prune', '-q', 'origin')) -TimeoutSec $FetchTimeoutSec
-        if ($f.Code -ne 0) {
+        # FR #1074: longer default timeout + retries so transient GitHub slowness does not leave offer gates stale.
+        $attempts = 1 + [Math]::Max(0, $FetchRetries)
+        $f = $null
+        for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            $f = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=45', 'fetch', '--prune', '-q', 'origin')) -TimeoutSec $FetchTimeoutSec
+            if ($f.Code -eq 0) { break }
             foreach ($l in ($f.Out | Select-Object -First 3)) { $log.Add("  $l") }
+            if ($f.TimedOut -and $attempt -lt $attempts) {
+                $log.Add("WARN sync-fetch timed out after ${FetchTimeoutSec}s (attempt $attempt/$attempts); retrying")
+                Start-Sleep -Seconds ([Math]::Min(5 * $attempt, 15))
+                continue
+            }
+            break
+        }
+        if ($f.Code -ne 0) {
             if ($created) { Remove-Item -LiteralPath (Join-Path $root '.git') -Recurse -Force -ErrorAction SilentlyContinue }
             else { $res.Ok = $true }
-            return (Done $(if ($f.TimedOut) { "fetch timed out after ${FetchTimeoutSec}s" } else { "fetch failed (exit $($f.Code)); keeping the installed version" }))
+            $why = if ($f.TimedOut) { "fetch timed out after ${FetchTimeoutSec}s x$attempts" } else { "fetch failed (exit $($f.Code)); keeping the installed version" }
+            $log.Add("ALERT sync-fetch-failed: $why; live tree not refreshed from origin")
+            return (Done $why)
         }
         if ($created) {
             $c = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('checkout', '-q', '-B', $Branch, '--track', "origin/$Branch")) -TimeoutSec 120
@@ -487,13 +509,17 @@ function Sync-BobiverseWorkTree {
                 }
             }
             if ($cur -ne $Branch) {
-                return (Done $(if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' }))
+                # FR #1074: still off-main after #1157 gates — alert so operators notice offer gates may lag.
+                $why = if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' }
+                $log.Add("ALERT sync-worktree-off-main: $why")
+                return (Done $why)
             }
         }
         $before = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
         $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
         if ($m.Code -ne 0) {
             foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
+            $log.Add("ALERT sync-ff-failed: ff-only not possible (local commits or edits in the way); live flat scripts may lag origin/$Branch until resolved")
             return (Done 'ff-only not possible (local commits or edits in the way); local work kept as is')
         }
         $after = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1

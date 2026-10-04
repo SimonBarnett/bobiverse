@@ -109,6 +109,10 @@ if (-not $explicitRepo -and $Product) {
     $wt = Sync-BobiverseWorkTree -InstallRoot $InstallRoot -Product $Product -Branch $Branch -GitExe $git -DryRun:$DryRun
     foreach ($l in @($wt.Log)) { Write-Host $l }
     Write-Host ("INFO sync-worktree ok={0} pulled={1} branch={2}: {3}" -f $wt.Ok, $wt.Pulled, $wt.Branch, $wt.Reason)
+    # FR #1074: surface stale fetch/ff so operators notice offer gates may lag main.
+    if ("$($wt.Reason)" -match 'timed out|ff-only not possible|fetch failed|not main|detached HEAD') {
+        Write-Host ("ALERT sync-worktree-stale: {0}" -f $wt.Reason)
+    }
     if ($wt.Ok -and (Test-Path -LiteralPath (Join-Path $InstallRoot "$Product\scripts"))) {
         $clone = $InstallRoot
         $pulled = [bool]$wt.Pulled
