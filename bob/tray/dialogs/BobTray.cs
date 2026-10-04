@@ -182,11 +182,13 @@ namespace BobDialogs
         TrayState state = new TrayState();
         DateTime lastWrite = DateTime.MinValue; long lastLen = -1;
         bool flashOn, acked, exiting;
+        string exitReason = "";
         long ackedSeq = -1;
         Process engine;
         int engineStarts; DateTime engineWindow = DateTime.Now;
         StatusForm statusForm; AboutForm aboutForm;
         public readonly List<string> MenuItems = new List<string>();
+        public string ExitReason { get { return exitReason ?? ""; } }
 
         public TrayContext(string root, string machine, bool noEngine, string[] args)
         {
@@ -408,6 +410,9 @@ namespace BobDialogs
         {
             if (exiting) return;
             exiting = true;
+            exitReason = "Exit";
+            TrayLifecycle.Write("exit", "reason", "Exit", "via", "bob-tray-Exit");
+            TrayLifecycle.SuppressWatchdog("Exit");
             CloseWindows();
             notify.Visible = false;
             Detached(Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\sc.exe"), "stop ircBob");
@@ -419,6 +424,8 @@ namespace BobDialogs
         {
             if (exiting) return;
             exiting = true;
+            exitReason = "Restart";
+            TrayLifecycle.Write("exit", "reason", "Restart", "via", "bob-tray-Restart");
             CloseWindows();
             notify.Visible = false;
             Command("restart");   // the engine announces the IRC logout and runs Start-BobFleetTray -ForceNew (replaces this exe, restarts ircBob)
@@ -477,8 +484,55 @@ namespace BobDialogs
             Environment.SetEnvironmentVariable("BOB_AI_ROOT", Environment.GetEnvironmentVariable("BOB_AI_ROOT") ?? (string.Equals(Path.GetFileName(root.TrimEnd('\\')), "bob", StringComparison.OrdinalIgnoreCase) ? Path.GetDirectoryName(root.TrimEnd('\\')) : ""));
             TrayContext ctx = new TrayContext(root, machine, Common.Flag(args, "--no-engine") || timing || dumpMenu.Length > 0, args);
             if (dumpMenu.Length > 0) { File.WriteAllText(dumpMenu, string.Join("\r\n", ctx.MenuItems.ToArray()), new UTF8Encoding(false)); return 0; }
+            TrayLifecycle.Write("tray-up", "via", "bob-tray.exe", "machine", machine);
             Application.Run(ctx);
+            string reason = string.IsNullOrEmpty(ctx.ExitReason) ? "unexpected" : ctx.ExitReason;
+            TrayLifecycle.Write("process-exit", "reason", reason, "via", "bob-tray.exe");
             return 0;
+        }
+    }
+
+    // FR #1642: append JSON lines to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log; suppress intentional Exit.
+    internal static class TrayLifecycle
+    {
+        static string Dir()
+        {
+            string d = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse");
+            Directory.CreateDirectory(d);
+            return d;
+        }
+
+        static string Esc(string s)
+        {
+            if (s == null) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        public static void Write(string ev, params string[] kv)
+        {
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.Append("{\"ts\":\"").Append(DateTime.UtcNow.ToString("o")).Append("\",\"event\":\"").Append(Esc(ev)).Append("\",\"pid\":").Append(Process.GetCurrentProcess().Id);
+                sb.Append(",\"user\":\"").Append(Esc(Environment.UserName)).Append("\"");
+                for (int i = 0; i + 1 < kv.Length; i += 2)
+                    sb.Append(",\"").Append(Esc(kv[i])).Append("\":\"").Append(Esc(kv[i + 1])).Append("\"");
+                sb.Append("}");
+                File.AppendAllText(Path.Combine(Dir(), "tray-lifecycle.log"), sb.ToString() + "\r\n", new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        public static void SuppressWatchdog(string reason)
+        {
+            try
+            {
+                DateTime until = DateTime.UtcNow.AddMinutes(1440);
+                string json = "{\"ts\":\"" + DateTime.UtcNow.ToString("o") + "\",\"reason\":\"" + Esc(reason) + "\",\"pid\":" + Process.GetCurrentProcess().Id + ",\"ttl_minutes\":1440,\"until\":\"" + until.ToString("o") + "\"}";
+                File.WriteAllText(Path.Combine(Dir(), "tray-watchdog.suppress"), json, new UTF8Encoding(false));
+                Write("watchdog-suppress", "reason", reason, "ttlMinutes", "1440");
+            }
+            catch { }
         }
     }
 }

@@ -62,3 +62,103 @@ function Invoke-BobTrayExitSequence {
     }
     return $ran.ToArray()
 }
+
+function Get-BobTrayLifecycleDir {
+    $dir = Join-Path $env:LOCALAPPDATA 'Bobiverse'
+    New-Item -ItemType Directory -Force -Path $dir -ErrorAction SilentlyContinue | Out-Null
+    return $dir
+}
+
+function Write-BobTrayLifecycleEvent {
+    # FR #1636 / #1642: append one JSON line to %LOCALAPPDATA%\Bobiverse\tray-lifecycle.log
+    param(
+        [Parameter(Mandatory)][string]$Event,
+        [hashtable]$Fields = @{}
+    )
+    try {
+        $dir = Get-BobTrayLifecycleDir
+        $line = [ordered]@{
+            ts    = (Get-Date).ToUniversalTime().ToString('o')
+            event = $Event
+            pid   = $PID
+            user  = $env:USERNAME
+        }
+        foreach ($k in @($Fields.Keys)) { $line[$k] = $Fields[$k] }
+        Add-Content -LiteralPath (Join-Path $dir 'tray-lifecycle.log') -Value (($line | ConvertTo-Json -Compress)) -Encoding utf8
+    }
+    catch { }
+}
+
+function Get-BobTrayWatchdogSuppressPath {
+    return (Join-Path (Get-BobTrayLifecycleDir) 'tray-watchdog.suppress')
+}
+
+function Set-BobTrayWatchdogSuppress {
+    # Intentional TipForm Exit: watchdog must not relaunch until cleared or TTL expires (FR #1642).
+    param([string]$Reason = 'Exit', [int]$TtlMinutes = 1440)
+    try {
+        $path = Get-BobTrayWatchdogSuppressPath
+        $doc = @{
+            ts           = (Get-Date).ToUniversalTime().ToString('o')
+            reason       = $Reason
+            pid          = $PID
+            ttl_minutes  = $TtlMinutes
+            until        = (Get-Date).ToUniversalTime().AddMinutes($TtlMinutes).ToString('o')
+        }
+        Set-Content -LiteralPath $path -Value ($doc | ConvertTo-Json -Compress) -Encoding utf8
+        Write-BobTrayLifecycleEvent -Event 'watchdog-suppress' -Fields @{ reason = $Reason; ttlMinutes = $TtlMinutes }
+    }
+    catch { }
+}
+
+function Clear-BobTrayWatchdogSuppress {
+    try {
+        $path = Get-BobTrayWatchdogSuppressPath
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            Write-BobTrayLifecycleEvent -Event 'watchdog-suppress-clear' -Fields @{}
+        }
+    }
+    catch { }
+}
+
+function Test-BobTrayWatchdogSuppressed {
+    param([datetime]$Now = (Get-Date).ToUniversalTime())
+    $path = Get-BobTrayWatchdogSuppressPath
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $doc = $raw | ConvertFrom-Json
+        $until = [datetime]::Parse([string]$doc.until, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        if ($until.Kind -eq [DateTimeKind]::Unspecified) { $until = [DateTime]::SpecifyKind($until, [DateTimeKind]::Utc) }
+        return ($Now -lt $until.ToUniversalTime())
+    }
+    catch {
+        return $true
+    }
+}
+
+function Test-BobTrayProcessPresent {
+    # True when bob-tray.exe or Watch-BobTray / seat-wrapper is alive (FR #1642 watchdog).
+    param([string]$InstallRoot = '')
+    $root = [string]$InstallRoot
+    if (-not $root) { $root = [string]$env:BOB_AI_ROOT }
+    $toolsPrefix = ''
+    if ($root) {
+        $bobRoot = if ((Split-Path -Leaf $root) -ieq 'bob') { $root } else { Join-Path $root 'bob' }
+        $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $bobRoot 'tools'))
+    }
+    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            ($_.CommandLine -and (
+                $_.CommandLine -match 'Watch-BobTray\.ps1' -or
+                $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1'
+            )) -or (
+                $_.Name -eq 'bob-tray.exe' -and (
+                    -not $toolsPrefix -or (
+                        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
+                    )
+                )
+            )
+        })
+    return ($hits.Count -gt 0)
+}

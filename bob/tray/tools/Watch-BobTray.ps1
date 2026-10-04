@@ -2024,7 +2024,13 @@ function Request-BobTrayIrcLogout {
 function Restart-BobTrayWatcher {
     # CAST IRON: Restart uses the SAME bootstrap as Start (Start-BobFleetTray -ForceNew).
     # No separate Restart shortcut. No LLM.
+    $script:trayExitReason = 'Restart'
     Write-TrayLog 'Restart: Start-BobFleetTray -ForceNew (same bootstrap as Start Menu)'
+    try {
+        if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Restart'; via = 'TipForm-Restart' }
+        }
+    } catch { }
     try {
         $script:notifyIcon.ShowBalloonTip(8000, 'Bob Systray', 'Restarting (bootstrap + tidy)...', [System.Windows.Forms.ToolTipIcon]::Info)
     }
@@ -2323,6 +2329,15 @@ function Close-BobTrayDialogs {
 function Invoke-BobTrayExit {
     $script:trayExitReason = 'Exit'
     Write-TrayLog 'Exit: close dialogs, dispose icon, exit UI, stop ircBob (detached)'
+    # FR #1642: intentional Exit suppresses the unexpected-exit watchdog relaunch.
+    try {
+        if (Get-Command Set-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) {
+            Set-BobTrayWatchdogSuppress -Reason 'Exit'
+        }
+        if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+            Write-BobTrayLifecycleEvent -Event 'exit' -Fields @{ reason = 'Exit'; via = 'TipForm-Exit' }
+        }
+    } catch { }
     [void](Invoke-BobTrayExitSequence `
             -CloseDialogs { Close-BobTrayDialogs } `
             -DisposeIcon { $notify.Visible = $false; $notify.Dispose() } `
@@ -3066,6 +3081,11 @@ $pulse.Start()
 [void](Write-BobTrayAlive -Dir $script:startWorkerDir)
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
+try {
+    if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+        Write-BobTrayLifecycleEvent -Event 'tray-up' -Fields @{ via = $(if (Test-BobTrayEngineMode) { 'engine' } else { 'Watch-BobTray' }) }
+    }
+} catch { }
 [System.Windows.Forms.Application]::Run($ctx)
 $poll.Stop(); $flash.Stop(); $pulse.Stop(); $pulseOff.Stop(); $startWorkerTimer.Stop()
 try {
@@ -3074,6 +3094,13 @@ try {
 }
 catch { }
 try { Remove-Item -LiteralPath (Join-Path $script:startWorkerDir 'tray.alive') -Force -ErrorAction SilentlyContinue } catch { }
+# FR #1642: always record process exit reason (Exit/Restart already logged; else unexpected).
+$finalReason = if ([string]$script:trayExitReason) { [string]$script:trayExitReason } else { 'unexpected' }
+try {
+    if (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue) {
+        Write-BobTrayLifecycleEvent -Event 'process-exit' -Fields @{ reason = $finalReason }
+    }
+} catch { }
 # Exit path (menu Exit/Restart already announced+logout). Idempotent; skip second announce.
 # t798u: Exit already stopped ircBob (detached); the slow logout/kill path is only for Restart and external stops.
 if ($script:trayExitReason -ne 'Exit') {
