@@ -122,11 +122,13 @@ def handle_digest_get(home: Path, briefer_nick: str = "") -> tuple[int, bytes]:
 
 
 def handle_health_get(home: Path) -> tuple[int, bytes]:
-    """FR #1136: liveness + lock age + last digest write (local loopback / monitors)."""
+    """FR #1136 / #1388: liveness + lock age/holder + last digest write (local loopback / monitors)."""
     bobreport.break_stale_digest_lock(home)
     age = bobreport.digest_lock_age_s(home)
+    holder = bobreport.digest_lock_holder_pid(home)
     last = bobreport.last_digest_write_iso(home)
     stale_limit = bobreport.digest_lock_stale_s()
+    foreign_limit = bobreport.digest_lock_foreign_s()
     lock_ok = age is None or age < stale_limit
     writable = True
     try:
@@ -142,6 +144,9 @@ def handle_health_get(home: Path) -> tuple[int, bytes]:
         "ok": ok,
         "lock_age_s": age,
         "lock_stale_s": stale_limit,
+        "lock_foreign_s": foreign_limit,
+        "lock_pid": holder,
+        "pid": os.getpid(),
         "last_digest_write": last,
         "digest_writable": writable,
     }
@@ -795,12 +800,26 @@ def serve(
             use_filer = gh_filer.default_filer()
         except Exception:
             use_filer = None
-    # Heal before accept: empty/stale digest.lock must not wedge the first requests.
+    # Heal before accept: empty/stale/foreign digest.lock must not wedge the first requests.
     bobreport.break_stale_digest_lock(home)
-    drain_pending(home, briefer_nick=briefer_nick, filer=use_filer)
     handler = make_handler(home, allow, briefer_nick, filer=use_filer)
+    # FR #1388: bind :7700 BEFORE drain_pending. drain (webhook replay / intake outbox /
+    # GitHub) can block for seconds while chair holds digest.lock — historically left
+    # bobcallback.py alive with no LISTEN (SYN_SENT clients).
     httpd = ThreadingHTTPServer((host, listen_port), handler)
     _start_health_watchdog(home, host, listen_port)
+
+    def _bg_drain() -> None:
+        try:
+            done = drain_pending(home, briefer_nick=briefer_nick, filer=use_filer)
+            if done:
+                print(f"INFO drain_pending done={len(done)}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — never kill the listener for drain
+            print(f"WARN drain_pending err={exc}", flush=True)
+
+    import threading
+
+    threading.Thread(target=_bg_drain, name="bobcallback-drain", daemon=True).start()
     return httpd
 
 
