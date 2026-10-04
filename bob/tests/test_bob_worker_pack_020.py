@@ -207,6 +207,7 @@ def test_stage_skills_carry_the_harvest_rule_with_install_absolute_paths(bob_sta
             assert mk in t, f"{f.relative_to(bob_stage)}: missing {mk!r}"
         assert "..\\scripts\\Report-BobiverseIntakeIssue.ps1" in t, f.relative_to(bob_stage)
         assert ".\\scripts\\Report-BobiverseIntakeIssue.ps1" not in t.replace("..\\scripts\\", ""), f.relative_to(bob_stage)
+        assert "...\\scripts\\" not in t, f"{f.relative_to(bob_stage)}: staged path rewrite doubled the dot (FR #1704)"
         if f.name == "SKILL.md":
             assert t.index("CAST IRON RULE - HARVEST AND FILE EVERYTHING") < (t.find("\n## ") if "\n## " in t else 10**9), f
 
