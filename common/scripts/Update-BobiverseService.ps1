@@ -289,6 +289,50 @@ function Get-ServiceAppParameters {
     return ''
 }
 
+function Get-BobiverseArpProduct {
+    # FR #1432: Uninstall registry row for bobiverse <$Product> (DisplayVersion / ProductCode).
+    $want = "bobiverse $Product"
+    foreach ($root in @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+        )) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($k in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            try {
+                $p = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction Stop
+                if ([string]$p.DisplayName -ne $want) { continue }
+                $ver = ConvertTo-Ver ([string]$p.DisplayVersion)
+                return [pscustomobject]@{
+                    ProductCode    = [string]$k.PSChildName
+                    DisplayVersion = [string]$p.DisplayVersion
+                    Version        = $ver
+                }
+            } catch { }
+        }
+    }
+    return $null
+}
+
+function Invoke-BobiverseArpUninstall {
+    # Quietly remove a registered product so the next /i is a real install, not maintenance mode.
+    param([Parameter(Mandatory)][string]$ProductCode, [string]$Why = 'arp-heal')
+    if ($ProductCode -notmatch '^\{[0-9A-Fa-f-]{36}\}$') {
+        Write-UpdLog "$Why-skip bad ProductCode"
+        return $false
+    }
+    $mlog = Join-Path $StateDir ('msiexec-uninstall-{0}.log' -f ($Why -replace '[^a-z0-9-]', ''))
+    $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -PassThru -WindowStyle Hidden `
+        -ArgumentList @('/x', $ProductCode, '/qn', '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"{0}"' -f $mlog))
+    $null = $p.Handle
+    if (-not $p.WaitForExit(600000)) {
+        Write-UpdLog "$Why-timeout ProductCode=$ProductCode"
+        return $false
+    }
+    $code = [int]$p.ExitCode
+    Write-UpdLog "$Why msiexec-uninstall-exit=$code ProductCode=$ProductCode"
+    return (@(0, 1605, 3010) -contains $code)  # 1605 = already uninstalled
+}
+
 function Get-AppParam {
     param([string]$AppParameters, [string]$Name)
     if ($AppParameters -match ('-{0}\s+"([^"]+)"' -f $Name)) { return $Matches[1] }
@@ -434,6 +478,18 @@ function Invoke-Apply {
         $backup = Backup-Install -OldVersion $oldText
         Write-UpdLog "backup-done dir=$(Split-Path -Leaf $backup)"
 
+        # FR #1432: a prior apply that rolled back files can leave ARP at the newer ProductCode while
+        # InstallRoot\VERSION is old. The next msiexec /i then runs maintenance mode (no file rewrite)
+        # and VERSION verify fails forever. Uninstall the desynced product first so /i is a real install.
+        $arp = Get-BobiverseArpProduct
+        if ($arp -and $arp.Version -and $oldVer -and ($arp.Version -gt $oldVer)) {
+            Write-UpdLog ("arp-desync-uninstall ARP={0} file={1} ProductCode={2}" -f $arp.DisplayVersion, $oldText, $arp.ProductCode)
+            [void](Invoke-BobiverseArpUninstall -ProductCode $arp.ProductCode -Why 'arp-desync-uninstall')
+        } elseif ($arp -and $arp.Version -and ($arp.Version -ge $target) -and $oldVer -and ($oldVer -lt $target)) {
+            Write-UpdLog ("arp-desync-uninstall ARP={0} already>=target file={1} ProductCode={2}" -f $arp.DisplayVersion, $oldText, $arp.ProductCode)
+            [void](Invoke-BobiverseArpUninstall -ProductCode $arp.ProductCode -Why 'arp-desync-uninstall')
+        }
+
         $mlog = Join-Path $StateDir ('msiexec-{0}.log' -f $tag)
         $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -PassThru -WindowStyle Hidden `
             -ArgumentList @('/i', ('"{0}"' -f $msi), '/qn', '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"{0}"' -f $mlog))
@@ -447,7 +503,15 @@ function Invoke-Apply {
         Write-UpdLog "msiexec-exit=$code (log: $(Split-Path -Leaf $mlog))"
         if (@(0, 3010, 1641) -notcontains $code) { throw "msiexec exit $code" }
 
-        $newVer = ConvertTo-Ver (Get-Content -LiteralPath (Join-Path $InstallRoot 'VERSION') -Raw -ErrorAction SilentlyContinue)
+        $verPath = Join-Path $InstallRoot 'VERSION'
+        $newVer = ConvertTo-Ver (Get-Content -LiteralPath $verPath -Raw -ErrorAction SilentlyContinue)
+        # FR #1432: msiexec success-family can still leave VERSION stale (maintenance reconfigure /
+        # NeverOverwrite components). Stamp from the verified plan so S4 / self-update observers see the bump.
+        if (-not $newVer -or $newVer -ne $target) {
+            Set-Content -LiteralPath $verPath -Value ($target.ToString() + [Environment]::NewLine) -Encoding ascii
+            Write-UpdLog ("version-stamped-after-msi was={0} now={1}" -f $(if ($newVer) { $newVer.ToString() } else { 'missing' }), $target.ToString())
+            $newVer = ConvertTo-Ver (Get-Content -LiteralPath $verPath -Raw -ErrorAction SilentlyContinue)
+        }
         if (-not $newVer -or $newVer -ne $target) { throw "installed VERSION is '$newVer', expected $($target.ToString())" }
         if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) { throw "service $ServiceName missing after install" }
         # The MSI custom action runs as SYSTEM without the old service's environment, so it can re-derive the
@@ -520,6 +584,15 @@ function Invoke-Apply {
         Remove-OldBackups
     } catch {
         Write-UpdLog "apply-failed $($_.Exception.GetType().Name): $($_.Exception.Message)"
+        # FR #1432: if msiexec registered the new product but verify failed, uninstall ARP before
+        # restoring files so the next start is not stuck in maintenance-mode /i.
+        try {
+            $arpFail = Get-BobiverseArpProduct
+            if ($arpFail -and $arpFail.Version -and $target -and ($arpFail.Version -ge $target)) {
+                Write-UpdLog ("arp-desync-uninstall on-fail ARP={0} ProductCode={1}" -f $arpFail.DisplayVersion, $arpFail.ProductCode)
+                [void](Invoke-BobiverseArpUninstall -ProductCode $arpFail.ProductCode -Why 'arp-desync-uninstall')
+            }
+        } catch { Write-UpdLog "arp-desync-uninstall-warn $($_.Exception.Message)" }
         if ($backup) { Invoke-Rollback -BackupDir $backup -AppParameters $appParams -Why 'install-failed' }
         elseif ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -and (Get-Service -Name $ServiceName).Status -ne 'Running') {
             try { Start-Service -Name $ServiceName } catch { }
