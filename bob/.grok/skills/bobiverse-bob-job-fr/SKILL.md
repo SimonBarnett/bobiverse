@@ -74,8 +74,10 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 
 * **Before** creating a new job tree, and **after DONE** (once the PR is up): run
   `..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob -KeepPath <current-job-wt>`
-  (or `-Force` to prune even when FreeGB ≥ 2).
-* Default gate: prune when **FreeGB < 2** (`-MinFreeGB 2`). Cap extras with `-MaxExtraJobTrees 0` (keep only `-KeepPath` + install root).
+  (or `-Force` for full reclaim even when FreeGB ≥ 2).
+* Default gates (FR #877 / **FR #1661**):
+  * **Low disk:** prune when **FreeGB < 2** (`-MinFreeGB 2`) — removes all job trees + orphan `%TEMP%\bobiverse-*`.
+  * **Earlier prune / soft cap:** even when FreeGB ≥ MinFreeGB, remove extras beyond `-MaxExtraJobTrees` (default **0** = keep only `-KeepPath` + install root). Do not wait until FreeGB is critical.
 * Manual one-liner if the script is missing: `git -C <install> worktree remove --force <old-wt>; git -C <install> worktree prune`.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
 
