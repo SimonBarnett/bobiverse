@@ -96,3 +96,15 @@ VERSION → **0.1.10**.
 | Combined release (#196) | Consolidates the remaining 0.1.20 fixes and documentation across intake, chair/outbox, relay persistence, digest/reporting, airc remote control and durable jobs, tray packaging, sparse checkout, NSSM safety, and cursor-pool stamping. |
 
 VERSION -> **0.1.20** (packaged MSIs and release archives).
+
+## 2026-10-04 - BobCallback supervised single-owner heal (harvest #1568 cluster)
+
+| Lesson | Fix / book |
+|---|---|
+| HTTP 000 / no LISTEN | One detached `Start-BobCallbackSupervised`; never stack task + second supervised |
+| Supervised parent killed | Killing Wait-Process parent kills :7700 child; always Start-Process detached |
+| External Stop-Process / bare py | If supervised vanishes with no WARN, leave bare HTTP 200 for 60s+ alone |
+| health task Ready false-ok | Require LISTEN + GET /bob/v1/report HTTP 200 |
+| Heal shell suicide | Exclude current `$PID` when pruning duplicate supervised |
+
+Books: `jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md`, `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`. Canonical receipt #1568; duplicates closed in promote PR.
