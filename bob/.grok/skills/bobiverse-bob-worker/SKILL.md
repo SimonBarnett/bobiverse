@@ -76,18 +76,10 @@ An unknown reading is "not available" (falls through), never "available". Readin
   Registration: TLS to `irc.ntsa.uk:6697` with the Ergo server PASS (found like the ear's: `home\ergo.password`, `config\ergo.password`, `BOB_IRC_PASSWORD`); SASL only if
   `BOB_IRC_SASL_USER`/`BOB_IRC_SASL_PASSWORD` are already in the environment. The seat does NOT use the ear's NickServ account.
 * **Event-driven relay**: a blocking socket read thread receives a line and injects it into the agent's console input from that same thread (WriteConsoleInput into the
-<<<<<<< HEAD
   shared worker console) - no poll, no timer. The agent sees `FROM <nick> <target> <text>` as typed input. Ordering/limits: max 8 injections per 30 s, extra messages are
   coalesced into one `FROM (flood-coalesced N messages) ...`; identical consecutive lines are dropped; `POINT/DIGEST/AGPK/SEAL`, `is busy.`, `password=`, `XAI_API_KEY` lines are
   never relayed; messages arriving during the 6 s agent start-up are held and injected the moment it is ready. PMs are relayed only from `Jeeves`.
 * **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline.
-=======
-
-* **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline.
-  shared worker console) - no poll, no timer. The agent sees `FROM <nick> <target> <text>` as typed input. Ordering/limits: max 8 injections per 30 s, extra messages are
-  coalesced into one `FROM (flood-coalesced N messages) ...`; identical consecutive lines are dropped; `POINT/DIGEST/AGPK/SEAL`, `is busy.`, `password=`, `XAI_API_KEY` lines are
-  never relayed; messages arriving during the 6 s agent start-up are held and injected the moment it is ready. PMs are relayed only from `Jeeves`.
->>>>>>> a5c2dfc (fix(mrb-1617): nothing queued must not arm inject-pending busy)
 * **Liveness answered by the exe**: server `PING`->`PONG` at once, CTCP PING/VERSION, and the fleet `ping` / `ping <selector>` in `#<machine>` -> `pong` (selector matches the
   nick or the machine id; prefix/substring/`*`/`?`). Pings are never forwarded to the agent (no wake, no flood).
 * **Reply path**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to the `outbox.txt` named in its first instruction
@@ -107,14 +99,7 @@ by a **NEW agent** (never a resume) after a backoff of 5 s, then 15 s, then 45 s
 
 ## `!bored`, ACK and DONE (the program posts `!bored`, you write ACK/DONE)
 
-<<<<<<< HEAD
-The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - exactly like the agent watcher (`Watch-AgentHealth`, FR #100): when the agent is ready (seat start),
-immediately after a DONE or NACK/GIVEUP (`bored -> shop reason=done|free`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: busy = an open `ACK`
-with no DONE/NACK/GIVEUP (younger than 45 min), or the agent starting/restarting/hung. Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161),
-and logs `bored: free-rx matched (...)`. Any forwarded message or outbox activity resets the idle clock; at most one `!bored` per second. It stops for good on IRC loss/shutdown.
-=======
 The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - (FR #100 / #1611): when the agent is ready (seat start), after DONE/NACK/GIVEUP **once the harvest hold ends** (default 90 s, `BOB_WORKER_HARVEST_HOLD_S`; outbox activity extends it — harvest before the next `!bored`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: open `ACK` (younger than 45 min), inject-pending assign work until ACK/grace (`BOB_WORKER_ASSIGN_GRACE_S`, default 600 s), harvest hold, or the agent starting/restarting/hung. Jeeves `nothing queued` resets the idle clock but does **not** arm inject-pending (MRB #1617). Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161), and logs `bored: free-rx matched (...)` / `bored: harvest hold`. At most one `!bored` per second. It stops for good on IRC loss/shutdown.
->>>>>>> a5c2dfc (fix(mrb-1617): nothing queued must not arm inject-pending busy)
 A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by assigning in `!focus` order; you ACK; DONE/NACK/GIVEUP mark the seat idle. Exact lines: skill
 `bobiverse-bob-job-irc`; per job type: `bobiverse-bob-job-fr`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
 
