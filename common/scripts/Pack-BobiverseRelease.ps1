@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Stage + WiX-pack jeeves, bob, and/or airc MSIs for SimonBarnett/bobiverse releases.
@@ -18,7 +18,9 @@ param(
     # Tests only (needs -SkipMsi): stage the worker/plan folders without compiling bob-worker.exe (PyInstaller, ~40 s).
     [switch]$SkipWorkerExe,
     # Tests only (needs -SkipMsi): skip bob-ear.exe (FR #1481 PyInstaller, ~40 s).
-    [switch]$SkipEarExe
+    [switch]$SkipEarExe,
+    # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
+    [switch]$SkipJeevesExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +44,7 @@ $null = & $fetchNssm -OutDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_
 
 if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed together with -SkipMsi (an MSI without bob-worker.exe must never ship)' }
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
+if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -255,6 +258,19 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
         Copy-Item -LiteralPath $butlerSrc -Destination (Join-Path $stage 'assets\jeeves-butler.ico') -Force
         Write-Host "INFO jeeves staged assets\jeeves-butler.ico"
+        # FR #2301 / WP3: one-file jeeves.exe (chair + in-proc HTTP)
+        $jeevesExeDir = Join-Path $stage 'jeeves'
+        New-Item -ItemType Directory -Force -Path $jeevesExeDir | Out-Null
+        if ($SkipJeevesExe) {
+            Write-Host 'WARN jeeves pack: -SkipJeevesExe (test stage; no jeeves.exe)'
+        } else {
+            $buildJeeves = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-Jeeves.ps1')
+            if (-not (Test-Path -LiteralPath $buildJeeves)) { throw "missing Build-Jeeves.ps1 (FR #2301): $buildJeeves" }
+            $jexe = (& $buildJeeves -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+            if (-not $jexe -or -not (Test-Path -LiteralPath $jexe)) { throw 'Build-Jeeves.ps1 did not produce jeeves.exe' }
+            Copy-Item -LiteralPath $jexe -Destination (Join-Path $jeevesExeDir 'jeeves.exe') -Force
+            Write-Host 'INFO jeeves staged jeeves\jeeves.exe'
+        }
     }
     if ($Name -eq 'bob') {
         $wahSrc = Resolve-WatchAgentHealthSrc

@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Clean-install ircJeeves (+ optional BobIrcd if Ergo present). Nick Jeeves.
@@ -179,15 +179,27 @@ if (-not $SkipErgo) {
     }
 }
 
-$launcher = Join-Path $InstallRoot 'scripts\Start-Jeeves.ps1'
 $user = Resolve-BobiverseServiceUser
-# No -Python in AppParameters (spaces break NSSM quoting - issue #3)
-$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome `"$ChairHome`" -RepoRoot `"$InstallRoot`""
-
-[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
-[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
-[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
-[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
+# FR #2301 / WP3: prefer one-file jeeves.exe (chair + in-proc HTTP). Legacy: powershell Start-Jeeves.ps1.
+$jeevesExe = Join-Path $InstallRoot 'jeeves\jeeves.exe'
+$useJeevesExe = Test-Path -LiteralPath $jeevesExe
+if ($useJeevesExe) {
+    $appParams = "--chair --http 127.0.0.1:7700 --home `"$ChairHome`" --digest-home `"$digestHome`""
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $ServiceName, $jeevesExe))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', $jeevesExe))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', $InstallRoot))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
+    Write-Host "INFO ircJeeves Application=jeeves.exe (FR #2301 WP3 cutover)"
+} else {
+    $launcher = Join-Path $InstallRoot 'scripts\Start-Jeeves.ps1'
+    # No -Python in AppParameters (spaces break NSSM quoting - issue #3)
+    $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome `"$ChairHome`" -RepoRoot `"$InstallRoot`""
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', 'powershell.exe'))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
+    Write-Host 'INFO ircJeeves Application=powershell Start-Jeeves.ps1 (legacy; no jeeves\jeeves.exe)'
+}
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', 'bobiverse Jeeves chair'))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 # FR #1055: Restart on Default and on exit 0 (graceful quit).
@@ -255,6 +267,20 @@ if (Test-Path -LiteralPath $operPy) {
         Write-Host "WARN oper provisioning: $($_.Exception.Message)"
     }
 }
+# Supervised BobCallback (ONSTART) - FR #1316: same account as digest home owner (not SYSTEM).
+# FR #2301 / WP3: when ircJeeves runs jeeves.exe (in-proc HTTP), do not register a second Python BobCallback owner.
+if ($useJeevesExe) {
+    Write-Host 'INFO skipping Python BobCallback task (jeeves.exe owns :7700; FR #2301 WP3)'
+    try {
+        $existingCb = Get-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
+        if ($existingCb) {
+            Unregister-ScheduledTask -TaskName 'BobCallback' -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Host 'INFO removed legacy BobCallback scheduled task (WP3 cutover)'
+        }
+    } catch {
+        Write-Host "WARN BobCallback unregister: $($_.Exception.Message)"
+    }
+} else {
 # Supervised BobCallback (ONSTART) — FR #1316: same account as digest home owner (not SYSTEM).
 # SYSTEM + --home C:\Users\Administrator\.bobiverse wedges :7700 via cross-principal digest.lock/ACL.
 try {
@@ -312,6 +338,7 @@ try {
     Write-Host 'INFO chair jobs: webhook-health probe 30 min + GitHub resync 15 min (inside ircJeeves; token source logged once)'
 } catch {
     Write-Host "WARN BobCallback task: $($_.Exception.Message)"
+}
 }
 
 if (-not $SkipErgo -and -not $NoStart) {
