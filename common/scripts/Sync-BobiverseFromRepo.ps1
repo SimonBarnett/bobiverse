@@ -185,6 +185,8 @@ function ConvertTo-BobiverseVersion([string]$Text) {
     return $null
 }
 function Get-BobiverseArpDisplayVersion([string]$ProductName) {
+    # Match Update-BobiverseService Get-BobiverseArpProduct spelling; compare case-insensitive
+    # so "Bobiverse airc" / "bobiverse airc" both hit (MRB #1577).
     $want = "bobiverse $($ProductName.Trim().ToLowerInvariant())"
     foreach ($root in @(
             'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -194,7 +196,9 @@ function Get-BobiverseArpDisplayVersion([string]$ProductName) {
         foreach ($k in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
             try {
                 $p = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction Stop
-                if ([string]$p.DisplayName -ne $want) { continue }
+                $dn = [string]$p.DisplayName
+                if (-not $dn) { continue }
+                if ($dn.Trim().ToLowerInvariant() -ne $want) { continue }
                 $dv = [string]$p.DisplayVersion
                 if ($dv) { return $dv.Trim() }
             } catch { }
@@ -202,8 +206,12 @@ function Get-BobiverseArpDisplayVersion([string]$ProductName) {
     }
     return ''
 }
-$arpVerText = if ($ArpVersionOverride -and $ArpVersionOverride.Trim()) {
-    $ArpVersionOverride.Trim()
+# Test hook: -ArpVersionOverride none|- means "no ARP row" (skip live registry).
+$arpOverride = if ($ArpVersionOverride) { $ArpVersionOverride.Trim() } else { '' }
+$arpVerText = if ($arpOverride -in @('none', '-', 'null')) {
+    ''
+} elseif ($arpOverride) {
+    $arpOverride
 } else {
     Get-BobiverseArpDisplayVersion -ProductName $Product
 }
