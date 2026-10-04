@@ -246,7 +246,7 @@ def check(args):
                 + detail
             )
             notes.append(
-                "skill/harvest issues are SKIP_FR and never enqueue — open GitHub skill count is outside this queue"
+                "skill/harvest intakes are offerable promote FRs (FR #1682); if gated empty, check other gates — open skill count may still be in unaccepted"
             )
     elif offerable_n > 0 and idle_seat_count > 0:
         findings.append(

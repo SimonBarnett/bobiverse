@@ -39,7 +39,7 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 
 1. **Playbook / fix with write access** -> branch + **pull request** to bobiverse. Never `git push origin main` for harvest.
 2. **No GitHub write / API fail** -> intake webhook (`Report-BobiverseIntakeIssue.ps1`) or local `report-outbox/` retry (`Invoke-BobiverseHarvest.ps1 -Flush`).
-3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request` / `needs-mrb1`).
+3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request`). Do **not** stamp `needs-mrb1`.
 4. Prefer `.\scripts\Invoke-BobiverseHarvest.ps1` / `Report-BobiverseIntakeIssue.ps1` over free-form chat.
 
 ## Where to put lessons
@@ -74,7 +74,7 @@ Branch `harvest/…` or `fix/…` → PR to `main`. Bump `common/VERSION` only w
 
 ## Worker: consolidate open skill receipts → promote PR (FR #1684 / #1682)
 
-`label:skill` / titles `harvest:` / `skill:` are **SKIP_FR** in the chair queue (they must not eat product FR seats). They still need a **promote PR** so hostile MRB can merge lessons into the books. Intake alone is a receipt, not a merge.
+`label:skill` / titles `harvest:` / `skill:` are **offerable FR promote jobs** (FR #1682): the chair hands them out so workers consolidate and open a **promote PR** for hostile MRB. They are not product code FRs and still do **not** block repo UAT. Intake alone is a receipt, not a merge — do **not** GIVEUP when offered.
 
 When a worker is assigned a skill-promote / harvest-backlog job, or when finishing a session with `gh` write access and open skill receipts for books you touched:
 

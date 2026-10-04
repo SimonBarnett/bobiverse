@@ -65,7 +65,7 @@ Monitor for: empty offer queue while open FRs exist; seats idle with unaccepted 
 
 **Machine pin (FR #587 / #852):** recycle/recompose Jeeves and prune-`queue.json` FRs must stamp `require_machine=ionos` so marchhare seats are not offered ionos-only deploy work. If non-ionos seats keep getting those assigns after the cue merge, the live chair needs recompose/recycle — file/de-dup intake (same class as per-PR UAT leftovers).
 
-**Skill/harvest rows:** issues labeled `skill` (or harvest titles) must not be offered as FR (`issue_skip_fr_reason` → `label:skill`). Offering them is a chair/queue hygiene finding.
+**Skill/harvest rows (FR #1682):** issues labeled `skill` (or harvest titles) **are** offered as FR promote jobs. Workers must consolidate-by-book (FR #1684), not GIVEUP. Monitor finding is the opposite: skill backlog never offered, or seats GIVEUP-looping on skill offers because stale skills still say SKIP_FR.
 
 ## FR / MRB / UAT flow (UAT per repo)
 

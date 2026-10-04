@@ -81,6 +81,19 @@ flowchart TD
    it (same `idempotency_key`) on the next run. Helper:
    `scripts/Report-BobiverseIntakeIssue.ps1`.
 
+### Open skill / harvest receipts → consolidate then PR (FR #1682 / FR #1684)
+
+Intake `kind: skill|harvest` creates `label:skill` issues. The chair **offers** them as FR promote jobs (not product code FRs; they still do not block repo UAT). Do **not** GIVEUP. Without a promote PR the lessons never reach MRB merge.
+
+When you have `gh` write (same turn or on a skill-promote assign):
+
+1. Group open `label:skill` issues **by owner skill book** (see `harvest-agent-skills` table).
+2. **Close duplicate** receipts for the same book/lesson.
+3. Open **one** `harvest/…` PR per book (or one multi-book PR with clear paths) that promotes unique Lesson lines; PR body uses `Closes …` / `Duplicates closed: …`.
+4. Leave merge to hostile **MRB**. Never push `main`.
+
+Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts → promote PR**.
+
 Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), **`repo`
 (required `owner/name` — never omit; no default)**, `title`, `body`, optional
 `files[]` (`path` + `content`, small), `source` (machine, agent/tool, skill
