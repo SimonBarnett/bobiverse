@@ -46,6 +46,7 @@ Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick
 
 See `bobiverse-fleet-ops`. Airc specifics: after MSI ensure `config\ergo.password`; re-run `Install-Airc.cmd -MachineId <id>` if NSSM is stale.
 Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply — never inline msiexec in the live service). Opt out `BOBIVERSE_NO_UPDATE=1`. Hotpatch = back up `<ai root>\airc`, copy changed scripts, `Restart-Service Airc` ONLY.
+**Uninstall (FR #1566):** MSI `/x` runs `Uninstall-Airc.cmd` before RemoveFiles (`REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE`) to stop/remove service `Airc`; ConsoleHome secrets stay. Manual: `scripts\Uninstall-Airc.cmd`.
 
 ## Do not
 
