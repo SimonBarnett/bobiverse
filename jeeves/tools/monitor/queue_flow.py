@@ -43,8 +43,19 @@ def _ensure_gitclaim():
     return gitclaim
 
 
+def _row_labels(row: dict) -> set[str]:
+    labs = row.get("labels") or ()
+    if isinstance(labs, str):
+        labs = [labs]
+    return {str(x).strip().lower() for x in labs if str(x).strip()}
+
+
 def _gate_bucket(row: dict) -> str:
-    """First gate reason for an unaccepted row (FR #1518). Does not change SKIP_FR semantics."""
+    """First gate reason for an unaccepted row (FR #1518). Does not change SKIP_FR semantics.
+
+    FR #1523 / #1526: ``needs-mrb1`` is not an offer gate (intake hallucination). Leftover
+    labels are reported via notes, not this bucket.
+    """
     if row.get("ignored"):
         return "ignored"
     try:
@@ -56,8 +67,6 @@ def _gate_bucket(row: dict) -> str:
             if "skill" in s or "harvest" in s:
                 return "skill"
             return "skip_fr"
-        if gc.row_awaits_mrb1(row):
-            return "needs-mrb1"
         # Global human gate (empty nick): per-seat giveup still counts as needs-human for breakdown.
         if gc.row_needs_human(row, ""):
             return "needs-human"
@@ -68,20 +77,19 @@ def _gate_bucket(row: dict) -> str:
             "yes",
         ):
             return "needs-human"
-        labs = row.get("labels") or ()
-        if isinstance(labs, str):
-            labs = [labs]
-        labs_l = {str(x).strip().lower() for x in labs}
+        labs_l = _row_labels(row)
         if "skill" in labs_l or "harvest" in labs_l:
             return "skill"
-        if "needs-mrb1" in labs_l:
-            return "needs-mrb1"
         if "needs-human" in labs_l:
             return "needs-human"
     rm = str(row.get("require_machine") or "").strip()
     if rm and rm.lower() not in ("*", "any", "none", "-", ""):
         return "require_machine"
     return "ungated"
+
+
+def _legacy_needs_mrb1_count(unaccepted: list[dict]) -> int:
+    return sum(1 for r in unaccepted if "needs-mrb1" in _row_labels(r))
 
 
 def _count_idle_seats(digest_doc: dict) -> int:
@@ -194,6 +202,13 @@ def check(args):
     missing_url = [
         r for r in unaccepted if row_task(r) == "MRB" and not row_has_pull_url(r)
     ]
+
+    legacy_mrb1 = _legacy_needs_mrb1_count(unaccepted)
+    if legacy_mrb1:
+        notes.append(
+            f"legacy needs-mrb1 label on {legacy_mrb1} row(s) "
+            "(not an offer gate; FR #1523/#1526)"
+        )
 
     # FR #1518: gated-empty is informational (exit 0). True starve = ungated work + idle seats.
     if offerable_n == 0:
