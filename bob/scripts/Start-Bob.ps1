@@ -36,14 +36,6 @@ if (-not $BobHome) {
 }
 New-Item -ItemType Directory -Force -Path $BobHome | Out-Null
 
-$earExe = Join-Path $scriptDir 'bob-ear.exe'
-$useEarExe = Test-Path -LiteralPath $earExe -PathType Leaf
-if (-not $useEarExe) {
-    if (-not $Python) {
-        try { $Python = Resolve-BobiversePython } catch { throw 'python.exe missing (and scripts\bob-ear.exe not present; FR #1481)' }
-    }
-}
-
 $env:BOB_MACHINE_ID = $MachineId
 # Self-update on start: see the v0.1.17 block below (Update-BobiverseService.ps1).
 
@@ -85,6 +77,9 @@ if (Test-Path -LiteralPath $updater) {
     catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
 }
 
+# FR #1481 / MRB #1488: prefer bob-ear.exe *after* sync/self-update so a just-staged exe is seen.
+$earExe = Join-Path $scriptDir 'bob-ear.exe'
+$useEarExe = Test-Path -LiteralPath $earExe -PathType Leaf
 $agent = Join-Path $scriptDir 'irc_agent.py'
 $shop = "#$MachineId"
 $channel = "#bobiverse,$shop"
@@ -97,6 +92,9 @@ if ($useEarExe) {
     Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel via=bob-ear.exe (FR #1481)"
     & $earExe @earArgs
     exit $LASTEXITCODE
+}
+if (-not $Python) {
+    try { $Python = Resolve-BobiversePython } catch { throw 'python.exe missing (and scripts\bob-ear.exe not present; FR #1481)' }
 }
 if (-not (Test-Path -LiteralPath $agent)) { throw "missing $agent (and bob-ear.exe not present)" }
 Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel via=python irc_agent.py"
