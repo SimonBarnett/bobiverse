@@ -1,0 +1,52 @@
+# FR #1454: keep resync pagination (and related gitclaim) regressions out of main.
+# Runs when gitclaim or its resync-pagination tests change.
+name: pytest-gitclaim
+
+on:
+  pull_request:
+    paths:
+      - "common/scripts/gitclaim.py"
+      - "jeeves/tests/test_fr1150_resync_paginate.py"
+      - "jeeves/tests/test_fr1093_require_machine_stale_rows.py"
+      - "jeeves/tests/test_mrb1174_focus_needs_mrb1_offer.py"
+      - "common/tests/**"
+      - "jeeves/tests/**"
+      - "pytest.ini"
+      - "conftest.py"
+      - ".github/workflows/pytest-gitclaim.yml"
+  push:
+    branches: [main]
+    paths:
+      - "common/scripts/gitclaim.py"
+      - "jeeves/tests/test_fr1150_resync_paginate.py"
+      - ".github/workflows/pytest-gitclaim.yml"
+
+jobs:
+  pytest-gitclaim:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Resync pagination gate (FR #1150 / #1454)
+        run: |
+          $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\jeeves"
+          python -m pytest jeeves/tests/test_fr1150_resync_paginate.py -q --tb=short
+
+      - name: Broader gitclaim / chair offer suite
+        run: |
+          $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\jeeves"
+          python -m pytest `
+            jeeves/tests/test_fr1093_require_machine_stale_rows.py `
+            jeeves/tests/test_mrb1174_focus_needs_mrb1_offer.py `
+            jeeves/tests/test_fr1323_mrb_done_no_reoffer.py `
+            -q --tb=short
