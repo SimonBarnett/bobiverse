@@ -3507,13 +3507,18 @@ def resync_from_github(
             ledger_now = ledger_load(home)
 
             def _fr_done_hold(repo: str, ident: str) -> bool:
-                # Ledger fr_done means a PR was already opened for this FR — do not re-offer
-                # (resync kept re-adding #1201-class rows that every seat ledger-blocked).
+                # Ledger fr_done means a seat already DONE'd this FR (PR may be in MRB).
+                # Hold only while the FR is *not* in the GitHub want set — if desired still
+                # lists it, no open PR Closes it, so suppressing enqueue stranded open
+                # issues (e.g. #1201) and Jeeves reported empty while GitHub showed work.
                 done_ts = _parse_iso_ts(
                     str((ledger_now.get("fr_done") or {}).get(_lkey(repo, ident)) or "")
                 )
                 return done_ts is not None and (time.time() - done_ts) < FR_DONE_HOLD_S
 
+            # Drop stale unaccepted FR rows that are still inside the hold *and* not wanted
+            # by GitHub (PR open / issue closed). Wanted FRs must stay enqueueable.
+            want_fr = {(c.repo, c.id) for c in desired if c.task == "FR"}
             doc["unaccepted"] = [
                 r
                 for r in doc["unaccepted"]
@@ -3521,8 +3526,10 @@ def resync_from_github(
                     isinstance(r, dict)
                     and str(r.get("task") or "").upper() == "FR"
                     and _fr_done_hold(str(r.get("repo") or ""), str(r.get("id") or ""))
+                    and (str(r.get("repo") or ""), str(r.get("id") or "")) not in want_fr
                 )
             ]
+            cleared_fr_done: list[str] = []
             for claim in desired:
                 if claim.task == "FR" and fr_is_superseded(
                     doc,
@@ -3532,8 +3539,13 @@ def resync_from_github(
                     fetched_repos=fetched_set2,
                 ):
                     continue  # FR #254
-                if claim.task == "FR" and _fr_done_hold(claim.repo, claim.id):
-                    continue
+                # Do NOT skip desired FRs for fr_done — being in desired means no open PR
+                # supersedes the issue. Also clear the stamp so ledger_blocks does not
+                # tell every seat "PR pending merge" when none exists (#1201).
+                if claim.task == "FR":
+                    fk = _lkey(claim.repo, claim.id)
+                    if fk in (ledger_now.get("fr_done") or {}):
+                        cleared_fr_done.append(fk)
                 mrb_url = (
                     f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
                 )
@@ -3598,6 +3610,14 @@ def resync_from_github(
             for i, row in enumerate(doc["unaccepted"], start=1):
                 row["seq"] = i
             _write_queue(queue_path(home), doc)
+            if cleared_fr_done:
+                def _clear_stale_fr_done(led: dict) -> None:
+                    fd = led.setdefault("fr_done", {})
+                    for k in cleared_fr_done:
+                        fd.pop(k, None)
+
+                with contextlib.suppress(OSError):
+                    _ledger_update(home, _clear_stale_fr_done)
             return {
                 "ok": True,
                 "unaccepted": len(doc["unaccepted"]),
