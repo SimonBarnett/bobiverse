@@ -733,6 +733,11 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
     (re.compile(r"(?i)\bneeds-ionos\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
+    # FR #1550: monitor idle+ungated / ircJeeves StartPending filings are chair-host ops
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\bstartpending\b"), "ionos"),
+    (re.compile(r"(?i)\bstartpending\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
+    (re.compile(r"(?i)\bidle seats?\b.{0,120}\bungated offerable\b"), "ionos"),
+    (re.compile(r"(?i)\bungated offerable\b.{0,120}\bidle seats?\b"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # agentic_fomprep WP0 live proof must run on DEV1
@@ -749,6 +754,10 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bSYSTEM\b.{0,120}\bBobCallback\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,160}\.bobiverse\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,80}\bprincipal\b"), "ionos"),
+    # FR #1550: monitor check evidence / missing shop OFFER after StartPending
+    (re.compile(r"(?i)\bInvoke-JeevesMonitorCheck\b"), "ionos"),
+    (re.compile(r"(?i)\bno shop OFFER\b"), "ionos"),
+    (re.compile(r"(?i)\bchair[- ]outbox\b.{0,100}\b(?:OFFER|!bored|GIT announce)"), "ionos"),
 )
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
