@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - Skills-only promote from worktree (harvest #2318)
+
+| Lesson | Fix |
+|--------|-----|
+| Promote Jeeves maintenance skills while install main tip is dirty with local gitclaim/callback experiments | Worktree from `origin/main`; skills/docs only; leave dirty product scripts uncommitted on the install tip. Sibling playbook PR #2317 |
+
+Books: harvest-agent-skills.
+
 ## 2026-10-04 - Jeeves silent to operator / unverified WHOIS (harvest #2179)
 
 | Lesson | Fix |

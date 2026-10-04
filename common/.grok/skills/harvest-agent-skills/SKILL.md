@@ -139,3 +139,13 @@ If a harvest/skill intake already cites a pull URL, intake returns **`linked_exi
 ## needs-mrb1 ban (harvest #1717 / FR #1526)
 
 Never create or stamp `needs-mrb1`/`mrb1`. Human gate is `needs-human` only.
+## Skills-only promote from worktree (harvest #2318)
+
+When the **install** git tip (`<ai root>\bob` / jeeves) is dirty with local product experiments (`gitclaim.py`, `bobcallback.py`, …) that must not ship:
+
+1. Create a job worktree from **origin/main** (not the dirty install tip).
+2. Promote **skills/docs only** on that branch (`harvest/…`).
+3. Leave the dirty product scripts uncommitted on the install main tip (or stash/revert later).
+4. Open the promote PR from the worktree tip; do not `git add` the install-tree dirty scripts into the harvest PR.
+
+Sibling example: `harvest/maint-skills-nothing-queued` (#2317) for monitor/troubleshooting nothing-queued playbooks.
