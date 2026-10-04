@@ -1,6 +1,14 @@
 # Skill harvest log
 
 
+## 2026-10-04 - Intake linked_existing_pr (FR #1812 / harvest #2013)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest/skill intake with a pull URL must not open a second skill issue | linked_existing_pr + draft_pr_error logging; skip_fr harvest_pr_summary for via-intake+skill PR-opened receipts. Product PR #2012 |
+
+Books: harvest, harvest-agent-skills.
+
 ## 2026-10-04 - living FR re-file when intake is harvest-only (harvest #2001)
 
 | Lesson | Fix |
