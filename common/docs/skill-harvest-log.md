@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - Hand-out empty under focus (harvest #2243)
+
+| Lesson | Fix |
+|--------|-----|
+| !bored / hand-out empty while many ungated FRs exist outside focus | Count focus-repo unaccepted MRB/FR first; outside-focus ungated rows do not offer under strict focus; re-enqueue open PRs as MRB; clear digest busy only for merged PRs not in accepted (keep seats busy #1967) |
+
+Books: `bobiverse-jeeves-monitor`.
+
 
 ## 2026-10-04 - Living ionos architecture FR (harvest #1989 / FR #1993)
 
