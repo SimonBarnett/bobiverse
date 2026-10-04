@@ -15,6 +15,8 @@ def test_workflow_gates_gitclaim_and_fr1150():
     text = WF.read_text(encoding="utf-8")
     assert "common/scripts/gitclaim.py" in text
     assert "test_fr1150_resync_paginate.py" in text
+    assert "test_fr1454_ci_gitclaim_gate.py" in text
     assert "pytest" in text.lower()
+    assert "windows-latest" in text
     # Must fail the job on red (default pytest non-zero exit).
     assert "pull_request" in text
