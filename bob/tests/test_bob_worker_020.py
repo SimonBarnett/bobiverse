@@ -466,7 +466,13 @@ def test_relay_injects_from_the_socket_read_thread_with_no_polling_delay(ircd, t
 def test_relay_has_no_poll_loop_in_the_inbound_path():
     src = (ROOT / "scripts" / "bob_worker.py").read_text(encoding="utf-8")
     body = src[src.index("class Relay"):src.index("# ----------------------------------------------------------------------------------------------- ping liveness") if False else src.index("def parse_ping")]
-    assert "time.sleep" not in body.replace("time.sleep(submit_gap_s)", "")
+    # FR #1601: inject_console sleeps (gap / second Enter) are allowed; Relay itself must not poll-sleep.
+    scrubbed = (
+        body.replace("time.sleep(submit_gap_s)", "")
+        .replace("time.sleep(gap)", "")
+        .replace("time.sleep(min(0.08, gap))", "")
+    )
+    assert "time.sleep" not in scrubbed
     read_loop = src[src.index("def _read_loop"):src.index("def _handle")]
     assert "sleep" not in read_loop and "s.recv(4096)" in read_loop
 
