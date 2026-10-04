@@ -9,6 +9,12 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 |--------|-----|
 | idle+ungated during BoredEmitter harvest_hold (~90s after DONE) is not true starve; expect !bored after hold; suppress orphan/giveup/queue_flow false alarms | Documented in `bobiverse-jeeves-monitor` + `bobiverse-bob-worker`. Related false-starve gates: FR #1622/#1625/#1652 / PR #1654 |
 
+## 2026-10-04 - Conflict-marker CAST IRON before merge (FR #1634 / harvest #1657)
+
+| Lesson | Fix |
+|--------|-----|
+| Run check_conflict_markers.py before every gh pr merge; merge origin/main into behind FR branches first; close harvest twins as not planned; Duplicates closed body nit OK without a fix PR when tests green | Documented in `bobiverse-bob-job-mrb` + FR pointer. Product/CI: PR #1640. Overlaps harvest #1647 behind-main/nits notes. |
+
 ## 2026-10-04 - MRB behind-main + body/docs nits (harvest #1647)
 
 | Lesson | Fix / book |
