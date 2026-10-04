@@ -12,6 +12,9 @@ param(
     [string]$InstallRoot = '',   # '' = installed root / discovered <ai root>\bob (t780u)
     [string]$MachineId = '',
     [string]$TaskName = 'BobiverseTray',
+    # FR #1642: minute probe that relaunches Start-BobTray -ForceNew -SkipTidy when the tray dies unexpectedly.
+    [string]$WatchdogTaskName = 'BobiverseTrayWatchdog',
+    [int]$WatchdogMinutes = 1,
     [string]$RunAsUser = '',
     [switch]$RunNow,
     [switch]$RegisterOnly,
@@ -92,6 +95,34 @@ if ($RunNow -and -not $RegisterOnly) {
         Write-Host "INFO Startup shortcut $lnk (SkipTidy)"
     }
 }
+# FR #1642: register unexpected-exit watchdog (SkipTidy only; never tidies seats).
+$ensure = Join-Path $InstallRoot 'scripts\Ensure-BobTrayRunning.ps1'
+if (Test-Path -LiteralPath $ensure) {
+    cmd /c "schtasks /Delete /TN `"$WatchdogTaskName`" /F >nul 2>&1" | Out-Null
+    $wdArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ensure`" -InstallRoot `"$InstallRoot`" -MachineId {0}" -f $MachineId
+    try {
+        $wdAction = New-ScheduledTaskAction -Execute $ps -Argument $wdArgs
+        $wdLogon = New-ScheduledTaskTrigger -AtLogOn -User $RunAsUser
+        $wdWatch = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes ([Math]::Max(1, $WatchdogMinutes))) `
+            -RepetitionDuration (New-TimeSpan -Days 9999)
+        $wdSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $wdPrincipal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $WatchdogTaskName -Action $wdAction -Trigger @($wdLogon, $wdWatch) `
+            -Settings $wdSettings -Principal $wdPrincipal -Force -ErrorAction Stop | Out-Null
+        Write-Host ("INFO Register-ScheduledTask {0} every {1}m (ForceNew+SkipTidy relaunch FR #1642)" -f $WatchdogTaskName, $WatchdogMinutes)
+    } catch {
+        Write-Host ("WARN Register-ScheduledTask {0}: {1}" -f $WatchdogTaskName, $_.Exception.Message)
+        $wdTr = ('"{0}" {1}' -f $ps, $wdArgs)
+        $createWd = cmd /c "schtasks /Create /TN `"$WatchdogTaskName`" /SC MINUTE /MO $WatchdogMinutes /RU `"$RunAsUser`" /RL LIMITED /IT /F /TR $wdTr"
+        Write-Host ("INFO schtasks create {0}: {1}" -f $WatchdogTaskName, (($createWd | Out-String).Trim()))
+    }
+} else {
+    Write-Host ("WARN missing {0}; BobiverseTrayWatchdog not registered" -f $ensure)
+}
+
 $ErrorActionPreference = $prevEap
 
 Write-Host "INFO Start-BobTrayInteractive done user=$RunAsUser machine=$MachineId"
