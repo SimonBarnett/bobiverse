@@ -19,6 +19,12 @@ Books: `common/scripts/gitclaim.py`. Related body-line pin: FR #1824.
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - twin-DONE harvest loop skip (FR #2237)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest of twin/already-fixed DONE sessions re-files skill twins that Jeeves re-offers as FR (nested stack) | `Invoke-BobiverseHarvest` skips twin-DONE-only summaries (like FR #936 GIVEUP loop); harvest skill documents skip |
+
 ## 2026-10-04 - skill-harvest-log rebase keep-both (FR #1757 / #1750)
 
 | Lesson | Fix |

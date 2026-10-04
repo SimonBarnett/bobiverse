@@ -117,6 +117,9 @@ PowerShell:
 # close a session (summary + lessons, secret-scanned, queued offline):
 .\scripts\Invoke-BobiverseHarvest.ps1 -Summary '...' -Lesson '...' [-SkillFile path]
 .\scripts\Invoke-BobiverseHarvest.ps1 -Flush
+# FR #2237: skip Invoke-BobiverseHarvest when the ONLY lesson is a twin/already-fixed
+# DONE playbook (Duplicate of #N + DONE citing covering PR). Filing those creates nested
+# skill twins that the chair re-offers as FR. Real new playbooks still harvest normally.
 # or:
 Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
   -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
