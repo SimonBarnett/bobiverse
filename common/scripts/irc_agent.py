@@ -2362,7 +2362,11 @@ class Client:
             return
         if status == "empty":
             gitclaim.note_worker_activity(self.home, src, now)
-            self._git_say(target, gitclaim.format_nothing_queued(src))
+            try:
+                _empty_stats = gitclaim.summarize_empty_offer(self.home, src)
+            except Exception:  # noqa: BLE001
+                _empty_stats = None
+            self._git_say(target, gitclaim.format_nothing_queued(src, _empty_stats))
             info(f"INFO git-claim bored empty nick={src}")
             try:  # t816u: a bored seat with nothing to do is idle
                 self._workers().on_done(src, target)

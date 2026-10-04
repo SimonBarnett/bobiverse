@@ -37,16 +37,22 @@ IIS ARR -> still proxies to 127.0.0.1:7700
 - Digest lock: chair updates and HTTP `/report` share an in-process digest mutex; break foreign locks only for other PIDs.
 - Refuse second instance: bind `:7700` exclusive + named Windows mutex `Global\BobiverseJeeves-<digestHomeHash>`; second start exits **2** with JSON `{ok:false,err:"already_running"}`.
 
-## CLI (draft)
+## CLI
 
 ```text
-jeeves.exe --self-test [--json] [--check locks|http|queue|...]
-jeeves.exe --heal [--dry-run] [--force-orphan-busy]
+jeeves.exe --self-test [--json] [--check locks|http|queue|imports|health|offer]
+jeeves.exe --heal [--dry-run] [--force-orphan-busy] [--json]
 jeeves.exe --chair --http 127.0.0.1:7700 --home <chair> --digest-home <bobiverse> --nick Jeeves
 jeeves.exe --http-only --bind 127.0.0.1 --port 7700 --home <digest>
 ```
 
 Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
+
+### WP2 self-test / heal (landed)
+
+- `--self-test` default checks: `imports`, `locks`, `http` (:7700 listen), `queue`, `offer` (focus/machine empty breakdown). Add `--check health` to run `tools/monitor/health.py` as a library.
+- `--heal` allowlist: break stale `git-claim.lock`, `bobreport.break_stale_digest_lock`, report HTTP/health/offer; never BobIrcd. `--force-orphan-busy` only when `accepted` is empty (still report-first; no default `clear_seat_doing`).
+- Shop empty reply: `format_nothing_queued` may emit `0 offerable under focus (N unaccepted, X out-of-focus, Y require_machine)` so `!bored` empty is not mistaken for an empty queue file.
 
 ## Acceptance metrics
 
@@ -62,9 +68,9 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 
 | WP | Scope | Status |
 |----|-------|--------|
-| WP0 | This spec + acceptance (docs) | this PR (append evidence on living #1993) |
-| WP1 | In-process HTTP + chair entry (`jeeves_main`) + in-proc queue RLock | this PR (foundation) |
-| WP2 | Diagnostics + heal CLI + service loop (monitor scripts as libraries) | next — append on #1993 (do not twin FR) |
+| WP0 | This spec + acceptance (docs) | landed (PR #2270; append evidence on living #1993) |
+| WP1 | In-process HTTP + chair entry (`jeeves_main`) + in-proc queue RLock | landed (PR #2270 foundation) |
+| WP2 | Diagnostics + heal CLI + monitor scripts as libraries; empty-offer wording | this PR (landed CLI; service-loop rebind stays in-process when exe is the service) |
 | WP3 | `Build-Jeeves.ps1` + MSI/NSSM cutover | next — append on #1993 (do not twin FR) |
 | WP4 | Ionos cutover + storm test | next — append on #1993 (`require_machine: ionos`) |
 
