@@ -110,3 +110,11 @@ def test_ledger_giveup_seats_excluded_from_escape_pool(tmp_path, monkeypatch):
     assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-20596", live) == ""
     # Giveup seats stay blocked (escape only lifts "implemented").
     assert gitclaim.ledger_blocks(led, uat, "marchhare-41928", live)
+
+    # enrich stamps exact author; review_blocked must also lift when others gave up.
+    enriched = dict(uat)
+    enriched["author_seat"] = "win-mpre8vi4u6u-20596"
+    enriched["implementer_seat"] = "win-mpre8vi4u6u-20596"
+    assert not gitclaim.review_blocked_for_author(
+        enriched, "win-mpre8vi4u6u-20596", live, ledger=led
+    )
