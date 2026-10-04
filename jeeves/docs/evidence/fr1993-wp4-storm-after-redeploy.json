@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "fr": 2302,
+  "seed": 1,
+  "pings": 50,
+  "workers": 4,
+  "machines": [
+    "marchhare",
+    "flamingo"
+  ],
+  "enqueue_added": 50,
+  "enqueue_duplicate": 0,
+  "enqueue_errors": [],
+  "claim_ok": 50,
+  "claim_errors": [],
+  "done_ok": 50,
+  "failures": [],
+  "duration_s": 20.8331,
+  "inproc_lock": true
+}
