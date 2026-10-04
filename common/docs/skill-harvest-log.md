@@ -422,3 +422,14 @@ Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
 | Lesson | Fix |
 |--------|-----|
 | When open PRs are missing from the MRB queue because git-claim.lock / token 403 blocked resync: enqueue_unaccepted via gh pr list; clear_seat_doing stale busy | Documented in jeeves-troubleshooting + jeeves-monitor. Product root #1811 → #1993. |
+
+## 2026-10-04 - nothing queued under strict focus + ledger giveup (harvest #2309 / #2314)
+
+| Lesson | Fix / book |
+|--------|------------|
+| `nothing queued` / `bored empty` while queue.json has dozens of unaccepted rows | Diff unaccepted vs in-focus vs `offer_focus_top` per nick: strict OOF, self-MRB, same-machine `review_blocked`, `require_machine`, and `seat-ledger.json` giveups. |
+| Clearing only queue `giveup_seats`/`needs_human` leaves seat empty | Also clear that seat under durable `seat-ledger.json` giveup keys. |
+| Immediate ACK then GIVEUP after ledger clear | Do **not** re-clear ledger — that feeds a GIVEUP loop; leave stamp and file the loop. |
+| Sticky MRB `offered_to` rebroadcast with no ACK | Other-machine non-ACK blocks same-machine siblings via `review_blocked`; report/recycle that seat. |
+
+Books: `bobiverse-jeeves-monitor`, `bobiverse-jeeves-troubleshooting`. Issues: #2309, #2314; living FR #1993 append.
