@@ -51,6 +51,26 @@ See `bobiverse-fleet-ops`. Bob specifics: hotpatch = back up `<ai root>\bob`, co
 `Restart-BobEar.ps1`, which announces the departure first). Do not kill seats/agents or the tray to apply a patch. `Start-Bob.ps1`
 must pass `--host` or the watcher/tray treats the ear as foreign and kills it (restart loop).
 
+## TipForm worker lines (FR #1553 / harvest #1562)
+
+TipForm paints `run/tray-status.json` (`grok[].workers`). Stale `{nick}: {work}` while seats are busy is usually **not** stuck workers.
+
+Common failure chain:
+
+1. BobCallback down (`http://127.0.0.1:7700/bob/v1/report` HTTP 000) so live digest GET fails.
+2. `Get-BobTrayHover` hangs on the WinForms poll thread (peer DNS/UNC) so `Write-BobTrayStatusSnapshot` never runs.
+3. Digest `worker_list` lags ACC (orphan doing/offered).
+
+Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
+
+- Never let `Get-BobTrayHover` block TipForm worker refresh.
+- `Sync-BobTrayStatusWorkersFromDigest` — report/digest-only sync (bounded timeout) rewrites `grok[].workers` without calling hover.
+- Call sync **before** `Update-Hover` on each poll; keep a **non-UI** timer (~10s, `SynchronizingObject=$null`) so worker lines keep moving while hover is stuck.
+- When BobCallback is down, still prefer local chair files (`digest.json` + queue ACC) over a hung hover path.
+- Empty TipForm while digest has activity: peer merge must roll `working_on` from `worker_list` (PR #1495); nick-map/digest readers must accept `.work` / `.job` / `.working_on` (PR #1555).
+
+Troubleshoot: compare TipForm vs `Invoke-JeevesMonitorCheck -Check stuck_accepted` / queue ACC; heal BobCallback with `Start-BobCallbackSupervised.ps1` (single owner). See `bobiverse-bob-troubleshooting`.
+
 ## Do not
 
 - Self-REGISTER the shop with ChanServ (Jeeves `!register` only); mint a fresh NickServ GUID for a registered `bob-*` account.
