@@ -123,3 +123,11 @@ VERSION -> **0.1.20** (packaged MSIs and release archives).
 | Monitor cannot !assign | By design; diagnose queue/bored/gates, do not act as chair |
 
 Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md`. Canonical #1581; duplicate #1483.
+
+## 2026-10-04 - bob product vision path (harvest #1632 / FR #1615)
+
+| Lesson | Fix / book |
+|---|---|
+| bob MRB/UAT vision-first | Read `bob/VISION.md`; fleet umbrella stays `common/docs/vision.md` |
+
+Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #1639.
