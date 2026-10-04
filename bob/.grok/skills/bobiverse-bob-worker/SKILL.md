@@ -99,11 +99,11 @@ by a **NEW agent** (never a resume) after a backoff of 5 s, then 15 s, then 45 s
 
 ## `!bored`, ACK and DONE (the program posts `!bored`, you write ACK/DONE)
 
-The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - exactly like the agent watcher (`Watch-AgentHealth`, FR #100): when the agent is ready (seat start),
-immediately after a DONE or NACK/GIVEUP (`bored -> shop reason=done|free`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: busy = an open `ACK`
-with no DONE/NACK/GIVEUP (younger than 45 min), or the agent starting/restarting/hung. Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161),
-and logs `bored: free-rx matched (...)`. Any forwarded message or outbox activity resets the idle clock; at most one `!bored` per second. It stops for good on IRC loss/shutdown.
-A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by assigning in `!focus` order; you ACK; DONE/NACK/GIVEUP mark the seat idle. Exact lines: skill
+The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - when the agent is ready (seat start),
+after DONE/NACK/GIVEUP once the **harvest hold** ends (`bored -> shop reason=done|free`, FR #1611), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: open `ACK`
+(younger than 45 min), **post-inject assign grace** until ACK/DONE/NACK/GIVEUP (or grace timeout), harvest hold after DONE/free, or the agent starting/restarting/hung. Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161),
+and logs `bored: free-rx matched (...)` / `bored: harvest-hold ...`. Outbox activity during harvest hold **extends** the hold. A forwarded assign marks assign-grace busy so idle `!bored` cannot fire while you are still reading the inject. At most one `!bored` per second. It stops for good on IRC loss/shutdown.
+A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by assigning in `!focus` order; you ACK; finish CAST IRON harvest in the same turn as DONE/NACK/GIVEUP **before** the program's next `!bored`. Exact lines: skill
 `bobiverse-bob-job-irc`; per job type: `bobiverse-bob-job-fr`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
 
 ## Exit codes

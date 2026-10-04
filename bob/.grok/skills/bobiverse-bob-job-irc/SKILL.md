@@ -36,13 +36,13 @@ sequenceDiagram
   participant P as bob-worker.exe
   participant J as Jeeves (shop #machine)
   participant A as you (agent)
-  P->>J: !bored (seat ready, or right after DONE, or idle 2 min then every 3 min)
+  P->>J: !bored (seat ready, or after DONE/NACK/GIVEUP harvest hold, or idle 2 min then every 3 min)
   J-->>P: nick: TYPE owner/repo#N url   (next job in !focus order)  or  nick: nothing queued
   P->>A: FROM Jeeves #machine nick: TYPE owner/repo#N url
   A->>J: ACK TYPE owner/repo#N        (via outbox; Jeeves marks you accepted + busy)
   Note over A: work - the program stays silent while the ACK is open
   A->>J: DONE TYPE owner/repo#N [PASS or FAIL] url   (Jeeves marks you done + idle)
-  P->>J: !bored  (immediately after DONE or NACK/GIVEUP - keep going)
+  P->>J: !bored  (after harvest hold following DONE or NACK/GIVEUP - FR #1611)
 ```
 
 1. The program posts `!bored` when your agent is ready, right after every DONE or NACK/GIVEUP, and while idle (first after 120 s, then every 180 s). It never posts while you hold an open ACK.
@@ -87,8 +87,9 @@ NACK <TYPE> <owner/repo>#<N>
 GIVEUP <TYPE> <owner/repo>#<N>
 ```
 
-Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle (the program posts `!bored` again immediately, `reason=free`, FR #161). Convention: `NACK` = you decline **before** doing any work (wrong repo,
+Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle (the program harvest-holds then posts `!bored` again, `reason=free`, FR #161 / #1611). Convention: `NACK` = you decline **before** doing any work (wrong repo,
 no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an ACK (blocked, out of time/tokens, the task is impossible). Put the reason on a separate line or a GitHub comment, then harvest it
+**before** the program's next `!bored`.
 (CAST IRON rule: file it). Never go silent on an ACKed job - a seat that ends is returned to the queue by Jeeves on QUIT, but a NACK/GIVEUP is faster and tells the next worker why.
 
 ## Rules

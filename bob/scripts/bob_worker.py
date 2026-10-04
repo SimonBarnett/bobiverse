@@ -333,7 +333,8 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to {home}\\outbox.txt, then end the turn. "
         f"ping/pong is answered for you. The program posts !bored for you - NEVER post it yourself. When Jeeves assigns a job, first append "
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append 'PRIVMSG #{machine} :DONE <FR|MRB|UAT> owner/repo#N <PASS|FAIL> <url>' "
-        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. CAST IRON: harvest skills and file every issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn. "
+        f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. CAST IRON: harvest skills and file every issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 in the same turn as DONE/NACK/GIVEUP "
+        f"(finish harvest before the program's next !bored; the exe holds !bored briefly for that). "
         f"Never print or store secrets."
     )
 
@@ -1457,20 +1458,25 @@ def outbox_payload(line: str) -> str:
 
 
 class BoredEmitter:
-    """t770u: the EXE (never the model) posts `PRIVMSG #<machine> :!bored` exactly like the agent watcher (Watch-AgentHealth FR #100):
-      * on seat start (agent ready), right after a DONE or NACK/GIVEUP, and while idle: first idle after 120 s, then every 180 s;
-      * never while busy (an open ACK younger than 45 min, or the agent starting/restarting/hung);
-      * any forward / outbox activity resets the idle clock; at most one line per second per reason;
-      * only the seat's own shop (IrcSeat.say refuses anything else); never after IRC loss/shutdown (stop()).
-    Jeeves then assigns in !focus order; ACK marks the seat doing; DONE/NACK/GIVEUP mark it idle (immediate !bored).
+    """t770u / FR #1611: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
+      * on seat start (agent ready), after DONE/NACK/GIVEUP once the harvest hold ends, and while idle
+        (first idle after 120 s, then every 180 s);
+      * never while busy: open ACK (<45 min), post-inject assign grace (until ACK/DONE/NACK/GIVEUP or grace),
+        harvest hold after DONE/NACK/GIVEUP, or agent starting/restarting/hung;
+      * outbox activity during harvest hold extends the hold; forwards mark assign-grace busy;
+      * only the seat's own shop; never after IRC loss/shutdown (stop()).
+    Jeeves assigns in !focus order; ACK marks doing; DONE/NACK/GIVEUP clear the job then harvest-hold before !bored.
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
                  ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
-                 nak_s: float = 120.0):
+                 nak_s: float = 120.0, harvest_hold_s: float = 60.0, assign_grace_s: float = 300.0):
         self.send, self.log, self.clock = send, log, clock
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
         self.nak_s = nak_s  # t817u: fixed timer from a Jeeves NAK to the next !bored (never while busy)
+        # FR #1611: hold !bored after DONE/free so CAST IRON harvest can finish; post-inject grace until ACK.
+        self.harvest_hold_s = float(harvest_hold_s)
+        self.assign_grace_s = float(assign_grace_s)
         self._nak_due: Optional[float] = None
         self._cv = threading.Condition()
         self._ready = False
@@ -1478,6 +1484,9 @@ class BoredEmitter:
         self._ack_open = False
         self._ack_at: Optional[float] = None
         self._idle_since: Optional[float] = None
+        self._pending_work = False  # inject delivered; busy until ACK/DONE/FREE or assign_grace
+        self._pending_until: Optional[float] = None
+        self._harvest_until: Optional[float] = None  # after DONE/FREE; outbox extends
         self._last_bored: Optional[float] = None
         self._last_reason = ""
         self._done_key = ""
@@ -1508,10 +1517,12 @@ class BoredEmitter:
             self._cv.notify_all()
 
     def activity(self) -> None:
-        """A message was forwarded to the agent (it is about to work): reset the idle clock."""
+        """A message was forwarded to the agent (it is about to work): mark assign-grace busy (FR #1611)."""
         with self._cv:
-            if self._idle_since is not None:
-                self._idle_since = self.clock()
+            now = self.clock()
+            self._pending_work = True
+            self._pending_until = now + self.assign_grace_s
+            self._idle_since = None
             self._cv.notify_all()
 
     def nak(self) -> None:
@@ -1522,31 +1533,63 @@ class BoredEmitter:
                 self._nak_due = self.clock() + self.nak_s
             self._cv.notify_all()
 
+    def _begin_harvest_hold(self, now: float, why: str) -> None:
+        """FR #1611: after DONE/NACK/GIVEUP, hold !bored so the agent can harvest before the next assign."""
+        self._pending_work = False
+        self._pending_until = None
+        self._idle_since = None
+        hold = max(0.0, self.harvest_hold_s)
+        self._harvest_until = now + hold
+        self.log(f"bored: harvest-hold {hold:.0f}s after {why}")
+
     def on_outbox(self, payload: str) -> None:
         now = self.clock()
         p = (payload or "").strip()
         with self._cv:
             if _OUT_ACK_RX.match(p):
-                self._ack_open, self._ack_at, self._idle_since = True, now, None
+                self._ack_open, self._ack_at = True, now
+                self._pending_work = False
+                self._pending_until = None
+                self._harvest_until = None
+                self._idle_since = None
             elif _OUT_DONE_RX.match(p):
                 self._ack_open = False
                 self._done_key = p
-                self._idle_since = now
-            elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP: free immediately and !bored (FR #161)
+                self._begin_harvest_hold(now, "DONE")
+            elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP: clear busy, then harvest hold before !bored (FR #161 / #1611)
                 verb = (p.split(None, 1)[0] if p else "FREE").upper()
                 self._ack_open = False
                 self._free_key = p
-                self._idle_since = now
-                self.log(f"bored: free-rx matched ({verb}) - seat idle")
+                self._begin_harvest_hold(now, verb)
+                self.log(f"bored: free-rx matched ({verb}) - harvest hold then idle")
+            elif self._harvest_until is not None and now < self._harvest_until:
+                # Outbox during harvest (intake notes, follow-up PRIVMSG) extends the hold.
+                self._harvest_until = now + max(0.0, self.harvest_hold_s)
+                self.log("bored: harvest-hold extended (outbox)")
             elif self._ack_open:
                 self._ack_at = now  # outbox activity keeps an open ACK fresh (the watcher uses the outbox mtime)
+            elif self._pending_work:
+                self._pending_until = now + self.assign_grace_s
             else:
                 self._idle_since = now
             self._cv.notify_all()
 
     # ---- decision
     def _busy(self, now: float) -> bool:
-        return (not self._ready) or (self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s)
+        if not self._ready:
+            return True
+        if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
+            return True
+        if self._harvest_until is not None:
+            if now < self._harvest_until:
+                return True
+            self._harvest_until = None  # expired; allow pending done/free reason
+        if self._pending_work:
+            if self._pending_until is not None and now < self._pending_until:
+                return True
+            self._pending_work = False
+            self._pending_until = None
+        return False
 
     def _reason(self, now: float) -> Optional[str]:
         if self._stopped or not self._ready or now < self._retry_at:
@@ -1575,6 +1618,11 @@ class BoredEmitter:
     def _next_due(self, now: float) -> Optional[float]:
         if self._stopped or not self._ready:
             return None
+        if self._harvest_until is not None and now < self._harvest_until:
+            return self._harvest_until
+        if self._pending_work and self._pending_until is not None and now < self._pending_until:
+            wake = self._pending_until
+            return min(wake, self._nak_due) if self._nak_due is not None else wake
         if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
             wake = self._ack_at + self.ack_stale_s  # busy until the ACK goes stale (or DONE/NACK wakes us sooner)
             return min(wake, self._nak_due) if self._nak_due is not None else wake

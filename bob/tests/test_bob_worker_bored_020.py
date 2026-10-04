@@ -1,5 +1,5 @@
-"""t770u: the worker exe posts `!bored` exactly like the agent watcher (Watch-AgentHealth FR #100) - by itself, never the model,
-only when idle, same channel/format, same throttle; ACK = busy, DONE = idle (and an immediate !bored); never after IRC loss."""
+"""t770u / FR #1611: the worker exe posts `!bored` - by itself, never the model,
+only when idle; ACK / post-inject / harvest-hold = busy; DONE/NACK/GIVEUP then harvest hold then !bored; never after IRC loss."""
 from __future__ import annotations
 
 import threading
@@ -9,13 +9,15 @@ import bob_worker as bw
 from repo_layout import ROOT
 from test_bob_worker_020 import Rig, ircd, make_seat, wait_until  # noqa: F401  (ircd is a fixture)
 
-IDLE, REPEAT = 0.3, 0.5
+IDLE, REPEAT, HOLD = 0.3, 0.5, 0.35
 
 
 def emitter(sent, **kw):
     kw.setdefault("idle_s", IDLE)
     kw.setdefault("repeat_s", REPEAT)
     kw.setdefault("ack_stale_s", 60.0)
+    kw.setdefault("harvest_hold_s", HOLD)
+    kw.setdefault("assign_grace_s", 60.0)
     e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, lambda m: None, **kw)
     e.start()
     return e
@@ -37,7 +39,8 @@ def test_bored_is_sent_on_start_then_while_idle_with_the_watcher_throttle():
     e.stop()
 
 
-def test_bored_is_never_sent_while_busy_and_done_triggers_it_immediately():
+def test_bored_is_never_sent_while_busy_and_done_triggers_after_harvest_hold():
+    """FR #1611: DONE clears the job but !bored waits for harvest_hold_s (not immediate)."""
     sent: list = []
     e = emitter(sent)
     e.set_ready(True)
@@ -48,8 +51,10 @@ def test_bored_is_never_sent_while_busy_and_done_triggers_it_immediately():
     n = len(sent)
     t = time.monotonic()
     e.on_outbox("DONE FR SimonBarnett/bobiverse#7 PASS https://github.com/SimonBarnett/bobiverse/pull/9")
-    assert wait_until(lambda: len(sent) == n + 1, 1.0)
-    assert sent[-1] - t < 0.2, "DONE -> !bored must be immediate (watcher gate: ~5 s)"
+    time.sleep(HOLD * 0.5)
+    assert len(sent) == n, "no !bored during harvest hold"
+    assert wait_until(lambda: len(sent) == n + 1, HOLD + 1.0)
+    assert sent[-1] - t >= HOLD * 0.8, "DONE -> !bored only after harvest hold"
     assert e.sent[-1][1] == "done"
     time.sleep(0.2)
     assert [r for _, r in e.sent].count("done") == 1               # the same DONE never re-fires
@@ -75,10 +80,13 @@ def test_a_busy_agent_is_silent_when_it_is_not_ready_or_the_ack_is_fresh_but_sta
 
 
 def test_nack_and_giveup_free_the_seat():
-    """FR #161: GIVEUP/NACK clear busy and post !bored immediately (reason=free), with a free-rx log line."""
+    """FR #161 / #1611: GIVEUP/NACK clear busy, harvest-hold, then !bored (reason=free)."""
     sent: list = []
     logs: list = []
-    e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, logs.append, idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0)
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0, harvest_hold_s=HOLD, assign_grace_s=60.0,
+    )
     e.start()
     e.set_ready(True)
     assert wait_until(lambda: len(sent) == 1, 1.0)
@@ -87,22 +95,25 @@ def test_nack_and_giveup_free_the_seat():
     n = len(sent)
     t = time.monotonic()
     e.on_outbox("GIVEUP UAT o/r#4")
-    assert wait_until(lambda: len(sent) == n + 1, 1.0)
-    assert sent[-1] - t < 0.2, "GIVEUP -> !bored must be immediate like DONE"
+    time.sleep(HOLD * 0.4)
+    assert len(sent) == n, "no !bored during GIVEUP harvest hold"
+    assert wait_until(lambda: len(sent) == n + 1, HOLD + 1.0)
+    assert sent[-1] - t >= HOLD * 0.8
     assert e.sent[-1][1] == "free"
     assert any("free-rx matched (GIVEUP)" in m for m in logs)
+    assert any("harvest-hold" in m for m in logs)
     e.on_outbox("ACK FR o/r#5")
     time.sleep(0.1)
     n2 = len(sent)
     e.on_outbox("NACK FR o/r#5")
-    assert wait_until(lambda: len(sent) == n2 + 1, 1.0)
+    assert wait_until(lambda: len(sent) == n2 + 1, HOLD + 1.0)
     assert e.sent[-1][1] == "free"
     assert any("free-rx matched (NACK)" in m for m in logs)
     e.stop()
 
 
 def test_drain_applies_job_bookkeeping_when_say_fails(tmp_path):
-    """FR #161: if irc.say fails, still apply ACK/DONE/NACK/GIVEUP busy bookkeeping so !bored can fire."""
+    """FR #161 / #1611: if irc.say fails, still apply busy bookkeeping; GIVEUP harvest-holds then !bored."""
     sent: list = []
     logs: list = []
 
@@ -112,7 +123,10 @@ def test_drain_applies_job_bookkeeping_when_say_fails(tmp_path):
         def say(self, target, text):
             return False
 
-    e = bw.BoredEmitter(lambda: sent.append(time.monotonic()) or True, logs.append, idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0)
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0, harvest_hold_s=HOLD, assign_grace_s=60.0,
+    )
     e.start()
     e.set_ready(True)
     assert wait_until(lambda: len(sent) == 1, 1.0)
@@ -127,22 +141,73 @@ def test_drain_applies_job_bookkeeping_when_say_fails(tmp_path):
     assert bw.drain_outbox(ob, FailSay(), logs.append, e.on_outbox) == 0
     assert any("say failed; applied busy bookkeeping for GIVEUP" in m for m in logs)
     assert any("free-rx matched (GIVEUP)" in m for m in logs)
-    assert wait_until(lambda: len(sent) >= 2, 1.0)
-    assert sent[-1] - t < 0.25
+    assert wait_until(lambda: len(sent) >= 2, HOLD + 1.0)
+    assert sent[-1] - t >= HOLD * 0.8
     assert e.sent[-1][1] == "free"
     e.stop()
 
 
-def test_forwarded_work_resets_the_idle_clock():
+def test_forwarded_work_marks_assign_grace_busy():
+    """FR #1611: inject/activity is busy until ACK or assign_grace expires (not merely idle reset)."""
     sent: list = []
-    e = emitter(sent)
+    e = emitter(sent, assign_grace_s=0.8)
     e.set_ready(True)
     assert wait_until(lambda: len(sent) == 1, 1.0)
-    for _ in range(6):                                              # a forward every 0.1 s: never idle for 0.3 s
-        time.sleep(0.1)
-        e.activity()
-    assert len(sent) == 1
+    n = len(sent)
+    e.activity()  # assign injected
+    time.sleep(IDLE + REPEAT + 0.2)
+    assert len(sent) == n, "post-inject assign grace must silence !bored"
+    assert wait_until(lambda: len(sent) >= n + 1, 2.0), "after assign grace expires, idle !bored may resume"
     e.stop()
+
+
+def test_fr1611_harvest_hold_extended_by_outbox():
+    sent: list = []
+    logs: list = []
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, ack_stale_s=60.0, harvest_hold_s=HOLD, assign_grace_s=60.0,
+    )
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.on_outbox("ACK FR o/r#9")
+    n = len(sent)
+    t = time.monotonic()
+    e.on_outbox("DONE FR o/r#9 PASS https://example.test/p/1")
+    time.sleep(HOLD * 0.4)
+    e.on_outbox("PRIVMSG #marchhare :harvest note")  # payload without ACK/DONE - extend hold
+    # After extend, need another nearly-full HOLD from the extension moment.
+    time.sleep(HOLD * 0.5)
+    assert len(sent) == n, "extended harvest hold must still block !bored"
+    assert wait_until(lambda: len(sent) == n + 1, HOLD + 1.5)
+    assert sent[-1] - t >= HOLD * 1.2, "hold extended by outbox"
+    assert e.sent[-1][1] == "done"
+    assert any("harvest-hold extended" in m for m in logs)
+    e.stop()
+
+
+def test_fr1611_activity_then_ack_stays_busy_until_done():
+    sent: list = []
+    e = emitter(sent, assign_grace_s=0.4)
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    n = len(sent)
+    e.activity()
+    e.on_outbox("ACK FR o/r#10")
+    time.sleep(0.6)  # past assign grace; ACK must keep busy
+    assert len(sent) == n
+    e.on_outbox("DONE FR o/r#10 PASS https://example.test/p/2")
+    assert wait_until(lambda: len(sent) == n + 1, HOLD + 1.0)
+    assert e.sent[-1][1] == "done"
+    e.stop()
+
+
+def test_fr1611_worker_prompt_mentions_harvest_before_bored():
+    p = bw.worker_prompt(r"C:\ai\bob\worker", r"C:\run", "marchhare", "marchhare-1")
+    assert "harvest" in p.lower()
+    assert "!bored" in p
+    assert "holds !bored" in p or "before the program's next !bored" in p
 
 
 def test_stopped_emitter_never_sends_again():
@@ -177,7 +242,10 @@ def rig_with_bored(ircd, tmp_path):
     seat.log = rig.logs.append
     seat.on_message = rig.relay.deliver
     seat.connect(timeout=5)
-    rig.sup.bored = bw.BoredEmitter(rig.sup.post_bored, rig.logs.append, idle_s=IDLE, repeat_s=REPEAT)
+    rig.sup.bored = bw.BoredEmitter(
+        rig.sup.post_bored, rig.logs.append,
+        idle_s=IDLE, repeat_s=REPEAT, harvest_hold_s=HOLD, assign_grace_s=60.0,
+    )
     rig.sup.bored.start()
     return seat, rig
 
@@ -204,7 +272,9 @@ def test_wire_ack_silences_done_resumes_and_the_model_cannot_post_bored(ircd, tm
     assert any("refused agent-written !bored" in m for m in rig.logs)
     ob.write_text("PRIVMSG #marchhare :DONE FR SimonBarnett/bobiverse#7 PASS https://github.com/SimonBarnett/bobiverse/pull/9\n", encoding="utf-8")
     bw.drain_outbox(ob, seat, rig.logs.append, rig.sup.bored.on_outbox)
-    assert wait_until(lambda: len(bored_lines(ircd)) == 2, 2.0)
+    time.sleep(HOLD * 0.4)
+    assert len(bored_lines(ircd)) == 1, "no wire !bored during harvest hold"
+    assert wait_until(lambda: len(bored_lines(ircd)) == 2, HOLD + 2.0)
     rig.sup.shutdown("test", bw.EXIT_OK)
 
 

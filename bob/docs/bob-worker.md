@@ -16,8 +16,9 @@ One compiled program, `<ai root>\bob\worker\bob-worker.exe` (`scripts/bob_worker
   Inject logging (FR #86): `worker.log` keeps the **full** `relay: injected FROM ...` line (no mid-URL cut); the same payload is written to `run_dir/last-from.txt` for hang-restart recovery.
   **FR #995:** each successful outbox drain logs `outbox: sent PRIVMSG #<shop> (N chars): <scrubbed preview>` so a sending seat is not mistaken for stuck-at-last-bored.
   **FR #994:** Jeeves ``<nick>: nothing queued`` is injected as `FROM` like an assign (so the agent can confirm the wire). If the agent is not ready yet (startup grace) the line is **held** and logged `relay: held nothing-queued`; if console inject fails, `last-from.txt` is still written and the log says `relay: inject failed for nothing-queued`. Operators: Halloy showing `nothing queued` with no `relay: injected` means check for `held` / `inject failed` lines — the seat is not necessarily deaf.
-* **`!bored`** (t770u): posted by the exe only, exactly like the agent watcher (`Watch-AgentHealth` FR #100): on ready, right after DONE, idle 120 s then every 180 s, never while an ACK is open (<45 min) or the agent is (re)starting; never after IRC loss; an agent-written `!bored` is refused.
-  Jeeves then assigns in `!focus` order; ACK marks the seat doing, DONE marks it idle. Exact lines: `bobiverse-bob-job-irc`.
+* **`!bored`** (t770u / FR #1611): posted by the exe only: on ready; after DONE/NACK/GIVEUP once the **harvest hold** ends (default 60 s, extended by further outbox activity); idle 120 s then every 180 s. Never while busy: open ACK (<45 min), **post-inject assign grace** (default 300 s until ACK/DONE/NACK/GIVEUP), harvest hold, or agent (re)starting; never after IRC loss; an agent-written `!bored` is refused.
+  Jeeves then assigns in `!focus` order; ACK marks the seat doing; DONE/NACK/GIVEUP clear the job then harvest-hold before the next `!bored` so CAST IRON harvest can finish first. Exact lines: `bobiverse-bob-job-irc`. Live seats need a rebuilt `bob-worker.exe` (MSI / `Build-BobWorker.ps1`) to pick this up.
+
 * **Exit codes**: 0 ok / window closed, 2 IRC unreachable at start (no agent started), 3 IRC lost, 4 no agent or key cancelled, 5 restart limit, 6 launch failed, 64 usage.
 
 ## Installer / updater
