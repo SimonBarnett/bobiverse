@@ -1,4 +1,4 @@
-﻿"""Jeeves MUST hand out work (Simon 2026-10-04): short empty reply, per-repo focus filters, no NAK while focused work exists."""
+"""Jeeves MUST hand out work (Simon 2026-10-04): short empty reply, per-repo focus filters, no NAK while focused work exists."""
 from __future__ import annotations
 
 import pytest
@@ -79,3 +79,25 @@ def test_hi_repo_outranks_lo_repo(_home):
     status, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos")
     assert job["repo"].endswith("bobiverse")
 
+
+def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
+    """Author-machine sibling may take MRB when other live seats fail require_machine."""
+    row = _row(
+        "SimonBarnett/bobiverse",
+        "MRB",
+        2319,
+        7,
+        require_machine="ionos",
+        author_seat="win-mpre8vi4u6u-14452",
+        implementer_seat="win-mpre8vi4u6u-14452",
+        url="https://github.com/SimonBarnett/bobiverse/pull/2319",
+    )
+    _queue(_home, [row])
+    fi.handle_focus_cmd(_home, "hi bobiverse")
+    # Live: ionos sibling + marchhare (pinned out by require_machine=ionos)
+    live = {"win-mpre8vi4u6u-7764", "marchhare-40208", "win-mpre8vi4u6u-14452"}
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-14452", live) is True  # exact author
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-7764", live) is False  # sibling; marchhare not viable
+    assert gitclaim.row_blocked_for_machine(row, "marchhare-40208") is True
+    status, job = gitclaim.offer_focus_top(_home, "win-mpre8vi4u6u-7764", "#win-mpre8vi4u6u")
+    assert status != "empty" and job and str(job.get("id")) in ("#2319", "2319", "#2319")
