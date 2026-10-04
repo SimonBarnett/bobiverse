@@ -3,6 +3,16 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - MRB behind-main + body/docs nits (harvest #1647)
+
+| Lesson | Fix / book |
+|---|---|
+| PR head behind main | Merge origin/main into FR branch before gh pr merge |
+| Additive hostile tests | Land on docs/mrb-N, never push onto PR under review |
+| Body/docs-only nits + green tests | PASS without separate fix PR; close harvest twins as not planned |
+
+Book: `bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md`.
+
 ## 2026-10-04 - Get-Asset fail-closed + Airc Fleet ServiceMode (FR #1545 / harvest #1590)
 
 | Lesson | Fix |
