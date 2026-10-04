@@ -35,6 +35,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | `chanserv-sync timeout; keeping last good roster` | Two forced syncs overlapped or Ergo was slow; the last roster stays. Harmless once. |
 | `ERROR chanserv LIST DENIED` | The Jeeves IRC oper lacks the `chanreg` capability (do not edit the Ergo config from here; tell the Ergo owner). |
 | Webhook down alert in #bobiverse | `webhook-health.json` says which target/check. `local` down = `BobCallback` task not running (`schtasks /Run /TN BobCallback`, port 7700 free?). `public` down only = IIS site/ARR/rewrite (`Install-BobWebhooks.ps1`). |
+| BobCallback LISTEN but curl times out | Re-probe once before restart (harvest #1705/#1706). Do not treat as hard down on first timeout. |
 | BobCallback cannot write the digest | The task runs as SYSTEM; the digest home must grant SYSTEM and the service user. Writes use unique `*.tmp` names and orphan cleanup; never delete `digest.json`. |
 | `github_resync: no token` | Put the token in `config\github.token` (one line, ACL SYSTEM+Administrators). Handling is unchanged; only the source is logged. |
 | Chair keeps losing the nick `Jeeves` | Legacy `BobJeeves` (gh-Jeeves) still installed - remove it from the SCM. |

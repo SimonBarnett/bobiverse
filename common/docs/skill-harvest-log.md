@@ -131,3 +131,12 @@ Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/sk
 | Source patch alone | Does not update frozen bob-worker-*.exe already running |
 
 Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md`. Canonical #1605; twin #1614.
+
+## 2026-10-04 - BobCallback LISTEN+timeout re-probe; skill-offer ungated expected (harvest #1706)
+
+| Lesson | Fix / book |
+|---|---|
+| LISTEN + curl timeout | Re-probe before restart (#1705/#1706) |
+| Large ungated after skill-offer | Expected; orphan w-mh still inflate idle_seats |
+
+Books: `bobiverse-jeeves-monitor`, troubleshooting. Twin #1705.
