@@ -1,6 +1,6 @@
 """FR #1080 / #1122 / PR #1236: needs-mrb1 is not SKIP_FR / not require_machine=mrb1.
 
-FR #1363: offer paths refuse needs-mrb1 until the label is cleared (still enqueueable).
+Operator 2026-10-04: needs-mrb1 must not block offers (hallucination).
 """
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ def test_needs_mrb1_is_not_skip_but_not_require_machine():
     # Corrupt stamp ignored
     row = {"require_machine": "mrb1", "labels": ["feature-request"], "title": "x", "body": "", "task": "FR"}
     assert not gitclaim.row_require_machine(row)
-    # FR #1363: offer gate (separate from SKIP_FR)
-    assert gitclaim.row_awaits_mrb1({"labels": ["needs-mrb1"]}) is True
+    # Operator 2026-10-04: offer gate removed
+    assert gitclaim.row_awaits_mrb1({"labels": ["needs-mrb1"]}) is False
 
 
 def test_row_on_cooldown_is_per_giveup_seat():
@@ -101,8 +101,8 @@ def test_strict_focus_fallback_offers_in_focus_when_order_misses(tmp_path, monke
     assert job["id"] == "#1074"
 
 
-def test_strict_focus_skips_needs_mrb1_under_focus(tmp_path, monkeypatch):
-    """FR #1363 supersedes #1080 offerability: needs-mrb1 stays queued, not offered."""
+def test_strict_focus_offers_needs_mrb1_under_focus(tmp_path, monkeypatch):
+    """Operator 2026-10-04: needs-mrb1 label must not block offers under strict focus."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     (home / "focus.json").write_text(
@@ -131,5 +131,5 @@ def test_strict_focus_skips_needs_mrb1_under_focus(tmp_path, monkeypatch):
         },
     )
     st, job = gitclaim.offer_focus_top(home, "win-mpre8vi4u6u-1", "#win-mpre8vi4u6u")
-    assert st == "empty"
-    assert job is None
+    assert st == "ok"
+    assert job["id"] == "#1074"

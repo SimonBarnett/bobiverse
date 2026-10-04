@@ -353,9 +353,8 @@ def _labels_for(norm: dict, *, quarantine: bool) -> list[str]:
         labels.append("feature-request")
     if kind in ("skill", "harvest"):
         labels.append("skill")
-    if kind in ("issue", "fr"):
-        # FR #151: agent/intake proposals await human vision fit (MRB #1)
-        labels.append("needs-mrb1")
+    # Operator 2026-10-04: do not stamp needs-mrb1 — it was a hallucination that
+    # blocked !bored offers (FR #1363) while open counts climbed on skill/ops FRs.
     if quarantine:
         labels.append("via-intake-untriaged")
     return labels

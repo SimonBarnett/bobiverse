@@ -128,8 +128,8 @@ SKIP_FR_LABELS = frozenset(
         "needs-human",
         # needs-mrb1 must NOT be a SKIP_FR label (#1080/#1122/#1174 / PR #1236): that
         # emptied bobiverse offers under focus.strict and dropped rows on resync.
-        # FR #1363: offer paths still refuse needs-mrb1 via ``row_awaits_mrb1`` until
-        # the label is cleared (workers would only ACK+GIVEUP anyway).
+        # Operator 2026-10-04: needs-mrb1 is a hallucination — do not offer-block on it
+        # (row_awaits_mrb1 always False). Intake no longer stamps the label.
         "blocked",
         "release-gate",
     }
@@ -673,19 +673,12 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
 
 
 def row_awaits_mrb1(row: dict) -> bool:
-    """True when the FR still carries label ``needs-mrb1`` (FR #1363).
+    """Legacy FR #1363 offer gate — always False (operator 2026-10-04).
 
-    Rows stay enqueueable (not ``SKIP_FR_LABELS`` — see #1080/#1122/#1174) but
-    must not be offered: every seat would only ACK then GIVEUP until a human
-    clears the vision label. Re-offering after GIVEUP burned fleet cycles
-    (e.g. #1316 → marchhare while still needs-mrb1).
+    ``needs-mrb1`` was an intake hallucination that stranded ungated work while
+    open-issue counts climbed. Kept as a named helper so call sites/tests stay
+    stable; label presence must not block ``!bored`` / ``!assign`` offers.
     """
-    labs = row.get("labels") or ()
-    if isinstance(labs, str):
-        labs = [labs]
-    for lab in labs:
-        if str(lab or "").strip().lower() == "needs-mrb1":
-            return True
     return False
 
 
@@ -698,9 +691,9 @@ def issue_blocks_repo_uat(
 ) -> bool:
     """True when an open issue must hold repo-level UAT back (t853u / FR #1416).
 
-    ``needs-mrb1`` stays enqueueable and offer-blocked (FR #1363) but must not
-    prevent repo UAT: filing a vision-gated FR used to drop UAT from the queue
-    while every seat saw ``nothing queued`` (#1416 circular strand).
+    ``needs-mrb1`` must not prevent repo UAT (#1416) and must not block offers
+    (operator 2026-10-04: label is a hallucination). Kept as a non-blocking
+    open-issue class for UAT clearance only.
     """
     if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
         return False

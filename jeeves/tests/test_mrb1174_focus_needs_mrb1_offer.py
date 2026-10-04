@@ -1,4 +1,4 @@
-"""MRB #1174: strict focus stays in-focus; FR #1363 skips needs-mrb1 offers; keep pagination."""
+"""MRB #1174: strict focus stays in-focus; needs-mrb1 must not block offers; keep pagination."""
 from __future__ import annotations
 
 import re
@@ -21,8 +21,8 @@ def _fr(repo: str, n: int, labels=None, title: str = "FR: x"):
     }
 
 
-def test_strict_skips_needs_mrb1_and_does_not_leak_club(tmp_path, monkeypatch):
-    """FR #1363: needs-mrb1 is not offered; strict still refuses Club-Madeira leak."""
+def test_strict_offers_needs_mrb1_and_does_not_leak_club(tmp_path, monkeypatch):
+    """needs-mrb1 is offerable; strict still refuses Club-Madeira leak."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     (home / "focus.json").write_text(
@@ -47,8 +47,8 @@ def test_strict_skips_needs_mrb1_and_does_not_leak_club(tmp_path, monkeypatch):
         },
     )
     st, job = gitclaim.offer_focus_top(home, "marchhare-35600", "#marchhare")
-    assert st == "empty"
-    assert job is None
+    assert st == "ok"
+    assert job["id"] == "#1055"
 
 
 def test_strict_offers_clear_bobiverse_not_club(tmp_path, monkeypatch):
