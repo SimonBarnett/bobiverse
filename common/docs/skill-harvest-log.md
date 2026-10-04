@@ -3,6 +3,15 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - seats_stuck_doing false busy after DONE (harvest #1712)
+
+| Lesson | Fix / book |
+|---|---|
+| digest doing + accepted empty after DONE | Stale working_on; do not !assign or kill seat |
+| Remediation | Next TipForm/digest POST; optional clear workers.*.working_on |
+
+Books: `bobiverse-jeeves-monitor`, TipForm note in `bobiverse-bob`. Twin #1713.
+
 ## 2026-10-04 - Never Closes skill harvest from unrelated PR (harvest #1674)
 
 | Lesson | Fix |
