@@ -2587,7 +2587,7 @@ def offer_focus_top(
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
-                    return None  # FR #1363: needs-mrb1 not offerable until cleared
+                    return None  # legacy hook; row_awaits_mrb1 always False (op 2026-10-04)
                 if row_skip_fr_reason(cand):
                     return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
@@ -2736,7 +2736,7 @@ def offer_top(
                 if row_needs_human(row, nick or "") or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
                     continue
                 if row_awaits_mrb1(row):
-                    continue  # FR #1363
+                    continue  # legacy hook; always False (op 2026-10-04)
                 if repo_archived_for_queue(str(row.get("repo") or "")):
                     continue  # FR #785
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
@@ -3192,7 +3192,8 @@ def assign_row(
             if row_needs_human(cand, me):
                 return "refused", "row is needs-human"
             if row_awaits_mrb1(cand):
-                return "refused", "row awaits needs-mrb1 clear (FR #1363)"
+                # Unreachable while row_awaits_mrb1 is always False (op 2026-10-04).
+                return "refused", "row awaits needs-mrb1 clear (legacy)"
             if row_on_cooldown(cand, now_f, me):
                 return "refused", "row is on GIVEUP/NACK cooldown"
             if row_skip_fr_reason(cand):
