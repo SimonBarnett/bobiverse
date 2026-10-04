@@ -199,7 +199,7 @@ def _check_offer(home: Path, chair_home: Path | None) -> tuple[dict[str, Any], l
         # Finding only when queue has rows but zero offerable under focus (operator confusion).
         if int(stats.get("unaccepted") or 0) > 0 and int(stats.get("offerable") or 0) == 0:
             findings.append(
-                "0 offerable under focus "
+                "0 offerable for you under focus "
                 f"({stats.get('unaccepted')} unaccepted, "
                 f"{stats.get('out_of_focus')} out-of-focus, "
                 f"{stats.get('require_machine')} require_machine)"
