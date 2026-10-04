@@ -8,6 +8,10 @@ Homes (no agentic_irc dependency):
 ``migrate_legacy`` COPIES the old home into the new one (never overwrites, never deletes) and
 drops a marker, so the old home stays as a backup and the migration runs once. Secret values
 are never printed; only file names and counts are reported.
+
+FR #2350: auto-migrate only into canonical home basenames (``.bobiverse``, ``.jeeves``,
+``home``, …). An explicit scratch ``--home`` (UAT under ``%TEMP%``) stays isolated unless
+``BOB_MIGRATE_LEGACY=1`` or the caller passes ``old_homes=``.
 """
 from __future__ import annotations
 
@@ -23,6 +27,17 @@ CHAIR_NAME = ".jeeves"
 DIGEST_NAME = ".bobiverse"
 LEGACY_CHAIR_NAME = ".agentic-irc-jeeves"
 LEGACY_DIGEST_NAME = ".agentic-irc-bobiverse"
+# FR #2350: only these basenames auto-pull ~/.agentic-irc-* (scratch --home stays isolated).
+# Opt-in: BOB_MIGRATE_LEGACY=1. Opt-out: BOB_HOME_NO_MIGRATE=1.
+CANONICAL_HOME_NAMES = frozenset(
+    {
+        CHAIR_NAME.lower(),
+        DIGEST_NAME.lower(),
+        "home",
+        "home-jeeves",
+        "home-bob",
+    }
+)
 # never carried over: live state of the old process
 SKIP_SUFFIXES = (".log", ".pid", ".lock", ".tmp", ".pos")
 SKIP_NAMES = {".agentic-irc-service-start", ".bobiverse-service-start", "agent.quit.request", MARKER}
@@ -33,6 +48,24 @@ KEY_FILES = ("digest.json", "focus.json", "ignored.json", "queue.json", "registe
 DIGEST_ONLY_FILES = frozenset(KEY_FILES)
 # outbox basenames that need a companion cursor after migrate (FR #68)
 OUTBOX_BASENAMES = ("chair-outbox.txt", "outbox.txt")
+
+
+def _env_truthy(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def home_allows_legacy_migrate(new_home: Path) -> bool:
+    """FR #2350: scratch / explicit UAT homes must not merge profile legacy agentic-irc trees.
+
+    Returns False when ``BOB_HOME_NO_MIGRATE`` is set. Returns True when ``BOB_MIGRATE_LEGACY``
+    is set, or when the home basename is a known fleet/chair/digest name (``.bobiverse``,
+    ``.jeeves``, ``home``, …). Callers that pass ``old_homes=`` explicitly bypass this gate.
+    """
+    if _env_truthy("BOB_HOME_NO_MIGRATE"):
+        return False
+    if _env_truthy("BOB_MIGRATE_LEGACY"):
+        return True
+    return Path(new_home).name.lower() in CANONICAL_HOME_NAMES
 
 
 def _admin_profile() -> Path:
@@ -197,12 +230,20 @@ def _copy_tree(src: Path, dst: Path, stats: dict, extra_skip: frozenset[str] | N
 def migrate_legacy(new_home: Path, old_homes: list[Path] | None = None, role: str = "") -> dict:
     """Copy the first existing legacy home into ``new_home`` once. Returns a summary dict.
 
-    ``status``: ``migrated`` | ``already`` (marker present) | ``no-legacy`` | ``error``.
+    ``status``: ``migrated`` | ``already`` (marker present) | ``no-legacy`` |
+    ``skipped-noncanonical`` | ``skipped-opt-out`` | ``error``.
+
+    FR #2350: auto-discovery of ``~/.agentic-irc-*`` is skipped for non-canonical homes
+    (scratch ``--home``). Pass ``old_homes=`` explicitly, or set ``BOB_MIGRATE_LEGACY=1``,
+    to force a merge into a custom path.
     """
     new_home = Path(new_home)
     marker = new_home / MARKER
     if marker.is_file():
         return {"status": "already", "new": str(new_home)}
+    if old_homes is None and not home_allows_legacy_migrate(new_home):
+        status = "skipped-opt-out" if _env_truthy("BOB_HOME_NO_MIGRATE") else "skipped-noncanonical"
+        return {"status": status, "new": str(new_home)}
     cands = old_homes if old_homes is not None else legacy_candidates(new_home, role)
     old = next((c for c in cands if Path(c).is_dir()), None)
     if old is None:
@@ -290,11 +331,11 @@ def ensure_homes(chair: Path | None = None, digest: Path | None = None, log=prin
                     f"INFO home-migration skipped DPAPI-bound files this account cannot decrypt: "
                     f"{','.join(res['skipped_protected'])} (a fresh one is created)"
                 )
-            if res.get("skipped_protected"):
-                log(
-                    f"INFO home-migration skipped DPAPI-bound files this account cannot decrypt: "
-                    f"{','.join(res['skipped_protected'])} (a fresh one is created)"
-                )
+        elif res["status"] in ("skipped-noncanonical", "skipped-opt-out"):
+            log(
+                f"INFO home-migration skipped {res['status']} new={res['new']} "
+                "(explicit scratch --home stays isolated; set BOB_MIGRATE_LEGACY=1 to opt in)"
+            )
         elif res["status"] == "error":
             log(f"WARN home-migration {res.get('old')} -> {res['new']} errors={res['errors']}")
     return out
