@@ -44,7 +44,16 @@ LEGACY_UNACCEPTED = "git-unaccepted.json"
 LEGACY_ACCEPTED = "git-accepted.jsonl"
 ACTIVITY_NAME = "git-worker-activity.json"
 LOCK_NAME = "git-claim.lock"
+PENDING_NAME = "git-claim-pending.jsonl"
 ACCEPTED_CAP = 200
+# FR #1811: lock wait was 5s and dropped webhook rows under contention; default 30s (env override).
+try:
+    LOCK_WAIT_S = max(1.0, float(os.environ.get("BOB_GITCLAIM_LOCK_S", "30")))
+except ValueError:
+    LOCK_WAIT_S = 30.0
+# FR #1811: keep done[] smaller so queue.json rewrite stays cheap under lock.
+DONE_CAP = 100
+WRITE_REPLACE_RETRIES = 8
 
 # Task vocabulary. The GIT allowlist below is unchanged: only PR and MRB
 # are produced from GitHub events. BUILD, FIX, and UAT are valid kinds if a
@@ -600,6 +609,13 @@ def issue_skip_fr_reason(
                 text_hits.append(lab)
         if text_hits:
             return f"label_text:{text_hits[0]}"
+    # FR #1812: via-intake+skill "PR opened" / pull URL summaries are receipts of an
+    # already-open harvest PR — do not enqueue as FR work (workers would re-implement).
+    if "via-intake" in labs and "skill" in labs:
+        if re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+", blob, re.I):
+            return "harvest_pr_summary"
+        if re.search(r"(?i)\bPR\s+opened\b", title_s):
+            return "harvest_pr_summary"
     return None
 
 
@@ -731,10 +747,12 @@ _REQUIRE_MACHINE_NON_MACHINE = frozenset(
         "gate",
     }
 )
-# Explicit cue ΓåÆ fleet machine id (normalized lowercase).
+# Explicit cue -> fleet machine id (normalized lowercase).
 # FR #1508: title/label cues vs body cues. Bare machine names / require_machine=
 # in an issue body often appear as evidence about *other* pins and must not
 # re-pin the filing itself (#1507 class).
+# FR #1824 / #1843: a *dedicated body line* ``require_machine: ionos`` (or ``=``)
+# is an intentional pin — honor it. Inline evidence prose still must not pin.
 _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bce-priority-dev1\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
@@ -747,8 +765,18 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bstartpending\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
     (re.compile(r"(?i)\bidle seats?\b.{0,120}\bungated offerable\b"), "ionos"),
     (re.compile(r"(?i)\bungated offerable\b.{0,120}\bidle seats?\b"), "ionos"),
+    # FR #1899: title-level intake/BobCallback 502 ops filings
+    (re.compile(r"(?i)\bintake\b.{0,40}\b(?:BobCallback|ARR)\b.{0,40}\b502\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:BobCallback|ARR)\b.{0,40}\bintake\b.{0,40}\b502\b"), "ionos"),
+    (re.compile(r"(?i)\bintake\b.{0,60}\b502\b.{0,40}\b(?:Bad Gateway|harvest)"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ionos\b"), "ionos"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ce-priority-dev1\b"), "ce-priority-dev1"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ce-priority-dev\b"), "ce-priority-dev1"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
+    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
     # agentic_fomprep WP0 live proof must run on DEV1
     (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
     (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
@@ -773,6 +801,14 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     ), "ionos"),
     (re.compile(r"(?i)\bno shop OFFER\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b.{0,100}\b(?:OFFER|!bored|GIT announce)"), "ionos"),
+    # FR #1899: intake/ARR/BobCallback 502 ops live on the Ergo/chair host (not flamingo)
+    (re.compile(r"(?i)\b(?:intake|/bob/v1/intake)\b.{0,140}\b(?:502|Bad Gateway)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:502|Bad Gateway)\b.{0,140}\b(?:intake|/bob/v1/intake|BobCallback|harvest-outbox)\b"), "ionos"),
+    (re.compile(r"(?i)\bBobCallback\b.{0,120}\b(?:502|Bad Gateway|LISTEN|:7700)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:502|Bad Gateway|LISTEN|:7700)\b.{0,120}\bBobCallback\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:ARR|reverse[- ]proxy)\b.{0,140}\b(?:intake|BobCallback|/bob/v1)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:intake|BobCallback|/bob/v1)\b.{0,140}\b(?:ARR|reverse[- ]proxy)\b"), "ionos"),
+    (re.compile(r"(?i)\bharvest-outbox\b.{0,100}\b(?:502|Bad Gateway|KEPT)\b"), "ionos"),
 )
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -797,8 +833,8 @@ def infer_require_machine(
     """Return a fleet machine id the job must run on, or '' (FR #587).
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
-    title/body/line cues (WP0 live ΓåÆ ce-priority-dev1; needs-ionos / chair-outbox /
-    recycle|recompose Jeeves / prune queue.json ΓåÆ ionos; FR #587 / #852).
+    title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
+    recycle|recompose Jeeves / prune queue.json -> ionos; FR #587 / #852).
     """
     labs = labels or ()
     if isinstance(labs, str):
@@ -1243,8 +1279,109 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         row["require_machine"] = req
 
 
+def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
+    """Mutate queue doc for one claim. Returns added|removed|updated|duplicate|noop|error."""
+    if claim.task not in TASK_KINDS and claim.action not in ("closed", "edited"):
+        return "error"
+    ev, action = claim.event, claim.action
+    changed = "noop"
+
+    if ev == "issues" and action in ("opened", "reopened"):
+        if issue_skip_fr_reason(
+            title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
+        ):
+            changed = "noop"
+        else:
+            _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
+            changed = _append_unaccepted(doc, claim)
+            if changed == "skipped":
+                changed = "noop"
+
+    elif ev == "issues" and action == "closed":
+        n = _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"FR", "PR"})
+        before = len(doc["unaccepted"])
+        doc["unaccepted"] = [
+            r for r in doc["unaccepted"]
+            if not (r.get("repo") == claim.repo and r.get("id") == claim.id and r.get("task") == "UAT"
+                    and r.get("action") != "uat")
+        ]
+        n += before - len(doc["unaccepted"])
+        changed = "removed" if n else "noop"
+
+    elif ev == "pull_request" and action in (
+        "opened",
+        "ready_for_review",
+        "edited",
+        "synchronize",
+    ):
+        implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
+        for ref in claim.refs:
+            _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "UAT"})
+        extra: dict[str, str] = {}
+        if claim.refs:
+            extra["refs"] = ",".join(claim.refs)
+        extra["url"] = (
+            f"https://github.com/{claim.repo}/pull/{str(claim.id).lstrip('#')}"
+        )
+        if implementer:
+            extra["author_seat"] = implementer
+            extra["implementer_seat"] = implementer
+        changed = _append_unaccepted(doc, claim, **extra)
+        for r in doc["unaccepted"]:
+            if not _same(r, claim.repo, "MRB", claim.id):
+                continue
+            if not PULL_URL_RE.search(str(r.get("url") or "")):
+                r["url"] = extra["url"]
+            if implementer and not row_author_seats(r):
+                r["author_seat"] = implementer
+                r["implementer_seat"] = implementer
+
+    elif ev == "pull_request" and action == "closed":
+        _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
+        _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
+        if claim.merged:
+            mrb_src: dict = {}
+            for bucket in ("accepted", "done"):
+                for row in doc.get(bucket) or []:
+                    if (
+                        str(row.get("repo") or "") == claim.repo
+                        and str(row.get("task") or "").upper() == "MRB"
+                        and str(row.get("id") or "") == claim.id
+                    ):
+                        mrb_src = dict(row)
+                        break
+                if mrb_src:
+                    break
+            del mrb_src
+            for ref in claim.refs:
+                _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
+            if is_mrb_fix_pr_title(str(claim.title or claim.line or "")):
+                _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "MRB", "FR", "PR"})
+            changed = "updated"
+        else:
+            for ref in claim.refs:
+                fr = GitClaim(
+                    repo=claim.repo,
+                    task="FR",
+                    id=ref,
+                    event="issues",
+                    action="reopened",
+                    line=claim.line,
+                )
+                _append_unaccepted(doc, fr)
+            changed = "updated"
+    else:
+        changed = _append_unaccepted(doc, claim)
+    return changed
+
+
 def apply_queue_event(home: Path, claim: GitClaim) -> str:
-    """Apply one deterministic queue transition. Returns added|removed|updated|duplicate|error|noop."""
+    """Apply one deterministic queue transition.
+
+    Returns added|removed|updated|duplicate|noop|error|error:queue-*.
+    FR #1811: distinguish lock/read/write failures, spool on failure, skip noop rewrite,
+    drain pending under the same lock.
+    """
     if claim.task not in TASK_KINDS and claim.action not in ("closed", "edited"):
         return "error"
     try:
@@ -1252,124 +1389,37 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
             try:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
+                _spool_pending(home, claim)
+                return "error:queue-read"
+
+            dirty = False
+            for pending in _pop_all_pending(home):
+                ch = _apply_claim_to_doc(doc, pending)
+                if ch == "error":
+                    _spool_pending(home, pending)
+                elif ch != "noop":
+                    dirty = True
+
+            changed = _apply_claim_to_doc(doc, claim)
+            if changed == "error":
                 return "error"
+            if changed != "noop":
+                dirty = True
 
-            ev, action = claim.event, claim.action
-            changed = "noop"
-
-            if ev == "issues" and action in ("opened", "reopened"):
-                # FR for issue; drop any stale UAT for same id
-                if issue_skip_fr_reason(
-                    title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
-                ):
-                    changed = "noop"
-                else:
-                    _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
-                    changed = _append_unaccepted(doc, claim)
-                    if changed == "skipped":
-                        changed = "noop"
-
-            elif ev == "issues" and action == "closed":
-                # t826u: a closed issue drops its FR/PR rows (FR #180 point 4). A UAT row queued BY A MERGED PR is kept: every FR PR
-                # carries `Closes owner/repo#N`, so the merge itself closes the issue and the UAT of that merge must still be assigned.
-                n = _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"FR", "PR"})
-                before = len(doc["unaccepted"])
-                doc["unaccepted"] = [
-                    r for r in doc["unaccepted"]
-                    if not (r.get("repo") == claim.repo and r.get("id") == claim.id and r.get("task") == "UAT"
-                            and r.get("action") != "uat")
-                ]
-                n += before - len(doc["unaccepted"])
-                changed = "removed" if n else "noop"
-
-            elif ev == "pull_request" and action in (
-                "opened",
-                "ready_for_review",
-                "edited",
-                "synchronize",  # FR #924: push events also backfill author_seat
-            ):
-                # Supersede linked FRs with this MRB
-                # FR #593: stamp author_seat from FR implementer before dropping FR rows.
-                implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
-                for ref in claim.refs:
-                    _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "UAT"})
-                extra: dict[str, str] = {}
-                if claim.refs:
-                    extra["refs"] = ",".join(claim.refs)
-                # Real pull URL so MRB offerability never invents from a bare id (FR #595).
-                extra["url"] = (
-                    f"https://github.com/{claim.repo}/pull/{str(claim.id).lstrip('#')}"
-                )
-                if implementer:
-                    extra["author_seat"] = implementer
-                    extra["implementer_seat"] = implementer
-                changed = _append_unaccepted(doc, claim, **extra)
-                # t860u: a row that already existed (webhook race / earlier issues event) must still get the
-                # real pull URL, else mrb_row_offerable is False and the seats sit idle until the next resync.
-                # FR #811 / #831: also backfill author_seat / implementer_seat when the MRB was enqueued
-                # before the FR implementer was known (self-MRB offers to the writer).
-                for r in doc["unaccepted"]:
-                    if not _same(r, claim.repo, "MRB", claim.id):
-                        continue
-                    if not PULL_URL_RE.search(str(r.get("url") or "")):
-                        r["url"] = extra["url"]
-                    if implementer and not row_author_seats(r):
-                        r["author_seat"] = implementer
-                        r["implementer_seat"] = implementer
-
-            elif ev == "pull_request" and action == "closed":
-                _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
-                # FR #848 / t853u: never leave a per-PR UAT row for this pull number
-                # (leftovers from pre-t853u or poisoned repo_uat + wrong id, e.g. UAT #835).
-                _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
-                if claim.merged:
-                    # PASS path: UAT for each linked open issue (queue UAT rows).
-                    # FR #227 / #265: carry MRB reviewer + FR implementer seats.
-                    mrb_src: dict = {}
-                    for bucket in ("accepted", "done"):
-                        for row in doc.get(bucket) or []:
-                            if (
-                                str(row.get("repo") or "") == claim.repo
-                                and str(row.get("task") or "").upper() == "MRB"
-                                and str(row.get("id") or "") == claim.id
-                            ):
-                                mrb_src = dict(row)
-                                break
-                        if mrb_src:
-                            break
-                    # t853u: UAT is per REPO (one row once every issue is closed and every PR merged,
-                    # see resync_from_github); a merge never queues a per-PR / per-issue UAT any more.
-                    del mrb_src
-                    for ref in claim.refs:
-                        _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
-                    # FR #848: mrb-*-fix merges must also clear any UAT stamped with the PR title.
-                    if is_mrb_fix_pr_title(str(claim.title or claim.line or "")):
-                        _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "MRB", "FR", "PR"})
-                    changed = "updated"
-                else:
-                    # closed without merge: restore FR for linked issues
-                    for ref in claim.refs:
-                        fr = GitClaim(
-                            repo=claim.repo,
-                            task="FR",
-                            id=ref,
-                            event="issues",
-                            action="reopened",
-                            line=claim.line,
-                        )
-                        _append_unaccepted(doc, fr)
-                    changed = "updated"
-            else:
-                # plain enqueue
-                changed = _append_unaccepted(doc, claim)
-
+            if not dirty:
+                return changed
             try:
                 _write_queue(queue_path(home), doc)
             except OSError:
-                return "error"
+                _spool_pending(home, claim)
+                return "error:queue-write"
             return changed
-    except (TimeoutError, OSError):
-        return "error"
+    except TimeoutError:
+        _spool_pending(home, claim)
+        return "error:queue-lock-timeout"
+    except OSError:
+        _spool_pending(home, claim)
+        return "error:queue-write"
 
 
 
@@ -1454,19 +1504,111 @@ def worker_working_on(home: Path, nick: str) -> str:
     return str(row.get("working_on") or "").strip()
 
 
+def pending_path(home: Path) -> Path:
+    return _root(home) / PENDING_NAME
+
+
+def _claim_to_pending_dict(claim: GitClaim) -> dict:
+    return {
+        "repo": claim.repo,
+        "task": claim.task,
+        "id": claim.id,
+        "event": claim.event,
+        "action": claim.action,
+        "line": claim.line,
+        "refs": list(claim.refs or ()),
+        "merged": claim.merged,
+        "title": claim.title,
+        "body": claim.body,
+        "labels": list(claim.labels or ()),
+        "state": claim.state,
+    }
+
+
+def _claim_from_pending_dict(d: dict) -> GitClaim | None:
+    if not isinstance(d, dict):
+        return None
+    repo = str(d.get("repo") or "").strip()
+    task = str(d.get("task") or "").strip()
+    ident = str(d.get("id") or "").strip()
+    if not repo or not ident:
+        return None
+    refs = d.get("refs") or ()
+    if isinstance(refs, str):
+        refs = [x for x in refs.split(",") if x]
+    labels = d.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    merged = d.get("merged")
+    if merged is not None and not isinstance(merged, bool):
+        merged = None
+    return GitClaim(
+        repo=repo,
+        task=task or "FR",
+        id=ident,
+        event=str(d.get("event") or ""),
+        action=str(d.get("action") or ""),
+        line=str(d.get("line") or ""),
+        refs=tuple(str(x) for x in refs),
+        merged=merged,
+        title=str(d.get("title") or ""),
+        body=str(d.get("body") or ""),
+        labels=tuple(str(x) for x in labels),
+        state=str(d.get("state") or ""),
+    )
+
+
+def _spool_pending(home: Path, claim: GitClaim) -> None:
+    """Durable spool so lock/write failures do not drop webhook claims (FR #1811)."""
+    try:
+        path = pending_path(home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(_claim_to_pending_dict(claim), separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
+def _pop_all_pending(home: Path) -> list[GitClaim]:
+    path = pending_path(home)
+    if not path.exists():
+        return []
+    out: list[GitClaim] = []
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        c = _claim_from_pending_dict(d)
+        if c is not None:
+            out.append(c)
+    return out
+
+
 @contextmanager
 def _lock(home: Path):
     root = _root(home)
     root.mkdir(parents=True, exist_ok=True)
     path = root / LOCK_NAME
-    deadline = time.time() + 5.0
+    deadline = time.time() + LOCK_WAIT_S
     fd: int | None = None
     while fd is None:
         try:
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             try:
-                if time.time() - path.stat().st_mtime > 30:
+                if time.time() - path.stat().st_mtime > max(30.0, LOCK_WAIT_S):
                     path.unlink()
                     continue
             except OSError:
@@ -1619,15 +1761,37 @@ def _read_queue_file(path: Path) -> dict:
         "unaccepted": [row for row in (_coerce_row(r) for r in unaccepted if isinstance(r, dict)) if row],
         "accepted": [row for row in (_coerce_row(r) for r in accepted if isinstance(r, dict)) if row],
         # FR #254: keep DONE rows (url/result) so FR stays superseded while implement PR is open.
-        "done": [row for row in (_coerce_row(r) for r in done if isinstance(r, dict)) if row][-ACCEPTED_CAP:],
+        "done": [row for row in (_coerce_row(r) for r in done if isinstance(r, dict)) if row][-DONE_CAP:],
     }
 
 
 def _write_queue(path: Path, doc: dict) -> None:
+    """Atomic replace with PermissionError retries (Windows AV/reader contention, FR #1811)."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    # prune done under lock so rewrites stay smaller
+    done = doc.get("done")
+    if isinstance(done, list) and len(done) > DONE_CAP:
+        doc["done"] = done[-DONE_CAP:]
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    last_exc: Exception | None = None
+    for attempt in range(WRITE_REPLACE_RETRIES):
+        try:
+            os.replace(str(tmp), str(path))
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            time.sleep(0.05 * (attempt + 1))
+        except OSError as exc:
+            # Some Windows paths surface sharing violations as WinError 32/5 via OSError
+            if getattr(exc, "winerror", None) in (5, 32) or isinstance(exc, PermissionError):
+                last_exc = exc
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise OSError("queue replace failed")
 
 
 def _load_queue_unlocked(home: Path) -> dict:
@@ -1664,18 +1828,21 @@ def _already(doc: dict, repo: str, task: str, ident: str) -> bool:
 
 
 def enqueue_unaccepted(home: Path, claim: GitClaim) -> str:
-    """Apply deterministic queue transition for this claim (FR #207 supersede table)."""
+    """Apply deterministic queue transition for this claim (FR #207 supersede table).
+
+    FR #1811: pass through error:queue-* so BobCallback can announce specific errs;
+    still maps success codes to legacy added|duplicate.
+    """
     if claim.task not in TASK_KINDS:
         return "error"
     result = apply_queue_event(home, claim)
+    if result.startswith("error"):
+        return result
     if result in ("added", "updated", "removed", "duplicate", "noop"):
-        # map to legacy return values for callers
         if result == "added":
             return "added"
         if result == "duplicate":
             return "duplicate"
-        if result == "error":
-            return "error"
         return "added" if result in ("updated", "removed") else "duplicate"
     return "error"
 
@@ -1945,7 +2112,7 @@ def mrb_row_offerable(
     """True when an MRB row has a resolvable pull URL (and optional live PR check).
 
     FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
-    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed ΓåÆ False).
+    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed -> False).
     """
     if _canon_task(row) != "MRB":
         return True
@@ -2022,7 +2189,7 @@ def github_pr_exists_checker(
     home: Path | None = None,
     cache: dict | None = None,
 ):
-    """Return ``pr_exists(repo, num)`` ΓåÆ True only for an **open** pull (FR #595 / #740).
+    """Return ``pr_exists(repo, num)`` -> True only for an **open** pull (FR #595 / #740).
 
     Merged or closed PRs still return HTTP 200 from GitHub; those must be False so
     seats are not re-offered MRB after DONE PASS/FAIL. Returns None when offline /

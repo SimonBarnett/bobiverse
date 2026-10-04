@@ -1,7 +1,46 @@
 # Skill harvest log
 
+
+## 2026-10-04 - Quiet MSI Node soft-fail under SYSTEM (FR #1825 / harvest #2020)
+
+| Lesson | Fix |
+|--------|-----|
+| Per-user WindowsApps winget fails under LocalSystem; node hard-fail -> msiexec 1603 | Prefer pinned nodejs.org x64 MSI (ALLUSERS=1); soft-fail git/python/node with WARN; product PR #2019 |
+
+Books: bobiverse-fleet-ops, common/docs/post-install.md.
+
+## 2026-10-04 - intake/BobCallback/ARR 502 ops pin ionos (FR #1899)
+
+| Lesson | Fix / book |
+|---|---|
+| Chair offered intake 502 / BobCallback / ARR reverse-proxy FRs to flamingo | Stamp require_machine=ionos from title/body cues (intake+502, BobCallback+:7700, ARR/reverse-proxy+/bob/v1) |
+
+Books: `common/scripts/gitclaim.py`. Related body-line pin: FR #1824.
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
+
+## 2026-10-04 - skill-harvest-log rebase keep-both (FR #1757 / #1750)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest PRs that touch skill-harvest-log.md must rebase onto main before MRB merge when parallel promotes landed; one fix PR must keep both dated sections | Documented in harvest-agent-skills + bobiverse-bob-job-mrb. Evidence: MRB #1741 FAIL-fixed via #1750 (TipForm + ionos-pin sections both kept). |
+
+## 2026-10-04 - job-uat drop needs-mrb1 GIVEUP gate (FR #1830)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvested UAT gates must not teach ACK/GIVEUP wait-for-needs-mrb1 | bobiverse-bob-job-uat: CAST IRON ban; human gate is needs-human only (with #1717/#1526). |
+
+## 2026-10-04 - Harvest intake links existing PR (FR #1812)
+
+| Lesson | Fix |
+|--------|-----|
+| kind=harvest/skill with no files but body/title cites pull/N filed a second skill issue (filed_issue_fallback) and queued duplicate FR work | intake links existing PR (`linked_existing_pr`); log draft_pr_error; skip_fr `harvest_pr_summary` for via-intake+skill PR-opened receipts; harvest `-ExistingPrUrl` |
+## 2026-10-04 - Body-line require_machine pin (FR #1824 / #1843)
+
+| Lesson | Fix |
+|--------|-----|
+| Dedicated body line `require_machine: ionos` was ignored (FR #1508 blocked inline evidence); flamingo got ionos-only offers | Honor MULTILINE `^require_machine[:=]` pin lines in body cues; keep inline evidence unpinned |
 
 ## 2026-10-04 - Fix-PR race after DONE PASS (harvest #1981 / MRB #1847)
 
@@ -10,7 +49,6 @@ Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) rem
 | Fix PR can race CONFLICTING and close unmerged after DONE PASS | Immediately open a land PR from the known-good tip onto current main; merge; verify origin/main has the lesson before ending |
 
 Books: obiverse-bob-job-mrb. Example land: PR #1979 after #1977 race.
-
 
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 
@@ -47,7 +85,7 @@ Books: `bobiverse-bob`, troubleshooting, `bobiverse-bob-job-mrb`. Twin #1681 (wa
 
 | Lesson | Fix |
 |--------|-----|
-| idle+ungated during BoredEmitter harvest_hold (~90s after DONE) is not true starve; expect !bored after hold; suppress orphan/giveup/queue_flow false alarms | Documented in `bobiverse-jeeves-monitor` + `bobiverse-bob-worker`. Related false-starve gates: FR #1622/#1625/#1652 / PR #1654 |
+| idle+ungated during BoredEmitter harvest_hold (~90s after DONE) is not true starve; expect !bored after hold; suppress orphan/giveup/queue_flow false alarms | Documented in `bobiverse-jeeves-monitor` + `bbobiverse-bob-worker`. Related false-starve gates: FR #1622/#1625/#1652 / PR #1654 |
 
 ## 2026-10-04 - Conflict-marker CAST IRON before merge (FR #1634 / harvest #1657)
 
@@ -132,7 +170,7 @@ Book: `bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md`.
 
 | Lesson | Fix |
 |--------|-----|
-| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/...` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bobiverse-bob-job-fr` |
+| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/...` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bbobiverse-bob-worker`, `bobiverse-bob-job-fr` |
 
 ## 2026-10-03 - FR #806 archive-richer hand-merge
 
@@ -140,40 +178,40 @@ Book: `bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md`.
 |--------|-----|
 | Ten "archive richer" docs flagged in ARCHIVED_REPOS after #802 | Merged useful honesty-box / chair / design-uat / Ergo describe-only content into live files; left verbatim archive copies untouched; dropped stale archived-repo homes and old pack tool names |
 
-## 2026-09-29 ├â┬ó├óΓÇÜ┬¼├óΓé¼┬¥ WIN-MPRE8VI4U6U airc/bob/jeeves cutover
+## 2026-09-29 — WIN-MPRE8VI4U6U airc/bob/jeeves cutover
 
 Harvested into `.grok/skills/bobiverse-{jeeves,bob,airc}` + `docs/post-install.md` + install scripts:
 
 | Lesson | Fix |
 |--------|-----|
 | `Start-Jeeves` / `--channel` + PowerShell `#` comment | `irc_agent.py`: `--channel` optional when `--chair` |
-| MSI LocalSystem ChairHome ├â┬ó├óΓé¼┬á├óΓé¼Γäó `C:\Users\Default\├â╞Æ├é┬ó├â┬ó├óΓé¼┼í├é┬¼├âΓÇÜ├é┬ª` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
+| MSI LocalSystem ChairHome → `C:\Users\Default\…` | `Install-Jeeves`: prefer Admin chair or `home-jeeves` |
 | Legacy `BobJeeves` + `ircJeeves` both Running | `Disable-BobiverseLegacyBobJeeves` on install |
 | `CryptUnprotectData` with LocalSystem + Admin identity | post-install + skill: ObjectName / park identity interim |
-| Crash-loop stderr flooding airc console | NSSM AppStdout/AppStderr ├â┬ó├óΓé¼┬á├óΓé¼Γäó `C:\ai\jeeves\logs\` |
+| Crash-loop stderr flooding airc console | NSSM AppStdout/AppStderr → `C:\ai\jeeves\logs\` |
 | Leftover `AircConsole` beside bobiverse `Airc` | `Install-Airc` **removes** `AircConsole` from SCM |
 | Legacy `BobJeeves` left Stopped/Disabled in services.msc | `Remove-BobiverseLegacyService` deletes SCM entry (tree kept) |
 | Remote ops via bob outbox PRIVMSG to `*_console` | bobiverse-bob / bobiverse-airc skills |
 | Duplicate MSI tray vs Watch-BobTray | already 0.1.5 (#14); documented again |
 
-VERSION ├â┬ó├óΓé¼┬á├óΓé¼Γäó **0.1.6** (pack when shipping).
+VERSION → **0.1.6** (pack when shipping).
 
-## 2026-09-30 ├â┬ó├óΓÇÜ┬¼├óΓé¼┬¥ DEV1 TipForm companion durable start
+## 2026-09-30 — DEV1 TipForm companion durable start
 
 Harvested into .grok/skills/bobiverse-bob + docs/post-install.md + tray launcher:
 
 | Lesson | Fix |
 |--------|-----|
 | Tray logs `tray up` then dies when started from Grok agent shell | `Start-BobFleetTray` uses WMI `Win32_Process.Create` (job-object breakaway) |
-| Broad seat-wrapper `match Watch-BobTray` kills diagnosing shells | Kill filter requires `-File ├â╞Æ├é┬ó├â┬ó├óΓé¼┼í├é┬¼├âΓÇÜ├é┬ªWatch-BobTray.ps1` / `_Watch-BobTray-*.ps1` |
+| Broad seat-wrapper `match Watch-BobTray` kills diagnosing shells | Kill filter requires `-File …Watch-BobTray.ps1` / `_Watch-BobTray-*.ps1` |
 | Product is service + companion, not BobFleet task | HKCU `Run\BobiverseTray`; disable `BobFleet-<id>` |
 | LocalSystem skipped update-check | `Start-Bob` no longer forces `BOBIVERSE_NO_UPDATE`; `Check-BobiverseUpdate` resolves `gh` + Releases API |
 | TipForm recycle JIT `PipelineStoppedException` | CatchException before Controls; swallow on ticks (agentic_build Watch-BobTray) |
 | Version visible on card | TipForm footer `bob {ver}` |
 
-VERSION ├â┬ó├óΓé¼┬á├óΓé¼Γäó **0.1.8** (pack when shipping).
+VERSION → **0.1.8** (pack when shipping).
 
-## 2026-09-30 ├â┬ó├óΓÇÜ┬¼├óΓé¼┬¥ Jeeves webhooks + digest roster + start ff-only (0.1.9)
+## 2026-09-30 — Jeeves webhooks + digest roster + start ff-only (0.1.9)
 
 | Lesson | Fix |
 |--------|-----|
@@ -181,20 +219,20 @@ VERSION ├â┬ó├óΓé¼┬á├óΓé¼Γäó **0.1.8** (pack when shippin
 | Intake/jira on ionos | `bobcallback` `/bob/v1/intake` + `/bob/v1/jira`; durable `webhook_queue`; announce `#bobiverse` |
 | Harvest without GitHub | shared `.grok/skills/harvest` in every MSI; intake `kind` default `issue` |
 | Product MSI books split | Pack stages per-product docs/skills/AGENTS; jeeves has no bob seat/TipForm |
-| Start-time update | `Sync-BobiverseFromRepo` ff-only clone ├â┬ó├óΓé¼┬á├óΓé¼Γäó sync install tree; MSI update is fallback |
+| Start-time update | `Sync-BobiverseFromRepo` ff-only clone → sync install tree; MSI update is fallback |
 | Install start failures | `Report-BobiverseIntakeIssue` from Install-Jeeves/Bob/Airc |
 
-VERSION ├â┬ó├óΓé¼┬á├óΓé¼Γäó **0.1.9**.
-## 2026-09-30 ├â┬ó├óΓÇÜ┬¼├óΓé¼┬¥ TipForm Restart├â┬ó├óΓé¼┬á├óΓé¼ΓäóircBob; tray never Sync/ff (0.1.10)
+VERSION → **0.1.9**.
+## 2026-09-30 — TipForm Restart→ircBob; tray never Sync/ff (0.1.10)
 
 | Lesson | Fix |
 |--------|-----|
 | Tray + service both looked like updaters | Tray Start skips product update; Sync/ff only on Start-Bob |
-| TipForm Restart only relaunched UI | TipForm **Restart** ├â┬ó├óΓé¼┬á├óΓé¼Γäó `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
+| TipForm Restart only relaunched UI | TipForm **Restart** → `Start-BobFleetTray -ForceNew` (restarts ircBob + tray); ear-only remains `Restart-BobEar.ps1` (FR #154) |
 | Quiet MSI TipForm in session 0 (invisible) | Start-BobTrayInteractive ONLOGON /IT; no session-0 Start-Process |
-| Jeeves missing from #win-mpre... | ChanServ !register required for chair_channels |
+| Jeeves missing from #win-mpre… | ChanServ !register required for chair_channels |
 
-VERSION ├â┬ó├óΓé¼┬á├óΓé¼Γäó **0.1.10**.
+VERSION → **0.1.10**.
 
 ## 2026-10-02 - chair commands, Start Menu, agent-start layer (PR #83)
 
@@ -268,4 +306,11 @@ Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #
 | parent_of after proc.wait() empty | Capture create-parent at start_agent (FR #1643 / PR #1658) |
 | Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
 
-Books: obiverse-bob-worker, obiverse-bob-troubleshooting.
+Books: bbobiverse-bob-worker, bbobiverse-bob-troubleshooting.
+Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
+
+## 2026-10-04 - MRB enqueue when resync blocked (harvest #1927)
+
+| Lesson | Fix |
+|--------|-----|
+| When open PRs are missing from the MRB queue because git-claim.lock / token 403 blocked resync: enqueue_unaccepted via gh pr list; clear_seat_doing stale busy | Documented in jeeves-troubleshooting + jeeves-monitor. Product root #1811 → #1993. |

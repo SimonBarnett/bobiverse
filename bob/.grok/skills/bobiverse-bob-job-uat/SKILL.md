@@ -85,7 +85,7 @@ flowchart TD
 
 ## Harvested UAT gates (skill records #1216-#1429)
 
-- `needs-mrb1` is a human-vision gate, not a machine pin: ACK then GIVEUP and wait for the label to be cleared. Do not start ionos/DEV1 work merely because the row was offered, and do not infer a machine from a title.
+- **CAST IRON (FR #1830 / #1717 / #1526):** never create, stamp, or wait on `needs-mrb1`/`mrb1` — that label was an offer hallucination. The real human gate is `needs-human` only. Do not ACK/GIVEUP to "wait for needs-mrb1 to clear". Do not start ionos/DEV1 work merely because a row was offered, and do not infer a machine from a title.
 - Repo UAT is `UAT #0` only after the repository is clear. An exact-author escape may be used only when the remaining candidates are ledger/GIVEUP blocked; never UAT your own implementation or MRB-fix.
 - A hard `require_machine`/seat pin beats `any` or an inferred default. Keep self-UAT and MRB-author rows away from their author; record the accepted-by/author stamps needed for later offers.
 - After a UAT/MRB merge, resync main before re-offering and purge stale `offered_to`/`doing` state; a merged row must not be recycled as a fresh PR/UAT.

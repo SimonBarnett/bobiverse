@@ -72,6 +72,14 @@ Branch `harvest/…` or `fix/…` -> PR to `main`. Bump `common/VERSION` only wh
 3. Append a dated line to `common/docs/skill-harvest-log.md` when the lesson is new.
 4. Skip one-off incident notes and noisy chat.
 
+## skill-harvest-log parallel promotes (FR #1757 / MRB #1741 -> #1750)
+
+common/docs/skill-harvest-log.md is a shared append-only index. Parallel harvest/promote PRs often both add a new dated ## section at the same tip, so the second PR goes CONFLICTING against main.
+
+* Before MRB merge (and before DONE on a harvest PR that touches this file): rebase or merge origin/main onto the tip.
+* When resolving the conflict: **keep both dated sections** (and both lesson rows). Do not drop the other promote's section to "win" the merge.
+* One focused fix/rebase PR is enough when the unique head is still the right acceptance (see obiverse-bob-job-mrb CONFLICTING). Example: MRB #1741 FAIL-fixed via #1750 keeping TipForm + ionos-pin sections.
+
 ## Worker: consolidate open skill receipts -> promote PR (FR #1684 / #1682)
 
 `label:skill` / titles `harvest:` / `skill:` are **offerable FR promote jobs** (FR #1682): the chair hands them out so workers consolidate and open a **promote PR** for hostile MRB. They are not product code FRs and still do **not** block repo UAT. Intake alone is a receipt, not a merge - do **not** GIVEUP when offered.

@@ -40,6 +40,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | `health` ok while report dead | Task `Ready`/`Running` alone is not healthy — require LISTEN + GET `/bob/v1/report` (or `/health`) HTTP 200. |
 | `github_resync: no token` | Put the token in `config\github.token` (one line, ACL SYSTEM+Administrators). Handling is unchanged; only the source is logged. |
 | Open PR disappeared from MRB queue after resync | Stale premature `mrb_done` purged the row. Open `pr_exists` must win; clear stale `mrb_done` like `fr_done` (FR #1585 / #1613 / PR #1606). |
+| Many open PRs with no MRB unaccepted rows (resync blocked) | `git-claim.lock` timeout / OSError or `GitHub.token` 403 can drop issue+PR queue events while `gh pr list` still works (harvest #1927 / product #1811 → #1993). Heal: `enqueue_unaccepted(GitClaim MRB)` per open PR from `gh pr list`; `clear_seat_doing` for stale busy so `!bored` can offer. Prefer fixing the lock/token root; do not leave the queue empty of open PRs. |
 | Chair keeps losing the nick `Jeeves` | Legacy `BobJeeves` (gh-Jeeves) still installed - remove it from the SCM. |
 | `error: the following arguments are required: --channel` | An unquoted `#bobiverse` in a PowerShell command line. Quote it. |
 | Mojibake / parse failure in a ps1 | Keep the BOM on existing ps1 files; write Python/JSON/outbox without BOM. |
@@ -59,7 +60,8 @@ Probe together: scheduled-task state, `:7700` LISTEN, and a fresh GET `http://12
 7. **Orphan python still serving** — after a heal, if only orphan `bobcallback.py` remains with HTTP 200, do not stack supervised; wait until report drops, then start one clean supervised.
 8. **Brief timeout with LISTEN** — connect timeout while LISTEN is present: re-probe curl once; do not immediate restart. If the re-probe returns HTTP 200, leave the single supervised owner alone (harvest #1705/#1706).
 9. **`digest.lock`** — leave a non-empty fresh lock alone when the holder PID is live (`bobcallback` or `irc_agent`). Clear only empty/stale foreign locks.
-10. **After heal** — `Invoke-BobiverseHarvest.ps1 -Flush` so intake queued during IIS/ARR 502 while `:7700` was down can drain.
+10. **`git-claim.lock` / `GIT fail err=queue*` (FR #1811)** — webhook enqueue failures are now `queue-lock-timeout` / `queue-read` / `queue-write` (not opaque `queue`). Claims spool to `git-claim-pending.jsonl` and drain on the next lock; raise wait via `BOB_GITCLAIM_LOCK_S` (default 30). Not the same bug as multi-supervisor BobCallback (#1767). Stuck 0-byte chair-held `git-claim.lock` still needs `Restart-Service ircJeeves` only (never BobIrcd).
+11. **After heal** — `Invoke-BobiverseHarvest.ps1 -Flush` so intake queued during IIS/ARR 502 while `:7700` was down can drain.
 
 Always finish with the harvest step (see rule above) - every row here was learned the hard way and is only useful if the next
 agent files what it finds.

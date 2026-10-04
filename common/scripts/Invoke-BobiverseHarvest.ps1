@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Harvest step for any Bobiverse debugging/maintenance session: file what you learned to the intake webhook.
@@ -22,6 +22,7 @@ param(
     [string[]]$Lesson = @(),
     [string[]]$SkillFile = @(),
     [string]$Repo = 'SimonBarnett/bobiverse',
+    [string]$ExistingPrUrl = '',  # FR #1812: when set / already in Summary, intake links PR (no fallback skill issue)
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
     [string]$Machine = '',
     [string]$OutboxDir = '',
@@ -93,9 +94,15 @@ function Get-IntakeHttpStatus {
     param($ErrorRecord)
     $ex = $ErrorRecord.Exception
     while ($null -ne $ex) {
-        if ($ex.Response -and $ex.Response.StatusCode) {
-            try { return [int]$ex.Response.StatusCode } catch { }
-            try { return [int]$ex.Response.StatusCode.value__ } catch { }
+        # FR #1842: StrictMode — only touch .Response when the property exists.
+        $respProp = $ex.PSObject.Properties['Response']
+        if ($null -ne $respProp -and $null -ne $respProp.Value) {
+            $resp = $respProp.Value
+            $codeProp = $resp.PSObject.Properties['StatusCode']
+            if ($null -ne $codeProp -and $null -ne $codeProp.Value) {
+                try { return [int]$codeProp.Value } catch { }
+                try { return [int]$codeProp.Value.value__ } catch { }
+            }
         }
         $ex = $ex.InnerException
     }
@@ -117,13 +124,26 @@ function Get-IntakeHttpStatus {
 
 function Move-OutboxDropped {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Reason)
+    # FR #1910: concurrent Flush may have already removed/moved the source — treat as success.
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "DROPPED $Path (already gone; $Reason)"
+        return
+    }
     $dir = Split-Path -Parent $Path
     $dropDir = Join-Path $dir 'dropped'
     New-Item -ItemType Directory -Force -Path $dropDir | Out-Null
     $dest = Join-Path $dropDir (Split-Path -Leaf $Path)
     if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
-    Move-Item -LiteralPath $Path -Destination $dest -Force
-    Write-Host "DROPPED $Path -> $dest ($Reason)"
+    try {
+        Move-Item -LiteralPath $Path -Destination $dest -Force
+        Write-Host "DROPPED $Path -> $dest ($Reason)"
+    } catch {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            Write-Host "DROPPED $Path (race; already gone; $Reason)"
+            return
+        }
+        throw
+    }
 }
 
 if ($Flush) {
@@ -189,7 +209,10 @@ if ($Flush) {
             }
             try {
                 $r = Send-Payload $raw
-                Remove-Item -LiteralPath $f.FullName -Force
+                # FR #1910: another Flush may have archived the file after SENT — do not fail the cycle.
+                if (Test-Path -LiteralPath $f.FullName) {
+                    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+                }
                 $sent++
                 Write-Host "SENT $($f.Name) intake_id=$($r.intake_id)"
             } catch {
@@ -263,9 +286,17 @@ $body = "Session summary:`n$Summary`n`nLessons:`n$lessonText`n"
 $scan = $body + (($files | ForEach-Object { $_.content }) -join "`n")
 if ($scan -match $secretRx) { throw 'refusing to send: text looks like it contains a secret/token/password. Remove it and retry.' }
 
+if ($ExistingPrUrl) {
+    $eu = $ExistingPrUrl.Trim()
+    if ($eu -and $body -notmatch [regex]::Escape($eu)) {
+        $body = $body + "`nExisting PR: $eu`n"
+    }
+}
 $title = 'harvest: ' + $Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length))
 $sha = [Security.Cryptography.SHA256]::Create()
 $idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$Repo|$title|$body"))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
+
+# FR #1812: when -Summary/-Lesson already cite https://github.com/.../pull/N (or pass -ExistingPrUrl), intake links that PR and does not file a fallback skill issue.
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
     source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = 'harvest'; version = '' }

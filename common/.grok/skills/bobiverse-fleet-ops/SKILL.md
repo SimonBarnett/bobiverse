@@ -132,6 +132,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Self-update Apply hung / 0-byte MSI / mutex stuck | `Get-Asset` stalled on GitHub download without timeout | FR #1545: IWR TimeoutSec + curl `--max-time` fallback; throw → `download-failed` + mutex release (PR #1561). Check `...\update\<product>\update.log` |
 | Wrapper splat behaves oddly / wrong args | Script used automatic `$args` for splatting | Rename to an explicit array (e.g. `$launchArgs`) before `@splat` (PR #1588) |
 | InstallRoot `VERSION` jumps after sync / disagrees with ARP | Sync copied a newer clone `VERSION` over the MSI stamp | ARP `DisplayVersion` wins; Sync heals InstallRoot to ARP and skips clone clobber (FR #1565 / #1589 / PR #1577) |
+| Quiet MSI **1603** / `node still missing after winget` under LocalSystem | Per-user WindowsApps `winget` alias unusable as SYSTEM; Node/git/python hard-failed | FR #1825: prefer pinned **nodejs.org** x64 MSI (`ALLUSERS=1` + sha256); soft-fail missing tools with `WARN tool-missing` so product MSI continues (PR #2019). Install machine-wide prereqs afterward if needed at runtime |
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
 
@@ -139,3 +140,4 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 - On live Windows hosts, restart only the affected BobCallback task or `ircJeeves` service. Never restart BobIrcd/Ergo as a shortcut, and preserve queue/outbox evidence while recovering a callback or worker.
 - For upgrades and resync, verify the installed VERSION, clean/main worktree, fetch result, service/task state, and endpoint health; record an ALERT when fetch/ff/worktree state is stale.
 - After MSI, treat ARP `DisplayVersion` as VERSION truth for Sync heal; never let a newer repo/clone VERSION overwrite the MSI stamp (FR #1565 / harvest #1589).
+- Quiet MSI bootstrap under SYSTEM: do not rely on per-user WindowsApps winget; prefer pinned nodejs.org MSI for Node and soft-fail git/python/node so install does not 1603 (FR #1825 / harvest #2020 / PR #2019).
