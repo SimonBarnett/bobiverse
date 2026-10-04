@@ -588,6 +588,11 @@ function Invoke-Apply {
                 $o = Get-AppParam -AppParameters $appParams -Name $key
                 $n = Get-AppParam -AppParameters $newParams -Name $key
                 if ($o -and $o -ne $n) {
+                    # FR #2355: never restore ConsoleHome under Users\Default (NickServ GUID orphan).
+                    if ($key -eq 'ConsoleHome' -and ($o -match '(?i)(?:^|[\\/])Users[\\/]Default(?:[\\/]|$)')) {
+                        Write-UpdLog "identity-reconcile skip ConsoleHome under Users\Default (keeping installer value)"
+                        continue
+                    }
                     Write-UpdLog "identity-reconcile $key changed by the installer - restoring the previous value"
                     Invoke-ServiceReregister -AppParameters $appParams -LogName 'reconcile-install.log' -What 'reconcile'
                     break

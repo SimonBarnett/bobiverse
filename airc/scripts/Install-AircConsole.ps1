@@ -180,6 +180,38 @@ if ($Launcher -match '^[A-Za-z]:\\' ) {
     }
 }
 
+function Test-AircDefaultProfileHome {
+    param([string]$Path)
+    return [bool](($Path) -and ($Path -match '(?i)(?:^|[\\/])Users[\\/]Default(?:[\\/]|$)'))
+}
+
+function Resolve-AircSafeConsoleHome {
+    <#
+      FR #2355: never keep ConsoleHome under Users\Default (prior-identity restore / FR #1552
+      can re-bake the orphan NickServ home). Migrate files to <install>\home and rewrite paths.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Home,
+        [Parameter(Mandatory)][string]$SafeHome,
+        [string]$PasswordFilePath = ''
+    )
+    if (-not (Test-AircDefaultProfileHome -Path $Home)) {
+        return [pscustomobject]@{ ConsoleHome = $Home; PasswordFile = $PasswordFilePath; Migrated = $false }
+    }
+    Write-Host "WARN FR #2355: ConsoleHome under Users\Default ($Home) — migrating to $SafeHome"
+    New-Item -ItemType Directory -Force -Path $SafeHome | Out-Null
+    if (Test-Path -LiteralPath $Home) {
+        Copy-Item -LiteralPath (Join-Path $Home '*') -Destination $SafeHome -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $pf = $PasswordFilePath
+    if ($pf -and (Test-AircDefaultProfileHome -Path $pf)) {
+        $leaf = Split-Path -Leaf $pf
+        if (-not $leaf) { $leaf = 'console.password' }
+        $pf = Join-Path $SafeHome $leaf
+    }
+    return [pscustomobject]@{ ConsoleHome = $SafeHome; PasswordFile = $pf; Migrated = $true }
+}
+
 # LocalSystem / quiet MSI: never bake C:\Users\Default\.airc* (NickServ GUID orphan).
 if (-not $ConsoleHome) {
     $adminHome = Join-Path $env:SystemDrive 'Users\Administrator\.airc'
@@ -202,6 +234,15 @@ if (-not $ConsoleHome) {
         $ConsoleHome = Join-Path $env:USERPROFILE '.airc-console'
     }
 }
+New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
+
+# FR #2355: remap even when -ConsoleHome / prior identity restored Users\Default.
+$installRootForHome = Split-Path -Parent (Split-Path -Parent $Launcher)
+if (-not $installRootForHome) { $installRootForHome = Split-Path -Parent $scriptDir }
+$safeConsoleHome = Join-Path $installRootForHome 'home'
+$homeFix = Resolve-AircSafeConsoleHome -Home $ConsoleHome -SafeHome $safeConsoleHome -PasswordFilePath $PasswordFile
+$ConsoleHome = $homeFix.ConsoleHome
+if ($homeFix.PasswordFile) { $PasswordFile = $homeFix.PasswordFile }
 New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
 
 function Write-AircSecretFile {

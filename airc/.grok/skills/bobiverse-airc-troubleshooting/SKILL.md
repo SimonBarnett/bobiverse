@@ -35,3 +35,8 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | DisplayName still `#{machine}` | `Install-AircConsole.ps1` expands DisplayName/Description with machine id. Re-run install or set NSSM DisplayName after upgrade. |
 
 Finish every session with the harvest step.
+
+## FR #2355
+
+| DisplayName still literal #{machine} or ConsoleHome under Users\Default | Old NSSM bake / FR #1552 prior-identity restore of Default home | Heal DisplayName with expanded MachineId; migrate home to <ai root>\airc\home and update AppParameters; Install remaps Default after prior restore (FR #2355). |
+

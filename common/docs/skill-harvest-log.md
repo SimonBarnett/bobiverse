@@ -1,5 +1,11 @@
 # Skill harvest log
 
+## 2026-10-05 - Airc NSSM DisplayName / Default home (FR #2355)
+
+| Lesson | Fix |
+|--------|-----|
+| Live DisplayName stayed literal #{machine}; AppParameters ConsoleHome under Users\Default survived upgrades via FR #1552 identity restore | Expand DisplayName with MachineId (FR #1546); remap Default ConsoleHome to <install>\home after prior-identity restore; identity-reconcile must not restore Default homes |
+
 ## 2026-10-05 - Queue body[:500] must keep require_machine pins (MRB #2319 / FR #2312)
 
 | Lesson | Fix |
