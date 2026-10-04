@@ -2702,8 +2702,30 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
 
 
 
+def clamp_empty_reply_stats(stats: dict | None) -> dict:
+    """FR #2333: empty bored reply must never claim N>0 offerable for this seat.
+
+    `summarize_empty_offer` can still count a row the live `offer_focus_top` path
+    skipped (cooldown, awaits_mrb1, sticky_skip edge, PR checker, …). When the shop
+    already returned empty for this nick, fold leftover offerable into `blocked_other`.
+    """
+    out = dict(stats or {})
+    try:
+        off = int(out.get("offerable") or 0)
+    except (TypeError, ValueError):
+        off = 0
+    if off > 0:
+        try:
+            prev = int(out.get("blocked_other") or 0)
+        except (TypeError, ValueError):
+            prev = 0
+        out["blocked_other"] = prev + off
+        out["offerable"] = 0
+    return out
+
+
 def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
-    """Shop empty reply. With stats (FR #1993 WP2 / FR #2309): focus + per-nick gate breakdown."""
+    """Shop empty reply. Seat-relative (FR #2333): focus + per-nick gate breakdown."""
     if not stats:
         return f"{nick}: nothing queued"
     try:
@@ -2714,6 +2736,7 @@ def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
         self_mrb = int(stats.get("self_mrb") or 0)
         ledger = int(stats.get("ledger") or 0)
         sticky = int(stats.get("sticky_offered") or 0)
+        blocked_other = int(stats.get("blocked_other") or 0)
     except (TypeError, ValueError):
         return f"{nick}: nothing queued"
     if unaccepted <= 0:
@@ -2725,8 +2748,10 @@ def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
         extra.append(f"ledger={ledger}")
     if sticky:
         extra.append(f"sticky={sticky}")
+    if blocked_other:
+        extra.append(f"blocked_other={blocked_other}")
     base = (
-        f"{nick}: {offerable} offerable under focus "
+        f"{nick}: {offerable} offerable for you under focus "
         f"({unaccepted} unaccepted, {out_of_focus} out-of-focus, "
         f"{req} require_machine"
     )
