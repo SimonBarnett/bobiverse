@@ -847,7 +847,7 @@ class Relay:
         self._timer: Optional[threading.Timer] = None
         self.last_injected_at: Optional[float] = None
         self.injected = 0
-        self.on_inject: Optional[Callable[[], None]] = None  # health: note "input delivered, expect activity"
+        self.on_inject: Optional[Callable[..., None]] = None  # health: note "input delivered, expect activity" (line arg)
         self.last_unacked = ""
 
     def set_target(self, inject: Optional[Callable[[str], bool]]) -> None:
@@ -910,7 +910,13 @@ class Relay:
             self._persist_last_from(line)
             if self.on_inject:
                 try:
-                    self.on_inject()
+                    self.on_inject(line)
+                except TypeError:
+                    # Older callbacks took no args.
+                    try:
+                        self.on_inject()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             return "injected"
@@ -1536,11 +1542,15 @@ class BoredEmitter:
                 self._inject_at = None
             self._cv.notify_all()
 
-    def activity(self) -> None:
-        """A message was forwarded to the agent (it is about to work): mark pending work + reset idle."""
+    def activity(self, mark_work: bool = True) -> None:
+        """A message was forwarded to the agent: reset idle; optionally mark pending assign work.
+
+        ``mark_work=False`` for idle wire like Jeeves ``nothing queued`` (MRB #1617): do not start
+        ``assign_grace_s`` inject-pending busy — the agent is not working a job.
+        """
         with self._cv:
             now = self.clock()
-            if not self._ack_open:
+            if mark_work and not self._ack_open:
                 self._inject_pending = True
                 self._inject_at = now
             if self._harvest_until is not None and now < self._harvest_until:
@@ -1747,10 +1757,17 @@ class Supervisor:
         if irc:
             irc.on_lost = lambda why: self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
 
-    def _on_inject(self) -> None:
+    def _on_inject(self, line: str = "") -> None:
         self.detector.note_inject(self.clock())
         if self.bored:
-            self.bored.activity()
+            # MRB #1617: ``nothing queued`` is idle wire, not an assign — do not arm inject-pending.
+            mark_work = True
+            parts = (line or "").split(None, 3)
+            if len(parts) >= 4 and parts[0].upper() == "FROM":
+                mark_work = not is_nothing_queued(parts[3], self.nick)
+            elif line:
+                mark_work = not is_nothing_queued(line, self.nick)
+            self.bored.activity(mark_work=mark_work)
 
     def post_bored(self) -> bool:
         """The ONLY place !bored is sent: the exe, own shop, never during shutdown / after IRC loss."""

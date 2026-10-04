@@ -245,6 +245,46 @@ def test_fr1611_inject_pending_blocks_bored_until_ack_or_grace():
     e.stop()
 
 
+def test_mrb1617_nothing_queued_does_not_arm_inject_pending():
+    """Idle Jeeves wire must not start assign_grace_s busy (MRB #1617)."""
+    sent: list = []
+    e = bw.BoredEmitter(
+        lambda: sent.append(time.monotonic()) or True, lambda m: None,
+        idle_s=0.2, repeat_s=0.2, harvest_hold_s=0.0, assign_grace_s=30.0,
+    )
+    e.start()
+    e.set_ready(True)
+    assert wait_until(lambda: len(sent) == 1, 1.0)
+    e.activity(mark_work=False)  # nothing queued
+    assert wait_until(lambda: len(sent) >= 2, 1.5), "idle !bored must still fire after nothing-queued"
+    e.stop()
+
+
+def test_mrb1617_on_inject_nothing_queued_skips_pending(tmp_path):
+    class FakeIrc:
+        shop = "#marchhare"
+        alive = True
+        on_nak = None
+        on_lost = None
+
+        def say(self, *a, **k):
+            return True
+
+    class FakeRelay:
+        on_inject = None
+
+    logs: list = []
+    bored = bw.BoredEmitter(lambda: True, logs.append, harvest_hold_s=0.0, assign_grace_s=600.0)
+    sup = bw.Supervisor(
+        kind="grok", exe="x", cwd=str(tmp_path), machine="marchhare", nick="marchhare-1",
+        run_dir=tmp_path, irc=FakeIrc(), relay=FakeRelay(), log=logs.append, bored=bored,
+    )
+    sup._on_inject("FROM Jeeves #marchhare marchhare-1: nothing queued")
+    assert bored._inject_pending is False
+    sup._on_inject("FROM Jeeves #marchhare marchhare-1: FR o/r#9 https://example.com/i/9")
+    assert bored._inject_pending is True
+
+
 # ------------------------------------------------------------------------------------------------ on the wire (fake IRC, real seat + supervisor)
 def bored_lines(ircd):
     return [r for r in ircd.received if r == "PRIVMSG #marchhare :!bored"]
