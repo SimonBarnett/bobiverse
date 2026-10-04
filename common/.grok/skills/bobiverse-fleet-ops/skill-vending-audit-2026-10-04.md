@@ -2,9 +2,9 @@
 
 ## Result
 
-The harvest commit `b15182a` was submitted as PR #1491 and merged. Its lessons are already promoted into the existing owner books. This audit keeps the remaining cross-cutting placement and install evidence with the shared `bobiverse-fleet-ops` book, which is staged by both the Bob MSI and the Jeeves install.
+The harvest commit `b15182a` was submitted as PR #1491 and merged. Its lessons are already promoted into the existing owner books. This audit keeps cross-cutting placement and install evidence with the shared `bobiverse-fleet-ops` book, staged by both the Bob MSI and the Jeeves install.
 
-No standalone `skill-dba` source was found in the repository or the audited installed trees. Do not invent one or create a second top-level `skills` tree. A future DBA lesson must be filed to an owning book with its source issue/PR before it is vendored.
+The MSSQL DBA source is `SimonBarnett/skill-dba` at pinned main commit `7bf3824ae5b6de3cf461bd22118658c4e371d5b4`. Its twelve `.grok/skills/<name>/SKILL.md` books, config example, scripts, and docs are vendored under `skill-dba/` in this shared book. Future DBA harvests must arrive on skill-dba as a branch + PR; never silently edit the vendor or push main.
 
 ## Owner map
 
@@ -18,6 +18,7 @@ No standalone `skill-dba` source was found in the repository or the audited inst
 | queue/resync, chair/digest home, monitor smoke | `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md` | Jeeves install; user `.grok\\skills` |
 | machine pins, secret-safe service/task recovery | this shared `bobiverse-fleet-ops` book | Bob MSI + Jeeves install |
 | harvest/intake and deduplication | `common/.grok/skills/harvest-agent-skills/SKILL.md` | Bob MSI + Jeeves install |
+| MSSQL backup/health/cutover and DBA harvest | vendored `skill-dba/.grok/skills/*` | Bob MSI + Jeeves shared fleet book |
 
 User-level extras from retired `agentic_*` worktrees (`agent-monitor`, `watch-seat`, old `agentic-*`, etc.) are legacy copies, not new product books. They remain untouched; only canonical books are refreshed by installers.
 
@@ -33,9 +34,10 @@ flowchart LR
   BW --> U[User %USERPROFILE%\\.grok\\skills]
   BP --> U
   JJ --> U
+  D[skill-dba @ 7bf3824] --> R
 ```
 
-The pack copies the complete shared `bobiverse-fleet-ops` directory, not just its `SKILL.md`; the installer then replaces the matching user-level book from the staged directory. Compare relative paths and SHA-256 after installation. Never hand-edit only an installed copy.
+The pack copies the complete shared `bobiverse-fleet-ops` directory, not just its `SKILL.md`; the installer then replaces the matching user-level book recursively. Compare relative paths and SHA-256 after installation. Never hand-edit only an installed copy.
 
 ## FR acceptance flow
 
@@ -49,8 +51,6 @@ flowchart TD
   X -- mismatch --> N[fix PR; FR remains open]
   X -- match --> M[non-author MRB then UAT]
 ```
-
-The merged PR must contain `Closes #N`; a harvest record or static file listing alone does not close an FR.
 
 ## MRB acceptance flow
 
@@ -66,8 +66,6 @@ flowchart TD
   Q -- yes --> PASS[MRB PASS]
   PASS --> U[eligible UAT or merge]
 ```
-
-The implementing seat cannot self-MRB. A green unit test without staged-payload and installed-copy evidence is not PASS. A live-seat limitation remains a blocker rather than being inferred away.
 
 ## UAT acceptance flow
 
@@ -87,7 +85,7 @@ A service state, scheduled-task listing, or PyInstaller string search is not liv
 ## Audit checklist
 
 1. Source checkout is clean `main` and fast-forwarded.
-2. Bob worker/plan and Jeeves `.grok\\skills` match their allow-lists and canonical hashes.
-3. Pack tests pass and MSI harvest includes the shared book plus its audit sidecar.
+2. Bob worker/plan and Jeeves `.grok\\skills` match allow-lists and canonical hashes.
+3. Pack tests pass and MSI harvest includes the shared book plus its audit sidecar and `skill-dba/` subtree.
 4. Installed user-level copies are compared by SHA-256; legacy extras are reported, not silently deleted.
 5. Report MSI version, source commit, target folders, and FR/MRB/UAT evidence without secrets.
