@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - Ear channel_list DIGEST_ID_FOLD (harvest #2280 / MRB #2262 / #2279)
+
+| Lesson | Fix |
+|--------|-----|
+| Ear channel_list helpers must fold DIGEST_ID_FOLD aliases (ionos->win-mpre8vi4u6u, dev1->ce-priority-dev1) so Start-Bob / tests never target #ionos | inbound_transcript.canonical_machine_id via bobreport.fold_machine_id; FLEET_EAR_MACHINES uses canonical ids. Product fix PR #2279 |
+
+Books: bobiverse-bob, bob/docs/bob-ear.md, inbound_transcript.
+
 ## 2026-10-04 - CONFLICTING fix PR re-merge before REST (harvest #2274)
 
 | Lesson | Fix |

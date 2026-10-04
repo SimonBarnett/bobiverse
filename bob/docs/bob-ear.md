@@ -1,13 +1,14 @@
 # Bob ear (fleet box)
 
-Service **ircBob** → `Start-Bob.ps1` → **`scripts\bob-ear.exe`** (FR #1481, self-contained frozen `irc_agent`) or, on repo/dev trees without the exe, `python -u irc_agent.py`. Nick **`Bob-{MachineId}`**.
-Companion: TipForm systray (`scripts\Start-BobTray.ps1` → `tools\Start-BobFleetTray.ps1`).
+Service **ircBob** -> `Start-Bob.ps1` -> **`scripts\bob-ear.exe`** (FR #1481, self-contained frozen `irc_agent`) or, on repo/dev trees without the exe, `python -u irc_agent.py`. Nick **`Bob-{MachineId}`**.
+Companion: TipForm systray (`scripts\Start-BobTray.ps1` -> `tools\Start-BobFleetTray.ps1`).
 
-Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) → staged by `Pack-BobiverseRelease` into the bob MSI. Safe swap: `scripts\Install-BobEarExe.ps1` (keeps `bob-ear.exe.bak`, restores on smoke failure).
+Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) -> staged by `Pack-BobiverseRelease` into the bob MSI. Safe swap: `scripts\Install-BobEarExe.ps1` (keeps `bob-ear.exe.bak`, restores on smoke failure).
 
 ## Channels and homes
 
-- JOIN `#bobiverse` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#<machine>` on every box — Ionos, MarchHare, Flamingo, …)
+- JOIN `#bobiverse` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#<machine>` on every box — Ionos host, MarchHare, Flamingo, …)
+- **DIGEST_ID_FOLD (harvest #2280 / PR #2279):** digest aliases fold to the real shop id — `ionos` -> `win-mpre8vi4u6u`, `dev1` -> `ce-priority-dev1`. Helpers (`inbound_transcript.channel_list_for_machine` / `canonical_machine_id`) must never emit `#ionos` or `#dev1` as the shop channel.
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
 - Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
@@ -29,8 +30,8 @@ Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_wor
 | Secret | Path / env |
 |--------|------------|
 | Ergo PASS | `<ai root>\bob\config\ergo.password` or `~\.grok\ergo\connect.password` |
-| NickServ SASL | `<ai root>\bob\home\nickserv.password` → `BOB_IRC_SASL_USER=bob-{machine}` |
-| Service logon | `config\service.password` / `BOBIVERSE_SERVICE_PASSWORD` → DPAPI `service.cred` |
+| NickServ SASL | `<ai root>\bob\home\nickserv.password` -> `BOB_IRC_SASL_USER=bob-{machine}` |
+| Service logon | `config\service.password` / `BOBIVERSE_SERVICE_PASSWORD` -> DPAPI `service.cred` |
 | Digest POST | none (no secret; the digest accepts machine ids on the roster Jeeves publishes) |
 
 Do **not** mint a fresh GUID for an already-registered NickServ account.
@@ -60,10 +61,10 @@ Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai roo
 ## Tray / recycle
 
 - Product Sync/ff runs on **ircBob Start-Bob** only — TipForm Start never updates the tree.
-- TipForm menu **Restart** → `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches TipForm in the interactive session so Sync/ff runs on ear start).
-- Ear-only: Desktop / Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` (announce → `Restart-Service ircBob`).
+- TipForm menu **Restart** -> `Restart-BobTrayWatcher` -> `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches TipForm in the interactive session so Sync/ff runs on ear start).
+- Ear-only: Desktop / Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` (announce -> `Restart-Service ircBob`).
 - Quiet MSI: `Start-BobTrayInteractive.ps1` registers ONLOGON `/IT` task `BobiverseTray` (no session-0 TipForm).
-- `!recycle` / `!recycle {machine}`: announce → restart tray + `ircBob`.
+- `!recycle` / `!recycle {machine}`: announce -> restart tray + `ircBob`.
 
 ## Verify
 
