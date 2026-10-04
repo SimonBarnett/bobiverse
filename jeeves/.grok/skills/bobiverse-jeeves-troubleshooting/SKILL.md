@@ -40,6 +40,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | `health` ok while report dead | Task `Ready`/`Running` alone is not healthy — require LISTEN + GET `/bob/v1/report` (or `/health`) HTTP 200. |
 | `github_resync: no token` | Put the token in `config\github.token` (one line, ACL SYSTEM+Administrators). Handling is unchanged; only the source is logged. |
 | Open PR disappeared from MRB queue after resync | Stale premature `mrb_done` purged the row. Open `pr_exists` must win; clear stale `mrb_done` like `fr_done` (FR #1585 / #1613 / PR #1606). |
+| Many open PRs with no MRB unaccepted rows (resync blocked) | `git-claim.lock` timeout / OSError or `GitHub.token` 403 can drop issue+PR queue events while `gh pr list` still works (harvest #1927 / product #1811 → #1993). Heal: `enqueue_unaccepted(GitClaim MRB)` per open PR from `gh pr list`; `clear_seat_doing` for stale busy so `!bored` can offer. Prefer fixing the lock/token root; do not leave the queue empty of open PRs. |
 | Chair keeps losing the nick `Jeeves` | Legacy `BobJeeves` (gh-Jeeves) still installed - remove it from the SCM. |
 | `error: the following arguments are required: --channel` | An unquoted `#bobiverse` in a PowerShell command line. Quote it. |
 | Mojibake / parse failure in a ps1 | Keep the BOM on existing ps1 files; write Python/JSON/outbox without BOM. |
