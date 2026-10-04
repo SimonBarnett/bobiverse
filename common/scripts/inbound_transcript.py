@@ -25,7 +25,9 @@ _SECRETISH = re.compile(
 _lock = threading.Lock()
 
 # Canonical fleet machine ids covered by FR #2174 acceptance (path + recovery).
-FLEET_EAR_MACHINES = ("ionos", "marchhare", "flamingo")
+# Ionos host shop is win-mpre8vi4u6u (DIGEST_ID_FOLD); keep alias "ionos" for docs/tests.
+FLEET_EAR_MACHINES = ("win-mpre8vi4u6u", "marchhare", "flamingo")
+FLEET_EAR_ALIASES = ("ionos", "dev1")
 
 
 def scrub_text(text: str) -> str:
@@ -39,9 +41,27 @@ def sanitize_machine_id(machine_id: str) -> str:
     return mid
 
 
-def channel_list_for_machine(machine_id: str) -> str:
-    """Identical Start-Bob --channel value on every fleet box."""
+def canonical_machine_id(machine_id: str) -> str:
+    """Fold digest aliases (ionos->win-mpre8vi4u6u, dev1->ce-priority-dev1) for shop channels."""
     mid = sanitize_machine_id(machine_id)
+    if not mid:
+        return mid
+    try:
+        import bobreport
+
+        folded = bobreport.fold_machine_id(mid)
+        return folded or mid
+    except Exception:  # noqa: BLE001
+        if mid == "ionos":
+            return "win-mpre8vi4u6u"
+        if mid == "dev1":
+            return "ce-priority-dev1"
+        return mid
+
+
+def channel_list_for_machine(machine_id: str) -> str:
+    """Identical Start-Bob --channel value on every fleet box (aliases folded)."""
+    mid = canonical_machine_id(machine_id)
     if not mid:
         raise ValueError("machine_id required")
     return f"#bobiverse,#{mid}"
@@ -60,7 +80,7 @@ def ear_recovery_plan(
     Covers Ionos / MarchHare / Flamingo path differences called out in FR #2174:
     missing ircBob, leftover ``irc_listen.py``, missing outbox, missing transcript.
     """
-    mid = sanitize_machine_id(machine_id)
+    mid = canonical_machine_id(machine_id)
     if mid not in FLEET_EAR_MACHINES and mid:
         # Still return a plan — unknown boxes follow the same recovery.
         pass
