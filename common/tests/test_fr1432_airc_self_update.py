@@ -27,11 +27,20 @@ def test_fr1432_apply_stamps_version_when_msi_leaves_stale_file():
     assert "FR #1432" in UPD
     assert "version-stamped-after-msi" in UPD
     assert "installed VERSION is" in UPD
+    # MRB #1477: stamp only when post-install ARP DisplayVersion matches target.
+    assert "version-stamp-skipped" in UPD
+    assert "Get-BobiverseArpProduct" in UPD
 
 
 def test_fr1432_apply_heals_arp_version_desync_before_msiexec():
     assert "arp-desync-uninstall" in UPD
     assert "Get-BobiverseArpProduct" in UPD or "Uninstall" in UPD
+    assert 'bobiverse $Product' in UPD or 'bobiverse {0}' in UPD or '"bobiverse $Product"' in UPD or "bobiverse $Product" in UPD
+
+
+def test_fr1432_arp_display_name_exact_product():
+    # Live ARP rows are "bobiverse airc" / "bobiverse bob" / "bobiverse jeeves".
+    assert 'bobiverse $Product' in UPD
 
 
 def test_fr1432_airc_asset_pattern_matches_release_msi_name():
