@@ -97,7 +97,19 @@ function Wait-BobCallbackListening {
     return (Test-BobCallbackListening)
 }
 $callback = Join-Path $scriptDir 'bobcallback.py'
+# FR #1472 / #1455 / #1767: count supervised parents before any Start-Process heal.
+function Get-BobCallbackSupervisedParentCount {
+    $n = 0
+    try {
+        foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" -ErrorAction SilentlyContinue)) {
+            $cmd = [string]$p.CommandLine
+            if ($cmd -and $cmd -match 'Start-BobCallbackSupervised\.ps1') { $n++ }
+        }
+    } catch { }
+    return $n
+}
 # FR #1472 / #1455: user-context starts prefer the supervised restart wrapper (same as Register fallback).
+# FR #1767 / #1831: never stack a second supervised; prefer schtasks /Run when the task exists.
 function Start-BobCallbackUserContext {
     param(
         [string]$PythonExe,
@@ -105,6 +117,21 @@ function Start-BobCallbackUserContext {
         [string]$WorkDir,
         [string]$DigestHome
     )
+    $supCount = Get-BobCallbackSupervisedParentCount
+    if ($supCount -ge 1) {
+        Write-Host ("WARN skip Start-Process supervised; already {0} parent(s) (FR #1767)" -f $supCount)
+        return $false
+    }
+    $cbTask = Get-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
+    if ($cbTask) {
+        try {
+            schtasks /Run /TN BobCallback 2>&1 | Out-Null
+            Write-Host 'INFO bobcallback heal via schtasks /Run /TN BobCallback (FR #1831)'
+            return $true
+        } catch {
+            Write-Host ("WARN schtasks /Run BobCallback failed: {0}" -f $_.Exception.Message)
+        }
+    }
     $supervise = Join-Path $WorkDir 'Start-BobCallbackSupervised.ps1'
     if (-not (Test-Path -LiteralPath $supervise)) {
         $supervise = Join-Path (Split-Path -Parent $CallbackPy) 'Start-BobCallbackSupervised.ps1'

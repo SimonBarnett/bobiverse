@@ -58,17 +58,18 @@ def _port_listening(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def _bobcallback_ok() -> tuple[str, bool]:
-    """Accept service Running, scheduled task Running/Ready, or :7700 listen."""
+    """Healthy only when :7700 listens (or skipped). Task Ready/Running alone is a false ok (FR #1767)."""
     st = _service_state("BobCallback")
-    if st.lower() == "running":
-        return st, True
     if st.lower() == "skipped":
         return st, True
-    task = _scheduled_task_state("BobCallback")
-    if task.lower() in ("running", "ready"):
-        return f"task:{task}", True
     if _port_listening(BOBCALLBACK_PORT):
         return f"listen:{BOBCALLBACK_PORT}", True
+    task = _scheduled_task_state("BobCallback")
+    # Ready/Running without LISTEN = wedge / multi-supervisor lock fight — report finding.
+    if task.lower() in ("running", "ready"):
+        return f"task:{task}-no-listen", False
+    if st.lower() == "running":
+        return f"{st}-no-listen", False
     return st if st != "missing" else f"missing/task:{task}", False
 
 

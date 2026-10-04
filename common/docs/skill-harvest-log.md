@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
+
+| Lesson | Fix |
+|--------|-----|
+| Two Start-BobCallbackSupervised parents fight digest.lock → public INTAKE 502 | Wrapper refuses second parent; Start-Jeeves/Register count parents and prefer schtasks /Run; health treats Ready without LISTEN as finding |
+
 ## 2026-10-04 - Honor require_machine stamps with ACK/GIVEUP (harvest #1688)
 
 | Lesson | Fix |
