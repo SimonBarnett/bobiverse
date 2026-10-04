@@ -161,9 +161,11 @@ def test_queue_flow_offerable_count_uses_gates(tmp_path, monkeypatch):
     )
     payload, code = queue_flow.check(_args(chair, digest))
     assert payload["offerable_count"] == 0
-    # empty offerable is itself a queue_flow finding
-    assert code == 1
-    assert any("offer queue empty" in f for f in payload["findings"])
+    # FR #1518 / #1625: gated or empty offerable is EXIT 0 (notes), not false starve.
+    assert code == 0, payload
+    assert payload["ok"] is True
+    notes = " ".join(payload.get("notes") or []).lower()
+    assert "gated" in notes or "empty" in notes or "ungated" in notes
 
 
 def test_count_offerable_helper_zero_without_nicks():

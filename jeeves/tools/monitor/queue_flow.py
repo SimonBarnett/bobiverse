@@ -93,12 +93,22 @@ def _legacy_needs_mrb1_count(unaccepted: list[dict]) -> int:
 
 
 def _count_idle_seats(digest_doc: dict) -> int:
-    n = 0
-    machines = digest_doc.get("machines") if isinstance(digest_doc, dict) else None
-    for w in iter_worker_entries(machines):
-        if str(w.get("state") or "").lower() == "idle":
-            n += 1
-    return n
+    """FR #1625 / #1652: shop-form idle seats only (deduped; drop w-mh-* ghosts)."""
+    try:
+        import idle_seats as _idle
+
+        machines = digest_doc.get("machines") if isinstance(digest_doc, dict) else None
+        return len(_idle.collect_idle_shop_seats(machines))
+    except Exception:
+        n = 0
+        machines = digest_doc.get("machines") if isinstance(digest_doc, dict) else None
+        for w in iter_worker_entries(machines):
+            if str(w.get("state") or "").lower() == "idle":
+                nick = str(w.get("nick") or w.get("name") or "")
+                if nick.lower().startswith("w-"):
+                    continue
+                n += 1
+        return n
 
 
 def _pin_zero_seat_note(unaccepted: list[dict], digest_doc: dict) -> str | None:
@@ -172,22 +182,30 @@ def check(args):
         bucket = _gate_bucket(r)
         gated_counts[bucket] = gated_counts.get(bucket, 0) + 1
 
-    # Seat-aware ungated offerable (same as FR #1116 / idle_seats).
+    # Seat-aware ungated offerable for IDLE shop seats only (FR #1116 / #1625 / #1652).
+    # Do not pass busy/doing nicks into count_offerable — that inflated offerable_n while
+    # orphan w-mh-* ghosts made idle_seat_count>0 (false true-starve).
     offerable_n = 0
+    pending_offers = 0
     try:
         import idle_seats as _idle
 
-        nicks = []
+        pending_offers = sum(
+            1 for r in unaccepted if isinstance(r, dict) and _idle.row_offer_pending(r)
+        )
         machines = dig.get("machines") if isinstance(dig, dict) else None
-        for w in iter_worker_entries(machines):
-            nick = w.get("nick") or w.get("name")
-            if nick:
-                nicks.append(str(nick))
+        idle_rows = _idle.collect_idle_shop_seats(machines)
+        nicks = [str(x.get("nick") or "") for x in idle_rows if x.get("nick")]
         if not nicks:
-            offerable_n = gated_counts.get("ungated", 0)
+            # No real idle shop seats: ungated count is informational only (not starve).
+            offerable_n = 0
         else:
             home = qpath.parent
             offerable_n = int(_idle.count_offerable_for_live_seats(home, unaccepted, nicks))
+        if pending_offers:
+            notes.append(
+                f"{pending_offers} unaccepted row(s) offered_to awaiting ACK (excluded from starve; FR #1625)"
+            )
     except Exception:
         offerable_n = sum(
             1
@@ -196,6 +214,7 @@ def check(args):
             and not r.get("needs_human")
             and str(r.get("needs_human") or "").lower() not in ("1", "true", "yes")
             and _gate_bucket(r) == "ungated"
+            and not str(r.get("offered_to") or "").strip()
         )
 
     idle_seat_count = _count_idle_seats(dig if isinstance(dig, dict) else {})
@@ -250,7 +269,10 @@ def check(args):
             "unaccepted_count": len(unaccepted),
             "offerable_count": offerable_n,
             "ungated_offerable_count": offerable_n,
+            # FR #1652: alias — offerable is computed against idle shop nicks only.
+            "offerable_for_idle_seats": offerable_n,
             "idle_seat_count": idle_seat_count,
+            "pending_offer_count": pending_offers,
             "gated_counts": gated_counts,
             "missing_pull_url_count": len(missing_url),
             "notes": notes,
