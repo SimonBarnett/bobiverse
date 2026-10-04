@@ -1849,11 +1849,30 @@ def stamp_mrb_done(home: Path, repo: str, ident: str) -> None:
         pass
 
 
-def mrb_already_done(doc: dict, row: dict, *, home: Path | None = None) -> bool:
+def clear_mrb_done(home: Path, repo: str, ident: str) -> None:
+    """Drop a stale ``mrb_done`` stamp (FR #1585: premature DONE while PR still open)."""
+
+    def _upd(doc: dict) -> None:
+        md = doc.get("mrb_done")
+        if isinstance(md, dict):
+            md.pop(_lkey(repo, ident), None)
+
+    try:
+        _ledger_update(home, _upd)
+    except OSError:
+        pass
+
+
+def mrb_already_done(
+    doc: dict, row: dict, *, home: Path | None = None, pr_exists=None
+) -> bool:
     """FR #740 / #1323: True when ``done`` or ledger ``mrb_done`` covers this MRB.
 
     After DONE PASS/FAIL the row must not be re-offered (even if a duplicate
     lingered in ``unaccepted``, ``done[]`` rotated, or GitHub still returns HTTP 200).
+
+    FR #1585: when ``pr_exists`` confirms the pull is still **open**, a premature
+    DONE / ledger stamp must not block or purge — GitHub open wins over the stamp.
     """
     if _canon_task(row) != "MRB":
         return False
@@ -1862,6 +1881,12 @@ def mrb_already_done(doc: dict, row: dict, *, home: Path | None = None) -> bool:
     if not repo or not ident:
         return False
     want = ident if ident.startswith("#") else f"#{ident.lstrip('#')}"
+    if pr_exists is not None:
+        try:
+            if bool(pr_exists(repo, want.lstrip("#"))):
+                return False
+        except Exception:
+            pass
     for r in doc.get("done") or []:
         if not isinstance(r, dict):
             continue
@@ -2115,18 +2140,30 @@ def _purge_fr_that_are_pulls(doc: dict, *, is_pull=None) -> int:
 
 
 def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None, home: Path | None = None) -> int:
-    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323)."""
+    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323).
+
+    FR #1585: when ``pr_exists`` says the pull is still open, keep the row and clear
+    a stale ledger ``mrb_done`` stamp so the next offline scan cannot re-kill it.
+    """
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
     for row in doc.get("unaccepted") or []:
         if not isinstance(row, dict):
             continue
         if _canon_task(row) == "MRB":
-            if mrb_already_done(doc, row, home=home):
+            if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
                 continue
             # Always apply structural / merged-flag checks; live open-state when checker given.
             if not mrb_row_offerable(row, pr_exists=pr_exists):
                 continue
+            # FR #1585: heal premature DONE stamps while GitHub still shows open.
+            if home is not None and pr_exists is not None:
+                repo = str(row.get("repo") or "").strip()
+                ident = str(row.get("id") or "").strip()
+                if repo and ident and mrb_ledger_done_hold(home, repo, ident):
+                    with contextlib.suppress(Exception):
+                        if bool(pr_exists(repo, ident.lstrip("#"))):
+                            clear_mrb_done(home, repo, ident)
         kept.append(row)
     doc["unaccepted"] = kept
     return before - len(kept)
@@ -2136,7 +2173,7 @@ def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None, home: Path | None = No
     """True when an MRB row should leave the live queues (merged/closed/already-done)."""
     if _canon_task(row) != "MRB":
         return False
-    if mrb_already_done(doc, row, home=home):
+    if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
         return True
     return not mrb_row_offerable(row, pr_exists=pr_exists)
 
@@ -2619,7 +2656,7 @@ def offer_focus_top(
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
                     return None
-                if mrb_already_done(doc, cand, home=home):
+                if mrb_already_done(doc, cand, home=home, pr_exists=pr_exists):
                     return None
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     return None
@@ -2763,8 +2800,8 @@ def offer_top(
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
                     continue
-                if mrb_already_done(doc, row, home=home):
-                    continue  # FR #740
+                if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
+                    continue  # FR #740 / #1585
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     continue
                 row_eff = enrich_uat_author_fields(doc, row)
@@ -3229,8 +3266,8 @@ def assign_row(
             # FR #818 / t853u: refuse manual assign of legacy per-PR / non-#0 UAT.
             if task_u == "UAT" and not is_repo_uat(cand):
                 return "refused", "UAT is per-repo only (id #0 + repo_uat); per-PR UAT forbidden (t853u / FR #818)"
-            # FR #740 / #738: refuse manual assign of already-DONE or closed/merged MRB.
-            if task_u == "MRB" and mrb_already_done(doc, cand, home=home):
+            # FR #740 / #738 / #1585: refuse already-DONE MRB unless the pull is still open.
+            if task_u == "MRB" and mrb_already_done(doc, cand, home=home, pr_exists=pr_exists):
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real open pull URL"
@@ -3577,12 +3614,15 @@ def resync_from_github(
                 ):
                     # FR #1323: drop MERGED/closed even when offered_to is set
                     continue
-                # FR #1323: also drop MRB held by ledger mrb_done
+                # FR #1323 / #1585: drop ledger-held MRB only when GitHub no longer wants it.
+                # Open pulls in ``want`` must survive keep so offered_to/seq are preserved;
+                # stale mrb_done stamps are cleared below when re-enqueueing desired MRBs.
                 if (
                     str(row.get("task") or "").upper() == "MRB"
                     and mrb_ledger_done_hold(
                         home, str(row.get("repo") or ""), str(row.get("id") or "")
                     )
+                    and (row.get("repo"), row.get("task"), row.get("id")) not in want
                 ):
                     continue
                 keep.append(row)
@@ -3629,6 +3669,7 @@ def resync_from_github(
                 )
             ]
             cleared_fr_done: list[str] = []
+            cleared_mrb_done: list[str] = []
             for claim in desired:
                 if claim.task == "FR" and fr_is_superseded(
                     doc,
@@ -3645,6 +3686,12 @@ def resync_from_github(
                     fk = _lkey(claim.repo, claim.id)
                     if fk in (ledger_now.get("fr_done") or {}):
                         cleared_fr_done.append(fk)
+                # FR #1585: open PR still on GitHub — clear premature mrb_done so offer
+                # purge cannot wipe the row resync just (re)queued.
+                if claim.task == "MRB":
+                    mk = _lkey(claim.repo, claim.id)
+                    if mk in (ledger_now.get("mrb_done") or {}):
+                        cleared_mrb_done.append(mk)
                 mrb_url = (
                     f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
                 )
@@ -3727,14 +3774,19 @@ def resync_from_github(
                 focus_pruned = 0
                 focus_redundant = 0
             _write_queue(queue_path(home), doc)
-            if cleared_fr_done:
-                def _clear_stale_fr_done(led: dict) -> None:
-                    fd = led.setdefault("fr_done", {})
-                    for k in cleared_fr_done:
-                        fd.pop(k, None)
+            if cleared_fr_done or cleared_mrb_done:
+                def _clear_stale_done_stamps(led: dict) -> None:
+                    if cleared_fr_done:
+                        fd = led.setdefault("fr_done", {})
+                        for k in cleared_fr_done:
+                            fd.pop(k, None)
+                    if cleared_mrb_done:
+                        md = led.setdefault("mrb_done", {})
+                        for k in cleared_mrb_done:
+                            md.pop(k, None)
 
                 with contextlib.suppress(OSError):
-                    _ledger_update(home, _clear_stale_fr_done)
+                    _ledger_update(home, _clear_stale_done_stamps)
             return {
                 "ok": True,
                 "unaccepted": len(doc["unaccepted"]),
