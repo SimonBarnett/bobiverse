@@ -58,7 +58,7 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 
 - `--self-test` default checks: `imports`, `locks`, `http` (:7700 listen), `queue`, `offer` (focus/machine empty breakdown). Add `--check health` to run `tools/monitor/health.py` as a library.
 - `--heal` allowlist: break stale `git-claim.lock`, `bobreport.break_stale_digest_lock`, report HTTP/health/offer; never BobIrcd. `--force-orphan-busy` only when `accepted` is empty (still report-first; no default `clear_seat_doing`).
-- Shop empty reply: `format_nothing_queued` may emit `0 offerable for you under focus (N unaccepted, X out-of-focus, Y require_machine, self_mrb=..., ledger=..., sticky=...)` so `!bored` empty is not mistaken for an empty queue file (FR #2309). Empty bored reply is seat-relative (FR #2333: never N>0 offerable for you when assign was empty). Sticky same-nick MRB offers without ACK stop refreshing `offered_ts` and clear after `OFFER_STICKY_MAX` rebroadcasts.
+- Shop empty reply: `format_nothing_queued` is ALWAYS the single short line `<nick>: nothing queued` (Jeeves must hand out work, never a summary). The breakdown `format_empty_offer_detail` (`0 offerable under focus (N unaccepted, X out-of-focus, Y require_machine, self_mrb=..., ledger=..., sticky=...)`) goes to the chair log only (FR #2309). Sticky same-nick MRB offers without ACK stop refreshing `offered_ts` and clear after `OFFER_STICKY_MAX` rebroadcasts.
 
 ## Acceptance metrics
 

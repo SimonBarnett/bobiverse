@@ -178,7 +178,7 @@ def test_fr1993_wp2_heal_force_orphan_requires_empty_accepted(tmp_path):
 def test_fr1993_wp2_format_nothing_queued_with_stats():
     bare = gitclaim.format_nothing_queued("seat-1")
     assert bare == "seat-1: nothing queued"
-    rich = gitclaim.format_nothing_queued(
+    rich = gitclaim.format_empty_offer_detail(
         "seat-1",
         {
             "unaccepted": 41,
