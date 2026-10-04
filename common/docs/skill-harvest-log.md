@@ -3,6 +3,15 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - tray SkipTidy autostart + ACCEPTABLE partial-FR drift (harvest #1663)
+
+| Lesson | Fix / book |
+|---|---|
+| ONLOGON/shortcuts kill seats | Autostart uses -ForceNew -SkipTidy; TipForm Restart still tidies (FR #1636 / PR #1645) |
+| Partial FR with follow-ups | ACCEPTABLE drift for MRB PASS when follow-up issues are explicit |
+
+Books: `bobiverse-bob`, troubleshooting, `bobiverse-bob-job-mrb`. Twin #1681 (watchdog SkipTidy).
+
 ## 2026-10-04 - MRB behind-main + body/docs nits (harvest #1647)
 
 | Lesson | Fix / book |
