@@ -1,6 +1,14 @@
 # Skill harvest log
 
 
+## 2026-10-04 - BobCallback report probe >=20s (harvest #2057 / FR #1993)
+
+| Lesson | Fix |
+|--------|-----|
+| curl/IWR max-time 4s false-alarms under digest.lock while LISTEN+longer probe is 200 | Use --max-time / -TimeoutSec >= 20 for /bob/v1/report; Watch-BobWebhooks.ps1 = 20s |
+
+Books: bobiverse-jeeves-monitor, bobiverse-jeeves-troubleshooting. Living architecture FR #1993.
+
 ## 2026-10-04 - Intake linked_existing_pr (FR #1812 / harvest #2013)
 
 | Lesson | Fix |

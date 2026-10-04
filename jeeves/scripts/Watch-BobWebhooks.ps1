@@ -20,7 +20,8 @@ $fail = $false
 $detail = @()
 foreach ($u in @($LocalUrl, $PublicUrl)) {
     try {
-        $r = Invoke-WebRequest -Uri $u -Method GET -TimeoutSec 8 -UseBasicParsing
+        # Harvest #2057 / FR #1993: under digest.lock contention, <20s probes false-alarm; keep >=20.
+        $r = Invoke-WebRequest -Uri $u -Method GET -TimeoutSec 20 -UseBasicParsing
         if ($r.StatusCode -ne 200) { $fail = $true; $detail += "$u status=$($r.StatusCode)" }
     } catch {
         $fail = $true
