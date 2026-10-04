@@ -1052,6 +1052,10 @@ _LOCK_STATE = threading.local()
 DIGEST_LOCK_STALE_ENV = "BOB_DIGEST_LOCK_STALE_S"
 DEFAULT_DIGEST_LOCK_STALE_S = 30.0
 DEFAULT_DIGEST_LOCK_TIMEOUT_S = 2.0
+# FR #1388: live foreign holder (e.g. chair irc_agent) longer than this → breakable.
+# Shorter than full stale so BobCallback HTTP / startup is not wedged for 30s.
+DIGEST_LOCK_FOREIGN_ENV = "BOB_DIGEST_LOCK_FOREIGN_S"
+DEFAULT_DIGEST_LOCK_FOREIGN_S = 12.0
 
 
 class DigestLockBusy(Exception):
@@ -1067,6 +1071,14 @@ def digest_lock_stale_s() -> float:
         return max(1.0, float(os.environ.get(DIGEST_LOCK_STALE_ENV) or DEFAULT_DIGEST_LOCK_STALE_S))
     except ValueError:
         return DEFAULT_DIGEST_LOCK_STALE_S
+
+
+def digest_lock_foreign_s() -> float:
+    """Max age for a live *other* process's digest.lock before BobCallback may break it (FR #1388)."""
+    try:
+        return max(1.0, float(os.environ.get(DIGEST_LOCK_FOREIGN_ENV) or DEFAULT_DIGEST_LOCK_FOREIGN_S))
+    except ValueError:
+        return DEFAULT_DIGEST_LOCK_FOREIGN_S
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1123,26 +1135,37 @@ def _read_lock_meta(lock_path: Path) -> tuple[int | None, float | None, float]:
 
 
 def break_stale_digest_lock(home: Path, max_age_s: float | None = None) -> dict | None:
-    """Unlink ``digest.lock`` when empty, older than ``max_age_s``, or holder PID is dead (FR #1136).
+    """Unlink ``digest.lock`` when empty, older than ``max_age_s``, holder PID is dead (FR #1136),
+    or a *foreign* live holder exceeds ``digest_lock_foreign_s`` (FR #1388).
 
-    Never breaks a fresh lock held by a live PID. Returns a small info dict when broken, else None.
+    Never breaks a fresh lock held by *this* PID. Returns a small info dict when broken, else None.
     Logs ``lock-broken age=... pid=...``.
     """
     lock_path = digest_lock_path(Path(home))
     if not lock_path.exists():
         return None
     max_age = digest_lock_stale_s() if max_age_s is None else float(max_age_s)
+    foreign_age = digest_lock_foreign_s()
     pid, stamped, age = _read_lock_meta(lock_path)
     size = 0
     with contextlib.suppress(OSError):
         size = lock_path.stat().st_size
     reason = None
+    me = os.getpid()
     if size == 0:
         reason = "empty"
     elif age >= max_age:
         reason = "stale"
     elif pid is not None and not _pid_alive(pid):
         reason = "dead-pid"
+    elif (
+        pid is not None
+        and int(pid) != int(me)
+        and _pid_alive(pid)
+        and age >= foreign_age
+    ):
+        # Chair irc_agent (or other) held digest.lock while BobCallback needed :7700.
+        reason = "foreign-stale"
     if reason is None:
         return None
     with contextlib.suppress(OSError):
@@ -1159,6 +1182,12 @@ def digest_lock_age_s(home: Path) -> float | None:
         return max(0.0, time.time() - lock_path.stat().st_mtime)
     except OSError:
         return None
+
+
+def digest_lock_holder_pid(home: Path) -> int | None:
+    """PID stamped in ``digest.lock``, or None if absent/unreadable (FR #1388)."""
+    pid, _stamped, _age = _read_lock_meta(digest_lock_path(Path(home)))
+    return pid
 
 
 def last_digest_write_iso(home: Path) -> str:
