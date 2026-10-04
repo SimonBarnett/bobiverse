@@ -1,4 +1,4 @@
-﻿"""FR #2301 / WP3: Build-Jeeves + pack stage + Install NSSM cutover (Refs #1993)."""
+"""FR #2301 / WP3: Build-Jeeves + pack stage + Install NSSM cutover (Refs #1993)."""
 from __future__ import annotations
 
 import re
@@ -10,6 +10,10 @@ BUILD = ROOT / "jeeves/scripts/Build-Jeeves.ps1"
 PACK = ROOT / "common/scripts/Pack-BobiverseRelease.ps1"
 INSTALL = ROOT / "jeeves/scripts/Install-Jeeves.ps1"
 DOC = ROOT / "jeeves/docs/jeeves-exe-self-heal.md"
+THIS = Path(__file__)
+
+# Classic UTF-8-as-Latin1 mojibake prefix for em/en dash (built at runtime so the needle is not literal).
+MOJIBAKE_DASH = ("\u00e2" + "\u20ac")
 
 HIDDEN = (
     "irc_agent",
@@ -17,12 +21,18 @@ HIDDEN = (
     "gitclaim",
     "bobreport",
     "intake",
+    "jeeves_locks",
+    "focus_ignore",
     "chair_commands",
     "chair_health",
     "chair_oper",
     "shop_chanserv",
     "shop_listen",
     "shop_ops",
+    "health",
+    "queue_flow",
+    "focus_seat",
+    "webhook_health",
 )
 
 
@@ -63,3 +73,17 @@ def test_fr2301_docs_wp3_landed_refs_living_fr():
     assert "WP3" in text
     assert "never `Closes`" in text or "never Closes" in text or "Refs" in text
     assert "jeeves.exe" in text
+    assert re.search(r"\|\s*WP2\s*\|[^\n]*\|\s*landed", text), "WP2 status should be landed"
+    assert not re.search(r"\|\s*WP2\s*\|[^\n]*\|\s*this PR", text)
+
+
+def test_fr2301_encoding_utf8_no_bom_no_mojibake():
+    """Hostile: WP3 product/docs files must be UTF-8 without BOM and without classic mojibake."""
+    for path in (BUILD, PACK, INSTALL, DOC, THIS):
+        raw = path.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf"), f"BOM in {path}"
+        assert raw.endswith(b"\n"), f"missing trailing newline in {path}"
+        text = raw.decode("utf-8")
+        assert "\ufeff" not in text
+        if path != THIS:
+            assert MOJIBAKE_DASH not in text, f"mojibake in {path}"
