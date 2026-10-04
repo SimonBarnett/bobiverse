@@ -688,6 +688,27 @@ def row_awaits_mrb1(row: dict) -> bool:
     return False
 
 
+def issue_blocks_repo_uat(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    state: str = "",
+) -> bool:
+    """True when an open issue must hold repo-level UAT back (t853u / FR #1416).
+
+    ``needs-mrb1`` stays enqueueable and offer-blocked (FR #1363) but must not
+    prevent repo UAT: filing a vision-gated FR used to drop UAT from the queue
+    while every seat saw ``nothing queued`` (#1416 circular strand).
+    """
+    if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
+        return False
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    if "needs-mrb1" in labs:
+        return False
+    return True
+
+
 # FR #587: machine-affinity for seats that cannot do the work (WP0 live / chair-outbox).
 # FR #628 / #732: also accept bare ``machine:<id>`` (legacy pin label).
 _REQUIRE_MACHINE_LABEL_RE = re.compile(
@@ -2793,7 +2814,21 @@ def ledger_blocks(ledger: dict, row: dict, nick: str, live=None) -> str:
     why = _ledger_blocks(ledger, row, nick)
     if why and is_repo_uat(row) and "implemented" in why and live:
         seats = {s for s in live} | {nick}
-        active = {s for s in seats if not row_gave_up_by(row, s)}
+
+        def _active_for_uat_escape(s: str) -> bool:
+            # FR #1407 / #1416: row giveup_seats AND durable ledger giveup must
+            # not count toward "all blocked". After resync the UAT row often has
+            # empty giveup_seats while ledger still records the GIVEUPs; those
+            # seats have 0 FR touches and used to steal the less-involved pick,
+            # stranding the only implementer who could escape.
+            if row_gave_up_by(row, s):
+                return False
+            other = _ledger_blocks(ledger, row, s)
+            if other and "gave up" in other:
+                return False
+            return True
+
+        active = {s for s in seats if _active_for_uat_escape(s)}
         pool = active if active else seats
         if not all(_ledger_blocks(ledger, row, s) for s in pool):
             return why
@@ -3246,11 +3281,12 @@ def resync_from_github(
             issues = []
         if not isinstance(prs, list):
             prs = []
-        # t853u: repo-level UAT gate. Excluded issues (needs-human, boards/mrb-home, harvest/skill records,
-        # CRITICAL spam, safe-to-close) never hold a repo back; every other open issue or any open PR does.
+        # t853u: repo-level UAT gate. Excluded issues (needs-human, boards/mrb-home, harvest/skill
+        # records, CRITICAL spam, safe-to-close, needs-mrb1 — FR #1416) never hold a repo back;
+        # every other open issue or any open PR does.
         blocking = [
             i for i in issues
-            if isinstance(i, dict) and not i.get("pull_request") and not issue_skip_fr_reason(
+            if isinstance(i, dict) and not i.get("pull_request") and issue_blocks_repo_uat(
                 title=str(i.get("title") or ""), body=str(i.get("body") or ""),
                 labels=_label_names(i.get("labels")), state=str(i.get("state") or "open"))
         ]
