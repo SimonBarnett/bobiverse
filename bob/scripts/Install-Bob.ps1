@@ -254,8 +254,9 @@ if (-not $SkipIcons) {
         -WorkingDirectory (Join-Path $InstallRoot 'scripts') `
         -Description 'Restart ircBob (announces departure)'
     if ((-not $SkipTray) -and (Test-Path -LiteralPath $trayPs1)) {
-        $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew"
-        $trayDesc = 'bob TipForm systray (companion to ircBob; Restart recycles ircBob + Sync/ff)'
+        # FR #1636: desktop/Startup/HKCU autostart use -SkipTidy (ForceNew replaces tray only).
+        $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew -SkipTidy"
+        $trayDesc = 'bob TipForm systray (ForceNew+SkipTidy; TipForm Restart tidies seats)'
         New-BobiverseShortcut -LinkPath (Join-Path $desk 'Bobiverse Tray.lnk') `
             -TargetPath 'powershell.exe' `
             -Arguments $trayArgs `
@@ -277,9 +278,9 @@ if (-not $SkipIcons) {
             if (-not (Test-Path -LiteralPath $runKey)) {
                 New-Item -Path $runKey -Force | Out-Null
             }
-            $runVal = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId"
+            $runVal = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew -SkipTidy"
             Set-ItemProperty -LiteralPath $runKey -Name 'BobiverseTray' -Value $runVal -Type String -Force
-            Write-Host 'INFO HKCU Run BobiverseTray registered'
+            Write-Host 'INFO HKCU Run BobiverseTray registered (SkipTidy FR #1636)'
         } catch {
             Write-Host ("WARN HKCU Run BobiverseTray failed: {0}" -f $_.Exception.Message)
         }
@@ -335,8 +336,8 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
         $adminStartup = 'C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
         $adminDesk = 'C:\Users\Administrator\Desktop'
         if ((Test-Path 'C:\Users\Administrator') -and (Test-Path -LiteralPath $trayPs1)) {
-            $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew"
-            $trayDesc = 'bob TipForm systray (companion to ircBob; Restart recycles ircBob + Sync/ff)'
+            $trayArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew -SkipTidy"
+            $trayDesc = 'bob TipForm systray (ForceNew+SkipTidy FR #1636; TipForm Restart tidies)'
             $trayIco = Join-Path $InstallRoot 'assets\bob-systray.ico'
             if (-not (Test-Path -LiteralPath $trayIco)) { $trayIco = '' }
             if (Test-Path -LiteralPath $adminStartup) {
@@ -361,17 +362,17 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
                     }
                 }
                 if (Test-Path -LiteralPath $runPath) {
-                    $runVal = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId"
+                    $runVal = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayPs1`" -InstallRoot `"$InstallRoot`" -MachineId $MachineId -ForceNew -SkipTidy"
                     New-Item -Path $runPath -Force -ErrorAction SilentlyContinue | Out-Null
                     Set-ItemProperty -LiteralPath $runPath -Name 'BobiverseTray' -Value $runVal -Type String -Force
-                    Write-Host 'INFO Administrator HKU Run BobiverseTray registered'
+                    Write-Host 'INFO Administrator HKU Run BobiverseTray registered (SkipTidy FR #1636)'
                 }
             } catch {
                 Write-Host ("WARN Admin HKU Run BobiverseTray: {0}" -f $_.Exception.Message)
             }
         }
     } elseif (Test-Path -LiteralPath $trayPs1) {
-        # Interactive install: kill prior tray then start TipForm in this session
+        # Interactive install: kill prior tray then start TipForm in this session (SkipTidy keeps seats).
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             $_.CommandLine -and (
                 $_.CommandLine -match 'Start-BobTray\.ps1' -or
@@ -387,11 +388,10 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
         Start-Sleep -Milliseconds 500
         $trayLaunch = @(
             '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-            '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew'
+            '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew', '-SkipTidy'
         )
-        if ($noTidy) { $trayLaunch += '-SkipTidy' }
         Start-Process -FilePath 'powershell.exe' -ArgumentList $trayLaunch | Out-Null
-        Write-Host 'INFO started TipForm Start-BobTray (ircBob companion)'
+        Write-Host 'INFO started TipForm Start-BobTray (ircBob companion; SkipTidy FR #1636)'
         if (Test-Path -LiteralPath $trayInteractive) {
             try { & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RegisterOnly } catch { }
         }

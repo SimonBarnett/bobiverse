@@ -26,17 +26,24 @@ def test_install_bob_skips_tidy_for_quiet_and_msi():
     assert "Test-BobiverseMsiOrQuiet" in t
     # quiet path hands the switch to the interactive launcher
     assert "-RunNow -SkipTidy:$noTidy" in t
-    # interactive path appends -SkipTidy to the tray launch args
-    assert "$trayLaunch += '-SkipTidy'" in t
+    # FR #1636: interactive tray launch always includes -SkipTidy (seats kept)
+    assert "'-SkipTidy'" in t or '"-SkipTidy"' in t or "-ForceNew', '-SkipTidy'" in t or "-ForceNew -SkipTidy" in t
 
 
-def test_interactive_launcher_runs_one_shot_with_skiptidy():
+def test_interactive_launcher_persists_skiptidy_on_logon_task():
+    """FR #1636 supersedes #32's 'persistent task without SkipTidy' — ONLOGON must SkipTidy."""
     t = _t("Start-BobTrayInteractive.ps1")
     assert "[switch]$SkipTidy" in t
-    assert "-ForceNew -SkipTidy" in t
-    # the persistent logon task keeps its normal args (no SkipTidy baked in)
-    persistent = [ln for ln in t.splitlines() if ln.lstrip().startswith("$action = New-ScheduledTaskAction")]
-    assert persistent and all("SkipTidy" not in ln for ln in persistent)
+    assert "trayArgsPersistent" in t
+    assert "-SkipTidy" in t
+    # Persistent action uses the SkipTidy args variable (or inlines SkipTidy).
+    assert "New-ScheduledTaskAction" in t
+    assert "trayArgsPersistent" in t or (
+        any(
+            "New-ScheduledTaskAction" in ln and "SkipTidy" in ln
+            for ln in t.splitlines()
+        )
+    )
 
 
 def test_vendored_fleet_tray_still_supports_skiptidy():
