@@ -4,11 +4,11 @@ See **[feature-request-airc-remote-control-2026-10-01.md](./feature-request-airc
 
 ## Today (v0.1.x)
 
-Authenticated PRIVMSG to `{machine}_console` pipes each line into a **cmd.exe** session. Stdout returns as Query PRIVMSG, clipped to ~400 characters. Multi-line work usually means gist + `irm` + `powershell -File`.
+Authenticated PRIVMSG to `{machine}_console` runs PowerShell (or `cmd:` / `psb64:`) and returns Query lines `out`/`err`/`DONE id=… exit=…`. The bob ear appends those to `<bob home>\airc-replies.jsonl` (FR #1546). `Invoke-AircRemote.ps1 -Outbox … -ReplyFile …` prefixes `id=<corr>` and waits for matching DONE (non-zero exit on timeout).
 
 ```text
-PRIVMSG marchhare_console :sc query Airc
-PRIVMSG marchhare_console :cmd /c type <ai root>\airc\VERSION
+PRIVMSG marchhare_console :id=aabbccdd Write-Output ping
+PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 ```
 
 ## Target verbs (FR)

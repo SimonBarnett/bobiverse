@@ -58,8 +58,28 @@ NICK_RETRIES_SHOP = 5
 NICK_RETRIES_LOBBY = 20
 
 
+_KEEPALIVE_LOG_INTERVAL_S = 3600.0
+_last_keepalive_log_mono = 0.0
+
+
 def info(msg: str) -> None:
-    print(msg, flush=True)
+    """ISO-UTC timestamped stdout line; always flush (FR #1546)."""
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"{ts} {msg}", flush=True)
+
+
+def info_keepalive(msg: str) -> None:
+    """Rate-limit keepalive noise to about one line per hour (FR #1546)."""
+    global _last_keepalive_log_mono
+    import time as _time
+
+    now = _time.monotonic()
+    if (now - _last_keepalive_log_mono) < _KEEPALIVE_LOG_INTERVAL_S:
+        return
+    _last_keepalive_log_mono = now
+    info(msg)
 
 
 def read_password(path: Path | None, env_key: str = "AIRC_CONSOLE_PASSWORD") -> str | None:
@@ -629,7 +649,7 @@ class AircConsoleService:
                 return
             self._last_ping_sent = now
             self._awaiting_pong = True
-            info("INFO keepalive PING sent")
+            info_keepalive("INFO keepalive PING sent")
 
     def read_loop(self) -> None:
         assert self.sock is not None
