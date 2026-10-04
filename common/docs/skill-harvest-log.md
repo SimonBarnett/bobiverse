@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - Jeeves silent to operator / unverified WHOIS (harvest #2179)
+
+| Lesson | Fix |
+|--------|-----|
+| Operator sees Jeeves "not responding" while shop still assigns | Check `chan-privs` for unverified WHOIS on the operator nick; `Restart-Service ircJeeves` to refresh; do not restart BobIrcd; leave worker seats alone |
+
+Books: bobiverse-jeeves-troubleshooting.
+
 ## 2026-10-04 - Harvest promote MRB merge order (harvest #2296)
 
 | Lesson | Fix |
