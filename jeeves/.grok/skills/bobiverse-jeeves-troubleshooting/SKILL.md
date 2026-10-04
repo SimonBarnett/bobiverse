@@ -28,6 +28,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Symptom | Diagnosis / fix |
 |---|---|
 | Commands "do nothing" for the ear | The ear is only recognised as `bob-<machine>` for a machine on the roster. Check `!status roster:`; `!resync`; confirm the SASL account is logged in (`chan-privs` logs). |
+| Operator: Jeeves "not responding" but shop still assigns | Service can be healthy and offering while the **operator nick** is stuck unverified (WHOIS / account not linked). Check `chan-privs` / chair logs for unverified WHOIS on that nick; `Restart-Service ircJeeves` to refresh account/priv state. Leave seats alone; **never** restart `BobIrcd`/Ergo (harvest #2179). Dual BobCallback / `DigestLockBusy` is a separate heal path. |
 | Replies never arrive | Replies go by PM (not the channel). The chair logs `git-help pm nick=... kind=ear`; `cmd-trace.log` has the text. Rate limit: `!help`/`!list` 30 s per nick. |
 | `!list` says "queue empty" but `!status` has unaccepted items | `!focus strict on` hides everything not focused. `!focus strict off` (and restore afterwards). |
 | Operator: many open GitHub issues/PRs "not assigning" | Raw open counts are not the chair queue. Check `ungated_offerable` + shop `!bored` traces before claiming the chair is broken (harvest #1581). Monitor must not `!assign`. |
