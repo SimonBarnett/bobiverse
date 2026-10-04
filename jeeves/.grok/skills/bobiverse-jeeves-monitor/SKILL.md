@@ -104,3 +104,11 @@ Shop wire (workers in `#{machine}` only): `!bored` → assign → `ACK` → work
 ## Chair home vs digest home (FR #1043 / ionos)
 
 On ionos, NSSM `ircJeeves` may use `-ChairHome ~/.jeeves` while live `queue.json` / `focus.json` live under `BOB_DIGEST_HOME` (`~/.bobiverse`). Monitor checks resolve ops files via `ops_home`: prefer chair when those files exist there, else fall back to digest home. Pass `-ChairHome` / `--digest-home` explicitly when verifying. `BobCallback` may be a Scheduled Task (or `:7700` listen), not `Get-Service`.
+
+## Harvested monitor playbook (skill records #1215-#1456)
+
+- Resolve queue/focus per file: live `queue.json`, `focus.json`, and digest state may live under `BOB_DIGEST_HOME`, not the default chair home. Handle both list and dict-shaped `focus.repos`; an empty strict focus must be a finding when unaccepted work exists.
+- `idle_seats` must count rows offerable to at least one live seat, using the same needs-human, cooldown, ledger, and machine-pin gates as `offer_focus_top`; raw unaccepted count alone creates false alarms.
+- For BobCallback: check scheduled-task state, `:7700` LISTEN, and a fresh `/bob/v1/report` probe together. A brief connect failure while LISTEN is present warrants a curl re-probe, not an immediate restart. If the callback is wedged or a lock is empty/stale, remove only the stale lock, restart BobCallback, and verify HTTP 200; never touch BobIrcd/Ergo.
+- `digest.lock` owned by the live callback is not foreign-stale. A `doing`/`offered` worker with no accepted row, repeated `bored nak busy`, or no ACK/DONE/GIVEUP beyond the threshold should be reported with the remediation (restart callback/clear stale state).
+- Monitor checks observe and diagnose; they do not claim work, assign seats, or act as the chair.

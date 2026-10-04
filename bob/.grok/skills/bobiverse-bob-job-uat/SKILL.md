@@ -82,3 +82,10 @@ flowchart TD
 * No Ergo changes, PowerShell only, never print or commit secrets (no tokens in release notes, evidence or FRs). * The release is created only inside an assigned UAT job (the general "no release / no VERSION bump" rule is lifted for that case only).
 * **FR #147:** never dump `nssm get <svc> AppEnvironmentExtra` values into the transcript — print env **key names only** (split on first `=`; see `bobiverse-fleet-ops`).
 * CAST IRON harvest rule at the top: file every defect, gap and improvement you notice during UAT in the same turn.
+
+## Harvested UAT gates (skill records #1216-#1429)
+
+- `needs-mrb1` is a human-vision gate, not a machine pin: ACK then GIVEUP and wait for the label to be cleared. Do not start ionos/DEV1 work merely because the row was offered, and do not infer a machine from a title.
+- Repo UAT is `UAT #0` only after the repository is clear. An exact-author escape may be used only when the remaining candidates are ledger/GIVEUP blocked; never UAT your own implementation or MRB-fix.
+- A hard `require_machine`/seat pin beats `any` or an inferred default. Keep self-UAT and MRB-author rows away from their author; record the accepted-by/author stamps needed for later offers.
+- After a UAT/MRB merge, resync main before re-offering and purge stale `offered_to`/`doing` state; a merged row must not be recycled as a fresh PR/UAT.

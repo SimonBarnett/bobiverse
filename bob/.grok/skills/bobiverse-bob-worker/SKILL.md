@@ -135,3 +135,9 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 | Wrong agent chosen | selection is automatic; fix the fuel readings, do not edit the exe. |
 
 File every problem you find: CAST IRON rule at the top.
+
+## Harvested reliability rules (closed skill records #1201-#1460)
+
+- Treat `outbox.txt` as a durable hand-off: create its parent/file before a drain, append atomically, and never delete the file merely because one drain reached EOF. A later worker/relay must be able to recreate and append safely. See #1201 and the related harvest records.
+- `IrcSeat.say()` must report a dead writer as failure and trigger the normal lost-IRC path; never log a successful send when `_write_loop` has already died. Confirm `001` + shop JOIN before posting `!bored`. See the worker-liveness lessons around #1018 and #1201.
+- When diagnosing a silent seat, distinguish TCP/WHOIS presence from a confirmed JOIN and inspect the worker's own log/outbox; a registered nick without a shop JOIN is not assignable work.
