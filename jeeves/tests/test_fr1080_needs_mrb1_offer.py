@@ -87,7 +87,7 @@ def test_strict_focus_fallback_offers_in_focus_when_order_misses(tmp_path, monke
                     "ts": "t",
                     "line": "FR SimonBarnett/bobiverse#1074",
                     "title": "FR: sync timeout",
-                    # FR #1363: needs-mrb1 is not offerable; use a clearable vision-free FR.
+                    # Plain FR (no needs-mrb1); leftover-label offerability covered below.
                     "labels": ["feature-request", "via-intake"],
                     "state": "open",
                 }
