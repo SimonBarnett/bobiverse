@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """TLS IRC agent: reconnect, SASL from env, flood delay, AGPK TOFU, SEAL v2 inbox.
 
-Stdout is INFO only (no raw IRC, no AGPK/SEAL bodies). Full lines go to irc.log if
-BOB_IRC_DEBUG=1. SASL: BOB_IRC_SASL_USER + BOB_IRC_SASL_PASSWORD (not argv).
+Stdout is INFO only (no raw IRC, no AGPK/SEAL bodies). Full raw lines go to irc.log if
+BOB_IRC_DEBUG=1. Scrubbed inbound PRIVMSG transcript (channel, nick, text) always goes to
+home/inbound-transcript.log (FR #2174). SASL: BOB_IRC_SASL_USER + BOB_IRC_SASL_PASSWORD (not argv).
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ import shop_listen  # noqa: E402
 import agent_control  # noqa: E402
 import registered_machines  # noqa: E402
 import bob_home  # noqa: E402
+import inbound_transcript  # noqa: E402
 import chair_oper  # noqa: E402
 import chan_privs  # noqa: E402
 import chair_commands  # noqa: E402
@@ -2478,6 +2480,12 @@ class Client:
         to_me = tgt_l in self._mine_nicks()
         if to_channel:
             self._note_call_channel(target)
+        # FR #2174: always-on scrubbed inbound transcript (not gated on BOB_IRC_DEBUG).
+        if to_channel or to_me:
+            try:
+                inbound_transcript.append_inbound(self.home, target, src, body)
+            except Exception:
+                pass
         if not to_channel and not to_me:
             return
         if to_channel and self._maybe_channel_pong(src, target, body):
