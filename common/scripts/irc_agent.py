@@ -2324,6 +2324,18 @@ class Client:
         if not chair:
             info(f"INFO git-claim bored ear-noop nick={src} (Jeeves assigns; gh-Jeeves#106)")
             return
+        # FR #1714 / #1508: heal orphan digest doing BEFORE busy gate — otherwise
+        # stale workers-map working_on nak-busys forever and never reaches offer_focus_top.
+        _gh_cache: dict = {}
+        _pr_exists = gitclaim.github_pr_exists_checker(home=self.home, cache=_gh_cache)
+        try:
+            n_orphan = gitclaim.clear_orphan_digest_mrb_doing(
+                self.home, pr_exists=_pr_exists
+            )
+            if n_orphan:
+                info(f"INFO git-claim bored cleared orphan digest doing n={n_orphan} nick={src}")
+        except Exception as exc:  # noqa: BLE001
+            info(f"WARN git-claim bored orphan clear {type(exc).__name__}")
         gate = gitclaim.bored_gate(self.home, src, target, now)
         if gate == "ignore":
             info(f"INFO git-claim bored ignore nick={src}")
@@ -2341,13 +2353,12 @@ class Client:
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).
         # FR #595 / #247: skip MRB rows whose /pull/N 404s when a token is available.
-        _gh_cache: dict = {}
         status, job = gitclaim.offer_focus_top(
             self.home,
             src,
             bobreport.normalize_channel(target),
             now=now,
-            pr_exists=gitclaim.github_pr_exists_checker(home=self.home, cache=_gh_cache),
+            pr_exists=_pr_exists,
             is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
         )
         if status == "ok" and isinstance(job, dict):

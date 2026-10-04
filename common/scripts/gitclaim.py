@@ -1488,8 +1488,30 @@ def worker_shop_channel(nick: str) -> str | None:
         return None
 
 
+def _worker_list_busy_work(ent: dict, nick: str) -> str:
+    """Non-empty work string when worker_list still shows offered/doing for nick."""
+    n = (nick or "").strip().lower()
+    if not n or not isinstance(ent, dict):
+        return ""
+    for row in ent.get("worker_list") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != n:
+            continue
+        state = str(row.get("state") or "").strip().lower()
+        work = str(row.get("work") or "").strip()
+        if state in ("doing", "offered", "busy", "accepted") or work:
+            return work or state
+    return ""
+
+
 def worker_working_on(home: Path, nick: str) -> str:
-    """Digest working_on for this worker pid. Empty if the worker is absent."""
+    """Digest working_on for this worker pid. Empty if the worker is absent.
+
+    FR #1714: when ``worker_list`` is already idle but the legacy pid ``workers``
+    map still has ``working_on`` / ``running``, heal the map (and machine roll)
+    so ``!bored`` does not nak-busy forever after a lost DONE.
+    """
     parsed = bobreport.parse_seat_nick(nick)
     if not parsed:
         return ""
@@ -1497,11 +1519,31 @@ def worker_working_on(home: Path, nick: str) -> str:
     doc = bobreport.load_digest(_root(home))
     machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
     ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+    if not isinstance(ent, dict):
+        return ""
+    list_busy = _worker_list_busy_work(ent, nick)
     workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
     row = workers.get(str(pid))
-    if not isinstance(row, dict):
+    map_wo = ""
+    if isinstance(row, dict):
+        map_wo = str(row.get("working_on") or "").strip()
+        map_state = str(row.get("state") or "").strip().lower()
+        if not map_wo and map_state in ("running", "doing", "offered", "busy"):
+            map_wo = map_state
+    if map_wo and not list_busy:
+        # Split brain: list idle, map busy → clear map (CAST IRON: do not clear when list busy).
+        needle = ""
+        m = _MRB_DOING_RX.search(map_wo)
+        if m:
+            needle = str(int(m.group(2)))
+        with contextlib.suppress(Exception):
+            bobreport.clear_seat_doing(
+                home, nick, only_if_work_contains=needle or map_wo[:40]
+            )
         return ""
-    return str(row.get("working_on") or "").strip()
+    if list_busy:
+        return list_busy if list_busy not in ("doing", "offered", "busy", "accepted") else map_wo
+    return map_wo
 
 
 def pending_path(home: Path) -> Path:
@@ -2371,6 +2413,23 @@ _MRB_DOING_RX = re.compile(
 )
 
 
+def _orphan_mrb_repo_num(
+    work: str, *, default_repo: str = "SimonBarnett/bobiverse"
+) -> tuple[str, str] | None:
+    m = _MRB_DOING_RX.search(str(work or ""))
+    if not m:
+        return None
+    repo_part = (m.group(1) or "").strip()
+    num = str(int(m.group(2)))
+    if repo_part and "/" in repo_part:
+        repo = repo_part
+    elif repo_part:
+        repo = f"SimonBarnett/{repo_part}"
+    else:
+        repo = default_repo
+    return repo, num
+
+
 def clear_orphan_digest_mrb_doing(
     home: Path,
     *,
@@ -2382,6 +2441,9 @@ def clear_orphan_digest_mrb_doing(
     FR #1430 clears doing when an *accepted* MERGED row is purged. When the ACC
     row is already gone (DONE lost / webhook race), seats stay nak-busy forever.
     Call from !bored / offer paths with the live `pr_exists` checker.
+
+    FR #1714: also scan pid-keyed ``workers`` map (and machine ``working_on``) —
+    ``worker_list`` can already be idle while the map keeps ``running`` + working_on.
     """
     if pr_exists is None or home is None:
         return 0
@@ -2392,6 +2454,25 @@ def clear_orphan_digest_mrb_doing(
     if not isinstance(machines, dict):
         return 0
     cleared = 0
+    seen_nicks: set[str] = set()
+
+    def _try_clear(nick: str, num: str, repo: str) -> None:
+        nonlocal cleared
+        n = (nick or "").strip()
+        if not n or n.lower() in seen_nicks:
+            return
+        try:
+            still_open = bool(pr_exists(repo, num))
+        except Exception:
+            return
+        if still_open:
+            return
+        with contextlib.suppress(Exception):
+            out = bobreport.clear_seat_doing(home, n, only_if_work_contains=num)
+            if getattr(out, "ok", False):
+                cleared += 1
+                seen_nicks.add(n.lower())
+
     for mid, ent in list(machines.items()):
         if not isinstance(ent, dict):
             continue
@@ -2401,33 +2482,47 @@ def clear_orphan_digest_mrb_doing(
                 continue
             if str(row.get("state") or "").lower() != "doing":
                 continue
-            work = str(row.get("work") or "")
-            m = _MRB_DOING_RX.search(work)
-            if not m:
+            parsed = _orphan_mrb_repo_num(str(row.get("work") or ""), default_repo=default_repo)
+            if not parsed:
                 continue
-            repo_part = (m.group(1) or "").strip()
-            num = str(int(m.group(2)))
-            if repo_part and "/" in repo_part:
-                repo = repo_part
-            elif repo_part:
-                repo = f"SimonBarnett/{repo_part}"
-            else:
-                repo = default_repo
-            try:
-                still_open = bool(pr_exists(repo, num))
-            except Exception:
+            repo, num = parsed
+            _try_clear(str(row.get("nick") or "").strip(), num, repo)
+        # FR #1714: workers map + machine-level working_on even when list is idle.
+        workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+        for pid_s, w in list(workers.items()):
+            if not isinstance(w, dict):
                 continue
-            if still_open:
+            wo = str(w.get("working_on") or "").strip()
+            if not wo:
                 continue
-            nick = str(row.get("nick") or "").strip()
+            parsed = _orphan_mrb_repo_num(wo, default_repo=default_repo)
+            if not parsed:
+                continue
+            repo, num = parsed
+            nick = str(w.get("nick") or "").strip()
             if not nick:
-                continue
-            with contextlib.suppress(Exception):
-                out = bobreport.clear_seat_doing(
-                    home, nick, only_if_work_contains=num
-                )
-                if getattr(out, "ok", False):
-                    cleared += 1
+                nick = f"{mid}-{pid_s}"
+            _try_clear(nick, num, repo)
+        mach_wo = str(ent.get("working_on") or "").strip()
+        if mach_wo:
+            parsed = _orphan_mrb_repo_num(mach_wo, default_repo=default_repo)
+            if parsed:
+                repo, num = parsed
+                # Prefer a concrete seat nick from workers/list still holding that PR.
+                nick = ""
+                for row in rows:
+                    if isinstance(row, dict) and num in str(row.get("work") or ""):
+                        nick = str(row.get("nick") or "").strip()
+                        if nick:
+                            break
+                if not nick:
+                    for pid_s, w in list(workers.items()):
+                        if isinstance(w, dict) and num in str(w.get("working_on") or ""):
+                            nick = str(w.get("nick") or f"{mid}-{pid_s}").strip()
+                            if nick:
+                                break
+                if nick:
+                    _try_clear(nick, num, repo)
     return cleared
 
 
