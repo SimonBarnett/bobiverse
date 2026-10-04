@@ -38,6 +38,7 @@ You are the **MONITORING** agent - not the chair, not a worker. Never `!assign` 
 | Focus present | `focus_present` | bobiverse missing from strict focus while unaccepted work exists (FR #1019) |
 | Focus redundant items | `focus_redundant_items` | `focus.items` keys under an already-focused repo (FR #1520 per-repo policy) |
 | Seats stuck doing | `seats_stuck_doing` | doing/offered stale busy, nak-busy loops, PermissionError log counts (FR #1019) |
+| Skill promote backlog | `skill_promote_backlog` | open skill receipts >= threshold with no skill-promote PR/issue/queue row (FR #1682) |
 | Stale digest | `stale_digest` | digest not updating |
 | GIVEUP loops | `giveup_loops` | same row repeatedly GIVEUP |
 | Stuck accepted | `stuck_accepted` | accepted rows not progressing |

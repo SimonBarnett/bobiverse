@@ -36,7 +36,7 @@ Foundation: `bobiverse-jeeves`, `bobiverse-jeeves-commands`, `bobiverse-fleet-op
 
 ## Prefer token-free scripts (t865u)
 
-Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing` (Python under `tools\monitor\`; FR #1019 / FR #1520). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
+Run deterministic checks before reasoning. Exit **0** ok / **1** finding / **2** error; one JSON line. Named wrappers under `scripts\`: `Test-JeevesMonitorHealth`, `Test-JeevesMonitorIdleSeats`, `Test-JeevesMonitorQueueFlow`, `Test-JeevesMonitorStaleDigest`, `Test-JeevesMonitorGiveupLoops`, `Test-JeevesMonitorStuckAccepted`, `Test-JeevesMonitorAutoFeed`, `Test-JeevesMonitorAutoFocus`, `Test-JeevesMonitorFocusPresent`, `Test-JeevesMonitorFocusRedundantItems`, `Test-JeevesMonitorSeatsStuckDoing`, `Test-JeevesMonitorSkillPromoteBacklog` (Python under `tools\monitor\`; FR #1019 / FR #1520 / FR #1682). Runner: `Invoke-JeevesMonitorCheck.ps1`. **Any repeated manual check becomes such a script** (intake FR + PR). Start Menu **Start Jeeves Monitor** → `Start-JeevesMonitor.ps1` → `bob-worker.exe --mode monitor` (NEW agent every time, never resume; CWD = this Jeeves install).
 
 ## Auto-start (FR #954)
 
@@ -65,7 +65,8 @@ Monitor for: empty offer queue while open FRs exist; seats idle with unaccepted 
 
 **Machine pin (FR #587 / #852):** recycle/recompose Jeeves and prune-`queue.json` FRs must stamp `require_machine=ionos` so marchhare seats are not offered ionos-only deploy work. If non-ionos seats keep getting those assigns after the cue merge, the live chair needs recompose/recycle — file/de-dup intake (same class as per-PR UAT leftovers).
 
-**Skill/harvest rows:** issues labeled `skill` (or harvest titles) must not be offered as FR (`issue_skip_fr_reason` → `label:skill`). Offering them is a chair/queue hygiene finding.
+**Skill/harvest rows:** issues labeled `skill` (or harvest titles) must not be offered as product FR (`issue_skip_fr_reason` → `label:skill`). Offering them is a chair/queue hygiene finding.
+**Skill-promote (FR #1682):** label `skill-promote` is offerable. Resync enqueues at most one promote FR when open skill receipts >= `BOB_SKILL_PROMOTE_THRESHOLD` (default 15) and no harvest/promote PR is open. Monitor check `skill_promote_backlog` reports `open_skill_without_promote_pr` when the backlog has no promote PR/issue/queue row (needs `GITHUB_TOKEN` on the monitor host for the GitHub count).
 
 ## FR / MRB / UAT flow (UAT per repo)
 

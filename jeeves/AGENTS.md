@@ -49,6 +49,7 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 | Auto-focus | `scripts\Test-JeevesMonitorAutoFocus.ps1` | `tools\monitor\auto_focus.py` |
 | Focus present (bobiverse under strict) | `scripts\Test-JeevesMonitorFocusPresent.ps1` | `tools\monitor\focus_present.py` |
 | Seats stuck doing / NAK busy | `scripts\Test-JeevesMonitorSeatsStuckDoing.ps1` | `tools\monitor\seats_stuck_doing.py` |
+| Skill promote backlog (FR #1682) | `scripts\Test-JeevesMonitorSkillPromoteBacklog.ps1` | `tools\monitor\skill_promote_backlog.py` |
 
 Runner: `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name> [-DryRun]`. Exit codes: **0** = ok, **1** = finding, **2** = error. Start Menu **Start Jeeves Monitor** launches a NEW agent here via `scripts\Start-JeevesMonitor.ps1` (never resume).
 

@@ -39,8 +39,19 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 
 1. **Playbook / fix with write access** -> branch + **pull request** to bobiverse. Never `git push origin main` for harvest.
 2. **No GitHub write / API fail** -> intake webhook (`Report-BobiverseIntakeIssue.ps1`) or local `report-outbox/` retry (`Invoke-BobiverseHarvest.ps1 -Flush`).
-3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request` / `needs-mrb1`).
+3. **Bugs / FRs without a ready patch** -> intake `kind: issue|fr` (labels `via-intake`; FR also `feature-request`).
 4. Prefer `.\scripts\Invoke-BobiverseHarvest.ps1` / `Report-BobiverseIntakeIssue.ps1` over free-form chat.
+
+## Skill-promote path (FR #1682) — receipts are not a dead end
+
+Intake `kind=skill|harvest` issues stay **SKIP_FR** (never ordinary product FR implements). To merge lessons:
+
+1. Chair/resync enqueues **at most one** FR labeled `skill-promote` when open skill receipts >= `BOB_SKILL_PROMOTE_THRESHOLD` (default 15) and no harvest/promote PR is already open.
+2. A worker ACKs that FR, opens **one** `harvest/…` PR promoting unique Lessons into owner books + `skill-harvest-log.md`, with `Closes` / `Duplicates closed:` for the receipts covered.
+3. Hostile **MRB** merges the promote PR (implementer never self-merges).
+4. Monitor `skill_promote_backlog` tracks `open_skill_without_promote_pr`.
+
+Never offer every harvest receipt as its own FR. Never stamp `needs-mrb1` on skill issues.
 
 ## Where to put lessons
 

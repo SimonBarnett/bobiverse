@@ -132,8 +132,16 @@ SKIP_FR_LABELS = frozenset(
         # (row_awaits_mrb1 always False). Intake no longer stamps the label.
         "blocked",
         "release-gate",
+        # skill-promote is intentionally NOT listed (FR #1682): one offerable promote FR
+        # so skill/harvest receipts get a harvest/ PR + MRB instead of forever SKIP_FR.
     }
 )
+
+# FR #1682: offerable promote job (not a product implement FR; not a skill receipt).
+SKILL_PROMOTE_LABEL = "skill-promote"
+SKILL_PROMOTE_THRESHOLD_DEFAULT = 15
+SKILL_PROMOTE_REPO = "SimonBarnett/bobiverse"
+_SKILL_PROMOTE_PR_TITLE_RE = re.compile(r"(?i)^(harvest\b|docs:\s*harvest|skill-promote\b)")
 
 # Labels safe to detect in free text (title/line/body). Bare ``mrb`` is labels-only ΓÇö
 # otherwise titles like "harden MRB/FR routing" (#595) would false-positive.
@@ -559,6 +567,212 @@ def _label_names(labels) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _labels_set(labels: tuple[str, ...] | list[str] | object) -> set[str]:
+    if isinstance(labels, str):
+        labels = [labels]
+    return {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+
+
+def row_is_skill_promote(row: dict | None) -> bool:
+    """True when the queue row is a skill-promote FR (FR #1682)."""
+    if not isinstance(row, dict):
+        return False
+    return SKILL_PROMOTE_LABEL in _labels_set(row.get("labels") or ())
+
+
+def issue_is_skill_promote(
+    *,
+    title: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> bool:
+    labs = _labels_set(labels)
+    if SKILL_PROMOTE_LABEL in labs:
+        return True
+    # Title form used when creating the standing promote FR.
+    t = (title or "").strip().lower()
+    return t.startswith("fr: promote open skill") or t.startswith("fr: skill-promote")
+
+
+def issue_is_skill_receipt(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    state: str = "",
+) -> bool:
+    """Open skill/harvest honesty-box receipt (not a skill-promote job)."""
+    if (state or "").strip().lower() == "closed":
+        return False
+    if issue_is_skill_promote(title=title, labels=labels):
+        return False
+    labs = _labels_set(labels)
+    if "skill" in labs:
+        return True
+    return bool(HARVEST_TITLE_RE.match((title or "").strip()))
+
+
+def is_skill_promote_pr(*, title: str = "", labels: tuple[str, ...] | list[str] = ()) -> bool:
+    """Open PR that promotes skill books (harvest/… or skill-promote label)."""
+    labs = _labels_set(labels)
+    if SKILL_PROMOTE_LABEL in labs:
+        return True
+    return bool(_SKILL_PROMOTE_PR_TITLE_RE.match((title or "").strip()))
+
+
+def skill_promote_threshold() -> int:
+    raw = (os.environ.get("BOB_SKILL_PROMOTE_THRESHOLD") or "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return SKILL_PROMOTE_THRESHOLD_DEFAULT
+
+
+def ensure_skill_promote_queue(
+    home: Path,
+    *,
+    open_issues: list | None = None,
+    open_prs: list | None = None,
+    create_issue=None,
+    threshold: int | None = None,
+    repo: str = SKILL_PROMOTE_REPO,
+    doc: dict | None = None,
+) -> dict:
+    """FR #1682: when skill receipts exceed threshold, ensure exactly one promote FR is queued.
+
+    Bare ``skill`` / ``harvest:`` issues stay SKIP_FR. A single ``skill-promote`` FR is
+    offerable so a seat can open one ``harvest/…`` PR (then MRB) that Closes the receipts.
+
+    ``create_issue(title, body, labels) -> int`` is optional (GitHub issue number). When
+    omitted and no promote issue exists, returns ``action=need_issue`` for the monitor.
+    """
+    thr = int(threshold) if threshold is not None else skill_promote_threshold()
+    issues = [i for i in (open_issues or []) if isinstance(i, dict)]
+    prs = [p for p in (open_prs or []) if isinstance(p, dict)]
+    receipts = [
+        i
+        for i in issues
+        if issue_is_skill_receipt(
+            title=str(i.get("title") or ""),
+            body=str(i.get("body") or ""),
+            labels=_label_names(i.get("labels")),
+            state=str(i.get("state") or "open"),
+        )
+    ]
+    skill_count = len(receipts)
+    out: dict = {"skill_count": skill_count, "threshold": thr, "repo": repo}
+    if skill_count < thr:
+        out.update(action="noop", reason="below_threshold")
+        return out
+    if any(
+        is_skill_promote_pr(
+            title=str(p.get("title") or ""),
+            labels=_label_names(p.get("labels")),
+        )
+        for p in prs
+    ):
+        out.update(action="noop", reason="promote_pr_open")
+        return out
+
+    qdoc = doc if isinstance(doc, dict) else load_queue(home)
+    for bucket in ("unaccepted", "accepted"):
+        for row in qdoc.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("repo") or "") != repo:
+                continue
+            if row_is_skill_promote(row) or issue_is_skill_promote(
+                title=str(row.get("title") or ""),
+                labels=row.get("labels") or (),
+            ):
+                out.update(
+                    action="noop",
+                    reason="already_queued",
+                    id=str(row.get("id") or ""),
+                    bucket=bucket,
+                )
+                return out
+
+    promote_issues = [
+        i
+        for i in issues
+        if issue_is_skill_promote(
+            title=str(i.get("title") or ""),
+            labels=_label_names(i.get("labels")),
+        )
+        and str(i.get("state") or "open").lower() == "open"
+        and not i.get("pull_request")
+        and isinstance(i.get("number"), int)
+    ]
+    issue_num: int | None = None
+    issue_title = ""
+    issue_body = ""
+    issue_labels: tuple[str, ...] = ()
+    if promote_issues:
+        iss = sorted(promote_issues, key=lambda x: int(x["number"]))[0]
+        issue_num = int(iss["number"])
+        issue_title = str(iss.get("title") or "")
+        issue_body = str(iss.get("body") or "")
+        issue_labels = _label_names(iss.get("labels"))
+    elif create_issue is not None:
+        sample = []
+        for i in receipts[:40]:
+            n = i.get("number")
+            t = str(i.get("title") or "").strip()
+            if isinstance(n, int):
+                sample.append(f"- #{n}: {t[:120]}")
+        body = (
+            "## Ask\n"
+            "Promote open `skill` / `harvest:` intake receipts into owner `.grok/skills/**` "
+            "and `common/docs/skill-harvest-log.md` via **one** `harvest/…` PR, then hostile MRB.\n\n"
+            f"## Backlog\nskill_receipts={skill_count} (threshold={thr})\n\n"
+            "## Sample open receipts\n"
+            + ("\n".join(sample) if sample else "(none listed)")
+            + "\n\n"
+            "## Do not\n"
+            "- Implement as a product FR\n"
+            "- Offer every harvest receipt as its own FR\n"
+            "- Stamp needs-mrb1\n"
+            "- Merge without MRB\n\n"
+            f"_via FR #1682 skill-promote ensure_\n"
+        )
+        title = "FR: promote open skill/harvest intake to skill-book PR"
+        labels = ["feature-request", SKILL_PROMOTE_LABEL, "via-intake"]
+        created = create_issue(title, body, labels)
+        issue_num = int(created)
+        issue_title = title
+        issue_body = body
+        issue_labels = tuple(labels)
+        out["created_issue"] = issue_num
+    else:
+        out.update(action="need_issue", reason="no_promote_issue")
+        return out
+
+    assert issue_num is not None
+    labs = tuple(dict.fromkeys([*(issue_labels or ()), SKILL_PROMOTE_LABEL, "feature-request"]))
+    claim = GitClaim(
+        repo=repo,
+        task="FR",
+        id=f"#{issue_num}",
+        event="issues",
+        action="opened",
+        line=f"FR {repo}#{issue_num}",
+        title=issue_title or "FR: promote open skill/harvest intake to skill-book PR",
+        body=issue_body,
+        labels=labs,
+        state="open",
+    )
+    # Prefer mutating caller's doc when inside resync lock; else apply_queue_event.
+    if doc is not None:
+        result = _append_unaccepted(doc, claim)
+        out.update(action="enqueued" if result == "added" else result, id=claim.id)
+    else:
+        result = apply_queue_event(home, claim)
+        out.update(action="enqueued" if result == "added" else result, id=claim.id)
+    return out
+
+
 def issue_skip_fr_reason(
     *,
     title: str = "",
@@ -570,6 +784,9 @@ def issue_skip_fr_reason(
     if (state or "").strip().lower() == "closed":
         return "closed"
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    # FR #1682: skill-promote FRs are offerable (product FR queue stays free of skill spam).
+    if SKILL_PROMOTE_LABEL in labs or issue_is_skill_promote(title=title, labels=labels):
+        return None
     hit = labs & SKIP_FR_LABELS
     if hit:
         return f"label:{sorted(hit)[0]}"
@@ -3447,6 +3664,9 @@ def resync_from_github(
     repo_clear: dict[str, bool] = {}   # t853u: no open non-excluded issue and no open PR
     uat_plan: dict[str, tuple[list[str], list[str]]] = {}   # repo -> (merged PRs this cycle, issues they closed)
     cycles = ledger_load(home).get("uat_cycle") or {}
+    # FR #1682: remember bobiverse open issues/PRs for skill-promote ensure after merge.
+    skill_promote_issues: list = []
+    skill_promote_prs: list = []
     for repo in repos:
         if not REPO_RE.fullmatch(repo):
             continue
@@ -3470,6 +3690,9 @@ def resync_from_github(
             issues = []
         if not isinstance(prs, list):
             prs = []
+        if repo.lower() == SKILL_PROMOTE_REPO.lower():
+            skill_promote_issues = list(issues)
+            skill_promote_prs = list(prs)
         # t853u: repo-level UAT gate. Excluded issues (needs-human, boards/mrb-home, harvest/skill
         # records, CRITICAL spam, safe-to-close, needs-mrb1 — FR #1416) never hold a repo back;
         # every other open issue or any open PR does.
@@ -3773,6 +3996,52 @@ def resync_from_github(
             except Exception:
                 focus_pruned = 0
                 focus_redundant = 0
+            # FR #1682: enqueue at most one skill-promote FR when skill receipt backlog is high.
+            # create_issue only when a token is available (auto-open standing promote FR).
+            skill_promote_info: dict = {"action": "skipped", "reason": "bobiverse_not_fetched"}
+            if skill_promote_issues or any(
+                r.lower() == SKILL_PROMOTE_REPO.lower() for r in fetched
+            ):
+                create_cb = None
+                if token:
+
+                    def create_cb(title: str, body: str, labels: list[str], _repo=SKILL_PROMOTE_REPO, _token=token):
+                        payload = json.dumps(
+                            {"title": title, "body": body, "labels": list(labels)}
+                        ).encode("utf-8")
+                        hdrs = {
+                            "Accept": "application/vnd.github+json",
+                            "User-Agent": "bobiverse-jeeves",
+                            "Authorization": "Bearer " + _token,
+                            "Content-Type": "application/json",
+                        }
+                        req = urllib.request.Request(
+                            f"https://api.github.com/repos/{_repo}/issues",
+                            data=payload,
+                            headers=hdrs,
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(req, timeout=30) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                        num = data.get("number")
+                        if not isinstance(num, int):
+                            raise RuntimeError("skill-promote create_issue: missing number")
+                        return num
+
+                try:
+                    skill_promote_info = ensure_skill_promote_queue(
+                        home,
+                        open_issues=skill_promote_issues,
+                        open_prs=skill_promote_prs,
+                        create_issue=create_cb,
+                        doc=doc,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    skill_promote_info = {"action": "error", "error": str(exc)}
+                # Re-seq after a possible enqueue.
+                doc["unaccepted"].sort(key=sk)
+                for i, row in enumerate(doc["unaccepted"], start=1):
+                    row["seq"] = i
             _write_queue(queue_path(home), doc)
             if cleared_fr_done or cleared_mrb_done:
                 def _clear_stale_done_stamps(led: dict) -> None:
@@ -3796,6 +4065,7 @@ def resync_from_github(
                 "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),
                 "failed": list(failed),
+                "skill_promote": skill_promote_info,
             }
     except (TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}

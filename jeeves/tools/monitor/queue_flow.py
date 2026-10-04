@@ -246,7 +246,7 @@ def check(args):
                 + detail
             )
             notes.append(
-                "skill/harvest issues are SKIP_FR and never enqueue — open GitHub skill count is outside this queue"
+                "skill/harvest receipts are SKIP_FR; skill-promote FR (FR #1682) is the offerable path — see skill_promote_backlog"
             )
     elif offerable_n > 0 and idle_seat_count > 0:
         findings.append(
