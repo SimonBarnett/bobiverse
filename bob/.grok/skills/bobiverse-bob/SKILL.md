@@ -22,7 +22,7 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 
 ## Architecture
 
-`ircBob` runs `Start-Bob.ps1` â†’ prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#<machine> --host <irc host>`. Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback.
+`ircBob` runs `Start-Bob.ps1` → prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#<machine> --host <irc host>`. Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback.
 (NSSM). The ear is the box's presence on IRC: it keeps the shop channel, reports status to the digest, executes `!recycle`
 for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **TipForm tray** is an interactive companion
 (not a service, not a `BobFleet-*` task). Digest POSTs need no secret (roster-gated by Jeeves).
@@ -35,7 +35,7 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 | IRC | channels `#bobiverse` + `#<machine>`; nick `Bob-<machine>`; SASL user `bob-<machine>`; host passed explicitly with `--host` (Start-Bob `-IrcHost`, default `irc.ntsa.uk`) |
 | Config | `config\ergo.password` (server PASS), `home\nickserv.password` (SASL), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon) |
 | Tray | `scripts\Start-BobTray.ps1 -> tools\Start-BobFleetTray.ps1`; HKCU `Run\BobiverseTray`; per-user Startup shortcut; quiet MSI uses the ONLOGON `/IT` task `BobiverseTray` |
-| TipForm **Restart** | Menu label **Restart** â†’ `Restart-BobTrayWatcher` â†’ `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
+| TipForm **Restart** | Menu label **Restart** → `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
 | Agent / Plan | Tray items **Agent** and **Plan** (single click, no submenu) run `worker\bob-worker.exe` (via a per-user run-copy) -> a NEW agent each click, never resumed. Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
 | Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
 
@@ -64,7 +64,7 @@ Common failure chain:
 Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
 
 - Never let `Get-BobTrayHover` block TipForm worker refresh.
-- `Sync-BobTrayStatusWorkersFromDigest` â€” report/digest-only sync (bounded timeout) rewrites `grok[].workers` without calling hover.
+- `Sync-BobTrayStatusWorkersFromDigest` — report/digest-only sync (bounded timeout) rewrites `grok[].workers` without calling hover.
 - Call sync **before** `Update-Hover` on each poll; keep a **non-UI** timer (~10s, `SynchronizingObject=$null`) so worker lines keep moving while hover is stuck.
 - When BobCallback is down, still prefer local chair files (`digest.json` + queue ACC) over a hung hover path.
 - NAK busy after DONE: digest `machines.workers` map can stay `running`/`working_on` while `worker_list` is idle (harvest #1715); clear both maps. Product FR #1714.
