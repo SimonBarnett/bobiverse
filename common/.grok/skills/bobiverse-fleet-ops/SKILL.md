@@ -67,6 +67,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 
 - Install = MSI (`jeeves-<ver>.msi`, `bob-<ver>.msi`, `airc-<ver>.msi`). The MSI lays the tree (scripts, `.grok\skills`,
   AGENTS.md ...) and a custom action runs `Install-<Product>.ps1` (NSSM service, Start Menu folder, skills).
+- **Agent-folder skill sync (FR #1704 / PR #1709):** `Sync-BobiverseAgentFolders` must regex-rewrite only bare `.\scripts\` with a negative lookbehind `(?<!\.)` so `..\scripts\` is never turned into `...\scripts\`. Plain `.Replace('.\scripts\', '..\scripts\')` triples the dot and breaks installed worker skill paths (e.g. Clear-BobiverseJobWorktrees). Pack scripts: a **double-encoded UTF-8 BOM** (`EF BB BF` mis-read as Latin-1 then re-saved → bytes `c3 af c2 bb c2 bf`) makes WinPS 5.1 refuse `Pack-BobiverseRelease.ps1` — strip to a single UTF-8 BOM or none per file contract (harvest #1711).
 - Self-update: on every service start `Update-BobiverseService.ps1` asks GitHub releases/latest (no token), verifies the
   `.sha256`, stops ONLY that service, backs up the tree (`<ProgramData>\bobiverse\update\<product>\backup`), runs the MSI, refreshes
   skills, starts. Any failure = automatic rollback + loop guard. Log: `...\update\<product>\update.log`.
@@ -115,6 +116,8 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Symptom | Cause | Fix |
 |---|---|---|
 | `sasl-fail 904` / `433` loop, nick reserved | NickServ account password lost / wrong GUID | Oper `NickServ PASSWD <account> <the password file's value>` then restart that service; never mint a new password for a registered account |
+| Installed skill paths show `...\scripts\` (triple dot) | `Sync-BobiverseAgentFolders` used plain Replace on `.\scripts\` | Rewrite only bare `.\scripts\` with `(?<!\.)` lookbehind (FR #1704 / PR #1709) |
+| `Pack-BobiverseRelease.ps1` refused by WinPS 5.1 / weird first-char parse | Double-encoded UTF-8 BOM (`c3afc2bbc2bf`) | Re-save as UTF-8 (single BOM or no BOM per contract); do not Latin-1 round-trip BOM files |
 | Config/JSON/ps1 "unexpected character" | UTF-8 BOM in a file that must have none (outbox, intake JSON) or missing BOM in a ps1 with non-ASCII | Outbox/JSON: write UTF-8 NO BOM. Read JSON with `utf-8-sig`. Keep BOM on existing `.ps1` |
 | Ear restarts every 30-60 s, `+h`/`+o` re-granted each time | Watcher/tray kills an ear whose command line lacks `--host` | `Start-Bob.ps1 -IrcHost` passes `--host`; the MSI bakes `-IrcHost` into the NSSM service |
 | Service points at an old tree after MSI | NSSM `Application` still the old path | Re-run `Install-<Product>.ps1` (or `nssm set <svc> Application ...`) |

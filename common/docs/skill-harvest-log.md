@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Agent-folder path rewrite lookbehind + Pack BOM (FR #1704 / harvest #1711)
+
+| Lesson | Fix |
+|--------|-----|
+| Sync-BobiverseAgentFolders must regex-rewrite only bare .\scripts\ ((?<!\.) lookbehind); plain Replace triples dots in ..\scripts\. Double-encoded UTF-8 BOM makes WinPS 5.1 refuse Pack-BobiverseRelease.ps1 | Documented in `bobiverse-fleet-ops`. Product: PR #1709 / nits #1710 |
+
 ## 2026-10-04 - Never Closes skill harvest from unrelated PR (harvest #1674)
 
 | Lesson | Fix |
