@@ -1232,7 +1232,7 @@ function Sync-BobiverseAgentFolders {
         # The agent runs with cwd = <install>\$n, so the rule's relative '.\scripts\' becomes '..\scripts\' (install-root independent - t780u: no C:\ai baked into the MSI stage).
         Get-ChildItem -LiteralPath (Join-Path $dest '.grok\skills') -Recurse -Filter 'SKILL.md' | ForEach-Object {
             $t = [IO.File]::ReadAllText($_.FullName)
-            $t2 = $t.Replace('.\scripts\', '..\scripts\')
+            $t2 = [regex]::Replace($t, '(?<!\.)\.\\scripts\\', '..\scripts\')   # bare '.\scripts\' only; a plain Replace also hit '..\scripts\' -> '...\scripts\' (FR #1704)
             if ($t2 -ne $t) { [IO.File]::WriteAllText($_.FullName, $t2, $enc) }
         }
         $agents = [IO.File]::ReadAllText((Join-Path $dest 'AGENTS.md'))

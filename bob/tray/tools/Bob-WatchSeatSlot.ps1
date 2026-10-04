@@ -1,4 +1,4 @@
-ï»¿# FR #345 (pairs AgentMonitor #97): tray-side watch seat slot / IRC home helpers.
+﻿# FR #345 (pairs AgentMonitor #97): tray-side watch seat slot / IRC home helpers.
 # Dot-source from Watch-BobTray / Start-BobWatchWorker / tests.
 # Never starts live monitors from this file alone.
 
