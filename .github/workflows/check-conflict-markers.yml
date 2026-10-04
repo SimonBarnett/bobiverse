@@ -1,0 +1,25 @@
+# FR #1634: never land unresolved git conflict markers on main.
+name: check-conflict-markers
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  conflict-markers:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan tree for conflict markers (FR #1634)
+        run: |
+          $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts"
+          python common\scripts\check_conflict_markers.py --root .

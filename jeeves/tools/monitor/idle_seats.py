@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116)."""
+"""Idle-seat detector: digest workers idle while offerable queue work exists (FR #1116 / #1625)."""
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from _common import (
@@ -17,6 +19,9 @@ from _common import (
     resolve_queue_path,
     run_check,
 )
+
+# Full shop nick: {machine}-{pid}. Short w-mh-* / w-io-* digest ghosts are not starve seats (FR #1625).
+_SHOP_NICK_RX = re.compile(r"^[a-z0-9][a-z0-9_.-]*-\d+$", re.I)
 
 
 def _load_json(path: Path):
@@ -43,10 +48,78 @@ def _ensure_gitclaim():
     return gitclaim
 
 
+def is_starve_idle_nick(nick: str) -> bool:
+    """True when digest nick is a real shop seat for starve math (FR #1625).
+
+    Drops ``w-mh-*`` / ``w-io-*`` short ghosts and anything that is not ``machine-pid``.
+    """
+    n = (nick or "").strip()
+    if not n or n.lower().startswith("w-") or n.lower().startswith("bob-"):
+        return False
+    return bool(_SHOP_NICK_RX.match(n))
+
+
+def row_offer_pending(row: dict, *, now: float | None = None, timeout_s: float | None = None) -> bool:
+    """True when ``offered_to`` is still within assign grace (awaiting ACK; FR #1625)."""
+    to = str(row.get("offered_to") or "").strip()
+    if not to:
+        return False
+    try:
+        import gitclaim as gc
+
+        limit = float(gc.OFFER_TIMEOUT_S if timeout_s is None else timeout_s)
+    except Exception:
+        limit = float(90.0 if timeout_s is None else timeout_s)
+    now_f = time.time() if now is None else float(now)
+    try:
+        age = now_f - datetime.fromisoformat(
+            str(row.get("offered_ts") or "").replace("Z", "+00:00")
+        ).timestamp()
+    except ValueError:
+        age = limit + 1
+    return age < limit
+
+
+def collect_idle_shop_seats(machines: object) -> list[dict]:
+    """Idle digest workers, deduped by canonical nick, shop-form only (FR #1625)."""
+    try:
+        gc = _ensure_gitclaim()
+    except Exception:
+        gc = None
+    seen: set[str] = set()
+    out: list[dict] = []
+    for w in iter_worker_entries(machines):
+        if str(w.get("state") or "").lower() != "idle":
+            continue
+        nick = str(w.get("nick") or w.get("name") or "").strip()
+        if not is_starve_idle_nick(nick):
+            continue
+        key = nick.lower()
+        if gc is not None:
+            try:
+                key = (gc.canonical_worker_nick(nick) or nick).strip().lower()
+            except Exception:
+                key = nick.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "machine": w.get("machine"),
+                "nick": nick,
+                "pid": w.get("pid"),
+            }
+        )
+    return out
+
+
 def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str, now: float) -> bool:
     """Read-only mirror of offer_focus_top eligibility (no offered_to / lock mutation)."""
     me = (gc.canonical_worker_nick(nick) or nick or "").strip()
     if not me:
+        return False
+    # FR #1625: row already offered to a seat awaiting ACK — not starve offerable.
+    if row_offer_pending(row, now=now):
         return False
     if gc.row_needs_human(row, me) or gc.row_on_cooldown(row, now, me):
         return False
@@ -128,21 +201,18 @@ def count_offerable_for_live_seats(
 def check(args):
     chair, digest = resolve_homes(args)
     findings = []
+    notes = []
     dig = _load_json(digest / "digest.json") or {}
     qpath = resolve_queue_path(chair, digest)
     queue = _load_json(qpath) or {}
     unaccepted = queue_bucket_rows(queue, "unaccepted")
-    idle = []
     machines = dig.get("machines") if isinstance(dig, dict) else None
-    for w in iter_worker_entries(machines):
-        if str(w.get("state", "")).lower() == "idle":
-            idle.append(
-                {
-                    "machine": w.get("machine"),
-                    "nick": w.get("nick") or w.get("name"),
-                    "pid": w.get("pid"),
-                }
-            )
+    idle = collect_idle_shop_seats(machines)
+    pending_offers = sum(1 for r in unaccepted if isinstance(r, dict) and row_offer_pending(r))
+    if pending_offers:
+        notes.append(
+            f"{pending_offers} unaccepted row(s) offered_to awaiting ACK (not starve offerable; FR #1625)"
+        )
     idle_nicks = [str(x.get("nick") or "") for x in idle if x.get("nick")]
     home = ops_home(chair, digest)
     # Prefer digest home when queue lives there (gitclaim lock/ledger).
@@ -161,6 +231,8 @@ def check(args):
             "idle_seats": idle,
             "unaccepted_count": len(unaccepted),
             "offerable_for_live_seats": offerable,
+            "pending_offer_count": pending_offers,
+            "notes": notes,
             "digest_path": str(digest / "digest.json"),
             "queue_path": str(qpath),
             "findings": findings,
