@@ -1694,10 +1694,20 @@ function Start-BobTrayWorkerExe {
         $run = Join-Path $binDir ('bob-worker-{0}.exe' -f $hash)
         if (-not (Test-Path -LiteralPath $run)) {
             Copy-Item -LiteralPath $exe -Destination $run -Force
-            # best effort: drop run-copies of older builds that no seat is using (a locked one just stays)
+            # FR #1643: defer delete while hashed run exe is still in use by a live seat (locked = leave for later).
             Get-ChildItem -LiteralPath $binDir -Filter 'bob-worker-*.exe' -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -ne $run } |
-                ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { } }
+                ForEach-Object {
+                    $old = $_.FullName
+                    try {
+                        $fs = [System.IO.File]::Open($old, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+                        $fs.Close(); $fs.Dispose()
+                        Remove-Item -LiteralPath $old -Force -ErrorAction Stop
+                    }
+                    catch {
+                        # in use / defer - seat still holds this bob-worker-<hash>.exe
+                    }
+                }
         }
         $argv = @('--mode', $Mode, '--install-root', $RepoRoot)
         $mid = Get-BobTrayMachineId
