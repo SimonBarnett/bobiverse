@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - jeeves.exe chair+HTTP foundation (FR #1993)
+
+| Lesson | Fix |
+|--------|-----|
+| Dual BobCallback/chair processes fight git-claim.lock / digest.lock | WP0 spec `jeeves/docs/jeeves-exe-self-heal.md`; WP1 `jeeves_main` + in-proc RLock + instance mutex; WP2/WP3 follow-up FRs for heal CLI and MSI pack |
+
+Books: `jeeves_main`, `jeeves_locks`, bobiverse-jeeves.
+
 
 ## 2026-10-04 - Living ionos architecture FR (harvest #1989 / FR #1993)
 
