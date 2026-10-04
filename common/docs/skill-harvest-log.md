@@ -1,6 +1,14 @@
 # Skill harvest log
 
 
+## 2026-10-04 - Quiet MSI Node soft-fail under SYSTEM (FR #1825 / harvest #2020)
+
+| Lesson | Fix |
+|--------|-----|
+| Per-user WindowsApps winget fails under LocalSystem; node hard-fail -> msiexec 1603 | Prefer pinned nodejs.org x64 MSI (ALLUSERS=1); soft-fail git/python/node with WARN; product PR #2019 |
+
+Books: bobiverse-fleet-ops, common/docs/post-install.md.
+
 ## 2026-10-04 - intake/BobCallback/ARR 502 ops pin ionos (FR #1899)
 
 | Lesson | Fix / book |
