@@ -96,3 +96,12 @@ VERSION → **0.1.10**.
 | Combined release (#196) | Consolidates the remaining 0.1.20 fixes and documentation across intake, chair/outbox, relay persistence, digest/reporting, airc remote control and durable jobs, tray packaging, sparse checkout, NSSM safety, and cursor-pool stamping. |
 
 VERSION -> **0.1.20** (packaged MSIs and release archives).
+
+## 2026-10-04 - chair "not assigning" vs open GitHub counts (harvest #1581)
+
+| Lesson | Fix / book |
+|---|---|
+| Large open-issue totals look like chair failure | Mostly skill/harvest (+ needs-human); check ungated_offerable and !bored first |
+| Monitor cannot !assign | By design; diagnose queue/bored/gates, do not act as chair |
+
+Books: `jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md`, `jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md`. Canonical #1581; duplicate #1483.
