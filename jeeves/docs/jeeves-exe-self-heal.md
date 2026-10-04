@@ -1,4 +1,4 @@
-# jeeves.exe — chair + BobCallback one process (FR #1993)
+# jeeves.exe â€” chair + BobCallback one process (FR #1993)
 
 Living architecture FR: https://github.com/SimonBarnett/bobiverse/issues/1993
 
@@ -50,6 +50,12 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 
 ### WP2 self-test / heal (landed)
 
+### WP3 pack + MSI cutover (landed — FR #2301)
+
+- `Build-Jeeves.ps1` freezes `jeeves_main.py` to `jeeves.exe` (hidden imports for chair/shop/callback/monitor).
+- `Pack-BobiverseRelease` stages `jeeves\jeeves.exe` (`-SkipJeevesExe` only with `-SkipMsi`).
+- `Install-Jeeves` NSSM Application = `jeeves.exe --chair --http 127.0.0.1:7700 --home <chair> --digest-home <digest>` when the exe is present; skips Python `BobCallback` task (in-proc HTTP). Legacy powershell `Start-Jeeves.ps1` remains if exe missing.
+
 - `--self-test` default checks: `imports`, `locks`, `http` (:7700 listen), `queue`, `offer` (focus/machine empty breakdown). Add `--check health` to run `tools/monitor/health.py` as a library.
 - `--heal` allowlist: break stale `git-claim.lock`, `bobreport.break_stale_digest_lock`, report HTTP/health/offer; never BobIrcd. `--force-orphan-busy` only when `accepted` is empty (still report-first; no default `clear_seat_doing`).
 - Shop empty reply: `format_nothing_queued` may emit `0 offerable under focus (N unaccepted, X out-of-focus, Y require_machine)` so `!bored` empty is not mistaken for an empty queue file.
@@ -71,10 +77,10 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 | WP0 | This spec + acceptance (docs) | landed (PR #2270; append evidence on living #1993) |
 | WP1 | In-process HTTP + chair entry (`jeeves_main`) + in-proc queue RLock | landed (PR #2270 foundation) |
 | WP2 | Diagnostics + heal CLI + monitor scripts as libraries; empty-offer wording | this PR (landed CLI; service-loop rebind stays in-process when exe is the service) |
-| WP3 | `Build-Jeeves.ps1` + MSI/NSSM cutover | next — append on #1993 (do not twin FR) |
-| WP4 | Ionos cutover + storm test | next — append on #1993 (`require_machine: ionos`) |
+| WP3 | `Build-Jeeves.ps1` + MSI/NSSM cutover | this PR (FR #2301; Refs #1993) |
+| WP4 | Ionos cutover + storm test | next â€” append on #1993 (`require_machine: ionos`) |
 
-CAST IRON: living FR #1993 stays open until E1–E5 + cutover are done. Partial WP PRs use **Refs** `#1993`, never `Closes`.
+CAST IRON: living FR #1993 stays open until E1â€“E5 + cutover are done. Partial WP PRs use **Refs** `#1993`, never `Closes`.
 
 ## Heal allowlist
 
@@ -94,7 +100,7 @@ CAST IRON: living FR #1993 stays open until E1–E5 + cutover are done. Partial 
 - Embedding Ergo / touching `BobIrcd`
 - LLM inside the service
 - Monitor `clear_seat_doing` as default heal (CAST IRON keep seats busy #1967)
-- Removing IIS ARR in WP1–WP3 (keep ARR; harden backend)
+- Removing IIS ARR in WP1â€“WP3 (keep ARR; harden backend)
 
 ## Success definition
 
