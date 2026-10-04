@@ -27,6 +27,8 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 
 ## Architecture
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 `ircJeeves` runs `irc_agent.py --chair --nick Jeeves --home <chair home>` (NSSM, `Start-Jeeves.ps1`). Everything is
 deterministic and token-less except the optional GitHub token used for filing issues and the 15-min FR/MRB resync.
 

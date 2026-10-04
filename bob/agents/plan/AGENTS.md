@@ -17,6 +17,8 @@ Your working folder is `<ai root>\bob\plan`. This file is also shipped as `CLAUD
 
 ## Read first (in this order)
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 - `.grok/skills/visionary/SKILL.md` - the plan-mode route: shape, success metrics, stack, architecture, HTML mocks
 - `.grok/skills/plan-create-repo`, `plan-git-from-plan`, `plan-enable-prs`, `plan-bob-webhooks` - plan -> repo setup (only after an approved plan)
 - `.grok/skills/harvest-skills-visionary/SKILL.md`, `harvest/SKILL.md`, `harvest-agent-skills/SKILL.md` - harvest + intake

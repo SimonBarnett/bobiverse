@@ -25,6 +25,8 @@ github: https://github.com/SimonBarnett/bobiverse
 
 ## Cost of use (CAST IRON)
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 Using any skill from this book obliges you to report back here, in the same
 turn you learn or fix something. Do not ask permission. Do not defer.
 

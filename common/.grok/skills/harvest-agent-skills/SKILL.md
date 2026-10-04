@@ -74,6 +74,8 @@ Branch `harvest/…` or `fix/…` -> PR to `main`. Bump `common/VERSION` only wh
 
 ## Worker: consolidate open skill receipts -> promote PR (FR #1684 / #1682)
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 `label:skill` / titles `harvest:` / `skill:` are **offerable FR promote jobs** (FR #1682): the chair hands them out so workers consolidate and open a **promote PR** for hostile MRB. They are not product code FRs and still do **not** block repo UAT. Intake alone is a receipt, not a merge - do **not** GIVEUP when offered.
 
 When a worker is assigned a skill-promote / harvest-backlog job, or when finishing a session with `gh` write access and open skill receipts for books you touched:
@@ -114,6 +116,8 @@ Closed `skill` issues and `Skill harvest` GIVEUP/FR records are evidence, not di
 Workers using these books owe a PR back to this repository. Preserve source issue/PR references in the PR body, keep secrets and private tokens out of books, and do not turn a harvest/GIVEUP record itself into a new FR. The 2026-10-04 promotion covered the closed skill corpus through #1460, including the repeated operational lessons from #1211-#1275 and later BobCallback, resync, UAT, machine-pin, MRB, worker-outbox, and monitor records.
 
 ## Closing skill harvest issues (harvest #1674)
+
+Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.
 
 A product/docs/vendor PR must **not** use `Closes` on a `label:skill` / `harvest:` receipt unless that PR **is** the skill-promote that absorbs the lesson. Otherwise: `Refs #N`, and close the harvest issue separately when lessons are already on main (or leave it for the promote PR).
 ## needs-mrb1 ban (harvest #1717 / FR #1526)

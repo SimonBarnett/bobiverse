@@ -335,6 +335,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append 'PRIVMSG #{machine} :DONE <FR|MRB|UAT> owner/repo#N <PASS|FAIL> <url>' "
         f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file every issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
         f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
+        f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Never print or store secrets."
     )
 
@@ -370,6 +371,8 @@ def rules_text(folder: str, kind: str) -> str:
     }.get(kind, "Worker seat: IRC is handled for you.")
     return (f"NEW session. Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
+            f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
+            f"If an FR worker finds the assigned issue is a duplicate/twin or already done, close it with a comment linking the first issue or covering PR before sending DONE. "
             + extra)
 
 

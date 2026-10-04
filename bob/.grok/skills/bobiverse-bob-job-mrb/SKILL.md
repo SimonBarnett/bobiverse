@@ -59,6 +59,10 @@ After the merge check `gh issue view N --repo <owner>/<repo> --json state`: if i
 
 ## Duplicates: verify and close them (t857u)
 
+Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.
+
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 The PR body must carry a **`Duplicates closed:`** line (or `none (searched: ...)`). During the review search the open issues again for duplicates of what the PR fixes;
 any still open that the implementer missed: comment **`Duplicate of #N / fixed by PR #M`** and close as not planned
 (`gh issue close <dup> --repo <owner>/<repo> --reason "not planned" --comment "Duplicate of #N / fixed by PR #M"`), and add it to the board. A real extra issue the PR

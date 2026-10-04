@@ -41,6 +41,8 @@ Your working folder is `<ai root>\bob\worker`. This file is also shipped as `CLA
 
 ## Issues close with their PR
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 - Every FR PR body contains `Closes <owner>/<repo>#N` for the originating issue; a successful MRB merges (if authorised) or confirms that link and closes the issue itself with a comment when the merge did not (e.g. non-default branch). FR/MRB DONE only after that is verified (`bobiverse-bob-job-fr` / `-mrb`).
 
 ## The repo is the parent folder
