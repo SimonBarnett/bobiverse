@@ -1,6 +1,14 @@
 # Skill harvest log
 
 
+## 2026-10-04 - Living ionos architecture FR (harvest #1989 / FR #1993)
+
+| Lesson | Fix |
+|--------|-----|
+| Approved chair+HTTP / self-test plans for ionos | One bobiverse FR with require_machine: ionos; append WP evidence to the same body; do not twin FRs |
+
+Books: bobiverse-jeeves. Living FR: #1993.
+
 ## 2026-10-04 - BobCallback report probe >=20s (harvest #2057 / FR #1993)
 
 | Lesson | Fix |
