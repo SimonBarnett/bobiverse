@@ -1,10 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Launch Bob-{MachineId} ear (NSSM ircBob). Self-update check then irc_agent.
+  Launch Bob-{MachineId} ear (NSSM ircBob). Self-update check then bob-ear.exe (FR #1481) or irc_agent.py.
 .NOTES
   Issue #3: use --channel (not --channels); load Ergo PASS from MSI config\ergo.password.
   Do not pass -Python via NSSM AppParameters (spaces break quoting) - resolve here.
+  FR #1481: prefer scripts\bob-ear.exe (self-contained); fall back to python -u irc_agent.py for repo/dev trees.
 #>
 [CmdletBinding()]
 param(
@@ -34,10 +35,6 @@ if (-not $BobHome) {
     }
 }
 New-Item -ItemType Directory -Force -Path $BobHome | Out-Null
-
-if (-not $Python) {
-    try { $Python = Resolve-BobiversePython } catch { throw 'python.exe missing' }
-}
 
 $env:BOB_MACHINE_ID = $MachineId
 # Self-update on start: see the v0.1.17 block below (Update-BobiverseService.ps1).
@@ -80,6 +77,9 @@ if (Test-Path -LiteralPath $updater) {
     catch { Write-Host "WARN self-update: $($_.Exception.Message)" }
 }
 
+# FR #1481 / MRB #1488: prefer bob-ear.exe *after* sync/self-update so a just-staged exe is seen.
+$earExe = Join-Path $scriptDir 'bob-ear.exe'
+$useEarExe = Test-Path -LiteralPath $earExe -PathType Leaf
 $agent = Join-Path $scriptDir 'irc_agent.py'
 $shop = "#$MachineId"
 $channel = "#bobiverse,$shop"
@@ -87,6 +87,16 @@ if (-not $IrcHost) { $IrcHost = [string]$env:BOB_IRC_HOST }
 if (-not $IrcHost) { $IrcHost = 'irc.ntsa.uk' }
 $IrcHost = $IrcHost.Trim()
 if ($IrcHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw "invalid -IrcHost '$IrcHost'" }
-Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel"
-& $Python -u $agent --nick $nick --home $BobHome --channel $channel --host $IrcHost
+$earArgs = @('--nick', $nick, '--home', $BobHome, '--channel', $channel, '--host', $IrcHost)
+if ($useEarExe) {
+    Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel via=bob-ear.exe (FR #1481)"
+    & $earExe @earArgs
+    exit $LASTEXITCODE
+}
+if (-not $Python) {
+    try { $Python = Resolve-BobiversePython } catch { throw 'python.exe missing (and scripts\bob-ear.exe not present; FR #1481)' }
+}
+if (-not (Test-Path -LiteralPath $agent)) { throw "missing $agent (and bob-ear.exe not present)" }
+Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel via=python irc_agent.py"
+& $Python -u $agent @earArgs
 exit $LASTEXITCODE
