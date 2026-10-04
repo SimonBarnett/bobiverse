@@ -36,7 +36,9 @@ param(
     [string]$InstallRoot = '',
     [string]$Branch = 'main',
     [switch]$DryRun,
-    [switch]$ComposeOnly
+    [switch]$ComposeOnly,
+    # Test hook (FR #1565): pretend ARP DisplayVersion is this value (skip registry).
+    [string]$ArpVersionOverride = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -174,17 +176,58 @@ $cloneVer = if (Test-Path -LiteralPath $verSrc) { (Get-Content -LiteralPath $ver
 Write-Host "INFO sync-copy clone=$clone ver=$cloneVer -> $InstallRoot pulled=$pulled"
 
 # FR #1018: do not robocopy an older clone over a newer MSI-installed VERSION (caused 0.1.21 -> 0.1.20 rollback).
+# FR #1565: when ARP DisplayVersion is present, heal InstallRoot\VERSION to ARP and never let a newer
+# clone VERSION (e.g. git 0.1.22) clobber the MSI-stamped file (ARP 0.1.21).
 $installVerFile = Join-Path $InstallRoot 'VERSION'
 $installVerText = if (Test-Path -LiteralPath $installVerFile) { (Get-Content -LiteralPath $installVerFile -Raw).Trim() } else { '' }
 function ConvertTo-BobiverseVersion([string]$Text) {
     if ($Text -match '(\d+)\.(\d+)\.(\d+)') { return [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])" }
     return $null
 }
+function Get-BobiverseArpDisplayVersion([string]$ProductName) {
+    $want = "bobiverse $($ProductName.Trim().ToLowerInvariant())"
+    foreach ($root in @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+        )) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($k in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            try {
+                $p = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction Stop
+                if ([string]$p.DisplayName -ne $want) { continue }
+                $dv = [string]$p.DisplayVersion
+                if ($dv) { return $dv.Trim() }
+            } catch { }
+        }
+    }
+    return ''
+}
+$arpVerText = if ($ArpVersionOverride -and $ArpVersionOverride.Trim()) {
+    $ArpVersionOverride.Trim()
+} else {
+    Get-BobiverseArpDisplayVersion -ProductName $Product
+}
+$arpVer = ConvertTo-BobiverseVersion $arpVerText
+if ($arpVer) {
+    $curFile = ConvertTo-BobiverseVersion $installVerText
+    if (-not $curFile -or $curFile -ne $arpVer) {
+        Set-Content -LiteralPath $installVerFile -Value ($arpVer.ToString() + [Environment]::NewLine) -Encoding ascii
+        Write-Host ("INFO sync-heal-version-from-arp was={0} arp={1} (FR #1565)" -f $(if ($installVerText) { $installVerText } else { 'missing' }), $arpVer.ToString())
+        $installVerText = $arpVer.ToString()
+    }
+}
 $installVer = ConvertTo-BobiverseVersion $installVerText
 $cloneVerObj = ConvertTo-BobiverseVersion $cloneVer
 if ($installVer -and $cloneVerObj -and $installVer -gt $cloneVerObj) {
     Write-Host "WARN sync-skip-newer-install install=$($installVer.ToString()) clone=$($cloneVerObj.ToString()) - refusing to overwrite MSI tree with older clone"
     exit 0
+}
+# Remember ARP so the final VERSION copy can refuse a newer clone stamp.
+$script:BobiverseArpVersion = $arpVer
+$script:BobiverseSkipVersionCopyFromClone = $false
+if ($arpVer -and $cloneVerObj -and $arpVer -ne $cloneVerObj) {
+    $script:BobiverseSkipVersionCopyFromClone = $true
+    Write-Host ("WARN sync-skip-arp-version ARP={0} clone={1} - MSI VERSION is source of truth (FR #1565)" -f $arpVer.ToString(), $cloneVerObj.ToString())
 }
 
 if ($DryRun) {
@@ -305,7 +348,11 @@ if ($Product) {
 }
 
 if (Test-Path -LiteralPath $verSrc) {
-    Copy-Item -Force -LiteralPath $verSrc -Destination (Join-Path $InstallRoot 'VERSION')
+    if ($script:BobiverseSkipVersionCopyFromClone) {
+        Write-Host 'INFO sync-keep-arp-version (skipped clone VERSION copy; FR #1565)'
+    } else {
+        Copy-Item -Force -LiteralPath $verSrc -Destination (Join-Path $InstallRoot 'VERSION')
+    }
 }
 
 $localVer = '?'
