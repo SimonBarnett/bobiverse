@@ -765,6 +765,10 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bstartpending\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
     (re.compile(r"(?i)\bidle seats?\b.{0,120}\bungated offerable\b"), "ionos"),
     (re.compile(r"(?i)\bungated offerable\b.{0,120}\bidle seats?\b"), "ionos"),
+    # FR #1899: title-level intake/BobCallback 502 ops filings
+    (re.compile(r"(?i)\bintake\b.{0,40}\b(?:BobCallback|ARR)\b.{0,40}\b502\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:BobCallback|ARR)\b.{0,40}\bintake\b.{0,40}\b502\b"), "ionos"),
+    (re.compile(r"(?i)\bintake\b.{0,60}\b502\b.{0,40}\b(?:Bad Gateway|harvest)"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
@@ -797,6 +801,14 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     ), "ionos"),
     (re.compile(r"(?i)\bno shop OFFER\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b.{0,100}\b(?:OFFER|!bored|GIT announce)"), "ionos"),
+    # FR #1899: intake/ARR/BobCallback 502 ops live on the Ergo/chair host (not flamingo)
+    (re.compile(r"(?i)\b(?:intake|/bob/v1/intake)\b.{0,140}\b(?:502|Bad Gateway)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:502|Bad Gateway)\b.{0,140}\b(?:intake|/bob/v1/intake|BobCallback|harvest-outbox)\b"), "ionos"),
+    (re.compile(r"(?i)\bBobCallback\b.{0,120}\b(?:502|Bad Gateway|LISTEN|:7700)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:502|Bad Gateway|LISTEN|:7700)\b.{0,120}\bBobCallback\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:ARR|reverse[- ]proxy)\b.{0,140}\b(?:intake|BobCallback|/bob/v1)\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:intake|BobCallback|/bob/v1)\b.{0,140}\b(?:ARR|reverse[- ]proxy)\b"), "ionos"),
+    (re.compile(r"(?i)\bharvest-outbox\b.{0,100}\b(?:502|Bad Gateway|KEPT)\b"), "ionos"),
 )
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
