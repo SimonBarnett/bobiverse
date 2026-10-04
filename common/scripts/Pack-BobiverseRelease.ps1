@@ -434,6 +434,23 @@ function Build-Msi([string]$Name, [string]$Stage) {
 "@
         }
     }
+    # FR #1566: airc MSI /x must stop/remove the Airc service before RemoveFiles.
+    # Skip when UPGRADINGPRODUCTCODE is set (MajorUpgrade of this product) so AppParameters
+    # stay readable for the new product's RunInstall / FR #1552 preserve path.
+    # Return=ignore so a missing nssm/service never blocks ARP cleanup.
+    $uninstallCaDecls = ''
+    $uninstallCaSeq = ''
+    if ($Name -eq 'airc') {
+        $uninstallCaDecls = @"
+    <!-- FR #1566: quiet uninstall stops/removes Airc; ConsoleHome secrets stay. -->
+    <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot;" Execute="immediate" />
+    <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
+"@
+        $uninstallCaSeq = @"
+      <Custom Action="SetUninstallCmd" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+"@
+    }
     $guidMark = [guid]::NewGuid().ToString().ToUpper()
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -464,6 +481,7 @@ $msiProps
     <!-- #70: RunInstall forwards OPERFILE/SKIPERGO/MACHINEID/... via public Property Ids. -->
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
     <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
+$uninstallCaDecls
     <InstallUISequence>
       <Custom Action="FindAiRoot" Before="CostInitialize">NOT AIROOT</Custom>
       <Custom Action="SetInstallDirFromAiRoot" Before="CostFinalize"></Custom>
@@ -473,6 +491,7 @@ $msiProps
       <Custom Action="SetInstallDirFromAiRoot" Before="CostFinalize"></Custom>
       <Custom Action="SetInstallCmd" After="InstallFiles">NOT Installed OR REINSTALL</Custom>
       <Custom Action="RunInstall" After="SetInstallCmd">NOT Installed OR REINSTALL</Custom>
+$uninstallCaSeq
     </InstallExecuteSequence>
   </Product>
 </Wix>
