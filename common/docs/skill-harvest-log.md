@@ -222,3 +222,13 @@ VERSION -> **0.1.20** (packaged MSIs and release archives).
 | bob MRB/UAT vision-first | Read `bob/VISION.md`; fleet umbrella stays `common/docs/vision.md` |
 
 Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #1639.
+
+## 2026-10-04 - external-kill parent cache + deferred bin delete (harvest #1678)
+
+| Lesson | Fix / book |
+|---|---|
+| parent_of after proc.wait() empty | Capture create-parent at start_agent (FR #1643 / PR #1658) |
+| Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
+
+Books: obiverse-bob-worker, obiverse-bob-troubleshooting.
+
