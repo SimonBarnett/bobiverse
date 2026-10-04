@@ -1750,6 +1750,10 @@ class Supervisor:
         self._shutting = False
         self._grace_timer: Optional[threading.Timer] = None
         self._agent_started_at: Optional[float] = None
+        # FR #1643 / MRB #1658: capture create-parent while agent is still live (post-wait Toolhelp often misses it).
+        self._agent_parent_pid: int = 0
+        self._agent_parent_image: str = ''
+        self._agent_parent_cmd: str = ''
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
         relay.on_inject = self._on_inject
         if irc and self.bored:
@@ -1798,6 +1802,18 @@ class Supervisor:
             self._owned.add(proc.pid)
             self.sessions.append(spec.session_id)
             self._agent_started_at = self.clock()
+            # FR #1643 / MRB #1658: snapshot create-parent now; after wait() the agent PID is usually gone from Toolhelp.
+            try:
+                self._agent_parent_pid = int(parent_of(int(proc.pid)) or 0)
+            except Exception:
+                self._agent_parent_pid = 0
+            self._agent_parent_image = ''
+            self._agent_parent_cmd = ''
+            if self._agent_parent_pid > 0:
+                try:
+                    _pp, self._agent_parent_image, self._agent_parent_cmd = describe_process(self._agent_parent_pid)
+                except Exception:
+                    self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
             if self.startup_grace_s > 0:
                 self.log(
@@ -1840,7 +1856,15 @@ class Supervisor:
             code = -1
         with self._lock:
             expected = proc.pid in self._expected_exit
-            current = self.proc is proc
+            # Match by pid so a wait thread still owns the seat even when the handle object differs (tests / restarts).
+            current = (
+                self.proc is proc
+                or (
+                    self.proc is not None
+                    and getattr(self.proc, "pid", None) is not None
+                    and int(self.proc.pid) == int(proc.pid)
+                )
+            )
             started = getattr(self, "_agent_started_at", None)
         if expected or not current:
             return
@@ -1851,13 +1875,37 @@ class Supervisor:
             last = str(getattr(self.relay, "last_unacked", "") or "")
         except Exception:
             last = ""
+        # FR #1643 / MRB #1658: prefer live parent_of; fall back to spawn-time snapshot (post-wait Toolhelp often empty).
+        parent_pid = 0
+        parent_image = ""
+        parent_cmd = ""
+        try:
+            parent_pid = int(parent_of(int(proc.pid)) or 0)
+        except Exception:
+            parent_pid = 0
+        if parent_pid > 0:
+            try:
+                _pp, parent_image, parent_cmd = describe_process(parent_pid)
+            except Exception:
+                parent_image, parent_cmd = "", ""
+        if parent_pid <= 0:
+            parent_pid = int(getattr(self, "_agent_parent_pid", 0) or 0)
+            parent_image = str(getattr(self, "_agent_parent_image", "") or "")
+            parent_cmd = str(getattr(self, "_agent_parent_cmd", "") or "")
+        kill_line = format_external_kill_log(
+            agent_pid=int(proc.pid),
+            agent_code=int(code) if code is not None else -1,
+            parent_pid=parent_pid,
+            parent_image=parent_image,
+            parent_cmd=parent_cmd,
+        )
         if age is not None and age < max(30.0, float(self.startup_grace_s) + 15.0):
             self.log(
                 f"agent: early exit code={code} after {age:.1f}s "
-                f"(startup_grace_s={self.startup_grace_s:.0f}); last_injected={last[:200]!r}"
+                f"(startup_grace_s={self.startup_grace_s:.0f}); last_injected={last[:200]!r}; {kill_line}"
             )
         else:
-            self.log(f"agent: exited by itself code={code}; leaving (a closed agent ends the seat)")
+            self.log(f"agent: exited by itself code={code}; {kill_line}; leaving (a closed agent ends the seat)")
         self.shutdown("agent-exited", EXIT_OK)
 
     # ---- health
@@ -2238,6 +2286,109 @@ def run_agent(args, log: Log) -> int:
             except Exception:
                 pass
     return sup.run_forever()
+
+
+# --------------------------------------------------------------------------------------------- FR #1643: external-kill / parent logging
+def parent_of(pid: int) -> int:
+    """Best-effort parent PID from Toolhelp32; 0 when unknown or the process is already gone."""
+    try:
+        want = int(pid)
+    except (TypeError, ValueError):
+        return 0
+    if want <= 0:
+        return 0
+    for p, pp, _name in snapshot_procs():
+        if int(p) == want:
+            return int(pp) if int(pp) > 0 else 0
+    return 0
+
+
+def describe_process(pid: int) -> tuple:
+    """Best-effort ``(pid, image, cmdline)`` for a live process. Empty strings when a field is unknown.
+
+    Image comes from Toolhelp32 (or QueryFullProcessImageNameW); cmdline from Win32_Process via PowerShell
+    when available. Never raises; never prints secrets (caller logs the returned strings as-is).
+    """
+    try:
+        want = int(pid)
+    except (TypeError, ValueError):
+        return (0, "", "")
+    if want <= 0:
+        return (0, "", "")
+    image = ""
+    for p, _pp, name in snapshot_procs():
+        if int(p) == want:
+            image = str(name or "")
+            break
+    if not image and sys.platform == "win32":
+        try:
+            from ctypes import wintypes
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            # PROCESS_QUERY_LIMITED_INFORMATION
+            h = k32.OpenProcess(0x1000, False, want)
+            if h:
+                try:
+                    buf = ctypes.create_unicode_buffer(1024)
+                    size = wintypes.DWORD(1024)
+                    if hasattr(k32, "QueryFullProcessImageNameW"):
+                        k32.QueryFullProcessImageNameW.argtypes = [
+                            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
+                        ]
+                        k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+                        if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                            image = buf.value or ""
+                finally:
+                    k32.CloseHandle(h)
+        except Exception:
+            pass
+    cmdline = ""
+    if sys.platform == "win32":
+        try:
+            # Keep argv short; avoid printing env. Timeout stays low so exit logging never hangs.
+            ps = (
+                f"$p = Get-CimInstance Win32_Process -Filter \"ProcessId={want}\" "
+                f"-ErrorAction SilentlyContinue; if ($p) {{ $p.CommandLine }}"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=5,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            if r.returncode == 0 and r.stdout:
+                cmdline = (r.stdout or "").strip()
+        except Exception:
+            cmdline = ""
+    if not image and cmdline:
+        # Fall back to the first token of the cmdline as a display name.
+        image = cmdline.split(" ", 1)[0].strip('"')
+    return (want, image, cmdline)
+
+
+def format_external_kill_log(
+    agent_pid: int,
+    agent_code: int,
+    parent_pid: int = 0,
+    parent_image: str = "",
+    parent_cmd: str = "",
+) -> str:
+    """One log line for an unexpected agent exit (FR #1643 terminated-by-external-kill)."""
+    img = (parent_image or "").strip() or "?"
+    cmd = (parent_cmd or "").strip()
+    if len(cmd) > 240:
+        cmd = cmd[:237] + "..."
+    parts = [
+        "terminated-by-external-kill",
+        f"pid={int(agent_pid)}",
+        f"code={int(agent_code)}",
+        f"parent_pid={int(parent_pid or 0)}",
+        f"parent_image={img}",
+    ]
+    if cmd:
+        parts.append(f"parent_cmd={cmd}")
+    return " ".join(parts)
 
 
 # --------------------------------------------------------------------------------------------- t815u: hard cap of live workers
