@@ -31,20 +31,20 @@ $launcher = Join-Path $scriptDir 'Start-AircConsole.ps1'
 if (-not (Test-Path -LiteralPath $launcher)) { throw "missing $launcher (FR #1545 Fleet wrapper)" }
 
 # Always ServiceMode under NSSM so Update-BobiverseService runs (FR #1545).
-$args = @{
+$launchArgs = @{
     ServiceMode  = $true
     ShopMode     = $ShopMode
     HostName     = $HostName
     Port         = $Port
 }
-if ($MachineId) { $args['MachineId'] = $MachineId }
-if ($ConsoleHome) { $args['ConsoleHome'] = $ConsoleHome }
-if ($PasswordFile) { $args['PasswordFile'] = $PasswordFile }
-if ($OperatorsFile) { $args['OperatorsFile'] = $OperatorsFile }
-if ($Python) { $args['Python'] = $Python }
-if ($PSBoundParameters.ContainsKey('Sasl')) { $args['Sasl'] = $Sasl }
-if ($NoSasl) { $args['NoSasl'] = $true }
+if ($MachineId) { $launchArgs['MachineId'] = $MachineId }
+if ($ConsoleHome) { $launchArgs['ConsoleHome'] = $ConsoleHome }
+if ($PasswordFile) { $launchArgs['PasswordFile'] = $PasswordFile }
+if ($OperatorsFile) { $launchArgs['OperatorsFile'] = $OperatorsFile }
+if ($Python) { $launchArgs['Python'] = $Python }
+if ($PSBoundParameters.ContainsKey('Sasl')) { $launchArgs['Sasl'] = $Sasl }
+if ($NoSasl) { $launchArgs['NoSasl'] = $true }
 
 Write-Host "INFO Fleet wrapper FR #1545 delegates to Start-AircConsole.ps1 -ServiceMode (sync+self-update)"
-& $launcher @args
+& $launcher @launchArgs
 exit $LASTEXITCODE
