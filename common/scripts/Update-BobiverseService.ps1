@@ -136,14 +136,74 @@ function Test-AssetUrl {
 }
 
 function Get-Asset {
-    param([string]$Url, [string]$Dest)
+    # FR #1545: hard timeout + retries + curl.exe fallback. Invoke-WebRequest can stall
+    # forever on a half-open GitHub TLS socket (0-byte OutFile, mutex held). curl --max-time
+    # fails closed so Apply can Set-Failure download-failed and release the mutex.
+    param(
+        [string]$Url,
+        [string]$Dest,
+        [int]$TimeoutSec = 120,
+        [int]$Retries = 2
+    )
     if (-not (Test-AssetUrl -Url $Url)) { throw "asset url rejected" }
-    if ($Url -match '^https://') {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec 600 -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
-    } else {
+    if ($Url -notmatch '^https://') {
         Copy-Item -LiteralPath $Url -Destination $Dest -Force
+        return
     }
+    $dir = Split-Path -Parent $Dest
+    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $attempts = 1 + [Math]::Max(0, $Retries)
+    $lastErr = $null
+    for ($i = 1; $i -le $attempts; $i++) {
+        Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+        # 1) IWR with hard TimeoutSec (no-progress stalls still hang on some WinPS builds — keep short).
+        try {
+            Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
+            Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
+            if ((Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
+                Write-UpdLog ("download-ok method=iwr bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
+                return
+            }
+            $lastErr = 'iwr produced empty file'
+            Write-UpdLog "download-warn $lastErr"
+        } catch {
+            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+            Write-UpdLog "download-warn method=iwr $lastErr"
+        }
+        Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+        # 2) curl.exe fallback (Windows 10+ ships curl).
+        $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+        if (-not (Test-Path -LiteralPath $curl)) {
+            $cmd = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if ($cmd) { $curl = $cmd.Source }
+        }
+        if (Test-Path -LiteralPath $curl) {
+            try {
+                Write-UpdLog ("download-try method=curl attempt={0}/{1} max-time={2}s" -f $i, $attempts, $TimeoutSec)
+                $prev = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
+                $clog = & $curl -sSL --fail --retry 2 --retry-delay 2 --connect-timeout 30 --max-time $TimeoutSec `
+                    -A 'bobiverse-self-update' -o $Dest $Url 2>&1
+                $ccode = $LASTEXITCODE
+                $ErrorActionPreference = $prev
+                if ($ccode -eq 0 -and (Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
+                    Write-UpdLog ("download-ok method=curl bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
+                    return
+                }
+                $lastErr = "curl exit=$ccode $(($clog | Select-Object -First 3) -join ' ')"
+                Write-UpdLog "download-warn method=curl $lastErr"
+            } catch {
+                $lastErr = "curl $($_.Exception.GetType().Name): $($_.Exception.Message)"
+                Write-UpdLog "download-warn $lastErr"
+            }
+        } else {
+            Write-UpdLog 'download-warn curl.exe not found'
+        }
+        if ($i -lt $attempts) { Start-Sleep -Seconds ([Math]::Min(5 * $i, 15)) }
+    }
+    Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+    throw "download-failed after $attempts attempts: $lastErr"
 }
 
 function Test-IsAdmin {
