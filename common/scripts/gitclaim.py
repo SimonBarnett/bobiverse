@@ -1729,6 +1729,18 @@ def _coerce_row(row: dict) -> dict | None:
             out["giveup_count"] = int(row.get("giveup_count") or 0)
     except (TypeError, ValueError):
         pass
+    # FR #2309: sticky no-ACK rebroadcast counter + skip list must survive reload.
+    try:
+        if row.get("offered_count") is not None:
+            out["offered_count"] = int(row.get("offered_count") or 0)
+    except (TypeError, ValueError):
+        pass
+    if row.get("sticky_skip_seats"):
+        skips = row.get("sticky_skip_seats")
+        if isinstance(skips, list):
+            out["sticky_skip_seats"] = [str(x) for x in skips if str(x).strip()]
+        else:
+            out["sticky_skip_seats"] = [str(skips)]
     if row.get("repo_uat"):
         out["repo_uat"] = True
     if row.get("merged_prs"):
@@ -2007,6 +2019,8 @@ def last_worker_activity(home: Path, nick: str) -> float | None:
 
 
 OFFER_TIMEOUT_S = 90.0
+# FR #2309: max same-nick rebroadcasts without ACK before clearing the pin.
+OFFER_STICKY_MAX = 3
 
 
 def ordered_unaccepted(home: Path, rows: list[dict] | None = None) -> list[dict]:
@@ -2572,11 +2586,12 @@ def format_assign_line(nick: str, row: dict) -> str:
 
 
 def summarize_empty_offer(home: Path, nick: str = "") -> dict:
-    """Operator counts when !bored yields empty under focus (FR #1993 WP2).
+    """Operator counts when !bored yields empty under focus (FR #1993 WP2 / FR #2309).
 
-    Returns unaccepted / out_of_focus / require_machine / offerable estimates.
-    ``offerable`` is rows that pass focus (when strict) and are not machine-blocked
-    for ``nick`` (empty nick = any require_machine counts as blocked).
+    Returns unaccepted / out_of_focus / require_machine / offerable estimates plus
+    per-nick gate counts: self_mrb, ledger, sticky_offered.
+    ``offerable`` is rows that pass focus (when strict) and are not blocked for ``nick``
+    by machine / self-MRB / ledger / sticky pin to another seat.
     """
     out = {
         "unaccepted": 0,
@@ -2584,6 +2599,9 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         "require_machine": 0,
         "offerable": 0,
         "strict": False,
+        "self_mrb": 0,
+        "ledger": 0,
+        "sticky_offered": 0,
     }
     try:
         path = queue_path(home)
@@ -2592,6 +2610,12 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
     except Exception:
         return out
     out["unaccepted"] = len(rows)
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    live = live_seat_nicks(home) if me else set()
+    ledger = ledger_load(home) if me else {}
+    import time as _time
+
+    now_f = _time.time()
     try:
         import focus_ignore
 
@@ -2610,7 +2634,9 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         offerable = 0
         out_of_focus = 0
         req_machine = 0
-        me = (nick or "").strip()
+        self_mrb = 0
+        ledger_n = 0
+        sticky_n = 0
         for r in rows:
             repo = str(r.get("repo") or "")
             if strict and focused:
@@ -2621,7 +2647,6 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if not in_focus:
                     out_of_focus += 1
                     continue
-            # machine gate
             row = dict(r)
             _stamp_require_machine(row)
             rm = str(row.get("require_machine") or "").strip()
@@ -2629,18 +2654,56 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                 if not me or row_blocked_for_machine(row, me):
                     req_machine += 1
                     continue
+            to = str(row.get("offered_to") or "").strip()
+            sticky_pin = False
+            if to:
+                try:
+                    age = now_f - datetime.fromisoformat(
+                        str(row.get("offered_ts") or "").replace("Z", "+00:00")
+                    ).timestamp()
+                except ValueError:
+                    age = 0.0
+                if age < OFFER_TIMEOUT_S:
+                    sticky_n += 1
+                    sticky_pin = True
+            if me:
+                cand = enrich_uat_author_fields(raw if isinstance(raw, dict) else {}, row)
+                if review_blocked_for_author(cand, me, live, ledger=ledger):
+                    self_mrb += 1
+                    continue
+                if ledger_blocks(ledger, cand, me, live):
+                    ledger_n += 1
+                    continue
+                if row_gave_up_by(cand, me) or row_needs_human(cand, me):
+                    ledger_n += 1
+                    continue
+                skips = {
+                    (canonical_worker_nick(x) or str(x)).strip().lower()
+                    for x in (cand.get("sticky_skip_seats") or [])
+                    if str(x).strip()
+                }
+                if me.lower() in skips:
+                    continue
+            if sticky_pin:
+                to_c = (canonical_worker_nick(to) or to).strip().lower()
+                me_l = me.lower()
+                if me and to_c and to_c != me_l:
+                    continue  # pinned to someone else
             offerable += 1
         out["out_of_focus"] = out_of_focus
         out["require_machine"] = req_machine
         out["offerable"] = offerable
+        out["self_mrb"] = self_mrb
+        out["ledger"] = ledger_n
+        out["sticky_offered"] = sticky_n
     except Exception:
-        # Best-effort without focus_ignore: treat all as offerable candidate.
         out["offerable"] = out["unaccepted"]
     return out
 
 
+
 def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
-    """Shop empty reply. With stats (FR #1993 WP2): show focus/machine gate breakdown."""
+    """Shop empty reply. With stats (FR #1993 WP2 / FR #2309): focus + per-nick gate breakdown."""
     if not stats:
         return f"{nick}: nothing queued"
     try:
@@ -2648,15 +2711,29 @@ def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
         out_of_focus = int(stats.get("out_of_focus") or 0)
         req = int(stats.get("require_machine") or 0)
         offerable = int(stats.get("offerable") or 0)
+        self_mrb = int(stats.get("self_mrb") or 0)
+        ledger = int(stats.get("ledger") or 0)
+        sticky = int(stats.get("sticky_offered") or 0)
     except (TypeError, ValueError):
         return f"{nick}: nothing queued"
     if unaccepted <= 0:
         return f"{nick}: nothing queued"
-    return (
+    extra = []
+    if self_mrb:
+        extra.append(f"self_mrb={self_mrb}")
+    if ledger:
+        extra.append(f"ledger={ledger}")
+    if sticky:
+        extra.append(f"sticky={sticky}")
+    base = (
         f"{nick}: {offerable} offerable under focus "
         f"({unaccepted} unaccepted, {out_of_focus} out-of-focus, "
-        f"{req} require_machine)"
+        f"{req} require_machine"
     )
+    if extra:
+        return base + ", " + ", ".join(extra) + ")"
+    return base + ")"
+
 
 
 def live_seat_nicks(home: Path) -> set[str]:
@@ -2952,6 +3029,8 @@ def offer_focus_top(
     "ok" job | "empty" (nothing queued / nothing eligible under strict focus or ignore) | "error".
     A row offered to another seat within OFFER_TIMEOUT_S is skipped; a row already offered to
     this nick is re-offered (rebroadcast) instead of burning a second job.
+    FR #2309: same-nick rebroadcast does not refresh ``offered_ts``; after OFFER_STICKY_MAX
+    attempts the pin clears and the nick is added to ``sticky_skip_seats`` so another seat can take it.
     ``pr_exists`` (optional) skips MRB rows whose pull URL 404s (FR #595 / #247).
     """
     import time as _time
@@ -3002,6 +3081,7 @@ def offer_focus_top(
                 return bool(ca) and ca == cb
 
             def _eligible(cand: dict) -> dict | None:
+                nonlocal purged
                 if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
@@ -3035,6 +3115,35 @@ def offer_focus_top(
                     except ValueError:
                         age = OFFER_TIMEOUT_S + 1
                     if age < OFFER_TIMEOUT_S:
+                        return None
+                skips = {
+                    (canonical_worker_nick(x) or str(x)).strip().lower()
+                    for x in (cand.get("sticky_skip_seats") or [])
+                    if str(x).strip()
+                }
+                if me.lower() in skips:
+                    return None
+                # FR #2309: sticky same-nick pin past OFFER_STICKY_MAX -> clear for other seats.
+                if to and _same_seat(to, me):
+                    try:
+                        oc = int(cand.get("offered_count") or 0)
+                    except (TypeError, ValueError):
+                        oc = 0
+                    if oc >= OFFER_STICKY_MAX:
+                        cand.pop("offered_to", None)
+                        cand.pop("offered_ts", None)
+                        cand.pop("offered_channel", None)
+                        skip_list = [
+                            str(x).strip()
+                            for x in (cand.get("sticky_skip_seats") or [])
+                            if str(x).strip()
+                        ]
+                        if me not in skip_list and me.lower() not in {
+                            (canonical_worker_nick(x) or x).strip().lower() for x in skip_list
+                        }:
+                            skip_list.append(me)
+                        cand["sticky_skip_seats"] = skip_list
+                        purged = True
                         return None
                 cand_eff = enrich_uat_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live, ledger=ledger):
@@ -3100,8 +3209,21 @@ def offer_focus_top(
                 if row is pick or _same(row, str(pick.get("repo") or ""), str(pick.get("task") or ""), str(pick.get("id") or "")):
                     # FR #618: persist enriched author stamps (pick may be enrich_uat_author_fields copy).
                     job = dict(pick)
+                    # Prefer live queue row fields (pick may be enrich copy without offered_*).
+                    prev_to = str(row.get("offered_to") or job.get("offered_to") or "").strip()
+                    prev_ts = str(row.get("offered_ts") or job.get("offered_ts") or "").strip()
+                    try:
+                        prev_count = int(row.get("offered_count") or job.get("offered_count") or 0)
+                    except (TypeError, ValueError):
+                        prev_count = 0
+                    same = bool(prev_to) and _same_seat(prev_to, me)
                     job["offered_to"] = me
-                    job["offered_ts"] = _utc_now()
+                    # FR #2309: rebroadcast keeps original offered_ts so OFFER_TIMEOUT can free the row.
+                    if same and prev_ts:
+                        job["offered_ts"] = prev_ts
+                    else:
+                        job["offered_ts"] = _utc_now()
+                    job["offered_count"] = prev_count + 1
                     job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
                     resolved = resolve_assign_url(job)
                     if resolved:
