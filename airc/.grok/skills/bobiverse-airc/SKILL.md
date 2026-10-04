@@ -40,12 +40,16 @@ Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick
 
 - Shell ergonomics: FR #75 (PowerShell default, `cmd:`, `psb64:`, `DONE id= exit=`).
 - Driving-box helper: `scripts\Invoke-AircRemote.ps1` (FR #76) — `-SelfTest`, `-Outbox`, PUT chunking client-side.
+- **ReplyFile wait (FR #1546 / PR #1560):** `Invoke-AircRemote -ReplyFile` prefixes `id=<8hex>` on Command/Cmd/Psb64, then polls `<bob home>\airc-replies.jsonl` until matching `DONE` (timeout exit 2). The bob ear appends `*_console` Query `out`/`err`/`DONE` PMs to that jsonl (see `bobiverse-bob-commands`). Never rely on a pre-written reply file alone. Overlapping remotes that reuse the same id can collide.
+- Console NSSM logging (FR #1546): AppStdout/AppStderr under `<ai root>\airc\logs\airc-console.log` with rotate; DisplayName/Description expanded with the machine id (no literal `#{machine}`); service `info()` lines are ISO-UTC; keepalive PING logged at most once per hour via `info_keepalive`.
 - Protocol sketch: `docs/airc-remote-control.md`. Ops: `docs/airc-ops.md`.
 
 ## Install, upgrade, rollback, hotpatch
 
 See `bobiverse-fleet-ops`. Airc specifics: after MSI ensure `config\ergo.password`; re-run `Install-Airc.cmd -MachineId <id>` if NSSM is stale.
 Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply — never inline msiexec in the live service). Opt out `BOBIVERSE_NO_UPDATE=1`. Hotpatch = back up `<ai root>\airc`, copy changed scripts, `Restart-Service Airc` ONLY.
+**Fleet wrapper (FR #1545 / PR #1561):** legacy NSSM entry `Start-AircConsole-Fleet.ps1` must delegate to `Start-AircConsole.ps1 -ServiceMode` so sync + self-update run (same opt-outs). Always pass `-ServiceMode` under NSSM. Use `$launchArgs` for the splat — never automatic `$args` (PR #1588).
+**Upgrade AppParameters (FR #1552 / harvest #1583):** MSI upgrade/reinstall must read the **live** NSSM/service `AppParameters` first, then `airc-install.json` fallback, **before** any profile default. Never invent a new `ConsoleHome` when an identity already exists (keeps NickServ GUID / shop nick). Merged PR #1570 + docs #1575.
 **Uninstall (FR #1566):** MSI `/x` runs `Uninstall-Airc.cmd` before RemoveFiles (`REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE`) to stop/remove service `Airc`; ConsoleHome secrets stay. Manual: `scripts\Uninstall-Airc.cmd`.
 
 ## Do not
