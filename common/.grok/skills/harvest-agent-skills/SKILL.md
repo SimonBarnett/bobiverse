@@ -125,6 +125,10 @@ Workers using these books owe a PR back to this repository. Preserve source issu
 ## Closing skill harvest issues (harvest #1674)
 
 A product/docs/vendor PR must **not** use `Closes` on a `label:skill` / `harvest:` receipt unless that PR **is** the skill-promote that absorbs the lesson. Otherwise: `Refs #N`, and close the harvest issue separately when lessons are already on main (or leave it for the promote PR).
+## Linked existing harvest PR (FR #1812 / harvest #2013)
+
+If a harvest/skill intake already cites a pull URL, intake returns **`linked_existing_pr`** and must not file a duplicate skill issue. Prefer that PR for MRB; skip re-offering `harvest_pr_summary` receipts as new FRs. Product: PR #2012.
+
 ## needs-mrb1 ban (harvest #1717 / FR #1526)
 
 Never create or stamp `needs-mrb1`/`mrb1`. Human gate is `needs-human` only.
