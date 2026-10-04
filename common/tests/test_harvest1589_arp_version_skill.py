@@ -17,8 +17,16 @@ def test_harvest1589_fleet_ops_arp_version_truth():
     _no_bom(OPS)
     assert "ARP" in text and "DisplayVersion" in text
     assert "1589" in text or "1565" in text
-    assert "ArpVersionOverride" in text or "clone" in text.lower()
+    assert "ArpVersionOverride" in text
     assert "Sync-BobiverseFromRepo" in text or "Sync" in text
+    assert "InstallRoot" in text and "clobber" in text.lower()
+    assert "VERSION truth" in text or "VERSION truth" in text.replace("`", "")
+
+
+def test_harvest1589_known_failure_and_harvested_rule():
+    text = OPS.read_text(encoding="utf-8")
+    assert "InstallRoot `VERSION` jumps after sync" in text or "disagrees with ARP" in text
+    assert "After MSI, treat ARP" in text or "ARP `DisplayVersion` as VERSION truth" in text
 
 
 def test_harvest1589_log():
@@ -26,3 +34,4 @@ def test_harvest1589_log():
     _no_bom(LOG)
     assert "#1589" in text
     assert "ARP" in text or "DisplayVersion" in text
+    assert "ArpVersionOverride" in text or "clone" in text.lower()
