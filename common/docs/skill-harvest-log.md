@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - jeeves.exe chair+HTTP foundation (FR #1993)
+
+| Lesson | Fix |
+|--------|-----|
+| Dual BobCallback/chair processes fight git-claim.lock / digest.lock | WP0 spec `jeeves/docs/jeeves-exe-self-heal.md`; WP1 `jeeves_main` + in-proc RLock + instance mutex; append WP2+ on living #1993 with Refs only (never Closes / never twin WPs) |
+
+Books: `jeeves_main`, `jeeves_locks`, bobiverse-jeeves. Living FR: #1993.
+
 ## 2026-10-04 - Hand-out empty under focus (harvest #2243)
 
 | Lesson | Fix |

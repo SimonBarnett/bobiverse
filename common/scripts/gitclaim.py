@@ -1598,6 +1598,17 @@ def _pop_all_pending(home: Path) -> list[GitClaim]:
 
 @contextmanager
 def _lock(home: Path):
+    # FR #1993: same-process chair+HTTP share an RLock (no 30s disk wait between threads).
+    try:
+        import jeeves_locks
+
+        inproc = jeeves_locks.inproc_queue_lock()
+    except Exception:  # noqa: BLE001
+        inproc = None
+    if inproc is not None:
+        with inproc:
+            yield
+        return
     root = _root(home)
     root.mkdir(parents=True, exist_ok=True)
     path = root / LOCK_NAME
