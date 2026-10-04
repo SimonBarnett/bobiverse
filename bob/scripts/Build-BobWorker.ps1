@@ -48,7 +48,7 @@ $work = Join-Path $OutDir 'worker-build'
 if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $dist = Join-Path $work 'dist'
-$argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--console', '--name', 'bob-ear',
+$argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--console', '--name', 'bob-worker',
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $icoArgs
