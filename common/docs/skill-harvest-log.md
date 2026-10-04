@@ -179,3 +179,9 @@ VERSION -> **0.1.20** (packaged MSIs and release archives).
 | Lesson | Fix |
 |--------|-----|
 | BobCallback curl timeout with LISTEN can recover 200 without restart; skill flood in ungated_offerable after FR #1682 is expected until consolidate PRs land; exclude w-mh-* from idle_seats | Folded into jeeves-monitor + troubleshooting (with #1568 heal cluster). |
+
+## 2026-10-04 - skill-harvest-log rebase keep-both (FR #1757 / #1750)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest PRs that touch skill-harvest-log.md must rebase onto main before MRB merge when parallel promotes landed; one fix PR must keep both dated sections | Documented in harvest-agent-skills + bobiverse-bob-job-mrb. Evidence: MRB #1741 FAIL-fixed via #1750 (TipForm + ionos-pin sections both kept). |
