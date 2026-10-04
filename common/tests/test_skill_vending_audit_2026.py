@@ -18,7 +18,9 @@ def test_owner_books_and_flow_diagrams_are_canonical():
         assert (ROOT / rel).is_file(), rel
     text = AUDIT.read_text(encoding="utf-8-sig")
     assert "b15182a" in text and "PR #1491" in text
-    assert "No standalone `skill-dba` source" in text
+    assert "SimonBarnett/skill-dba" in text
+    assert "UPSTREAM-PIN.txt" in text
+    assert "second top-level" in text or "free-floating" in text
     assert text.count("```mermaid") >= 4
     for section in ("FR acceptance flow", "MRB acceptance flow", "UAT acceptance flow"):
         assert section in text

@@ -4,7 +4,7 @@
 
 The harvest commit `b15182a` was submitted as PR #1491 and merged. Its lessons are already promoted into the existing owner books. This audit keeps the remaining cross-cutting placement and install evidence with the shared `bobiverse-fleet-ops` book, which is staged by both the Bob MSI and the Jeeves install.
 
-No standalone `skill-dba` source was found in the repository or the audited installed trees. Do not invent one or create a second top-level `skills` tree. A future DBA lesson must be filed to an owning book with its source issue/PR before it is vendored.
+External DBA lessons live in `SimonBarnett/skill-dba`, pinned here as `bobiverse-fleet-ops/skill-dba/UPSTREAM-PIN.txt` (ref recorded in-tree). Do not invent a second top-level `skills` tree or a free-floating `skill-dba` book at the bobiverse root; keep the pin under the shared fleet-ops book and file product lessons to an owning book with source issue/PR before deeper vendoring.
 
 ## Owner map
 
