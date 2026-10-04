@@ -134,9 +134,9 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 
 File every problem you find: CAST IRON rule at the top.
 
-## Skill harvest backlog (FR #1684) — consolidate by book, then PR
+## Skill harvest backlog (FR #1682 / FR #1684) — consolidate by book, then PR
 
-`label:skill` / `harvest:` intake receipts are **SKIP_FR** (not product FR jobs). They still need a promote PR so MRB can merge lessons into `.grok/skills`.
+Chair **offers** `label:skill` / `harvest:` / `skill:` intake receipts as FR promote jobs (FR #1682). They are not product code FRs; do **not** GIVEUP. Workers consolidate by skill book and open one promote PR so MRB can merge lessons into `.grok/skills`.
 
 When assigned a skill-promote job, or when you have `gh` write and open skill receipts for books you own:
 
