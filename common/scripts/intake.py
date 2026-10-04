@@ -35,6 +35,32 @@ _SECRETISH = re.compile(
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
+_PR_URL_RE = re.compile(
+    r"https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+)/pull/(?P<num>\d+)",
+    re.I,
+)
+_PR_OPENED_TITLE_RE = re.compile(r"(?i)\bPR\s+opened\b")
+
+
+def extract_existing_pr_ref(repo: str, title: str, body: str) -> tuple[int, str] | None:
+    """If title/body already points at a GitHub pull, return (number, html_url).
+
+    Used so skill/harvest honesty-box summaries that follow an already-opened ``gh``
+    PR do not file a second fallback issue (FR #1812).
+    """
+    blob = f"{title or ''}\n{body or ''}"
+    m = _PR_URL_RE.search(blob)
+    if not m:
+        return None
+    num = int(m.group("num"))
+    owner, name = m.group("owner"), m.group("name")
+    # Prefer the URL's repo; fall back to intake repo for display consistency.
+    url_repo = f"{owner}/{name}"
+    use_repo = url_repo if url_repo else repo
+    return num, f"https://github.com/{use_repo}/pull/{num}"
+
+
+
 class GitHubFiler(Protocol):
     """Service credential surface (fake in tests)."""
 
@@ -449,20 +475,30 @@ def file_submission(
         else:
             branch = f"intake/{iid}"
             files = list(norm.get("files") or [])
-            try:
-                out = filer.create_draft_pr(repo, title, body, branch, files, labels)
-                rec["url"] = out["url"]
-                rec["number"] = out["number"]
-                rec["branch"] = out.get("branch")
-                rec["state"] = "filed"
-            except Exception:
-                # fallback issue with file list (no raw huge dump if empty)
-                listing = "\n".join(f"- `{f.get('path')}`" for f in files) or "- (no files)"
-                issue_body = body + "\n\n### Files\n" + listing
-                out = filer.create_issue(repo, title, issue_body, labels)
-                rec["url"] = out["url"]
-                rec["number"] = out["number"]
-                rec["state"] = "filed_issue_fallback"
+            # FR #1812: skill/harvest summary that already cites an open PR → link, no second issue.
+            existing = extract_existing_pr_ref(repo, title, body)
+            if not files and existing is not None:
+                num, url = existing
+                rec["url"] = url
+                rec["number"] = num
+                rec["state"] = "linked_existing_pr"
+            else:
+                try:
+                    out = filer.create_draft_pr(repo, title, body, branch, files, labels)
+                    rec["url"] = out["url"]
+                    rec["number"] = out["number"]
+                    rec["branch"] = out.get("branch")
+                    rec["state"] = "filed"
+                except Exception as exc:
+                    # Log why draft PR failed (was swallowed silently before FR #1812).
+                    rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                    # fallback issue with file list (no raw huge dump if empty)
+                    listing = "\n".join(f"- `{f.get('path')}`" for f in files) or "- (no files)"
+                    issue_body = body + "\n\n### Files\n" + listing
+                    out = filer.create_issue(repo, title, issue_body, labels)
+                    rec["url"] = out["url"]
+                    rec["number"] = out["number"]
+                    rec["state"] = "filed_issue_fallback"
     except GitHubDown:
         rec["state"] = "queued"
         rec["queued"] = True

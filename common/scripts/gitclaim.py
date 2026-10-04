@@ -600,6 +600,13 @@ def issue_skip_fr_reason(
                 text_hits.append(lab)
         if text_hits:
             return f"label_text:{text_hits[0]}"
+    # FR #1812: via-intake+skill "PR opened" / pull URL summaries are receipts of an
+    # already-open harvest PR — do not enqueue as FR work (workers would re-implement).
+    if "via-intake" in labs and "skill" in labs:
+        if re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+", blob, re.I):
+            return "harvest_pr_summary"
+        if re.search(r"(?i)\bPR\s+opened\b", title_s):
+            return "harvest_pr_summary"
     return None
 
 
