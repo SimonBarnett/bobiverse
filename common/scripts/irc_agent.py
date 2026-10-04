@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import random
 import re
@@ -16,6 +17,7 @@ import ssl
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,6 +50,47 @@ import channel_only  # noqa: E402
 import startworker  # noqa: E402
 
 FLOOD_S = 0.8
+
+# FR #1546: Query replies from {machine}_console (out/err/DONE) → home/airc-replies.jsonl
+_AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
+_AIRC_REPLY_BODY_RE = re.compile(
+    r"^(?:(?:out|err)\s+id=[0-9a-f]+\s+seq=\d+\s|DONE\s+id=[0-9a-f]+\s+exit=-?\d+\s*$)",
+    re.IGNORECASE,
+)
+
+
+def is_airc_console_reply(src: str, body: str) -> bool:
+    """True when a PM is an Airc remote-control reply line from ``*_console``."""
+    if not src or not _AIRC_CONSOLE_NICK_RE.match(src.strip()):
+        return False
+    return bool(_AIRC_REPLY_BODY_RE.match((body or "").strip()))
+
+
+def append_airc_reply_jsonl(
+    home: Path,
+    src: str,
+    body: str,
+    *,
+    path: Path | None = None,
+) -> Path | None:
+    """Append one console reply as JSONL under ``home/airc-replies.jsonl`` (FR #1546).
+
+    Returns the path written, or None when the line is not a console reply.
+    """
+    if not is_airc_console_reply(src, body):
+        return None
+    dest = path if path is not None else (Path(home) / "airc-replies.jsonl")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "from": src.strip(),
+        "body": (body or "").strip(),
+    }
+    line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with dest.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(line)
+        fh.flush()
+    return dest
 # FR #68: cap each outbox tick so chair +o and ChanServ sync cannot starve.
 OUTBOX_LINES_PER_TICK = 8
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
@@ -2446,6 +2489,13 @@ class Client:
             return
         if to_me:
             self._mark_pm_open(src)
+            # FR #1546: capture Airc console Query replies for Invoke-AircRemote -ReplyFile.
+            if is_airc_console_reply(src, body):
+                try:
+                    append_airc_reply_jsonl(self.home, src, body)
+                except OSError as exc:
+                    info(f"WARN airc-replies append failed {type(exc).__name__}")
+                return
             if src.lower() not in self._mine_nicks():
                 pulled = self._digest_asm.feed(src, body)
                 if pulled is not None:

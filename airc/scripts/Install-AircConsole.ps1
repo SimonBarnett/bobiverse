@@ -350,12 +350,16 @@ $appParams += " -PasswordFile `"$PasswordFile`""
 if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
 if (Test-Path -LiteralPath $opsFile) { $appParams += " -OperatorsFile `"$opsFile`"" }
 
+# FR #1546: expand DisplayName/Description (never leave literal #{machine}); log under install tree.
+$dnMachine = if ($MachineId) { $MachineId } elseif ($script:AircConsoleMachineId) { $script:AircConsoleMachineId } else { 'machine' }
+$displayName = "airc console (#${dnMachine} IRC shell)"
+$description = "FR #253: nick console on #${dnMachine}; auth PRIVMSG -> shell; silent in channel."
 $setPairs = @(
     @('Application', 'powershell.exe'),
     @('AppDirectory', (Split-Path $Launcher -Parent)),
     @('AppParameters', $appParams),
-    @('DisplayName', 'airc console (#{machine} IRC shell)'),
-    @('Description', 'FR #253: nick console on #{machinename}; auth PRIVMSG -> shell; silent in channel.'),
+    @('DisplayName', $displayName),
+    @('Description', $description),
     @('Start', 'SERVICE_AUTO_START'),
     @('AppExit', 'Default', 'Restart'),
     @('AppRestartDelay', '5000'),
@@ -364,9 +368,9 @@ $setPairs = @(
 )
 # Fleet id is passed via AppParameters -MachineId (LocalSystem has no user env).
 # Do not set AppEnvironmentExtra here — NSSM MULTI_SZ quoting is fragile on WinPS 5.1.
-$logDir = Join-Path $env:USERPROFILE '.grok\long-running-background-tasks'
+$logDir = Join-Path $packRoot 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$log = Join-Path $logDir 'airc-console-service.log'
+$log = Join-Path $logDir 'airc-console.log'
 $setPairs += @(
     @('AppStdout', $log),
     @('AppStderr', $log),
@@ -375,6 +379,8 @@ $setPairs += @(
     @('AppRotateFiles', '1'),
     @('AppRotateBytes', '1048576')
 )
+Write-Host "INFO service DisplayName=$displayName"
+Write-Host "INFO service log=$log"
 foreach ($pair in $setPairs) {
     $argsN = @('set', $ServiceName) + $pair
     $r = Invoke-AircNssm -Exe $Nssm -NssmArgs $argsN
@@ -414,7 +420,7 @@ if ($NoStart) {
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
     if (-not $svc -or $svc.Status -ne 'Running') {
-        $logHint = Join-Path $env:USERPROFILE '.grok\long-running-background-tasks\airc-console-service.log'
+        $logHint = Join-Path $packRoot 'logs\airc-console.log'
         throw ("$ServiceName failed to reach Running (status=$($svc.Status)). Check $logHint")
     }
     Write-Host "INFO $ServiceName Running"

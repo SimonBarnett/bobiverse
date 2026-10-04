@@ -67,4 +67,6 @@ def test_outbox_write_command(tmp_path):
     )
     assert r.returncode == 0, r.stdout + "\n" + r.stderr
     text = outbox.read_text(encoding="utf-8")
-    assert "PRIVMSG tm_console :cmd: echo ok" in text
+    # FR #1546: Command/Cmd bodies are prefixed with id=<corr> for reply correlation.
+    assert "PRIVMSG tm_console :id=" in text
+    assert "cmd: echo ok" in text

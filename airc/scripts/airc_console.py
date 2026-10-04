@@ -745,22 +745,37 @@ def prepare_psb64_encoded_command(payload: str) -> str:
 
 
 def parse_shell_request(text: str) -> ShellRequest:
-    """Parse a console PRIVMSG into ps / cmd: / psb64: (FR #75)."""
+    """Parse a console PRIVMSG into ps / cmd: / psb64: (FR #75).
+
+    Optional leading ``id=<8 hex>`` (FR #1546) pins the DONE/out/err correlation id
+    so Invoke-AircRemote can wait on ``airc-replies.jsonl``.
+    """
     raw = (text or "").strip()
     if not raw:
         raise ShellRequestError("empty command")
+    job_id: str | None = None
+    m = re.match(r"(?is)^id=([0-9a-f]{8})\s+(.*)$", raw)
+    if m:
+        job_id = m.group(1).lower()
+        raw = m.group(2).strip()
+        if not raw:
+            raise ShellRequestError("empty command after id=")
     low = raw.lower()
     if low.startswith("psb64:"):
         payload = raw[6:]
         # Validate early; body stores original payload for argv build.
         prepare_psb64_encoded_command(payload)
-        return ShellRequest(kind="psb64", body=payload)
-    if low.startswith("cmd:"):
+        req = ShellRequest(kind="psb64", body=payload)
+    elif low.startswith("cmd:"):
         body = raw[4:].lstrip()
         if not body:
             raise ShellRequestError("empty cmd:")
-        return ShellRequest(kind="cmd", body=body)
-    return ShellRequest(kind="ps", body=raw)
+        req = ShellRequest(kind="cmd", body=body)
+    else:
+        req = ShellRequest(kind="ps", body=raw)
+    if job_id:
+        req.job_id = job_id
+    return req
 
 
 def build_shell_argv(req: ShellRequest) -> list[str]:

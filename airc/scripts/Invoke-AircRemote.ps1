@@ -277,6 +277,107 @@ function Write-AircOutbox {
     }
 }
 
+function Resolve-AircRepliesJsonl {
+    <#
+      FR #1546: well-known ear capture file. Prefer sibling of -Outbox, else BOB_HOME,
+      else <ai root>\bob\home\airc-replies.jsonl.
+    #>
+    param(
+        [string]$Outbox = '',
+        [string]$ReplyFile = ''
+    )
+    if ($ReplyFile -and $ReplyFile.ToLowerInvariant().EndsWith('.jsonl')) {
+        return $ReplyFile
+    }
+    if ($Outbox) {
+        $dir = Split-Path -Parent $Outbox
+        if ($dir) { return (Join-Path $dir 'airc-replies.jsonl') }
+    }
+    if ($env:BOB_HOME -and $env:BOB_HOME.Trim()) {
+        return (Join-Path $env:BOB_HOME.Trim() 'airc-replies.jsonl')
+    }
+    $ai = if ($env:AI_ROOT) { $env:AI_ROOT } else { 'C:\ai' }
+    return (Join-Path $ai 'bob\home\airc-replies.jsonl')
+}
+
+function Get-AircRepliesJsonlLength {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return [int64]0 }
+    return ([System.IO.FileInfo]$Path).Length
+}
+
+function Read-AircRepliesJsonlBodies {
+    <#
+      Read JSONL bodies from StartOffset bytes; return new offset + body lines.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int64]$StartOffset = 0
+    )
+    $bodies = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return [pscustomobject]@{ Offset = [int64]0; Bodies = @() }
+    }
+    $fs = $null
+    $sr = $null
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        if ($StartOffset -gt $fs.Length) { $StartOffset = 0 }
+        [void]$fs.Seek($StartOffset, [System.IO.SeekOrigin]::Begin)
+        $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8, $true, 1024, $true)
+        while ($null -ne ($line = $sr.ReadLine())) {
+            $t = $line.Trim()
+            if (-not $t) { continue }
+            try {
+                $obj = $t | ConvertFrom-Json
+                if ($obj.body) { [void]$bodies.Add([string]$obj.body) }
+            } catch {
+                # Plain-text fallback line
+                [void]$bodies.Add($t)
+            }
+        }
+        $newOff = $fs.Position
+    } finally {
+        if ($sr) { $sr.Dispose() }
+        if ($fs) { $fs.Dispose() }
+    }
+    return [pscustomobject]@{ Offset = $newOff; Bodies = $bodies.ToArray() }
+}
+
+function Wait-AircRemoteReplies {
+    <#
+      Poll airc-replies.jsonl until DONE id=<ExpectJobId> or timeout (FR #1546).
+      Exit path: returns body lines; throws on timeout (caller exits non-zero).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$RepliesJsonl,
+        [Parameter(Mandatory)][string]$ExpectJobId,
+        [int]$TimeoutSec = 60,
+        [int64]$StartOffset = 0
+    )
+    if ($TimeoutSec -lt 1) { throw 'TimeoutSec must be >= 1 when waiting for replies' }
+    $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSec)
+    $collected = New-Object System.Collections.Generic.List[string]
+    $pos = $StartOffset
+    $id = $ExpectJobId.ToLowerInvariant()
+    $doneRe = [regex]::new(('(?i)^DONE\s+id={0}\s+exit=-?\d+\s*$' -f [regex]::Escape($id)))
+    $lineRe = [regex]::new(('(?i)^(?:out|err)\s+id={0}\s+seq=\d+\s' -f [regex]::Escape($id)))
+    while ([datetime]::UtcNow -lt $deadline) {
+        $chunk = Read-AircRepliesJsonlBodies -Path $RepliesJsonl -StartOffset $pos
+        $pos = $chunk.Offset
+        foreach ($b in @($chunk.Bodies)) {
+            if ($lineRe.IsMatch($b) -or $doneRe.IsMatch($b)) {
+                [void]$collected.Add($b)
+            }
+            if ($doneRe.IsMatch($b)) {
+                return $collected.ToArray()
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw ("timeout waiting for DONE id={0} after {1}s (replies={2})" -f $ExpectJobId, $TimeoutSec, $RepliesJsonl)
+}
+
 function Invoke-AircRemoteWithRetry {
     param(
         [scriptblock]$Send,
@@ -413,6 +514,40 @@ function Invoke-AircRemoteSelfTest {
     $pm = @(New-AircPrivmsgLines -MachineId 'ionos' -Bodies @('STATUS'))
     Assert-True ($pm.Count -eq 1 -and $pm[0] -eq 'PRIVMSG ionos_console :STATUS') 'PRIVMSG framing'
 
+    # FR #1546: replies jsonl wait + Resolve path (avoid $HOME — read-only automatic var)
+    $replyHome = Join-Path $env:TEMP ('airc-replies-home-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $replyHome | Out-Null
+    try {
+        $jsonl = Join-Path $replyHome 'airc-replies.jsonl'
+        $outbox = Join-Path $replyHome 'outbox.txt'
+        $resolved = Resolve-AircRepliesJsonl -Outbox $outbox
+        Assert-True ($resolved -eq $jsonl) 'replies jsonl sibling of outbox'
+        $id = 'aabbccdd'
+        $off = Get-AircRepliesJsonlLength -Path $jsonl
+        $row1 = (@{ ts = '2026-10-04T00:00:00Z'; from = 'tm_console'; body = "out id=$id seq=1 ping" } | ConvertTo-Json -Compress)
+        $row2 = (@{ ts = '2026-10-04T00:00:01Z'; from = 'tm_console'; body = "DONE id=$id exit=0" } | ConvertTo-Json -Compress)
+        # Background writer after short delay so Wait polls
+        $job = Start-Job -ScriptBlock {
+            param($p, $a, $b)
+            Start-Sleep -Milliseconds 400
+            Add-Content -LiteralPath $p -Value $a -Encoding utf8
+            Add-Content -LiteralPath $p -Value $b -Encoding utf8
+        } -ArgumentList $jsonl, $row1, $row2
+        $got = Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 10 -StartOffset $off
+        Assert-True ($got.Count -ge 2) 'wait collected out+DONE'
+        Assert-True ($got[-1] -match '^DONE id=aabbccdd exit=0') 'wait DONE line'
+        Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+        try {
+            Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId 'ffffffff' -TimeoutSec 1 -StartOffset ([int64]([System.IO.FileInfo]$jsonl).Length) | Out-Null
+            Assert-True $false 'wait timeout should throw'
+        } catch {
+            Assert-True (([string]$_) -match 'timeout') 'wait timeout message'
+        }
+    } finally {
+        Remove-Item -LiteralPath $replyHome -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     if ($script:SelfTestFailed -gt 0) {
         Write-Host ("SELFTEST FAILED count={0}" -f $script:SelfTestFailed)
         exit 1
@@ -446,7 +581,14 @@ switch ($Action) {
         $bodies = [string[]]@($put.Lines)
     }
     'Psb64' {
-        $bodies = [string[]]@((New-AircRemoteBody -Action Psb64 -Text $Text))
+        # FR #1546: pin correlation id so ear jsonl + Wait can match DONE.
+        $bodies = [string[]]@(('id={0} {1}' -f $corr, (New-AircRemoteBody -Action Psb64 -Text $Text)))
+    }
+    'Command' {
+        $bodies = [string[]]@(('id={0} {1}' -f $corr, (New-AircRemoteBody -Action Command -Text $Text)))
+    }
+    'Cmd' {
+        $bodies = [string[]]@(('id={0} {1}' -f $corr, (New-AircRemoteBody -Action Cmd -Text $Text)))
     }
     default {
         $bodies = [string[]]@((New-AircRemoteBody -Action $Action -Text $Text -Path $Path -JobId $corr))
@@ -455,6 +597,9 @@ switch ($Action) {
 
 $privmsgs = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies $bodies)
 Write-Host ("INFO action={0} machine={1} id={2} lines={3}" -f $Action, $MachineId, $corr, $privmsgs.Count)
+
+$repliesJsonl = Resolve-AircRepliesJsonl -Outbox $Outbox -ReplyFile $ReplyFile
+$startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
 
 if ($Outbox) {
     Write-AircOutbox -Outbox $Outbox -Lines $privmsgs -WhatIf:$WhatIf
@@ -465,9 +610,23 @@ if ($Outbox) {
     foreach ($l in $privmsgs) { Write-Host (Protect-AircRemoteSecret $l) }
 }
 
-if ($ReplyFile -and (Test-Path -LiteralPath $ReplyFile)) {
-    $raw = Get-Content -LiteralPath $ReplyFile -Encoding utf8
-    $parsed = ConvertFrom-AircRemoteReply -Lines $raw -ExpectJobId $corr
+# FR #1546: wait for ear-captured DONE when -ReplyFile is set (or jsonl path requested).
+$wantWait = [bool]$ReplyFile -and -not $WhatIf
+if ($wantWait) {
+    try {
+        $rawLines = @(Wait-AircRemoteReplies -RepliesJsonl $repliesJsonl -ExpectJobId $corr -TimeoutSec $TimeoutSec -StartOffset $startOffset)
+    } catch {
+        Write-Host ("ERROR {0}" -f (Protect-AircRemoteSecret ([string]$_)))
+        exit 2
+    }
+    if ($ReplyFile -and -not $ReplyFile.ToLowerInvariant().EndsWith('.jsonl')) {
+        $dir = Split-Path -Parent $ReplyFile
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllLines($ReplyFile, $rawLines, (New-Object System.Text.UTF8Encoding $false))
+    }
+    $parsed = ConvertFrom-AircRemoteReply -Lines $rawLines -ExpectJobId $corr
     Write-Output $parsed
     if ($parsed.ExitCode -ne 0) { exit $parsed.ExitCode }
 }
