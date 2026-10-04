@@ -151,6 +151,147 @@ function Write-BobTrayStatusSnapshot {
     catch { return $null }
 }
 
+function Format-BobTrayStatusWorkerLine {
+    # Same contract as Format-BobTrayWorkerLine / TipForm: "{irc nick}: {doing|offered|idle}".
+    param([string]$Nick, [string]$State, [string]$Work)
+    $n = ([string]$Nick).Trim()
+    if (-not $n) { return $null }
+    $st = ([string]$State).Trim().ToLowerInvariant()
+    $text = 'idle'
+    if ($st -eq 'doing') {
+        $w = ([string]$Work) -replace '[\r\n\t]+', ' '
+        $w = $w.Trim()
+        if (-not $w) { $w = 'working' }
+        $text = $w
+    }
+    elseif ($st -eq 'offered') {
+        $w = ([string]$Work) -replace '[\r\n\t]+', ' '
+        $w = $w.Trim()
+        if ($w -and $w -ne 'offered') { $text = ('offered: {0}' -f $w) }
+        else { $text = 'offered' }
+    }
+    return ('{0}: {1}' -f $n, $text)
+}
+
+function Get-BobTrayDigestWorkerLinesForMachine {
+    # Report-only: machines.<id>.workers as array [{nick,state,work}] or nick-map {nick={state,work|job}}.
+    param($Digest, [string]$MachineId)
+    if (-not $Digest -or -not $Digest.machines -or -not $MachineId) { return @() }
+    $ent = $null
+    foreach ($p in @($Digest.machines.PSObject.Properties)) {
+        if ([string]$p.Name -ieq $MachineId) { $ent = $p.Value; break }
+    }
+    if (-not $ent -or -not ($ent.PSObject.Properties.Name -contains 'workers')) { return @() }
+    $node = $ent.workers
+    $lines = New-Object System.Collections.Generic.List[string]
+    $isNickMap = $false
+    if ($node -is [pscustomobject] -or $node -is [System.Collections.IDictionary]) {
+        foreach ($prop in @($node.PSObject.Properties)) {
+            if ([string]$prop.Name -match '^[A-Za-z0-9_]+-\d+$') { $isNickMap = $true; break }
+        }
+    }
+    if ($isNickMap) {
+        foreach ($prop in @($node.PSObject.Properties)) {
+            $nick = [string]$prop.Name
+            if ($nick -notmatch '^[A-Za-z0-9_]+-\d+$') { continue }
+            $val = $prop.Value
+            $state = 'idle'; $work = ''
+            if ($val -is [pscustomobject] -or $val -is [System.Collections.IDictionary]) {
+                if ($val.state) { $state = [string]$val.state }
+                if ($val.work) { $work = [string]$val.work }
+                elseif ($val.job) { $work = [string]$val.job }
+                elseif ($val.working_on) { $work = [string]$val.working_on }
+            }
+            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work
+            if ($ln) { [void]$lines.Add($ln) }
+        }
+    }
+    else {
+        foreach ($w in @($node)) {
+            if (-not $w) { continue }
+            $nick = ''
+            $state = 'idle'
+            $work = ''
+            if ($w -is [pscustomobject] -or $w -is [System.Collections.IDictionary]) {
+                if ($w.nick) { $nick = [string]$w.nick }
+                if ($w.state) { $state = [string]$w.state }
+                if ($w.work) { $work = [string]$w.work }
+                elseif ($w.job) { $work = [string]$w.job }
+            }
+            $ln = Format-BobTrayStatusWorkerLine -Nick $nick -State $state -Work $work
+            if ($ln) { [void]$lines.Add($ln) }
+        }
+    }
+    return @($lines | Sort-Object)
+}
+
+function Sync-BobTrayStatusWorkersFromDigest {
+    <#
+      FR #1553: refresh TipForm worker lines from the public digest report WITHOUT Get-BobTrayHover.
+      Bound HTTP (default 8s) so a peer DNS/UNC hang in hover cannot freeze tray-status.json forever.
+      Updates only grok[].workers (+ ts); leaves cursor pools / attention alone.
+      -Digest: optional already-parsed digest (tests / callers that fetched elsewhere).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$ReportUrl = '',
+        [int]$TimeoutSec = 8,
+        $Digest = $null
+    )
+    try {
+        $path = Join-Path (Join-Path $Root 'run') 'tray-status.json'
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+        $digest = $Digest
+        if (-not $digest) {
+            $url = [string]$ReportUrl
+            if (-not $url) { $url = [string]$env:BOB_DIGEST_REPORT_URL }
+            if (-not $url) { $url = 'https://irc.ntsa.uk/bob/v1/report' }
+            $url = $url.Trim()
+            $sec = [Math]::Max(2, [int]$TimeoutSec)
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $sec -Headers @{ Accept = 'application/json' }
+            $ms = $resp.RawContentStream
+            $ms.Position = 0
+            $buf = New-Object byte[] ([int]$ms.Length)
+            [void]$ms.Read($buf, 0, $buf.Length)
+            $digest = [System.Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+        }
+        if (-not $digest -or -not $digest.machines) { return $null }
+        $raw = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding $false))
+        $model = $raw | ConvertFrom-Json
+        if (-not $model) { return $null }
+        $grok = @($model.grok)
+        if ($grok.Count -eq 0) { return $null }
+        $changed = $false
+        foreach ($row in $grok) {
+            if (-not $row) { continue }
+            $heading = [string]$row.heading
+            if (-not $heading) { continue }
+            $token = ($heading -split '\s+', 2)[0]
+            if (-not $token) { continue }
+            $mid = $token.Trim().ToLowerInvariant()
+            $lines = @(Get-BobTrayDigestWorkerLinesForMachine -Digest $digest -MachineId $mid)
+            $prev = @($row.workers | ForEach-Object { [string]$_ })
+            $same = ($prev.Count -eq $lines.Count)
+            if ($same) {
+                for ($i = 0; $i -lt $prev.Count; $i++) {
+                    if ($prev[$i] -cne $lines[$i]) { $same = $false; break }
+                }
+            }
+            if (-not $same) {
+                $row.workers = @($lines)
+                $changed = $true
+            }
+        }
+        $model.ts = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        if (-not $changed) {
+            # Still bump ts so TipForm age stays fresh even when lines unchanged.
+            return (Write-BobTrayStatusSnapshot -Root $Root -Model $model)
+        }
+        return (Write-BobTrayStatusSnapshot -Root $Root -Model $model)
+    }
+    catch { return $null }
+}
+
 # ---- t832u: the compiled tray (tools\bob-tray.exe) owns icon / menu / clicks; this script is then the headless "engine" (BOB_TRAY_ENGINE=1) ----
 function Test-BobTrayEngineMode { return ([string]$env:BOB_TRAY_ENGINE -eq '1') }
 
