@@ -34,3 +34,35 @@ def test_installers_copy_complete_shared_skill_books():
     assert "Get-BobiverseSkillNames" in common
     assert "bobiverse-fleet-ops" in common
     assert "Copy-Item -LiteralPath $src -Destination $dest -Recurse -Force" in common
+
+
+def test_skill_dba_is_vendored_at_pinned_upstream_ref():
+    root = ROOT / "common/.grok/skills/bobiverse-fleet-ops/skill-dba"
+    pin = (root / "UPSTREAM-PIN.txt").read_text(encoding="utf-8")
+    assert "SimonBarnett/skill-dba" in pin
+    assert "7bf3824ae5b6de3cf461bd22118658c4e371d5b4" in pin
+    names = {
+        "harvest-agent-skills",
+        "mssql-backup-standard",
+        "mssql-backup-audit",
+        "mssql-backup-cutover",
+        "mssql-weekly-backup-check",
+        "mssql-instance-health-collect",
+        "mssql-post-move-health",
+        "mssql-disk-mount-layout-report",
+        "mssql-deadlock-triage",
+        "mssql-cost-capacity-review",
+        "mssql-discover-registered-host",
+        "mssql-agent-jobs-inventory",
+    }
+    assert all((root / ".grok/skills" / name / "SKILL.md").is_file() for name in names)
+    for rel in (
+        "scripts/Invoke-BackupAudit.ps1",
+        "scripts/Invoke-LiveAudit.ps1",
+        "scripts/Invoke-MssqlDiscoverRegisteredHost.ps1",
+        "scripts/Invoke-PostMoveHealth.ps1",
+        "scripts/dba_instance_health_collect.sql",
+        "config/instances.example.json",
+        "docs/skill-sources/MANIFEST.md",
+    ):
+        assert (root / rel).is_file(), rel
