@@ -1,4 +1,7 @@
-"""FR #1363: do not re-offer needs-mrb1; BobCallback principal cues → ionos; GIVEUP stamps cooldown."""
+"""FR #1363 legacy + operator 2026-10-04: needs-mrb1 must NOT block offers.
+
+Also: BobCallback principal cues → ionos; GIVEUP stamps cooldown.
+"""
 from __future__ import annotations
 
 import time
@@ -28,11 +31,12 @@ def _fr(repo: str, n: int, labels=None, title: str = "FR: x", body: str = ""):
 def test_needs_mrb1_stays_enqueueable_but_not_in_skip_fr():
     assert "needs-mrb1" not in gitclaim.SKIP_FR_LABELS
     assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("needs-mrb1", "via-intake")) is None
-    assert gitclaim.row_awaits_mrb1({"labels": ["feature-request", "needs-mrb1"]}) is True
+    # Operator 2026-10-04: label is a hallucination — never blocks offers.
+    assert gitclaim.row_awaits_mrb1({"labels": ["feature-request", "needs-mrb1"]}) is False
     assert gitclaim.row_awaits_mrb1({"labels": ["feature-request"]}) is False
 
 
-def test_offer_skips_needs_mrb1_even_under_focus(tmp_path, monkeypatch):
+def test_offer_accepts_needs_mrb1_under_focus(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     (home / "focus.json").write_text(
@@ -48,7 +52,7 @@ def test_offer_skips_needs_mrb1_even_under_focus(tmp_path, monkeypatch):
                     "SimonBarnett/bobiverse",
                     1316,
                     ["needs-mrb1", "feature-request", "via-intake"],
-                    title="BobCallback task runs as SYSTEM against Administrator .bobiverse home",
+                    title="FR: plain ungated work with leftover needs-mrb1 label",
                 ),
                 _fr(
                     "SimonBarnett/bobiverse",
@@ -63,12 +67,10 @@ def test_offer_skips_needs_mrb1_even_under_focus(tmp_path, monkeypatch):
     )
     st, job = gitclaim.offer_focus_top(home, "marchhare-41928", "#marchhare")
     assert st == "ok"
-    assert job["id"] == "#1363"
+    assert job["id"] == "#1316"
     st2, job2 = gitclaim.offer_focus_top(home, "win-mpre8vi4u6u-15656", "#win-mpre8vi4u6u")
-    # #1363 already offered to marchhare; needs-mrb1 #1316 still not offered
-    assert st2 in ("empty", "ok")
-    if st2 == "ok":
-        assert job2["id"] != "#1316"
+    assert st2 == "ok"
+    assert job2["id"] == "#1363"
 
 
 def test_bobcallback_principal_cues_require_ionos():
@@ -140,14 +142,14 @@ def test_giveup_stamps_cooldown_until(tmp_path, monkeypatch):
     assert "marchhare-41928" in str(job.get("giveup_seats") or "")
 
 
-def test_giveup_needs_mrb1_marks_needs_human(tmp_path, monkeypatch):
+def test_giveup_needs_mrb1_does_not_force_needs_human(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     accepted = _fr(
         "SimonBarnett/bobiverse",
         1316,
         ["needs-mrb1", "feature-request"],
-        title="BobCallback SYSTEM vs Admin home",
+        title="FR: leftover needs-mrb1 label",
     )
     accepted["nick"] = "win-mpre8vi4u6u-1"
     gitclaim._write_queue(
@@ -158,14 +160,16 @@ def test_giveup_needs_mrb1_marks_needs_human(tmp_path, monkeypatch):
         home, repo="SimonBarnett/bobiverse", task="FR", ident="#1316"
     )
     assert st == "ok"
-    assert job.get("needs_human") is True
+    assert job.get("needs_human") is not True
     assert job.get("cooldown_until")
-    # Still not offerable to a different seat while needs-mrb1 remains
+    # After cooldown window would pass — but same seat still on giveup_seats;
+    # a different seat must be able to take it despite needs-mrb1 label.
+    job.pop("cooldown_until", None)
     gitclaim._write_queue(
         gitclaim.queue_path(home),
         {"v": 1, "unaccepted": [job], "accepted": [], "done": []},
     )
     (home / "focus.json").write_text('{"v":1,"repos":[],"strict":false}', encoding="utf-8")
     st2, job2 = gitclaim.offer_focus_top(home, "marchhare-41928", "#marchhare")
-    assert st2 == "empty"
-    assert job2 is None
+    assert st2 == "ok"
+    assert job2["id"] == "#1316"

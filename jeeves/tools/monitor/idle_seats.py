@@ -50,8 +50,9 @@ def _row_offerable_to_nick(gc, doc, ledger, live: set[str], row: dict, nick: str
         return False
     if gc.row_needs_human(row, me) or gc.row_on_cooldown(row, now, me):
         return False
+    # row_awaits_mrb1 is always False (needs-mrb1 hallucination; keep call for API parity)
     if gc.row_awaits_mrb1(row):
-        return False  # FR #1363
+        return False
     if gc.row_skip_fr_reason(row):
         return False
     if gc.repo_archived_for_queue(str(row.get("repo") or "")):
