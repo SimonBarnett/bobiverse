@@ -326,6 +326,65 @@ def handle_git_webhook(
 
 WORKER_OPS = frozenset({"worker-upsert", "worker-remove", "worker-work"})
 REPORT_OPS = frozenset({"merge", "delete-worker", "shop-down"}) | WORKER_OPS
+# Underscore / short aliases seen from older tray / ear clients.
+_REPORT_OP_ALIASES = {
+    "worker_upsert": "worker-upsert",
+    "worker_remove": "worker-remove",
+    "worker_work": "worker-work",
+    "upsert": "worker-upsert",
+    "remove": "worker-remove",
+    "work": "worker-work",
+    "working_on": "merge",
+    "presence": "merge",
+    "status": "merge",
+}
+
+
+def coerce_report_payload(payload: dict) -> dict:
+    """Normalize legacy POST /bob/v1/report bodies into REPORT_OPS shape.
+
+    Fleet boxes historically POST machine + pcent/working_on with no ``op``, or use
+    underscore aliases. Rejects still happen for empty/unknown bodies — those log
+    ``op=`` + keys so we can find the client.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    raw = str(out.get("op") or "").strip().lower()
+    if raw in _REPORT_OP_ALIASES:
+        out["op"] = _REPORT_OP_ALIASES[raw]
+        return out
+    if raw:
+        return out
+    # Missing/empty op: infer merge vs worker-work from fields.
+    mid = bobreport.normalize_machine_id(str(out.get("machine") or out.get("id") or ""))
+    if not mid:
+        return out
+    nick = str(out.get("nick") or "").strip()
+    if nick and bobreport.is_worker_nick(nick):
+        # Prefer worker-work when a seat nick is present.
+        if out.get("state") in (None, "") and "working_on" in out:
+            text = str(out.get("working_on") or "").strip()
+            out["state"] = "idle" if not text else "doing"
+            if text and out.get("work") in (None, ""):
+                out["work"] = text
+        out["op"] = "worker-work" if out.get("state") not in (None, "") else "worker-upsert"
+        return out
+    # Machine presence / pcent / working_on without nick → merge (apply_callback path).
+    merge_keys = (
+        "pcent",
+        "working_on",
+        "cursor_pools",
+        "period_end",
+        "cursor_period_end",
+        "online",
+        "workers",
+        "worker_list",
+        "pid",
+    )
+    if any(k in out for k in merge_keys):
+        out["op"] = "merge"
+    return out
 
 
 def validate_report_payload(home: Path, payload: dict) -> tuple[int, str, str]:
@@ -376,9 +435,17 @@ def handle_report_post(
     payload = _parse_json_body(body)
     if payload is None:
         return 400, b""
+    if isinstance(payload, dict):
+        payload = coerce_report_payload(payload)
     code, mid, why = validate_report_payload(home, payload)
     if code:
-        print(f"INFO report reject {code} {why}", flush=True)
+        op_raw = ""
+        keys = ""
+        if isinstance(payload, dict):
+            op_raw = str(payload.get("op") or "")
+            keys = ",".join(sorted(str(k) for k in payload.keys())[:12])
+        peer_hint = ""
+        print(f"INFO report reject {code} {why} op={op_raw!r} keys={keys}{peer_hint}", flush=True)
         return code, b""
     if rate is not None and not rate.allow("report:" + mid):
         print(f"INFO report reject 429 rate machine={mid}", flush=True)
@@ -709,7 +776,11 @@ def make_handler(
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             if payload and method != "HEAD":
-                self.wfile.write(payload)
+                try:
+                    self.wfile.write(payload)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                    # Client timed out while we waited on digest.lock / built the digest.
+                    self.close_connection = True
 
         def do_GET(self) -> None:
             self._run("GET")
