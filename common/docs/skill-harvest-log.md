@@ -3,6 +3,12 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Get-Asset fail-closed + Airc Fleet ServiceMode (FR #1545 / harvest #1590)
+
+| Lesson | Fix |
+|--------|-----|
+| Never splat via PowerShell automatic `$args` in wrappers; Get-Asset must fail-closed (timeout/curl) so Apply can Set-Failure download-failed and release the mutex | Documented in `bobiverse-fleet-ops` + `bobiverse-airc`. Product: PR #1561 / nits #1588 |
+
 ## 2026-10-04 - TipForm stale worker lines (FR #1553 / harvest #1562)
 
 | Lesson | Fix |
