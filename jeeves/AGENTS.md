@@ -16,16 +16,16 @@
 >    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-## First turn (FR #954) — do this NOW
+## First turn (FR #954) â€” do this NOW
 
 **On start, with no user prompt, run the `monitor-start` skill NOW.** Do not wait for Simon. Do not only list directories.
 
-Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus), report delays via intake only, then loop on a schedule.
+Skills live in **`.grok\skills`** (there is **no** top-level `.\skills` folder). Open `.grok\skills\monitor-start\SKILL.md` and follow it: run the token-free `Test-JeevesMonitor*` / `Invoke-JeevesMonitorCheck` cycle (health, idle seats, queue flow, **focus present**, seats stuck doing, stale digest, GIVEUP loops, stuck accepted, auto-feed / auto-focus, skill_promote_backlog), report delays via intake only, then loop on a schedule.
 
-Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` — deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
+Product tree: `<ai root>\jeeves`. Services: **ircJeeves** (chair nick `Jeeves` â€” deterministic, token-less), **BobIrcd** (Ergo, separate), task **BobCallback** (webhooks :7700). This file is also shipped as `CLAUDE.md`, `GROK.md` and
 `.cursor/rules/bobiverse-jeeves.mdc` so any agent (Grok, Claude, Cursor, ...) started in this directory has the same briefing.
 
-## Role (MONITORING — not the chair, not a worker)
+## Role (MONITORING â€” not the chair, not a worker)
 
 * **Monitor** health, queue flow, idle seats, GIVEUP loops, stale digest, open issues not offered, stuck accepted rows, IRC/webhooks.
 * **Report only** via intake (`Report-BobiverseIntakeIssue.ps1 -Repo <correct target repo> -Kind fr|issue`), Closes-style FR body, de-duplicated against open issues first.
@@ -54,13 +54,13 @@ Runner: `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name> [-DryRun]`. Exit co
 
 ## Self-harvest loop (t865u)
 
-The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks — promote them the same turn.
+The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn.
 
 ## What you are looking at
 
 Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks + 15-min authenticated GitHub resync), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !assign !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
 
-Worker status on the digest: seats cycle **idle** → **offered** → **doing** (ACK) → idle (DONE/NACK/GIVEUP). Shop wire in `#<machine>` only: `!bored`, `ACK` / `DONE` / `NACK` / `GIVEUP`. Job kinds: **FR** (implement, open PR, never merge) → **MRB** (hostile review + merge) → **UAT** (vision gaps or release). UAT is per-repo.
+Worker status on the digest: seats cycle **idle** â†’ **offered** â†’ **doing** (ACK) â†’ idle (DONE/NACK/GIVEUP). Shop wire in `#<machine>` only: `!bored`, `ACK` / `DONE` / `NACK` / `GIVEUP`. Job kinds: **FR** (implement, open PR, never merge) â†’ **MRB** (hostile review + merge) â†’ **UAT** (vision gaps or release). UAT is per-repo.
 
 ## IRC direction rules (who may speak where)
 
@@ -68,7 +68,7 @@ Worker status on the digest: seats cycle **idle** → **offered** → **doing** 
 |---|---|---|
 | Chair | `Jeeves` | `#bobiverse` (op) + every `#{machine}` (silent assign) |
 | Ear | `bob-<machine>` | own `#{machine}` + `#bobiverse` |
-| Worker seat | `<machine>-<pid>` | own `#{machine}` **only** — never `#bobiverse`, never PMs to claim jobs |
+| Worker seat | `<machine>-<pid>` | own `#{machine}` **only** â€” never `#bobiverse`, never PMs to claim jobs |
 | MONITORING agent (you) | your session | report via intake; do not drive shop assigns |
 
 ## Read first (in this order)
