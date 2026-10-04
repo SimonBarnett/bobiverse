@@ -1,5 +1,10 @@
 # Skill harvest log
 
+## 2026-10-05 - Queue body[:500] must keep require_machine pins (MRB #2319 / FR #2312)
+
+| Lesson | Fix |
+|--------|-----|
+| Enqueue stored `body[:500]`, dropping a trailing dedicated `require_machine:` / `=` pin (e.g. #1714 past char 500), so `require_machine` stayed null and non-matching seats got the offer | `gitclaim._body_for_queue` appends missing pin lines after the truncate window; hard-pin `bobiverse#1714` -> ionos; stamp on append. Hostile: equals-form, blank-line, row-only refresh, ce-priority pin |
 ## 2026-10-04 - Skills-only promote from worktree (harvest #2318)
 
 | Lesson | Fix |
