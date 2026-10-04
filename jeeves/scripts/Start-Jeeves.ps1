@@ -97,6 +97,38 @@ function Wait-BobCallbackListening {
     return (Test-BobCallbackListening)
 }
 $callback = Join-Path $scriptDir 'bobcallback.py'
+# FR #1472 / #1455: user-context starts prefer the supervised restart wrapper (same as Register fallback).
+function Start-BobCallbackUserContext {
+    param(
+        [string]$PythonExe,
+        [string]$CallbackPy,
+        [string]$WorkDir,
+        [string]$DigestHome
+    )
+    $supervise = Join-Path $WorkDir 'Start-BobCallbackSupervised.ps1'
+    if (-not (Test-Path -LiteralPath $supervise)) {
+        $supervise = Join-Path (Split-Path -Parent $CallbackPy) 'Start-BobCallbackSupervised.ps1'
+    }
+    if (Test-Path -LiteralPath $supervise) {
+        $fbArgs = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $supervise,
+            '-Python', $PythonExe, '-ScriptPath', $CallbackPy,
+            '-DigestHome', $DigestHome, '-Port', '7700'
+        )
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $fbArgs -WorkingDirectory $WorkDir -WindowStyle Hidden | Out-Null
+        Write-Host 'INFO bobcallback via Start-BobCallbackSupervised.ps1 (FR #1472)'
+        return $true
+    }
+    $cbArgs = @(
+        '-u', $CallbackPy,
+        '--home', $DigestHome,
+        '--bind', '127.0.0.1',
+        '--port', '7700'
+    )
+    Start-Process -FilePath $PythonExe -ArgumentList $cbArgs -WorkingDirectory $WorkDir -WindowStyle Hidden | Out-Null
+    Write-Host 'WARN Start-BobCallbackSupervised.ps1 missing; bare python bobcallback (FR #1472)'
+    return $true
+}
 if ((Test-Path -LiteralPath $callback) -and -not (Test-BobCallbackListening)) {
     Write-Host 'INFO starting bobcallback on 127.0.0.1:7700'
     $started = $false
@@ -116,14 +148,8 @@ if ((Test-Path -LiteralPath $callback) -and -not (Test-BobCallbackListening)) {
         }
     }
     if (-not $started) {
-        $cbArgs = @(
-            '-u', $callback,
-            '--home', $env:BOB_DIGEST_HOME,
-            '--bind', '127.0.0.1',
-            '--port', '7700'
-        )
         try {
-            Start-Process -FilePath $Python -ArgumentList $cbArgs -WorkingDirectory $scriptDir -WindowStyle Hidden | Out-Null
+            Start-BobCallbackUserContext -PythonExe $Python -CallbackPy $callback -WorkDir $scriptDir -DigestHome $env:BOB_DIGEST_HOME | Out-Null
             $started = $true
         } catch {
             Write-Host "WARN bobcallback start failed: $($_.Exception.Message)"
@@ -136,19 +162,13 @@ if ((Test-Path -LiteralPath $callback) -and -not (Test-BobCallbackListening)) {
             # FR #1316: task Running but no LISTENING after 15–20s = wedge (SYSTEM vs Admin home).
             Write-Host 'WARN bobcallback not listening on 127.0.0.1:7700 after start (ARR intake will 502.3)'
             if ($cbTask) {
-                Write-Host 'WARN BobCallback wedge: stopping task and falling back to user-context Start-Process'
+                Write-Host 'WARN BobCallback wedge: stopping task and falling back to supervised user-context (FR #1472)'
                 try { Stop-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue } catch { }
                 Start-Sleep -Seconds 1
-                $cbArgs = @(
-                    '-u', $callback,
-                    '--home', $env:BOB_DIGEST_HOME,
-                    '--bind', '127.0.0.1',
-                    '--port', '7700'
-                )
                 try {
-                    Start-Process -FilePath $Python -ArgumentList $cbArgs -WorkingDirectory $scriptDir -WindowStyle Hidden | Out-Null
+                    Start-BobCallbackUserContext -PythonExe $Python -CallbackPy $callback -WorkDir $scriptDir -DigestHome $env:BOB_DIGEST_HOME | Out-Null
                     if (Wait-BobCallbackListening -TimeoutSec 15) {
-                        Write-Host 'INFO bobcallback listening via user-context fallback (FR #1316)'
+                        Write-Host 'INFO bobcallback listening via supervised user-context fallback (FR #1316/#1472)'
                     }
                 } catch {
                     Write-Host "WARN user-context bobcallback fallback failed: $($_.Exception.Message)"
