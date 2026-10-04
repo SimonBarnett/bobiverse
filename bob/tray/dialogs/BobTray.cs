@@ -72,6 +72,19 @@ namespace BobDialogs
             return n >= MaxWorkers ? "Max " + MaxWorkers + " workers (" + n + " already running). Close a worker window first." : "";
         }
 
+        // FR #1643: true when another process still has the hashed bob-worker-*.exe open (seat holds the run copy).
+        static bool IsWorkerExeInUse(string path)
+        {
+            try
+            {
+                using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    return false;
+            }
+            catch (IOException) { return true; }
+            catch (UnauthorizedAccessException) { return true; }
+            catch { return true; }
+        }
+
         static string Quote(string a) { return Regex.IsMatch(a, "[\\s\"]") ? "\"" + a.Replace("\"", "\\\"") + "\"" : a; }
 
         // Same contract as Start-BobTrayWorkerExe: fresh agent every click, run-copy of the exe so a seat never locks the install,
@@ -92,7 +105,13 @@ namespace BobDialogs
             if (!File.Exists(run))
             {
                 File.Copy(exe, run, true);
-                foreach (string old in Directory.GetFiles(bin, "bob-worker-*.exe")) if (!string.Equals(old, run, StringComparison.OrdinalIgnoreCase)) { try { File.Delete(old); } catch { } }
+                // FR #1643: defer delete while a live seat still holds the hashed run exe (in use / locked).
+                foreach (string old in Directory.GetFiles(bin, "bob-worker-*.exe"))
+                {
+                    if (string.Equals(old, run, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsWorkerExeInUse(old)) continue;
+                    try { File.Delete(old); } catch { }
+                }
             }
             List<string> argv = new List<string>(new string[] { "--mode", mode, "--install-root", root });
             if (machine.Length > 0) { argv.Add("--machine-id"); argv.Add(machine); }
