@@ -127,3 +127,7 @@ Acceptance the harness proves offline:
 ## Success definition
 
 Operators stop babysitting supervised Python; `jeeves.exe` is the only Jeeves runtime; webhooks stay up through resync; `jeeves.exe --self-test` is the first response to any chair/webhook incident; seats stay busy unless a true orphan heal is explicitly forced.
+
+## Evidence append — FR #2352 restart verify (2026-10-05)
+
+See `jeeves/docs/evidence/fr2352-restart-verify-2026-10-05.md`: tip rebuild + ircJeeves-only recycle; covering merges #2342/#2348 confirmed; local intake 202; BobIrcd untouched.
