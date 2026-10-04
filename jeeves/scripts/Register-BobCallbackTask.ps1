@@ -128,10 +128,20 @@ if ($Start) {
         # Interactive tasks often do not bind when started from a non-interactive seat;
         # fall back to same-user Start-Process (FR #1316 / Start-Jeeves wedge path).
         # FR #1455: prefer supervised wrapper so a later kill still auto-restarts.
-        Write-Host 'WARN BobCallback not listening after task start; user-context Start-Process fallback'
-        try { Stop-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue } catch { }
-        Start-Sleep -Seconds 1
-        if (Test-Path -LiteralPath $supervise) {
+        Write-Host 'WARN BobCallback not listening after task start; heal carefully (FR #1767/#1831)'
+        # Count supervised parents before any Start-Process (monitor heal races).
+        $supParents = 0
+        try {
+            foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" -ErrorAction SilentlyContinue)) {
+                if ([string]$p.CommandLine -match 'Start-BobCallbackSupervised\.ps1') { $supParents++ }
+            }
+        } catch { }
+        if ($supParents -ge 1) {
+            Write-Host ("WARN skip Start-Process fallback; already {0} supervised parent(s) (FR #1767)" -f $supParents)
+            try { schtasks /Run /TN BobCallback 2>&1 | Out-Null } catch { }
+        } elseif (Test-Path -LiteralPath $supervise) {
+            try { Stop-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue } catch { }
+            Start-Sleep -Seconds 1
             $fbArgs = @(
                 '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $supervise,
                 '-Python', $Python, '-ScriptPath', $ScriptPath, '-DigestHome', $DigestHome, '-Port', "$Port"
@@ -139,6 +149,8 @@ if ($Start) {
             Start-Process -FilePath 'powershell.exe' -ArgumentList $fbArgs -WindowStyle Hidden | Out-Null
             Write-Host 'INFO fallback launched Start-BobCallbackSupervised.ps1'
         } else {
+            try { Stop-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue } catch { }
+            Start-Sleep -Seconds 1
             $argList = @('-u', $ScriptPath, '--home', $DigestHome, '--bind', '127.0.0.1', '--port', "$Port")
             Start-Process -FilePath $Python -ArgumentList $argList -WindowStyle Hidden | Out-Null
         }

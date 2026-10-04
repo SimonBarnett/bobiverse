@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Run bobcallback.py in a restart loop (FR #1455 / MRB #1462).
+  Run bobcallback.py in a restart loop (FR #1455 / MRB #1462 / FR #1767).
 
 .DESCRIPTION
   The BobCallback scheduled task is ONSTART + Interactive. When the python process
@@ -10,6 +10,10 @@
 
   On wrapper exit (Stop-ScheduledTask / Ctrl+C), the child python is stopped so
   it is not left orphaned without a supervisor.
+
+  FR #1767 / #1831: only one supervised parent may own the loop. A second launch
+  (monitor Start-Process heal race, Register fallback while task already running)
+  exits 0 immediately so digest.lock fights and INTAKE 502 flaps stop.
 #>
 [CmdletBinding()]
 param(
@@ -37,6 +41,34 @@ if (-not $DigestHome) {
 }
 if (-not (Test-Path -LiteralPath $Python)) {
     $Python = 'python'
+}
+
+function Get-BobCallbackSupervisedParentIds {
+    <#
+    .SYNOPSIS
+      PIDs of PowerShell processes whose command line runs Start-BobCallbackSupervised.ps1.
+      ExcludeCurrentPid: skip $PID (heal shells matching the script name).
+    #>
+    param([switch]$ExcludeCurrentPid)
+    $ids = @()
+    try {
+        $procs = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" -ErrorAction SilentlyContinue
+        foreach ($p in @($procs)) {
+            $cmd = [string]$p.CommandLine
+            if (-not $cmd) { continue }
+            if ($cmd -notmatch 'Start-BobCallbackSupervised\.ps1') { continue }
+            if ($ExcludeCurrentPid -and [int]$p.ProcessId -eq $PID) { continue }
+            $ids += [int]$p.ProcessId
+        }
+    } catch { }
+    return @($ids | Select-Object -Unique)
+}
+
+# FR #1767: refuse a second Wait-Process parent (digest.lock fight / INTAKE 502).
+$others = @(Get-BobCallbackSupervisedParentIds -ExcludeCurrentPid)
+if ($others.Count -ge 1) {
+    Write-Host ("WARN refuse second Start-BobCallbackSupervised; already running pid(s)={0} (FR #1767)" -f ($others -join ','))
+    exit 0
 }
 
 $argList = @('-u', $ScriptPath, '--home', $DigestHome, '--bind', $Bind, '--port', "$Port")
