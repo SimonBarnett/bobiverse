@@ -78,8 +78,9 @@ def check(args):
     chair, digest = resolve_homes(args)
     findings = []
     remediation = [
+        "report only by default (keep seats busy; harvest #1967)",
         "restart BobCallback if digest/working_on is stale",
-        "clear workers.<pid>.working_on / reset seat state when accepted is empty",
+        "clear_seat_doing / idle workers.<pid>.working_on only when accepted is empty AND seat is a true orphan blocking !bored (use --force-orphan-busy)",
     ]
     stuck = []
     dig = _load_json(digest / "digest.json") or {}
