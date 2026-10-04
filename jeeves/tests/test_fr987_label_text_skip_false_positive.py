@@ -165,11 +165,11 @@ def test_labeled_fr_mentioning_evergreen_in_title_is_kept():
     )
 
 
-def test_skill_label_still_skips_even_when_title_mentions_mrb_home():
-    """Hostile: real skip labels remain authoritative when present."""
+def test_skill_label_offerable_even_when_title_mentions_mrb_home():
+    """FR #1682 / #1684: skill harvests stay offerable; mrb-home mention in title is not a skip."""
     why = gitclaim.issue_skip_fr_reason(
         title="harvest: note about mrb-home skip",
         body="",
         labels=("skill", "via-intake"),
     )
-    assert why in ("label:skill", "harvest_title") or (why or "").startswith("label:")
+    assert why is None

@@ -25,12 +25,19 @@ def _issue_payload(num: int, *, title: str, body: str = "", labels=None, state: 
     }
 
 
-def test_skill_and_harvest_issues_do_not_become_fr_claims():
-    skill = gitclaim.claim_from_payload("issues", _issue_payload(10, title="harvest: lesson", labels=["skill", "via-intake"]))
-    assert skill is None
-    harvest_title = gitclaim.claim_from_payload("issues", _issue_payload(11, title="harvest: NACK umbrella"))
-    assert harvest_title is None
-    plain = gitclaim.claim_from_payload("issues", _issue_payload(12, title="FR: real work", labels=["feature-request"]))
+def test_skill_and_harvest_issues_become_fr_promote_claims():
+    """FR #1682 / #1684: skill/harvest intakes are handed out as FR promote jobs."""
+    skill = gitclaim.claim_from_payload(
+        "issues", _issue_payload(10, title="harvest: lesson", labels=["skill", "via-intake"])
+    )
+    assert skill is not None and skill.task == "FR" and skill.id == "#10"
+    harvest_title = gitclaim.claim_from_payload(
+        "issues", _issue_payload(11, title="harvest: lesson from session")
+    )
+    assert harvest_title is not None and harvest_title.task == "FR" and harvest_title.id == "#11"
+    plain = gitclaim.claim_from_payload(
+        "issues", _issue_payload(12, title="FR: real work", labels=["feature-request"])
+    )
     assert plain is not None and plain.task == "FR" and plain.id == "#12"
 
 
@@ -75,18 +82,18 @@ def test_apply_queue_skips_unassignable_and_stores_title(tmp_path, monkeypatch):
     assert rows[0]["title"] == "FR: ship it"
     assert "feature-request" in rows[0]["labels"]
 
-    junk = gitclaim.GitClaim(
+    skill = gitclaim.GitClaim(
         repo="SimonBarnett/bobiverse",
         task="FR",
         id="#99",
         event="issues",
         action="opened",
         line="",
-        title="harvest: junk",
+        title="harvest: promote lesson",
         labels=("skill",),
     )
-    assert gitclaim.apply_queue_event(tmp_path, junk) == "noop"
-    assert len(gitclaim.load_unaccepted(tmp_path)) == 1
+    assert gitclaim.apply_queue_event(tmp_path, skill) == "added"
+    assert len(gitclaim.load_unaccepted(tmp_path)) == 2
 
 
 def test_giveup_sets_cooldown_and_offer_skips_until_expired(tmp_path, monkeypatch):
@@ -152,7 +159,8 @@ def test_second_giveup_marks_needs_human(tmp_path, monkeypatch):
         assert gitclaim.offer_focus_top(tmp_path, "b-2", "#b", now=time.time() + 10_000)[0] == "empty"
 
 
-def test_prune_drops_skill_and_safe_to_close_rows(tmp_path, monkeypatch):
+def test_prune_keeps_skill_drops_safe_to_close_rows(tmp_path, monkeypatch):
+    """FR #1682: skill/harvest rows stay; safe-to-close still pruned."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     rows = [
         {"repo": "o/r", "task": "FR", "id": "#1", "seq": 1, "ts": "t", "line": "x", "title": "FR: keep"},
@@ -179,12 +187,13 @@ def test_prune_drops_skill_and_safe_to_close_rows(tmp_path, monkeypatch):
     ]
     gitclaim._write_queue(gitclaim.queue_path(tmp_path), {"v": 1, "unaccepted": rows, "accepted": []})
     res = gitclaim.prune_unassignable_queue(tmp_path)
-    assert res["ok"] and res["dropped"] == 2
+    assert res["ok"] and res["dropped"] == 1
     left = gitclaim.load_unaccepted(tmp_path)
-    assert [r["id"] for r in left] == ["#1"]
+    assert [r["id"] for r in left] == ["#1", "#2"]
 
 
-def test_resync_does_not_readd_skill_or_safe_to_close(tmp_path, monkeypatch):
+def test_resync_readds_skill_not_safe_to_close(tmp_path, monkeypatch):
+    """FR #1682: skill harvests enqueue; safe-to-close still skipped."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim._write_queue(gitclaim.queue_path(tmp_path), {"v": 1, "unaccepted": [], "accepted": []})
 
@@ -202,7 +211,7 @@ def test_resync_does_not_readd_skill_or_safe_to_close(tmp_path, monkeypatch):
     res = gitclaim.resync_from_github(tmp_path, ["o/a"], fetch_json=fetch)
     assert res["ok"]
     ids = [r["id"] for r in gitclaim.load_unaccepted(tmp_path)]
-    assert ids == ["#1"]
+    assert ids == ["#1", "#2"]
 
 
 def test_mrb_home_label_and_handoff_title_do_not_become_fr_claims():
