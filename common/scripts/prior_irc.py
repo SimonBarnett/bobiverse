@@ -8,11 +8,12 @@ bob-flamingo_1 / the client _l rename).
 Rules (nick N, home H). Current process and --keep-pid are never killed.
 Command lines are never printed.
 
-irc_agent.py — kill when the command line names that script and any of:
+irc_agent.py / bob-ear.exe — kill when the command line names that script/exe and any of:
   1. --nick equals N (exact, case-insensitive)
   2. --home normalizes to the same path as H (not a child path; worker homes
      under the fleet home stay up)
   3. N is a bob-* builder nick and --nick is exactly bob (ionos bare-nick ghost)
+  PyInstaller onefile parents that share argv are kept via ancestor_pids (FR #2351).
 
 irc_listen.py — kill when the command line names that script and any of:
   1. --home normalizes to H
@@ -48,7 +49,11 @@ CURSOR_GHOST_HOME = ".bobiverse-cursor"
 BARE_BOB_NICK = "bob"
 
 _SCRIPT_RE = {
-    "irc_agent": re.compile(r"(^|[\s'\"\\/])irc_agent\.py(?=$|[\s'\"])", re.I),
+    # FR #2351: frozen bob-ear.exe is the same process family as irc_agent.py.
+    "irc_agent": re.compile(
+        r"(^|[\s'\"\\/])(irc_agent\.py|bob-ear(?:\.exe)?)(?=$|[\s'\"])",
+        re.I,
+    ),
     "irc_listen": re.compile(r"(^|[\s'\"\\/])irc_listen\.py(?=$|[\s'\"])", re.I),
 }
 _FLAG_RE = re.compile(
@@ -107,6 +112,78 @@ def homes_equal(a: str, b: str) -> bool:
     left = normalize_home(a)
     right = normalize_home(b)
     return bool(left) and left == right
+
+
+def ancestor_pids(pid: int) -> set[int]:
+    """Parent chain for ``pid`` (exclusive of ``pid``). Used so PyInstaller onefile
+    parents that share --nick/--home are never killed as priors of their child (FR #2351).
+    """
+    out: set[int] = set()
+    if pid <= 1:
+        return out
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            TH32CS_SNAPPROCESS = 0x00000002
+            INVALID = ctypes.c_void_p(-1).value
+
+            class PROCESSENTRY32W(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", wintypes.DWORD),
+                    ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", wintypes.WCHAR * 260),
+                ]
+
+            kernel32 = ctypes.windll.kernel32
+            snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            if snap == INVALID:
+                return out
+            try:
+                entry = PROCESSENTRY32W()
+                entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+                parents: dict[int, int] = {}
+                if kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+                    while True:
+                        parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                        if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                            break
+                cur = int(pid)
+                for _ in range(32):
+                    parent = parents.get(cur)
+                    if not parent or parent <= 1 or parent == cur or parent in out:
+                        break
+                    out.add(parent)
+                    cur = parent
+            finally:
+                kernel32.CloseHandle(snap)
+        except Exception:
+            return out
+        return out
+    # POSIX: walk /proc
+    cur = int(pid)
+    for _ in range(32):
+        try:
+            with open(f"/proc/{cur}/stat", encoding="utf-8") as fh:
+                body = fh.read()
+            rparen = body.rfind(")")
+            fields = body[rparen + 2 :].split()
+            parent = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            break
+        if parent <= 1 or parent == cur or parent in out:
+            break
+        out.add(parent)
+        cur = parent
+    return out
 
 
 def is_cursor_ghost_home(raw: str) -> bool:
@@ -169,7 +246,10 @@ def select_victims(
     include_listens: bool = True,
 ) -> list[tuple[int, str]]:
     """Return (pid, kind) to kill, sorted by pid. Does not kill."""
-    keep = keep_pids or set()
+    keep = set(keep_pids or ())
+    # Expand keep with ancestors of every kept pid (onefile parent shares argv).
+    for kept in list(keep):
+        keep.update(ancestor_pids(kept))
     builder = is_bob_builder_nick(nick)
     chosen: list[tuple[int, str]] = []
     for pid, cmdline in processes:
@@ -223,7 +303,14 @@ def _list_posix() -> list[tuple[int, str]]:
         pid_s, _, cmd = stripped.partition(" ")
         if not pid_s.isdigit() or not cmd:
             continue
-        if "irc_agent.py" not in cmd and "irc_listen.py" not in cmd:
+        low = cmd.casefold()
+        if (
+            "irc_agent.py" not in low
+            and "irc_listen.py" not in low
+            and "bob-ear.exe" not in low
+            and "/bob-ear" not in low
+            and "\\bob-ear" not in low
+        ):
             continue
         rows.append((int(pid_s), cmd))
     return rows
@@ -233,7 +320,9 @@ def _list_windows() -> list[tuple[int, str]]:
     script = (
         "Get-CimInstance Win32_Process | "
         "Where-Object { $_.CommandLine -and "
-        "($_.CommandLine -like '*irc_agent.py*' -or $_.CommandLine -like '*irc_listen.py*') } | "
+        "($_.CommandLine -like '*irc_agent.py*' -or $_.CommandLine -like '*irc_listen.py*' "
+        "-or $_.CommandLine -like '*bob-ear.exe*' -or $_.CommandLine -like '*\\bob-ear *' "
+        "-or $_.CommandLine -like '*\\bob-ear\"*') } | "
         "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
     )
     out = subprocess.check_output(
