@@ -120,7 +120,8 @@ Chair stamps `require_machine` from labels (`needs-ionos`, `machine:ionos`) and 
 
 * Marchhare cannot bounce ionos `ircJeeves` or edit ionos `queue.json` — those FRs are ionos-only.
 * If you are still offered one (stale chair / missing stamp): ACK then **GIVEUP** with `needs-ionos` / `require_machine=ionos` in the reason line; file intake if the stamp was missing.
-* Skill/harvest intake issues (`label:skill` or title starting `harvest`/`skill`) are **not** FR jobs — GIVEUP with that reason (or promote the playbook via a skill PR if that is the assign intent).
+* Skill/harvest intake issues (`label:skill` or title starting `harvest`/`skill`) are **not** ordinary product FR jobs (chair SKIP_FR). If offered one by mistake: GIVEUP with that reason.
+* **Skill-promote / harvest-backlog assigns (FR #1684 / #1682)** — do **not** GIVEUP. Consolidate open skill receipts **by owner skill book**, close duplicate skill-book requests, open **one** `harvest/…` promote PR (`Closes` / `Duplicates closed:`), then DONE with the PR URL for hostile MRB. Full steps: `harvest-agent-skills` → **Worker: consolidate open skill receipts → promote PR**. Never one PR per receipt; never merge yourself.
 
 ## Twin / already-fixed FRs (FR #751 / #905 harvest)
 
