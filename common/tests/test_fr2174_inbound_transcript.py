@@ -74,6 +74,13 @@ def test_channel_list_sanitizes():
     assert it.channel_list_for_machine("MarchHare") == "#bobiverse,#marchhare"
 
 
+def test_channel_list_folds_ionos_alias_to_win_mpre():
+    """DIGEST_ID_FOLD: ionos shop is #win-mpre8vi4u6u, never #ionos (MRB #2262)."""
+    assert it.canonical_machine_id("ionos") == "win-mpre8vi4u6u"
+    assert it.channel_list_for_machine("ionos") == "#bobiverse,#win-mpre8vi4u6u"
+    assert "win-mpre8vi4u6u" in it.FLEET_EAR_MACHINES
+
+
 def test_ear_recovery_absent_service():
     plan = it.ear_recovery_plan(
         "marchhare",
