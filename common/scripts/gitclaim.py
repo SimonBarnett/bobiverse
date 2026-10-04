@@ -754,8 +754,14 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bSYSTEM\b.{0,120}\bBobCallback\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,160}\.bobiverse\b"), "ionos"),
     (re.compile(r"(?i)\bBobCallback\b.{0,80}\bprincipal\b"), "ionos"),
-    # FR #1550: monitor check evidence / missing shop OFFER after StartPending
-    (re.compile(r"(?i)\bInvoke-JeevesMonitorCheck\b"), "ionos"),
+    # FR #1550 / #1559: monitor check evidence / missing shop OFFER after StartPending.
+    # Bare Invoke-JeevesMonitorCheck alone is too broad (docs/skills); require ops context.
+    (re.compile(
+        r"(?i)\bInvoke-JeevesMonitorCheck\b.{0,200}\b(?:idle_seats|StartPending|offerable|no shop OFFER)\b"
+    ), "ionos"),
+    (re.compile(
+        r"(?i)\b(?:idle_seats|StartPending|offerable|no shop OFFER)\b.{0,200}\bInvoke-JeevesMonitorCheck\b"
+    ), "ionos"),
     (re.compile(r"(?i)\bno shop OFFER\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b.{0,100}\b(?:OFFER|!bored|GIT announce)"), "ionos"),
 )
