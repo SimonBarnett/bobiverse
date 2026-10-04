@@ -18,6 +18,8 @@ def test_start_jeeves_prefers_supervised_for_user_context_fallback():
 def test_start_jeeves_still_prefers_scheduled_task_first():
     text = START.read_text(encoding="utf-8-sig")
     i_task = text.find("Start-ScheduledTask -TaskName 'BobCallback'")
-    i_sup = text.find("Start-BobCallbackSupervised.ps1")
+    # First *call* site (not the function definition).
+    i_call = text.find("Start-BobCallbackUserContext -PythonExe")
     assert i_task > 0
-    assert i_sup > i_task
+    assert i_call > i_task
+    assert "Prefer the durable scheduled task" in text
