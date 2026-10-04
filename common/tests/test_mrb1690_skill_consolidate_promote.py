@@ -46,6 +46,9 @@ def test_mrb1690_pointer_skills_and_job_fr_align():
         assert "FR #1684" in text
     assert "SKIP_FR" in harvest or "SKIP_FR" in worker or "SKIP_FR" in job
     assert "do **not** GIVEUP" in job or "do not GIVEUP" in job.lower()
+    # FR #1718: the old "offered by mistake: GIVEUP" bullet must be gone
+    assert "If offered one by mistake: GIVEUP" not in job
+    assert "deliberately offers" in job
     assert "Consolidate" in worker or "consolidate" in worker
     assert "MRB" in worker and "MRB" in harvest
 
