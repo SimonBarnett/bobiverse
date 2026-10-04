@@ -2377,8 +2377,13 @@ class Client:
                 _empty_stats = gitclaim.summarize_empty_offer(self.home, src)
             except Exception:  # noqa: BLE001
                 _empty_stats = None
-            self._git_say(target, gitclaim.format_nothing_queued(src, _empty_stats))
-            info(f"INFO git-claim bored empty nick={src}")
+            # The seat gets ONE short line; the focus/gate breakdown stays in the chair log (not the channel).
+            self._git_say(target, gitclaim.format_nothing_queued(src))
+            try:
+                _detail = gitclaim.format_empty_offer_detail(src, _empty_stats)
+            except Exception:  # noqa: BLE001
+                _detail = ""
+            info(f"INFO git-claim bored empty nick={src} {_detail}".rstrip())
             try:  # t816u: a bored seat with nothing to do is idle
                 self._workers().on_done(src, target)
             except Exception as exc:  # noqa: BLE001

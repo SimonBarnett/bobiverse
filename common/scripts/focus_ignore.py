@@ -33,7 +33,7 @@ import bobreport
 
 FOCUS_FILE = "focus.json"
 IGNORE_FILE = "ignored.json"
-NAMED_PRIORITY = {"high": 1, "medium": 5, "low": 9}
+NAMED_PRIORITY = {"high": 1, "hi": 1, "medium": 5, "med": 5, "low": 9, "lo": 9}
 DEFAULT_PRIORITY = 1
 UNFOCUSED_RANK = 10_000
 
@@ -518,6 +518,10 @@ def handle_focus_cmd(home: Path, arg: str) -> list[str]:
     if normalize_item_ref(parts[0]):
         p2 = _priority_token(parts[1]) if len(parts) > 1 else None
         return _set_item(home, parts[0], p2[0] if p2 else None, p2[1] if p2 else "high")
+    # `!focus <repo> [hi|lo|high|medium|low|N]` -- priority after the repo (Simon 2026-10-04).
+    if len(parts) == 2 and _priority_token(parts[1]) is not None and _REPO_TOKEN.match(parts[0]):
+        p2 = _priority_token(parts[1])
+        return _set_repo(home, parts[0], p2[0], p2[1])
     return _set_repo(home, raw if len(parts) > 1 else parts[0], DEFAULT_PRIORITY, "high")
 
 

@@ -2703,7 +2703,16 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
 
 
 def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
-    """Shop empty reply. With stats (FR #1993 WP2 / FR #2309): focus + per-nick gate breakdown."""
+    """Shop empty reply to a !bored seat: ONE short line, never a summary list.
+
+    ``stats`` is accepted for backward compatibility and ignored: the focus/gate breakdown
+    (FR #1993 WP2 / FR #2309) goes to the chair log via ``format_empty_offer_detail``, not the channel.
+    """
+    return f"{nick}: nothing queued"
+
+
+def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
+    """Operator/log line for an empty offer: focus + per-nick gate breakdown (FR #1993 WP2 / FR #2309)."""
     if not stats:
         return f"{nick}: nothing queued"
     try:

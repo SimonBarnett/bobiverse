@@ -51,7 +51,7 @@ def _ts(age_s: float) -> str:
 
 
 def test_fr2309_format_nothing_queued_includes_self_mrb_ledger_sticky():
-    rich = gitclaim.format_nothing_queued(
+    rich = gitclaim.format_empty_offer_detail(
         "marchhare-1",
         {
             "unaccepted": 41,
