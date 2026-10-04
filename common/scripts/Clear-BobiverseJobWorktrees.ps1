@@ -98,22 +98,19 @@ foreach ($line in $list) {
 }
 
 $removed = 0
-$jobTrees = @()
-foreach ($p in $paths) {
-    if (Test-IsJobWorktreePath $p $rootFull $keepFull) {
-        $jobTrees += $p
-    }
-}
+# FR #1664: pipeline/filter of one path is a scalar string; always force Object[] before .Count (StrictMode).
+$jobTrees = @($paths | Where-Object { Test-IsJobWorktreePath $_ $rootFull $keepFull })
 
 # Cap: remove extras beyond MaxExtraJobTrees (oldest first by path mtime when possible)
 if ($MaxExtraJobTrees -ge 0 -and $jobTrees.Count -gt $MaxExtraJobTrees) {
-    $sorted = $jobTrees | Sort-Object {
+    # FR #1664: Sort-Object of a single path returns a scalar; wrap with @() before .Count.
+    $sorted = @($jobTrees | Sort-Object {
         if (Test-Path -LiteralPath $_) {
             (Get-Item -LiteralPath $_).LastWriteTimeUtc
         } else {
             [datetime]::MinValue
         }
-    }
+    })
     $toRemove = @($sorted | Select-Object -First ([Math]::Max(0, $sorted.Count - $MaxExtraJobTrees)))
 } else {
     $toRemove = @($jobTrees)
