@@ -87,11 +87,14 @@ once the implementer cannot be reached. Never close `needs-human` / `board` issu
 * **A successful MRB closes the originating issue**: merge -> `Closes` auto-closes it; otherwise you close it with a comment (never leave a merged PR's issue open, never close it for a FAIL that did not merge). * Different seat/session than the author. One docs PR at most; one fix PR at most. No release, no version bump, no Ergo changes, no secrets, PowerShell only.
 * **Never merge conflict markers (FR #1634):** tip must be clean of `<<<<<<<` / `=======` / `>>>>>>>`; use `common/scripts/check_conflict_markers.py`. * Report which agent and model did the review. * CAST IRON harvest rule at the top: file every issue/FR/bug you find in the same turn - findings that are not part of this PR become new intake items.
 
+
 ## CONFLICTING / superseded MRB (harvest #1609)
 
-When the assigned PR is **CONFLICTING**, already **closed**, or a **duplicate** of work already on main (twin FR closed by another merge):
+**CONFLICTING alone is not an automatic FAIL.** If this PR is still the unique fix: merge `origin/main` into the tip, resolve markers, re-run tests + `check_conflict_markers.py`, then continue the normal PASS/FAIL review.
 
-1. Confirm the superseding merge: gh pr view / gh issue view — lessons and originating issues already landed (Closes / merged PR URLs).
+When the assigned PR is already **closed**, or a **duplicate/superseded** of work already on main (twin FR closed by another merge) — including when that duplicate head is also CONFLICTING:
+
+1. Confirm the superseding merge: `gh pr view` / `gh issue view` — lessons and originating issues already landed (`Closes` / merged PR URLs).
 2. Do **not** force-merge, rebase-to-revive, or re-open the duplicate head.
 3. Post an MRB board with verdict **FAIL** (or FAIL-superseded): cite the merged PR(s) that already satisfy acceptance.
 4. Close the duplicate/conflicting PR with a comment pointing at the superseding merge.
@@ -100,9 +103,23 @@ When the assigned PR is **CONFLICTING**, already **closed**, or a **duplicate** 
 
 Self-MRB remains a separate hand-back (GIVEUP / NACK); this section is for hostile review of a head that lost the race to main.
 
+## Self-MRB (harvest #1603 / MRB #1578)
+
+Never hostile-review or merge a PR **this seat opened** (same nick/session/worktree author). A green local pytest run is not a non-author MRB.
+
+Wire (preferred after you already ACK'd):
+
+1. Confirm authorship: branch you pushed, or PR head from this seat's FR promote.
+2. Outbox: GIVEUP MRB owner/repo#N
+3. Separate line: reason self-MRB - this seat opened PR #N; needs a different seat (and DIRTY/rebase needed when the head conflicts with main).
+4. Harvest the lesson; do not open a second MRB from this seat on that PR.
+
+If you spot self-MRB **before** any review work and have not ACK'd yet, NACK MRB owner/repo#N with the same reason is also valid (job-irc: NACK = decline before work). After ACK, always **GIVEUP** — never go silent.
+
 ## Harvested MRB discipline (skill records #1223-#1457)
 
-- CONFLICTING/superseded duplicate PR: FAIL board, close the PR, DONE FAIL; never force-merge (harvest #1609).
-- The implementing seat must GIVEUP self-MRB and ask the chair for a different seat; a green local test run is not a non-author MRB.
+- CONFLICTING/superseded duplicate PR: FAIL board, close the PR, DONE FAIL; never force-merge (harvest #1609). Mere CONFLICTING unique heads: merge main, resolve, re-test.
+- The implementing seat must GIVEUP self-MRB and ask the chair for a different seat; a green local test run is not a non-author MRB. Full wire: **Self-MRB** section above.
+
 - MRB PASS requires the claimed tests, a clean/rebased branch, and the merged PR's `Closes` lines. When an acceptance contract changes, expect a focused fix/nits PR and rerun the hostile tests rather than accepting stale evidence.
 - After merge: switch to `main`, fast-forward from `origin/main`, sync the installed tree, and restart only the relevant service. Do not treat a harvest/MRB record as a new FR row.

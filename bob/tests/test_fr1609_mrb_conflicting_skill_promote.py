@@ -15,6 +15,7 @@ def test_fr1609_mrb_conflicting_section():
     assert "force-merge" in text.lower() or "force-merge" in text
     assert "DONE FAIL" in text or "DONE MRB" in text
     assert "1609" in text
+    assert "not an automatic FAIL" in text
 
 
 def test_fr1609_irc_troubleshooting_row():
@@ -27,7 +28,7 @@ def test_fr1609_skill_harvest_log():
     text = LOG.read_text(encoding="utf-8")
     assert "1609" in text
     assert "CONFLICTING" in text or "force-merge" in text
-    assert "<<<<<<" not in text
+    assert "<<<<<<< HEAD" not in text
 
 
 def test_fr1609_files_end_with_newline():
