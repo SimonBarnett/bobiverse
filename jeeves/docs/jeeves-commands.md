@@ -127,8 +127,12 @@ Source: `common/scripts/startworker.py` (decision) + `irc_agent.py` (`_maybe_sta
 
 ### UAT author enrich (FR #618)
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 UAT is per repo only (`UAT owner/repo#0` + `repo_uat`; t853u). Author stamps on that row can still be missing when DONE MRB stamped a Closes issue id or when stamps were dropped on resync. At offer time, `enrich_uat_author_fields` copies `implementer_seat` / `mrb_author_seat` / `mrb_fix_author_seat` from related accepted/done MRB rows (matching `refs` / `merged_prs` / `mrb-N` in title/line). `offer_focus_top` and `offer_top` both apply the author block after enrich. First related MRB wins (accepted before done).
 
 ## Live deploy evidence
+
+Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
 
 - FR #1016 ionos chair/queue verification: [fr-1016-ionos-live-evidence.md](./fr-1016-ionos-live-evidence.md)

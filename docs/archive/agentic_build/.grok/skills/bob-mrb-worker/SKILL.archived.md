@@ -27,6 +27,8 @@ Fuel / launch: `cursor-mrb-dev` / `start-bob-cursor`. Dispatcher: `bob-job-loop`
 
 ## Standing process (verbatim)
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 1. Use `gh pr checkout` in a temporary worktree; read the PR intent + changed files
 2. **Find the vision (FR #351).** Read, in order: `VISION.md` / visionary brief
    (`*_BRIEF.md`, skills-visionary output), README purpose/goals, CAST IRON rules

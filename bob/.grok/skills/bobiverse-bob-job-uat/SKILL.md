@@ -54,6 +54,8 @@ flowchart TD
 
 ## Steps
 
+One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
+
 1. **ACK.** 2. Confirm the repo really is clear: `gh issue list --repo owner/repo --state open` shows only excluded issues and `gh pr list --state open` is empty; each merged PR's originating issue must be **closed** (the PR's `Closes` / the MRB closed it; if an originating issue is still open on a successful path, close it with a comment linking the PR); the PRs merged this cycle are in the assign context (`merged_prs`) - if something is still open, `NACK` with that fact (Jeeves withdraws the row). Read the **VISION** (for bobiverse **bob** work: `bob/VISION.md` first — FR #1615 / harvest #1632; fleet umbrella remains `common/docs/vision.md` / `docs\vision.md`: objective, success table with how each metric is measured, fail-when) and every spec that applies, plus the FR's acceptance criteria and the MRB board. If there is no VISION/spec for the area, derive criteria from the FR text and say so in the evidence.
 3. Test the **merged** result - not the branch - on a real machine/install, exactly as a user or operator would. 4. For each VISION success metric / spec requirement / FR criterion record: the action, the actual result, pass/fail. Include negative cases and the rollback/uninstall path if the change touches install or services.
 5. **Decide on the gaps** (anything the product does not yet do or does wrongly against the VISION / specs / criteria):

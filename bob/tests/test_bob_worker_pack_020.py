@@ -19,7 +19,53 @@ RULE = ("CAST IRON RULE - HARVEST AND FILE EVERYTHING", "Report-BobiverseIntakeI
         "https://irc.ntsa.uk/bob/v1/intake", "-Repo SimonBarnett/bobiverse")
 RESUME_RX = re.compile(r"(?i)(--resume|--continue|-r\b|--session\b|--chat\b)")
 JOB_SKILLS = ("bobiverse-bob-job-irc", "bobiverse-bob-job-fr", "bobiverse-bob-job-mrb", "bobiverse-bob-job-uat")
+DUPLICATE_RULE = ("One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, "
+                  "close the later one and comment a reference to the first; never leave both open; "
+                  "done issues are closed too.")
+HARVEST_RECEIPT_RULE = ("Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged "
+                       "is closed by the worker/MRB as soon as it is filed; a receipt is never left open.")
+HARVEST_RECEIPT_RULE_FILES = (
+    "bob/.grok/skills/bobiverse-bob-job-fr/SKILL.md",
+    "bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md",
+    "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
+    "common/.grok/skills/harvest-agent-skills/SKILL.md",
+)
 
+DUPLICATE_RULE_FILES = (
+    "bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md",
+    "bob/.grok/skills/bobiverse-bob-job-fr/SKILL.md",
+    "bob/.grok/skills/bobiverse-bob-job-uat/SKILL.md",
+    "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
+    "bob/.grok/skills/bobiverse-bob-plan/SKILL.md",
+    "bob/agents/worker/.grok/skills/bobiverse-worker-seat/SKILL.md",
+    "bob/agents/worker/AGENTS.md",
+    "bob/agents/plan/AGENTS.md",
+    "common/.grok/skills/harvest/SKILL.md",
+    "common/.grok/skills/harvest-agent-skills/SKILL.md",
+    "jeeves/.grok/skills/bobiverse-jeeves/SKILL.md",
+    "jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md",
+    "jeeves/docs/jeeves-commands.md",
+)
+
+
+def test_duplicate_issue_rule_is_present_in_every_active_instruction_copy():
+    for rel in DUPLICATE_RULE_FILES:
+        path = ROOT / rel
+        assert path.is_file(), rel
+        assert DUPLICATE_RULE in path.read_text(encoding="utf-8-sig"), rel
+
+
+def test_harvest_receipt_rule_is_in_worker_mrb_and_harvest_books():
+    for rel in HARVEST_RECEIPT_RULE_FILES:
+        assert HARVEST_RECEIPT_RULE in (ROOT / rel).read_text(encoding="utf-8-sig"), rel
+
+
+def test_startup_prompts_carry_duplicate_closure_rule():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import bob_worker
+
+    assert DUPLICATE_RULE in bob_worker.worker_prompt("C:\\worker", "C:\\home", "testbox", "Bob-testbox")
+    assert DUPLICATE_RULE in bob_worker.rules_text("C:\\worker", "worker")
 
 def _tray() -> str:
     return TRAY.read_text(encoding="utf-8-sig")
@@ -430,3 +476,23 @@ def test_worker_agents_and_docs_state_the_issue_closing_rule():
         t = p.read_text(encoding="utf-8-sig")
         assert "Closes <owner>/<repo>#N" in t, p
     assert "t826u" in (ROOT / "docs" / "bob-worker.md").read_text(encoding="utf-8-sig")
+
+def test_skill_intake_consolidates_every_issue_for_the_book():
+    rule = ("Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), "
+            "it must close all open issues for that skill book (every harvest/skill issue targeting the same book), "
+            "open one consolidated PR for them, and cite every issue it closes (Closes #N for each); "
+            "no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.")
+    files = (
+        "bob/.grok/skills/bobiverse-bob-job-fr/SKILL.md",
+        "bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md",
+        "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
+        "common/.grok/skills/harvest-agent-skills/SKILL.md",
+        "common/.grok/skills/harvest/SKILL.md",
+        "jeeves/docs/jeeves-commands.md",
+    )
+    for rel in files:
+        assert rule in (ROOT / rel).read_text(encoding="utf-8-sig"), rel
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import bob_worker
+    assert rule in bob_worker.worker_prompt("C:\\worker", "C:\\home", "testbox", "Bob-testbox")
+    assert rule in bob_worker.rules_text("C:\\worker", "worker")
