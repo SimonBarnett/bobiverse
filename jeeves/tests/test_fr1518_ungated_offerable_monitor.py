@@ -63,7 +63,8 @@ def _write_digest(digest: Path, *, idle: bool = True) -> None:
     )
 
 
-def test_fr1518_gated_skill_and_mrb1_exit0_with_counts(tmp_path):
+def test_fr1518_gated_skill_and_pins_exit0_with_counts(tmp_path):
+    """Skill + require_machine pins → gated-empty exit 0 (FR #1518)."""
     chair = tmp_path / "jeeves"
     digest = tmp_path / "bobiverse"
     _write_queue(
@@ -79,13 +80,6 @@ def test_fr1518_gated_skill_and_mrb1_exit0_with_counts(tmp_path):
             {
                 "repo": "SimonBarnett/bobiverse",
                 "task": "FR",
-                "id": "#1518",
-                "title": "monitor ungated",
-                "labels": ["feature-request", "needs-mrb1"],
-            },
-            {
-                "repo": "SimonBarnett/bobiverse",
-                "task": "FR",
                 "id": "#1102",
                 "title": "DEV1 pin",
                 "labels": ["feature-request"],
@@ -97,14 +91,43 @@ def test_fr1518_gated_skill_and_mrb1_exit0_with_counts(tmp_path):
     code, payload = _run_queue_flow(chair, digest)
     assert code == 0, payload
     assert payload["ok"] is True
-    assert payload["unaccepted_count"] == 3
+    assert payload["unaccepted_count"] == 2
     assert payload["ungated_offerable_count"] == 0
     gc = payload["gated_counts"]
     assert gc.get("skill", 0) >= 1
-    assert gc.get("needs-mrb1", 0) >= 1
     assert gc.get("require_machine", 0) >= 1
     notes = " ".join(payload.get("notes") or [])
     assert "gated" in notes.lower() or "ungated" in notes.lower()
+
+
+def test_fr1518_legacy_needs_mrb1_label_not_a_gate(tmp_path):
+    """MRB #1529 / FR #1526: leftover needs-mrb1 must not gate; note only."""
+    chair = tmp_path / "jeeves"
+    digest = tmp_path / "bobiverse"
+    _write_queue(
+        chair,
+        [
+            {
+                "repo": "SimonBarnett/bobiverse",
+                "task": "FR",
+                "id": "#1518",
+                "title": "monitor ungated",
+                "labels": ["feature-request", "needs-mrb1", "via-intake"],
+            }
+        ],
+    )
+    _write_digest(digest, idle=True)
+    (digest / "registered-machines.json").write_text(
+        '{"v":1,"machines":["win-mpre8vi4u6u"]}',
+        encoding="utf-8",
+    )
+    code, payload = _run_queue_flow(chair, digest)
+    assert payload.get("gated_counts", {}).get("needs-mrb1", 0) == 0
+    notes = " ".join(payload.get("notes") or [])
+    assert "legacy needs-mrb1" in notes
+    # Seat-aware offerable may still be >0 → true starve is OK; label alone is not a gate.
+    if int(payload.get("ungated_offerable_count") or 0) == 0:
+        assert code == 0, payload
 
 
 def test_fr1518_true_starve_when_ungated_and_idle(tmp_path):
