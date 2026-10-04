@@ -1184,7 +1184,8 @@ function Test-BobTrayWorkerNickKey {
 }
 
 function Get-BobTrayWorkersFromNickMap {
-    # Jeeves digest: workers is an object keyed by nick → {state,job,ts} (not an array).
+    # Jeeves digest: workers is an object keyed by nick → {state,job|work,ts} (not an array).
+    # FR #1547: Jeeves exports activity as `.work`; also accept `.job` / `.working_on`.
     param($WorkersNode, [string]$MachineIdFilter = '')
     $out = @()
     if (-not $WorkersNode) { return $out }
@@ -1226,6 +1227,7 @@ function Get-BobTrayWorkersFromNickMap {
             if ($val -is [pscustomobject] -or $val -is [System.Collections.IDictionary]) {
                 if ($val.state) { $state = [string]$val.state }
                 if ($val.job) { $job = [string]$val.job }
+                elseif ($val.work) { $job = [string]$val.work }
                 elseif ($val.working_on) { $job = [string]$val.working_on }
             }
             elseif ($null -ne $val -and [string]$val -ne '') {
@@ -1252,6 +1254,7 @@ function Get-BobTrayWorkersFromNickMap {
             elseif ($wn.id) { $nick = [string]$wn.id }
             if ($wn.state) { $state = [string]$wn.state }
             if ($wn.job) { $job = [string]$wn.job }
+            elseif ($wn.work) { $job = [string]$wn.work }
             elseif ($wn.working_on) { $job = [string]$wn.working_on }
         }
         if (-not (Test-BobTrayWorkerNickKey $nick)) { continue }
@@ -1404,7 +1407,7 @@ function Expand-BobReportDigestView {
                     }
                 }
             }
-            # FR #357: machines.<id>.workers is nick-keyed {state,job,ts}, not a count/array.
+            # FR #357 / #1547: machines.<id>.workers is nick-keyed {state,job|work,ts}, not a count/array.
             $nodeNames = @($node.PSObject.Properties.Name)
             if ($nodeNames -contains 'workers' -and $null -ne $node.workers) {
                 $seats = @(Get-BobTrayWorkersFromNickMap -WorkersNode $node.workers -MachineIdFilter $mid)
