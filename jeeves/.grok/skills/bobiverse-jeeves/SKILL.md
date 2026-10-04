@@ -62,6 +62,7 @@ Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (com
    FR/MRB rows of successfully fetched repos are dropped; accepted jobs, other kinds, failed repos and ignored repos are untouched.
    Repos: `JEEVES_RESYNC_REPOS` / `resync-repos.txt` in the chair home, else repos already queued + the token's own repos
    under the allowed owners. `!resync` runs it now; `!status` shows `github_resync:` and `webhooks:`.
+   **Open-PR MRB vs stale `mrb_done` (FR #1585 / harvest #1613):** premature `mrb_done` must not purge an MRB whose GitHub pull is still **open**. `mrb_already_done(..., pr_exists=)` treats open `pr_exists` as winning (keep/requeue the MRB); resync clears stale `mrb_done` stamps the same way it heals stale `fr_done`. Merged PR #1606.
 
 ## Services and identity
 
