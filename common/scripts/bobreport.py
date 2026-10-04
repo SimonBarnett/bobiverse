@@ -1721,7 +1721,14 @@ def _apply_merge_payload(doc: dict, mid: str, payload: dict) -> list[str]:
             workers[pid_s] = _coerce_worker(mid, pid_s, merged)
             _roll_working_on(ent)
     elif "working_on" in payload and (pid_raw is None or str(pid_raw) == ""):
-        ent["working_on"] = str(payload.get("working_on") or "")
+        # Empty machine-level heartbeat must not wipe chair worker-work activity.
+        # Peers often POST merge with working_on="" (no pid); blanking here made TipForm
+        # / public digest look idle while worker_list still had doing seats.
+        text = str(payload.get("working_on") or "").strip()
+        if text:
+            ent["working_on"] = text
+        else:
+            _roll_working_on(ent)
     for key in _MERGE_PEER_FIELDS:
         if key not in payload or payload[key] is None:
             continue
@@ -2667,6 +2674,8 @@ def export_machine_for_tray(
         if reset:
             base["period_end"] = str(reset)
     _mask_expired_pools(base, now)
+    # Prefer chair worker_list activity over a peer-blanked machine.working_on.
+    _refresh_machine_activity_from_worker_list(base)
     out: dict = {}
     for key in _TRAY_MACHINE_EXPORT_KEYS:
         if key in base:
