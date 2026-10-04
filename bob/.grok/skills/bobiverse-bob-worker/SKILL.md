@@ -79,7 +79,8 @@ An unknown reading is "not available" (falls through), never "available". Readin
   shared worker console) - no poll, no timer. The agent sees `FROM <nick> <target> <text>` as typed input. Ordering/limits: max 8 injections per 30 s, extra messages are
   coalesced into one `FROM (flood-coalesced N messages) ...`; identical consecutive lines are dropped; `POINT/DIGEST/AGPK/SEAL`, `is busy.`, `password=`, `XAI_API_KEY` lines are
   never relayed; messages arriving during the 6 s agent start-up are held and injected the moment it is ready. PMs are relayed only from `Jeeves`.
-* **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline. Live seats need a rebuilt `bob-worker.exe` (`Build-BobWorker` / MSI) — source-only patches do not update the frozen PyInstaller binary already running from the tray.
+* **NACK of a second assign (FR #1732):** free-rx / harvest hold only for NACK/GIVEUP/DONE that match the open ACK job id; concurrent NACK while another ACK is open keeps the seat busy.
+* **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline. Live seats need a rebuilt `bob-worker.exe` (`Build-BobWorker` / MSI) â€” source-only patches do not update the frozen PyInstaller binary already running from the tray.
 * **Liveness answered by the exe**: server `PING`->`PONG` at once, CTCP PING/VERSION, and the fleet `ping` / `ping <selector>` in `#<machine>` -> `pong` (selector matches the
   nick or the machine id; prefix/substring/`*`/`?`). Pings are never forwarded to the agent (no wake, no flood).
 * **Reply path**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to the `outbox.txt` named in its first instruction
@@ -99,7 +100,7 @@ by a **NEW agent** (never a resume) after a backoff of 5 s, then 15 s, then 45 s
 
 ## `!bored`, ACK and DONE (the program posts `!bored`, you write ACK/DONE)
 
-The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - (FR #100 / #1611): when the agent is ready (seat start), after DONE/NACK/GIVEUP **once the harvest hold ends** (default 90 s, `BOB_WORKER_HARVEST_HOLD_S`; outbox activity extends it — harvest before the next `!bored`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: open `ACK` (younger than 45 min), inject-pending assign work until ACK/grace (`BOB_WORKER_ASSIGN_GRACE_S`, default 600 s), harvest hold, or the agent starting/restarting/hung. Jeeves `nothing queued` resets the idle clock but does **not** arm inject-pending (MRB #1617). Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161), and logs `bored: free-rx matched (...)` / `bored: harvest hold`. At most one `!bored` per second. It stops for good on IRC loss/shutdown.
+The exe posts `PRIVMSG #<machine> :!bored` itself - **never the model** - (FR #100 / #1611): when the agent is ready (seat start), after DONE/NACK/GIVEUP **once the harvest hold ends** (default 90 s, `BOB_WORKER_HARVEST_HOLD_S`; outbox activity extends it â€” harvest before the next `!bored`), and while idle (first after 120 s of quiet, then every 180 s). Never while busy: open `ACK` (younger than 45 min), inject-pending assign work until ACK/grace (`BOB_WORKER_ASSIGN_GRACE_S`, default 600 s), harvest hold, or the agent starting/restarting/hung. Jeeves `nothing queued` resets the idle clock but does **not** arm inject-pending (MRB #1617). Outbox drain applies ACK/DONE/NACK/GIVEUP busy bookkeeping even when `irc.say` fails (FR #161), and logs `bored: free-rx matched (...)` / `bored: harvest hold`. At most one `!bored` per second. It stops for good on IRC loss/shutdown.
 A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by assigning in `!focus` order; you ACK; DONE/NACK/GIVEUP mark the seat idle. Exact lines: skill
 `bobiverse-bob-job-irc`; per job type: `bobiverse-bob-job-fr`, `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`.
 
@@ -135,7 +136,7 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 
 File every problem you find: CAST IRON rule at the top.
 
-## Skill harvest backlog (FR #1682 / FR #1684) — consolidate by book, then PR
+## Skill harvest backlog (FR #1682 / FR #1684) â€” consolidate by book, then PR
 
 Chair **offers** `label:skill` / `harvest:` / `skill:` intake receipts as FR promote jobs (FR #1682). They are not product code FRs; do **not** GIVEUP. Workers consolidate by skill book and open one promote PR so MRB can merge lessons into `.grok/skills`.
 
@@ -143,10 +144,10 @@ When assigned a skill-promote job, or when you have `gh` write and open skill re
 
 1. Group open skill issues **by owner skill book** (`harvest-agent-skills` table).
 2. **Close duplicate** receipts for the same book/lesson.
-3. Open **one** `harvest/…` PR per book (or one multi-book PR with clear paths); body lists `Closes …` and `Duplicates closed: …`.
+3. Open **one** `harvest/â€¦` PR per book (or one multi-book PR with clear paths); body lists `Closes â€¦` and `Duplicates closed: â€¦`.
 4. DONE with PR URL; another seat **MRB** merges. Never push `main`. Never one PR per harvest receipt.
 
-Details: skills `harvest` + `harvest-agent-skills` (Worker: consolidate open skill receipts → promote PR). Job wiring: `bobiverse-bob-job-fr`.
+Details: skills `harvest` + `harvest-agent-skills` (Worker: consolidate open skill receipts â†’ promote PR). Job wiring: `bobiverse-bob-job-fr`.
 
 ## Harvested reliability rules (closed skill records #1201-#1460)
 
