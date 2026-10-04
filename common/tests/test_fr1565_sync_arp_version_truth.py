@@ -109,3 +109,42 @@ def test_fr1565_matching_arp_and_clone_still_copies(tmp_path):
     assert p.returncode == 0, out
     assert "sync-skip-arp-version" not in out
     assert (install / "VERSION").read_text(encoding="utf-8").strip() == "0.1.21"
+
+
+def test_fr1565_no_arp_allows_clone_version_copy(tmp_path):
+    """MRB #1577: without ARP (dev / override empty), clone VERSION may refresh the file."""
+    install = _seed_airc_install(tmp_path, file_ver="0.1.20", clone_ver="0.1.21")
+    env = {**os.environ}
+    env.pop("BOBIVERSE_NO_UPDATE", None)
+    p = subprocess.run(
+        [
+            PS,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SYNC),
+            "-Product",
+            "airc",
+            "-InstallRoot",
+            str(install),
+            "-ComposeOnly",
+            "-ArpVersionOverride",
+            "none",  # sentinel: ignore live ARP on the test host
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=90,
+    )
+    out = (p.stdout or "") + (p.stderr or "")
+    assert p.returncode == 0, out
+    assert "sync-skip-arp-version" not in out
+    assert "sync-heal-version-from-arp" not in out
+    assert (install / "VERSION").read_text(encoding="utf-8").strip() == "0.1.21"
+
+
+def test_fr1565_display_name_compare_is_case_insensitive():
+    t = SYNC.read_text(encoding="utf-8-sig")
+    assert "ToLowerInvariant()" in t
+    assert "DisplayName" in t
