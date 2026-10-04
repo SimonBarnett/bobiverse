@@ -94,6 +94,10 @@ When you have `gh` write (same turn or on a skill-promote assign):
 
 Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skill receipts → promote PR**.
 
+### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
+
+When intake `kind: skill|harvest` (or a harvest summary) already names a GitHub **pull** URL in the title/body, the intake host must **`linked_existing_pr`** — comment on / attach that PR — and must **not** open a second fallback `label:skill` issue. Log `draft_pr_error` when draft-PR creation fails. `Invoke-BobiverseHarvest` / `issue_skip_fr_reason` should treat via-intake+skill “PR opened” receipts as `harvest_pr_summary` (skip re-offer as product FR). Product code: PR #2012.
+
 Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), **`repo`
 (required `owner/name` — never omit; no default)**, `title`, `body`, optional
 `files[]` (`path` + `content`, small), `source` (machine, agent/tool, skill

@@ -3,6 +3,15 @@
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
 
+## 2026-10-04 - Intake linked_existing_pr (FR #1812 / harvest #2013)
+
+| Lesson | Fix |
+|--------|-----|
+| Harvest/skill intake with a pull URL must not open a second skill issue | linked_existing_pr + draft_pr_error logging; skip_fr harvest_pr_summary for via-intake+skill PR-opened receipts. Product PR #2012 |
+
+Books: harvest, harvest-agent-skills.
+
+
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 
 | Lesson | Fix |
