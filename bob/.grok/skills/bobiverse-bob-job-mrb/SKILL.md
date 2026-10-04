@@ -104,6 +104,15 @@ When the assigned PR is already **closed**, or a **duplicate/superseded** of wor
 
 Self-MRB remains a separate hand-back (GIVEUP / NACK); this section is for hostile review of a head that lost the race to main.
 
+## Fix-PR race after DONE (harvest #1981 / MRB #1847)
+
+After you **DONE PASS** a FAIL-fixed MRB, the one fix PR can still race **CONFLICTING** and be closed **unmerged** (parallel main moves). Before ending the seat:
+
+1. Confirm the fix tip actually landed: `git fetch origin main` and `git show origin/main:<path>` / pytest for the lesson markers.
+2. If the fix PR is closed unmerged or main lacks the lesson, immediately open a **land PR** from the known-good tip (or cherry-pick the fix commit tree) onto current `main`, merge it, and verify `origin/main` again.
+3. Post a short follow-up board comment on the assigned PR citing the land PR URL.
+4. Do **not** force-push an empty main tip onto the fix branch; do **not** close originating issues until the lesson is on `main`.
+
 ## Self-MRB (harvest #1603 / MRB #1578)
 
 Never hostile-review or merge a PR **this seat opened** (same nick/session/worktree author). A green local pytest run is not a non-author MRB.
@@ -133,6 +142,7 @@ Checks:
 - Never let an unrelated docs/vendor/product PR `Closes` a `label:skill` harvest issue; strip wrong `Closes`, use `Refs`, close the harvest record separately when lessons are already on main (harvest #1674 / MRB #1660).
 - **Partial FR ACCEPTABLE drift (harvest #1663 / MRB #1645):** SkipTidy autostart PASS when TipForm Restart still tidies is intentional; leave explicit follow-up issues open; still merge `origin/main` and run `check_conflict_markers` before merge.
 - CONFLICTING/superseded duplicate PR: FAIL board, close the PR, DONE FAIL; never force-merge (harvest #1609). CONFLICTING with open acceptance still uses one fix/rebase PR. Mere CONFLICTING unique heads: merge main, resolve, re-test.
+- After DONE PASS, if the fix PR races closed unmerged: open a land PR from the known-good tip onto current main, merge, verify `origin/main` contains the lesson (harvest #1981 / MRB #1847).
 - Skill/docs diffs: mid-bullet insert leaving orphan continuation text is FAIL even when code is green (harvest #1616 / MRB #1608).
 - The implementing seat must GIVEUP self-MRB and ask the chair for a different seat; a green local test run is not a non-author MRB. Full wire: **Self-MRB** section above.
 
