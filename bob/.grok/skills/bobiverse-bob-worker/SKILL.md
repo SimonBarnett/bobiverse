@@ -134,6 +134,19 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 
 File every problem you find: CAST IRON rule at the top.
 
+## Skill harvest backlog (FR #1684) — consolidate by book, then PR
+
+`label:skill` / `harvest:` intake receipts are **SKIP_FR** (not product FR jobs). They still need a promote PR so MRB can merge lessons into `.grok/skills`.
+
+When assigned a skill-promote job, or when you have `gh` write and open skill receipts for books you own:
+
+1. Group open skill issues **by owner skill book** (`harvest-agent-skills` table).
+2. **Close duplicate** receipts for the same book/lesson.
+3. Open **one** `harvest/…` PR per book (or one multi-book PR with clear paths); body lists `Closes …` and `Duplicates closed: …`.
+4. DONE with PR URL; another seat **MRB** merges. Never push `main`. Never one PR per harvest receipt.
+
+Details: skills `harvest` + `harvest-agent-skills` (Worker: consolidate open skill receipts → promote PR). Job wiring: `bobiverse-bob-job-fr`.
+
 ## Harvested reliability rules (closed skill records #1201-#1460)
 
 - Treat `outbox.txt` as a durable hand-off: create its parent/file before a drain, append atomically, and never delete the file merely because one drain reached EOF. A later worker/relay must be able to recreate and append safely. See #1201 and the related harvest records.

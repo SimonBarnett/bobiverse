@@ -2,6 +2,12 @@
 
 Pre-bobiverse harvest diaries (agentic_build / agentic_irc / bob-design-uat) remain under `docs/archive/*/docs/skill-harvest-log.md` for provenance. Do not treat those paths or product names as live. This file is the live bobiverse index (FR #806).
 
+## 2026-10-04 - FR #1684 skill consolidate → promote PR
+
+| Lesson | Fix |
+|--------|-----|
+| Open `label:skill` / `harvest:` receipts are SKIP_FR and never become PRs, so lessons never MRB-merge | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/…` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bobiverse-bob-job-fr` |
+
 ## 2026-10-03 - FR #806 archive-richer hand-merge
 
 | Lesson | Fix |

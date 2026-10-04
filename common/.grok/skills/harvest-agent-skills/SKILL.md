@@ -72,6 +72,23 @@ Branch `harvest/…` or `fix/…` → PR to `main`. Bump `common/VERSION` only w
 3. Append a dated line to `common/docs/skill-harvest-log.md` when the lesson is new.
 4. Skip one-off incident notes and noisy chat.
 
+## Worker: consolidate open skill receipts → promote PR (FR #1684 / #1682)
+
+`label:skill` / titles `harvest:` / `skill:` are **SKIP_FR** in the chair queue (they must not eat product FR seats). They still need a **promote PR** so hostile MRB can merge lessons into the books. Intake alone is a receipt, not a merge.
+
+When a worker is assigned a skill-promote / harvest-backlog job, or when finishing a session with `gh` write access and open skill receipts for books you touched:
+
+1. **List** open skill receipts:
+   `gh issue list -R SimonBarnett/bobiverse --state open --label skill --limit 200 --json number,title,body,labels`
+2. **Consolidate by skill book** — map each issue to one owner book from the table above (title/body/Lesson). Default only to `common/.grok/skills/harvest-agent-skills` when no product book fits. Do **not** open one PR per receipt.
+3. **Dedupe lessons** — for each book, keep unique durable Lesson lines; skip one-off incident noise already present in that `SKILL.md`.
+4. **Close duplicate skill-book requests** — for redundant receipts of the same book/lesson, close as duplicates when the promote PR opens (`gh issue close N --comment "Duplicate of #<canonical> / absorbed by <pr-url>"`). PR body must list `Duplicates closed: #a #b #c`.
+5. **One promote PR per book** (or one PR covering N books with clear file ownership): branch `harvest/…`, edit only those `.grok/skills/**` paths + one `common/docs/skill-harvest-log.md` line. Never `git push origin main`.
+6. **PR body** — `Closes SimonBarnett/bobiverse#N` for issues fully absorbed; `Duplicates closed: …` for the rest; name every book file touched. Implementer never merges.
+7. **DONE** with the PR URL; another seat runs hostile **MRB** to merge.
+
+Product FR jobs stay separate. Do not GIVEUP a real FR just because skill receipts exist. Do not stamp `needs-mrb1` on skill issues.
+
 ## Do not
 
 - Push harvest to `main`.
@@ -82,6 +99,8 @@ Branch `harvest/…` or `fix/…` → PR to `main`. Bump `common/VERSION` only w
 - Dispatch product builds under the harvest label.
 - File intake against archived superseded repos.
 - Spend tokens re-deriving a path a script already encodes.
+- Leave open `label:skill` receipts without a promote PR when you have `gh` write and unique lessons remain.
+- Open dozens of tiny PRs (one per harvest receipt).
 
 ## Inclusion rule
 
