@@ -102,3 +102,11 @@ VERSION → **0.1.10**.
 | Combined release (#196) | Consolidates the remaining 0.1.20 fixes and documentation across intake, chair/outbox, relay persistence, digest/reporting, airc remote control and durable jobs, tray packaging, sparse checkout, NSSM safety, and cursor-pool stamping. |
 
 VERSION -> **0.1.20** (packaged MSIs and release archives).
+
+## 2026-10-04 - Airc MSI AppParameters identity preserve (harvest #1583)
+
+| Lesson | Fix / book |
+|---|---|
+| MSI upgrade invents ConsoleHome | Read live AppParameters, then airc-install.json, before profile defaults (FR #1552 / PR #1570) |
+
+Books: `airc/.grok/skills/bobiverse-airc/SKILL.md`, `airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md`.
