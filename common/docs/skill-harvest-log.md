@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-04 - Harvest promote MRB merge order (harvest #2296)
+
+| Lesson | Fix |
+|--------|-----|
+| MRB of a harvest promote: merge skill PR first, then one `docs/mrb-N` hostile-test PR from new main; verify `Closes` closed the skill issue before DONE PASS | Documented in bobiverse-bob-job-mrb. Example: #2289 then docs #2295 |
+
+Books: bobiverse-bob-job-mrb.
+
 ## 2026-10-04 - nothing queued = focus + require_machine gate (harvest #2285)
 
 | Lesson | Fix |
