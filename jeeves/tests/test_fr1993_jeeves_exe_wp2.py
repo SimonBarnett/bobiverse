@@ -187,7 +187,7 @@ def test_fr1993_wp2_format_nothing_queued_with_stats():
             "require_machine": 3,
         },
     )
-    assert "0 offerable under focus" in rich
+    assert "0 offerable for you under focus" in rich
     assert "41 unaccepted" in rich
     assert "36 out-of-focus" in rich
     assert "require_machine" in rich

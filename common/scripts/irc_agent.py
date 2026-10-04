@@ -2374,7 +2374,9 @@ class Client:
         if status == "empty":
             gitclaim.note_worker_activity(self.home, src, now)
             try:
-                _empty_stats = gitclaim.summarize_empty_offer(self.home, src)
+                _empty_stats = gitclaim.clamp_empty_reply_stats(
+                    gitclaim.summarize_empty_offer(self.home, src)
+                )
             except Exception:  # noqa: BLE001
                 _empty_stats = None
             self._git_say(target, gitclaim.format_nothing_queued(src, _empty_stats))

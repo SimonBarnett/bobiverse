@@ -63,7 +63,7 @@ def test_fr2309_format_nothing_queued_includes_self_mrb_ledger_sticky():
             "sticky_offered": 1,
         },
     )
-    assert "0 offerable under focus" in rich
+    assert "0 offerable for you under focus" in rich
     assert "self_mrb=1" in rich
     assert "ledger=1" in rich
     assert "sticky=1" in rich
