@@ -26,6 +26,7 @@ Never assume `C:\ai`. The root is the `<drive>:\ai` on a **fixed** disk (Win32_L
 ## Update paths and precedence (t781u/t782u)
 
 Per service start: (1) repo fast-forward of the install work tree (sparse `<product>/` + `common/`, ff-only on `main`, local edits/commits/branches untouched, never blocks the start), flat runtime recomposed; `BOBIVERSE_REPO` = explicit external clone instead; (2) then the MSI release self-update, only when a release is newer than the VERSION now installed. `BOBIVERSE_NO_UPDATE=1` disables both; `BOB_AUTOUPDATE=0` only the release check. Look at `git -C <install> status -sb` and `Sync-BobiverseFromRepo.ps1 -Product <p> -DryRun` (read-only) before assuming what a box runs. Details: README "The install dir is a git work tree". Linked FR worktrees share `.git/info/exclude` (`/*`); new files outside un-ignored trees need **`git add -f`** (FR #132 / `bobiverse-bob-job-fr`).
+**ARP VERSION truth (FR #1565 / harvest #1589):** after MSI, Windows ARP `DisplayVersion` is the installed VERSION truth. `Sync-BobiverseFromRepo` must heal `<InstallRoot>\VERSION` to match ARP and must **not** let a newer git/clone `VERSION` stamp clobber the MSI identity on start-up sync. Unit tests use `-ArpVersionOverride none` (or the script's equivalent) so live ARP does not poison CI. Merged PR #1577 + docs #1587.
 ## Fleet model (what talks to what)
 
 - **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box.
@@ -126,9 +127,11 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Agent transcript shows Ergo/SASL password after `nssm get` | `AppEnvironmentExtra` dumped raw (FR #147) | Print env **key names only** (split on first `=`); never paste AppEnvironmentExtra values into logs, filings, or chat |
 | Self-update Apply hung / 0-byte MSI / mutex stuck | `Get-Asset` stalled on GitHub download without timeout | FR #1545: IWR TimeoutSec + curl `--max-time` fallback; throw → `download-failed` + mutex release (PR #1561). Check `...\update\<product>\update.log` |
 | Wrapper splat behaves oddly / wrong args | Script used automatic `$args` for splatting | Rename to an explicit array (e.g. `$launchArgs`) before `@splat` (PR #1588) |
+| InstallRoot `VERSION` jumps after sync / disagrees with ARP | Sync copied a newer clone `VERSION` over the MSI stamp | ARP `DisplayVersion` wins; Sync heals InstallRoot to ARP and skips clone clobber (FR #1565 / #1589 / PR #1577) |
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
 
 - Honor `require_machine` pins literally: a DEV1/ionos operation must be assigned to that capable seat, never to a convenient but incapable worker. Hard pins beat `any`; do not derive a pin from an ambiguous title.
 - On live Windows hosts, restart only the affected BobCallback task or `ircJeeves` service. Never restart BobIrcd/Ergo as a shortcut, and preserve queue/outbox evidence while recovering a callback or worker.
 - For upgrades and resync, verify the installed VERSION, clean/main worktree, fetch result, service/task state, and endpoint health; record an ALERT when fetch/ff/worktree state is stale.
+- After MSI, treat ARP `DisplayVersion` as VERSION truth for Sync heal; never let a newer repo/clone VERSION overwrite the MSI stamp (FR #1565 / harvest #1589).
