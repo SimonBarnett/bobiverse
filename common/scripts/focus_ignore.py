@@ -14,7 +14,10 @@ Strict mode keeps only focused rows. Ignored repos are dropped everywhere.
 
 This is a clean re-implementation of the subset needed, NOT a vendored copy of the
 gh-Jeeves package (no pinned tag exists to vendor). Closed item focus is pruned on
-resync via ``prune_closed_focus_items`` (FR #1508). Left out: retarget_item_focus.
+resync via ``prune_closed_focus_items`` (FR #1508). FR #1520: focus is per-repo —
+``_set_item`` refuses ``owner/repo#N`` when that repo is already in ``focus.repos``,
+and ``prune_redundant_focus_items`` drops leftover item keys under a focused repo.
+Left out: retarget_item_focus.
 """
 
 from __future__ import annotations
@@ -228,6 +231,43 @@ def prune_closed_focus_items(home: Path, open_keys: set[str] | frozenset[str]) -
         save_focus(home, doc)
     return dropped
 
+
+def prune_redundant_focus_items(home: Path) -> int:
+    """Drop focus *items* whose repo is already in ``focus.repos`` (FR #1520).
+
+    Repo-level focus already admits every ungated row of that repo under
+    ``focus.strict``. Per-issue item keys for the same repo are redundant and
+    were historically re-added by ear spam of ``!focus owner/repo#N``.
+    """
+    doc = load_focus(home)
+    items = doc.get("items") if isinstance(doc.get("items"), dict) else {}
+    repos = doc.get("repos") if isinstance(doc.get("repos"), dict) else {}
+    if not items or not repos:
+        return 0
+    keep: dict[str, Any] = {}
+    dropped = 0
+    for key, meta in items.items():
+        item_repo = ""
+        if isinstance(meta, dict):
+            item_repo = str(meta.get("repo") or "").strip()
+        if not item_repo:
+            parsed = normalize_item_ref(str(key))
+            if parsed:
+                item_repo = parsed[0]
+        covered = bool(item_repo) and any(
+            repo_match(rk, item_repo) or repo_match(item_repo, rk) for rk in repos
+        )
+        if covered:
+            dropped += 1
+            continue
+        keep[key] = meta
+    if dropped:
+        doc["items"] = keep
+        doc["updated"] = _now()
+        save_focus(home, doc)
+    return dropped
+
+
 def is_strict(home: Path) -> bool:
     return bool(load_focus(home).get("strict"))
 
@@ -402,6 +442,12 @@ def _set_item(home: Path, token: str, rank: int | None, label: str | None) -> li
         return ["focus: bad item (use owner/repo#N or repo#N)"]
     repo, ident, key = parsed
     doc = load_focus(home)
+    # FR #1520: per-repo focus already covers every ungated row — refuse item keys.
+    repos = doc.get("repos") if isinstance(doc.get("repos"), dict) else {}
+    if any(repo_match(rk, repo) or repo_match(repo, rk) for rk in repos):
+        return [
+            f"focus: skipped {key} (per-repo focus already covers {repo}; FR #1520)"
+        ]
     items = {k: v for k, v in doc["items"].items() if k.lower() != key.lower()}
     if rank is None:
         doc["item_seq"] = int(doc.get("item_seq") or 0) + 1
@@ -423,7 +469,11 @@ def _set_repo(home: Path, token: str, pr: int, label: str) -> list[str]:
     repos[canon] = {"priority": max(1, pr), "label": label, "ts": _now()}
     doc["repos"] = repos
     save_focus(home, doc)
-    return [f"focus: {canon} priority={max(1, pr)} ({label})"]
+    pruned = prune_redundant_focus_items(home)
+    lines = [f"focus: {canon} priority={max(1, pr)} ({label})"]
+    if pruned:
+        lines.append(f"focus: pruned {pruned} redundant item(s) under repo focus (FR #1520)")
+    return lines
 
 
 def format_focus_lines(home: Path) -> list[str]:

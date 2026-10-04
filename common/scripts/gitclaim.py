@@ -3712,8 +3712,11 @@ def resync_from_github(
                         n = str(num).lstrip("#")
                         open_keys.add(f"{repo}#{n}".lower())
                 focus_pruned = _fi.prune_closed_focus_items(home, open_keys)
+                # FR #1520: drop owner/repo#N items when that repo is already focused.
+                focus_redundant = _fi.prune_redundant_focus_items(home)
             except Exception:
                 focus_pruned = 0
+                focus_redundant = 0
             _write_queue(queue_path(home), doc)
             if cleared_fr_done:
                 def _clear_stale_fr_done(led: dict) -> None:
@@ -3729,6 +3732,7 @@ def resync_from_github(
                 "added": added,
                 "dropped": dropped,
                 "focus_pruned": int(focus_pruned),
+                "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),
                 "failed": list(failed),
             }
