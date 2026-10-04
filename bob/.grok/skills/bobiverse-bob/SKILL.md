@@ -22,7 +22,7 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 
 ## Architecture
 
-`ircBob` runs `Start-Bob.ps1` → prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#<machine> --host <irc host>`. Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback.
+`ircBob` runs `Start-Bob.ps1` -> prefer `scripts\bob-ear.exe` (FR #1481 self-contained ear) else `python -u irc_agent.py` with `--nick Bob-<machine> --home <home> --channel #bobiverse,#<machine> --host <irc host>`. Pack builds the exe via `Build-BobEar.ps1`; `Install-BobEarExe.ps1` swaps it with `.bak` rollback.
 (NSSM). The ear is the box's presence on IRC: it keeps the shop channel, reports status to the digest, executes `!recycle`
 for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **TipForm tray** is an interactive companion
 (not a service, not a `BobFleet-*` task). Digest POSTs need no secret (roster-gated by Jeeves).
@@ -32,10 +32,10 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 | Install root | `<ai root>\bob` (`scripts\`, `tools\` TipForm, `src\` BobBridge, `assets\bob-systray.ico`, `config\`, `logs\`, `.grok\skills\`, `PIN.txt`, `VERSION`, **`VISION.md`** for MRB/UAT — FR #1615) |
 | Ear home | `<ai root>\bob\home` (LocalSystem) else `~\.bobiverse`; `outbox.txt` (+`.pos`), **`inbound-transcript.log`** (always-on scrubbed PRIVMSG: channel/nick/text, FR #2174), `irc.log` (raw wire only with `BOB_IRC_DEBUG=1`), `nickserv.password`, `accounts.json`, `digest.json` |
 | Logs | `<ai root>\bob\logs\stdout.log` / `stderr.log` (rotated `ircBob-*` files) |
-| IRC | channels `#bobiverse` + `#<machine>` (identical on Ionos/MarchHare/Flamingo); nick `Bob-<machine>`; SASL user `bob-<machine>`; host passed explicitly with `--host` (Start-Bob `-IrcHost`, default `irc.ntsa.uk`) |
+| IRC | channels `#bobiverse` + `#<machine>` (identical on every box); nick `Bob-<machine>`; SASL user `bob-<machine>`; host passed explicitly with `--host` (Start-Bob `-IrcHost`, default `irc.ntsa.uk`). **DIGEST_ID_FOLD:** `ionos`->`win-mpre8vi4u6u`, `dev1`->`ce-priority-dev1` — never JOIN/`--channel` `#ionos` (harvest #2280 / PR #2279) |
 | Config | `config\ergo.password` (server PASS), `home\nickserv.password` (SASL), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon) |
 | Tray | `scripts\Start-BobTray.ps1 -> tools\Start-BobFleetTray.ps1`; HKCU `Run\BobiverseTray`; per-user Startup shortcut; quiet MSI uses the ONLOGON `/IT` task `BobiverseTray`. Autostart/shortcuts/ONLOGON default **`-ForceNew -SkipTidy`** (FR #1636 / harvest #1663): replace the prior tray only; leave seats/Grok Bot running. |
-| TipForm **Restart** | Menu label **Restart** → `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray; **this** path still tidies seats). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
+| TipForm **Restart** | Menu label **Restart** -> `Restart-BobTrayWatcher` -> `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray; **this** path still tidies seats). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
 | Agent / Plan | Tray items **Agent** and **Plan** (single click, no submenu) run `worker\bob-worker.exe` (via a per-user run-copy) -> a NEW agent each click, never resumed. Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
 | Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
 
@@ -44,7 +44,7 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 - **Listen:** `Get-Content <bob home>\inbound-transcript.log -Tail 40` — always-on rotating transcript (`UTC channel nick text`, secrets redacted). Independent of `BOB_IRC_DEBUG`.
 - **Send:** append `PRIVMSG <target> :<text>` to `<bob home>\outbox.txt` (UTF-8 no BOM). Same outbox contract on every machine.
 - **Worker filter:** `bob-worker` still only injects FROM Jeeves addressed to that seat; other lines remain visible in the transcript.
-- **Recovery:** absent `ircBob` → Install-Bob / Start-Service; stale `irc_listen.py` → retire and use ircBob; running without transcript → `Restart-BobEar.ps1` after deploy.
+- **Recovery:** absent `ircBob` -> Install-Bob / Start-Service; stale `irc_listen.py` -> retire and use ircBob; running without transcript -> `Restart-BobEar.ps1` after deploy.
 
 ## Roles
 
