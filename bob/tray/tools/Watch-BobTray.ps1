@@ -953,7 +953,7 @@ function Get-BobTrayGrokFuelRemaining {
     # CAST IRON (Simon 2026-09-27 + AgentMonitor#150): Grok agent start uses LOCAL
     # weekly remaining (Get-BobWeeklyRemaining / unified.jsonl), not digest
     # pcent.grok-chat (that key is Cursor Sand) and not a poisoned seat-cache 0.
-    # Grok 1.0.41: remaining_pct=$null (TipForm n/a) is a real local reading —
+    # Grok 1.0.41: remaining_pct=$null (TipForm n/a) is a real local reading â€”
     # return $null so Resolve-BobTrayGrokFuelAtStart uses Get-BobGrokAvailability.
     if (Get-Command Get-BobWeeklyRemaining -ErrorAction SilentlyContinue) {
         try {
@@ -962,7 +962,7 @@ function Get-BobTrayGrokFuelRemaining {
                 if ($null -ne $w.remaining_pct -and [string]$w.remaining_pct -ne '') {
                     try { return [int]$w.remaining_pct } catch { }
                 }
-                # Local billing doc present with unknown % — do not fall through to
+                # Local billing doc present with unknown % â€” do not fall through to
                 # TipForm snapshot / digest Sand 0% (false exhaustion dialog).
                 return $null
             }
@@ -1306,9 +1306,9 @@ function Start-BobTrayAgentWatch {
     # #285 + CAST IRON (Simon 2026-09-27): hide the watch PowerShell host; agent TUI
     # must be visible (Build-BobWatchSeatLaunchArgs passes -Windows on, never off).
     # Direct -WatchWorker avoids an outer re-spawn.
-    $ps1 = Join-Path $script:agentMonitorDir 'Watch-AgentHealth.ps1'
+    $ps1 = Join-Path $script:agentmonitorDir 'Watch-AgentHealth.exe'
     if (-not (Test-Path -LiteralPath $ps1)) {
-        Write-TrayLog ('agents: missing Watch-AgentHealth.ps1 under ' + $script:agentMonitorDir)
+        Write-TrayLog ('agents: missing Watch-AgentHealth.exe under ' + $script:agentMonitorDir)
         return
     }
     $slotHelpers = Join-Path $RepoRoot 'tools\Bob-WatchSeatSlot.ps1'
@@ -1388,7 +1388,7 @@ function Start-BobTrayAgentWatch {
             $sessionEnv = @{ CURSOR_API_KEY = $key }
         }
     }
-    $ps = (Get-Command powershell.exe).Source
+    $ps = $ps1
     # FR #345: explicit next free slot + -IrcHome (pairs AgentMonitor #97)
     try {
         $pick = Resolve-BobWatchNextFreeSlot -Kind $kind -ExcludePid $PID

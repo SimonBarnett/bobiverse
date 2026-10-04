@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal
 if "%~1"=="" (
     echo Usage: %~nx0 grok ^| cursor [new] [off]
@@ -24,9 +24,10 @@ if /i "%~3"=="new" set "PSARGS=%PSARGS% -New"
 if /i "%~3"=="off" set "HIDDEN=1"
 if "%HIDDEN%"=="1" (
     set "PSARGS=%PSARGS% -Windows off"
-    start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0Watch-AgentHealth.ps1" %PSARGS%
+    start "" "%~dp0Watch-AgentHealth.exe" %PSARGS%
     echo Watch monitor started hidden. Log: %USERPROFILE%\Desktop\Watch-AgentHealth\Watch-AgentHealth.log
     exit /b 0
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "%~dp0Watch-AgentHealth.ps1" %PSARGS%
+"%~dp0Watch-AgentHealth.exe" %PSARGS%
 exit /b 0
+
