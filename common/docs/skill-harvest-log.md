@@ -141,3 +141,10 @@ Books: `bob/.grok/skills/bobiverse-bob-worker/SKILL.md`, `bob/.grok/skills/bobiv
 | Product | FR #1714 |
 
 Books: `bobiverse-jeeves-monitor`, `bobiverse-bob`.
+## 2026-10-04 - Airc MSI AppParameters identity preserve (harvest #1583)
+
+| Lesson | Fix / book |
+|---|---|
+| MSI upgrade invents ConsoleHome | Read live AppParameters, then airc-install.json, before profile defaults (FR #1552 / PR #1570) |
+
+Books: `airc/.grok/skills/bobiverse-airc/SKILL.md`, `airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md`.
