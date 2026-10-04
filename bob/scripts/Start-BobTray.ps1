@@ -24,24 +24,30 @@ param(
     [switch]$SkipTidy
 )
 
-function Write-BobTrayLifecycle {
-    param([string]$Event, [hashtable]$Fields = @{})
-    try {
-        $dir = Join-Path $env:LOCALAPPDATA 'Bobiverse'
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        $line = [ordered]@{
-            ts     = (Get-Date).ToUniversalTime().ToString('o')
-            event  = $Event
-            pid    = $PID
-            user   = $env:USERNAME
-        }
-        foreach ($k in $Fields.Keys) { $line[$k] = $Fields[$k] }
-        $json = ($line | ConvertTo-Json -Compress)
-        Add-Content -LiteralPath (Join-Path $dir 'tray-lifecycle.log') -Value $json -Encoding utf8
-    } catch { }
-}
-
 $ErrorActionPreference = 'Continue'
+# FR #1636 / #1642: shared lifecycle writer lives in tools\BobTrayLifecycle.ps1 when composed.
+$__life = Join-Path (Split-Path -Parent $PSScriptRoot) 'tools\BobTrayLifecycle.ps1'
+if (-not (Test-Path -LiteralPath $__life)) { $__life = Join-Path $PSScriptRoot '..\tray\tools\BobTrayLifecycle.ps1' }
+if (Test-Path -LiteralPath $__life) { . $__life }
+if (-not (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue)) {
+    function Write-BobTrayLifecycleEvent {
+        param([string]$Event, [hashtable]$Fields = @{})
+        try {
+            $dir = Join-Path $env:LOCALAPPDATA 'Bobiverse'
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $line = [ordered]@{
+                ts    = (Get-Date).ToUniversalTime().ToString('o')
+                event = $Event
+                pid   = $PID
+                user  = $env:USERNAME
+            }
+            foreach ($k in $Fields.Keys) { $line[$k] = $Fields[$k] }
+            Add-Content -LiteralPath (Join-Path $dir 'tray-lifecycle.log') -Value (($line | ConvertTo-Json -Compress)) -Encoding utf8
+        } catch { }
+    }
+}
+# Back-compat alias used by FR #1636 Start-BobTray body.
+function Write-BobTrayLifecycle { param([string]$Event, [hashtable]$Fields = @{}); Write-BobTrayLifecycleEvent -Event $Event -Fields $Fields }
 
 # t780u: no hard-coded C:\ai. Installed: this script lives in <install>\scripts, so the install root is its parent. Otherwise the
 # <drive>:\ai root is discovered on the fixed disks (Bobiverse-Common.ps1; BOB_AI_ROOT overrides).
@@ -127,6 +133,8 @@ if ($ForceNew -or $prior.Count -gt 0) {
 
 # Prefer Start-BobFleetTray when present (tidy + ircBob restart); else Watch-BobTray direct.
 $fleetStart = Join-Path $InstallRoot 'tools\Start-BobFleetTray.ps1'
+# FR #1642: a fresh start re-arms the unexpected-exit watchdog.
+if (Get-Command Clear-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) { Clear-BobTrayWatchdogSuppress }
 if (Test-Path -LiteralPath $fleetStart) {
     $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1'
     if ($noTidy) { Write-Host 'INFO tray start: SkipTidy (seats and Grok Bot are left running)' }
