@@ -76,6 +76,37 @@ if (-not (Test-AircConsoleIsAdmin)) {
     exit [int]$p.ExitCode
 }
 
+# FR #1552: load shared helpers when present (Install-Airc always has them; direct invoke may not).
+$scriptDirEarly = $PSScriptRoot
+if (-not $scriptDirEarly) {
+    if ($PSCommandPath) { $scriptDirEarly = Split-Path -Parent $PSCommandPath }
+    elseif ($MyInvocation.MyCommand.Path) { $scriptDirEarly = Split-Path -Parent $MyInvocation.MyCommand.Path }
+}
+$commonPs1 = if ($scriptDirEarly) { Join-Path $scriptDirEarly 'Bobiverse-Common.ps1' } else { '' }
+if ($commonPs1 -and (Test-Path -LiteralPath $commonPs1) -and -not (Get-Command Get-BobiverseServiceAppParameters -ErrorAction SilentlyContinue)) {
+    . $commonPs1
+}
+
+# FR #1552: capture existing service AppParameters BEFORE tear-down so upgrade/reinstall
+# keeps ConsoleHome / MachineId / PasswordFile (never default to the invoking profile).
+$priorAppParams = ''
+$priorId = $null
+if (Get-Command Get-BobiverseServiceAppParameters -ErrorAction SilentlyContinue) {
+    $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName $ServiceName
+    $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
+    if ($priorAppParams) {
+        Write-Host "INFO FR #1552: preserving identity from existing $ServiceName AppParameters"
+        if (-not $ConsoleHome -and $priorId.ConsoleHome) { $ConsoleHome = $priorId.ConsoleHome }
+        if (-not $MachineId -and $priorId.MachineId) { $MachineId = $priorId.MachineId }
+        if (-not $PasswordFile -and $priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
+            $PasswordFile = $priorId.PasswordFile
+        }
+        if (-not $Launcher -and $priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) {
+            $Launcher = $priorId.Launcher
+        }
+    }
+}
+
 # Resolve fleet machine id early (operators seed + NSSM env + Start -MachineId).
 if (-not $MachineId) {
     $MachineId = ($env:AIRC_CONSOLE_MACHINE, $env:BOB_MACHINE_ID | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
@@ -344,6 +375,10 @@ $Python = (Resolve-Path -LiteralPath $Python).Path
 Write-Host "INFO service python=$Python"
 
 # Application MUST be powershell.exe (never the .ps1 Path — see NSSM GUI / issue #259).
+# FR #1552: prefer prior OperatorsFile path when it still exists (fleet custom ops list).
+if ($priorId -and $priorId.OperatorsFile -and (Test-Path -LiteralPath $priorId.OperatorsFile)) {
+    $opsFile = $priorId.OperatorsFile
+}
 $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" -ServiceMode -ConsoleHome `"$ConsoleHome`""
 $appParams += " -Python `"$Python`""
 $appParams += " -PasswordFile `"$PasswordFile`""

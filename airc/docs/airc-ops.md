@@ -9,9 +9,12 @@ Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / 
 |---------|------------------------|
 | Interactive user | `%USERPROFILE%\.airc` |
 | LocalSystem / quiet MSI | `C:\Users\Administrator\.airc` if present, else `<ai root>\airc\home` |
+| **Upgrade / reinstall** (FR #1552) | **Existing NSSM `Airc` AppParameters** (`-ConsoleHome`, `-MachineId`, `-PasswordFile`, `-OperatorsFile`, `-File` launcher if still on disk) |
 
-**Never** `C:\Users\Default\.airc` — that orphans the NickServ GUID (`console.password`).
-`Install-Airc.ps1` migrates legacy `.airc-console` / Default homes when needed.
+**Never** default to the invoking user's profile when the `Airc` service is already registered — that resets identity and causes SASL 904 / NickServ 433.
+**Never** invent a fresh ConsoleHome on MSI upgrade when AppParameters already name one (including a deliberate `Default\.airc` fleet bake).
+`Install-Airc.ps1` / `Install-AircConsole.ps1` read `HKLM\...\Services\Airc\Parameters\AppParameters` first; they also write `<ai root>\airc\config\airc-install.json` (paths only, no secrets).
+Fresh installs still migrate legacy `.airc-console` / Default homes when no prior service exists.
 
 ## Shop vs lobby
 
@@ -49,10 +52,11 @@ PUT/RUN/JOB verbs are constructed by the helper (sandbox under `<ai root>\airc\d
 ## Install / secrets / update
 
 - After public MSI: place `<ai root>\airc\config\ergo.password` (or rely on Install copy). **Never invent** the Ergo PASS; NickServ GUID is minted into ConsoleHome `console.password`.
-- Re-run `Install-Airc.cmd -MachineId <id>` if NSSM still points at an old tree.
+- Re-run `Install-Airc.cmd -MachineId <id>` if NSSM still points at an old tree. On upgrade, omit `-ConsoleHome` so FR #1552 preserve-from-AppParameters runs.
 - Service-start self-update is **`Update-BobiverseService.ps1`** (Check mode from `Start-AircConsole.ps1` / product start): compares GitHub Releases to `VERSION`, then starts a **detached** Apply helper (scheduled task / WMI). It never runs `msiexec` inline inside the live service process. Opt out: `BOBIVERSE_NO_UPDATE=1`, `BOB_AUTOUPDATE=0`, or `config\autoupdate.disabled`.
 - Optional clone sync when `Sync-BobiverseFromRepo.ps1` is present and `BOBIVERSE_REPO` is set; that path is secondary to the detached release updater.
 - Do **not** document or call the retired `Check-BobiverseUpdate.ps1` name for fleet ops.
+- **ProductCode / uninstall (FR #1552 notes):** ProductCode changes per version — look up uninstall via ARP `DisplayName` `bobiverse airc` (`Get-BobiverseArpProduct` in the updater), never hard-code a GUID. Quiet uninstall should stop/remove the `Airc` service while keeping ConsoleHome secrets; if ARP is removed but the service remains, treat that as a bug and file intake.
 
 ## Operator smoke (short)
 

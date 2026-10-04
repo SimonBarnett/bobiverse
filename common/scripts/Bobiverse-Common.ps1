@@ -43,6 +43,43 @@ function Invoke-BobiverseNssmChecked {
     return $r
 }
 
+function Get-BobiverseServiceAppParameters {
+    <# FR #1552: read NSSM AppParameters from the service registry (no secret values logged). #>
+    param([Parameter(Mandatory)][string]$ServiceName)
+    try {
+        $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters"
+        if (Test-Path -LiteralPath $k) {
+            return [string](Get-ItemProperty -LiteralPath $k -Name AppParameters -ErrorAction Stop).AppParameters
+        }
+    } catch { }
+    return ''
+}
+
+function Get-BobiverseAppParam {
+    <# Parse -Name "value" or -Name value from an NSSM AppParameters string. #>
+    param([string]$AppParameters, [Parameter(Mandatory)][string]$Name)
+    if (-not $AppParameters) { return '' }
+    if ($AppParameters -match ("-{0}\s+`"([^`"]+)`"" -f [regex]::Escape($Name))) { return $Matches[1] }
+    if ($AppParameters -match ("-{0}\s+([A-Za-z0-9_.:\\/-]+)" -f [regex]::Escape($Name))) { return $Matches[1] }
+    return ''
+}
+
+function Get-BobiverseAircIdentityFromAppParameters {
+    <# FR #1552: extract ConsoleHome / MachineId / PasswordFile / OperatorsFile / Launcher from AppParameters. #>
+    param([string]$AppParameters)
+    $launcher = ''
+    if ($AppParameters -match '-File\s+"([^"]+\.ps1)"') { $launcher = $Matches[1] }
+    elseif ($AppParameters -match '-File\s+([A-Za-z0-9_.:\\/-]+\.ps1)') { $launcher = $Matches[1] }
+    return [pscustomobject]@{
+        ConsoleHome   = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'ConsoleHome'
+        MachineId     = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'MachineId'
+        PasswordFile  = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'PasswordFile'
+        OperatorsFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'OperatorsFile'
+        Launcher      = $launcher
+        Raw           = [string]$AppParameters
+    }
+}
+
 function Set-BobiverseNssmAppExitRestart {
     <#
     FR #1055: pin NSSM to Restart on Default AND exit code 0.

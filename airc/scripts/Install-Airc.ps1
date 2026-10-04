@@ -72,9 +72,27 @@ if (-not (Test-Path $destErgo)) {
     }
 }
 
+# FR #1552: MSI / reinstall must keep the live service identity (ConsoleHome, MachineId,
+# PasswordFile, OperatorsFile). Never default to the invoking user's profile when Airc
+# is already registered — that caused SASL 904 / NickServ 433 after 0.1.20->0.1.21.
+$priorAppParams = Get-BobiverseServiceAppParameters -ServiceName 'Airc'
+$priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
+if ($priorAppParams) {
+    Write-Host 'INFO FR #1552: existing Airc AppParameters found — preserving identity fields'
+    if (-not $ConsoleHome -and $priorId.ConsoleHome) {
+        $ConsoleHome = $priorId.ConsoleHome
+        Write-Host "INFO preserving ConsoleHome from service AppParameters"
+    }
+    if (-not $MachineId -and $priorId.MachineId) {
+        $MachineId = $priorId.MachineId
+        Write-Host "INFO preserving MachineId from service AppParameters"
+    }
+}
+
 # Under MSI LocalSystem, USERPROFILE is often C:\Users\Default — that loses the
 # Admin NickServ GUID and breaks {machine}_console reclaim (marchhare 2026-09-30).
 # Mirror Install-Jeeves: prefer existing Admin home, else InstallRoot\home.
+# Only when no prior service identity and no explicit -ConsoleHome.
 if (-not $ConsoleHome) {
     $adminHome = Join-Path $env:SystemDrive 'Users\Administrator\.airc'
     if (Test-BobiverseIsLocalSystem) {
@@ -89,7 +107,7 @@ if (-not $ConsoleHome) {
         $ConsoleHome = Join-Path $env:USERPROFILE '.airc'
     }
 }
-# Migrate from .airc-console / Default bake if needed
+# Migrate from .airc-console / Default bake if needed (never when prior ConsoleHome exists).
 $legacyCandidates = @(
     (Join-Path $env:USERPROFILE '.airc-console'),
     (Join-Path $env:SystemDrive 'Users\Default\.airc'),
@@ -105,6 +123,26 @@ if (-not (Test-Path -LiteralPath $ConsoleHome)) {
     }
 }
 
+# Snapshot identity for the next upgrade (opaque paths only; no secret contents).
+try {
+    $idPath = Join-Path $InstallRoot 'config\airc-install.json'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $idPath) | Out-Null
+    $snap = [ordered]@{
+        v            = 1
+        service      = 'Airc'
+        ConsoleHome  = $ConsoleHome
+        MachineId    = $MachineId
+        PasswordFile = $(if ($priorId.PasswordFile) { $priorId.PasswordFile } else { Join-Path $ConsoleHome 'console.password' })
+        OperatorsFile = $(if ($priorId.OperatorsFile) { $priorId.OperatorsFile } else { Join-Path $ConsoleHome 'operators.txt' })
+        Launcher     = $(if ($priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) { $priorId.Launcher } else { '' })
+        updated      = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    ($snap | ConvertTo-Json) | Set-Content -LiteralPath $idPath -Encoding utf8
+    Write-Host "INFO wrote $idPath"
+} catch {
+    Write-Host ("WARN airc-install.json: {0}" -f $_.Exception.Message)
+}
+
 $installLegacy = Join-Path $InstallRoot 'scripts\Install-AircConsole.ps1'
 $args = @{
     ServiceName = 'Airc'
@@ -115,6 +153,13 @@ if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }
 if ($Python) { $args.Python = $Python }
 if ($NoStart) { $args.NoStart = $true }
+# FR #1552: pass through prior PasswordFile when still on disk (keeps NickServ GUID path).
+if ($priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
+    $args.PasswordFile = $priorId.PasswordFile
+}
+if ($priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) {
+    $args.Launcher = $priorId.Launcher
+}
 
 # Patch launcher path expectation: Install-AircConsole looks beside itself
 try {
