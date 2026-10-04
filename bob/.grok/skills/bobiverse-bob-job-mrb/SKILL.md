@@ -129,6 +129,7 @@ Checks:
 
 ## Harvested MRB discipline (skill records #1223-#1457)
 
+- After a sibling merge leaves your MRB head CONFLICTING: merge `origin/main`, keep both soft-cap and StrictMode `@()` wraps; `Closes` only remaining open FRs when the twin is already closed (harvest #1694).
 - Never let an unrelated docs/vendor/product PR `Closes` a `label:skill` harvest issue; strip wrong `Closes`, use `Refs`, close the harvest record separately when lessons are already on main (harvest #1674 / MRB #1660).
 - **Partial FR ACCEPTABLE drift (harvest #1663 / MRB #1645):** SkipTidy autostart PASS when TipForm Restart still tidies is intentional; leave explicit follow-up issues open; still merge `origin/main` and run `check_conflict_markers` before merge.
 - CONFLICTING/superseded duplicate PR: FAIL board, close the PR, DONE FAIL; never force-merge (harvest #1609). CONFLICTING with open acceptance still uses one fix/rebase PR. Mere CONFLICTING unique heads: merge main, resolve, re-test.

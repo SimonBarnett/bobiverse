@@ -70,6 +70,7 @@ Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude
 
 ## Job worktree cleanup (FR #877)
 
+* **StrictMode `.Count`:** wrap `Sort-Object`/`Where-Object` results with `@()` before `.Count` (FR #1664 / Clear-BobiverseJobWorktrees). FreeGB capacity shortfalls are separate FRs — do not close them as duplicates of the StrictMode fix (harvest #1689).
 Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` until `git worktree add` fails with **No space left on device**.
 
 * **Before** creating a new job tree, and **after DONE** (once the PR is up): run

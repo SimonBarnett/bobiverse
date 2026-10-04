@@ -62,6 +62,12 @@ Book: `bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md`.
 |--------|-----|
 | `Invoke-AircRemote -ReplyFile` needs ear capture of `*_console` Query lines to `home/airc-replies.jsonl` plus helper poll until DONE; NSSM AppStdout under install logs with timestamps and keepalive rate-limit | Promoted into `airc/.grok/skills/bobiverse-airc`, `bobiverse-airc-troubleshooting`, and `bob/.grok/skills/bobiverse-bob-commands` (code already on main via PR #1560) |
 
+## 2026-10-04 - StrictMode @() before .Count (FR #1664 / harvest #1689)
+
+| Lesson | Fix |
+|--------|-----|
+| PowerShell StrictMode: Sort-Object/Where-Object of one item is a scalar — wrap with @() before .Count; leave separate FreeGB capacity FRs open | Documented in `bobiverse-fleet-ops` + `bobiverse-bob-job-fr`. Product: PR #1672. Related soft-cap conflict playbook: harvest #1694 |
+
 ## 2026-10-04 - Self-MRB GIVEUP wire (harvest #1603)
 
 | Lesson | Fix |
@@ -231,4 +237,3 @@ Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #
 | Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
 
 Books: obiverse-bob-worker, obiverse-bob-troubleshooting.
-
