@@ -108,3 +108,12 @@ VERSION → **0.1.10**.
 | Combined release (#196) | Consolidates the remaining 0.1.20 fixes and documentation across intake, chair/outbox, relay persistence, digest/reporting, airc remote control and durable jobs, tray packaging, sparse checkout, NSSM safety, and cursor-pool stamping. |
 
 VERSION -> **0.1.20** (packaged MSIs and release archives).
+
+## 2026-10-04 - Sync ARP VERSION truth (harvest #1589 / FR #1565)
+
+| Lesson | Fix / book |
+|---|---|
+| Clone VERSION clobbers MSI stamp on sync | ARP DisplayVersion is truth; Sync heals InstallRoot VERSION and skips newer clone stamps (PR #1577) |
+| Tests poisoned by live ARP | Use -ArpVersionOverride none (or equivalent) in unit tests |
+
+Book: `common/.grok/skills/bobiverse-fleet-ops/SKILL.md`. Canonical #1589; twin #1595.
