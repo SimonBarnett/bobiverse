@@ -505,12 +505,18 @@ function Invoke-Apply {
 
         $verPath = Join-Path $InstallRoot 'VERSION'
         $newVer = ConvertTo-Ver (Get-Content -LiteralPath $verPath -Raw -ErrorAction SilentlyContinue)
-        # FR #1432: msiexec success-family can still leave VERSION stale (maintenance reconfigure /
-        # NeverOverwrite components). Stamp from the verified plan so S4 / self-update observers see the bump.
+        # FR #1432: msiexec success-family can still leave VERSION stale (NeverOverwrite on VERSION).
+        # Stamp only when ARP agrees the target product is registered — never paper over a no-op
+        # maintenance /i that left both bits and ARP on the old build (MRB #1477 hostile).
         if (-not $newVer -or $newVer -ne $target) {
-            Set-Content -LiteralPath $verPath -Value ($target.ToString() + [Environment]::NewLine) -Encoding ascii
-            Write-UpdLog ("version-stamped-after-msi was={0} now={1}" -f $(if ($newVer) { $newVer.ToString() } else { 'missing' }), $target.ToString())
-            $newVer = ConvertTo-Ver (Get-Content -LiteralPath $verPath -Raw -ErrorAction SilentlyContinue)
+            $arpAfter = Get-BobiverseArpProduct
+            if ($arpAfter -and $arpAfter.Version -and ($arpAfter.Version -eq $target)) {
+                Set-Content -LiteralPath $verPath -Value ($target.ToString() + [Environment]::NewLine) -Encoding ascii
+                Write-UpdLog ("version-stamped-after-msi was={0} now={1} arp={2}" -f $(if ($newVer) { $newVer.ToString() } else { 'missing' }), $target.ToString(), $arpAfter.DisplayVersion)
+                $newVer = ConvertTo-Ver (Get-Content -LiteralPath $verPath -Raw -ErrorAction SilentlyContinue)
+            } else {
+                Write-UpdLog ("version-stamp-skipped arp={0} (want {1})" -f $(if ($arpAfter) { $arpAfter.DisplayVersion } else { 'none' }), $target.ToString())
+            }
         }
         if (-not $newVer -or $newVer -ne $target) { throw "installed VERSION is '$newVer', expected $($target.ToString())" }
         if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) { throw "service $ServiceName missing after install" }
