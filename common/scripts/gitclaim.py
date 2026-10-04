@@ -3026,6 +3026,10 @@ def review_blocked_for_author(
                     p = bobreport.parse_seat_nick(n_c)
                     if not p or bobreport.fold_machine_id(p[0]) == author_mid:
                         continue
+                    # FR #2339: pinned-out other-machine seats are not viable — do not
+                    # strand the author-machine sibling when require_machine forbids them.
+                    if row_blocked_for_machine(row, n_c):
+                        continue
                     if ledger is not None and repo_uat:
                         other_why = _ledger_blocks(ledger, row, n_c)
                         if other_why and "implemented" in other_why:
