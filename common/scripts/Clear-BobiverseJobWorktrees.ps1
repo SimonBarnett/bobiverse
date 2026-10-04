@@ -86,25 +86,33 @@ Write-Host ("FreeGB={0} MinFreeGB={1} RepoRoot={2} KeepPath={3}" -f $freeGb, $Mi
 # FR #1661: low-disk / -Force = full reclaim; soft cap still runs when FreeGB is healthy.
 $lowDisk = $Force -or ($freeGb -lt $MinFreeGB)
 
-$list = & git -C $rootFull worktree list --porcelain 2>&1
+# FR #1740 / #1664: force Object[] of line strings — a single-line git capture is a scalar string and
+# `foreach` would iterate characters under StrictMode.
+$list = @(
+    & git -C $rootFull worktree list --porcelain 2>&1 |
+        ForEach-Object { "$_" } |
+        Where-Object { $_ -ne '' }
+)
 if ($LASTEXITCODE -ne 0) {
-    throw "git worktree list failed: $list"
+    throw "git worktree list failed: $($list -join "`n")"
 }
 
-$paths = @()
+$paths = New-Object System.Collections.Generic.List[string]
 foreach ($line in $list) {
     if ($line -match '^worktree (.+)$') {
-        $paths += $Matches[1]
+        [void]$paths.Add($Matches[1])
     }
 }
 
 $removed = 0
-# FR #1664: pipeline/filter of one path is a scalar string; always force Object[] before .Count (StrictMode).
-$jobTrees = @($paths | Where-Object { Test-IsJobWorktreePath $_ $rootFull $keepFull })
+# FR #1664 / #1740: pipeline/filter of one path is a scalar string; always force Object[] before .Count (StrictMode).
+$jobTrees = @($paths.ToArray() | Where-Object { Test-IsJobWorktreePath $_ $rootFull $keepFull })
+$jobTrees = @($jobTrees)
 
 # Cap: remove extras beyond MaxExtraJobTrees (oldest first by path mtime when possible).
 # FR #1661 soft cap: enforce this even when FreeGB >= MinFreeGB (earlier prune gate).
-$softCapNeeded = ($MaxExtraJobTrees -ge 0 -and $jobTrees.Count -gt $MaxExtraJobTrees)
+$jobTreeCount = @($jobTrees).Count
+$softCapNeeded = ($MaxExtraJobTrees -ge 0 -and $jobTreeCount -gt $MaxExtraJobTrees)
 if (-not $lowDisk -and -not $softCapNeeded) {
     Write-Host "OK: free space above MinFreeGB and job-tree count within MaxExtraJobTrees; pass -Force to prune anyway."
     return
@@ -113,7 +121,7 @@ if (-not $lowDisk -and -not $softCapNeeded) {
 if ($lowDisk) {
     # Full reclaim: remove every job tree (KeepPath / install root already excluded).
     $toRemove = @($jobTrees)
-    Write-Host ("FR #1661 full reclaim: lowDisk/Force removing {0} job worktree(s)" -f $toRemove.Count)
+    Write-Host ("FR #1661 full reclaim: lowDisk/Force removing {0} job worktree(s)" -f @($toRemove).Count)
 } elseif ($softCapNeeded) {
     # FR #1664: Sort-Object of a single path returns a scalar; wrap with @() before .Count.
     $sorted = @($jobTrees | Sort-Object {
@@ -123,8 +131,9 @@ if ($lowDisk) {
             [datetime]::MinValue
         }
     })
-    $toRemove = @($sorted | Select-Object -First ([Math]::Max(0, $sorted.Count - $MaxExtraJobTrees)))
-    Write-Host ("FR #1661 earlier prune / soft cap: removing {0} extra job worktree(s) (MaxExtraJobTrees={1})" -f $toRemove.Count, $MaxExtraJobTrees)
+    $sortedCount = @($sorted).Count
+    $toRemove = @($sorted | Select-Object -First ([Math]::Max(0, $sortedCount - $MaxExtraJobTrees)))
+    Write-Host ("FR #1661 earlier prune / soft cap: removing {0} extra job worktree(s) (MaxExtraJobTrees={1})" -f @($toRemove).Count, $MaxExtraJobTrees)
 } else {
     $toRemove = @()
 }
