@@ -84,8 +84,8 @@ An unknown reading is "not available" (falls through), never "available". Readin
 * **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline. Live seats need a rebuilt `bob-worker.exe` (`Build-BobWorker` / MSI) - source-only patches do not update the frozen PyInstaller binary already running from the tray.
 * **Liveness answered by the exe**: server `PING`->`PONG` at once, CTCP PING/VERSION, and the fleet `ping` / `ping <selector>` in `#<machine>` -> `pong` (selector matches the
   nick or the machine id; prefix/substring/`*`/`?`). Pings are never forwarded to the agent (no wake, no flood).
-* **Reply path**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to the `outbox.txt` named in its first instruction
-  (`%LOCALAPPDATA%\Bobiverse\worker\run\worker-<machine>-<pid>-<id>\outbox.txt`); lines for any other target are refused.
+* **Reply path (FR #2380)**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to `$env:BOB_OUTBOX` (bob-worker sets it on every agent child) or the path in the first instruction / each injected `FROM ... [outbox: <path>]` footer
+  (`%LOCALAPPDATA%\Bobiverse\worker\run\worker-<machine>-<pid>-<id>\outbox.txt`). **Never** the ear's `home\outbox.txt`. Lines for any other target are refused.
 
 ## If IRC is lost: the seat ends (no reconnect loop)
 
