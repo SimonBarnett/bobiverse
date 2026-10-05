@@ -198,15 +198,25 @@ def _check_offer(home: Path, chair_home: Path | None) -> tuple[dict[str, Any], l
         stats = gitclaim.summarize_empty_offer(root, "")
         detail = dict(stats)
         detail["ok"] = True
-        # Finding only when queue has rows but zero offerable under focus (operator confusion).
+        # Finding when queue has rows but zero offerable under focus (operator confusion).
+        # FR #2526: if every unaccepted row is require_machine-gated (and none out-of-focus),
+        # keep as note only — intentional pins must not exit 1 / spawn maintenance.
         if int(stats.get("unaccepted") or 0) > 0 and int(stats.get("offerable") or 0) == 0:
-            findings.append(
+            msg = (
                 "0 offerable for you under focus "
                 f"({stats.get('unaccepted')} unaccepted, "
                 f"{stats.get('out_of_focus')} out-of-focus, "
                 f"{stats.get('require_machine')} require_machine)"
             )
-            detail["ok"] = False
+            unacc = int(stats.get("unaccepted") or 0)
+            req = int(stats.get("require_machine") or 0)
+            oof = int(stats.get("out_of_focus") or 0)
+            if req >= unacc and oof == 0:
+                detail["offer_note_only"] = True
+                detail["offer_note"] = msg
+            else:
+                findings.append(msg)
+                detail["ok"] = False
         return detail, findings, errors
     except Exception as exc:  # noqa: BLE001
         errors.append(f"offer:{type(exc).__name__}")
@@ -458,6 +468,8 @@ def run_heal(
                 f"out_of_focus={detail.get('out_of_focus')} "
                 f"require_machine={detail.get('require_machine')}"
             )
+            if detail.get("offer_note"):
+                notes.append(str(detail.get("offer_note")))
     except Exception as exc:  # noqa: BLE001
         errors.append(f"offer:{type(exc).__name__}")
 
@@ -558,6 +570,30 @@ def start_http_thread(
     return t, httpd
 
 
+
+def is_ephemeral_pytest_home(path: str | Path | None) -> bool:
+    """True for pytest temp homes that must not override live digest/chair (FR #2526)."""
+    s = str(path or "").replace("\\", "/").lower()
+    if not s:
+        return False
+    return ("pytest-of-" in s) or ("/pytest-current" in s) or s.rstrip("/").endswith("pytest-current")
+
+
+def resolve_digest_home(*, digest_home_arg: str = "", home_arg: str = "", env: dict | None = None) -> Path:
+    """Resolve digest home; refuse ephemeral pytest BOB_DIGEST_HOME (FR #2526)."""
+    e = os.environ if env is None else env
+    candidates = [
+        (digest_home_arg or "").strip(),
+        (e.get("BOB_DIGEST_HOME") or "").strip(),
+        (home_arg or "").strip(),
+    ]
+    for c in candidates:
+        if c and not is_ephemeral_pytest_home(c):
+            return Path(c).expanduser()
+    prof = e.get("USERPROFILE") or e.get("HOME") or "."
+    return Path(prof).expanduser() / ".bobiverse"
+
+
 def parse_http_bind(raw: str) -> tuple[str, int]:
     text = (raw or "").strip()
     if not text:
@@ -611,12 +647,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--nick", default="Jeeves")
     args, unknown = p.parse_known_args(argv)
 
-    digest = (args.digest_home or os.environ.get("BOB_DIGEST_HOME") or args.home or "").strip()
-    if not digest:
-        prof = os.environ.get("USERPROFILE") or os.environ.get("HOME") or "."
-        digest = str(Path(prof) / ".bobiverse")
-    home = Path(digest).expanduser()
+    home = resolve_digest_home(digest_home_arg=args.digest_home or "", home_arg=args.home or "")
     chair_home = Path(args.home).expanduser() if args.home else None
+    if chair_home and is_ephemeral_pytest_home(chair_home):
+        chair_home = None
 
     # FR #2524: bare jeeves.exe (no mode) must fail-fast exit 2 without grabbing
     # the instance mutex — NSSM AppExit Restart otherwise loops and fills stderr
