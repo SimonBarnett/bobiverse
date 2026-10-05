@@ -1,17 +1,22 @@
-"""FR #595: never invent /pull/{issue_id} for MRB; skip mrb/mrb-pass/mrb-fail FR boards."""
+"""FR #595: never invent /pull/{issue_id} for MRB; skip mrb-pass FR boards; mrb-fail remediations stay offerable (FR #2464)."""
 from __future__ import annotations
 
 import gitclaim
 
 
 def test_skip_fr_labels_include_verdict_boards():
-    for lab in ("mrb", "mrb-pass", "mrb-fail"):
-        assert lab in gitclaim.SKIP_FR_LABELS
-        assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=(lab,)) == f"label:{lab}"
+    # FR #2464: only PASS (and home/evergreen) stay in SKIP_FR_LABELS; mrb-fail is offerable.
+    assert "mrb-pass" in gitclaim.SKIP_FR_LABELS
+    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb-pass",)) == "label:mrb-pass"
+    assert "mrb-fail" not in gitclaim.SKIP_FR_LABELS
+    assert "mrb" not in gitclaim.SKIP_FR_LABELS
+    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb-fail",)) is None
+    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb",)) is None
 
 
 def test_mrb_verdict_labels_do_not_enqueue_as_fr():
-    for lab in ("mrb", "mrb-pass", "mrb-fail"):
+    # PASS still skipped; FAIL remediations enqueue (FR #2464).
+    for lab, expect_none in (("mrb-pass", True), ("mrb-fail", False), ("mrb", False)):
         claim = gitclaim.claim_from_payload(
             "issues",
             {
@@ -19,14 +24,17 @@ def test_mrb_verdict_labels_do_not_enqueue_as_fr():
                 "repository": {"full_name": "SimonBarnett/agentic_fomprep"},
                 "issue": {
                     "number": 9,
-                    "title": "MRB FAIL board",
+                    "title": "MRB FAIL board" if lab == "mrb-fail" else "MRB board",
                     "body": "",
                     "state": "open",
                     "labels": [{"name": lab}, {"name": "feature-request"}],
                 },
             },
         )
-        assert claim is None, lab
+        if expect_none:
+            assert claim is None, lab
+        else:
+            assert claim is not None, lab
 
 
 def test_mrb_without_url_does_not_invent_pull_from_issue_id():
@@ -187,7 +195,7 @@ def test_offer_skips_stale_pull_when_pr_exists_false(tmp_path, monkeypatch):
 
 
 def test_offer_skips_mrb_pass_row_even_when_only_line_set(tmp_path, monkeypatch):
-    """Legacy row: empty title, labels + line still skip at offer (priority cannot override)."""
+    """Legacy row: empty title, mrb-pass labels still skip at offer (priority cannot override)."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
@@ -200,8 +208,8 @@ def test_offer_skips_mrb_pass_row_even_when_only_line_set(tmp_path, monkeypatch)
                     "id": "#9",
                     "seq": 1,
                     "ts": "t",
-                    "line": "mrb-fail board for agentic_fomprep",
-                    "labels": ["mrb-fail", "feature-request"],
+                    "line": "mrb-pass board for agentic_fomprep",
+                    "labels": ["mrb-pass", "feature-request"],
                     # title intentionally missing
                 },
                 {
@@ -221,6 +229,33 @@ def test_offer_skips_mrb_pass_row_even_when_only_line_set(tmp_path, monkeypatch)
     st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-1", "#marchhare")
     assert st == "ok"
     assert job["id"] == "#595"
+
+
+def test_offer_allows_mrb_fail_remediation_row(tmp_path, monkeypatch):
+    """FR #2464: mrb-fail labeled FR is offerable remediation work."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/agentic_fomprep",
+                    "task": "FR",
+                    "id": "#11",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "MRB FAIL: formlimited",
+                    "title": "MRB FAIL: formlimited-audit-in-clause 7db4bcc",
+                    "labels": ["mrb", "mrb-fail"],
+                },
+            ],
+            "accepted": [],
+        },
+    )
+    st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-1", "#marchhare")
+    assert st == "ok"
+    assert job["id"] == "#11"
 
 
 def test_prune_drops_mrb_verdict_and_fake_mrb_rows(tmp_path, monkeypatch):
@@ -272,15 +307,17 @@ def test_prune_drops_mrb_verdict_and_fake_mrb_rows(tmp_path, monkeypatch):
     assert [r["id"] for r in left] == ["#1", "#240"]
 
 def test_skip_fr_underscore_verdict_aliases():
-    for lab in ("mrb_pass", "mrb_fail"):
-        assert lab in gitclaim.SKIP_FR_LABELS
-        assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=(lab,)).startswith("label:")
+    assert "mrb_pass" in gitclaim.SKIP_FR_LABELS
+    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb_pass",)).startswith("label:")
+    # FR #2464: mrb_fail alias is not a skip label
+    assert "mrb_fail" not in gitclaim.SKIP_FR_LABELS
+    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb_fail",)) is None
 
 
-def test_line_only_mrb_fail_text_skips_without_labels(tmp_path, monkeypatch):
-    """MRB #603: empty labels + line text 'mrb-fail' must skip (legacy queue shape)."""
+def test_line_only_mrb_fail_text_offerable_without_labels(tmp_path, monkeypatch):
+    """FR #2464 / supersedes MRB #603 skip: line text mrb-fail is offerable remediation."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
-    assert gitclaim.row_skip_fr_reason(
+    assert not gitclaim.row_skip_fr_reason(
         {"line": "mrb-fail board for agentic_fomprep#9", "labels": (), "title": ""}
     )
     gitclaim._write_queue(
@@ -313,7 +350,7 @@ def test_line_only_mrb_fail_text_skips_without_labels(tmp_path, monkeypatch):
     )
     st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-1", "#marchhare")
     assert st == "ok"
-    assert job["id"] == "#595"
+    assert job["id"] == "#9"
 
 
 def test_real_fr_title_with_mrb_slash_not_skipped():

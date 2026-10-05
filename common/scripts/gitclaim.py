@@ -129,12 +129,11 @@ SKIP_FR_LABELS = frozenset(
         "mrb_home",
         "evergreen",
         "evergreen-mrb",
-        # FR #595: verdict / board labels are not implementable FRs.
-        "mrb",
+        # FR #595: PASS verdict / board labels are not implementable FRs.
+        # FR #2464: mrb-fail remediation MUST stay offerable (remove mrb-fail from skip).
+        # Bare "mrb" alone is not a skip — pair with mrb-pass / mrb-home / title shape.
         "mrb-pass",
-        "mrb-fail",
         "mrb_pass",
-        "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
         # needs-mrb1 must NOT be a SKIP_FR label (#1080/#1122/#1174 / PR #1236): that
