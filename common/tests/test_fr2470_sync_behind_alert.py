@@ -53,6 +53,12 @@ def test_fr2470_readme_documents_harvest_tip_hotpatch():
     assert "Invoke-BobiverseHarvest" in t or "harvest" in t.lower()
     assert "ComposeOnly" in t or "hotpatch" in t.lower()
     assert "sync-behind" in t or "behind origin" in t.lower()
+    # Hostile MRB #2474: do not teach the Set-Content pipeline (WinPS utf8 = BOM).
+    i = t.lower().find("hotpatch")
+    hot = t[i : i + 1100] if i >= 0 else ""
+    assert "WriteAllText" in hot or "UTF8Encoding" in hot
+    assert "Set-Content -LiteralPath" not in hot
+    assert "|\n  Set-Content" not in hot and "|\r\n  Set-Content" not in hot
 
 
 def test_fr2470_ff_blocked_alerts_with_behind_count():
