@@ -1,5 +1,14 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2415 jeeves maintenance agent after heal
+
+| Field | Value |
+|-------|-------|
+| Lesson | After jeeves.exe --heal still exits non-zero, start ONE bob-worker --mode maintenance in first fixed-disk \\ai\\jeeves (or BOB_AI_ROOT); single-instance lock + 30m cooldown; log every spawn/skip; dry-run logs would_spawn without lock/cooldown stamp; dead lock PID must clear before re-spawn; opt out --no-maintenance-agent. |
+| Evidence | FR #2412 / PR #2415; hostile MRB #2415 docs follow-up |
+| Refs | SimonBarnett/bobiverse#2412 SimonBarnett/bobiverse#2415 |
+
+
 ## 2026-10-05 — MRB #2410 harvest-log C0 strip
 
 | Field | Value |
