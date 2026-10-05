@@ -1,4 +1,5 @@
 # FR #1454: keep resync pagination (and related gitclaim) regressions out of main.
+# FR #2540: BOB_DIGEST_HOME must not leak across GET /report → later queue_path (fair-isol canary).
 # Runs when gitclaim or its resync-pagination tests change.
 name: pytest-gitclaim
 
@@ -6,9 +7,11 @@ on:
   pull_request:
     paths:
       - "common/scripts/gitclaim.py"
+      - "common/scripts/bobreport.py"
       - "jeeves/tests/test_fr1150_resync_paginate.py"
       - "jeeves/tests/test_fr1093_require_machine_stale_rows.py"
       - "jeeves/tests/test_mrb1174_focus_needs_mrb1_offer.py"
+      - "jeeves/tests/test_fr2540_digest_home_no_leak.py"
       - "common/tests/**"
       - "jeeves/tests/**"
       - "pytest.ini"
@@ -18,7 +21,9 @@ on:
     branches: [main]
     paths:
       - "common/scripts/gitclaim.py"
+      - "common/scripts/bobreport.py"
       - "jeeves/tests/test_fr1150_resync_paginate.py"
+      - "jeeves/tests/test_fr2540_digest_home_no_leak.py"
       - ".github/workflows/pytest-gitclaim.yml"
 
 jobs:
@@ -52,4 +57,18 @@ jobs:
             jeeves/tests/test_fr1093_require_machine_stale_rows.py `
             jeeves/tests/test_mrb1174_focus_needs_mrb1_offer.py `
             jeeves/tests/test_fr1323_mrb_done_no_reoffer.py `
+            -q --tb=short
+
+      - name: Fair-isol digest-home leak canary (FR #2540)
+        run: |
+          # Tip regression vs 82346a1: github_pr_exists_checker setdefault(BOB_DIGEST_HOME)
+          # during GET /bob/v1/report redirected later queue_path/offer checks.
+          Remove-Item Env:BOB_* -ErrorAction SilentlyContinue
+          Remove-Item Env:JEEVES_* -ErrorAction SilentlyContinue
+          $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\jeeves"
+          python -m pytest `
+            jeeves/tests/test_fr2540_digest_home_no_leak.py `
+            jeeves/tests/test_webhooks_no_secret.py::test_get_digest_still_public `
+            jeeves/tests/test_fr1993_jeeves_exe_wp2.py::test_fr1993_wp2_self_test_queue_and_offer `
+            jeeves/tests/test_fr1993_jeeves_exe_wp2.py::test_fr1993_wp2_summarize_empty_offer `
             -q --tb=short
