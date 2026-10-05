@@ -1,0 +1,73 @@
+﻿#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Compile scripts\airc_console_service.py into airc.exe (PyInstaller, one file). Called by Pack-AircConsoleRelease.ps1 for the airc MSI (FR #2397).
+.DESCRIPTION
+  The repo toolchain is Python (every service is a .py run by NSSM), so the worker is frozen with PyInstaller rather than
+  introducing a second toolchain. Needs Python 3.12 + `pip install pyinstaller` on the BUILD machine only; the target box needs
+  neither (the exe embeds its own interpreter). The exe is a console-subsystem program: its console window IS the one agent window (the tray starts it with a visible console; the agent inherits it).
+.OUTPUTS
+  The full path of the built airc.exe.
+#>
+[CmdletBinding()]
+param(
+    [string]$RepoRoot = '',
+    [Parameter(Mandatory = $true)][string]$OutDir,
+    [string]$Python = ''
+)
+$ErrorActionPreference = 'Stop'
+# t773u: repo is split per service (this script is bob\scripts); a flat stage keeps it next to Bobiverse-Common.ps1.
+$cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $cm)) { $cm = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\scripts\Bobiverse-Common.ps1' }
+. $cm
+if (-not $RepoRoot) { $RepoRoot = Get-BobiverseRepoRoot -ScriptDir $PSScriptRoot }
+$src = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\airc_console_service.py'
+if (-not (Test-Path -LiteralPath $src)) { throw "missing $src" }
+# PyInstaller needs every scripts dir on its path (the composed flat layout is the union of <service>\scripts).
+$pyPaths = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts')
+$pathArgs = @(); foreach ($pp in $pyPaths) { $pathArgs += @('--paths', $pp) }
+# FR #2397: no tray icon for airc.exe
+$icoArgs = @()
+
+if (-not $Python) { throw 'python.exe not found (needed to build airc.exe)' }
+$prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+& $Python -m PyInstaller --version *> $null
+$pyiOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEap
+if (-not $pyiOk) { throw "PyInstaller missing for $Python (pip install pyinstaller)" }
+
+$work = Join-Path $OutDir 'airc-build'
+if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+$dist = Join-Path $work 'dist'
+$argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--console', '--name', 'airc',
+    '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
+$argList += $pathArgs
+$argList += $icoArgs
+$argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
+# PyInstaller's isolated child can fail when PowerShell captures a live pipeline; use files for both streams.
+$argText = (($argList | ForEach-Object {
+        $v = [string]$_
+        if ($v -match '[\s"]') { '"' + $v.Replace('"', '\"') + '"' } else { $v }
+    }) -join ' ')
+$logPath = Join-Path $work 'pyinstaller.stdout.log'
+$errPath = Join-Path $work 'pyinstaller.stderr.log'
+$proc = Start-Process -FilePath $Python -ArgumentList $argText -WorkingDirectory $RepoRoot -Wait -PassThru -NoNewWindow `
+    -RedirectStandardOutput $logPath -RedirectStandardError $errPath
+$code = $proc.ExitCode
+$log = @()
+if (Test-Path -LiteralPath $logPath) { $log += Get-Content -LiteralPath $logPath }
+if (Test-Path -LiteralPath $errPath) { $log += Get-Content -LiteralPath $errPath }
+$exe = Join-Path $dist 'airc.exe'
+if ($code -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
+    ($log | Select-Object -Last 25) | ForEach-Object { Write-Host "  pyinstaller: $_" }
+    throw "PyInstaller failed (exit $code)"
+}
+# Smoke: the frozen exe must start and run its selection logic without starting any agent.
+$prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+$probe = & $exe --dry-run --install-root $work 2>&1
+$pcode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($pcode -ne 0 -or -not (($probe | Out-String) -match '"decision"')) { throw "airc.exe smoke test failed (exit $pcode): $($probe | Out-String)" }
+Write-Host ("INFO built {0} ({1:N1} MB)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB))
+$exe

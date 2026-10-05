@@ -12,7 +12,8 @@ param(
     [string]$RepoRoot = '',
     [string]$OutDir = '',
     [string]$Version = '',
-    [switch]$KeepStage
+    [switch]$KeepStage,
+    [string]$Python = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,6 +68,17 @@ foreach ($rel in $files) {
     New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
     Copy-Item -LiteralPath $src -Destination $dest -Force
 }
+
+
+# FR #2397: freeze airc_console_service.py -> bin\airc.exe (PyInstaller; Jeeves WP3 pattern).
+$buildAirc = Join-Path $PSScriptRoot 'Build-Airc.ps1'
+if (-not (Test-Path -LiteralPath $buildAirc)) { throw "missing $buildAirc" }
+$aircExe = & $buildAirc -RepoRoot $RepoRoot -OutDir $OutDir -Python $Python
+if (-not $aircExe -or -not (Test-Path -LiteralPath $aircExe)) { throw 'Build-Airc.ps1 did not produce airc.exe' }
+$binStage = Join-Path $stage 'bin'
+New-Item -ItemType Directory -Force -Path $binStage | Out-Null
+Copy-Item -LiteralPath $aircExe -Destination (Join-Path $binStage 'airc.exe') -Force
+Write-Host "INFO staged bin\airc.exe"
 
 # Issue #266: ship win64 nssm.exe so clients need not have C:\ai\ergo\nssm.exe.
 $nssmStage = Join-Path $stage 'third_party\nssm\win64'
