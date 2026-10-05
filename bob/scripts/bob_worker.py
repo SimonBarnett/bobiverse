@@ -1562,9 +1562,14 @@ class AssignAckMiss:
             self._since = float(now)
             self._reminded = False
             self.last_line = line or ""
-        elif is_nothing_queued(line or "", own_nick):
-            # Idle wire must not arm the miss timer.
-            pass
+            return
+        # Mirror BoredEmitter._on_inject: strip FROM nick target before idle match.
+        text = line or ""
+        parts = text.split(None, 3)
+        body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+        if is_nothing_queued(body, own_nick):
+            # Idle / withdrawn assign: clear any armed miss timer (MRB #2386).
+            self.clear()
 
     def note_ack(self) -> None:
         self.clear()
