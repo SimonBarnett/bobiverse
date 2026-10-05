@@ -1,5 +1,14 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2403 frozen airc.exe Sync/Update
+
+| Field | Value |
+|-------|-------|
+| Lesson | Hostile tests for kick_frozen_service_start_hooks must assert airc\\airc.exe install-root resolution, BOBIVERSE_NO_UPDATE skip, and Sync-then-Update arg parity with Start-AircConsole -ServiceMode — string-contains alone is not enough. |
+| Evidence | MRB #2403 on PR #2403; follow-up docs PR |
+| Refs | SimonBarnett/bobiverse#2403 SimonBarnett/bobiverse#2401 |
+
+
 ## 2026-10-05 — MRB #2386 ack-miss nothing-queued clear
 
 | Field | Value |
