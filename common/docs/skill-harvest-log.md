@@ -586,3 +586,10 @@ Books: bob tray / agentwatcher / Install-Bob. Tip PR #2528; hostile docs this en
 | Product mains under pytest installed crash_report as jeeves; sessionfinish WinError 448 on pytest-current filed as product crash | Skip OSError 448 / untrusted-mount when path mentions pytest-of- or pytest-current; no-op install for shipped exe names while PYTEST_CURRENT_TEST is set (override BOB_CRASH_ALLOW_UNDER_PYTEST=1) |
 
 Books: crash_report (common). Tip PR #2538; hostile docs this entry.
+## 2026-10-05 — MRB #2557 seat-root recycle (FR #2556)
+
+| Field | Value |
+|-------|-------|
+| Lesson | Onefile bob-worker = bootloader+child = one seat; recycle/cap-kill must use worker_seat_roots / excess_worker_seat_roots + Stop-BobWorkerSeatTrees — never Sort ProcessId | Select -Skip N | Stop-Process (kills whole seats). |
+| Evidence | FR #2556 / PR #2557; hostile docs/mrb-2557; MarchHare 38244/40460 external kill after #2554 hotpatch |
+| Refs | SimonBarnett/bobiverse#2556 SimonBarnett/bobiverse#2557 |
