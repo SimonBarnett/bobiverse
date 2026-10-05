@@ -104,6 +104,9 @@ def test_hostile_docs_and_monitor_wiring():
     op = (ROOT / "jeeves" / "docs" / "empty-offer-operator.md").read_text(encoding="utf-8")
     assert "heal_require_machine_all_gave_up" in op
     assert "ledger_clear_giveup" in op
+    # FR #2486: living umbrella exclusion documented for operators.
+    assert "Living FR" in op or "Refs-only" in op
+    assert "2486" in op
     mon = (ROOT / "jeeves" / "docs" / "monitoring.md").read_text(encoding="utf-8")
     assert "empty-offer-operator.md" in mon
     assert "empty-offer-playbook.md" in mon
