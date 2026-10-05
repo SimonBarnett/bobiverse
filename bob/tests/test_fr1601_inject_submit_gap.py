@@ -29,7 +29,7 @@ def test_inject_console_source_has_double_enter_and_no_006_default():
     src = (bw.__file__ and open(bw.__file__, encoding="utf-8").read()) or ""
     assert "def _submit_gap_s" in src
     assert "BOB_WORKER_SUBMIT_GAP_S" in src
-    assert "enter2" in src
+    assert src.count("build_enter_records()") >= 2  # double Enter (FR #1601); name enter2 removed in #2498
     assert "submit_gap_s: float = 0.06" not in src
     assert "default: float = 0.20" in src
     # FR #1601 comment trail
@@ -42,7 +42,7 @@ def test_skill_event_driven_bullet_not_split_by_submit_gap():
     skill = Path(__file__).resolve().parents[1] / ".grok/skills/bobiverse-bob-worker/SKILL.md"
     text = skill.read_text(encoding="utf-8")
     i = text.index("* **Event-driven relay**:")
-    j = text.index("* **Submit gap (FR #1601)**:")
+    j = text.index("* **Inject paste (FR #2498 / #1601)**:")
     k = text.index("* **Liveness answered by the exe**:")
     event = text[i:j]
     submit = text[j:k]
@@ -52,4 +52,5 @@ def test_skill_event_driven_bullet_not_split_by_submit_gap():
     assert "shared worker console)" not in submit
     assert "BOB_WORKER_SUBMIT_GAP_S" in submit
     assert "Enter twice" in submit
+    assert "FR #2498" in submit or "clipboard" in submit
 
