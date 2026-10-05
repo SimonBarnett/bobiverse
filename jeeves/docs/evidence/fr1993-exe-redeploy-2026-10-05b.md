@@ -1,13 +1,13 @@
 # FR #1993 live exe tip redeploy evidence (2026-10-05b)
 
-Seat: `win-mpre8vi4u6u` (DIGEST_ID_FOLD of `ionos`). Living FR stays open (`Refs` only — never `Closes`).
+Seat: `win-mpre8vi4u6u` (DIGEST_ID_FOLD of `ionos`). Living FR stays open (`Refs` only â€” never `Closes`).
 
 ## Why
 
 Prior tip redeploy (#2485 @ `14a6549`) landed before chair merges that must live inside frozen `jeeves.exe`:
 
-- FR #2464 / PR #2469 — `mrb-fail` remediation offerable
-- FR #2451 / PR #2468 — `require_machine=ionos` for install(+smoke) on ionos
+- FR #2464 / PR #2469 â€” `mrb-fail` remediation offerable
+- FR #2451 / PR #2468 â€” `require_machine=ionos` for install(+smoke) on ionos
 
 Tip advanced to `a8b96b0` (`a8b96b0819fd7d4e528900bba508ca8da5ff1083`).
 
@@ -23,13 +23,13 @@ Tip advanced to `a8b96b0` (`a8b96b0819fd7d4e528900bba508ca8da5ff1083`).
 |-------|--------|
 | Service | `ircJeeves` Running; `BobIrcd` Running |
 | E1 LISTEN | `127.0.0.1:7700` LISTENING |
-| E2 local intake | POST `/bob/v1/intake` with `probe-shape-only-do-not-file` → **202** `queued:true` |
-| E4 smoke | `--self-test --check imports` → **exit 0** |
+| E2 local intake | POST `/bob/v1/intake` with `probe-shape-only-do-not-file` â†’ **202** `queued:true` |
+| E4 smoke | `--self-test --check imports` â†’ **exit 0** |
 
 ## Still open on living #1993
 
 - Public ARR 30-post intake storm
 - Full `--self-test` in a maintenance window
-- Heal re-offer of living umbrella after dual GIVEUP (see #2486)
+- Heal re-offer of living umbrella after dual GIVEUP — **#2486 CLOSED** via PR #2497 (pin-ledger Living FR skip); redeploy tip here predated that merge
 
 Ergo / `BobIrcd` untouched.
