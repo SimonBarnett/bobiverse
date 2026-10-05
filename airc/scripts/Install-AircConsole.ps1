@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Register NSSM service AircConsole (Automatic). FR #253 / #256 / #305.
@@ -417,43 +417,63 @@ function Remove-AircConsoleService {
 # Issue #273: always tear down any prior install, then register from this tree.
 Remove-AircConsoleService -Exe $Nssm -Name $ServiceName
 Write-Host "INFO Installing $ServiceName"
-$inst = Invoke-AircNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe')
-if ($inst.ExitCode -ne 0) {
-    throw ("nssm install failed: {0} ({1})" -f $inst.ExitCode, ($inst.Output -join ' '))
-}
 
-# Issue #282: bake absolute python.exe into AppParameters (LocalSystem has no PATH).
-$resolvePy = Join-Path $scriptDir 'Resolve-AircConsolePython.ps1'
-if (Test-Path -LiteralPath $resolvePy) { . $resolvePy }
-if (-not $Python -or -not (Test-Path -LiteralPath $Python)) {
-    if (Get-Command Resolve-AircConsolePythonPath -ErrorAction SilentlyContinue) {
-        $Python = Resolve-AircConsolePythonPath -Preferred $Python -HintUserProfile $env:USERPROFILE
-    }
-}
-if (-not $Python -or -not (Test-Path -LiteralPath $Python)) {
-    throw 'python.exe not found for service install. Install Python (all-users) or pass -Python. Issue #282.'
-}
-$Python = (Resolve-Path -LiteralPath $Python).Path
-Write-Host "INFO service python=$Python"
-
-# Application MUST be powershell.exe (never the .ps1 Path — see NSSM GUI / issue #259).
 # FR #1552: prefer prior OperatorsFile path when it still exists (fleet custom ops list).
 if ($priorId -and $priorId.OperatorsFile -and (Test-Path -LiteralPath $priorId.OperatorsFile)) {
     $opsFile = $priorId.OperatorsFile
 }
-$appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" -ServiceMode -ConsoleHome `"$ConsoleHome`""
-$appParams += " -Python `"$Python`""
-$appParams += " -PasswordFile `"$PasswordFile`""
-if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
-if (Test-Path -LiteralPath $opsFile) { $appParams += " -OperatorsFile `"$opsFile`"" }
+
+# FR #2397: prefer one-file airc.exe (no system Python). Legacy: powershell + Start-AircConsole.ps1.
+$aircExe = Join-Path $packRoot 'airc\airc.exe'
+$useAircExe = Test-Path -LiteralPath $aircExe
+if ($useAircExe) {
+    $aircExe = (Resolve-Path -LiteralPath $aircExe).Path
+    $inst = Invoke-AircNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, $aircExe)
+    if ($inst.ExitCode -ne 0) {
+        throw ("nssm install failed: {0} ({1})" -f $inst.ExitCode, ($inst.Output -join ' '))
+    }
+    $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl"
+    if ($MachineId) { $appParams += " --machine `"$MachineId`"" }
+    if (Test-Path -LiteralPath $opsFile) { $appParams += " --operators-file `"$opsFile`"" }
+    $appTarget = $aircExe
+    $appDirectory = $packRoot
+    Write-Host "INFO Airc Application=airc.exe (FR #2397 cutover)"
+} else {
+    $inst = Invoke-AircNssm -Exe $Nssm -NssmArgs @('install', $ServiceName, 'powershell.exe')
+    if ($inst.ExitCode -ne 0) {
+        throw ("nssm install failed: {0} ({1})" -f $inst.ExitCode, ($inst.Output -join ' '))
+    }
+    # Issue #282: bake absolute python.exe into AppParameters (LocalSystem has no PATH).
+    $resolvePy = Join-Path $scriptDir 'Resolve-AircConsolePython.ps1'
+    if (Test-Path -LiteralPath $resolvePy) { . $resolvePy }
+    if (-not $Python -or -not (Test-Path -LiteralPath $Python)) {
+        if (Get-Command Resolve-AircConsolePythonPath -ErrorAction SilentlyContinue) {
+            $Python = Resolve-AircConsolePythonPath -Preferred $Python -HintUserProfile $env:USERPROFILE
+        }
+    }
+    if (-not $Python -or -not (Test-Path -LiteralPath $Python)) {
+        throw 'python.exe not found for service install. Install Python (all-users) or pass -Python. Issue #282.'
+    }
+    $Python = (Resolve-Path -LiteralPath $Python).Path
+    Write-Host "INFO service python=$Python"
+    # Application MUST be powershell.exe (never the .ps1 Path — see NSSM GUI / issue #259).
+    $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" -ServiceMode -ConsoleHome `"$ConsoleHome`""
+    $appParams += " -Python `"$Python`""
+    $appParams += " -PasswordFile `"$PasswordFile`""
+    if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
+    if (Test-Path -LiteralPath $opsFile) { $appParams += " -OperatorsFile `"$opsFile`"" }
+    $appTarget = 'powershell.exe'
+    $appDirectory = (Split-Path $Launcher -Parent)
+    Write-Host 'INFO Airc Application=powershell Start-AircConsole.ps1 (legacy; no airc\airc.exe)'
+}
 
 # FR #1546: expand DisplayName/Description (never leave literal #{machine}); log under install tree.
 $dnMachine = if ($MachineId) { $MachineId } elseif ($script:AircConsoleMachineId) { $script:AircConsoleMachineId } else { 'machine' }
 $displayName = "airc console (#${dnMachine} IRC shell)"
 $description = "FR #253: nick console on #${dnMachine}; auth PRIVMSG -> shell; silent in channel."
 $setPairs = @(
-    @('Application', 'powershell.exe'),
-    @('AppDirectory', (Split-Path $Launcher -Parent)),
+    @('Application', $appTarget),
+    @('AppDirectory', $appDirectory),
     @('AppParameters', $appParams),
     @('DisplayName', $displayName),
     @('Description', $description),
