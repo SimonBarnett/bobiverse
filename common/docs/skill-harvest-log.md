@@ -221,7 +221,7 @@ Books: `bobiverse-jeeves-monitor`, TipForm note in `bobiverse-bob`. Twin #1713.
 |--------|-----|
 | Fix PR can race CONFLICTING and close unmerged after DONE PASS | Immediately open a land PR from the known-good tip onto current main; merge; verify origin/main has the lesson before ending |
 
-Books: obiverse-bob-job-mrb. Example land: PR #1979 after #1977 race.
+Books: bobiverse-bob-job-mrb. Example land: PR #1979 after #1977 race.
 
 ## 2026-10-04 - BobCallback multi-supervisor refuse (FR #1767 / #1831)
 
@@ -258,7 +258,7 @@ Books: `bobiverse-bob`, troubleshooting, `bobiverse-bob-job-mrb`. Twin #1681 (wa
 
 | Lesson | Fix |
 |--------|-----|
-| idle+ungated during BoredEmitter harvest_hold (~90s after DONE) is not true starve; expect !bored after hold; suppress orphan/giveup/queue_flow false alarms | Documented in `bobiverse-jeeves-monitor` + `bbobiverse-bob-worker`. Related false-starve gates: FR #1622/#1625/#1652 / PR #1654 |
+| idle+ungated during BoredEmitter harvest_hold (~90s after DONE) is not true starve; expect !bored after hold; suppress orphan/giveup/queue_flow false alarms | Documented in `bobiverse-jeeves-monitor` + `bobiverse-bob-worker`. Related false-starve gates: FR #1622/#1625/#1652 / PR #1654 |
 
 ## 2026-10-04 - Conflict-marker CAST IRON before merge (FR #1634 / harvest #1657)
 
@@ -343,7 +343,7 @@ Book: `bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md`.
 
 | Lesson | Fix |
 |--------|-----|
-| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/...` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bbobiverse-bob-worker`, `bobiverse-bob-job-fr` |
+| Open `label:skill` / `harvest:` receipts must become promote PRs (FR #1682 offers them; do not GIVEUP) | Worker consolidates by owner skill book, closes duplicate receipts, opens one `harvest/...` PR; MRB merges. Documented in `harvest-agent-skills`, `harvest`, `bobiverse-bob-worker`, `bobiverse-bob-job-fr` |
 
 ## 2026-10-03 - FR #806 archive-richer hand-merge
 
@@ -479,8 +479,8 @@ Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #
 | parent_of after proc.wait() empty | Capture create-parent at start_agent (FR #1643 / PR #1658) |
 | Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
 
-Books: bbobiverse-bob-worker, bbobiverse-bob-troubleshooting.
-Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
+Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
+Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
 
 ## 2026-10-04 - MRB enqueue when resync blocked (harvest #1927)
 
