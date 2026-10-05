@@ -3169,6 +3169,7 @@ def format_external_kill_log(
 
 # --------------------------------------------------------------------------------------------- t815u: hard cap of live workers
 HARD_MAX_WORKERS = 2          # FR #2522/Simon: ONLY worker seats (mode=agent). Plan + maintenance MAY start on top and never count.
+# FR #2556: onefile = bootloader+child = ONE seat; recycle/cap-kill MUST use worker_seat_roots / excess_worker_seat_roots (never flat PID Skip-N).
 CAPPED_MODES = ("agent",)     # modes refused when 2 agent seats are already live
 UNCAPPED_MODES = ("plan", "monitor", "maintenance")
 _WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
@@ -3250,6 +3251,57 @@ def other_live_workers(procs: list, my_pid: int, *, modes: tuple = ("agent",)) -
     roots.discard(my_pid)
     wanted = {str(m).lower() for m in modes}
     return sum(1 for p in roots if rows[p][2] in wanted)
+
+
+def worker_seat_roots(procs: list, *, modes: tuple = ("agent",)) -> list:
+    """FR #2556: PIDs of live worker SEAT roots (onefile bootloader, or lone exe).
+
+    A PyInstaller onefile seat is bootloader + same-named child; only the root
+    (parent not also a bob-worker*) counts as a seat. ``modes`` filters like
+    ``other_live_workers`` (default: agent seats only).
+    """
+    rows = {}
+    for entry in procs:
+        p, pp, n = int(entry[0]), int(entry[1]), str(entry[2])
+        rows[p] = (pp, n, _proc_mode(entry))
+    workers = {p for p, (_pp, n, _m) in rows.items() if _WORKER_EXE_RX.match(n)}
+    wanted = {str(m).lower() for m in modes}
+    roots = [p for p in workers if rows[p][0] not in workers and rows[p][2] in wanted]
+    return sorted(roots)
+
+
+def worker_seat_tree_pids(procs: list, root_pid: int) -> list:
+    """FR #2556: root + descendants that are bob-worker* (onefile child), root first."""
+    rows = {}
+    kids = {}
+    for entry in procs:
+        p, pp, n = int(entry[0]), int(entry[1]), str(entry[2])
+        rows[p] = (pp, n)
+        kids.setdefault(pp, []).append(p)
+    root = int(root_pid)
+    if root not in rows or not _WORKER_EXE_RX.match(rows[root][1]):
+        return []
+    out = [root]
+    stack = list(kids.get(root, []))
+    while stack:
+        c = stack.pop()
+        if c in rows and _WORKER_EXE_RX.match(rows[c][1]):
+            out.append(c)
+            stack.extend(kids.get(c, []))
+    return out
+
+
+def excess_worker_seat_roots(procs: list, keep: int, *, modes: tuple = ("agent",)) -> list:
+    """FR #2556: seat roots to stop so at most ``keep`` agent seats remain.
+
+    Keeps the newest roots (highest pid as weak proxy); returns older roots.
+    Never use a flat PID Skip-N list — that destroys onefile bootloader+child pairs.
+    """
+    k = max(0, int(keep))
+    roots = worker_seat_roots(procs, modes=modes)
+    if len(roots) <= k:
+        return []
+    return sorted(roots)[: max(0, len(roots) - k)]
 
 
 def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:
