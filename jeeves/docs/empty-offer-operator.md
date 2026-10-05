@@ -22,7 +22,8 @@ Typical pattern (incident 2026-10-05):
 2. Inspect seat-ledger giveup for the pin key (`owner/repo#N`) under the chair home (`.bobiverse` backup if you snapshot first).
 3. Confirm digest `/report`: pin machine has **shop workers** (`worker_list`), not only `running=1` ghosts.
 4. Heal options:
-   - Prefer monitor auto-heal: `queue_flow` clears ledger giveup when **every live seat on the pin machine** has GIVEUP'd that living FR (`heal_require_machine_all_gave_up`).
+   - Prefer monitor auto-heal: `queue_flow` clears ledger giveup when **every live seat on the pin machine** has GIVEUP'd that pin FR (`heal_require_machine_all_gave_up`).
+   - **Exception (FR #2486):** Living FR / Refs-only tracking umbrellas (body cue `Living FR` / `Refs-only` / `keep appending`, or labels `living` / `refs-only` / `tracking-umbrella`) are **excluded** from auto-heal so operator GIVEUPs stick (e.g. bobiverse#1993). Clear those giveups only with an explicit manual `ledger_clear_giveup` when you intend to re-offer.
    - Manual: `gitclaim.ledger_clear_giveup(home, repo, ident, nick=None, task="FR")` (omit nick to clear all), or edit ledger carefully.
 5. File **unpinned** follow-up FRs so marchhare/flamingo stay fed while pins wait for the right box.
 6. If pin machine has **zero** shop seats, start workers there (or clear/adjust the pin) — see monitor note `require_machine pins only; no seats on …`.
