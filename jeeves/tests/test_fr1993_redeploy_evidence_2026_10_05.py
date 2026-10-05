@@ -16,3 +16,7 @@ def test_redeploy_evidence_refs_only_and_no_closes():
     assert "BobIrcd" in text and "untouched" in text.lower()
     assert "127.0.0.1:7700" in text
     assert "202" in text
+    # Hostile MRB #2485: build/backup/tip identity must be recorded
+    assert "Build-Jeeves.ps1" in text
+    assert "14a6549" in text
+    assert "backup-before-1993-redeploy" in text
