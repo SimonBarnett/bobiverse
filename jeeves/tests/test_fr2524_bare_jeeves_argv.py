@@ -1,4 +1,4 @@
-﻿"""FR #2524: bare jeeves.exe must fail-fast (no mutex); maintenance state uses --home."""
+"""FR #2524: bare jeeves.exe must fail-fast (no mutex); maintenance state uses --home."""
 from __future__ import annotations
 
 import io
