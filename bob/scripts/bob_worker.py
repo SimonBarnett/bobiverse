@@ -979,7 +979,7 @@ def _write_console_all(k32, h, recs, wintypes) -> bool:
 
 
 def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bool:
-    """Paste 	ext into THIS process's console input and submit with Enter.
+    """Paste text into THIS process's console input and submit with Enter.
 
     FR #2498: do not drip KEY_EVENT per character into the Grok TUI (that paints
     one glyph at a time and can take minutes per Jeeves line). Prefer clipboard +
