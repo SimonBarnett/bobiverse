@@ -312,6 +312,28 @@ class GhCliFiler:
 
         return {"url": url, "number": number, "branch": branch}
 
+    def find_pull_by_head(self, repo: str, head_branch: str) -> dict[str, Any] | None:
+        """Return an open/closed PR for ``head_branch`` if present (FR #2595 drain dedupe)."""
+        repo = str(repo or "").strip()
+        head_branch = str(head_branch or "").strip()
+        if not repo or "/" not in repo or not head_branch:
+            return None
+        owner = repo.split("/", 1)[0]
+        # head must be owner:branch for the pulls filter.
+        q = f"repos/{repo}/pulls?state=all&head={owner}:{head_branch}&per_page=5"
+        try:
+            rows = self._api("GET", q)
+        except GitHubDown:
+            return None
+        if not isinstance(rows, list) or not rows:
+            return None
+        row = rows[0]
+        number = int(row.get("number") or 0)
+        url = str(row.get("html_url") or "")
+        if not number or not url:
+            return None
+        return {"url": url, "number": number, "branch": head_branch}
+
 
 def default_filer() -> GitHubFiler:
     return GhCliFiler()
