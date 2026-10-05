@@ -717,7 +717,19 @@ def drain_pending(
     )
     if filer is not None:
         try:
-            intake.drain_intake_outbox(home, filer, limit=limit)
+            # FR #2595: same receipt-aware rules as CLI drain (probes drop, receipts
+            # record-only, idempotent / intake/<iid> PR dedupe).
+            stats = intake.drain_intake_outbox(home, filer, limit=limit)
+            counts = getattr(stats, "as_counts", None)
+            if callable(counts):
+                c = counts()
+                print(
+                    "INFO intake_outbox_drain "
+                    f"filed={c.get('filed')} receipt={c.get('recorded_receipt')} "
+                    f"probe={c.get('dropped_probe')} dup={c.get('skipped_duplicate')} "
+                    f"deferred={c.get('deferred')}",
+                    flush=True,
+                )
         except Exception:
             pass
     return done

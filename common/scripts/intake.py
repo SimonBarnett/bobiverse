@@ -50,6 +50,26 @@ def is_worker_receipt_issue(*, kind: str, title: str, body: str) -> bool:
     return bool(_WORKER_RECEIPT_MARKER.search(f"{title}\n{body}"))
 
 
+_DO_NOT_FILE_PROBE_RE = re.compile(
+    r"(?i)do-not-file|probe-do-not-file|probe-shape-only|redeploy-probe"
+)
+
+
+def is_do_not_file_probe(*, title: str, body: str = "") -> bool:
+    """Drop intentional probe filings (FR #2595 / crash-probe class)."""
+    return bool(_DO_NOT_FILE_PROBE_RE.search(f"{title or ''}\n{body or ''}"))
+
+
+def is_harvest_worker_receipt(*, kind: str, title: str, body: str) -> bool:
+    """kind=harvest session rows that are DONE/twin/GIVEUP receipts (FR #2595).
+
+    These must not stay as open draft PRs (webhook would enqueue them as FR work).
+    Real playbook harvests without receipt markers still open draft PRs.
+    """
+    if str(kind or "").strip().lower() != "harvest":
+        return False
+    return bool(_WORKER_RECEIPT_MARKER.search(f"{title or ''}\n{body or ''}"))
+
 
 _PR_URL_RE = re.compile(
     r"https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+)/pull/(?P<num>\d+)",
@@ -99,6 +119,10 @@ class GitHubFiler(Protocol):
         labels: list[str],
     ) -> dict[str, Any]:
         """Return {url, number, branch}. May raise GitHubDown."""
+
+    def find_pull_by_head(self, repo: str, head_branch: str) -> dict[str, Any] | None:
+        """Optional: return {url, number, branch} for an existing head branch, else None."""
+        return None
 
 
 class GitHubDown(RuntimeError):
@@ -158,6 +182,47 @@ class FakeGitHubFiler:
         }
         self.prs.append(row)
         return {"url": row["url"], "number": self._n, "branch": branch}
+
+    def find_pull_by_head(self, repo: str, head_branch: str) -> dict[str, Any] | None:
+        want = str(head_branch or "").strip()
+        if not want:
+            return None
+        for row in self.prs:
+            if str(row.get("repo") or "") == repo and str(row.get("branch") or "") == want:
+                return {
+                    "url": row.get("url"),
+                    "number": row.get("number"),
+                    "branch": row.get("branch"),
+                }
+        return None
+
+
+@dataclass
+class DrainResult:
+    """FR #2595: counts from a receipt-aware intake outbox drain."""
+
+    filed: list[str] = field(default_factory=list)
+    recorded_receipt: list[str] = field(default_factory=list)
+    dropped_probe: list[str] = field(default_factory=list)
+    skipped_duplicate: list[str] = field(default_factory=list)
+    deferred: list[str] = field(default_factory=list)
+    dry_run: bool = False
+
+    def as_counts(self) -> dict[str, Any]:
+        return {
+            "filed": len(self.filed),
+            "recorded_receipt": len(self.recorded_receipt),
+            "dropped_probe": len(self.dropped_probe),
+            "skipped_duplicate": len(self.skipped_duplicate),
+            "deferred": len(self.deferred),
+            "dry_run": self.dry_run,
+            "handled": (
+                len(self.filed)
+                + len(self.recorded_receipt)
+                + len(self.dropped_probe)
+                + len(self.skipped_duplicate)
+            ),
+        }
 
 
 @dataclass
@@ -491,6 +556,14 @@ def file_submission(
         "url": None,
         "queued": False,
     }
+    # FR #2595: probes never file. Harvest worker receipts record-only (no draft PR)
+    # unless FR #1812 already cites an existing PR URL (link, still no second filing).
+    raw_body = str(norm.get("body") or "")
+    if is_do_not_file_probe(title=title, body=raw_body):
+        rec["state"] = "dropped_probe"
+        rec["queued"] = False
+        _save_record(home, rec)
+        return rec
     try:
         if kind in ("issue", "fr"):
             out = filer.create_issue(repo, title, body, labels)
@@ -507,6 +580,11 @@ def file_submission(
                 rec["url"] = url
                 rec["number"] = num
                 rec["state"] = "linked_existing_pr"
+            elif is_harvest_worker_receipt(kind=kind, title=title, body=raw_body):
+                rec["state"] = "receipt_recorded"
+                rec["queued"] = False
+                _save_record(home, rec)
+                return rec
             else:
                 try:
                     out = filer.create_draft_pr(repo, title, body, branch, files, labels)
@@ -621,6 +699,25 @@ def process_intake(
             },
             log_safe=_safe_log(norm, existing["intake_id"], "duplicate"),
         )
+    # FR #2595: receipt_recorded / dropped_probe also settle the idempotency key.
+    if existing and str(existing.get("state") or "") in (
+        "receipt_recorded",
+        "dropped_probe",
+        "filed",
+        "linked_existing_pr",
+        "filed_issue_fallback",
+    ):
+        return IntakeResult(
+            202,
+            {
+                "intake_id": existing["intake_id"],
+                "url": existing.get("url"),
+                "queued": False,
+                "duplicate": True,
+                "state": existing.get("state"),
+            },
+            log_safe=_safe_log(norm, existing["intake_id"], "duplicate"),
+        )
     if existing and existing.get("queued"):
         return IntakeResult(
             202,
@@ -676,30 +773,135 @@ def get_intake_status(home: Path, intake_id: str) -> tuple[int, dict[str, Any]]:
     return 200, out
 
 
+def _filer_find_pull(filer: GitHubFiler, repo: str, head_branch: str) -> dict[str, Any] | None:
+    finder = getattr(filer, "find_pull_by_head", None)
+    if not callable(finder):
+        return None
+    try:
+        return finder(repo, head_branch)
+    except Exception:
+        return None
+
+
 def drain_intake_outbox(
     home: Path,
     filer: GitHubFiler,
     *,
     limit: int = 20,
-) -> list[str]:
-    """Retry queued filings when GitHub is back. Returns intake_ids filed."""
+    dry_run: bool = False,
+) -> DrainResult:
+    """Retry queued filings when GitHub is back (FR #2595 receipt-aware).
+
+    Rules per outbox row:
+    - drop do-not-file probes
+    - skip when idempotency key already settled, or ``intake/<iid>`` PR exists
+    - harvest worker receipts: record-only (no draft PR / no offerable webhook)
+    - otherwise file via ``file_submission``
+    - ``dry_run=True``: count only; leave outbox files and GitHub untouched
+    """
     root = intake_root(home) / "outbox"
-    filed: list[str] = []
-    for path in sorted(root.glob("*.json"))[:limit]:
+    stats = DrainResult(dry_run=bool(dry_run))
+    for path in sorted(root.glob("*.json"))[: max(0, int(limit))]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         norm = data.get("norm") or {}
+        if not isinstance(norm, dict):
+            continue
         iid = str(data.get("intake_id") or path.stem)
         quarantine = bool(data.get("quarantine"))
+        title = str(norm.get("title") or "")
+        body = str(norm.get("body") or "")
+        kind = str(norm.get("kind") or "").strip().lower()
+        repo = str(norm.get("repo") or "").strip()
+        idem = str(norm.get("idempotency_key") or "").strip()
+
+        if is_do_not_file_probe(title=title, body=body):
+            stats.dropped_probe.append(iid)
+            if not dry_run:
+                rec = {
+                    "intake_id": iid,
+                    "kind": kind or "harvest",
+                    "repo": repo,
+                    "title": title,
+                    "idempotency_key": idem,
+                    "quarantine": quarantine,
+                    "ts": _utc(),
+                    "state": "dropped_probe",
+                    "url": None,
+                    "queued": False,
+                }
+                _save_record(home, rec)
+                path.unlink(missing_ok=True)
+            continue
+
+        existing = _find_idempotent(home, idem) if idem else None
+        if existing and (
+            existing.get("url")
+            or str(existing.get("state") or "")
+            in (
+                "receipt_recorded",
+                "dropped_probe",
+                "filed",
+                "linked_existing_pr",
+                "filed_issue_fallback",
+            )
+        ):
+            stats.skipped_duplicate.append(iid)
+            if not dry_run:
+                path.unlink(missing_ok=True)
+            continue
+
+        branch = f"intake/{iid}"
+        if repo and _filer_find_pull(filer, repo, branch):
+            stats.skipped_duplicate.append(iid)
+            if not dry_run:
+                rec = {
+                    "intake_id": iid,
+                    "kind": kind or "harvest",
+                    "repo": repo,
+                    "title": title,
+                    "idempotency_key": idem,
+                    "quarantine": quarantine,
+                    "ts": _utc(),
+                    "state": "linked_existing_pr",
+                    "url": None,
+                    "queued": False,
+                    "branch": branch,
+                }
+                found = _filer_find_pull(filer, repo, branch) or {}
+                if found.get("url"):
+                    rec["url"] = found.get("url")
+                    rec["number"] = found.get("number")
+                _save_record(home, rec)
+                path.unlink(missing_ok=True)
+            continue
+
+        if is_harvest_worker_receipt(kind=kind, title=title, body=body):
+            stats.recorded_receipt.append(iid)
+            if not dry_run:
+                try:
+                    file_submission(home, norm, filer, intake_id=iid, quarantine=quarantine)
+                except GitHubDown:
+                    stats.recorded_receipt.remove(iid)
+                    stats.deferred.append(iid)
+                    continue
+                path.unlink(missing_ok=True)
+            continue
+
+        # Real playbook / issue / skill / fr row.
+        if dry_run:
+            stats.filed.append(iid)
+            continue
         try:
             file_submission(home, norm, filer, intake_id=iid, quarantine=quarantine)
         except GitHubDown:
+            stats.deferred.append(iid)
             continue
         path.unlink(missing_ok=True)
-        filed.append(iid)
-    return filed
+        stats.filed.append(iid)
+    return stats
 
 
 def harvest_should_use_intake(*, gh_available: bool, gh_authenticated: bool) -> bool:
@@ -787,3 +989,41 @@ def write_local_report_outbox(
         safe.pop("contact_public", None)
     path.write_text(json.dumps(safe, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def _cli_drain(argv: list[str] | None = None) -> int:
+    """CLI: ``python intake.py drain --home <path> [--limit N] [--dry-run]`` (FR #2595)."""
+    import argparse
+
+    p = argparse.ArgumentParser(prog="intake.py drain", description="Receipt-aware intake outbox drain")
+    p.add_argument("--home", required=True, help="Bobiverse home containing intake/outbox")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--dry-run", action="store_true")
+    ns = p.parse_args(argv)
+    home = Path(ns.home)
+    try:
+        from gh_filer import default_filer as _default_filer
+    except Exception:
+        _default_filer = None  # type: ignore[assignment]
+    filer = _default_filer() if _default_filer else FakeGitHubFiler()
+    stats = drain_intake_outbox(home, filer, limit=int(ns.limit), dry_run=bool(ns.dry_run))
+    counts = stats.as_counts()
+    print(json.dumps(counts, indent=2))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    import sys
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in ("-h", "--help"):
+        print("usage: intake.py drain --home <path> [--limit N] [--dry-run]")
+        return 0
+    if args[0] == "drain":
+        return _cli_drain(args[1:])
+    print(f"unknown command: {args[0]}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
