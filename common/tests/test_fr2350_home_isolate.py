@@ -56,7 +56,7 @@ def test_ensure_homes_scratch_digest_isolated(tmp_path, monkeypatch):
     out = bob_home.ensure_homes(digest=scratch, log=logs.append)
     assert out and out[0]["status"] == "skipped-noncanonical"
     assert not (scratch / "queue.json").exists()
-    assert any("skipped" in line.lower() or "noncanonical" in line.lower() for line in logs) or True
+    assert any(("skipped" in line.lower()) or ("noncanonical" in line.lower()) for line in logs)
 
 
 def test_canonical_bobiverse_home_still_migrates(tmp_path, monkeypatch):
@@ -127,3 +127,56 @@ def test_explicit_old_homes_kwarg_still_migrates_scratch(tmp_path, monkeypatch):
     res = bob_home.migrate_legacy(scratch, old_homes=[old], role="digest")
     assert res["status"] == "migrated"
     assert (scratch / "digest.json").is_file()
+
+
+def test_mrb2357_no_migrate_wins_over_migrate_legacy(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    _seed_legacy(profile)
+    monkeypatch.setattr(bob_home, "_profile", lambda: profile)
+    monkeypatch.setattr(bob_home, "_admin_profile", lambda: profile)
+    monkeypatch.setenv("BOB_MIGRATE_LEGACY", "1")
+    monkeypatch.setenv("BOB_HOME_NO_MIGRATE", "1")
+    new = profile / bob_home.DIGEST_NAME
+    res = bob_home.migrate_legacy(new, role="digest")
+    assert res["status"] == "skipped-opt-out"
+    assert not (new / "queue.json").exists()
+
+
+def test_mrb2357_canonical_jeeves_chair_still_migrates(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    old = profile / bob_home.LEGACY_CHAIR_NAME
+    old.mkdir()
+    (old / "chair-outbox.txt").write_text("PRIVMSG #c :x\n", encoding="utf-8")
+    monkeypatch.setattr(bob_home, "_profile", lambda: profile)
+    monkeypatch.setattr(bob_home, "_admin_profile", lambda: profile)
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
+    new = profile / bob_home.CHAIR_NAME
+    res = bob_home.migrate_legacy(new, role="chair")
+    assert res["status"] == "migrated"
+    assert (new / "chair-outbox.txt").is_file()
+
+
+def test_mrb2357_scratch_with_marker_reports_already(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOB_MIGRATE_LEGACY", raising=False)
+    scratch = tmp_path / "ear-scratch-marked"
+    scratch.mkdir()
+    (scratch / bob_home.MARKER).write_text("already\n", encoding="utf-8")
+    res = bob_home.migrate_legacy(scratch, role="digest")
+    assert res["status"] == "already"
+
+
+def test_mrb2357_ensure_homes_logs_skipped_noncanonical(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    _seed_legacy(profile)
+    monkeypatch.setattr(bob_home, "_profile", lambda: profile)
+    monkeypatch.setattr(bob_home, "_admin_profile", lambda: profile)
+    monkeypatch.delenv("BOB_MIGRATE_LEGACY", raising=False)
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
+    scratch = tmp_path / "run" / "ear-home-2"
+    logs: list[str] = []
+    out = bob_home.ensure_homes(digest=scratch, log=logs.append)
+    assert out and out[0]["status"] == "skipped-noncanonical"
+    assert any("skipped-noncanonical" in line for line in logs)
