@@ -41,7 +41,7 @@ def test_status_emits_done_with_caller_id(tmp_path):
     store = jobs.JobStore(tmp_path / "home")
     proto = jobs.JobProtocol(store, ai_root=tmp_path, machine="tm", airc_running=True)
     lines = proto.handle("bob-tm", "STATUS", {"id": "c25bd00e"})
-    assert any(x.startswith("STATUS machine=tm") for x in lines)
+    assert any(x.startswith("out id=c25bd00e seq=") and "STATUS machine=tm" in x for x in lines)
     assert lines[-1] == "DONE id=c25bd00e exit=0"
 
 
@@ -92,7 +92,7 @@ def test_handle_raw_heard_status_routes_job_not_shell(tmp_path):
     noisy = "@tm_console marchhare here. weekly=27. Heard: id=c25bd00e STATUS"
     hr = core.handle_raw(f":bob-tm!u@h PRIVMSG tm_console :{noisy}")
     assert hr is not None and hr.action == "job"
-    assert any(r.startswith("STATUS machine=tm") for r in replies)
+    assert any(r.startswith("out id=c25bd00e seq=") and "STATUS machine=tm" in r for r in replies)
     assert any(r == "DONE id=c25bd00e exit=0" for r in replies)
 
 

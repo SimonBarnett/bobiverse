@@ -47,6 +47,7 @@ def test_status_parseable(home, tmp_path):
     proto = jobs.JobProtocol(store, ai_root=tmp_path, machine="tm", airc_running=True)
     lines = proto.handle("bob-tm", "STATUS", {})
     assert len(lines) >= 2
+    assert lines[0].startswith("out id=") and " seq=1 " in lines[0]
     assert "STATUS machine=tm airc=Running" in lines[0]
     assert "bob=1.2.3" in lines[0]
     assert "airc_ver=9.9.9" in lines[0]
@@ -163,7 +164,7 @@ def test_unauthorized_verb_matrix(home):
     proto = jobs.JobProtocol(store, verb_auth=auth)
     # read ok for other nick
     lines = proto.handle("bob-other", "STATUS", {})
-    assert lines[0].startswith("STATUS")
+    assert "STATUS machine=" in lines[0] and lines[0].startswith("out id=")
     # write denied
     err = proto.handle("bob-other", "PUT", {"path": "a.bin", "id": "deadbeef", "bytes": "1"})[0]
     assert "denied" in err
@@ -251,7 +252,7 @@ def test_core_routes_status_and_denies_unauth(home):
     )
     hr = core.handle_raw(":bob-tm!u@h PRIVMSG tm_console :STATUS")
     assert hr is not None and hr.action == "job"
-    assert any(r.startswith("STATUS") for r in replies)
+    assert any(r.startswith("out id=") and "STATUS machine=" in r for r in replies)
     replies.clear()
     hr2 = core.handle_raw(":evil!u@h PRIVMSG tm_console :STATUS")
     assert hr2 is not None and hr2.action == "deny"
