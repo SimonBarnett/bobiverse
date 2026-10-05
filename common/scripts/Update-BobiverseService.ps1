@@ -551,16 +551,23 @@ function Invoke-Apply {
         }
 
         $mlog = Join-Path $StateDir ('msiexec-{0}.log' -f $tag)
-        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -PassThru -WindowStyle Hidden `
-            -ArgumentList @('/i', ('"{0}"' -f $msi), '/qn', '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"{0}"' -f $mlog))
-        $null = $p.Handle
-        if (-not $p.WaitForExit(1200000)) {
-            Write-UpdLog 'msiexec-timeout (20 min) - left running, no rollback while it is active'
-            Set-Failure -Tag $tag -Result 'msiexec-timeout'
-            return
+        # FR #2475: serialise msiexec + retry 1618 (ERROR_INSTALL_ALREADY_RUNNING)
+        if (Get-Command Invoke-BobiverseMsiexecSerialized -ErrorAction SilentlyContinue) {
+            $msiResult = Invoke-BobiverseMsiexecSerialized -ArgumentList @('/i', ('"{0}"' -f $msi), '/qn', '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"{0}"' -f $mlog)) -LogPath $mlog -TimeoutMs 1200000
+            $code = [int]$msiResult.ExitCode
+        } else {
+            $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -PassThru -WindowStyle Hidden `
+                -ArgumentList @('/i', ('"{0}"' -f $msi), '/qn', '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"{0}"' -f $mlog))
+            $null = $p.Handle
+            if (-not $p.WaitForExit(1200000)) {
+                Write-UpdLog 'msiexec-timeout (20 min) - left running, no rollback while it is active'
+                Set-Failure -Tag $tag -Result 'msiexec-timeout'
+                return
+            }
+            $code = [int]$p.ExitCode
         }
-        $code = [int]$p.ExitCode
-        Write-UpdLog "msiexec-exit=$code (log: $(Split-Path -Leaf $mlog))"
+        Write-UpdLog "msiexec-exit=$code (log: $(Split-Path -Leaf $mlog)) FR#2475"
+        if ($code -eq 1618) { throw 'msiexec exit 1618 after serialized retries (FR #2475)' }
         if (@(0, 3010, 1641) -notcontains $code) { throw "msiexec exit $code" }
 
         $verPath = Join-Path $InstallRoot 'VERSION'
