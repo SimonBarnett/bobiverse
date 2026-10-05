@@ -255,7 +255,28 @@ def report_exception(
         existing = _gh_search_open_sig(repo, sig)
         if existing:
             ok = _gh_comment(repo, existing, body)
-            return {"ok": ok, "deduped": True, "number": existing, "sig": sig}
+            if ok:
+                return {"ok": True, "deduped": True, "number": existing, "sig": sig}
+            # FR #2411 / MRB #2416: gh comment fail must spool (never drop the crash).
+            path = _write_spool(
+                {
+                    "title": title,
+                    "body": body,
+                    "repo": repo,
+                    "sig": sig,
+                    "exe": exe,
+                    "error": "dedupe_comment_failed",
+                    "dedupe_number": int(existing),
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            )
+            return {
+                "ok": False,
+                "deduped": True,
+                "number": existing,
+                "spooled": str(path),
+                "sig": sig,
+            }
 
         post = filer_post or _post_intake
         try:
