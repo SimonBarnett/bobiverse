@@ -359,9 +359,11 @@ def test_each_job_skill_has_steps_evidence_owners_and_the_diagram_flows_ack_to_d
 
 def test_job_skills_match_the_jeeves_wire_contract():
     irc = (SK / "bobiverse-bob-job-irc" / "SKILL.md").read_text(encoding="utf-8-sig")
-    for x in ("ACK <TYPE> <owner/repo>#<N>", "DONE <TYPE> <owner/repo>#<N> [PASS|FAIL] <url>", "NACK <TYPE>", "GIVEUP <TYPE>", "!focus",
+    # FR #2419: FR DONE is url-only; MRB/UAT keep PASS|FAIL (no single combined DONE template).
+    for x in ("ACK <TYPE> <owner/repo>#<N>", "DONE FR", "DONE MRB", "PASS|FAIL", "NACK <TYPE>", "GIVEUP <TYPE>", "!focus",
               "#<machine>", "nothing queued", "FR #224", "docs/jeeves-commands.md", "never a PM"):
         assert x.lower() in irc.lower(), x
+    assert "2419" in irc
     assert re.search(r"(?i)nothing after the url", irc)
     assert re.search(r"(?i)never post .{0,10}!bored.{0,12}yourself|never.{0,30}`?!bored", irc)
     # the Jeeves grammar really is what the skill says

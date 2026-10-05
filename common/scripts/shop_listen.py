@@ -9,7 +9,9 @@ Grammar (single line, case-insensitive verb):
   DONE <TYPE> <owner/repo>#<n> <result> [url|rest...]
   NACK|GIVEUP <TYPE> <owner/repo>#<n> [reason...]
 
-TYPE is FR|MRB|UAT|PR|FIX|BUILD. result examples: PASS merged | FAIL fix#m | PR <url>
+TYPE is FR|MRB|UAT|PR|FIX|BUILD.
+DONE result: FR = PR url only (no PASS/FAIL — FR #2419 strips/ignores them if present).
+MRB/UAT = PASS|FAIL [url]. Legacy ``PR <url>`` still accepted.
 GIVEUP/NACK optional trailing reason is logged on the shop-listen INFO line (FR #1701).
 """
 from __future__ import annotations
@@ -87,10 +89,32 @@ def parse_shop_job_line(body: str) -> ShopJobLine | None:
     if verb == "ACK":
         title = rest
     elif verb == "DONE":
-        # result is first tokens until URL or end
         parts = rest.split()
-        if parts:
-            # PASS merged | FAIL fix#12 | PR
+        if parts and task == "FR":
+            # FR #2419: PASS/FAIL belong to MRB/UAT only. Ignore them on FR DONE so the
+            # PR url still completes ACC (mistaken PASS must not strand accepted rows).
+            i = 0
+            if parts[0].upper() == "PASS":
+                i = 2 if len(parts) > 1 and parts[1].lower().startswith("merge") else 1
+            elif parts[0].upper() == "FAIL":
+                i = 1
+                if len(parts) > 1 and not parts[1].lower().startswith("http"):
+                    i = 2
+            if i < len(parts) and parts[i].upper() == "PR":
+                result = "PR"
+                i += 1
+            rest_tokens = parts[i:]
+            for tok in rest_tokens:
+                if tok.startswith("http://") or tok.startswith("https://"):
+                    url = tok
+                    break
+            if url and result != "PR":
+                result = url
+            elif rest_tokens and not url and not result:
+                result = rest_tokens[0]
+            title = " ".join(rest_tokens)
+        elif parts:
+            # MRB/UAT/PR/FIX/BUILD: PASS merged | FAIL fix#12 | PR | url
             if parts[0].upper() == "PASS":
                 result = "PASS merged" if len(parts) > 1 and parts[1].lower().startswith("merge") else "PASS"
                 rest2 = " ".join(parts[2:]) if result == "PASS merged" else " ".join(parts[1:])
@@ -99,6 +123,10 @@ def parse_shop_job_line(body: str) -> ShopJobLine | None:
                 rest2 = " ".join(parts[2:]) if len(parts) > 1 else ""
             elif parts[0].upper() == "PR":
                 result = "PR"
+                rest2 = " ".join(parts[1:])
+            elif parts[0].startswith("http://") or parts[0].startswith("https://"):
+                url = parts[0]
+                result = parts[0]
                 rest2 = " ".join(parts[1:])
             else:
                 result = parts[0]
