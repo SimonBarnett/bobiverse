@@ -1,8 +1,6 @@
-﻿"""FR #2526: refuse pytest BOB_DIGEST_HOME; require_machine-all offer is note-only."""
+"""FR #2526: refuse pytest BOB_DIGEST_HOME; require_machine-all offer is note-only."""
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 import jeeves_main
