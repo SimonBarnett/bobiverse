@@ -3931,10 +3931,37 @@ def require_machine_all_live_gave_up(
     return blocked if len(blocked) == len(matching) else []
 
 
+# FR #2486: Living / Refs-only tracking umbrellas keep operator GIVEUPs — auto-heal
+# must not re-offer them after dual pin-machine GIVEUP (e.g. bobiverse#1993).
+_LIVING_TRACKING_UMBRELLA_RE = re.compile(
+    r"(?i)\bliving\s+fr\b|\brefs[-\s]?only\b|\bkeep\s+appending\b"
+)
+_LIVING_TRACKING_LABELS = frozenset(
+    {"living", "living-fr", "refs-only", "refs_only", "tracking-umbrella", "tracking_umbrella"}
+)
+
+
+def row_skip_pin_ledger_heal_reason(row: dict) -> str | None:
+    """FR #2486: why ``heal_require_machine_all_gave_up`` must leave this row alone."""
+    labels = {
+        str(x).strip().lower().replace("_", "-")
+        for x in (row.get("labels") or [])
+        if str(x or "").strip()
+    }
+    if labels & _LIVING_TRACKING_LABELS:
+        return "living_tracking_label"
+    blob = f"{row.get('title') or ''}\n{row.get('body') or ''}\n{row.get('line') or ''}"
+    if _LIVING_TRACKING_UMBRELLA_RE.search(blob):
+        return "living_tracking_body"
+    return None
+
+
 def heal_require_machine_all_gave_up(
     home: Path, live: set[str] | None = None
 ) -> list[str]:
     """Clear ledger giveup when every live pin-machine seat gave up a living FR (FR #2446).
+
+    FR #2486: skips Living FR / Refs-only tracking umbrellas so operator GIVEUPs stick.
 
     Returns human-readable heal lines (repo#id + nick count). Shop IRC stays short;
     callers log these for operators / monitors.
@@ -3948,6 +3975,8 @@ def heal_require_machine_all_gave_up(
     seats = live if live is not None else live_seat_nicks(home)
     healed: list[str] = []
     for row in rows:
+        if row_skip_pin_ledger_heal_reason(row):
+            continue
         blocked = require_machine_all_live_gave_up(home, row, seats)
         if not blocked:
             continue
