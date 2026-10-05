@@ -155,6 +155,15 @@ if ($env:BOB_INTAKE_KEY) {
     $headers['X-Bob-Intake-Key'] = [string]$env:BOB_INTAKE_KEY
 }
 
+function Get-IntakeResponseProp {
+    # FR #2379: StrictMode — optional intake JSON keys (url / queued) may be absent on 202.
+    param($Response, [Parameter(Mandatory)][string]$Name, $Default = $null)
+    if ($null -eq $Response) { return $Default }
+    $prop = $Response.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return $Default }
+    return $prop.Value
+}
+
 $bodyJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
 # FR #611: always POST UTF-8 bytes (WinPS string -Body can be UTF-16 on some hosts).
 $bodyBytes = [Text.Encoding]::UTF8.GetBytes($bodyJson)
@@ -164,9 +173,9 @@ try {
     return [pscustomobject]@{
         ok              = $true
         queued_local    = $false
-        intake_id       = $resp.intake_id
-        url             = $resp.url
-        queued          = [bool]$resp.queued
+        intake_id       = (Get-IntakeResponseProp -Response $resp -Name 'intake_id' -Default $null)
+        url             = (Get-IntakeResponseProp -Response $resp -Name 'url' -Default $null)
+        queued          = [bool](Get-IntakeResponseProp -Response $resp -Name 'queued' -Default $false)
         idempotency_key = $payload.idempotency_key
         outbox          = @()
         error           = $null
