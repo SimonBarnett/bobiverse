@@ -779,6 +779,8 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bintake\b.{0,40}\b(?:BobCallback|ARR)\b.{0,40}\b502\b"), "ionos"),
     (re.compile(r"(?i)\b(?:BobCallback|ARR)\b.{0,40}\bintake\b.{0,40}\b502\b"), "ionos"),
     (re.compile(r"(?i)\bintake\b.{0,60}\b502\b.{0,40}\b(?:Bad Gateway|harvest)"), "ionos"),
+    # FR #2451: release pack titles that say install/smoke on ionos
+    (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
@@ -819,6 +821,9 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(?:ARR|reverse[- ]proxy)\b.{0,140}\b(?:intake|BobCallback|/bob/v1)\b"), "ionos"),
     (re.compile(r"(?i)\b(?:intake|BobCallback|/bob/v1)\b.{0,140}\b(?:ARR|reverse[- ]proxy)\b"), "ionos"),
     (re.compile(r"(?i)\bharvest-outbox\b.{0,100}\b(?:502|Bad Gateway|KEPT)\b"), "ionos"),
+    # FR #2451: release pack FRs that install/smoke on ionos (not bare release-out)
+    (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "ionos"),
+    (re.compile(r"(?i)\bsmoke\s+on\s+ionos\b"), "ionos"),
 )
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -897,7 +902,7 @@ def infer_require_machine(
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
     title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
-    recycle|recompose Jeeves / prune queue.json -> ionos; FR #587 / #852).
+    recycle|recompose Jeeves / prune queue.json / install(+smoke) on ionos -> ionos; FR #587 / #852 / #2451).
     """
     labs = labels or ()
     if isinstance(labs, str):
