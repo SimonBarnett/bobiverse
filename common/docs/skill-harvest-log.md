@@ -1,5 +1,14 @@
 # Skill harvest log
 
+## 2026-10-05 — skill #2406 PyInstaller UAT static check
+
+| Field | Value |
+|-------|-------|
+| Lesson | One-file PyInstaller exes false-fail outer-PE Select-String for free-rx/_OUT_FREE_RX; extract bob_worker.pyc or run BoredEmitter free-rx tests / outbox GIVEUP. Literal reason=free is composed at runtime. |
+| Evidence | FR #232 ionos MSI verify; skill promote #2406 |
+| Refs | SimonBarnett/bobiverse#2406 SimonBarnett/bobiverse#232 |
+
+
 ## 2026-10-05 — MRB #2403 frozen airc.exe Sync/Update
 
 | Field | Value |

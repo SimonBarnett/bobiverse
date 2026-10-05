@@ -87,6 +87,10 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 
 ## Harvested UAT gates (skill records #1216-#1429)
 
+- **PyInstaller exe static gates (FR #2406 / verify #232):** one-file ob-worker.exe / jeeves.exe / irc.exe compress strings into the PYZ. Outer-PE Select-String for markers such as _OUT_FREE_RX, ree-rx, or literal 
+eason=free **false-fails** even when the shipped *.pyc contains them. Prefer: (1) extract with pyinstxtractor (or equivalent) and search ob_worker.pyc / product pyc; (2) run the matching BoredEmitter / product unit tests (	est_bob_worker_bored_020.py free-rx paths); (3) live outbox GIVEUP/NACK drain and read ored: free-rx matched / ored -> shop reason=free in worker.log. Literal 
+eason=free is composed at runtime (ored -> shop reason= + ree).
+
 - **CAST IRON (FR #1830 / #1717 / #1526):** never create, stamp, or wait on `needs-mrb1`/`mrb1` — that label was an offer hallucination. The real human gate is `needs-human` only. Do not ACK/GIVEUP to "wait for needs-mrb1 to clear". Do not start ionos/DEV1 work merely because a row was offered, and do not infer a machine from a title.
 - Repo UAT is `UAT #0` only after the repository is clear. An exact-author escape may be used only when the remaining candidates are ledger/GIVEUP blocked; never UAT your own implementation or MRB-fix.
 - A hard `require_machine`/seat pin beats `any` or an inferred default. Keep self-UAT and MRB-author rows away from their author; record the accepted-by/author stamps needed for later offers.
