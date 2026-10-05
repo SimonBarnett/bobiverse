@@ -1,4 +1,12 @@
 # Skill harvest log
+## 2026-10-05 — FR #2563 / MRB #2565 self-update backup soft-fail
+
+| Field | Value |
+|-------|-------|
+| Lesson | Apply backup robocopy ≥8 must not burn MaxAttempts: exclude volatile paths, retry+log errors, record `backup-failed` with `-NoCount`, `Ensure-ServiceRunning` after pre-msi abort; `-ForceCheck` clears blocked-loop-guard. |
+| Evidence | PR #2565; post-install Self-update backup section; hostile test_mrb2565_hostile_backup_softfail.py |
+| Refs | SimonBarnett/bobiverse#2563 SimonBarnett/bobiverse#2565 |
+
 ## 2026-10-04 - Airc MSI AppParameters identity preserve (harvest #1583)
 
 | Lesson | Fix / book |
