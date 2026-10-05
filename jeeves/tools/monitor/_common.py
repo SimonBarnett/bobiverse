@@ -13,11 +13,31 @@ EXIT_FINDING = 1
 EXIT_ERROR = 2
 
 
+def _is_ephemeral_test_home(path: Path) -> bool:
+    """Refuse pytest/tmpdir overrides left in the agent process env (maintenance #2412).
+
+    A leaked ``BOB_DIGEST_HOME`` under ``pytest-of-*`` makes monitor/heal look at an
+    empty scratch tree and either false-ok or false-stale while the live chair is fine.
+    """
+    try:
+        parts = {p.lower() for p in Path(path).resolve().parts}
+    except OSError:
+        parts = {p.lower() for p in Path(path).parts}
+    joined = "/".join(Path(path).parts).lower().replace("\\", "/")
+    if "pytest-of-" in joined or "/pytest-" in joined or "\\pytest-" in joined.lower():
+        return True
+    if "pytest-current" in parts:
+        return True
+    return False
+
+
 def chair_home(env: Optional[dict] = None) -> Path:
     env = os.environ if env is None else env
     override = env.get("JEEVES_HOME") or env.get("BOB_JEEVES_HOME")
     if override:
-        return Path(override)
+        cand = Path(override)
+        if not _is_ephemeral_test_home(cand):
+            return cand
     return Path(env.get("USERPROFILE") or Path.home()) / ".jeeves"
 
 
@@ -25,7 +45,9 @@ def digest_home(env: Optional[dict] = None) -> Path:
     env = os.environ if env is None else env
     override = env.get("BOB_DIGEST_HOME")
     if override:
-        return Path(override)
+        cand = Path(override)
+        if not _is_ephemeral_test_home(cand):
+            return cand
     return Path(env.get("USERPROFILE") or Path.home()) / ".bobiverse"
 
 

@@ -857,7 +857,7 @@ _SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
     ("simonbarnett/agentic_fomprep", "#7"),
     ("simonbarnett/agentic_fomprep", "#8"),
     ("simonbarnett/agentic_fomprep", "#9"),
-    ("simonbarnett/agentic_fomprep", "#11"),
+    # FR #2521: #11 is FAIL remediation (offerable after #2464), not an evergreen MRB home.
     ("simonbarnett/agentic_fomprep", "#20"),
 }
 
