@@ -16,9 +16,9 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | Verb | Purpose |
 |------|---------|
 | `STATUS` | Airc Running + VERSION files (bob/airc/jeeves); replies as `out id= seq=` then `DONE` (FR #2575) |
-| plain line | PowerShell (default) |
-| `cmd: …` | COMSPEC escape hatch |
-| `psb64:<b64>` | `powershell -EncodedCommand` |
+| plain line | PowerShell (default); UTF-8 `$OutputEncoding` wrap so StdOut keeps Greek/CJK (FR #2580) |
+| `cmd: …` | COMSPEC escape hatch (`chcp 65001` prefixed, FR #2580) |
+| `psb64:<b64>` | `powershell -EncodedCommand` (same UTF-8 wrap) |
 | `PUT path` + chunks | Write file (base64 seq) |
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
 | `GET path` | hash/size + head/tail |
