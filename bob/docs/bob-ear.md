@@ -11,6 +11,7 @@ Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) -> staged by `Pack-Bobivers
 - **DIGEST_ID_FOLD (harvest #2280 / PR #2279):** digest aliases fold to the real shop id — `ionos` -> `win-mpre8vi4u6u`, `dev1` -> `ce-priority-dev1`. Helpers (`inbound_transcript.channel_list_for_machine` / `canonical_machine_id`) must never emit `#ionos` or `#dev1` as the shop channel.
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
 - Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
+- **`--home` isolation (FR #2350):** an explicit scratch `--home` (UAT under `%TEMP%`, …) does **not** merge `~\.agentic-irc-bobiverse`. Fleet basenames `home` / `.bobiverse` still one-time migrate. Opt-in: `BOB_MIGRATE_LEGACY=1`. Opt-out: `BOB_HOME_NO_MIGRATE=1`.
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
 
 ## Listen (inbound transcript) — FR #2174
