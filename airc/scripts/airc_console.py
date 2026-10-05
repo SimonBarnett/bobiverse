@@ -757,10 +757,27 @@ def sanitize_console_operator_text(text: str) -> str:
     into the console PRIVMSG; PowerShell then sees ``@marchhare_console`` as a splat.
     Prefer the payload after ``Heard:``; otherwise strip a bobtalk ``@nick mid here.`` prefix
     when the remainder looks like a console command / FR #78 verb.
+
+    FR #2570 follow-up: bobtalk-only presence lines (no command after the prefix) return
+    empty so ``handle_raw`` drops them — never pipe ``@nick`` / ``weekly=N`` into PowerShell.
     """
     raw = (text or "").strip()
     if not raw:
         return raw
+    m = _HEARD_PAYLOAD_RE.search(raw)
+    if m:
+        return (m.group(1) or "").strip()
+    m2 = _BOBTALK_PREFIX_RE.match(raw)
+    if m2:
+        rest = raw[m2.end() :].strip()
+        # Presence-only: "@nick mid here. weekly=26." or leftover "weekly=26"
+        if not rest or re.fullmatch(r"(?i)weekly=\S+", rest):
+            return ""
+        return rest
+    # Still looks like a nick-mention splat — not a console command.
+    if raw.startswith("@"):
+        return ""
+    return raw
     m = _HEARD_PAYLOAD_RE.search(raw)
     if m:
         return (m.group(1) or "").strip()
