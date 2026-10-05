@@ -5,7 +5,11 @@
 | Lesson | Fix |
 |--------|-----|
 | Live DisplayName stayed literal #{machine}; AppParameters ConsoleHome under Users\Default survived upgrades via FR #1552 identity restore | Expand DisplayName with MachineId (FR #1546); remap Default ConsoleHome to <install>\home after prior-identity restore; identity-reconcile must not restore Default homes |
+## 2026-10-05 - Scratch --home must not merge agentic-irc (MRB #2357 / FR #2350)
 
+| Lesson | Fix |
+|--------|-----|
+| bob-ear `--home` scratch under `%TEMP%` still merged `~/.agentic-irc-bobiverse` (queue/secrets/*.legacy) | `home_allows_legacy_migrate` gates auto-migrate to canonical basenames; opt-in `BOB_MIGRATE_LEGACY`; opt-out `BOB_HOME_NO_MIGRATE`; `old_homes=` still intentional |
 ## 2026-10-05 - Release must ship airc+jeeves MSI too (FR #2354)
 
 | Lesson | Fix |
