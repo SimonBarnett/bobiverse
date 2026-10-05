@@ -18,7 +18,8 @@ function Start-BobTrayDialog {
     $exe = Get-BobTrayDialogExe -Root $Root -Name $Name
     if (-not $exe) { return $false }
     try {
-        [void](Start-Process -FilePath $exe -ArgumentList @('--root', ('"{0}"' -f $Root)) -WorkingDirectory $Root -ErrorAction Stop)
+        # FR #2590 / #2585: do not embed quotes in Start-Process ArgumentList values (they become part of --root).
+        [void](Start-Process -FilePath $exe -ArgumentList @('--root', $Root) -WorkingDirectory $Root -ErrorAction Stop)
         return $true
     }
     catch { return $false }
