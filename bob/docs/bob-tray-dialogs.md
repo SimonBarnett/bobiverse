@@ -51,7 +51,7 @@ It runs the Status and About windows in-process (no second process to start).
 * **Exit** closes the windows, hides the icon, stops the ircBob service (detached) and ends the engine; **Restart** hides the icon and has the engine
   re-launch the tray. `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ircBob restart-on-start, ForceNew, tidy unchanged) and
   kills the old PowerShell tray; without the exe it starts the PowerShell tray as before, which stays a complete fallback.
-* **Single instance**: a named mutex per root.
+* **Single instance**: a named mutex per normalized install root (FR #2585: trim quotes/trailing slash + `GetFullPath` so argv variants share one mutex). A second `bob-tray.exe` logs `process-exit reason=already-running` (never `unexpected`) and does not write `tray-up`.
 * **Switches** (tests): `--root`, `--machine`, `--no-engine`, `--dump-menu f`, `--dump-state f --text-out f`, `--seats --text-out f`, `--timing-out f`
   (ms to icon visible, ms to the menu's Opened event).
 

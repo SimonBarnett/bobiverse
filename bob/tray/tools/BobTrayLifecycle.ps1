@@ -140,23 +140,26 @@ function Test-BobTrayWatchdogSuppressed {
 
 function Test-BobTrayProcessPresent {
     # True when bob-tray.exe or Watch-BobTray / seat-wrapper is alive (FR #1642 watchdog).
+    # FR #2585: Name -eq bob-tray.exe is enough (ExecutablePath may be null); already-running
+    # duplicate exits must not look like a missing tray to the watchdog.
     param([string]$InstallRoot = '')
     $root = [string]$InstallRoot
     if (-not $root) { $root = [string]$env:BOB_AI_ROOT }
     $toolsPrefix = ''
     if ($root) {
         $bobRoot = if ((Split-Path -Leaf $root) -ieq 'bob') { $root } else { Join-Path $root 'bob' }
-        $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $bobRoot 'tools'))
+        try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $bobRoot 'tools')) } catch { $toolsPrefix = Join-Path $bobRoot 'tools' }
     }
     $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             ($_.CommandLine -and (
                 $_.CommandLine -match 'Watch-BobTray\.ps1' -or
-                $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1'
+                $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+                $_.CommandLine -match '(?i)bob-tray\.exe'
             )) -or (
                 $_.Name -eq 'bob-tray.exe' -and (
-                    -not $toolsPrefix -or (
-                        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
-                    )
+                    -not $toolsPrefix -or
+                    -not $_.ExecutablePath -or
+                    $_.ExecutablePath.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
                 )
             )
         })

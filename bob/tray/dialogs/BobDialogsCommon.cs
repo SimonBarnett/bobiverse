@@ -66,12 +66,29 @@ namespace BobDialogs
         }
 
         // Install root: --root, else the parent of the exe's tools\ folder (flat install), else the exe folder.
+        // FR #2585: normalize so single-instance mutex matches across quoted/trailing-slash argv variants.
+        public static string NormalizeRoot(string r)
+        {
+            if (string.IsNullOrEmpty(r)) return "";
+            string s = r.Trim().Trim('"').Trim('\'');
+            try { s = Path.GetFullPath(s); } catch { }
+            return s.TrimEnd('\\', '/');
+        }
+
+        public static string TrayMutexKey(string root)
+        {
+            // Keep path casing from GetFullPath so a tip build matches a live pre-FR#2585 tray mutex.
+            string n = NormalizeRoot(root);
+            if (n.Length == 0) n = "default";
+            return "Tray_" + n.Replace('\\', '_').Replace('/', '_').Replace(':', '_');
+        }
+
         public static string Root(string[] args)
         {
             string r = Arg(args, "--root");
-            if (r.Length > 0) return r;
-            string dir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-            if (string.Equals(Path.GetFileName(dir), "tools", StringComparison.OrdinalIgnoreCase)) return Path.GetDirectoryName(dir);
+            if (r.Length > 0) return NormalizeRoot(r);
+            string dir = NormalizeRoot(AppDomain.CurrentDomain.BaseDirectory);
+            if (string.Equals(Path.GetFileName(dir), "tools", StringComparison.OrdinalIgnoreCase)) return Path.GetDirectoryName(dir) ?? dir;
             return dir;
         }
 

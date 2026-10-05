@@ -17,7 +17,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $RepoRoot) { $RepoRoot = Split-Path $PSScriptRoot -Parent }
-$RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
+# FR #2585: normalize so bob-tray.exe mutex key matches (no trailing slash / odd path forms).
+$RepoRoot = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
 $tray = Join-Path $RepoRoot 'tools\Watch-BobTray.ps1'
 if (-not (Test-Path -LiteralPath $tray)) {
     throw "missing $tray"
@@ -92,11 +93,22 @@ function Get-BobSystrayTrayProcesses {
     # Match bare Watch-BobTray.ps1 AND seat wrappers (_Watch-BobTray-marchhare.ps1).
     # Wrapper CommandLine does not contain "Watch-BobTray.ps1", so a strict .ps1
     # suffix miss made ForceNew leave ghosts and "failed to stay up" false-fail.
+    # FR #2585: match bob-tray.exe by Name (ExecutablePath is often null on CIM) or CommandLine.
+    param([string]$Root = '')
+    if (-not $Root) { $Root = $RepoRoot }
+    $toolsPrefix = ''
+    try { $toolsPrefix = [IO.Path]::GetFullPath((Join-Path $Root 'tools')) } catch { $toolsPrefix = Join-Path $Root 'tools' }
     return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             ($_.CommandLine -and (
                 $_.CommandLine -match 'Watch-BobTray\.ps1' -or
-                $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1'
-            )) -or ($_.Name -eq 'bob-tray.exe' -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith((Join-Path $RepoRoot 'tools'), [StringComparison]::OrdinalIgnoreCase))
+                $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1' -or
+                $_.CommandLine -match '(?i)bob-tray\.exe'
+            )) -or (
+                $_.Name -eq 'bob-tray.exe' -and (
+                    -not $_.ExecutablePath -or
+                    $_.ExecutablePath.StartsWith($toolsPrefix, [StringComparison]::OrdinalIgnoreCase)
+                )
+            )
         })
 }
 
@@ -253,11 +265,14 @@ $ps = (Get-Command powershell.exe).Source
 $trayExe = Get-BobSystrayTrayExe -Root $RepoRoot
 if ($trayExe) {
     # t832u: start the compiled tray (it starts the hidden engine itself); same job-object breakaway as below.
+    # FR #2585: do not embed quotes inside Start-Process ArgumentList values (became part of --root).
     $exeArgs = '--root "{0}"' -f $RepoRoot
     if ($mid) { $exeArgs += (' --machine {0}' -f $mid) }
     $createdExe = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ('"{0}" {1}' -f $trayExe, $exeArgs); CurrentDirectory = $RepoRoot }
     if (-not ($createdExe -and [int]$createdExe.ReturnValue -eq 0)) {
-        Start-Process -FilePath $trayExe -ArgumentList @('--root', ('"{0}"' -f $RepoRoot)) -WorkingDirectory $RepoRoot | Out-Null
+        $spArgs = @('--root', $RepoRoot)
+        if ($mid) { $spArgs += @('--machine', $mid) }
+        Start-Process -FilePath $trayExe -ArgumentList $spArgs -WorkingDirectory $RepoRoot | Out-Null
     }
     Start-Sleep -Seconds 2
     $aliveExe = @(Get-BobSystrayTrayProcesses)

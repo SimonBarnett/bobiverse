@@ -568,7 +568,12 @@ namespace BobDialogs
             if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
-            if (!timing && dumpMenu.Length == 0 && !Common.Single("Tray_" + root.Replace('\\', '_').Replace(':', '_'), "")) return 0;
+            // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.
+            if (!timing && dumpMenu.Length == 0 && !Common.Single(Common.TrayMutexKey(root), ""))
+            {
+                TrayLifecycle.Write("process-exit", "reason", "already-running", "via", "bob-tray.exe", "machine", machine);
+                return 0;
+            }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Environment.SetEnvironmentVariable("BOB_MACHINE_ID", machine);
