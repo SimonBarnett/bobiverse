@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2438 C# CrashHook skip probe/do-not-file
+
+| Field | Value |
+|-------|-------|
+| Lesson | C# CrashHook must mirror Python crash_report.should_skip_report: skip exe probe/crash-probe/crash_probe and message/body/title with do-not-file or probe-shape-only before intake or spool; FlushSpool must drop matching payloads. |
+| Evidence | FR #2436 / PR #2438; hostile MRB #2438 docs |
+| Refs | SimonBarnett/bobiverse#2436 SimonBarnett/bobiverse#2438 SimonBarnett/bobiverse#2431 |
+
 ## 2026-10-05 — MRB #2426 FR DONE PASS strip + MRB FAIL url
 
 | Field | Value |
