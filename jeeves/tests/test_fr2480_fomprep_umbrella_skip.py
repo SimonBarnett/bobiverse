@@ -100,3 +100,9 @@ def test_resync_drops_hard_pinned_umbrella_without_labels(tmp_path, monkeypatch)
         if str(r.get("task") or "").upper() == "FR"
     }
     assert "#8" not in ids
+
+def test_mrb2531_fomprep_11_empty_labels_not_hard_pinned():
+    """Hostile: removing #11 from pin set must not leave bare-id hard skip."""
+    row = {"repo": REPO, "task": "FR", "id": "#11", "title": "MRB FAIL board", "labels": []}
+    assert gitclaim.row_skip_fr_reason(row) is None
+    assert ("simonbarnett/agentic_fomprep", "#11") not in gitclaim._SKIP_FR_ISSUE_PINS
