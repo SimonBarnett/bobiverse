@@ -323,14 +323,33 @@ def ask_session_key(prompt: str, title: str = "Grok session key") -> Optional[st
         chars.clear()
 
 
-# --------------------------------------------------------------------------------------------- prompts
+# --------------------------------------------------------------------------------------------- prompts / seat env (FR #2380)
+def outbox_path_for_run(run_dir: Path | str) -> Path:
+    """Canonical seat outbox path under the worker run dir (never the ear home\\outbox.txt)."""
+    return Path(run_dir) / "outbox.txt"
+
+
+def seat_env_extra(run_dir: Path | str, machine: str, nick: str) -> dict:
+    """Env vars every agent child must inherit so compaction cannot lose the outbox (FR #2380)."""
+    outbox = str(outbox_path_for_run(run_dir))
+    shop = f"#{(machine or '').strip().lstrip('#')}"
+    return {
+        "BOB_OUTBOX": outbox,
+        "BOB_SHOP": shop,
+        "BOB_NICK": (nick or "").strip(),
+        "BOB_MACHINE": (machine or "").strip().lower(),
+    }
+
+
 def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
+    outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
         f"Your working folder is {worker_dir}. FIRST read the skills in {worker_dir}\\.grok\\skills and {worker_dir}\\AGENTS.md "
         f"(start with bobiverse-worker-seat, then bobiverse-bob-worker, harvest). "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
-        f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to {home}\\outbox.txt, then end the turn. "
+        f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
+        f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
         f"ping/pong is answered for you. The program posts !bored for you - NEVER post it yourself. When Jeeves assigns a job, first append "
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append 'PRIVMSG #{machine} :DONE <FR|MRB|UAT> owner/repo#N <PASS|FAIL> <url>' "
         f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
@@ -827,8 +846,22 @@ def accept_for_agent(src: str, target: str, text: str, own_nick: str, jeeves: st
     return addressed_to(text, own_nick)
 
 
-def format_from(nick: str, target: str, text: str, maxlen: int = 2000) -> str:
-    return "FROM %s %s %s" % (nick, target, one_line(text, maxlen))
+def format_from(
+    nick: str,
+    target: str,
+    text: str,
+    maxlen: int = 2000,
+    *,
+    outbox: str | Path | None = None,
+) -> str:
+    """Build the agent-visible FROM line. FR #2380: optional ``[outbox: path]`` footer survives compaction."""
+    body = one_line(text, maxlen)
+    line = "FROM %s %s %s" % (nick, target, body)
+    if outbox:
+        footer = "[outbox: %s]" % str(outbox)
+        if footer.lower() not in line.lower():
+            line = "%s %s" % (line, footer)
+    return line
 
 
 class Relay:
@@ -837,13 +870,21 @@ class Relay:
     it is ready (a timer-less callback). Flood guard: >max_burst injections per window are coalesced into one."""
 
     def __init__(self, log: Callable[[str], None], max_burst: int = 8, window_s: float = 30.0, max_pending: int = 5,
-                 clock: Callable[[], float] = time.monotonic, persist_dir: Optional[Path] = None):
+                 clock: Callable[[], float] = time.monotonic, persist_dir: Optional[Path] = None,
+                 outbox_path: Optional[Path] = None):
         self.log = log
         self.max_burst = max_burst
         self.window_s = window_s
         self.max_pending = max_pending
         self.clock = clock
         self.persist_dir = Path(persist_dir) if persist_dir else None
+        # FR #2380: stamp every injected FROM with the seat outbox so compaction cannot lose it.
+        if outbox_path is not None:
+            self.outbox_path = Path(outbox_path)
+        elif self.persist_dir is not None:
+            self.outbox_path = outbox_path_for_run(self.persist_dir)
+        else:
+            self.outbox_path = None
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
@@ -872,7 +913,7 @@ class Relay:
             if nq:
                 self.log("relay: skipped nothing-queued (dropped by filter — unexpected)")
             return "dropped"
-        line = format_from(nick, target, text)
+        line = format_from(nick, target, text, outbox=self.outbox_path)
         with self._lock:
             if line == self._last_line:
                 return "duplicate"
@@ -1827,6 +1868,8 @@ class Supervisor:
                 self.bored.set_ready(False)  # a (re)starting agent is not idle
             spec = build_launch(self.kind, "agent", self.cwd, self._prompt() + (" " + note if note else ""), self.exe, self.run_dir)
             env = dict(self.base_env)
+            # FR #2380: seat outbox/shop/nick survive context compaction via child env (not only first prompt).
+            env.update(seat_env_extra(self.run_dir, self.machine, self.nick))
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
