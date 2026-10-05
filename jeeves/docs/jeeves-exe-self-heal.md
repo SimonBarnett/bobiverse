@@ -129,6 +129,12 @@ Acceptance the harness proves offline:
 
 Operators stop babysitting supervised Python; `jeeves.exe` is the only Jeeves runtime; webhooks stay up through resync; `jeeves.exe --self-test` is the first response to any chair/webhook incident; seats stay busy unless a true orphan heal is explicitly forced.
 
-## Evidence append — FR #2352 restart verify (2026-10-05)
+## Evidence append â€” FR #2352 restart verify (2026-10-05)
 
 See `jeeves/docs/evidence/fr2352-restart-verify-2026-10-05.md`: tip rebuild + ircJeeves-only recycle; covering merges #2342/#2348 confirmed; local intake 202; BobIrcd untouched.
+
+## FR #2524 — bare argv / maintenance state
+
+- Bare `jeeves.exe` (no `--self-test` / `--heal` / `--http-only` / `--chair --http`) exits **2** immediately and does **not** acquire the instance mutex or spawn a maintenance agent.
+- NSSM `AppParameters` for `jeeves.exe` must include `--chair --http HOST:PORT` (Install-Jeeves + Assert-BobJeevesNssmRestart).
+- Maintenance state/lock/log live under **chair** `--home` `maintenance` (`jeeves-maintenance-state.json`), including `last_heal_findings` / `last_heal_errors` from the heal payload.

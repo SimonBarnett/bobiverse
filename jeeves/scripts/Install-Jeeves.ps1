@@ -194,6 +194,10 @@ if ($useJeevesExe) {
     } else {
         [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
         Write-Host "INFO ircJeeves Application=jeeves.exe (FR #2301 WP3 cutover; FR #2475 safe set)"
+        # FR #2524: refuse empty mode params (NSSM Restart would bare-loop jeeves.exe).
+        if (-not $appParams -or $appParams -notmatch '(?i)--chair' -or $appParams -notmatch '(?i)--http') {
+            throw "Install-Jeeves: AppParameters must include --chair --http ... (FR #2524); got '$appParams'"
+        }
     }
 }
 if (-not $useJeevesExe) {
