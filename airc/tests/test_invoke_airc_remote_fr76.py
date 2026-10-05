@@ -49,7 +49,8 @@ def test_whatif_status_prints_privmsg_without_secrets(tmp_path):
     )
     assert r.returncode == 0, r.stdout + "\n" + r.stderr
     blob = (r.stdout or "") + (r.stderr or "")
-    assert "PRIVMSG marchhare_console :STATUS" in blob
+    # FR #2570: Status pins id=<8hex> STATUS (not bare STATUS).
+    assert "PRIVMSG marchhare_console :id=" in blob and " STATUS" in blob
     assert "password=" not in blob.lower() or "password=***" in blob.lower()
 
 

@@ -41,7 +41,7 @@ def test_status_emits_done_with_caller_id(tmp_path):
     store = jobs.JobStore(tmp_path / "home")
     proto = jobs.JobProtocol(store, ai_root=tmp_path, machine="tm", airc_running=True)
     lines = proto.handle("bob-tm", "STATUS", {"id": "c25bd00e"})
-    assert any(x.startswith("STATUS machine=tm") for x in lines)
+    assert any(x.startswith("out id=c25bd00e seq=1 STATUS machine=tm") for x in lines)
     assert lines[-1] == "DONE id=c25bd00e exit=0"
 
 
@@ -92,7 +92,7 @@ def test_handle_raw_heard_status_routes_job_not_shell(tmp_path):
     noisy = "@tm_console marchhare here. weekly=27. Heard: id=c25bd00e STATUS"
     hr = core.handle_raw(f":bob-tm!u@h PRIVMSG tm_console :{noisy}")
     assert hr is not None and hr.action == "job"
-    assert any(r.startswith("STATUS machine=tm") for r in replies)
+    assert any(r.startswith("out id=c25bd00e seq=1 STATUS machine=tm") for r in replies)
     assert any(r == "DONE id=c25bd00e exit=0" for r in replies)
 
 
@@ -114,6 +114,7 @@ def test_mrb2571_status_without_caller_id_still_emits_done(tmp_path):
     store = jobs.JobStore(tmp_path / "home")
     proto = jobs.JobProtocol(store, ai_root=tmp_path, machine="tm", airc_running=True)
     lines = proto.handle("bob-tm", "STATUS", {})
+    assert lines[0].startswith("out id=") and " seq=1 STATUS machine=tm" in lines[0]
     assert lines[-1].startswith("DONE id=") and lines[-1].endswith("exit=0")
     assert len(lines[-1].split("id=")[1].split()[0]) == 8
 
@@ -123,7 +124,8 @@ def test_mrb2571_skills_status_heard_bullet_contiguous():
     skill = (ROOT / "airc" / ".grok" / "skills" / "bobiverse-airc" / "SKILL.md").read_text(
         encoding="utf-8-sig"
     )
-    assert "STATUS + Heard: strip (FR #2570)" in skill
+    assert "STATUS + Heard: strip (FR #2570" in skill
+    assert "#2575" in skill or "2575" in skill
     assert "sanitize_console_operator_text" in skill
     assert "Footgun" in skill or "footgun" in skill.lower()
     trouble = (

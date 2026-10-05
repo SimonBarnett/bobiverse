@@ -560,11 +560,15 @@ class JobProtocol:
             self.authorize(nick, verb)
             if verb == "STATUS":
                 vers = collect_status_versions(self.ai_root)
-                lines = format_status_lines(
+                body = format_status_lines(
                     airc_running=self.airc_running, versions=vers, machine=self.machine
                 )
                 # FR #2570: terminal DONE so Invoke-AircRemote -ReplyFile Wait matches id=.
+                # FR #2575: frame body as out id= seq= (same as format_shell_replies) so StdOut fills.
                 jid = (kv.get("id") or "").strip().lower() or new_job_id()
+                lines = [
+                    f"out id={jid} seq={i} {part}" for i, part in enumerate(body, start=1)
+                ]
                 lines.append(f"DONE id={jid} exit=0")
                 return lines
             if verb == "PUT":
