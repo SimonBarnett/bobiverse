@@ -2501,6 +2501,24 @@ def _purge_fr_that_are_pulls(doc: dict, *, is_pull=None, issue_open=None) -> int
     return before - len(kept)
 
 
+def _fr_issue_is_closed(row: dict, *, issue_open=None) -> bool:
+    """True when an FR row's GitHub issue is CLOSED (stamped and/or live check)."""
+    if _canon_task(row) != "FR":
+        return False
+    if str(row.get("state") or "").strip().lower() == "closed":
+        return True
+    if issue_open is None:
+        return False
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return False
+    try:
+        return not bool(issue_open(repo, num))
+    except Exception:
+        return False
+
+
 def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None) -> int:
     """Drop unaccepted FR rows whose GitHub issue is CLOSED (FR #2340).
 
@@ -2512,20 +2530,49 @@ def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None) -> int:
     for row in doc.get("unaccepted") or []:
         if not isinstance(row, dict):
             continue
-        if _canon_task(row) == "FR":
-            if str(row.get("state") or "").strip().lower() == "closed":
-                continue
-            if issue_open is not None:
-                repo = str(row.get("repo") or "").strip()
-                num = str(row.get("id") or "").strip().lstrip("#")
-                if repo and num:
-                    try:
-                        if not bool(issue_open(repo, num)):
-                            continue
-                    except Exception:
-                        pass
+        if _fr_issue_is_closed(row, issue_open=issue_open):
+            continue
         kept.append(row)
     doc["unaccepted"] = kept
+    return before - len(kept)
+
+
+def _purge_closed_fr_accepted(doc: dict, *, issue_open=None, home: Path | None = None) -> int:
+    """Move accepted FR rows whose GitHub issue is CLOSED into done (FR #2361).
+
+    Unaccepted CLOSED purge (#2348 / FR #2340) left ACC rows (e.g. #2340 on
+    marchhare) stuck forever. Mirrors ``_purge_dead_mrb_accepted`` for FR.
+    ``clear_seat_doing`` only when ``only_if_work_contains`` matches the id —
+    never blanket-clear working seats (keep seats busy).
+    """
+    before = len(doc.get("accepted") or [])
+    kept: list[dict] = []
+    done = doc.setdefault("done", [])
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if _fr_issue_is_closed(row, issue_open=issue_open):
+            fin = dict(row)
+            fin["result"] = "CLOSED"
+            fin["done_ts"] = _utc_now()
+            fin["state"] = "closed"
+            done.append(fin)
+            if home is not None:
+                seat = str(
+                    fin.get("nick")
+                    or fin.get("accepted_by")
+                    or fin.get("offered_to")
+                    or ""
+                ).strip()
+                ident = str(fin.get("id") or "").lstrip("#")
+                if seat and ident:
+                    with contextlib.suppress(Exception):
+                        bobreport.clear_seat_doing(
+                            home, seat, only_if_work_contains=ident
+                        )
+            continue
+        kept.append(row)
+    doc["accepted"] = kept
     return before - len(kept)
 
 
@@ -3242,6 +3289,10 @@ def offer_focus_top(
             ) or purged
             # FR #2340: drop CLOSED-issue FR rows before picking (stamped state + live check).
             purged = bool(_purge_closed_fr_unaccepted(doc, issue_open=issue_open)) or purged
+            # FR #2361: move accepted CLOSED FR rows to done (ACC #2340 class).
+            purged = bool(
+                _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
+            ) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
             if pr_exists is not None:
                 with contextlib.suppress(Exception):
@@ -3462,6 +3513,9 @@ def offer_top(
                 _purge_fr_that_are_pulls(doc, is_pull=is_pull, issue_open=issue_open)
             ) or purged
             purged = bool(_purge_closed_fr_unaccepted(doc, issue_open=issue_open)) or purged
+            purged = bool(
+                _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
+            ) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
             if pr_exists is not None:
                 with contextlib.suppress(Exception):
