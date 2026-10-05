@@ -28,6 +28,8 @@ def test_pack_declares_public_msi_properties_and_forwards_them_to_runinstall():
     assert "-OperFile &quot;[OPERFILE]&quot;" in p
     assert "-MsiSkipErgo &quot;[SKIPERGO]&quot;" in p
     assert "-MachineId &quot;[MACHINEID]&quot;" in p
+    # FR #2564 / MRB #2566: ProductVersion must reach Install-*.ps1 for VERSION assert
+    assert "-MsiProductVersion &quot;[ProductVersion]&quot;" in p
     assert "#70: RunInstall forwards" in p or "#70: public MSI properties" in p
 
 
