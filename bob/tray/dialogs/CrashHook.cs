@@ -1,4 +1,5 @@
 // FR #2411: unhandled exception in tray dialogs -> GitHub issue (dedupe + spool).
+// FR #2436: skip probe / do-not-file / probe-shape-only (parity with crash_report.should_skip_report).
 // Mirrors common/scripts/crash_report.py for WinForms exes compiled by Build-BobDialogs.ps1.
 using System;
 using System.Collections.Generic;
@@ -22,6 +23,10 @@ namespace BobDialogs
             RegexOptions.Compiled);
         static readonly Regex TokenBlobRe = new Regex(
             @"(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+)\b",
+            RegexOptions.Compiled);
+        // FR #2436 / Python crash_report._DO_NOT_FILE_RE + _PROBE_EXE
+        static readonly Regex DoNotFileRe = new Regex(
+            @"(?i)do-not-file|probe-shape-only",
             RegexOptions.Compiled);
 
         public static void Install(string exeName)
@@ -53,6 +58,31 @@ namespace BobDialogs
             if (string.IsNullOrEmpty(text)) return "";
             string s = SecretRe.Replace(text, delegate(Match m) { return m.Groups[1].Value + "=<redacted>"; });
             return TokenBlobRe.Replace(s, "<redacted-token>");
+        }
+
+        /// <summary>
+        /// FR #2436: shape/probe crashes must never create intake issues or spool forever.
+        /// Markers match Python crash_report.should_skip_report: exe probe/crash-probe/crash_probe,
+        /// or message/body/title containing do-not-file or probe-shape-only.
+        /// </summary>
+        public static bool ShouldSkipReport(string exeName, Exception ex)
+        {
+            return ShouldSkipReport(exeName, ex, null, null);
+        }
+
+        public static bool ShouldSkipReport(string exeName, Exception ex, string body, string title)
+        {
+            string name = (exeName ?? "").Trim().ToLowerInvariant();
+            if (name == "probe" || name == "crash-probe" || name == "crash_probe")
+                return true;
+            string msg = "";
+            try
+            {
+                if (ex != null) msg = ex.Message ?? "";
+            }
+            catch { msg = ""; }
+            string blob = msg + "\n" + (body ?? "") + "\n" + (title ?? "");
+            return DoNotFileRe.IsMatch(blob);
         }
 
         public static string Signature(Exception ex)
@@ -111,6 +141,10 @@ namespace BobDialogs
         {
             try
             {
+                // FR #2436: mirror crash_report.should_skip_report before intake/spool.
+                if (ShouldSkipReport(exeName, ex))
+                    return;
+
                 string sig = Signature(ex);
                 string et = ex == null ? "?" : ex.GetType().Name;
                 string msg = Redact(ex == null ? "" : (ex.Message ?? ""));
@@ -170,6 +204,12 @@ namespace BobDialogs
                         string body = Convert.ToString(payload.ContainsKey("body") ? payload["body"] : "") ?? "";
                         string sig = Convert.ToString(payload.ContainsKey("sig") ? payload["sig"] : Path.GetFileNameWithoutExtension(path)) ?? "unknown";
                         string exe = Convert.ToString(payload.ContainsKey("exe") ? payload["exe"] : "unknown") ?? "unknown";
+                        // FR #2436: drop probe / do-not-file spool payloads (parity with crash_report.flush_spool).
+                        if (ShouldSkipReport(exe, null, body, title))
+                        {
+                            try { File.Delete(path); } catch { }
+                            continue;
+                        }
                         if (TryPostIntake(title, body, sig, exe))
                         {
                             try { File.Delete(path); } catch { }
