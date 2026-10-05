@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -808,14 +810,129 @@ def selftest() -> int:
     assert r and r.action == "silent_channel"
     r2 = core.handle_raw(":evil!e@h PRIVMSG ionos_console :whoami")
     assert r2 and r2.action == "deny"
+    assert isinstance(is_frozen_airc_exe(), bool)
+    _ = resolve_airc_install_root()  # must not raise
     info("INFO selftest ok")
     return 0
+
+
+def is_frozen_airc_exe() -> bool:
+    """True when running as PyInstaller airc.exe (FR #2397 / #2401)."""
+    return bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+
+
+def resolve_airc_install_root() -> Path | None:
+    """Install tree root for Sync/Update scripts (``<ai root>\\airc``)."""
+    if is_frozen_airc_exe():
+        exe = Path(sys.executable).resolve()
+        # Pack stages ``airc\\airc.exe`` under the install root.
+        if exe.parent.name.lower() == "airc":
+            return exe.parent.parent
+        return exe.parent
+    here = Path(__file__).resolve().parent
+    # Source: ``airc/scripts`` -> ``airc``; staged flat: ``scripts`` -> install root.
+    if here.name.lower() == "scripts":
+        return here.parent
+    return here
+
+
+def _resolve_powershell() -> str | None:
+    found = shutil.which("powershell.exe")
+    if found:
+        return found
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    candidate = Path(windir) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if candidate.is_file():
+        return str(candidate)
+    return None
+
+
+def _run_ps1_best_effort(script: Path, args: list[str], label: str) -> None:
+    """Run a pack script; never raise (service start must continue). FR #2401."""
+    ps = _resolve_powershell()
+    if not ps:
+        info(f"WARN {label}: powershell.exe missing")
+        return
+    if not script.is_file():
+        info(f"WARN {label}: missing {script}")
+        return
+    cmd = [
+        ps,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        *args,
+    ]
+    try:
+        # Check mode of Update-BobiverseService always exits 0 and is bounded;
+        # Sync is ff-only and must not block the start on failure.
+        subprocess.run(
+            cmd,
+            cwd=str(script.parent),
+            timeout=120,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # noqa: BLE001 - start path must never abort
+        info(f"WARN {label}: {exc}")
+
+
+def kick_frozen_service_start_hooks() -> None:
+    """Parity with Start-AircConsole -ServiceMode when NSSM runs airc.exe (FR #2401).
+
+    Legacy powershell + Start-AircConsole.ps1 already runs Sync/Update before Python;
+    only the frozen exe path needs this (otherwise we would double-check every start).
+    Opt-outs: BOBIVERSE_NO_UPDATE=1 skips both; BOB_AUTOUPDATE=0 / autoupdate.disabled
+    are honoured inside Update-BobiverseService.ps1.
+    """
+    if not is_frozen_airc_exe():
+        return
+    root = resolve_airc_install_root()
+    if root is None:
+        return
+    scripts = root / "scripts"
+    no_update = (os.environ.get("BOBIVERSE_NO_UPDATE") or "").strip() == "1"
+    if not no_update:
+        sync = scripts / "Sync-BobiverseFromRepo.ps1"
+        if sync.is_file():
+            try:
+                info(f"INFO frozen sync-from-repo InstallRoot={root}")
+                _run_ps1_best_effort(
+                    sync,
+                    ["-Product", "airc", "-InstallRoot", str(root)],
+                    "sync-from-repo",
+                )
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN sync-from-repo: {exc}")
+        updater = scripts / "Update-BobiverseService.ps1"
+        if updater.is_file():
+            try:
+                info("INFO frozen self-update check (Update-BobiverseService)")
+                _run_ps1_best_effort(
+                    updater,
+                    [
+                        "-Product",
+                        "airc",
+                        "-InstallRoot",
+                        str(root),
+                        "-ServiceName",
+                        "Airc",
+                    ],
+                    "self-update",
+                )
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN self-update: {exc}")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.selftest:
         return selftest()
+    # FR #2401: airc.exe NSSM Application skips Start-AircConsole.ps1; restore S4 hooks.
+    kick_frozen_service_start_hooks()
     return AircConsoleService(args).run()
 
 
