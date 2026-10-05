@@ -66,7 +66,21 @@ def test_fr2312_append_unaccepted_stamps_and_preserves_pin():
     assert row.get("require_machine") == "ionos"
     assert _has_ionos_pin(str(row.get("body") or ""))
     assert gitclaim.row_blocked_for_machine(row, "marchhare-35016") is True
-    assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-1") is False
+    # FR #2525: parse_seat_nick only accepts machines in seat_machine_ids(); pin the
+    # canonical fold target so ionos↔win-mpre matching is not digest-environment flake.
+    import bobreport
+
+    real_ids = bobreport.seat_machine_ids
+
+    def _ids():
+        return set(real_ids()) | {"win-mpre8vi4u6u", "ionos"}
+
+    bobreport.seat_machine_ids = _ids  # type: ignore[assignment]
+    try:
+        assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-1") is False
+        assert gitclaim.row_blocked_for_machine(row, "ionos-1") is False
+    finally:
+        bobreport.seat_machine_ids = real_ids  # type: ignore[assignment]
 
 
 def test_fr2312_naive_truncate_would_miss_pin_but_helper_does_not():

@@ -784,11 +784,11 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
-    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ionos\b"), "ionos"),
-    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ce-priority-dev1\b"), "ce-priority-dev1"),
-    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*ce-priority-dev\b"), "ce-priority-dev1"),
-    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
-    (re.compile(r"(?im)^\s*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
+    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ionos\b"), "ionos"),
+    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ce-priority-dev1\b"), "ce-priority-dev1"),
+    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ce-priority-dev\b"), "ce-priority-dev1"),
+    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
+    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
     # agentic_fomprep WP0 live proof must run on DEV1
     (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
     (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
@@ -846,6 +846,8 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # FR #2512 / #2511: airc MSI re-pack + install/smoke on ionos (mis-offered to marchhare
     # while frozen jeeves lagged #2451 cues). Hard pin survives empty/stale queue body.
     ("simonbarnett/bobiverse", "#2511"): "ionos",
+    # FR #2525 / #2522: maintenance butler FR pin past truncate + backtick line.
+    ("simonbarnett/bobiverse", "#2522"): "ionos",
 }
 
 # FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
@@ -873,7 +875,9 @@ _MRB_HOME_BOARD_BODY_RE = re.compile(
 # survive (FR #2312 — #1714 pin sat after char 500 and was dropped on enqueue).
 QUEUE_BODY_LIMIT = 500
 _REQUIRE_MACHINE_PIN_LINE_RE = re.compile(
-    r"(?im)^[ \t]*require_machine\s*[:=]\s*[a-z0-9][a-z0-9_.-]*\b"
+    # FR #2525: allow markdown wrappers + trailing notes, e.g.
+    # `` `require_machine: ionos` (hotpatch verify) ``
+    r"(?im)^[ \t]*[`*]*require_machine\s*[:=]\s*([a-z0-9][a-z0-9_.-]*)\b[`*]*"
 )
 
 
@@ -887,8 +891,11 @@ def _body_for_queue(body: str, *, limit: int | None = None) -> str:
         return text
     pins: list[str] = []
     for m in _REQUIRE_MACHINE_PIN_LINE_RE.finditer(text):
-        line = m.group(0).strip()
-        if line and line not in pins:
+        mid = (m.group(1) or "").strip().lower()
+        if not mid:
+            continue
+        line = f"require_machine: {mid}"
+        if line not in pins:
             pins.append(line)
     head = text[:lim].rstrip()
     if not pins:
