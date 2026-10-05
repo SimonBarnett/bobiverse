@@ -81,7 +81,8 @@ An unknown reading is "not available" (falls through), never "available". Readin
   coalesced into one `FROM (flood-coalesced N messages) ...`; identical consecutive lines are dropped; `POINT/DIGEST/AGPK/SEAL`, `is busy.`, `password=`, `XAI_API_KEY` lines are
   never relayed; messages arriving during the 6 s agent start-up are held and injected the moment it is ready. PMs are relayed only from `Jeeves`.
 * **NACK of a second assign (FR #1732):** free-rx / harvest hold only for NACK/GIVEUP/DONE that match the open ACK job id; concurrent NACK while another ACK is open keeps the seat busy.
-* **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline. Live seats need a rebuilt `bob-worker.exe` (`Build-BobWorker` / MSI) - source-only patches do not update the frozen PyInstaller binary already running from the tray.
+* **Inject paste (FR #2498 / #1601)**: paste the FROM line via clipboard+Ctrl+V (fallback: one batched WriteConsoleInput of all KEY_EVENTs — never per-char drip into the Grok TUI). Then wait BOB_WORKER_SUBMIT_GAP_S (default 0.20s) and Enter twice so the TUI submits. Live seats need a rebuilt ob-worker.exe (Build-BobWorker / MSI) - source-only patches do not update the frozen PyInstaller binary.
+
 * **Liveness answered by the exe**: server `PING`->`PONG` at once, CTCP PING/VERSION, and the fleet `ping` / `ping <selector>` in `#<machine>` -> `pong` (selector matches the
   nick or the machine id; prefix/substring/`*`/`?`). Pings are never forwarded to the agent (no wake, no flood).
 * **Reply path (FR #2380)**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to `$env:BOB_OUTBOX` (bob-worker sets it on every agent child) or the path in the first instruction / each injected `FROM ... [outbox: <path>]` footer

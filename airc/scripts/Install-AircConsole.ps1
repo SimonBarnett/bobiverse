@@ -25,8 +25,8 @@ param(
     [string]$ServiceName = 'AircConsole',
     # Absolute python.exe for LocalSystem (#282). Empty = auto-resolve at install.
     [string]$Python = '',
-    # Fleet shop id (ionos/flamingo/…). Empty = BOB_MACHINE_ID / AIRC_CONSOLE_MACHINE.
-    # Required on boxes where COMPUTERNAME is not the fleet id (e.g. WIN-…).
+    # Fleet shop id (ionos/flamingo/...). Empty = BOB_MACHINE_ID / AIRC_CONSOLE_MACHINE.
+    # Required on boxes where COMPUTERNAME is not the fleet id (e.g. WIN-...).
     [string]$MachineId = '',
     # #277: default starts the service so Running is the unattended end state.
     [switch]$NoStart
@@ -110,7 +110,7 @@ if ((-not $priorAppParams) -and $scriptDirEarly) {
                 Launcher      = [string]($snap.Launcher)
                 Raw           = ''
             }
-            Write-Host "INFO FR #1552: no AppParameters — using $snapPath"
+            Write-Host "INFO FR #1552: no AppParameters - using $snapPath"
         } catch {
             Write-Host ("WARN airc-install.json read: {0}" -f $_.Exception.Message)
         }
@@ -139,7 +139,7 @@ $script:AircConsoleMachineId = $MachineId
 if ($MachineId) {
     Write-Host "INFO MachineId=$MachineId (console will JOIN #$MachineId)"
 } else {
-    Write-Warning ("Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console may join #win-… instead of #ionos." -f $env:COMPUTERNAME)
+    Write-Warning ("Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console may join #win-... instead of #ionos." -f $env:COMPUTERNAME)
 }
 
 # FR #259: $PSScriptRoot can be empty in param() defaults under [CmdletBinding()];
@@ -191,17 +191,20 @@ function Resolve-AircSafeConsoleHome {
       can re-bake the orphan NickServ home). Migrate files to <install>\home and rewrite paths.
     #>
     param(
-        [Parameter(Mandatory)][string]$Home,
+        # FR #2499: never name this $Home - automatic $Home is read-only under bind.
+        [Parameter(Mandatory)]
+        [Alias('Home')]
+        [string]$HomePath,
         [Parameter(Mandatory)][string]$SafeHome,
         [string]$PasswordFilePath = ''
     )
-    if (-not (Test-AircDefaultProfileHome -Path $Home)) {
-        return [pscustomobject]@{ ConsoleHome = $Home; PasswordFile = $PasswordFilePath; Migrated = $false }
+    if (-not (Test-AircDefaultProfileHome -Path $HomePath)) {
+        return [pscustomobject]@{ ConsoleHome = $HomePath; PasswordFile = $PasswordFilePath; Migrated = $false }
     }
-    Write-Host "WARN FR #2355: ConsoleHome under Users\Default ($Home) — migrating to $SafeHome"
+    Write-Host "WARN FR #2355: ConsoleHome under Users\Default ($HomePath) - migrating to $SafeHome"
     New-Item -ItemType Directory -Force -Path $SafeHome | Out-Null
-    if (Test-Path -LiteralPath $Home) {
-        Copy-Item -LiteralPath (Join-Path $Home '*') -Destination $SafeHome -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $HomePath) {
+        Copy-Item -LiteralPath (Join-Path $HomePath '*') -Destination $SafeHome -Recurse -Force -ErrorAction SilentlyContinue
     }
     $pf = $PasswordFilePath
     if ($pf -and (Test-AircDefaultProfileHome -Path $pf)) {
@@ -252,7 +255,7 @@ function Write-AircSecretFile {
     )
     $text = ($Secret -replace '[\r\n]+$', '').Trim()
     if (-not $text) { throw "refusing empty secret for $Path" }
-    # ASCII one-line; no BOM — same shape as connect.password / NickServ GUID.
+    # ASCII one-line; no BOM - same shape as connect.password / NickServ GUID.
     [IO.File]::WriteAllText($Path, $text + "`n", [Text.UTF8Encoding]::new($false))
     icacls $Path /grant 'SYSTEM:(R)' 2>$null | Out-Null
     if ($env:USERNAME) {
@@ -262,7 +265,7 @@ function Write-AircSecretFile {
 
 function Initialize-AircConsoleHomeSecrets {
     param(
-        # Never name this $Home — PowerShell automatic $Home is read-only (FR #259).
+        # Never name this $Home - PowerShell automatic $Home is read-only (FR #259).
         [Parameter(Mandatory)][string]$ConsoleHomeDir,
         [string[]]$OperatorNicks,
         [string]$NickServPasswordFile = '',
@@ -314,7 +317,7 @@ function Initialize-AircConsoleHomeSecrets {
         throw 'operators.txt missing and -Operators empty (FR #253)'
     }
 
-    # #271 NickServ GUID — mint here so first service start is unattended.
+    # #271 NickServ GUID - mint here so first service start is unattended.
     if (-not $NickServPasswordFile) {
         $NickServPasswordFile = Join-Path $ConsoleHomeDir 'console.password'
     }
@@ -456,7 +459,7 @@ if ($useAircExe) {
     }
     $Python = (Resolve-Path -LiteralPath $Python).Path
     Write-Host "INFO service python=$Python"
-    # Application MUST be powershell.exe (never the .ps1 Path — see NSSM GUI / issue #259).
+    # Application MUST be powershell.exe (never the .ps1 Path - see NSSM GUI / issue #259).
     $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" -ServiceMode -ConsoleHome `"$ConsoleHome`""
     $appParams += " -Python `"$Python`""
     $appParams += " -PasswordFile `"$PasswordFile`""
@@ -484,7 +487,7 @@ $setPairs = @(
     @('ObjectName', 'LocalSystem')
 )
 # Fleet id is passed via AppParameters -MachineId (LocalSystem has no user env).
-# Do not set AppEnvironmentExtra here — NSSM MULTI_SZ quoting is fragile on WinPS 5.1.
+# Do not set AppEnvironmentExtra here - NSSM MULTI_SZ quoting is fragile on WinPS 5.1.
 $logDir = Join-Path $packRoot 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $log = Join-Path $logDir 'airc-console.log'
@@ -519,7 +522,7 @@ Write-Host ("Application=" + ($appGet.Output -join ' ').Trim())
 Write-Host ("AppParameters=" + ($parGet.Output -join ' ').Trim())
 
 if ($NoStart) {
-    Write-Host 'INFO Install done; -NoStart set — not starting service.'
+    Write-Host 'INFO Install done; -NoStart set - not starting service.'
 } else {
     # #277 unattended end state: service Running.
     Write-Host "INFO starting $ServiceName"

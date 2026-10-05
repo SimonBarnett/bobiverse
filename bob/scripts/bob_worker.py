@@ -853,10 +853,143 @@ def _submit_gap_s(default: float = 0.20) -> float:
     return max(0.05, min(2.0, v))
 
 
+def _clipboard_get_unicode() -> str | None:
+    """Best-effort read of current CF_UNICODETEXT (FR #2504). None if empty/unavailable."""
+    if os.name != "nt":
+        return None
+    CF_UNICODETEXT = 13
+    try:
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            return None
+        if not u32.OpenClipboard(None):
+            return None
+        try:
+            h = u32.GetClipboardData(CF_UNICODETEXT)
+            if not h:
+                return None
+            ptr = k32.GlobalLock(h)
+            if not ptr:
+                return None
+            try:
+                return ctypes.wstring_at(ptr)
+            finally:
+                k32.GlobalUnlock(h)
+        finally:
+            u32.CloseClipboard()
+    except Exception:
+        return None
+
+
+def _clipboard_set_unicode(text: str) -> bool:
+    """Put Unicode text on the Windows clipboard. Used by inject_console paste path (FR #2498)."""
+    if os.name != "nt":
+        return False
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    data = (text.replace("\x00", "") + "\x00").encode("utf-16-le")
+    if not u32.OpenClipboard(None):
+        return False
+    try:
+        u32.EmptyClipboard()
+        h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not h:
+            return False
+        ptr = k32.GlobalLock(h)
+        if not ptr:
+            k32.GlobalFree(h)
+            return False
+        try:
+            ctypes.memmove(ptr, data, len(data))
+        finally:
+            k32.GlobalUnlock(h)
+        if not u32.SetClipboardData(CF_UNICODETEXT, h):
+            k32.GlobalFree(h)
+            return False
+        return True
+    finally:
+        u32.CloseClipboard()
+
+
+def _clipboard_restore_unicode(prior: str | None) -> bool:
+    """Restore prior CF_UNICODETEXT after inject paste, or leave empty if prior was None (FR #2504)."""
+    if os.name != "nt":
+        return False
+    try:
+        if prior is None:
+            u32 = ctypes.WinDLL("user32", use_last_error=True)
+            if not u32.OpenClipboard(None):
+                return False
+            try:
+                u32.EmptyClipboard()
+                return True
+            finally:
+                u32.CloseClipboard()
+        return _clipboard_set_unicode(prior)
+    except Exception:
+        return False
+
+
+def _build_ctrl_v_records():
+    """Ctrl down, V down/up, Ctrl up - one paste chord."""
+    wintypes, INPUT_RECORD = _win_structs()
+    arr = (INPUT_RECORD * 4)()
+    seq = [
+        (0x11, 1, "\x00", 0x0008),
+        (0x56, 1, "v", 0x0008),
+        (0x56, 0, "v", 0x0008),
+        (0x11, 0, "\x00", 0),
+    ]
+    for i, (vk, down, ch, ctrl) in enumerate(seq):
+        rec = arr[i]
+        rec.EventType = 1
+        k = rec.Event.KeyEvent
+        k.bKeyDown = down
+        k.wRepeatCount = 1
+        k.wVirtualKeyCode = vk
+        k.wVirtualScanCode = 0
+        k.uChar = ch
+        k.dwControlKeyState = ctrl
+    return arr
+
+
+def _write_console_all(k32, h, recs, wintypes) -> bool:
+    """Write every INPUT_RECORD; retry remainder if WriteConsoleInput truncates. No sleeps."""
+    if not recs:
+        return True
+    total = len(recs)
+    offset = 0
+    written = wintypes.DWORD(0)
+    Elem = recs._type_
+    while offset < total:
+        n = total - offset
+        rem = (Elem * n)()
+        for i in range(n):
+            rem[i] = recs[offset + i]
+        if not k32.WriteConsoleInputW(h, rem, n, ctypes.byref(written)):
+            return False
+        got = int(written.value or 0)
+        if got <= 0:
+            return False
+        offset += got
+    return True
+
+
 def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bool:
-    """Type `text` + Enter into THIS exe's console input. t771u: the agent is a child that INHERITED this console (one window,
-    one console), so its keyboard input is our CONIN$ - no AttachConsole/FreeConsole dance and no second console. `pid` is
-    kept for the call signature/logging only. Returns True on success."""
+    """Paste text into THIS process's console input and submit with Enter.
+
+    FR #2498: do not drip KEY_EVENT per character into the Grok TUI (that paints
+    one glyph at a time and can take minutes per Jeeves line). Prefer clipboard +
+    Ctrl+V (one paste), then the FR #1601 submit gap + double Enter. Fallback: one
+    batched WriteConsoleInput of all KEY_EVENTs (still no per-char sleep).
+
+    FR #2504: save prior CF_UNICODETEXT before EmptyClipboard; restore after the
+    Ctrl+V chord has been queued and the submit gap has elapsed (best-effort) so
+    operator clipboard is not permanently clobbered. pid is call-signature only.
+    """
     if os.name != "nt":
         return False
     text = one_line(text)
@@ -874,21 +1007,33 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
         h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
         if not h or h == ctypes.c_void_p(-1).value:
             return False
+        prior = None
+        clipboard_touched = False
         try:
-            written = wintypes.DWORD(0)
-            recs = build_key_records(text, u32)
-            if not k32.WriteConsoleInputW(h, recs, len(recs), ctypes.byref(written)):
-                return False
-            # End paste chunk so Enter SUBMITS (not a literal newline in the buffer).
+            pasted = False
+            prior = _clipboard_get_unicode()
+            if _clipboard_set_unicode(text):
+                clipboard_touched = True
+                pasted = _write_console_all(k32, h, _build_ctrl_v_records(), wintypes)
+            if not pasted:
+                recs = build_key_records(text, u32)
+                if not _write_console_all(k32, h, recs, wintypes):
+                    return False
+            # Give the TUI time to drain Ctrl+V and read our clipboard, then restore.
             time.sleep(gap)
-            enter = build_enter_records()
-            if not k32.WriteConsoleInputW(h, enter, len(enter), ctypes.byref(written)):
+            if clipboard_touched:
+                _clipboard_restore_unicode(prior)
+                clipboard_touched = False
+            if not _write_console_all(k32, h, build_enter_records(), wintypes):
                 return False
-            # Second Enter covers TUIs that consume the first as newline after a long paste.
             time.sleep(min(0.08, gap))
-            enter2 = build_enter_records()
-            return bool(k32.WriteConsoleInputW(h, enter2, len(enter2), ctypes.byref(written)))
+            return _write_console_all(k32, h, build_enter_records(), wintypes)
         finally:
+            if clipboard_touched:
+                try:
+                    _clipboard_restore_unicode(prior)
+                except Exception:
+                    pass
             k32.CloseHandle(h)
 
 
