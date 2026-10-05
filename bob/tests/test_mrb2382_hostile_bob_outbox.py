@@ -8,12 +8,14 @@ import bob_worker as bw
 
 def test_mrb2382_shop_strips_hash_no_double():
     env = bw.seat_env_extra(Path("run"), "#Win-MPRE", "nick")
-    # Shop keeps caller casing after stripping a leading '#'; machine id is lowercased.
+    # Leading '#' stripped for both shop and machine; machine lowercased.
     assert env["BOB_SHOP"] == "#Win-MPRE"
     assert env["BOB_MACHINE"] == "win-mpre"
     assert "##" not in env["BOB_SHOP"]
+    assert not env["BOB_MACHINE"].startswith("#")
     env2 = bw.seat_env_extra(Path("run"), "win-mpre8vi4u6u", "n")
     assert env2["BOB_SHOP"] == "#win-mpre8vi4u6u"
+    assert env2["BOB_MACHINE"] == "win-mpre8vi4u6u"
 
 
 def test_mrb2382_outbox_never_ear_home(tmp_path: Path):

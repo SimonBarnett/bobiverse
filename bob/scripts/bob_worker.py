@@ -332,12 +332,13 @@ def outbox_path_for_run(run_dir: Path | str) -> Path:
 def seat_env_extra(run_dir: Path | str, machine: str, nick: str) -> dict:
     """Env vars every agent child must inherit so compaction cannot lose the outbox (FR #2380)."""
     outbox = str(outbox_path_for_run(run_dir))
-    shop = f"#{(machine or '').strip().lstrip('#')}"
+    mid = (machine or "").strip().lstrip("#")
+    shop = f"#{mid}"
     return {
         "BOB_OUTBOX": outbox,
         "BOB_SHOP": shop,
         "BOB_NICK": (nick or "").strip(),
-        "BOB_MACHINE": (machine or "").strip().lower(),
+        "BOB_MACHINE": mid.lower(),
     }
 
 
