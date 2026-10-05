@@ -80,6 +80,7 @@ function Invoke-BobTrayStartWorkerQueue {
 }
 
 # t815u: hard cap - never more than 2 worker seats (agent or plan) per machine, counted from LIVE bob-worker*.exe processes
+# FR #2556: reclaim by seat root trees only (see Stop-BobWorkerSeatTrees); never flat Skip-N.
 # (a onefile exe = bootloader + same-named child = one seat; stale run dirs never count). Shared by the tray click and !startworker.
 # FR #2523: Watch-AgentHealth / legacy watch seats are NOT counted here and must not start as shop workers when bob-worker is installed.
 $script:BobTrayHardMaxWorkers = 2
@@ -112,7 +113,7 @@ function Test-BobWorkerProductActive {
 
 function Measure-BobTrayWorkerSeats {
     param([object[]]$Procs)
-    # Only bob-worker*.exe seats (never Watch-AgentHealth / grok.exe watch seats) — FR #2523 / t815u.
+    # Only bob-worker*.exe seats (never Watch-AgentHealth / grok.exe watch seats) - FR #2523 / t815u.
     $w = @($Procs | Where-Object { $_.Name -match '^bob-worker(-[0-9a-f]+)?\.exe$' })
     $ids = @($w | ForEach-Object { [int]$_.ProcessId })
     return @($w | Where-Object { $ids -notcontains [int]$_.ParentProcessId }).Count
@@ -129,4 +130,16 @@ function Get-BobTrayWorkerCapRefusal {
     $n = Measure-BobTrayWorkerSeats -Procs $Procs
     if ($n -ge $cap) { return ('Max {0} workers ({1} already running). Close a worker window first.' -f $cap, $n) }
     return ''
+}
+
+# FR #2556: when reclaiming over HARD_MAX_WORKERS, kill SEAT ROOT trees only.
+# Never: Get-CimInstance ... | Sort ProcessId | Select -Skip N | Stop-Process
+# (onefile = bootloader+child same name; Skip-N by flat PID kills whole seats).
+function Stop-BobWorkerSeatTrees {
+  param([int[]]$RootPids)
+  foreach ($root in $RootPids) {
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.ProcessId -eq $root -or $_.ParentProcessId -eq $root } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  }
 }
