@@ -557,24 +557,54 @@ function Sync-BobiverseWorkTree {
             if ($cur -ne $Branch) {
                 # FR #1074: still off-main after #1157 gates — alert so operators notice offer gates may lag.
                 $why = if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' }
+                $behindOff = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
+                if ($behindOff -gt 0) {
+                    $why = "$why; HEAD behind origin/$Branch by $behindOff commit(s)"
+                }
                 $log.Add("ALERT sync-worktree-off-main: $why")
                 return (Done $why)
             }
         }
         $before = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
+        $behindPre = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
+        if ($behindPre -gt 0) {
+            $log.Add("INFO sync-behind-pre: HEAD behind origin/$Branch by $behindPre commit(s); attempting ff-only")
+        }
         $m = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('merge', '--ff-only', '-q', "origin/$Branch")) -TimeoutSec 60
         if ($m.Code -ne 0) {
             foreach ($l in ($m.Out | Select-Object -First 3)) { $log.Add("  $l") }
-            $log.Add("ALERT sync-ff-failed: ff-only not possible (local commits or edits in the way); live flat scripts may lag origin/$Branch until resolved")
-            return (Done 'ff-only not possible (local commits or edits in the way); local work kept as is')
+            $behindFail = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
+            $behindMsg = if ($behindFail -gt 0) { "; HEAD behind origin/$Branch by $behindFail commit(s)" } else { '' }
+            $log.Add("ALERT sync-ff-failed: ff-only not possible (local commits or edits in the way); live flat scripts may lag origin/$Branch until resolved$behindMsg")
+            return (Done ("ff-only not possible (local commits or edits in the way); local work kept as is$behindMsg"))
         }
         $after = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
         $res.Pulled = ("$before" -ne "$after")
+        # FR #2470: verify tip after ff — a silent miss left marchhare common/scripts 403 commits behind origin/main.
+        $behind = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
+        if ($behind -gt 0) {
+            $log.Add("ALERT sync-behind: HEAD behind origin/$Branch by $behind commit(s) after ff-only; live common/scripts may lag tip (FR #2470)")
+            return (Done "still behind origin/$Branch by $behind")
+        }
         return (Done $(if ($res.Pulled) { "fast-forwarded origin/$Branch" } else { 'already up to date' }))
     } catch {
         $res.Reason = "work tree sync error: $($_.Exception.Message)"
         return [pscustomobject]$res
     }
+}
+
+function Get-BobiverseWorkTreeBehindCount {
+    # FR #2470: commits on origin/<Branch> not in HEAD (0 = tip; -1 = git error).
+    param(
+        [Parameter(Mandatory)][string]$Git,
+        [Parameter(Mandatory)][string[]]$GitArgsBase,
+        [Parameter(Mandatory)][string]$Branch
+    )
+    $c = Invoke-BobiverseGit -Git $Git -GitArgs ($GitArgsBase + @('rev-list', '--count', "HEAD..origin/$Branch")) -TimeoutSec 30
+    if ($c.Code -ne 0) { return -1 }
+    $raw = if ($c.Out.Count) { "$($c.Out[0])".Trim() } else { '' }
+    if ($raw -match '^\d+$') { return [int]$raw }
+    return -1
 }
 function Get-BobiverseInstallGitExcludeText {
     # Shared by install bootstrap and sync refresh (FR #132). Linked FR worktrees use this exclude.

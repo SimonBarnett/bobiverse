@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Queue-flow check: gated vs ungated offer queue (FR #1518 / #1508 / #2448)."""
+"""Queue-flow check: gated vs ungated offer queue (FR #1518 / #1508 / #2448 / #2446)."""
 from __future__ import annotations
 
 import json
@@ -23,6 +23,20 @@ from _common import (
 # FR #2448: pin-only / gated empty offer for idle seats sustained this long → finding.
 EMPTY_OFFER_STARVE_S = 10 * 60
 EMPTY_OFFER_STATE = "monitor-empty-offer-starve.json"
+
+# FR #2446 aliases (tests / operator docs); 10m timer lives in EMPTY_OFFER_* (FR #2448).
+PIN_LEDGER_STARVE_S = EMPTY_OFFER_STARVE_S
+_PIN_STARVE_STATE = EMPTY_OFFER_STATE
+
+
+def _update_pin_starve_timer(ops: Path, active_keys: list[str]) -> tuple[bool, float]:
+    """Compat wrapper for FR #2446 tests; delegates to EMPTY_OFFER starve tracker."""
+    active = bool(active_keys)
+    sig = "|".join(sorted(active_keys)) if active_keys else ""
+    age, _over = _update_empty_offer_starve(ops, active=active, signature=sig)
+    # Threshold follows PIN_LEDGER_STARVE_S so tests can monkeypatch it independently.
+    return age >= float(PIN_LEDGER_STARVE_S), age
+
 
 
 def _load_json(path: Path):
@@ -206,6 +220,28 @@ def _pin_zero_seat_note(unaccepted: list[dict], digest_doc: dict) -> str | None:
     return "offer queue gated: require_machine pins only (seats present on pin machines)"
 
 
+def _pin_ledger_starve_keys(home: Path, unaccepted: list[dict]) -> list[str]:
+    """FR #2446: living require_machine rows where every live pin-machine seat GIVEUP'd."""
+    try:
+        gc = _ensure_gitclaim()
+        live = gc.live_seat_nicks(home)
+        keys: list[str] = []
+        for r in unaccepted:
+            if not isinstance(r, dict):
+                continue
+            blocked = gc.require_machine_all_live_gave_up(home, r, live)
+            if not blocked:
+                continue
+            repo = str(r.get("repo") or r.get("owner_repo") or "?")
+            ident = r.get("id") or r.get("number") or "?"
+            ident_s = str(ident)
+            if not ident_s.startswith("#"):
+                ident_s = "#" + ident_s
+            keys.append(f"{repo}{ident_s}")
+        return keys
+    except Exception:
+        return []
+
 def check(args):
     chair, digest = resolve_homes(args)
     findings: list[str] = []
@@ -307,6 +343,30 @@ def check(args):
         findings.append(
             f"true starve: ungated_offerable={offerable_n} idle_seats={idle_seat_count}"
         )
+
+
+    # FR #2446: require_machine pin + all live pin seats GIVEUP -> heal ledger immediately.
+    pin_ledger_keys: list[str] = []
+    healed_lines: list[str] = []
+    home = qpath.parent
+    if len(unaccepted) > 0:
+        pin_ledger_keys = _pin_ledger_starve_keys(home, unaccepted)
+        if pin_ledger_keys:
+            try:
+                gc = _ensure_gitclaim()
+                healed_lines = gc.heal_require_machine_all_gave_up(home)
+            except Exception:
+                healed_lines = []
+            detail = ",".join(pin_ledger_keys)
+            if healed_lines:
+                notes.append(
+                    "pin ledger starve healed (FR #2446): " + "; ".join(healed_lines)
+                )
+                findings.append(
+                    f"pin ledger starve healed: {detail} - see jeeves/docs/empty-offer-operator.md"
+                )
+            else:
+                notes.append(f"pin ledger starve detected (heal skipped/empty): {detail}")
 
     # FR #2448: sustained pin-only / gated empty while idle seats exist → finding after 10m.
     rm_n = int(gated_counts.get("require_machine") or 0)

@@ -3762,6 +3762,130 @@ def ledger_giveup(home: Path, nick: str, repo: str, task: str, ident: str, refs=
         pass
 
 
+def ledger_clear_giveup(
+    home: Path,
+    repo: str,
+    ident: str,
+    nick: str | None = None,
+    task: str = "FR",
+) -> int:
+    """FR #2446 operator heal: drop ledger giveup for ``repo#ident`` (one nick or all nicks).
+
+    Returns how many nick entries were cleared for the row key. Does not rewrite
+    linked-ref keys (operator clears the living FR/issue key that is stuck).
+    """
+    key = _lkey(repo, ident)
+    task_u = (task or "FR").upper()
+    me = _canon_ledger_nick(nick) if nick else ""
+    cleared = [0]
+
+    def _f(doc: dict) -> None:
+        gu = doc.get("giveup") or {}
+        if key not in gu or not isinstance(gu[key], dict):
+            return
+        bucket = gu[key]
+        if me:
+            tl = bucket.get(me) or []
+            if task_u in tl:
+                bucket[me] = [t for t in tl if t != task_u]
+                cleared[0] += 1
+                if not bucket[me]:
+                    bucket.pop(me, None)
+        else:
+            for n, tl in list(bucket.items()):
+                if task_u in (tl or []):
+                    bucket[n] = [t for t in (tl or []) if t != task_u]
+                    cleared[0] += 1
+                    if not bucket[n]:
+                        bucket.pop(n, None)
+        if not bucket:
+            gu.pop(key, None)
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        return 0
+    return cleared[0]
+
+
+def live_seats_matching_require_machine(live: set[str], required: str) -> list[str]:
+    """Live seat nicks that match a ``require_machine`` pin (FR #2446)."""
+    req = str(required or "").strip()
+    if not req or req.lower() in ("*", "any", "none", "-", ""):
+        return []
+    out: list[str] = []
+    for nick in sorted(live or ()):
+        if seat_matches_require_machine(str(nick), req):
+            out.append(str(nick))
+    return out
+
+
+def require_machine_all_live_gave_up(
+    home: Path, row: dict, live: set[str] | None = None
+) -> list[str]:
+    """FR #2446: when a living require_machine row is GIVEUP'd by every live seat on that machine.
+
+    Returns the matching live nicks (all gave up) or ``[]`` when the heal/surface
+    condition does not apply (no pin, no matching live seats, or at least one
+    matching seat has not given up).
+    """
+    if not isinstance(row, dict):
+        return []
+    row_eff = dict(row)
+    _stamp_require_machine(row_eff)
+    req = str(row_eff.get("require_machine") or "").strip()
+    if not req or req.lower() in ("*", "any", "none", "-", ""):
+        return []
+    seats = live if live is not None else live_seat_nicks(home)
+    matching = live_seats_matching_require_machine(set(seats or ()), req)
+    if not matching:
+        return []
+    ledger = ledger_load(home)
+    task = _canon_task(row_eff)
+    blocked: list[str] = []
+    for nick in matching:
+        why = _ledger_blocks(ledger, row_eff, nick)
+        if why and "gave up" in why:
+            blocked.append(nick)
+            continue
+        if row_gave_up_by(row_eff, nick):
+            blocked.append(nick)
+            continue
+        return []
+    return blocked if len(blocked) == len(matching) else []
+
+
+def heal_require_machine_all_gave_up(
+    home: Path, live: set[str] | None = None
+) -> list[str]:
+    """Clear ledger giveup when every live pin-machine seat gave up a living FR (FR #2446).
+
+    Returns human-readable heal lines (repo#id + nick count). Shop IRC stays short;
+    callers log these for operators / monitors.
+    """
+    try:
+        path = queue_path(home)
+        raw = json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
+        rows = [r for r in (raw.get("unaccepted") or []) if isinstance(r, dict)]
+    except Exception:
+        return []
+    seats = live if live is not None else live_seat_nicks(home)
+    healed: list[str] = []
+    for row in rows:
+        blocked = require_machine_all_live_gave_up(home, row, seats)
+        if not blocked:
+            continue
+        repo = str(row.get("repo") or "")
+        ident = str(row.get("id") or "")
+        task = _canon_task(row)
+        n = 0
+        for nick in blocked:
+            n += ledger_clear_giveup(home, repo, ident, nick=nick, task=task)
+        if n:
+            healed.append(f"{repo}{ident if str(ident).startswith('#') else '#' + str(ident)} cleared={n}")
+    return healed
+
+
 def _row_link_keys(row: dict) -> list[str]:
     repo = str(row.get("repo") or "")
     refs = row.get("refs") or []
