@@ -94,3 +94,41 @@ def test_handle_raw_heard_status_routes_job_not_shell(tmp_path):
     assert hr is not None and hr.action == "job"
     assert any(r.startswith("STATUS machine=tm") for r in replies)
     assert any(r == "DONE id=c25bd00e exit=0" for r in replies)
+
+
+def test_mrb2571_sanitize_bobtalk_prefix_without_heard():
+    """MRB #2571: @nick mid here. weekly=N. STATUS (no Heard:) still strips to STATUS."""
+    noisy = "@tm_console marchhare here. weekly=27. STATUS"
+    assert ac.sanitize_console_operator_text(noisy) == "STATUS"
+    assert not ac.sanitize_console_operator_text(
+        "@tm_console marchhare here. weekly=27. Heard: Get-Date"
+    ).startswith("@")
+
+
+def test_mrb2571_status_without_caller_id_still_emits_done(tmp_path):
+    """MRB #2571: STATUS with empty kv still ends DONE id=… exit=0 (generated id)."""
+    for name in ("bob", "airc", "jeeves"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    store = jobs.JobStore(tmp_path / "home")
+    proto = jobs.JobProtocol(store, ai_root=tmp_path, machine="tm", airc_running=True)
+    lines = proto.handle("bob-tm", "STATUS", {})
+    assert lines[-1].startswith("DONE id=") and lines[-1].endswith("exit=0")
+    assert len(lines[-1].split("id=")[1].split()[0]) == 8
+
+
+def test_mrb2571_skills_status_heard_bullet_contiguous():
+    """MRB #2571: skill inserts are complete bullets (no orphan Heard: tail)."""
+    skill = (ROOT / "airc" / ".grok" / "skills" / "bobiverse-airc" / "SKILL.md").read_text(
+        encoding="utf-8-sig"
+    )
+    assert "STATUS + Heard: strip (FR #2570)" in skill
+    assert "sanitize_console_operator_text" in skill
+    assert "Footgun" in skill or "footgun" in skill.lower()
+    trouble = (
+        ROOT / "airc" / ".grok" / "skills" / "bobiverse-airc-troubleshooting" / "SKILL.md"
+    ).read_text(encoding="utf-8-sig")
+    assert "-Action Status" in trouble or "Action Status" in trouble
+    assert "FR #2570" in trouble
+
