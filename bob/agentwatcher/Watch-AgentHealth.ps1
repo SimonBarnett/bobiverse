@@ -33,6 +33,9 @@ param(
 
     [switch]$WatchWorker,
 
+    # FR #2523: escape hatch only — default refuses start when bob-worker.exe is present.
+    [switch]$AllowAlongsideBobWorker,
+
     [ValidateSet('on', 'off')]
     [string]$Windows = 'on',
 
@@ -46,6 +49,33 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $script:AgentTuiWindowStyle = $(if ($Windows -eq 'on') { 'Normal' } else { 'Hidden' })
+
+# FR #2523: when bob-worker is the active product, do not start a legacy watch shop seat
+# (exceeds the 2-seat intent and steals Jeeves offers). Escape hatch: -AllowAlongsideBobWorker.
+function Test-BobWorkerProductActive {
+    param([string]$HintRoot = '')
+    $paths = New-Object System.Collections.Generic.List[string]
+    if ($HintRoot) { $paths.Add((Join-Path $HintRoot 'worker\bob-worker.exe')) }
+    if ($PSScriptRoot) {
+        $paths.Add((Join-Path (Split-Path -Parent $PSScriptRoot) 'worker\bob-worker.exe'))
+        $paths.Add((Join-Path $PSScriptRoot '..\worker\bob-worker.exe'))
+    }
+    foreach ($root in @('C:\ai\bob', 'D:\ai\bob', 'E:\ai\bob')) {
+        if (Test-Path -LiteralPath $root) {
+            $paths.Add((Join-Path $root 'worker\bob-worker.exe'))
+        }
+    }
+    foreach ($p in $paths) {
+        try {
+            if ($p -and (Test-Path -LiteralPath ([IO.Path]::GetFullPath($p)))) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+if (-not $AllowAlongsideBobWorker -and (Test-BobWorkerProductActive -HintRoot $Cwd)) {
+    throw 'FR #2523: bob-worker.exe is installed — refuse Watch-AgentHealth shop start. Use tray Agent (bob-worker). Pass -AllowAlongsideBobWorker to override.'
+}
 
 if (-not $Grok -and -not $Cursor) {
     throw 'Pass --grok (agent.exe) or --cursor (agent.cmd).'

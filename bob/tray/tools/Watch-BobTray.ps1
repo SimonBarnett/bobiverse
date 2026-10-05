@@ -1299,6 +1299,22 @@ function Show-BobTraySessionApiKeyDialog {
 
 function Start-BobTrayAgentWatch {
     param($Agent)
+    # FR #2523: bob-worker is the only shop build seat. Do not spawn Watch-AgentHealth alongside it.
+    if (Get-Command Test-BobWorkerProductActive -ErrorAction SilentlyContinue) {
+        if (Test-BobWorkerProductActive -InstallRoot $RepoRoot) {
+            Write-TrayLog 'agents: FR #2523 refusing Watch-AgentHealth start - bob-worker.exe is installed; use tray Agent (bob-worker)'
+            try {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "bob-worker is installed on this box.`r`nUse the tray Agent item (bob-worker) for shop seats.`r`nLegacy Watch-AgentHealth is disabled alongside bob-worker (FR #2523).",
+                    'Bob Fleet Agents',
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+            }
+            catch { }
+            return
+        }
+    }
     if (-not (Test-BobTrayAgentMonitorReady)) {
         Initialize-BobTrayAgentSetup $Agent
         return
@@ -1497,6 +1513,13 @@ function Stop-BobTrayAgentWatchSeat {
 
 function Invoke-BobTrayAgent {
     param($Agent)
+    # FR #2523: same gate as Start-BobTrayAgentWatch (bob-worker product wins).
+    if (Get-Command Test-BobWorkerProductActive -ErrorAction SilentlyContinue) {
+        if (Test-BobWorkerProductActive -InstallRoot $RepoRoot) {
+            Write-TrayLog 'agents: FR #2523 Invoke-BobTrayAgent blocked - bob-worker active'
+            return
+        }
+    }
     if (-not (Test-BobTrayAgentInstalled $Agent)) {
         Initialize-BobTrayAgentSetup $Agent
         return
