@@ -52,6 +52,16 @@ Prefer **deterministic scripts that run without tokens** over reasoning. Run the
 
 Runner: `scripts\Invoke-JeevesMonitorCheck.ps1 -Check <name> [-DryRun]`. Exit codes: **0** = ok, **1** = finding, **2** = error. Start Menu **Start Jeeves Monitor** launches a NEW agent here via `scripts\Start-JeevesMonitor.ps1` (never resume).
 
+## Maintenance agent (FR #2412 / #2522)
+
+When `jeeves.exe --heal` still fails, ONE rate-limited maintenance agent starts here (`bob-worker.exe --mode maintenance`; single-instance lock + 30-minute cooldown unchanged).
+
+- **Window:** title exactly `Jeeves maintenance`, Jeeves **butler** icon (`assets\jeeves-butler.ico`, same as the tray Jeeves / Start Jeeves Monitor).
+- **Session:** grok **resumes** the last maintenance session (recorded in `%LOCALAPPDATA%\Bobiverse\maintenance\last-session.json`) when that session still exists under this folder; otherwise a NEW session. This is the ONLY seat that may resume; worker/plan/monitor seats stay NEW-only.
+- **Finish order (CAST IRON):** 1) harvest maintenance skills into the Jeeves skills (`.grok\skills`, honesty box) and file issues/FRs for every finding; close receipt issues immediately; 2) ONLY THEN write the run dir's `maintenance-done.json` (`harvested: true`, `issues: [...]`, `receipts_closed: true`); 3) the exe closes the agent and its own console. No lingering window.
+- **Cap:** does NOT count toward the 2-worker-seat cap and is never blocked by it (worker seats only). Still at most ONE maintenance agent (file lock + mutex).
+- **Extending self-test/heal:** the agent MAY add or update deterministic checks as `jeeves/checks/check_<name>.py` (see `jeeves/checks/README.md`) plus matching pytest under `jeeves/tests/`, **only through a PR + MRB**. Never live-edit the running `jeeves.exe` or its install; a rebuilt exe picks the new check up (`--self-test` loads every `check_*.py`).
+
 ## Self-harvest loop (t865u)
 
 The monitoring agent uses the **harvest skill on itself**: after every finding, harvest the learning back into bobiverse skills via intake / PR (`Invoke-BobiverseHarvest.ps1` + `Report-BobiverseIntakeIssue.ps1`). Do not keep private playbooks â€” promote them the same turn.

@@ -27,7 +27,7 @@ from typing import Callable, Iterable
 CMD = "!startworker"
 MODES = ("agent", "plan")
 DEFAULT_MODE = "agent"
-HARD_MAX_WORKERS = 2             # t815u: slowness - never more than 2 worker seats per machine (env may only lower it)
+HARD_MAX_WORKERS = 2             # t815u / FR #2522: ONLY mode=agent seats; plan is uncapped and does not count
 DEFAULT_MAX_WORKERS = HARD_MAX_WORKERS
 DEFAULT_COOLDOWN_S = 30.0        # between two accepted starts on one machine
 REQUEST_TTL_S = 60.0             # a queued request older than this is dropped by the tray
@@ -100,12 +100,30 @@ def authorize(nick: str, account, *, machine_of_nick: Callable[[str], str | None
 
 # --------------------------------------------------------------------------- workers on this machine
 
-def count_workers(procs: Iterable[tuple]) -> int:
-    """Seats = root bob-worker*.exe processes. (pid, ppid, exe-name) tuples. A onefile exe is a bootloader plus
-    a same-named child: count the roots only."""
-    rows = [(int(p), int(pp), str(n)) for p, pp, n in procs]
-    wk = {p for p, _pp, n in rows if WORKER_EXE_RE.match(n)}
-    return sum(1 for p, pp, n in rows if p in wk and pp not in wk)
+def _entry_mode(entry) -> str:
+    if not isinstance(entry, (tuple, list)) or len(entry) < 4:
+        return "agent"
+    raw = str(entry[3] or "").strip().lower()
+    if raw in ("agent", "plan", "monitor", "maintenance"):
+        return raw
+    import re as _re
+    m = _re.search(r"--mode[=\s]+(agent|plan|monitor|maintenance)", raw)
+    return m.group(1) if m else "agent"
+
+
+def count_workers(procs: Iterable[tuple], *, modes: tuple = ("agent",)) -> int:
+    """Root bob-worker*.exe seats whose mode is in ``modes`` (default: agent/worker only).
+
+    FR #2522: plan/maintenance never count toward the IRC ``!startworker`` cap. Optional 4th
+    tuple field is mode or cmdline; missing mode defaults to agent.
+    """
+    rows = []
+    for entry in procs:
+        p, pp, n = int(entry[0]), int(entry[1]), str(entry[2])
+        rows.append((p, pp, n, _entry_mode(entry)))
+    wk = {p for p, _pp, n, _m in rows if WORKER_EXE_RE.match(n)}
+    wanted = {str(m).lower() for m in modes}
+    return sum(1 for p, pp, n, m in rows if p in wk and pp not in wk and m in wanted)
 
 
 def snapshot_procs() -> list:
@@ -235,9 +253,10 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
     if not tray_alive(qdir, now):
         return nack("no_interactive_session",
                     "nobody is logged in with the Bob tray running (start the tray from the Start menu)", mode=mode, kind=kind)
-    have = count_workers((procs or snapshot_procs)())
+    # FR #2522: only agent starts are capped; plan may start on top of 2 workers.
+    have = count_workers((procs or snapshot_procs)(), modes=("agent",))
     cap = min(gate.max_workers, HARD_MAX_WORKERS)
-    if have >= cap:
+    if mode == "agent" and have >= cap:
         return nack("cap", f"max {cap} workers ({have} running on {local})", mode=mode, kind=kind)
     left = gate.remaining(now)
     if left > 0:
@@ -249,5 +268,9 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
         except OSError as e:
             return nack("queue_error", f"could not queue the request ({type(e).__name__})", mode=mode, kind=kind)
     gate.arm(now)
-    return Decision(True, "ok", f"ACK startworker {mode} on {local} (queued {rid or '-'}; workers {have + 1}/{cap}; by {nick})",
+    slot = (
+        f"workers {have + 1}/{cap}" if mode == "agent"
+        else f"plan (uncapped; workers {have}/{cap})"
+    )
+    return Decision(True, "ok", f"ACK startworker {mode} on {local} (queued {rid or '-'}; {slot}; by {nick})",
                     mode, kind, rid)

@@ -6,7 +6,6 @@ Modes:
                 FR #2412: if still failing, start one rate-limited maintenance agent)
   --http-only   BobCallback listener (in-process path for cutover tests)
   --chair --http HOST:PORT  enable in-proc locks, start HTTP thread, then irc_agent --chair
-  bare argv (no mode)       exit 2 immediately; never grab mutex / never spawn maintenance (FR #2524)
 
 PyInstaller pack (WP3) freezes this module as jeeves.exe.
 """
@@ -24,8 +23,82 @@ from types import SimpleNamespace
 from typing import Any
 
 
-SELF_TEST_CHECKS = ("imports", "locks", "http", "queue", "health", "offer")
+SELF_TEST_CHECKS = ("imports", "locks", "http", "queue", "health", "offer")  # builtins
 DEFAULT_SELF_TEST = ("imports", "locks", "http", "queue", "offer")
+
+
+def is_ephemeral_test_home(path: Path) -> bool:
+    """FR #2526: refuse pytest/tmpdir homes left in BOB_DIGEST_HOME / JEEVES_HOME."""
+    try:
+        parts = {p.lower() for p in Path(path).resolve().parts}
+    except OSError:
+        parts = {p.lower() for p in Path(path).parts}
+    joined = "/".join(Path(path).parts).lower().replace("\\", "/")
+    if "pytest-of-" in joined or "/pytest-" in joined:
+        return True
+    if "pytest-current" in parts:
+        return True
+    return False
+
+
+def is_ephemeral_pytest_home(path: str | Path | None) -> bool:
+    """Alias for FR #2526 tests landed via #2532 (string or Path)."""
+    if path is None or str(path).strip() == "":
+        return False
+    return is_ephemeral_test_home(Path(path))
+
+
+def resolve_digest_home(
+    *,
+    digest_home: str = "",
+    home: str = "",
+    digest_home_arg: str = "",
+    home_arg: str = "",
+    env: dict | None = None,
+) -> Path:
+    """Prefer explicit --digest-home, then non-ephemeral BOB_DIGEST_HOME, then ~/.bobiverse.
+
+    Accepts digest_home/home (FR #2522) and digest_home_arg/home_arg (#2532).
+    """
+    e = os.environ if env is None else env
+    for raw in (
+        digest_home or digest_home_arg,
+        e.get("BOB_DIGEST_HOME") or "",
+        home or home_arg,
+    ):
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        cand = Path(s).expanduser()
+        if is_ephemeral_test_home(cand):
+            continue
+        return cand
+    prof = e.get("USERPROFILE") or e.get("HOME") or "."
+    return Path(prof) / ".bobiverse"
+
+
+def resolve_chair_home(*, home: str = "", env: dict | None = None) -> Path:
+    e = os.environ if env is None else env
+    for raw in (home, e.get("JEEVES_HOME") or "", e.get("BOB_JEEVES_HOME") or ""):
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        cand = Path(s).expanduser()
+        if is_ephemeral_test_home(cand):
+            continue
+        return cand
+    prof = e.get("USERPROFILE") or e.get("HOME") or "."
+    return Path(prof) / ".jeeves"
+
+
+def load_check_plugins() -> dict[str, Any]:
+    """FR #2522: check_*.py plugins (jeeves/checks); see jeeves_checks.py. Never raises."""
+    try:
+        import jeeves_checks
+
+        return jeeves_checks.load_plugin_checks(reserved=SELF_TEST_CHECKS)
+    except Exception as exc:  # noqa: BLE001
+        return {"_errors": {"errors": [f"plugin_registry:{type(exc).__name__}"]}}
 
 
 def _print_json(payload: dict) -> None:
@@ -198,20 +271,22 @@ def _check_offer(home: Path, chair_home: Path | None) -> tuple[dict[str, Any], l
         stats = gitclaim.summarize_empty_offer(root, "")
         detail = dict(stats)
         detail["ok"] = True
-        # Finding when queue has rows but zero offerable under focus (operator confusion).
-        # FR #2526: if every unaccepted row is require_machine-gated (and none out-of-focus),
-        # keep as note only — intentional pins must not exit 1 / spawn maintenance.
-        if int(stats.get("unaccepted") or 0) > 0 and int(stats.get("offerable") or 0) == 0:
+        # Finding when queue has rows but zero offerable under focus — EXCEPT when every
+        # unaccepted row is require_machine-gated (FR #2526): that is an intentional pin, so
+        # note only (do not exit 1 / spawn maintenance).
+        unacc = int(stats.get("unaccepted") or 0)
+        offerable = int(stats.get("offerable") or 0)
+        req_m = int(stats.get("require_machine") or 0)
+        out_f = int(stats.get("out_of_focus") or 0)
+        if unacc > 0 and offerable == 0:
             msg = (
                 "0 offerable for you under focus "
-                f"({stats.get('unaccepted')} unaccepted, "
-                f"{stats.get('out_of_focus')} out-of-focus, "
-                f"{stats.get('require_machine')} require_machine)"
+                f"({unacc} unaccepted, {out_f} out-of-focus, {req_m} require_machine)"
             )
-            unacc = int(stats.get("unaccepted") or 0)
-            req = int(stats.get("require_machine") or 0)
-            oof = int(stats.get("out_of_focus") or 0)
-            if req >= unacc and oof == 0:
+            if req_m >= unacc and out_f == 0:
+                detail["ok"] = True
+                detail["offer_all_require_machine"] = True
+                detail["note"] = msg
                 detail["offer_note_only"] = True
                 detail["offer_note"] = msg
             else:
@@ -231,10 +306,15 @@ def run_self_test(
     chair_home: Path | None = None,
 ) -> int:
     """Token-free self-test. 0=ok 1=finding 2=error. WP2 wires monitor libs + --check."""
-    wanted = list(checks) if checks else list(DEFAULT_SELF_TEST)
+    plugins = load_check_plugins()
+    plugin_errors = list((plugins.pop("_errors", None) or {}).get("errors") or [])
+    if checks:
+        wanted = list(checks)
+    else:
+        wanted = list(DEFAULT_SELF_TEST) + sorted(k for k, v in plugins.items() if v.get("include_default", True))
     wanted = [c.strip().lower() for c in wanted if c and c.strip()]
     for c in wanted:
-        if c not in SELF_TEST_CHECKS:
+        if c not in SELF_TEST_CHECKS and c not in plugins:
             payload = {
                 "ok": False,
                 "exit": 2,
@@ -252,7 +332,7 @@ def run_self_test(
             return 2
 
     findings: list[str] = []
-    errors: list[str] = []
+    errors: list[str] = list(plugin_errors)
     check_payloads: dict[str, Any] = {}
     chair = Path(chair_home) if chair_home else home
 
@@ -277,6 +357,15 @@ def run_self_test(
                 errors.extend(payload.get("findings") or [payload.get("error") or "health_error"])
             elif code == 1:
                 findings.extend(payload.get("findings") or ["health_finding"])
+            continue
+        if name in plugins:  # FR #2522 plugin check
+            try:
+                detail, fnd, err = plugins[name]["run"](home, chair)
+            except Exception as exc:  # noqa: BLE001
+                detail, fnd, err = {"ok": False, "plugin": plugins[name]["path"]}, [], [f"{name}:{type(exc).__name__}"]
+            check_payloads[name] = detail if isinstance(detail, dict) else {"ok": False}
+            findings.extend(str(x) for x in (fnd or []))
+            errors.extend(str(x) for x in (err or []))
             continue
         detail, fnd, err = runners[name]()
         check_payloads[name] = detail
@@ -468,8 +557,8 @@ def run_heal(
                 f"out_of_focus={detail.get('out_of_focus')} "
                 f"require_machine={detail.get('require_machine')}"
             )
-            if detail.get("offer_note"):
-                notes.append(str(detail.get("offer_note")))
+            if detail.get("offer_all_require_machine") and detail.get("note"):
+                notes.append(f"offer_pin_note: {detail.get('note')}")
     except Exception as exc:  # noqa: BLE001
         errors.append(f"offer:{type(exc).__name__}")
 
@@ -482,19 +571,18 @@ def run_heal(
         try:
             import jeeves_maintenance
 
-            # FR #2524: persist maintenance state under chair --home when set
-            # (operators look in ~/.jeeves/maintenance, not digest-home).
+            # FR #2526: lock/state under real chair home (never pytest digest); spawn clears pytest env.
+            maint_home = Path(chair) if chair else resolve_chair_home()
             mr = jeeves_maintenance.try_start_maintenance_agent(
-                home=chair,
+                home=maint_home,
                 heal_exit=int(exit_code),
                 heal_payload={
                     "findings": findings,
                     "errors": errors,
                     "actions": actions,
-                    "digest_home": str(home),
-                    "chair_home": str(chair),
                 },
                 dry_run=bool(dry_run),
+                digest_home=home,
             )
             maintenance = {
                 "action": mr.action,
@@ -570,30 +658,6 @@ def start_http_thread(
     return t, httpd
 
 
-
-def is_ephemeral_pytest_home(path: str | Path | None) -> bool:
-    """True for pytest temp homes that must not override live digest/chair (FR #2526)."""
-    s = str(path or "").replace("\\", "/").lower()
-    if not s:
-        return False
-    return ("pytest-of-" in s) or ("/pytest-current" in s) or s.rstrip("/").endswith("pytest-current")
-
-
-def resolve_digest_home(*, digest_home_arg: str = "", home_arg: str = "", env: dict | None = None) -> Path:
-    """Resolve digest home; refuse ephemeral pytest BOB_DIGEST_HOME (FR #2526)."""
-    e = os.environ if env is None else env
-    candidates = [
-        (digest_home_arg or "").strip(),
-        (e.get("BOB_DIGEST_HOME") or "").strip(),
-        (home_arg or "").strip(),
-    ]
-    for c in candidates:
-        if c and not is_ephemeral_pytest_home(c):
-            return Path(c).expanduser()
-    prof = e.get("USERPROFILE") or e.get("HOME") or "."
-    return Path(prof).expanduser() / ".bobiverse"
-
-
 def parse_http_bind(raw: str) -> tuple[str, int]:
     text = (raw or "").strip()
     if not text:
@@ -647,13 +711,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--nick", default="Jeeves")
     args, unknown = p.parse_known_args(argv)
 
-    home = resolve_digest_home(digest_home_arg=args.digest_home or "", home_arg=args.home or "")
-    chair_home = Path(args.home).expanduser() if args.home else None
-    if chair_home and is_ephemeral_pytest_home(chair_home):
-        chair_home = None
+    home = resolve_digest_home(digest_home=args.digest_home or "", home=args.home or "")
+    chair_home = resolve_chair_home(home=args.home or "") if (args.home or "").strip() else resolve_chair_home()
+    # Drop ephemeral overrides so child tools / monitor libs inherit a real home.
+    for key in ("BOB_DIGEST_HOME", "JEEVES_HOME", "BOB_JEEVES_HOME"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw and is_ephemeral_test_home(Path(raw)):
+            os.environ.pop(key, None)
 
     # FR #2524: bare jeeves.exe (no mode) must fail-fast exit 2 without grabbing
-    # the instance mutex — NSSM AppExit Restart otherwise loops and fills stderr
+    # the instance mutex - NSSM AppExit Restart otherwise loops and fills stderr
     # during cutover when AppParameters are empty/missing.
     has_mode = bool(args.self_test or args.heal or args.http_only or (args.chair and args.http))
     if not has_mode:
@@ -742,12 +809,7 @@ def main(argv: list[str] | None = None) -> int:
                     sys.argv = old
                 return 0
 
-        # Unreachable when has_mode gated above; keep defensive exit 2 (no maintenance).
-        print(
-            "jeeves.exe: error: specify --self-test, --heal, --http-only, or --chair --http HOST:PORT",
-            file=sys.stderr,
-            flush=True,
-        )
+        p.error("specify --self-test, --heal, --http-only, or --chair --http HOST:PORT")
         return 2
     finally:
         jeeves_locks.release_instance_mutex()

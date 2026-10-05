@@ -564,3 +564,12 @@ Books: `bobiverse-jeeves-monitor`, `bobiverse-jeeves-troubleshooting`. Issues: #
 | Skill inject-paste bullet had a C0 backspace that ate the leading letter of the worker exe name | Strip the C0 control byte and restore the full worker exe name; gate no-C0 on the bullet |
 
 Books: worker operating skill (tray Agent / inject path). Tip PR #2510; hostile docs this entry.
+
+## 2026-10-05 - legacy Watch-AgentHealth vs bob-worker seats (MRB #2528 / FR #2523)
+
+| Lesson | Fix / book |
+|--------|------------|
+| Legacy Watch-AgentHealth Desktop/tray seats still started beside the tray Agent product and stole shop offers past the 2-seat intent | Refuse Watch-AgentHealth shop start when worker exe is installed; skip Desktop install; tray Start/Invoke gates; Measure seats counts only worker exe processes |
+| Escape hatch for rare dual-product boxes | `-AllowAlongsideBobWorker` on Watch-AgentHealth only |
+
+Books: bob tray / agentwatcher / Install-Bob. Tip PR #2528; hostile docs this entry.

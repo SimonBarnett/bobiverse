@@ -127,6 +127,24 @@ def write_lock(home: Path, pid: int, cwd: str) -> None:
     )
 
 
+def try_claim_lock(home: Path, cwd: str, pid: int = 0) -> bool:
+    """FR #2522: atomic single-instance claim (O_CREAT|O_EXCL). Clears stale dead-PID locks first."""
+    live_maintenance_pid(home)  # clears stale
+    path = state_dir(home) / LOCK_NAME
+    payload = json.dumps({"pid": int(pid), "cwd": cwd, "ts": time.time(), "pending": pid == 0}, indent=0) + "\n"
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
+
+
 def clear_lock(home: Path) -> None:
     path = state_dir(home) / LOCK_NAME
     try:
@@ -185,23 +203,18 @@ def resolve_bob_worker_exe(jeeves_cwd: Path) -> Path | None:
     return None
 
 
-def _is_ephemeral_pytest_home(path: str | Path | None) -> bool:
-    s = str(path or "").replace("\\", "/").lower()
-    if not s:
-        return False
-    return ("pytest-of-" in s) or ("/pytest-current" in s) or s.rstrip("/").endswith("pytest-current")
-
-
-def _spawn_env_without_pytest_homes() -> dict[str, str]:
-    """FR #2526: do not inherit pytest BOB_DIGEST_HOME / JEEVES_HOME into maintenance."""
-    env = {str(k): str(v) for k, v in os.environ.items()}
+def _scrub_pytest_env(env: dict) -> dict:
+    """FR #2526: never hand a pytest temp BOB_DIGEST_HOME / JEEVES_HOME to the maintenance agent."""
+    out = dict(env)
     for key in ("BOB_DIGEST_HOME", "JEEVES_HOME", "BOB_JEEVES_HOME"):
-        if _is_ephemeral_pytest_home(env.get(key)):
-            env.pop(key, None)
-    return env
+        raw = str(out.get(key) or "")
+        low = raw.lower().replace("\\", "/")
+        if "pytest-of-" in low or "/pytest-" in low or "pytest-current" in low:
+            out.pop(key, None)
+    return out
 
 
-def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path) -> int:
+def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path, digest_home: Path | None = None) -> int:
     """Start bob-worker --mode maintenance in a new process; return pid."""
     argv = [
         str(exe),
@@ -212,7 +225,9 @@ def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path) -> int:
         "--work-root",
         str(work_root),
     ]
-    # Visible console for the ONE maintenance agent window (parity with Start-JeevesMonitor).
+    env = _scrub_pytest_env(dict(os.environ))
+    if digest_home is not None:
+        env["BOB_DIGEST_HOME"] = str(digest_home)
     creation = 0
     if os.name == "nt":
         creation = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
@@ -221,7 +236,7 @@ def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path) -> int:
         cwd=str(work_root),
         close_fds=True,
         creationflags=creation,
-        env=_spawn_env_without_pytest_homes(),
+        env=env,
     )
     return int(proc.pid)
 
@@ -234,11 +249,16 @@ def try_start_maintenance_agent(
     dry_run: bool = False,
     now: float | None = None,
     cooldown_s: float = MAINTENANCE_COOLDOWN_S,
-    spawn_fn: Callable[[Path, Path, Path], int] | None = None,
+    spawn_fn: Callable[..., int] | None = None,
     resolve_cwd: Callable[[], Path] | None = None,
     resolve_exe: Callable[[Path], Path | None] | None = None,
+    digest_home: Path | None = None,
 ) -> MaintenanceResult:
-    """If heal still failing, start one maintenance agent (or skip with logged reason)."""
+    """If heal still failing, start one maintenance agent (or skip with logged reason).
+
+    FR #2522: single-instance via live-PID check + atomic O_EXCL lock claim (bob-worker also
+    takes a named mutex). A second concurrent heal never starts a second agent.
+    """
     t = time.time() if now is None else now
     if int(heal_exit) == 0:
         r = MaintenanceResult("skip", "heal_ok")
@@ -275,11 +295,27 @@ def try_start_maintenance_agent(
         _append_log(home, r.log_line)
         return r
 
+    if not try_claim_lock(home, str(cwd), pid=0):
+        live2 = live_maintenance_pid(home)
+        r = MaintenanceResult(
+            "skip",
+            f"already_live pid={live2}" if live2 else "lock_busy",
+            cwd=str(cwd),
+            pid=live2,
+        )
+        r.log_line = f"skip reason={r.reason} cwd={cwd}"
+        _append_log(home, r.log_line)
+        return r
+
     bob_install = exe.parent.parent  # .../bob/worker/bob-worker.exe -> bob
     spawner = spawn_fn or _spawn_bob_worker
     try:
-        pid = int(spawner(exe, bob_install, Path(cwd)))
+        try:
+            pid = int(spawner(exe, bob_install, Path(cwd), digest_home))  # type: ignore[misc]
+        except TypeError:
+            pid = int(spawner(exe, bob_install, Path(cwd)))
     except Exception as exc:  # noqa: BLE001
+        clear_lock(home)
         r = MaintenanceResult("skip", f"spawn_failed:{type(exc).__name__}", cwd=str(cwd))
         r.log_line = f"skip reason={r.reason} cwd={cwd}"
         _append_log(home, r.log_line)
