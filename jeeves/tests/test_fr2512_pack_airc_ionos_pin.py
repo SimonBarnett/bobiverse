@@ -61,3 +61,30 @@ def test_fr2512_pack_airc_alone_does_not_pin():
         )
         == ""
     )
+
+def test_mrb2515_hard_pin_empty_blob_via_infer():
+    """Hostile: hard pin survives totally empty title/body (stale queue row)."""
+    assert (
+        gitclaim.infer_require_machine(
+            title="",
+            body="",
+            labels=(),
+            repo="SimonBarnett/bobiverse",
+            ident="#2511",
+        )
+        == "ionos"
+    )
+
+
+def test_mrb2515_offer_gap_pack_airc_cues_phrase_unpinned():
+    """Hostile: receipt text 'Pack-Airc cues' must not pin (no Assert/install combo)."""
+    assert (
+        gitclaim.infer_require_machine(
+            title="chair re-offered ionos airc MSI pack #2511 to marchhare-35016",
+            body="fix: stamp needs-ionos from Pack-Airc cues; refs #2511 #2512",
+            labels=("via-intake",),
+            repo="SimonBarnett/bobiverse",
+            ident="#2513",
+        )
+        == ""
+    )
