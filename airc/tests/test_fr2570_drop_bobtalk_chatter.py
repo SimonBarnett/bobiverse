@@ -1,4 +1,4 @@
-﻿"""FR #2570 follow-up: bobtalk-only chatter must not reach PowerShell."""
+"""FR #2570 follow-up: bobtalk-only chatter must not reach PowerShell."""
 from __future__ import annotations
 
 import airc_console as ac
@@ -68,3 +68,21 @@ def test_invoke_status_still_pins_id_on_main_tip():
     t = (ROOT / "airc" / "scripts" / "Invoke-AircRemote.ps1").read_text(encoding="utf-8-sig")
     assert "id={0} STATUS" in t
     assert "'Status'" in t
+
+
+def test_mrb2573_keeps_powershell_array_at_paren():
+    """MRB #2573: leading @(...) must not be dropped as a nick mention."""
+    cmd = "@('a','b') | ForEach-Object { $_ }"
+    assert ac.sanitize_console_operator_text(cmd) == cmd
+    hs = '@"\nhi\n"@'
+    assert ac.sanitize_console_operator_text(hs) == hs
+
+
+def test_mrb2573_no_unreachable_sanitize_tail():
+    """MRB #2573: sanitize must not leave dead duplicate Heard:/bobtalk block."""
+    src = (ROOT / "airc" / "scripts" / "airc_console.py").read_text(encoding="utf-8")
+    fn = src[src.index("def sanitize_console_operator_text") : src.index("def parse_shell_request")]
+    assert fn.count("_HEARD_PAYLOAD_RE.search") == 1
+    assert fn.count("_BOBTALK_PREFIX_RE.match") == 1
+    assert fn.rstrip().endswith("return raw")
+
