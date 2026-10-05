@@ -462,8 +462,19 @@ def reconnect_cap() -> int | None:
 def debug_log(path: Path | None, line: str) -> None:
     if path is None:
         return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def open_debug_log(home: Path, *, enabled: bool) -> Path | None:
+    """FR #2351: create irc.log as soon as BOB_IRC_DEBUG is on (before TCP/TLS)."""
+    if not enabled:
+        return None
+    path = Path(home) / "irc.log"
+    debug_log(path, f"debug-open home={home}")
+    return path
 
 
 class Client:
@@ -508,8 +519,16 @@ class Client:
         self.inbox = self.home / "inbox"
         self.inbox.mkdir(parents=True, exist_ok=True)
         protect.protect_path(self.inbox)
-        self.debug = self.home / "irc.log" if os.environ.get("BOB_IRC_DEBUG") else None
-        self.ident = seal.load_ident() if seal.ident_path().exists() else None
+        # FR #2351: open irc.log on Client construct so a hung connect still leaves evidence.
+        dbg_on = bool((os.environ.get("BOB_IRC_DEBUG") or "").strip())
+        self.debug = open_debug_log(self.home, enabled=dbg_on)
+        info(f"INFO home ready nick={self.live_nick} home={self.home} debug={'on' if self.debug else 'off'}")
+        self.ident = None
+        if seal.ident_path().exists():
+            try:
+                self.ident = seal.load_ident()
+            except Exception as exc:  # pragma: no cover - corrupt/foreign DPAPI must not block connect
+                info(f"WARN identity load skipped {type(exc).__name__}")
         self.peers = seal.load_peers()
         self.fragments = seal.FragmentStore()
         self._moot: dict = {}
@@ -1712,11 +1731,31 @@ class Client:
                 return
 
     def connect(self) -> ssl.SSLSocket:
+        """TCP + TLS with bounded timeouts (FR #2351: never hang silent after prior-clean)."""
+        host = self.args.host
+        port = int(self.args.port)
+        tcp_timeout = 20.0
+        tls_timeout = 20.0
+        msg = f"connecting {host}:{port} tcp_timeout={tcp_timeout:g}s"
+        info(f"INFO {msg}")
+        debug_log(self.debug, msg)
         ctx = ssl.create_default_context()
-        raw = socket.create_connection((self.args.host, self.args.port), 20)
-        raw.settimeout(None)
-        sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
+        raw = socket.create_connection((host, port), tcp_timeout)
+        debug_log(self.debug, f"tcp-ok {host}:{port}")
+        info(f"INFO tcp-ok {host}:{port}; starting TLS")
+        raw.settimeout(tls_timeout)
+        try:
+            sock = ctx.wrap_socket(raw, server_hostname=host)
+        except (OSError, ssl.SSLError) as exc:
+            debug_log(self.debug, f"tls-fail {type(exc).__name__}: {exc}")
+            try:
+                raw.close()
+            except OSError:
+                pass
+            raise
         sock.settimeout(None)
+        debug_log(self.debug, f"tls-ok {host}:{port}")
+        info(f"INFO tls-ok {host}:{port}")
         return sock
 
     def sasl_token(self) -> str | None:
@@ -2947,8 +2986,12 @@ class Client:
         self._outbox_gen += 1
         gen = self._outbox_gen
         info(
-            f"INFO connecting {self.args.host}:{self.args.port} "
+            f"INFO session start {self.args.host}:{self.args.port} "
             f"nick={self.live_nick} home={self.home}"
+        )
+        debug_log(
+            self.debug,
+            f"session start {self.args.host}:{self.args.port} nick={self.live_nick}",
         )
         self.sock = self.connect()
         threading.Thread(target=self.reader, daemon=True).start()
@@ -3002,7 +3045,13 @@ class Client:
             else:
                 self.say("AGPK v1 " + self.ident["pk"])
         info(f"INFO joined {','.join(self.channels)} as {self.live_nick}")
+        debug_log(self.debug, f"joined {','.join(self.channels)} as {self.live_nick}")
         self._last_server_rx = time.time()
+        # FR #2351: --once means one connect/JOIN then exit (smoke/UAT), not an idle loop.
+        if getattr(self.args, "once", False):
+            info("INFO once: session complete")
+            debug_log(self.debug, "once: session complete")
+            return
         while not self.stop.is_set() and not self.dead.wait(timeout=1):
             if self._consume_control_quit():
                 break
@@ -3088,7 +3137,11 @@ def main() -> None:
     p.add_argument("--outbox", default="")
     p.add_argument("--hello", default="")
     p.add_argument("--announce-key", action="store_true")
-    p.add_argument("--once", action="store_true", help="no reconnect (tests)")
+    p.add_argument(
+        "--once",
+        action="store_true",
+        help="one connect/JOIN then exit; skip prior-clean and reconnect (smoke/UAT, FR #2351)",
+    )
     p.add_argument(
         "--chair",
         action="store_true",
