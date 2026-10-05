@@ -661,20 +661,39 @@ class AircConsoleService:
                 chunk = self.sock.recv(4096)
             except (socket.timeout, TimeoutError):
                 # Python 3.10+ ssl may raise TimeoutError; keep the loop alive (#286).
+                # FR #2541: KeyboardInterrupt is BaseException — must not escape past
+                # `except Exception` during service stop mid-recv (crash-sig 6b485fc97e52813b).
                 try:
                     self._check_probe_timeout()
+                except KeyboardInterrupt:
+                    info("INFO probe interrupted -> stop")
+                    self._stop.set()
+                    return
                 except Exception as pe:
                     info(f"INFO probe-err {pe}")
                 try:
                     self.sessions.reap_idle()
+                except KeyboardInterrupt:
+                    info("INFO reap interrupted -> stop")
+                    self._stop.set()
+                    return
                 except Exception as re:
                     info(f"INFO reap-err {re}")
                 try:
                     self._idle_keepalive()
+                except KeyboardInterrupt:
+                    info("INFO keepalive interrupted -> stop")
+                    self._stop.set()
+                    return
                 except Exception as ke:
                     info(f"INFO keepalive-err {ke}")
                     self._force_reconnect = True
                 continue
+            except KeyboardInterrupt:
+                # FR #2541: clean stop on service interrupt during recv.
+                info("INFO recv interrupted -> stop")
+                self._stop.set()
+                return
             except Exception as e:
                 info(f"INFO recv-err {e}")
                 break
@@ -713,6 +732,11 @@ class AircConsoleService:
                 self.handshake()
                 self.read_loop()
                 session_ok = self._registered
+            except KeyboardInterrupt:
+                # FR #2541: NSSM stop / Ctrl+C during connect/handshake/read — exit loop.
+                info("INFO session interrupted -> stop")
+                self._stop.set()
+                break
             except Exception as e:
                 info(f"INFO session-err {e}")
             finally:
