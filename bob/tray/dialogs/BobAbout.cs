@@ -253,6 +253,7 @@ namespace BobDialogs
         [STAThread]
         static int Main(string[] args)
         {
+            CrashHook.Install("bob-about");
             string root = Common.Root(args);
             // Headless: write the install text to a file and exit (tests, support). No window, no single-instance lock.
             string textOut = Common.Arg(args, "--text-out");

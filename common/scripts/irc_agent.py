@@ -3137,6 +3137,12 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
 
 def main() -> None:
     import signal
+    try:
+        import crash_report
+
+        crash_report.install("bob-ear")
+    except Exception:
+        pass
 
     p = argparse.ArgumentParser(description="agentic TLS IRC")
     p.add_argument("--host", default="irc.ntsa.uk")

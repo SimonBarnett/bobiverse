@@ -481,6 +481,7 @@ namespace BobDialogs
         [STAThread]
         static int Main(string[] args)
         {
+            CrashHook.Install("bob-tray");
             string root = Common.Root(args);
             string machine = Common.Arg(args, "--machine");
             if (machine.Length == 0) machine = (Environment.GetEnvironmentVariable("BOB_MACHINE_ID") ?? "").Trim();

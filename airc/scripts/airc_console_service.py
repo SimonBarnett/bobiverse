@@ -928,6 +928,12 @@ def kick_frozen_service_start_hooks() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        import crash_report
+
+        crash_report.install("airc")
+    except Exception:
+        pass
     args = build_arg_parser().parse_args(argv)
     if args.selftest:
         return selftest()

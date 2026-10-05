@@ -520,6 +520,12 @@ def parse_http_bind(raw: str) -> tuple[str, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        import crash_report
+
+        crash_report.install("jeeves")
+    except Exception:
+        pass
     argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(description="jeeves.exe foundation (FR #1993)")
     p.add_argument("--self-test", action="store_true")
