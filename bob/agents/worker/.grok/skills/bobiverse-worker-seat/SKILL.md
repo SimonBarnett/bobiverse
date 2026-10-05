@@ -34,10 +34,12 @@ read it, do it, reply, stop. Several fast messages may be merged into `FROM (flo
 
 ## Replying
 
-Append lines to the `outbox.txt` file named in your first instruction (it is under `%LOCALAPPDATA%\Bobiverse\worker\run\...`, NOT in this folder):
+Append lines to the **seat** `outbox.txt` (under `%LOCALAPPDATA%\Bobiverse\worker\run\worker-<nick>-...\outbox.txt`). Prefer `$env:BOB_OUTBOX` (bob-worker sets it for every agent child — FR #2380). Each injected `FROM` line also ends with `[outbox: <path>]` so compaction cannot lose it. **Never** write to the ear's `<ai root>\bob\home\outbox.txt`.
 
 ```powershell
-Add-Content -LiteralPath '<outbox path from your first instruction>' -Value 'PRIVMSG #<machine> :done: <one short line>' -Encoding utf8
+$outbox = $env:BOB_OUTBOX
+if (-not $outbox) { $outbox = '<outbox path from first instruction or FROM [outbox:] footer>' }
+Add-Content -LiteralPath $outbox -Value 'PRIVMSG #<machine> :done: <one short line>' -Encoding utf8
 ```
 
 Keep replies short (one line, under 400 characters). Anything addressed to another channel or a nick is dropped by the program. Never include a secret.
@@ -62,9 +64,9 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 Prunes job trees when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-MaxExtraJobTrees 0`. Seat-disk `-WhatIf` reports without deleting. Never delete Ergo, secrets, the install root, or the live session id. Details: `bobiverse-bob-job-fr`.
 
 
-## Outbox path (FR #866)
+## Outbox path (FR #866 / #2380)
 
-Append ``PRIVMSG #<machine> :<text>`` to the ``outbox.txt`` path from the first instruction. The worker drains by moving the file aside, then recreates an empty ``outbox.txt`` so the path stays writable for the whole seat lifetime. If a write ever fails with PathNotFound, recreate the parent run dir and retry once.
+Append ``PRIVMSG #<machine> :<text>`` to ``$env:BOB_OUTBOX`` (or the path from the first instruction / ``FROM … [outbox: …]`` footer). The worker drains by moving the file aside, then recreates an empty ``outbox.txt`` so the path stays writable for the whole seat lifetime. If a write ever fails with PathNotFound, recreate the parent run dir and retry once. After context compaction, re-read ``$env:BOB_OUTBOX`` — do not search the install tree for ``outbox.txt`` (that finds the ear).
 
 ## If something breaks
 
