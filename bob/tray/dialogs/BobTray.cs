@@ -108,7 +108,17 @@ namespace BobDialogs
                 using (Process p = Process.Start(psi))
                 {
                     if (p == null) return false;
+                    // FR #2430: drain stderr while reading stdout — redirecting both without
+                    // draining stderr can fill the pipe and deadlock until the 8s kill.
+                    string stderr = "";
+                    System.Threading.Thread errThread = new System.Threading.Thread(() =>
+                    {
+                        try { stderr = p.StandardError.ReadToEnd(); } catch { }
+                    });
+                    errThread.IsBackground = true;
+                    errThread.Start();
                     string json = p.StandardOutput.ReadToEnd();
+                    errThread.Join(8000);
                     if (!p.WaitForExit(8000)) { try { p.Kill(); } catch { } return false; }
                     if (p.ExitCode != 0 || string.IsNullOrWhiteSpace(json)) return false;
                     Dictionary<string, object> d = Common.Dict(Common.ParseJson(json.Trim()));
