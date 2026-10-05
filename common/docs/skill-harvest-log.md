@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2442 Build-BobWatcher separate stdout/stderr
+
+| Field | Value |
+|-------|-------|
+| Lesson | Start-Process rejects identical RedirectStandardOutput and RedirectStandardError paths; PyInstaller builders must use separate stdout/stderr log files (Build-BobWatcher now matches Build-BobWorker/Build-Jeeves). |
+| Evidence | FR #2441 / PR #2442; live Watch-AgentHealth.exe build on MRB #2442; hostile docs |
+| Refs | SimonBarnett/bobiverse#2441 SimonBarnett/bobiverse#2442 |
+
 ## 2026-10-05 — MRB #2438 C# CrashHook skip probe/do-not-file
 
 | Field | Value |
