@@ -4500,5 +4500,51 @@ def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
     if last is not None and (float(now) - last) < IDLE_S:
         return "wait"
     if worker_working_on(home, nick):
+        if release_stale_busy(home, nick, now):
+            return "ok"
         return "busy"
     return "ok"
+
+
+# A seat only sends !bored when it is idle. If the digest still says "doing" but the seat has
+# no accepted queue row, or its accepted row is older than BUSY_STALE_S, the DONE was lost:
+# nak-busying it forever stalls the whole fleet (2026-10-05: marchhare seats nak-busy 8h on
+# merged MRB #2349 / closed FR #2340 while every open MRB was ionos-authored).
+BUSY_STALE_S = 3600.0
+
+
+def release_stale_busy(home: Path, nick: str, now: float) -> bool:
+    """Heal a lost-DONE seat on !bored: drop its stale accepted row(s), set it idle. True if healed."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+
+    def _owner(r: dict) -> str:
+        raw = str(r.get("nick") or r.get("offered_to") or "").strip()
+        return (canonical_worker_nick(raw) or raw).strip().lower()
+
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
+            mine = [r for r in acc if _owner(r) == me]
+            for r in mine:
+                ts = str(r.get("accepted_ts") or r.get("offered_ts") or r.get("ts") or "")
+                try:
+                    age = float(now) - datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    age = BUSY_STALE_S + 1
+                if age < BUSY_STALE_S:
+                    return False  # genuinely recent job: honour busy
+            if mine:
+                # Drop (not requeue): github-resync re-adds the row if the item is still open,
+                # so a closed/merged job is never handed out again.
+                doc["accepted"] = [r for r in acc if _owner(r) != me]
+                _write_queue(queue_path(home), doc)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        out = bobreport.clear_seat_doing(_root(home), nick)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(getattr(out, "ok", False))
