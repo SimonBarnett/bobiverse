@@ -434,15 +434,16 @@ function Build-Msi([string]$Name, [string]$Stage) {
     # #70: public MSI properties flow into RunInstall (CAQuietExec64). Empty props expand to "" and Install-*.ps1 ignores them.
     # msiexec /i jeeves-*.msi OPERFILE=C:\path\oper.txt SKIPERGO=1 SKIPCOPY=1
     # msiexec /i bob-*.msi MACHINEID=marchhare SKIPCOPY=1
+    # FR #2564: forward ProductVersion so Install-*.ps1 can Assert-BobiverseInstallVersion (no silent VERSION lie).
     $installArgs = switch ($Name) {
         'jeeves' {
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -OperFile &quot;[OPERFILE]&quot; -OperName &quot;[OPERNAME]&quot; -OpAccounts &quot;[OPACCOUNTS]&quot; -MsiSkipErgo &quot;[SKIPERGO]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot;'
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -OperFile &quot;[OPERFILE]&quot; -OperName &quot;[OPERNAME]&quot; -OpAccounts &quot;[OPACCOUNTS]&quot; -MsiSkipErgo &quot;[SKIPERGO]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot; -MsiProductVersion &quot;[ProductVersion]&quot;'
         }
         'bob' {
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -IrcHost &quot;[IRCHOST]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot;'
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -IrcHost &quot;[IRCHOST]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot; -MsiProductVersion &quot;[ProductVersion]&quot;'
         }
         'airc' {
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot;'
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot;'
         }
     }
     $msiProps = switch ($Name) {
@@ -485,6 +486,17 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
 "@
     }
+    # FR #2564: on RunInstall failure / MSI rollback, best-effort Start-Service so seats are not left dead.
+    # Schedule RollbackRecover BEFORE RunInstall; Windows Installer runs Execute=rollback CAs when the deferred CA fails.
+    $rollbackCaDecls = @"
+    <!-- FR #2564: rollback restart ircBob/Airc/ircJeeves after failed RunInstall (1603 / CA fail). -->
+    <CustomAction Id="SetRollbackRecoverCmd" Property="RollbackRecover" Value="&quot;[INSTALLDIR]scripts\Recover-BobiverseService.cmd&quot; -Product $Name -InstallRoot &quot;[INSTALLDIR].&quot; -Why msi-rollback" Execute="immediate" />
+    <CustomAction Id="RollbackRecover" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="rollback" Impersonate="no" Return="ignore" />
+"@
+    $rollbackCaSeq = @"
+      <Custom Action="SetRollbackRecoverCmd" After="SetInstallCmd">NOT Installed OR REINSTALL</Custom>
+      <Custom Action="RollbackRecover" After="SetRollbackRecoverCmd">NOT Installed OR REINSTALL</Custom>
+"@
     $guidMark = [guid]::NewGuid().ToString().ToUpper()
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -516,6 +528,7 @@ $msiProps
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
     <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
 $uninstallCaDecls
+$rollbackCaDecls
     <InstallUISequence>
       <Custom Action="FindAiRoot" Before="CostInitialize">NOT AIROOT</Custom>
       <Custom Action="SetInstallDirFromAiRoot" Before="CostFinalize"></Custom>
@@ -524,7 +537,8 @@ $uninstallCaDecls
       <Custom Action="FindAiRoot" Before="CostInitialize">NOT AIROOT</Custom>
       <Custom Action="SetInstallDirFromAiRoot" Before="CostFinalize"></Custom>
       <Custom Action="SetInstallCmd" After="InstallFiles">NOT Installed OR REINSTALL</Custom>
-      <Custom Action="RunInstall" After="SetInstallCmd">NOT Installed OR REINSTALL</Custom>
+$rollbackCaSeq
+      <Custom Action="RunInstall" After="RollbackRecover">NOT Installed OR REINSTALL</Custom>
 $uninstallCaSeq
     </InstallExecuteSequence>
   </Product>

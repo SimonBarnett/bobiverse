@@ -874,6 +874,109 @@ function Test-BobiverseMsiOrQuiet {
     return $false
 }
 
+# --- FR #2564: MSI UI 1603 / rollback logging + service recover ---
+
+function Get-BobiverseMsiLogDir {
+    <#
+      Canonical verbose / CA log directory for UI and quiet msiexec (FR #2564).
+      Prefer %ProgramData%\Bobiverse\logs so a UI install without /l*v still leaves a known trail.
+    #>
+    $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
+    $dir = Join-Path $pd 'Bobiverse\logs'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    return $dir
+}
+
+function Write-BobiverseMsiInstallLog {
+    <# Append one UTF-8 (no BOM) line to ProgramData\Bobiverse\logs\install-<product>.log (FR #2564). #>
+    param(
+        [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Leaf = ''
+    )
+    try {
+        $dir = Get-BobiverseMsiLogDir
+        if (-not $Leaf) { $Leaf = "install-$Product.log" }
+        $path = Join-Path $dir $Leaf
+        $line = '{0:o} {1}' -f [datetime]::UtcNow, ($Message -replace '[\r\n]+', ' ')
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::AppendAllText($path, $line + [Environment]::NewLine, $utf8)
+        Write-Host ("INFO msi-log {0}: {1}" -f $Leaf, $Message)
+    } catch {
+        Write-Host ("WARN msi-log-write-failed: {0}" -f $_.Exception.Message)
+    }
+}
+
+function Assert-BobiverseInstallVersion {
+    <#
+      FR #2564: when MSI forwards ProductVersion, InstallRoot\VERSION must match.
+      Prevents a "success" that left binaries / ARP on a different build.
+      Empty ExpectedVersion = no-op (repo/script installs without the MSI property).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$ExpectedVersion = '',
+        [ValidateSet('bob', 'jeeves', 'airc', '')][string]$Product = ''
+    )
+    if (-not $ExpectedVersion -or -not $ExpectedVersion.Trim()) { return }
+    $want = $ExpectedVersion.Trim()
+    if ($want -notmatch '^\d+\.\d+\.\d+') {
+        Write-Host ("WARN Assert-BobiverseInstallVersion skip bad ExpectedVersion '{0}'" -f $want)
+        return
+    }
+    $verPath = Join-Path $InstallRoot 'VERSION'
+    if (-not (Test-Path -LiteralPath $verPath)) {
+        throw "Assert-BobiverseInstallVersion: missing $verPath (expected $want)"
+    }
+    $got = (Get-Content -LiteralPath $verPath -Raw -ErrorAction Stop).Trim()
+    if ($got -ne $want) {
+        throw "Assert-BobiverseInstallVersion: InstallRoot VERSION='$got' expected '$want' (FR #2564)"
+    }
+    if ($Product) {
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("version-ok file={0}" -f $got)
+    }
+}
+
+function Restore-BobiverseServiceAfterFailedInstall {
+    <#
+      FR #2564: after Install-*.ps1 / MSI RunInstall failure or WiX rollback, best-effort Start-Service
+      so a failed upgrade does not leave ircBob/Airc/ircJeeves Stopped and wipe seats.
+      Does not recreate a fully removed service (needs a full Install-*.ps1); only starts if SCM entry exists.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ServiceName,
+        [ValidateSet('bob', 'jeeves', 'airc')][string]$Product = 'bob',
+        [string]$Why = 'install-failed'
+    )
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-skip service=$ServiceName absent why=$Why") -Leaf ("recover-$Product.log")
+        Write-Host "WARN recover: service $ServiceName absent after failed install ($Why) - re-run Install or sanctioned self-update"
+        return $false
+    }
+    if ($svc.Status -eq 'Running') {
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-ok already-running $ServiceName why=$Why") -Leaf ("recover-$Product.log")
+        return $true
+    }
+    try {
+        if ($svc.StartType -eq 'Disabled') {
+            try { Set-Service -Name $ServiceName -StartupType Automatic -ErrorAction SilentlyContinue } catch { }
+        }
+        Start-Service -Name $ServiceName -ErrorAction Stop
+        Start-Sleep -Seconds 2
+        $after = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $ok = $after -and $after.Status -eq 'Running'
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-start service=$ServiceName ok=$ok status=$($after.Status) why=$Why") -Leaf ("recover-$Product.log")
+        if ($ok) { Write-Host "INFO recover: started $ServiceName after failed install ($Why)" }
+        else { Write-Host "WARN recover: Start-Service $ServiceName did not reach Running ($($after.Status))" }
+        return [bool]$ok
+    } catch {
+        Write-BobiverseMsiInstallLog -Product $Product -Message ("recover-fail service=$ServiceName err=$($_.Exception.Message) why=$Why") -Leaf ("recover-$Product.log")
+        Write-Host "WARN recover: Start-Service $ServiceName failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Resolve-BobiverseServiceUser {
     <# Prefer interactive / install user over LocalSystem (MSI deferred CA). #>
     if (-not (Test-BobiverseIsLocalSystem)) {

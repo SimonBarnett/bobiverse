@@ -24,7 +24,9 @@ param(
     [switch]$PromptServicePassword,
     [switch]$SkipCopy,
     # #70: MSI public property SKIPCOPY=1 arrives via RunInstall as a string.
-    [string]$MsiSkipCopy = ''
+    [string]$MsiSkipCopy = '',
+    # FR #2564: MSI ProductVersion forwarded by RunInstall for VERSION assert.
+    [string]$MsiProductVersion = ''
 )
 
 # #70: map MSI property strings onto the real switches (empty / unset = no-op).
@@ -86,6 +88,11 @@ if (-not $BobHome) {
 }
 New-Item -ItemType Directory -Force -Path $BobHome | Out-Null
 
+# FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
+Write-BobiverseMsiInstallLog -Product bob -Message ("install-begin service=$ServiceName installRoot=$InstallRoot msiVer=$MsiProductVersion")
+$script:BobInstallOk = $false
+try {
+
 # Stop ear service; TipForm tray is restarted after icons (companion, not BobFleet task)
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
 
@@ -94,6 +101,8 @@ if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+# FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
+Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product bob
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'bob'
 # t762u: worker\ + plan\ agent folders (skills/AGENTS). The MSI lays them (plus worker\bob-worker.exe); repo installs build them here. Never deletes plan\work.
 if ((Test-Path -LiteralPath (Get-BobiverseRepoPath -Root $repoRoot -Rel 'bob-agents\worker\AGENTS.md')) -and ([IO.Path]::GetFullPath($repoRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\'))) {
@@ -421,3 +430,14 @@ if (-not $NoStart) {
 }
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
 Write-Host "INFO Install-Bob done nick=$nick"
+Write-BobiverseMsiInstallLog -Product bob -Message ("install-ok nick=$nick")
+$script:BobInstallOk = $true
+} catch {
+    Write-BobiverseMsiInstallLog -Product bob -Message ("install-fail $($_.Exception.Message)")
+    throw
+} finally {
+    # FR #2564: if RunInstall blew up after Remove-BobiverseService, try Start-Service when SCM entry exists.
+    if (-not $script:BobInstallOk) {
+        [void](Restore-BobiverseServiceAfterFailedInstall -ServiceName $ServiceName -Product bob -Why 'Install-Bob-catch')
+    }
+}

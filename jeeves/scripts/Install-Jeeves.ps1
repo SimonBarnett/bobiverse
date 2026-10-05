@@ -29,7 +29,9 @@ param(
     [string]$OpAccounts = '',
     # #70: MSI public properties (msiexec ... SKIPERGO=1 SKIPCOPY=1) arrive as strings via RunInstall.
     [string]$MsiSkipErgo = '',
-    [string]$MsiSkipCopy = ''
+    [string]$MsiSkipCopy = '',
+    # FR #2564: MSI ProductVersion forwarded by RunInstall for VERSION assert.
+    [string]$MsiProductVersion = ''
 )
 
 # #70: map MSI property strings onto the real switches (empty / unset = no-op).
@@ -113,6 +115,11 @@ if ((Test-Path -LiteralPath $homeMigrate) -and $Python) {
     }
 }
 
+# FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
+Write-BobiverseMsiInstallLog -Product jeeves -Message ("install-begin service=$ServiceName installRoot=$InstallRoot msiVer=$MsiProductVersion")
+$script:JeevesInstallOk = $false
+try {
+
 # Clean prior ircJeeves + remove legacy gh-Jeeves chair (both fight for nick Jeeves)
 Remove-BobiverseService -Nssm $Nssm -Name $ServiceName
 Remove-BobiverseLegacyService -Name 'BobJeeves' -Nssm $Nssm
@@ -123,6 +130,8 @@ if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+# FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
+Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product jeeves
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'jeeves'
 $skillsSrc = Get-BobiverseRepoMergedDir -Root $repoRoot -Sub '.grok\skills'
 if (Test-Path $skillsSrc) {
@@ -375,3 +384,14 @@ if (-not $NoStart) {
 }
 Get-Service $ServiceName, BobIrcd -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize
 Write-Host 'INFO Install-Jeeves done'
+Write-BobiverseMsiInstallLog -Product jeeves -Message 'install-ok'
+$script:JeevesInstallOk = $true
+} catch {
+    Write-BobiverseMsiInstallLog -Product jeeves -Message ("install-fail $($_.Exception.Message)")
+    throw
+} finally {
+    # FR #2564: if RunInstall blew up after Remove-BobiverseService, try Start-Service when SCM entry exists.
+    if (-not $script:JeevesInstallOk) {
+        [void](Restore-BobiverseServiceAfterFailedInstall -ServiceName $ServiceName -Product jeeves -Why 'Install-Jeeves-catch')
+    }
+}
