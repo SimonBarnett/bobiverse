@@ -19,10 +19,10 @@ def test_fake_filer_reexported() -> None:
     assert "github.com" in out["url"]
 
 
-def test_gh_cli_draft_pr_falls_back_path() -> None:
+def test_gh_cli_draft_pr_is_implemented_method() -> None:
+    """FR #2579: create_draft_pr is a real GhCliFiler method (no stub RuntimeError)."""
     f = gh_filer.GhCliFiler()
-    try:
-        f.create_draft_pr("SimonBarnett/bobiverse", "t", "b", "branch", [], [])
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
-        assert "draft PR" in str(exc)
+    assert callable(getattr(f, "create_draft_pr", None))
+    src = Path(gh_filer.__file__).read_text(encoding="utf-8")
+    assert "draft PR not implemented" not in src
+    assert '"draft": True' in src
