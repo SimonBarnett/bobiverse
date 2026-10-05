@@ -5,6 +5,7 @@
 // <root>\run\tray-status.json every poll; this exe reads it every 2 s and tells the engine what to do through <root>\run\tray-cmd.txt
 // (ack | exit | restart), which the engine picks up within 2 s.
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -87,6 +88,44 @@ namespace BobDialogs
 
         static string Quote(string a) { return Regex.IsMatch(a, "[\\s\"]") ? "\"" + a.Replace("\"", "\\\"") + "\"" : a; }
 
+        // FR #2421: prefer bob-worker --describe-launch JSON (same plan as Watch-BobTray / CLI).
+        static bool TryDescribeLaunch(string installExe, string root, string mode, string machine, out string run, out List<string> argv, out string wd, out string title)
+        {
+            run = ""; argv = null; wd = ""; title = "";
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = installExe;
+                StringBuilder args = new StringBuilder();
+                args.Append("--describe-launch --mode ").Append(Quote(mode));
+                args.Append(" --install-root ").Append(Quote(root));
+                if (machine.Length > 0) args.Append(" --machine-id ").Append(Quote(machine));
+                psi.Arguments = args.ToString();
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.CreateNoWindow = true;
+                using (Process p = Process.Start(psi))
+                {
+                    if (p == null) return false;
+                    string json = p.StandardOutput.ReadToEnd();
+                    if (!p.WaitForExit(8000)) { try { p.Kill(); } catch { } return false; }
+                    if (p.ExitCode != 0 || string.IsNullOrWhiteSpace(json)) return false;
+                    Dictionary<string, object> d = Common.Dict(Common.ParseJson(json.Trim()));
+                    if (d == null) return false;
+                    run = Common.Str(d, "run_exe");
+                    wd = Common.Str(d, "cwd");
+                    title = Common.Str(d, "title");
+                    IList raw = Common.List(d.ContainsKey("argv") ? d["argv"] : null);
+                    if (raw == null || raw.Count == 0 || run.Length == 0) return false;
+                    argv = new List<string>();
+                    foreach (object o in raw) argv.Add(Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture));
+                    return argv.Count > 0;
+                }
+            }
+            catch { return false; }
+        }
+
         // Same contract as Start-BobTrayWorkerExe: fresh agent every click, run-copy of the exe so a seat never locks the install,
         // its own visible console (CREATE_NEW_CONSOLE). Returns the pid, or 0 with `error` set.
         public static int Launch(string root, string mode, string machine, out string error)
@@ -96,32 +135,53 @@ namespace BobDialogs
             if (refusal.Length > 0) { error = refusal; return 0; }
             string exe = Path.Combine(root, "worker\\bob-worker.exe");
             if (!File.Exists(exe)) { error = "bob-worker.exe is missing:\n" + exe + "\n\nReinstall or upgrade the bob MSI."; return 0; }
-            string hash;
-            using (SHA256 sha = SHA256.Create()) using (FileStream fs = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                hash = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "").Substring(0, 12).ToLowerInvariant();
-            string bin = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse\\worker\\bin");
-            Directory.CreateDirectory(bin);
-            string run = Path.Combine(bin, "bob-worker-" + hash + ".exe");
+
+            string run = "";
+            List<string> argv = null;
+            string wd = "";
+            string title = "";
+            bool fromPlan = TryDescribeLaunch(exe, root, mode, machine, out run, out argv, out wd, out title);
+
+            if (!fromPlan)
+            {
+                // Fallback: local hash/argv (must stay aligned with describe_worker_exe_launch).
+                string hash;
+                using (SHA256 sha = SHA256.Create()) using (FileStream fs = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    hash = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "").Substring(0, 12).ToLowerInvariant();
+                string bin = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse\\worker\\bin");
+                Directory.CreateDirectory(bin);
+                run = Path.Combine(bin, "bob-worker-" + hash + ".exe");
+                argv = new List<string>(new string[] { "--mode", mode, "--install-root", root });
+                if (machine.Length > 0) { argv.Add("--machine-id"); argv.Add(machine); }
+                wd = Path.Combine(root, mode == "plan" ? "plan" : "worker");
+                title = "Bob " + mode + " - starting (closing this window ends the agent)";
+            }
+
+            string binDir = Path.GetDirectoryName(run) ?? Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.GetTempPath(), "Bobiverse\\worker\\bin");
+            Directory.CreateDirectory(binDir);
             if (!File.Exists(run))
             {
                 File.Copy(exe, run, true);
-                // FR #1643: defer delete while a live seat still holds the hashed run exe (in use / locked).
-                foreach (string old in Directory.GetFiles(bin, "bob-worker-*.exe"))
-                {
-                    if (string.Equals(old, run, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (IsWorkerExeInUse(old)) continue;
-                    try { File.Delete(old); } catch { }
-                }
             }
-            // FR #2413 / MRB #2417: argv/cwd/hash must match bob_worker.describe_worker_exe_launch / --describe-launch.
-            List<string> argv = new List<string>(new string[] { "--mode", mode, "--install-root", root });
-            if (machine.Length > 0) { argv.Add("--machine-id"); argv.Add(machine); }
+            // FR #1643: defer delete while a live seat still holds the hashed run exe (in use / locked).
+            foreach (string old in Directory.GetFiles(binDir, "bob-worker-*.exe"))
+            {
+                if (string.Equals(old, run, StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsWorkerExeInUse(old)) continue;
+                try { File.Delete(old); } catch { }
+            }
+
+            if (string.IsNullOrEmpty(wd) || !Directory.Exists(wd))
+            {
+                wd = Path.Combine(root, mode == "plan" ? "plan" : "worker");
+                if (!Directory.Exists(wd)) wd = root;
+            }
+            if (string.IsNullOrEmpty(title)) title = "Bob " + mode + " - starting (closing this window ends the agent)";
+
             StringBuilder cmd = new StringBuilder(Quote(run));
             foreach (string a in argv) cmd.Append(' ').Append(Quote(a));
-            string wd = Path.Combine(root, mode == "plan" ? "plan" : "worker");
-            if (!Directory.Exists(wd)) wd = root;
             STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
-            si.lpTitle = "Bob " + mode + " - starting (closing this window ends the agent)";
+            si.lpTitle = title;
             PROCESS_INFORMATION pi;
             if (!CreateProcessW(run, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x10 /* CREATE_NEW_CONSOLE */, IntPtr.Zero, wd, ref si, out pi))
             { error = "start failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message; return 0; }

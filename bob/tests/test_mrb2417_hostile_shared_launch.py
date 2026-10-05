@@ -43,14 +43,15 @@ def test_watch_bob_tray_prefers_describe_launch():
     assert "Start-BobTrayWorkerExe" in text
 
 
-def test_bob_tray_cs_keeps_argv_contract_aligned_with_describe(tmp_path):
-    """TipForm still embeds launch; argv/cwd/hash tokens must match describe_worker_exe_launch."""
+def test_bob_tray_cs_consumes_describe_launch(tmp_path):
+    """TipForm WorkerLauncher prefers --describe-launch (FR #2421); fallback keeps argv contract."""
     cs = (ROOT / "bob" / "tray" / "dialogs" / "BobTray.cs").read_text(encoding="utf-8")
-    assert 'new string[] { "--mode", mode, "--install-root", root }' in cs
+    assert "TryDescribeLaunch" in cs
+    assert "--describe-launch" in cs
+    assert "FR #2421" in cs
+    assert 'new string[] { "--mode", mode, "--install-root", root }' in cs  # fallback
     assert 'mode == "plan" ? "plan" : "worker"' in cs
-    assert "Bobiverse" in cs and "worker" in cs and "bin" in cs
     assert "bob-worker-" in cs
-    assert "FR #2413 / MRB #2417" in cs
     root = tmp_path / "bob"
     (root / "worker").mkdir(parents=True)
     (root / "plan").mkdir()
