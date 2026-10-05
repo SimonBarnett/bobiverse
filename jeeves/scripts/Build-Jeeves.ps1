@@ -35,12 +35,18 @@ if ($monDir -and (Test-Path -LiteralPath $monDir)) {
 }
 
 $hidden = @(
-    'irc_agent', 'bobcallback', 'gitclaim', 'bobreport', 'intake', 'jeeves_locks', 'jeeves_maintenance', 'focus_ignore',
+    'irc_agent', 'bobcallback', 'gitclaim', 'bobreport', 'intake', 'jeeves_locks', 'jeeves_maintenance', 'jeeves_checks', 'focus_ignore',
     'chair_commands', 'chair_health', 'chair_oper',
     'shop_chanserv', 'shop_listen', 'shop_ops',
     'health', 'queue_flow', 'focus_seat', 'webhook_health'
 )
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
+
+# FR #2522: bundle jeeves\checks (check_*.py plugins loaded by --self-test). Changes ship via PR + MRB + rebuild.
+$checksDir = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\checks'
+if ($checksDir -and (Test-Path -LiteralPath $checksDir)) {
+    $hiddenArgs += @('--add-data', ('{0};checks' -f $checksDir))
+}
 
 if (-not $Python) {
     foreach ($c in @((Get-Command python.exe -ErrorAction SilentlyContinue).Source, 'C:\Program Files\Python312\python.exe', 'C:\Python312\python.exe')) {

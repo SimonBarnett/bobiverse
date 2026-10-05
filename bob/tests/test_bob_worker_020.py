@@ -913,8 +913,9 @@ def test_main_refuses_to_start_when_two_workers_are_already_running(monkeypatch,
     monkeypatch.setattr(bw, "run_agent", lambda *a, **k: started.append("agent") or 0)
     monkeypatch.setattr(bw, "run_plan", lambda *a, **k: started.append("plan") or 0)
     assert bw.main(["--mode", "agent", "--install-root", str(tmp_path)]) == bw.EXIT_REFUSED
-    assert bw.main(["--mode", "plan", "--install-root", str(tmp_path)]) == bw.EXIT_REFUSED
-    assert started == []
+    # FR #2522 / Simon: plan is uncapped and may start on top of 2 workers.
+    assert bw.main(["--mode", "plan", "--install-root", str(tmp_path)]) == 0 and started == ["plan"]
+    started.clear()
     monkeypatch.setattr(bw, "snapshot_procs", lambda: _seats(200))
     assert bw.main(["--mode", "agent", "--install-root", str(tmp_path)]) == 0 and started == ["agent"]
 

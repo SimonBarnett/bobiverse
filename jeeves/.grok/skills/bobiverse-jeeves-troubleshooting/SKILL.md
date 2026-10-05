@@ -52,6 +52,15 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | After MSI, service still runs old code | NSSM Application path - re-run `Install-Jeeves.ps1`; check `<ai root>\jeeves\VERSION`. |
 | Ergo restarted when the MSI upgraded | `ergo.exe` hard link (#70) - verify `fsutil hardlink list <ai root>\ergo\ergo.exe` shows ONE name; the installer repairs it without stopping Ergo. |
 
+## Maintenance agent playbook (FR #2412 / #2522)
+
+When `jeeves.exe --heal` still fails, ONE rate-limited maintenance agent starts here (`bob-worker.exe --mode maintenance`; single-instance lock + 30-minute cooldown unchanged).
+
+- **Window:** title exactly `Jeeves maintenance`, Jeeves **butler** icon (`assets\jeeves-butler.ico`, same as the tray Jeeves / Start Jeeves Monitor).
+- **Session:** grok **resumes** the last maintenance session (recorded in `%LOCALAPPDATA%\Bobiverse\maintenance\last-session.json`) when that session still exists under this folder; otherwise a NEW session. This is the ONLY seat that may resume; worker/plan/monitor seats stay NEW-only.
+- **Finish order (CAST IRON):** 1) harvest maintenance skills into the Jeeves skills (`.grok\skills`, honesty box) and file issues/FRs for every finding; close receipt issues immediately; 2) ONLY THEN write the run dir's `maintenance-done.json` (`harvested: true`, `issues: [...]`, `receipts_closed: true`); 3) the exe closes the agent and its own console. No lingering window.
+- **Extending self-test/heal:** the agent MAY add or update deterministic checks as `jeeves/checks/check_<name>.py` (see `jeeves/checks/README.md`) plus matching pytest under `jeeves/tests/`, **only through a PR + MRB**. Never live-edit the running `jeeves.exe` or its install; a rebuilt exe picks the new check up (`--self-test` loads every `check_*.py`).
+
 ## BobCallback heal (supervised single-owner; harvest #1465-#1651 / #1568 / FR #1767 / #1831)
 
 Probe together: scheduled-task state, `:7700` LISTEN, and a fresh GET `http://127.0.0.1:7700/bob/v1/report`. Comment existing FRs `#1455` / `#1467` / `#1388` / `#1767` instead of twin intake when the class matches.

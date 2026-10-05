@@ -142,7 +142,7 @@ def test_mrb2415_worker_prompt_cast_iron():
     assert "def maintenance_prompt" in text
     assert "never Ergo" in text or "never Ergo/BobIrcd" in text
     assert "Report-BobiverseIntakeIssue" in text
-    assert "NEW session" in text
+    assert ("NEW maintenance session" in text) or ("RESUMES your previous maintenance session" in text) or ("NEW session" in text)
     assert '"maintenance"' in text
     # hashed Start-JeevesMaintenance launcher
     st = START.read_text(encoding="utf-8-sig")

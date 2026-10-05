@@ -12,6 +12,8 @@ Rules (CAST IRON, Simon t762u-t765u)
     -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
   * EVERY launch is a NEW agent: new session id, new console window, new run dir. Never --resume/--continue/-r, never
     reuse or attach to an existing window/process (assert_fresh() enforces it; a restart after a hang is a NEW agent too).
+    ONE exception (FR #2522): --mode maintenance SHOULD resume its own last maintenance session (recorded by this exe)
+    when that grok session still exists; otherwise it starts NEW. Worker/plan/monitor never resume.
   * IRC: blocking socket reader thread; a message is injected into the agent's console input from that very thread
     (no poll/timer between receive and inject). PING/PONG and the fleet `ping` liveness are answered here, not by the agent.
   * IRC lost  => kill the agent process tree THIS exe started (and only that) and exit. No reconnect loop, no orphan.
@@ -487,26 +489,135 @@ def monitor_prompt(jeeves_dir: str) -> str:
     )
 
 
-def maintenance_prompt(jeeves_dir: str) -> str:
-    # FR #2412: one-shot maintenance after jeeves --heal still failing.
+MAINTENANCE_TITLE = "Jeeves maintenance"  # FR #2522: exact console/window title
+MAINTENANCE_DONE_NAME = "maintenance-done.json"  # FR #2522: agent writes this LAST (after harvest) -> exe closes
+
+
+def maintenance_prompt(jeeves_dir: str, done_file: str = "", resumed: bool = False) -> str:
+    # FR #2412 + FR #2522: maintenance after jeeves --heal still failing.
+    done = done_file or f"<run dir>\\{MAINTENANCE_DONE_NAME}"
+    session = ("This RESUMES your previous maintenance session (FR #2522); re-check current state before acting. "
+               if resumed else "This is a NEW maintenance session (no previous one to resume). ")
     return (
-        f"You are the Jeeves MAINTENANCE agent (FR #2412). NEW session only (never resume). CWD is {jeeves_dir}. "
+        f"You are the Jeeves MAINTENANCE agent (FR #2412 / #2522). {session}CWD is {jeeves_dir}. "
         f"jeeves.exe --heal / --self-test already ran and STILL reported findings or errors. "
         f"Read {jeeves_dir}\\AGENTS.md and skills under {jeeves_dir}\\.grok\\skills (bobiverse-jeeves, "
         f"bobiverse-jeeves-troubleshooting, bobiverse-fleet-ops, harvest). Diagnose why Jeeves is unhealthy, "
         f"apply safe hotpatch-only fixes (never Ergo/BobIrcd, never kill seats/tray), then file ONE GitHub issue "
         f"via {jeeves_dir}\\scripts\\Report-BobiverseIntakeIssue.ps1 with evidence (heal output, logs, what you tried). "
-        f"If you fix it, say so in the issue body. Self-harvest before you finish. Never print or store secrets."
+        f"If you fix it, say so in the issue body. "
+        f"You MAY add or update the deterministic jeeves.exe --self-test/--heal checks (jeeves/checks/check_<name>.py, "
+        f"see jeeves/checks/README.md) and their pytest suite, but ONLY through a PR + MRB in the bobiverse repo - "
+        f"never live-edit the running jeeves.exe or its install. "
+        f"FINISH ORDER (CAST IRON): 1) harvest maintenance skills into the Jeeves skills {jeeves_dir}\\.grok\\skills "
+        f"(honesty box; Invoke-BobiverseHarvest.ps1 / intake so the repo copy is updated) and "
+        f"file issues/FRs for every finding; close any receipt issue immediately; 2) ONLY THEN write {done} as JSON "
+        f'{{"harvested": true, "skills": [...], "issues": ["#N", ...], "receipts_closed": true, "summary": "..."}}; '
+        f"3) the program then closes this window and your process itself - do not wait for Simon. "
+        f"Never print or store secrets."
     )
+
+
+def maintenance_exit_decision(done: Optional[dict]) -> tuple:
+    """FR #2522: may the maintenance seat close now? Harvest MUST come before exit.
+
+    Returns ("exit", reason) only when the agent's done file proves harvest finished
+    (harvested true, issues list present, receipts closed); otherwise ("wait", reason)."""
+    if not isinstance(done, dict):
+        return ("wait", "no_done_file")
+    if done.get("harvested") is not True:
+        return ("wait", "harvest_not_done")
+    if not isinstance(done.get("issues"), list):
+        return ("wait", "issues_not_listed")
+    if done.get("receipts_closed") is not True:
+        return ("wait", "receipts_not_closed")
+    return ("exit", "harvested")
+
+
+def read_maintenance_done(run_dir: Path) -> Optional[dict]:
+    p = Path(run_dir) / MAINTENANCE_DONE_NAME
+    try:
+        if not p.is_file():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def maintenance_state_path() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "Bobiverse" / "maintenance" / "last-session.json"
+
+
+def grok_sessions_root() -> Path:
+    return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "sessions"
+
+
+def grok_session_exists(session_id: str, cwd: str, sessions_root: Optional[Path] = None) -> bool:
+    """grok keeps sessions under <sessions>/<url-quoted cwd>/<uuid>."""
+    from urllib.parse import quote
+
+    if not session_id or not re.fullmatch(r"[0-9a-fA-F-]{36}", str(session_id)):
+        return False
+    root = Path(sessions_root) if sessions_root else grok_sessions_root()
+    for key in (quote(str(cwd), safe=""), quote(str(cwd).rstrip("\\"), safe="")):
+        if (root / key / str(session_id)).exists():
+            return True
+    return False
+
+
+def choose_maintenance_session(cwd: str, kind: str, state_path: Optional[Path] = None,
+                               sessions_root: Optional[Path] = None) -> tuple:
+    """FR #2522: ("resume", sid) when OUR last maintenance grok session in cwd still exists, else ("new", fresh uuid)."""
+    if kind == "grok":
+        sp = Path(state_path) if state_path else maintenance_state_path()
+        try:
+            st = json.loads(sp.read_text(encoding="utf-8-sig")) if sp.is_file() else {}
+        except Exception:
+            st = {}
+        sid = str(st.get("session_id") or "")
+        same_cwd = str(st.get("cwd") or "").rstrip("\\").lower() == str(cwd).rstrip("\\").lower()
+        if sid and same_cwd and grok_session_exists(sid, cwd, sessions_root):
+            return ("resume", sid)
+    return ("new", str(uuid.uuid4()))
+
+
+def record_maintenance_session(session_id: str, cwd: str, kind: str, state_path: Optional[Path] = None) -> None:
+    sp = Path(state_path) if state_path else maintenance_state_path()
+    try:
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(json.dumps({"session_id": session_id, "cwd": str(cwd), "kind": kind,
+                                  "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def maintenance_icon_path(folder: Path) -> Optional[Path]:
+    """FR #2522: the tray's Jeeves butler icon for the maintenance window (work root first, then bundled)."""
+    cands = [Path(folder) / "assets" / "jeeves-butler.ico"]
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        cands.append(Path(mei) / "assets" / "jeeves-butler.ico")
+    here = Path(__file__).resolve().parent.parent
+    cands.append(here.parent / "jeeves" / "assets" / "jeeves-butler.ico")
+    for c in cands:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            pass
+    return None
 
 
 def rules_text(folder: str, kind: str) -> str:
     extra = {
         "plan": "PLAN SEAT ONLY: no IRC, no builds.",
         "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; never act as chair; prefer token-free monitor scripts; self-harvest after every finding.",
-        "maintenance": "JEEVES MAINTENANCE ONLY (FR #2412): diagnose after heal still failing; safe hotpatch only; file intake issue; never Ergo/BobIrcd; never act as chair.",
+        "maintenance": "JEEVES MAINTENANCE ONLY (FR #2412/#2522): diagnose after heal still failing; safe hotpatch only; file intake issue; check/test changes only via PR+MRB; harvest BEFORE writing the done file; never Ergo/BobIrcd; never act as chair.",
     }.get(kind, "Worker seat: IRC is handled for you.")
-    return (f"NEW session. Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
+    head = ("Maintenance session (resumed when a previous one exists, else new). " if kind == "maintenance" else "NEW session. ")
+    return (f"{head}Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
             f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
             f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
@@ -525,9 +636,17 @@ class LaunchSpec:
     env_extra: dict = field(default_factory=dict)
 
 
-def assert_fresh(argv: list, files: Optional[dict] = None) -> None:
-    """t765u: an agent is never resumed/continued/attached. Refuse any command line that says so."""
-    for a in argv:
+def assert_fresh(argv: list, files: Optional[dict] = None, allow_resume: bool = False) -> None:
+    """t765u: an agent is never resumed/continued/attached. Refuse any command line that says so.
+    FR #2522: allow_resume=True is passed ONLY by maintenance builds; it permits exactly one --resume <uuid>."""
+    args = list(argv)
+    if allow_resume and "--resume" in args:
+        i = args.index("--resume")
+        sid = str(args[i + 1]) if i + 1 < len(args) else ""
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", sid):
+            raise ValueError("refusing to launch: maintenance --resume needs an explicit session uuid")
+        args = args[:i] + args[i + 2:]
+    for a in args:
         if str(a).lower() in FORBIDDEN_FLAGS:
             raise ValueError(f"refusing to launch: '{a}' would reuse an existing agent session")
     for text in (files or {}).values():
@@ -535,13 +654,18 @@ def assert_fresh(argv: list, files: Optional[dict] = None) -> None:
             raise ValueError("refusing to launch: launcher script would resume/continue an agent session")
 
 
-def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir: Path, session_id: Optional[str] = None) -> LaunchSpec:
-    sid = session_id or str(uuid.uuid4())
+def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir: Path, session_id: Optional[str] = None,
+                 resume_session_id: Optional[str] = None) -> LaunchSpec:
+    if resume_session_id and not (mode == "maintenance" and kind == "grok"):
+        raise ValueError("refusing to launch: only grok maintenance may resume (FR #2522)")
+    sid = resume_session_id or session_id or str(uuid.uuid4())
     rules = rules_text(cwd, mode)
     files: dict = {}
     if kind == "grok":
         if mode == "plan":
             argv = [exe, "--permission-mode", "plan", "--session-id", sid, "--cwd", cwd, "--rules", rules, prompt]
+        elif resume_session_id:
+            argv = [exe, "--no-auto-update", "--no-alt-screen", "--cwd", cwd, "--resume", sid, "--rules", rules, prompt]
         else:
             argv = [exe, "--no-auto-update", "--no-alt-screen", "--cwd", cwd, "-s", sid, "--rules", rules, prompt]
     elif kind == "cursor":
@@ -557,7 +681,7 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lfile]
     else:
         raise ValueError(f"unknown agent kind {kind!r}")
-    assert_fresh(argv, {k: v for k, v in files.items() if k.endswith(".ps1")})
+    assert_fresh(argv, {k: v for k, v in files.items() if k.endswith(".ps1")}, allow_resume=bool(resume_session_id))
     return LaunchSpec(argv=argv, cwd=cwd, session_id=sid, files=files)
 
 
@@ -639,7 +763,7 @@ def find_window_icon(install_root: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
-def set_console_icon(install_root: Optional[Path] = None) -> bool:
+def set_console_icon(install_root: Optional[Path] = None, icon: Optional[Path] = None) -> bool:
     """t794u: put the systray icon on the worker's console window (title bar + taskbar). The exe itself carries the same icon
     (PyInstaller --icon). Typed ctypes (HWND/HICON are pointers); never raises, never prints."""
     if os.name != "nt":
@@ -655,7 +779,7 @@ def set_console_icon(install_root: Optional[Path] = None) -> bool:
         u32.SendMessageW.restype = ctypes.c_ssize_t
         u32.SendMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
         hwnd = k32.GetConsoleWindow()
-        ico = find_window_icon(install_root)
+        ico = Path(icon) if icon else find_window_icon(install_root)
         if not hwnd or not ico:
             return False
         done = False
@@ -2726,8 +2850,45 @@ def run_monitor(args, log: Log) -> int:
     return EXIT_OK
 
 
-def run_maintenance(args, log: Log) -> int:
-    """FR #2412: one-shot Jeeves maintenance seat after --heal still failing."""
+_MAINT_MUTEX_KEEP: list = []
+
+
+def try_acquire_maintenance_mutex() -> bool:
+    """FR #2522: at most ONE maintenance bob-worker on the machine (named mutex). Stale locks are elsewhere."""
+    if os.name != "nt":
+        return True
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        handle = k32.CreateMutexW(None, True, "Global\\Bobiverse-Jeeves-Maintenance")
+        if not handle:
+            return False
+        err = ctypes.get_last_error()
+        _MAINT_MUTEX_KEEP.append(handle)
+        if err == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        return True
+    except Exception:
+        return True  # fail open only if mutex API unavailable; file lock still applies
+
+
+def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s: float = 5.0,
+                    state_path: Optional[Path] = None, sessions_root: Optional[Path] = None,
+                    console: Optional[Callable] = None, icon_setter: Optional[Callable] = None,
+                    killer: Optional[Callable] = None, run_dir: Optional[Path] = None,
+                    acquire_mutex: Optional[Callable] = None) -> int:
+    """FR #2412 + #2522: Jeeves maintenance seat after --heal still failing.
+
+    * window title exactly MAINTENANCE_TITLE + the tray's Jeeves butler icon (re-applied while running);
+    * grok resumes OUR last maintenance session when it still exists, else NEW (choose_maintenance_session);
+    * closes itself: when the agent writes the done file AFTER harvest (maintenance_exit_decision) the exe kills the
+      agent tree it started and exits, so no console lingers. Agent exit on its own also ends the exe.
+    Rate limit + single instance stay in jeeves_maintenance (lock is this exe's pid)."""
+    claim = acquire_mutex or try_acquire_maintenance_mutex
+    if not claim():
+        log("maintenance: refused - another maintenance agent is already live (mutex)")
+        return EXIT_REFUSED
     work = Path(getattr(args, "work_root", "") or "") if getattr(args, "work_root", None) else None
     folder = work if work and str(work) else _default_jeeves_root(Path(args.install_root))
     folder = Path(folder)
@@ -2752,29 +2913,62 @@ def run_maintenance(args, log: Log) -> int:
             return EXIT_NO_AGENT
         secret, kind = SecretStr(key), "grok"
     exe = cursor_cmd if kind == "cursor" else grok_exe
-    run_dir = _new_run_dir("maintenance", "maintenance")
-    run_dir.mkdir(parents=True, exist_ok=True)
-    ensure_console("Jeeves Maintenance (%s) - closing this window ends the agent" % kind)
-    spec = build_launch(kind, "maintenance", str(folder), maintenance_prompt(str(folder)), exe, run_dir)
+    rd = Path(run_dir) if run_dir else _new_run_dir("maintenance", "maintenance")
+    rd.mkdir(parents=True, exist_ok=True)
+    set_title = console or ensure_console
+    set_icon = icon_setter or set_console_icon
+    icon = maintenance_icon_path(folder)
+    set_title(MAINTENANCE_TITLE)
+    try:
+        set_icon(folder, icon=icon)
+    except Exception:
+        pass
+    how, sid = choose_maintenance_session(str(folder), kind, state_path=state_path, sessions_root=sessions_root)
+    done_file = rd / MAINTENANCE_DONE_NAME
+    prompt = maintenance_prompt(str(folder), done_file=str(done_file), resumed=(how == "resume"))
+    spec = build_launch(kind, "maintenance", str(folder), prompt, exe, rd,
+                        session_id=(sid if how == "new" else None),
+                        resume_session_id=(sid if how == "resume" else None))
     env = dict(os.environ)
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
     try:
-        proc = default_spawn(spec, env)
+        proc = (spawn or default_spawn)(spec, env)
     except Exception as e:
         log(f"maintenance: launch failed {type(e).__name__}")
         return EXIT_LAUNCH_FAIL
+    record_maintenance_session(spec.session_id, str(folder), kind, state_path=state_path)
     log(
-        f"maintenance: started NEW {kind} agent pid={proc.pid} session={spec.session_id} "
-        f"cwd={folder} (FR #2412; no IRC; ending either ends both)"
+        f"maintenance: started {'RESUMED' if how == 'resume' else 'NEW'} {kind} agent pid={proc.pid} "
+        f"session={spec.session_id} cwd={folder} icon={icon} done_file={done_file} (FR #2412/#2522; no IRC)"
     )
-    install_ctrl_handler(lambda: kill_tree(proc.pid))
-    try:
-        code = proc.wait()
-    except Exception:
-        code = -1
-    log(f"maintenance: agent ended code={code}")
-    return EXIT_OK
+    kill = killer or kill_tree
+    install_ctrl_handler(lambda: kill(proc.pid))
+    while True:
+        code = None
+        try:
+            code = proc.poll()
+        except Exception:
+            code = -1
+        if code is not None:
+            log(f"maintenance: agent ended code={code} - closing")
+            return EXIT_OK
+        verdict, why = maintenance_exit_decision(read_maintenance_done(rd))
+        if verdict == "exit":
+            log(f"maintenance: done file ok ({why}) - closing agent tree and exiting")
+            try:
+                kill(proc.pid)
+            except Exception:
+                pass
+            return EXIT_OK
+        if why != "no_done_file":
+            log(f"maintenance: done file present but {why} - waiting for harvest")
+        try:
+            set_title(MAINTENANCE_TITLE)  # agent TUIs may retitle the console
+            set_icon(folder, icon=icon)
+        except Exception:
+            pass
+        time.sleep(max(0.01, float(poll_s)))
 
 
 def run_agent(args, log: Log) -> int:
@@ -2959,7 +3153,9 @@ def format_external_kill_log(
 
 
 # --------------------------------------------------------------------------------------------- t815u: hard cap of live workers
-HARD_MAX_WORKERS = 2          # slowness: never more than 2 worker seats (agent or plan) per machine; BOB_WORKER_MAX may only LOWER it
+HARD_MAX_WORKERS = 2          # FR #2522/Simon: ONLY worker seats (mode=agent). Plan + maintenance MAY start on top and never count.
+CAPPED_MODES = ("agent",)     # modes refused when 2 agent seats are already live
+UNCAPPED_MODES = ("plan", "monitor", "maintenance")
 _WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 
 
@@ -3008,23 +3204,44 @@ def snapshot_procs() -> list:
         return []
 
 
-def other_live_workers(procs: list, my_pid: int) -> int:
-    """Live worker SEATS other than this one: root bob-worker*.exe processes (a onefile exe is a bootloader plus a same-named
-    child, and a plan/agent seat is one root). Counted from the live process table, never from run dirs."""
-    rows = {int(p): (int(pp), str(n)) for p, pp, n in procs}
-    workers = {p for p, (_pp, n) in rows.items() if _WORKER_EXE_RX.match(n)}
+def _proc_mode(entry) -> str:
+    """Optional 4th tuple field: mode name or full cmdline. Default agent (worker seat)."""
+    if not isinstance(entry, (tuple, list)) or len(entry) < 4:
+        return "agent"
+    raw = str(entry[3] or "").strip().lower()
+    if raw in ("agent", "plan", "monitor", "maintenance"):
+        return raw
+    m = re.search(r"--mode[=\s]+(agent|plan|monitor|maintenance)", raw)
+    return m.group(1) if m else "agent"
+
+
+def other_live_workers(procs: list, my_pid: int, *, modes: tuple = ("agent",)) -> int:
+    """Live SEATS other than this one whose mode is in ``modes`` (default: worker/agent only).
+
+    FR #2522 / Simon 2026-10-05: the hard cap is worker seats only. Plan and maintenance may
+    sit on top of 2 workers and must not be counted. ``procs`` entries are
+    ``(pid, ppid, exe[, mode_or_cmdline])``; missing mode defaults to agent.
+    """
+    rows = {}
+    for entry in procs:
+        p, pp, n = int(entry[0]), int(entry[1]), str(entry[2])
+        rows[p] = (pp, n, _proc_mode(entry))
+    workers = {p for p, (_pp, n, _m) in rows.items() if _WORKER_EXE_RX.match(n)}
     mine = my_pid
-    while mine in rows and rows[mine][0] in workers:       # walk up to the root of OUR tree
+    while mine in rows and rows[mine][0] in workers:
         mine = rows[mine][0]
     roots = {p for p in workers if rows[p][0] not in workers}
     roots.discard(mine)
     roots.discard(my_pid)
-    return len(roots)
+    wanted = {str(m).lower() for m in modes}
+    return sum(1 for p in roots if rows[p][2] in wanted)
 
 
-def worker_cap_refusal(procs: list, my_pid: int) -> str:
-    """'' = free to start, else the refusal text."""
-    n, cap = other_live_workers(procs, my_pid), max_workers()
+def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:
+    """'' = free to start. Plan/monitor/maintenance are never refused by the worker cap."""
+    if str(for_mode).lower() not in CAPPED_MODES:
+        return ""
+    n, cap = other_live_workers(procs, my_pid, modes=("agent",)), max_workers()
     if n >= cap:
         return "max %d workers (%d already running on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
     return ""
@@ -3082,9 +3299,9 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps({"decision": dec.kind, "reason": dec.reason, "cursor_cmd": bool(cc), "grok_exe": bool(ge),
                           "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
         return EXIT_OK
-    # Monitor/maintenance seats do not consume the worker hard-cap (they are not shop workers).
-    if args.mode not in ("monitor", "maintenance"):
-        refusal = worker_cap_refusal(snapshot_procs(), os.getpid())  # t815u: hard cap, before any window/agent/IRC
+    # FR #2522 / Simon: ONLY mode=agent is capped. Plan + maintenance (+ monitor) start freely on top of 2 workers.
+    if args.mode in CAPPED_MODES:
+        refusal = worker_cap_refusal(snapshot_procs(), os.getpid(), for_mode=args.mode)
         if refusal:
             log("refused: " + refusal)
             try:
@@ -3117,4 +3334,4 @@ def main(argv: Optional[list] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main())
