@@ -1746,7 +1746,8 @@ def _coerce_row(row: dict) -> dict | None:
     # author_seat/url: written by gh-Jeeves-style producers; needed by the MRB author rule and wire url (#39).
     # FR #265: implementer_seat + mrb_author_seat survive reload for UAT dual-seat block.
     # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
-    for key in ("nick", "channel", "accepted_ts", "offered_to", "offered_ts", "offered_channel",
+    # accepted_by: ACC ownership for stale-busy heal (#2369 / MRB #2371) and ACC CLOSED purge (#2361).
+    for key in ("nick", "channel", "accepted_ts", "accepted_by", "offered_to", "offered_ts", "offered_channel",
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
                 "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
@@ -4574,7 +4575,10 @@ def release_stale_busy(home: Path, nick: str, now: float) -> bool:
         return False
 
     def _owner(r: dict) -> str:
-        raw = str(r.get("nick") or r.get("offered_to") or "").strip()
+        # Match ACC purge seats (#2361): nick / accepted_by / offered_to.
+        raw = str(
+            r.get("nick") or r.get("accepted_by") or r.get("offered_to") or ""
+        ).strip()
         return (canonical_worker_nick(raw) or raw).strip().lower()
 
     try:
