@@ -1,40 +1,27 @@
-"""MRB #2462 hostile gates for FR #2460 Clear-BobiverseJobWorktrees git stderr StrictMode."""
+"""Hostile MRB #2462: Clear worktrees capture LASTEXITCODE after stringify, then rmdir fallback."""
 from __future__ import annotations
-
-import re
 
 from repo_layout import ROOT
 
 SCRIPT = ROOT / "common" / "scripts" / "Clear-BobiverseJobWorktrees.ps1"
 
 
-def _text() -> str:
-    return SCRIPT.read_text(encoding="utf-8")
-
-
-def test_mrb2462_no_bare_out_host_on_any_git_worktree_call():
-    text = _text()
-    # Any git worktree remove/prune must stringify; never pipe straight to Out-Host.
-    for m in re.finditer(r"& git[^\n]+worktree (remove|prune)[^\n]*", text):
-        line = m.group(0)
-        assert "| Out-Host" not in line, line
-        # Call site continues into a ForEach stringify block nearby.
-        window = text[m.start() : m.start() + 350]
-        assert 'ForEach-Object { "$_" }' in window, window
-
-
-def test_mrb2462_git_exit_captured_before_host_loop():
-    text = _text()
+def test_hostile_remove_captures_exit_before_fallback():
+    text = SCRIPT.read_text(encoding="utf-8")
     start = text.index("Removing worktree $p")
     block = text[start : start + 900]
-    assert "$gitExit = $LASTEXITCODE" in block
-    # Capture must precede the Write-Host loop over $gitOut.
-    assert block.index("$gitExit = $LASTEXITCODE") < block.index("foreach ($line in $gitOut)")
-    assert "if ($gitExit -ne 0)" in block
-    assert "Remove-Item -LiteralPath $p -Recurse -Force" in block
+    i_stringify = block.index('ForEach-Object { "$_" }')
+    i_exit = block.index("$gitExit = $LASTEXITCODE")
+    i_fallback = block.index("if ($gitExit -ne 0)")
+    i_rm = block.index("Remove-Item -LiteralPath $p")
+    assert i_stringify < i_exit < i_fallback < i_rm
+    assert "will try prune / rmdir" in block
 
 
-def test_mrb2462_fr2460_markers_on_remove_and_prune():
-    text = _text()
-    assert text.count("FR #2460") >= 2
-    assert "ErrorRecords" in text or "ErrorRecord" in text
+def test_hostile_no_bare_outhost_on_git_native():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert text.count("& git -C $rootFull worktree") >= 2
+    for marker in ("worktree remove --force $p", "worktree prune"):
+        i = text.index(marker)
+        window = text[max(0, i - 80) : i + 200]
+        assert "| Out-Host" not in window
