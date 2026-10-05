@@ -195,6 +195,16 @@ def normalize_outbox_line(text: str) -> tuple[str, str]:
     return "bare", s
 
 
+def is_misplaced_worker_job_wire(line: str) -> bool:
+    """True when an outbox line is a worker ACK/DONE/NACK/GIVEUP job-wire (FR #2384).
+
+    After context compaction, worker agents sometimes lose the run-dir outbox path and
+    append job-wire PRIVMSG lines into the bob ear ``home\\outbox.txt``. The ear must
+    refuse those so they never go out under the ear nick (follow-up to #2380 / #2382).
+    """
+    return shop_listen.parse_shop_job_line(line) is not None
+
+
 def write_outbox_line(path: Path, text: str, *, channel: str | None = None) -> None:
     """
     Append one outbox line as UTF-8 **without BOM**.
@@ -2906,12 +2916,18 @@ class Client:
         lines, new_last = take_outbox_lines(path, last, max_lines=OUTBOX_LINES_PER_TICK)
         sent: list[str] = []
         gate_fleet = bobreport.chair_mode_active(self.home)
+        # FR #2384: bob ear (non-chair) refuses worker job-wire lines misplaced in home\outbox.txt
+        refuse_job_wire = not getattr(self.args, "chair", False)
         for line in lines:
             # FR #226: re-normalize (BOM / pre-wrapped) before classify
             kind, norm = normalize_outbox_line(line)
             if kind == "empty":
                 continue
             line = norm
+            if refuse_job_wire and is_misplaced_worker_job_wire(line):
+                preview = line if len(line) <= 160 else (line[:157] + "...")
+                info(f"WARN outbox refused misplaced worker job-wire (FR #2384): {preview}")
+                continue
             if gate_fleet and bobreport.outbox_line_spam_for_fleet_channel(line, default_channel=self.chan):
                 continue
             op = shop_ops.raw_op_line(line, self.original_nick)
