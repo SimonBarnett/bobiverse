@@ -695,9 +695,26 @@ def resolve_comspec() -> str:
     return (os.environ.get("COMSPEC") or "").strip() or "cmd.exe"
 
 
+# FR #2580: redirected powershell.exe defaults $OutputEncoding to ASCII, which
+# best-fits non-ASCII (α→a, CJK→?) before airc UTF-8-decodes stdout (U+FFFD).
+PS_UTF8_STDOUT_PREAMBLE = (
+    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+    "$OutputEncoding = [Console]::OutputEncoding; "
+)
+
+
+def wrap_ps_script_utf8_stdout(script: str) -> str:
+    """Prefix a PowerShell script so captured stdout is UTF-8 (FR #2580)."""
+    return PS_UTF8_STDOUT_PREAMBLE + (script or "")
+
+
 def encode_ps_encoded_command(script: str) -> str:
-    """Base64 of UTF-16LE script text for ``powershell -EncodedCommand``."""
-    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    """Base64 of UTF-16LE script text for ``powershell -EncodedCommand``.
+
+    Always wraps with UTF-8 OutputEncoding so Greek/CJK survive capture (FR #2580).
+    """
+    wrapped = wrap_ps_script_utf8_stdout(script)
+    return base64.b64encode(wrapped.encode("utf-16-le")).decode("ascii")
 
 
 def _looks_like_utf16le_script(raw: bytes) -> bool:
@@ -711,9 +728,9 @@ def _looks_like_utf16le_script(raw: bytes) -> bool:
 def prepare_psb64_encoded_command(payload: str) -> str:
     """Decode ``psb64:`` payload to an ``-EncodedCommand`` ASCII base64 string.
 
-    Rules (FR #75): prefer native UTF-16LE EncodedCommand bytes when the payload
-    looks like UTF-16LE; otherwise treat decoded bytes as UTF-8 script text and
-    re-encode to UTF-16LE for ``-EncodedCommand``.
+    Rules (FR #75): decode UTF-16LE or UTF-8 script text, then always re-encode
+    via ``encode_ps_encoded_command`` so the FR #2580 UTF-8 stdout wrap applies
+    (do not return raw payload bytes without the wrap).
     """
     text = (payload or "").strip()
     if not text:
@@ -726,8 +743,8 @@ def prepare_psb64_encoded_command(payload: str) -> str:
         raise ShellRequestError("malformed psb64") from exc
     if _looks_like_utf16le_script(raw):
         try:
-            raw.decode("utf-16-le")
-            return base64.b64encode(raw).decode("ascii")
+            # Re-encode via encode_ps_encoded_command so FR #2580 UTF-8 wrap applies.
+            return encode_ps_encoded_command(raw.decode("utf-16-le"))
         except UnicodeDecodeError:
             pass
     try:
@@ -737,8 +754,7 @@ def prepare_psb64_encoded_command(payload: str) -> str:
         pass
     if len(raw) % 2 == 0:
         try:
-            raw.decode("utf-16-le")
-            return base64.b64encode(raw).decode("ascii")
+            return encode_ps_encoded_command(raw.decode("utf-16-le"))
         except UnicodeDecodeError as exc:
             raise ShellRequestError("malformed psb64") from exc
     raise ShellRequestError("malformed psb64")
@@ -818,7 +834,12 @@ def parse_shell_request(text: str) -> ShellRequest:
 
 def build_shell_argv(req: ShellRequest) -> list[str]:
     if req.kind == "cmd":
-        return [resolve_comspec(), "/d", "/c", req.body]
+        # FR #2580: OEM code page mangles non-ASCII; force UTF-8 CP for capture.
+        body = req.body or ""
+        stripped = body.lstrip().lower()
+        if not stripped.startswith("chcp "):
+            body = "chcp 65001>nul & " + body
+        return [resolve_comspec(), "/d", "/c", body]
     if req.kind == "psb64":
         enc = prepare_psb64_encoded_command(req.body)
     else:

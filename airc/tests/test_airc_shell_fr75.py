@@ -42,7 +42,9 @@ def test_cmd_escape_uses_comspec(monkeypatch):
     argv = ac.build_shell_argv(req)
     assert argv[0].lower().endswith("cmd.exe")
     assert "/c" in [a.lower() for a in argv]
-    assert "echo %COMSPEC%" in argv
+    # FR #2580 prefixes chcp 65001 so non-ASCII cmd stdout survives capture.
+    assert any("echo %COMSPEC%" in a for a in argv)
+    assert any(a.lower().startswith("chcp 65001") or "chcp 65001" in a.lower() for a in argv)
 
 
 def test_psb64_roundtrip_computername():
