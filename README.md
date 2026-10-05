@@ -82,12 +82,19 @@ Preferred catch-up (install on `main`, clean tree):
 
 That fetch + ff-only + robocopy recomposes flat `scripts\` from `common\` / `<product>\`. Watch the log for `ALERT sync-behind` / `ALERT sync-ff-failed`.
 
-One-file **hotpatch** when ff is blocked (dirty tree or feature branch) but you need tip harvest immediately:
+One-file **hotpatch** when ff is blocked (dirty tree or feature branch) but you need tip harvest immediately (UTF-8 **without BOM**; WinPS `-Encoding utf8` writers add a BOM — use `UTF8Encoding(false)`):
 
 ```powershell
 git -C <install> fetch origin
-git -C <install> show origin/main:common/scripts/Invoke-BobiverseHarvest.ps1 |
-  Set-Content -LiteralPath <install>\common\scripts\Invoke-BobiverseHarvest.ps1 -Encoding utf8
+ = git -C <install> show origin/main:common/scripts/Invoke-BobiverseHarvest.ps1
+# UTF-8 no BOM (WinPS Set-Content -Encoding utf8 writes a BOM)
+[System.IO.File]::WriteAllText(
+  (Join-Path <install> 'common\scripts\Invoke-BobiverseHarvest.ps1'),
+  (( -join "
+").TrimEnd() + "
+"),
+  [System.Text.UTF8Encoding]::new(False)
+)
 & <install>\scripts\Sync-BobiverseFromRepo.ps1 -Product bob -InstallRoot <install> -ComposeOnly
 ```
 
