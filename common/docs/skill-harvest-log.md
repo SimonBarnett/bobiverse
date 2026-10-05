@@ -1,4 +1,9 @@
 # Skill harvest log
+## 2026-10-05 FR #2447 / #2511 airc MSI re-pack after HomePath
+
+- Script fixes on main do not update shipped MSIs; Quiet Apply runs the packaged copy until Pack + Assert + upload.
+- After Install-AircConsole ASCII/$HomePath (#2501), re-pack airc, replace GitHub release assets, Assert-BobiverseReleaseAssets, then Apply (clear loop-guard if prior msiexec-timeout on the broken CA).
+- Pack offline: seed `common/third_party/nssm` and `wix` from a known-good install when nssm.cc/WiX zip fetch fails.
 
 ## 2026-10-05 — FR #2448 empty-offer operator playbook
 
