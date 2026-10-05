@@ -33,3 +33,4 @@ Also: `jeeves.exe --self-test --check offer` and monitor `queue_flow` JSON (`gat
 - Living architecture pin / chair exe: #1993
 - Incident root-cause FR: #2446
 - Empty-offer log wording: FR #2309 / #2333; harvest #2243 / #2285 / #2309
+- Post-incident queue vs GitHub FR snapshot: `empty-offer-verify-2454.md` (FR #2454)
