@@ -226,11 +226,17 @@ class AircConsoleService:
         self._force_reconnect = False
 
     def _on_console_out(self, nick: str, line: str) -> None:
-        # Reply in Query only — never on shop channel (silent).
+        # Reply in Query only - never on shop channel (silent).
         # FR #75: chunk deterministically within IRC_SAFE_PAYLOAD (no silent 400 clip).
+        # FR #2551: shell/job/session worker threads call this after IRC drop; never let
+        # ConnectionError escape into those threads (crash hook / unhandled thread exc).
         text = (line or "").replace("\n", " ").replace("\r", " ")
-        for piece in chunk_irc_text(text, limit=IRC_SAFE_PAYLOAD, prefix=""):
-            self.send_privmsg(nick, piece)
+        try:
+            for piece in chunk_irc_text(text, limit=IRC_SAFE_PAYLOAD, prefix=""):
+                self.send_privmsg(nick, piece)
+        except ConnectionError as e:
+            info(f"INFO console-out-send-err {e}")
+            self._force_reconnect = True
 
     def connect(self) -> None:
         self._registered = False

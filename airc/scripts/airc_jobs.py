@@ -534,8 +534,13 @@ class JobProtocol:
             raise JobProtocolError("denied", f"verb {verb} requires {level} permission")
 
     def _emit(self, nick: str, line: str) -> None:
+        # FR #2551: on_reply may raise ConnectionError after IRC drop; swallow so the
+        # RUN worker thread does not die with an unhandled exception (crash hook).
         if self.on_reply:
-            self.on_reply(nick, line)
+            try:
+                self.on_reply(nick, line)
+            except ConnectionError:
+                return
 
     def handle(self, nick: str, verb: str, kv: dict[str, str]) -> list[str]:
         try:
