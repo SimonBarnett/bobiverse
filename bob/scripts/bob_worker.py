@@ -978,6 +978,12 @@ def _write_console_all(k32, h, recs, wintypes) -> bool:
     return True
 
 
+def _inject_prefer_paste() -> bool:
+    """FR #2508: BOB_WORKER_INJECT_PASTE=0 skips clipboard+Ctrl+V (KEY_EVENT batch only)."""
+    raw = (os.environ.get("BOB_WORKER_INJECT_PASTE") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bool:
     """Paste text into THIS process's console input and submit with Enter.
 
@@ -986,6 +992,7 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
     Ctrl+V (one paste), then the FR #1601 submit gap + double Enter. Fallback: one
     batched WriteConsoleInput of all KEY_EVENTs (still no per-char sleep).
 
+    FR #2508: opt out with BOB_WORKER_INJECT_PASTE=0 (KEY_EVENT batch only).
     FR #2504: save prior CF_UNICODETEXT before EmptyClipboard; restore after the
     Ctrl+V chord has been queued and the submit gap has elapsed (best-effort) so
     operator clipboard is not permanently clobbered. pid is call-signature only.
@@ -1011,10 +1018,12 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
         clipboard_touched = False
         try:
             pasted = False
-            prior = _clipboard_get_unicode()
-            if _clipboard_set_unicode(text):
-                clipboard_touched = True
-                pasted = _write_console_all(k32, h, _build_ctrl_v_records(), wintypes)
+            prior = None
+            if _inject_prefer_paste():
+                prior = _clipboard_get_unicode()
+                if _clipboard_set_unicode(text):
+                    clipboard_touched = True
+                    pasted = _write_console_all(k32, h, _build_ctrl_v_records(), wintypes)
             if not pasted:
                 recs = build_key_records(text, u32)
                 if not _write_console_all(k32, h, recs, wintypes):
