@@ -854,12 +854,13 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
 # Labels mrb-home/umbrella/parent-fr should SKIP_FR (#271), but stale queue rows
 # enqueued before labels (or when API label payloads were empty) kept being offered.
 # Hard-pin by (repo, #N) so resync/offer always prune.
+# FR #2521: do NOT pin #11 — that is FAIL remediation (offerable after #2464/#2469),
+# not an evergreen home. Homes remain #3/#7/#8/#9/#20.
 _SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
     ("simonbarnett/agentic_fomprep", "#3"),
     ("simonbarnett/agentic_fomprep", "#7"),
     ("simonbarnett/agentic_fomprep", "#8"),
     ("simonbarnett/agentic_fomprep", "#9"),
-    ("simonbarnett/agentic_fomprep", "#11"),
     ("simonbarnett/agentic_fomprep", "#20"),
 }
 
