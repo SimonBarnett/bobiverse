@@ -220,25 +220,31 @@ if ($env:BOB_IRC_PASSWORD) {
 # t794u: the systray (interactive user) stops ircBob on Exit and restarts it on Start Systray.
 [void](Grant-BobiverseServiceUserControl -Name $ServiceName)
 # Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)
+# FR #2523: when bob-worker.exe is present, do not (re)install Desktop Watch-AgentHealth — shop seats are bob-worker only.
 if (-not $SkipWatchAgentHealth) {
-    $wahSrc = Join-Path $InstallRoot 'Watch-AgentHealth'
-    if (-not (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1'))) {
-        $wahSrc = Join-Path $repoRoot 'Watch-AgentHealth'
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1'))) {
-        $wahSrc = Get-BobiverseRepoPath -Root $repoRoot -Rel 'third_party\Watch-AgentHealth'
-    }
-    $wahDesk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Watch-AgentHealth'
-    if (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1')) {
-        if (-not (Test-Path -LiteralPath $wahDesk) -or $ForceTools) {
-            New-Item -ItemType Directory -Force -Path $wahDesk | Out-Null
-            Copy-Item -Path (Join-Path $wahSrc '*') -Destination $wahDesk -Recurse -Force
-            Write-Host "INFO Watch-AgentHealth -> $wahDesk"
-        } else {
-            Write-Host "INFO Watch-AgentHealth already on Desktop (pass -ForceTools to refresh)"
-        }
+    $bobWorkerExe = Join-Path $InstallRoot 'worker\bob-worker.exe'
+    if (Test-Path -LiteralPath $bobWorkerExe) {
+        Write-Host 'INFO FR #2523 skip Desktop Watch-AgentHealth install (bob-worker.exe present; use tray Agent)'
     } else {
-        Write-Host 'WARN Watch-AgentHealth not in pack; skip Desktop install'
+        $wahSrc = Join-Path $InstallRoot 'Watch-AgentHealth'
+        if (-not (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1'))) {
+            $wahSrc = Join-Path $repoRoot 'Watch-AgentHealth'
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1'))) {
+            $wahSrc = Get-BobiverseRepoPath -Root $repoRoot -Rel 'third_party\Watch-AgentHealth'
+        }
+        $wahDesk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Watch-AgentHealth'
+        if (Test-Path -LiteralPath (Join-Path $wahSrc 'Watch-AgentHealth.ps1')) {
+            if (-not (Test-Path -LiteralPath $wahDesk) -or $ForceTools) {
+                New-Item -ItemType Directory -Force -Path $wahDesk | Out-Null
+                Copy-Item -Path (Join-Path $wahSrc '*') -Destination $wahDesk -Recurse -Force
+                Write-Host "INFO Watch-AgentHealth -> $wahDesk"
+            } else {
+                Write-Host "INFO Watch-AgentHealth already on Desktop (pass -ForceTools to refresh)"
+            }
+        } else {
+            Write-Host 'WARN Watch-AgentHealth not in pack; skip Desktop install'
+        }
     }
 }
 

@@ -81,10 +81,38 @@ function Invoke-BobTrayStartWorkerQueue {
 
 # t815u: hard cap - never more than 2 worker seats (agent or plan) per machine, counted from LIVE bob-worker*.exe processes
 # (a onefile exe = bootloader + same-named child = one seat; stale run dirs never count). Shared by the tray click and !startworker.
+# FR #2523: Watch-AgentHealth / legacy watch seats are NOT counted here and must not start as shop workers when bob-worker is installed.
 $script:BobTrayHardMaxWorkers = 2
+
+function Test-BobWorkerProductActive {
+    <#
+    FR #2523: True when bob-worker.exe is the active product under InstallRoot (or common ai roots).
+    Legacy Watch-AgentHealth must not auto-start / join shop alongside it.
+    #>
+    param(
+        [string]$InstallRoot = ''
+    )
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($InstallRoot) {
+        $candidates.Add((Join-Path $InstallRoot 'worker\bob-worker.exe'))
+    }
+    if ($script:RepoRoot) {
+        $candidates.Add((Join-Path $script:RepoRoot 'worker\bob-worker.exe'))
+    }
+    foreach ($root in @('C:\ai\bob', 'D:\ai\bob', 'E:\ai\bob')) {
+        if (Test-Path -LiteralPath $root) {
+            $candidates.Add((Join-Path $root 'worker\bob-worker.exe'))
+        }
+    }
+    foreach ($p in $candidates) {
+        if ($p -and (Test-Path -LiteralPath $p)) { return $true }
+    }
+    return $false
+}
 
 function Measure-BobTrayWorkerSeats {
     param([object[]]$Procs)
+    # Only bob-worker*.exe seats (never Watch-AgentHealth / grok.exe watch seats) — FR #2523 / t815u.
     $w = @($Procs | Where-Object { $_.Name -match '^bob-worker(-[0-9a-f]+)?\.exe$' })
     $ids = @($w | ForEach-Object { [int]$_.ProcessId })
     return @($w | Where-Object { $ids -notcontains [int]$_.ParentProcessId }).Count

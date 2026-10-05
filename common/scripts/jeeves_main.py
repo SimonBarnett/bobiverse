@@ -41,10 +41,31 @@ def is_ephemeral_test_home(path: Path) -> bool:
     return False
 
 
-def resolve_digest_home(*, digest_home: str = "", home: str = "", env: dict | None = None) -> Path:
-    """Prefer explicit --digest-home, then non-ephemeral BOB_DIGEST_HOME, then ~/.bobiverse."""
+def is_ephemeral_pytest_home(path: str | Path | None) -> bool:
+    """Alias for FR #2526 tests landed via #2532 (string or Path)."""
+    if path is None or str(path).strip() == "":
+        return False
+    return is_ephemeral_test_home(Path(path))
+
+
+def resolve_digest_home(
+    *,
+    digest_home: str = "",
+    home: str = "",
+    digest_home_arg: str = "",
+    home_arg: str = "",
+    env: dict | None = None,
+) -> Path:
+    """Prefer explicit --digest-home, then non-ephemeral BOB_DIGEST_HOME, then ~/.bobiverse.
+
+    Accepts digest_home/home (FR #2522) and digest_home_arg/home_arg (#2532).
+    """
     e = os.environ if env is None else env
-    for raw in (digest_home, e.get("BOB_DIGEST_HOME") or "", home):
+    for raw in (
+        digest_home or digest_home_arg,
+        e.get("BOB_DIGEST_HOME") or "",
+        home or home_arg,
+    ):
         s = str(raw or "").strip()
         if not s:
             continue
@@ -266,6 +287,8 @@ def _check_offer(home: Path, chair_home: Path | None) -> tuple[dict[str, Any], l
                 detail["ok"] = True
                 detail["offer_all_require_machine"] = True
                 detail["note"] = msg
+                detail["offer_note_only"] = True
+                detail["offer_note"] = msg
             else:
                 findings.append(msg)
                 detail["ok"] = False
@@ -695,6 +718,18 @@ def main(argv: list[str] | None = None) -> int:
         raw = (os.environ.get(key) or "").strip()
         if raw and is_ephemeral_test_home(Path(raw)):
             os.environ.pop(key, None)
+
+    # FR #2524: bare jeeves.exe (no mode) must fail-fast exit 2 without grabbing
+    # the instance mutex - NSSM AppExit Restart otherwise loops and fills stderr
+    # during cutover when AppParameters are empty/missing.
+    has_mode = bool(args.self_test or args.heal or args.http_only or (args.chair and args.http))
+    if not has_mode:
+        msg = (
+            "jeeves.exe: error: specify --self-test, --heal, --http-only, "
+            "or --chair --http HOST:PORT (FR #2524: bare argv does not spawn maintenance)"
+        )
+        print(msg, file=sys.stderr, flush=True)
+        return 2
 
     if args.self_test:
         checks = args.check or None
