@@ -43,6 +43,102 @@ function Invoke-BobiverseNssmChecked {
     return $r
 }
 
+function Get-BobiverseNssmApplication {
+    <# FR #2475: read NSSM Application from the service registry (path only; no secrets). #>
+    param([Parameter(Mandatory)][string]$ServiceName)
+    try {
+        $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters"
+        if (Test-Path -LiteralPath $k) {
+            return [string](Get-ItemProperty -LiteralPath $k -Name Application -ErrorAction Stop).Application
+        }
+    } catch { }
+    return ''
+}
+
+function Set-BobiverseNssmApplicationSafe {
+    <#
+      FR #2475: never point NSSM Application at a missing exe.
+      If NewApplication is a filesystem path that does not exist, keep the previous Application
+      (or throw when -RequireExe and nothing valid remains). powershell.exe / cmd.exe are allowed.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Nssm,
+        [Parameter(Mandatory)][string]$ServiceName,
+        [Parameter(Mandatory)][string]$NewApplication,
+        [string]$AppDirectory = '',
+        [switch]$RequireExe
+    )
+    $prev = Get-BobiverseNssmApplication -ServiceName $ServiceName
+    $new = [string]$NewApplication
+    $isShell = ($new -match '(?i)(^|[\\/])(powershell|pwsh|cmd)\.exe$') -or ($new -ieq 'powershell.exe') -or ($new -ieq 'pwsh.exe') -or ($new -ieq 'cmd.exe')
+    if (-not $isShell) {
+        if (-not (Test-Path -LiteralPath $new)) {
+            Write-Host "WARN FR#2475 refuse NSSM Application=$new (missing); keeping previous=$prev"
+            if ($RequireExe -and -not ($prev -and (Test-Path -LiteralPath $prev))) {
+                throw "FR#2475: refused to set Application to missing path and no valid previous Application for $ServiceName"
+            }
+            return [pscustomobject]@{ Ok = $false; KeptPrevious = $true; Application = $prev; Refused = $new }
+        }
+    }
+    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', $new))
+    if ($AppDirectory) {
+        [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', $AppDirectory))
+    }
+    if (-not $isShell -and -not (Test-Path -LiteralPath $new)) {
+        Write-Host "WARN FR#2475 Application vanished after set ($new); restoring previous=$prev"
+        if ($prev) {
+            [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', $prev))
+            return [pscustomobject]@{ Ok = $false; KeptPrevious = $true; Application = $prev; Refused = $new }
+        }
+        throw "FR#2475: Application missing after nssm set and no previous path to restore ($ServiceName)"
+    }
+    return [pscustomobject]@{ Ok = $true; KeptPrevious = $false; Application = $new; Refused = '' }
+}
+
+function Invoke-BobiverseMsiexecSerialized {
+    <#
+      FR #2475: serialise msiexec via Global\bobiverse-msiexec mutex; retry exit 1618
+      (ERROR_INSTALL_ALREADY_RUNNING) a few times instead of leaving services half-upgraded.
+    #>
+    param(
+        [Parameter(Mandatory)][string[]]$ArgumentList,
+        [string]$LogPath = '',
+        [int]$TimeoutMs = 1200000,
+        [int]$MaxAttempts = 6,
+        [int]$RetryDelaySec = 15
+    )
+    $msiexec = Join-Path $env:SystemRoot 'System32\msiexec.exe'
+    $mutex = New-Object System.Threading.Mutex($false, 'Global\bobiverse-msiexec')
+    $held = $false
+    try {
+        try { $held = $mutex.WaitOne(1800000) } catch [System.Threading.AbandonedMutexException] { $held = $true }
+        if (-not $held) { throw 'FR#2475: timed out waiting for Global\bobiverse-msiexec mutex' }
+        $code = -1
+        for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+            $others = @(Get-Process -Name msiexec -ErrorAction SilentlyContinue)
+            if ($others.Count -gt 0 -and $attempt -lt $MaxAttempts) {
+                Write-Host "WARN FR#2475 msiexec busy (procs=$($others.Count)); wait $RetryDelaySec s attempt=$attempt"
+                Start-Sleep -Seconds $RetryDelaySec
+                continue
+            }
+            $p = Start-Process -FilePath $msiexec -ArgumentList $ArgumentList -PassThru -WindowStyle Hidden
+            if (-not $p.WaitForExit([Math]::Max(1000, [int]$TimeoutMs))) {
+                try { $p.Kill() } catch { }
+                throw ("FR#2475: msiexec timed out after {0} ms (attempt {1})" -f $TimeoutMs, $attempt)
+            }
+            $code = [int]$p.ExitCode
+            if ($code -ne 1618) { break }
+            Write-Host "WARN FR#2475 msiexec exit 1618 (already running); retry in $RetryDelaySec s attempt=$attempt"
+            Start-Sleep -Seconds $RetryDelaySec
+        }
+        return [pscustomobject]@{ ExitCode = $code; LogPath = $LogPath }
+    } finally {
+        if ($held) { try { $mutex.ReleaseMutex() } catch { } }
+        try { $mutex.Dispose() } catch { }
+    }
+}
+
+
 function Get-BobiverseServiceAppParameters {
     <# FR #1552: read NSSM AppParameters from the service registry (no secret values logged). #>
     param([Parameter(Mandatory)][string]$ServiceName)
