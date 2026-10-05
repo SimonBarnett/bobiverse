@@ -2888,6 +2888,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--no-tls", action="store_true", help="tests only")
     p.add_argument("--dry-run", action="store_true", help="print the agent selection as JSON and exit (starts nothing)")
+    p.add_argument("--describe-launch", action="store_true", help="FR #2413/MRB #2417: print describe_worker_exe_launch JSON and exit (tray/CLI shared plan)")
     p.add_argument("--echo", action="store_true", help="also print the log to stdout")
     p.add_argument(
         "--startup-grace-s",
@@ -2896,6 +2897,15 @@ def main(argv: Optional[list] = None) -> int:
         help="seconds to hold inject/!bored after agent spawn (FR #955; default 60, or BOB_WORKER_STARTUP_GRACE_S)",
     )
     args = p.parse_args(argv)
+    if getattr(args, "describe_launch", False):
+        plan = describe_worker_exe_launch(
+            args.install_root,
+            args.mode,
+            args.machine_id or "",
+            source="cli",
+        )
+        print(json.dumps(plan, sort_keys=True))
+        return EXIT_OK
     if args.startup_grace_s is None:
         env_grace = os.environ.get("BOB_WORKER_STARTUP_GRACE_S", "").strip()
         try:
