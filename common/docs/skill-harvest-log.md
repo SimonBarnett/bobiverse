@@ -555,3 +555,12 @@ Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
 | Sticky MRB `offered_to` rebroadcast with no ACK | Other-machine non-ACK blocks same-machine siblings via `review_blocked`; report/recycle that seat. |
 
 Books: `bobiverse-jeeves-monitor`, `bobiverse-jeeves-troubleshooting`. Issues: #2309, #2314; living FR #1993 append.
+
+## 2026-10-05 - bob-worker inject paste opt-out (MRB #2510 / FR #2508)
+
+| Lesson | Fix / book |
+|--------|------------|
+| Playbook documented `BOB_WORKER_INJECT_PASTE=0` but tip had no env gate after paste inject landed | Honor opt-out in `_inject_prefer_paste`; skip clipboard+Ctrl+V and use KEY_EVENT batch only; unit + hostile gates |
+| Skill inject-paste bullet had a C0 backspace that ate the leading letter of the worker exe name | Strip the C0 control byte and restore the full worker exe name; gate no-C0 on the bullet |
+
+Books: worker operating skill (tray Agent / inject path). Tip PR #2510; hostile docs this entry.
