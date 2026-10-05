@@ -1,4 +1,4 @@
-﻿"""FR #2526: pytest-home refuse + offer all-require_machine is a note (no maintenance spawn)."""
+"""FR #2526: pytest-home refuse + offer all-require_machine is a note (no maintenance spawn)."""
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,4 +1,4 @@
-﻿"""FR #2522: only ONE maintenance agent — concurrent triggers spawn exactly one."""
+"""FR #2522: only ONE maintenance agent — concurrent triggers spawn exactly one."""
 from __future__ import annotations
 
 from pathlib import Path
