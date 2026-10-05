@@ -15,7 +15,7 @@ LOCKED
 |----|--------|--------|--------------|-----------|
 | S1 | Ear present | `ircBob` Running; nick `Bob-{mid}` on `#bobiverse` + `#{mid}` | `Get-Service ircBob`; `bob/home/irc.log` JOIN lines | Service stopped or shop not joined |
 | S2 | One-window worker | Tray **Agent** starts one `bob-worker.exe` = one console = one agent | `pytest bob/tests/test_bob_worker_020.py` one-window cases; no `CREATE_NEW_CONSOLE` for agent | Second console / orphan agent |
-| S3 | Inject submits | Jeeves `FROM` lines auto-submit in the TUI (no manual Enter) | `inject_console` gap ≥ 0.20s + double Enter; `test_fr1601_inject_submit_gap.py` | Line sits waiting for Enter (`relay: injected` but agent idle) |
+| S3 | Inject submits | Jeeves `FROM` lines land as one paste (not per-char drip) and auto-submit | clipboard+Ctrl+V (FR #2498) then gap ≥ 0.20s + double Enter (FR #1601); `test_fr2498_inject_paste.py` / `test_fr1601_inject_submit_gap.py` | Drip-typing (~2 min/assign) or line waits for Enter |
 | S4 | Shop wire | Program posts `!bored` (after DONE/NACK/GIVEUP harvest hold, FR #1611); agent writes ACK/DONE only to `#{mid}` outbox | `bobiverse-bob-job-irc`; worker.log `bored -> shop` / `harvest-hold` | Model posts `!bored` or PRIVMSG nick/`#bobiverse`; immediate `!bored` before harvest |
 | S5 | CAST IRON harvest | Every gap/skill filed same turn via intake | `Report-BobiverseIntakeIssue.ps1`; AGENTS.md / skills lead with harvest rule | Findings left unfiled |
 

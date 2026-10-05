@@ -81,7 +81,8 @@ An unknown reading is "not available" (falls through), never "available". Readin
   coalesced into one `FROM (flood-coalesced N messages) ...`; identical consecutive lines are dropped; `POINT/DIGEST/AGPK/SEAL`, `is busy.`, `password=`, `XAI_API_KEY` lines are
   never relayed; messages arriving during the 6 s agent start-up are held and injected the moment it is ready. PMs are relayed only from `Jeeves`.
 * **NACK of a second assign (FR #1732):** free-rx / harvest hold only for NACK/GIVEUP/DONE that match the open ACK job id; concurrent NACK while another ACK is open keeps the seat busy.
-* **Submit gap (FR #1601)**: after typing a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline. Live seats need a rebuilt `bob-worker.exe` (`Build-BobWorker` / MSI) - source-only patches do not update the frozen PyInstaller binary already running from the tray.
+* **Inject paste (FR #2498)**: `inject_console` prefers CF_UNICODETEXT clipboard + Ctrl+V (bounded KEY_EVENTs) so the Grok TUI does not paint one character at a time (~2 min per Jeeves assign). Fallback KEY_EVENT path uses `write_console_input_all` (retries truncated writes; no per-char sleep). Opt out: `BOB_WORKER_INJECT_PASTE=0`.
+* **Submit gap (FR #1601)**: after paste/type of a FROM line, wait `BOB_WORKER_SUBMIT_GAP_S` (default 0.20s) then Enter twice so the TUI submits instead of inserting a newline. Live seats need a rebuilt `bob-worker.exe` (`Build-BobWorker` / MSI) - source-only patches do not update the frozen PyInstaller binary already running from the tray.
 * **Liveness answered by the exe**: server `PING`->`PONG` at once, CTCP PING/VERSION, and the fleet `ping` / `ping <selector>` in `#<machine>` -> `pong` (selector matches the
   nick or the machine id; prefix/substring/`*`/`?`). Pings are never forwarded to the agent (no wake, no flood).
 * **Reply path (FR #2380)**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to `$env:BOB_OUTBOX` (bob-worker sets it on every agent child) or the path in the first instruction / each injected `FROM ... [outbox: <path>]` footer
@@ -132,6 +133,7 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 | `!bored` never posts | open ACK without DONE/NACK/GIVEUP (busy), agent restarting, or IRC lost. Look for `bored -> shop` / `bored: free-rx matched` / `bored: not sent` in `worker.log`. |
 | Messages do not reach the agent | agent not ready yet (6 s) or `inject failed` in `worker.log`; raw-mode TUIs may need the window to exist - never minimise-kill the console. |
 | `relay: injected` in `worker.log` but TUI waits for Enter | Live `bob-worker-*.exe` is **stale** (pre-FR #1601 submit gap / double Enter). Press Enter once to unblock this line; durable fix = rebuild exe + start a **new** tray Agent seat (harvest #1605). |
+| TUI input fills one character at a time (~minutes per assign) | Live `bob-worker-*.exe` is **stale** (pre-FR #2498 clipboard paste). Rebuild process + new tray Agent seat; source-only hotpatch does not update the frozen binary. |
 | Agent restarted repeatedly | `HUNG` lines in `worker.log`; after 3 restarts in 30 min the seat ends (exit 5). |
 | Seat died mid-job; need who killed it | Look for external-kill / create-parent log from FR #1643. Parent after `wait()` is empty by design - spawn-time cache is the evidence (harvest #1678). |
 | Wrong agent chosen | selection is automatic; fix the fuel readings, do not edit the exe. |

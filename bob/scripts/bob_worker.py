@@ -830,6 +830,93 @@ def build_enter_records():
     return arr
 
 
+def build_ctrl_v_records():
+    """KEY_EVENTs for Ctrl+V paste (FR #2498). Four records — not O(n) per char."""
+    wintypes, INPUT_RECORD = _win_structs()
+    arr = (INPUT_RECORD * 4)()
+    # VK_CONTROL=0x11, VK_V=0x56; LEFT_CTRL_PRESSED=0x0008
+    seq = (
+        (0x11, 1, 0x0008, "\x00"),
+        (0x56, 1, 0x0008, "v"),
+        (0x56, 0, 0x0008, "v"),
+        (0x11, 0, 0x0000, "\x00"),
+    )
+    for i, (vk, down, ctrl, ch) in enumerate(seq):
+        rec = arr[i]
+        rec.EventType = 1
+        k = rec.Event.KeyEvent
+        k.bKeyDown = down
+        k.wRepeatCount = 1
+        k.wVirtualKeyCode = vk
+        k.wVirtualScanCode = 0
+        k.uChar = ch
+        k.dwControlKeyState = ctrl
+    return arr
+
+
+def write_console_input_all(k32, h, recs) -> bool:
+    """Write every INPUT_RECORD; retry from offset when ``written`` is truncated (FR #2498).
+
+    Retry truncated WriteConsoleInputW without delaying between chunks.
+    """
+    from ctypes import wintypes
+
+    total = len(recs)
+    if total <= 0:
+        return True
+    offset = 0
+    written = wintypes.DWORD(0)
+    while offset < total:
+        remaining = total - offset
+        if not k32.WriteConsoleInputW(
+            h, ctypes.byref(recs[offset]), remaining, ctypes.byref(written)
+        ):
+            return False
+        n = int(written.value)
+        if n <= 0:
+            return False
+        offset += n
+    return True
+
+
+def _set_clipboard_unicode(text: str) -> bool:
+    """Put Unicode text on the Windows clipboard (CF_UNICODETEXT). FR #2498."""
+    if os.name != "nt":
+        return False
+    try:
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+        if not u32.OpenClipboard(None):
+            return False
+        try:
+            u32.EmptyClipboard()
+            payload = (text + "\0").encode("utf-16-le")
+            hmem = k32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
+            if not hmem:
+                return False
+            ptr = k32.GlobalLock(hmem)
+            if not ptr:
+                k32.GlobalFree(hmem)
+                return False
+            ctypes.memmove(ptr, payload, len(payload))
+            k32.GlobalUnlock(hmem)
+            if not u32.SetClipboardData(CF_UNICODETEXT, hmem):
+                k32.GlobalFree(hmem)
+                return False
+            return True
+        finally:
+            u32.CloseClipboard()
+    except Exception:
+        return False
+
+
+def _inject_prefer_paste() -> bool:
+    raw = (os.environ.get("BOB_WORKER_INJECT_PASTE") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def one_line(text: str, maxlen: int = 600) -> str:
     t = re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")
     t = re.sub(r"\s+", " ", t).strip()
@@ -854,9 +941,17 @@ def _submit_gap_s(default: float = 0.20) -> float:
 
 
 def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bool:
-    """Type `text` + Enter into THIS exe's console input. t771u: the agent is a child that INHERITED this console (one window,
-    one console), so its keyboard input is our CONIN$ - no AttachConsole/FreeConsole dance and no second console. `pid` is
-    kept for the call signature/logging only. Returns True on success."""
+    """Paste/type `text` + Enter into THIS process's console input.
+
+    t771u: the agent is a child that INHERITED this console (one window, one console),
+    so its keyboard input is our CONIN$ - no AttachConsole/FreeConsole dance and no
+    second console. `pid` is kept for the call signature/logging only.
+
+    FR #2498: prefer a single clipboard paste (CF_UNICODETEXT + Ctrl+V) so the Grok TUI
+    does not paint one KEY_EVENT per character (~2 min for a Jeeves assign line). Fallback
+    KEY_EVENT path still uses `write_console_input_all` (no per-char sleep). Opt out:
+    `BOB_WORKER_INJECT_PASTE=0`.
+    """
     if os.name != "nt":
         return False
     text = one_line(text)
@@ -875,19 +970,21 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
         if not h or h == ctypes.c_void_p(-1).value:
             return False
         try:
-            written = wintypes.DWORD(0)
-            recs = build_key_records(text, u32)
-            if not k32.WriteConsoleInputW(h, recs, len(recs), ctypes.byref(written)):
-                return False
+            pasted = False
+            if _inject_prefer_paste() and _set_clipboard_unicode(text):
+                pasted = write_console_input_all(k32, h, build_ctrl_v_records())
+            if not pasted:
+                recs = build_key_records(text, u32)
+                if not write_console_input_all(k32, h, recs):
+                    return False
             # End paste chunk so Enter SUBMITS (not a literal newline in the buffer).
             time.sleep(gap)
-            enter = build_enter_records()
-            if not k32.WriteConsoleInputW(h, enter, len(enter), ctypes.byref(written)):
+            if not write_console_input_all(k32, h, build_enter_records()):
                 return False
             # Second Enter covers TUIs that consume the first as newline after a long paste.
             time.sleep(min(0.08, gap))
             enter2 = build_enter_records()
-            return bool(k32.WriteConsoleInputW(h, enter2, len(enter2), ctypes.byref(written)))
+            return write_console_input_all(k32, h, enter2)
         finally:
             k32.CloseHandle(h)
 
