@@ -61,3 +61,7 @@ gh issue list --repo SimonBarnett/bobiverse --state open --json number,title,lab
 ```
 
 See also: `empty-offer-playbook.md` (FR #2448), root-cause #2446 / PR #2450.
+
+See also: `empty-offer-playbook.md` (FR #2448), `empty-offer-incident-2026-10-05.md` (FR #2453), `empty-offer-operator.md`, root-cause #2446 / PR #2450.
+
+**Postscript:** PR #2450 later MERGED (MRB PASS); re-verify with the Method block after chair recycle/resync.
