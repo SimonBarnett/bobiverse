@@ -121,7 +121,11 @@ function Invoke-BobiverseMsiexecSerialized {
                 Start-Sleep -Seconds $RetryDelaySec
                 continue
             }
-            $p = Start-Process -FilePath $msiexec -ArgumentList $ArgumentList -PassThru -WindowStyle Hidden -Wait
+            $p = Start-Process -FilePath $msiexec -ArgumentList $ArgumentList -PassThru -WindowStyle Hidden
+            if (-not $p.WaitForExit([Math]::Max(1000, [int]$TimeoutMs))) {
+                try { $p.Kill() } catch { }
+                throw ("FR#2475: msiexec timed out after {0} ms (attempt {1})" -f $TimeoutMs, $attempt)
+            }
             $code = [int]$p.ExitCode
             if ($code -ne 1618) { break }
             Write-Host "WARN FR#2475 msiexec exit 1618 (already running); retry in $RetryDelaySec s attempt=$attempt"

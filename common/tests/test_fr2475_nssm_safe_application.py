@@ -36,3 +36,46 @@ def test_fr2475_install_jeeves_uses_safe_application_set():
 def test_fr2475_update_uses_serialized_msiexec_or_1618_retry():
     # Apply path must mention 1618 retry or call the shared serialised helper.
     assert ("Invoke-BobiverseMsiexecSerialized" in UPD) or ("1618" in UPD and "bobiverse-msiexec" in UPD)
+
+
+def test_fr2475_safe_setter_refuses_missing_path_behaviorally(tmp_path):
+    """Hostile MRB #2483: exercise Set-BobiverseNssmApplicationSafe refuse path (no real NSSM)."""
+    import subprocess
+    import textwrap
+
+    common = (ROOT / "common" / "scripts" / "Bobiverse-Common.ps1").resolve()
+    stub = tmp_path / "stub.ps1"
+    common_ps = str(common).replace("'", "''")
+    stub.write_text(
+        textwrap.dedent(
+            f"""
+            $ErrorActionPreference = 'Stop'
+            function Invoke-BobiverseNssmChecked {{
+                param($Exe,$NssmArgs)
+                return [pscustomobject]@{{ ExitCode = 0; Args = $NssmArgs }}
+            }}
+            . '{common_ps}'
+            function Get-BobiverseNssmApplication {{
+                param([string]$ServiceName)
+                return 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+            }}
+            $missing = Join-Path $env:TEMP ('no-such-jeeves-' + [guid]::NewGuid().ToString() + '.exe')
+            $r = Set-BobiverseNssmApplicationSafe -Nssm 'C:\\nssm\\nssm.exe' -ServiceName 'ircJeeves' -NewApplication $missing
+            if ($r.Ok) {{ throw 'expected Ok=false' }}
+            if (-not $r.KeptPrevious) {{ throw 'expected KeptPrevious' }}
+            if ($r.Application -notmatch 'powershell\\.exe$') {{ throw ('unexpected Application=' + $r.Application) }}
+            Write-Output 'REFUSE_OK'
+            """
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(stub)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    out = (proc.stdout or "") + (proc.stderr or "")
+    assert proc.returncode == 0, out
+    assert "REFUSE_OK" in out, out
