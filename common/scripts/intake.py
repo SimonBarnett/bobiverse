@@ -60,6 +60,16 @@ def is_do_not_file_probe(*, title: str, body: str = "") -> bool:
     return bool(_DO_NOT_FILE_PROBE_RE.search(f"{title or ''}\n{body or ''}"))
 
 
+# FR #2595 drain / file_submission: stronger than _WORKER_RECEIPT_MARKER.
+# Bare "FR #N", "CLOSED", or "merged" alone are common in real playbook harvests
+# (MRB #2597); those must still open draft PRs. Receipts use DONE/GIVEUP/SKIP/
+# self-MRB/twin/"duplicate of".
+_HARVEST_KIND_RECEIPT_MARKER = re.compile(
+    r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE)\b"
+    r"|\bduplicate of\b"
+)
+
+
 def is_harvest_worker_receipt(*, kind: str, title: str, body: str) -> bool:
     """kind=harvest session rows that are DONE/twin/GIVEUP receipts (FR #2595).
 
@@ -68,7 +78,7 @@ def is_harvest_worker_receipt(*, kind: str, title: str, body: str) -> bool:
     """
     if str(kind or "").strip().lower() != "harvest":
         return False
-    return bool(_WORKER_RECEIPT_MARKER.search(f"{title or ''}\n{body or ''}"))
+    return bool(_HARVEST_KIND_RECEIPT_MARKER.search(f"{title or ''}\n{body or ''}"))
 
 
 _PR_URL_RE = re.compile(
