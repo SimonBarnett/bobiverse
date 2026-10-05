@@ -141,8 +141,7 @@ File every problem you find: CAST IRON rule at the top.
 
 ## PyInstaller pack verify (FR #2406)
 
-Build-BobWorker / MSI ships a one-file PyInstaller ob-worker.exe. Do **not** fail a pack/UAT solely because outer-PE ASCII Select-String misses _OUT_FREE_RX / ree-rx / 
-eason=free — those live in the compressed PYZ (ob_worker.pyc). Verify with pyinstxtractor on the exe, or run ob/tests/test_bob_worker_bored_020.py free-rx tests / a scratch outbox GIVEUP and check worker.log for ored: free-rx matched and ored -> shop reason=free. Source-only edits do not update a running tray hashed copy; rebuild + new seat for live proof.
+Build-BobWorker / MSI ships a one-file PyInstaller bob-worker.exe. Do **not** fail a pack/UAT solely because outer-PE ASCII Select-String misses _OUT_FREE_RX / free-rx / reason=free — those live in the compressed PYZ (bob_worker.pyc). Verify with pyinstxtractor on the exe, or run bob/tests/test_bob_worker_bored_020.py free-rx tests / a scratch outbox GIVEUP and check worker.log for bored: free-rx matched and bored -> shop reason=free. Source-only edits do not update a running tray hashed copy; rebuild + new seat for live proof.
 
 ## Skill harvest backlog (FR #1682 / FR #1684) - consolidate by book, then PR
 
