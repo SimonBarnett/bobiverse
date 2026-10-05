@@ -702,6 +702,68 @@ function Get-BobiverseWorkTreeBehindCount {
     if ($raw -match '^\d+$') { return [int]$raw }
     return -1
 }
+
+function Sync-BobiverseUpdaterFromOrigin {
+    # FR #2581: dirty install trees block ff-only, so robocopy composes a stale
+    # Update-BobiverseService.ps1 (pre-#2563 soft-fail). After fetch, overlay the
+    # origin/<Branch> tip blob into flat scripts\ and common\scripts\ so Apply
+    # soft-fail lands without waiting for a clean worktree.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Branch = 'main',
+        [string]$GitExe = ''
+    )
+    $git = if ($GitExe) { $GitExe } else {
+        $cmd = Get-Command git -ErrorAction SilentlyContinue
+        if ($cmd) { $cmd.Source } else { '' }
+    }
+    if (-not $git) { return [pscustomobject]@{ Ok = $false; Reason = 'no git' } }
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'install is not a git work tree' }
+    }
+    $spec = "origin/${Branch}:common/scripts/Update-BobiverseService.ps1"
+    $tmp = Join-Path $env:TEMP ("bobiverse-upd-tip-" + [guid]::NewGuid().ToString('n') + '.ps1')
+    try {
+        $p = Start-Process -FilePath $git -ArgumentList @('-C', $InstallRoot, 'show', $spec) `
+            -RedirectStandardOutput $tmp -RedirectStandardError ($tmp + '.err') `
+            -NoNewWindow -Wait -PassThru
+        if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
+            $err = ''
+            if (Test-Path -LiteralPath ($tmp + '.err')) {
+                $err = (Get-Content -LiteralPath ($tmp + '.err') -Raw -ErrorAction SilentlyContinue)
+            }
+            return [pscustomobject]@{ Ok = $false; Reason = "git show $spec failed: $err" }
+        }
+        $bytes = [IO.File]::ReadAllBytes($tmp)
+        if ($bytes.Length -lt 40) {
+            return [pscustomobject]@{ Ok = $false; Reason = "tip blob too small ($($bytes.Length))" }
+        }
+        $text = [Text.Encoding]::UTF8.GetString($bytes)
+        if ($text -notmatch 'MaxAttempts|FR #2563|Update-Bobiverse|NoCount') {
+            return [pscustomobject]@{ Ok = $false; Reason = 'tip blob unexpected content' }
+        }
+        $utf8 = New-Object Text.UTF8Encoding $false
+        $targets = @(
+            (Join-Path $InstallRoot 'scripts\Update-BobiverseService.ps1'),
+            (Join-Path $InstallRoot 'common\scripts\Update-BobiverseService.ps1')
+        )
+        foreach ($t in $targets) {
+            $dir = Split-Path -Parent $t
+            if (-not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            }
+            [IO.File]::WriteAllText($t, $text.TrimEnd("`r", "`n") + "`n", $utf8)
+        }
+        return [pscustomobject]@{
+            Ok     = $true
+            Reason = "overlay $spec"
+            Bytes  = $bytes.Length
+        }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath ($tmp + '.err') -Force -ErrorAction SilentlyContinue
+    }
+}
 function Get-BobiverseInstallGitExcludeText {
     # Shared by install bootstrap and sync refresh (FR #132). Linked FR worktrees use this exclude.
     param([Parameter(Mandatory)][string]$Product)

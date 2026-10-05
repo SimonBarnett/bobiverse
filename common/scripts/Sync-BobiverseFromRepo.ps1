@@ -264,6 +264,22 @@ foreach ($d in @('scripts', 'third_party')) {
     }
 }
 
+# FR #2581: when ff is blocked by dirty hotpatches, the robocopy above still
+# copies a stale Update-BobiverseService.ps1. Overlay origin/<Branch> tip so
+# #2563 soft-fail / ForceCheck escape reaches flat scripts\ without a clean ff.
+if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
+    try {
+        $upd = Sync-BobiverseUpdaterFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
+        if ($upd.Ok) {
+            Write-Host ("INFO sync-updater-from-tip ok bytes={0}: {1}" -f $upd.Bytes, $upd.Reason)
+        } else {
+            Write-Host ("WARN sync-updater-from-tip skipped: {0}" -f $upd.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-updater-from-tip error: {0}" -f $_.Exception.Message)
+    }
+}
+
 # t784u: runtime dirs the stage/MSI lays out under another name than the repo uses (the tray runs from tools\ src\ assets\, not
 # from third_party\bob-tray; jeeves tools\). Without this a work-tree ff would update third_party\ but not what actually runs.
 $mirror = @()
