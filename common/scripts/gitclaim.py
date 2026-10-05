@@ -130,11 +130,10 @@ SKIP_FR_LABELS = frozenset(
         "evergreen",
         "evergreen-mrb",
         # FR #595: verdict / board labels are not implementable FRs.
+        # FR #2464: mrb-fail / mrb_fail are offerable remediation FRs (removed from skip).
         "mrb",
         "mrb-pass",
-        "mrb-fail",
         "mrb_pass",
-        "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
         # needs-mrb1 must NOT be a SKIP_FR label (#1080/#1122/#1174 / PR #1236): that
@@ -582,6 +581,10 @@ def issue_skip_fr_reason(
         return "closed"
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = labs & SKIP_FR_LABELS
+    # FR #2464: mrb-fail remediation is offerable. Bare `mrb` must not block when
+    # `mrb-fail` / `mrb_fail` is also present (FAIL boards carry both labels).
+    if hit and ("mrb-fail" in labs or "mrb_fail" in labs):
+        hit = set(hit) - {"mrb"}
     if hit:
         return f"label:{sorted(hit)[0]}"
     title_s = (title or "").strip()
