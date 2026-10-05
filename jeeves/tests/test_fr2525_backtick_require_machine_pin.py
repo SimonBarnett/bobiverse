@@ -1,4 +1,4 @@
-﻿"""FR #2525: backtick / trailing-note require_machine pin lines + hard-pin #2522."""
+"""FR #2525: backtick / trailing-note require_machine pin lines + hard-pin #2522."""
 from __future__ import annotations
 
 import re
