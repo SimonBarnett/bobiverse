@@ -592,6 +592,9 @@ def issue_skip_fr_reason(
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
+    # FR #2480: exact fomprep MRB-home board signature in body (not generic "MRB home" prose).
+    if _MRB_HOME_BOARD_BODY_RE.search(body or ""):
+        return "mrb_home_board_body"
     # bobiverse#258 / FR #133 / FR #987: evergreen MRB-home boards by title shape only
     # (label mrb-home/evergreen already returned above). Do not scan the body ΓÇö real FRs
     # that mention "MRB home" in prose must stay assignable.
@@ -623,6 +626,10 @@ def row_skip_fr_reason(row: dict) -> str | None:
     labels = row.get("labels") or ()
     if isinstance(labels, str):
         labels = [labels]
+    repo = str(row.get("repo") or "").strip().lower()
+    ident = _norm_row_id(row.get("id"))
+    if repo and ident and (repo, ident) in _SKIP_FR_ISSUE_PINS:
+        return "hard_pin_umbrella"
     # Queue rows often store the issue title in ``line`` (offer/list); fall back so
     # mrb-home / harvest title skips still fire when ``title`` was never stamped.
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
@@ -822,6 +829,26 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
     ("simonbarnett/bobiverse", "#1714"): "ionos",
 }
+
+# FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
+# Labels mrb-home/umbrella/parent-fr should SKIP_FR (#271), but stale queue rows
+# enqueued before labels (or when API label payloads were empty) kept being offered.
+# Hard-pin by (repo, #N) so resync/offer always prune.
+_SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
+    ("simonbarnett/agentic_fomprep", "#3"),
+    ("simonbarnett/agentic_fomprep", "#7"),
+    ("simonbarnett/agentic_fomprep", "#8"),
+    ("simonbarnett/agentic_fomprep", "#9"),
+    ("simonbarnett/agentic_fomprep", "#11"),
+    ("simonbarnett/agentic_fomprep", "#20"),
+}
+
+# Exact board phrase used by fomprep MRB-home intake issues (body). Title-only
+# evergreen regex (#987) deliberately ignores body "MRB home" prose; this phrase
+# is the parked-board signature and is safe to skip.
+_MRB_HOME_BOARD_BODY_RE = re.compile(
+    r"(?i)This issue is the MRB home for (?:that|this) feature request"
+)
 
 # Queue rows keep a short body for size; trailing dedicated require_machine pins must
 # survive (FR #2312 — #1714 pin sat after char 500 and was dropped on enqueue).
@@ -4497,6 +4524,8 @@ def resync_from_github(
             state = str(iss.get("state") or "open")
             if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
                 continue
+            if (str(repo).lower(), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
+                continue  # FR #2480 hard-pin umbrella
             desired.append(
                 GitClaim(
                     repo=repo,
