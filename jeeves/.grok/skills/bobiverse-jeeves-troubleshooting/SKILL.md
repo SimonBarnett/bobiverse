@@ -79,3 +79,4 @@ Probe together: scheduled-task state, `:7700` LISTEN, and a fresh GET `http://12
 
 Always finish with the harvest step (see rule above) - every row here was learned the hard way and is only useful if the next
 agent files what it finds.
+- **Harvest intake queued_github_down forever (FR #2579):** `gh_filer.GhCliFiler.create_draft_pr` was a stub; harvests refuse issue-fallback (MRB #2269) so every harvest queued. Fixed: real draft PR via `gh api` git data + draft pull. Stub failures log `queued_draft_pr_unsupported` (not github_down). After deploy on ionos, drain `intake\\outbox` harvest JSONs (close done/twin receipts; never re-offer as work).

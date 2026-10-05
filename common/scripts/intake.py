@@ -102,7 +102,11 @@ class GitHubFiler(Protocol):
 
 
 class GitHubDown(RuntimeError):
-    pass
+    """GitHub filing failed. ``reason`` selects the intake log tag (FR #2579)."""
+
+    def __init__(self, message: str = "", *, reason: str = "github_down") -> None:
+        super().__init__(message)
+        self.reason = (reason or "github_down").strip() or "github_down"
 
 
 @dataclass
@@ -400,7 +404,7 @@ def _labels_for(norm: dict, *, quarantine: bool) -> list[str]:
         labels.append("feature-request")
     if kind in ("skill", "harvest"):
         labels.append("skill")
-    # Operator 2026-10-04: do not stamp needs-mrb1 — it was a hallucination that
+    # Operator 2026-10-04: do not stamp needs-mrb1 - it was a hallucination that
     # blocked !bored offers (FR #1363) while open counts climbed on skill/ops FRs.
     if quarantine:
         labels.append("via-intake-untriaged")
@@ -496,7 +500,7 @@ def file_submission(
         else:
             branch = f"intake/{iid}"
             files = list(norm.get("files") or [])
-            # FR #1812: skill/harvest summary that already cites an open PR → link, no second issue.
+            # FR #1812: skill/harvest summary that already cites an open PR -> link, no second issue.
             existing = extract_existing_pr_ref(repo, title, body)
             if not files and existing is not None:
                 num, url = existing
@@ -515,7 +519,7 @@ def file_submission(
                     rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
                     if kind == "harvest":
                         # MRB #2269 / follow-up #2181: harvest receipts must never become
-                        # GitHub issues when draft-PR filing fails — queue for retry.
+                        # GitHub issues when draft-PR filing fails - queue for retry.
                         rec["state"] = "queued"
                         rec["queued"] = True
                         outbox = intake_root(home) / "outbox" / f"{iid}.json"
@@ -532,7 +536,16 @@ def file_submission(
                             encoding="utf-8",
                         )
                         _save_record(home, rec)
-                        raise GitHubDown("harvest draft PR filing failed") from exc
+                        msg = str(exc)
+                        reason = (
+                            "draft_pr_unsupported"
+                            if "draft PR not implemented" in msg
+                            or "draft_pr_unsupported" in msg.lower()
+                            else "github_down"
+                        )
+                        raise GitHubDown(
+                            "harvest draft PR filing failed", reason=reason
+                        ) from exc
                     # Non-harvest skill payloads retain the issue fallback with a file list.
                     listing = "\n".join(f"- `{f.get('path')}`" for f in files) or "- (no files)"
                     issue_body = body + "\n\n### Files\n" + listing
@@ -622,16 +635,23 @@ def process_intake(
     iid = f"in_{uuid.uuid4().hex[:16]}"
     try:
         rec = file_submission(home, norm, filer, intake_id=iid, quarantine=quarantine)
-    except GitHubDown:
+    except GitHubDown as exc:
         rec = load_record(home, iid) or {
             "intake_id": iid,
             "queued": True,
             "state": "queued",
         }
+        # FR #2579: do not announce stub draft-PR failures as github_down.
+        tag = f"queued_{getattr(exc, 'reason', 'github_down') or 'github_down'}"
+        if tag not in (
+            "queued_github_down",
+            "queued_draft_pr_unsupported",
+        ):
+            tag = "queued_github_down"
         return IntakeResult(
             202,
             {"intake_id": iid, "queued": True},
-            log_safe=_safe_log(norm, iid, "queued_github_down"),
+            log_safe=_safe_log(norm, iid, tag),
         )
 
     return IntakeResult(
