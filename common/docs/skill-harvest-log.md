@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-05 — FR #2448 empty-offer operator playbook
+
+| Field | Value |
+|-------|-------|
+| Lesson | When seats hear nothing queued but unaccepted pins remain, read chair-log format_empty_offer_detail (require_machine/ledger/out-of-focus); check shop workers on the pin machine; clear seat-ledger giveup once; file unpinned work. queue_flow finds pin-only empty offer for idle seats after >10m (FR #2448; root-cause #2446). |
+| Evidence | FR #2448; docs empty-offer-playbook.md; queue_flow starve watch |
+| Refs | SimonBarnett/bobiverse#2448 SimonBarnett/bobiverse#2446 |
+
 ## 2026-10-05 — MRB #2442 Build-BobWatcher separate stdout/stderr
 
 | Field | Value |

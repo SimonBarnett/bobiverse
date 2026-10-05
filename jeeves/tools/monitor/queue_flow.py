@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Queue-flow check: gated vs ungated offer queue (FR #1518 / #1508)."""
+"""Queue-flow check: gated vs ungated offer queue (FR #1518 / #1508 / #2448)."""
 from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 from _common import (
@@ -18,6 +19,10 @@ from _common import (
     row_task,
     run_check,
 )
+
+# FR #2448: pin-only / gated empty offer for idle seats sustained this long → finding.
+EMPTY_OFFER_STARVE_S = 10 * 60
+EMPTY_OFFER_STATE = "monitor-empty-offer-starve.json"
 
 
 def _load_json(path: Path):
@@ -90,6 +95,55 @@ def _gate_bucket(row: dict) -> str:
 
 def _legacy_needs_mrb1_count(unaccepted: list[dict]) -> int:
     return sum(1 for r in unaccepted if "needs-mrb1" in _row_labels(r))
+
+
+def _empty_offer_starve_path(ops: Path) -> Path:
+    return Path(ops) / EMPTY_OFFER_STATE
+
+
+def _update_empty_offer_starve(
+    ops: Path,
+    *,
+    active: bool,
+    signature: str,
+    now: float | None = None,
+) -> tuple[float, bool]:
+    """Track sustained empty-offer for idle seats (FR #2448).
+
+    Returns (age_seconds, raise_finding).
+    """
+    path = _empty_offer_starve_path(ops)
+    now_f = float(time.time() if now is None else now)
+    if not active:
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+        return 0.0, False
+    since = now_f
+    try:
+        if path.is_file():
+            doc = json.loads(path.read_text(encoding="utf-8-sig"))
+            if str(doc.get("signature") or "") == signature:
+                since = float(doc.get("since") or now_f)
+            else:
+                since = now_f
+    except Exception:
+        since = now_f
+    try:
+        path.write_text(
+            json.dumps(
+                {"since": since, "signature": signature, "updated": now_f},
+                indent=0,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    age = max(0.0, now_f - since)
+    return age, age >= float(EMPTY_OFFER_STARVE_S)
 
 
 def _count_idle_seats(digest_doc: dict) -> int:
@@ -230,6 +284,7 @@ def check(args):
         )
 
     # FR #1518: gated-empty is informational (exit 0). True starve = ungated work + idle seats.
+    pin_note = None
     if offerable_n == 0:
         pin_note = _pin_zero_seat_note(unaccepted, dig if isinstance(dig, dict) else {})
         if pin_note:
@@ -251,6 +306,29 @@ def check(args):
     elif offerable_n > 0 and idle_seat_count > 0:
         findings.append(
             f"true starve: ungated_offerable={offerable_n} idle_seats={idle_seat_count}"
+        )
+
+    # FR #2448: sustained pin-only / gated empty while idle seats exist → finding after 10m.
+    rm_n = int(gated_counts.get("require_machine") or 0)
+    ungated_n = int(gated_counts.get("ungated") or 0)
+    pin_starve = (
+        len(unaccepted) > 0
+        and offerable_n == 0
+        and idle_seat_count > 0
+        and (rm_n > 0 or bool(pin_note))
+        and ungated_n == 0
+    )
+    sig = f"unacc={len(unaccepted)}|offer={offerable_n}|rm={rm_n}|idle={idle_seat_count}"
+    age_s, raise_starve = _update_empty_offer_starve(ops, active=pin_starve, signature=sig)
+    if pin_starve:
+        notes.append(
+            f"empty-offer starve watch age_s={int(age_s)} threshold_s={EMPTY_OFFER_STARVE_S} (FR #2448)"
+        )
+    if raise_starve:
+        findings.append(
+            f"pin-only empty offer for idle seats >10m "
+            f"(unaccepted={len(unaccepted)} require_machine={rm_n} idle={idle_seat_count}; "
+            f"see empty-offer-playbook / #2446 / FR #2448)"
         )
 
     for r in missing_url[:20]:
@@ -275,6 +353,7 @@ def check(args):
             "pending_offer_count": pending_offers,
             "gated_counts": gated_counts,
             "missing_pull_url_count": len(missing_url),
+            "empty_offer_starve_age_s": int(age_s) if pin_starve else 0,
             "notes": notes,
             "findings": findings,
         },
