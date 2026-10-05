@@ -1,4 +1,5 @@
 # Skill harvest log
+<<<<<<< HEAD
 ## 2026-10-05 — FR #2564 MSI UI 1603 / rollback recover
 
 | Field | Value |
@@ -6,6 +7,15 @@
 | Lesson | UI msiexec must use `/l*v` under `%ProgramData%\Bobiverse\logs`; Install CA logs there too; on RunInstall failure WiX RollbackRecover + Install catch best-effort Start-Service so ircBob/Airc are not left Stopped; assert MSI ProductVersion vs InstallRoot VERSION. Prefer self-update over parallel UI msiexec while Apply holds the mutex. |
 | Evidence | FR #2564; Recover-BobiverseService; Pack RollbackRecover; post-install.md; fleet-ops known-failure row |
 | Refs | SimonBarnett/bobiverse#2564 |
+=======
+## 2026-10-05 — FR #2563 / MRB #2565 self-update backup soft-fail
+
+| Field | Value |
+|-------|-------|
+| Lesson | Apply backup robocopy ≥8 must not burn MaxAttempts: exclude volatile paths, retry+log errors, record `backup-failed` with `-NoCount`, `Ensure-ServiceRunning` after pre-msi abort; `-ForceCheck` clears blocked-loop-guard. |
+| Evidence | PR #2565; post-install Self-update backup section; hostile test_mrb2565_hostile_backup_softfail.py |
+| Refs | SimonBarnett/bobiverse#2563 SimonBarnett/bobiverse#2565 |
+>>>>>>> origin/main
 
 ## 2026-10-04 - Airc MSI AppParameters identity preserve (harvest #1583)
 

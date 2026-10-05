@@ -192,3 +192,7 @@ Complete service logon after quiet MSI: Desktop / Start Menu **Complete bobivers
 ## Flat scripts after git ff (FR #269)
 
 After a manual `git pull --ff-only` on the install work tree, run `Sync-BobiverseFromRepo.ps1 -Product bob -ComposeOnly` (or the matching product) so `scripts\` matches `common\scripts` / `<product>\scripts` without restarting the service. Service start already ff+recomposes; `-ComposeOnly` is the no-bounce hook. Scripts compose no longer uses robocopy `/XO` (git checkout mtimes can be older than the flat copy).
+
+## Self-update backup / loop-guard (FR #2563)
+
+`Update-BobiverseService.ps1` Apply backs up the install tree with robocopy before msiexec. Exit codes 0–7 are success; on ≥8 it logs failing paths, retries once, and excludes volatile dirs/files (`.pytest_cache`, `peers.json`, `*.lock`). A backup-only failure records `lastResult=backup-failed` **without** burning `MaxAttempts`, and `Ensure-ServiceRunning` restarts the service so seats/ear are not left Stopped. If a tag is already at `blocked-loop-guard`, operator escape is `-ForceCheck` (IRC UPDATE path): it clears that tag’s failure count and reschedules. Clear state manually only when needed: delete the tag key under `<StateDir>\state.json` `failures`, or wait for a newer release.

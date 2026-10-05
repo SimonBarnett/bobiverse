@@ -134,7 +134,11 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Wrapper splat behaves oddly / wrong args | Script used automatic `$args` for splatting | Rename to an explicit array (e.g. `$launchArgs`) before `@splat` (PR #1588) |
 | InstallRoot `VERSION` jumps after sync / disagrees with ARP | Sync copied a newer clone `VERSION` over the MSI stamp | ARP `DisplayVersion` wins; Sync heals InstallRoot to ARP and skips clone clobber (FR #1565 / #1589 / PR #1577) |
 | Quiet MSI **1603** / `node still missing after winget` under LocalSystem | Per-user WindowsApps `winget` alias unusable as SYSTEM; Node/git/python hard-failed | FR #1825: prefer pinned **nodejs.org** x64 MSI (`ALLUSERS=1` + sha256); soft-fail missing tools with `WARN tool-missing` so product MSI continues (PR #2019). Install machine-wide prereqs afterward if needed at runtime |
+<<<<<<< HEAD
 | UI MSI **1603** / ircBob left **Stopped** / seats gone after failed upgrade (FR #2564) | UI msiexec without `/l*v`; RunInstall removed the service then failed; no rollback start | Always `msiexec /i … /l*v "%ProgramData%\Bobiverse\logs\msi-<product>-….log"`; read `install-*.log` / `recover-*.log` under the same folder; prefer self-update (`Restart-Service`) over parallel UI msiexec while Apply holds the mutex. Pack schedules RollbackRecover → `Recover-BobiverseService`; Install scripts assert MSI ProductVersion vs VERSION and best-effort Start-Service on catch |
+=======
+| Self-update Apply aborts at **robocopy ≥8** / tag **blocked-loop-guard** / service left Stopped (FR #2563) | Backup threw on locked `.pytest_cache` / `peers.json`; MaxAttempts burned; no operator escape | Backup excludes volatile paths, retries once, logs failing paths; backup-only fails → `backup-failed` **without** MaxAttempts burn + `Ensure-ServiceRunning`; `-ForceCheck` clears the tag (PR #2565). Prefer Restart-Service Apply over parallel UI msiexec |
+>>>>>>> origin/main
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
 
