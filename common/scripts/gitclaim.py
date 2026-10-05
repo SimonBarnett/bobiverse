@@ -33,6 +33,11 @@ try:
     IDLE_S = max(0.0, float(os.environ.get("BOB_BORED_IDLE_S", "0")))
 except ValueError:
     IDLE_S = 0.0
+# FR #2369: digest doing + lost DONE must not nak-busy forever; recent ACC still busy.
+try:
+    BUSY_STALE_S = max(60.0, float(os.environ.get("BOB_BUSY_STALE_S", "3600")))
+except ValueError:
+    BUSY_STALE_S = 3600.0
 # FR #628: under repo-level focus a UAT row only counts as real work for this long after its merge.
 UAT_MAX_AGE_S = 48 * 3600.0
 # t856u: an FR a seat already DONE (its PR waits for MRB/merge) is not re-offered for this long.
@@ -4545,8 +4550,83 @@ def resync_from_github(
         return {"ok": False, "error": str(exc)}
 
 
+def release_stale_busy(home: Path, nick: str, now: float) -> bool:
+    """FR #2369: drop stale/absent ACC + clear digest doing so !bored can proceed.
+
+    A seat only sends !bored when idle. If digest still says busy, release when
+    this nick has no accepted row, or every accepted row for the nick is older
+    than `BUSY_STALE_S` (default 1h). A recent accepted row keeps nak-busy
+    (CAST IRON keep seats busy / #1967).
+    """
+    me = canonical_worker_nick(nick) or (nick or "").strip()
+    if not me:
+        return False
+    me_l = me.lower()
+
+    def _seat_match(row: dict) -> bool:
+        seat = str(
+            row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+        ).strip()
+        if not seat:
+            return False
+        other = canonical_worker_nick(seat) or seat
+        return other.lower() == me_l
+
+    def _age_s(row: dict) -> float | None:
+        for key in ("accepted_ts", "ts", "offered_ts"):
+            ts = _parse_iso_ts(str(row.get(key) or ""))
+            if ts is not None:
+                return float(now) - ts
+        return None
+
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return False
+            mine: list[dict] = []
+            others: list[dict] = []
+            for row in doc.get("accepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                if _seat_match(row):
+                    mine.append(row)
+                else:
+                    others.append(row)
+            for row in mine:
+                age = _age_s(row)
+                # Missing timestamp => treat as stale (lost-DONE class).
+                if age is not None and age < BUSY_STALE_S:
+                    return False
+            if mine:
+                done = doc.setdefault("done", [])
+                for row in mine:
+                    fin = dict(row)
+                    fin["result"] = "STALE_BUSY"
+                    fin["done_ts"] = _utc_now()
+                    done.append(fin)
+                doc["accepted"] = others
+                if len(doc["done"]) > DONE_CAP:
+                    doc["done"] = doc["done"][-DONE_CAP:]
+                try:
+                    _write_queue(queue_path(home), doc)
+                except OSError:
+                    return False
+        # Clear digest outside queue rewrite (clear_seat_doing has its own lock).
+        with contextlib.suppress(Exception):
+            bobreport.clear_seat_doing(home, me)
+        return True
+    except (TimeoutError, OSError):
+        return False
+
+
 def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
-    """ignore, wait, busy, or ok. wait is checked before busy so retries stay quiet."""
+    """ignore, wait, busy, or ok. wait is checked before busy so retries stay quiet.
+
+    FR #2369: when digest says busy, `release_stale_busy` may clear lost-DONE /
+    stale ACC (>BUSY_STALE_S) and return ok so the fleet cannot stall for hours.
+    """
     shop = worker_shop_channel(nick)
     if shop is None or _channel(channel) != shop:
         return "ignore"
@@ -4554,5 +4634,7 @@ def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
     if last is not None and (float(now) - last) < IDLE_S:
         return "wait"
     if worker_working_on(home, nick):
+        if release_stale_busy(home, nick, now):
+            return "ok"
         return "busy"
     return "ok"
