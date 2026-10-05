@@ -67,6 +67,43 @@ def test_install_jeeves_logs_and_recovers_on_failure():
     assert "MsiProductVersion" in t
 
 
+
+
+def test_install_airc_logs_and_recovers_on_failure():
+    """MRB #2566 hostile: airc must get the same ProgramData log + recover path as bob/jeeves."""
+    airc = ROOT / "airc" / "scripts" / "Install-Airc.ps1"
+    t = _read(airc)
+    assert "Write-BobiverseMsiInstallLog" in t or "Get-BobiverseMsiLogDir" in t
+    assert "Restore-BobiverseServiceAfterFailedInstall" in t
+    assert "Assert-BobiverseInstallVersion" in t
+    assert "MsiProductVersion" in t
+    assert "AircInstallOk" in t
+    assert "Install-Airc-catch" in t or "Why 'Install-Airc-catch'" in t
+
+
+def test_assert_version_empty_is_noop_and_mismatch_throws():
+    """MRB #2566: empty ExpectedVersion skips; mismatch must throw (FR #2564)."""
+    t = _read(COMMON / "Bobiverse-Common.ps1")
+    fn = t[t.index("function Assert-BobiverseInstallVersion") : t.index("function Restore-BobiverseServiceAfterFailedInstall")]
+    assert "Empty ExpectedVersion = no-op" in fn or "if (-not $ExpectedVersion" in fn
+    assert "throw" in fn and "expected" in fn.lower()
+
+
+def test_pack_rollback_recover_scheduled_before_runinstall():
+    """MRB #2566: WiX Execute=rollback CA must be sequenced before deferred RunInstall."""
+    p = _read(COMMON / "Pack-BobiverseRelease.ps1")
+    assert 'Execute="rollback"' in p
+    assert 'After="RollbackRecover"' in p
+    assert 'Return="ignore"' in p
+
+
+def test_recover_script_always_exits_zero():
+    """MRB #2566: rollback CA Return=ignore - recover must never fail the MSI rollback."""
+    text = _read(COMMON / "Recover-BobiverseService.ps1")
+    assert "exit 0" in text
+    assert "ErrorActionPreference = 'Continue'" in text or "$ErrorActionPreference = 'Continue'" in text
+
+
 def test_post_install_docs_require_lstar_v_under_programdata():
     doc = _read(DOCS / "post-install.md")
     assert "/l*v" in doc
