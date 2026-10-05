@@ -26,9 +26,12 @@ def test_harvest1583_troubleshooting_row():
 
 
 def test_harvest1583_log():
-    text = LOG.read_text(encoding="utf-8")
-    assert "1583" in text
+    raw = LOG.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8")
+    assert "harvest #1583" in text
     assert "AppParameters" in text
+    assert "airc-install.json" in text
     assert "<<<<<<" not in text
 
 
