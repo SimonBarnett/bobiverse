@@ -1,4 +1,11 @@
 # Skill harvest log
+## 2026-10-05 — FR #2575 / MRB #2576 STATUS out id= StdOut
+
+| Field | Value |
+|-------|-------|
+| Lesson | STATUS must emit `out id= seq=` before DONE so Invoke-AircRemote ConvertFrom fills StdOut; bare STATUS + DONE alone leaves Wait green with empty Out. |
+| Evidence | PR #2576; test_fr2575_status_out_id_frame; hostile test_mrb2576_hostile_status_stdout |
+| Refs | SimonBarnett/bobiverse#2575 SimonBarnett/bobiverse#2576 |
 ## 2026-10-05 — FR #2570 airc STATUS Heard: strip + DONE id=
 
 | Field | Value |
