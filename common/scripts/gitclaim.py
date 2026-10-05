@@ -595,6 +595,9 @@ def issue_skip_fr_reason(
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
+    # FR #2480: exact fomprep MRB-home board signature in body (not generic "MRB home" prose).
+    if _MRB_HOME_BOARD_BODY_RE.search(body or ""):
+        return "mrb_home_board_body"
     # bobiverse#258 / FR #133 / FR #987: evergreen MRB-home boards by title shape only
     # (label mrb-home/evergreen already returned above). Do not scan the body ΓÇö real FRs
     # that mention "MRB home" in prose must stay assignable.
@@ -626,6 +629,10 @@ def row_skip_fr_reason(row: dict) -> str | None:
     labels = row.get("labels") or ()
     if isinstance(labels, str):
         labels = [labels]
+    repo = str(row.get("repo") or "").strip().lower()
+    ident = _norm_row_id(row.get("id"))
+    if repo and ident and (repo, ident) in _SKIP_FR_ISSUE_PINS:
+        return "hard_pin_umbrella"
     # Queue rows often store the issue title in ``line`` (offer/list); fall back so
     # mrb-home / harvest title skips still fire when ``title`` was never stamped.
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
@@ -825,6 +832,26 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
     ("simonbarnett/bobiverse", "#1714"): "ionos",
 }
+
+# FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
+# Labels mrb-home/umbrella/parent-fr should SKIP_FR (#271), but stale queue rows
+# enqueued before labels (or when API label payloads were empty) kept being offered.
+# Hard-pin by (repo, #N) so resync/offer always prune.
+_SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
+    ("simonbarnett/agentic_fomprep", "#3"),
+    ("simonbarnett/agentic_fomprep", "#7"),
+    ("simonbarnett/agentic_fomprep", "#8"),
+    ("simonbarnett/agentic_fomprep", "#9"),
+    ("simonbarnett/agentic_fomprep", "#11"),
+    ("simonbarnett/agentic_fomprep", "#20"),
+}
+
+# Exact board phrase used by fomprep MRB-home intake issues (body). Title-only
+# evergreen regex (#987) deliberately ignores body "MRB home" prose; this phrase
+# is the parked-board signature and is safe to skip.
+_MRB_HOME_BOARD_BODY_RE = re.compile(
+    r"(?i)This issue is the MRB home for (?:that|this) feature request"
+)
 
 # Queue rows keep a short body for size; trailing dedicated require_machine pins must
 # survive (FR #2312 — #1714 pin sat after char 500 and was dropped on enqueue).
@@ -1173,10 +1200,16 @@ def _remove_unaccepted(doc: dict, repo: str, task: str, ident: str) -> int:
 
 def _remove_unaccepted_tasks(doc: dict, repo: str, ident: str, tasks: set[str]) -> int:
     before = len(doc["unaccepted"])
+    want_id = _norm_row_id(ident)
+    want_tasks = {str(t).upper() for t in tasks}
     doc["unaccepted"] = [
         r
         for r in doc["unaccepted"]
-        if not (r.get("repo") == repo and r.get("id") == ident and r.get("task") in tasks)
+        if not (
+            str(r.get("repo") or "") == str(repo or "")
+            and _norm_row_id(r.get("id")) == want_id
+            and str(r.get("task") or "").upper() in want_tasks
+        )
     ]
     return before - len(doc["unaccepted"])
 
@@ -1943,8 +1976,24 @@ def load_queue(home: Path) -> dict:
         return _empty_queue()
 
 
+def _norm_row_id(ident: str | None) -> str:
+    """Canonical ``#N`` id for queue row matching (FR #2458)."""
+    s = str(ident or "").strip()
+    if not s:
+        return ""
+    if s.startswith("#"):
+        return s
+    if s.isdigit():
+        return f"#{s}"
+    return s
+
+
 def _same(row: dict, repo: str, task: str, ident: str) -> bool:
-    return row.get("repo") == repo and row.get("task") == task and row.get("id") == ident
+    return (
+        str(row.get("repo") or "") == str(repo or "")
+        and str(row.get("task") or "").upper() == str(task or "").upper()
+        and _norm_row_id(row.get("id")) == _norm_row_id(ident)
+    )
 
 
 def _already(doc: dict, repo: str, task: str, ident: str) -> bool:
@@ -2221,7 +2270,7 @@ def mrb_row_should_survive_resync(
         return False
     repo = str(row.get("repo") or "")
     task = str(row.get("task") or "").upper()
-    ident = str(row.get("id") or "")
+    ident = _norm_row_id(row.get("id"))
     if repo not in fetched:
         return True
     if task not in ("FR", "MRB"):
@@ -2602,27 +2651,44 @@ def _purge_closed_fr_accepted(doc: dict, *, issue_open=None, home: Path | None =
     return before - len(kept)
 
 
-def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None, home: Path | None = None) -> int:
-    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323).
+def _purge_dead_mrb_unaccepted(
+    doc: dict,
+    *,
+    pr_exists=None,
+    home: Path | None = None,
+    open_pulls: dict | None = None,
+    fetched_repos: set | None = None,
+) -> int:
+    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323 / #2458).
 
     FR #1585: when ``pr_exists`` says the pull is still open, keep the row and clear
     a stale ledger ``mrb_done`` stamp so the next offline scan cannot re-kill it.
+
+    FR #2458: when ``open_pulls`` + ``fetched_repos`` are provided (resync), drop MRB
+    rows whose id is absent from that repo's open-pull set (merged/closed webhook miss).
     """
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
+    fetched = {str(x) for x in (fetched_repos or ())}
     for row in doc.get("unaccepted") or []:
         if not isinstance(row, dict):
             continue
         if _canon_task(row) == "MRB":
             if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
                 continue
-            # Always apply structural / merged-flag checks; live open-state when checker given.
             if not mrb_row_offerable(row, pr_exists=pr_exists):
                 continue
-            # FR #1585: heal premature DONE stamps while GitHub still shows open.
+            repo = str(row.get("repo") or "").strip()
+            ident = _norm_row_id(str(row.get("id") or ""))
+            if (
+                open_pulls is not None
+                and repo
+                and repo in fetched
+                and ident
+                and ident not in (open_pulls.get(repo) or set())
+            ):
+                continue
             if home is not None and pr_exists is not None:
-                repo = str(row.get("repo") or "").strip()
-                ident = str(row.get("id") or "").strip()
                 if repo and ident and mrb_ledger_done_hold(home, repo, ident):
                     with contextlib.suppress(Exception):
                         if bool(pr_exists(repo, ident.lstrip("#"))):
@@ -2630,6 +2696,21 @@ def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None, home: Path | None =
         kept.append(row)
     doc["unaccepted"] = kept
     return before - len(kept)
+
+
+def purge_dead_mrb_rows(home: Path, *, pr_exists=None) -> int:
+    """FR #2458: lock queue and drop dead unaccepted/accepted MRB rows; persist if changed."""
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            n = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home)
+            n += _purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)
+            if n:
+                _write_queue(queue_path(home), doc)
+            return n
+    except (OSError, json.JSONDecodeError, ValueError, TimeoutError):
+        return 0
+
 
 
 def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None, home: Path | None = None) -> bool:
@@ -4446,6 +4527,8 @@ def resync_from_github(
             state = str(iss.get("state") or "open")
             if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
                 continue
+            if (str(repo).lower(), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
+                continue  # FR #2480 hard-pin umbrella
             desired.append(
                 GitClaim(
                     repo=repo,
@@ -4464,7 +4547,7 @@ def resync_from_github(
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
-            want = {(c.repo, c.task, c.id) for c in desired}
+            want = {(c.repo, c.task, _norm_row_id(c.id)) for c in desired}
             fetched_set = set(fetched)
             before = len(doc["unaccepted"])
             keep = []
@@ -4506,13 +4589,18 @@ def resync_from_github(
                     continue
                 if (
                     row.get("repo") in fetched_set
-                    and row.get("task") in ("FR", "MRB")
-                    and (row.get("repo"), row.get("task"), row.get("id")) not in want
+                    and str(row.get("task") or "").upper() in ("FR", "MRB")
+                    and (
+                        row.get("repo"),
+                        str(row.get("task") or "").upper(),
+                        _norm_row_id(row.get("id")),
+                    )
+                    not in want
                     and not mrb_row_should_survive_resync(
                         row, want=want, fetched=fetched_set
                     )
                 ):
-                    # FR #1323: drop MERGED/closed even when offered_to is set
+                    # FR #1323 / #2458: drop MERGED/closed even when offered_to is set
                     continue
                 # FR #1323 / #1585: drop ledger-held MRB only when GitHub no longer wants it.
                 # Open pulls in ``want`` must survive keep so offered_to/seq are preserved;
@@ -4528,6 +4616,15 @@ def resync_from_github(
                 keep.append(row)
             dropped = before - len(keep)
             doc["unaccepted"] = keep
+            # FR #2458: belt-and-suspenders — drop MRB absent from open pulls for fetched repos
+            # (covers id-shape / offered_to edge cases the keep loop may miss).
+            # Do not pass home here: without an open-PR checker, ledger mrb_done would
+            # re-kill still-open rows (FR #1585). open_pulls alone is the truth for this pass.
+            dropped += _purge_dead_mrb_unaccepted(
+                doc,
+                open_pulls=open_pulls_map,
+                fetched_repos=fetched_set,
+            )
             added = 0
             fetched_set2 = set(fetched)
             # Premature DONE while GitHub issue/PR still open: pull those rows out of done

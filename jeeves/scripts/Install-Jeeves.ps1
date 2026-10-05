@@ -186,11 +186,17 @@ $useJeevesExe = Test-Path -LiteralPath $jeevesExe
 if ($useJeevesExe) {
     $appParams = "--chair --http 127.0.0.1:7700 --home `"$ChairHome`" --digest-home `"$digestHome`""
     [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install', $ServiceName, $jeevesExe))
-    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Application', $jeevesExe))
-    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', $InstallRoot))
-    [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
-    Write-Host "INFO ircJeeves Application=jeeves.exe (FR #2301 WP3 cutover)"
-} else {
+    # FR #2475: refuse missing exe; keep previous Application on failure
+    $setApp = Set-BobiverseNssmApplicationSafe -Nssm $Nssm -ServiceName $ServiceName -NewApplication $jeevesExe -AppDirectory $InstallRoot
+    if (-not $setApp.Ok) {
+        Write-Host "WARN FR#2475 keeping previous Application=$($setApp.Application); falling back to Start-Jeeves.ps1 launcher"
+        $useJeevesExe = $false
+    } else {
+        [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $appParams))
+        Write-Host "INFO ircJeeves Application=jeeves.exe (FR #2301 WP3 cutover; FR #2475 safe set)"
+    }
+}
+if (-not $useJeevesExe) {
     $launcher = Join-Path $InstallRoot 'scripts\Start-Jeeves.ps1'
     # No -Python in AppParameters (spaces break NSSM quoting - issue #3)
     $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -ChairHome `"$ChairHome`" -RepoRoot `"$InstallRoot`""

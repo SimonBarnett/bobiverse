@@ -55,19 +55,50 @@ Nothing else of the repo is checked out (no sibling products, no root files). Th
 Rules (`Sync-BobiverseWorkTree` in `common/scripts/Bobiverse-Common.ps1`):
 
 * first start: `git init` + `remote add origin` (env `BOBIVERSE_REMOTE`, default this repo) + sparse checkout + `checkout main`; on any failure the half-made `.git` is removed and the installed files keep running;
-* later starts: `git fetch` (timeout 45 s, no prompts) then `merge --ff-only origin/main` **only when the work tree is on `main`**. Never `reset`/`stash`/`clean`/`checkout -f`; uncommitted edits, local commits, a feature branch, a detached HEAD or a merge/rebase in progress are left exactly as they are (the fetch still happens). A refused ff is a WARN, never a failed start;
+* later starts: `git fetch` (timeout 120 s with retries, no prompts) then `merge --ff-only origin/main` **only when the work tree is on `main`**. Never `reset`/`stash`/`clean`/`checkout -f`; uncommitted edits, local commits, a feature branch, a detached HEAD or a merge/rebase in progress are left exactly as they are (the fetch still happens). A refused ff is an ALERT, never a failed start;
+* after every ff attempt the sync counts `git rev-list --count HEAD..origin/main` and emits **`ALERT sync-behind: HEAD behind origin/main by N commit(s)`** when N > 0 (FR #2470) — so a long-lived service that skipped restarts, or an ff that claimed success while tip still lagged, is visible in the start log;
 * offline / git missing / auth failure: the installed version runs unchanged.
 
 **Precedence of the update paths** (dev path first, release path second):
 
 1. `BOBIVERSE_REPO=<clone>` (explicit dev override): that clone is ff'd and copied into the install tree instead of the work tree.
-2. The install work tree ff (this section) - new commits on `main` are picked up on the next service restart.
+2. The install work tree ff (this section) - new commits on `main` are picked up on the next service restart (or by running `Sync-BobiverseFromRepo.ps1` by hand).
 3. Then the MSI release self-update (`Update-BobiverseService.ps1`): acts only if a GitHub release is **newer than the VERSION now installed** (the ff'd tree counts), so it remains the safety net where git/GitHub-git is unavailable.
 4. A shared clone `<ai root>\bobiverse` is used only when the work tree cannot be used.
 
 **Opt-out:** `BOBIVERSE_NO_UPDATE=1` (machine env) disables the repo ff, the sync *and* the release check. `BOB_AUTOUPDATE=0` / `<install>\config\autoupdate.disabled` disable the release check only.
 
 Working in the install dir (agents and humans): edit under `<product>\` / `common\` (the flat copies are build output and are refreshed from them), then `git switch -c fix/x`, commit, `git push -u origin fix/x`, open the PR. `Sync-BobiverseFromRepo.ps1 -Product <p>` applies your branch to the running flat tree without a restart. Issues go to the intake with `scripts\Report-BobiverseIntakeIssue.ps1`. Services run as another account than the file owner: `git -c safe.directory=* ...` or `git config --global --add safe.directory <install dir>`. The test-suite needs the full repo (root `conftest.py`): run it from a full clone or a job worktree with `git sparse-checkout disable`, not from a sparse install dir. Sparse FR/MRB trees that keep a partial cone must include `common/scripts` so `repo_layout` imports (FR #963); `*/tests/conftest.py` also adds that path.
+
+### Catch-up / harvest hotpatch when the install lags tip (FR #2470)
+
+`ircBob` / `ircJeeves` / `Airc` only run the ff+recompose path on **service start**. A box that stays up for days can leave `common\scripts` (and the flat `scripts\` copies) hundreds of commits behind `origin/main` — e.g. harvest still using bare `$r.url` under StrictMode after FR #2379 / PR #2385 landed on tip.
+
+Preferred catch-up (install on `main`, clean tree):
+
+```powershell
+& <install>\scripts\Sync-BobiverseFromRepo.ps1 -Product bob -InstallRoot <install>
+```
+
+That fetch + ff-only + robocopy recomposes flat `scripts\` from `common\` / `<product>\`. Watch the log for `ALERT sync-behind` / `ALERT sync-ff-failed`.
+
+One-file **hotpatch** when ff is blocked (dirty tree or feature branch) but you need tip harvest immediately (UTF-8 **without BOM**; WinPS `-Encoding utf8` writers add a BOM — use `UTF8Encoding(false)`):
+
+```powershell
+git -C <install> fetch origin
+ = git -C <install> show origin/main:common/scripts/Invoke-BobiverseHarvest.ps1
+# UTF-8 no BOM (WinPS Set-Content -Encoding utf8 writes a BOM)
+[System.IO.File]::WriteAllText(
+  (Join-Path <install> 'common\scripts\Invoke-BobiverseHarvest.ps1'),
+  (( -join "
+").TrimEnd() + "
+"),
+  [System.Text.UTF8Encoding]::new(False)
+)
+& <install>\scripts\Sync-BobiverseFromRepo.ps1 -Product bob -InstallRoot <install> -ComposeOnly
+```
+
+Same pattern for `Report-BobiverseIntakeIssue.ps1`. Edit tracked `common\scripts\…`, then `-ComposeOnly`; do not hand-edit only the flat `scripts\` copy (the next sync would overwrite it from a still-stale `common\`).
 ## Pack
 
 ```powershell
