@@ -196,3 +196,7 @@ After a manual `git pull --ff-only` on the install work tree, run `Sync-Bobivers
 ## Self-update backup / loop-guard (FR #2563)
 
 `Update-BobiverseService.ps1` Apply backs up the install tree with robocopy before msiexec. Exit codes 0–7 are success; on ≥8 it logs failing paths, retries once, and excludes volatile dirs/files (`.pytest_cache`, `peers.json`, `*.lock`). A backup-only failure records `lastResult=backup-failed` **without** burning `MaxAttempts`, and `Ensure-ServiceRunning` restarts the service so seats/ear are not left Stopped. If a tag is already at `blocked-loop-guard`, operator escape is `-ForceCheck` (IRC UPDATE path): it clears that tag’s failure count and reschedules. Clear state manually only when needed: delete the tag key under `<StateDir>\state.json` `failures`, or wait for a newer release.
+
+## Updater tip overlay when ff blocked (FR #2581)
+
+Dirty install worktrees (local hotpatches) can block `git merge --ff-only`, so Sync still robocopies a **stale** `Update-BobiverseService.ps1` even after `git fetch` refreshed `origin/main`. After scripts compose, `Sync-BobiverseFromRepo` calls `Sync-BobiverseUpdaterFromOrigin` to overlay `origin/<branch>:common/scripts/Update-BobiverseService.ps1` into flat `scripts\` and `common\scripts\`. That keeps #2563 soft-fail on disk without waiting for a clean ff. Manual one-shot: dot-source `Bobiverse-Common.ps1` and run `Sync-BobiverseUpdaterFromOrigin -InstallRoot <ai root>\bob`.
