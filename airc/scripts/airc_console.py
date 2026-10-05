@@ -760,6 +760,8 @@ def sanitize_console_operator_text(text: str) -> str:
 
     FR #2570 follow-up: bobtalk-only presence lines (no command after the prefix) return
     empty so ``handle_raw`` drops them — never pipe ``@nick`` / ``weekly=N`` into PowerShell.
+    MRB #2573: do not treat PowerShell ``@(…)`` / ``@'`` / ``@"`` as nick-mentions; drop only
+    ``@token`` nick-like lines. Remove unreachable duplicate sanitize tail.
     """
     raw = (text or "").strip()
     if not raw:
@@ -774,18 +776,9 @@ def sanitize_console_operator_text(text: str) -> str:
         if not rest or re.fullmatch(r"(?i)weekly=\S+", rest):
             return ""
         return rest
-    # Still looks like a nick-mention splat — not a console command.
-    if raw.startswith("@"):
+    # Nick-mention splat (not PowerShell array/here-string @( @' @" ).
+    if raw.startswith("@") and len(raw) > 1 and raw[1] not in "('\"":
         return ""
-    return raw
-    m = _HEARD_PAYLOAD_RE.search(raw)
-    if m:
-        return (m.group(1) or "").strip()
-    m2 = _BOBTALK_PREFIX_RE.match(raw)
-    if m2:
-        rest = raw[m2.end() :].strip()
-        if rest:
-            return rest
     return raw
 
 
