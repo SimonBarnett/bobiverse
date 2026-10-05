@@ -11,6 +11,7 @@ Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) -> staged by `Pack-Bobivers
 - **DIGEST_ID_FOLD (harvest #2280 / PR #2279):** digest aliases fold to the real shop id — `ionos` -> `win-mpre8vi4u6u`, `dev1` -> `ce-priority-dev1`. Helpers (`inbound_transcript.channel_list_for_machine` / `canonical_machine_id`) must never emit `#ionos` or `#dev1` as the shop channel.
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
 - Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
+- **`--home` isolation (FR #2350):** an explicit scratch `--home` (UAT under `%TEMP%`, …) does **not** merge `~\.agentic-irc-bobiverse`. Fleet basenames `home` / `.bobiverse` still one-time migrate. Opt-in: `BOB_MIGRATE_LEGACY=1`. Opt-out: `BOB_HOME_NO_MIGRATE=1`.
 - Agents: nick `{machine}-{pid}`, JOIN **shop only**
 
 ## Listen (inbound transcript) — FR #2174
@@ -66,6 +67,14 @@ Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai roo
 - Quiet MSI: `Start-BobTrayInteractive.ps1` registers ONLOGON `/IT` task `BobiverseTray` (no session-0 TipForm).
 - `!recycle` / `!recycle {machine}`: announce -> restart tray + `ircBob`.
 
+## Standalone UAT / connect progress (FR #2351)
+
+- `BOB_IRC_DEBUG=1` creates `<home>\irc.log` as soon as the Client starts (`debug-open`), then logs `session start` / `tcp-ok` / `tls-ok` (or `tls-fail`) before any IRC line arrives.
+- TCP and TLS each use a 20s timeout so a hung handshake fails loudly instead of sitting silent after `prior-clean`.
+- `--once` connects, JOINs, then exits (`INFO once: session complete`) — smoke/UAT friendly; omit `--once` for a long-running ear.
+- `prior_irc` also matches frozen `bob-ear.exe` priors (same nick/home) and keeps PyInstaller onefile ancestors so the live child is not orphaned.
+- Related: scratch `--home` must not merge `~\.agentic-irc-bobiverse` (FR #2350).
+
 ## Verify
 
 ```powershell
@@ -74,6 +83,8 @@ Get-Content <ai root>\bob\home\inbound-transcript.log -Tail 40 -ErrorAction Sile
 Get-Content <ai root>\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue  # only when BOB_IRC_DEBUG=1
 # Expect: SASL user=bob-<machine>, joined #bobiverse,#<machine> as Bob-<machine>
 # Expect: inbound-transcript.log lines like: 2026-10-04T12:00:00Z #marchhare Jeeves …
+# Scratch UAT: $env:BOB_IRC_DEBUG=1; bob-ear.exe --nick ear-test --home $tmp --channel #x --host irc.ntsa.uk --once
+# Expect irc.log contains debug-open + tcp-ok + tls-ok; process exits after JOIN
 ```
 
 ## Related

@@ -1,5 +1,15 @@
 # Skill harvest log
 
+## 2026-10-05 - Scratch --home must not merge agentic-irc (MRB #2357 / FR #2350)
+
+| Lesson | Fix |
+|--------|-----|
+| bob-ear `--home` scratch under `%TEMP%` still merged `~/.agentic-irc-bobiverse` (queue/secrets/*.legacy) | `home_allows_legacy_migrate` gates auto-migrate to canonical basenames; opt-in `BOB_MIGRATE_LEGACY`; opt-out `BOB_HOME_NO_MIGRATE`; `old_homes=` still intentional |
+## 2026-10-05 - Release must ship airc+jeeves MSI too (FR #2354)
+
+| Lesson | Fix |
+|--------|-----|
+| VERSION bump / UAT release uploaded only `bob-<ver>.msi`; airc Check returned `no-matching-asset` while InstallRoot VERSION already at the tag | Always `Pack-BobiverseRelease -Product all` and upload each product `.msi` + `.msi.sha256`; gate with `Assert-BobiverseReleaseAssets.ps1` before DONE |
 ## 2026-10-05 - Queue body[:500] must keep require_machine pins (MRB #2319 / FR #2312)
 
 | Lesson | Fix |
