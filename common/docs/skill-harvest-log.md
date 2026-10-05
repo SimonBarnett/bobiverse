@@ -1,5 +1,10 @@
 # Skill harvest log
 
+## 2026-10-05 - Merged fix(mrb-N) must not re-offer as MRB (MRB #2376 / FR #2375)
+
+| Lesson | Fix |
+|--------|-----|
+| After FAIL+fix, merged self-authored `fix(mrb-N)` stayed ACC / unaccepted and was re-offered (author GIVEUP self-MRB) | `mrb_row_offerable` rejects fix titles; closed+merged webhook moves ACC→done `MERGED` and stamps `mrb_done` |
 ## 2026-10-05 - !bored stale busy after lost DONE (FR #2369 / MRB #2371+#2373)
 
 | Lesson | Fix |
