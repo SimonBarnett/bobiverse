@@ -13,10 +13,18 @@ EXIT_FINDING = 1
 EXIT_ERROR = 2
 
 
+def _is_ephemeral_pytest_home(path: str | Path | None) -> bool:
+    """Ignore pytest temp homes leaked into BOB_DIGEST_HOME / JEEVES_HOME (FR #2526)."""
+    s = str(path or "").replace("\\", "/").lower()
+    if not s:
+        return False
+    return ("pytest-of-" in s) or ("/pytest-current" in s) or s.rstrip("/").endswith("pytest-current")
+
+
 def chair_home(env: Optional[dict] = None) -> Path:
     env = os.environ if env is None else env
     override = env.get("JEEVES_HOME") or env.get("BOB_JEEVES_HOME")
-    if override:
+    if override and not _is_ephemeral_pytest_home(override):
         return Path(override)
     return Path(env.get("USERPROFILE") or Path.home()) / ".jeeves"
 
@@ -24,7 +32,7 @@ def chair_home(env: Optional[dict] = None) -> Path:
 def digest_home(env: Optional[dict] = None) -> Path:
     env = os.environ if env is None else env
     override = env.get("BOB_DIGEST_HOME")
-    if override:
+    if override and not _is_ephemeral_pytest_home(override):
         return Path(override)
     return Path(env.get("USERPROFILE") or Path.home()) / ".bobiverse"
 

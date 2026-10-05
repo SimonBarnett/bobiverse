@@ -185,6 +185,22 @@ def resolve_bob_worker_exe(jeeves_cwd: Path) -> Path | None:
     return None
 
 
+def _is_ephemeral_pytest_home(path: str | Path | None) -> bool:
+    s = str(path or "").replace("\\", "/").lower()
+    if not s:
+        return False
+    return ("pytest-of-" in s) or ("/pytest-current" in s) or s.rstrip("/").endswith("pytest-current")
+
+
+def _spawn_env_without_pytest_homes() -> dict[str, str]:
+    """FR #2526: do not inherit pytest BOB_DIGEST_HOME / JEEVES_HOME into maintenance."""
+    env = {str(k): str(v) for k, v in os.environ.items()}
+    for key in ("BOB_DIGEST_HOME", "JEEVES_HOME", "BOB_JEEVES_HOME"):
+        if _is_ephemeral_pytest_home(env.get(key)):
+            env.pop(key, None)
+    return env
+
+
 def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path) -> int:
     """Start bob-worker --mode maintenance in a new process; return pid."""
     argv = [
@@ -205,6 +221,7 @@ def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path) -> int:
         cwd=str(work_root),
         close_fds=True,
         creationflags=creation,
+        env=_spawn_env_without_pytest_homes(),
     )
     return int(proc.pid)
 
