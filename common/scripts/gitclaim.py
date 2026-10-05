@@ -178,6 +178,29 @@ def _root(home: Path) -> Path:
     return bobreport.fleet_digest_home(Path(home))
 
 
+@contextmanager
+def _scoped_digest_home(home: Path | None):
+    """Temporarily point ``BOB_DIGEST_HOME`` at ``home`` for token lookup, then restore.
+
+    FR #2540: ``os.environ.setdefault("BOB_DIGEST_HOME", …)`` leaked the first caller's
+    home for the rest of the process. ``fleet_digest_home`` / ``queue_path`` then redirected
+    every later test or seat onto that home (GET /bob/v1/report after FR #2458 was enough).
+    """
+    if home is None:
+        yield
+        return
+    key = "BOB_DIGEST_HOME"
+    prev = os.environ.get(key)
+    os.environ[key] = str(home)
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prev
+
+
 def queue_path(home: Path) -> Path:
     return _root(home) / QUEUE_NAME
 
@@ -2415,10 +2438,9 @@ def github_pr_exists_checker(
         import gh_filer
     except Exception:
         return None
-    if home is not None:
-        # Prefer digest-home token when present (chair / LocalSystem).
-        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
-    src = gh_filer.ensure_gh_token_env()
+    # Prefer digest-home token when present (chair / LocalSystem); do not leak env (FR #2540).
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
     if src == "none":
         return None
     token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
@@ -2477,9 +2499,8 @@ def github_is_pull_checker(
         import gh_filer
     except Exception:
         return None
-    if home is not None:
-        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
-    src = gh_filer.ensure_gh_token_env()
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
     if src == "none":
         return None
     token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
@@ -2533,9 +2554,8 @@ def github_issue_open_checker(
         import gh_filer
     except Exception:
         return None
-    if home is not None:
-        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
-    src = gh_filer.ensure_gh_token_env()
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
     if src == "none":
         return None
     token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
@@ -4169,9 +4189,9 @@ def github_pr_seat_fetcher(*, home: Path | None = None):
         import gh_filer
     except Exception:
         return None
-    if home is not None:
-        os.environ.setdefault("BOB_DIGEST_HOME", str(home))
-    if gh_filer.ensure_gh_token_env() == "none":
+    with _scoped_digest_home(home):
+        src = gh_filer.ensure_gh_token_env()
+    if src == "none":
         return None
     token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
     if not token:

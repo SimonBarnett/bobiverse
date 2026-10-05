@@ -94,18 +94,27 @@ def _is_pytest_untrusted_mount(exc_value: BaseException | None, blob: str) -> bo
 
 
 def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str = "", title: str = "") -> bool:
-    """FR #2431 / #2535: skip probe markers and pytest WinError 448 ephemeral noise.
+    """FR #2431 / #2535 / #2541: skip probe markers, pytest mount noise, and shutdown signals.
 
     Markers: exe name `probe` / `crash-probe`, or message/body/title containing
     `do-not-file` or `probe-shape-only`.
     FR #2535: OSError WinError 448 (untrusted mount point) whose path mentions
     pytest-of- or pytest-current — pytest sessionfinish symlink cleanup, not a product crash.
+    FR #2541: KeyboardInterrupt / SystemExit are intentional shutdown (service stop /
+    Ctrl+C), not product crashes — airc filed KeyboardInterrupt during TimeoutError
+    handling when NSSM stopped the console mid-recv.
     """
     name = (exe or "").strip().lower()
     if name in _PROBE_EXE:
         return True
+    # FR #2541: shutdown signals (BaseException, not Exception) must never intake.
+    if isinstance(exc_value, (KeyboardInterrupt, SystemExit)):
+        return True
     blob = _blob_for_skip(exc_value, body, title)
     if _DO_NOT_FILE_RE.search(blob):
+        return True
+    # Spool/flush path often has exc_value=None — match type names in body/title too.
+    if re.search(r"(?i)\b(KeyboardInterrupt|SystemExit)\b", blob):
         return True
     return _is_pytest_untrusted_mount(exc_value, blob)
 
