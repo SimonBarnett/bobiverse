@@ -1,4 +1,4 @@
-"""Hostile MRB #1480: fr_done clear must not re-offer FRs superseded by an open Closes PR."""
+"""Hostile MRB #1480 / FR #2389: open Closes-PR keeps MRB; clears fr_done; FR not re-queued while superseded."""
 from __future__ import annotations
 
 import gitclaim
@@ -53,4 +53,9 @@ def test_resync_still_skips_fr_superseded_by_open_pr_despite_fr_done(tmp_path, m
     assert summary.get("ok") is True
     doc = gitclaim.load_queue(home)
     ids = [(r.get("task"), r.get("id")) for r in doc.get("unaccepted") or []]
+    # FR #2389: MRB must be present; FR not re-queued while MRB supersedes.
+    assert ("MRB", "#100") in ids
     assert ("FR", "#99") not in ids
+    # Stamp must clear so seats are not told "already delivered" for 24h with no merged closer.
+    led = gitclaim.ledger_load(home)
+    assert "simonbarnett/bobiverse#99" not in (led.get("fr_done") or {})

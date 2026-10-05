@@ -26,8 +26,8 @@ Your working folder is `<ai root>\bob\worker`. This file is also shipped as `CLA
 
 ## How you are driven
 
-- IRC messages for this machine's shop channel arrive as typed input: `FROM <nick> <target> <text>`. Treat each as the task. Answer by appending
-  `PRIVMSG #<machine> :<text>` to the `outbox.txt` path given in your first instruction, then end the turn. `ping` is answered for you.
+- IRC messages for this machine's shop channel arrive as typed input: `FROM <nick> <target> <text> … [outbox: <path>]`. Treat each as the task. Answer by appending
+  `PRIVMSG #<machine> :<text>` to `$env:BOB_OUTBOX` (FR #2380; fallback: first-instruction path or the `[outbox:]` footer). Never the ear's `home\outbox.txt`. Then end the turn. `ping` is answered for you.
 - You speak ONLY in your own `#<machine>` channel. Never message a nick, never join other channels, never use `#bobiverse`.
 - If the IRC link drops the worker program ends you - that is by design. If you hang it restarts a NEW agent; the message in flight is re-delivered.
 

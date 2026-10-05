@@ -323,14 +323,34 @@ def ask_session_key(prompt: str, title: str = "Grok session key") -> Optional[st
         chars.clear()
 
 
-# --------------------------------------------------------------------------------------------- prompts
+# --------------------------------------------------------------------------------------------- prompts / seat env (FR #2380)
+def outbox_path_for_run(run_dir: Path | str) -> Path:
+    """Canonical seat outbox path under the worker run dir (never the ear home\\outbox.txt)."""
+    return Path(run_dir) / "outbox.txt"
+
+
+def seat_env_extra(run_dir: Path | str, machine: str, nick: str) -> dict:
+    """Env vars every agent child must inherit so compaction cannot lose the outbox (FR #2380)."""
+    outbox = str(outbox_path_for_run(run_dir))
+    mid = (machine or "").strip().lstrip("#")
+    shop = f"#{mid}"
+    return {
+        "BOB_OUTBOX": outbox,
+        "BOB_SHOP": shop,
+        "BOB_NICK": (nick or "").strip(),
+        "BOB_MACHINE": mid.lower(),
+    }
+
+
 def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
+    outbox = str(outbox_path_for_run(home))
     return (
         f"You are a NEW Bobiverse worker agent (fresh session - never resume or continue an older one). "
         f"Your working folder is {worker_dir}. FIRST read the skills in {worker_dir}\\.grok\\skills and {worker_dir}\\AGENTS.md "
         f"(start with bobiverse-worker-seat, then bobiverse-bob-worker, harvest). "
         f"You are on IRC as {nick} in #{machine} only; this program keeps the connection. Messages from IRC arrive as typed input of the form "
-        f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to {home}\\outbox.txt, then end the turn. "
+        f"'FROM <nick> <target> <text>' - treat each as the task, answer by appending 'PRIVMSG #{machine} :<text>' to the seat outbox. "
+        f"Outbox path: use $env:BOB_OUTBOX (set by bob-worker) or {outbox} - NEVER the ear's home\\outbox.txt. "
         f"ping/pong is answered for you. The program posts !bored for you - NEVER post it yourself. When Jeeves assigns a job, first append "
         f"'PRIVMSG #{machine} :ACK <FR|MRB|UAT> owner/repo#N', do the work, then append 'PRIVMSG #{machine} :DONE <FR|MRB|UAT> owner/repo#N <PASS|FAIL> <url>' "
         f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
@@ -827,8 +847,22 @@ def accept_for_agent(src: str, target: str, text: str, own_nick: str, jeeves: st
     return addressed_to(text, own_nick)
 
 
-def format_from(nick: str, target: str, text: str, maxlen: int = 2000) -> str:
-    return "FROM %s %s %s" % (nick, target, one_line(text, maxlen))
+def format_from(
+    nick: str,
+    target: str,
+    text: str,
+    maxlen: int = 2000,
+    *,
+    outbox: str | Path | None = None,
+) -> str:
+    """Build the agent-visible FROM line. FR #2380: optional ``[outbox: path]`` footer survives compaction."""
+    body = one_line(text, maxlen)
+    line = "FROM %s %s %s" % (nick, target, body)
+    if outbox:
+        footer = "[outbox: %s]" % str(outbox)
+        if footer.lower() not in line.lower():
+            line = "%s %s" % (line, footer)
+    return line
 
 
 class Relay:
@@ -837,13 +871,21 @@ class Relay:
     it is ready (a timer-less callback). Flood guard: >max_burst injections per window are coalesced into one."""
 
     def __init__(self, log: Callable[[str], None], max_burst: int = 8, window_s: float = 30.0, max_pending: int = 5,
-                 clock: Callable[[], float] = time.monotonic, persist_dir: Optional[Path] = None):
+                 clock: Callable[[], float] = time.monotonic, persist_dir: Optional[Path] = None,
+                 outbox_path: Optional[Path] = None):
         self.log = log
         self.max_burst = max_burst
         self.window_s = window_s
         self.max_pending = max_pending
         self.clock = clock
         self.persist_dir = Path(persist_dir) if persist_dir else None
+        # FR #2380: stamp every injected FROM with the seat outbox so compaction cannot lose it.
+        if outbox_path is not None:
+            self.outbox_path = Path(outbox_path)
+        elif self.persist_dir is not None:
+            self.outbox_path = outbox_path_for_run(self.persist_dir)
+        else:
+            self.outbox_path = None
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
@@ -872,7 +914,7 @@ class Relay:
             if nq:
                 self.log("relay: skipped nothing-queued (dropped by filter — unexpected)")
             return "dropped"
-        line = format_from(nick, target, text)
+        line = format_from(nick, target, text, outbox=self.outbox_path)
         with self._lock:
             if line == self._last_line:
                 return "duplicate"
@@ -1466,6 +1508,99 @@ _OUT_JOB_KEY_RX = re.compile(
 )
 
 
+# FR #2383: Jeeves assign body still visible inside a FROM line after compaction footers.
+_JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+\S+#\d+\b")
+
+
+def looks_like_job_assign(line: str, own_nick: str = "") -> bool:
+    """True when an injected FROM looks like a Jeeves FR/MRB/UAT assign (not nothing-queued)."""
+    text = line or ""
+    if is_nothing_queued(text, own_nick):
+        return False
+    # Prefer the payload after FROM nick target …
+    parts = text.split(None, 3)
+    body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+    return bool(_JOB_ASSIGN_RX.search(body))
+
+
+class AssignAckMiss:
+    """FR #2383: assign injected, agent keeps working, but no ACK hits the run-dir outbox.
+
+    First action after ``remind_s``: re-inject an outbox-path reminder.
+    After ``recycle_s``: caller restarts a NEW agent (hang-style recycle).
+    """
+
+    def __init__(
+        self,
+        *,
+        remind_s: float | None = None,
+        recycle_s: float | None = None,
+    ):
+        self.remind_s = (
+            float(remind_s)
+            if remind_s is not None
+            else _env_float("BOB_WORKER_ACK_MISS_REMIND_S", 180.0, 30.0, 3600.0)
+        )
+        self.recycle_s = (
+            float(recycle_s)
+            if recycle_s is not None
+            else _env_float("BOB_WORKER_ACK_MISS_RECYCLE_S", 900.0, 60.0, 7200.0)
+        )
+        if self.recycle_s < self.remind_s:
+            self.recycle_s = self.remind_s
+        self._since: Optional[float] = None
+        self._reminded = False
+        self.last_line = ""
+
+    def clear(self) -> None:
+        self._since = None
+        self._reminded = False
+        self.last_line = ""
+
+    def note_inject(self, line: str, now: float, *, own_nick: str = "") -> None:
+        if looks_like_job_assign(line, own_nick):
+            self._since = float(now)
+            self._reminded = False
+            self.last_line = line or ""
+            return
+        # Mirror BoredEmitter._on_inject: strip FROM nick target before idle match.
+        text = line or ""
+        parts = text.split(None, 3)
+        body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+        if is_nothing_queued(body, own_nick):
+            # Idle / withdrawn assign: clear any armed miss timer (MRB #2386).
+            self.clear()
+
+    def note_ack(self) -> None:
+        self.clear()
+
+    def tick(self, now: float, *, ack_open: bool) -> Optional[str]:
+        """Return ``remind``, ``recycle``, or None."""
+        if ack_open:
+            self.clear()
+            return None
+        if self._since is None:
+            return None
+        age = float(now) - self._since
+        if age >= self.recycle_s:
+            return "recycle"
+        if age >= self.remind_s and not self._reminded:
+            self._reminded = True
+            return "remind"
+        return None
+
+    def reminder_line(self, *, shop: str, outbox: str | Path) -> str:
+        path = str(outbox)
+        return format_from(
+            "bob-worker",
+            shop,
+            "Reminder: ACK/DONE must go to $env:BOB_OUTBOX (run-dir). "
+            "Do not write the ear home\\outbox.txt.",
+            outbox=path,
+        )
+
+
+
 def outbox_job_key(payload: str) -> Optional[str]:
     """Normalize `FR owner/repo#N` from a shop wire line; None if not a typed job line."""
     m = _OUT_JOB_KEY_RX.match((payload or "").strip())
@@ -1540,6 +1675,14 @@ class BoredEmitter:
         self._harvest_until: Optional[float] = None
         self.sent: list = []  # (clock time, reason)
         self._thread: Optional[threading.Thread] = None
+
+    @property
+    def ack_open(self) -> bool:
+        """True while an ACK is open and not stale (FR #2383 / busy bookkeeping)."""
+        with self._cv:
+            if not self._ack_open or self._ack_at is None:
+                return False
+            return (self.clock() - self._ack_at) < self.ack_stale_s
 
     # ---- lifecycle / events (each wakes the timer thread)
     def start(self) -> None:
@@ -1791,6 +1934,8 @@ class Supervisor:
         self._agent_parent_image: str = ''
         self._agent_parent_cmd: str = ''
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
+        # FR #2383: assign injected + no run-dir ACK while agent keeps turning → remind then recycle.
+        self.ack_miss = AssignAckMiss()
         relay.on_inject = self._on_inject
         if irc and self.bored:
             irc.on_nak = self.bored.nak  # t817u
@@ -1799,6 +1944,10 @@ class Supervisor:
 
     def _on_inject(self, line: str = "") -> None:
         self.detector.note_inject(self.clock())
+        try:
+            self.ack_miss.note_inject(line, self.clock(), own_nick=self.nick)
+        except Exception:
+            pass
         if self.bored:
             # MRB #1617: ``nothing queued`` is idle wire, not an assign — do not arm inject-pending.
             mark_work = True
@@ -1808,6 +1957,14 @@ class Supervisor:
             elif line:
                 mark_work = not is_nothing_queued(line, self.nick)
             self.bored.activity(mark_work=mark_work)
+
+    def on_outbox_wire(self, payload: str) -> None:
+        """BoredEmitter + FR #2383 ACK-miss clear; used as the outbox_loop on_payload."""
+        p = (payload or "").strip()
+        if _OUT_ACK_RX.match(p) or _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
+            self.ack_miss.note_ack()
+        if self.bored:
+            self.bored.on_outbox(payload)
 
     def post_bored(self) -> bool:
         """The ONLY place !bored is sent: the exe, own shop, never during shutdown / after IRC loss."""
@@ -1827,6 +1984,8 @@ class Supervisor:
                 self.bored.set_ready(False)  # a (re)starting agent is not idle
             spec = build_launch(self.kind, "agent", self.cwd, self._prompt() + (" " + note if note else ""), self.exe, self.run_dir)
             env = dict(self.base_env)
+            # FR #2380: seat outbox/shop/nick survive context compaction via child env (not only first prompt).
+            env.update(seat_env_extra(self.run_dir, self.machine, self.nick))
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
@@ -1958,6 +2117,35 @@ class Supervisor:
             reason = self.detector.check(s, self.clock())
             if reason:
                 self.restart_agent(reason)
+                continue
+            # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
+            self._check_ack_miss(proc)
+
+    def _check_ack_miss(self, proc) -> None:
+        ack_open = bool(self.bored.ack_open) if self.bored else False
+        action = self.ack_miss.tick(self.clock(), ack_open=ack_open)
+        if not action:
+            return
+        outbox = outbox_path_for_run(self.run_dir)
+        shop = shop_channel(self.machine)
+        if action == "remind":
+            line = self.ack_miss.reminder_line(shop=shop, outbox=outbox)
+            self.log(
+                f"ack-miss: no ACK after assign for {self.ack_miss.remind_s:.0f}s; "
+                f"re-injecting outbox reminder path={outbox}"
+            )
+            try:
+                self._inject_line(proc, line)
+            except Exception as e:
+                self.log(f"ack-miss: remind inject failed {type(e).__name__}")
+            return
+        if action == "recycle":
+            self.log(
+                f"ack-miss: still no ACK after {self.ack_miss.recycle_s:.0f}s; "
+                f"recycling seat (NEW agent) path={outbox}"
+            )
+            self.ack_miss.clear()
+            self.restart_agent("no-ack-after-assign")
 
     def restart_agent(self, reason: str) -> None:
         with self._lock:
@@ -2310,7 +2498,7 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
-    threading.Thread(target=outbox_loop, args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.bored.on_outbox if sup.bored else None),
+    threading.Thread(target=outbox_loop, args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.on_outbox_wire),
                      name="outbox", daemon=True).start()
     install_ctrl_handler(lambda: sup.shutdown("console-closed", EXIT_OK))
     import signal

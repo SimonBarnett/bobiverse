@@ -90,6 +90,15 @@ function Get-IntakeAllowRepos {
     return $fallback
 }
 
+function Get-IntakeResponseProp {
+    # FR #2379: StrictMode — optional intake JSON keys (url / queued) may be absent on 202.
+    param($Response, [Parameter(Mandatory)][string]$Name, $Default = $null)
+    if ($null -eq $Response) { return $Default }
+    $prop = $Response.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return $Default }
+    return $prop.Value
+}
+
 function Get-IntakeHttpStatus {
     param($ErrorRecord)
     $ex = $ErrorRecord.Exception
@@ -214,7 +223,7 @@ if ($Flush) {
                     Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
                 }
                 $sent++
-                Write-Host "SENT $($f.Name) intake_id=$($r.intake_id)"
+                Write-Host ("SENT {0} intake_id={1}" -f $f.Name, (Get-IntakeResponseProp -Response $r -Name 'intake_id' -Default ''))
             } catch {
                 $status = Get-IntakeHttpStatus -ErrorRecord $_
                 $intakeErr = Get-IntakeErrorName -ErrorRecord $_
@@ -336,7 +345,10 @@ $json = $payload | ConvertTo-Json -Depth 6
 if ($DryRun) { Write-Host $json; return }
 try {
     $r = Send-Payload $json
-    Write-Host "HARVESTED intake_id=$($r.intake_id) url=$($r.url) queued=$($r.queued)"
+    $intakeId = Get-IntakeResponseProp -Response $r -Name 'intake_id' -Default ''
+    $url = Get-IntakeResponseProp -Response $r -Name 'url' -Default ''
+    $queued = Get-IntakeResponseProp -Response $r -Name 'queued' -Default $false
+    Write-Host "HARVESTED intake_id=$intakeId url=$url queued=$queued"
 } catch {
     New-Item -ItemType Directory -Force -Path $OutboxDir | Out-Null
     $out = Join-Path $OutboxDir ("harvest-$idem.json")
