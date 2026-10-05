@@ -1,4 +1,11 @@
 # Skill harvest log
+## 2026-10-05 — FR #2570 airc STATUS Heard: strip + DONE id=
+
+| Field | Value |
+|-------|-------|
+| Lesson | Console must sanitize bobtalk/Halloy `@nick … Heard:` before verb/shell; STATUS pins `id=` and emits `DONE id=… exit=0` for ReplyFile Wait; never point `-ReplyFile` at a non-ear `.jsonl`. |
+| Evidence | FR #2570; sanitize_console_operator_text; parse_job_verb id= prefix; Invoke-AircRemote Status branch |
+| Refs | SimonBarnett/bobiverse#2570 |
 ## 2026-10-05 - FR #2564 MSI UI 1603 / rollback recover
 
 | Field | Value |

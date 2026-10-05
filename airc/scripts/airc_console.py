@@ -744,13 +744,41 @@ def prepare_psb64_encoded_command(payload: str) -> str:
     raise ShellRequestError("malformed psb64")
 
 
+_HEARD_PAYLOAD_RE = re.compile(r"(?is)\bHeard:\s*(.+)$")
+_BOBTALK_PREFIX_RE = re.compile(
+    r"(?is)^@\S+\s+\S+\s+here\.\s*(?:weekly=[^.]+\.)?\s*"
+)
+
+
+def sanitize_console_operator_text(text: str) -> str:
+    """Strip Halloy/bobtalk nick-prefix and ``Heard:`` wrappers (FR #2570).
+
+    Live failure: clients relay ``@marchhare_console marchhare here. weekly=27. Heard: STATUS …``
+    into the console PRIVMSG; PowerShell then sees ``@marchhare_console`` as a splat.
+    Prefer the payload after ``Heard:``; otherwise strip a bobtalk ``@nick mid here.`` prefix
+    when the remainder looks like a console command / FR #78 verb.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    m = _HEARD_PAYLOAD_RE.search(raw)
+    if m:
+        return (m.group(1) or "").strip()
+    m2 = _BOBTALK_PREFIX_RE.match(raw)
+    if m2:
+        rest = raw[m2.end() :].strip()
+        if rest:
+            return rest
+    return raw
+
+
 def parse_shell_request(text: str) -> ShellRequest:
     """Parse a console PRIVMSG into ps / cmd: / psb64: (FR #75).
 
     Optional leading ``id=<8 hex>`` (FR #1546) pins the DONE/out/err correlation id
     so Invoke-AircRemote can wait on ``airc-replies.jsonl``.
     """
-    raw = (text or "").strip()
+    raw = sanitize_console_operator_text(text or "")
     if not raw:
         raise ShellRequestError("empty command")
     job_id: str | None = None
@@ -1167,7 +1195,8 @@ class AircConsoleCore:
                 reply="denied: authenticate / not an operator",
             )
 
-        cmd = (text or "").strip()
+        # FR #2570: strip Halloy/bobtalk Heard:/@nick noise before verb/shell routing.
+        cmd = sanitize_console_operator_text(text or "")
         if not cmd:
             return HandleResult(action="empty", nick=nick, target=target, text=text)
         if cmd.lower() in {".quit", "!quit", "exit"}:

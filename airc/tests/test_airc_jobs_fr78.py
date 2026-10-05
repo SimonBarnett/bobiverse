@@ -46,11 +46,13 @@ def test_status_parseable(home, tmp_path):
     store = jobs.JobStore(home)
     proto = jobs.JobProtocol(store, ai_root=tmp_path, machine="tm", airc_running=True)
     lines = proto.handle("bob-tm", "STATUS", {})
-    assert len(lines) == 1
+    assert len(lines) >= 2
     assert "STATUS machine=tm airc=Running" in lines[0]
     assert "bob=1.2.3" in lines[0]
     assert "airc_ver=9.9.9" in lines[0]
     assert "jeeves=0.1.0" in lines[0]
+    # FR #2570: STATUS ends with DONE id=… exit=0 for ReplyFile Wait.
+    assert lines[-1].startswith("DONE id=") and lines[-1].endswith("exit=0")
 
 
 def test_put_chunk_checksum_run_job_flow(home):
