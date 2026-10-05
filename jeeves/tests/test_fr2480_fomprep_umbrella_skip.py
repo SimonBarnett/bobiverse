@@ -8,11 +8,29 @@ REPO = "SimonBarnett/agentic_fomprep"
 
 
 def test_hard_pin_umbrella_ids_skip():
-    for num in (3, 7, 8, 9, 11, 20):
+    # FR #2521: #11 is FAIL remediation (offerable), not an evergreen home — omit from pin set.
+    for num in (3, 7, 8, 9, 20):
         row = {"repo": REPO, "task": "FR", "id": f"#{num}", "title": "FR: something", "labels": []}
         assert gitclaim.row_skip_fr_reason(row) == "hard_pin_umbrella"
         row2 = dict(row, id=str(num))  # hashless
         assert gitclaim.row_skip_fr_reason(row2) == "hard_pin_umbrella"
+
+
+def test_fr2521_fomprep_11_not_hard_pinned_while_homes_stay():
+    """#11 FAIL remediation must be offerable; #8/#9 evergreen homes stay skipped."""
+    row11 = {
+        "repo": REPO,
+        "task": "FR",
+        "id": "#11",
+        "title": "MRB FAIL board",
+        "labels": ["mrb", "mrb-fail", "feature-request"],
+    }
+    assert gitclaim.row_skip_fr_reason(row11) is None
+    assert ("simonbarnett/agentic_fomprep", "#11") not in gitclaim._SKIP_FR_ISSUE_PINS
+    for num in (8, 9):
+        row = {"repo": REPO, "task": "FR", "id": f"#{num}", "title": "FR: home", "labels": []}
+        assert gitclaim.row_skip_fr_reason(row) == "hard_pin_umbrella"
+        assert ("simonbarnett/agentic_fomprep", f"#{num}") in gitclaim._SKIP_FR_ISSUE_PINS
 
 
 def test_mrb_home_board_body_phrase_skips_without_labels():
