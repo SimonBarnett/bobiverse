@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2416 crash hook spool on dedupe-comment fail
+
+| Field | Value |
+|-------|-------|
+| Lesson | Unhandled exe crashes must file or spool: when an open crash-sig twin exists but gh comment fails, spool under LOCALAPPDATA/Bobiverse/crash-spool (or BOB_CRASH_SPOOL) and flush on next install — never drop the report. |
+| Evidence | FR #2411 / PR #2416; fix PR #2422; hostile MRB #2416 docs |
+| Refs | SimonBarnett/bobiverse#2411 SimonBarnett/bobiverse#2416 SimonBarnett/bobiverse#2422 |
+
 ## 2026-10-05 — MRB #2415 jeeves maintenance agent after heal
 
 | Field | Value |
