@@ -1,5 +1,10 @@
 # Skill harvest log
 
+## 2026-10-05 - !bored stale busy after lost DONE (FR #2369 / MRB #2371+#2373)
+
+| Lesson | Fix |
+|--------|-----|
+| Digest `doing` after lost DONE made `bored_gate` nak-busy forever (6h fleet stall) | `release_stale_busy` on busy: drop ACC older than `BUSY_STALE_S` (or absent), clear digest doing, stamp `STALE_BUSY`; recent ACC still busy |
 ## 2026-10-05 - Airc NSSM DisplayName / Default home (FR #2355)
 
 | Lesson | Fix |

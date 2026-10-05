@@ -4597,6 +4597,15 @@ def release_stale_busy(home: Path, nick: str, now: float) -> bool:
             if mine:
                 # Drop (not requeue): github-resync re-adds the row if the item is still open,
                 # so a closed/merged job is never handed out again.
+                # Audit stamp (MRB #2373 / FR #2369): keep a done trail for stale busy releases.
+                done = doc.setdefault("done", [])
+                for r in mine:
+                    fin = dict(r)
+                    fin["result"] = "STALE_BUSY"
+                    fin["done_ts"] = _utc_now()
+                    done.append(fin)
+                if len(done) > DONE_CAP:
+                    doc["done"] = done[-DONE_CAP:]
                 doc["accepted"] = [r for r in acc if _owner(r) != me]
                 _write_queue(queue_path(home), doc)
     except Exception:  # noqa: BLE001
