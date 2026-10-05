@@ -6,6 +6,7 @@ Modes:
                 FR #2412: if still failing, start one rate-limited maintenance agent)
   --http-only   BobCallback listener (in-process path for cutover tests)
   --chair --http HOST:PORT  enable in-proc locks, start HTTP thread, then irc_agent --chair
+  bare argv (no mode)       exit 2 immediately; never grab mutex / never spawn maintenance (FR #2524)
 
 PyInstaller pack (WP3) freezes this module as jeeves.exe.
 """
@@ -481,13 +482,17 @@ def run_heal(
         try:
             import jeeves_maintenance
 
+            # FR #2524: persist maintenance state under chair --home when set
+            # (operators look in ~/.jeeves/maintenance, not digest-home).
             mr = jeeves_maintenance.try_start_maintenance_agent(
-                home=home,
+                home=chair,
                 heal_exit=int(exit_code),
                 heal_payload={
                     "findings": findings,
                     "errors": errors,
                     "actions": actions,
+                    "digest_home": str(home),
+                    "chair_home": str(chair),
                 },
                 dry_run=bool(dry_run),
             )
@@ -647,6 +652,18 @@ def main(argv: list[str] | None = None) -> int:
     if chair_home and is_ephemeral_pytest_home(chair_home):
         chair_home = None
 
+    # FR #2524: bare jeeves.exe (no mode) must fail-fast exit 2 without grabbing
+    # the instance mutex — NSSM AppExit Restart otherwise loops and fills stderr
+    # during cutover when AppParameters are empty/missing.
+    has_mode = bool(args.self_test or args.heal or args.http_only or (args.chair and args.http))
+    if not has_mode:
+        msg = (
+            "jeeves.exe: error: specify --self-test, --heal, --http-only, "
+            "or --chair --http HOST:PORT (FR #2524: bare argv does not spawn maintenance)"
+        )
+        print(msg, file=sys.stderr, flush=True)
+        return 2
+
     if args.self_test:
         checks = args.check or None
         if checks:
@@ -725,7 +742,12 @@ def main(argv: list[str] | None = None) -> int:
                     sys.argv = old
                 return 0
 
-        p.error("specify --self-test, --heal, --http-only, or --chair --http HOST:PORT")
+        # Unreachable when has_mode gated above; keep defensive exit 2 (no maintenance).
+        print(
+            "jeeves.exe: error: specify --self-test, --heal, --http-only, or --chair --http HOST:PORT",
+            file=sys.stderr,
+            flush=True,
+        )
         return 2
     finally:
         jeeves_locks.release_instance_mutex()

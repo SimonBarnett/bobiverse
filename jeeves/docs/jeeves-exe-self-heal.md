@@ -129,12 +129,18 @@ Acceptance the harness proves offline:
 
 Operators stop babysitting supervised Python; `jeeves.exe` is the only Jeeves runtime; webhooks stay up through resync; `jeeves.exe --self-test` is the first response to any chair/webhook incident; seats stay busy unless a true orphan heal is explicitly forced.
 
-## Evidence append â€” FR #2352 restart verify (2026-10-05)
+## Evidence append - FR #2352 restart verify (2026-10-05)
 
 See `jeeves/docs/evidence/fr2352-restart-verify-2026-10-05.md`: tip rebuild + ircJeeves-only recycle; covering merges #2342/#2348 confirmed; local intake 202; BobIrcd untouched.
 
-## FR #2526 — pytest digest leak + require_machine offer note
+## FR #2524 - bare argv / maintenance state
 
-- Refuse ephemeral ``pytest-of-*`` / ``pytest-current`` values in ``BOB_DIGEST_HOME`` / ``JEEVES_HOME`` (monitor ``_common`` + ``jeeves_main.resolve_digest_home``).
+- Bare `jeeves.exe` (no `--self-test` / `--heal` / `--http-only` / `--chair --http`) exits **2** immediately and does **not** acquire the instance mutex or spawn a maintenance agent.
+- NSSM `AppParameters` for `jeeves.exe` must include `--chair --http HOST:PORT` (Install-Jeeves + Assert-BobJeevesNssmRestart).
+- Maintenance state/lock/log live under **chair** `--home` `maintenance` (`jeeves-maintenance-state.json`), including `last_heal_findings` / `last_heal_errors` from the heal payload.
+
+## FR #2526 - pytest digest leak + require_machine offer note
+
+- Refuse ephemeral `pytest-of-*` / `pytest-current` values in `BOB_DIGEST_HOME` / `JEEVES_HOME` (monitor `_common` + `jeeves_main.resolve_digest_home`).
 - Maintenance spawn clears those env keys so the agent does not inherit a polluted shell.
-- When every unaccepted row is ``require_machine``-gated (offerable=0, out-of-focus=0), heal/self-test treat ``0 offerable`` as a **note** (not exit 1 / maintenance spawn).
+- When every unaccepted row is `require_machine`-gated (offerable=0, out-of-focus=0), heal/self-test treat `0 offerable` as a **note** (not exit 1 / maintenance spawn).
