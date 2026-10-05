@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Shared helpers for bobiverse Install-*.ps1 (clean reinstall, NSSM, skills, shortcuts).
@@ -65,16 +65,25 @@ function Get-BobiverseAppParam {
 }
 
 function Get-BobiverseAircIdentityFromAppParameters {
-    <# FR #1552: extract ConsoleHome / MachineId / PasswordFile / OperatorsFile / Launcher from AppParameters. #>
+    <# FR #1552: extract ConsoleHome / MachineId / PasswordFile / OperatorsFile / Launcher from AppParameters.
+       FR #2397: also accept airc.exe argparse forms (--home / --machine / --password-file / --operators-file). #>
     param([string]$AppParameters)
     $launcher = ''
     if ($AppParameters -match '-File\s+"([^"]+\.ps1)"') { $launcher = $Matches[1] }
     elseif ($AppParameters -match '-File\s+([A-Za-z0-9_.:\\/-]+\.ps1)') { $launcher = $Matches[1] }
+    $consoleHome = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'ConsoleHome'
+    if (-not $consoleHome) { $consoleHome = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'home' }
+    $machineId = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'MachineId'
+    if (-not $machineId) { $machineId = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'machine' }
+    $passwordFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'PasswordFile'
+    if (-not $passwordFile) { $passwordFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'password-file' }
+    $operatorsFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'OperatorsFile'
+    if (-not $operatorsFile) { $operatorsFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'operators-file' }
     return [pscustomobject]@{
-        ConsoleHome   = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'ConsoleHome'
-        MachineId     = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'MachineId'
-        PasswordFile  = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'PasswordFile'
-        OperatorsFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'OperatorsFile'
+        ConsoleHome   = $consoleHome
+        MachineId     = $machineId
+        PasswordFile  = $passwordFile
+        OperatorsFile = $operatorsFile
         Launcher      = $launcher
         Raw           = [string]$AppParameters
     }

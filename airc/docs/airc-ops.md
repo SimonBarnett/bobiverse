@@ -9,7 +9,11 @@ Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / 
 |---------|------------------------|
 | Interactive user | `%USERPROFILE%\.airc` |
 | LocalSystem / quiet MSI | `C:\Users\Administrator\.airc` if present, else `<ai root>\airc\home` |
-| **Upgrade / reinstall** (FR #1552) | **Existing NSSM `Airc` AppParameters** (`-ConsoleHome`, `-MachineId`, `-PasswordFile`, `-OperatorsFile`, `-File` launcher if still on disk) |
+| **Upgrade / reinstall** (FR #1552) | **Existing NSSM `Airc` AppParameters** (PowerShell `-ConsoleHome` / `-MachineId` / … or airc.exe `--home` / `--machine` / `--password-file` / `--operators-file`) |
+
+## airc.exe (FR #2397)
+
+`Pack-BobiverseRelease -Product airc` runs `airc/scripts/Build-Airc.ps1` (PyInstaller one-file) and stages `airc\airc.exe` in the MSI. `Install-AircConsole` prefers that exe as NSSM `Application` with argparse AppParameters; when the exe is missing it keeps the legacy `powershell.exe` + `Start-AircConsole.ps1` path. Smoke: `airc.exe --selftest` and `airc.exe --help`. Target boxes do not need system Python for the console service once the exe is installed.
 
 **Never** default to the invoking user's profile when the `Airc` service is already registered — that resets identity and causes SASL 904 / NickServ 433.
 **Never** invent a fresh ConsoleHome on MSI upgrade when AppParameters already name one (including a deliberate `Default\.airc` fleet bake).

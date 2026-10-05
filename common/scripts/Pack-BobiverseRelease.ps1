@@ -20,7 +20,9 @@ param(
     # Tests only (needs -SkipMsi): skip bob-ear.exe (FR #1481 PyInstaller, ~40 s).
     [switch]$SkipEarExe,
     # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
-    [switch]$SkipJeevesExe
+    [switch]$SkipJeevesExe,
+    # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
+    [switch]$SkipAircExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +47,7 @@ $null = & $fetchNssm -OutDir (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_
 if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed together with -SkipMsi (an MSI without bob-worker.exe must never ship)' }
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
 if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
+if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -335,6 +338,21 @@ function Stage-Product([string]$Name) {
         }
         Stage-BobAgentFolders -Stage $stage
         Write-Host ("INFO bob staged TipForm tray from {0} pin={1}" -f $traySrc, ((Get-Content (Join-Path $traySrc 'PIN.txt') -TotalCount 1).Trim()))
+    }
+    if ($Name -eq 'airc') {
+        # FR #2397: one-file airc.exe (console service; no system Python on target)
+        $aircExeDir = Join-Path $stage 'airc'
+        New-Item -ItemType Directory -Force -Path $aircExeDir | Out-Null
+        if ($SkipAircExe) {
+            Write-Host 'WARN airc pack: -SkipAircExe (test stage; no airc.exe)'
+        } else {
+            $buildAirc = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-Airc.ps1')
+            if (-not (Test-Path -LiteralPath $buildAirc)) { throw "missing Build-Airc.ps1 (FR #2397): $buildAirc" }
+            $aexe = (& $buildAirc -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+            if (-not $aexe -or -not (Test-Path -LiteralPath $aexe)) { throw 'Build-Airc.ps1 did not produce airc.exe' }
+            Copy-Item -LiteralPath $aexe -Destination (Join-Path $aircExeDir 'airc.exe') -Force
+            Write-Host 'INFO airc staged airc\airc.exe'
+        }
     }
     return $stage
 }

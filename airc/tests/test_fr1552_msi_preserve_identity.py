@@ -62,6 +62,35 @@ def test_ops_doc_upgrade_preserves_identity():
 
 
 @win
+def test_parse_appparameters_identity_roundtrip_airc_exe(tmp_path: Path):
+    """FR #2397: argparse AppParameters from airc.exe NSSM cutover still parse identity."""
+    script = tmp_path / "parse-exe.ps1"
+    sample = (
+        r'--home "C:\Users\Administrator\.airc" '
+        r'--password-file "C:\Users\Administrator\.airc\console.password" '
+        r'--operators-file "C:\Users\Administrator\.airc\operators.txt" '
+        r'--machine "marchhare" --sasl'
+    )
+    body = f"""
+$ErrorActionPreference = 'Stop'
+. '{COMMON}'
+$raw = @'
+{sample}
+'@
+$id = Get-BobiverseAircIdentityFromAppParameters -AppParameters $raw
+if ($id.ConsoleHome -ne 'C:\\Users\\Administrator\\.airc') {{ throw "ConsoleHome=$($id.ConsoleHome)" }}
+if ($id.MachineId -ne 'marchhare') {{ throw "MachineId=$($id.MachineId)" }}
+if ($id.PasswordFile -notmatch 'console\\.password$') {{ throw "PasswordFile=$($id.PasswordFile)" }}
+if ($id.OperatorsFile -notmatch 'operators\\.txt$') {{ throw "OperatorsFile=$($id.OperatorsFile)" }}
+'OK'
+"""
+    script.write_text(body, encoding="utf-8")
+    r = subprocess.run([PS, "-NoProfile", "-File", str(script)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "OK" in r.stdout
+
+
+@win
 def test_parse_appparameters_identity_roundtrip(tmp_path: Path):
     script = tmp_path / "parse.ps1"
     sample = (
