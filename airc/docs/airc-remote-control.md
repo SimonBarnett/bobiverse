@@ -15,7 +15,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 
 | Verb | Purpose |
 |------|---------|
-| `STATUS` | Airc Running + VERSION files (bob/airc/jeeves) |
+| `STATUS` | Airc Running + VERSION files (bob/airc/jeeves); replies as `out id= seq=` then `DONE` (FR #2575) |
 | plain line | PowerShell (default) |
 | `cmd: …` | COMSPEC escape hatch |
 | `psb64:<b64>` | `powershell -EncodedCommand` |
