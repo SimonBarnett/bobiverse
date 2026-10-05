@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import ctypes
 import json
 import os
@@ -340,6 +341,104 @@ def seat_env_extra(run_dir: Path | str, machine: str, nick: str) -> dict:
         "BOB_SHOP": shop,
         "BOB_NICK": (nick or "").strip(),
         "BOB_MACHINE": mid.lower(),
+    }
+
+
+def describe_worker_exe_launch(
+    install_root: str | Path,
+    mode: str,
+    machine_id: str = "",
+    *,
+    local_app_data: str | Path | None = None,
+    source: str = "tray",
+) -> dict:
+    """Canonical bob-worker.exe process launch (FR #2413).
+
+    Tray Agent/Plan click, remote ``!startworker``, and CLI must use the same plan:
+    hashed run-copy under ``%LOCALAPPDATA%\\Bobiverse\\worker\\bin``, argv
+    ``--mode`` / ``--install-root`` / optional ``--machine-id``, cwd ``worker`` or ``plan``.
+
+    ``source`` is recorded for callers but must not change argv/cwd/run_exe (tray == cli).
+    """
+    src = (source or "tray").strip().lower() or "tray"
+    root = Path(install_root)
+    mode_l = (mode or "agent").strip().lower()
+    if mode_l not in ("agent", "plan", "monitor"):
+        mode_l = "agent"
+    install_exe = root / "worker" / "bob-worker.exe"
+    digest = hashlib.sha256(
+        install_exe.read_bytes() if install_exe.is_file() else b"missing"
+    ).hexdigest()[:12].lower()
+    base = Path(local_app_data) if local_app_data else Path(
+        os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    )
+    run_exe = base / "Bobiverse" / "worker" / "bin" / ("bob-worker-%s.exe" % digest)
+    argv = ["--mode", mode_l, "--install-root", str(root)]
+    mid = (machine_id or "").strip().lstrip("#")
+    if mid:
+        argv += ["--machine-id", mid]
+    if mode_l == "plan":
+        cwd = root / "plan"
+    else:
+        cwd = root / "worker"
+    if not cwd.is_dir():
+        cwd = root
+    title = "Bob %s - starting (closing this window ends the agent)" % mode_l
+    _ = src  # recorded only by callers; must not diverge the plan (tray == cli)
+    return {
+        "mode": mode_l,
+        "machine_id": mid,
+        "install_exe": str(install_exe),
+        "run_exe": str(run_exe),
+        "argv": argv,
+        "cwd": str(cwd),
+        "title": title,
+    }
+
+
+def describe_agent_child_launch(
+    *,
+    kind: str,
+    mode: str,
+    cwd: str | Path,
+    run_dir: str | Path,
+    machine: str,
+    nick: str,
+    agent_exe: str,
+    prompt: str | None = None,
+    session_id: str | None = None,
+) -> dict:
+    """Canonical cursor/grok child launch for agent and plan (FR #2413).
+
+    Always includes ``seat_env_extra`` (BOB_OUTBOX / BOB_SHOP / BOB_NICK / BOB_MACHINE)
+    and the mode prompt that points at ``.grok/skills`` + AGENTS.md under ``cwd``.
+    """
+    mode_l = (mode or "agent").strip().lower()
+    folder = str(cwd)
+    rd = Path(run_dir)
+    if prompt is None:
+        if mode_l == "plan":
+            prompt = plan_prompt(folder)
+        elif mode_l == "monitor":
+            prompt = monitor_prompt(folder)
+        else:
+            prompt = worker_prompt(folder, str(rd), machine, nick)
+    launch_mode = mode_l if mode_l in ("agent", "plan", "monitor") else "agent"
+    spec = build_launch(kind, launch_mode, folder, prompt, agent_exe, rd, session_id=session_id)
+    env = seat_env_extra(rd, machine, nick)
+    skills = str(Path(folder) / ".grok" / "skills")
+    return {
+        "kind": kind,
+        "mode": mode_l,
+        "cwd": folder,
+        "run_dir": str(rd),
+        "argv": list(spec.argv),
+        "env": dict(env),
+        "prompt": prompt,
+        "skills_dir": skills,
+        "session_id": spec.session_id,
+        "files": dict(spec.files or {}),
+        "spec": spec,
     }
 
 
@@ -1997,10 +2096,20 @@ class Supervisor:
                 return False
             if self.bored:
                 self.bored.set_ready(False)  # a (re)starting agent is not idle
-            spec = build_launch(self.kind, "agent", self.cwd, self._prompt() + (" " + note if note else ""), self.exe, self.run_dir)
+            child = describe_agent_child_launch(
+                kind=self.kind,
+                mode="agent",
+                cwd=self.cwd,
+                run_dir=self.run_dir,
+                machine=self.machine,
+                nick=self.nick,
+                agent_exe=self.exe,
+                prompt=self._prompt() + (" " + note if note else ""),
+            )
+            spec = child["spec"]
             env = dict(self.base_env)
-            # FR #2380: seat outbox/shop/nick survive context compaction via child env (not only first prompt).
-            env.update(seat_env_extra(self.run_dir, self.machine, self.nick))
+            # FR #2380 / #2413: seat env from shared describe_agent_child_launch.
+            env.update(child["env"])
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
@@ -2366,8 +2475,20 @@ def run_plan(args, log: Log) -> int:
         secret, kind = SecretStr(key), "grok"
     exe = cursor_cmd if kind == "cursor" else grok_exe
     run_dir = _new_run_dir("plan", "plan")
-    spec = build_launch(kind, "plan", str(folder), plan_prompt(str(folder)), exe, run_dir)
+    machine = normalize_machine_id(args.machine_id) if args.machine_id else default_machine_id()
+    nick = "%s-plan" % (machine or "plan")
+    child = describe_agent_child_launch(
+        kind=kind,
+        mode="plan",
+        cwd=str(folder),
+        run_dir=run_dir,
+        machine=machine or "plan",
+        nick=nick,
+        agent_exe=exe,
+    )
+    spec = child["spec"]
     env = dict(os.environ)
+    env.update(child["env"])  # FR #2413: same BOB_* seat env as Agent
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
     try:
