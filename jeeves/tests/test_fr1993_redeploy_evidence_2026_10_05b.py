@@ -16,3 +16,11 @@ def test_redeploy_b_evidence_refs_only():
     assert "127.0.0.1:7700" in text
     assert "202" in text
     assert "BobIrcd" in text
+
+def test_mrb2518_evidence_does_not_claim_2486_open():
+    text = DOC.read_text(encoding="utf-8")
+    # After #2497, evidence must not list #2486 as still-open work.
+    assert "see #2486" not in text.lower()
+    assert "2486 CLOSED" in text or "#2486 CLOSED" in text or "PR #2497" in text
+    assert "a8b96b0" in text
+    assert "BobIrcd untouched" in text or "BobIrcd" in text
