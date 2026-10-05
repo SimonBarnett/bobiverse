@@ -119,8 +119,16 @@ def parse_shop_job_line(body: str) -> ShopJobLine | None:
                 result = "PASS merged" if len(parts) > 1 and parts[1].lower().startswith("merge") else "PASS"
                 rest2 = " ".join(parts[2:]) if result == "PASS merged" else " ".join(parts[1:])
             elif parts[0].upper() == "FAIL":
-                result = " ".join(parts[:2]) if len(parts) > 1 else "FAIL"
-                rest2 = " ".join(parts[2:]) if len(parts) > 1 else ""
+                # Wire is ``FAIL <url>`` or ``FAIL fix#N <url>``. If the next token is a
+                # URL, do not glue it into result (MRB #2426 hostile).
+                if len(parts) > 1 and (
+                    parts[1].startswith("http://") or parts[1].startswith("https://")
+                ):
+                    result = "FAIL"
+                    rest2 = " ".join(parts[1:])
+                else:
+                    result = " ".join(parts[:2]) if len(parts) > 1 else "FAIL"
+                    rest2 = " ".join(parts[2:]) if len(parts) > 1 else ""
             elif parts[0].upper() == "PR":
                 result = "PR"
                 rest2 = " ".join(parts[1:])

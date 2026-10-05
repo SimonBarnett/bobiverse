@@ -1,5 +1,13 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2426 FR DONE PASS strip + MRB FAIL url
+
+| Field | Value |
+|-------|-------|
+| Lesson | FR DONE must be url-only (no PASS/FAIL); shop_listen strips mistaken PASS/FAIL on FR and keeps the PR url so ACC clears. MRB/UAT FAIL with a URL as the next token must set result=FAIL and url=<url>, not glue the URL into result. |
+| Evidence | FR #2419 / PR #2426; fix/hostile MRB #2426 |
+| Refs | SimonBarnett/bobiverse#2419 SimonBarnett/bobiverse#2426 |
+
 ## 2026-10-05 — MRB #2416 crash hook spool on dedupe-comment fail
 
 | Field | Value |
