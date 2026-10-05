@@ -32,4 +32,6 @@ Also: `jeeves.exe --self-test --check offer` and monitor `queue_flow` JSON (`gat
 
 - Living architecture pin / chair exe: #1993
 - Incident root-cause FR: #2446
+- Dated incident timeline (2026-10-05): [`empty-offer-incident-2026-10-05.md`](empty-offer-incident-2026-10-05.md) (FR #2453)
+- Heal PR: #2450
 - Empty-offer log wording: FR #2309 / #2333; harvest #2243 / #2285 / #2309
