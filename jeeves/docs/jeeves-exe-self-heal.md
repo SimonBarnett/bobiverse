@@ -41,7 +41,7 @@ IIS ARR -> still proxies to 127.0.0.1:7700
 
 ```text
 jeeves.exe --self-test [--json] [--check locks|http|queue|imports|health|offer]
-jeeves.exe --heal [--dry-run] [--force-orphan-busy] [--json]
+jeeves.exe --heal [--dry-run] [--force-orphan-busy] [--no-maintenance-agent] [--json]
 jeeves.exe --chair --http 127.0.0.1:7700 --home <chair> --digest-home <bobiverse> --nick Jeeves
 jeeves.exe --http-only --bind 127.0.0.1 --port 7700 --home <digest>
 ```
@@ -58,6 +58,7 @@ Exit codes match `Invoke-JeevesMonitorCheck`: **0=ok, 1=finding, 2=error**.
 
 - `--self-test` default checks: `imports`, `locks`, `http` (:7700 listen), `queue`, `offer` (focus/machine empty breakdown). Add `--check health` to run `tools/monitor/health.py` as a library.
 - `--heal` allowlist: break stale `git-claim.lock`, `bobreport.break_stale_digest_lock`, report HTTP/health/offer; never BobIrcd. `--force-orphan-busy` only when `accepted` is empty (still report-first; no default `clear_seat_doing`).
+- **FR #2412 maintenance agent:** when `--heal` still exits non-zero, `jeeves_maintenance.try_start_maintenance_agent` starts **one** `bob-worker.exe --mode maintenance` with CWD `<drive>:\ai\jeeves` (first fixed disk that has `\ai`, or `BOB_AI_ROOT\jeeves`). Single-instance lock + 30-minute cooldown; every spawn/skip is appended to `<home>\maintenance\jeeves-maintenance.log`. The agent diagnoses/fixes safely and files an intake issue. Opt out: `--no-maintenance-agent` or heal `--dry-run` (logs `dry-run would_spawn`). Shared launcher: `jeeves/scripts/Start-JeevesMaintenance.ps1`.
 - Shop empty reply: `format_nothing_queued` is ALWAYS the single short line `<nick>: nothing queued` (Jeeves must hand out work, never a summary). The breakdown `format_empty_offer_detail` (`0 offerable under focus (N unaccepted, X out-of-focus, Y require_machine, self_mrb=..., ledger=..., sticky=...)`) goes to the chair log only (FR #2309). Sticky same-nick MRB offers without ACK stop refreshing `offered_ts` and clear after `OFFER_STICKY_MAX` rebroadcasts.
 
 ## Acceptance metrics

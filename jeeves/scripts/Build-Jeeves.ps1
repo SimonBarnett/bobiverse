@@ -35,7 +35,7 @@ if ($monDir -and (Test-Path -LiteralPath $monDir)) {
 }
 
 $hidden = @(
-    'irc_agent', 'bobcallback', 'gitclaim', 'bobreport', 'intake', 'jeeves_locks', 'focus_ignore',
+    'irc_agent', 'bobcallback', 'gitclaim', 'bobreport', 'intake', 'jeeves_locks', 'jeeves_maintenance', 'focus_ignore',
     'chair_commands', 'chair_health', 'chair_oper',
     'shop_chanserv', 'shop_listen', 'shop_ops',
     'health', 'queue_flow', 'focus_seat', 'webhook_health'
