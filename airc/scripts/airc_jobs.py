@@ -52,6 +52,8 @@ _VERB_RE = re.compile(
     r"^(?P<verb>STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL)(?:\s+(?P<rest>.*))?$",
     re.IGNORECASE,
 )
+# FR #2570: optional leading id=<8 hex> before the verb (same pin as FR #75 shell).
+_ID_PREFIX_RE = re.compile(r"(?is)^id=([0-9a-f]{8})\s+(.*)$")
 
 
 class JobProtocolError(Exception):
@@ -71,13 +73,24 @@ def parse_kv(rest: str) -> dict[str, str]:
 
 
 def parse_job_verb(text: str) -> tuple[str, dict[str, str]] | None:
-    """Return (VERB, kv) if ``text`` is a FR #78 verb frame; else None."""
+    """Return (VERB, kv) if ``text`` is a FR #78 verb frame; else None.
+
+    FR #2570: accept optional leading ``id=<8 hex>`` so Invoke-AircRemote Status
+    can pin the same DONE correlation id as Command/Cmd/Psb64.
+    """
     raw = (text or "").strip()
+    leading_id = ""
+    m_id = _ID_PREFIX_RE.match(raw)
+    if m_id:
+        leading_id = (m_id.group(1) or "").lower()
+        raw = (m_id.group(2) or "").strip()
     m = _VERB_RE.match(raw)
     if not m:
         return None
     verb = m.group("verb").upper()
     kv = parse_kv(m.group("rest") or "")
+    if leading_id and "id" not in kv:
+        kv["id"] = leading_id
     # PUT path= may contain '=' only in kv values; path uses path=
     if verb == "PUT" and "path" not in kv and (m.group("rest") or "").lower().startswith("path="):
         # path value may include spaces? we disallow spaces in path for IRC safety
@@ -547,9 +560,13 @@ class JobProtocol:
             self.authorize(nick, verb)
             if verb == "STATUS":
                 vers = collect_status_versions(self.ai_root)
-                return format_status_lines(
+                lines = format_status_lines(
                     airc_running=self.airc_running, versions=vers, machine=self.machine
                 )
+                # FR #2570: terminal DONE so Invoke-AircRemote -ReplyFile Wait matches id=.
+                jid = (kv.get("id") or "").strip().lower() or new_job_id()
+                lines.append(f"DONE id={jid} exit=0")
+                return lines
             if verb == "PUT":
                 return self.store.handle_put(nick, kv)
             if verb == "CHUNK":

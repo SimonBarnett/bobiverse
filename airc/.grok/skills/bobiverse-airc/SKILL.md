@@ -41,6 +41,7 @@ Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick
 - Shell ergonomics: FR #75 (PowerShell default, `cmd:`, `psb64:`, `DONE id= exit=`).
 - Driving-box helper: `scripts\Invoke-AircRemote.ps1` (FR #76) — `-SelfTest`, `-Outbox`, PUT chunking client-side.
 - **ReplyFile wait (FR #1546 / PR #1560):** `Invoke-AircRemote -ReplyFile` prefixes `id=<8hex>` on Command/Cmd/Psb64, then polls `<bob home>\airc-replies.jsonl` until matching `DONE` (timeout exit 2). The bob ear appends `*_console` Query `out`/`err`/`DONE` PMs to that jsonl (see `bobiverse-bob-commands`). Never rely on a pre-written reply file alone. Overlapping remotes that reuse the same id can collide.
+- **STATUS + Heard: strip (FR #2570):** Status also pins `id=<8hex> STATUS`; the console emits `STATUS …` then `DONE id=… exit=0`. Console `sanitize_console_operator_text` strips Halloy/bobtalk `@nick … Heard:` wrappers before verb/shell routing (avoids PowerShell splat on `@machine_console`). **Footgun:** `-ReplyFile` ending in `.jsonl` that is **not** the ear’s `home\airc-replies.jsonl` makes Wait poll an empty file — always use the ear path (or omit and let Resolve-AircRepliesJsonl pick it).
 - Console NSSM logging (FR #1546): AppStdout/AppStderr under `<ai root>\airc\logs\airc-console.log` with rotate; DisplayName/Description expanded with the machine id (no literal `#{machine}`); service `info()` lines are ISO-UTC; keepalive PING logged at most once per hour via `info_keepalive`.
 - Protocol sketch: `docs/airc-remote-control.md`. Ops: `docs/airc-ops.md`.
 

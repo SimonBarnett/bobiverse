@@ -427,6 +427,7 @@ function Invoke-AircRemoteSelfTest {
     Assert-True ($round -eq $script) 'psb64 UTF-16LE round-trip'
 
     Assert-True ((New-AircRemoteBody -Action Status) -eq 'STATUS') 'STATUS verb'
+    # FR #2570: remote entry pins id= before STATUS (see switch Status branch).
 
     $tmp = Join-Path $env:TEMP ('airc-put-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -589,6 +590,10 @@ switch ($Action) {
     }
     'Cmd' {
         $bodies = [string[]]@(('id={0} {1}' -f $corr, (New-AircRemoteBody -Action Cmd -Text $Text)))
+    }
+    'Status' {
+        # FR #2570: pin id= so Wait matches DONE id= from STATUS (same as Command).
+        $bodies = [string[]]@(('id={0} STATUS' -f $corr))
     }
     default {
         $bodies = [string[]]@((New-AircRemoteBody -Action $Action -Text $Text -Path $Path -JobId $corr))
