@@ -105,3 +105,40 @@ def test_fr2486_operator_doc_mentions_living_skip():
     text = (ROOT / "jeeves" / "docs" / "empty-offer-operator.md").read_text(encoding="utf-8")
     assert "Living FR" in text or "Refs-only" in text or "refs-only" in text
     assert "2486" in text or "auto-heal" in text.lower()
+
+def test_mrb2497_issue_1993_exact_blob_skips_heal(home):
+    """Hostile: real #1993 title/body Living FR cue must skip heal after dual GIVEUP."""
+    title = "jeeves.exe: chair+BobCallback one process, self-test/heal, rock-solid webhooks"
+    body = (
+        "## Summary\n\n"
+        "Ship **ircJeeves as a frozen Windows executable** that runs **chair + BobCallback "
+        "in one process**, fully deterministic (no LLM), rock-solid IIS→`:7700` webhooks, "
+        "and a built-in diagnose/heal test matrix.\n\n"
+        "Operator approved 2026-10-04. **Living FR — keep appending** WP notes, test names, "
+        "and cutover evidence here (and in `jeeves/docs/jeeves-exe-self-heal.md` when opened).\n\n"
+        "`require_machine: ionos`\n"
+    )
+    _digest_seats(home, {"ionos": ("100", "200")})
+    _queue(home, [_row(1993, title=title, body=body, labels=["feature-request", "priority/critical"])])
+    gitclaim.ledger_giveup(home, "ionos-100", "SimonBarnett/bobiverse", "FR", "#1993")
+    gitclaim.ledger_giveup(home, "ionos-200", "SimonBarnett/bobiverse", "FR", "#1993")
+    live = gitclaim.live_seat_nicks(home)
+    assert gitclaim.row_skip_pin_ledger_heal_reason(_row(1993, title=title, body=body)) == "living_tracking_body"
+    assert gitclaim.heal_require_machine_all_gave_up(home, live) == []
+    assert gitclaim.ledger_clear_giveup(home, "SimonBarnett/bobiverse", "#1993") >= 1
+
+
+def test_mrb2497_truncated_queue_body_keeps_living_cue():
+    """Hostile: queue body truncate must not drop Living FR cue near top of #1993."""
+    body = (
+        "## Summary\n\n"
+        "Ship ircJeeves as a frozen Windows executable.\n\n"
+        "Operator approved 2026-10-04. **Living FR — keep appending** WP notes.\n\n"
+        "`require_machine: ionos`\n"
+        + ("x" * 800)
+    )
+    stored = gitclaim._body_for_queue(body)
+    assert "Living FR" in stored
+    assert gitclaim.row_skip_pin_ledger_heal_reason(
+        _row(1993, body=stored)
+    ) == "living_tracking_body"
