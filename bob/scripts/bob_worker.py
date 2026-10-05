@@ -1207,7 +1207,7 @@ _NOTHING_QUEUED_RX = re.compile(r"(?i)^nothing\s+queued\b")
 
 
 def is_nothing_queued(text: str, own_nick: str = "") -> bool:
-    """FR #994: Jeeves idle reply ``<nick>: nothing queued`` (optional address strip)."""
+    """Jeeves idle reply ``<nick>: nothing queued`` (optional address strip). FR #994 detect; FR #2554 never inject."""
     t = (text or "").strip()
     n = (own_nick or "").strip()
     if n and re.match(r"(?i)^@?" + re.escape(n) + r"\s*[:,]\s*", t):
@@ -1300,14 +1300,29 @@ class Relay:
                 pend, self._pending = self._pending, []
         if inject:
             for line in pend:
+                # FR #2554: never flush held nothing-queued into the agent.
+                parts = (line or "").split(None, 3)
+                body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else (line or "")
+                if is_nothing_queued(body) or ("nothing queued" in (line or "").lower()):
+                    self.log("relay: skipped nothing-queued (pending flush; not injected)")
+                    self._persist_last_from(line)
+                    continue
                 self._do_inject(line)
 
     def deliver(self, nick: str, target: str, text: str) -> str:
         nq = is_nothing_queued(text)
         if drop_text(text):
             if nq:
-                self.log("relay: skipped nothing-queued (dropped by filter — unexpected)")
+                self.log("relay: skipped nothing-queued (dropped by filter - unexpected)")
             return "dropped"
+        # FR #2554: CAST IRON - empty-queue / idle summaries must never wake the model.
+        # Operators still get an explicit skip log (+ optional last-from audit); only real
+        # Jeeves assigns addressed to this seat may reach inject.
+        if nq:
+            line = format_from(nick, target, text, outbox=self.outbox_path)
+            self.log("relay: skipped nothing-queued (not injected to agent)")
+            self._persist_last_from(line)
+            return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
         with self._lock:
             if line == self._last_line:
@@ -3334,4 +3349,4 @@ def main(argv: Optional[list] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main())
