@@ -42,15 +42,26 @@ if ($titleTrim.Length -gt 200) {
     throw ("Title length {0} exceeds intake max 200 (bad_title). Shorten the title." -f $titleTrim.Length)
 }
 
+function Get-ExceptionHttpResponse {
+    # FR #2461 / #1842: StrictMode — Exception.Response is absent on many exception types.
+    param($Exception)
+    if ($null -eq $Exception) { return $null }
+    $prop = $Exception.PSObject.Properties['Response']
+    if ($null -eq $prop) { return $null }
+    return $prop.Value
+}
+
 function Get-BobiverseIntakeErrorDetail {
     param($ErrorRecord)
     $detail = ''
     if ($ErrorRecord -and $ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
         $detail = [string]$ErrorRecord.ErrorDetails.Message
     }
-    if (-not $detail -and $ErrorRecord -and $ErrorRecord.Exception -and $ErrorRecord.Exception.Response) {
+    $ex0 = if ($ErrorRecord) { $ErrorRecord.Exception } else { $null }
+    $httpResp = Get-ExceptionHttpResponse -Exception $ex0
+    if (-not $detail -and $null -ne $httpResp) {
         try {
-            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            $stream = $httpResp.GetResponseStream()
             if ($stream) {
                 # Response stream may already be consumed; best-effort.
                 $reader = New-Object System.IO.StreamReader($stream)
@@ -63,11 +74,15 @@ function Get-BobiverseIntakeErrorDetail {
         $intakeError = $Matches[1]
     }
     $status = $null
-    $ex = if ($ErrorRecord) { $ErrorRecord.Exception } else { $null }
+    $ex = $ex0
     while ($null -ne $ex) {
-        if ($ex.Response -and $ex.Response.StatusCode) {
-            try { $status = [int]$ex.Response.StatusCode; break } catch { }
-            try { $status = [int]$ex.Response.StatusCode.value__; break } catch { }
+        $resp = Get-ExceptionHttpResponse -Exception $ex
+        if ($null -ne $resp) {
+            $codeProp = $resp.PSObject.Properties['StatusCode']
+            if ($null -ne $codeProp -and $null -ne $codeProp.Value) {
+                try { $status = [int]$codeProp.Value; break } catch { }
+                try { $status = [int]$codeProp.Value.value__; break } catch { }
+            }
         }
         $ex = $ex.InnerException
     }

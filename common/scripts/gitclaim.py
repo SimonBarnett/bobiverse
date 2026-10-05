@@ -130,11 +130,10 @@ SKIP_FR_LABELS = frozenset(
         "evergreen",
         "evergreen-mrb",
         # FR #595: verdict / board labels are not implementable FRs.
+        # FR #2464: mrb-fail / mrb_fail are offerable remediation FRs (removed from skip).
         "mrb",
         "mrb-pass",
-        "mrb-fail",
         "mrb_pass",
-        "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
         # needs-mrb1 must NOT be a SKIP_FR label (#1080/#1122/#1174 / PR #1236): that
@@ -582,6 +581,10 @@ def issue_skip_fr_reason(
         return "closed"
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = labs & SKIP_FR_LABELS
+    # FR #2464: mrb-fail remediation is offerable. Bare `mrb` must not block when
+    # `mrb-fail` / `mrb_fail` is also present (FAIL boards carry both labels).
+    if hit and ("mrb-fail" in labs or "mrb_fail" in labs):
+        hit = set(hit) - {"mrb"}
     if hit:
         return f"label:{sorted(hit)[0]}"
     title_s = (title or "").strip()
@@ -592,6 +595,9 @@ def issue_skip_fr_reason(
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
+    # FR #2480: exact fomprep MRB-home board signature in body (not generic "MRB home" prose).
+    if _MRB_HOME_BOARD_BODY_RE.search(body or ""):
+        return "mrb_home_board_body"
     # bobiverse#258 / FR #133 / FR #987: evergreen MRB-home boards by title shape only
     # (label mrb-home/evergreen already returned above). Do not scan the body ΓÇö real FRs
     # that mention "MRB home" in prose must stay assignable.
@@ -623,6 +629,10 @@ def row_skip_fr_reason(row: dict) -> str | None:
     labels = row.get("labels") or ()
     if isinstance(labels, str):
         labels = [labels]
+    repo = str(row.get("repo") or "").strip().lower()
+    ident = _norm_row_id(row.get("id"))
+    if repo and ident and (repo, ident) in _SKIP_FR_ISSUE_PINS:
+        return "hard_pin_umbrella"
     # Queue rows often store the issue title in ``line`` (offer/list); fall back so
     # mrb-home / harvest title skips still fire when ``title`` was never stamped.
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
@@ -827,6 +837,26 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
     ("simonbarnett/bobiverse", "#1714"): "ionos",
 }
+
+# FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
+# Labels mrb-home/umbrella/parent-fr should SKIP_FR (#271), but stale queue rows
+# enqueued before labels (or when API label payloads were empty) kept being offered.
+# Hard-pin by (repo, #N) so resync/offer always prune.
+_SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
+    ("simonbarnett/agentic_fomprep", "#3"),
+    ("simonbarnett/agentic_fomprep", "#7"),
+    ("simonbarnett/agentic_fomprep", "#8"),
+    ("simonbarnett/agentic_fomprep", "#9"),
+    ("simonbarnett/agentic_fomprep", "#11"),
+    ("simonbarnett/agentic_fomprep", "#20"),
+}
+
+# Exact board phrase used by fomprep MRB-home intake issues (body). Title-only
+# evergreen regex (#987) deliberately ignores body "MRB home" prose; this phrase
+# is the parked-board signature and is safe to skip.
+_MRB_HOME_BOARD_BODY_RE = re.compile(
+    r"(?i)This issue is the MRB home for (?:that|this) feature request"
+)
 
 # Queue rows keep a short body for size; trailing dedicated require_machine pins must
 # survive (FR #2312 — #1714 pin sat after char 500 and was dropped on enqueue).
@@ -1175,10 +1205,16 @@ def _remove_unaccepted(doc: dict, repo: str, task: str, ident: str) -> int:
 
 def _remove_unaccepted_tasks(doc: dict, repo: str, ident: str, tasks: set[str]) -> int:
     before = len(doc["unaccepted"])
+    want_id = _norm_row_id(ident)
+    want_tasks = {str(t).upper() for t in tasks}
     doc["unaccepted"] = [
         r
         for r in doc["unaccepted"]
-        if not (r.get("repo") == repo and r.get("id") == ident and r.get("task") in tasks)
+        if not (
+            str(r.get("repo") or "") == str(repo or "")
+            and _norm_row_id(r.get("id")) == want_id
+            and str(r.get("task") or "").upper() in want_tasks
+        )
     ]
     return before - len(doc["unaccepted"])
 
@@ -1945,8 +1981,24 @@ def load_queue(home: Path) -> dict:
         return _empty_queue()
 
 
+def _norm_row_id(ident: str | None) -> str:
+    """Canonical ``#N`` id for queue row matching (FR #2458)."""
+    s = str(ident or "").strip()
+    if not s:
+        return ""
+    if s.startswith("#"):
+        return s
+    if s.isdigit():
+        return f"#{s}"
+    return s
+
+
 def _same(row: dict, repo: str, task: str, ident: str) -> bool:
-    return row.get("repo") == repo and row.get("task") == task and row.get("id") == ident
+    return (
+        str(row.get("repo") or "") == str(repo or "")
+        and str(row.get("task") or "").upper() == str(task or "").upper()
+        and _norm_row_id(row.get("id")) == _norm_row_id(ident)
+    )
 
 
 def _already(doc: dict, repo: str, task: str, ident: str) -> bool:
@@ -2223,7 +2275,7 @@ def mrb_row_should_survive_resync(
         return False
     repo = str(row.get("repo") or "")
     task = str(row.get("task") or "").upper()
-    ident = str(row.get("id") or "")
+    ident = _norm_row_id(row.get("id"))
     if repo not in fetched:
         return True
     if task not in ("FR", "MRB"):
@@ -2604,27 +2656,44 @@ def _purge_closed_fr_accepted(doc: dict, *, issue_open=None, home: Path | None =
     return before - len(kept)
 
 
-def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None, home: Path | None = None) -> int:
-    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323).
+def _purge_dead_mrb_unaccepted(
+    doc: dict,
+    *,
+    pr_exists=None,
+    home: Path | None = None,
+    open_pulls: dict | None = None,
+    fetched_repos: set | None = None,
+) -> int:
+    """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323 / #2458).
 
     FR #1585: when ``pr_exists`` says the pull is still open, keep the row and clear
     a stale ledger ``mrb_done`` stamp so the next offline scan cannot re-kill it.
+
+    FR #2458: when ``open_pulls`` + ``fetched_repos`` are provided (resync), drop MRB
+    rows whose id is absent from that repo's open-pull set (merged/closed webhook miss).
     """
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
+    fetched = {str(x) for x in (fetched_repos or ())}
     for row in doc.get("unaccepted") or []:
         if not isinstance(row, dict):
             continue
         if _canon_task(row) == "MRB":
             if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
                 continue
-            # Always apply structural / merged-flag checks; live open-state when checker given.
             if not mrb_row_offerable(row, pr_exists=pr_exists):
                 continue
-            # FR #1585: heal premature DONE stamps while GitHub still shows open.
+            repo = str(row.get("repo") or "").strip()
+            ident = _norm_row_id(str(row.get("id") or ""))
+            if (
+                open_pulls is not None
+                and repo
+                and repo in fetched
+                and ident
+                and ident not in (open_pulls.get(repo) or set())
+            ):
+                continue
             if home is not None and pr_exists is not None:
-                repo = str(row.get("repo") or "").strip()
-                ident = str(row.get("id") or "").strip()
                 if repo and ident and mrb_ledger_done_hold(home, repo, ident):
                     with contextlib.suppress(Exception):
                         if bool(pr_exists(repo, ident.lstrip("#"))):
@@ -2632,6 +2701,21 @@ def _purge_dead_mrb_unaccepted(doc: dict, *, pr_exists=None, home: Path | None =
         kept.append(row)
     doc["unaccepted"] = kept
     return before - len(kept)
+
+
+def purge_dead_mrb_rows(home: Path, *, pr_exists=None) -> int:
+    """FR #2458: lock queue and drop dead unaccepted/accepted MRB rows; persist if changed."""
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            n = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home)
+            n += _purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)
+            if n:
+                _write_queue(queue_path(home), doc)
+            return n
+    except (OSError, json.JSONDecodeError, ValueError, TimeoutError):
+        return 0
+
 
 
 def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None, home: Path | None = None) -> bool:
@@ -3023,6 +3107,32 @@ def live_seat_nicks(home: Path) -> set[str]:
     return out
 
 
+
+def free_seat_nicks(home: Path, live: set[str] | None = None) -> set[str]:
+    """FR #2487: live seats that are idle/free (no digest working_on; not in accepted)."""
+    seats = set(live) if live is not None else live_seat_nicks(home)
+    busy: set[str] = set()
+    try:
+        doc = load_queue(home)
+        for r in doc.get("accepted") or []:
+            n = canonical_worker_nick(str(r.get("nick") or "")) or str(r.get("nick") or "").strip()
+            if n:
+                busy.add(n.lower())
+    except Exception:
+        pass
+    out: set[str] = set()
+    for n in seats:
+        n_c = canonical_worker_nick(n) or (n or "").strip()
+        if not n_c:
+            continue
+        if n_c.lower() in busy:
+            continue
+        if worker_working_on(home, n_c):
+            continue
+        out.add(n_c)
+    return out
+
+
 def _canon_seat_nick(raw: str) -> str:
     v = str(raw or "").strip()
     if not v or not bobreport.parse_seat_nick(v):
@@ -3177,17 +3287,22 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
     return out
 
 
-def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None) -> bool:
+def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None, *, free: set[str] | None = None) -> bool:
     """Do not hand an MRB/UAT to the author seat (or sibling on same machine) while another machine is live.
 
     FR #39 / #227 / #265: MRB and UAT must go to a different machine/seat than the
     FR implementer and/or MRB author when at least one other machine has a live seat.
     """
-    return review_blocked_for_author(row, nick, live, ledger=ledger)
+    return review_blocked_for_author(row, nick, live, ledger=ledger, free=free)
 
 
 def review_blocked_for_author(
-    row: dict, nick: str, live: set[str], ledger: dict | None = None
+    row: dict,
+    nick: str,
+    live: set[str],
+    ledger: dict | None = None,
+    *,
+    free: set[str] | None = None,
 ) -> bool:
     """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407).
 
@@ -3198,6 +3313,11 @@ def review_blocked_for_author(
     repo-level UAT when ``ledger`` is provided, not themselves FR-implementer blocked
     (``_ledger_blocks``). Giveup / fellow-implementer seats must not strand siblings
     of the stamped author after self-UAT GIVEUP loops.
+
+    FR #2487: when ``free`` is provided, sibling viability requires the other-machine
+    seat to be idle/free right now (in ``free``). Busy seats on another machine must
+    not strand cross-seat MRB on the author machine. When ``free`` is None, all
+    ``live`` seats are treated as free (unit-test / legacy default).
     """
     if _canon_task(row) not in ("MRB", "UAT"):
         return False
@@ -3241,6 +3361,12 @@ def review_blocked_for_author(
         if author_p and me_p:
             author_mid = bobreport.fold_machine_id(author_p[0])
             if author_mid == me_mid:
+                free_set = live if free is None else free
+                free_l = {
+                    (canonical_worker_nick(x) or x or "").strip().lower()
+                    for x in free_set
+                    if str(x or "").strip()
+                }
                 for n in live:
                     n_c = (canonical_worker_nick(n) or n or "").strip()
                     if not n_c or _seat_gave_up_uat(n_c):
@@ -3251,6 +3377,9 @@ def review_blocked_for_author(
                     # FR #2339: pinned-out other-machine seats are not viable — do not
                     # strand the author-machine sibling when require_machine forbids them.
                     if row_blocked_for_machine(row, n_c):
+                        continue
+                    # FR #2487: busy other-machine seats are not viable for sibling block.
+                    if n_c.lower() not in free_l:
                         continue
                     if ledger is not None and repo_uat:
                         other_why = _ledger_blocks(ledger, row, n_c)
@@ -3299,6 +3428,7 @@ def offer_focus_top(
 
     now_f = _time.time() if now is None else float(now)
     live = live_seat_nicks(home)
+    free = free_seat_nicks(home, live)
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
@@ -3418,7 +3548,7 @@ def offer_focus_top(
                         purged = True
                         return None
                 cand_eff = enrich_uat_author_fields(doc, cand)
-                if review_blocked_for_author(cand_eff, me, live, ledger=ledger):
+                if review_blocked_for_author(cand_eff, me, live, ledger=ledger, free=free):
                     return None
                 # FR #1093: stamp WP0/issue pins before the machine gate (stale rows).
                 _stamp_require_machine(cand_eff)
@@ -3713,6 +3843,130 @@ def ledger_giveup(home: Path, nick: str, repo: str, task: str, ident: str, refs=
         pass
 
 
+def ledger_clear_giveup(
+    home: Path,
+    repo: str,
+    ident: str,
+    nick: str | None = None,
+    task: str = "FR",
+) -> int:
+    """FR #2446 operator heal: drop ledger giveup for ``repo#ident`` (one nick or all nicks).
+
+    Returns how many nick entries were cleared for the row key. Does not rewrite
+    linked-ref keys (operator clears the living FR/issue key that is stuck).
+    """
+    key = _lkey(repo, ident)
+    task_u = (task or "FR").upper()
+    me = _canon_ledger_nick(nick) if nick else ""
+    cleared = [0]
+
+    def _f(doc: dict) -> None:
+        gu = doc.get("giveup") or {}
+        if key not in gu or not isinstance(gu[key], dict):
+            return
+        bucket = gu[key]
+        if me:
+            tl = bucket.get(me) or []
+            if task_u in tl:
+                bucket[me] = [t for t in tl if t != task_u]
+                cleared[0] += 1
+                if not bucket[me]:
+                    bucket.pop(me, None)
+        else:
+            for n, tl in list(bucket.items()):
+                if task_u in (tl or []):
+                    bucket[n] = [t for t in (tl or []) if t != task_u]
+                    cleared[0] += 1
+                    if not bucket[n]:
+                        bucket.pop(n, None)
+        if not bucket:
+            gu.pop(key, None)
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        return 0
+    return cleared[0]
+
+
+def live_seats_matching_require_machine(live: set[str], required: str) -> list[str]:
+    """Live seat nicks that match a ``require_machine`` pin (FR #2446)."""
+    req = str(required or "").strip()
+    if not req or req.lower() in ("*", "any", "none", "-", ""):
+        return []
+    out: list[str] = []
+    for nick in sorted(live or ()):
+        if seat_matches_require_machine(str(nick), req):
+            out.append(str(nick))
+    return out
+
+
+def require_machine_all_live_gave_up(
+    home: Path, row: dict, live: set[str] | None = None
+) -> list[str]:
+    """FR #2446: when a living require_machine row is GIVEUP'd by every live seat on that machine.
+
+    Returns the matching live nicks (all gave up) or ``[]`` when the heal/surface
+    condition does not apply (no pin, no matching live seats, or at least one
+    matching seat has not given up).
+    """
+    if not isinstance(row, dict):
+        return []
+    row_eff = dict(row)
+    _stamp_require_machine(row_eff)
+    req = str(row_eff.get("require_machine") or "").strip()
+    if not req or req.lower() in ("*", "any", "none", "-", ""):
+        return []
+    seats = live if live is not None else live_seat_nicks(home)
+    matching = live_seats_matching_require_machine(set(seats or ()), req)
+    if not matching:
+        return []
+    ledger = ledger_load(home)
+    task = _canon_task(row_eff)
+    blocked: list[str] = []
+    for nick in matching:
+        why = _ledger_blocks(ledger, row_eff, nick)
+        if why and "gave up" in why:
+            blocked.append(nick)
+            continue
+        if row_gave_up_by(row_eff, nick):
+            blocked.append(nick)
+            continue
+        return []
+    return blocked if len(blocked) == len(matching) else []
+
+
+def heal_require_machine_all_gave_up(
+    home: Path, live: set[str] | None = None
+) -> list[str]:
+    """Clear ledger giveup when every live pin-machine seat gave up a living FR (FR #2446).
+
+    Returns human-readable heal lines (repo#id + nick count). Shop IRC stays short;
+    callers log these for operators / monitors.
+    """
+    try:
+        path = queue_path(home)
+        raw = json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
+        rows = [r for r in (raw.get("unaccepted") or []) if isinstance(r, dict)]
+    except Exception:
+        return []
+    seats = live if live is not None else live_seat_nicks(home)
+    healed: list[str] = []
+    for row in rows:
+        blocked = require_machine_all_live_gave_up(home, row, seats)
+        if not blocked:
+            continue
+        repo = str(row.get("repo") or "")
+        ident = str(row.get("id") or "")
+        task = _canon_task(row)
+        n = 0
+        for nick in blocked:
+            n += ledger_clear_giveup(home, repo, ident, nick=nick, task=task)
+        if n:
+            healed.append(f"{repo}{ident if str(ident).startswith('#') else '#' + str(ident)} cleared={n}")
+    return healed
+
+
 def _row_link_keys(row: dict) -> list[str]:
     repo = str(row.get("repo") or "")
     refs = row.get("refs") or []
@@ -3992,6 +4246,7 @@ def assign_row(
     task_u = (task or "").upper()
     num = str(ident or "").strip().lstrip("#")
     live = live_seat_nicks(home)
+    free = free_seat_nicks(home, live)
     try:
         with _lock(home):
             try:
@@ -4042,7 +4297,7 @@ def assign_row(
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real open pull URL"
-            if review_blocked_for_author(cand, me, live, ledger=ledger_load(home)):
+            if review_blocked_for_author(cand, me, live, ledger=ledger_load(home), free=free):
                 return "refused", f"{me} authored/implemented this (no self-{task_u})"
             to = str(cand.get("offered_to") or "").strip()
             if to and to.lower() != me.lower():
@@ -4324,6 +4579,8 @@ def resync_from_github(
             state = str(iss.get("state") or "open")
             if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
                 continue
+            if (str(repo).lower(), _norm_row_id(ident)) in _SKIP_FR_ISSUE_PINS:
+                continue  # FR #2480 hard-pin umbrella
             desired.append(
                 GitClaim(
                     repo=repo,
@@ -4342,7 +4599,7 @@ def resync_from_github(
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
-            want = {(c.repo, c.task, c.id) for c in desired}
+            want = {(c.repo, c.task, _norm_row_id(c.id)) for c in desired}
             fetched_set = set(fetched)
             before = len(doc["unaccepted"])
             keep = []
@@ -4384,13 +4641,18 @@ def resync_from_github(
                     continue
                 if (
                     row.get("repo") in fetched_set
-                    and row.get("task") in ("FR", "MRB")
-                    and (row.get("repo"), row.get("task"), row.get("id")) not in want
+                    and str(row.get("task") or "").upper() in ("FR", "MRB")
+                    and (
+                        row.get("repo"),
+                        str(row.get("task") or "").upper(),
+                        _norm_row_id(row.get("id")),
+                    )
+                    not in want
                     and not mrb_row_should_survive_resync(
                         row, want=want, fetched=fetched_set
                     )
                 ):
-                    # FR #1323: drop MERGED/closed even when offered_to is set
+                    # FR #1323 / #2458: drop MERGED/closed even when offered_to is set
                     continue
                 # FR #1323 / #1585: drop ledger-held MRB only when GitHub no longer wants it.
                 # Open pulls in ``want`` must survive keep so offered_to/seq are preserved;
@@ -4406,6 +4668,15 @@ def resync_from_github(
                 keep.append(row)
             dropped = before - len(keep)
             doc["unaccepted"] = keep
+            # FR #2458: belt-and-suspenders — drop MRB absent from open pulls for fetched repos
+            # (covers id-shape / offered_to edge cases the keep loop may miss).
+            # Do not pass home here: without an open-PR checker, ledger mrb_done would
+            # re-kill still-open rows (FR #1585). open_pulls alone is the truth for this pass.
+            dropped += _purge_dead_mrb_unaccepted(
+                doc,
+                open_pulls=open_pulls_map,
+                fetched_repos=fetched_set,
+            )
             added = 0
             fetched_set2 = set(fetched)
             # Premature DONE while GitHub issue/PR still open: pull those rows out of done
