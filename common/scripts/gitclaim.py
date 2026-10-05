@@ -4210,7 +4210,12 @@ def resync_from_github(
     fetched: list[str] = []
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
-    supersede_keys: set[str] = set()  # FR #254 owner/repo#N closed by open PR Closes
+    # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
+    # stay as MRB rows; the open issue stays desired so fr_done can clear and MRB
+    # (or a re-opened FR if MRB is missing) can flow. (Open-PR supersede for offer
+    # still happens via fr_is_superseded once the MRB row is queued.)
+    supersede_keys: set[str] = set()  # owner/repo#N closed by merged PR Closes only
+    closed_by_merged_pr: set[str] = set()  # #N ids closed by merged PRs (same-repo)
     repo_clear: dict[str, bool] = {}   # t853u: no open non-excluded issue and no open PR
     uat_plan: dict[str, tuple[list[str], list[str]]] = {}   # repo -> (merged PRs this cycle, issues they closed)
     cycles = ledger_load(home).get("uat_cycle") or {}
@@ -4271,7 +4276,14 @@ def resync_from_github(
                         linked.append(r)
             if merged:
                 uat_plan[repo] = (merged, linked)
-        closed_by_pr: set[str] = set()
+                # FR #2389: merged closers (recent cycle) remove issues from desired.
+                for r in linked:
+                    closed_by_merged_pr.add(r)
+                for iss_id in linked:
+                    # extract_closes may return #N; also stamp owner/repo#N supersede keys.
+                    n = str(iss_id).lstrip("#")
+                    if n.isdigit():
+                        supersede_keys.add(f"{repo}#{n}")
         for pr in prs:
             if not isinstance(pr, dict):
                 continue
@@ -4281,15 +4293,9 @@ def resync_from_github(
             title = str(pr.get("title") or "")
             body = str(pr.get("body") or "")
             refs = extract_closes_issue_ids(title, body, repo=repo)
-            for r in refs:
-                closed_by_pr.add(r)
+            # FR #2389: do NOT add open-PR Closes refs to closed_by_merged_pr / supersede_keys.
+            # That left open issues out of desired, so fr_done never cleared (#2380/#2383 class).
             open_pulls_map.setdefault(repo, set()).add(f"#{num}")
-            # Full Closes owner/repo#N forms supersede that FR even cross-repo (FR #254).
-            for m in CLOSES_RE.finditer(f"{title}\n{body}"):
-                rname = (m.group("repo") or "").strip()
-                n = m.group("num")
-                if rname and n:
-                    supersede_keys.add(f"{rname}#{n}")
             # bobiverse#224 / #781: open mrb-*-fix PRs are not MRB queue jobs.
             if is_mrb_fix_pr_title(title):
                 continue
@@ -4303,10 +4309,10 @@ def resync_from_github(
             if not isinstance(num, int):
                 continue
             ident = f"#{num}"
-            if ident in closed_by_pr:
+            if ident in closed_by_merged_pr:
                 continue
             if fr_issue_key(repo, ident) in supersede_keys:
-                continue  # FR #254 cross-repo Closes
+                continue  # FR #254 / #2389: merged Closes only
             title = str(iss.get("title") or "")
             body = str(iss.get("body") or "")
             labels = _label_names(iss.get("labels"))
@@ -4438,6 +4444,13 @@ def resync_from_github(
             cleared_fr_done: list[str] = []
             cleared_mrb_done: list[str] = []
             for claim in desired:
+                # FR #2389 / #1201 / #1482: clear fr_done for every desired open issue even when
+                # fr_is_superseded skips re-enqueue (open Closes-PR → MRB). Otherwise the stamp
+                # sticks 24h while the issue stays OPEN with no merged closer.
+                if claim.task == "FR":
+                    fk = _lkey(claim.repo, claim.id)
+                    if fk in (ledger_now.get("fr_done") or {}):
+                        cleared_fr_done.append(fk)
                 if claim.task == "FR" and fr_is_superseded(
                     doc,
                     claim.repo,
@@ -4445,14 +4458,7 @@ def resync_from_github(
                     open_pulls=open_pulls_map,
                     fetched_repos=fetched_set2,
                 ):
-                    continue  # FR #254
-                # Do NOT skip desired FRs for fr_done — being in desired means no open PR
-                # supersedes the issue. Also clear the stamp so ledger_blocks does not
-                # tell every seat "PR pending merge" when none exists (#1201).
-                if claim.task == "FR":
-                    fk = _lkey(claim.repo, claim.id)
-                    if fk in (ledger_now.get("fr_done") or {}):
-                        cleared_fr_done.append(fk)
+                    continue  # FR #254: MRB / open implement PR supersedes FR enqueue
                 # FR #1585: open PR still on GitHub — clear premature mrb_done so offer
                 # purge cannot wipe the row resync just (re)queued.
                 if claim.task == "MRB":
