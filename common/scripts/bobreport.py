@@ -2926,6 +2926,11 @@ def _public_queue(home: Path) -> dict:
     """Job list served on GET /bob/v1/report. Webhook mirror, not a side channel."""
     import gitclaim
 
+    # FR #2458: surface-heal stale merged/closed MRB before digest consumers see them.
+    # Prefer open-only GitHub checker when token/home allow; otherwise ledger/merged flags only.
+    with contextlib.suppress(Exception):
+        checker = gitclaim.github_pr_exists_checker(home=home, cache={})
+        gitclaim.purge_dead_mrb_rows(home, pr_exists=checker)
     doc = gitclaim.load_queue(home)
     return {
         "unaccepted": list(doc.get("unaccepted") or []),
