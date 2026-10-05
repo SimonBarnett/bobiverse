@@ -1688,36 +1688,55 @@ function Start-BobTrayWorkerExe {
             if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show(('bob-worker.exe is missing:{0}{1}{0}{0}Reinstall or upgrade the bob MSI.' -f "`n", $exe), 'Bobiverse', 'OK', 'Warning') } catch { } }
             return 0
         }
-        $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
-        $binDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\bin'
-        New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-        $run = Join-Path $binDir ('bob-worker-{0}.exe' -f $hash)
-        if (-not (Test-Path -LiteralPath $run)) {
-            Copy-Item -LiteralPath $exe -Destination $run -Force
-            # FR #1643: defer delete while hashed run exe is still in use by a live seat (locked = leave for later).
-            Get-ChildItem -LiteralPath $binDir -Filter 'bob-worker-*.exe' -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -ne $run } |
-                ForEach-Object {
-                    $old = $_.FullName
-                    try {
-                        $fs = [System.IO.File]::Open($old, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-                        $fs.Close(); $fs.Dispose()
-                        Remove-Item -LiteralPath $old -Force -ErrorAction Stop
-                    }
-                    catch {
-                        # in use / defer - seat still holds this bob-worker-<hash>.exe
-                    }
-                }
-        }
-        $argv = @('--mode', $Mode, '--install-root', $RepoRoot)
+        # FR #2413 / MRB #2417: prefer shared plan from bob-worker --describe-launch.
         $mid = Get-BobTrayMachineId
-        if ($mid) { $argv += @('--machine-id', $mid) }
-        # t787u: the tray is a hidden powershell that owns a HIDDEN console. ProcessStartInfo UseShellExecute=false +
-        # CreateNoWindow=false does NOT create a console: the exe (and the agent that inherits its console) attached to the
-        # tray's hidden console - the click "did nothing" (MarchHare 2026-10-02: the exe ran, grok started, no window).
-        # CREATE_NEW_CONSOLE gives each click its OWN visible console: the exe's console IS the one agent window.
-        $wd = Join-Path $RepoRoot $(if ($Mode -eq 'plan') { 'plan' } else { 'worker' })
-        $title = ('Bob {0} - starting (closing this window ends the agent)' -f $Mode)
+        $plan = $null
+        try {
+            $dargv = @('--describe-launch', '--mode', $Mode, '--install-root', $RepoRoot)
+            if ($mid) { $dargv += @('--machine-id', $mid) }
+            $json = & $exe @dargv 2>$null | Out-String
+            if ($json) { $plan = $json | ConvertFrom-Json }
+        } catch { $plan = $null }
+        if ($plan -and $plan.run_exe -and $plan.argv) {
+            $run = [string]$plan.run_exe
+            $binDir = Split-Path -Parent $run
+            New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+            if (-not (Test-Path -LiteralPath $run)) {
+                Copy-Item -LiteralPath $exe -Destination $run -Force
+            }
+            $argv = @($plan.argv)
+            $wd = [string]$plan.cwd
+            if (-not $wd) { $wd = Join-Path $RepoRoot $(if ($Mode -eq 'plan') { 'plan' } else { 'worker' }) }
+            $title = [string]$plan.title
+            if (-not $title) { $title = ('Bob {0} - starting (closing this window ends the agent)' -f $Mode) }
+        } else {
+            $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
+            $binDir = Join-Path $env:LOCALAPPDATA 'Bobiverse\worker\bin'
+            New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+            $run = Join-Path $binDir ('bob-worker-{0}.exe' -f $hash)
+            if (-not (Test-Path -LiteralPath $run)) {
+                Copy-Item -LiteralPath $exe -Destination $run -Force
+            }
+            $argv = @('--mode', $Mode, '--install-root', $RepoRoot)
+            if ($mid) { $argv += @('--machine-id', $mid) }
+            $wd = Join-Path $RepoRoot $(if ($Mode -eq 'plan') { 'plan' } else { 'worker' })
+            $title = ('Bob {0} - starting (closing this window ends the agent)' -f $Mode)
+        }
+        # FR #1643: defer delete while hashed run exe is still in use by a live seat (locked = leave for later).
+        Get-ChildItem -LiteralPath $binDir -Filter 'bob-worker-*.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -ne $run } |
+            ForEach-Object {
+                $old = $_.FullName
+                try {
+                    $fs = [System.IO.File]::Open($old, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+                    $fs.Close(); $fs.Dispose()
+                    Remove-Item -LiteralPath $old -Force -ErrorAction Stop
+                }
+                catch {
+                    # in use / defer - seat still holds this bob-worker-<hash>.exe
+                }
+            }
+        # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
         $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title)[-1]
         Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} own visible console (NEW agent every click; selection cursor>grok>key dialog)' -f $Mode, $childPid, $Mode)
         return [int]$childPid   # t810u: the remote !startworker path reports it

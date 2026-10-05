@@ -113,6 +113,7 @@ namespace BobDialogs
                     try { File.Delete(old); } catch { }
                 }
             }
+            // FR #2413 / MRB #2417: argv/cwd/hash must match bob_worker.describe_worker_exe_launch / --describe-launch.
             List<string> argv = new List<string>(new string[] { "--mode", mode, "--install-root", root });
             if (machine.Length > 0) { argv.Add("--machine-id"); argv.Add(machine); }
             StringBuilder cmd = new StringBuilder(Quote(run));
