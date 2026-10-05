@@ -1,4 +1,12 @@
 # Skill harvest log
+## 2026-10-05 — FR #2564 MSI UI 1603 / rollback recover
+
+| Field | Value |
+|-------|-------|
+| Lesson | UI msiexec must use `/l*v` under `%ProgramData%\Bobiverse\logs`; Install CA logs there too; on RunInstall failure WiX RollbackRecover + Install catch best-effort Start-Service so ircBob/Airc are not left Stopped; assert MSI ProductVersion vs InstallRoot VERSION. Prefer self-update over parallel UI msiexec while Apply holds the mutex. |
+| Evidence | FR #2564; Recover-BobiverseService; Pack RollbackRecover; post-install.md; fleet-ops known-failure row |
+| Refs | SimonBarnett/bobiverse#2564 |
+
 ## 2026-10-04 - Airc MSI AppParameters identity preserve (harvest #1583)
 
 | Lesson | Fix / book |

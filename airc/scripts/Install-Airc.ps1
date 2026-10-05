@@ -13,7 +13,9 @@ param(
     [string[]]$Operators = @('Simon'),
     [string]$Python = '',
     [switch]$NoStart,
-    [switch]$ForceTools
+    [switch]$ForceTools,
+    # FR #2564: MSI ProductVersion forwarded by RunInstall for VERSION assert.
+    [string]$MsiProductVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,10 +48,17 @@ if (Test-Path -LiteralPath $bootstrap) {
     if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
 }
 
+# FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
+Write-BobiverseMsiInstallLog -Product airc -Message ("install-begin installRoot=$InstallRoot msiVer=$MsiProductVersion")
+$script:AircInstallOk = $false
+try {
+
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+# FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
+Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product airc
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'airc'
 $skillsSrc = Get-BobiverseRepoMergedDir -Root $repoRoot -Sub '.grok\skills'
 if (Test-Path $skillsSrc) {
@@ -208,3 +217,14 @@ try {
 }
 
 Write-Host 'INFO Install-Airc done (service Airc)'
+Write-BobiverseMsiInstallLog -Product airc -Message 'install-ok'
+$script:AircInstallOk = $true
+} catch {
+    Write-BobiverseMsiInstallLog -Product airc -Message ("install-fail $($_.Exception.Message)")
+    throw
+} finally {
+    # FR #2564: best-effort Start-Service Airc after a failed RunInstall.
+    if (-not $script:AircInstallOk) {
+        [void](Restore-BobiverseServiceAfterFailedInstall -ServiceName 'Airc' -Product airc -Why 'Install-Airc-catch')
+    }
+}

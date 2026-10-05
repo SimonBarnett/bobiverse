@@ -3,6 +3,17 @@
 ## After `msiexec /i *-*.msi`
 0. **Where is `<ai root>`?** It is the `<drive>:\ai` found on the fixed disks (env `BOB_AI_ROOT` / `msiexec ... AIROOT=D:\ai` override), `<SystemDrive>:\ai` only when no fixed disk has one. See README "The `<drive>:\ai` root". Never assume `C:\ai`.
 
+0b. **UI msiexec verbose log (FR #2564) — required for 1603 triage**  
+   Always pass `/l*v` to a known path under ProgramData when running a UI or elevated double-click install:
+
+   ```text
+   msiexec /i bob-0.1.24.msi /l*v "%ProgramData%\Bobiverse\logs\msi-bob-0124.log"
+   msiexec /i airc-0.1.24.msi /l*v "%ProgramData%\Bobiverse\logs\msi-airc-0124.log"
+   ```
+
+   Custom-action / file-in-use detail for exit **1603** lives in that log. Independently, `Install-*.ps1` also appends to `%ProgramData%\Bobiverse\logs\install-<product>.log` (and `recover-<product>.log` on rollback).  
+   **Prefer sanctioned self-update** (`Restart-Service` ircBob/Airc so `Update-BobiverseService` Apply runs) over a parallel UI msiexec while Apply holds `Global\bobiverse-update-msi`. A failed UI upgrade schedules a WiX **rollback** CA that best-effort `Start-Service`s the product service so seats are not left wiped.
+
 1. **ObjectName password (ircBob / ircJeeves)**  
    Services must run as the fleet **user** (DPAPI), not LocalSystem.  
    - Interactive `Install-*.ps1 -PromptServicePassword` prompts for the Windows password.  
