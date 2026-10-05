@@ -2,6 +2,7 @@
 
 Install via ``crash_report.install(exe_name)`` early in each Python entrypoint.
 The hook never raises and never blocks shutdown longer than a short network timeout.
+FR #2431: exe `probe` / messages with `do-not-file` or `probe-shape-only` are skipped (no intake, no spool keep).
 """
 from __future__ import annotations
 
@@ -50,6 +51,29 @@ def spool_dir() -> Path:
 def redact(text: str) -> str:
     s = _SECRET_RE.sub(lambda m: m.group(1) + "=<redacted>", text or "")
     return _TOKEN_BLOB_RE.sub("<redacted-token>", s)
+
+
+_PROBE_EXE = frozenset({"probe", "crash-probe", "crash_probe"})
+_DO_NOT_FILE_RE = re.compile(r"(?i)do-not-file|probe-shape-only")
+
+
+def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str = "", title: str = "") -> bool:
+    """FR #2431: shape/probe crashes must never create intake issues or spool forever.
+
+    Markers: exe name `probe` / `crash-probe`, or message/body/title containing
+    `do-not-file` or `probe-shape-only`.
+    """
+    name = (exe or "").strip().lower()
+    if name in _PROBE_EXE:
+        return True
+    msg = ""
+    if exc_value is not None:
+        try:
+            msg = str(exc_value)
+        except Exception:
+            msg = ""
+    blob = "\n".join((msg, body or "", title or ""))
+    return bool(_DO_NOT_FILE_RE.search(blob))
 
 
 def read_version() -> str:
@@ -244,6 +268,8 @@ def report_exception(
 ) -> dict[str, Any]:
     """File or spool a crash. Never raises."""
     try:
+        if should_skip_report(exe, exc_value):
+            return {"ok": True, "skipped": True, "reason": "probe-or-do-not-file"}
         title, body, sig = format_report(
             exe=exe,
             exc_type=exc_type,
@@ -338,6 +364,13 @@ def flush_spool(
             sig = str(payload.get("sig") or path.stem)
             exe = str(payload.get("exe") or "unknown")
             r = str(payload.get("repo") or repo)
+            if should_skip_report(exe, None, body=body, title=title):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                dropped += 1
+                continue
             try:
                 existing = _gh_search_open_sig(r, sig)
                 if existing:
