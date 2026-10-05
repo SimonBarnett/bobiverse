@@ -127,3 +127,67 @@ def test_fr2375_merged_webhook_purges_acc_and_stamps_ledger(tmp_path, monkeypatc
         tmp_path, "flamingo-1", "#flamingo", pr_exists=None
     )
     assert status == "empty"
+
+
+def test_mrb2376_mrb_N_fix_title_form_not_offerable():
+    row = {
+        "repo": REPO,
+        "task": "MRB",
+        "id": "#99",
+        "url": f"https://github.com/{REPO}/pull/99",
+        "title": "mrb-2371-fix: preserve accepted_by",
+        "line": "x",
+    }
+    assert gitclaim.is_mrb_fix_pr_title(row["title"])
+    assert gitclaim.mrb_row_offerable(row, pr_exists=lambda r, n: True) is False
+
+
+def test_mrb2376_normal_open_mrb_still_offerable():
+    row = {
+        "repo": REPO,
+        "task": "MRB",
+        "id": "#88",
+        "url": f"https://github.com/{REPO}/pull/88",
+        "title": "fix(jeeves): release stale busy after lost DONE",
+        "line": "x",
+    }
+    assert not gitclaim.is_mrb_fix_pr_title(row["title"])
+    assert gitclaim.mrb_row_offerable(row, pr_exists=lambda r, n: True) is True
+
+
+def test_mrb2376_merged_webhook_preserves_other_acc(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _seed(tmp_path)
+    _queue(
+        tmp_path,
+        accepted=[
+            {
+                "repo": REPO,
+                "task": "MRB",
+                "id": "#2374",
+                "nick": "marchhare-40208",
+                "url": f"https://github.com/{REPO}/pull/2374",
+            },
+            {
+                "repo": REPO,
+                "task": "FR",
+                "id": "#7",
+                "nick": "flamingo-1",
+            },
+        ],
+    )
+    claim = gitclaim.GitClaim(
+        repo=REPO,
+        task="MRB",
+        id="#2374",
+        event="pull_request",
+        action="closed",
+        line="closed",
+        merged=True,
+        title="fix(mrb-2371): x",
+    )
+    gitclaim.apply_queue_event(tmp_path, claim)
+    doc = gitclaim.load_queue(tmp_path)
+    assert len(doc.get("accepted") or []) == 1
+    assert str(doc["accepted"][0].get("id")) == "#7"
+
