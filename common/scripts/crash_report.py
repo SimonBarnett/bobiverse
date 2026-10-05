@@ -3,6 +3,9 @@
 Install via ``crash_report.install(exe_name)`` early in each Python entrypoint.
 The hook never raises and never blocks shutdown longer than a short network timeout.
 FR #2431: exe `probe` / messages with `do-not-file` or `probe-shape-only` are skipped (no intake, no spool keep).
+FR #2535: WinError 448 (untrusted mount) on pytest-of-*/pytest-current is skipped; shipped
+exe install is a no-op under PYTEST_CURRENT_TEST so product mains do not steal pytest's
+excepthook (sessionfinish cleanup noise was filing as crash: jeeves).
 """
 from __future__ import annotations
 
@@ -55,25 +58,56 @@ def redact(text: str) -> str:
 
 _PROBE_EXE = frozenset({"probe", "crash-probe", "crash_probe"})
 _DO_NOT_FILE_RE = re.compile(r"(?i)do-not-file|probe-shape-only")
+# FR #2535: pytest tmpdir symlink cleanup on Windows (WinError 448 / untrusted mount).
+_PYTEST_EPHEMERAL_RE = re.compile(r"(?i)pytest-of-|pytest-current")
+_UNTRUSTED_MOUNT_RE = re.compile(r"(?i)untrusted mount point|WinError\s*448")
+_SHIPPED_EXE_INSTALL = frozenset(
+    {
+        "jeeves",
+        "bob-ear",
+        "bob-worker",
+        "airc",
+        "watch-agenthealth",
+        "watch_agent_health",
+    }
+)
 
 
-def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str = "", title: str = "") -> bool:
-    """FR #2431: shape/probe crashes must never create intake issues or spool forever.
-
-    Markers: exe name `probe` / `crash-probe`, or message/body/title containing
-    `do-not-file` or `probe-shape-only`.
-    """
-    name = (exe or "").strip().lower()
-    if name in _PROBE_EXE:
-        return True
+def _blob_for_skip(exc_value: BaseException | None, body: str = "", title: str = "") -> str:
     msg = ""
     if exc_value is not None:
         try:
             msg = str(exc_value)
         except Exception:
             msg = ""
-    blob = "\n".join((msg, body or "", title or ""))
-    return bool(_DO_NOT_FILE_RE.search(blob))
+    return "\n".join((msg, body or "", title or ""))
+
+
+def _is_pytest_untrusted_mount(exc_value: BaseException | None, blob: str) -> bool:
+    """True for OSError WinError 448 (or message twin) on pytest-of-*/pytest-current paths."""
+    if not _PYTEST_EPHEMERAL_RE.search(blob):
+        return False
+    if exc_value is not None and isinstance(exc_value, OSError):
+        if getattr(exc_value, "winerror", None) == 448:
+            return True
+    return bool(_UNTRUSTED_MOUNT_RE.search(blob))
+
+
+def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str = "", title: str = "") -> bool:
+    """FR #2431 / #2535: skip probe markers and pytest WinError 448 ephemeral noise.
+
+    Markers: exe name `probe` / `crash-probe`, or message/body/title containing
+    `do-not-file` or `probe-shape-only`.
+    FR #2535: OSError WinError 448 (untrusted mount point) whose path mentions
+    pytest-of- or pytest-current — pytest sessionfinish symlink cleanup, not a product crash.
+    """
+    name = (exe or "").strip().lower()
+    if name in _PROBE_EXE:
+        return True
+    blob = _blob_for_skip(exc_value, body, title)
+    if _DO_NOT_FILE_RE.search(blob):
+        return True
+    return _is_pytest_untrusted_mount(exc_value, blob)
 
 
 def read_version() -> str:
@@ -394,9 +428,24 @@ def install(
     log_path: str | Path | None = None,
     flush: bool = True,
 ) -> None:
-    """Install process-wide crash hooks. Idempotent per process; never raises."""
+    """Install process-wide crash hooks. Idempotent per process; never raises.
+
+    FR #2535: when ``PYTEST_CURRENT_TEST`` is set, skip installing for shipped product
+    exe names so ``jeeves_main.main()`` (and siblings) under pytest do not replace
+    pytest's excepthook. Unit tests may install non-shipped names (e.g. ``unit-test-exe``)
+    or set ``BOB_CRASH_ALLOW_UNDER_PYTEST=1``.
+    """
     global _installed_for, _prev_sys_hook, _prev_thread_hook
     try:
+        name = (exe or "").strip()
+        under_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        allow = (os.environ.get("BOB_CRASH_ALLOW_UNDER_PYTEST") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if under_pytest and not allow and name.lower() in _SHIPPED_EXE_INSTALL:
+            return
         if _installed_for == exe:
             return
         log_p = Path(log_path) if log_path else None
