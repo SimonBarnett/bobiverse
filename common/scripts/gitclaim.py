@@ -4207,6 +4207,7 @@ def resync_from_github(
 
     skip = {str(x).strip().lower() for x in (ignored or ()) if str(x).strip()}
     desired: list[GitClaim] = []
+    open_issues_no_merged: set[tuple[str, str]] = set()  # (repo, #N) FR #2389
     fetched: list[str] = []
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
@@ -4272,6 +4273,7 @@ def resync_from_github(
             if merged:
                 uat_plan[repo] = (merged, linked)
         closed_by_pr: set[str] = set()
+        pr_closers: dict[str, list[tuple[str, bool]]] = {}  # issue -> [(pr, is_mrb_fix)]
         for pr in prs:
             if not isinstance(pr, dict):
                 continue
@@ -4283,6 +4285,7 @@ def resync_from_github(
             refs = extract_closes_issue_ids(title, body, repo=repo)
             for r in refs:
                 closed_by_pr.add(r)
+                pr_closers.setdefault(r, []).append((f"#{num}", is_mrb_fix_pr_title(title)))
             open_pulls_map.setdefault(repo, set()).add(f"#{num}")
             # Full Closes owner/repo#N forms supersede that FR even cross-repo (FR #254).
             for m in CLOSES_RE.finditer(f"{title}\n{body}"):
@@ -4296,6 +4299,22 @@ def resync_from_github(
             desired.append(
                 GitClaim(repo=repo, task="MRB", id=f"#{num}", event="pull_request", action="opened", line="", refs=refs)
             )
+        # FR #2389: open issues with no *merged* Closes stay eligible for fr_done clear
+        # even when an open Closes-PR keeps them out of desired (MRB is the offerable row).
+        # Fetch recent closed PRs here (repo_clear path only loads them when the repo is empty).
+        open_no_merged: set[str] = set()
+        merged_closers: set[str] = set()
+        try:
+            _closed_for_fr = getter(
+                f"https://api.github.com/repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50"
+            )
+        except Exception:  # noqa: BLE001
+            _closed_for_fr = []
+        for pr in _closed_for_fr if isinstance(_closed_for_fr, list) else []:
+            if not isinstance(pr, dict) or not pr.get("merged_at"):
+                continue
+            for r in extract_closes_issue_ids(str(pr.get("title") or ""), str(pr.get("body") or ""), repo=repo):
+                merged_closers.add(r)
         for iss in issues:
             if not isinstance(iss, dict) or iss.get("pull_request"):
                 continue
@@ -4303,8 +4322,13 @@ def resync_from_github(
             if not isinstance(num, int):
                 continue
             ident = f"#{num}"
-            if ident in closed_by_pr:
-                continue
+            if ident not in merged_closers:
+                open_no_merged.add(ident)
+                open_issues_no_merged.add((repo, ident))
+            if ident in closed_by_pr and any(not fix for _pr, fix in pr_closers.get(ident, [])):
+                continue  # an open, reviewable PR closes it: the MRB row is the work
+            # Simon 2026-10-05 (FR #2389): an OPEN issue whose only closers are mrb-fix PRs (never
+            # queued as MRB) has no offerable work otherwise -> keep it as an FR, never withhold it.
             if fr_issue_key(repo, ident) in supersede_keys:
                 continue  # FR #254 cross-repo Closes
             title = str(iss.get("title") or "")
@@ -4494,6 +4518,11 @@ def resync_from_github(
                     continue
                 if _append_unaccepted(doc, claim, **({"url": mrb_url} if mrb_url else {})) == "added":
                     added += 1
+            for repo_i, ident_i in open_issues_no_merged:
+                fk = _lkey(repo_i, ident_i)
+                if fk in (ledger_now.get("fr_done") or {}) and fk not in cleared_fr_done:
+                    cleared_fr_done.append(fk)  # FR #2389
+
             for urepo, (merged, linked) in uat_plan.items():
                 if any(
                     str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
