@@ -58,10 +58,15 @@ def test_install_shipped_exe_noop_under_pytest(monkeypatch):
     # Reset install state
     crash_report._installed_for = None
     before = sys.excepthook
-    crash_report.install("jeeves", flush=False)
-    assert sys.excepthook is before
-    assert crash_report._installed_for is None
-    # unit-test exe still installs under pytest
-    crash_report.install("unit-test-exe", flush=False)
-    assert crash_report._installed_for == "unit-test-exe"
-    assert sys.excepthook is not before
+    try:
+        crash_report.install("jeeves", flush=False)
+        assert sys.excepthook is before
+        assert crash_report._installed_for is None
+        # unit-test exe still installs under pytest
+        crash_report.install("unit-test-exe", flush=False)
+        assert crash_report._installed_for == "unit-test-exe"
+        assert sys.excepthook is not before
+    finally:
+        # MRB #2538: restore process hooks so later tests keep pytest's excepthook.
+        sys.excepthook = before
+        crash_report._installed_for = None

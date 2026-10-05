@@ -573,3 +573,11 @@ Books: worker operating skill (tray Agent / inject path). Tip PR #2510; hostile 
 | Escape hatch for rare dual-product boxes | `-AllowAlongsideBobWorker` on Watch-AgentHealth only |
 
 Books: bob tray / agentwatcher / Install-Bob. Tip PR #2528; hostile docs this entry.
+
+## 2026-10-05 - crash_report pytest WinError 448 skip (MRB #2538 / FR #2535)
+
+| Lesson | Fix / book |
+|--------|------------|
+| Product mains under pytest installed crash_report as jeeves; sessionfinish WinError 448 on pytest-current filed as product crash | Skip OSError 448 / untrusted-mount when path mentions pytest-of- or pytest-current; no-op install for shipped exe names while PYTEST_CURRENT_TEST is set (override BOB_CRASH_ALLOW_UNDER_PYTEST=1) |
+
+Books: crash_report (common). Tip PR #2538; hostile docs this entry.
