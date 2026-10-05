@@ -1,5 +1,14 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2410 harvest-log C0 strip
+
+| Field | Value |
+|-------|-------|
+| Lesson | skill-harvest-log.md must stay free of C0 controls (especially backspace) that eat the leading letter on Books book ids; gate with no-C0 + book-name lint tests and drop duplicate consecutive Books lines after repair. |
+| Evidence | FR #2408 / PR #2410; hostile MRB #2410 docs follow-up |
+| Refs | SimonBarnett/bobiverse#2408 SimonBarnett/bobiverse#2410 |
+
+
 ## 2026-10-05 — skill #2406 PyInstaller UAT static check
 
 | Field | Value |
@@ -479,7 +488,6 @@ Books: `bobiverse-bob-job-mrb`, `bobiverse-bob-job-uat`, `bobiverse-bob`. Twin #
 | parent_of after proc.wait() empty | Capture create-parent at start_agent (FR #1643 / PR #1658) |
 | Locked hashed bob-worker bin | Defer delete via exclusive-open; not a cleanup bug |
 
-Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
 Books: bobiverse-bob-worker, bobiverse-bob-troubleshooting.
 
 ## 2026-10-04 - MRB enqueue when resync blocked (harvest #1927)
