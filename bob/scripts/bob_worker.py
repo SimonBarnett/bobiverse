@@ -3169,7 +3169,8 @@ def format_external_kill_log(
 
 # --------------------------------------------------------------------------------------------- t815u: hard cap of live workers
 HARD_MAX_WORKERS = 2          # FR #2522/Simon: ONLY worker seats (mode=agent). Plan + maintenance MAY start on top and never count.
-# FR #2556: onefile = bootloader+child = ONE seat; recycle/cap-kill MUST use worker_seat_roots / excess_worker_seat_roots (never flat PID Skip-N).
+# FR #2556: onefile = bootloader+child = ONE seat; recycle/cap-kill MUST use
+# worker_seat_roots / recycle_to_cap / excess_worker_seat_roots (never flat PID Skip-N).
 CAPPED_MODES = ("agent",)     # modes refused when 2 agent seats are already live
 UNCAPPED_MODES = ("plan", "monitor", "maintenance")
 _WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
@@ -3302,6 +3303,16 @@ def excess_worker_seat_roots(procs: list, keep: int, *, modes: tuple = ("agent",
     if len(roots) <= k:
         return []
     return sorted(roots)[: max(0, len(roots) - k)]
+
+
+def recycle_to_cap(procs: list, keep: int, *, modes: tuple = ("agent",)) -> list:
+    """FR #2556: public recycle helper — root PIDs to stop so at most ``keep`` seats remain.
+
+    Same result as ``excess_worker_seat_roots``; name matches the FR acceptance API.
+    Callers expand each root with ``worker_seat_tree_pids`` (or tray
+    ``Stop-BobWorkerSeatTrees``) before kill. Never Sort|Skip-N on a flat PID list.
+    """
+    return excess_worker_seat_roots(procs, keep, modes=modes)
 
 
 def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:

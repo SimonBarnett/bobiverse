@@ -1,4 +1,4 @@
-﻿"""FR #2556: recycle/cap must kill onefile seat roots, never flat PID Skip-N."""
+"""FR #2556: recycle/cap must kill onefile seat roots, never flat PID Skip-N."""
 from __future__ import annotations
 
 import bob_worker as bw
@@ -27,8 +27,9 @@ def test_excess_worker_seat_roots_keeps_newest_pair():
     # Naive Skip-2 by sorted PID would yield kill list [200,201] or [100,101] mixed wrong;
     # correct excess is older root [100] (tree 100+101), keeping seat 200+201.
     assert bw.excess_worker_seat_roots(procs, keep=1) == [100]
+    assert bw.recycle_to_cap(procs, keep=1) == [100]
     kill = []
-    for root in bw.excess_worker_seat_roots(procs, keep=1):
+    for root in bw.recycle_to_cap(procs, keep=1):
         kill.extend(bw.worker_seat_tree_pids(procs, root))
     assert sorted(kill) == [100, 101]
     # Flat Skip-2 on all worker pids is the bug that killed MarchHare's second seat.
@@ -41,6 +42,7 @@ def test_excess_worker_seat_roots_keeps_newest_pair():
 def test_excess_keep_two_with_two_seats_empty():
     procs = _pair(100, 101) + _pair(200, 201)
     assert bw.excess_worker_seat_roots(procs, keep=2) == []
+    assert bw.recycle_to_cap(procs, keep=2) == []
 
 
 def test_fr2556_cap_still_seat_aware_with_onefile():
@@ -48,4 +50,3 @@ def test_fr2556_cap_still_seat_aware_with_onefile():
     # Starting a third seat: two other roots already
     assert bw.other_live_workers(procs, 300) == 2
     assert bw.worker_cap_refusal(procs, 300) != ""
-
