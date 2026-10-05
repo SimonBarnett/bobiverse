@@ -1,4 +1,4 @@
-﻿"""FR #2461: Report-BobiverseIntakeIssue must not touch Exception.Response under StrictMode."""
+"""FR #2461: Report-BobiverseIntakeIssue must not touch Exception.Response under StrictMode."""
 from __future__ import annotations
 
 from repo_layout import ROOT
@@ -20,3 +20,7 @@ def test_get_intake_error_detail_uses_helper():
     block = text[start : start + 1800]
     assert "Get-ExceptionHttpResponse" in block
     assert ".Exception.Response" not in block
+
+def test_statuscode_also_via_psobject_properties():
+    text = SCRIPT.read_text(encoding="utf-8-sig")
+    assert "PSObject.Properties['StatusCode']" in text or 'PSObject.Properties["StatusCode"]' in text
