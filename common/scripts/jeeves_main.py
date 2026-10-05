@@ -2,7 +2,8 @@
 
 Modes:
   --self-test   offline/live checks, exit 0/1/2, optional JSON (WP2: --check)
-  --heal        deterministic allowlist repairs (WP2: --dry-run / --force-orphan-busy)
+  --heal        deterministic allowlist repairs (WP2: --dry-run / --force-orphan-busy;
+                FR #2412: if still failing, start one rate-limited maintenance agent)
   --http-only   BobCallback listener (in-process path for cutover tests)
   --chair --http HOST:PORT  enable in-proc locks, start HTTP thread, then irc_agent --chair
 
@@ -320,8 +321,13 @@ def run_heal(
     force_orphan_busy: bool,
     as_json: bool,
     chair_home: Path | None = None,
+    no_maintenance_agent: bool = False,
 ) -> int:
-    """Deterministic heal allowlist (FR #1993 WP2). Never touches BobIrcd/Ergo."""
+    """Deterministic heal allowlist (FR #1993 WP2). Never touches BobIrcd/Ergo.
+
+    FR #2412: when exit != 0 after heal, start ONE rate-limited maintenance agent
+    in ``<drive>:\\ai\\jeeves`` (unless ``--no-maintenance-agent`` / dry-run skip path).
+    """
     actions: list[str] = []
     notes: list[str] = []
     findings: list[str] = []
@@ -455,6 +461,38 @@ def run_heal(
         errors.append(f"offer:{type(exc).__name__}")
 
     exit_code = 2 if errors else (1 if findings else 0)
+    maintenance: dict[str, Any] = {"action": "skip", "reason": "not_attempted"}
+    if no_maintenance_agent:
+        maintenance = {"action": "skip", "reason": "no_maintenance_agent_flag"}
+        notes.append("maintenance: skipped (--no-maintenance-agent)")
+    else:
+        try:
+            import jeeves_maintenance
+
+            mr = jeeves_maintenance.try_start_maintenance_agent(
+                home=home,
+                heal_exit=int(exit_code),
+                heal_payload={
+                    "findings": findings,
+                    "errors": errors,
+                    "actions": actions,
+                },
+                dry_run=bool(dry_run),
+            )
+            maintenance = {
+                "action": mr.action,
+                "reason": mr.reason,
+                "cwd": mr.cwd,
+                "pid": mr.pid,
+                "log": mr.log_line,
+            }
+            notes.append(f"maintenance: {mr.action} {mr.reason}")
+            if mr.action == "spawn":
+                actions.append(f"maintenance-agent pid={mr.pid} cwd={mr.cwd}")
+        except Exception as exc:  # noqa: BLE001 — heal must still return its exit
+            maintenance = {"action": "skip", "reason": f"hook_error:{type(exc).__name__}"}
+            notes.append(f"maintenance: hook_error:{type(exc).__name__}")
+
     payload = {
         "ok": exit_code == 0,
         "exit": exit_code,
@@ -465,8 +503,10 @@ def run_heal(
         "findings": findings,
         "errors": errors,
         "home": str(home),
+        "maintenance": maintenance,
         "fr": 1993,
         "wp": 2,
+        "fr_maintenance": 2412,
     }
     if as_json:
         _print_json(payload)
@@ -483,6 +523,10 @@ def run_heal(
             print(f"ERROR {e}", flush=True)
         for f in findings:
             print(f"FINDING {f}", flush=True)
+        print(
+            f"INFO maintenance action={maintenance.get('action')} reason={maintenance.get('reason')}",
+            flush=True,
+        )
     return int(exit_code)
 
 
@@ -525,6 +569,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--heal", action="store_true", help="WP2: deterministic allowlist heal")
     p.add_argument("--dry-run", action="store_true", help="with --heal: report actions only")
+    p.add_argument(
+        "--no-maintenance-agent",
+        action="store_true",
+        help="with --heal: do not spawn FR #2412 maintenance agent when still failing",
+    )
     p.add_argument(
         "--force-orphan-busy",
         action="store_true",
@@ -580,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
             force_orphan_busy=bool(args.force_orphan_busy),
             as_json=bool(args.json),
             chair_home=chair_home,
+            no_maintenance_agent=bool(args.no_maintenance_agent),
         )
 
     import jeeves_locks

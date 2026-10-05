@@ -5,6 +5,7 @@ Modes
   --mode agent   worker seat: cwd <install>\worker, IRC nick <machine>-<pid>, joins ONLY #<machine>
   --mode plan    plan agent: cwd <install>\plan, no IRC, fire-and-forget launch
   --mode monitor Jeeves MONITORING agent: cwd --work-root (default <ai>\\jeeves), no IRC; same fuel pick as agent
+  --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
 
 Rules (CAST IRON, Simon t762u-t765u)
   * Agent choice is ALWAYS automatic by token availability: Cursor (high or low pool > 0) -> Grok (local weekly > 0)
@@ -385,10 +386,24 @@ def monitor_prompt(jeeves_dir: str) -> str:
     )
 
 
+def maintenance_prompt(jeeves_dir: str) -> str:
+    # FR #2412: one-shot maintenance after jeeves --heal still failing.
+    return (
+        f"You are the Jeeves MAINTENANCE agent (FR #2412). NEW session only (never resume). CWD is {jeeves_dir}. "
+        f"jeeves.exe --heal / --self-test already ran and STILL reported findings or errors. "
+        f"Read {jeeves_dir}\\AGENTS.md and skills under {jeeves_dir}\\.grok\\skills (bobiverse-jeeves, "
+        f"bobiverse-jeeves-troubleshooting, bobiverse-fleet-ops, harvest). Diagnose why Jeeves is unhealthy, "
+        f"apply safe hotpatch-only fixes (never Ergo/BobIrcd, never kill seats/tray), then file ONE GitHub issue "
+        f"via {jeeves_dir}\\scripts\\Report-BobiverseIntakeIssue.ps1 with evidence (heal output, logs, what you tried). "
+        f"If you fix it, say so in the issue body. Self-harvest before you finish. Never print or store secrets."
+    )
+
+
 def rules_text(folder: str, kind: str) -> str:
     extra = {
         "plan": "PLAN SEAT ONLY: no IRC, no builds.",
         "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; never act as chair; prefer token-free monitor scripts; self-harvest after every finding.",
+        "maintenance": "JEEVES MAINTENANCE ONLY (FR #2412): diagnose after heal still failing; safe hotpatch only; file intake issue; never Ergo/BobIrcd; never act as chair.",
     }.get(kind, "Worker seat: IRC is handled for you.")
     return (f"NEW session. Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
             f"CAST IRON harvest rule: harvest skills and file every issue/FR/bug with Report-BobiverseIntakeIssue.ps1 (intake webhook) in the same turn. "
@@ -2434,6 +2449,57 @@ def run_monitor(args, log: Log) -> int:
     return EXIT_OK
 
 
+def run_maintenance(args, log: Log) -> int:
+    """FR #2412: one-shot Jeeves maintenance seat after --heal still failing."""
+    work = Path(getattr(args, "work_root", "") or "") if getattr(args, "work_root", None) else None
+    folder = work if work and str(work) else _default_jeeves_root(Path(args.install_root))
+    folder = Path(folder)
+    if not folder.is_dir():
+        log(f"maintenance: folder missing {folder}")
+        return EXIT_USAGE
+    if not (folder / "AGENTS.md").is_file():
+        log(f"maintenance: AGENTS.md missing in {folder}")
+        return EXIT_USAGE
+    dec, cursor_cmd, grok_exe, fuel = _choose(args, log, folder, "maintenance")
+    secret = None
+    kind = dec.kind
+    if kind == "none":
+        return EXIT_NO_AGENT
+    if kind == "dialog":
+        key = ask_session_key(
+            "No Cursor or Grok tokens remain. Enter an XAI_API_KEY for this Jeeves maintenance agent only (kept in memory, never saved).",
+            "Grok maintenance session key",
+        )
+        if not key:
+            log("maintenance: no key given - not starting")
+            return EXIT_NO_AGENT
+        secret, kind = SecretStr(key), "grok"
+    exe = cursor_cmd if kind == "cursor" else grok_exe
+    run_dir = _new_run_dir("maintenance", "maintenance")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_console("Jeeves Maintenance (%s) - closing this window ends the agent" % kind)
+    spec = build_launch(kind, "maintenance", str(folder), maintenance_prompt(str(folder)), exe, run_dir)
+    env = dict(os.environ)
+    if secret and kind == "grok":
+        env["XAI_API_KEY"] = secret.reveal()
+    try:
+        proc = default_spawn(spec, env)
+    except Exception as e:
+        log(f"maintenance: launch failed {type(e).__name__}")
+        return EXIT_LAUNCH_FAIL
+    log(
+        f"maintenance: started NEW {kind} agent pid={proc.pid} session={spec.session_id} "
+        f"cwd={folder} (FR #2412; no IRC; ending either ends both)"
+    )
+    install_ctrl_handler(lambda: kill_tree(proc.pid))
+    try:
+        code = proc.wait()
+    except Exception:
+        code = -1
+    log(f"maintenance: agent ended code={code}")
+    return EXIT_OK
+
+
 def run_agent(args, log: Log) -> int:
     machine = normalize_machine_id(args.machine_id) if args.machine_id else default_machine_id()
     if not machine:
@@ -2689,9 +2755,13 @@ def worker_cap_refusal(procs: list, my_pid: int) -> str:
 
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, plan, or Jeeves monitor) chosen by token availability.")
-    p.add_argument("--mode", choices=("agent", "plan", "monitor"), default="agent")
+    p.add_argument("--mode", choices=("agent", "plan", "monitor", "maintenance"), default="agent")
     p.add_argument("--install-root", default=DEFAULT_INSTALL_ROOT)
-    p.add_argument("--work-root", default="", help="monitor mode: Jeeves install CWD (default sibling <ai>\\jeeves)")
+    p.add_argument(
+        "--work-root",
+        default="",
+        help="monitor/maintenance mode: Jeeves install CWD (default sibling <ai>\\jeeves)",
+    )
     p.add_argument("--machine-id", default="")
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -2718,15 +2788,15 @@ def main(argv: Optional[list] = None) -> int:
         dec = select_agent(fuel, cc, ge)
         if args.mode == "plan":
             cwd = str(Path(args.install_root) / "plan")
-        elif args.mode == "monitor":
+        elif args.mode in ("monitor", "maintenance"):
             cwd = str(Path(args.work_root) if args.work_root else _default_jeeves_root(Path(args.install_root)))
         else:
             cwd = str(Path(args.install_root) / "worker")
         print(json.dumps({"decision": dec.kind, "reason": dec.reason, "cursor_cmd": bool(cc), "grok_exe": bool(ge),
                           "fuel": fuel.__dict__, "cwd": cwd, "mode": args.mode}))
         return EXIT_OK
-    # Monitor seats do not consume the worker hard-cap (they are not shop workers).
-    if args.mode != "monitor":
+    # Monitor/maintenance seats do not consume the worker hard-cap (they are not shop workers).
+    if args.mode not in ("monitor", "maintenance"):
         refusal = worker_cap_refusal(snapshot_procs(), os.getpid())  # t815u: hard cap, before any window/agent/IRC
         if refusal:
             log("refused: " + refusal)
@@ -2745,6 +2815,8 @@ def main(argv: Optional[list] = None) -> int:
             return run_plan(args, log)
         if args.mode == "monitor":
             return run_monitor(args, log)
+        if args.mode == "maintenance":
+            return run_maintenance(args, log)
         return run_agent(args, log)
     except Exception as e:  # never a traceback dialog
         log(f"fatal: {type(e).__name__}: {str(e)[:200]}")
