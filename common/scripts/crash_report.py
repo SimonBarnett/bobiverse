@@ -113,6 +113,9 @@ def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str =
     blob = _blob_for_skip(exc_value, body, title)
     if _DO_NOT_FILE_RE.search(blob):
         return True
+    # Spool/flush path often has exc_value=None — match type names in body/title too.
+    if re.search(r"(?i)\b(KeyboardInterrupt|SystemExit)\b", blob):
+        return True
     return _is_pytest_untrusted_mount(exc_value, blob)
 
 
