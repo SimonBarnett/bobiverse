@@ -1,4 +1,12 @@
 # Skill harvest log
+## 2026-10-04 - Airc MSI AppParameters identity preserve (harvest #1583)
+
+| Lesson | Fix / book |
+|---|---|
+| MSI upgrade invents ConsoleHome | Read live AppParameters, then airc-install.json, before profile defaults (FR #1552 / PR #1570) |
+
+Books: `airc/.grok/skills/bobiverse-airc/SKILL.md`, `airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md`.
+
 ## 2026-10-05 FR #2447 / #2511 airc MSI re-pack after HomePath
 
 - Script fixes on main do not update shipped MSIs; Quiet Apply runs the packaged copy until Pack + Assert + upload.
