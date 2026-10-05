@@ -1380,19 +1380,28 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
         _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
         _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
         if claim.merged:
-            mrb_src: dict = {}
-            for bucket in ("accepted", "done"):
-                for row in doc.get(bucket) or []:
-                    if (
-                        str(row.get("repo") or "") == claim.repo
-                        and str(row.get("task") or "").upper() == "MRB"
-                        and str(row.get("id") or "") == claim.id
-                    ):
-                        mrb_src = dict(row)
-                        break
-                if mrb_src:
-                    break
-            del mrb_src
+            # FR #2375: move any accepted MRB for this PR into done (lost webhook race /
+            # self-authored fix PR must not stay ACC and re-offer after merge).
+            kept_acc: list[dict] = []
+            done = doc.setdefault("done", [])
+            for row in doc.get("accepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                if (
+                    str(row.get("repo") or "") == claim.repo
+                    and str(row.get("task") or "").upper() == "MRB"
+                    and str(row.get("id") or "") == claim.id
+                ):
+                    fin = dict(row)
+                    fin["result"] = "MERGED"
+                    fin["merged"] = True
+                    fin["done_ts"] = _utc_now()
+                    done.append(fin)
+                    continue
+                kept_acc.append(row)
+            doc["accepted"] = kept_acc
+            if len(done) > DONE_CAP:
+                doc["done"] = done[-DONE_CAP:]
             for ref in claim.refs:
                 _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "MRB", "UAT"})
             if is_mrb_fix_pr_title(str(claim.title or claim.line or "")):
@@ -1453,6 +1462,14 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
             except OSError:
                 _spool_pending(home, claim)
                 return "error:queue-write"
+            # FR #2375 / #1323: ledger hold so MERGED PRs cannot re-offer if unaccepted leaks back.
+            if (
+                claim.event == "pull_request"
+                and claim.action == "closed"
+                and claim.merged
+            ):
+                with contextlib.suppress(Exception):
+                    stamp_mrb_done(home, claim.repo, claim.id)
             return changed
     except TimeoutError:
         _spool_pending(home, claim)
@@ -2221,10 +2238,15 @@ def mrb_row_offerable(
 
     FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
     FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed -> False).
+    FR #2375: ``fix(mrb-N)`` / ``mrb-N-fix`` titles are never MRB targets (enqueue already
+    skips them; reject at offer too if a row leaked in).
     """
     if _canon_task(row) != "MRB":
         return True
     if row.get("merged") in (True, "true", "1", 1):
+        return False
+    titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
+    if is_mrb_fix_pr_title(titleish):
         return False
     raw = str(row.get("url") or "").strip()
     if ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw):
