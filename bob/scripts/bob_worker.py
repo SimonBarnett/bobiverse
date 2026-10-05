@@ -2810,6 +2810,12 @@ def main(argv: Optional[list] = None) -> int:
     if not args.echo:
         silence_console(log)  # t787u: the console belongs to the agent TUI; errors go to the log file only
     try:
+        import crash_report
+
+        crash_report.install("bob-worker")
+    except Exception:
+        pass
+    try:
         ensure_console("Bob %s - starting" % args.mode)  # the ONE window for this agent
         if args.mode == "plan":
             return run_plan(args, log)

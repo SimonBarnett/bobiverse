@@ -59,6 +59,7 @@ foreach ($d in @(
     if (Test-Path -LiteralPath $logo) { $argv += "/resource:$logo,ntsa-gut-logo.png" }
     $argv += "/main:$($d.Main)"
     $argv += (Join-Path $SourceDir 'BobDialogsCommon.cs')
+    $argv += (Join-Path $SourceDir 'CrashHook.cs')
     foreach ($sf in $d.Srcs) { $argv += (Join-Path $SourceDir $sf) }
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $log = & $csc @argv 2>&1

@@ -7,6 +7,12 @@ import os, subprocess, sys
 from pathlib import Path
 
 def main() -> int:
+    try:
+        import crash_report
+
+        crash_report.install("Watch-AgentHealth")
+    except Exception:
+        pass
     here = Path(__file__).resolve().parent
     script = here / "Watch-AgentHealth.ps1"
     if not script.exists():

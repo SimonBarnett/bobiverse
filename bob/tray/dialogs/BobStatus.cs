@@ -248,6 +248,7 @@ namespace BobDialogs
         [STAThread]
         static int Main(string[] args)
         {
+            CrashHook.Install("bob-status");
             string root = Common.Root(args);
             // Headless: validate/echo the snapshot as the card would see it (tests, support).
             string check = Common.Arg(args, "--check");
