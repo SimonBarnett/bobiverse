@@ -146,8 +146,18 @@ foreach ($p in $toRemove) {
     }
     if ($PSCmdlet.ShouldProcess($p, 'git worktree remove --force')) {
         Write-Host "Removing worktree $p"
-        & git -C $rootFull worktree remove --force $p 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) {
+        # FR #2460: under StrictMode + ErrorActionPreference Stop, git stderr piped as
+        # ErrorRecords (e.g. Permission denied) can terminate before LASTEXITCODE fallback.
+        # Stringify every record so native stderr stays non-terminating.
+        $gitOut = @(
+            & git -C $rootFull worktree remove --force $p 2>&1 |
+                ForEach-Object { "$_" }
+        )
+        $gitExit = $LASTEXITCODE
+        foreach ($line in $gitOut) {
+            if ($line) { Write-Host $line }
+        }
+        if ($gitExit -ne 0) {
             Write-Warning "worktree remove failed for $p (will try prune / rmdir)"
             if (Test-Path -LiteralPath $p) {
                 Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
@@ -188,7 +198,14 @@ if ($removed -gt 0 -or $Force) {
         Write-Host "WhatIf: git worktree prune"
     } else {
         Write-Host "Pruning worktree metadata"
-        & git -C $rootFull worktree prune 2>&1 | Out-Host
+        # FR #2460: same stderr ErrorRecord hardening as worktree remove.
+        $pruneOut = @(
+            & git -C $rootFull worktree prune 2>&1 |
+                ForEach-Object { "$_" }
+        )
+        foreach ($line in $pruneOut) {
+            if ($line) { Write-Host $line }
+        }
     }
 }
 
