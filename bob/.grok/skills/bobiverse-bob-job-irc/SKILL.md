@@ -41,7 +41,7 @@ sequenceDiagram
   P->>A: FROM Jeeves #machine nick: TYPE owner/repo#N url
   A->>J: ACK TYPE owner/repo#N        (via outbox; Jeeves marks you accepted + busy)
   Note over A: work - the program stays silent while the ACK is open
-  A->>J: DONE TYPE owner/repo#N [PASS or FAIL] url   (Jeeves marks you done + idle)
+  A->>J: DONE TYPE owner/repo#N [PASS/FAIL only for MRB/UAT] url   (Jeeves marks you done + idle)
   P->>J: !bored  (immediately after DONE or NACK/GIVEUP - keep going)
 ```
 
@@ -65,11 +65,14 @@ ACK <TYPE> <owner/repo>#<N> [short title]
 ## DONE - exact format
 
 ```text
-DONE <TYPE> <owner/repo>#<N> [PASS|FAIL] <url>
+DONE FR  <owner/repo>#<N> <pr-url>
+DONE MRB <owner/repo>#<N> PASS|FAIL <pr-url>
+DONE UAT <owner/repo>#<N> PASS|FAIL [<url>]
 ```
 
 * `TYPE` and `owner/repo#N` = the **assigned** values, even if the work turned into something else.
-* At most one `PASS`/`FAIL`. FR: the PR url (no PASS/FAIL). MRB: `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
+* **FR never carries PASS/FAIL** (FR #2419). Wire is `DONE FR owner/repo#N <pr-url>` only. A mistaken `DONE FR ... PASS <url>` is **ignored** by `shop_listen.parse_shop_job_line` (PASS/FAIL stripped; URL kept) so ACC still completes - do not rely on that; emit the FR form without PASS.
+* MRB: exactly one `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
 * **FR / MRB: verify before DONE (t826u)** - FR: the PR body has `Closes <owner>/<repo>#N` and `closingIssuesReferences` lists N; MRB: the originating issue is closed (by the merge, or by you with a comment) or, if not merged yet, linked. Never DONE with an unlinked, still-open issue.
 * **Duplicates first (t857u)** - before FR DONE the PR body has `Duplicates closed:` (each duplicate FR/issue of what the PR fixes already commented `Duplicate of #N / fixed by PR #M` and closed as not planned; real extra issues get a `Closes <owner>/<repo>#D` line). MRB re-checks it before PASS. See `bobiverse-bob-job-fr` / `bobiverse-bob-job-mrb`.
 * **One line, nothing after the url.** Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment, never on the DONE line.
@@ -111,3 +114,4 @@ no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an
 | MRB PR CONFLICTING / already fixed on main | Twin merged elsewhere | FAIL board, close duplicate PR, DONE FAIL; do not force-merge (bobiverse-bob-job-mrb CONFLICTING section) |
 | Two assigns at once | you forgot the ACK (looked idle). ACK the first, `NACK` the second. |
 | `!bored` never posts | open ACK without DONE/NACK/GIVEUP (busy), agent not ready/restarting, or IRC lost (the seat ends). See `bobiverse-bob-worker`. |
+| FR DONE with `PASS` then re-assign | Wrong FR wire (PASS is MRB/UAT-only). Chair **strips** PASS/FAIL on FR DONE and keeps the PR url (FR #2419). Prefer `DONE FR owner/repo#N <url>` with no PASS. |
