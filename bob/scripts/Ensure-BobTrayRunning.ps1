@@ -6,6 +6,8 @@
   Watchdog probe for scheduled task BobiverseTrayWatchdog. Always relaunches with -SkipTidy
   (never the TipForm Restart tidy path). Honours tray-watchdog.suppress after intentional
   TipForm Exit. Opt out: BOBIVERSE_TRAY_WATCHDOG=0.
+  FR #2585: duplicate bob-tray.exe exits log process-exit reason=already-running (not unexpected);
+  this probe only relaunches when no tray process is present, so already-running never triggers a relaunch.
 #>
 [CmdletBinding()]
 param(
