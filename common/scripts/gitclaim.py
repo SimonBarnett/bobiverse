@@ -781,6 +781,8 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bintake\b.{0,60}\b502\b.{0,40}\b(?:Bad Gateway|harvest)"), "ionos"),
     # FR #2451: release pack titles that say install/smoke on ionos
     (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "ionos"),
+    # FR #2513: airc MSI re-pack titles (ionos release-out)
+    (re.compile(r"(?i)\bre-?pack\s+airc\s+msi\b"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
@@ -824,6 +826,11 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #2451: release pack FRs that install/smoke on ionos (not bare release-out)
     (re.compile(r"(?i)\binstall(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos\b"), "ionos"),
     (re.compile(r"(?i)\bsmoke\s+on\s+ionos\b"), "ionos"),
+    # FR #2513 / #2512: Pack-Airc / Pack-BobiverseRelease -Product airc (not bare Assert-ReleaseAssets).
+    # Negative lookahead avoids offer-gap receipts that say "Pack-Airc cues".
+    (re.compile(r"(?i)\bPack-Airc\b(?!\s+cues)"), "ionos"),
+    (re.compile(r"(?i)\bPack-BobiverseRelease\b[^\n]{0,80}-Product\s+airc\b"), "ionos"),
+    (re.compile(r"(?i)\bRun\s+Pack-Airc\b"), "ionos"),
 )
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -836,6 +843,8 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     # FR #2312 / #1714: ionos orphan workers-map / nak-busy — body pin is past the
     # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
     ("simonbarnett/bobiverse", "#1714"): "ionos",
+    # FR #2513 / #2512: airc MSI re-pack + ionos install/smoke (#2511) mis-offered to marchhare.
+    ("simonbarnett/bobiverse", "#2511"): "ionos",
 }
 
 # FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
