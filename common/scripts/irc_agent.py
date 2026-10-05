@@ -3135,6 +3135,13 @@ def clean_crashed_priors(nick: str, home: str, *, once: bool) -> None:
         raise SystemExit(1)
 
 
+# FR #2411: unhandled exception -> GitHub issue (dedupe + spool)
+try:
+    import crash_report
+    crash_report.install(product='bob-ear')
+except Exception:
+    pass
+
 def main() -> None:
     import signal
 

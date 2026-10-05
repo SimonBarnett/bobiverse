@@ -27,6 +27,7 @@ if (-not $SourceDir) {
     if (-not (Test-Path -LiteralPath $SourceDir)) { $SourceDir = Join-Path $RepoRoot 'dialogs' }
 }
 if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'BobDialogsCommon.cs'))) { throw "missing dialog sources in $SourceDir" }
+$argv += (Join-Path $SourceDir 'CrashHook.cs')
 
 $csc = $null
 foreach ($c in @(

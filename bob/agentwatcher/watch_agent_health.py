@@ -6,6 +6,13 @@ from __future__ import annotations
 import os, subprocess, sys
 from pathlib import Path
 
+# FR #2411: unhandled exception -> GitHub issue (dedupe + spool)
+try:
+    import crash_report
+    crash_report.install(product='Watch-AgentHealth')
+except Exception:
+    pass
+
 def main() -> int:
     here = Path(__file__).resolve().parent
     script = here / "Watch-AgentHealth.ps1"

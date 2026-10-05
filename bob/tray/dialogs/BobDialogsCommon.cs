@@ -34,8 +34,15 @@ namespace BobDialogs
         }
 
         // Single instance per dialog: the first process owns the mutex; a second launch only brings the first window forward.
+        public static void EnsureCrashHook(string product)
+        {
+            try { CrashHook.Install(product); } catch { }
+        }
+
         public static bool Single(string key, string windowTitle)
         {
+            EnsureCrashHook(key);
+
             bool created;
             keep = new Mutex(true, "Local\\Bobiverse_" + key, out created);
             if (created) return true;

@@ -399,6 +399,12 @@ def rules_text(folder: str, kind: str) -> str:
             + extra)
 
 
+# FR #2413: shared tray/CLI/remote seat launch plan
+try:
+    import seat_launch  # noqa: E402
+except ImportError:
+    seat_launch = None  # type: ignore
+
 # --------------------------------------------------------------------------------------------- launching (always NEW)
 @dataclass
 class LaunchSpec:
@@ -1982,10 +1988,30 @@ class Supervisor:
                 return False
             if self.bored:
                 self.bored.set_ready(False)  # a (re)starting agent is not idle
-            spec = build_launch(self.kind, "agent", self.cwd, self._prompt() + (" " + note if note else ""), self.exe, self.run_dir)
-            env = dict(self.base_env)
-            # FR #2380: seat outbox/shop/nick survive context compaction via child env (not only first prompt).
-            env.update(seat_env_extra(self.run_dir, self.machine, self.nick))
+            # FR #2413: one shared seat launch plan (tray / remote / CLI)
+            install_root = Path(self.cwd).parent if Path(self.cwd).name.lower() == "worker" else Path(getattr(self, "install_root", self.cwd))
+            if seat_launch is not None:
+                plan = seat_launch.shared_seat_plan(
+                    "agent",
+                    install_root,
+                    machine=self.machine,
+                    nick=self.nick,
+                    run_dir=self.run_dir,
+                    kind=self.kind,
+                    exe=self.exe,
+                    note=note or "",
+                    build_launch_fn=build_launch,
+                    seat_env_fn=seat_env_extra,
+                    prompt_fn=lambda folder, run_dir, machine, nick: worker_prompt(folder, run_dir, machine, nick),
+                )
+                spec = LaunchSpec(argv=list(plan.launch_argv), cwd=plan.cwd, session_id=plan.session_id, files=dict(plan.files))
+                env = dict(self.base_env)
+                env.update(plan.env_extra)
+            else:
+                spec = build_launch(self.kind, "agent", self.cwd, self._prompt() + (" " + note if note else ""), self.exe, self.run_dir)
+                env = dict(self.base_env)
+                # FR #2380: seat outbox/shop/nick survive context compaction via child env (not only first prompt).
+                env.update(seat_env_extra(self.run_dir, self.machine, self.nick))
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
@@ -2351,7 +2377,19 @@ def run_plan(args, log: Log) -> int:
         secret, kind = SecretStr(key), "grok"
     exe = cursor_cmd if kind == "cursor" else grok_exe
     run_dir = _new_run_dir("plan", "plan")
-    spec = build_launch(kind, "plan", str(folder), plan_prompt(str(folder)), exe, run_dir)
+    if seat_launch is not None:
+        plan = seat_launch.shared_seat_plan(
+            "plan",
+            Path(args.install_root),
+            run_dir=run_dir,
+            kind=kind,
+            exe=exe,
+            build_launch_fn=build_launch,
+            prompt_fn=lambda folder: plan_prompt(folder),
+        )
+        spec = LaunchSpec(argv=list(plan.launch_argv), cwd=plan.cwd, session_id=plan.session_id, files=dict(plan.files))
+    else:
+        spec = build_launch(kind, "plan", str(folder), plan_prompt(str(folder)), exe, run_dir)
     env = dict(os.environ)
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
@@ -2415,7 +2453,19 @@ def run_monitor(args, log: Log) -> int:
             set_console_icon(folder)  # find_window_icon only knows bob-systray; still set title
         except Exception:
             pass
-    spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir)
+    maint = (os.environ.get("BOB_MAINT_MODE") or "").strip()
+    maint_prompt = (os.environ.get("BOB_MAINT_PROMPT") or "").strip()
+    if maint and maint_prompt:
+        mon_prompt = maint_prompt
+    elif maint:
+        try:
+            import maintenance_agent
+            mon_prompt = maintenance_agent.maintenance_prompt(str(folder))
+        except Exception:
+            mon_prompt = monitor_prompt(str(folder))
+    else:
+        mon_prompt = monitor_prompt(str(folder))
+    spec = build_launch(kind, "monitor", str(folder), mon_prompt, exe, run_dir)
     env = dict(os.environ)
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
@@ -2686,6 +2736,13 @@ def worker_cap_refusal(procs: list, my_pid: int) -> str:
         return "max %d workers (%d already running on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
     return ""
 
+
+# FR #2411: unhandled exception -> GitHub issue (dedupe + spool)
+try:
+    import crash_report
+    crash_report.install(product='bob-worker')
+except Exception:
+    pass
 
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(prog="bob-worker", description="Start ONE NEW agent (worker with IRC, plan, or Jeeves monitor) chosen by token availability.")

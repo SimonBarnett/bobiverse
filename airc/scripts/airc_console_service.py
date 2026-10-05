@@ -927,6 +927,13 @@ def kick_frozen_service_start_hooks() -> None:
                 info(f"WARN self-update: {exc}")
 
 
+# FR #2411: unhandled exception -> GitHub issue (dedupe + spool)
+try:
+    import crash_report
+    crash_report.install(product='airc')
+except Exception:
+    pass
+
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.selftest:

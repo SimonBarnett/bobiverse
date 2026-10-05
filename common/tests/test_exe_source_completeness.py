@@ -15,9 +15,22 @@ from repo_layout import REPO, resolve
 
 # Paths are the names consumed by Get-BobiverseRepoPath / the flat pack layout.
 EXE_INPUTS: dict[str, tuple[str, ...]] = {
+    "jeeves.exe": (
+        "jeeves/scripts/Build-Jeeves.ps1",
+        "common/scripts/jeeves_main.py",
+        "common/scripts/crash_report.py",
+        "common/scripts/maintenance_agent.py",
+    ),
+    "airc.exe": (
+        "airc/scripts/Build-Airc.ps1",
+        "airc/scripts/airc_console_service.py",
+        "common/scripts/crash_report.py",
+    ),
     "bob-worker.exe": (
         "bob/scripts/Build-BobWorker.ps1",
         "bob/scripts/bob_worker.py",
+        "common/scripts/crash_report.py",
+        "common/scripts/seat_launch.py",
         "third_party/bob-tray/assets/bob-systray.ico",
     ),
     "bob-ear.exe": (
@@ -33,6 +46,7 @@ EXE_INPUTS: dict[str, tuple[str, ...]] = {
     "bob-about.exe": (
         "bob/scripts/Build-BobDialogs.ps1",
         "third_party/bob-tray/dialogs/BobDialogsCommon.cs",
+        "bob/tray/dialogs/CrashHook.cs",
         "third_party/bob-tray/dialogs/BobAbout.cs",
         "third_party/bob-tray/dialogs/bob-dialogs.manifest",
         "third_party/bob-tray/assets/bob-systray.ico",
@@ -41,6 +55,7 @@ EXE_INPUTS: dict[str, tuple[str, ...]] = {
     "bob-status.exe": (
         "bob/scripts/Build-BobDialogs.ps1",
         "third_party/bob-tray/dialogs/BobDialogsCommon.cs",
+        "bob/tray/dialogs/CrashHook.cs",
         "third_party/bob-tray/dialogs/BobStatus.cs",
         "third_party/bob-tray/dialogs/bob-dialogs.manifest",
         "third_party/bob-tray/assets/bob-systray.ico",
@@ -49,6 +64,7 @@ EXE_INPUTS: dict[str, tuple[str, ...]] = {
     "bob-tray.exe": (
         "bob/scripts/Build-BobDialogs.ps1",
         "third_party/bob-tray/dialogs/BobDialogsCommon.cs",
+        "bob/tray/dialogs/CrashHook.cs",
         "third_party/bob-tray/dialogs/BobAbout.cs",
         "third_party/bob-tray/dialogs/BobStatus.cs",
         "third_party/bob-tray/dialogs/BobTray.cs",

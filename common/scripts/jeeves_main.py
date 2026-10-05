@@ -483,6 +483,17 @@ def run_heal(
             print(f"ERROR {e}", flush=True)
         for f in findings:
             print(f"FINDING {f}", flush=True)
+    # FR #2412: if heal still failing, start one rate-limited maintenance agent in <ai>\jeeves
+    try:
+        import maintenance_agent
+
+        maintenance_agent.maybe_after_heal(
+            int(exit_code),
+            dry_run=bool(dry_run),
+            as_json=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN maintenance_agent: {type(exc).__name__}", flush=True)
     return int(exit_code)
 
 
@@ -518,6 +529,13 @@ def parse_http_bind(raw: str) -> tuple[str, int]:
         return (host or "127.0.0.1"), int(port_s)
     return "127.0.0.1", int(text)
 
+
+# FR #2411: unhandled exception -> GitHub issue (dedupe + spool)
+try:
+    import crash_report
+    crash_report.install(product='jeeves')
+except Exception:
+    pass
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
