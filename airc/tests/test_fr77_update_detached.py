@@ -394,7 +394,11 @@ def test_loop_guard_and_pending_for_airc_product(tmp_path):
         timeout=120,
     )
     log = (state / "update.log").read_text(encoding="utf-8")
-    assert p.returncode == 0 and "blocked-loop-guard" in log
+    # FR #2563: -ForceCheck clears MaxAttempts (operator escape); without it, blocked-loop-guard.
+    assert p.returncode == 0, log
+    assert "loop-guard-bypassed" in log, log
+    assert "would-update" in log
+    assert "blocked-loop-guard" not in log
 
     from datetime import datetime, timezone
 

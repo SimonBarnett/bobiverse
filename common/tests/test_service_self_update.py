@@ -140,6 +140,37 @@ def test_loop_guard_blocks_a_failed_tag(env):
 
 
 @win
+def test_force_check_bypasses_loop_guard(env):
+    """FR #2563: -ForceCheck clears MaxAttempts block so operators can escape a stuck tag."""
+    env.state.mkdir()
+    (env.state / "state.json").write_text(json.dumps({"failures": {"v0.1.17": 2}, "lastResult": "rolled-back",
+                                                       "lastTag": "v0.1.17", "lastAttemptUtc": "2020-01-01T00:00:00Z"}))
+    p, log = env("-DryRun", "-ForceCheck", release=_release("0.1.17"))
+    assert p.returncode == 0, log
+    assert "loop-guard-bypassed" in log, log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+    assert "blocked-loop-guard" not in log
+    st = json.loads((env.state / "state.json").read_text(encoding="utf-8-sig"))
+    assert "v0.1.17" not in (st.get("failures") or {})
+
+
+@win
+def test_backup_failed_result_does_not_block_next_check(env):
+    """FR #2563: backup-only Apply failures use NoCount — failures stay 0 so next Check still schedules."""
+    env.state.mkdir()
+    (env.state / "state.json").write_text(json.dumps({
+        "failures": {},
+        "lastResult": "backup-failed",
+        "lastTag": "v0.1.17",
+        "lastAttemptUtc": "2020-01-01T00:00:00Z",
+    }))
+    p, log = env("-DryRun", release=_release("0.1.17"))
+    assert p.returncode == 0, log
+    assert "blocked-loop-guard" not in log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+
+
+@win
 def test_pending_update_blocks_a_second_helper(env):
     from datetime import datetime, timezone
     env.state.mkdir()
@@ -237,15 +268,38 @@ def test_updater_backs_up_and_rolls_back():
     assert "Install-" in t and "-NoStart" in t        # rollback re-registers the service from the restored tree
 
 
+def test_fr2563_backup_excludes_volatile_retries_and_soft_fails():
+    """FR #2563: volatile excludes, retry, disk-low warn, NoCount backup-fail, Ensure-ServiceRunning, ForceCheck escape."""
+    t = _t("Update-BobiverseService.ps1")
+    backup = t[t.index("function Backup-Install"):t.index("function Remove-OldBackups")]
+    assert ".pytest_cache" in backup
+    assert "peers.json" in backup
+    assert "backup-retry" in backup
+    assert "backup-warn disk-low" in backup
+    assert "backup-robocopy-errors" in backup
+    assert "NoCount" in t
+    assert "backup-failed" in t
+    assert "function Ensure-ServiceRunning" in t
+    assert "loop-guard-bypassed" in t
+    assert "-ForceCheck clears" in t or "ForceCheck clears" in t
+    assert "backup of install tree failed" in t
+    assert "Set-Failure -Tag $tag -Result 'backup-failed' -NoCount" in t or (
+        "backup-failed" in t and "-NoCount" in t
+    )
+    assert "Ensure-ServiceRunning -Why" in t
+
+
 def test_updater_never_kills_seats_or_touches_ergo_or_prints_secrets():
     t = _t("Update-BobiverseService.ps1")
     t = re.sub(r"<#.*?#>", "", t, flags=re.S)
     code = "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("#"))
     assert not re.search(r"Stop-Process|taskkill|\.Kill\(\)|Get-Process", code, re.I)
     assert not re.search(r"grok|cursor", code.replace(".grok\\skills", ""), re.I)   # only the skills folder is named
-    assert not re.search(r"ircd\.yaml|\\ergo\\|Join-Path[^\n]*'ergo'|BobIrcd", code.replace("/XD ergo logs", ""), re.I)
+    # FR #2563: /XD dirs are built from an array that still includes ergo (never touch Ergo).
+    code_no_xd = code.replace("'ergo'", "").replace('"ergo"', "")
+    assert not re.search(r"ircd\.yaml|\\ergo\\|Join-Path[^\n]*'ergo'|BobIrcd", code_no_xd, re.I)
     assert not re.search(r"password|secret|token|oper\.cred", code.replace("-token", ""), re.I)
-    assert "/XD ergo" in t                                  # backup skips the pack's ergo payload
+    assert re.search(r"\$xd\s*=\s*@\([^)]*'ergo'", t) or "'ergo'" in t[t.index("function Backup-Install"):t.index("function Remove-OldBackups")]
     assert "exit 0" in t
 
 
@@ -269,7 +323,10 @@ def test_start_wrappers_run_the_updater_before_launch(wrapper, product, svc):
     assert f"-Product {product}" in t and f"-ServiceName {svc}" in t
     assert "catch { Write-Host \"WARN self-update" in t        # a throwing updater can never block the start
     launch = {"Start-Bob.ps1": "irc_agent.py", "Start-Jeeves.ps1": "irc_agent.py", "Start-AircConsole.ps1": "airc_console_service.py"}[wrapper]
-    assert t.index("Update-BobiverseService.ps1") < t.index(launch)
+    # Compare executable body only: synopsis/comments may name the launch script before the updater call.
+    body = re.sub(r"<#.*?#>", "", t, flags=re.S)
+    body = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    assert body.index("Update-BobiverseService.ps1") < body.index(launch)
     assert "Check-BobiverseUpdate.ps1" not in t               # the synchronous in-service msiexec path is gone
 
 

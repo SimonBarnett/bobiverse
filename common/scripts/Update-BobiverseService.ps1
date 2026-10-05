@@ -20,6 +20,9 @@
     the service from the restored tree, start the previous version, and record the failure.
   Loop guard: <StateDir>\state.json. A tag that failed MaxAttempts times is never retried; attempts are
   spaced by CooldownMinutes; a pending update blocks a second helper for 40 minutes.
+  FR #2563: backup-only Apply failures (robocopy >=8) record lastResult=backup-failed without burning
+  MaxAttempts; -ForceCheck clears a blocked tag so operators can escape a stuck loop-guard. Backup excludes
+  volatile dirs/files (.pytest_cache, peers.json locks), retries once, and warns when free disk is low.
   Log: <StateDir>\update.log - one line per attempt/outcome. Secrets are never read or printed.
 .NOTES
   PowerShell 5.1 only. Does not touch the IRC server (Ergo) or its files, never stops or kills any process
@@ -212,16 +215,40 @@ function Test-IsAdmin {
 }
 
 function Set-Failure {
-    param([string]$Tag, [string]$Result)
+    param(
+        [string]$Tag,
+        [string]$Result,
+        [switch]$NoCount   # FR #2563: record outcome without burning MaxAttempts (backup-only fails)
+    )
     $st = Get-State
-    $n = 0
-    if ($st.failures.ContainsKey($Tag)) { $n = [int]$st.failures[$Tag] }
-    $st.failures[$Tag] = $n + 1
+    if (-not $NoCount) {
+        $n = 0
+        if ($st.failures.ContainsKey($Tag)) { $n = [int]$st.failures[$Tag] }
+        $st.failures[$Tag] = $n + 1
+    }
     $st.pending = $null
     $st.lastResult = $Result
     $st.lastTag = $Tag
     $st.lastAttemptUtc = (Get-Date).ToUniversalTime().ToString('o')
     Save-State $st
+}
+
+function Ensure-ServiceRunning {
+    # FR #2563: after pre-msiexec Apply abort (esp. backup fail) leave the service Running.
+    param([string]$Why = 'apply-abort')
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $svc) { Write-UpdLog "ensure-running-skip missing=$ServiceName why=$Why"; return }
+    if ($svc.Status -eq 'Running') { Write-UpdLog "ensure-running already=$ServiceName why=$Why"; return }
+    try {
+        Start-Service -Name $ServiceName -ErrorAction Stop
+        if (Wait-ServiceState -Name $ServiceName -Status 'Running' -Seconds 60) {
+            Write-UpdLog "ensure-running ok=$ServiceName why=$Why"
+        } else {
+            Write-UpdLog "ensure-running-timeout $ServiceName why=$Why"
+        }
+    } catch {
+        Write-UpdLog "ensure-running-failed $ServiceName why=$Why $($_.Exception.GetType().Name)"
+    }
 }
 
 function Start-DetachedApply {
@@ -281,17 +308,63 @@ function Get-ExternalHomes {
 }
 
 function Backup-Install {
+    # FR #2563: robocopy 0-7 = success; on >=8 log failing paths, retry once after service settle,
+    # exclude volatile dirs/files so locked peers.json / .pytest_cache cannot burn MaxAttempts.
     param([string]$OldVersion)
+    try {
+        $rootItem = Get-Item -LiteralPath $InstallRoot -ErrorAction Stop
+        $driveName = $rootItem.PSDrive.Name
+        if (-not $driveName -and $InstallRoot -match '^[A-Za-z]:') { $driveName = $InstallRoot.Substring(0, 1) }
+        if ($driveName) {
+            $freeGB = [math]::Round((Get-PSDrive -Name $driveName).Free / 1GB, 2)
+            if ($freeGB -lt 2) {
+                Write-UpdLog "backup-warn disk-low freeGB=$freeGB (want >=2 before backup)"
+            }
+        }
+    } catch { }
+
     $dest = Join-Path $StateDir ('backup\{0}-{1}' -f $OldVersion, (Get-Date).ToString('yyyyMMddHHmmss'))
     $tree = Join-Path $dest 'tree'
     New-Item -ItemType Directory -Force -Path $tree | Out-Null
-    & robocopy.exe $InstallRoot $tree /E /XD ergo logs .git __pycache__ update /XF *.msi /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "backup of install tree failed (robocopy $LASTEXITCODE)" }
+    # Volatile / locked under live installs: test caches, update staging, worker run copies, peers.json.
+    $xd = @('ergo', 'logs', '.git', '__pycache__', 'update', '.pytest_cache', '.mypy_cache', '.ruff_cache', 'node_modules')
+    $xf = @('*.msi', 'peers.json', '*.lock')
+    $roboBase = @($InstallRoot, $tree, '/E')
+    foreach ($d in $xd) { $roboBase += @('/XD', $d) }
+    foreach ($f in $xf) { $roboBase += @('/XF', $f) }
+
+    $rc = 8
+    $maxTries = 2
+    for ($try = 1; $try -le $maxTries; $try++) {
+        if ($try -gt 1) {
+            Start-Sleep -Seconds 3
+            Write-UpdLog "backup-retry attempt=$try after robocopy $rc"
+        }
+        $quietArgs = $roboBase + @('/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
+        & robocopy.exe @quietArgs | Out-Null
+        $rc = [int]$LASTEXITCODE
+        if ($rc -lt 8) { break }
+        # Diagnostic pass (/L = list-only): surface ERROR lines without rewriting the tree.
+        $diagArgs = $roboBase + @('/L', '/R:0', '/W:0', '/NJH', '/NJS', '/NP')
+        $diagLines = @(& robocopy.exe @diagArgs 2>&1 | ForEach-Object { "$_" } |
+                Where-Object { $_ -match '(?i)ERROR|Access is denied|being used by another' } |
+                Select-Object -First 12)
+        if ($diagLines.Count -gt 0) {
+            Write-UpdLog ("backup-robocopy-errors exit={0} paths={1}" -f $rc, (($diagLines -join ' | ').Substring(0, [Math]::Min(400, (($diagLines -join ' | ').Length)))))
+        } else {
+            Write-UpdLog "backup-robocopy-errors exit=$rc paths=(none listed; check locks under InstallRoot)"
+        }
+    }
+    if ($rc -ge 8) { throw "backup of install tree failed (robocopy $rc)" }
+
     $i = 0
     foreach ($h in @(Get-ExternalHomes)) {
         $i++
         $d = Join-Path $dest ('external\{0}-{1}' -f $i, (Split-Path -Leaf $h))
-        & robocopy.exe $h $d /E /XD logs __pycache__ /MAX:52428800 /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        & robocopy.exe $h $d /E /XD logs __pycache__ .pytest_cache /XF peers.json *.lock /MAX:52428800 /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) {
+            Write-UpdLog "backup-external-warn home=$h robocopy=$LASTEXITCODE (continuing; tree backup ok)"
+        }
     }
     # the backup holds credentials: SYSTEM + Administrators only
     try { & icacls.exe $dest /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' 2>&1 | Out-Null } catch { }
@@ -661,7 +734,8 @@ function Invoke-Apply {
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         Remove-OldBackups
     } catch {
-        Write-UpdLog "apply-failed $($_.Exception.GetType().Name): $($_.Exception.Message)"
+        $failMsg = [string]$_.Exception.Message
+        Write-UpdLog "apply-failed $($_.Exception.GetType().Name): $failMsg"
         # FR #1432: if msiexec registered the new product but verify failed, uninstall ARP before
         # restoring files so the next start is not stuck in maintenance-mode /i.
         try {
@@ -671,11 +745,16 @@ function Invoke-Apply {
                 [void](Invoke-BobiverseArpUninstall -ProductCode $arpFail.ProductCode -Why 'arp-desync-uninstall')
             }
         } catch { Write-UpdLog "arp-desync-uninstall-warn $($_.Exception.Message)" }
+        # FR #2563: backup-only fails must not burn MaxAttempts; always leave the service Running.
+        $isBackupFail = $failMsg -match '(?i)backup of install tree failed'
         if ($backup) { Invoke-Rollback -BackupDir $backup -AppParameters $appParams -Why 'install-failed' }
-        elseif ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -and (Get-Service -Name $ServiceName).Status -ne 'Running') {
-            try { Start-Service -Name $ServiceName } catch { }
+        else { Ensure-ServiceRunning -Why $(if ($isBackupFail) { 'backup-failed' } else { 'apply-failed-pre-msi' }) }
+        if ($isBackupFail) {
+            Set-Failure -Tag $tag -Result 'backup-failed' -NoCount
+            Write-UpdLog "backup-failed-no-loop-count tag=$tag (next Check may retry; -ForceCheck clears MaxAttempts block)"
+        } else {
+            Set-Failure -Tag $tag -Result 'rolled-back'
         }
-        Set-Failure -Tag $tag -Result 'rolled-back'
     } finally {
         if ($msiHeld) { try { $msiMutex.ReleaseMutex() } catch { } }
         try { $mutex.ReleaseMutex() } catch { }
@@ -722,7 +801,8 @@ function Invoke-Check {
 
     # A crash-looping service restarts every few seconds: do not hammer the unauthenticated GitHub API
     # (60 requests/hour/IP) - at most one live lookup per 2 minutes per product.
-    # FR #77: IRC UPDATE uses -ForceCheck to bypass the throttle (still respects pending/loop-guard).
+    # FR #77: IRC UPDATE uses -ForceCheck to bypass the throttle.
+    # FR #2563: -ForceCheck also clears a MaxAttempts loop-guard for the same tag (operator escape).
     if (-not $ReleaseJson -and -not $ForceCheck) {
         $lc = ConvertTo-UtcDate $st.lastCheckUtc
         if ($lc -and (((Get-Date).ToUniversalTime() - $lc).TotalSeconds -lt 120)) { Write-UpdLog 'check result=throttled (checked <2 min ago)'; return }
@@ -774,8 +854,16 @@ function Invoke-Check {
     $fails = 0
     if ($st.failures.ContainsKey($tag)) { $fails = [int]$st.failures[$tag] }
     if ($fails -ge $MaxAttempts) {
-        Write-UpdLog "check result=blocked-loop-guard tag=$tag failures=$fails (a newer release is needed)"
-        return
+        # FR #2563: -ForceCheck is the operator escape from a stuck MaxAttempts block.
+        if ($ForceCheck) {
+            Write-UpdLog "check result=loop-guard-bypassed ForceCheck tag=$tag failures=$fails"
+            $st.failures.Remove($tag)
+            Save-State $st
+            $fails = 0
+        } else {
+            Write-UpdLog "check result=blocked-loop-guard tag=$tag failures=$fails (a newer release is needed; -ForceCheck clears)"
+            return
+        }
     }
     $last = ConvertTo-UtcDate $st.lastAttemptUtc
     if ($last -and $st.lastTag -eq $tag -and (((Get-Date).ToUniversalTime() - $last).TotalMinutes -lt $CooldownMinutes)) {
