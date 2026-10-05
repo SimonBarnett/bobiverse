@@ -121,6 +121,10 @@ A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by 
 The MSI installs `worker\bob-worker.exe`, `worker\AGENTS.md`, `worker\.grok\skills\*`, `plan\...`; the self-updater and `Sync-BobiverseFromRepo.ps1` refresh them. Running seats use the
 per-user run copy, so replacing the installed exe never kills or locks a seat; an uninstall leaves running seats alone (they end when their IRC link or window ends). Tray bin refresh **defers** delete of a hashed run-copy while exclusive-open shows it locked by a live seat (FR #1643 / #1678) - that defer is correct, not a stuck cleanup bug.
 
+## Hard cap recycle / seat roots (FR #2556 / t815u)
+
+A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **bootloader + same-named child = ONE seat**. Cap *counting* already uses seat roots (`other_live_workers` / tray `ParentProcessId` filter). When reclaiming over the hard max, **never** `Sort-Object ProcessId | Select -Skip N | Stop-Process` on a flat PID list — that destroys whole seats (MarchHare killed seat 38244/40460 after FR #2554 hotpatch). Use `worker_seat_roots` / `worker_seat_tree_pids` / `excess_worker_seat_roots` in `bob_worker.py`, and tray `Stop-BobWorkerSeatTrees` (root + children only).
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -135,6 +139,7 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 | `relay: injected` in `worker.log` but TUI waits for Enter | Live `bob-worker-*.exe` is **stale** (pre-FR #1601 submit gap / double Enter). Press Enter once to unblock this line; durable fix = rebuild exe + start a **new** tray Agent seat (harvest #1605). |
 | Agent restarted repeatedly | `HUNG` lines in `worker.log`; after 3 restarts in 30 min the seat ends (exit 5). |
 | Seat died mid-job; need who killed it | Look for external-kill / create-parent log from FR #1643. Parent after `wait()` is empty by design - spawn-time cache is the evidence (harvest #1678). |
+| Second seat dies after hotpatch recycle (no `shutting down` in worker.log) | Flat PID Skip-N kill (FR #2556). Reclaim with `excess_worker_seat_roots` + `Stop-BobWorkerSeatTrees`, never `Select -Skip N | Stop-Process`. |
 | Wrong agent chosen | selection is automatic; fix the fuel readings, do not edit the exe. |
 
 File every problem you find: CAST IRON rule at the top.
