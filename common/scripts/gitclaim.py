@@ -3099,6 +3099,32 @@ def live_seat_nicks(home: Path) -> set[str]:
     return out
 
 
+
+def free_seat_nicks(home: Path, live: set[str] | None = None) -> set[str]:
+    """FR #2487: live seats that are idle/free (no digest working_on; not in accepted)."""
+    seats = set(live) if live is not None else live_seat_nicks(home)
+    busy: set[str] = set()
+    try:
+        doc = load_queue(home)
+        for r in doc.get("accepted") or []:
+            n = canonical_worker_nick(str(r.get("nick") or "")) or str(r.get("nick") or "").strip()
+            if n:
+                busy.add(n.lower())
+    except Exception:
+        pass
+    out: set[str] = set()
+    for n in seats:
+        n_c = canonical_worker_nick(n) or (n or "").strip()
+        if not n_c:
+            continue
+        if n_c.lower() in busy:
+            continue
+        if worker_working_on(home, n_c):
+            continue
+        out.add(n_c)
+    return out
+
+
 def _canon_seat_nick(raw: str) -> str:
     v = str(raw or "").strip()
     if not v or not bobreport.parse_seat_nick(v):
@@ -3253,17 +3279,22 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
     return out
 
 
-def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None) -> bool:
+def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None, *, free: set[str] | None = None) -> bool:
     """Do not hand an MRB/UAT to the author seat (or sibling on same machine) while another machine is live.
 
     FR #39 / #227 / #265: MRB and UAT must go to a different machine/seat than the
     FR implementer and/or MRB author when at least one other machine has a live seat.
     """
-    return review_blocked_for_author(row, nick, live, ledger=ledger)
+    return review_blocked_for_author(row, nick, live, ledger=ledger, free=free)
 
 
 def review_blocked_for_author(
-    row: dict, nick: str, live: set[str], ledger: dict | None = None
+    row: dict,
+    nick: str,
+    live: set[str],
+    ledger: dict | None = None,
+    *,
+    free: set[str] | None = None,
 ) -> bool:
     """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407).
 
@@ -3274,6 +3305,11 @@ def review_blocked_for_author(
     repo-level UAT when ``ledger`` is provided, not themselves FR-implementer blocked
     (``_ledger_blocks``). Giveup / fellow-implementer seats must not strand siblings
     of the stamped author after self-UAT GIVEUP loops.
+
+    FR #2487: when ``free`` is provided, sibling viability requires the other-machine
+    seat to be idle/free right now (in ``free``). Busy seats on another machine must
+    not strand cross-seat MRB on the author machine. When ``free`` is None, all
+    ``live`` seats are treated as free (unit-test / legacy default).
     """
     if _canon_task(row) not in ("MRB", "UAT"):
         return False
@@ -3317,6 +3353,12 @@ def review_blocked_for_author(
         if author_p and me_p:
             author_mid = bobreport.fold_machine_id(author_p[0])
             if author_mid == me_mid:
+                free_set = live if free is None else free
+                free_l = {
+                    (canonical_worker_nick(x) or x or "").strip().lower()
+                    for x in free_set
+                    if str(x or "").strip()
+                }
                 for n in live:
                     n_c = (canonical_worker_nick(n) or n or "").strip()
                     if not n_c or _seat_gave_up_uat(n_c):
@@ -3327,6 +3369,9 @@ def review_blocked_for_author(
                     # FR #2339: pinned-out other-machine seats are not viable — do not
                     # strand the author-machine sibling when require_machine forbids them.
                     if row_blocked_for_machine(row, n_c):
+                        continue
+                    # FR #2487: busy other-machine seats are not viable for sibling block.
+                    if n_c.lower() not in free_l:
                         continue
                     if ledger is not None and repo_uat:
                         other_why = _ledger_blocks(ledger, row, n_c)
@@ -3375,6 +3420,7 @@ def offer_focus_top(
 
     now_f = _time.time() if now is None else float(now)
     live = live_seat_nicks(home)
+    free = free_seat_nicks(home, live)
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
@@ -3494,7 +3540,7 @@ def offer_focus_top(
                         purged = True
                         return None
                 cand_eff = enrich_uat_author_fields(doc, cand)
-                if review_blocked_for_author(cand_eff, me, live, ledger=ledger):
+                if review_blocked_for_author(cand_eff, me, live, ledger=ledger, free=free):
                     return None
                 # FR #1093: stamp WP0/issue pins before the machine gate (stale rows).
                 _stamp_require_machine(cand_eff)
@@ -4192,6 +4238,7 @@ def assign_row(
     task_u = (task or "").upper()
     num = str(ident or "").strip().lstrip("#")
     live = live_seat_nicks(home)
+    free = free_seat_nicks(home, live)
     try:
         with _lock(home):
             try:
@@ -4242,7 +4289,7 @@ def assign_row(
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real open pull URL"
-            if review_blocked_for_author(cand, me, live, ledger=ledger_load(home)):
+            if review_blocked_for_author(cand, me, live, ledger=ledger_load(home), free=free):
                 return "refused", f"{me} authored/implemented this (no self-{task_u})"
             to = str(cand.get("offered_to") or "").strip()
             if to and to.lower() != me.lower():
