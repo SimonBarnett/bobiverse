@@ -148,6 +148,33 @@ def test_flush_spool_sends_and_deletes(tmp_path, monkeypatch):
     assert posts and posts[0][1] == "abcd1234abcd1234"
 
 
+def test_dedupe_comment_fail_spools(tmp_path, monkeypatch):
+    """MRB #2416: when an open twin exists but gh comment fails, spool — never drop."""
+    monkeypatch.setattr(crash_report, "_gh_search_open_sig", lambda repo, sig: 42)
+    monkeypatch.setattr(crash_report, "_gh_comment", lambda repo, number, body: False)
+
+    try:
+        raise RuntimeError("password=must-redact twin")
+    except RuntimeError as exc:
+        result = crash_report.report_exception(
+            "bob-ear",
+            type(exc),
+            exc,
+            exc.__traceback__,
+            filer_post=lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not create twin")),
+        )
+    assert result.get("ok") is False
+    assert result.get("deduped") is True
+    assert result.get("number") == 42
+    path = Path(result["spooled"])
+    assert path.is_file()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["error"] == "dedupe_comment_failed"
+    assert payload["dedupe_number"] == 42
+    assert "must-redact" not in payload["body"]
+    assert "crash-sig:" in payload["body"]
+
+
 def test_install_hooks_idempotent(monkeypatch):
     monkeypatch.setattr(crash_report, "flush_spool", lambda **kw: {"sent": 0, "kept": 0, "dropped": 0})
     prev = sys.excepthook
