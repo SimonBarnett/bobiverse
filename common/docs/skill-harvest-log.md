@@ -1,5 +1,14 @@
 # Skill harvest log
 
+## 2026-10-05 — MRB #2386 ack-miss nothing-queued clear
+
+| Field | Value |
+|-------|-------|
+| Lesson | AssignAckMiss.note_inject must parse FROM body before is_nothing_queued (full FROM lines never match); clear on idle so a withdrawn assign does not remind/recycle. |
+| Evidence | Hostile MRB #2386 on PR #2386; tip left elif is_nothing_queued: pass |
+| Refs | SimonBarnett/bobiverse#2386 SimonBarnett/bobiverse#2383 |
+
+
 ## 2026-10-05 - Merged fix(mrb-N) must not re-offer as MRB (MRB #2376 / FR #2375)
 
 | Lesson | Fix |
