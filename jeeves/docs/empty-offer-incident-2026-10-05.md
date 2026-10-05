@@ -1,6 +1,6 @@
 # Empty-offer starvation incident — 2026-10-05 (FR #2453)
 
-Dated operator note for the morning **pins-only / nothing-queued** event. Playbook: [`empty-offer-playbook.md`](empty-offer-playbook.md) (FR #2448). Product heal: [#2446](https://github.com/SimonBarnett/bobiverse/issues/2446) / [PR #2450](https://github.com/SimonBarnett/bobiverse/pull/2450).
+Dated operator note for the morning **pins-only / nothing-queued** event. Playbook: [`empty-offer-playbook.md`](empty-offer-playbook.md) (FR #2448). Operator heal APIs: [`empty-offer-operator.md`](empty-offer-operator.md). Product heal: [#2446](https://github.com/SimonBarnett/bobiverse/issues/2446) / [PR #2450](https://github.com/SimonBarnett/bobiverse/pull/2450).
 
 ## Timeline (BST)
 
