@@ -923,8 +923,13 @@ class ShellJobRunner:
         return key
 
     def _emit(self, nick: str, line: str) -> None:
+        # FR #2551: on_reply may raise ConnectionError after IRC drop; swallow so the
+        # worker thread does not die with an unhandled exception (crash hook).
         if self.on_reply:
-            self.on_reply(nick, line)
+            try:
+                self.on_reply(nick, line)
+            except ConnectionError:
+                return
 
     def close_nick(self, nick: str) -> None:
         # Oneshoot threads are daemon; nothing durable to kill beyond tracking.
