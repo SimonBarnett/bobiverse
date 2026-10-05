@@ -131,3 +131,36 @@ def test_stale_accepted_by_only_row_is_dropped(tmp_path, monkeypatch):
 def test_stall_test_file_has_no_bom():
     path = Path(__file__)
     assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_mrb2373_stale_busy_preserves_other_seat_acc(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch, work="bobiverse FR #2340")
+    now = time.time()
+    old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 8 * 3600))
+    other = "win-mpre8vi4u6u-1"
+    _queue(
+        tmp_path,
+        [
+            {"repo": "SimonBarnett/bobiverse", "task": "FR", "id": "#2340", "nick": NICK,
+             "accepted_ts": old, "ts": old},
+            {"repo": "SimonBarnett/bobiverse", "task": "FR", "id": "#8", "nick": other,
+             "accepted_ts": old, "ts": old},
+        ],
+    )
+    assert _gate(tmp_path, now) == "ok"
+    acc = gitclaim.load_queue(tmp_path)["accepted"]
+    assert len(acc) == 1
+    assert acc[0]["nick"] == other
+    done = gitclaim.load_queue(tmp_path).get("done") or []
+    assert any(str(r.get("result") or "") == "STALE_BUSY" and str(r.get("id")) == "#2340" for r in done)
+
+
+def test_mrb2373_missing_accepted_ts_treated_as_stale(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch, work="bobiverse FR #2340")
+    now = time.time()
+    _queue(
+        tmp_path,
+        [{"repo": "SimonBarnett/bobiverse", "task": "FR", "id": "#2340", "nick": NICK}],
+    )
+    assert _gate(tmp_path, now) == "ok"
+    assert gitclaim.load_queue(tmp_path)["accepted"] == []
