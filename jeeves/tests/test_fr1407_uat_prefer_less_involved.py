@@ -1,8 +1,9 @@
-"""FR #1407: repo UAT must not strand on self-UAT GIVEUP loops.
+"""FR #1407 / FR #2939: repo UAT self-UAT prefilter (no refuse-then-escape).
 
-When every live seat implemented something (escape hatch), prefer the seat with
-fewer cycle FR touches. Sibling review_blocked must ignore giveup seats and
-other-machine seats that are themselves implementer-blocked.
+Historically #1407 preferred the less-involved seat when every live seat had FR
+touches (escape hatch). FR #2939 aligns the chair with the worker self-UAT skill:
+FR *or* MRB cycle touch blocks offer, and all-blocked escalates instead of lifting
+a seat that will GIVEUP.
 """
 from __future__ import annotations
 
@@ -65,52 +66,11 @@ def _uat_row(**extra):
     return row
 
 
-def test_escape_prefers_fewer_fr_touches(tmp_path, monkeypatch):
-    """Heavy MRB-fix author stays blocked while a lighter implementer may escape."""
+def test_all_fr_touched_seats_stay_blocked_no_escape(tmp_path, monkeypatch):
+    """FR #2939: former #1407 escape must not lift any self-UAT seat."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest_two_machines(tmp_path)
     uat = _uat_row()
-
-    # Heavy author (marchhare-41928): three recent MRB-fix PRs.
-    for pr in ("#1393", "#1384", "#1328"):
-        gitclaim.ledger_touch(
-            tmp_path, "marchhare-41928", REPO, "FR",
-            [f"simonbarnett/bobiverse{pr}", "simonbarnett/bobiverse#0"],
-        )
-    # Lighter author (ionos-15656): one older PR only.
-    gitclaim.ledger_touch(
-        tmp_path, "win-mpre8vi4u6u-15656", REPO, "FR",
-        ["simonbarnett/bobiverse#1143", "simonbarnett/bobiverse#0"],
-    )
-    # Exact stamped author also implemented.
-    gitclaim.ledger_touch(
-        tmp_path, "win-mpre8vi4u6u-20596", REPO, "FR",
-        ["simonbarnett/bobiverse#1010", "simonbarnett/bobiverse#0"],
-    )
-    # 35600 also heavy so escape still considers "all active blocked".
-    for pr in ("#1393", "#1384"):
-        gitclaim.ledger_touch(
-            tmp_path, "marchhare-35600", REPO, "FR",
-            [f"simonbarnett/bobiverse{pr}", "simonbarnett/bobiverse#0"],
-        )
-
-    led = gitclaim.ledger_load(tmp_path)
-    live = gitclaim.live_seat_nicks(tmp_path)
-
-    assert gitclaim._ledger_blocks(led, uat, "marchhare-41928")
-    assert gitclaim._ledger_blocks(led, uat, "win-mpre8vi4u6u-15656")
-
-    # Prefer less-involved: 15656 may escape; 41928 stays blocked.
-    assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-15656", live) == ""
-    why_heavy = gitclaim.ledger_blocks(led, uat, "marchhare-41928", live)
-    assert why_heavy and "self-UAT" in why_heavy
-
-
-def test_sibling_ignores_giveup_and_implementer_others(tmp_path, monkeypatch):
-    """After marchhare self-UAT GIVEUP, ionos sibling of author stamp may take UAT."""
-    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
-    _digest_two_machines(tmp_path)
-    uat = _uat_row(giveup_seats="marchhare-41928,marchhare-35600")
 
     for nick, prs in (
         ("marchhare-41928", ("#1393", "#1384", "#1328")),
@@ -126,22 +86,43 @@ def test_sibling_ignores_giveup_and_implementer_others(tmp_path, monkeypatch):
 
     led = gitclaim.ledger_load(tmp_path)
     live = gitclaim.live_seat_nicks(tmp_path)
+    assert gitclaim.repo_uat_no_eligible_live_seat(led, uat, live)
+    for nick in ("marchhare-41928", "win-mpre8vi4u6u-15656"):
+        why = gitclaim.ledger_blocks(led, uat, nick, live)
+        assert why and gitclaim.ledger_why_is_self_uat(why)
 
-    # Exact author still blocked.
+
+def test_sibling_ignores_giveup_and_implementer_others(tmp_path, monkeypatch):
+    """Sibling without cycle FR/MRB touches may take UAT when others gave up / are blocked."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _digest_two_machines(tmp_path)
+    uat = _uat_row(giveup_seats="marchhare-41928,marchhare-35600")
+
+    for nick, prs in (
+        ("marchhare-41928", ("#1393", "#1384", "#1328")),
+        ("marchhare-35600", ("#1393", "#1384")),
+        ("win-mpre8vi4u6u-20596", ("#1010",)),
+    ):
+        for pr in prs:
+            gitclaim.ledger_touch(
+                tmp_path, nick, REPO, "FR",
+                [f"simonbarnett/bobiverse{pr}", "simonbarnett/bobiverse#0"],
+            )
+    # 15656 has no FR/MRB touch — eligible fresh seat on author machine.
+
+    led = gitclaim.ledger_load(tmp_path)
+    live = gitclaim.live_seat_nicks(tmp_path)
+
     assert gitclaim.review_blocked_for_author(uat, "win-mpre8vi4u6u-20596", live, ledger=led)
-
-    # Sibling used to stay blocked while giveup marchhare seats remained "live".
     assert not gitclaim.review_blocked_for_author(
         uat, "win-mpre8vi4u6u-15656", live, ledger=led
     )
-
-    # And ledger lets the lighter ionos seat through.
     assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-15656", live) == ""
     assert gitclaim.row_gave_up_by(uat, "marchhare-41928")
 
 
-def test_equal_fr_counts_still_escape_both(tmp_path, monkeypatch):
-    """Equal involvement → classic escape hatch (anyone may)."""
+def test_equal_fr_counts_stay_blocked(tmp_path, monkeypatch):
+    """FR #2939: equal involvement still self-UAT — escalate, do not escape."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest_two_machines(tmp_path)
     uat = _uat_row()
@@ -152,5 +133,6 @@ def test_equal_fr_counts_still_escape_both(tmp_path, monkeypatch):
         )
     led = gitclaim.ledger_load(tmp_path)
     live = gitclaim.live_seat_nicks(tmp_path)
-    assert gitclaim.ledger_blocks(led, uat, "marchhare-41928", live) == ""
-    assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-15656", live) == ""
+    assert gitclaim.ledger_blocks(led, uat, "marchhare-41928", live)
+    assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-15656", live)
+    assert gitclaim.repo_uat_no_eligible_live_seat(led, uat, live)

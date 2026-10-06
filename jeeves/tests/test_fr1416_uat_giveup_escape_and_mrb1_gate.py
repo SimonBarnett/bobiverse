@@ -1,7 +1,8 @@
-"""FR #1416: UAT must not strand when live seats are ledger-giveup + one implementer.
+"""FR #1416 / FR #2939: needs-mrb1 must not block repo UAT; self-UAT is prefiltered.
 
-Also: needs-mrb1 issues must not hold the repo UAT gate (circular strand when the
-monitor files a needs-mrb1 FR about stranded UAT).
+#1416 originally added an escape so the sole remaining implementer could take UAT after
+others GIVEUP'd. FR #2939 removes that escape (worker skill refuses self-UAT) and
+escalates instead. needs-mrb1 still must not hold the repo UAT gate.
 """
 from __future__ import annotations
 
@@ -80,21 +81,15 @@ def test_needs_mrb1_does_not_block_repo_uat_gate():
     ) is False
 
 
-def test_ledger_giveup_seats_excluded_from_escape_pool(tmp_path, monkeypatch):
-    """After resync, giveup_seats is empty but ledger still has GIVEUPs.
-
-    Giveup seats have 0 FR touches and must not steal the less-involved pick
-    from the sole implementer who should escape.
-    """
+def test_ledger_giveup_and_sole_implementer_stay_blocked(tmp_path, monkeypatch):
+    """FR #2939: after others GIVEUP, sole implementer stays self-UAT blocked (no escape)."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest(tmp_path)
-    uat = _uat_row()  # no giveup_seats — mimics fresh resync row
+    uat = _uat_row()
 
-    # Three seats GIVEUP'd UAT (durable ledger only).
     for nick in ("marchhare-41928", "marchhare-35600", "win-mpre8vi4u6u-15656"):
         gitclaim.ledger_giveup(tmp_path, nick, REPO, "UAT", "#0")
 
-    # Sole remaining seat is the implementer.
     gitclaim.ledger_touch(
         tmp_path, "win-mpre8vi4u6u-20596", REPO, "FR",
         ["simonbarnett/bobiverse#1010", "simonbarnett/bobiverse#0"],
@@ -106,26 +101,24 @@ def test_ledger_giveup_seats_excluded_from_escape_pool(tmp_path, monkeypatch):
     assert "gave up" in gitclaim._ledger_blocks(led, uat, "marchhare-41928")
     assert "implemented" in gitclaim._ledger_blocks(led, uat, "win-mpre8vi4u6u-20596")
 
-    # Escape must lift the implementer even though giveup seats are "live".
-    assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-20596", live) == ""
-    # Giveup seats stay blocked (escape only lifts "implemented").
+    # No escape — implementer stays blocked; escalate path handles the strand.
+    assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-20596", live)
     assert gitclaim.ledger_blocks(led, uat, "marchhare-41928", live)
 
-    # enrich stamps exact author; review_blocked must also lift when others gave up.
     enriched = dict(uat)
     enriched["author_seat"] = "win-mpre8vi4u6u-20596"
     enriched["implementer_seat"] = "win-mpre8vi4u6u-20596"
-    assert not gitclaim.review_blocked_for_author(
+    assert gitclaim.review_blocked_for_author(
         enriched, "win-mpre8vi4u6u-20596", live, ledger=led
     )
+    assert gitclaim.repo_uat_no_eligible_live_seat(led, uat, live)
 
 
 def test_exact_author_stays_blocked_when_one_other_not_giveup(tmp_path, monkeypatch):
-    """Hostile (MRB #1422): exact-author escape requires EVERY other live seat gave up."""
+    """Hostile: exact author never self-UATs while another live seat remains."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest(tmp_path)
     uat = _uat_row()
-    # Only two of three non-author seats gave up; 15656 is still eligible-ish.
     for nick in ("marchhare-41928", "marchhare-35600"):
         gitclaim.ledger_giveup(tmp_path, nick, REPO, "UAT", "#0")
     gitclaim.ledger_touch(
@@ -143,7 +136,7 @@ def test_exact_author_stays_blocked_when_one_other_not_giveup(tmp_path, monkeypa
 
 
 def test_sole_live_exact_author_still_blocked(tmp_path, monkeypatch):
-    """Hostile (MRB #1422): FR #628 — sole live exact author stays blocked for repo UAT."""
+    """Hostile (MRB #1422 / FR #2939): sole live exact author stays blocked for repo UAT."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _roster(tmp_path)
     doc = bobreport.empty_digest()

@@ -1,4 +1,8 @@
-"""Hostile MRB #1409: sole active implementer after giveups may escape."""
+"""Hostile MRB #1409 / FR #2939: sole implementer after giveups stays self-UAT blocked.
+
+#1409 originally required the escape hatch. FR #2939 removes escape (worker refuses
+self-UAT) and escalates when every live seat is blocked.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,7 +39,7 @@ def _digest(home: Path) -> None:
     bobreport.save_digest(home, doc)
 
 
-def test_sole_active_implementer_after_giveup_escapes(tmp_path, monkeypatch):
+def test_sole_active_implementer_after_giveup_stays_blocked(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest(tmp_path)
     uat = {
@@ -55,9 +59,12 @@ def test_sole_active_implementer_after_giveup_escapes(tmp_path, monkeypatch):
         )
     led = gitclaim.ledger_load(tmp_path)
     live = gitclaim.live_seat_nicks(tmp_path)
-    assert gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-15656", live) == ""
+    why = gitclaim.ledger_blocks(led, uat, "win-mpre8vi4u6u-15656", live)
+    assert why and gitclaim.ledger_why_is_self_uat(why)
     assert gitclaim.row_gave_up_by(uat, "marchhare-41928")
-    # Giveup seat still listed live but must not strand sibling via review_blocked.
+    assert gitclaim.repo_uat_no_eligible_live_seat(led, uat, live)
+    # Giveup seat still listed live but must not strand sibling via review_blocked
+    # when the sibling is not the stamped author.
     assert not gitclaim.review_blocked_for_author(
         uat, "win-mpre8vi4u6u-15656", live, ledger=led
     )
@@ -73,4 +80,5 @@ def test_docs_uat_paragraph_has_no_control_chars():
     assert "blocked" in para
     assert "release-gate" in para
     assert chr(8) not in para
-    assert "fewer cycle FR touches" in para
+    assert "self_uat" in para or "self-UAT" in para or "FR #2939" in para
+    assert "fewer cycle FR touches" not in para
