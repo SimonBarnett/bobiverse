@@ -71,10 +71,13 @@ def test_mrb2615_flush_stop_noop_when_idle(tmp_path, monkeypatch):
 
 
 def test_mrb2615_read_loop_stop_paths_call_flush():
+    # FR #2649: #2644 moved interrupt paths to prepare_stop (which calls flush_stop_dones).
     src = Path(svc.__file__).read_text(encoding="utf-8")
-    assert 'flush_stop_dones(reason="probe interrupted")' in src
-    assert 'flush_stop_dones(reason="reap interrupted")' in src
-    assert src.count("flush_stop_dones") >= 2
+    assert 'prepare_stop(reason="probe interrupted")' in src
+    assert 'prepare_stop(reason="reap interrupted")' in src
+    assert 'prepare_stop(reason="keepalive interrupted")' in src
+    assert src.count("prepare_stop") >= 3
+    assert "flush_stop_dones" in src
 
 
 def test_mrb2615_skill_bullets_contiguous():

@@ -45,4 +45,4 @@ Finish every session with the harvest step.
 
 | DisplayName still literal #{machine} or ConsoleHome under Users\Default | Old NSSM bake / FR #1552 prior-identity restore of Default home | Heal DisplayName with expanded MachineId; migrate home to <ai root>\airc\home and update AppParameters; Install remaps Default after prior restore (FR #2355). |
 
-| Stop mid-Command: ear got out/err but **no DONE**; log `session interrupted` + `WinError 10038` | Stop flushed after socket invalid (FR #2640). Tip: prepare_stop drains DONE then closes; hotpatch irc_console_service.py + Restart-Service Airc (or tip MSI). |
+| Stop mid-Command: ear got out/err but **no DONE**; log `session interrupted` + `10038` / `send: no socket` | FR #2640/#2649: prepare_stop drains DONE with **no FLOOD_S gap**, sets `_stop_flushed` so finally does not re-flush after sock=None. Hotpatch `airc_console_service.py` + Restart-Service Airc (frozen `airc.exe` needs rebuild). |

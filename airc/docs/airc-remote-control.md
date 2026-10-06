@@ -8,7 +8,7 @@ Authenticated PRIVMSG to `{machine}_console` runs PowerShell (or `cmd:` / `psb64
 
 Concurrent Commands on the same Query are **queued** (FR #2632)
 
-On service stop / session interrupt, DONE for every in-flight and pending shell id is flushed **before** the IRC socket closes (FR #2640); late worker emits enqueue-only so stop never `sendall`s after close (avoids WinError 10038 + lost DONE).: one shell in flight plus a short pending list; each job still emits its own DONE. A full queue fail-closes with `busy: prior shell still emitting` + `DONE exit=1` (FR #2612: no hang). `Invoke-AircRemote` retries that busy reply within `-MaxRetries` / `-TimeoutSec` when `-JobId` was not pinned (compat with older airc).
+On service stop / session interrupt, DONE for every in-flight and pending shell id is flushed **before** the IRC socket closes (FR #2640 / #2649) with **no per-line FLOOD_S delay** so SCM cannot kill the socket between err and DONE; `_stop_flushed` skips a second finally drain after sock=None. Late worker emits enqueue-only so stop never \sendall\s after close.
 
 ```text
 PRIVMSG marchhare_console :id=aabbccdd Write-Output ping
