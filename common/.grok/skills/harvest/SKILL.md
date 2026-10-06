@@ -183,6 +183,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 - GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
+- Harvest-lesson MRB: process playbooks (merge origin/main first, docs/mrb-N after skill merge) belong in bobiverse-bob-job-mrb — if intake parks them under harvest while that coverage is on main, FAIL-supersede and close; never merge a second copy that says keep MRB process in harvest
 
 ## Harvest digest (lessons audit 2026-10-06)
 
