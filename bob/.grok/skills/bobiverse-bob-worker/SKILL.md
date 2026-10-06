@@ -189,3 +189,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 ## Harvested lessons (intake)
 
 - bob-worker harvest: Invoke-BobiverseHarvest must prefer BOB_NICK then BOB_AGENT_NICK, and seat_env_extra must export both so lesson PR seat= stamps and self-MRB blocks the opener (FR #2790 / MRB #2795).
+- bob-worker: BoredEmitter.turn_ended releases harvest hold when grok events.jsonl turn_ended arrives at/after DONE; harvest_hold_s is fallback only (FR #2802 / PR #2809).
