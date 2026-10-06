@@ -15,6 +15,11 @@
   - Always `git worktree prune` when removals happened (or with -Force).
   - Orphan %TEMP%\bobiverse-* directories not registered as worktrees are removed
     on low disk / -Force (full reclaim).
+  - FR #2727: never selects operator/build trees (`wt-bob-main-*`, `wt-airc-*`,
+    `wt-main`). Skips trees with a live `.bobiverse-seat` marker or a
+    git/python/PyInstaller process whose CommandLine cites the path. This script
+    is the only sanctioned reclaim path — seats must not hand-delete other
+    `C:\ai\*` trees when removed=0.
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
 
@@ -40,6 +45,15 @@ function Get-FreeGB([string]$Path) {
     return [math]::Round(([double]$d.Free) / 1GB, 2)
 }
 
+function Test-IsOperatorOrNonJobLeaf([string]$Leaf) {
+    # FR #2727: operator hotpatch / airc build trees must never be reclaim candidates.
+    if (-not $Leaf) { return $true }
+    if ($Leaf -match '(?i)^wt-bob-main($|-)') { return $true }
+    if ($Leaf -match '(?i)^wt-airc($|-)') { return $true }
+    if ($Leaf -match '(?i)^wt-main$') { return $true }
+    return $false
+}
+
 function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepFull) {
     if (-not $Path) { return $false }
     try {
@@ -50,12 +64,55 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
     if ($full.TrimEnd('\') -ieq $RootFull.TrimEnd('\')) { return $false }
     if ($KeepFull -and ($full.TrimEnd('\') -ieq $KeepFull.TrimEnd('\'))) { return $false }
     $leaf = Split-Path -Leaf $full
+    if (Test-IsOperatorOrNonJobLeaf $leaf) { return $false }
     $temp = [System.IO.Path]::GetFullPath($env:TEMP)
     if ($full.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -and ($leaf -match '(?i)^bobiverse-')) {
         return $true
     }
+    # Durable job trees under C:\ai (or D:\…): bob-wt-fr-N / job-fr-N / docs-mrb-N …
+    if ($leaf -match '(?i)^(bob-wt-|job-)?(fr|mrb|uat|docs-mrb)-\d') { return $true }
     if ($leaf -match '(?i)^(bobiverse-|fr-\d|mrb-|uat-)') { return $true }
-    if ($leaf -match '(?i)-wt$') { return $true }
+    # Temp-style …-wt suffix only when the leaf already looks like a job id.
+    if ($leaf -match '(?i)^(bobiverse-|fr-|mrb-|uat-|docs-mrb-).*-wt$') { return $true }
+    return $false
+}
+
+function Test-WorktreeProtected([string]$Path) {
+    # True when a live seat marker or busy tool process owns the tree (FR #2727).
+    if (-not $Path) { return $false }
+    try {
+        $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    } catch {
+        return $false
+    }
+    $marker = Join-Path $full '.bobiverse-seat'
+    if (Test-Path -LiteralPath $marker) {
+        try {
+            $raw = Get-Content -LiteralPath $marker -Raw -Encoding UTF8
+            $obj = $raw | ConvertFrom-Json
+            $seatPid = 0
+            if ($obj.PSObject.Properties.Name -contains 'pid') {
+                $seatPid = [int]$obj.pid
+            }
+            if ($seatPid -gt 0) {
+                $alive = Get-Process -Id $seatPid -ErrorAction SilentlyContinue
+                if ($null -ne $alive) {
+                    return $true
+                }
+            }
+        } catch {
+            # Malformed marker: do not treat as protected forever.
+        }
+    }
+    # Busy tool heuristic: CommandLine cites this path (cwd is not exposed via CIM).
+    $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '(?i)^(git|python|pyinstaller|py|pwsh|powershell)\.exe$' })
+    foreach ($proc in $procs) {
+        $cl = [string]$proc.CommandLine
+        if ($cl -and $cl.IndexOf($full, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
     return $false
 }
 
@@ -105,9 +162,17 @@ foreach ($line in $list) {
 }
 
 $removed = 0
+$skippedProtected = 0
 # FR #1664 / #1740: pipeline/filter of one path is a scalar string; always force Object[] before .Count (StrictMode).
 $jobTrees = @($paths.ToArray() | Where-Object { Test-IsJobWorktreePath $_ $rootFull $keepFull })
 $jobTrees = @($jobTrees)
+# FR #2727: drop live-seat / busy-tool trees before cap math (even with -Force).
+$protectedTrees = @($jobTrees | Where-Object { Test-WorktreeProtected $_ })
+$jobTrees = @($jobTrees | Where-Object { -not (Test-WorktreeProtected $_) })
+foreach ($pt in $protectedTrees) {
+    Write-Host "FR #2727 skip protected worktree $pt"
+    $skippedProtected++
+}
 
 # Cap: remove extras beyond MaxExtraJobTrees (oldest first by path mtime when possible).
 # FR #1661 soft cap: enforce this even when FreeGB >= MinFreeGB (earlier prune gate).
@@ -115,6 +180,9 @@ $jobTreeCount = @($jobTrees).Count
 $softCapNeeded = ($MaxExtraJobTrees -ge 0 -and $jobTreeCount -gt $MaxExtraJobTrees)
 if (-not $lowDisk -and -not $softCapNeeded) {
     Write-Host "OK: free space above MinFreeGB and job-tree count within MaxExtraJobTrees; pass -Force to prune anyway."
+    if ($skippedProtected -gt 0) {
+        Write-Host ("FR #2727 skipped_protected={0}" -f $skippedProtected)
+    }
     return
 }
 
@@ -210,4 +278,4 @@ if ($removed -gt 0 -or $Force) {
 }
 
 $freeAfter = Get-FreeGB $rootFull
-Write-Host ("Done removed={0} FreeGB_now={1}" -f $removed, $freeAfter)
+Write-Host ("Done removed={0} FreeGB_now={1} skipped_protected={2}" -f $removed, $freeAfter, $skippedProtected)

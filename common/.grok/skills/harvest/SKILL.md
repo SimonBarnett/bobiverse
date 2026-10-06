@@ -159,3 +159,9 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
   PR, issue, intake receipt or `harvest-outbox/` entry.
 - Add a separate `/bob/v1/harvest` endpoint — harvest is intake with the
   appropriate `kind`.
+
+## Harvested lessons (intake)
+
+- When Clear-BobiverseJobWorktrees removes 0 under low disk: file intake or GIVEUP / use a roomy drive — never hand-delete wt-bob-main/wt-airc/operator trees; write .bobiverse-seat so -Force skips live owners
+- GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
+- Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there — do not land a second copy in this book (MRB #2740 / #2749).
