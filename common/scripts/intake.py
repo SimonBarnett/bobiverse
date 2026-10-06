@@ -199,22 +199,54 @@ def resolve_skill_book(
 # FR #2970: FAIL-supersede / wrong-book / Harvest-lesson MRB *process* playbooks belong in
 # bobiverse-bob-job-mrb. Default -Book harvest must not open lesson(harvest) twins that
 # restate that routing and get FAIL-superseded forever.
-_MRB_PROCESS_ROUTING_RE = re.compile(
+# MRB #2973 hostile: bare "FAIL-supersede" alone must NOT match — a product harvest whose
+# summary mentions FAIL-superseded would otherwise re-route MSI/outbox tips into job-mrb.
+# Mirror Invoke-BobiverseHarvest Test-HarvestFailSupersedeProcessLoop: process cue required;
+# FAIL-supersede alone is insufficient.
+_FAIL_SUPERSEDE_RE = re.compile(r"(?i)FAIL[- ]supersede")
+_MRB_PROCESS_CUE_RE = re.compile(
     r"(?i)(?:"
-    r"FAIL[- ]supersede|"
     r"wrong[- ]book|"
     r"belong(?:s)? in\s+`?bobiverse-bob-job-mrb`?|"
     r"docs/mrb-N after skill merge|"
     r"Harvest-lesson MRB:\s*process|"
     r"never merge a second copy(?:\s+that says keep MRB process)?\s+in harvest|"
-    r"process playbooks?\s*\([^)]*belong"
+    r"process playbooks?|"
+    r"park(?:ed|s)?\s+under\s+harvest"
     r")"
 )
 
 
 def is_mrb_process_routing_lesson(text: str) -> bool:
-    """True when the lesson/summary is MRB process-routing (not a product playbook)."""
-    return bool(_MRB_PROCESS_ROUTING_RE.search(str(text or "")))
+    """True when the lesson/summary is MRB process-routing (not a product playbook).
+
+    Requires a process cue. Bare FAIL-supersede in a session summary does not qualify
+    (MRB #2973) so real product lessons still open under harvest.
+    """
+    t = str(text or "")
+    if not t.strip():
+        return False
+    if not _MRB_PROCESS_CUE_RE.search(t):
+        return False
+    # Strong process anchors: durable home is job-mrb / parked under harvest / promote order.
+    if re.search(r"(?i)belong(?:s)? in\s+`?bobiverse-bob-job-mrb", t):
+        return True
+    if re.search(r"(?i)park(?:ed|s)?\s+under\s+harvest", t):
+        return True
+    if re.search(
+        r"(?i)docs/mrb-N after skill merge|Harvest-lesson MRB:\s*process|"
+        r"never merge a second copy",
+        t,
+    ):
+        return True
+    if re.search(r"(?i)process playbooks?", t) and re.search(
+        r"(?i)bobiverse-bob-job-mrb|harvest", t
+    ):
+        return True
+    # FAIL-supersede + process cue (e.g. wrong-book) — same AND as the PS1 client skip.
+    if _FAIL_SUPERSEDE_RE.search(t):
+        return True
+    return False
 
 
 def _normalize_lesson_key(text: str) -> str:

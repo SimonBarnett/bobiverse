@@ -132,6 +132,8 @@ PowerShell:
 # FR #2970: also skip FAIL-supersede / wrong-book Harvest-lesson *process* playbooks
 # (belong in bobiverse-bob-job-mrb). Intake returns lesson_already_covered when harvest +
 # job-mrb already carry that CAST IRON routing — never open another lesson(harvest) twin.
+# MRB #2973: bare "FAIL-supersede" in a summary alone is not enough to re-route; a process
+# cue is required so real product lessons still open under harvest.
 # or:
 Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
   -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
