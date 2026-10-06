@@ -319,6 +319,43 @@ def info(msg: str) -> None:
     print(msg, flush=True)
 
 
+def resolve_bob_install_root(
+    *,
+    env: dict | None = None,
+    frozen: bool | None = None,
+    executable: str | Path | None = None,
+    file_path: str | Path | None = None,
+    explicit: str | Path | None = None,
+) -> Path:
+    """Product install root for startworker queue / tray.alive (FR #2666).
+
+    Priority: ``explicit`` / ``--install-root`` → ``BOB_INSTALL_ROOT`` → frozen
+    ``sys.executable`` layout → source ``<root>\\scripts\\irc_agent.py``.
+
+    PyInstaller onefile sets ``__file__`` under ``_MEIPASS`` (often
+    ``C:\\Windows\\Temp\\_MEI*``). Using ``Path(__file__).parent.parent`` there
+    resolves to Temp and makes ``tray_alive`` always false.
+    """
+    if explicit is not None and str(explicit).strip():
+        return Path(str(explicit).strip()).resolve()
+    e = os.environ if env is None else env
+    override = (e.get("BOB_INSTALL_ROOT") or "").strip()
+    if override:
+        return Path(override).resolve()
+    is_frozen = (
+        bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+        if frozen is None
+        else bool(frozen)
+    )
+    if is_frozen:
+        exe = Path(sys.executable if executable is None else executable).resolve()
+        # Pack stages scripts\\bob-ear.exe under InstallRoot (FR #1481).
+        if exe.parent.name.lower() == "scripts":
+            return exe.parent.parent
+        return exe.parent
+    here = Path(__file__ if file_path is None else file_path).resolve().parent
+    return here.parent
+
 
 def extract_privmsg_address_prefix(text: str) -> tuple[str, str]:
     """Return (prefix, rest). Prefix is nick: / @nick, / nick - kept on every split piece."""
@@ -1316,9 +1353,12 @@ class Client:
         info(f"INFO recycle wire machine={mid} scope={dec.scope}")
 
     def _install_root(self) -> Path:
-        """Product root of this ear (``<root>\\scripts\\irc_agent.py``); BOB_INSTALL_ROOT overrides."""
-        env = (os.environ.get("BOB_INSTALL_ROOT") or "").strip()
-        return Path(env) if env else Path(__file__).resolve().parent.parent
+        """Product root of this ear; see ``resolve_bob_install_root`` (FR #2666)."""
+        explicit = ""
+        args = getattr(self, "args", None)
+        if args is not None:
+            explicit = getattr(args, "install_root", "") or ""
+        return resolve_bob_install_root(explicit=explicit)
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
         """t810u: ``!startworker [agent|plan] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
@@ -3155,6 +3195,11 @@ def main() -> None:
         help="seed channel (required unless --chair; chair defaults to bobiverse)",
     )
     p.add_argument("--home", default="", help="BOB_HOME (required if two nicks on one box)")
+    p.add_argument(
+        "--install-root",
+        default="",
+        help="product install root (or env BOB_INSTALL_ROOT); frozen bob-ear.exe needs this or frozen-aware resolve (FR #2666)",
+    )
     p.add_argument("--realname", default="bobiverse")
     p.add_argument("--outbox", default="")
     p.add_argument("--hello", default="")
