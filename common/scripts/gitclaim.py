@@ -2305,6 +2305,7 @@ def enqueue_unaccepted(home: Path, claim: GitClaim) -> str:
 
     FR #1811: pass through error:queue-* so BobCallback can announce specific errs;
     still maps success codes to legacy added|duplicate.
+    FR #2803: after a real queue add/update, push offers to seats idle after ``nothing queued``.
     """
     if claim.task not in TASK_KINDS:
         return "error"
@@ -2312,11 +2313,17 @@ def enqueue_unaccepted(home: Path, claim: GitClaim) -> str:
     if result.startswith("error"):
         return result
     if result in ("added", "updated", "removed", "duplicate", "noop"):
+        out = "added"
         if result == "added":
-            return "added"
-        if result == "duplicate":
-            return "duplicate"
-        return "added" if result in ("updated", "removed") else "duplicate"
+            out = "added"
+        elif result == "duplicate":
+            out = "duplicate"
+        else:
+            out = "added" if result in ("updated", "removed") else "duplicate"
+        if out == "added" and result in ("added", "updated"):
+            with contextlib.suppress(Exception):
+                push_idle_offers_via_chair_outbox(home)
+        return out
     return "error"
 
 
@@ -3493,6 +3500,260 @@ def format_nothing_queued(nick: str, stats: dict | None = None) -> str:
     not the channel. Simon: Jeeves MUST hand out work — empty reply stays short.
     """
     return f"{nick}: nothing queued"
+
+
+# FR #2803: seats told "nothing queued" — push the next offerable row without waiting for !bored.
+IDLE_AFTER_EMPTY_MAX_AGE_S = 900.0  # 15 minutes
+IDLE_PUSH_MIN_INTERVAL_S = 5.0
+
+
+def idle_after_empty_path(home: Path) -> Path:
+    return _root(home) / "idle-after-empty.json"
+
+
+def _load_idle_after_empty(home: Path) -> dict:
+    path = idle_after_empty_path(home)
+    if not path.exists():
+        return {"v": 1, "seats": {}}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"v": 1, "seats": {}}
+    if not isinstance(doc, dict):
+        return {"v": 1, "seats": {}}
+    seats = doc.get("seats")
+    if not isinstance(seats, dict):
+        seats = {}
+    return {"v": 1, "seats": seats}
+
+
+def _write_idle_after_empty(home: Path, doc: dict) -> None:
+    path = idle_after_empty_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps({"v": 1, "seats": doc.get("seats") or {}}, indent=0, sort_keys=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(raw + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def note_idle_after_empty(
+    home: Path, nick: str, channel: str, *, now: float | None = None
+) -> None:
+    """Record that Jeeves told this seat ``nothing queued`` (FR #2803)."""
+    import time as _time
+
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    if not me:
+        return
+    shop = bobreport.normalize_channel(channel) if channel else (worker_shop_channel(me) or "")
+    if not shop:
+        return
+    now_f = _time.time() if now is None else float(now)
+    try:
+        with _lock(home):
+            doc = _load_idle_after_empty(home)
+            seats = doc.setdefault("seats", {})
+            prev = seats.get(me) if isinstance(seats.get(me), dict) else {}
+            seats[me] = {
+                "nick": me,
+                "channel": shop,
+                "told_at": float(now_f),
+                "last_push_at": float(prev.get("last_push_at") or 0.0),
+            }
+            _write_idle_after_empty(home, doc)
+    except (TimeoutError, OSError):
+        return
+
+
+def clear_idle_after_empty(home: Path, nick: str) -> None:
+    """Drop an idle-after-empty entry (offered / ACK / leave / busy)."""
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    if not me:
+        return
+    me_l = me.lower()
+    try:
+        with _lock(home):
+            doc = _load_idle_after_empty(home)
+            seats = doc.get("seats") or {}
+            drop = [
+                k
+                for k in list(seats.keys())
+                if (canonical_worker_nick(k) or k).strip().lower() == me_l
+            ]
+            if not drop:
+                return
+            for k in drop:
+                seats.pop(k, None)
+            _write_idle_after_empty(home, doc)
+    except (TimeoutError, OSError):
+        return
+
+
+def list_idle_after_empty(
+    home: Path, *, now: float | None = None, live: set[str] | None = None
+) -> list[dict]:
+    """Idle seats oldest-first; prune expired and seats missing from the digest."""
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    live_set = set(live) if live is not None else live_seat_nicks(home)
+    live_l = {
+        (canonical_worker_nick(x) or x).strip().lower() for x in live_set if str(x).strip()
+    }
+    try:
+        with _lock(home):
+            doc = _load_idle_after_empty(home)
+            seats = doc.get("seats") or {}
+            keep: dict = {}
+            rows: list[dict] = []
+            for key, ent in list(seats.items()):
+                if not isinstance(ent, dict):
+                    continue
+                nick = str(ent.get("nick") or key or "").strip()
+                nick_c = (canonical_worker_nick(nick) or nick).strip()
+                if not nick_c:
+                    continue
+                try:
+                    told = float(ent.get("told_at") or 0.0)
+                except (TypeError, ValueError):
+                    told = 0.0
+                if told <= 0 or (now_f - told) > IDLE_AFTER_EMPTY_MAX_AGE_S:
+                    continue
+                # If digest has any live seats, drop entries that are gone.
+                if live_l and nick_c.lower() not in live_l:
+                    continue
+                chan = bobreport.normalize_channel(str(ent.get("channel") or "")) or (
+                    worker_shop_channel(nick_c) or ""
+                )
+                if not chan:
+                    continue
+                try:
+                    last_push = float(ent.get("last_push_at") or 0.0)
+                except (TypeError, ValueError):
+                    last_push = 0.0
+                row = {
+                    "nick": nick_c,
+                    "channel": chan,
+                    "told_at": told,
+                    "last_push_at": last_push,
+                }
+                keep[nick_c] = row
+                rows.append(row)
+            if keep != seats:
+                doc["seats"] = keep
+                _write_idle_after_empty(home, doc)
+    except (TimeoutError, OSError):
+        return []
+    rows.sort(key=lambda r: (float(r.get("told_at") or 0.0), str(r.get("nick") or "")))
+    return rows
+
+
+def offer_to_idle_seats(
+    home: Path,
+    *,
+    say,
+    now: float | None = None,
+    pr_exists=None,
+    is_pull=None,
+    issue_open=None,
+    live: set[str] | None = None,
+) -> int:
+    """Push ``offer_focus_top`` to tracked idle seats (oldest first). No empty chatter (FR #2803).
+
+    ``say(channel, text)`` delivers the assign line (IRC or chair-outbox). Returns offers sent.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    idle_rows = list_idle_after_empty(home, now=now_f, live=live)
+    if not idle_rows:
+        return 0
+    sent = 0
+    for ent in idle_rows:
+        nick = str(ent.get("nick") or "").strip()
+        channel = str(ent.get("channel") or "").strip()
+        if not nick or not channel:
+            continue
+        try:
+            last_push = float(ent.get("last_push_at") or 0.0)
+        except (TypeError, ValueError):
+            last_push = 0.0
+        if last_push and (now_f - last_push) < IDLE_PUSH_MIN_INTERVAL_S:
+            continue
+        # Busy / wrong-shop seats: do not push; clear if genuinely busy.
+        if worker_working_on(home, nick):
+            clear_idle_after_empty(home, nick)
+            continue
+        gate = bored_gate(home, nick, channel, now_f)
+        if gate == "busy":
+            clear_idle_after_empty(home, nick)
+            continue
+        if gate == "ignore":
+            clear_idle_after_empty(home, nick)
+            continue
+        # gate == wait: recent activity throttle — skip this tick, keep idle entry.
+        if gate == "wait":
+            continue
+        status, job = offer_focus_top(
+            home,
+            nick,
+            channel,
+            now=now_f,
+            pr_exists=pr_exists,
+            is_pull=is_pull,
+            issue_open=issue_open,
+        )
+        if status == "ok" and isinstance(job, dict):
+            line = format_assign_line(nick, job)
+            try:
+                say(channel, line)
+            except Exception:
+                continue
+            clear_idle_after_empty(home, nick)
+            sent += 1
+            continue
+        # Nothing offerable for this seat: stay idle, stamp rate limit, no channel chatter.
+        try:
+            with _lock(home):
+                doc = _load_idle_after_empty(home)
+                seats = doc.get("seats") or {}
+                cur = seats.get(nick) if isinstance(seats.get(nick), dict) else None
+                if cur is None:
+                    for k, v in list(seats.items()):
+                        if (canonical_worker_nick(k) or k).strip().lower() == nick.lower():
+                            cur = v if isinstance(v, dict) else None
+                            nick = k
+                            break
+                if isinstance(cur, dict):
+                    cur["last_push_at"] = now_f
+                    seats[nick] = cur
+                    _write_idle_after_empty(home, doc)
+        except (TimeoutError, OSError):
+            pass
+    return sent
+
+
+def push_idle_offers_via_chair_outbox(
+    home: Path,
+    *,
+    now: float | None = None,
+    pr_exists=None,
+    is_pull=None,
+    issue_open=None,
+) -> int:
+    """Enqueue shop assign PRIVMSGs on chair-outbox for idle seats (webhook / enqueue path)."""
+
+    def _say(channel: str, text: str) -> None:
+        bobreport.enqueue_chair_fleet_privmsg(home, text, channel)
+
+    return offer_to_idle_seats(
+        home,
+        say=_say,
+        now=now,
+        pr_exists=pr_exists,
+        is_pull=is_pull,
+        issue_open=issue_open,
+    )
 
 
 def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
