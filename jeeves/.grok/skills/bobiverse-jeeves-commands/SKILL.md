@@ -56,6 +56,8 @@ Read `<chair home>\cmd-trace.log` for timed replies and `logs\stdout.log` for `k
 `!list`, `!filter fr`, `!ignored`, `!ignore zz-test/none` + `!unignore zz-test/none`, `!focus`, `!recycle dry-run`, `ping`.
 Restore any state you changed (`!focus strict on` if it was on). Never send `!recycle`, `!recycle <machine>` or `!bored` for real.
 
+Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture rows `state=open` + issues URL and monkeypatch `github_is_pull_checker` / `github_issue_open_checker` / `github_pr_exists_checker` so a live GH token cannot 404-refuse the fake repo (FR #2730 / MRB #2756 / harvest-lesson #2757).
+
 ## Harvested resync and deployment rules (skill records #1221-#1460)
 
 - Resync all GitHub issue pages, not only the newest 100; a pagination regression silently starves older FRs. Keep fetch timeout/retry and stale/off-main alerts enabled.
