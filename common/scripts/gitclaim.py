@@ -2287,6 +2287,28 @@ def _norm_row_id(ident: str | None) -> str:
     return s
 
 
+def _row_drop_label(row: dict) -> str:
+    """Short ``TASK repo#N`` label for resync/prune drop logs (FR #2899)."""
+    task = str(row.get("task") or "?").upper() or "?"
+    repo = str(row.get("repo") or "?").strip() or "?"
+    ident = _norm_row_id(row.get("id")) or "#?"
+    return f"{task} {repo}{ident}"
+
+
+def _heal_mrb_pull_url(row: dict) -> bool:
+    """Synthesize ``/pull/N`` URL when repo+#N are known (FR #2604 / #2899)."""
+    if not isinstance(row, dict) or _canon_task(row) != "MRB":
+        return False
+    if PULL_URL_RE.search(str(row.get("url") or "")):
+        return True
+    repo = str(row.get("repo") or "").strip()
+    ident = _norm_row_id(row.get("id"))
+    if not repo or not ident:
+        return False
+    row["url"] = f"https://github.com/{repo}/pull/{ident.lstrip('#')}"
+    return bool(PULL_URL_RE.search(str(row.get("url") or "")))
+
+
 def _same(row: dict, repo: str, task: str, ident: str) -> bool:
     return (
         str(row.get("repo") or "") == str(repo or "")
@@ -3668,10 +3690,12 @@ def offer_to_idle_seats(
     is_pull=None,
     issue_open=None,
     live: set[str] | None = None,
+    log=None,
 ) -> int:
     """Push ``offer_focus_top`` to tracked idle seats (oldest first). No empty chatter (FR #2803).
 
     ``say(channel, text)`` delivers the assign line (IRC or chair-outbox). Returns offers sent.
+    FR #2899: optional ``log(msg)`` records every successful offer (parity with bored offered).
     """
     import time as _time
 
@@ -3744,6 +3768,9 @@ def offer_to_idle_seats(
                     pass
                 continue
             clear_idle_after_empty(home, nick)
+            if callable(log):
+                with contextlib.suppress(Exception):
+                    log(f"INFO git-claim idle offered {line} nick={nick}")
             sent += 1
             continue
         # Nothing offerable for this seat: stay idle, stamp rate limit, no channel chatter.
@@ -3774,6 +3801,7 @@ def push_idle_offers_via_chair_outbox(
     pr_exists=None,
     is_pull=None,
     issue_open=None,
+    log=None,
 ) -> int:
     """Enqueue shop assign PRIVMSGs on chair-outbox for idle seats (webhook / enqueue path)."""
 
@@ -3787,6 +3815,7 @@ def push_idle_offers_via_chair_outbox(
         pr_exists=pr_exists,
         is_pull=is_pull,
         issue_open=issue_open,
+        log=log,
     )
 
 
@@ -4256,19 +4285,27 @@ def offer_focus_top(
                     if clear_orphan_digest_mrb_doing(home, pr_exists=pr_exists):
                         purged = True
             # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
+            # FR #2899: also clear when offered_to nick is not live (author-seat recycle).
+            live_l = {
+                (canonical_worker_nick(n) or n or "").strip().lower()
+                for n in live
+                if (canonical_worker_nick(n) or n or "").strip()
+            }
             for cand in doc.get("unaccepted") or []:
                 if not isinstance(cand, dict):
                     continue
                 to = str(cand.get("offered_to") or "").strip()
                 if not to:
                     continue
+                to_c = (canonical_worker_nick(to) or to).strip().lower()
+                dead_pin = bool(to_c) and to_c not in live_l
                 try:
                     age = now_f - datetime.fromisoformat(
                         str(cand.get("offered_ts") or "").replace("Z", "+00:00")
                     ).timestamp()
                 except ValueError:
                     age = offer_timeout_s(cand) + 1
-                if age >= offer_timeout_s(cand):
+                if dead_pin or age >= offer_timeout_s(cand):
                     cand.pop("offered_to", None)
                     cand.pop("offered_ts", None)
                     cand.pop("offered_channel", None)
@@ -5217,6 +5254,7 @@ def prune_unassignable_queue(home: Path) -> dict:
 
     Does not call GitHub. Closed-issue drops still come from webhooks + ``resync_from_github``.
     ``needs_human`` rows are kept but never offered (see ``offer_focus_top``).
+    FR #2899: heal missing MRB ``/pull/N`` URLs before dropping; return ``dropped_detail``.
     """
     try:
         with _lock(home):
@@ -5226,21 +5264,29 @@ def prune_unassignable_queue(home: Path) -> dict:
                 return {"ok": False, "error": "load"}
             before = len(doc["unaccepted"])
             keep = []
+            dropped_detail: list[str] = []
             for row in doc["unaccepted"]:
                 task = str(row.get("task") or "").upper()
                 if task == "FR" and row_skip_fr_reason(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue
                 # FR #846: drop FR rows whose URL is a pull request.
                 if task == "FR" and not fr_row_offerable(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} fr_not_offerable")
                     continue
                 # FR #785: drop rows whose repo is archived / superseded (e.g. gh-Jeeves).
                 if repo_archived_for_queue(str(row.get("repo") or "")):
+                    dropped_detail.append(f"{_row_drop_label(row)} archived_repo")
                     continue
-                # FR #595: drop MRB rows that cannot resolve to a real /pull/ URL.
-                if task == "MRB" and not mrb_row_offerable(row):
-                    continue
+                # FR #595 / #2604 / #2899: heal missing pull URL before dropping.
+                if task == "MRB":
+                    _heal_mrb_pull_url(row)
+                    if not mrb_row_offerable(row):
+                        dropped_detail.append(f"{_row_drop_label(row)} mrb_not_offerable")
+                        continue
                 # FR #818 / t853u: drop any UAT that is not the single repo-level #0 row.
                 if task == "UAT" and not is_repo_uat(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} uat_not_repo_level")
                     continue
                 keep.append(row)
             doc["unaccepted"] = keep
@@ -5249,7 +5295,12 @@ def prune_unassignable_queue(home: Path) -> dict:
                 _write_queue(queue_path(home), doc)
             except OSError:
                 return {"ok": False, "error": "write"}
-            return {"ok": True, "dropped": dropped, "unaccepted": len(keep)}
+            return {
+                "ok": True,
+                "dropped": dropped,
+                "dropped_detail": dropped_detail,
+                "unaccepted": len(keep),
+            }
     except (TimeoutError, OSError):
         return {"ok": False, "error": "lock"}
 
@@ -5305,6 +5356,8 @@ def resync_from_github(
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
     skipped_draft = 0
+    # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
+    skipped_open_pulls: set[tuple[str, str]] = set()
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
     # stay as MRB rows; the open issue stays desired so fr_done can clear and MRB
     # (or a re-opened FR if MRB is missing) can flow. (Open-PR supersede for offer
@@ -5398,6 +5451,7 @@ def resync_from_github(
             # for UAT/repo_clear and FR supersede via open_pulls_map above.
             if pr.get("draft") is True:
                 skipped_draft += 1
+                skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync skip draft PR {repo}#{num}",
                     flush=True,
@@ -5407,6 +5461,7 @@ def resync_from_github(
             pr_labels = _label_names(pr.get("labels"))
             if is_intake_harvest_receipt_pr(title=title, body=body, labels=pr_labels):
                 skipped_draft += 1
+                skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync skip harvest-receipt PR {repo}#{num}",
                     flush=True,
@@ -5467,67 +5522,85 @@ def resync_from_github(
             fetched_set = set(fetched)
             before = len(doc["unaccepted"])
             keep = []
+            dropped_detail: list[str] = []
             for row in doc["unaccepted"]:
-                if str(row.get("task") or "").upper() == "UAT":
+                task_u = str(row.get("task") or "").upper()
+                repo_s = str(row.get("repo") or "")
+                ident_n = _norm_row_id(row.get("id"))
+                if task_u == "UAT":
                     # FR #818 / t853u: only keep real repo-level UAT (#0 + repo_uat).
                     if not is_repo_uat(row):
+                        dropped_detail.append(f"{_row_drop_label(row)} uat_not_repo_level")
                         continue
                     if (
                         row.get("repo") in fetched_set
                         and not repo_clear.get(str(row.get("repo")), True)
                         and not row.get("offered_to")
                     ):
+                        dropped_detail.append(f"{_row_drop_label(row)} uat_repo_not_clear")
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
-                if str(row.get("task") or "").upper() == "FR" and row_skip_fr_reason(row):
+                if task_u == "FR" and row_skip_fr_reason(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue  # FR #180 local junk
-                if str(row.get("task") or "").upper() == "FR" and not fr_row_offerable(row):
+                if task_u == "FR" and not fr_row_offerable(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} fr_not_offerable")
                     continue  # FR #846: /pull/ URL is never an FR
-                if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
+                if task_u == "FR" and fr_is_superseded(
                     doc,
-                    str(row.get("repo") or ""),
+                    repo_s,
                     str(row.get("id") or ""),
                     open_pulls=open_pulls_map,
                     fetched_repos=set(fetched),
                 ):
+                    dropped_detail.append(f"{_row_drop_label(row)} fr_superseded")
                     continue  # FR #254
                 # FR #846: drop FR whose id is an open pull number for this repo.
-                if str(row.get("task") or "").upper() == "FR":
-                    urepo = str(row.get("repo") or "")
-                    ident = str(row.get("id") or "")
-                    if ident in (open_pulls_map.get(urepo) or set()):
+                if task_u == "FR":
+                    if ident_n in (open_pulls_map.get(repo_s) or set()):
+                        dropped_detail.append(f"{_row_drop_label(row)} fr_is_open_pull")
                         continue
                 if (
-                    row.get("repo") in fetched_set
-                    and str(row.get("task") or "").upper() == "FR"
-                    and (row.get("repo"), row.get("task"), row.get("id")) not in want
+                    repo_s in fetched_set
+                    and task_u == "FR"
+                    and (repo_s, "FR", ident_n) not in want
                 ):
                     # FR #846: do not preserve closed-issue / closed-PR phantoms via offered_to.
+                    dropped_detail.append(f"{_row_drop_label(row)} fr_not_in_want")
                     continue
                 if (
-                    row.get("repo") in fetched_set
-                    and str(row.get("task") or "").upper() in ("FR", "MRB")
-                    and (
-                        row.get("repo"),
-                        str(row.get("task") or "").upper(),
-                        _norm_row_id(row.get("id")),
-                    )
-                    not in want
+                    repo_s in fetched_set
+                    and task_u in ("FR", "MRB")
+                    and (repo_s, task_u, ident_n) not in want
                     and not mrb_row_should_survive_resync(
                         row, want=want, fetched=fetched_set
                     )
                 ):
+                    # FR #2899: still-open pull that missed desired (label race / transient
+                    # want miss) must survive — unless this cycle classified it draft/receipt.
+                    if (
+                        task_u == "MRB"
+                        and ident_n in (open_pulls_map.get(repo_s) or set())
+                        and (repo_s, ident_n) not in skipped_open_pulls
+                    ):
+                        _heal_mrb_pull_url(row)
+                        keep.append(row)
+                        continue
                     # FR #1323 / #2458: drop MERGED/closed even when offered_to is set
+                    dropped_detail.append(f"{_row_drop_label(row)} not_in_want")
                     continue
                 # FR #1323 / #1585: drop ledger-held MRB only when GitHub no longer wants it.
                 # Open pulls in ``want`` must survive keep so offered_to/seq are preserved;
                 # stale mrb_done stamps are cleared below when re-enqueueing desired MRBs.
                 if (
-                    str(row.get("task") or "").upper() == "MRB"
-                    and mrb_ledger_done_hold(
-                        home, str(row.get("repo") or ""), str(row.get("id") or "")
+                    task_u == "MRB"
+                    and mrb_ledger_done_hold(home, repo_s, ident_n)
+                    and (repo_s, "MRB", ident_n) not in want
+                    and not (
+                        ident_n in (open_pulls_map.get(repo_s) or set())
+                        and (repo_s, ident_n) not in skipped_open_pulls
                     )
-                    and (row.get("repo"), row.get("task"), row.get("id")) not in want
                 ):
+                    dropped_detail.append(f"{_row_drop_label(row)} mrb_ledger_done")
                     continue
                 keep.append(row)
             dropped = before - len(keep)
@@ -5536,11 +5609,14 @@ def resync_from_github(
             # (covers id-shape / offered_to edge cases the keep loop may miss).
             # Do not pass home here: without an open-PR checker, ledger mrb_done would
             # re-kill still-open rows (FR #1585). open_pulls alone is the truth for this pass.
-            dropped += _purge_dead_mrb_unaccepted(
+            purged_n = _purge_dead_mrb_unaccepted(
                 doc,
                 open_pulls=open_pulls_map,
                 fetched_repos=fetched_set,
             )
+            if purged_n:
+                dropped += purged_n
+                dropped_detail.append(f"purge_dead_mrb x{purged_n}")
             added = 0
             fetched_set2 = set(fetched)
             # Premature DONE while GitHub issue/PR still open: pull those rows out of done
@@ -5725,6 +5801,7 @@ def resync_from_github(
                 "unaccepted": len(doc["unaccepted"]),
                 "added": added,
                 "dropped": dropped,
+                "dropped_detail": list(dropped_detail),
                 "skipped_draft": int(skipped_draft),
                 "focus_pruned": int(focus_pruned),
                 "focus_redundant": int(focus_redundant),

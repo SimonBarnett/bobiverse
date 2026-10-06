@@ -230,10 +230,13 @@ def resync_cycle(home: Path, *, token: str, ignored, fetch_json=None, owners: se
     repos = discover_repos(home, owners, getter, ignored)
     if not repos:
         return {"ok": True, "unaccepted": len(gitclaim.load_unaccepted(home)), "added": 0, "dropped": 0,
-                "repos": [], "failed": [], "note": "no repos", "pruned": pruned.get("dropped", 0)}
+                "repos": [], "failed": [], "note": "no repos", "pruned": pruned.get("dropped", 0),
+                "pruned_detail": list(pruned.get("dropped_detail") or []),
+                "dropped_detail": []}
     out = gitclaim.resync_from_github(home, repos, fetch_json=getter, token=token, ignored=list(ignored))
     if isinstance(out, dict):
         out["pruned"] = int(pruned.get("dropped") or 0)
+        out["pruned_detail"] = list(pruned.get("dropped_detail") or [])
     return out
 
 
@@ -339,7 +342,14 @@ class ChairJobs:
             self.last_resync, self.last_resync_at = res, self.clock()
             if res.get("ok"):
                 self.log(f"INFO github-resync ok repos={len(res.get('repos') or [])} failed={len(res.get('failed') or [])} "
-                         f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} unaccepted={res.get('unaccepted', 0)}")
+                         f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
+                         f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
+                         f"unaccepted={res.get('unaccepted', 0)}")
+                # FR #2899: name every dropped row + reason (never only dropped=N).
+                for detail in list(res.get("dropped_detail") or [])[:40]:
+                    self.log(f"INFO github-resync dropped {detail}")
+                for detail in list(res.get("pruned_detail") or [])[:40]:
+                    self.log(f"INFO github-resync pruned {detail}")
             else:
                 self.log(f"WARN github-resync failed: {res.get('error')}")
         except Exception as exc:  # noqa: BLE001
