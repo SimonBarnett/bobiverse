@@ -64,17 +64,20 @@ def is_do_not_file_probe(*, title: str, body: str = "") -> bool:
 # Bare "FR #N", "CLOSED", or "merged" alone are common in real playbook harvests
 # (MRB #2597); those must still open draft PRs. Receipts use DONE/GIVEUP/SKIP/
 # self-MRB/twin/"duplicate of".
+# FR #2650: also PASS/FAIL — "harvest: MRB #N PASS: merged" was filed as a draft
+# PR and offered as MRB via the PR-opened webhook (#2647 class).
 _HARVEST_KIND_RECEIPT_MARKER = re.compile(
-    r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE)\b"
+    r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|PASS|FAIL)\b"
     r"|\bduplicate of\b"
 )
 
 
 def is_harvest_worker_receipt(*, kind: str, title: str, body: str) -> bool:
-    """kind=harvest session rows that are DONE/twin/GIVEUP receipts (FR #2595).
+    """kind=harvest session rows that are DONE/PASS/FAIL/twin/GIVEUP receipts.
 
-    These must not stay as open draft PRs (webhook would enqueue them as FR work).
-    Real playbook harvests without receipt markers still open draft PRs.
+    FR #2595 / #2650: these must not stay as open draft PRs (webhook would
+    enqueue them as MRB work). Real playbook harvests without receipt markers
+    still open draft PRs (MRB #2597: bare FR #N / merged alone are not enough).
     """
     if str(kind or "").strip().lower() != "harvest":
         return False
