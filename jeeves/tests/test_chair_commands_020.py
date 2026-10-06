@@ -85,8 +85,12 @@ def chair(tmp_path, monkeypatch):
     import agent_control
     monkeypatch.setattr(agent_control, "request_agent_quit", lambda *a, **k: c.recycled.append("quit"))
     gitclaim._write_queue(gitclaim.queue_path(tmp_path), {"v": 1, "accepted": [], "unaccepted": [
-        {"repo": "o/a", "task": "FR", "id": "#1", "seq": 1, "ts": "2026-10-01T10:00:01Z", "line": "x", "title": "fr one"},
-        {"repo": "o/b", "task": "MRB", "id": "#2", "seq": 2, "ts": "2026-10-01T10:00:02Z", "line": "x", "title": "mrb two"},
+        # FR #2730: stamp open + issues URL so offline structural FR #2340 checks stay green.
+        {"repo": "o/a", "task": "FR", "id": "#1", "seq": 1, "ts": "2026-10-01T10:00:01Z", "line": "x",
+         "title": "fr one", "state": "open", "event": "issues",
+         "url": "https://github.com/o/a/issues/1"},
+        {"repo": "o/b", "task": "MRB", "id": "#2", "seq": 2, "ts": "2026-10-01T10:00:02Z", "line": "x",
+         "title": "mrb two", "url": "https://github.com/o/b/pull/2"},
     ]})
     return c
 
@@ -305,7 +309,11 @@ def test_ear_bare_recycle_is_left_to_the_chair_route():
     assert 'if kind == "refuse" and machine_id is None:' not in t
 
 # ------------------------------------------------------------------ !assign (t849u)
-def test_assign_owner_and_ear_post_normal_line_as_jeeves(chair):
+def test_assign_owner_and_ear_post_normal_line_as_jeeves(chair, monkeypatch):
+    # FR #2730: with a live GH token, issue_open(o/a#1) 404s and refuses; stub checkers.
+    monkeypatch.setattr(gitclaim, "github_is_pull_checker", lambda **k: (lambda r, n: False))
+    monkeypatch.setattr(gitclaim, "github_issue_open_checker", lambda **k: (lambda r, n: True))
+    monkeypatch.setattr(gitclaim, "github_pr_exists_checker", lambda **k: (lambda r, n: True))
     chair.acct["simon"] = "simon"
     out = pm(chair, "simon", "!assign marchhare-41928 o/a FR 1")
     assert out == ["assign: sent marchhare-41928: FR o/a#1 https://github.com/o/a/issues/1"], out
@@ -346,3 +354,26 @@ def test_help_lists_assign_with_usage_and_rules(chair):
     assert "self-MRB/UAT" in blob and "idle" in blob and "simon" in blob
     # strangers do not see it
     assert not any(l.startswith("!assign") for l in pm(chair, "mallory", "!help"))
+
+def test_fr2730_assign_refuses_when_issue_open_says_closed(chair, monkeypatch):
+    # FR #2730: chair !assign path must refuse CLOSED FRs via live issue_open (FR #2340).
+    monkeypatch.setattr(gitclaim, "github_is_pull_checker", lambda **k: (lambda r, n: False))
+    monkeypatch.setattr(gitclaim, "github_issue_open_checker", lambda **k: (lambda r, n: False))
+    monkeypatch.setattr(gitclaim, "github_pr_exists_checker", lambda **k: (lambda r, n: True))
+    chair.acct["simon"] = "simon"
+    out = pm(chair, "simon", "!assign marchhare-41928 o/a FR 1")
+    assert out and out[0].startswith("assign: refused"), out
+    assert "CLOSED" in out[0] or "pull" in out[0].lower(), out
+    assert not any(s.startswith("PRIVMSG #marchhare") for s in chair.sent)
+
+
+def test_fr2730_assign_refuses_when_is_pull_true(chair, monkeypatch):
+    # FR #2730: chair !assign path must refuse FR rows that are actually pulls.
+    monkeypatch.setattr(gitclaim, "github_is_pull_checker", lambda **k: (lambda r, n: True))
+    monkeypatch.setattr(gitclaim, "github_issue_open_checker", lambda **k: (lambda r, n: True))
+    monkeypatch.setattr(gitclaim, "github_pr_exists_checker", lambda **k: (lambda r, n: True))
+    chair.acct["simon"] = "simon"
+    out = pm(chair, "simon", "!assign marchhare-41928 o/a FR 1")
+    assert out and out[0].startswith("assign: refused"), out
+    assert "pull" in out[0].lower() or "CLOSED" in out[0], out
+    assert not any(s.startswith("PRIVMSG #marchhare") for s in chair.sent)
