@@ -78,10 +78,202 @@ def is_harvest_worker_receipt(*, kind: str, title: str, body: str) -> bool:
     FR #2595 / #2650: these must not stay as open draft PRs (webhook would
     enqueue them as MRB work). Real playbook harvests without receipt markers
     still open draft PRs (MRB #2597: bare FR #N / merged alone are not enough).
+    FR #2705: receipt markers never drop Lessons — callers that see lessons must
+    open a non-draft skill-book PR instead of receipt_recorded alone.
     """
     if str(kind or "").strip().lower() != "harvest":
         return False
     return bool(_HARVEST_KIND_RECEIPT_MARKER.search(f"{title or ''}\n{body or ''}"))
+
+
+# FR #2705: Lessons: bullets that are real playbook lines (not the placeholder).
+_LESSONS_SECTION_RE = re.compile(
+    r"(?is)(?:^|\n)\s*Lessons:\s*\n(?P<body>.*?)(?=\n\s*_[a-z]|\n\s*Existing PR:|\Z)"
+)
+_LESSON_BULLET_RE = re.compile(r"(?m)^\s*[-*]\s+(?P<text>.+?)\s*$")
+_LESSON_PLACEHOLDER_RE = re.compile(r"(?i)^\(?\s*no new playbook line\s*\)?$")
+HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
+LESSON_PR_MRB_INSTRUCTION = (
+    "MRB: verify that the lesson is generalised and placed in the right SKILL.md "
+    "(move or reword it if not), then merge."
+)
+DEFAULT_SKILL_BOOK = "harvest"
+SKILL_BOOK_PATHS: dict[str, str] = {
+    "harvest": "common/.grok/skills/harvest/SKILL.md",
+    "harvest-agent-skills": "common/.grok/skills/harvest-agent-skills/SKILL.md",
+    "bobiverse-fleet-ops": "common/.grok/skills/bobiverse-fleet-ops/SKILL.md",
+    "bobiverse-bob": "bob/.grok/skills/bobiverse-bob/SKILL.md",
+    "bobiverse-bob-worker": "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
+    "bobiverse-bob-job-irc": "bob/.grok/skills/bobiverse-bob-job-irc/SKILL.md",
+    "bobiverse-bob-job-fr": "bob/.grok/skills/bobiverse-bob-job-fr/SKILL.md",
+    "bobiverse-bob-job-mrb": "bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md",
+    "bobiverse-bob-job-uat": "bob/.grok/skills/bobiverse-bob-job-uat/SKILL.md",
+    "bobiverse-bob-commands": "bob/.grok/skills/bobiverse-bob-commands/SKILL.md",
+    "bobiverse-bob-troubleshooting": "bob/.grok/skills/bobiverse-bob-troubleshooting/SKILL.md",
+    "bobiverse-bob-plan": "bob/.grok/skills/bobiverse-bob-plan/SKILL.md",
+    "bobiverse-worker-seat": "bob/agents/worker/.grok/skills/bobiverse-worker-seat/SKILL.md",
+    "bobiverse-jeeves": "jeeves/.grok/skills/bobiverse-jeeves/SKILL.md",
+    "bobiverse-jeeves-commands": "jeeves/.grok/skills/bobiverse-jeeves-commands/SKILL.md",
+    "bobiverse-jeeves-monitor": "jeeves/.grok/skills/bobiverse-jeeves-monitor/SKILL.md",
+    "bobiverse-jeeves-troubleshooting": "jeeves/.grok/skills/bobiverse-jeeves-troubleshooting/SKILL.md",
+    "bobiverse-airc": "airc/.grok/skills/bobiverse-airc/SKILL.md",
+    "bobiverse-airc-commands": "airc/.grok/skills/bobiverse-airc-commands/SKILL.md",
+    "bobiverse-airc-troubleshooting": "airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md",
+}
+# (keywords_all_present_lowercase, book_name) — first match wins.
+_SKILL_BOOK_KEYWORD_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("mrb", "hostile"), "bobiverse-bob-job-mrb"),
+    (("mrb",), "bobiverse-bob-job-mrb"),
+    (("uat",), "bobiverse-bob-job-uat"),
+    (("worker", "seat"), "bobiverse-worker-seat"),
+    (("bob-worker",), "bobiverse-bob-worker"),
+    (("outbox", "privmsg"), "bobiverse-worker-seat"),
+    (("jeeves", "monitor"), "bobiverse-jeeves-monitor"),
+    (("jeeves",), "bobiverse-jeeves"),
+    (("airc",), "bobiverse-airc"),
+    (("fleet-ops",), "bobiverse-fleet-ops"),
+    (("hotpatch",), "bobiverse-fleet-ops"),
+    (("plan", "vision"), "bobiverse-bob-plan"),
+)
+
+
+def extract_harvest_lessons(body: str) -> list[str]:
+    """Return real Lessons: bullets; drop the '(no new playbook line)' placeholder (FR #2705)."""
+    text = str(body or "")
+    m = _LESSONS_SECTION_RE.search(text)
+    if not m:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for bm in _LESSON_BULLET_RE.finditer(m.group("body")):
+        line = (bm.group("text") or "").strip()
+        if not line or _LESSON_PLACEHOLDER_RE.match(line):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        out.append(line)
+    return out
+
+
+def resolve_skill_book(
+    *,
+    skill_book: str = "",
+    title: str = "",
+    body: str = "",
+) -> tuple[str, str]:
+    """Map source.skill_book / path / keywords → (book_name, repo-relative SKILL.md path).
+
+    FR #2705: explicit book or path wins; else deterministic keyword routing; else harvest.
+    """
+    raw = str(skill_book or "").strip().replace("\\", "/")
+    if raw:
+        lower = raw.lower()
+        if lower.endswith("skill.md") or "/.grok/skills/" in lower:
+            path = raw.lstrip("/")
+            name = Path(path).parent.name or DEFAULT_SKILL_BOOK
+            return name, path
+        key = lower
+        if key.startswith("bobiverse-"):
+            pass
+        elif key in SKILL_BOOK_PATHS:
+            pass
+        else:
+            # bare name without prefix
+            pass
+        if key in SKILL_BOOK_PATHS:
+            return key, SKILL_BOOK_PATHS[key]
+        # Unknown book name: still target harvest folder named after it under common.
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", key).strip("-") or DEFAULT_SKILL_BOOK
+        if safe in SKILL_BOOK_PATHS:
+            return safe, SKILL_BOOK_PATHS[safe]
+        return safe, f"common/.grok/skills/{safe}/SKILL.md"
+
+    blob = f"{title or ''}\n{body or ''}".lower()
+    for keys, book in _SKILL_BOOK_KEYWORD_HINTS:
+        if all(k in blob for k in keys):
+            return book, SKILL_BOOK_PATHS[book]
+    return DEFAULT_SKILL_BOOK, SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
+
+
+def apply_lessons_to_skill_md(existing: str, lessons: list[str]) -> str:
+    """Append lessons under ``## Harvested lessons (intake)`` (FR #2705)."""
+    base = str(existing or "").rstrip() + "\n"
+    bullets = "\n".join(f"- {x}" for x in lessons if str(x).strip())
+    if not bullets:
+        return base
+    heading = HARVESTED_LESSONS_HEADING
+    if heading in base:
+        # Append under existing heading (before any later ## if present after it).
+        idx = base.index(heading)
+        after = base[idx + len(heading) :]
+        next_h = re.search(r"\n##\s+", after)
+        if next_h:
+            insert_at = idx + len(heading) + next_h.start()
+            return base[:insert_at].rstrip() + "\n" + bullets + "\n" + base[insert_at:]
+        return base.rstrip() + "\n" + bullets + "\n"
+    return base.rstrip() + "\n\n" + heading + "\n\n" + bullets + "\n"
+
+
+def _filer_get_file(filer: Any, repo: str, path: str) -> str:
+    getter = getattr(filer, "get_file_content", None)
+    if not callable(getter):
+        return ""
+    try:
+        val = getter(repo, path)
+    except Exception:
+        return ""
+    return str(val or "")
+
+
+def _filer_create_pr(
+    filer: Any,
+    repo: str,
+    title: str,
+    body: str,
+    branch: str,
+    files: list[dict[str, str]],
+    labels: list[str],
+    *,
+    draft: bool,
+) -> dict[str, Any]:
+    """Prefer create_pr (non-draft) / create_draft_pr; Fake supports both (FR #2705)."""
+    if draft:
+        return filer.create_draft_pr(repo, title, body, branch, files, labels)
+    create_pr = getattr(filer, "create_pr", None)
+    if callable(create_pr):
+        return create_pr(repo, title, body, branch, files, labels)
+    # Fallback: draft API with draft=False kw if supported.
+    try:
+        return filer.create_draft_pr(
+            repo, title, body, branch, files, labels, draft=False  # type: ignore[call-arg]
+        )
+    except TypeError:
+        out = filer.create_draft_pr(repo, title, body, branch, files, labels)
+        return out
+
+
+def build_lesson_pr_title(book: str, lessons: list[str]) -> str:
+    first = (lessons[0] if lessons else "harvest lesson").strip()
+    tip = first[:72] + ("…" if len(first) > 72 else "")
+    return f"lesson({book}): {tip}"
+
+
+def build_lesson_pr_body(*, book: str, path: str, lessons: list[str], original_body: str) -> str:
+    lines = [
+        LESSON_PR_MRB_INSTRUCTION,
+        "",
+        f"Target skill book: `{book}` (`{path}`).",
+        "",
+        "Lessons:",
+        *[f"- {x}" for x in lessons],
+        "",
+        "---",
+        "",
+        str(original_body or "").rstrip(),
+        "",
+    ]
+    return "\n".join(lines)
 
 
 _PR_URL_RE = re.compile(
@@ -133,6 +325,21 @@ class GitHubFiler(Protocol):
     ) -> dict[str, Any]:
         """Return {url, number, branch}. May raise GitHubDown."""
 
+    def create_pr(
+        self,
+        repo: str,
+        title: str,
+        body: str,
+        branch: str,
+        files: list[dict[str, str]],
+        labels: list[str],
+    ) -> dict[str, Any]:
+        """Return {url, number, branch} for a non-draft PR (FR #2705 lesson PRs)."""
+
+    def get_file_content(self, repo: str, path: str) -> str:
+        """Optional: current file contents on the default branch (FR #2705)."""
+        return ""
+
     def find_pull_by_head(self, repo: str, head_branch: str) -> dict[str, Any] | None:
         """Optional: return {url, number, branch} for an existing head branch, else None."""
         return None
@@ -152,6 +359,7 @@ class FakeGitHubFiler:
 
     issues: list[dict[str, Any]] = field(default_factory=list)
     prs: list[dict[str, Any]] = field(default_factory=list)
+    repo_files: dict[str, str] = field(default_factory=dict)
     down: bool = False
     _n: int = 1000
 
@@ -170,6 +378,11 @@ class FakeGitHubFiler:
         self.issues.append(row)
         return {"url": row["url"], "number": self._n}
 
+    def get_file_content(self, repo: str, path: str) -> str:
+        _ = repo
+        key = str(path or "").replace("\\", "/").lstrip("/")
+        return str(self.repo_files.get(key) or "")
+
     def create_draft_pr(
         self,
         repo: str,
@@ -178,6 +391,35 @@ class FakeGitHubFiler:
         branch: str,
         files: list[dict[str, str]],
         labels: list[str],
+    ) -> dict[str, Any]:
+        return self._add_pr(
+            repo, title, body, branch, files, labels, draft=True
+        )
+
+    def create_pr(
+        self,
+        repo: str,
+        title: str,
+        body: str,
+        branch: str,
+        files: list[dict[str, str]],
+        labels: list[str],
+    ) -> dict[str, Any]:
+        """Non-draft PR (FR #2705 harvest-lesson skill-book edits)."""
+        return self._add_pr(
+            repo, title, body, branch, files, labels, draft=False
+        )
+
+    def _add_pr(
+        self,
+        repo: str,
+        title: str,
+        body: str,
+        branch: str,
+        files: list[dict[str, str]],
+        labels: list[str],
+        *,
+        draft: bool,
     ) -> dict[str, Any]:
         if self.down:
             raise GitHubDown("github unreachable")
@@ -190,10 +432,14 @@ class FakeGitHubFiler:
             "branch": branch,
             "files": list(files),
             "labels": list(labels),
-            "draft": True,
+            "draft": bool(draft),
             "url": f"https://github.com/{repo}/pull/{self._n}",
         }
         self.prs.append(row)
+        for item in files or []:
+            p = str(item.get("path") or "").replace("\\", "/").lstrip("/")
+            if p:
+                self.repo_files[p] = str(item.get("content") or "")
         return {"url": row["url"], "number": self._n, "branch": branch}
 
     def find_pull_by_head(self, repo: str, head_branch: str) -> dict[str, Any] | None:
@@ -571,6 +817,8 @@ def file_submission(
     }
     # FR #2595: probes never file. Harvest worker receipts record-only (no draft PR)
     # unless FR #1812 already cites an existing PR URL (link, still no second filing).
+    # FR #2705: Lessons always open a non-draft skill-book PR (receipt / existing-PR
+    # markers suppress only the status part; they never drop lessons).
     raw_body = str(norm.get("body") or "")
     if is_do_not_file_probe(title=title, body=raw_body):
         rec["state"] = "dropped_probe"
@@ -586,10 +834,66 @@ def file_submission(
         else:
             branch = f"intake/{iid}"
             files = list(norm.get("files") or [])
+            lessons = extract_harvest_lessons(raw_body)
+            if kind in ("harvest", "skill") and lessons:
+                src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
+                book, skill_path = resolve_skill_book(
+                    skill_book=str((src or {}).get("skill_book") or ""),
+                    title=title,
+                    body=raw_body,
+                )
+                existing_md = _filer_get_file(filer, repo, skill_path)
+                new_md = apply_lessons_to_skill_md(existing_md, lessons)
+                lesson_files = [{"path": skill_path, "content": new_md}]
+                lesson_title = build_lesson_pr_title(book, lessons)
+                lesson_body = build_lesson_pr_body(
+                    book=book,
+                    path=skill_path,
+                    lessons=lessons,
+                    original_body=body,
+                )
+                lesson_labels = ["via-intake", "harvest-lesson"]
+                try:
+                    out = _filer_create_pr(
+                        filer,
+                        repo,
+                        lesson_title,
+                        lesson_body,
+                        branch,
+                        lesson_files,
+                        lesson_labels,
+                        draft=False,
+                    )
+                    rec["url"] = out["url"]
+                    rec["number"] = out["number"]
+                    rec["branch"] = out.get("branch")
+                    rec["state"] = "filed"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = len(lessons)
+                except Exception as exc:
+                    rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                    rec["state"] = "queued"
+                    rec["queued"] = True
+                    outbox = intake_root(home) / "outbox" / f"{iid}.json"
+                    safe_norm = dict(norm)
+                    safe_norm["contact"] = ""
+                    if norm.get("contact_public") and norm.get("contact"):
+                        safe_norm["contact"] = _redact(str(norm["contact"]))
+                    outbox.write_text(
+                        json.dumps(
+                            {"norm": safe_norm, "intake_id": iid, "quarantine": quarantine},
+                            indent=2,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    _save_record(home, rec)
+                    raise GitHubDown(
+                        "harvest lesson PR filing failed", reason="github_down"
+                    ) from exc
             # FR #1812: skill/harvest summary that already cites an open PR -> link, no second issue.
-            existing = extract_existing_pr_ref(repo, title, body)
-            if not files and existing is not None:
-                num, url = existing
+            elif not files and extract_existing_pr_ref(repo, title, body) is not None:
+                num, url = extract_existing_pr_ref(repo, title, body)  # type: ignore[misc]
                 rec["url"] = url
                 rec["number"] = num
                 rec["state"] = "linked_existing_pr"
@@ -802,17 +1106,23 @@ def drain_intake_outbox(
     *,
     limit: int = 20,
     dry_run: bool = False,
+    source_dir: Path | str | None = None,
 ) -> DrainResult:
     """Retry queued filings when GitHub is back (FR #2595 receipt-aware).
 
     Rules per outbox row:
     - drop do-not-file probes
     - skip when idempotency key already settled, or ``intake/<iid>`` PR exists
-    - harvest worker receipts: record-only (no draft PR / no offerable webhook)
+    - harvest worker receipts with no Lessons: record-only (no draft PR / no offer)
+    - harvest with Lessons: non-draft skill-book PR via ``file_submission`` (FR #2705)
     - otherwise file via ``file_submission``
+    - ``source_dir``: optional hold directory (e.g. outbox-hold-2583) instead of outbox
     - ``dry_run=True``: count only; leave outbox files and GitHub untouched
     """
-    root = intake_root(home) / "outbox"
+    if source_dir is not None:
+        root = Path(source_dir)
+    else:
+        root = intake_root(home) / "outbox"
     stats = DrainResult(dry_run=bool(dry_run))
     for path in sorted(root.glob("*.json"))[: max(0, int(limit))]:
         try:
@@ -891,7 +1201,11 @@ def drain_intake_outbox(
                 path.unlink(missing_ok=True)
             continue
 
-        if is_harvest_worker_receipt(kind=kind, title=title, body=body):
+        # FR #2705: Lessons in a receipt body must file (skill-book PR), not record-only.
+        if (
+            is_harvest_worker_receipt(kind=kind, title=title, body=body)
+            and not extract_harvest_lessons(body)
+        ):
             stats.recorded_receipt.append(iid)
             if not dry_run:
                 try:
@@ -903,7 +1217,7 @@ def drain_intake_outbox(
                 path.unlink(missing_ok=True)
             continue
 
-        # Real playbook / issue / skill / fr row.
+        # Real playbook / issue / skill / fr row (including harvest Lessons).
         if dry_run:
             stats.filed.append(iid)
             continue
@@ -1005,13 +1319,18 @@ def write_local_report_outbox(
 
 
 def _cli_drain(argv: list[str] | None = None) -> int:
-    """CLI: ``python intake.py drain --home <path> [--limit N] [--dry-run]`` (FR #2595)."""
+    """CLI: ``python intake.py drain --home <path> [--limit N] [--dry-run] [--source-dir]``."""
     import argparse
 
     p = argparse.ArgumentParser(prog="intake.py drain", description="Receipt-aware intake outbox drain")
     p.add_argument("--home", required=True, help="Bobiverse home containing intake/outbox")
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument(
+        "--source-dir",
+        default="",
+        help="Optional hold directory (FR #2705); default is <home>/intake/outbox",
+    )
     ns = p.parse_args(argv)
     home = Path(ns.home)
     try:
@@ -1019,7 +1338,14 @@ def _cli_drain(argv: list[str] | None = None) -> int:
     except Exception:
         _default_filer = None  # type: ignore[assignment]
     filer = _default_filer() if _default_filer else FakeGitHubFiler()
-    stats = drain_intake_outbox(home, filer, limit=int(ns.limit), dry_run=bool(ns.dry_run))
+    src = str(ns.source_dir or "").strip() or None
+    stats = drain_intake_outbox(
+        home,
+        filer,
+        limit=int(ns.limit),
+        dry_run=bool(ns.dry_run),
+        source_dir=src,
+    )
     counts = stats.as_counts()
     print(json.dumps(counts, indent=2))
     return 0
@@ -1030,7 +1356,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help"):
-        print("usage: intake.py drain --home <path> [--limit N] [--dry-run]")
+        print(
+            "usage: intake.py drain --home <path> [--limit N] [--dry-run] [--source-dir PATH]"
+        )
         return 0
     if args[0] == "drain":
         return _cli_drain(args[1:])

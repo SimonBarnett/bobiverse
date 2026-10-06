@@ -19,6 +19,10 @@ class RaisingDraftFiler(intake.FakeGitHubFiler):
     def create_draft_pr(self, repo, title, body, branch, files, labels):
         raise RuntimeError("gh_filer: draft PR not implemented; use issue fallback")
 
+    def create_pr(self, repo, title, body, branch, files, labels):
+        # FR #2705 lesson path also needs a failing create_pr for queue tests.
+        raise RuntimeError("gh_filer: create_pr not implemented; use issue fallback")
+
 
 def _home(name: str) -> Path:
     p = ROOT / "tests" / name
@@ -27,13 +31,17 @@ def _home(name: str) -> Path:
 
 
 def test_fr1812_harvest_with_pr_url_links_no_issue():
+    """No real Lessons + existing PR URL → linked_existing_pr (never a fallback issue)."""
     filer = RaisingDraftFiler()
     home = _home("_tmp_intake_fr1812_link")
     norm = {
         "kind": "harvest",
         "repo": "SimonBarnett/bobiverse",
         "title": "harvest: FR #1657 conflict-marker; PR opened",
-        "body": "Session summary:\nPR opened\n\nLessons:\n- x\n\nhttps://github.com/SimonBarnett/bobiverse/pull/1794\n",
+        "body": (
+            "Session summary:\nPR opened\n\nLessons:\n- (no new playbook line)\n\n"
+            "https://github.com/SimonBarnett/bobiverse/pull/1794\n"
+        ),
         "files": [],
         "source": {"machine": "marchhare", "agent": "Invoke-BobiverseHarvest", "skill_book": "harvest", "version": ""},
         "idempotency_key": "hv-fr1812-link1",
@@ -48,8 +56,39 @@ def test_fr1812_harvest_with_pr_url_links_no_issue():
     assert filer.prs == []
 
 
+def test_fr1812_harvest_pr_url_with_lessons_opens_lesson_pr():
+    """FR #2705: existing PR URL must not drop Lessons — open non-draft skill-book PR."""
+    filer = intake.FakeGitHubFiler()
+    filer.repo_files["common/.grok/skills/harvest/SKILL.md"] = "# Harvest\n"
+    home = _home("_tmp_intake_fr1812_lesson")
+    norm = {
+        "kind": "harvest",
+        "repo": "SimonBarnett/bobiverse",
+        "title": "harvest: FR #1657 conflict-marker; PR opened",
+        "body": (
+            "Session summary:\nPR opened\n\nLessons:\n- conflict markers must be clean\n\n"
+            "https://github.com/SimonBarnett/bobiverse/pull/1794\n"
+        ),
+        "files": [],
+        "source": {"machine": "marchhare", "agent": "Invoke-BobiverseHarvest", "skill_book": "harvest", "version": ""},
+        "idempotency_key": "hv-fr1812-lesson1",
+        "contact": "",
+        "contact_public": False,
+    }
+    rec = intake.file_submission(home, norm, filer, intake_id="in_fr1812lesson")
+    assert rec["state"] == "filed"
+    assert filer.issues == []
+    assert filer.prs
+    assert filer.prs[-1].get("draft") is False
+    assert "harvest-lesson" in filer.prs[-1]["labels"]
+
+
 def test_fr1812_harvest_without_pr_queues_not_issue_fallback():
-    """MRB #2269 / follow-up #2181: harvest draft-PR failure queues; never issue-fallback."""
+    """MRB #2269 / follow-up #2181: harvest PR failure queues; never issue-fallback.
+
+    FR #2705: lesson path uses create_pr; RaisingDraftFiler fails both create_pr and
+    create_draft_pr so the queue path still covers GitHub-down.
+    """
     import pytest
 
     filer = RaisingDraftFiler()
