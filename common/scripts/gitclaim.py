@@ -1299,6 +1299,75 @@ def fr_implementer_seat_from_doc(doc: dict, repo: str, refs) -> str:
     return ""
 
 
+# FR #2623: citing DONE FR must not overwrite the true implementer on an existing MRB row.
+_IMPLEMENTER_KEEP_KEYS = frozenset(
+    {"author_seat", "implementer_seat", "author_nick", "author"}
+)
+
+
+def resolve_done_fr_implementer_seat(
+    doc: dict,
+    *,
+    pr_repo: str,
+    pr_id: str,
+    issue_repo: str,
+    issue_id: str,
+    done_nick: str,
+) -> str:
+    """Seat to stamp as MRB implementer after a DONE FR with a pull URL (FR #2623).
+
+    Prefer (1) an existing MRB row stamp for the pull, then (2) the earliest prior
+    DONE FR that already pointed at the same pull (or same issue+pull). A re-offered
+    FR whose DONE only cites another seat's open PR must keep that earlier
+    implementer — never the citing seat.
+    """
+    want_pr = _norm_row_id(pr_id)
+    for bucket in ("unaccepted", "accepted", "done"):
+        for row in doc.get(bucket) or []:
+            if str(row.get("task") or "").upper() != "MRB":
+                continue
+            if str(row.get("repo") or "") != str(pr_repo or ""):
+                continue
+            if _norm_row_id(row.get("id")) != want_pr:
+                continue
+            seat = str(
+                row.get("implementer_seat")
+                or row.get("author_seat")
+                or row.get("author_nick")
+                or ""
+            ).strip()
+            if seat and bobreport.parse_seat_nick(seat):
+                return canonical_worker_nick(seat) or seat
+
+    pull_num = str(pr_id or "").lstrip("#")
+    pull_needle = f"/pull/{pull_num}"
+    issue_norm = _norm_row_id(issue_id)
+    for row in doc.get("done") or []:
+        if str(row.get("task") or "").upper() != "FR":
+            continue
+        url = str(row.get("url") or row.get("result") or "")
+        if pull_needle not in url:
+            continue
+        parsed = parse_github_pull_url(url)
+        same_pull = bool(parsed and parsed[0] == pr_repo and _norm_row_id(parsed[1]) == want_pr)
+        if not same_pull and pr_repo.lower() not in url.lower():
+            continue
+        same_issue = (
+            str(row.get("repo") or "") == str(issue_repo or "")
+            and _norm_row_id(row.get("id")) == issue_norm
+        )
+        if not (same_pull or same_issue):
+            continue
+        seat = str(row.get("nick") or row.get("done_by") or "").strip()
+        if seat and bobreport.parse_seat_nick(seat):
+            return canonical_worker_nick(seat) or seat
+
+    nick = str(done_nick or "").strip()
+    if nick and bobreport.parse_seat_nick(nick):
+        return canonical_worker_nick(nick) or nick
+    return nick
+
+
 def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
     if claim.task == "FR" and issue_skip_fr_reason(
         title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
@@ -1322,8 +1391,12 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
                 if claim.state:
                     row["state"] = str(claim.state).strip().lower()
                 for k, v in extra.items():
-                    if v:
-                        row[k] = v
+                    if not v:
+                        continue
+                    # FR #2623: keep the true implementer when a citing DONE refreshes the MRB.
+                    if k in _IMPLEMENTER_KEEP_KEYS and str(row.get(k) or "").strip():
+                        continue
+                    row[k] = v
                 _stamp_require_machine(row, claim)
                 return "duplicate"
         return "duplicate"
