@@ -166,6 +166,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 - GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - Hostile MRB for FR #2811: merge origin/main into fr tip first; pin NQ skipped while hold_assigns_while is true; docs/mrb contiguous **FR #2811:** while the harvest hold window must be wide enough for held_until_turn_end/post_bored.
+- Harvest-lesson MRB: FAIL-supersede when tip restates an existing numbered job-mrb intake step (e.g. step 8 wrong-book bob-worker) as a weaker Harvested lessons bullet.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
