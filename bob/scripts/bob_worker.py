@@ -3081,7 +3081,9 @@ class Supervisor:
             if self.sessions:
                 sid = self.sessions[-1]
                 sid_box["sid"] = sid
-            return grok_session_dir(cwd, sid or "")
+            d = grok_session_dir(cwd, sid or "")
+            # GrokTurnWatcher tails the events file (same as make_submit_probe / FR #2696).
+            return (d / "events.jsonl") if d is not None else None
 
         def _on_started(turn: Optional[int], wall: float) -> None:
             if self.bored:
