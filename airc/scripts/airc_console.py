@@ -701,21 +701,25 @@ def resolve_comspec() -> str:
 
 # FR #2580: redirected powershell.exe defaults $OutputEncoding to ASCII, which
 # best-fits non-ASCII (α→a, CJK→?) before airc UTF-8-decodes stdout (U+FFFD).
+# FR #2641: also silence progress records — redirected hosts otherwise emit
+# ``#< CLIXML`` / ``Preparing modules for first use`` on stderr (extra IRC flood
+# and a non-empty StdErr for ExitCode 0 callers).
 PS_UTF8_STDOUT_PREAMBLE = (
+    "$ProgressPreference = 'SilentlyContinue'; "
     "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
     "$OutputEncoding = [Console]::OutputEncoding; "
 )
 
 
 def wrap_ps_script_utf8_stdout(script: str) -> str:
-    """Prefix a PowerShell script so captured stdout is UTF-8 (FR #2580)."""
+    """Prefix a PowerShell script for UTF-8 stdout + silent progress (FR #2580 / #2641)."""
     return PS_UTF8_STDOUT_PREAMBLE + (script or "")
 
 
 def encode_ps_encoded_command(script: str) -> str:
     """Base64 of UTF-16LE script text for ``powershell -EncodedCommand``.
 
-    Always wraps with UTF-8 OutputEncoding so Greek/CJK survive capture (FR #2580).
+    Always wraps with UTF-8 OutputEncoding (FR #2580) and silent progress (FR #2641).
     """
     wrapped = wrap_ps_script_utf8_stdout(script)
     return base64.b64encode(wrapped.encode("utf-16-le")).decode("ascii")
