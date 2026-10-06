@@ -144,6 +144,7 @@ On review:
 1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
 2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
+- Behind-main Jeeves status FRs: merge origin/main into the FR tip before gh pr merge; put Client.__init__/_process_started and Build-Jeeves VERSION pins on docs/mrb-N
 
 ## Skill / markdown diff hygiene (harvest #1616)
 
