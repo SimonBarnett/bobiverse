@@ -110,6 +110,8 @@ When the assigned PR is already **closed**, or a **duplicate/superseded** of wor
 5. If the originating issue is still open only because this duplicate never merged, close it citing the merged fix URLs (not this PR).
 6. **DONE MRB owner/repo#N FAIL <assigned-pr-url>** — nothing after the URL.
 
+**Harvest-lesson twins:** the same rule applies when two `lesson(<book>):` / `harvest-lesson` tips carry the same playbook — FAIL-superseded the later one; never merge the misplaced raw duplicate tip into `harvest` when the playbook belongs (or already landed) in `bobiverse-bob-job-mrb` (MRB #2741 / #2747 / #2750).
+
 Self-MRB remains a separate hand-back (GIVEUP / NACK); this section is for hostile review of a head that lost the race to main.
 
 ## Fix-PR race after DONE (harvest #1981 / MRB #1847)
@@ -144,6 +146,7 @@ On review:
 1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
 2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
+4. **Twin harvest-lesson PRs** for the same book/lesson: FAIL-superseded board, close the later PR citing the merged first; never merge the misplaced raw duplicate tip (MRB #2741 / #2747 / #2750).
 
 ## Skill / markdown diff hygiene (harvest #1616)
 
