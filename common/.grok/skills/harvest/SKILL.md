@@ -166,6 +166,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 - GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - Hostile MRB for FR #2811: merge origin/main into fr tip first; pin NQ skipped while hold_assigns_while is true; docs/mrb contiguous **FR #2811:** while the harvest hold window must be wide enough for held_until_turn_end/post_bored.
+- bob-worker: when post-DONE turn is still open, do not fire harvest_hold_s !bored (or stale-build recycle) until turn_ended or BOB_WORKER_TURN_HOLD_MAX_S (FR #2834).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
