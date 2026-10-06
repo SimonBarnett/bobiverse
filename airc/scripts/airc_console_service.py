@@ -202,8 +202,10 @@ class AircConsoleService:
             on_inflight=self.note_shell_inflight,
             on_idle=self.clear_shell_inflight,
         )
-        # Install root = parent of scripts/ (product tree). Used by FR #77 UPDATE.
-        install_root = str(Path(__file__).resolve().parents[1])
+        # FR #77 / #2949: frozen airc.exe must use resolve_airc_install_root
+        # (sys.executable parent), never Path(__file__).parents[1] under _MEI*.
+        _root = resolve_airc_install_root()
+        install_root = str(_root) if _root is not None else str(Path(__file__).resolve().parents[1])
         ai_root = Path(os.environ.get("AI_ROOT") or self.home.parent.parent)
         # Verb matrix: empty write/exec sets => any base-authenticated nick (documented).
         self.job_store = JobStore(self.home)
