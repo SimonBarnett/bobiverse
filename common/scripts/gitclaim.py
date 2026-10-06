@@ -623,10 +623,17 @@ def is_intake_harvest_receipt_pr(
     labels, ``Invoke-BobiverseHarvest`` / ``Session summary:`` footer, or a receipt
     status word (DONE/PASS/FAIL/GIVEUP/SKIP/twin/…). Real worker promote PRs lack
     ``via-intake`` and receipt-status titles.
+
+    FR #2705: ``harvest-lesson`` / ``lesson(<book>):`` skill-book PRs are offerable MRB
+    work — never treated as receipts.
     """
     title_s = (title or "").strip()
     body_s = body or ""
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    if "harvest-lesson" in labs:
+        return False
+    if re.match(r"(?i)^lesson\s*\(", title_s):
+        return False
     harvestish = bool(HARVEST_TITLE_RE.match(title_s))
     via_intake_skill = "via-intake" in labs and "skill" in labs
     if via_intake_skill and (harvestish or _INTAKE_HARVEST_FOOTER_RE.search(body_s)):

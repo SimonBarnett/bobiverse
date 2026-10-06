@@ -186,6 +186,44 @@ class GhCliFiler:
         except json.JSONDecodeError as exc:
             raise GitHubDown(f"gh api non-json: {text_out[:200]}") from exc
 
+    def get_file_content(self, repo: str, path: str) -> str:
+        """Return UTF-8 file contents from the default branch (FR #2705)."""
+        ensure_gh_token_env()
+        repo = str(repo or "").strip()
+        path = str(path or "").strip().replace("\\", "/").lstrip("/")
+        if not repo or "/" not in repo or not path:
+            return ""
+        try:
+            meta = self._api("GET", f"repos/{repo}/contents/{path}")
+        except GitHubDown:
+            return ""
+        if not isinstance(meta, dict):
+            return ""
+        import base64
+
+        encoding = str(meta.get("encoding") or "")
+        content = str(meta.get("content") or "")
+        if encoding == "base64" and content:
+            try:
+                return base64.b64decode(content.replace("\n", "")).decode("utf-8")
+            except Exception:
+                return ""
+        return content
+
+    def create_pr(
+        self,
+        repo: str,
+        title: str,
+        body: str,
+        branch: str,
+        files: list[dict[str, str]],
+        labels: list[str],
+    ) -> dict[str, Any]:
+        """Create a non-draft PR with the given files (FR #2705 harvest-lesson)."""
+        return self._create_pr_with_files(
+            repo, title, body, branch, files, labels, draft=False
+        )
+
     def create_draft_pr(
         self,
         repo: str,
@@ -201,24 +239,40 @@ class GhCliFiler:
         ``docs/intake-harvest/<branch-safe>.md`` with the harvest body so the
         branch is non-empty. Returns ``{url, number, branch}``.
         """
+        return self._create_pr_with_files(
+            repo, title, body, branch, files, labels, draft=True
+        )
+
+    def _create_pr_with_files(
+        self,
+        repo: str,
+        title: str,
+        body: str,
+        branch: str,
+        files: list[dict[str, str]],
+        labels: list[str],
+        *,
+        draft: bool,
+    ) -> dict[str, Any]:
         ensure_gh_token_env()
         repo = str(repo or "").strip()
         branch = str(branch or "").strip()
+        tag = "create_pr" if not draft else "create_draft_pr"
         if not repo or "/" not in repo:
-            raise GitHubDown("create_draft_pr: bad repo")
+            raise GitHubDown(f"{tag}: bad repo")
         if not branch or ".." in branch or branch.startswith("/"):
-            raise GitHubDown("create_draft_pr: bad branch")
+            raise GitHubDown(f"{tag}: bad branch")
 
         meta = self._api("GET", f"repos/{repo}")
         default_branch = str(meta.get("default_branch") or "main")
         ref = self._api("GET", f"repos/{repo}/git/ref/heads/{default_branch}")
         base_sha = str((ref.get("object") or {}).get("sha") or "")
         if not base_sha:
-            raise GitHubDown(f"create_draft_pr: missing base sha for {default_branch}")
+            raise GitHubDown(f"{tag}: missing base sha for {default_branch}")
         commit = self._api("GET", f"repos/{repo}/git/commits/{base_sha}")
         base_tree = str((commit.get("tree") or {}).get("sha") or "")
         if not base_tree:
-            raise GitHubDown("create_draft_pr: missing base tree")
+            raise GitHubDown(f"{tag}: missing base tree")
 
         entries = list(files or [])
         if not entries:
@@ -235,7 +289,7 @@ class GhCliFiler:
             path = str(item.get("path") or "").strip().replace("\\", "/")
             content = str(item.get("content") or "")
             if not path or ".." in path.split("/") or path.startswith("/"):
-                raise GitHubDown(f"create_draft_pr: bad file path {path!r}")
+                raise GitHubDown(f"{tag}: bad file path {path!r}")
             blob = self._api(
                 "POST",
                 f"repos/{repo}/git/blobs",
@@ -243,7 +297,7 @@ class GhCliFiler:
             )
             blob_sha = str(blob.get("sha") or "")
             if not blob_sha:
-                raise GitHubDown(f"create_draft_pr: blob failed for {path}")
+                raise GitHubDown(f"{tag}: blob failed for {path}")
             tree_items.append(
                 {"path": path, "mode": "100644", "type": "blob", "sha": blob_sha}
             )
@@ -255,7 +309,7 @@ class GhCliFiler:
         )
         tree_sha = str(new_tree.get("sha") or "")
         if not tree_sha:
-            raise GitHubDown("create_draft_pr: tree create failed")
+            raise GitHubDown(f"{tag}: tree create failed")
 
         new_commit = self._api(
             "POST",
@@ -268,7 +322,7 @@ class GhCliFiler:
         )
         commit_sha = str(new_commit.get("sha") or "")
         if not commit_sha:
-            raise GitHubDown("create_draft_pr: commit create failed")
+            raise GitHubDown(f"{tag}: commit create failed")
 
         ref_name = f"refs/heads/{branch}"
         try:
@@ -292,13 +346,13 @@ class GhCliFiler:
                 "body": str(body or ""),
                 "head": branch,
                 "base": default_branch,
-                "draft": True,
+                "draft": bool(draft),
             },
         )
         number = int(pr.get("number") or 0)
         url = str(pr.get("html_url") or "")
         if not number or not url:
-            raise GitHubDown("create_draft_pr: pull create returned no number/url")
+            raise GitHubDown(f"{tag}: pull create returned no number/url")
 
         if labels:
             try:

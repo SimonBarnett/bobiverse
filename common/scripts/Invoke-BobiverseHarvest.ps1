@@ -14,6 +14,8 @@
 .EXAMPLE
   .\Invoke-BobiverseHarvest.ps1 -Summary 'ear restart loop' -Lesson 'Start-Bob must pass --host or the watcher kills the ear'
 .EXAMPLE
+  .\Invoke-BobiverseHarvest.ps1 -Summary 'MRB lesson' -Lesson 'vision-first before hostile tests' -Book bobiverse-bob-job-mrb
+.EXAMPLE
   .\Invoke-BobiverseHarvest.ps1 -Flush
 #>
 [CmdletBinding()]
@@ -23,6 +25,7 @@ param(
     [string[]]$SkillFile = @(),
     [string]$Repo = 'SimonBarnett/bobiverse',
     [string]$ExistingPrUrl = '',  # FR #1812: when set / already in Summary, intake links PR (no fallback skill issue)
+    [string]$Book = 'harvest',  # FR #2705: sets source.skill_book for lesson → SKILL.md routing
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
     [string]$Machine = '',
     [string]$OutboxDir = '',
@@ -336,9 +339,12 @@ $sha = [Security.Cryptography.SHA256]::Create()
 $idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$Repo|$title|$body"))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
 
 # FR #1812: when -Summary/-Lesson already cite https://github.com/.../pull/N (or pass -ExistingPrUrl), intake links that PR and does not file a fallback skill issue.
+# FR #2705: -Book sets source.skill_book so Lessons land in that SKILL.md (default harvest).
+$bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { 'harvest' }
+$bookName = $bookName.Substring(0, [Math]::Min(64, $bookName.Length))
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
-    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = 'harvest'; version = '' }
+    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; version = '' }
 }
 if ($files.Count) { $payload.files = $files }
 $json = $payload | ConvertTo-Json -Depth 6

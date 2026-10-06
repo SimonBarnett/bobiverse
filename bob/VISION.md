@@ -15,7 +15,7 @@ LOCKED
 |----|--------|--------|--------------|-----------|
 | S1 | Ear present | `ircBob` Running; nick `Bob-{mid}` on `#bobiverse` + `#{mid}` | `Get-Service ircBob`; `bob/home/irc.log` JOIN lines | Service stopped or shop not joined |
 | S2 | One-window worker | Tray **Agent** starts one `bob-worker.exe` = one console = one agent | `pytest bob/tests/test_bob_worker_020.py` one-window cases; no `CREATE_NEW_CONSOLE` for agent | Second console / orphan agent |
-| S3 | Inject submits | Jeeves `FROM` lines auto-submit in the TUI (no manual Enter) | `inject_console` gap ≥ 0.20s + double Enter; `test_fr1601_inject_submit_gap.py` | Line sits waiting for Enter (`relay: injected` but agent idle) |
+| S3 | Inject submits | Jeeves `FROM` lines auto-submit in the TUI (no manual Enter) | `inject_console` gap ≥ 0.20s + double Enter; submit-verify probe + Enter-only retry never re-paste (FR #2696); `test_fr1601_inject_submit_gap.py` + `test_fr2696_inject_submit_verify.py` | Line sits waiting for Enter (`relay: injected` but agent idle; no `submit-verify ok` / retries exhausted) |
 | S4 | Shop wire | Program posts `!bored` (after DONE/NACK/GIVEUP harvest hold, FR #1611); agent writes ACK/DONE only to `#{mid}` outbox | `bobiverse-bob-job-irc`; worker.log `bored -> shop` / `harvest-hold` | Model posts `!bored` or PRIVMSG nick/`#bobiverse`; immediate `!bored` before harvest |
 | S5 | CAST IRON harvest | Every gap/skill filed same turn via intake | `Report-BobiverseIntakeIssue.ps1`; AGENTS.md / skills lead with harvest rule | Findings left unfiled |
 
@@ -49,7 +49,7 @@ TipForm tray
 
 bob-worker.exe (one window)
   ├─ IRC seat nick {machine}-{pid} → JOIN #{machine} only
-  ├─ relay: WriteConsoleInput FROM lines (submit gap + Enter×2)
+  ├─ relay: paste/WriteConsoleInput FROM lines (submit gap + Enter×2 + submit-verify Enter-only retry, FR #2696)
   ├─ outbox.txt ← agent ACK/DONE/NACK/GIVEUP / PRIVMSG #{machine}
   └─ program posts !bored; never the model
 
@@ -78,12 +78,12 @@ Tray is the bob UI surface. HTML mocks document tip states for visual UAT later 
 - Product path `/bobiverse/bob`; install `<ai root>\bob`
 - Ear nick `Bob-{machinename}`; worker nick `{machine}-{pid}`
 - Always-new agent (no `--resume` / `--continue`); one window per seat
-- Event-driven inject/relay; submit gap (`BOB_WORKER_SUBMIT_GAP_S`, default 0.20s) + second Enter
+- Event-driven inject/relay; submit gap (`BOB_WORKER_SUBMIT_GAP_S`, default 0.20s) + second Enter; submit-verify probe + Enter-only retry never re-paste (FR #2696, `BOB_WORKER_SUBMIT_VERIFY*`)
 - Shop wire: program `!bored` after harvest hold on DONE/NACK/GIVEUP (FR #1611); agent ACK/DONE/NACK/GIVEUP on `#{machine}` only
 - CAST IRON harvest + intake every session (before the program's next `!bored`); never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only the product service concerned
 
 ## UNKNOWN
 
-- Exact Cursor/Grok TUI paste-mode timing across all host console types (Windows Terminal vs conhost) beyond the FR #1601 defaults
+- Exact Cursor/Grok TUI paste-mode timing across all host console types (Windows Terminal vs conhost) beyond FR #1601 defaults; first-paste race mitigated by FR #2696 submit-verify on grok (cursor still has no durable enqueue probe)
 - Future HTML status site (tray remains primary UI)
