@@ -189,3 +189,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 ## Harvested lessons (intake)
 
 - bob-worker harvest: Invoke-BobiverseHarvest must prefer BOB_NICK then BOB_AGENT_NICK, and seat_env_extra must export both so lesson PR seat= stamps and self-MRB blocks the opener (FR #2790 / MRB #2795).
+- bob-worker submit-verify: stop_fn must match BoredEmitter.ack_job_ref to the injected assign_job_ref — an unrelated open ACK must not return stop/ACK at 0.0s and skip Enter retries
