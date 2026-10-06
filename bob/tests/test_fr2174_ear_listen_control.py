@@ -34,8 +34,9 @@ def test_irc_agent_always_appends_inbound_transcript():
     src = IRC_AGENT.read_text(encoding="utf-8")
     assert "inbound_transcript" in src
     assert "append_inbound" in src
-    # Raw debug dump stays gated; scrubbed transcript must not require BOB_IRC_DEBUG.
-    assert 'self.debug = self.home / "irc.log" if os.environ.get("BOB_IRC_DEBUG") else None' in src
+    # Raw debug dump stays gated (FR #2351 open_debug_log); scrubbed transcript must not require BOB_IRC_DEBUG.
+    assert "open_debug_log" in src and "BOB_IRC_DEBUG" in src
+    assert "self.debug = open_debug_log(self.home, enabled=dbg_on)" in src
     # handle_privmsg must call append_inbound before early returns that skip chat.
     i = src.index("def handle_privmsg")
     body = src[i : src.index("\n    def ", i + 10)]

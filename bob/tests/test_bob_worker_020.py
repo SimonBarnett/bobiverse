@@ -275,7 +275,7 @@ def test_plan_launch_twice_makes_two_agents(tmp_path, monkeypatch):
     monkeypatch.setattr(bw, "resolve_grok_exe", lambda *a, **k: r"C:\g\agent.exe")
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
     (tmp_path / "plan").mkdir()
-    args = type("A", (), {"install_root": str(tmp_path)})()
+    args = type("A", (), {"install_root": str(tmp_path), "machine_id": "testbox"})()
     log = bw.Log(None)
     assert bw.run_plan(args, log) == 0
     assert bw.run_plan(args, log) == 0
@@ -726,7 +726,7 @@ def test_plan_mode_is_hosted_in_this_console_and_ends_with_its_agent(tmp_path, m
     hooks: list = []
     monkeypatch.setattr(bw, "install_ctrl_handler", lambda f: hooks.append(f) or True)
     out: list = []
-    args = types.SimpleNamespace(install_root=str(tmp_path), mode="plan")
+    args = types.SimpleNamespace(install_root=str(tmp_path), mode="plan", machine_id="testbox")
     th = threading.Thread(target=lambda: out.append(bw.run_plan(args, bw.Log(None))), daemon=True)
     th.start()
     assert wait_until(lambda: len(procs) == 1, 3.0)

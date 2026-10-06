@@ -1528,6 +1528,13 @@ function Sync-BobiverseAgentFolders {
             $to = Join-Path $dest ".grok\skills\$sk"
             New-Item -ItemType Directory -Force -Path $to | Out-Null
             Copy-Item -Path (Join-Path $from '*') -Destination $to -Recurse -Force
+            # FR #2835: nested skill-dba\.grok\skills is a foreign skill-book snapshot (SimonBarnett/skill-dba),
+            # not a bobiverse agent instruction copy. Drop it from the staged agent folder so CAST IRON /
+            # Report-BobiverseIntakeIssue pins stay on real bob books only.
+            $nestedDbaGrok = Join-Path $to 'skill-dba\.grok'
+            if (Test-Path -LiteralPath $nestedDbaGrok) {
+                Remove-Item -LiteralPath $nestedDbaGrok -Recurse -Force
+            }
         }
         # The agent runs with cwd = <install>\$n, so the rule's relative '.\scripts\' becomes '..\scripts\' (install-root independent - t780u: no C:\ai baked into the MSI stage).
         Get-ChildItem -LiteralPath (Join-Path $dest '.grok\skills') -Recurse -Filter 'SKILL.md' | ForEach-Object {

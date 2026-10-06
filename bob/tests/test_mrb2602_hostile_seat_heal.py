@@ -48,7 +48,8 @@ def test_mrb2602_launch_cap_refusal_still_gates():
     t = _read(BOB_TRAY)
     launch = t[t.find("public static int Launch") :]
     launch = launch[: launch.find("\n        public static", 1)] if "\n        public static" in launch[1:] else launch
-    assert "CapRefusal()" in launch
+    # Launch gates on CapRefusal(mode); bare CapRefusal() remains on the --seats text path.
+    assert "CapRefusal(mode)" in launch or "CapRefusal()" in launch
 
 
 def test_mrb2602_ensure_script_measure_procs_dryrun_opt_out():

@@ -40,7 +40,8 @@ def test_mrb2528_watcher_escape_hatch_and_default_throw():
 def test_mrb2528_measure_seats_excludes_watch_process_names():
     text = START_WORKER.read_text(encoding="utf-8")
     start = text.index("function Measure-BobTrayWorkerSeats")
-    block = text[start : start + 450]
+    # Comment + Modes default grew past the old 450-char window (same as FR #2835 / fr2523 pin).
+    block = text[start : start + 900]
     assert "bob-worker(-[0-9a-f]+)?\\.exe" in block or r"^bob-worker(-[0-9a-f]+)?\.exe$" in block
     # Comment may mention legacy watch; process filter must still be bob-worker only.
     assert "Where-Object" in block
