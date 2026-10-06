@@ -31,9 +31,9 @@ namespace BobDialogs
         static readonly Regex UrlUserinfoRe = new Regex(
             @"(?i)(https?://)[^/\s:@]+:[^/\s@]+@",
             RegexOptions.Compiled);
-        // Optional quotes around key/value (JSON "api_key": "…"); bare pass:
+        // Optional quotes around key; value is full "..." (FR #2679 multi-word JSON) or bare token.
         static readonly Regex SecretKvRe = new Regex(
-            @"(?i)""?(password|passwd|\bpass\b|secret|token|api[_-]?key|xai_api_key|cursor_api_key|BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|NickServ|SASL)""?\s*[:=]\s*""?[^\s"",}]+""?",
+            @"(?i)""?(password|passwd|\bpass\b|secret|token|api[_-]?key|xai_api_key|cursor_api_key|BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|NickServ|SASL)""?\s*[:=]\s*(?:""[^""]*""|[^\s"",}]+)",
             RegexOptions.Compiled);
         static readonly Regex TokenBlobRe = new Regex(
             @"(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+)\b",
@@ -69,7 +69,7 @@ namespace BobDialogs
 
         public static string Redact(string text)
         {
-            // FR #2411 / FR #2668: parity with Python crash_report.redact
+            // FR #2411 / FR #2668 / FR #2679: parity with Python crash_report.redact
             if (string.IsNullOrEmpty(text)) return "";
             string s = AuthSchemeRe.Replace(text, delegate(Match m) { return m.Groups[1].Value + "=<redacted>"; });
             s = NickServRe.Replace(s, delegate(Match m) { return "NickServ " + m.Groups[1].Value + " <redacted>"; });
