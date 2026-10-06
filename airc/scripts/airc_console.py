@@ -946,18 +946,41 @@ class ShellJobRunner:
         cwd: str | None = None,
         timeout_s: float = SHELL_TIMEOUT_S,
         wait: bool = False,
+        on_inflight: Callable[[str, str], None] | None = None,
+        on_idle: Callable[[str], None] | None = None,
     ) -> None:
         self.on_reply = on_reply
         self.cwd = cwd
         self.timeout_s = timeout_s
         self.wait = wait
+        self.on_inflight = on_inflight
+        self.on_idle = on_idle
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
 
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
 
+        # FR #2612: overlapping shell on the same Query — fail closed with DONE so
+        # Invoke-AircRemote Wait does not hang while a prior job is still emitting.
+        with self._lock:
+            prev = self._threads.get(key)
+            busy = prev is not None and prev.is_alive()
+        if busy:
+            try:
+                req = parse_shell_request(command)
+                jid = req.job_id
+            except ShellRequestError as exc:
+                jid = uuid.uuid4().hex[:8]
+                self._emit(key, f"err id={jid} seq=1 {exc}")
+                self._emit(key, f"DONE id={jid} exit=2")
+                return key
+            self._emit(key, f"err id={jid} seq=1 busy: prior shell still emitting")
+            self._emit(key, f"DONE id={jid} exit=1")
+            return key
+
         def worker() -> None:
+            jid: str | None = None
             try:
                 try:
                     req = parse_shell_request(command)
@@ -966,10 +989,21 @@ class ShellJobRunner:
                     self._emit(key, f"err id={jid} seq=1 {exc}")
                     self._emit(key, f"DONE id={jid} exit=2")
                     return
+                jid = req.job_id
+                if self.on_inflight:
+                    try:
+                        self.on_inflight(key, jid)
+                    except Exception:
+                        pass
                 outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
                 for line in format_shell_replies(outcome):
                     self._emit(key, line)
             finally:
+                if self.on_idle:
+                    try:
+                        self.on_idle(key)
+                    except Exception:
+                        pass
                 with self._lock:
                     self._threads.pop(key, None)
 

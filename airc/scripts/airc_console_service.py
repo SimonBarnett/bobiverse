@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import queue
+import re
 import shutil
 import socket
 import ssl
@@ -58,6 +60,11 @@ RECONNECT_MAX_S = 60.0
 CHANSERV_PROBE_S = 8.0
 NICK_RETRIES_SHOP = 5
 NICK_RETRIES_LOBBY = 20
+# FR #2612: match out/err/DONE id= for in-flight shell tracking + stop flush.
+_SHELL_ID_RE = re.compile(
+    r"^(?:(?:out|err)\s+id=([0-9a-f]+)\s+seq=\d+|DONE\s+id=([0-9a-f]+)\s+exit=-?\d+\s*$)",
+    re.IGNORECASE,
+)
 
 
 _KEEPALIVE_LOG_INTERVAL_S = 3600.0
@@ -192,6 +199,8 @@ class AircConsoleService:
             on_reply=self._on_console_out,
             cwd=cwd,
             wait=False,
+            on_inflight=self.note_shell_inflight,
+            on_idle=self.clear_shell_inflight,
         )
         # Install root = parent of scripts/ (product tree). Used by FR #77 UPDATE.
         install_root = str(Path(__file__).resolve().parents[1])
@@ -224,19 +233,100 @@ class AircConsoleService:
         self._last_ping_sent = 0.0
         self._awaiting_pong = False
         self._force_reconnect = False
+        # FR #2612: durable outbound Query queue survives force_reconnect in-process;
+        # stop flush emits DONE for tracked shell ids so Wait does not hang.
+        self._out_q: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._inflight_lock = threading.Lock()
+        self._shell_inflight: dict[str, str] = {}
+
+    def note_shell_inflight(self, nick: str, job_id: str) -> None:
+        key = (nick or "").strip().lower()
+        jid = (job_id or "").strip().lower()
+        if not key or not jid:
+            return
+        with self._inflight_lock:
+            self._shell_inflight[key] = jid
+
+    def clear_shell_inflight(self, nick: str) -> None:
+        key = (nick or "").strip().lower()
+        with self._inflight_lock:
+            self._shell_inflight.pop(key, None)
+
+    def shell_inflight(self) -> dict[str, str]:
+        with self._inflight_lock:
+            return dict(self._shell_inflight)
+
+    def out_queue_size(self) -> int:
+        return int(self._out_q.qsize())
+
+    def _track_reply_line(self, nick: str, text: str) -> None:
+        m = _SHELL_ID_RE.match((text or "").strip())
+        if not m:
+            return
+        jid = (m.group(1) or m.group(2) or "").lower()
+        if not jid:
+            return
+        key = (nick or "").strip().lower()
+        if text.strip().upper().startswith("DONE"):
+            self.clear_shell_inflight(key)
+        else:
+            self.note_shell_inflight(key, jid)
 
     def _on_console_out(self, nick: str, line: str) -> None:
         # Reply in Query only - never on shop channel (silent).
         # FR #75: chunk deterministically within IRC_SAFE_PAYLOAD (no silent 400 clip).
         # FR #2551: shell/job/session worker threads call this after IRC drop; never let
         # ConnectionError escape into those threads (crash hook / unhandled thread exc).
+        # FR #2612: enqueue first so lines survive force_reconnect; drain best-effort.
         text = (line or "").replace("\n", " ").replace("\r", " ")
+        self._track_reply_line(nick, text)
+        for piece in chunk_irc_text(text, limit=IRC_SAFE_PAYLOAD, prefix=""):
+            self._out_q.put((nick, piece))
         try:
-            for piece in chunk_irc_text(text, limit=IRC_SAFE_PAYLOAD, prefix=""):
-                self.send_privmsg(nick, piece)
+            self.drain_out_queue()
         except ConnectionError as e:
             info(f"INFO console-out-send-err {e}")
             self._force_reconnect = True
+
+    def drain_out_queue(self, *, max_items: int | None = None) -> int:
+        """Send queued Query replies. Leaves remaining items on ConnectionError."""
+        sent = 0
+        while max_items is None or sent < max_items:
+            try:
+                nick, piece = self._out_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self.send_privmsg(nick, piece)
+                sent += 1
+            except ConnectionError:
+                # Put failed line back at the front via a small hold then rest of queue.
+                rest: list[tuple[str, str]] = [(nick, piece)]
+                while True:
+                    try:
+                        rest.append(self._out_q.get_nowait())
+                    except queue.Empty:
+                        break
+                for item in rest:
+                    self._out_q.put(item)
+                self._force_reconnect = True
+                raise
+        return sent
+
+    def flush_stop_dones(self, *, reason: str = "service-stop") -> None:
+        """FR #2612: best-effort DONE for in-flight shells before process exit."""
+        inflight = self.shell_inflight()
+        if not inflight:
+            return
+        safe_reason = (reason or "service-stop").replace("\n", " ").replace("\r", " ")[:80]
+        for nick, jid in list(inflight.items()):
+            self._out_q.put((nick, f"err id={jid} seq=1 {safe_reason}"))
+            self._out_q.put((nick, f"DONE id={jid} exit=1"))
+            self.clear_shell_inflight(nick)
+        try:
+            self.drain_out_queue()
+        except ConnectionError as e:
+            info(f"INFO stop-flush-send-err {e}")
 
     def connect(self) -> None:
         self._registered = False
@@ -670,9 +760,14 @@ class AircConsoleService:
                 # FR #2541: KeyboardInterrupt is BaseException — must not escape past
                 # `except Exception` during service stop mid-recv (crash-sig 6b485fc97e52813b).
                 try:
+                    self.drain_out_queue()
+                except ConnectionError:
+                    self._force_reconnect = True
+                try:
                     self._check_probe_timeout()
                 except KeyboardInterrupt:
                     info("INFO probe interrupted -> stop")
+                    self.flush_stop_dones(reason="probe interrupted")
                     self._stop.set()
                     return
                 except Exception as pe:
@@ -681,6 +776,7 @@ class AircConsoleService:
                     self.sessions.reap_idle()
                 except KeyboardInterrupt:
                     info("INFO reap interrupted -> stop")
+                    self.flush_stop_dones(reason="reap interrupted")
                     self._stop.set()
                     return
                 except Exception as re:
@@ -689,6 +785,7 @@ class AircConsoleService:
                     self._idle_keepalive()
                 except KeyboardInterrupt:
                     info("INFO keepalive interrupted -> stop")
+                    self.flush_stop_dones(reason="keepalive interrupted")
                     self._stop.set()
                     return
                 except Exception as ke:
@@ -698,6 +795,7 @@ class AircConsoleService:
             except KeyboardInterrupt:
                 # FR #2541: clean stop on service interrupt during recv.
                 info("INFO recv interrupted -> stop")
+                self.flush_stop_dones(reason="recv interrupted")
                 self._stop.set()
                 return
             except Exception as e:
@@ -736,16 +834,27 @@ class AircConsoleService:
             try:
                 self.connect()
                 self.handshake()
+                # FR #2612: after reconnect, drain Query replies queued while the link was down.
+                try:
+                    drained = self.drain_out_queue()
+                    if drained:
+                        info(f"INFO out-queue drained n={drained}")
+                except ConnectionError as e:
+                    info(f"INFO out-queue-drain-err {e}")
+                    self._force_reconnect = True
                 self.read_loop()
                 session_ok = self._registered
             except KeyboardInterrupt:
                 # FR #2541: NSSM stop / Ctrl+C during connect/handshake/read — exit loop.
                 info("INFO session interrupted -> stop")
+                self.flush_stop_dones(reason="session interrupted")
                 self._stop.set()
                 break
             except Exception as e:
                 info(f"INFO session-err {e}")
             finally:
+                if self._stop.is_set():
+                    self.flush_stop_dones(reason="service-stop")
                 self.sessions.close_all()
                 if self.sock:
                     try:

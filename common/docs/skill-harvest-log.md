@@ -669,3 +669,12 @@ Books: airc fr77 / Update-BobiverseService. Tip PR #2613; hostile docs this entr
 | Live: #2612 re-offered to marchhare-39912 ~1 min after 9524 DONE + open PR #2615 | Same keep-done path; sibling should get MRB not FR |
 
 Books: bobiverse-bob-job-fr, chair gitclaim resync. Tip PR #2621; hostile docs this entry. Refs: SimonBarnett/bobiverse#2617 SimonBarnett/bobiverse#2621
+
+## 2026-10-06 - airc long Command stall after seq=1 (FR #2612)
+
+| Lesson | Fix / book |
+|--------|------------|
+| Live MarchHare 80-line Command got only seq=1 then Wait timeout; airc-console.log showed probe interrupted -> stop then process restart mid-emit | Outbound Query queue survives in-process force_reconnect and drains after handshake; graceful stop flushes DONE exit=1 for in-flight shell ids; overlapping shell on same Query returns busy DONE |
+| FLOOD_S 0.35s per line makes large outputs slow | Raise Invoke-AircRemote -TimeoutSec; avoid Restart-Service Airc during live ReplyFile Wait |
+
+Books: bobiverse-airc, bobiverse-airc-troubleshooting. Refs: SimonBarnett/bobiverse#2612
