@@ -122,14 +122,26 @@ def handle_digest_get(home: Path, briefer_nick: str = "") -> tuple[int, bytes]:
 
 
 def handle_health_get(home: Path) -> tuple[int, bytes]:
-    """FR #1136 / #1388: liveness + lock age/holder + last digest write (local loopback / monitors)."""
+    """FR #1136 / #1388 / #2902: liveness + lock age/holder + last digest write.
+
+    A lock held by *this* live PID past ``lock_stale_s`` is still healthy (a write is
+    in progress). Only foreign/dead/absent-stale ages and an unwritable digest dir
+    make ``ok`` false (HTTP 503).
+    """
     bobreport.break_stale_digest_lock(home)
     age = bobreport.digest_lock_age_s(home)
     holder = bobreport.digest_lock_holder_pid(home)
     last = bobreport.last_digest_write_iso(home)
     stale_limit = bobreport.digest_lock_stale_s()
     foreign_limit = bobreport.digest_lock_foreign_s()
-    lock_ok = age is None or age < stale_limit
+    me = os.getpid()
+    own_live = (
+        holder is not None
+        and int(holder) == int(me)
+        and bobreport._pid_alive(int(holder))
+    )
+    # FR #2902: own live holder never trips lock_ok - age alone is not failure.
+    lock_ok = age is None or age < stale_limit or own_live
     writable = True
     try:
         dig = bobreport.digest_path(home)
@@ -146,7 +158,8 @@ def handle_health_get(home: Path) -> tuple[int, bytes]:
         "lock_stale_s": stale_limit,
         "lock_foreign_s": foreign_limit,
         "lock_pid": holder,
-        "pid": os.getpid(),
+        "pid": me,
+        "lock_own": bool(own_live),
         "last_digest_write": last,
         "digest_writable": writable,
     }
@@ -819,8 +832,36 @@ def _health_watchdog_s() -> float:
         return DEFAULT_HEALTH_WATCHDOG_S
 
 
+def _watchdog_try_break(home: Path, *, why: str) -> None:
+    """FR #2902: break only when break_stale actually unlinks; log the real outcome."""
+    holder = bobreport.digest_lock_holder_pid(home)
+    age = bobreport.digest_lock_age_s(home)
+    me = os.getpid()
+    info = None
+    with contextlib.suppress(Exception):
+        info = bobreport.break_stale_digest_lock(home)
+    if info:
+        print(
+            f"INFO health-watchdog broke digest.lock age={info.get('age')} "
+            f"pid={info.get('pid')} reason={info.get('reason')} ({why})",
+            flush=True,
+        )
+        return
+    if holder is not None and int(holder) == int(me):
+        print(
+            f"WARN health-watchdog {why}; left own live digest.lock "
+            f"pid={holder} age={age}",
+            flush=True,
+        )
+        return
+    print(
+        f"WARN health-watchdog {why}; lock untouched holder={holder} age={age}",
+        flush=True,
+    )
+
+
 def _start_health_watchdog(home: Path, host: str, port: int) -> None:
-    """FR #1136: periodic loopback /health; break stale lock on failure (self-heal)."""
+    """FR #1136 / #2902: periodic loopback /health; break stale/foreign lock on failure."""
     import threading
     import urllib.request
 
@@ -841,11 +882,9 @@ def _start_health_watchdog(home: Path, host: str, port: int) -> None:
                 doc = json.loads(raw.decode("utf-8") or "{}")
                 if not doc.get("ok"):
                     print(f"WARN health-watchdog not-ok body={raw[:200]!r}", flush=True)
-                    bobreport.break_stale_digest_lock(home)
+                    _watchdog_try_break(home, why="not-ok")
             except Exception as exc:  # noqa: BLE001 — heal and keep looping
-                print(f"WARN health-watchdog err={exc}; breaking digest.lock", flush=True)
-                with contextlib.suppress(Exception):
-                    bobreport.break_stale_digest_lock(home)
+                _watchdog_try_break(home, why=f"err={exc}")
 
     threading.Thread(target=_loop, name="bobcallback-health-watchdog", daemon=True).start()
 
