@@ -37,12 +37,13 @@ _NICKSERV_RE = re.compile(
 _IRC_PASS_RE = re.compile(r"(?i)\bPASS\s+\S+")
 # https://user:pass@host → strip userinfo
 _URL_USERINFO_RE = re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@")
-# Optional quotes around key/value (JSON "api_key": "…"); include bare pass:
+# Optional quotes around key; value is either a full "..." string (FR #2679 multi-word
+# JSON) or a bare single token (pass: / password=). Prefer quoted form first.
 _SECRET_KV_RE = re.compile(
     r'(?i)"?(?P<key>'
     r"password|passwd|\bpass\b|secret|token|api[_-]?key|xai_api_key|cursor_api_key|"
     r"BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|NickServ|SASL"
-    r')"?\s*[:=]\s*"?[^\s",}]+"?'
+    r')"?\s*[:=]\s*(?:"[^"]*"|[^\s",}]+)'
 )
 _TOKEN_BLOB_RE = re.compile(
     r"(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -63,7 +64,7 @@ def spool_dir() -> Path:
 
 
 def redact(text: str) -> str:
-    """Strip common secret shapes from crash titles/bodies (FR #2411 / FR #2668)."""
+    """Strip common secret shapes from crash titles/bodies (FR #2411 / #2668 / #2679)."""
     s = text or ""
     s = _AUTH_SCHEME_RE.sub(r"\1=<redacted>", s)
     s = _NICKSERV_RE.sub(lambda m: f"NickServ {m.group(1)} <redacted>", s)

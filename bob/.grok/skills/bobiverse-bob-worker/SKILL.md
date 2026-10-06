@@ -116,7 +116,7 @@ A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by 
 
 * `%LOCALAPPDATA%\Bobiverse\worker\logs\bob-worker-agent.log` (start-up selection) and `...\run\worker-<machine>-<pid>-<id>\worker.log` (everything the seat did: IRC, injections, restarts).
 * The tray log (`Open log`) records `worker: started ...` / `plan: started ...`.
-* Never paste a key; the logs never contain one. Crash/spool redact (FR #2411 / FR #2668) covers `password=`/`token=`/`XAI_API_KEY=`, Bearer/Basic, NickServ IDENTIFY/REGISTER, IRC PASS, URL userinfo, and quoted JSON keys — keep fake values only in tests.
+* Never paste a key; the logs never contain one. Crash/spool redact (FR #2411 / FR #2668 / FR #2679) covers `password=`/`token=`/`XAI_API_KEY=`, Bearer/Basic, NickServ IDENTIFY/REGISTER, IRC PASS, URL userinfo, and quoted JSON keys/values (including multi-word `"password": "a b c"`) — keep fake values only in tests.
 
 ## Upgrade / uninstall / seats
 
