@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import os
 import random
@@ -1115,8 +1116,12 @@ class Client:
                 chan = parts[1].lstrip(":") if len(parts) > 1 else trailing
                 gone = (parts[2].lstrip(":") if cmd == "KICK" and len(parts) > 2 else who)
                 self._workers().on_leave(gone, chan)
+                with contextlib.suppress(Exception):
+                    gitclaim.clear_idle_after_empty(self.home, gone)  # FR #2803
             elif cmd == "QUIT":
                 self._workers().on_quit(who)
+                with contextlib.suppress(Exception):
+                    gitclaim.clear_idle_after_empty(self.home, who)  # FR #2803
             elif cmd == "NICK":
                 new = (parts[1] if len(parts) > 1 else trailing).lstrip(":")
                 self._workers().on_nick(who, new)
@@ -2460,6 +2465,8 @@ class Client:
         )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)
+            with contextlib.suppress(Exception):
+                gitclaim.clear_idle_after_empty(self.home, src)  # FR #2803
             line = gitclaim.format_assign_line(src, job)
             self._git_say(target, line)
             info(f"INFO git-claim bored offered {line} nick={src}")
@@ -2478,6 +2485,9 @@ class Client:
                 _empty_stats = None
             # The seat gets ONE short line; the focus/gate breakdown stays in the chair log (not the channel).
             self._git_say(target, gitclaim.format_nothing_queued(src))
+            with contextlib.suppress(Exception):
+                # FR #2803: track for push-on-arrival (no wait for next !bored).
+                gitclaim.note_idle_after_empty(self.home, src, target, now=now)
             try:
                 _detail = gitclaim.format_empty_offer_detail(src, _empty_stats)
             except Exception:  # noqa: BLE001
@@ -2510,6 +2520,8 @@ class Client:
         status, job = gitclaim.accept_offered(self.home, src, bobreport.normalize_channel(target))
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)
+            with contextlib.suppress(Exception):
+                gitclaim.clear_idle_after_empty(self.home, src)  # FR #2803
             line = gitclaim.format_claimed(job)
             if getattr(self.args, "chair", False):
                 try:
@@ -2567,8 +2579,12 @@ class Client:
         try:
             if verb == "ACK" and status in ("ok", "duplicate", "missing") and act:
                 self._workers().on_ack(src, target, act)
+                with contextlib.suppress(Exception):
+                    gitclaim.clear_idle_after_empty(self.home, src)  # FR #2803
             elif verb in ("DONE", "NACK", "GIVEUP"):
                 self._workers().on_done(src, target)
+                with contextlib.suppress(Exception):
+                    gitclaim.clear_idle_after_empty(self.home, src)  # FR #2803
         except Exception as exc:  # noqa: BLE001
             info(f"WARN workers {verb} error {type(exc).__name__}")
             if verb in ("DONE", "NACK", "GIVEUP"):

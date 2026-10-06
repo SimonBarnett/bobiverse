@@ -60,7 +60,7 @@ Install root `<ai root>\jeeves`. Chair home `~\.jeeves` (queue, focus, ignore, c
 | Unaccepted / accepted / done | Chair queue (crash mirror + live webhook path) |
 | Focus | `!focus` / `!unfocus` / strict - sorts `!list` and assign-on-`!bored` |
 | Ignore | `!ignore` / `!unignore` - suppress a repo fleet-wide |
-| Assign | On `!bored`, Jeeves offers next row in focus order; optional owner/ear `!assign` |
+| Assign | On `!bored`, Jeeves offers next row in focus order; optional owner/ear `!assign`. **FR #2803:** seats told `nothing queued` are tracked; when a row is enqueued/becomes offerable, Jeeves pushes `offer_focus_top` to those idle seats (oldest first) without waiting for the next `!bored` (no repeated empty chatter) |
 | Seat ledger | Digest `machines.<id>.workers[]` with state **idle** / **offered** / **doing**; TipForm `working_on` |
 
 Monitor for: empty offer queue while open FRs exist; seats idle with unaccepted work; accepted rows stuck; GIVEUP loops; machine-pin / author-seat blocks leaving work stranded; hand-out empty / `nothing queued` under focus while outside-focus ungated rows remain or `require_machine` shrinks the offerable set (harvest #2243 / #2285).
