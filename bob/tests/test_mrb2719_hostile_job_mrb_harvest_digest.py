@@ -93,7 +93,11 @@ def test_mrb2719_prove_the_claim_literally():
 def test_mrb2719_audit_table_path_present():
     text = _utf8_no_bom(MRB)
     assert "harvest-lessons-audit-2026-10-06.md" in text
-    assert "no separate audit table file on main" not in text
+    assert "The per-lesson table is in" in text
+    idx = text.index("**Digest audit path")
+    window = text[idx : idx + 480]
+    assert "exists on the tip" in window or "missing" in window
+    assert "docs/mrb-N" in window
 
 
 def test_mrb2719_digest_bullets_complete_lines():

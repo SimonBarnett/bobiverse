@@ -50,5 +50,7 @@ def test_mrb2763_job_mrb_has_digest_audit_path_under_harvest_digest():
 
 def test_mrb2763_harvest_lacks_raw_digest_audit_bullet():
     text = _utf8_no_bom(HARVEST)
-    assert "harvest-lessons-audit-2026-10-06.md" not in text
+    # Harvest may cite the audit filename in its own digest intro; the job-mrb playbook
+    # must not be duplicated as a raw "- Harvest-digest skill PRs" bullet here.
     assert "- Harvest-digest skill PRs" not in text
+    assert "**Digest audit path" not in text
