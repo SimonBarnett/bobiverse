@@ -129,7 +129,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (J
 if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
-Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot
+Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot -MsiProductVersion $MsiProductVersion
 # FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
 Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product jeeves
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'jeeves'
