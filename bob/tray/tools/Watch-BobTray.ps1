@@ -2032,6 +2032,8 @@ function Request-BobTrayIrcLogout {
     # CAST IRON (Simon 2026-09-27): closing systray must log off bob IRC account.
     # agentic_irc #250 / FR #453: announce + drain FIRST, then quit.request, wait
     # for irc_agent stop, then Stop-BobiverseMoot. Never kill before announce flush.
+    # FR #2943: prefer the *service* ear home (InstallRoot\home) so LocalSystem ircBob
+    # drains the PRIVMSG / sees agent.quit.request — profile .bobiverse is orphaned.
     # Use $ircHome - $HOME/$home is a read-only automatic variable in PowerShell.
     param(
         [ValidateSet('Exit', 'Restart')]
@@ -2040,11 +2042,33 @@ function Request-BobTrayIrcLogout {
     )
     $ircHome = $null
     try {
-        if (Get-Command Get-BobIrcHome -ErrorAction SilentlyContinue) {
-            $ircHome = Get-BobIrcHome
+        $commonWatch = $null
+        if ($RepoRoot) {
+            $commonWatch = Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1'
+            if (-not (Test-Path -LiteralPath $commonWatch)) {
+                $commonWatch = Join-Path (Split-Path $RepoRoot -Parent) 'common\scripts\Bobiverse-Common.ps1'
+            }
+        }
+        if ($commonWatch -and (Test-Path -LiteralPath $commonWatch) -and -not (Get-Command Get-BobiverseEarServiceHome -ErrorAction SilentlyContinue)) {
+            . $commonWatch
+        }
+        if (Get-Command Get-BobiverseEarServiceHome -ErrorAction SilentlyContinue) {
+            $ircHome = [string](Get-BobiverseEarServiceHome -ServiceName 'ircBob' -InstallRoot $RepoRoot)
         }
     }
     catch { }
+    if (-not $ircHome -and $RepoRoot) {
+        $cand = Join-Path $RepoRoot 'home'
+        if (Test-Path -LiteralPath $cand) { $ircHome = $cand }
+    }
+    if (-not $ircHome) {
+        try {
+            if (Get-Command Get-BobIrcHome -ErrorAction SilentlyContinue) {
+                $ircHome = Get-BobIrcHome
+            }
+        }
+        catch { }
+    }
     if (-not $ircHome) {
         $ircHome = Join-Path $env:USERPROFILE '.bobiverse'
     }

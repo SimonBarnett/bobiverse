@@ -64,6 +64,7 @@ Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai roo
 - Product Sync/ff runs on **ircBob Start-Bob** only — TipForm Start never updates the tree.
 - TipForm menu **Restart** -> `Restart-BobTrayWatcher` -> `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches TipForm in the interactive session so Sync/ff runs on ear start).
 - Ear-only: Desktop / Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` (announce -> `Restart-Service ircBob`).
+- **FR #2943 / VISION S3:** departure PRIVMSG + `depart-request.txt` go to the **service** ear home (`<InstallRoot>\home`, via `Get-BobiverseEarServiceHome`) — the path LocalSystem `Start-Bob` drains — not `%USERPROFILE%\.bobiverse` (orphan undrained outbox).
 - Quiet MSI: `Start-BobTrayInteractive.ps1` registers ONLOGON `/IT` task `BobiverseTray` (no session-0 TipForm).
 - `!recycle` / `!recycle {machine}`: announce -> restart tray + `ircBob`.
 
