@@ -194,3 +194,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - bob-worker: after GIVEUP/NACK/DONE, hold Jeeves assigns in Relay until turn_ended or harvest_hold_s fallback; post_bored flushes before !bored and arms inject-pending (FR #2811).
 - bob-worker: when a post-DONE turn is still open, do not fire harvest_hold_s !bored (or stale-build recycle) until turn_ended or TURN_HOLD_MAX_S (FR #2834).
 - bob-worker: turn_ended with ACK open and no DONE/NACK/GIVEUP arms done-miss remind then release (FR #2875); never invent DONE; ack_stale_s remains last resort.
+- bob-worker: end startup inject/!bored hold on first grok turn_ended after spawn (FR #2884); startup_grace_s remains fallback; startup_min_s floor blocks instant bogus events
