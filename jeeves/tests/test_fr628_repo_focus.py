@@ -231,10 +231,10 @@ def test_ledger_blocks_fr_implementer_and_mrb_reviewer_for_uat_family(_home):
     gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#269"])        # implemented FR #269
     gitclaim.ledger_touch(_home, "ionos-12", "o/a", "MRB", ["o/a#623", "o/a#269"])   # reviewed PR #623 closing #269
     led = gitclaim.ledger_load(_home)
-    # t853u / #781: repo-level UAT only blocks FR implementers (not MRB reviewers).
+    # FR #2939: repo-level UAT blocks FR implementers AND MRB reviewers (worker self-UAT).
     uat = _uat(0, refs=["#269"], merged_prs=["#623"])
     assert "no self-UAT" in gitclaim.ledger_blocks(led, uat, "ionos-11")
-    assert gitclaim.ledger_blocks(led, uat, "ionos-12") == ""
+    assert "no self-UAT" in gitclaim.ledger_blocks(led, uat, "ionos-12")
     assert gitclaim.ledger_blocks(led, uat, "ionos-13") == ""
     mrb = _row("o/a", "MRB", 623, 1, refs=["#269"])
     assert gitclaim.ledger_blocks(led, mrb, "ionos-11")          # implementer can't review own PR
@@ -395,23 +395,28 @@ def _repo_uat_row(**kw):
 
 def test_repo_uat_goes_to_a_seat_that_implemented_none_of_the_merged_prs(_home, monkeypatch):
     gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#10"])
-    gitclaim.ledger_touch(_home, "ionos-12", "o/a", "MRB", ["o/a#10"])         # a reviewer may still run the UAT
+    gitclaim.ledger_touch(_home, "ionos-12", "o/a", "MRB", ["o/a#10"])  # FR #2939: MRB also self-UAT
     monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {"ionos-11", "ionos-12", "ionos-13"})
     _queue(_home, [_repo_uat_row()])
     fi.handle_focus_cmd(_home, "1 o/a")
     assert gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")[0] == "empty"
-    st, job = gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")
+    assert gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")[0] == "empty"
+    st, job = gitclaim.offer_focus_top(_home, "ionos-13", "#ionos")
     assert st == "ok" and (job["task"], job["id"]) == ("UAT", "#0")
 
 
 def test_repo_uat_fallback_when_every_live_seat_implemented_something(_home, monkeypatch):
+    """FR #2939: all self-UAT → escalate (needs_human), do not offer a seat that will refuse."""
     gitclaim.ledger_touch(_home, "ionos-11", "o/a", "FR", ["o/a#10"])
     gitclaim.ledger_touch(_home, "ionos-12", "o/a", "FR", ["o/a#11"])
     monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {"ionos-11", "ionos-12"})
     _queue(_home, [_repo_uat_row()])
     fi.handle_focus_cmd(_home, "1 o/a")
-    assert gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")[0] == "ok"
-    # ... but a seat that already gave the repo UAT up never gets it back
+    assert gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")[0] == "empty"
+    assert gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")[0] == "empty"
+    rows = [r for r in gitclaim.load_unaccepted(_home) if r.get("task") == "UAT"]
+    assert rows and rows[0].get("needs_human") is True and rows[0].get("self_uat_escalated") is True
+    # ... and a seat that already gave the repo UAT up never gets it back
     gitclaim.ledger_giveup(_home, "ionos-12", "o/a", "UAT", "#0")
     assert gitclaim.offer_focus_top(_home, "ionos-12", "#ionos")[0] == "empty"
 

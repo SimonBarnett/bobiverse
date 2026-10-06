@@ -56,8 +56,8 @@ def test_live_seat_nicks_ignores_worker_dict_ghosts(tmp_path, monkeypatch):
     assert "marchhare-41912" not in live
 
 
-def test_repo_uat_escape_hatch_when_only_ghosts_were_unblocked(tmp_path, monkeypatch):
-    """Ghost eligible seats used to prevent 'all live blocked → allow anyone'."""
+def test_repo_uat_live_seats_ignore_ghosts_and_self_uat_stays_blocked(tmp_path, monkeypatch):
+    """FR #1401 live seats + FR #2939: ghosts ignored; self-UAT never escaped."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     _digest_with_ghosts(home)
@@ -72,8 +72,7 @@ def test_repo_uat_escape_hatch_when_only_ghosts_were_unblocked(tmp_path, monkeyp
         "merged_prs": ["#1390"],
         "refs": ["#1390"],
     }
-    # Repo UAT only excludes FR implementers (t853u); stamp FR on every real live seat.
-    # Ghosts never touched — they used to look eligible and block the escape hatch.
+    # Stamp FR on every real live seat. Ghosts never touched and must not count as live.
     for nick in ("marchhare-35600", "marchhare-41928"):
         gitclaim.ledger_touch(
             home,
@@ -86,18 +85,15 @@ def test_repo_uat_escape_hatch_when_only_ghosts_were_unblocked(tmp_path, monkeyp
     led = gitclaim.ledger_load(home)
     live = gitclaim.live_seat_nicks(home)
     assert "marchhare-16564" not in live
+    assert "marchhare-41912" not in live
     assert live
 
-    # Without ghosts, every live seat is blocked → escape clears the block.
+    # FR #2939: every real live seat is self-UAT — stay blocked (escalate, no escape).
     why356 = gitclaim.ledger_blocks(led, uat, "marchhare-35600", live)
-    assert why356 == ""
+    assert why356 and "self-UAT" in why356
     why419 = gitclaim.ledger_blocks(led, uat, "marchhare-41928", live)
-    assert why419 == ""
-
-    # Sanity: with ghosts force-included, escape would NOT fire for 35600.
-    live_with_ghosts = set(live) | {"marchhare-16564", "marchhare-41912"}
-    why_stuck = gitclaim.ledger_blocks(led, uat, "marchhare-35600", live_with_ghosts)
-    assert why_stuck and "self-UAT" in why_stuck
+    assert why419 and "self-UAT" in why419
+    assert gitclaim.repo_uat_no_eligible_live_seat(led, uat, live)
 
 
 def test_live_seat_nicks_falls_back_to_workers_when_list_empty(tmp_path, monkeypatch):

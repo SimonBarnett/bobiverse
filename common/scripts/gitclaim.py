@@ -2141,6 +2141,9 @@ def _coerce_row(row: dict) -> dict | None:
         out["merged_prs"] = [str(x) for x in mp] if isinstance(mp, list) else [str(mp)]
     if row_needs_human(row):
         out["needs_human"] = True
+    # FR #2939: one-shot announce when every live seat is self-UAT for repo UAT #0.
+    if row.get("self_uat_escalated"):
+        out["self_uat_escalated"] = True
     return out
 
 
@@ -3425,9 +3428,9 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
     """Operator counts when !bored yields empty under focus (FR #1993 WP2 / FR #2309).
 
     Returns unaccepted / out_of_focus / require_machine / offerable estimates plus
-    per-nick gate counts: self_mrb, ledger, sticky_offered.
+    per-nick gate counts: self_mrb, self_uat, ledger, sticky_offered.
     ``offerable`` is rows that pass focus (when strict) and are not blocked for ``nick``
-    by machine / self-MRB / ledger / sticky pin to another seat.
+    by machine / self-MRB / self-UAT / ledger / sticky pin to another seat.
     """
     out = {
         "unaccepted": 0,
@@ -3436,6 +3439,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         "offerable": 0,
         "strict": False,
         "self_mrb": 0,
+        "self_uat": 0,
         "ledger": 0,
         "sticky_offered": 0,
     }
@@ -3471,6 +3475,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         out_of_focus = 0
         req_machine = 0
         self_mrb = 0
+        self_uat = 0
         ledger_n = 0
         sticky_n = 0
         for r in rows:
@@ -3504,11 +3509,25 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     sticky_pin = True
             if me:
                 cand = enrich_uat_author_fields(raw if isinstance(raw, dict) else {}, row)
+                if is_repo_uat(cand):
+                    with contextlib.suppress(Exception):
+                        maybe_escalate_repo_uat_all_self_uat(
+                            home, cand, live=live, ledger=ledger
+                        )
                 if review_blocked_for_author(cand, me, live, ledger=ledger):
-                    self_mrb += 1
+                    # Repo UAT exact-author / sibling stamp counts as self_uat (FR #2939);
+                    # MRB exact-author stays self_mrb.
+                    if is_repo_uat(cand) or _canon_task(cand) == "UAT":
+                        self_uat += 1
+                    else:
+                        self_mrb += 1
                     continue
-                if ledger_blocks(ledger, cand, me, live):
-                    ledger_n += 1
+                why = ledger_blocks(ledger, cand, me, live)
+                if why:
+                    if is_repo_uat(cand) and ledger_why_is_self_uat(why):
+                        self_uat += 1
+                    else:
+                        ledger_n += 1
                     continue
                 if row_gave_up_by(cand, me) or row_needs_human(cand, me):
                     ledger_n += 1
@@ -3530,6 +3549,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
         out["require_machine"] = req_machine
         out["offerable"] = offerable
         out["self_mrb"] = self_mrb
+        out["self_uat"] = self_uat
         out["ledger"] = ledger_n
         out["sticky_offered"] = sticky_n
     except Exception:
@@ -3913,6 +3933,7 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
         req = int(stats.get("require_machine") or 0)
         offerable = int(stats.get("offerable") or 0)
         self_mrb = int(stats.get("self_mrb") or 0)
+        self_uat = int(stats.get("self_uat") or 0)
         ledger = int(stats.get("ledger") or 0)
         sticky = int(stats.get("sticky_offered") or 0)
         blocked_other = int(stats.get("blocked_other") or 0)
@@ -3923,6 +3944,8 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
     extra = []
     if self_mrb:
         extra.append(f"self_mrb={self_mrb}")
+    if self_uat:
+        extra.append(f"self_uat={self_uat}")
     if ledger:
         extra.append(f"ledger={ledger}")
     if sticky:
@@ -3944,9 +3967,8 @@ def live_seat_nicks(home: Path) -> set[str]:
 
     Prefer canonical ``worker_list`` (tray / shop feed). Legacy pid-keyed
     ``workers`` often keeps ghost seats that never ``!bored``; counting them as
-    live blocked the repo-UAT escape hatch (when every *real* live seat is
-    ledger-blocked, anyone may take UAT). Fall back to ``workers`` only when
-    ``worker_list`` is empty.
+    live used to strand repo-UAT eligibility math (FR #1401). Fall back to
+    ``workers`` only when ``worker_list`` is empty.
     """
     out: set[str] = set()
     try:
@@ -4208,20 +4230,11 @@ def review_blocked_for_author(
 
     for author in authors:
         author_l = author.lower()
-        # Exact author seat: never self-MRB / self-UAT (FR #628), except repo UAT when
-        # every *other* live seat already GIVEUP'd (FR #1416). Otherwise ledger_blocks
-        # escape lifts the implementer and enrich_uat_author_fields re-blocks them.
+        # Exact author seat: never self-MRB / self-UAT (FR #628).
+        # FR #2939: do not lift exact author when others GIVEUP'd — that escape
+        # disagreed with the worker self-UAT skill and stranded UAT after refuse.
+        # Escalate via maybe_escalate_repo_uat_all_self_uat instead.
         if author_l == me_l:
-            if not repo_uat or ledger is None:
-                return True
-            others = [
-                (canonical_worker_nick(n) or n or "").strip()
-                for n in live
-                if (canonical_worker_nick(n) or n or "").strip()
-                and (canonical_worker_nick(n) or n).strip().lower() != me_l
-            ]
-            if others and all(_seat_gave_up_uat(o) for o in others):
-                continue  # sole non-giveup seat may take stranded repo UAT
             return True
         # FR #2604: MRB self-exclusion is exact seat only — sibling on same machine OK.
         if task == "MRB":
@@ -4376,6 +4389,16 @@ def offer_focus_top(
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
                     return None
                 if ledger_blocks(ledger, cand, me, live):
+                    if is_repo_uat(cand):
+                        with contextlib.suppress(Exception):
+                            if maybe_escalate_repo_uat_all_self_uat(
+                                home,
+                                cand,
+                                live=live,
+                                ledger=ledger,
+                                locked_doc=doc,
+                            ):
+                                purged = True
                     return None
                 if str(cand.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
@@ -4432,6 +4455,16 @@ def offer_focus_top(
                         return None
                 cand_eff = enrich_uat_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live, ledger=ledger, free=free):
+                    if is_repo_uat(cand):
+                        with contextlib.suppress(Exception):
+                            if maybe_escalate_repo_uat_all_self_uat(
+                                home,
+                                cand,
+                                live=live,
+                                ledger=ledger,
+                                locked_doc=doc,
+                            ):
+                                purged = True
                     return None
                 # FR #1093: stamp WP0/issue pins before the machine gate (stale rows).
                 _stamp_require_machine(cand_eff)
@@ -4913,45 +4946,128 @@ def _uat_cycle_fr_touch_count(ledger: dict, row: dict, nick: str) -> int:
     return n
 
 
-def ledger_blocks(ledger: dict, row: dict, nick: str, live=None) -> str:
-    """See ``_ledger_blocks``. For the repo-level UAT (t853u) a seat that implemented any merged PR of the
-    cycle is skipped, unless EVERY *active* live seat did (then escape hatch).
+def ledger_why_is_self_uat(why: str) -> bool:
+    """True when a ledger block reason is self-UAT (authored or MRB'd the cycle)."""
+    w = (why or "").lower()
+    return ("implemented" in w) or ("reviewed" in w) or ("no self-uat" in w)
 
-    FR #1407: seats already in ``giveup_seats`` do not count toward "all blocked". When the
-    escape hatch would fire, prefer the less-involved seat (fewer cycle ``FR`` touches) —
-    a heavy MRB-fix author stays blocked while a lighter implementer may take UAT.
+
+def repo_uat_no_eligible_live_seat(
+    ledger: dict, row: dict, live
+) -> bool:
+    """FR #2939: True when every live seat is giveup- or self-UAT-blocked for repo UAT."""
+    if not is_repo_uat(row):
+        return False
+    seats = {s for s in (live or set()) if str(s or "").strip()}
+    if not seats:
+        return False
+    for s in seats:
+        if row_gave_up_by(row, s):
+            continue
+        why = _ledger_blocks(ledger, row, s)
+        if not why:
+            return False
+        if "gave up" in why:
+            continue
+        if ledger_why_is_self_uat(why):
+            continue
+        # Other ledger block (e.g. FR-done hold) — still not eligible, keep scanning.
+        continue
+    return True
+
+
+def stamp_repo_uat_self_uat_escalate(row: dict) -> bool:
+    """Stamp needs_human + self_uat_escalated on a queue row (in-memory). True if newly stamped."""
+    if not is_repo_uat(row):
+        return False
+    already = bool(row.get("self_uat_escalated"))
+    row["needs_human"] = True
+    row["self_uat_escalated"] = True
+    return not already
+
+
+def announce_repo_uat_self_uat_escalate(home: Path, repo: str) -> bool:
+    """One-shot #bobiverse announce for stranded repo UAT (FR #2939)."""
+    repo_s = (repo or "").strip() or "repo"
+    msg = (
+        f"UAT {repo_s}#0 stranded: every live seat is self-UAT "
+        f"(authored or MRB'd this cycle). Needs a fresh/uninvolved seat or a human."
+    )
+    try:
+        return bool(bobreport.enqueue_chair_fleet_privmsg(home, msg, bobreport.FLEET_CHANNEL))
+    except Exception:
+        return False
+
+
+def maybe_escalate_repo_uat_all_self_uat(
+    home: Path,
+    row: dict,
+    *,
+    live=None,
+    ledger: dict | None = None,
+    locked_doc: dict | None = None,
+) -> bool:
+    """FR #2939: when no live seat can take repo UAT (all self-UAT / giveup), escalate once.
+
+    Stamps ``needs_human`` + ``self_uat_escalated`` on the queue row and announces on
+    #bobiverse that UAT needs a fresh/uninvolved seat or a human. Returns True when
+    this call performed (or confirmed) the escalation.
+
+    When ``locked_doc`` is provided the caller already holds the queue lock — mutate that
+    doc in place and do not re-acquire (file lock is not re-entrant).
     """
-    why = _ledger_blocks(ledger, row, nick)
-    if why and is_repo_uat(row) and "implemented" in why and live:
-        seats = {s for s in live} | {nick}
+    if not is_repo_uat(row):
+        return False
+    if row.get("self_uat_escalated") and row_needs_human(row, ""):
+        return True
+    led = ledger if ledger is not None else ledger_load(home)
+    seats = set(live) if live is not None else live_seat_nicks(home)
+    if not repo_uat_no_eligible_live_seat(led, row, seats):
+        return False
+    repo = str(row.get("repo") or "").strip() or "repo"
+    newly = False
 
-        def _active_for_uat_escape(s: str) -> bool:
-            # FR #1407 / #1416: row giveup_seats AND durable ledger giveup must
-            # not count toward "all blocked". After resync the UAT row often has
-            # empty giveup_seats while ledger still records the GIVEUPs; those
-            # seats have 0 FR touches and used to steal the less-involved pick,
-            # stranding the only implementer who could escape.
-            if row_gave_up_by(row, s):
-                return False
-            other = _ledger_blocks(ledger, row, s)
-            if other and "gave up" in other:
-                return False
-            return True
-
-        active = {s for s in seats if _active_for_uat_escape(s)}
-        pool = active if active else seats
-        if not all(_ledger_blocks(ledger, row, s) for s in pool):
-            return why
-        my_n = _uat_cycle_fr_touch_count(ledger, row, nick)
-        me_l = (canonical_worker_nick(nick) or nick or "").strip().lower()
-        for s in pool:
-            s_l = (canonical_worker_nick(s) or s or "").strip().lower()
-            if s_l == me_l:
+    def _apply(doc: dict) -> bool:
+        nonlocal newly
+        for r in doc.get("unaccepted") or []:
+            if not isinstance(r, dict) or not is_repo_uat(r):
                 continue
-            if _uat_cycle_fr_touch_count(ledger, row, s) < my_n:
-                return why
-        return ""
-    return why
+            if str(r.get("repo") or "").strip().lower() != repo.lower():
+                continue
+            newly = stamp_repo_uat_self_uat_escalate(r)
+            row["needs_human"] = True
+            row["self_uat_escalated"] = True
+            return True
+        # Row not yet in queue (unit test) — stamp the caller copy only.
+        newly = stamp_repo_uat_self_uat_escalate(row)
+        return newly
+
+    try:
+        if locked_doc is not None:
+            _apply(locked_doc)
+        else:
+            with _lock(home):
+                doc = _load_queue_unlocked(home)
+                if _apply(doc):
+                    _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return False
+    if newly:
+        announce_repo_uat_self_uat_escalate(home, repo)
+    return True
+
+
+def ledger_blocks(ledger: dict, row: dict, nick: str, live=None) -> str:
+    """See ``_ledger_blocks``.
+
+    FR #2939: repo UAT self-UAT (FR or MRB cycle touch) is never escaped. The old
+    all-blocked escape (#1407 / #1416) offered a seat that then GIVEUP'd per the
+    worker skill. When every live seat is self-UAT / giveup blocked, call
+    ``maybe_escalate_repo_uat_all_self_uat`` (offer / empty-offer paths) instead.
+    ``live`` remains in the signature for call-site compatibility.
+    """
+    _ = live  # retained for API compatibility / escalate callers
+    return _ledger_blocks(ledger, row, nick)
 
 
 def _ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
@@ -4960,6 +5076,7 @@ def _ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
     * a seat that gave up the row (or its linked PR/issue) in the same MRB/UAT/FR family never gets it again;
     * UAT: blocked for the FR implementer and the MRB reviewer of any linked issue/PR;
     * MRB: blocked for the FR implementer of any linked issue/PR.
+    * repo-level UAT (FR #2939): same as UAT — FR *or* MRB cycle touch is self-UAT.
     """
     me = _canon_ledger_nick(nick)
     if not me:
@@ -4982,9 +5099,9 @@ def _ledger_blocks(ledger: dict, row: dict, nick: str) -> str:
         if not repo_level and task in ("MRB", "UAT") and task in tl:
             return f"{nick} already gave up linked {k}"
     if task in ("MRB", "UAT"):
+        # UAT (including repo-level #0): FR implementer OR MRB reviewer (FR #2939).
+        # MRB rows: FR implementer only.
         bad = {"FR", "MRB"} if task == "UAT" else {"FR"}
-        if repo_level:
-            bad = {"FR"}          # t853u: only seats that implemented a merged PR of the cycle are excluded
         tc = ledger.get("touch") or {}
         for k in keys:
             roles = (tc.get(k) or {}).get(me) or []
