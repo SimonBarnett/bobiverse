@@ -81,3 +81,7 @@ File every issue / FR / bug and every learned playbook (CAST IRON rule at the to
 ## Startup readiness (FR #955)
 
 Do not expect an assign in the first ~60s after tray Agent start. ``bob-worker`` holds inject and ``!bored`` for ``startup_grace_s`` (default 60, override ``BOB_WORKER_STARTUP_GRACE_S`` / ``--startup-grace-s``) so the Grok/Cursor TUI can finish booting. Early IRC assigns are held and flushed when ready. IRC connect retries up to 3 times before fail-closed.
+
+## Harvested lessons (intake)
+
+- When Clear-BobiverseJobWorktrees removes 0 trees, file disk capacity or move the job tree to a roomy drive — never invent a Remove-Item list of C:\ai\*wt* paths
