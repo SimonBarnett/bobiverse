@@ -90,6 +90,6 @@ jobs:
             jeeves/tests/test_mrb2267_hostile_jeeves_exe_foundation.py::test_mrb2267_living_fr_refs_not_closes_in_docs `
             jeeves/tests/test_mrb2319_body_truncate_hostile.py::test_mrb2319_blank_line_before_trailing_pin `
             jeeves/tests/test_mrb2468_hostile_release_ionos_cues.py::test_hostile_marchhare_blocked_when_pinned_ionos `
-            jeeves/tests/test_mrb2482_hostile_fomprep_umbrella_skip.py::test_mrb2482_pin_set_exact_five `
+            jeeves/tests/test_mrb2482_hostile_fomprep_umbrella_skip.py::test_mrb2482_pin_set_exact_six `
             jeeves/tests/test_mrb807_fix_monitor_queue_shapes.py::test_queue_flow_mrb_missing_pull_url_uses_task_field `
             -q --tb=line
