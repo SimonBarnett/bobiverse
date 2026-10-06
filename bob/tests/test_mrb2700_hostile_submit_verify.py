@@ -105,24 +105,30 @@ def test_mrb2700_unified_probe_matches_pid_and_ts(tmp_path):
 def test_mrb2700_supervisor_inject_wiring_source():
     src = Path(bw.__file__).read_text(encoding="utf-8")
     i = src.index("def _inject_line")
-    body = src[i:i + 1200]
+    # FR #2791 lengthens the stop_fn block; keep a window that still covers inject_with_submit_verify kwargs.
+    body = src[i : i + 2200]
     assert "since_wall = time.time()" in body
     assert "clock=time.monotonic" in body
     assert "sync=False" in body
     assert "make_submit_probe" in body
     assert "send_console_enter" in body
     assert "inject_with_submit_verify" in body
+    # FR #2791: stop only for the injected job's ACK.
+    assert "assign_job_ref" in body
+    assert "ack_job_ref" in body
 
 
 def test_mrb2700_skill_submit_verify_bullet_contiguous():
     skill = Path(__file__).resolve().parents[1] / ".grok" / "skills" / "bobiverse-bob-worker" / "SKILL.md"
     text = skill.read_text(encoding="utf-8")
-    assert "**Submit verify (FR #2696)**" in text
-    # Contiguous: never re-paste appears in the same bullet paragraph
-    idx = text.index("**Submit verify (FR #2696)**")
-    chunk = text[idx: idx + 500]
+    # FR #2791 extends the heading to cite both FRs; keep contiguous never-repaste pin.
+    assert "**Submit verify (FR #2696" in text
+    idx = text.index("**Submit verify (FR #2696")
+    chunk = text[idx: idx + 700]
     assert "never re-paste" in chunk
     assert "BOB_WORKER_SUBMIT_VERIFY" in chunk
+    assert "2791" in chunk
+    assert "assign_job_ref" in chunk or "ack_job_ref" in chunk
 
 
 def test_mrb2700_backoff_env_garbage_falls_back(monkeypatch):
