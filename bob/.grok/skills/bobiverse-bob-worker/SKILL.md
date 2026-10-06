@@ -190,3 +190,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 
 - bob-worker harvest: Invoke-BobiverseHarvest must prefer BOB_NICK then BOB_AGENT_NICK, and seat_env_extra must export both so lesson PR seat= stamps and self-MRB blocks the opener (FR #2790 / MRB #2795).
 - bob-worker: BoredEmitter.turn_ended releases harvest hold when grok events.jsonl turn_ended arrives at/after DONE; harvest_hold_s is fallback only (FR #2802 / PR #2809).
+- MRB bob-worker turn watcher: Supervisor path_fn must return grok_session_dir(...)/events.jsonl — returning the session dir makes GrokTurnWatcher path.is_file() fail forever (silent 90s harvest_hold fallback); pin with a source hostile test
