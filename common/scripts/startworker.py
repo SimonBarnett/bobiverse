@@ -31,7 +31,7 @@ HARD_MAX_WORKERS = 2             # t815u / FR #2522: ONLY mode=agent seats; plan
 DEFAULT_MAX_WORKERS = HARD_MAX_WORKERS
 DEFAULT_COOLDOWN_S = 30.0        # between two accepted starts on one machine
 REQUEST_TTL_S = 60.0             # a queued request older than this is dropped by the tray
-TRAY_ALIVE_MAX_AGE_S = 15.0      # tray heartbeat freshness (tray writes it every ~2 s)
+TRAY_ALIVE_MAX_AGE_S = 30.0      # tray heartbeat freshness (host/ThreadPool writes every ~2 s; FR #2697: ≥2× worst UI refresh stall)
 QUEUE_SUBDIR = ("run", "startworker")
 ALIVE_FILE = "tray.alive"
 DISABLE_FILE = "startworker.disabled"
