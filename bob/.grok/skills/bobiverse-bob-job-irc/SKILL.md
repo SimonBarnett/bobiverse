@@ -83,6 +83,8 @@ DONE UAT <owner/repo>#<N> PASS|FAIL [<url>]
   `PRIVMSG #marchhare :DONE MRB SimonBarnett/bobiverse#9 PASS https://github.com/SimonBarnett/bobiverse/pull/9`
   `PRIVMSG #marchhare :DONE UAT SimonBarnett/bobiverse#7 PASS`
 
+**Always append the DONE/NACK/GIVEUP line - never check the outbox first.** The worker drains `outbox.txt` every 0.5 s, so it is almost always empty; a "skip if already there" guard (on WinPS 5.1 `(Get-Content -Raw) -notmatch` on an empty file is a falsy empty array) silently drops the line. Send it as **its own short command** (just the `Add-Content`), right after the verdict/PR URL is known and **before** harvest/prune/cleanup - never chained inside a long board/merge/harvest tool call that can be cut off. If unsure whether it went out, append it again: a duplicate DONE is harmless, a missing one strands the seat (#2875). Proof of send is `outbox: sent …` in worker.log, not the outbox file.
+
 ## NACK / GIVEUP - handing a job back
 
 ```text

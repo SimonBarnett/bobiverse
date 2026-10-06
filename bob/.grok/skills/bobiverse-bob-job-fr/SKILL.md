@@ -94,13 +94,16 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 
 ## DONE URL - capture `gh pr create` output (FR #108)
 
-Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns.
+Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns. Capture `$url` first; append DONE as **its own short command** afterward (FR #2876 — never check the outbox first).
 
 ```powershell
 $url = (gh pr create --repo owner/name --base main --head fr-N --title '...' --body-file $pr 2>&1 |
   Select-String -Pattern 'https://github.com/\S+/pull/\d+').Matches.Value |
   Select-Object -First 1
 if (-not $url) { throw 'gh pr create did not print a pull URL' }
+```
+
+```powershell
 Add-Content -LiteralPath $outbox -Value "PRIVMSG #shop :DONE FR owner/repo#N $url" -Encoding utf8
 ```
 
