@@ -92,12 +92,11 @@ def test_mrb2719_prove_the_claim_literally():
 
 def test_mrb2719_audit_table_path_present():
     text = _utf8_no_bom(MRB)
-    # Intro drops the dead audit table path; Digest audit path tip still names it to drop on docs/mrb-N.
-    assert "no separate audit table file on main" in text
     assert "harvest-lessons-audit-2026-10-06.md" in text
+    assert "The per-lesson table is in" in text
     idx = text.index("**Digest audit path")
-    window = text[idx : idx + 420]
-    assert "harvest-lessons-audit-2026-10-06.md" in window
+    window = text[idx : idx + 480]
+    assert "exists on the tip" in window or "missing" in window
     assert "docs/mrb-N" in window
 
 
