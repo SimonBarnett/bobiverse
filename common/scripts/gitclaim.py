@@ -189,6 +189,9 @@ class GitClaim:
     body: str = ""
     labels: tuple[str, ...] = ()
     state: str = ""
+    # Lesson PRs: refs are citations, not implementation links; author = opener seat.
+    harvest_lesson: bool = False
+    opened_by: str = ""
 
 
 def _utc_now() -> str:
@@ -611,6 +614,45 @@ def _label_names(labels) -> tuple[str, ...]:
         if name:
             out.append(name)
     return tuple(out)
+
+
+def is_harvest_lesson_pr(
+    *,
+    title: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """True for a ``harvest-lesson`` / ``lesson(<book>):`` skill-book PR (FR #2705)."""
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    if "harvest-lesson" in labs:
+        return True
+    return bool(re.match(r"(?i)^lesson\s*\(", (title or "").strip()))
+
+
+_LESSON_OPENER_SEAT_RE = re.compile(r"(?i)\b(?:seat|agent)=`(?P<nick>[A-Za-z0-9_.-]+)`")
+
+
+def lesson_pr_opener_seat(body: str = "") -> str:
+    """Seat nick that opened a lesson PR, from the intake provenance footer (``seat=`` / ``agent=``).
+
+    A lesson PR's author is whoever opened it. The seats that implemented an FR the
+    lesson merely cites are not its authors. Returns '' when no seat nick is named
+    (operator / audit PRs, ``agent=`Invoke-BobiverseHarvest``` without ``seat=``).
+    """
+    for m in _LESSON_OPENER_SEAT_RE.finditer(body or ""):
+        nick = m.group("nick")
+        if bobreport.parse_seat_nick(nick):
+            return canonical_worker_nick(nick) or nick
+    return ""
+
+
+def _heal_lesson_mrb_row(row: dict, opener: str) -> None:
+    """Lesson MRB row: drop cited-FR refs and any author stamp that is not the opener."""
+    row.pop("refs", None)
+    for k in ("author_seat", "implementer_seat", "author_nick", "author", "author_seats"):
+        row.pop(k, None)
+    if opener:
+        row["author_seat"] = opener
+        row["implementer_seat"] = opener
 
 
 def is_intake_harvest_receipt_pr(
@@ -1279,10 +1321,21 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB (open/ready only).
         if action in ("opened", "ready_for_review") and is_mrb_fix_pr_title(title):
             return None
-        refs = extract_closes_issue_ids(title, body, src, repo=repo)
+        # Lesson PRs cite FRs; they do not implement them. No refs, so the cited FR's
+        # implementer is not stamped as author and the FR row is not superseded.
+        lesson = is_harvest_lesson_pr(title=title, labels=labels)
+        refs = () if lesson else extract_closes_issue_ids(title, body, src, repo=repo)
         task = "MRB" if action in ("opened", "ready_for_review") else "MRB"
         return GitClaim(
-            repo=repo, task=task, id=ident, event=ev, action=action, line=src, refs=refs
+            repo=repo,
+            task=task,
+            id=ident,
+            event=ev,
+            action=action,
+            line=src,
+            refs=refs,
+            harvest_lesson=lesson,
+            opened_by=lesson_pr_opener_seat(body) if lesson else "",
         )
 
     if ev == "pull_request" and action == "closed":
@@ -1590,7 +1643,10 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
         "edited",
         "synchronize",
     ):
-        implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
+        if claim.harvest_lesson:
+            implementer = claim.opened_by  # lesson PR author = opener, never a cited FR's implementer
+        else:
+            implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
         for ref in claim.refs:
             _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "UAT"})
         extra: dict[str, str] = {}
@@ -1608,7 +1664,9 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                 continue
             if not PULL_URL_RE.search(str(r.get("url") or "")):
                 r["url"] = extra["url"]
-            if implementer and not row_author_seats(r):
+            if claim.harvest_lesson:
+                _heal_lesson_mrb_row(r, claim.opened_by)
+            elif implementer and not row_author_seats(r):
                 r["author_seat"] = implementer
                 r["implementer_seat"] = implementer
 
@@ -5003,8 +5061,19 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
+            lesson = is_harvest_lesson_pr(title=title, labels=pr_labels)
             desired.append(
-                GitClaim(repo=repo, task="MRB", id=f"#{num}", event="pull_request", action="opened", line="", refs=refs)
+                GitClaim(
+                    repo=repo,
+                    task="MRB",
+                    id=f"#{num}",
+                    event="pull_request",
+                    action="opened",
+                    line="",
+                    refs=() if lesson else refs,
+                    harvest_lesson=lesson,
+                    opened_by=lesson_pr_opener_seat(body) if lesson else "",
+                )
             )
         for iss in issues:
             if not isinstance(iss, dict) or iss.get("pull_request"):
@@ -5224,6 +5293,8 @@ def resync_from_github(
                             r["body"] = claim.body
                         if claim.labels:
                             r["labels"] = list(claim.labels)
+                        if claim.harvest_lesson:
+                            _heal_lesson_mrb_row(r, claim.opened_by)
                         _stamp_require_machine(r, claim)
                     # Clear *stale* needs_human (keep-the-flow) but keep the intentional
                     # FR #180 gate after GIVEUP_NEEDS_HUMAN_COUNT giveups.

@@ -593,6 +593,7 @@ def validate_payload(
             "agent": str(source.get("agent") or "")[:64],
             "skill_book": str(source.get("skill_book") or "")[:64],
             "version": str(source.get("version") or "")[:32],
+            "seat": str(source.get("seat") or "")[:64],
         },
         "contact": contact[:200] if contact else "",
         "contact_public": contact_public,
@@ -712,7 +713,9 @@ def _provenance_footer(norm: dict, intake_id: str, *, quarantine: bool) -> str:
         "---",
         f"_via-intake id=`{intake_id}` ts=`{_utc()}`_",
         f"_source machine=`{src.get('machine') or '-'}` agent=`{src.get('agent') or '-'}` "
-        f"book=`{src.get('skill_book') or '-'}` ver=`{src.get('version') or '-'}`_",
+        f"book=`{src.get('skill_book') or '-'}` ver=`{src.get('version') or '-'}`"
+        + (f" seat=`{src.get('seat')}`" if src.get("seat") else "")
+        + "_",
     ]
     if quarantine:
         bits.append("_quarantine: unkeyed source - triage before FR queue_")
