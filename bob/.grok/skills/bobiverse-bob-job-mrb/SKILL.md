@@ -131,12 +131,14 @@ Never hostile-review or merge a PR **this seat opened** (same nick/session/workt
 
 Wire (preferred after you already ACK'd):
 
-1. Confirm authorship: branch you pushed, or PR head from this seat's FR promote.
+1. Confirm authorship: branch you pushed, PR head from this seat's FR promote, or a `lesson(<book>):` / harvest-lesson tip from this seat's `Invoke-BobiverseHarvest`.
 2. Outbox: GIVEUP MRB owner/repo#N
 3. Separate line: reason self-MRB - this seat opened PR #N; needs a different seat (and DIRTY/rebase needed when the head conflicts with main).
 4. Harvest the lesson; do not open a second MRB from this seat on that PR.
 
 If you spot self-MRB **before** any review work and have not ACK'd yet, NACK MRB owner/repo#N with the same reason is also valid (job-irc: NACK = decline before work). After ACK, always **GIVEUP** — never go silent.
+
+**Harvest-lesson self-MRB (MRB #2732 / #2735):** a harvest-lesson PR opened from this seat's `Invoke-BobiverseHarvest` is self-MRB for that seat — NACK/GIVEUP and leave it for another seat.
 
 ## Harvest-lesson intake PRs (FR #2705)
 
