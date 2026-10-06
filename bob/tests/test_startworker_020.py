@@ -121,6 +121,20 @@ def test_nobody_logged_in_no_tray_heartbeat_is_a_nack_with_the_reason(q, tmp_pat
     assert not list(q.glob("req-*.json"))
 
 
+def test_tray_alive_max_age_covers_worst_ui_refresh_stall():
+    # FR #2697: UI poll can block 7-11s; max age must stay above that even if a tick is late.
+    assert sw.TRAY_ALIVE_MAX_AGE_S >= 30.0
+
+
+def test_tray_alive_stays_true_across_12s_engine_stall_when_host_heartbeat_is_fresh(q):
+    # Host/ThreadPool heartbeat keeps mtime fresh; ear must not NACK across a 12s engine stall.
+    (q / sw.ALIVE_FILE).write_text("alive")
+    os.utime(q / sw.ALIVE_FILE, (NOW + 12.0, NOW + 12.0))
+    assert sw.tray_alive(q, now=NOW + 12.0) is True
+    assert sw.tray_alive(q, now=NOW + 12.0 + 12.0) is True   # still within default max_age
+    assert ask(q, now=NOW + 24.0).ok
+
+
 def test_hard_cap_is_two_seats_counted_from_live_processes_not_the_onefile_bootloader_children(q):
     one = [(10, 1, "bob-worker-aaa.exe"), (11, 10, "bob-worker-aaa.exe"), (99, 1, "grok.exe"), (98, 11, "python.exe")]   # ONE seat
     two = one + [(20, 1, "bob-worker-aaa.exe"), (21, 20, "bob-worker-aaa.exe")]                                       # TWO seats
@@ -330,12 +344,64 @@ def test_tray_wiring_timer_heartbeat_helper_and_click_function_contract():
     assert "Start-BobTrayWorkerExe -Mode $mode -Quiet" in w                    # the SAME function as the Agent / Plan click
     assert "$startWorkerTimer.Start()" in w and "$startWorkerTimer.Stop()" in w
     assert "Write-BobTrayAlive" in w and "'tray.alive'" in w                   # heartbeat removed on exit => ear NACKs at once
+    # FR #2697: heartbeat must not share the WinForms UI thread with the 30s poll refresh.
+    assert "$script:trayAliveTimer = New-Object System.Timers.Timer" in w
+    assert "$script:trayAliveTimer.Interval = 2000" in w
+    assert "$script:trayAliveTimer.SynchronizingObject = $null" in w
+    assert "$script:trayAliveTimer.Start()" in w
     i = w.index("function Start-BobTrayWorkerExe")
     body = w[i:w.index("$script:attention = $false", i)]
     assert "[switch]$Quiet" in body and "return [int]$childPid" in body and "-not $Quiet" in body
     assert "Start-BobTrayWorkerExe -Mode 'agent' })" in w                      # the click still works unchanged
     sync = (ROOT / "scripts" / "Sync-BobTrayFromAgenticBuild.ps1").read_text(encoding="utf-8")
     assert "BobTrayStartWorker.ps1" in sync                                    # survives a vendor re-sync
+
+
+def test_bob_tray_cs_hosts_threading_alive_heartbeat():
+    # FR #2697 preferred path: bob-tray.exe writes tray.alive on a Threading.Timer the PS UI poll cannot block.
+    cs = (ROOT / "bob" / "tray" / "dialogs" / "BobTray.cs").read_text(encoding="utf-8-sig")
+    assert 'Path.Combine(runDir, "startworker")' in cs or "Path.Combine(runDir, \"startworker\")" in cs
+    assert 'tray.alive' in cs
+    assert "System.Threading.Timer" in cs
+    assert "WriteTrayAlive" in cs or "aliveTimer" in cs
+
+
+@WIN
+def test_tray_alive_threadpool_timer_keeps_mtime_fresh_during_12s_ui_stall(tmp_path):
+    # Behavioural: a System.Timers.Timer (SynchronizingObject=$null) keeps writing while "UI" sleeps 12s.
+    qd = tmp_path / "root" / "run" / "startworker"
+    qd.mkdir(parents=True)
+    out = _ps(tmp_path, r'''
+$dir = "%s"
+$timer = New-Object System.Timers.Timer
+$timer.Interval = 500
+$timer.AutoReset = $true
+$timer.SynchronizingObject = $null
+$sub = Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
+    try {
+        $d = [string]$Event.MessageData
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+        Set-Content -LiteralPath (Join-Path $d 'tray.alive') -Value ([datetime]::UtcNow.ToString('o')) -Encoding ASCII
+    } catch { }
+} -MessageData $dir
+$timer.Start()
+Start-Sleep -Milliseconds 800
+$samples = New-Object System.Collections.Generic.List[double]
+$t0 = [datetime]::UtcNow
+# Simulate a blocked WinForms poll tick (FR #2697 evidence: 7-11s).
+Start-Sleep -Seconds 12
+$f = Join-Path $dir 'tray.alive'
+if (Test-Path -LiteralPath $f) {
+  $age = ([datetime]::UtcNow - (Get-Item -LiteralPath $f).LastWriteTimeUtc).TotalSeconds
+  "AGE=" + [math]::Round($age, 3)
+} else { "AGE=missing" }
+$timer.Stop(); $timer.Dispose()
+Unregister-Event -SourceIdentifier $sub.Name -ErrorAction SilentlyContinue
+Remove-Job $sub -Force -ErrorAction SilentlyContinue
+''' % qd)
+    assert "AGE=" in out and "AGE=missing" not in out
+    age = float([ln.split("=", 1)[1] for ln in out.splitlines() if ln.startswith("AGE=")][0])
+    assert age <= 3.0, out
 
 
 @WIN

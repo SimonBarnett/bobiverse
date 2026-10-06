@@ -3069,7 +3069,9 @@ $script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorker
 } -MessageData $script:trayWorkerSyncMsg
 $script:trayWorkerSyncTimer.Start()
 
-# t810u: remote "!startworker" - heartbeat + consume the ear's queued requests (the ear runs in session 0 and cannot open a window).
+# t810u: remote "!startworker" - consume the ear's queued requests (the ear runs in session 0 and cannot open a window).
+# FR #2697: heartbeat is NOT on this WinForms timer — the 30s $poll tick blocks the UI thread for 7-11s and
+# starved tray.alive past the ear's staleness limit. Queue/cmd stay here; alive moves to System.Timers.Timer below.
 $script:startWorkerDir = Get-BobTrayStartWorkerDir -Root $RepoRoot
 $startWorkerTimer = New-Object System.Windows.Forms.Timer
 $startWorkerTimer.Interval = 2000
@@ -3087,6 +3089,22 @@ $startWorkerTimer.Add_Tick({
         catch [System.Management.Automation.PipelineStoppedException] { return }
         catch { Write-TrayLog ('startworker queue: ' + $_.Exception.Message) }
     })
+
+# FR #2697: ThreadPool (non-UI) 2s heartbeat — tray.alive keeps ticking while WinForms $poll is stuck in digest/hover.
+$script:trayAliveTimer = New-Object System.Timers.Timer
+$script:trayAliveTimer.Interval = 2000
+$script:trayAliveTimer.AutoReset = $true
+$script:trayAliveTimer.SynchronizingObject = $null
+$script:trayAliveSub = Register-ObjectEvent -InputObject $script:trayAliveTimer -EventName Elapsed -Action {
+    try {
+        $dir = [string]$Event.MessageData
+        if (-not $dir) { return }
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        Set-Content -LiteralPath (Join-Path $dir 'tray.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+    }
+    catch { }
+} -MessageData $script:startWorkerDir
+$script:trayAliveTimer.Start()
 
 $pulse = New-Object System.Windows.Forms.Timer
 $pulse.Interval = 60000
@@ -3130,7 +3148,7 @@ else { $notify.Visible = $true }
 $flash.Start()
 $poll.Start()
 $pulse.Start()
-[void](Write-BobTrayAlive -Dir $script:startWorkerDir)
+[void](Write-BobTrayAlive -Dir $script:startWorkerDir)   # seed immediately; trayAliveTimer keeps it fresh (FR #2697)
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
 try {
@@ -3140,6 +3158,11 @@ try {
 } catch { }
 [System.Windows.Forms.Application]::Run($ctx)
 $poll.Stop(); $flash.Stop(); $pulse.Stop(); $pulseOff.Stop(); $startWorkerTimer.Stop()
+try {
+    if ($script:trayAliveTimer) { $script:trayAliveTimer.Stop(); $script:trayAliveTimer.Dispose() }
+    if ($script:trayAliveSub) { Unregister-Event -SourceIdentifier $script:trayAliveSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayAliveSub -Force -ErrorAction SilentlyContinue }
+}
+catch { }
 try {
     if ($script:trayWorkerSyncTimer) { $script:trayWorkerSyncTimer.Stop(); $script:trayWorkerSyncTimer.Dispose() }
     if ($script:trayWorkerSyncSub) { Unregister-Event -SourceIdentifier $script:trayWorkerSyncSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayWorkerSyncSub -Force -ErrorAction SilentlyContinue }

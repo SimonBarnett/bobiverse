@@ -2,7 +2,7 @@
 #
 # The ear (service, session 0) authorises/caps/queues a request file; the tray - the one process that lives in the
 # interactive session - launches the worker through the SAME function as the Agent / Plan click. Protocol (common\scripts\startworker.py):
-#   <root>\run\startworker\tray.alive     heartbeat, touched every tick (the ear NACKs when it is stale = nobody logged in)
+#   <root>\run\startworker\tray.alive     heartbeat (FR #2697: ThreadPool/host timer every ~2 s; also touched on queue tick)
 #   <root>\run\startworker\req-<id>.json  {id, mode, by, kind, ts, expires}  written atomically by the ear
 #   <root>\run\startworker\res-<id>.json  {id, ok, reason, pid}               audit trail written here
 # A request is DELETED before it is acted on (at-most-once) and ignored once expired. No credentials in any file.
