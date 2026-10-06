@@ -164,7 +164,7 @@ After `DONE FR owner/repo#N https://github.com/…/pull/M`, chair `resync_from_g
 
 ## Harvest digest (lessons audit 2026-10-06)
 
-Generalised from 73 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
+Generalised from 73 harvested lessons that never reached this book (audit for FR #2705). Per-lesson sources are the cited harvest issue numbers on each bullet (no separate audit table file on main).
 
 - **Re-offered or already-covered FR:** if an open or merged PR already `Closes` the FR (yours or another seat's), ACK, verify the Closes link and the claimed tests, and DONE with that PR URL every time it is re-offered. Never open a second implement PR. If the covering PR lacks `Closes #N`, edit its body (the FR seat never merges). For a CLOSED-unmerged fix, rebase it onto main as a successor PR. Repeated re-offers are a chair supersede gap: comment on the existing gap issue rather than filing a new one. (63 lessons: harvest #2210, #2206, #2201, #2190, #2064, #2193 +81 more, 4 held intake rows)
 - **Greenfield product FRs:** ship the VISION and a foundation with a testable gate (for example DNS ownership) first, then file child FRs. Children wait for the foundation PR. Never store customer keys in project infrastructure (device-only), never log secrets, and make no live vendor calls in a foundation PR. (5 lessons: harvest #1179, #1168, #1155, #1152, #1133)
