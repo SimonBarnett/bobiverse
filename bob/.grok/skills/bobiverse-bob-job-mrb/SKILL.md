@@ -144,7 +144,6 @@ On review:
 1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
 2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
-- Behind-main Jeeves status FRs: merge origin/main into the FR tip before gh pr merge; put Client.__init__/_process_started and Build-Jeeves VERSION pins on docs/mrb-N
 
 ## Skill / markdown diff hygiene (harvest #1616)
 
@@ -170,5 +169,5 @@ Checks:
 - MRB PASS requires the claimed tests, a clean/rebased branch, and the merged PR's `Closes` lines. When an acceptance contract changes, expect a focused fix/nits PR and rerun the hostile tests rather than accepting stale evidence.
 - Chair side (FR #1585 / harvest #1613): an open GitHub pull must survive resync even if ledger `mrb_done` was stamped early — `mrb_already_done(pr_exists)` keeps open PRs; resync clears stale stamps.
 - After merge: switch to `main`, fast-forward from `origin/main`, sync the installed tree, and restart only the relevant service. Do not treat a harvest/MRB record as a new FR row.
-- **Behind-main + nits (harvest #1647 / MRB #1629):** merge `origin/main` into the FR branch before merge; put additive hostile tests on `docs/mrb-N`; missing `Duplicates closed:` is a body nit (close harvest twins as not planned); PASS without a fix PR when only body/docs nits remain and tests are green.
+- **Behind-main + nits (harvest #1647 / MRB #1629 / harvest #2740):** merge `origin/main` into the FR branch before merge; put additive hostile tests on `docs/mrb-N`; missing `Duplicates closed:` is a body nit (close harvest twins as not planned); PASS without a fix PR when only body/docs nits remain and tests are green. For Jeeves `!status` / frozen-VERSION style FRs, pin `Client.__init__` `_process_started` and `Build-Jeeves.ps1` `--add-data VERSION` (install-root resolve) on that docs/mrb-N PR (MRB #2733 / FR #2728).
 - **Harvest promote MRB (harvest #2296 / MRB #2289):** merge skill PR first → then `docs/mrb-N` hostile-test PR from **new** `origin/main` → verify skill issue closed via `Closes` before DONE PASS.
