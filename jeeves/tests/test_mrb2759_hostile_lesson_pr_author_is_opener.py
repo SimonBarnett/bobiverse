@@ -120,9 +120,15 @@ def test_mrb2759_apply_does_not_stamp_fr_implementer(tmp_path):
 
 
 def test_mrb2759_harvest_ps1_sends_source_seat():
+    """FR #2790: prefer BOB_NICK (bob-worker) then BOB_AGENT_NICK (legacy)."""
     text = HARVEST_PS1.read_text(encoding="utf-8")
+    assert "BOB_NICK" in text
     assert "BOB_AGENT_NICK" in text
     assert "seat =" in text or "seat=" in text.replace(" ", "")
+    # Prefer worker seat nick over the legacy Watch-AgentHealth name.
+    nick_idx = text.index("BOB_NICK")
+    agent_idx = text.index("BOB_AGENT_NICK", nick_idx + 1)
+    assert nick_idx < agent_idx
 
 
 def test_mrb2759_intake_footer_seat_roundtrip():

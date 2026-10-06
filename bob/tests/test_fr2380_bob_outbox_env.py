@@ -12,6 +12,7 @@ def test_seat_env_extra_sets_bob_outbox_shop_nick(tmp_path: Path):
     assert env["BOB_OUTBOX"] == str(run / "outbox.txt")
     assert env["BOB_SHOP"] == "#marchhare"
     assert env["BOB_NICK"] == "marchhare-40208"
+    assert env["BOB_AGENT_NICK"] == "marchhare-40208"
     assert env["BOB_MACHINE"] == "marchhare"
     assert "home\\outbox.txt" not in env["BOB_OUTBOX"].replace("/", "\\").lower()
 
