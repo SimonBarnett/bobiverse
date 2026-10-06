@@ -704,16 +704,96 @@ def resolve_comspec() -> str:
 # FR #2641: also silence progress records — redirected hosts otherwise emit
 # ``#< CLIXML`` / ``Preparing modules for first use`` on stderr (extra IRC flood
 # and a non-empty StdErr for ExitCode 0 callers).
+# FR #2910: keep each preamble statement on its own line so terminating errors
+# report ``At line:N char:…`` against the user script, not a fused one-liner
+# that echoes ``$ProgressPreference`` / ``UTF8Encoding`` into StdErr.
 PS_UTF8_STDOUT_PREAMBLE = (
-    "$ProgressPreference = 'SilentlyContinue'; "
-    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
-    "$OutputEncoding = [Console]::OutputEncoding; "
+    "$ProgressPreference = 'SilentlyContinue'\n"
+    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false\n"
+    "$OutputEncoding = [Console]::OutputEncoding\n"
 )
+
+_CLIXML_ERROR_S_RE = re.compile(
+    r'<S\s+S="Error">(.*?)</S>',
+    re.IGNORECASE | re.DOTALL,
+)
+_CLIXML_HEX_ESC_RE = re.compile(r"_x([0-9A-Fa-f]{4})_", re.IGNORECASE)
 
 
 def wrap_ps_script_utf8_stdout(script: str) -> str:
-    """Prefix a PowerShell script for UTF-8 stdout + silent progress (FR #2580 / #2641)."""
+    """Prefix a PowerShell script for UTF-8 stdout + silent progress (FR #2580 / #2641 / #2910)."""
     return PS_UTF8_STDOUT_PREAMBLE + (script or "")
+
+
+def _unescape_powershell_clixml_text(text: str) -> str:
+    """Decode PowerShell CLIXML ``_xHHHH_`` escapes (CR/LF and friends)."""
+
+    def _one(m: re.Match[str]) -> str:
+        try:
+            return chr(int(m.group(1), 16))
+        except ValueError:
+            return m.group(0)
+
+    return _CLIXML_HEX_ESC_RE.sub(_one, text or "")
+
+
+def plain_text_powershell_stderr(stderr: str) -> str:
+    """Turn redirected PowerShell CLIXML stderr into plain error text (FR #2910).
+
+    Windows PowerShell 5.1 serialises the error stream as ``#< CLIXML`` / ``<Objs>``
+    when stdout/stderr are redirected. Extract ``<S S=\"Error\">`` payloads, unescape
+    ``_xHHHH_``, drop progress/noise records, and strip residual wrapper preamble
+    echoes so IRC ``err`` lines carry the real message only.
+    """
+    raw = stderr or ""
+    if not raw:
+        return ""
+    looks_clixml = ("#< CLIXML" in raw) or ("<Objs" in raw and 'S="Error"' in raw)
+    if looks_clixml:
+        parts = [
+            _unescape_powershell_clixml_text(m.group(1)).strip("\r\n")
+            for m in _CLIXML_ERROR_S_RE.finditer(raw)
+        ]
+        # Drop empty / whitespace-only Error nodes.
+        parts = [p for p in parts if p.strip()]
+        plain = "\n".join(parts).strip()
+        if not plain:
+            # Fallback: strip CLIXML chrome rather than returning empty.
+            plain = re.sub(r"(?is)#<\s*CLIXML\s*", "", raw)
+            plain = re.sub(r"(?is)</?Objs[^>]*>", "", plain)
+            plain = _unescape_powershell_clixml_text(plain).strip()
+    else:
+        plain = raw
+    # Never leak the UTF-8 / progress wrapper into operator-visible StdErr.
+    drop_markers = (
+        "ProgressPreference",
+        "UTF8Encoding",
+        "$OutputEncoding",
+        "[Console]::OutputEncoding",
+    )
+    kept: list[str] = []
+    for line in plain.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if any(m in line for m in drop_markers):
+            # Keep lines that also carry the real error after a fused preamble.
+            # e.g. "... OutputEncoding; Write-Error 'boom' : boom"
+            if ":" in line and any(
+                tok in line for tok in ("Write-Error", "Cannot find", "Exception", "Error")
+            ):
+                # Prefer text after the last preamble marker when fused.
+                cut = line
+                for m in drop_markers:
+                    if m in cut:
+                        idx = cut.rfind(m)
+                        # advance past ';' if present after the marker span
+                        semi = cut.find(";", idx)
+                        if semi != -1:
+                            cut = cut[semi + 1 :].lstrip()
+                if cut and cut != line:
+                    kept.append(cut)
+                    continue
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def encode_ps_encoded_command(script: str) -> str:
@@ -887,10 +967,13 @@ def run_shell_request(
     except subprocess.TimeoutExpired as exc:
         out, _ = _clip_bytes(exc.stdout or b"")
         err, _ = _clip_bytes(exc.stderr or b"")
+        err = plain_text_powershell_stderr(err)
         err = (err + ("\n" if err else "") + f"timeout after {timeout_s:.0f}s").strip()
         return ShellOutcome(job_id=req.job_id, exit_code=124, stdout=out, stderr=err)
     out, out_clip = _clip_bytes(proc.stdout or b"")
     err, err_clip = _clip_bytes(proc.stderr or b"")
+    # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect — plain-text it.
+    err = plain_text_powershell_stderr(err)
     if out_clip:
         out += "\n[clipped stdout]"
     if err_clip:
