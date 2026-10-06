@@ -6,8 +6,9 @@ The Bob ear (service, session 0, LocalSystem) can not open a window on the user'
 
   ear   : authenticate (verified services account) -> machine check -> kill-switch -> tray alive? (= somebody is
           logged in with the tray up) -> worker cap -> cooldown -> write ``req-<id>.json`` -> reply ACK / NACK
-  tray  : every ~2 s writes ``tray.alive`` and consumes ``req-*.json`` (deleted BEFORE launch: at-most-once,
-          expired after REQUEST_TTL_S) -> Start-BobTrayWorkerExe -> ``res-<id>.json`` (audit only)
+  tray  : host/ThreadPool writes ``tray.alive`` every ~2 s (FR #2697: not on the WinForms poll thread);
+          consumes ``req-*.json`` on a UI tick (deleted BEFORE launch: at-most-once, expired after
+          REQUEST_TTL_S) -> Start-BobTrayWorkerExe -> ``res-<id>.json`` (audit only)
 
 No credentials cross this queue, only {id, mode, by, ts}. Everything here is pure / injectable so it is testable
 without IRC, a desktop or Windows.
