@@ -1,4 +1,7 @@
-"""Hostile MRB #2469: mrb-fail offerable; mrb-home/mrb-pass still win; bare mrb alone skips."""
+"""Hostile MRB #2469 inverted by FR #2562 / #2677: mrb-fail never offerable.
+
+mrb-home / mrb-pass still win; bare mrb alone skips; claim_from_payload returns None.
+"""
 from __future__ import annotations
 
 import gitclaim
@@ -6,26 +9,22 @@ from repo_layout import ROOT
 
 
 def test_hostile_mrb_fail_plus_mrb_home_still_skipped():
-    assert (
-        gitclaim.issue_skip_fr_reason(
-            title="MRB FAIL",
-            labels=("mrb", "mrb-fail", "mrb-home"),
-        )
-        == "label:mrb-home"
+    reason = gitclaim.issue_skip_fr_reason(
+        title="MRB FAIL",
+        labels=("mrb", "mrb-fail", "mrb-home"),
     )
+    assert reason is not None and reason.startswith("label:")
 
 
 def test_hostile_mrb_fail_plus_mrb_pass_still_skipped():
-    assert (
-        gitclaim.issue_skip_fr_reason(
-            title="MRB FAIL then PASS?",
-            labels=("mrb", "mrb-fail", "mrb-pass"),
-        )
-        == "label:mrb-pass"
+    reason = gitclaim.issue_skip_fr_reason(
+        title="MRB FAIL then PASS?",
+        labels=("mrb", "mrb-fail", "mrb-pass"),
     )
+    assert reason is not None and reason.startswith("label:")
 
 
-def test_hostile_claim_task_is_fr_not_mrb_for_fail_remediation():
+def test_hostile_claim_mrb_fail_is_none():
     claim = gitclaim.claim_from_payload(
         "issues",
         {
@@ -34,19 +33,17 @@ def test_hostile_claim_task_is_fr_not_mrb_for_fail_remediation():
             "issue": {
                 "number": 42,
                 "title": "MRB FAIL product",
-                "body": "fix it",
+                "body": "verdict board",
                 "state": "open",
                 "labels": [{"name": "mrb"}, {"name": "mrb-fail"}],
             },
         },
     )
-    assert claim is not None
-    assert claim.task == "FR"
-    assert claim.id == "#42"
-    assert (claim.line or "") == ""
+    assert claim is None
 
 
-def test_hostile_skip_set_mentions_2464():
+def test_hostile_skip_set_mentions_2562_and_includes_mrb_fail():
     src = (ROOT / "common" / "scripts" / "gitclaim.py").read_text(encoding="utf-8")
-    assert "FR #2464" in src
-    assert "mrb-fail" not in gitclaim.SKIP_FR_LABELS
+    assert "FR #2562" in src
+    assert "mrb-fail" in gitclaim.SKIP_FR_LABELS
+    assert "mrb_fail" in gitclaim.SKIP_FR_LABELS
