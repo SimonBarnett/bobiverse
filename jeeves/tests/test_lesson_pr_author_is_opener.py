@@ -175,3 +175,35 @@ def test_intake_footer_carries_seat():
     foot = intake._provenance_footer(norm, "in_x", quarantine=False)
     assert f"seat=`{OPENER_SEAT}`" in foot
     assert gitclaim.lesson_pr_opener_seat(foot) == OPENER_SEAT
+
+
+def _closed_payload(num, *, title, body, labels=(), merged=False):
+    p = _pr_payload(num, title=title, body=body, labels=labels, action="closed")
+    p["pull_request"]["merged"] = merged
+    p["pull_request"]["state"] = "closed"
+    return p
+
+
+def test_closed_unmerged_lesson_pr_does_not_reopen_cited_fr(tmp_path):
+    _queue(tmp_path, done=[_done_fr()])
+    claim = gitclaim.claim_from_payload(
+        "pull_request",
+        _closed_payload(2724, title="lesson(x): y", body=LESSON_BODY, labels=["harvest-lesson"]),
+        line="GIT pull_request SimonBarnett/bobiverse closed #2724 lesson(x): y by SimonBarnett",
+    )
+    gitclaim.apply_queue_event(tmp_path, claim)
+    doc = gitclaim._load_queue_unlocked(tmp_path)
+    assert not [r for r in doc["unaccepted"] if r.get("task") == "FR"], doc["unaccepted"]
+
+
+def test_closed_unmerged_pr_does_not_requeue_itself_as_fr(tmp_path):
+    """Live 2026-10-06: closing test PR #2760 unmerged queued 'FR #2760' (line says 'closed #2760')."""
+    _queue(tmp_path)
+    claim = gitclaim.claim_from_payload(
+        "pull_request",
+        _closed_payload(2760, title="some change", body="no links here"),
+        line="GIT pull_request SimonBarnett/bobiverse closed #2760 some change by SimonBarnett",
+    )
+    gitclaim.apply_queue_event(tmp_path, claim)
+    doc = gitclaim._load_queue_unlocked(tmp_path)
+    assert not [r for r in doc["unaccepted"] if r.get("task") == "FR" and r.get("id") == "#2760"]

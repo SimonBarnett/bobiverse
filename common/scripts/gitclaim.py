@@ -1345,7 +1345,15 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         pr = _pr_blob(payload)
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
-        refs = extract_closes_issue_ids(title, body, src, repo=repo)
+        labels = _label_names(pr.get("labels"))
+        # Lesson PRs cite FRs: closing one (merged or not) must not touch or re-open them.
+        # Never self-reference: the chair line "... closed #N ..." is not a link to FR #N.
+        if is_harvest_lesson_pr(title=title, labels=labels):
+            refs = ()
+        else:
+            refs = tuple(
+                r for r in extract_closes_issue_ids(title, body, src, repo=repo) if r != ident
+            )
         merged = bool(pr.get("merged"))
         return GitClaim(
             repo=repo,
