@@ -165,6 +165,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 - When Clear-BobiverseJobWorktrees removes 0 under low disk: file intake or GIVEUP / use a roomy drive - never hand-delete wt-bob-main/wt-airc/operator trees; write .bobiverse-seat so -Force skips live owners
 - GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
+- Submit-verify stop_fn must compare BoredEmitter.ack_job_ref to assign_job_ref(injected line); unrelated open ACK must not return stop/ACK at 0.0s. After product merge, update bob/VISION.md S3 and add docs/mrb hostile pins (pre-open matching ACK + stale ACK) from the new main tip.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
