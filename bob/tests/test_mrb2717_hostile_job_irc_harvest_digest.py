@@ -58,9 +58,9 @@ def test_mrb2717_host_pinned_digest_id_fold():
     assert "never GIVEUP" in window or "never GIVEUP there" in text
 
 
-def test_mrb2717_no_dead_audit_table_path():
+def test_mrb2717_audit_table_path_present():
     text = _utf8_no_bom(IRC)
-    assert "harvest-lessons-audit-2026-10-06.md" not in text
+    assert "harvest-lessons-audit-2026-10-06.md" in text
 
 
 def test_mrb2717_digest_bullets_complete_lines():
