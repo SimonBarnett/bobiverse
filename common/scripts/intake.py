@@ -196,10 +196,70 @@ def resolve_skill_book(
     return DEFAULT_SKILL_BOOK, SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
 
 
+# FR #2970: FAIL-supersede / wrong-book / Harvest-lesson MRB *process* playbooks belong in
+# bobiverse-bob-job-mrb. Default -Book harvest must not open lesson(harvest) twins that
+# restate that routing and get FAIL-superseded forever.
+_MRB_PROCESS_ROUTING_RE = re.compile(
+    r"(?i)(?:"
+    r"FAIL[- ]supersede|"
+    r"wrong[- ]book|"
+    r"belong(?:s)? in\s+`?bobiverse-bob-job-mrb`?|"
+    r"docs/mrb-N after skill merge|"
+    r"Harvest-lesson MRB:\s*process|"
+    r"never merge a second copy(?:\s+that says keep MRB process)?\s+in harvest|"
+    r"process playbooks?\s*\([^)]*belong"
+    r")"
+)
+
+
+def is_mrb_process_routing_lesson(text: str) -> bool:
+    """True when the lesson/summary is MRB process-routing (not a product playbook)."""
+    return bool(_MRB_PROCESS_ROUTING_RE.search(str(text or "")))
+
+
+def _normalize_lesson_key(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def filter_new_lessons(existing_md: str, lessons: list[str]) -> list[str]:
+    """Drop lessons already present in existing_md (FR #2970 de-dupe)."""
+    base = _normalize_lesson_key(existing_md)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in lessons:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        key = _normalize_lesson_key(line)
+        if key in seen:
+            continue
+        seen.add(key)
+        if key and key in base:
+            continue
+        out.append(line)
+    return out
+
+
+def mrb_process_routing_already_covered(filer: Any, repo: str) -> bool:
+    """True when harvest + job-mrb already carry the CAST IRON process-routing gates."""
+    harvest = _filer_get_file(filer, repo, SKILL_BOOK_PATHS["harvest"]).lower()
+    mrb = _filer_get_file(filer, repo, SKILL_BOOK_PATHS["bobiverse-bob-job-mrb"]).lower()
+    harvest_ok = ("do not land a second copy" in harvest) or (
+        "bobiverse-bob-job-mrb" in harvest and "harvest-lesson mrb" in harvest
+    )
+    mrb_ok = (("docs/mrb-n" in mrb) or ("docs/mrb-" in mrb)) and (
+        ("behind-main" in mrb)
+        or ("harvest promote order" in mrb)
+        or ("harvest-lesson" in mrb)
+    )
+    return bool(harvest_ok and mrb_ok)
+
+
 def apply_lessons_to_skill_md(existing: str, lessons: list[str]) -> str:
     """Append lessons under ``## Harvested lessons (intake)`` (FR #2705)."""
+    fresh = filter_new_lessons(existing, lessons)
     base = str(existing or "").rstrip() + "\n"
-    bullets = "\n".join(f"- {x}" for x in lessons if str(x).strip())
+    bullets = "\n".join(f"- {x}" for x in fresh if str(x).strip())
     if not bullets:
         return base
     heading = HARVESTED_LESSONS_HEADING
@@ -845,14 +905,34 @@ def file_submission(
                     title=title,
                     body=raw_body,
                 )
+                lesson_blob = "\n".join(lessons) + "\n" + raw_body + "\n" + title
+                # FR #2970: MRB process-routing lessons never open lesson(harvest).
+                if is_mrb_process_routing_lesson(lesson_blob):
+                    book = "bobiverse-bob-job-mrb"
+                    skill_path = SKILL_BOOK_PATHS[book]
+                    if mrb_process_routing_already_covered(filer, repo):
+                        rec["state"] = "lesson_already_covered"
+                        rec["skill_book"] = book
+                        rec["lesson_count"] = 0
+                        rec["queued"] = False
+                        _save_record(home, rec)
+                        return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)
-                new_md = apply_lessons_to_skill_md(existing_md, lessons)
+                new_lessons = filter_new_lessons(existing_md, lessons)
+                if not new_lessons:
+                    rec["state"] = "lesson_already_covered"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = 0
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
+                new_md = apply_lessons_to_skill_md(existing_md, new_lessons)
                 lesson_files = [{"path": skill_path, "content": new_md}]
-                lesson_title = build_lesson_pr_title(book, lessons)
+                lesson_title = build_lesson_pr_title(book, new_lessons)
                 lesson_body = build_lesson_pr_body(
                     book=book,
                     path=skill_path,
-                    lessons=lessons,
+                    lessons=new_lessons,
                     original_body=body,
                 )
                 lesson_labels = ["via-intake", "harvest-lesson"]
@@ -872,7 +952,7 @@ def file_submission(
                     rec["branch"] = out.get("branch")
                     rec["state"] = "filed"
                     rec["skill_book"] = book
-                    rec["lesson_count"] = len(lessons)
+                    rec["lesson_count"] = len(new_lessons)
                 except Exception as exc:
                     rec["draft_pr_error"] = f"{type(exc).__name__}: {exc}"[:500]
                     rec["state"] = "queued"
@@ -1020,9 +1100,11 @@ def process_intake(
             log_safe=_safe_log(norm, existing["intake_id"], "duplicate"),
         )
     # FR #2595: receipt_recorded / dropped_probe also settle the idempotency key.
+    # FR #2970: lesson_already_covered settles too (no lesson PR opened).
     if existing and str(existing.get("state") or "") in (
         "receipt_recorded",
         "dropped_probe",
+        "lesson_already_covered",
         "filed",
         "linked_existing_pr",
         "filed_issue_fallback",
@@ -1169,6 +1251,7 @@ def drain_intake_outbox(
             in (
                 "receipt_recorded",
                 "dropped_probe",
+                "lesson_already_covered",
                 "filed",
                 "linked_existing_pr",
                 "filed_issue_fallback",

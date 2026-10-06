@@ -316,6 +316,29 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
     return
 }
 
+# FR #2970: FAIL-supersede / wrong-book Harvest-lesson MRB *process* playbooks belong in
+# bobiverse-bob-job-mrb. Re-harvesting them with default -Book harvest opens twin lesson(harvest)
+# tips that the next MRB FAIL-supersedes again. Skip client-side (intake also gates).
+function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
+    $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
+    $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
+    $isProcess = (
+        ($joined -match '(?i)belong(?:s)? in\s+`?bobiverse-bob-job-mrb') -or
+        ($joined -match '(?i)docs/mrb-N after skill merge') -or
+        ($joined -match '(?i)Harvest-lesson MRB:\s*process') -or
+        ($joined -match '(?i)never merge a second copy') -or
+        ($joined -match '(?i)wrong[- ]book') -or
+        ($joined -match '(?i)process playbooks?')
+    )
+    if ($isFailSuper -and $isProcess) { return $true }
+    if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
+    return $false
+}
+if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
+
 $files = @()
 foreach ($sf in $SkillFile) {
     if (-not (Test-Path -LiteralPath $sf)) { throw "skill file not found: $sf" }
