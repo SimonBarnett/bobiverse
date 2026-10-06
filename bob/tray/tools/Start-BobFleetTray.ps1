@@ -60,17 +60,19 @@ function Ensure-BobSystraySeatWrapper {
         '  )'
         '} | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }'
         'Start-Sleep -Milliseconds 600'
-        ('$env:BOB_IRC_HOME = "{0}"' -f $ircHome.Replace('\', '\\'))
-        ('$env:BOB_HOME = "{0}"' -f $ircHome.Replace('\', '\\'))
-        ('$env:BOB_MACHINE_ID = "{0}"' -f $MachineId)
-        ('$env:BOB_BRIDGE_HOME = "{0}"' -f $bridge.Replace('\', '\\'))
-        ('& "{0}"' -f $trayPath)
+        # FR #2669: single-quoted path assigns (no backslash doubling). PS "..." treats \ as literal.
+        ('$env:BOB_IRC_HOME = ''{0}''' -f ($ircHome -replace '''', ''''''))
+        ('$env:BOB_HOME = ''{0}''' -f ($ircHome -replace '''', ''''''))
+        ('$env:BOB_MACHINE_ID = ''{0}''' -f ($MachineId -replace '''', ''''''))
+        ('$env:BOB_BRIDGE_HOME = ''{0}''' -f ($bridge -replace '''', ''''''))
+        ('& ''{0}''' -f ($trayPath -replace '''', ''''''))
     )
     $needWrite = $true
     if (Test-Path -LiteralPath $wrap) {
         $cur = Get-Content -LiteralPath $wrap -Raw -ErrorAction SilentlyContinue
-        # Rewrite when path/id change OR when the old broad "Watch-BobTray" kill filter is still present.
-        if ($cur -and $cur -match [regex]::Escape($trayPath) -and $cur -match [regex]::Escape($MachineId) `
+        # Rewrite when path/id change, old broad kill filter, OR FR #2669 doubled-backslash env assigns.
+        $hasDoubledEnv = $cur -and ($cur -match '=[ ]*"[A-Za-z]:\\\\' -or $cur -match "=[ ]*'[A-Za-z]:\\\\")
+        if ($cur -and -not $hasDoubledEnv -and $cur -match [regex]::Escape($trayPath) -and $cur -match [regex]::Escape($MachineId) `
                 -and $cur -match '\(-File\|-f\)' -and $cur -notmatch 'CommandLine -match "Watch-BobTray"') {
             $needWrite = $false
         }

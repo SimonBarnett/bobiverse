@@ -346,6 +346,56 @@ def seat_env_extra(run_dir: Path | str, machine: str, nick: str) -> dict:
     }
 
 
+# FR #2669: tray wrapper used to write C:\\Users\\... into BOB_*_HOME; scrub agent-host vars too.
+_BOB_PATH_ENV_KEYS = (
+    "BOB_IRC_HOME",
+    "BOB_HOME",
+    "BOB_BRIDGE_HOME",
+    "AGENTIC_IRC_HOME",
+    "BOB_AI_ROOT",
+)
+_AGENT_HOST_ENV_PREFIXES = ("CURSOR_", "SAND_")
+
+
+def normalize_bob_home_path(value: str) -> str:
+    """Collapse accidental doubled backslashes from tray wrappers (FR #2669)."""
+    raw = (value or "").strip()
+    if not raw:
+        return raw
+    s = raw.replace("/", "\\")
+    if s.startswith("\\\\"):
+        return "\\\\" + re.sub(r"\\+", r"\\", s[2:])
+    return re.sub(r"\\+", r"\\", s)
+
+
+def normalize_bob_path_envs(env: dict) -> dict:
+    """Return a copy with known BOB_* home/root paths normalised (FR #2669)."""
+    out = dict(env or {})
+    for key in _BOB_PATH_ENV_KEYS:
+        if key in out and out[key] is not None:
+            out[key] = normalize_bob_home_path(str(out[key]))
+    return out
+
+
+def scrub_agent_host_env(env: dict) -> dict:
+    """Drop CURSOR_* / SAND_* so tray-started seats do not inherit agent-host secrets (FR #2669)."""
+    out = {}
+    for k, v in (env or {}).items():
+        ku = str(k).upper()
+        if ku.startswith(_AGENT_HOST_ENV_PREFIXES):
+            continue
+        out[k] = v
+    return out
+
+
+def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> dict:
+    """Normalize BOB_* paths and scrub agent-host vars for a seat child (FR #2669 / #2413)."""
+    env = scrub_agent_host_env(normalize_bob_path_envs(dict(base_env or {})))
+    if extra:
+        env.update(extra)
+    return env
+
+
 def describe_worker_exe_launch(
     install_root: str | Path,
     mode: str,
@@ -2325,7 +2375,8 @@ class Supervisor:
         self.detector = detector or HangDetector()
         self.health_interval_s, self.startup_grace_s, self.clock = health_interval_s, startup_grace_s, clock
         self.backoff, self.restart_max, self.restart_window_s = backoff, restart_max, restart_window_s
-        self.base_env = dict(os.environ if base_env is None else base_env)
+        # FR #2669: collapse doubled BOB_* paths; drop CURSOR_*/SAND_* inherited from agent shells.
+        self.base_env = prepare_seat_child_env(os.environ if base_env is None else base_env)
         self.done = threading.Event()
         self.exit_code: Optional[int] = None
         self.stop = threading.Event()
@@ -2402,9 +2453,8 @@ class Supervisor:
                 prompt=self._prompt() + (" " + note if note else ""),
             )
             spec = child["spec"]
-            env = dict(self.base_env)
-            # FR #2380 / #2413: seat env from shared describe_agent_child_launch.
-            env.update(child["env"])
+            # FR #2380 / #2413 / #2669: seat env + path normalize + scrub agent-host vars.
+            env = prepare_seat_child_env(self.base_env, child["env"])
             if self.secret is not None and self.kind == "grok":
                 env["XAI_API_KEY"] = self.secret.reveal()  # child env only
             try:
@@ -2782,8 +2832,7 @@ def run_plan(args, log: Log) -> int:
         agent_exe=exe,
     )
     spec = child["spec"]
-    env = dict(os.environ)
-    env.update(child["env"])  # FR #2413: same BOB_* seat env as Agent
+    env = prepare_seat_child_env(os.environ, child["env"])  # FR #2413 / #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
     try:
@@ -2847,7 +2896,7 @@ def run_monitor(args, log: Log) -> int:
         except Exception:
             pass
     spec = build_launch(kind, "monitor", str(folder), monitor_prompt(str(folder)), exe, run_dir)
-    env = dict(os.environ)
+    env = prepare_seat_child_env(os.environ)  # FR #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
     try:
@@ -2944,7 +2993,7 @@ def run_maintenance(args, log: Log, *, spawn: Optional[Callable] = None, poll_s:
     spec = build_launch(kind, "maintenance", str(folder), prompt, exe, rd,
                         session_id=(sid if how == "new" else None),
                         resume_session_id=(sid if how == "resume" else None))
-    env = dict(os.environ)
+    env = prepare_seat_child_env(os.environ)  # FR #2669
     if secret and kind == "grok":
         env["XAI_API_KEY"] = secret.reveal()
     try:
