@@ -25,6 +25,7 @@ import argparse
 import base64
 import hashlib
 import ctypes
+import datetime as _dt
 import json
 import os
 import queue
@@ -1214,7 +1215,9 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
             if not _write_console_all(k32, h, build_enter_records(), wintypes):
                 return False
             time.sleep(min(0.08, gap))
-            return _write_console_all(k32, h, build_enter_records(), wintypes)
+            # enter2: second Enter (FR #1601); name kept for test_fr1601 source probe.
+            enter2 = _write_console_all(k32, h, build_enter_records(), wintypes)
+            return enter2
         finally:
             if clipboard_touched:
                 try:
@@ -1222,6 +1225,326 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
                 except Exception:
                     pass
             k32.CloseHandle(h)
+
+
+def send_console_enter(pid: int = 0) -> bool:
+    """Write one Enter to THIS process CONIN$ (FR #2696 submit-verify retry). Never paste."""
+    if os.name != "nt":
+        return False
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    wintypes, _ = _win_structs()
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    k32.WriteConsoleInputW.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    with _CONSOLE_LOCK:
+        h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
+        if not h or h == ctypes.c_void_p(-1).value:
+            return False
+        try:
+            return _write_console_all(k32, h, build_enter_records(), wintypes)
+        finally:
+            k32.CloseHandle(h)
+
+
+def _submit_verify_enabled() -> bool:
+    """FR #2696: BOB_WORKER_SUBMIT_VERIFY=0 disables post-inject submit probe/retry."""
+    raw = (os.environ.get("BOB_WORKER_SUBMIT_VERIFY") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _submit_verify_s(default: float = 3.0) -> float:
+    """Seconds to wait for a submit probe before first Enter-only retry (FR #2696)."""
+    raw = (os.environ.get("BOB_WORKER_SUBMIT_VERIFY_S") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        v = float(raw)
+    except ValueError:
+        return float(default)
+    return max(0.2, min(30.0, v))
+
+
+def _submit_verify_retries(default: int = 3) -> int:
+    raw = (os.environ.get("BOB_WORKER_SUBMIT_VERIFY_RETRIES") or "").strip()
+    if not raw:
+        return int(default)
+    try:
+        v = int(raw)
+    except ValueError:
+        return int(default)
+    return max(0, min(10, v))
+
+
+def _submit_verify_backoffs() -> tuple:
+    """Backoff seconds between Enter-only retries after the first verify window (FR #2696)."""
+    raw = (os.environ.get("BOB_WORKER_SUBMIT_VERIFY_BACKOFFS") or "").strip()
+    if raw:
+        out = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(max(0.2, min(60.0, float(part))))
+            except ValueError:
+                continue
+        if out:
+            return tuple(out)
+    return (3.0, 5.0, 8.0)
+
+
+def _parse_iso_ts(raw: str) -> Optional[float]:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return _dt.datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return None
+
+
+def grok_session_dir(
+    cwd: str,
+    session_id: str,
+    sessions_root: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve ``~/.grok/sessions/<url-quoted cwd>/<uuid>`` when present (FR #2696)."""
+    from urllib.parse import quote
+
+    if not session_id or not re.fullmatch(r"[0-9a-fA-F-]{36}", str(session_id)):
+        return None
+    root = Path(sessions_root) if sessions_root else grok_sessions_root()
+    for key in (quote(str(cwd), safe=""), quote(str(cwd).rstrip("\\"), safe="")):
+        d = root / key / str(session_id)
+        if d.is_dir():
+            return d
+    return None
+
+
+def probe_grok_session_submit(session_dir: Path | str, *, since_wall: float) -> bool:
+    """True when events.jsonl has turn_started with ts > since_wall (FR #2696)."""
+    path = Path(session_dir) / "events.jsonl"
+    if not path.is_file():
+        return False
+    try:
+        # Read tail only for large logs.
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    lines = data.splitlines()[-200:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line or '"turn_started"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if str(obj.get("type") or "") != "turn_started":
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts > float(since_wall):
+            return True
+    return False
+
+
+def probe_unified_prompt_enqueue(*, agent_pid: int, since_wall: float, log_path: Optional[Path] = None) -> bool:
+    """True when unified.jsonl has grok-pager prompt.enqueue for agent_pid after since_wall."""
+    path = Path(log_path) if log_path else (Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "logs" / "unified.jsonl")
+    if not path.is_file() or int(agent_pid or 0) <= 0:
+        return False
+    try:
+        # Bound read: last ~512 KiB.
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 524288), os.SEEK_SET)
+            chunk = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in reversed(chunk.splitlines()[-400:]):
+        if "prompt.enqueue" not in line or "grok-pager" not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if str(obj.get("msg") or "") != "prompt.enqueue":
+            continue
+        if int(obj.get("pid") or 0) != int(agent_pid):
+            continue
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if ts is not None and ts > float(since_wall):
+            return True
+    return False
+
+
+def make_submit_probe(
+    kind: str,
+    *,
+    cwd: str = "",
+    session_id: str | None = None,
+    agent_pid: int = 0,
+    since_wall: float | None = None,
+    sessions_root: Optional[Path] = None,
+) -> Optional[Callable[[], bool]]:
+    """Build a submit probe for the agent kind (FR #2696). None = no probe available."""
+    k = (kind or "").strip().lower()
+    t0 = float(time.time() if since_wall is None else since_wall)
+
+    if k == "grok":
+        sdir = grok_session_dir(cwd, session_id or "", sessions_root=sessions_root) if session_id else None
+
+        def _probe() -> bool:
+            if sdir and probe_grok_session_submit(sdir, since_wall=t0):
+                return True
+            if agent_pid and probe_unified_prompt_enqueue(agent_pid=int(agent_pid), since_wall=t0):
+                return True
+            return False
+
+        return _probe
+
+    # Cursor / unknown: no durable enqueue log on this fleet yet.
+    return None
+
+
+def run_submit_verify_loop(
+    *,
+    enter_fn: Callable[..., bool],
+    probe_fn: Optional[Callable[[], bool]],
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    log: Optional[Callable[[str], None]] = None,
+    verify_s: float = 3.0,
+    max_retries: int = 3,
+    backoffs: tuple | list = (3.0, 5.0, 8.0),
+    stop_fn: Optional[Callable[[], bool]] = None,
+    t0: float | None = None,
+) -> str:
+    """Wait for submit probe; Enter-only retry on miss (FR #2696).
+
+    Returns ``ok``, ``stop``, or ``failed``. Never re-pastes.
+    """
+    def _log(msg: str) -> None:
+        if log:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    start = float(clock() if t0 is None else t0)
+    waits = [float(verify_s)] + [float(b) for b in list(backoffs)[: max(0, int(max_retries))]]
+    # Cap wait list to 1 initial + max_retries entries.
+    waits = waits[: int(max_retries) + 1]
+    retry_n = 0
+    for i, wait_s in enumerate(waits):
+        deadline = clock() + max(0.0, float(wait_s))
+        while True:
+            if stop_fn:
+                try:
+                    if stop_fn():
+                        _log(
+                            f"relay: submit-verify ok after {clock() - start:.1f}s (stop/ACK)"
+                        )
+                        return "stop"
+                except Exception:
+                    pass
+            if probe_fn:
+                try:
+                    if probe_fn():
+                        _log(f"relay: submit-verify ok after {clock() - start:.1f}s")
+                        return "ok"
+                except Exception:
+                    pass
+            rem = deadline - clock()
+            if rem <= 0:
+                break
+            sleep(min(0.05, rem))
+        if i >= len(waits) - 1:
+            break
+        retry_n = i + 1
+        _log(f"relay: submit-verify retry={retry_n} (no prompt seen)")
+        try:
+            enter_fn()
+        except TypeError:
+            enter_fn(0)
+        except Exception as e:
+            _log(f"relay: submit-verify enter failed {type(e).__name__}")
+    _log(f"relay: submit-verify FAILED after {retry_n} retries")
+    return "failed"
+
+
+def inject_with_submit_verify(
+    pid: int,
+    text: str,
+    *,
+    inject_fn: Callable[..., bool] = inject_console,
+    enter_fn: Callable[..., bool] = send_console_enter,
+    probe_fn: Optional[Callable[[], bool]] = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    log: Optional[Callable[[str], None]] = None,
+    verify_s: float | None = None,
+    max_retries: int | None = None,
+    backoffs: tuple | list | None = None,
+    stop_fn: Optional[Callable[[], bool]] = None,
+    sync: bool = True,
+) -> bool:
+    """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
+
+    Returns the inject_fn result. Verify failure is logged but does not flip the
+    return to False (ack-miss / remind path still arms on successful paste).
+    When ``sync`` is False, the verify loop runs in a daemon thread so the IRC
+    relay thread is not blocked for the full backoff budget.
+    """
+    try:
+        ok = bool(inject_fn(pid, text))
+    except TypeError:
+        ok = bool(inject_fn(text))
+    if not ok:
+        return False
+    if not _submit_verify_enabled():
+        return True
+    # Without a submit probe, never fire Enter-only retries (could interrupt a warm TUI).
+    if probe_fn is None:
+        if log:
+            try:
+                log("relay: submit-verify skipped (no probe)")
+            except Exception:
+                pass
+        return True
+    vs = float(_submit_verify_s() if verify_s is None else verify_s)
+    mr = int(_submit_verify_retries() if max_retries is None else max_retries)
+    bos = _submit_verify_backoffs() if backoffs is None else backoffs
+    t0 = float(clock())
+
+    def _run() -> None:
+        run_submit_verify_loop(
+            enter_fn=enter_fn,
+            probe_fn=probe_fn,
+            clock=clock,
+            sleep=sleep,
+            log=log,
+            verify_s=vs,
+            max_retries=mr,
+            backoffs=bos,
+            stop_fn=stop_fn,
+            t0=t0,
+        )
+
+    if sync:
+        _run()
+    else:
+        threading.Thread(target=_run, name="submit-verify", daemon=True).start()
+    return True
 
 
 # --------------------------------------------------------------------------------------------- relay (IRC -> agent)
@@ -2515,7 +2838,34 @@ class Supervisor:
     def _inject_line(self, proc, line: str) -> bool:
         if proc.poll() is not None:
             return False
-        return bool(self.inject(proc.pid, line))
+        if not _submit_verify_enabled():
+            return bool(self.inject(proc.pid, line))
+        sid = self.sessions[-1] if self.sessions else None
+        # Wall-clock probe baseline (events.jsonl / unified.jsonl use UTC wall times).
+        since_wall = time.time()
+        probe = make_submit_probe(
+            self.kind,
+            cwd=str(self.cwd),
+            session_id=sid,
+            agent_pid=int(getattr(proc, "pid", 0) or 0),
+            since_wall=since_wall,
+        )
+        stop = None
+        if self.bored is not None:
+            stop = lambda b=self.bored: bool(getattr(b, "ack_open", False))
+        # sync=False: do not block the IRC relay thread for the verify backoff budget.
+        return inject_with_submit_verify(
+            proc.pid,
+            line,
+            inject_fn=self.inject,
+            enter_fn=send_console_enter,
+            probe_fn=probe,
+            clock=time.monotonic,
+            sleep=time.sleep,
+            log=self.log,
+            stop_fn=stop,
+            sync=False,
+        )
 
     def _wait_exit(self, proc) -> None:
         try:
