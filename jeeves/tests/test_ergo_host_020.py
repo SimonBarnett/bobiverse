@@ -20,7 +20,8 @@ def _t(name: str) -> str:
 def test_start_bob_passes_host_explicitly_and_validates_it():
     t = _t("Start-Bob.ps1")
     assert "[string]$IrcHost = ''" in t
-    assert "--nick $nick --home $BobHome --channel $channel --host $IrcHost" in t
+    # FR #1481 / frozen ear: argv array form (not a single interpolated string).
+    assert "$earArgs = @('--nick', $nick, '--home', $BobHome, '--channel', $channel, '--host', $IrcHost)" in t
     assert "$env:BOB_IRC_HOST" in t and "'irc.ntsa.uk'" in t
     assert "invalid -IrcHost" in t
 

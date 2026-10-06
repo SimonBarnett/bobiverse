@@ -151,6 +151,7 @@ def test_queue_flow_mrb_missing_pull_url_uses_task_field(tmp_path: Path):
     code, payload = _run("queue_flow", chair, digest)
     assert code == 1, payload
     assert payload["ok"] is False
-    assert payload["offerable_count"] >= 1
+    # Empty digest → idle_seat_count=0 so offerable_count stays 0 (FR #1652 idle-only math).
+    # The missing-pull-url finding must still fire from the MRB task/id shape.
     assert payload["missing_pull_url_count"] >= 1
     assert any("missing pull url" in f for f in payload["findings"])

@@ -106,7 +106,8 @@ def test_clear_orphan_digest_mrb_doing(tmp_path, monkeypatch):
         return False  # merged
 
     n = gitclaim.clear_orphan_digest_mrb_doing(tmp_path, pr_exists=pr_exists)
-    assert n == 1
+    # FR #1714: may clear worker_list nick and workers-map nick (w-io-* vs machine-pid) separately.
+    assert n >= 1
     assert gitclaim.worker_working_on(tmp_path, "win-mpre8vi4u6u-20596") == ""
     ent = bobreport.load_digest(tmp_path)["machines"]["win-mpre8vi4u6u"]
     assert ent["worker_list"][0]["state"] == "idle"

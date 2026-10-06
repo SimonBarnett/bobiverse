@@ -64,7 +64,11 @@ def _write_digest(digest: Path, *, idle: bool = True) -> None:
 
 
 def test_fr1518_gated_skill_and_pins_exit0_with_counts(tmp_path):
-    """Skill + require_machine pins → gated-empty exit 0 (FR #1518)."""
+    """needs-human + require_machine pins → gated-empty exit 0 (FR #1518).
+
+    FR #1682: label:skill / harvest intakes are offerable promote FRs (ungated).
+    Gated-empty proof uses needs-human + require_machine instead of skill.
+    """
     chair = tmp_path / "jeeves"
     digest = tmp_path / "bobiverse"
     _write_queue(
@@ -74,8 +78,9 @@ def test_fr1518_gated_skill_and_pins_exit0_with_counts(tmp_path):
                 "repo": "SimonBarnett/bobiverse",
                 "task": "FR",
                 "id": "#9001",
-                "title": "skill: harvest foo",
-                "labels": ["skill", "via-intake"],
+                "title": "FR: human gate",
+                "labels": ["feature-request", "needs-human"],
+                "needs_human": True,
             },
             {
                 "repo": "SimonBarnett/bobiverse",
@@ -94,7 +99,8 @@ def test_fr1518_gated_skill_and_pins_exit0_with_counts(tmp_path):
     assert payload["unaccepted_count"] == 2
     assert payload["ungated_offerable_count"] == 0
     gc = payload["gated_counts"]
-    assert gc.get("skill", 0) >= 1
+    # label:needs-human is SKIP_FR → skip_fr bucket (row_needs_human alone is needs-human).
+    assert gc.get("skip_fr", 0) + gc.get("needs-human", 0) >= 1
     assert gc.get("require_machine", 0) >= 1
     notes = " ".join(payload.get("notes") or [])
     assert "gated" in notes.lower() or "ungated" in notes.lower()

@@ -1,5 +1,5 @@
 # FR #1454: keep resync pagination (and related gitclaim) regressions out of main.
-# FR #2540: BOB_DIGEST_HOME must not leak across GET /report → later queue_path (fair-isol canary).
+# FR #2540: BOB_DIGEST_HOME must not leak across GET /report â†’ later queue_path (fair-isol canary).
 # Runs when gitclaim or its resync-pagination tests change.
 name: pytest-gitclaim
 
@@ -72,3 +72,24 @@ jobs:
             jeeves/tests/test_fr1993_jeeves_exe_wp2.py::test_fr1993_wp2_self_test_queue_and_offer `
             jeeves/tests/test_fr1993_jeeves_exe_wp2.py::test_fr1993_wp2_summarize_empty_offer `
             -q --tb=short
+
+      - name: Previously-red jeeves acceptance pins (FR #2633)
+        run: |
+          $env:PYTHONPATH = "$((Get-Location).Path)\jeeves\scripts;$((Get-Location).Path)\jeeves\tests;$((Get-Location).Path)\jeeves\tools;$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\common\tests;$((Get-Location).Path)\bob\scripts;$((Get-Location).Path)\airc\scripts"
+          python -m pytest `
+            jeeves/tests/test_ergo_host_020.py::test_start_bob_passes_host_explicitly_and_validates_it `
+            jeeves/tests/test_fr1508_ungated_offer_holds.py::test_clear_orphan_digest_mrb_doing `
+            jeeves/tests/test_fr1518_ungated_offerable_monitor.py::test_fr1518_gated_skill_and_pins_exit0_with_counts `
+            jeeves/tests/test_fr1927_mrb_enqueue_when_resync_blocked.py `
+            jeeves/tests/test_fr1_msi_fleet_acceptance.py `
+            jeeves/tests/test_harvest1581_chair_assign_myth.py `
+            jeeves/tests/test_harvest1613_mrb_done_open_pr.py `
+            jeeves/tests/test_harvest1715_nak_busy_workers_map.py `
+            jeeves/tests/test_jeeves_self_contained.py::test_no_agentic_irc_repo_or_module_dependency `
+            jeeves/tests/test_mrb1337_offer_top_is_pull.py::test_assign_row_refuses_fr_that_is_pull `
+            jeeves/tests/test_mrb2267_hostile_jeeves_exe_foundation.py::test_mrb2267_living_fr_refs_not_closes_in_docs `
+            jeeves/tests/test_mrb2319_body_truncate_hostile.py::test_mrb2319_blank_line_before_trailing_pin `
+            jeeves/tests/test_mrb2468_hostile_release_ionos_cues.py::test_hostile_marchhare_blocked_when_pinned_ionos `
+            jeeves/tests/test_mrb2482_hostile_fomprep_umbrella_skip.py::test_mrb2482_pin_set_exact_five `
+            jeeves/tests/test_mrb807_fix_monitor_queue_shapes.py::test_queue_flow_mrb_missing_pull_url_uses_task_field `
+            -q --tb=line

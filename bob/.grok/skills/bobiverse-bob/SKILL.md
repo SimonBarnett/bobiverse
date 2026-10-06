@@ -75,7 +75,7 @@ Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
 - `Sync-BobTrayStatusWorkersFromDigest` — report/digest-only sync (bounded timeout) rewrites `grok[].workers` without calling hover.
 - Call sync **before** `Update-Hover` on each poll; keep a **non-UI** timer (~10s, `SynchronizingObject=$null`) so worker lines keep moving while hover is stuck.
 - When BobCallback is down, still prefer local chair files (`digest.json` + queue ACC) over a hung hover path.
-- NAK busy after DONE: digest `machines.workers` map can stay `running`/`working_on` while `worker_list` is idle (harvest #1715); clear both maps. Product FR #1714.
+- NAK busy after DONE: digest `machines.workers` map can stay `running`/`working_on` while `worker_list` is idle (harvest #1715); clear both maps → product FR #1714.
 - Empty TipForm while digest has activity: peer merge must roll `working_on` from `worker_list` (PR #1495); nick-map/digest readers must accept `.work` / `.job` / `.working_on` (PR #1555).
 
 Troubleshoot: compare TipForm vs `Invoke-JeevesMonitorCheck -Check stuck_accepted` / queue ACC; heal BobCallback with `Start-BobCallbackSupervised.ps1` (single owner). See `bobiverse-bob-troubleshooting`.

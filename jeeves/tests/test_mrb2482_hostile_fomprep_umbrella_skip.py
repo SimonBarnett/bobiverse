@@ -5,16 +5,18 @@ import gitclaim
 
 
 REPO = "SimonBarnett/agentic_fomprep"
-PINS = {3, 7, 8, 9, 11, 20}
+# FR #2521: do NOT pin #11 (FAIL remediation, offerable). Homes: #3/#7/#8/#9/#20.
+PINS = {3, 7, 8, 9, 20}
 
 
-def test_mrb2482_pin_set_exact_six():
+def test_mrb2482_pin_set_exact_five():
     got = {
         int(ident.lstrip("#"))
         for (repo, ident) in gitclaim._SKIP_FR_ISSUE_PINS
         if repo == "simonbarnett/agentic_fomprep"
     }
     assert got == PINS
+    assert 11 not in got
 
 
 def test_mrb2482_same_numbers_on_bobiverse_not_pinned():
