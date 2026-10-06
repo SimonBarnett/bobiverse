@@ -2332,6 +2332,19 @@ _OUT_JOB_KEY_RX = re.compile(
 
 # FR #2383: Jeeves assign body still visible inside a FROM line after compaction footers.
 _JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+\S+#\d+\b")
+# FR #2791: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
+_ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT)\s+(\S+#\d+)\b")
+
+
+def assign_job_ref(line: str) -> Optional[str]:
+    """Lower-cased ``owner/repo#N`` from a Jeeves assign / FROM line, or None (FR #2791)."""
+    text = line or ""
+    parts = text.split(None, 3)
+    body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+    m = _ASSIGN_JOB_REF_RX.search(body)
+    if not m:
+        return None
+    return m.group(1).lower()
 
 
 def looks_like_job_assign(line: str, own_nick: str = "") -> bool:
@@ -2505,6 +2518,20 @@ class BoredEmitter:
             if not self._ack_open or self._ack_at is None:
                 return False
             return (self.clock() - self._ack_at) < self.ack_stale_s
+
+    @property
+    def ack_job_ref(self) -> Optional[str]:
+        """Lower-cased ``owner/repo#N`` for the open ACK, or None (FR #2791 / #1732)."""
+        with self._cv:
+            if not self._ack_open or self._ack_at is None:
+                return None
+            if (self.clock() - self._ack_at) >= self.ack_stale_s:
+                return None
+            key = self._ack_job_key or ""
+            parts = key.split(None, 1)
+            if len(parts) < 2:
+                return None
+            return parts[1].lower()
 
     # ---- lifecycle / events (each wakes the timer thread)
     def start(self) -> None:
@@ -2952,9 +2979,13 @@ class Supervisor:
             agent_pid=int(getattr(proc, "pid", 0) or 0),
             since_wall=since_wall,
         )
+        # FR #2791: stop only when the open ACK is for this injected job (not any ACK).
         stop = None
-        if self.bored is not None:
-            stop = lambda b=self.bored: bool(getattr(b, "ack_open", False))
+        want = assign_job_ref(line)
+        if want and self.bored is not None:
+            stop = lambda b=self.bored, w=want: bool(getattr(b, "ack_open", False)) and (
+                getattr(b, "ack_job_ref", None) == w
+            )
         # sync=False: do not block the IRC relay thread for the verify backoff budget.
         return inject_with_submit_verify(
             proc.pid,
