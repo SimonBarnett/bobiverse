@@ -1080,6 +1080,39 @@ class ShellJobRunner:
             except ConnectionError:
                 return
 
+    def open_job_ids(self) -> list[tuple[str, str]]:
+        """(nick, job_id) for in-flight + pending commands (FR #2640 stop flush)."""
+        out: list[tuple[str, str]] = []
+        with self._lock:
+            for key, item in list(self._inflight_cmd.items()):
+                try:
+                    jid = parse_shell_request(item.command).job_id
+                except ShellRequestError:
+                    jid = uuid.uuid4().hex[:8]
+                out.append((key, jid))
+            for key, q in list(self._pending.items()):
+                for item in list(q):
+                    if self._inflight_cmd.get(key) is item:
+                        continue
+                    try:
+                        jid = parse_shell_request(item.command).job_id
+                    except ShellRequestError:
+                        jid = uuid.uuid4().hex[:8]
+                    out.append((key, jid))
+        return out
+
+    def abandon_open_jobs(self) -> list[tuple[str, str]]:
+        """Drop pending/in-flight bookkeeping and unblock waiters; return job ids (FR #2640)."""
+        ids = self.open_job_ids()
+        with self._lock:
+            pending_all = list(self._pending.items())
+            self._pending.clear()
+            self._inflight_cmd.clear()
+        for _key, q in pending_all:
+            for item in q:
+                item.done.set()
+        return ids
+
     def close_nick(self, nick: str) -> None:
         # Oneshoot threads are daemon; drop tracking + pending for this Query.
         key = nick.strip().lower()
