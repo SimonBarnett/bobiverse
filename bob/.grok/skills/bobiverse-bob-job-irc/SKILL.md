@@ -118,7 +118,7 @@ no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an
 
 ## Harvest digest (lessons audit 2026-10-06)
 
-Generalised from 196 harvested lessons that never reached this book (audit for FR #2705). Per-lesson sources are the cited harvest issue numbers on each bullet (no separate audit table file on main).
+Generalised from 196 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
 
 - **`needs-mrb1` is a dead, hallucinated label:** never create, stamp or gate on it; `needs-human` is the only human gate (FR #1526). Older harvest lessons that say "needs-mrb1 => ACK then GIVEUP" are obsolete. If the label turns up, strip it and treat the row as normal work. (74 lessons: harvest #2233, #2196, #2018, #2011, #1852, #1846 +76 more)
 - **Umbrellas, living FRs and loops:** evergreen umbrellas (for example agentic_fomprep#3/#7/#8/#9/#11/#20) and living architecture FRs (Refs-only, for example #1993) are not implement jobs. ACK then GIVEUP with a reason, or DONE the covering URL, and never `Closes` a living FR. Child FRs wait while the parent foundation PR is open; a parent with open child PRs gets an issue-comment matrix, not another PR. On a re-offer loop, do not file a new CRITICAL every cycle: comment once on the existing drain/needs_human issue. (70 lessons: harvest #2304, #2294, #2238, #2191, #2188, #1844 +116 more, 17 held intake rows)

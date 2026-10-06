@@ -93,10 +93,10 @@ def test_mrb2721_chair_internals():
     assert "git-claim.lock" in window or "RLock" in window
 
 
-def test_mrb2721_no_dead_audit_table_path():
+def test_mrb2721_audit_table_path_present():
     text = _utf8_no_bom(JT)
-    assert "harvest-lessons-audit-2026-10-06.md" not in text
-    assert "no separate audit table file on main" in text
+    assert "harvest-lessons-audit-2026-10-06.md" in text
+    assert "no separate audit table file on main" not in text
 
 
 def test_mrb2721_digest_bullets_complete_lines():

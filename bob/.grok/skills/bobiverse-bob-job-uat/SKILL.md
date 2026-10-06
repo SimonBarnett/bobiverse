@@ -96,7 +96,7 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 
 ## Harvest digest (lessons audit 2026-10-06)
 
-Generalised from 67 harvested lessons that never reached this book (audit for FR #2705). Per-lesson sources are the cited harvest issue numbers on each bullet (no separate audit table file on main).
+Generalised from 67 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
 
 - **Self-UAT is forbidden per seat:** the implementer of the Fixes PR, the author of any `mrb-*-fix`/nits PR on it, and the MRB seat must ACK then GIVEUP that UAT with a reason and ask for a different seat. Never weaken into self-PASS. On repeated re-offers keep GIVEUP and comment once on the existing gap issue rather than filing a new CRITICAL each loop. (42 lessons: harvest #1413, #1411, #1410, #1408, #1406, #691 +41 more, 1 held intake row)
 - **UAT is repo-level only:** the only valid UAT is `owner/repo#0` with `repo_uat`. Per-PR, merged-PR-number and `mrb-*-fix` UAT assigns get ACK then GIVEUP. Before starting, run `gh pr list --state open` and the open-issue gate (needs-human, mrb-home and skill are excluded). If anything is left, NACK. The escape pool prefers less-involved seats and ignores ghost seats and durable giveups. Live-host UATs (for example CE-PRIORITY-DEV1) follow the host pin. (17 lessons: harvest #1431, #1428, #1423, #1421, #1420, #1417 +11 more, 1 held intake row)

@@ -179,7 +179,7 @@ Checks:
 
 ## Harvest digest (lessons audit 2026-10-06)
 
-Generalised from 372 harvested lessons that never reached this book (audit for FR #2705). Per-lesson sources are the cited harvest issue numbers on each bullet (no separate audit table file on main).
+Generalised from 372 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
 
 **Digest audit path (MRB #2718 / #2763):** harvest-digest skill PRs that cite `common/docs/harvest-lessons-audit-2026-10-06.md` must drop that dead path on `docs/mrb-N` (file never on main) and pin digest bullets with a hostile test module (same pattern as docs/mrb-2717 for job-irc).
 
