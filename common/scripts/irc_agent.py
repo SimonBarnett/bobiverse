@@ -585,6 +585,8 @@ class Client:
         self._outbox_gen = 0
         self._linelen = 512
         self._privmsg_text_max: int | None = None  # None → derive from nick/target/linelen
+        # FR #2728: chair !status uptime from process/agent construction, not first command.
+        self._process_started = time.time()
         self.ready = threading.Event()
         self.joined = threading.Event()
         self.dead = threading.Event()
@@ -2103,8 +2105,12 @@ class Client:
         if st is None:
             from types import SimpleNamespace
 
+            # FR #2728: use construction time so the first !status is not uptime_s=0.
+            started = getattr(self, "_process_started", None)
+            if not isinstance(started, (int, float)) or started <= 0:
+                started = time.time()
             st = SimpleNamespace(
-                started=time.time(), help_rate=chair_commands.HelpRate(),
+                started=float(started), help_rate=chair_commands.HelpRate(),
                 recycle_gate=chair_commands.RecycleGate(), whois_at={}, trace_ok=True,
             )
             self._cc_state = st
