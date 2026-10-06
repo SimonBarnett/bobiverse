@@ -20,7 +20,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | Verb | Purpose |
 |------|---------|
 | `STATUS` | Airc Running + VERSION files (bob/airc/jeeves); replies as `out id= seq=` then `DONE` (FR #2575) |
-| plain line | PowerShell (default); UTF-8 `$OutputEncoding` wrap so StdOut keeps Greek/CJK (FR #2580); `$ProgressPreference=SilentlyContinue` so StdErr stays free of CLIXML progress noise (FR #2641); terminating / `Write-Error` StdErr is decoded from CLIXML to plain text (FR #2910) |
+| plain line | PowerShell (default); UTF-8 `$OutputEncoding` wrap so StdOut keeps Greek/CJK (FR #2580); `$ProgressPreference=SilentlyContinue` so StdErr stays free of CLIXML progress noise (FR #2641); terminating / `Write-Error` StdErr is decoded from CLIXML to plain text with user-relative `At line:` (FR #2910 / #2918) |
 | `cmd: …` | COMSPEC escape hatch (`chcp 65001` prefixed, FR #2580) |
 | `psb64:<b64>` | `powershell -EncodedCommand` (same UTF-8 wrap) |
 | `PUT path` + chunks | Write file (base64 seq) |

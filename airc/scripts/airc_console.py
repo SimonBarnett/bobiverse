@@ -705,8 +705,10 @@ def resolve_comspec() -> str:
 # ``#< CLIXML`` / ``Preparing modules for first use`` on stderr (extra IRC flood
 # and a non-empty StdErr for ExitCode 0 callers).
 # FR #2910: keep each preamble statement on its own line so terminating errors
-# report ``At line:N char:…`` against the user script, not a fused one-liner
-# that echoes ``$ProgressPreference`` / ``UTF8Encoding`` into StdErr.
+# do not fuse ``$ProgressPreference`` / ``UTF8Encoding`` into the user statement
+# (char offsets / preamble leak). FR #2918: PowerShell still numbers those
+# preamble lines, so ``plain_text_powershell_stderr`` rewrites ``At line:N`` by
+# subtracting ``ps_utf8_preamble_line_count()`` to match the user script.
 PS_UTF8_STDOUT_PREAMBLE = (
     "$ProgressPreference = 'SilentlyContinue'\n"
     "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false\n"
@@ -718,6 +720,17 @@ _CLIXML_ERROR_S_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _CLIXML_HEX_ESC_RE = re.compile(r"_x([0-9A-Fa-f]{4})_", re.IGNORECASE)
+_AT_LINE_RE = re.compile(r"At line:(\d+)(\s+char:)", re.IGNORECASE)
+
+
+def ps_utf8_preamble_line_count() -> int:
+    """How many script lines ``PS_UTF8_STDOUT_PREAMBLE`` occupies before user text (FR #2918)."""
+    p = PS_UTF8_STDOUT_PREAMBLE or ""
+    if not p:
+        return 0
+    if p.endswith("\n"):
+        return p.count("\n")
+    return p.count("\n") + 1
 
 
 def wrap_ps_script_utf8_stdout(script: str) -> str:
@@ -737,17 +750,37 @@ def _unescape_powershell_clixml_text(text: str) -> str:
     return _CLIXML_HEX_ESC_RE.sub(_one, text or "")
 
 
-def plain_text_powershell_stderr(stderr: str) -> str:
-    """Turn redirected PowerShell CLIXML stderr into plain error text (FR #2910).
+def _adjust_at_line_numbers(text: str, offset: int) -> str:
+    """Rewrite ``At line:N`` to user-script coordinates (FR #2918)."""
+    if offset <= 0 or not text:
+        return text
+
+    def _repl(m: re.Match[str]) -> str:
+        n = int(m.group(1))
+        return f"At line:{max(1, n - offset)}{m.group(2)}"
+
+    return _AT_LINE_RE.sub(_repl, text)
+
+
+def plain_text_powershell_stderr(
+    stderr: str, *, at_line_offset: int | None = None
+) -> str:
+    """Turn redirected PowerShell CLIXML stderr into plain error text (FR #2910 / #2918).
 
     Windows PowerShell 5.1 serialises the error stream as ``#< CLIXML`` / ``<Objs>``
     when stdout/stderr are redirected. Extract ``<S S=\"Error\">`` payloads, unescape
     ``_xHHHH_``, drop progress/noise records, and strip residual wrapper preamble
     echoes so IRC ``err`` lines carry the real message only.
+
+    Default ``at_line_offset`` is ``ps_utf8_preamble_line_count()`` so ``At line:``
+    matches the operator script (pass ``0`` for raw CLIXML fixtures that were not
+    wrapped).
     """
     raw = stderr or ""
     if not raw:
         return ""
+    if at_line_offset is None:
+        at_line_offset = ps_utf8_preamble_line_count()
     looks_clixml = ("#< CLIXML" in raw) or ("<Objs" in raw and 'S="Error"' in raw)
     if looks_clixml:
         parts = [
@@ -793,7 +826,8 @@ def plain_text_powershell_stderr(stderr: str) -> str:
                     continue
             continue
         kept.append(line)
-    return "\n".join(kept).strip()
+    plain = "\n".join(kept).strip()
+    return _adjust_at_line_numbers(plain, int(at_line_offset or 0))
 
 
 def encode_ps_encoded_command(script: str) -> str:
