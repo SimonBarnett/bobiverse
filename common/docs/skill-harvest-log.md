@@ -652,6 +652,15 @@ Books: bobiverse-bob-worker, post-install. Tip PR #2602; hostile docs/mrb-2602 t
 
 Books: bobiverse-bob-job-mrb, chair gitclaim/shop_listen. Tip PR #2607; hostile docs this entry. Refs: SimonBarnett/bobiverse#2604 SimonBarnett/bobiverse#2607
 
+## 2026-10-06 - fr77 ergo exclude via $xd array (MRB #2613 / FR #2611)
+
+| Lesson | Fix / book |
+|--------|------------|
+| airc/tests fr77 gate still asserted literal "/XD ergo" after FR #2563 moved robocopy excludes into $xd = @('ergo', ...) + foreach /XD | Assert 'ergo' inside $xd array and foreach /XD loop; keep SkipErgo; do not weaken no-Ergo CAST IRON |
+| PR bodies saying "closed #N" for already-closed history auto-link closingIssuesReferences | Prefer "prior #N" / avoid GitHub closing keywords next to unrelated issue numbers |
+
+Books: airc fr77 / Update-BobiverseService. Tip PR #2613; hostile docs this entry. Refs: SimonBarnett/bobiverse#2611 SimonBarnett/bobiverse#2613
+
 ## 2026-10-06 - airc long Command stall after seq=1 (FR #2612)
 
 | Lesson | Fix / book |
