@@ -83,7 +83,7 @@ agent files what it finds.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
-Generalised from 149 harvested lessons that never reached this book (audit for FR #2705). Per-lesson sources are the cited harvest issue numbers on each bullet (no separate audit table file on main).
+Generalised from 149 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
 
 - **Callback / :7700 health (from the Python BobCallback era; still valid for jeeves.exe):** trust an HTTP probe of `/bob/v1/report` (curl.exe with `--max-time` of 20 or more) over service or task status, and act only when the probe fails. Run exactly one listener: kill duplicates and never stack supervised wrappers. Never break a fresh `digest.lock` held by a live PID; clear only empty, stale or dead-PID locks. Bind :7700 before draining the outbox. Never touch BobIrcd. On a repeat flap, comment on the existing outage issue instead of filing a twin. (67 lessons: harvest #2263, #1936, #1789, #1768, #1760, #1624 +61 more, 1 held intake row)
 - **Idle seats and empty offers:** the open GitHub count is not the queue. Before filing starve, compare `unaccepted` with each nick's `offer_focus_top` gates: strict focus, require_machine with no live seat, self-MRB, ledger/giveup cooldown, pending `offered_to` grace, and idle-only nicks (no `w-mh-*` ghosts). `nak busy` with an empty `accepted` means a stale digest `doing`/`working_on`: run `clear_seat_doing`. Never `!assign` from a monitor. Focus is repo-level only (`!focus owner/repo`). (18 lessons: harvest #1748, #1656, #1655, #1648, #1627, #1556 +8 more, 4 held intake rows)

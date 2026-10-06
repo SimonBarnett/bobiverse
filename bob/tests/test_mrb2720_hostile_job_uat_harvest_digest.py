@@ -56,10 +56,10 @@ def test_mrb2720_product_cookbook_release_uat():
     assert "VERSION" in window or "FAIL" in window
 
 
-def test_mrb2720_no_dead_audit_table_path():
+def test_mrb2720_audit_table_path_present():
     text = _utf8_no_bom(UAT)
-    assert "harvest-lessons-audit-2026-10-06.md" not in text
-    assert "no separate audit table file on main" in text
+    assert "harvest-lessons-audit-2026-10-06.md" in text
+    assert "no separate audit table file on main" not in text
 
 
 def test_mrb2720_digest_bullets_complete_lines():

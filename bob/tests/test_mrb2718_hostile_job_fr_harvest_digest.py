@@ -64,10 +64,10 @@ def test_mrb2718_test_harness_gotchas():
     assert "repo_layout" in window or "PYTHONPATH" in window or "sparse" in window
 
 
-def test_mrb2718_no_dead_audit_table_path():
+def test_mrb2718_audit_table_path_present():
     text = _utf8_no_bom(FR)
-    assert "harvest-lessons-audit-2026-10-06.md" not in text
-    assert "no separate audit table file on main" in text
+    assert "harvest-lessons-audit-2026-10-06.md" in text
+    assert "no separate audit table file on main" not in text
 
 
 def test_mrb2718_digest_bullets_complete_lines():

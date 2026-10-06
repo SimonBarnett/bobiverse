@@ -90,10 +90,10 @@ def test_mrb2719_prove_the_claim_literally():
     assert "routing" in window.lower() or "empty labels" in window
 
 
-def test_mrb2719_no_dead_audit_table_path():
+def test_mrb2719_audit_table_path_present():
     text = _utf8_no_bom(MRB)
-    assert "harvest-lessons-audit-2026-10-06.md" not in text
-    assert "no separate audit table file on main" in text
+    assert "harvest-lessons-audit-2026-10-06.md" in text
+    assert "no separate audit table file on main" not in text
 
 
 def test_mrb2719_digest_bullets_complete_lines():
