@@ -1452,6 +1452,111 @@ def make_submit_probe(
     return None
 
 
+def bored_on_turn_end_enabled() -> bool:
+    """FR #2802: BOB_WORKER_BORED_ON_TURN_END=0 restores timer-only harvest_hold_s behaviour."""
+    raw = (os.environ.get("BOB_WORKER_BORED_ON_TURN_END") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def should_start_turn_watcher(kind: str) -> bool:
+    """FR #2802: grok turn watcher only when opt-in is on (default on)."""
+    return (kind or "").strip().lower() == "grok" and bored_on_turn_end_enabled()
+
+
+class GrokTurnWatcher:
+    """FR #2802: poll grok session events.jsonl for turn_started / turn_ended."""
+
+    def __init__(
+        self,
+        *,
+        events_path: Path | str | None = None,
+        events_path_fn: Optional[Callable[[], Path | str | None]] = None,
+        on_turn_started: Optional[Callable[[Optional[int], float], None]] = None,
+        on_turn_ended: Optional[Callable[[Optional[int], float], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+        poll_s: float = 0.5,
+        log: Optional[Callable[[str], None]] = None,
+    ):
+        self._path = Path(events_path) if events_path else None
+        self._path_fn = events_path_fn
+        self._on_started = on_turn_started
+        self._on_ended = on_turn_ended
+        self._stop = stop_event or threading.Event()
+        self.poll_s = max(0.05, float(poll_s))
+        self._log = log
+        self._offset = 0
+        self._cur: Optional[Path] = None
+
+    def _resolve(self) -> Optional[Path]:
+        if self._path_fn is not None:
+            try:
+                p = self._path_fn()
+            except Exception:
+                return None
+            return Path(p) if p else None
+        return self._path
+
+    def _emit_line(self, line: str) -> None:
+        line = (line or "").strip()
+        if not line:
+            return
+        try:
+            obj = json.loads(line)
+        except Exception:
+            return
+        typ = str(obj.get("type") or "")
+        wall = _parse_iso_ts(str(obj.get("ts") or ""))
+        if wall is None:
+            wall = time.time()
+        turn = obj.get("turn_number")
+        try:
+            turn_i = int(turn) if turn is not None else None
+        except Exception:
+            turn_i = None
+        if typ == "turn_started" and self._on_started:
+            try:
+                self._on_started(turn_i, float(wall))
+            except Exception:
+                pass
+        elif typ == "turn_ended" and self._on_ended:
+            try:
+                self._on_ended(turn_i, float(wall))
+            except Exception:
+                pass
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            path = self._resolve()
+            if path is None:
+                self._stop.wait(self.poll_s)
+                continue
+            try:
+                if self._cur != path:
+                    self._cur = path
+                    self._offset = 0
+                    if self._log:
+                        try:
+                            self._log(f"bored: turn watcher following {path}")
+                        except Exception:
+                            pass
+                if not path.is_file():
+                    self._stop.wait(self.poll_s)
+                    continue
+                size = path.stat().st_size
+                if size < self._offset:
+                    self._offset = 0
+                if size > self._offset:
+                    with path.open("r", encoding="utf-8", errors="replace") as f:
+                        f.seek(self._offset)
+                        chunk = f.read()
+                        self._offset = f.tell()
+                    for ln in chunk.splitlines():
+                        self._emit_line(ln)
+            except OSError:
+                pass
+            self._stop.wait(self.poll_s)
+
+
 def run_submit_verify_loop(
     *,
     enter_fn: Callable[..., bool],
@@ -2463,14 +2568,16 @@ def _env_float(name: str, default: float, lo: float, hi: float) -> float:
 
 
 class BoredEmitter:
-    """t770u / FR #1611: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
+    """t770u / FR #1611 / FR #2802: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
+      * FR #2802: grok ``turn_ended`` releases the harvest hold early (and idle turn end -> reason ``turn``);
+        ``harvest_hold_s`` remains the fallback maximum when no turn-end signal arrives;
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
         second per reason; only the seat's own shop; never after IRC loss/shutdown (stop()).
-    Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S.
+    Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S, BOB_WORKER_BORED_ON_TURN_END.
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
@@ -2508,6 +2615,14 @@ class BoredEmitter:
         self._inject_pending = False
         self._inject_at: Optional[float] = None
         self._harvest_until: Optional[float] = None
+        # FR #2802 turn-end gate (generation avoids race: turn_ended then turn_started before fire)
+        self._hold_started_at: Optional[float] = None
+        self._turn_started_at: Optional[float] = None
+        self._turn_gen = 0
+        self._release_gen: Optional[int] = None
+        self._turn_idle_pending = False
+        self._arm_skip = False  # hold fire at the turn_ended clock instant so turn_started can cancel
+        self._hold_release_at: Optional[float] = None
         self.sent: list = []  # (clock time, reason)
         self._thread: Optional[threading.Thread] = None
 
@@ -2584,12 +2699,82 @@ class BoredEmitter:
         self._inject_pending = False
         self._inject_at = None
         self._idle_since = None
+        self._hold_started_at = now
+        self._release_gen = None
+        self._turn_idle_pending = False
         if self.harvest_hold_s > 0:
             self._harvest_until = now + self.harvest_hold_s
             self.log(f"bored: harvest hold {self.harvest_hold_s:.0f}s before next !bored")
         else:
             self._harvest_until = None
             self._idle_since = now
+
+    def turn_started(self, at: float | None = None, *, turn: int | None = None, sid: str | None = None) -> None:
+        """FR #2802: grok turn_started — bumps generation so a prior turn_ended release cannot fire yet."""
+        with self._cv:
+            now = float(self.clock() if at is None else at)
+            self._turn_started_at = now
+            self._turn_gen += 1
+            self._turn_idle_pending = False
+            self._cv.notify_all()
+
+    def turn_ended(
+        self,
+        at: float | None = None,
+        *,
+        turn: int | None = None,
+        sid: str | None = None,
+    ) -> None:
+        """FR #2802: grok turn_ended — release harvest hold when at/after DONE, or idle reason=turn."""
+        with self._cv:
+            now = float(self.clock() if at is None else at)
+            # Open ACK or inject-pending: ignore (still busy).
+            if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
+                self._cv.notify_all()
+                return
+            if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
+                self._cv.notify_all()
+                return
+
+            if self._harvest_until is not None and self._hold_started_at is not None:
+                # Stale turn_ended before DONE/free line: ignore.
+                if now < self._hold_started_at:
+                    self._cv.notify_all()
+                    return
+                self._harvest_until = None
+                self._idle_since = now
+                self._release_gen = self._turn_gen
+                self._arm_skip = True
+                self._hold_release_at = now
+                self.log(
+                    f"bored: turn ended (sid={sid or '-'}, turn={turn if turn is not None else '-'}) - hold released"
+                )
+            elif (
+                self._release_gen is not None
+                and self._release_gen != self._turn_gen
+                and self._hold_started_at is not None
+                and (
+                    (self._done_key and self._done_key != self._last_done_key)
+                    or (self._free_key and self._free_key != self._last_free_key)
+                )
+            ):
+                # Prior release was cancelled by turn_started; this end re-arms fire.
+                self._release_gen = self._turn_gen
+                self._idle_since = now
+                self._arm_skip = True
+                self._hold_release_at = now
+                self.log(
+                    f"bored: turn ended (sid={sid or '-'}, turn={turn if turn is not None else '-'}) - hold released"
+                )
+            elif self._ready and not self._stopped:
+                # Idle turn end: no open ACK / inject / hold.
+                self._turn_idle_pending = True
+                self._release_gen = self._turn_gen
+                self._arm_skip = True
+                self._hold_release_at = now
+                if self._idle_since is None:
+                    self._idle_since = now
+            self._cv.notify_all()
 
     def on_outbox(self, payload: str) -> None:
         now = self.clock()
@@ -2668,11 +2853,22 @@ class BoredEmitter:
             self._idle_since = now
         if not self._start_sent:
             return "start"
+        # FR #2802: turn_started after a turn-end release bumps gen and gates done/free/turn.
+        if self._release_gen is not None and self._release_gen != self._turn_gen:
+            self._arm_skip = False
+            return None
+        # Hold fire at the turn_ended clock instant so a same-tick turn_started can cancel.
+        if self._arm_skip:
+            if self._hold_release_at is not None and now <= self._hold_release_at:
+                return None
+            self._arm_skip = False
         # FR #1611: fire done/free only after harvest hold has ended (not immediate on outbox).
         if self._done_key and self._done_key != self._last_done_key:
             return "done"
         if self._free_key and self._free_key != self._last_free_key:
             return "free"
+        if self._turn_idle_pending:
+            return "turn"
         if self._nak_due is not None and now >= self._nak_due:
             return "nak"
         since = (now - self._last_bored) if self._last_bored is not None else 1e12
@@ -2696,6 +2892,14 @@ class BoredEmitter:
             return min(wake, self._nak_due) if self._nak_due is not None else wake
         if now < self._retry_at:
             return self._retry_at
+        # FR #2802: after turn-end release (or arm_skip cleared), wake immediately for done/free/turn.
+        if self._release_gen is not None and self._release_gen == self._turn_gen:
+            if (
+                (self._done_key and self._done_key != self._last_done_key)
+                or (self._free_key and self._free_key != self._last_free_key)
+                or self._turn_idle_pending
+            ):
+                return now
         base = self._idle_since if self._idle_since is not None else now
         thr = self.repeat_s if self._last_reason == "idle" else self.idle_s
         due = base + self.idle_s
@@ -2715,6 +2919,8 @@ class BoredEmitter:
             key = (reason, int(now))
         if key == self._last_dedupe:
             self._retry_at = now + 1.0
+            if reason == "turn":
+                self._turn_idle_pending = False
             return
         ok = False
         try:
@@ -2731,8 +2937,12 @@ class BoredEmitter:
             self._start_sent = True
         if reason == "done":
             self._last_done_key = self._done_key
+            self._hold_started_at = None
         if reason == "free":
             self._last_free_key = self._free_key
+            self._hold_started_at = None
+        if reason == "turn":
+            self._turn_idle_pending = False
         self.sent.append((now, reason))
         self.log(f"bored -> shop reason={reason}")
 
@@ -2743,6 +2953,10 @@ class BoredEmitter:
                 r = self._reason(now)
                 if r:
                     self._fire(r, now)
+                    continue
+                # FR #2802: brief wait while arm_skip so turn_started can cancel same-tick.
+                if self._arm_skip and self._hold_release_at is not None and now <= self._hold_release_at:
+                    self._cv.wait(0.02)
                     continue
                 due = self._next_due(now)
                 self._cv.wait(None if due is None else max(0.0, due - now))
@@ -2837,11 +3051,59 @@ class Supervisor:
         self.ack_miss = AssignAckMiss()
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
         self.stale_build_check: Optional[Callable[[], Optional[str]]] = None
+        # FR #2802: grok events.jsonl turn watcher (opt-out BOB_WORKER_BORED_ON_TURN_END=0).
+        self._turn_watch_stop = threading.Event()
+        self._turn_watch_thread: Optional[threading.Thread] = None
         relay.on_inject = self._on_inject
         if irc and self.bored:
             irc.on_nak = self.bored.nak  # t817u
         if irc:
             irc.on_lost = lambda why: self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
+
+    def _stop_turn_watcher(self) -> None:
+        self._turn_watch_stop.set()
+        th = self._turn_watch_thread
+        self._turn_watch_thread = None
+        if th is not None and th.is_alive():
+            th.join(timeout=2.0)
+
+    def _start_turn_watcher(self, session_id: str) -> None:
+        """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
+        self._stop_turn_watcher()
+        if not self.bored or not should_start_turn_watcher(self.kind):
+            return
+        self._turn_watch_stop = threading.Event()
+        cwd = str(self.cwd)
+        sid_box = {"sid": session_id}
+
+        def _path() -> Optional[Path]:
+            sid = sid_box["sid"]
+            if self.sessions:
+                sid = self.sessions[-1]
+                sid_box["sid"] = sid
+            return grok_session_dir(cwd, sid or "")
+
+        def _on_started(turn: Optional[int], wall: float) -> None:
+            if self.bored:
+                self.bored.turn_started(turn=turn, sid=sid_box.get("sid"))
+
+        def _on_ended(turn: Optional[int], wall: float) -> None:
+            if self.bored:
+                # Use emitter clock for hold release; wall is only for logging/stale via hold_started mono.
+                self.bored.turn_ended(turn=turn, sid=sid_box.get("sid"))
+
+        watcher = GrokTurnWatcher(
+            events_path_fn=_path,
+            on_turn_started=_on_started,
+            on_turn_ended=_on_ended,
+            stop_event=self._turn_watch_stop,
+            poll_s=0.5,
+            log=self.log,
+        )
+        th = threading.Thread(target=watcher.run, name="grok-turn-watch", daemon=True)
+        self._turn_watch_thread = th
+        th.start()
+        self.log(f"bored: turn watcher started (session={session_id})")
 
     def _on_inject(self, line: str = "") -> None:
         self.detector.note_inject(self.clock())
@@ -2942,6 +3204,7 @@ class Supervisor:
                 )
             self.detector.reset(self.clock())
             self.relay.set_target(None)
+            self._start_turn_watcher(spec.session_id)
             self._arm_ready(proc)
             threading.Thread(target=self._wait_exit, args=(proc,), name="agent-wait", daemon=True).start()
             return True
@@ -3147,6 +3410,7 @@ class Supervisor:
                 self._expected_exit.add(proc.pid)
         self.log(f"worker: shutting down ({reason}) exit={code}")
         self.stop.set()
+        self._stop_turn_watcher()
         if self.bored:
             self.bored.stop()  # no !bored after IRC loss / shutdown
         self.relay.close()
