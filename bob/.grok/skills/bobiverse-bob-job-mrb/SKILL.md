@@ -144,6 +144,7 @@ On review:
 1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
 2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
+- A harvest-lesson PR opened from this seat's Invoke-BobiverseHarvest is self-MRB for that seat — NACK/GIVEUP and leave it for another seat
 
 ## Skill / markdown diff hygiene (harvest #1616)
 
