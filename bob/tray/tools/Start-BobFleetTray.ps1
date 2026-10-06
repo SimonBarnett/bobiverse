@@ -173,14 +173,33 @@ if (-not (Test-Path -LiteralPath $tray)) {
 $hits = @(Get-BobSystrayTrayProcesses)
 
 if ($ForceNew -and $hits.Count -gt 0) {
-    # FR #453: if Restart already announced, outbox is empty; if an external
-    # ForceNew kills a live tray, still try a best-effort departure line first.
+    # FR #453 / FR #2943: announce into the *service* ear home (InstallRoot\home) that
+    # LocalSystem ircBob drains — not %USERPROFILE%\.bobiverse (orphan undrained outbox).
     try {
-        $ircHomeFn = Join-Path $env:USERPROFILE '.bobiverse'
+        $commonFn = Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1'
+        if (-not (Test-Path -LiteralPath $commonFn)) {
+            $commonFn = Join-Path (Split-Path $RepoRoot -Parent) 'common\scripts\Bobiverse-Common.ps1'
+        }
+        if ((Test-Path -LiteralPath $commonFn) -and -not (Get-Command Get-BobiverseEarServiceHome -ErrorAction SilentlyContinue)) {
+            . $commonFn
+        }
+        $ircHomeFn = ''
+        if (Get-Command Get-BobiverseEarServiceHome -ErrorAction SilentlyContinue) {
+            $ircHomeFn = [string](Get-BobiverseEarServiceHome -ServiceName $ServiceName -InstallRoot $RepoRoot)
+        }
+        if (-not $ircHomeFn) {
+            $candHome = Join-Path $RepoRoot 'home'
+            if (Test-Path -LiteralPath $candHome) { $ircHomeFn = $candHome }
+        }
+        if (-not $ircHomeFn) {
+            # Last resort only when install home is missing (dev / unset).
+            $ircHomeFn = Join-Path $env:USERPROFILE '.bobiverse'
+        }
+        New-Item -ItemType Directory -Force -Path $ircHomeFn | Out-Null
         if (Test-Path -LiteralPath $ircHomeFn) {
             $midFn = Get-BobSystrayMachineId
             if (-not $midFn) { $midFn = 'unknown' }
-            $nickFn = 'bob-{0}' -f $midFn
+            $nickFn = 'Bob-{0}' -f $midFn
             $msgFn = '{0}: tray Restart - logging off IRC (graceful PART/QUIT)' -f $nickFn
             $lineFn = 'PRIVMSG #bobiverse :{0}' -f $msgFn
             $obFn = Join-Path $ircHomeFn 'outbox.txt'
@@ -193,8 +212,19 @@ if ($ForceNew -and $hits.Count -gt 0) {
                 }
             }
             $agentStillUp = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-                    $_.CommandLine -and $_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse'
+                    $_.CommandLine -and (
+                        ($_.CommandLine -match 'irc_agent\.py' -and $_.CommandLine -match 'bobiverse') -or
+                        ($_.CommandLine -match 'bob-ear\.exe') -or
+                        ($_.Name -match '(?i)^bob-ear')
+                    )
                 }).Count -gt 0
+            # Also treat ircBob Running as "ear up" when process match misses (NSSM / frozen exe).
+            if (-not $agentStillUp) {
+                try {
+                    $svcFn = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+                    if ($svcFn -and $svcFn.Status -eq 'Running') { $agentStillUp = $true }
+                } catch { }
+            }
             # Skip if Restart already logged out (agent gone) — avoid orphan announce for next join.
             if ($needAnnounce -and $agentStillUp) {
                 if (Test-Path -LiteralPath $obFn) {
@@ -206,7 +236,7 @@ if ($ForceNew -and $hits.Count -gt 0) {
                     }
                 }
                 [IO.File]::WriteAllText($obFn, $lineFn + "`n", [Text.UTF8Encoding]::new($false))
-                Write-Output ('irc departure announce (ForceNew): {0}' -f $msgFn)
+                Write-Output ('irc departure announce (ForceNew home={0}): {1}' -f $ircHomeFn, $msgFn)
                 $deadlineFn = [datetime]::UtcNow.AddSeconds(20)
                 while ([datetime]::UtcNow -lt $deadlineFn) {
                     if (-not (Test-Path -LiteralPath $obFn)) { break }
