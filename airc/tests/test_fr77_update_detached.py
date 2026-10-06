@@ -171,10 +171,14 @@ def test_updater_script_check_has_no_msiexec_and_airc_identity_hooks():
     assert "msiexec" not in check.lower()
     assert "Start-DetachedApply" in check
     assert "TargetVersion" in t or "-TargetVersion" in t
-    # identity + no Ergo
+    # identity + no Ergo (FR #2563 / #2611: excludes via $xd array + foreach /XD, not literal "/XD ergo")
     assert "ConsoleHome" in t and "MachineId" in t
     assert "identity-reconcile" in t
-    assert "/XD ergo" in t
+    xd_m = re.search(r"\$xd\s*=\s*@\(([^)]*)\)", t)
+    assert xd_m is not None, "Update-BobiverseService backup must build $xd exclude array"
+    assert "'ergo'" in xd_m.group(1), "ergo must remain in robocopy $xd excludes"
+    assert re.search(r"foreach\s*\(\s*\$d\s+in\s+\$xd\s*\)", t)
+    assert "/XD" in t
     assert "'-SkipErgo'" in t or "-SkipErgo" in t
 
 
