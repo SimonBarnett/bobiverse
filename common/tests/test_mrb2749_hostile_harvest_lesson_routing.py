@@ -34,11 +34,12 @@ def test_mrb2749_harvest_routes_lesson_mrb_playbook_to_job_mrb():
     assert "bobiverse-bob-job-mrb" in text
     assert "2749" in text or "2740" in text
     assert "second copy" in text.lower() or "do not land a second copy" in text.lower()
-    # Contiguous routing tip
-    idx = text.index("bobiverse-bob-job-mrb")
-    window = text[max(0, idx - 120) : idx + 220]
-    assert "Harvest-lesson" in window or "harvest-lesson" in window.lower()
+    # Anchor on the bullet start so "Harvest-lesson" is inside the window.
+    idx = text.index("- Harvest-lesson MRB playbooks")
+    window = text[idx : idx + 420]
+    assert "bobiverse-bob-job-mrb" in window
     assert "behind-main" in window.lower() or "1647" in window
+    assert "harvest" in window.lower()
 
 
 def test_mrb2749_job_mrb_still_owns_behind_main_pins():
