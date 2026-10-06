@@ -2620,21 +2620,25 @@ def _env_float(name: str, default: float, lo: float, hi: float) -> float:
 
 
 class BoredEmitter:
-    """t770u / FR #1611 / FR #2802: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
+    """t770u / FR #1611 / FR #2802 / FR #2834: the EXE (never the model) posts `PRIVMSG #<machine> :!bored`:
       * on seat start (agent ready), after DONE/NACK/GIVEUP **once the harvest hold ends**, and while idle
         (first idle after idle_s, then every repeat_s);
       * FR #2802: grok ``turn_ended`` releases the harvest hold early (and idle turn end -> reason ``turn``);
-        ``harvest_hold_s`` remains the fallback maximum when no turn-end signal arrives;
+        ``harvest_hold_s`` remains the fallback when no turn-end signal arrives;
+      * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
+        past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
         second per reason; only the seat's own shop; never after IRC loss/shutdown (stop()).
-    Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S, BOB_WORKER_BORED_ON_TURN_END.
+    Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S, BOB_WORKER_BORED_ON_TURN_END,
+    BOB_WORKER_TURN_HOLD_MAX_S.
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
                  ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
-                 nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None):
+                 nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None,
+                 turn_hold_max_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
         self.nak_s = nak_s  # t817u: fixed timer from a Jeeves NAK to the next !bored (never while busy)
@@ -2646,6 +2650,11 @@ class BoredEmitter:
         self.assign_grace_s = (
             float(assign_grace_s) if assign_grace_s is not None
             else _env_float("BOB_WORKER_ASSIGN_GRACE_S", 600.0, 30.0, 3600.0)
+        )
+        # FR #2834: safety cap while a post-DONE turn stays open past harvest_hold_s.
+        self.turn_hold_max_s = (
+            float(turn_hold_max_s) if turn_hold_max_s is not None
+            else _env_float("BOB_WORKER_TURN_HOLD_MAX_S", 600.0, 90.0, 3600.0)
         )
         self._nak_due: Optional[float] = None
         self._cv = threading.Condition()
@@ -2675,18 +2684,49 @@ class BoredEmitter:
         self._turn_idle_pending = False
         self._arm_skip = False  # hold fire at the turn_ended clock instant so turn_started can cancel
         self._hold_release_at: Optional[float] = None
+        # FR #2834: open turn past harvest_hold_s (watcher saw turn_started; cleared on turn_ended).
+        self._turn_open = False
+        self._turn_watcher_armed = False
+        self._turn_hold_cap_logged = False
         # FR #2811: assign parked in Relay during harvest — blocks !bored, not turn_ended release.
         self._held_assign = False
         self.sent: list = []  # (clock time, reason)
         self._thread: Optional[threading.Thread] = None
 
+    def _pending_harvest_fire(self) -> bool:
+        """True while DONE/NACK/GIVEUP has not yet produced its !bored."""
+        return bool(
+            (self._done_key and self._done_key != self._last_done_key)
+            or (self._free_key and self._free_key != self._last_free_key)
+        )
+
+    def _extend_hold_for_open_turn(self, now: float) -> bool:
+        """FR #2834: keep harvest busy while turn open, until turn_ended or turn_hold_max_s."""
+        if not bored_on_turn_end_enabled():
+            return False
+        if not self._turn_watcher_armed or not self._turn_open:
+            return False
+        if self._hold_started_at is None or not self._pending_harvest_fire():
+            return False
+        cap_at = float(self._hold_started_at) + float(self.turn_hold_max_s)
+        if now >= cap_at:
+            if not self._turn_hold_cap_logged:
+                self._turn_hold_cap_logged = True
+                self.log(
+                    f"bored: turn hold max {self.turn_hold_max_s:.0f}s - releasing "
+                    "(no turn_ended; safety net)"
+                )
+            return False
+        return True
+
     @property
     def holding_incoming_assigns(self) -> bool:
-        """FR #2811: True during post-DONE/NACK/GIVEUP harvest hold (park incoming assigns)."""
+        """FR #2811 / #2834: True during harvest hold or open-turn extension (park incoming assigns)."""
         with self._cv:
-            if self._harvest_until is None:
-                return False
-            return self.clock() < float(self._harvest_until)
+            now = self.clock()
+            if self._harvest_until is not None and now < float(self._harvest_until):
+                return True
+            return self._extend_hold_for_open_turn(now)
 
     def note_held_assign(self) -> None:
         """FR #2811: Relay parked an assign; stay offer-pending until flush."""
@@ -2776,6 +2816,7 @@ class BoredEmitter:
         self._hold_started_at = now
         self._release_gen = None
         self._turn_idle_pending = False
+        self._turn_hold_cap_logged = False
         if self.harvest_hold_s > 0:
             self._harvest_until = now + self.harvest_hold_s
             self.log(f"bored: harvest hold {self.harvest_hold_s:.0f}s before next !bored")
@@ -2788,6 +2829,8 @@ class BoredEmitter:
         with self._cv:
             now = float(self.clock() if at is None else at)
             self._turn_started_at = now
+            self._turn_open = True
+            self._turn_watcher_armed = True
             self._turn_gen += 1
             self._turn_idle_pending = False
             self._cv.notify_all()
@@ -2802,6 +2845,7 @@ class BoredEmitter:
         """FR #2802: grok turn_ended — release harvest hold when at/after DONE, or idle reason=turn."""
         with self._cv:
             now = float(self.clock() if at is None else at)
+            self._turn_open = False
             # Open ACK or inject-pending: ignore (still busy).
             if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
                 self._cv.notify_all()
@@ -2810,7 +2854,10 @@ class BoredEmitter:
                 self._cv.notify_all()
                 return
 
-            if self._harvest_until is not None and self._hold_started_at is not None:
+            if (
+                (self._harvest_until is not None or self._pending_harvest_fire())
+                and self._hold_started_at is not None
+            ):
                 # Stale turn_ended before DONE/free line: ignore.
                 if now < self._hold_started_at:
                     self._cv.notify_all()
@@ -2903,6 +2950,9 @@ class BoredEmitter:
             return True
         if self._harvest_until is not None and now < self._harvest_until:
             return True
+        # FR #2834: turn still open after harvest_hold_s — keep busy until turn_ended or max.
+        if self._extend_hold_for_open_turn(now):
+            return True
         # FR #2811: held assign blocks idle/nak/repeat, but must NOT block done/free —
         # those fire post_bored, which flushes the held line (harvest_hold_s fallback).
         if self._held_assign:
@@ -2966,6 +3016,9 @@ class BoredEmitter:
             wakes.append(self._ack_at + self.ack_stale_s)
         if self._harvest_until is not None and now < self._harvest_until:
             wakes.append(self._harvest_until)
+        # FR #2834: while open-turn extends past harvest_hold_s, wake at the safety cap.
+        if self._extend_hold_for_open_turn(now) and self._hold_started_at is not None:
+            wakes.append(float(self._hold_started_at) + float(self.turn_hold_max_s))
         if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
             wakes.append(self._inject_at + self.assign_grace_s)
         if wakes:
