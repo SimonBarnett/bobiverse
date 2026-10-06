@@ -3342,22 +3342,26 @@ def review_blocked_for_author(
     *,
     free: set[str] | None = None,
 ) -> bool:
-    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407).
+    """Shared MRB+UAT author block (FR #39 / #227 / #265 / #1407 / #2604).
 
-    Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat), or is a
-    sibling on the same machine while another machine has a *viable* live seat.
+    Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat).
+
+    For **UAT** only: also blocks a sibling on the same machine while another machine
+    has a *viable* live seat (FR #1407 / #2487). For **MRB**, self-exclusion is
+    exact-seat only (FR #2604) so a same-machine sibling may review even when
+    another machine looks live — two seats on one box must not strand an open PR.
 
     Viable other-machine seats (FR #1407): not already in ``giveup_seats``, and for
     repo-level UAT when ``ledger`` is provided, not themselves FR-implementer blocked
     (``_ledger_blocks``). Giveup / fellow-implementer seats must not strand siblings
     of the stamped author after self-UAT GIVEUP loops.
 
-    FR #2487: when ``free`` is provided, sibling viability requires the other-machine
-    seat to be idle/free right now (in ``free``). Busy seats on another machine must
-    not strand cross-seat MRB on the author machine. When ``free`` is None, all
+    FR #2487: when ``free`` is provided, UAT sibling viability requires the other-machine
+    seat to be idle/free right now (in ``free``). When ``free`` is None, all
     ``live`` seats are treated as free (unit-test / legacy default).
     """
-    if _canon_task(row) not in ("MRB", "UAT"):
+    task = _canon_task(row)
+    if task not in ("MRB", "UAT"):
         return False
     authors = row_author_seats(row)
     if not authors:
@@ -3394,8 +3398,11 @@ def review_blocked_for_author(
             if others and all(_seat_gave_up_uat(o) for o in others):
                 continue  # sole non-giveup seat may take stranded repo UAT
             return True
+        # FR #2604: MRB self-exclusion is exact seat only — sibling on same machine OK.
+        if task == "MRB":
+            continue
         author_p = bobreport.parse_seat_nick(author)
-        # Sibling seat on the same machine: block when another machine has a viable live seat.
+        # UAT sibling seat on the same machine: block when another machine has a viable live seat.
         if author_p and me_p:
             author_mid = bobreport.fold_machine_id(author_p[0])
             if author_mid == me_mid:
@@ -4537,6 +4544,7 @@ def resync_from_github(
     fetched: list[str] = []
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
+    skipped_draft = 0
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
     # stay as MRB rows; the open issue stays desired so fr_done can clear and MRB
     # (or a re-opened FR if MRB is missing) can flow. (Open-PR supersede for offer
@@ -4625,6 +4633,15 @@ def resync_from_github(
             open_pulls_map.setdefault(repo, set()).add(f"#{num}")
             # bobiverse#224 / #781: open mrb-*-fix PRs are not MRB queue jobs.
             if is_mrb_fix_pr_title(title):
+                continue
+            # FR #2604: draft open PRs must not become MRB jobs; still count as open
+            # for UAT/repo_clear and FR supersede via open_pulls_map above.
+            if pr.get("draft") is True:
+                skipped_draft += 1
+                print(
+                    f"resync skip draft PR {repo}#{num}",
+                    flush=True,
+                )
                 continue
             desired.append(
                 GitClaim(repo=repo, task="MRB", id=f"#{num}", event="pull_request", action="opened", line="", refs=refs)
@@ -4908,6 +4925,7 @@ def resync_from_github(
                 "unaccepted": len(doc["unaccepted"]),
                 "added": added,
                 "dropped": dropped,
+                "skipped_draft": int(skipped_draft),
                 "focus_pruned": int(focus_pruned),
                 "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),

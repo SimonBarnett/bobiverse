@@ -90,14 +90,14 @@ def test_hostile_offer_with_live_marchhare_still_offers_ionos_sibling(_home):
     assert job.get("offered_to") == "win-mpre8vi4u6u-7764"
 
 
-def test_hostile_viable_other_machine_still_blocks_sibling(_home):
-    """If another machine is NOT pinned out, sibling-on-author-machine stays blocked."""
+def test_hostile_mrb_sibling_ok_when_other_machine_live(_home):
+    """FR #2604: MRB exact-seat only — same-machine sibling may take MRB while flamingo is live."""
     row = _row(
         "SimonBarnett/bobiverse",
         "MRB",
         99,
         1,
-        # no require_machine — flamingo is viable
+        # no require_machine — flamingo is also viable
         author_seat="win-mpre8vi4u6u-1",
         implementer_seat="win-mpre8vi4u6u-1",
         url="https://github.com/SimonBarnett/bobiverse/pull/99",
@@ -112,9 +112,11 @@ def test_hostile_viable_other_machine_still_blocks_sibling(_home):
         {"win-mpre8vi4u6u": ["1", "2"], "flamingo": ["9"]},
     )
     live = gitclaim.live_seat_nicks(_home)
-    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-2", live) is True
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-1", live) is True
+    assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-2", live) is False
     status, job = gitclaim.offer_focus_top(
         _home, "win-mpre8vi4u6u-2", "#win-mpre8vi4u6u"
     )
-    # Prefer flamingo; sibling on author machine should not take it while flamingo is live.
-    assert status == "empty" or (job and job.get("offered_to") != "win-mpre8vi4u6u-2")
+    assert status == "ok"
+    assert job is not None
+    assert job.get("offered_to") == "win-mpre8vi4u6u-2"
