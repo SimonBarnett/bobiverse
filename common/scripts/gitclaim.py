@@ -2295,16 +2295,51 @@ def _row_drop_label(row: dict) -> str:
     return f"{task} {repo}{ident}"
 
 
-def _heal_mrb_pull_url(row: dict) -> bool:
-    """Synthesize ``/pull/N`` URL when repo+#N are known (FR #2604 / #2899)."""
+def _mrb_row_has_pull_provenance(row: dict) -> bool:
+    """True when an MRB row looks like a real pull (FR #2927).
+
+    Bare ``task=MRB`` + ``repo`` + ``#N`` queue junk (no URL / event / lesson labels)
+    must stay unhealable so prune can drop it (FR #595). Harvest-lesson / webhook
+    pull rows may omit ``url`` briefly — those get a synthesized ``/pull/N``.
+    """
+    if not isinstance(row, dict):
+        return False
+    if PULL_URL_RE.search(str(row.get("url") or "")):
+        return True
+    event = str(row.get("event") or "").strip().lower()
+    if event in ("pull_request", "pull_request_target"):
+        return True
+    labels = {
+        str(x).strip().lower()
+        for x in (row.get("labels") or ())
+        if str(x).strip()
+    }
+    if "harvest-lesson" in labels:
+        return True
+    title = str(row.get("title") or "").strip()
+    if title.lower().startswith("lesson("):
+        return True
+    return False
+
+
+def _heal_mrb_pull_url(row: dict, *, force: bool = False) -> bool:
+    """Synthesize ``/pull/N`` URL when repo+#N are known (FR #2604 / #2899 / #2927).
+
+    ``force=True`` is for resync paths that already know the id is an open pull.
+    """
     if not isinstance(row, dict) or _canon_task(row) != "MRB":
         return False
     if PULL_URL_RE.search(str(row.get("url") or "")):
         return True
+    # FR #2927: never invent a pull URL for fake/bare MRB rows (keeps FR #595 prune).
+    if not force and not _mrb_row_has_pull_provenance(row):
+        return False
     repo = str(row.get("repo") or "").strip()
     ident = _norm_row_id(row.get("id"))
     if not repo or not ident:
         return False
+    if force and not str(row.get("event") or "").strip():
+        row["event"] = "pull_request"
     row["url"] = f"https://github.com/{repo}/pull/{ident.lstrip('#')}"
     return bool(PULL_URL_RE.search(str(row.get("url") or "")))
 
@@ -4294,6 +4329,9 @@ def offer_focus_top(
                         purged = True
             # Drop stale offered_to so a dead/non-ACKing seat cannot pin the row forever.
             # FR #2899: also clear when offered_to nick is not live (author-seat recycle).
+            # FR #2927: only treat as dead-pin when the live set is non-empty. An empty
+            # digest (or tests without workers) must keep one-offer-per-job sticky until
+            # OFFER_TIMEOUT_S — otherwise every pin looks dead and two seats get #1.
             live_l = {
                 (canonical_worker_nick(n) or n or "").strip().lower()
                 for n in live
@@ -4306,7 +4344,7 @@ def offer_focus_top(
                 if not to:
                     continue
                 to_c = (canonical_worker_nick(to) or to).strip().lower()
-                dead_pin = bool(to_c) and to_c not in live_l
+                dead_pin = bool(to_c) and bool(live_l) and to_c not in live_l
                 try:
                     age = now_f - datetime.fromisoformat(
                         str(cand.get("offered_ts") or "").replace("Z", "+00:00")
@@ -5590,7 +5628,7 @@ def resync_from_github(
                         and ident_n in (open_pulls_map.get(repo_s) or set())
                         and (repo_s, ident_n) not in skipped_open_pulls
                     ):
-                        _heal_mrb_pull_url(row)
+                        _heal_mrb_pull_url(row, force=True)
                         keep.append(row)
                         continue
                     # FR #1323 / #2458: drop MERGED/closed even when offered_to is set

@@ -19,10 +19,6 @@ $ErrorActionPreference = 'Stop'
 if (-not $RepoRoot) { $RepoRoot = Split-Path $PSScriptRoot -Parent }
 # FR #2585: normalize so bob-tray.exe mutex key matches (no trailing slash / odd path forms).
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
-$tray = Join-Path $RepoRoot 'tools\Watch-BobTray.ps1'
-if (-not (Test-Path -LiteralPath $tray)) {
-    throw "missing $tray"
-}
 
 function Get-BobSystrayMachineId {
     $mid = ([string]$env:BOB_MACHINE_ID).Trim()
@@ -160,6 +156,18 @@ function Invoke-BobSystrayTidy {
     else {
         Write-Warning "tidy: missing $icons"
     }
+}
+
+# FR #2928: dot-source (tests loading Ensure-BobSystraySeatWrapper) must define
+# functions only. Never reach Invoke-BobSystrayTidy / Stop-BobSystrayPriorAgents /
+# Cleanup-OrphanAgents / tray start — that kills Grok Bot and every python/pwsh.
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+
+$tray = Join-Path $RepoRoot 'tools\Watch-BobTray.ps1'
+if (-not (Test-Path -LiteralPath $tray)) {
+    throw "missing $tray"
 }
 
 $hits = @(Get-BobSystrayTrayProcesses)
