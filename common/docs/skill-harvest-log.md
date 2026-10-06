@@ -651,3 +651,12 @@ Books: bobiverse-bob-worker, post-install. Tip PR #2602; hostile docs/mrb-2602 t
 | Draft harvest receipts must not become MRB jobs | resync skips draft open PRs, prints skip line, returns skipped_draft; drafts still count as open for UAT/repo_clear |
 
 Books: bobiverse-bob-job-mrb, chair gitclaim/shop_listen. Tip PR #2607; hostile docs this entry. Refs: SimonBarnett/bobiverse#2604 SimonBarnett/bobiverse#2607
+
+## 2026-10-06 - airc long Command stall after seq=1 (FR #2612)
+
+| Lesson | Fix / book |
+|--------|------------|
+| Live MarchHare 80-line Command got only seq=1 then Wait timeout; airc-console.log showed probe interrupted -> stop then process restart mid-emit | Outbound Query queue survives in-process force_reconnect and drains after handshake; graceful stop flushes DONE exit=1 for in-flight shell ids; overlapping shell on same Query returns busy DONE |
+| FLOOD_S 0.35s per line makes large outputs slow | Raise Invoke-AircRemote -TimeoutSec; avoid Restart-Service Airc during live ReplyFile Wait |
+
+Books: bobiverse-airc, bobiverse-airc-troubleshooting. Refs: SimonBarnett/bobiverse#2612
