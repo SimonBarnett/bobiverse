@@ -112,6 +112,8 @@ When the assigned PR is already **closed**, or a **duplicate/superseded** of wor
 
 **Harvest-lesson twins:** the same rule applies when two `lesson(<book>):` / `harvest-lesson` tips carry the same playbook — FAIL-superseded the later one; never merge the misplaced raw duplicate tip into `harvest` when the playbook belongs (or already landed) in `bobiverse-bob-job-mrb` (MRB #2741 / #2747 / #2750).
 
+**CAST IRON already covers it (MRB #2732 / #2783):** if the same skill book already has a CAST IRON / product paragraph covering the lesson (for example FR #2727 Clear `removed=0`), FAIL-supersede and close as not planned — do not merge a weaker `## Harvested lessons` duplicate.
+
 Self-MRB remains a separate hand-back (GIVEUP / NACK); this section is for hostile review of a head that lost the race to main.
 
 ## Fix-PR race after DONE (harvest #1981 / MRB #1847)
@@ -149,6 +151,7 @@ On review:
 2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
 4. **Twin harvest-lesson PRs** for the same book/lesson: FAIL-superseded board, close the later PR citing the merged first; never merge the misplaced raw duplicate tip (MRB #2741 / #2747 / #2750).
+5. **CAST IRON already covers it:** if the target book already has a CAST IRON / product paragraph for the lesson, FAIL-supersede and close as not planned — do not merge a weaker Harvested lessons duplicate (MRB #2732 / #2783).
 
 ## Skill / markdown diff hygiene (harvest #1616)
 
