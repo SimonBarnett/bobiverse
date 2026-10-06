@@ -1,4 +1,4 @@
-﻿# Airc remote control (protocol sketch)
+# Airc remote control (protocol sketch)
 
 See **[feature-request-airc-remote-control-2026-10-01.md](./feature-request-airc-remote-control-2026-10-01.md)** for LOCKED success metrics.
 
