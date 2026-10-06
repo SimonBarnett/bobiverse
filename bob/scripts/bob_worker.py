@@ -50,6 +50,7 @@ EXIT_NO_AGENT = 4  # nothing to start (no key given / no agent installed)
 EXIT_GAVE_UP = 5  # hang-restart bound exceeded
 EXIT_LAUNCH_FAIL = 6
 EXIT_REFUSED = 7  # t815u: already the maximum number of workers running
+EXIT_STALE_BUILD = 8  # FR #2782: idle seat exits so the tray seat-heal relaunches it on the hotpatched build
 
 def _default_install_root() -> str:
     """<drive>:\\ai\\bob on the fixed disk that really holds the fleet (t780u); never a hard-coded C:."""
@@ -2712,6 +2713,55 @@ class BoredEmitter:
                 due = self._next_due(now)
                 self._cv.wait(None if due is None else max(0.0, due - now))
 
+# --------------------------------------------------------------------------------------------- FR #2782: stale build
+STALE_BUILD_SETTLE_S = 60.0  # install exe must be unchanged this long (a hotpatch copy may still be in flight)
+_RUN_EXE_DIGEST_RX = re.compile(r"(?i)^bob-worker-([0-9a-f]{12})\.exe$")
+_stale_build_cache: dict = {}
+
+
+def stale_build_reason(run_exe: str | Path, install_root: str | Path, *, now: float | None = None,
+                       env: Optional[dict] = None) -> Optional[str]:
+    """FR #2782: why this seat is running an older build than the install, or None.
+
+    A seat runs ``%LOCALAPPDATA%\\Bobiverse\\worker\\bin\\bob-worker-<digest>.exe`` where ``<digest>`` is the first
+    12 hex of sha256(<install_root>\\worker\\bob-worker.exe) at launch (``describe_worker_exe_launch``). A hotpatch
+    replaces the install exe, but a running seat keeps its old run copy until it exits, so fixes such as the FR #2696
+    submit-verify never reach it. When the install exe now hashes differently (and has settled for
+    ``STALE_BUILD_SETTLE_S``), the seat is stale. Returns None for dev runs (python / un-hashed exe name), a missing
+    install exe, opt-out ``BOB_WORKER_STALE_BUILD_RECYCLE=0``, or when tray seat-heal is disabled
+    (``BOBIVERSE_WORKER_SEAT_HEAL=0``: nobody would refill the seat).
+    """
+    e = os.environ if env is None else env
+    if str(e.get("BOB_WORKER_STALE_BUILD_RECYCLE") or "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if str(e.get("BOBIVERSE_WORKER_SEAT_HEAL") or "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    m = _RUN_EXE_DIGEST_RX.match(Path(str(run_exe or "")).name)
+    if not m:
+        return None
+    run_d = m.group(1).lower()
+    inst = Path(install_root) / "worker" / "bob-worker.exe"
+    try:
+        st = inst.stat()
+    except OSError:
+        return None
+    t = time.time() if now is None else float(now)
+    if t - st.st_mtime < STALE_BUILD_SETTLE_S:
+        return None
+    key = (str(inst), st.st_size, st.st_mtime)
+    d = _stale_build_cache.get(key)
+    if d is None:
+        try:
+            d = hashlib.sha256(inst.read_bytes()).hexdigest()[:12].lower()
+        except OSError:
+            return None
+        _stale_build_cache.clear()
+        _stale_build_cache[key] = d
+    if d == run_d:
+        return None
+    return f"run={run_d} install={d}"
+
+
 # --------------------------------------------------------------------------------------------- supervisor
 class Supervisor:
     """Owns: the IRC seat, the relay, ONE agent at a time. Everything funnels through shutdown()."""
@@ -2751,6 +2801,8 @@ class Supervisor:
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
         # FR #2383: assign injected + no run-dir ACK while agent keeps turning → remind then recycle.
         self.ack_miss = AssignAckMiss()
+        # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
+        self.stale_build_check: Optional[Callable[[], Optional[str]]] = None
         relay.on_inject = self._on_inject
         if irc and self.bored:
             irc.on_nak = self.bored.nak  # t817u
@@ -2784,6 +2836,21 @@ class Supervisor:
     def post_bored(self) -> bool:
         """The ONLY place !bored is sent: the exe, own shop, never during shutdown / after IRC loss."""
         if self._shutting or self.stop.is_set() or not self.irc or not self.irc.alive:
+            return False
+        # FR #2782: !bored is only sent when idle (no open ACK, no harvest hold, no pending inject), so this is the
+        # one safe point to leave a stale build: exit instead of taking new work; tray seat-heal relaunches the seat
+        # from the current install exe. Never mid-job.
+        why = None
+        if self.stale_build_check is not None:
+            try:
+                why = self.stale_build_check()
+            except Exception:
+                why = None
+        if why:
+            self.log(f"worker: stale build ({why}) - idle, recycling seat for the installed build instead of !bored")
+            # shutdown() stops the BoredEmitter, whose lock is held by our caller: run it off-thread.
+            threading.Thread(target=self.shutdown, args=(f"stale-build: {why}", EXIT_STALE_BUILD),
+                             name="stale-build", daemon=True).start()
             return False
         return bool(self.irc.say(self.irc.shop, "!bored"))
 
@@ -3478,6 +3545,9 @@ def run_agent(args, log: Log) -> int:
         env_secret=secret,
         startup_grace_s=grace,
     )
+    # FR #2782: a hotpatched install exe must reach this seat at its next idle point.
+    _install_root = str(args.install_root)
+    sup.stale_build_check = lambda: stale_build_reason(sys.executable, _install_root)
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
