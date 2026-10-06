@@ -641,3 +641,13 @@ Books: crash_report (common). Tip PR #2538; hostile docs this entry.
 | TipForm heal needs rebuilt bob-tray.exe | Build-BobDialogs.ps1 after pull; source-only tree does not update the frozen tray binary |
 
 Books: bobiverse-bob-worker, post-install. Tip PR #2602; hostile docs/mrb-2602 this entry. Refs: SimonBarnett/bobiverse#2601 SimonBarnett/bobiverse#2602
+
+## 2026-10-06 - MRB exact-seat + DONE FR pull URL (MRB #2607 / FR #2604)
+
+| Lesson | Fix / book |
+|--------|------------|
+| DONE FR enqueued MRB without pull URL so mrb_row_offerable stayed false (0 offerable while open PR sat) | shop_listen.complete_job_by_ref stamps url from DONE /pull/ or builds github.com/{repo}/pull/{id} |
+| Same-machine sibling blocked whenever another machine looked live stranded MRB when only one box had seats | review_blocked_for_author: MRB exact-seat only; UAT keeps sibling-when-other-free (FR #2487) |
+| Draft harvest receipts must not become MRB jobs | resync skips draft open PRs, prints skip line, returns skipped_draft; drafts still count as open for UAT/repo_clear |
+
+Books: bobiverse-bob-job-mrb, chair gitclaim/shop_listen. Tip PR #2607; hostile docs this entry. Refs: SimonBarnett/bobiverse#2604 SimonBarnett/bobiverse#2607
