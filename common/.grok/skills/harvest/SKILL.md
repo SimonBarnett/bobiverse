@@ -159,3 +159,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
   PR, issue, intake receipt or `harvest-outbox/` entry.
 - Add a separate `/bob/v1/harvest` endpoint — harvest is intake with the
   appropriate `kind`.
+
+## Harvested lessons (intake)
+
+- Frozen chair !status VERSION must resolve install-root / JEEVES_INSTALL_ROOT / sys.executable before Path(__file__) under _MEIPASS; uptime must use Client construct time, not lazy first-command _cc()
