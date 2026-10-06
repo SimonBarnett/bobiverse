@@ -455,7 +455,17 @@ def complete_job_by_ref(
                         refs=(ident,),
                     )
                     # FR implementer becomes MRB author_seat / implementer_seat (FR #265).
-                    fr_author = str(job.get("nick") or job.get("done_by") or "").strip()
+                    # FR #2623: a DONE that only cites another seat's open PR must keep the
+                    # true implementer (existing MRB stamp or earlier DONE FR for this pull).
+                    done_nick = str(job.get("nick") or job.get("done_by") or nick or "").strip()
+                    fr_author = gitclaim.resolve_done_fr_implementer_seat(
+                        doc,
+                        pr_repo=pr_repo,
+                        pr_id=pr_id,
+                        issue_repo=repo,
+                        issue_id=ident,
+                        done_nick=done_nick,
+                    )
                     extra = {}
                     if fr_author:
                         extra["author_seat"] = fr_author
