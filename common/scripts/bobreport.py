@@ -2922,15 +2922,25 @@ def build_cursor_pools(
     return pools
 
 
+# FR #2729: the report is read-only; never queue behind the git-claim lock to purge.
+REPORT_PURGE_LOCK_WAIT_S = 0.2
+
+
 def _public_queue(home: Path) -> dict:
     """Job list served on GET /bob/v1/report. Webhook mirror, not a side channel."""
     import gitclaim
 
     # FR #2458: surface-heal stale merged/closed MRB before digest consumers see them.
     # Prefer open-only GitHub checker when token/home allow; otherwise ledger/merged flags only.
+    # FR #2729: shared 60 s verdict cache (not a fresh dict per GET); GitHub is asked outside
+    # the queue lock; skip the purge when the lock is not free within REPORT_PURGE_LOCK_WAIT_S.
     with contextlib.suppress(Exception):
-        checker = gitclaim.github_pr_exists_checker(home=home, cache={})
-        gitclaim.purge_dead_mrb_rows(home, pr_exists=checker)
+        checker = gitclaim.github_pr_exists_checker(
+            home=home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
+        )
+        gitclaim.purge_dead_mrb_rows(
+            home, pr_exists=checker, lock_timeout=REPORT_PURGE_LOCK_WAIT_S
+        )
     doc = gitclaim.load_queue(home)
     return {
         "unaccepted": list(doc.get("unaccepted") or []),
