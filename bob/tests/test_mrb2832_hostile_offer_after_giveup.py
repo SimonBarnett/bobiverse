@@ -36,11 +36,13 @@ def _utf8_no_bom(path: Path) -> str:
 def test_mrb2832_worker_skill_contiguous_fr2811():
     text = _utf8_no_bom(WORKER_SKILL)
     assert "FR #2811" in text
-    idx = text.index("FR #2811")
-    window = text[max(0, idx - 80) : idx + 420]
-    assert "held_until_turn_end" in window or "hold" in window.lower()
-    assert "turn_ended" in window or "harvest" in window.lower()
-    assert "2802" in window or "harvest_hold" in window
+    # Prefer the !bored paragraph pin (second mention is a short harvested-lessons bullet).
+    idx = text.index("**FR #2811:** while the harvest hold")
+    window = text[max(0, idx - 120) : idx + 520]
+    assert "held_until_turn_end" in window
+    assert "turn_ended" in window
+    assert "post_bored" in window
+    assert "harvest hold" in window.lower() or "harvest_hold" in window
 
 
 def test_mrb2832_job_irc_skill_contiguous_fr2811():
