@@ -25,4 +25,6 @@ def test_gh_cli_draft_pr_is_implemented_method() -> None:
     assert callable(getattr(f, "create_draft_pr", None))
     src = Path(gh_filer.__file__).read_text(encoding="utf-8")
     assert "draft PR not implemented" not in src
-    assert '"draft": True' in src
+    # FR #2705: draft flag is bool(draft) on the shared create path (still draft=True for create_draft_pr).
+    assert '"draft": True' in src or '"draft": bool(draft)' in src
+    assert "draft=True" in src

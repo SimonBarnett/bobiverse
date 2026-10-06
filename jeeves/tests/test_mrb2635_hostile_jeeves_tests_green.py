@@ -28,7 +28,7 @@ def test_mrb2635_ci_gates_previously_red_pin_set():
     assert "Previously-red jeeves acceptance pins (FR #2633)" in text
     for needle in (
         "test_fr1_msi_fleet_acceptance.py",
-        "test_mrb2482_pin_set_exact_five",
+        "test_mrb2482_pin_set_exact_six",
         "test_fr1518_gated_skill_and_pins_exit0_with_counts",
         "test_harvest1715_nak_busy_workers_map.py",
         "test_clear_orphan_digest_mrb_doing",

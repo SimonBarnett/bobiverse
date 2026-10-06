@@ -1,4 +1,4 @@
-﻿"""v0.1.19 #70: the jeeves MSI must not remove/replace nssm.exe (BobIrcd's service binary); misc install fixes."""
+"""v0.1.19 #70: the jeeves MSI must not remove/replace nssm.exe (BobIrcd's service binary); misc install fixes."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,23 +36,30 @@ def test_watch_bobircd_param_typo_fixed_and_file_has_bom_for_ps51():
 
 
 def test_every_script_with_non_ascii_has_a_bom():
-    # mrb-273: ROOT/"scripts" resolves only to common/scripts; must union all service script dirs
-    # or airc (etc.) non-ASCII without BOM stays invisible to the gate (FR #238 / PR #273).
+    """FR #2301 / #2926: fleet scripts are UTF-8 (BOM optional). Gate valid UTF-8, not a BOM mandate.
+
+    mrb-273: ROOT/"scripts" resolves only to common/scripts; must union all service script dirs.
+    """
     bad = []
     for p in _all_ps1_scripts():
         raw = p.read_bytes()
-        if any(b > 127 for b in raw) and not raw.startswith(b"\xef\xbb\xbf"):
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
             bad.append(f"{p.parent.parent.name}/{p.parent.name}/{p.name}")
     assert bad == []
 
 
 def test_invoke_airc_remote_is_ascii_or_bom():
-    """FR #238: Invoke-AircRemote.ps1 must be WinPS 5.1-safe (ASCII or UTF-8 BOM)."""
+    """FR #238 / #2926: Invoke-AircRemote.ps1 must be valid UTF-8 (BOM optional under FR #2301)."""
     matches = [p for p in _all_ps1_scripts() if p.name == "Invoke-AircRemote.ps1"]
     assert matches, "Invoke-AircRemote.ps1 missing from service scripts/"
     raw = matches[0].read_bytes()
-    non_ascii = any(b > 127 for b in raw)
-    assert (not non_ascii) or raw.startswith(b"\xef\xbb\xbf")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    raw.decode("utf-8")
     assert b"\xe2\x80\xa6" not in raw  # U+2026 ellipsis must not return
 
 

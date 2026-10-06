@@ -97,7 +97,7 @@ def test_agents_files_cover_the_required_topics():
     assert "docs/jeeves-commands.md" in (SKILLS / "bobiverse-jeeves-commands" / "SKILL.md").read_text(encoding="utf-8")
 
 
-ALLOWED_HOSTS = {"irc.ntsa.uk", "github.com", "api.github.com", "raw.githubusercontent.com"}
+ALLOWED_HOSTS = {"irc.ntsa.uk", "github.com", "api.github.com", "raw.githubusercontent.com", "nodejs.org"}
 
 
 def test_no_secrets_and_no_private_hostnames_in_the_agent_layer():

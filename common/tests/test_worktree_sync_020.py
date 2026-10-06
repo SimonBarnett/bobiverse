@@ -85,8 +85,11 @@ def world(tmp_path):
         env["BOBIVERSE_REMOTE"] = str(remote or bare)
         env.update(extra_env or {})
         t0 = time.time()
+        # FR #1565 / #2926: live ARP DisplayVersion on bob/airc would heal VERSION away from the fixture;
+        # tests pass -ArpVersionOverride none so clone common/VERSION wins.
         r = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SYNC), "-Product", product,
-                            "-InstallRoot", str(root_dir or root(product))], capture_output=True, text=True, timeout=240, env=env)
+                            "-InstallRoot", str(root_dir or root(product)),
+                            "-ArpVersionOverride", "none"], capture_output=True, text=True, timeout=240, env=env)
         r.elapsed = time.time() - t0
         r.text = r.stdout + r.stderr
         return r
