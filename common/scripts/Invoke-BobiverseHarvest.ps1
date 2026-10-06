@@ -344,7 +344,7 @@ $bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { 'harvest' }
 $bookName = $bookName.Substring(0, [Math]::Min(64, $bookName.Length))
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
-    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; version = '' }
+    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; version = ''; seat = $(if ($env:BOB_AGENT_NICK) { ([string]$env:BOB_AGENT_NICK).Substring(0, [Math]::Min(64, ([string]$env:BOB_AGENT_NICK).Length)) } else { '' }) }
 }
 if ($files.Count) { $payload.files = $files }
 $json = $payload | ConvertTo-Json -Depth 6
