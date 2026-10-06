@@ -4,6 +4,8 @@
 // PowerShell tray script, started HIDDEN by this exe in "engine" mode (BOB_TRAY_ENGINE=1: it owns no icon and no window). It publishes
 // <root>\run\tray-status.json every poll; this exe reads it every 2 s and tells the engine what to do through <root>\run\tray-cmd.txt
 // (ack | exit | restart), which the engine picks up within 2 s.
+// FR #2697: this host also writes run\startworker\tray.alive every 2 s on a System.Threading.Timer so a blocked PS UI
+// poll cannot starve the ear's !startworker heartbeat check.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -343,6 +345,8 @@ namespace BobDialogs
         readonly Icon idle = RobotIcon.Make(Color.Transparent), alertA = RobotIcon.Make(Color.FromArgb(220, 50, 47)),
             alertB = RobotIcon.Make(Color.FromArgb(255, 180, 0)), context = RobotIcon.Make(Color.FromArgb(210, 153, 34));
         readonly System.Windows.Forms.Timer flash = new System.Windows.Forms.Timer(), poll = new System.Windows.Forms.Timer(), watchdog = new System.Windows.Forms.Timer();
+        System.Threading.Timer aliveTimer;
+        readonly string aliveDir, aliveFile;
         TrayState state = new TrayState();
         DateTime lastWrite = DateTime.MinValue; long lastLen = -1;
         bool flashOn, acked, exiting;
@@ -360,6 +364,9 @@ namespace BobDialogs
             this.root = root; this.machine = machine; this.noEngine = noEngine;
             runDir = Path.Combine(root, "run"); Directory.CreateDirectory(runDir);
             snapFile = Path.Combine(runDir, "tray-status.json"); cmdFile = Path.Combine(runDir, "tray-cmd.txt");
+            // FR #2697: host-owned heartbeat path (ear reads tray.alive; must not depend on the PS UI thread).
+            aliveDir = Path.Combine(runDir, "startworker"); aliveFile = Path.Combine(aliveDir, "tray.alive");
+            Directory.CreateDirectory(aliveDir);
 
             ToolStripMenuItem miStatus = Item("Status", delegate { ShowStatus(); });
             miStatus.Font = new Font(miStatus.Font, FontStyle.Bold);   // bold = the default action
@@ -383,6 +390,8 @@ namespace BobDialogs
             Reload();
             notify.Visible = true;
             if (!noEngine) StartEngine();
+            WriteTrayAlive();
+            aliveTimer = new System.Threading.Timer(delegate { WriteTrayAlive(); }, null, 2000, 2000);
             flash.Start(); poll.Start(); watchdog.Start();
 
             string timing = Common.Arg(args, "--timing-out");
@@ -625,6 +634,7 @@ namespace BobDialogs
         void FinishAfterEngine(int waitMs)
         {
             flash.Stop(); poll.Stop(); watchdog.Stop();
+            StopAliveTimer();
             ThreadPoolWait(waitMs);
             ExitThread();
         }
@@ -640,8 +650,26 @@ namespace BobDialogs
             try { if (engine != null && !engine.HasExited) engine.Kill(); } catch { }
         }
 
+        // FR #2697: Threading.Timer callback — never shares the WinForms message pump with the PS engine poll.
+        void WriteTrayAlive()
+        {
+            try
+            {
+                Directory.CreateDirectory(aliveDir);
+                File.WriteAllText(aliveFile, DateTime.UtcNow.ToString("o") + " pid=" + Process.GetCurrentProcess().Id, Encoding.ASCII);
+            }
+            catch { }
+        }
+
+        void StopAliveTimer()
+        {
+            try { if (aliveTimer != null) { aliveTimer.Dispose(); aliveTimer = null; } } catch { }
+            try { if (File.Exists(aliveFile)) File.Delete(aliveFile); } catch { }
+        }
+
         protected override void ExitThreadCore()
         {
+            StopAliveTimer();
             try { notify.Visible = false; notify.Dispose(); } catch { }
             base.ExitThreadCore();
         }
