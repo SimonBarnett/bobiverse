@@ -20,6 +20,8 @@ import time
 import urllib.error
 import urllib.request
 import contextlib
+import copy
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1953,8 +1955,9 @@ def _pop_all_pending(home: Path) -> list[GitClaim]:
 
 
 @contextmanager
-def _lock(home: Path):
+def _lock(home: Path, *, timeout: float | None = None):
     # FR #1993: same-process chair+HTTP share an RLock (no 30s disk wait between threads).
+    # FR #2729: ``timeout`` (seconds) bounds the wait; TimeoutError when the lock is busy.
     try:
         import jeeves_locks
 
@@ -1962,13 +1965,21 @@ def _lock(home: Path):
     except Exception:  # noqa: BLE001
         inproc = None
     if inproc is not None:
-        with inproc:
+        if timeout is None:
+            with inproc:
+                yield
+            return
+        if not inproc.acquire(timeout=max(0.0, float(timeout))):
+            raise TimeoutError("git-claim lock busy")
+        try:
             yield
+        finally:
+            inproc.release()
         return
     root = _root(home)
     root.mkdir(parents=True, exist_ok=True)
     path = root / LOCK_NAME
-    deadline = time.time() + LOCK_WAIT_S
+    deadline = time.time() + (LOCK_WAIT_S if timeout is None else max(0.0, float(timeout)))
     fd: int | None = None
     while fd is None:
         try:
@@ -2598,6 +2609,59 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None
     return True
 
 
+# FR #2729: process-wide pr_exists verdict cache for the GET /bob/v1/report purge.
+PR_EXISTS_CACHE_TTL_S = 60.0
+_CACHE_MISS = object()
+
+
+class TTLCache:
+    """Thread-safe dict-like store whose entries expire after ``ttl_s`` seconds (FR #2729).
+
+    Supports ``get`` / ``in`` / ``[]`` like the plain dict callers already pass as
+    ``cache=``; its own small mutex is never the queue lock.
+    """
+
+    def __init__(self, ttl_s: float = PR_EXISTS_CACHE_TTL_S, *, clock=time.monotonic) -> None:
+        self.ttl_s = float(ttl_s)
+        self._clock = clock
+        self._data: dict = {}
+        self._mu = threading.Lock()
+
+    def get(self, key, default=None):
+        with self._mu:
+            ent = self._data.get(key)
+            if ent is None:
+                return default
+            if self._clock() - ent[0] > self.ttl_s:
+                self._data.pop(key, None)
+                return default
+            return ent[1]
+
+    def __contains__(self, key) -> bool:
+        return self.get(key, _CACHE_MISS) is not _CACHE_MISS
+
+    def __getitem__(self, key):
+        val = self.get(key, _CACHE_MISS)
+        if val is _CACHE_MISS:
+            raise KeyError(key)
+        return val
+
+    def __setitem__(self, key, value) -> None:
+        with self._mu:
+            self._data[key] = (self._clock(), value)
+
+    def clear(self) -> None:
+        with self._mu:
+            self._data.clear()
+
+    def __len__(self) -> int:
+        with self._mu:
+            return len(self._data)
+
+
+PR_EXISTS_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+
+
 def github_pr_exists_checker(
     *,
     home: Path | None = None,
@@ -2625,8 +2689,9 @@ def github_pr_exists_checker(
 
     def _check(repo: str, num: str) -> bool:
         key = f"{repo}#{num}"
-        if key in store:
-            return store[key]
+        hit = store.get(key, _CACHE_MISS)  # FR #2729: one lookup (TTL entry may expire between two)
+        if hit is not _CACHE_MISS:
+            return hit
         api = f"https://api.github.com/repos/{repo}/pulls/{num}"
         req = urllib.request.Request(
             api,
@@ -2916,18 +2981,104 @@ def _purge_dead_mrb_unaccepted(
     return before - len(kept)
 
 
-def purge_dead_mrb_rows(home: Path, *, pr_exists=None) -> int:
-    """FR #2458: lock queue and drop dead unaccepted/accepted MRB rows; persist if changed."""
-    try:
-        with _lock(home):
-            doc = _load_queue_unlocked(home)
-            n = _purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home)
-            n += _purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)
-            if n:
-                _write_queue(queue_path(home), doc)
-            return n
-    except (OSError, json.JSONDecodeError, ValueError, TimeoutError):
+# FR #2729: at most one purge at a time; concurrent report GETs skip instead of queueing.
+_PURGE_INFLIGHT = threading.Lock()
+
+
+def _mrb_verdict_key(repo, num) -> tuple[str, str]:
+    return (str(repo or "").strip().lower(), str(num or "").strip().lstrip("#"))
+
+
+def _mrb_row_verdict_key(row: dict) -> tuple[str, str]:
+    return _mrb_verdict_key(row.get("repo"), row.get("id"))
+
+
+def _is_mrb_row(row) -> bool:
+    return isinstance(row, dict) and _canon_task(row) == "MRB"
+
+
+def purge_dead_mrb_rows(
+    home: Path, *, pr_exists=None, lock_timeout: float | None = None
+) -> int:
+    """FR #2458: drop dead unaccepted/accepted MRB rows; persist if changed.
+
+    FR #2729: never call GitHub (``pr_exists``) while holding the queue lock.
+
+    1. Under the lock, snapshot the queue.
+    2. Outside the lock, ask ``pr_exists`` about every MRB row in the snapshot
+       (judged on a scratch copy; no ledger/digest side effects).
+    3. Re-lock, reload the queue and run the usual purge against those cached
+       verdicts only. MRB rows that appeared after the snapshot are left alone.
+
+    ``lock_timeout`` (seconds) bounds each lock wait; when the lock is busy the
+    purge is skipped (returns 0). Only one purge runs at a time; a concurrent
+    caller returns 0 at once.
+    """
+    if not _PURGE_INFLIGHT.acquire(blocking=False):
         return 0
+    try:
+        try:
+            with _lock(home, timeout=lock_timeout):
+                snap = copy.deepcopy(_load_queue_unlocked(home))
+        except (OSError, json.JSONDecodeError, ValueError, TimeoutError):
+            return 0
+        if not any(
+            _is_mrb_row(r) for b in ("unaccepted", "accepted") for r in (snap.get(b) or [])
+        ):
+            return 0
+
+        verdicts: dict[tuple[str, str], bool] = {}
+        memo = None
+        if pr_exists is not None:
+
+            def _record(repo, num):
+                key = _mrb_verdict_key(repo, num)
+                if key in verdicts:
+                    return verdicts[key]
+                ok = bool(pr_exists(repo, num))  # network: outside the queue lock
+                verdicts[key] = ok
+                return ok
+
+            scratch = copy.deepcopy(snap)
+            with contextlib.suppress(Exception):
+                _purge_dead_mrb_unaccepted(scratch, pr_exists=_record, home=None)
+            with contextlib.suppress(Exception):
+                _purge_dead_mrb_accepted(scratch, pr_exists=_record, home=None)
+
+            def memo(repo, num):  # noqa: F811 - cached verdicts only, never network
+                return verdicts.get(_mrb_verdict_key(repo, num), True)
+
+        try:
+            with _lock(home, timeout=lock_timeout):
+                doc = _load_queue_unlocked(home)
+                held: dict[str, list] = {}
+                for b in ("unaccepted", "accepted"):
+                    rows = list(doc.get(b) or [])
+                    held[b] = rows
+                    if memo is not None:
+                        doc[b] = [
+                            r
+                            for r in rows
+                            if not (_is_mrb_row(r) and _mrb_row_verdict_key(r) not in verdicts)
+                        ]
+                n = _purge_dead_mrb_unaccepted(doc, pr_exists=memo, home=home)
+                n += _purge_dead_mrb_accepted(doc, pr_exists=memo, home=home)
+                if memo is not None:
+                    for b in ("unaccepted", "accepted"):
+                        kept = {id(r) for r in doc.get(b) or []}
+                        doc[b] = [
+                            r
+                            for r in held[b]
+                            if id(r) in kept
+                            or (_is_mrb_row(r) and _mrb_row_verdict_key(r) not in verdicts)
+                        ]
+                if n:
+                    _write_queue(queue_path(home), doc)
+                return n
+        except (OSError, json.JSONDecodeError, ValueError, TimeoutError):
+            return 0
+    finally:
+        _PURGE_INFLIGHT.release()
 
 
 
