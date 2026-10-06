@@ -389,11 +389,15 @@ def scrub_agent_host_env(env: dict) -> dict:
 
 
 def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> dict:
-    """Normalize BOB_* paths and scrub agent-host vars for a seat child (FR #2669 / #2413)."""
-    env = scrub_agent_host_env(normalize_bob_path_envs(dict(base_env or {})))
+    """Normalize BOB_* paths and scrub agent-host vars for a seat child (FR #2669 / #2413 / #2683).
+
+    Scrub + normalise run **after** merging ``extra`` so CURSOR_*/SAND_* (or doubled
+    BOB_* paths) cannot re-enter via the overlay (hostile probe / FR #2683).
+    """
+    env = dict(base_env or {})
     if extra:
         env.update(extra)
-    return env
+    return scrub_agent_host_env(normalize_bob_path_envs(env))
 
 
 def describe_worker_exe_launch(

@@ -26,12 +26,16 @@ def test_mrb2680_seat_env_extra_keys_are_bob_only():
 
 
 def test_mrb2680_prepare_documents_extra_cursor_gap_then_seat_safe():
-    """Belt check: seat extras stay clean; CURSOR in base is scrubbed."""
+    """Belt check: seat extras stay clean; CURSOR in base/extra is scrubbed (FR #2683)."""
     base = {"CURSOR_API_KEY": "fake", "BOB_IRC_HOME": r"C:\\Users\\x\\.bob"}
     out = bw.prepare_seat_child_env(base, bw.seat_env_extra(r"C:\r", "m", "m-1"))
     assert "CURSOR_API_KEY" not in out
     assert out["BOB_IRC_HOME"] == r"C:\Users\x\.bob"
     assert "BOB_OUTBOX" in out
+    # FR #2683: even a hostile extra overlay cannot reintroduce agent-host keys.
+    hostile = bw.prepare_seat_child_env(base, {"CURSOR_FROM_EXTRA": "b"})
+    assert "CURSOR_FROM_EXTRA" not in hostile
+    assert "CURSOR_API_KEY" not in hostile
 
 
 def test_mrb2680_fleet_tray_source_uses_single_quoted_assigns():
