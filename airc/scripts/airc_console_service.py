@@ -240,6 +240,8 @@ class AircConsoleService:
         self._shell_inflight: dict[str, str] = {}
         # FR #2640: once stop flush starts, enqueue-only (no send) until prepare_stop closes.
         self._stopping = False
+        # FR #2649: flush at most once so finally does not re-drain after sock=None.
+        self._stop_flushed = False
 
     def note_shell_inflight(self, nick: str, job_id: str) -> None:
         key = (nick or "").strip().lower()
@@ -292,8 +294,12 @@ class AircConsoleService:
             info(f"INFO console-out-send-err {e}")
             self._force_reconnect = True
 
-    def drain_out_queue(self, *, max_items: int | None = None) -> int:
-        """Send queued Query replies. Leaves remaining items on ConnectionError."""
+    def drain_out_queue(self, *, max_items: int | None = None, flood: bool = True) -> int:
+        """Send queued Query replies. Leaves remaining items on ConnectionError.
+
+        FR #2649: stop flush passes ``flood=False`` so err+DONE leave back-to-back;
+        the normal ``FLOOD_S`` gap let SCM invalidate the socket after err and drop DONE.
+        """
         sent = 0
         while max_items is None or sent < max_items:
             try:
@@ -301,7 +307,7 @@ class AircConsoleService:
             except queue.Empty:
                 break
             try:
-                self.send_privmsg(nick, piece)
+                self.send_privmsg(nick, piece, flood=flood)
                 sent += 1
             except ConnectionError:
                 # Put failed line back at the front via a small hold then rest of queue.
@@ -318,8 +324,10 @@ class AircConsoleService:
         return sent
 
     def flush_stop_dones(self, *, reason: str = "service-stop") -> None:
-        """FR #2612 / #2640: enqueue DONE for in-flight + pending shells; drain while sock live."""
+        """FR #2612 / #2640 / #2649: enqueue DONE; drain with no flood gap while sock live."""
         self._stopping = True
+        if self._stop_flushed:
+            return
         safe_reason = (reason or "service-stop").replace("\n", " ").replace("\r", " ")[:80]
         jobs: dict[tuple[str, str], None] = {}
         for nick, jid in self.shell_inflight().items():
@@ -335,21 +343,28 @@ class AircConsoleService:
             self._out_q.put((nick, f"DONE id={jid} exit=1"))
             self.clear_shell_inflight(nick)
         if not jobs and self.out_queue_size() == 0:
+            self._stop_flushed = True
+            return
+        if not self.sock:
+            # Already closed (e.g. finally after prepare_stop) — do not spam send: no socket.
+            info("INFO stop-flush-skip no socket (queue kept until process exit)")
+            self._stop_flushed = True
             return
         try:
-            self.drain_out_queue()
+            self.drain_out_queue(flood=False)
         except ConnectionError as e:
             info(f"INFO stop-flush-send-err {e}")
+        self._stop_flushed = True
 
     def prepare_stop(self, *, reason: str = "service-stop") -> None:
-        """FR #2640: flush DONEs then close the socket — never sendall after close."""
+        """FR #2640 / #2649: flush DONEs (no flood gap) then close — never sendall after close."""
         self._stopping = True
         self._stop.set()
         self.flush_stop_dones(reason=reason)
         deadline = time.monotonic() + 1.5
         while self.out_queue_size() > 0 and time.monotonic() < deadline and self.sock:
             try:
-                self.drain_out_queue()
+                self.drain_out_queue(flood=False)
             except ConnectionError as e:
                 info(f"INFO stop-drain-err {e}")
                 break
@@ -378,7 +393,7 @@ class AircConsoleService:
         self._last_recv = time.monotonic()
         info(f"INFO connected {self.args.host}:{self.args.port} tls={self.args.tls}")
 
-    def send(self, line: str) -> None:
+    def send(self, line: str, *, flood: bool = True) -> None:
         if not self.sock:
             raise ConnectionError("send: no socket")
         data = (line.rstrip("\r\n") + "\r\n").encode("utf-8", errors="replace")
@@ -387,15 +402,16 @@ class AircConsoleService:
                 self.sock.sendall(data)
             except OSError as e:
                 raise ConnectionError(f"send failed: {e}") from e
-            time.sleep(FLOOD_S)
+            if flood and FLOOD_S > 0:
+                time.sleep(FLOOD_S)
 
-    def send_privmsg(self, target: str, text: str) -> None:
+    def send_privmsg(self, target: str, text: str, *, flood: bool = True) -> None:
         if self.core.may_speak_on_channel() is False and target.lower() == self.channel.lower():
             info(f"INFO drop channel speak target={target}")
             return
         # IRC line length safety
         safe = text.replace("\n", " ").replace("\r", " ")
-        self.send(f"PRIVMSG {target} :{safe}")
+        self.send(f"PRIVMSG {target} :{safe}", flood=flood)
 
     def send_notice(self, target: str, text: str) -> None:
         """NOTICE — used for ping replies (including channel ping → Query-style NOTICE)."""
@@ -881,7 +897,9 @@ class AircConsoleService:
             except Exception as e:
                 info(f"INFO session-err {e}")
             finally:
-                if self._stop.is_set():
+                # FR #2649: prepare_stop already flushed; skip re-drain after sock=None
+                # (was logging stop-flush-send-err send: no socket and dropping DONE).
+                if self._stop.is_set() and not self._stop_flushed:
                     if self.sock is not None:
                         self.prepare_stop(reason="service-stop")
                     else:
