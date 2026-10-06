@@ -1,4 +1,4 @@
-﻿"""Jeeves chair command surface (bobiverse#39 gaps: every gh-Jeeves @8d76d9a command).
+"""Jeeves chair command surface (bobiverse#39 gaps: every gh-Jeeves @8d76d9a command).
 
 Deterministic, token-less, no secrets. Pure functions (no sockets / no clock unless injected) so the
 fake-IRC tests drive them exactly like the live chair does. ``irc_agent.Client`` is the thin glue.
@@ -360,16 +360,132 @@ def build_help(who: Principal, arg=None, *, rate: HelpRate | None = None, now: f
 
 
 # ------------------------------------------------------------------ !status
-def read_version(root: Path | None = None) -> str:
-    here = Path(root) if root else Path(__file__).resolve().parent.parent
-    for p in (here / "VERSION", here / "src" / "VERSION"):
-        try:
-            v = p.read_text(encoding="utf-8-sig").strip()
-            if v:
-                return v.splitlines()[0].strip()
-        except OSError:
+def resolve_jeeves_install_root(
+    *,
+    env: dict | None = None,
+    frozen: bool | None = None,
+    executable: str | Path | None = None,
+    file_path: str | Path | None = None,
+    explicit: str | Path | None = None,
+) -> Path:
+    """Install root for chair VERSION (FR #2728; same frozen family as FR #2666).
+
+    Priority: ``explicit`` → ``JEEVES_INSTALL_ROOT`` → ``BOB_INSTALL_ROOT`` →
+    frozen ``sys.executable`` layout (``<root>\\jeeves\\jeeves.exe`` or
+    ``<root>\\jeeves.exe``) → source ``common/`` parent of ``chair_commands.py``.
+    """
+    import sys
+
+    if explicit is not None and str(explicit).strip():
+        return Path(str(explicit).strip()).resolve()
+    e = os.environ if env is None else env
+    for key in ("JEEVES_INSTALL_ROOT", "BOB_INSTALL_ROOT"):
+        override = (e.get(key) or "").strip()
+        if override:
+            return Path(override).resolve()
+    is_frozen = (
+        bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+        if frozen is None
+        else bool(frozen)
+    )
+    if is_frozen:
+        exe = Path(sys.executable if executable is None else executable).resolve()
+        # Pack stages jeeves\\jeeves.exe under InstallRoot (Install-Jeeves.ps1).
+        if exe.parent.name.lower() == "jeeves":
+            return exe.parent.parent
+        return exe.parent
+    here = Path(__file__ if file_path is None else file_path).resolve().parent
+    return here.parent
+
+
+def _version_from_file(path: Path) -> str | None:
+    try:
+        v = path.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if not v:
+        return None
+    return v.splitlines()[0].strip() or None
+
+
+def read_version(
+    root: Path | None = None,
+    *,
+    env: dict | None = None,
+    frozen: bool | None = None,
+    executable: str | Path | None = None,
+    file_path: str | Path | None = None,
+    meipass: str | Path | None = None,
+) -> str:
+    """Resolve chair VERSION; prefer install root over PyInstaller ``_MEIPASS`` (FR #2728)."""
+    import sys
+
+    e = os.environ if env is None else env
+    for key in ("BOBIVERSE_VERSION", "BOB_VERSION", "JEEVES_VERSION"):
+        env_ver = (e.get(key) or "").strip()
+        if env_ver:
+            return env_ver.splitlines()[0].strip()[:64]
+
+    roots: list[Path] = []
+    if root is not None:
+        roots.append(Path(root))
+    try:
+        roots.append(
+            resolve_jeeves_install_root(
+                env=e, frozen=frozen, executable=executable, file_path=file_path
+            )
+        )
+    except Exception:
+        pass
+    # Source layout: common/VERSION beside scripts/, and repo root VERSION.
+    here = Path(__file__ if file_path is None else file_path).resolve().parent
+    roots.extend([here.parent, here.parent.parent])
+
+    seen: set[str] = set()
+    for base in roots:
+        key = str(base.resolve()) if base.exists() else str(base)
+        if key in seen:
             continue
+        seen.add(key)
+        for p in (base / "VERSION", base / "src" / "VERSION", base / "common" / "VERSION"):
+            got = _version_from_file(p)
+            if got:
+                return got
+
+    # Bundled PyInstaller data last (Build-Jeeves --add-data VERSION).
+    mei = meipass
+    if mei is None:
+        mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        got = _version_from_file(Path(mei) / "VERSION")
+        if got:
+            return got
     return "?"
+
+
+def count_digest_doing_seats(home: Path) -> int:
+    """Count digest ``worker_list`` rows with ``state=doing`` (FR #2728)."""
+    import bobreport
+
+    try:
+        doc = bobreport.load_digest(Path(home))
+    except Exception:
+        return 0
+    machines = doc.get("machines") if isinstance(doc, dict) else None
+    if not isinstance(machines, dict):
+        return 0
+    n = 0
+    for ent in machines.values():
+        if not isinstance(ent, dict):
+            continue
+        try:
+            rows = bobreport._coerce_worker_list(ent.get("worker_list"))
+        except Exception:
+            continue
+        for row in rows:
+            if str(row.get("state") or "").lower() == "doing":
+                n += 1
+    return n
 
 
 def status_lines(home: Path, *, started: float, now: float | None = None, version: str | None = None) -> list:
@@ -384,6 +500,11 @@ def status_lines(home: Path, *, started: float, now: float | None = None, versio
         acc = len(gitclaim.load_accepted(home))
     except Exception:
         pass
+    busy = 0
+    try:
+        busy = count_digest_doing_seats(home)
+    except Exception:
+        busy = 0
     try:
         mids = list(bobreport.roster_machine_ids(Path(home)))
     except Exception:
@@ -396,7 +517,7 @@ def status_lines(home: Path, *, started: float, now: float | None = None, versio
     return [
         f"Jeeves status: version={version or read_version()} uptime_s={int(max(0, now - started))}",
         f"queue: unaccepted={un} accepted={acc}",
-        f"workers: busy={acc}",
+        f"workers: busy={busy}",
         f"roster: machines={len(mids)} ({', '.join(mids)})" if mids else "roster: machines=0",
         f"last_resync: roster {('%ds ago' % int(age)) if age is not None else 'n/a'}",
     ]
