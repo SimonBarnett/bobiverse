@@ -2099,6 +2099,7 @@ def _coerce_row(row: dict) -> dict | None:
     # FR #180: title/labels/cooldown/needs_human must survive reload so offer/prune keep working.
     # accepted_by: ACC ownership for stale-busy heal (#2369 / MRB #2371) and ACC CLOSED purge (#2361).
     for key in ("nick", "channel", "accepted_ts", "accepted_by", "offered_to", "offered_ts", "offered_channel",
+                "offered_via",  # FR #2811: giveup-push sticky window
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
                 "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
@@ -2434,8 +2435,18 @@ def last_worker_activity(home: Path, nick: str) -> float | None:
 
 
 OFFER_TIMEOUT_S = 90.0
+# FR #2811: giveup-push offers stay sticky through harvest_hold_s so a held assign is not stolen.
+GIVEUP_OFFER_EXTRA_S = 90.0
 # FR #2309: max same-nick rebroadcasts without ACK before clearing the pin.
 OFFER_STICKY_MAX = 3
+
+
+def offer_timeout_s(row: dict | None) -> float:
+    """Sticky offer window; giveup-pushed rows get OFFER_TIMEOUT_S + GIVEUP_OFFER_EXTRA_S (FR #2811)."""
+    base = float(OFFER_TIMEOUT_S)
+    if isinstance(row, dict) and str(row.get("offered_via") or "").strip().lower() == "giveup":
+        return base + float(GIVEUP_OFFER_EXTRA_S)
+    return base
 
 
 def ordered_unaccepted(home: Path, rows: list[dict] | None = None) -> list[dict]:
@@ -3779,6 +3790,47 @@ def push_idle_offers_via_chair_outbox(
     )
 
 
+def offer_after_giveup(
+    home: Path,
+    nick: str,
+    channel: str,
+    *,
+    say,
+    now: float | None = None,
+    pr_exists=None,
+    is_pull=None,
+    issue_open=None,
+) -> tuple[int, dict | None]:
+    """FR #2811: after GIVEUP/NACK, push the next eligible job to that seat (no empty chatter).
+
+    Uses the same ``offer_focus_top`` gates as ``!bored``. Returns ``(1, job)`` if delivered.
+    """
+    status, job = offer_focus_top(
+        home,
+        nick,
+        channel,
+        now=now,
+        pr_exists=pr_exists,
+        is_pull=is_pull,
+        issue_open=issue_open,
+        offered_via="giveup",
+    )
+    if status != "ok" or not isinstance(job, dict):
+        return 0, None
+    line = format_assign_line(nick, job)
+    delivered = False
+    try:
+        ret = say(channel, line)
+        delivered = ret is not False
+    except Exception:
+        delivered = False
+    if not delivered:
+        return 0, None
+    with contextlib.suppress(Exception):
+        clear_idle_after_empty(home, nick)
+    return 1, job
+
+
 def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
     """Operator/log line for an empty offer: focus + per-nick gate breakdown (FR #1993 WP2 / #2309 / #2333)."""
     if not stats:
@@ -4159,6 +4211,7 @@ def offer_focus_top(
     pr_exists=None,
     is_pull=None,
     issue_open=None,
+    offered_via: str | None = None,
 ) -> tuple[str, dict | None]:
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
 
@@ -4214,11 +4267,12 @@ def offer_focus_top(
                         str(cand.get("offered_ts") or "").replace("Z", "+00:00")
                     ).timestamp()
                 except ValueError:
-                    age = OFFER_TIMEOUT_S + 1
-                if age >= OFFER_TIMEOUT_S:
+                    age = offer_timeout_s(cand) + 1
+                if age >= offer_timeout_s(cand):
                     cand.pop("offered_to", None)
                     cand.pop("offered_ts", None)
                     cand.pop("offered_channel", None)
+                    cand.pop("offered_via", None)
                     purged = True
 
             def _same_seat(a: str, b: str) -> bool:
@@ -4261,8 +4315,8 @@ def offer_focus_top(
                             str(cand.get("offered_ts") or "").replace("Z", "+00:00")
                         ).timestamp()
                     except ValueError:
-                        age = OFFER_TIMEOUT_S + 1
-                    if age < OFFER_TIMEOUT_S:
+                        age = offer_timeout_s(cand) + 1
+                    if age < offer_timeout_s(cand):
                         return None
                 skips = {
                     (canonical_worker_nick(x) or str(x)).strip().lower()
@@ -4373,6 +4427,11 @@ def offer_focus_top(
                         job["offered_ts"] = _utc_now()
                     job["offered_count"] = prev_count + 1
                     job["offered_channel"] = bobreport.normalize_channel(channel) if channel else ""
+                    via = str(offered_via or "").strip()
+                    if via:
+                        job["offered_via"] = via
+                    elif not same:
+                        job.pop("offered_via", None)
                     resolved = resolve_assign_url(job)
                     if resolved:
                         job["url"] = resolved
