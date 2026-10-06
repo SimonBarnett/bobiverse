@@ -1229,15 +1229,17 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
         labels = _label_names(pr.get("labels"))
-        # FR #2650 / #2604: draft open PRs never become MRB (resync already skips drafts).
-        if action in ("opened", "ready_for_review") and pr.get("draft") is True:
+        # FR #2650 / #2604: draft PRs never become MRB (resync already skips drafts).
+        # MRB #2651: also edited/synchronize — _apply_claim_to_doc appends unaccepted for those.
+        if action in ("opened", "ready_for_review", "edited", "synchronize") and pr.get("draft") is True:
             return None
-        # FR #2650: intake harvest receipt PRs never become MRB via webhook.
-        if action in ("opened", "ready_for_review") and is_intake_harvest_receipt_pr(
+        # FR #2650 / MRB #2651: intake harvest receipt PRs never become MRB via webhook
+        # (opened/ready_for_review/edited/synchronize all call _append_unaccepted).
+        if action in ("opened", "ready_for_review", "edited", "synchronize") and is_intake_harvest_receipt_pr(
             title=title, body=body, labels=labels
         ):
             return None
-        # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB.
+        # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB (open/ready only).
         if action in ("opened", "ready_for_review") and is_mrb_fix_pr_title(title):
             return None
         refs = extract_closes_issue_ids(title, body, src, repo=repo)
