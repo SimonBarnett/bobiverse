@@ -43,15 +43,13 @@ def test_fr2523_cap_counts_only_bob_worker():
     text = START_WORKER.read_text(encoding="utf-8")
     assert "Measure-BobTrayWorkerSeats" in text
     assert r"^bob-worker(-[0-9a-f]+)?\.exe$" in text
-    block = text[
-        text.index("function Measure-BobTrayWorkerSeats") : text.index(
-            "function Measure-BobTrayWorkerSeats"
-        )
-        + 400
-    ]
-    # Filter must only match bob-worker*.exe process names.
+    start = text.index("function Measure-BobTrayWorkerSeats")
+    # Comment + Modes default grew past the old 400-char window; take enough to cover the filter.
+    block = text[start : start + 900]
+    # Filter must only match bob-worker*.exe process names (FR #2523 / t815u).
     assert "bob-worker" in block
     assert "Where-Object" in block
+    assert r"^bob-worker(-[0-9a-f]+)?\.exe$" in block
 
 
 def test_fr2523_watch_agent_health_refuses_alongside_bob_worker():

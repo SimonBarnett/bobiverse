@@ -62,7 +62,10 @@ def test_mrb2382_start_agent_merges_seat_env(tmp_path: Path, monkeypatch):
     src = (Path(__file__).resolve().parents[1] / "scripts" / "bob_worker.py").read_text(
         encoding="utf-8"
     )
-    assert "env.update(seat_env_extra(self.run_dir, self.machine, self.nick))" in src
+    # FR #2413 / #2669: seat env (incl. BOB_OUTBOX) merges via prepare_seat_child_env + describe_agent_child_launch.
+    assert "def seat_env_extra(" in src
+    assert "prepare_seat_child_env" in src
+    assert "seat_env_extra(rd, machine, nick)" in src or "seat_env_extra(run_dir" in src
     # silence unused
     assert fake_spawn and FakeBored
 

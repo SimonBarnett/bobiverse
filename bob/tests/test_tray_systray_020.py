@@ -338,7 +338,9 @@ def test_tray_has_no_update_logic_and_the_update_scripts_are_gone():
 # ------------------------------------------------------------------------------------------------ 7. systray icon for the worker exe + window
 def test_worker_exe_is_built_with_the_systray_icon_and_the_window_uses_it():
     b = _t(SCRIPTS / "Build-BobWorker.ps1")
-    assert "'--icon', $ico" in b and "--add-data" in b and "bob-systray.ico" in b and "@icoArgs" in b
+    # Build appends $icoArgs (icon + --add-data); splat @icoArgs was replaced by $argList += $icoArgs.
+    assert "'--icon', $ico" in b and "--add-data" in b and "bob-systray.ico" in b
+    assert "$icoArgs" in b and "$argList += $icoArgs" in b
     w = _t(SCRIPTS / "bob_worker.py")
     assert w.index("ensure_console(f\"Bob worker") < w.index("set_console_icon(Path(args.install_root))")
     assert "WM_SETICON" in w and "LoadImageW.argtypes" in w and "SendMessageW.argtypes" in w   # typed: 64-bit handles
