@@ -461,6 +461,16 @@ def complete_job_by_ref(
                         extra["author_seat"] = fr_author
                         extra["implementer_seat"] = fr_author
                     extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
+                    # FR #2604: stamp the pull URL so mrb_row_offerable is True. Webhook /
+                    # resync paths already set url; DONE FR used to enqueue without it, so
+                    # the new MRB sat unaccepted but never offered (0 offerable).
+                    pull_src = (url or result or "").strip()
+                    if "/pull/" in pull_src:
+                        extra["url"] = pull_src
+                    elif pr_id:
+                        extra["url"] = (
+                            f"https://github.com/{pr_repo}/pull/{str(pr_id).lstrip('#')}"
+                        )
                     gitclaim._append_unaccepted(doc, claim, **extra)
             # t853u: an MRB PASS no longer queues per-PR / per-issue UAT rows; UAT is one row per repo,
             # created by the GitHub resync once every issue is closed and every PR is merged.

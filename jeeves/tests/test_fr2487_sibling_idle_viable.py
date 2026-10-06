@@ -1,4 +1,9 @@
-"""FR #2487: sibling MRB block only when another machine has an idle/free seat."""
+"""FR #2487 free-seat helper + FR #2604 MRB exact-seat self-exclusion.
+
+FR #2487 introduced free= for sibling viability. FR #2604 made MRB self-exclusion
+exact-seat only (siblings on the same machine may take MRB even when another
+machine is free). UAT keeps the sibling-when-other-free block.
+"""
 from __future__ import annotations
 
 import bobreport
@@ -30,6 +35,19 @@ def _mrb(author: str) -> dict:
     }
 
 
+def _uat(author: str) -> dict:
+    return {
+        "repo": "SimonBarnett/bobiverse",
+        "task": "UAT",
+        "id": "#0",
+        "repo_uat": True,
+        "title": "UAT bobiverse",
+        "url": "https://github.com/SimonBarnett/bobiverse",
+        "author_seat": author,
+        "implementer_seat": author,
+    }
+
+
 def test_fr2487_sibling_not_blocked_when_other_machine_seats_busy():
     row = _mrb("marchhare-35016")
     live = {
@@ -44,7 +62,8 @@ def test_fr2487_sibling_not_blocked_when_other_machine_seats_busy():
     assert gitclaim.review_blocked_for_author(row, "marchhare-40208", live, free=free) is False  # sibling OK
 
 
-def test_fr2487_sibling_blocked_when_other_machine_has_free_seat():
+def test_fr2604_mrb_sibling_ok_even_when_other_machine_has_free_seat():
+    """FR #2604 supersedes FR #2487 sibling-block for MRB: exact seat only."""
     row = _mrb("marchhare-35016")
     live = {
         "marchhare-35016",
@@ -53,14 +72,26 @@ def test_fr2487_sibling_blocked_when_other_machine_has_free_seat():
         "win-mpre8vi4u6u-7764",
     }
     free = {"marchhare-35016", "marchhare-40208", "win-mpre8vi4u6u-7764"}  # ionos free
+    assert gitclaim.review_blocked_for_author(row, "marchhare-40208", live, free=free) is False
+
+
+def test_fr2487_uat_sibling_still_blocked_when_other_machine_has_free_seat():
+    """UAT keeps sibling block when another machine has a free seat (FR #2487)."""
+    row = _uat("marchhare-35016")
+    live = {
+        "marchhare-35016",
+        "marchhare-40208",
+        "win-mpre8vi4u6u-14452",
+        "win-mpre8vi4u6u-7764",
+    }
+    free = {"marchhare-35016", "marchhare-40208", "win-mpre8vi4u6u-7764"}
     assert gitclaim.review_blocked_for_author(row, "marchhare-40208", live, free=free) is True
 
 
-def test_fr2487_free_none_preserves_legacy_live_as_free():
+def test_fr2604_mrb_sibling_ok_when_free_none():
     row = _mrb("marchhare-35016")
     live = {"marchhare-35016", "marchhare-40208", "win-mpre8vi4u6u-7764"}
-    # free=None => treat all live as free => sibling blocked
-    assert gitclaim.review_blocked_for_author(row, "marchhare-40208", live, free=None) is True
+    assert gitclaim.review_blocked_for_author(row, "marchhare-40208", live, free=None) is False
 
 
 def test_fr2487_free_seat_nicks_excludes_accepted(tmp_path, monkeypatch):
