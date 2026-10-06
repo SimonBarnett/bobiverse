@@ -661,6 +661,15 @@ Books: bobiverse-bob-job-mrb, chair gitclaim/shop_listen. Tip PR #2607; hostile 
 
 Books: airc fr77 / Update-BobiverseService. Tip PR #2613; hostile docs this entry. Refs: SimonBarnett/bobiverse#2611 SimonBarnett/bobiverse#2613
 
+## 2026-10-06 - DONE FR must survive resync while implement PR open (MRB #2621 / FR #2617)
+
+| Lesson | Fix / book |
+|--------|------------|
+| github-resync stripped still-open DONE FR rows (FR #1150 still_open purge), removing evidence for fr_superseded_by_done_pr so a sibling !bored got the same FR again | Keep DONE FR + /pull/ URL in done[] while that PR is in open_pulls_map (or PR repo not fetched); still drop when implement PR is gone (FR #2389) |
+| Live: #2612 re-offered to marchhare-39912 ~1 min after 9524 DONE + open PR #2615 | Same keep-done path; sibling should get MRB not FR |
+
+Books: bobiverse-bob-job-fr, chair gitclaim resync. Tip PR #2621; hostile docs this entry. Refs: SimonBarnett/bobiverse#2617 SimonBarnett/bobiverse#2621
+
 ## 2026-10-06 - airc long Command stall after seq=1 (FR #2612)
 
 | Lesson | Fix / book |
