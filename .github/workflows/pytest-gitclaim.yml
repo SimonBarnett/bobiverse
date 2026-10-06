@@ -1,5 +1,5 @@
 # FR #1454: keep resync pagination (and related gitclaim) regressions out of main.
-# FR #2540: BOB_DIGEST_HOME must not leak across GET /report â†’ later queue_path (fair-isol canary).
+# FR #2540: BOB_DIGEST_HOME must not leak across GET /report -> later queue_path (fair-isol canary).
 # Runs when gitclaim or its resync-pagination tests change.
 name: pytest-gitclaim
 

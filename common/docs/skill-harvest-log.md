@@ -687,6 +687,15 @@ Books: bobiverse-airc, bobiverse-airc-troubleshooting. Tip PR #2615; hostile doc
 
 Books: chair gitclaim/shop_listen. Tip PR #2628; hostile docs this entry. Refs: SimonBarnett/bobiverse#2623 SimonBarnett/bobiverse#2628
 
+## 2026-10-06 - airc concurrent shell queue (MRB #2634 / FR #2632)
+
+| Lesson | Fix / book |
+|--------|------------|
+| After #2615 busy fail-closed, overlapping Invoke-AircRemote Commands left one caller exit=1 with no retry | ShellJobRunner per-Query pending queue (SHELL_PENDING_MAX=8); overflow still busy DONE; Invoke-AircRemote retries busy exit=1 |
+| Product PR touched airc-remote-control.md with UTF-8 BOM | Strip BOM on docs/mrb hostile tip before merge |
+
+Books: bobiverse-airc, bobiverse-airc-troubleshooting. Product PR #2634; hostile docs this entry. Refs: SimonBarnett/bobiverse#2632 SimonBarnett/bobiverse#2634
+
 ## 2026-10-06 - chair assign myth / harvest log restore (FR #2633 / #1581 #1613 #1715)
 
 | Lesson | Fix / book |
@@ -697,3 +706,4 @@ Books: chair gitclaim/shop_listen. Tip PR #2628; hostile docs this entry. Refs: 
 | Harvest-log mojibake (`→` stored as cp1252 garbage) broke UTF-8 gates | Rewrite rows as real UTF-8 arrows/dashes; no BOM |
 
 Books: bobiverse-jeeves-monitor, bobiverse-bob, bobiverse-bob-job-mrb. Tip PR for FR #2633.
+

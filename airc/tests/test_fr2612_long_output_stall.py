@@ -6,7 +6,8 @@ showed ``probe interrupted -> stop`` then full process restart mid-emit. Wait ti
 Acceptance:
 1. Outbound reply queue retains lines across ConnectionError / force_reconnect; drain after sock returns.
 2. Graceful stop flushes DONE for in-flight shell job ids so Wait can finish.
-3. Overlapping shell on the same Query fails closed with busy DONE (no silent stall).
+3. Overlapping shell on the same Query is queued (FR #2632); only a full pending queue
+   fail-closes with busy DONE so Wait never hangs without a DONE.
 """
 from __future__ import annotations
 
@@ -67,14 +68,15 @@ def test_fr2612_stop_flush_emits_done_for_inflight(tmp_path, monkeypatch):
     assert s.shell_inflight() == {}
 
 
-def test_fr2612_overlapping_shell_busy_done():
+def test_fr2612_overlapping_shell_queue_full_busy_done():
+    """FR #2612/#2632: only a full pending queue fail-closes with busy DONE."""
     seen: list[str] = []
 
     def capture(nick: str, line: str) -> None:
         seen.append(line)
 
-    runner = ac.ShellJobRunner(on_reply=capture, wait=False)
-    # Fake a live prior thread.
+    runner = ac.ShellJobRunner(on_reply=capture, wait=False, pending_max=0)
+    # Fake a live prior thread with pending_max=0 → any overlap is overflow.
     import threading
 
     hold = threading.Event()
