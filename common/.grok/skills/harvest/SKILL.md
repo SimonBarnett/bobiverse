@@ -159,3 +159,11 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
   PR, issue, intake receipt or `harvest-outbox/` entry.
 - Add a separate `/bob/v1/harvest` endpoint — harvest is intake with the
   appropriate `kind`.
+
+## Harvest digest (lessons audit 2026-10-06)
+
+Generalised from 81 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
+
+- **Legacy harvest-as-FR twins (before FR #2705):** when a closed or duplicate harvest/skill receipt is offered as work, ACK, confirm the lesson is already on main or in an open promote/lesson PR, DONE with that covering PR URL, and close the receipt as `Duplicate of #N / fixed by PR #M`. Never open a second promote PR and never re-harvest the twin playbook itself. Since FR #2705, lessons land as `lesson(<book>)` PRs, so these receipts should no longer reach seats. (71 lessons: harvest #2275, #2242, #2239, #2235, #2232, #2229 +95 more, 5 held intake rows)
+- **Skill and harvest rows offered as FR:** a promote assign means consolidating by book into one skills PR with `Closes` (never GIVEUP or SKIP_FR it). A harvest-of-harvest or receipt-only row is not work: ACK, then DONE or GIVEUP citing the covering PR. Invoke-BobiverseHarvest skips GIVEUP-of-skill and twin-DONE-only loops (FR #936 / #2237). (8 lessons: harvest #1835, #1698, #1530, #927, #948, #937 +1 more, 1 held intake row)
+- **Intake and Flush:** WinPS clients POST UTF-8 bytes and read optional response properties through PSObject.Properties. Permanent 400s are dropped, not retried. Intake 502.3 on irc.ntsa.uk means the chair listener is down (an ionos-only heal): queue offline and Flush later. Archived repos leave `DEFAULT_ALLOW_REPOS`. Drain held outboxes with `drain --dry-run` first. Receipts never drop Lessons (FR #2705). (2 lessons: harvest #919, #904, #721)
