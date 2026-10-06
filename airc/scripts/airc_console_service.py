@@ -238,6 +238,8 @@ class AircConsoleService:
         self._out_q: queue.Queue[tuple[str, str]] = queue.Queue()
         self._inflight_lock = threading.Lock()
         self._shell_inflight: dict[str, str] = {}
+        # FR #2640: once stop flush starts, enqueue-only (no send) until prepare_stop closes.
+        self._stopping = False
 
     def note_shell_inflight(self, nick: str, job_id: str) -> None:
         key = (nick or "").strip().lower()
@@ -282,6 +284,8 @@ class AircConsoleService:
         self._track_reply_line(nick, text)
         for piece in chunk_irc_text(text, limit=IRC_SAFE_PAYLOAD, prefix=""):
             self._out_q.put((nick, piece))
+        if self._stopping:
+            return
         try:
             self.drain_out_queue()
         except ConnectionError as e:
@@ -314,19 +318,48 @@ class AircConsoleService:
         return sent
 
     def flush_stop_dones(self, *, reason: str = "service-stop") -> None:
-        """FR #2612: best-effort DONE for in-flight shells before process exit."""
-        inflight = self.shell_inflight()
-        if not inflight:
-            return
+        """FR #2612 / #2640: enqueue DONE for in-flight + pending shells; drain while sock live."""
+        self._stopping = True
         safe_reason = (reason or "service-stop").replace("\n", " ").replace("\r", " ")[:80]
-        for nick, jid in list(inflight.items()):
+        jobs: dict[tuple[str, str], None] = {}
+        for nick, jid in self.shell_inflight().items():
+            jobs[(nick, jid)] = None
+        try:
+            for nick, jid in self.shell_runner.open_job_ids():
+                jobs[(nick, jid)] = None
+            self.shell_runner.abandon_open_jobs()
+        except Exception as e:
+            info(f"INFO stop-flush-runner-err {e}")
+        for nick, jid in list(jobs.keys()):
             self._out_q.put((nick, f"err id={jid} seq=1 {safe_reason}"))
             self._out_q.put((nick, f"DONE id={jid} exit=1"))
             self.clear_shell_inflight(nick)
+        if not jobs and self.out_queue_size() == 0:
+            return
         try:
             self.drain_out_queue()
         except ConnectionError as e:
             info(f"INFO stop-flush-send-err {e}")
+
+    def prepare_stop(self, *, reason: str = "service-stop") -> None:
+        """FR #2640: flush DONEs then close the socket — never sendall after close."""
+        self._stopping = True
+        self._stop.set()
+        self.flush_stop_dones(reason=reason)
+        deadline = time.monotonic() + 1.5
+        while self.out_queue_size() > 0 and time.monotonic() < deadline and self.sock:
+            try:
+                self.drain_out_queue()
+            except ConnectionError as e:
+                info(f"INFO stop-drain-err {e}")
+                break
+            time.sleep(0.02)
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
 
     def connect(self) -> None:
         self._registered = False
@@ -767,8 +800,7 @@ class AircConsoleService:
                     self._check_probe_timeout()
                 except KeyboardInterrupt:
                     info("INFO probe interrupted -> stop")
-                    self.flush_stop_dones(reason="probe interrupted")
-                    self._stop.set()
+                    self.prepare_stop(reason="probe interrupted")
                     return
                 except Exception as pe:
                     info(f"INFO probe-err {pe}")
@@ -776,8 +808,7 @@ class AircConsoleService:
                     self.sessions.reap_idle()
                 except KeyboardInterrupt:
                     info("INFO reap interrupted -> stop")
-                    self.flush_stop_dones(reason="reap interrupted")
-                    self._stop.set()
+                    self.prepare_stop(reason="reap interrupted")
                     return
                 except Exception as re:
                     info(f"INFO reap-err {re}")
@@ -785,8 +816,7 @@ class AircConsoleService:
                     self._idle_keepalive()
                 except KeyboardInterrupt:
                     info("INFO keepalive interrupted -> stop")
-                    self.flush_stop_dones(reason="keepalive interrupted")
-                    self._stop.set()
+                    self.prepare_stop(reason="keepalive interrupted")
                     return
                 except Exception as ke:
                     info(f"INFO keepalive-err {ke}")
@@ -795,8 +825,7 @@ class AircConsoleService:
             except KeyboardInterrupt:
                 # FR #2541: clean stop on service interrupt during recv.
                 info("INFO recv interrupted -> stop")
-                self.flush_stop_dones(reason="recv interrupted")
-                self._stop.set()
+                self.prepare_stop(reason="recv interrupted")
                 return
             except Exception as e:
                 info(f"INFO recv-err {e}")
@@ -845,16 +874,18 @@ class AircConsoleService:
                 self.read_loop()
                 session_ok = self._registered
             except KeyboardInterrupt:
-                # FR #2541: NSSM stop / Ctrl+C during connect/handshake/read — exit loop.
+                # FR #2541 / #2640: NSSM stop — flush DONEs then close sock (no post-close send).
                 info("INFO session interrupted -> stop")
-                self.flush_stop_dones(reason="session interrupted")
-                self._stop.set()
+                self.prepare_stop(reason="session interrupted")
                 break
             except Exception as e:
                 info(f"INFO session-err {e}")
             finally:
                 if self._stop.is_set():
-                    self.flush_stop_dones(reason="service-stop")
+                    if self.sock is not None:
+                        self.prepare_stop(reason="service-stop")
+                    else:
+                        self.flush_stop_dones(reason="service-stop")
                 self.sessions.close_all()
                 if self.sock:
                     try:
