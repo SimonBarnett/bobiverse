@@ -41,12 +41,16 @@ def _fn_body(text: str, name: str) -> str:
 
 
 def test_mrb2583_ghcli_create_draft_pr_not_stub():
-    body = _fn_body(GH.read_text(encoding="utf-8"), "create_draft_pr")
+    full = GH.read_text(encoding="utf-8")
+    body = _fn_body(full, "create_draft_pr")
     assert "draft PR not implemented" not in body
-    assert 'draft": True' in body or "'draft': True" in body or '"draft": True' in body
-    assert "/git/blobs" in body
-    assert "/pulls" in body
-    assert "FR #2579" in body
+    # FR #2705: create_draft_pr passes draft=True; git data + draft JSON live in _create_pr_with_files.
+    assert "draft=True" in body
+    shared = _fn_body(full, "_create_pr_with_files")
+    assert '"draft": bool(draft)' in shared or '"draft": True' in shared
+    assert "/git/blobs" in shared
+    assert "/pulls" in shared
+    assert "FR #2579" in body or "FR #2579" in shared
 
 
 def test_mrb2583_rejects_path_traversal():

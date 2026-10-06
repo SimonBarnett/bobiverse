@@ -64,7 +64,7 @@ def is_do_not_file_probe(*, title: str, body: str = "") -> bool:
 # Bare "FR #N", "CLOSED", or "merged" alone are common in real playbook harvests
 # (MRB #2597); those must still open draft PRs. Receipts use DONE/GIVEUP/SKIP/
 # self-MRB/twin/"duplicate of".
-# FR #2650: also PASS/FAIL — "harvest: MRB #N PASS: merged" was filed as a draft
+# FR #2650: also PASS/FAIL - "harvest: MRB #N PASS: merged" was filed as a draft
 # PR and offered as MRB via the PR-opened webhook (#2647 class).
 _HARVEST_KIND_RECEIPT_MARKER = re.compile(
     r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|PASS|FAIL)\b"
@@ -78,7 +78,7 @@ def is_harvest_worker_receipt(*, kind: str, title: str, body: str) -> bool:
     FR #2595 / #2650: these must not stay as open draft PRs (webhook would
     enqueue them as MRB work). Real playbook harvests without receipt markers
     still open draft PRs (MRB #2597: bare FR #N / merged alone are not enough).
-    FR #2705: receipt markers never drop Lessons — callers that see lessons must
+    FR #2705: receipt markers never drop Lessons - callers that see lessons must
     open a non-draft skill-book PR instead of receipt_recorded alone.
     """
     if str(kind or "").strip().lower() != "harvest":
@@ -120,7 +120,7 @@ SKILL_BOOK_PATHS: dict[str, str] = {
     "bobiverse-airc-commands": "airc/.grok/skills/bobiverse-airc-commands/SKILL.md",
     "bobiverse-airc-troubleshooting": "airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md",
 }
-# (keywords_all_present_lowercase, book_name) — first match wins.
+# (keywords_all_present_lowercase, book_name) - first match wins.
 _SKILL_BOOK_KEYWORD_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("mrb", "hostile"), "bobiverse-bob-job-mrb"),
     (("mrb",), "bobiverse-bob-job-mrb"),
@@ -162,7 +162,7 @@ def resolve_skill_book(
     title: str = "",
     body: str = "",
 ) -> tuple[str, str]:
-    """Map source.skill_book / path / keywords → (book_name, repo-relative SKILL.md path).
+    """Map source.skill_book / path / keywords -> (book_name, repo-relative SKILL.md path).
 
     FR #2705: explicit book or path wins; else deterministic keyword routing; else harvest.
     """
@@ -255,7 +255,7 @@ def _filer_create_pr(
 
 def build_lesson_pr_title(book: str, lessons: list[str]) -> str:
     first = (lessons[0] if lessons else "harvest lesson").strip()
-    tip = first[:72] + ("…" if len(first) > 72 else "")
+    tip = first[:72] + ("..." if len(first) > 72 else "")
     return f"lesson({book}): {tip}"
 
 

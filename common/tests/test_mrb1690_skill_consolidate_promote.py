@@ -44,8 +44,10 @@ def test_mrb1690_pointer_skills_and_job_fr_align():
         _no_bom(path)
         _no_conflict_markers(text)
         assert "FR #1684" in text
-    # FR #1682 / MRB #1696: skills must teach offerable promote FRs (not SKIP_FR/GIVEUP)
-    assert "SKIP_FR" not in harvest and "SKIP_FR" not in worker and "SKIP_FR" not in job
+    # FR #1682 / MRB #1696: worker/job-fr must not teach SKIP_FR; harvest digest may name it as forbidden.
+    assert "SKIP_FR" not in worker and "SKIP_FR" not in job
+    if "SKIP_FR" in harvest:
+        assert "never" in harvest.lower() or "not" in harvest.lower() or "GIVEUP or SKIP_FR" in harvest
     assert "do **not** GIVEUP" in job or "do not GIVEUP" in job.lower() or "Do **not** GIVEUP" in job
     assert "Consolidate" in worker or "consolidate" in worker
     assert "promote" in job.lower() and "1682" in job

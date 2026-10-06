@@ -256,6 +256,9 @@ ALLOWED = {
     # other tools' trees (agentic_*), vendored tray (pinned upstream; patched only where it names the bobiverse install)
     "common/scripts/bob_recycle.py", "common/scripts/bobstat.py", "common/scripts/protect.py",
     "bob/scripts/Sync-BobTrayFromAgenticBuild.ps1",
+    # last-resort fallbacks when RepoRoot/AiRoot not passed (disk reclaim helpers)
+    "common/scripts/Clear-BobiverseJobWorktrees.ps1",
+    "common/scripts/Clear-BobiverseSeatDisk.ps1",
 }
 DEFAULT_RE = re.compile(r"""(\$\w*(Root|Dir)\w*\s*=\s*['"]C:\\ai|\[string\]\$\w+\s*=\s*['"]C:\\ai|SetDirectory[^>]*C:\\ai|Join-Path\s+['"]C:\\ai)""", re.I)
 
