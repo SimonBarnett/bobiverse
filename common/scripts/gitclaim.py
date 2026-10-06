@@ -113,8 +113,17 @@ _INTAKE_HARVEST_FOOTER_RE = re.compile(r"(?i)Invoke-BobiverseHarvest|Session sum
 _HARVEST_RECEIPT_STATUS_RE = re.compile(
     r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|PASS|FAIL)\b|\bduplicate of\b"
 )
-# FR #628: chair-spam records (re-offer / drain loops filed by seats) are never real FR work.
-CRITICAL_SPAM_TITLE_RE = re.compile(r"(?i)^CRITICAL:|\bdrain FR-unaccepted\b|\b\d+(st|nd|rd|th)\+? re-offer\b")
+# FR #628 / FR #2670: chair-spam records (re-offer / drain loops) are never real FR work.
+# Bare ``CRITICAL:`` without via-intake / feature-request is still spam (seat loop filings).
+# Via-intake / feature-request ``CRITICAL:`` product filings are offerable (deadlock fix #2670).
+CRITICAL_SPAM_PREFIX_RE = re.compile(r"(?i)^CRITICAL:")
+CRITICAL_SPAM_SHAPE_RE = re.compile(
+    r"(?i)\bdrain FR-unaccepted\b|\b\d+(st|nd|rd|th)\+? re-offer\b"
+)
+# Back-compat for tests/importers that still match the combined name.
+CRITICAL_SPAM_TITLE_RE = re.compile(
+    r"(?i)^CRITICAL:|\bdrain FR-unaccepted\b|\b\d+(st|nd|rd|th)\+? re-offer\b"
+)
 # FR #133 / bobiverse#258: evergreen MRB-home boards are not FR jobs.
 EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
     r"(?i)\bMRB\s+home\b|\bHostile\s+MRB\s+home\b|\bMRB:\s+\S+.*\bhandoff\b",
@@ -646,8 +655,14 @@ def issue_skip_fr_reason(
     title_s = (title or "").strip()
     # FR #1682 / #1684: harvest:/skill: titles are offerable promote jobs (workers
     # consolidate by skill book then open a harvest/* PR). Do not SKIP_FR them.
-    if CRITICAL_SPAM_TITLE_RE.search(title_s):
+    # FR #628 / #2670: drain / Nth re-offer shapes are always spam.
+    if CRITICAL_SPAM_SHAPE_RE.search(title_s):
         return "critical_spam_title"
+    # FR #2670: via-intake / feature-request CRITICAL: is real work (must queue +
+    # block UAT). Bare CRITICAL: without those labels stays SKIP_FR (seat spam).
+    if CRITICAL_SPAM_PREFIX_RE.search(title_s):
+        if "via-intake" not in labs and "feature-request" not in labs:
+            return "critical_spam_title"
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
