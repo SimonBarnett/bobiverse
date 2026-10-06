@@ -168,13 +168,15 @@ def test_s3_restart_bob_ear_and_tray_wiring():
     assert (S / "bob_recycle.py").is_file()
 
 
-def test_s3_recycle_parse_jeeves_and_machine():
+def test_s3_recycle_parse_jeeves_and_machine(monkeypatch):
     import sys
 
     sys.path.insert(0, str(S))
     import bob_recycle
 
     assert bob_recycle.parse_recycle_query("!recycle jeeves") == ("run", "jeeves")
+    # CI runners are not fleet boxes: pin chair home so marchhare resolves without roster.
+    monkeypatch.setenv("BOB_CHAIR_MACHINE", "marchhare")
     assert bob_recycle.parse_recycle_query("!recycle marchhare")[0] == "run"
 
 

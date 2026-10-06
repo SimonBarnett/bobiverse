@@ -1,6 +1,6 @@
-"""FR #595: never invent /pull/{issue_id} for MRB; skip mrb/mrb-pass FR boards.
+"""FR #595: never invent /pull/{issue_id} for MRB; skip mrb/mrb-pass/mrb-fail FR boards.
 
-FR #2464: mrb-fail is offerable remediation (no longer in SKIP_FR_LABELS).
+FR #2562 / #2677: reverse #2464 — mrb-fail is a verdict board skip again.
 """
 from __future__ import annotations
 
@@ -8,11 +8,9 @@ import gitclaim
 
 
 def test_skip_fr_labels_include_verdict_boards():
-    for lab in ("mrb", "mrb-pass"):
+    for lab in ("mrb", "mrb-pass", "mrb-fail"):
         assert lab in gitclaim.SKIP_FR_LABELS
-        assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=(lab,)) == f"label:{lab}"
-    assert "mrb-fail" not in gitclaim.SKIP_FR_LABELS
-    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb-fail",)) is None
+        assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=(lab,)).startswith("label:")
 
 
 def test_mrb_verdict_labels_do_not_enqueue_as_fr():
@@ -279,22 +277,19 @@ def test_prune_drops_mrb_verdict_and_fake_mrb_rows(tmp_path, monkeypatch):
 def test_skip_fr_underscore_verdict_aliases():
     assert "mrb_pass" in gitclaim.SKIP_FR_LABELS
     assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb_pass",)).startswith("label:")
-    # FR #2464: mrb_fail is offerable remediation.
-    assert "mrb_fail" not in gitclaim.SKIP_FR_LABELS
-    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb_fail",)) is None
+    # FR #2562 / #2677: mrb_fail is a verdict board skip again.
+    assert "mrb_fail" in gitclaim.SKIP_FR_LABELS
+    assert gitclaim.issue_skip_fr_reason(title="FR: x", labels=("mrb_fail",)).startswith("label:")
 
 
 def test_line_only_mrb_pass_text_skips_without_labels(tmp_path, monkeypatch):
-    """MRB #603 / FR #2464: empty labels + line text 'mrb-pass' still skips; mrb-fail does not."""
+    """MRB #603 / FR #2562: empty labels + line text 'mrb-pass' / 'mrb-fail' both skip."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     assert gitclaim.row_skip_fr_reason(
         {"line": "mrb-pass board for agentic_fomprep#9", "labels": (), "title": ""}
     )
-    assert (
-        gitclaim.row_skip_fr_reason(
-            {"line": "mrb-fail remediation for agentic_fomprep#11", "labels": (), "title": ""}
-        )
-        is None
+    assert gitclaim.row_skip_fr_reason(
+        {"line": "mrb-fail remediation for agentic_fomprep#11", "labels": (), "title": ""}
     )
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),

@@ -44,7 +44,8 @@ def test_mrb2635_harvest_log_restores_2633_and_keeps_2632():
     assert "FR #2632" in text or "MRB #2634" in text
 
 
-def test_mrb2635_fomprep_pin_set_excludes_eleven():
+def test_mrb2635_fomprep_pin_set_includes_eleven():
+    """FR #2562 / #2677: reverse #2521 — #11 MRB FAIL verdict is hard-pinned again."""
     import gitclaim
 
     got = {
@@ -52,5 +53,5 @@ def test_mrb2635_fomprep_pin_set_excludes_eleven():
         for (repo, ident) in gitclaim._SKIP_FR_ISSUE_PINS
         if repo == "simonbarnett/agentic_fomprep"
     }
-    assert got == {3, 7, 8, 9, 20}
-    assert 11 not in got
+    assert got == {3, 7, 8, 9, 11, 20}
+    assert 11 in got
