@@ -742,12 +742,15 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
     rules = rules_text(cwd, mode)
     files: dict = {}
     if kind == "grok":
+        # FR #2699: every grok seat (agent/plan/monitor/maintenance) shares the same
+        # --no-auto-update + --no-alt-screen prefix so Plan cannot self-update mid-session.
+        prefix = [exe, "--no-auto-update", "--no-alt-screen", "--cwd", cwd]
         if mode == "plan":
-            argv = [exe, "--permission-mode", "plan", "--session-id", sid, "--cwd", cwd, "--rules", rules, prompt]
+            argv = prefix + ["--permission-mode", "plan", "--session-id", sid, "--rules", rules, prompt]
         elif resume_session_id:
-            argv = [exe, "--no-auto-update", "--no-alt-screen", "--cwd", cwd, "--resume", sid, "--rules", rules, prompt]
+            argv = prefix + ["--resume", sid, "--rules", rules, prompt]
         else:
-            argv = [exe, "--no-auto-update", "--no-alt-screen", "--cwd", cwd, "-s", sid, "--rules", rules, prompt]
+            argv = prefix + ["-s", sid, "--rules", rules, prompt]
     elif kind == "cursor":
         # The prompt goes through a FILE read by a fixed launcher: text never lands on a command line (no shell injection).
         pfile = str(Path(run_dir) / "prompt.txt")
