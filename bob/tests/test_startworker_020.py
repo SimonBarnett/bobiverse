@@ -303,8 +303,11 @@ def test_tray_drops_expired_bad_mode_unreadable_and_a_launch_that_throws_is_neve
     (qd / "req-evil.json").write_text(json.dumps({"id": "evil", "mode": "agent; calc", "by": "x", "kind": "owner", "ts": 1, "expires": fut}))
     (qd / "req-junk.json").write_text("{not json")
     (qd / "req-boom.json").write_text(json.dumps({"id": "boom", "mode": "agent", "by": "x", "kind": "owner", "ts": 1, "expires": fut}))
+    # FR #2667: CapRefusal reads live bob-worker seats; stub empty so boom reaches Launch throw
+    # (this test is about expired/bad-mode/unreadable/launch-error, not the agent-only cap).
     out = _ps(tmp_path, r'''
 . "%s"
+function Get-BobTrayWorkerCapRefusal { param([object[]]$Procs = $null, [string]$Mode = 'agent') '' }
 $dir = Get-BobTrayStartWorkerDir -Root "%s"
 $global:n = 0
 $r = @(Invoke-BobTrayStartWorkerQueue -Dir $dir -Launch { param($m) $global:n++; throw 'nope' })
