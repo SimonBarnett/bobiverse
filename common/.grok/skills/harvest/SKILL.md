@@ -183,6 +183,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 - GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
+- Repo UAT clear-gate: feature-request (via-intake product FRs) must block issue_blocks_repo_uat even when the title starts with Harvest/Skill; only harvest:/skill: colon receipts (or label skill) are non-blocking; resync must drop unaccepted UAT when not clear even if offered_to is set
 
 ## Harvest digest (lessons audit 2026-10-06)
 
