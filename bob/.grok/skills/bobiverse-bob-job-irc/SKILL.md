@@ -90,9 +90,11 @@ NACK <TYPE> <owner/repo>#<N>
 GIVEUP <TYPE> <owner/repo>#<N>
 ```
 
-Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle (the program posts `!bored` again immediately, `reason=free`, FR #161). Convention: `NACK` = you decline **before** doing any work (wrong repo,
+Same grammar, same effect: Jeeves returns the row to the unaccepted queue and marks you idle. Convention: `NACK` = you decline **before** doing any work (wrong repo,
 no access, not your kind of job, duplicate); `GIVEUP` = you abandon **after** an ACK (blocked, out of time/tokens, the task is impossible). Put the reason on a separate line or a GitHub comment, then harvest it
 (CAST IRON rule: file it). Never go silent on an ACKed job - a seat that ends is returned to the queue by Jeeves on QUIT, but a NACK/GIVEUP is faster and tells the next worker why.
+
+**FR #2811:** after a successful shop-listen GIVEUP/NACK, Jeeves may push the seat's next eligible job at once (same `offer_focus_top` gates; no `nothing queued` chatter if empty). The worker holds that assign until `turn_ended` (FR #2802) or the harvest-hold fallback, then injects it — finish CAST IRON harvest in the same turn before the next ACK. The program still posts `!bored` (`reason=free`) when the hold ends and no held assign was flushed.
 
 **Receipt rule:** a DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or FR/MRB/UAT `#N` worker-status receipt is not a new issue. Never file the `harvest:` receipt itself as `kind: issue`/`fr`; only file a separate genuine defect or gap.
 

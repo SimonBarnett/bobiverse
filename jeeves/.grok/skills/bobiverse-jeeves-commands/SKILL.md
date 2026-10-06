@@ -40,7 +40,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!recycle [machine\|all\|dry-run [machine\|all]]` | owner, ears | route a seat recycle (bare/all = fleet; 120 s cooldown). `dry-run` only prints the plan. `!recycle jeeves` restarts `ircJeeves` only |
 | `!register <machine>` | operators | ChanServ REGISTER `#<machine>` |
 | `ping` / `ping <glob>` | anyone | bare word (no `!`), channel or PM -> `pong` |
-| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs |
+| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811:** after GIVEUP/NACK ok, chair may push next eligible job via `offer_focus_top` (`offered_via=giveup`, longer sticky); send nothing when empty (no `nothing queued`) |
 
 ## Who counts as who (authorization)
 

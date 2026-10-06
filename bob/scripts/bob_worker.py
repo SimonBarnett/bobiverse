@@ -1809,6 +1809,9 @@ class Relay:
         self.injected = 0
         self.on_inject: Optional[Callable[..., None]] = None  # health: note "input delivered, expect activity" (line arg)
         self.last_unacked = ""
+        # FR #2811: while True, park Jeeves assigns in _pending (harvest / turn still running).
+        self.hold_assigns_while: Optional[Callable[[], bool]] = None
+        self.on_hold_assign: Optional[Callable[[str], None]] = None
 
     def set_target(self, inject: Optional[Callable[[str], bool]]) -> None:
         with self._lock:
@@ -1842,6 +1845,28 @@ class Relay:
             self._persist_last_from(line)
             return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
+        # FR #2811: hold assigns during post-DONE/NACK/GIVEUP harvest / turn; deliver on turn_ended.
+        hold = False
+        try:
+            hold = bool(self.hold_assigns_while and self.hold_assigns_while())
+        except Exception:
+            hold = False
+        if hold and assign_job_ref(line):
+            with self._lock:
+                if line == self._last_line:
+                    return "duplicate"
+                self._last_line = line
+                self._pending.append(line)
+                if len(self._pending) > self.max_pending:
+                    del self._pending[0]
+            self.log("relay: held assign until turn end " + line[:120])
+            self._persist_last_from(line)
+            if self.on_hold_assign:
+                try:
+                    self.on_hold_assign(line)
+                except Exception:
+                    pass
+            return "held_until_turn_end"
         with self._lock:
             if line == self._last_line:
                 return "duplicate"
@@ -1931,6 +1956,23 @@ class Relay:
         with self._lock:
             if line and line not in self._pending:
                 self._pending.insert(0, line)
+
+    def release_held_assigns(self) -> int:
+        """FR #2811: flush pending assign lines after turn_ended / harvest hold ends."""
+        with self._lock:
+            keep: list = []
+            flush: list = []
+            for line in self._pending:
+                if assign_job_ref(line):
+                    flush.append(line)
+                else:
+                    keep.append(line)
+            self._pending = keep
+        n = 0
+        for line in flush:
+            if self._do_inject(line) == "injected":
+                n += 1
+        return n
 
     def close(self) -> None:
         with self._lock:
@@ -2623,8 +2665,30 @@ class BoredEmitter:
         self._turn_idle_pending = False
         self._arm_skip = False  # hold fire at the turn_ended clock instant so turn_started can cancel
         self._hold_release_at: Optional[float] = None
+        # FR #2811: assign parked in Relay during harvest — blocks !bored, not turn_ended release.
+        self._held_assign = False
         self.sent: list = []  # (clock time, reason)
         self._thread: Optional[threading.Thread] = None
+
+    @property
+    def holding_incoming_assigns(self) -> bool:
+        """FR #2811: True during post-DONE/NACK/GIVEUP harvest hold (park incoming assigns)."""
+        with self._cv:
+            if self._harvest_until is None:
+                return False
+            return self.clock() < float(self._harvest_until)
+
+    def note_held_assign(self) -> None:
+        """FR #2811: Relay parked an assign; stay offer-pending until flush."""
+        with self._cv:
+            self._held_assign = True
+            self._idle_since = None
+            self._cv.notify_all()
+
+    def clear_held_assign(self) -> None:
+        with self._cv:
+            self._held_assign = False
+            self._cv.notify_all()
 
     @property
     def ack_open(self) -> bool:
@@ -2829,6 +2893,13 @@ class BoredEmitter:
             return True
         if self._harvest_until is not None and now < self._harvest_until:
             return True
+        # FR #2811: held assign blocks idle/nak/repeat, but must NOT block done/free —
+        # those fire post_bored, which flushes the held line (harvest_hold_s fallback).
+        if self._held_assign:
+            pending_done = bool(self._done_key and self._done_key != self._last_done_key)
+            pending_free = bool(self._free_key and self._free_key != self._last_free_key)
+            if not pending_done and not pending_free:
+                return True
         if self._inject_pending and self._inject_at is not None:
             if now - self._inject_at < self.assign_grace_s:
                 return True
@@ -3055,6 +3126,11 @@ class Supervisor:
         self._turn_watch_stop = threading.Event()
         self._turn_watch_thread: Optional[threading.Thread] = None
         relay.on_inject = self._on_inject
+        # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
+        relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)
+        relay.on_hold_assign = lambda _line: (
+            self.bored.note_held_assign() if self.bored else None
+        )
         if irc and self.bored:
             irc.on_nak = self.bored.nak  # t817u
         if irc:
@@ -3093,6 +3169,13 @@ class Supervisor:
             if self.bored:
                 # Use emitter clock for hold release; wall is only for logging/stale via hold_started mono.
                 self.bored.turn_ended(turn=turn, sid=sid_box.get("sid"))
+            # FR #2811: deliver parked assigns now that harvest hold can end.
+            try:
+                if self.bored:
+                    self.bored.clear_held_assign()
+                self.relay.release_held_assigns()
+            except Exception:
+                pass
 
         watcher = GrokTurnWatcher(
             events_path_fn=_path,
@@ -3135,6 +3218,19 @@ class Supervisor:
         """The ONLY place !bored is sent: the exe, own shop, never during shutdown / after IRC loss."""
         if self._shutting or self.stop.is_set() or not self.irc or not self.irc.alive:
             return False
+        # FR #2811: flush held assigns before !bored (harvest_hold_s fallback path).
+        try:
+            if self.bored:
+                self.bored.clear_held_assign()
+            n = self.relay.release_held_assigns()
+            if n:
+                # Injected work — do not also !bored this tick; arm inject-pending so
+                # a False return (retry) stays busy until ACK.
+                if self.bored:
+                    self.bored.activity(mark_work=True)
+                return False
+        except Exception:
+            pass
         # FR #2782: !bored is only sent when idle (no open ACK, no harvest hold, no pending inject), so this is the
         # one safe point to leave a stale build: exit instead of taking new work; tray seat-heal relaunches the seat
         # from the current install exe. Never mid-job.

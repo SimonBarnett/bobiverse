@@ -2605,7 +2605,24 @@ class Client:
                 )
             except Exception as trace_exc:  # noqa: BLE001
                 info(f"WARN shop-listen cmd-trace {type(trace_exc).__name__}")
-        # Never PRIVMSG the shop channel (FR #211).
+            # FR #2811: deliberate exception to FR #211 — offer next eligible job at once.
+            if status == "ok":
+                try:
+                    n, job2 = gitclaim.offer_after_giveup(
+                        self._digest_home(),
+                        src,
+                        bobreport.normalize_channel(target),
+                        say=lambda ch, t: self._git_say(ch, t),
+                    )
+                    if n and isinstance(job2, dict):
+                        with contextlib.suppress(Exception):
+                            self._workers().on_offer(
+                                src, target, shop_listen.activity_description(job2)
+                            )
+                        info(f"INFO git-claim giveup-offer nick={src} n={n}")
+                except Exception as offer_exc:  # noqa: BLE001
+                    info(f"WARN giveup-offer {type(offer_exc).__name__}")
+        # Never PRIVMSG the shop channel for ACK/DONE (FR #211). GIVEUP/NACK may push one assign (FR #2811).
         return True
 
     def handle_privmsg(self, prefix: str, target: str, body: str) -> None:
