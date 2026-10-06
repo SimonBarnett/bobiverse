@@ -1366,9 +1366,28 @@ def digest_lock(
         if locked and fh is not None:
             with contextlib.suppress(OSError):
                 _write_lock_holder(fh)
+        # FR #2902: heartbeat every 10s while held so mtime/age stay fresh across
+        # long critical sections (still prefer not to do slow I/O under the lock).
+        stop_hb = threading.Event()
+        hb_fh = fh if locked else None
+
+        def _heartbeat() -> None:
+            while not stop_hb.wait(10.0):
+                if hb_fh is None:
+                    return
+                with contextlib.suppress(OSError):
+                    _write_lock_holder(hb_fh)
+
+        hb_thread = None
+        if hb_fh is not None:
+            hb_thread = threading.Thread(
+                target=_heartbeat, name="digest-lock-heartbeat", daemon=True
+            )
+            hb_thread.start()
         try:
             yield
         finally:
+            stop_hb.set()
             _LOCK_STATE.depth = 0
             if fh is not None:
                 if locked:
@@ -2099,8 +2118,14 @@ def apply_quit(home: Path, nick: str, briefer_nick: str = "") -> PresenceOutcome
     return PresenceOutcome(ok=True)
 
 
-@_digest_locked
 def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> CallbackOutcome:
+    """Apply a BobCallback report/git-claim op.
+
+    FR #2902: ``git-claim`` must not run under ``digest.lock`` - ``claim_top`` can wait
+    on ``git-claim.lock`` for up to ``LOCK_WAIT_S`` (30s) while chair resync/purge holds
+    it, which aged ``digest.lock`` past ``lock_stale_s`` and made ``/health`` 503.
+    Digest mutators still take ``digest.lock`` via ``_apply_callback_digest``.
+    """
     # FR #69: chair --home is ~/.jeeves; digest.json + ChanServ roster live in BOB_DIGEST_HOME.
     home = fleet_digest_home(Path(home))
     if not isinstance(payload, dict):
@@ -2123,6 +2148,13 @@ def apply_callback(home: Path, payload: dict, briefer_nick: str = "") -> Callbac
             return CallbackOutcome(ok=False, err="queue")
         body = json.dumps({"ok": True, "claimed": job}, separators=(",", ":")).encode("utf-8")
         return CallbackOutcome(ok=True, changed=job is not None, body=body)
+    return _apply_callback_digest(home, payload, briefer_nick, op)
+
+
+@_digest_locked
+def _apply_callback_digest(
+    home: Path, payload: dict, briefer_nick: str, op: str
+) -> CallbackOutcome:
     mid = normalize_machine_id(str(payload.get("machine") or payload.get("id") or ""))
     if mid:
         mid = fold_machine_id(mid)       # #79: reports from a legacy alias land on the canonical machine
