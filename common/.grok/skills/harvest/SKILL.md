@@ -159,3 +159,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
   PR, issue, intake receipt or `harvest-outbox/` entry.
 - Add a separate `/bob/v1/harvest` endpoint — harvest is intake with the
   appropriate `kind`.
+
+## Harvested lessons (intake)
+
+- GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
