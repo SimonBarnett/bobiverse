@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import bob_worker as bw
-from repo_layout import resolve
+from repo_layout import ROOT, resolve
 
 
 def test_mrb2710_plan_argv_order_prefix_then_permission_mode(tmp_path):
@@ -55,7 +55,6 @@ def test_mrb2710_plan_skill_documents_no_auto_update():
 
 def test_mrb2710_no_second_permission_mode_plan_argv_outside_build_launch():
     """Grok seat --permission-mode plan must only be assembled in build_launch."""
-    root = resolve(".")
     hits = []
     for rel in (
         "bob/scripts/bob_worker.py",
@@ -64,10 +63,10 @@ def test_mrb2710_no_second_permission_mode_plan_argv_outside_build_launch():
         "jeeves/scripts/Start-JeevesMaintenance.ps1",
         "common/scripts/jeeves_maintenance.py",
     ):
-        p = root / rel
+        p = ROOT / rel
         if not p.is_file():
             continue
         text = p.read_text(encoding="utf-8-sig")
-        if "--permission-mode" in text and "plan" in text:
+        if "--permission-mode" in text:
             hits.append(rel)
     assert hits == ["bob/scripts/bob_worker.py"], hits
