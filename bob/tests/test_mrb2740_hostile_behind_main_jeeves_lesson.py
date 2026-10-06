@@ -31,7 +31,8 @@ def test_mrb2740_lesson_on_behind_main_discipline_bullet():
     # Contiguous: Jeeves status pins live on the behind-main bullet, not as a
     # fake 4th harvest-lesson review step.
     idx = text.index("harvest #2740")
-    window = text[max(0, idx - 80) : idx + 350]
+    # Bullet is long; keep a wide contiguous window past `_process_started`.
+    window = text[max(0, idx - 80) : idx + 520]
     assert "_process_started" in window
     assert "Build-Jeeves" in window or "Build-Jeeves.ps1" in window
     assert "VERSION" in window
