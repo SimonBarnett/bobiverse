@@ -342,9 +342,19 @@ $idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8
 # FR #2705: -Book sets source.skill_book so Lessons land in that SKILL.md (default harvest).
 $bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { 'harvest' }
 $bookName = $bookName.Substring(0, [Math]::Min(64, $bookName.Length))
+# FR #2790: bob-worker seats export BOB_NICK (and BOB_AGENT_NICK alias); prefer BOB_NICK
+# so lesson PR footers carry seat=<nick> for Jeeves self-MRB blocking. Fall back to
+# BOB_AGENT_NICK for Watch-AgentHealth / legacy seats that only set that name.
+$seatNick = ''
+if ($env:BOB_NICK -and ([string]$env:BOB_NICK).Trim()) {
+    $seatNick = ([string]$env:BOB_NICK).Trim()
+} elseif ($env:BOB_AGENT_NICK -and ([string]$env:BOB_AGENT_NICK).Trim()) {
+    $seatNick = ([string]$env:BOB_AGENT_NICK).Trim()
+}
+if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
-    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; version = ''; seat = $(if ($env:BOB_AGENT_NICK) { ([string]$env:BOB_AGENT_NICK).Substring(0, [Math]::Min(64, ([string]$env:BOB_AGENT_NICK).Length)) } else { '' }) }
+    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; version = ''; seat = $seatNick }
 }
 if ($files.Count) { $payload.files = $files }
 $json = $payload | ConvertTo-Json -Depth 6

@@ -51,6 +51,7 @@ def test_agent_child_launch_includes_seat_env_and_skills(tmp_path):
     assert env["BOB_OUTBOX"] == str(run_dir / "outbox.txt")
     assert env["BOB_SHOP"] == "#win-mpre8vi4u6u"
     assert env["BOB_NICK"] == "win-mpre8vi4u6u-1"
+    assert env["BOB_AGENT_NICK"] == "win-mpre8vi4u6u-1"
     assert env["BOB_MACHINE"] == "win-mpre8vi4u6u"
     assert child["cwd"] == str(cwd)
     assert str(cwd / ".grok" / "skills") in child["skills_dir"] or child["skills_dir"] == str(cwd / ".grok" / "skills")
@@ -79,5 +80,5 @@ def test_plan_child_launch_matches_agent_env_keys(tmp_path):
         machine="m", nick="m-plan", agent_exe=r"C:\a.exe",
     )
     assert set(agent["env"]) == set(plan["env"])
-    for k in ("BOB_OUTBOX", "BOB_SHOP", "BOB_NICK", "BOB_MACHINE"):
+    for k in ("BOB_OUTBOX", "BOB_SHOP", "BOB_NICK", "BOB_AGENT_NICK", "BOB_MACHINE"):
         assert k in plan["env"]

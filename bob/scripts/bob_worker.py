@@ -336,14 +336,21 @@ def outbox_path_for_run(run_dir: Path | str) -> Path:
 
 
 def seat_env_extra(run_dir: Path | str, machine: str, nick: str) -> dict:
-    """Env vars every agent child must inherit so compaction cannot lose the outbox (FR #2380)."""
+    """Env vars every agent child must inherit so compaction cannot lose the outbox (FR #2380).
+
+    FR #2790: also export ``BOB_AGENT_NICK`` (same value as ``BOB_NICK``) so
+    ``Invoke-BobiverseHarvest.ps1`` and legacy Watch-AgentHealth readers stamp
+    ``source.seat`` / footer ``seat=`` for lesson-PR self-MRB blocking.
+    """
     outbox = str(outbox_path_for_run(run_dir))
     mid = (machine or "").strip().lstrip("#")
     shop = f"#{mid}"
+    nick_s = (nick or "").strip()
     return {
         "BOB_OUTBOX": outbox,
         "BOB_SHOP": shop,
-        "BOB_NICK": (nick or "").strip(),
+        "BOB_NICK": nick_s,
+        "BOB_AGENT_NICK": nick_s,
         "BOB_MACHINE": mid.lower(),
     }
 
@@ -493,7 +500,7 @@ def describe_agent_child_launch(
 ) -> dict:
     """Canonical cursor/grok child launch for agent and plan (FR #2413).
 
-    Always includes ``seat_env_extra`` (BOB_OUTBOX / BOB_SHOP / BOB_NICK / BOB_MACHINE)
+    Always includes ``seat_env_extra`` (BOB_OUTBOX / BOB_SHOP / BOB_NICK / BOB_AGENT_NICK / BOB_MACHINE)
     and the mode prompt that points at ``.grok/skills`` + AGENTS.md under ``cwd``.
     """
     mode_l = (mode or "agent").strip().lower()
