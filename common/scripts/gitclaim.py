@@ -3705,9 +3705,32 @@ def offer_to_idle_seats(
         )
         if status == "ok" and isinstance(job, dict):
             line = format_assign_line(nick, job)
+            delivered = False
             try:
-                say(channel, line)
+                ret = say(channel, line)
+                # Chair-outbox enqueue returns False on OSError/secret skip; treat as fail.
+                delivered = ret is not False
             except Exception:
+                delivered = False
+            if not delivered:
+                # Keep idle entry; stamp rate limit so we retry after IDLE_PUSH_MIN_INTERVAL_S.
+                try:
+                    with _lock(home):
+                        doc = _load_idle_after_empty(home)
+                        seats = doc.get("seats") or {}
+                        cur = seats.get(nick) if isinstance(seats.get(nick), dict) else None
+                        if cur is None:
+                            for k, v in list(seats.items()):
+                                if (canonical_worker_nick(k) or k).strip().lower() == nick.lower():
+                                    cur = v if isinstance(v, dict) else None
+                                    nick = k
+                                    break
+                        if isinstance(cur, dict):
+                            cur["last_push_at"] = now_f
+                            seats[nick] = cur
+                            _write_idle_after_empty(home, doc)
+                except (TimeoutError, OSError):
+                    pass
                 continue
             clear_idle_after_empty(home, nick)
             sent += 1
@@ -3743,8 +3766,8 @@ def push_idle_offers_via_chair_outbox(
 ) -> int:
     """Enqueue shop assign PRIVMSGs on chair-outbox for idle seats (webhook / enqueue path)."""
 
-    def _say(channel: str, text: str) -> None:
-        bobreport.enqueue_chair_fleet_privmsg(home, text, channel)
+    def _say(channel: str, text: str) -> bool:
+        return bool(bobreport.enqueue_chair_fleet_privmsg(home, text, channel))
 
     return offer_to_idle_seats(
         home,
