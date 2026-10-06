@@ -68,6 +68,16 @@ $argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--cons
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $hiddenArgs
+# FR #2728: bundle VERSION into _MEIPASS as last-resort when install-root resolve fails.
+$verCandidates = @(
+    (Join-Path $RepoRoot 'VERSION'),
+    (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'VERSION'),
+    (Join-Path $RepoRoot 'common\VERSION')
+)
+$verFile = $verCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if ($verFile) {
+    $argList += @('--add-data', ($verFile + ';.'))
+}
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
 
 $argText = (($argList | ForEach-Object {

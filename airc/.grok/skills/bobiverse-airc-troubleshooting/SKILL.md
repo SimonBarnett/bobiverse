@@ -46,3 +46,9 @@ Finish every session with the harvest step.
 | DisplayName still literal #{machine} or ConsoleHome under Users\Default | Old NSSM bake / FR #1552 prior-identity restore of Default home | Heal DisplayName with expanded MachineId; migrate home to <ai root>\airc\home and update AppParameters; Install remaps Default after prior restore (FR #2355). |
 
 | Stop mid-Command: ear got out/err but **no DONE**; log `session interrupted` + `10038` / `send: no socket` | FR #2640/#2649: prepare_stop drains DONE with **no FLOOD_S gap**, sets `_stop_flushed` so finally does not re-flush after sock=None. Hotpatch `airc_console_service.py` + Restart-Service Airc (frozen `airc.exe` needs rebuild). |
+
+## Harvest digest (lessons audit 2026-10-06)
+
+Generalised from 18 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
+
+- **Console job protocol:** background emits must swallow ConnectionError on a dead IRC socket and force a reconnect, and handle KeyboardInterrupt explicitly on service stop. STATUS pins `id=` and frames output as `out id= seq=` followed by `DONE id=`. Sanitize bobtalk/Halloy `Heard:` wrappers, but never strip PowerShell `@(`, `@'` or `@"`. ReplyFile must be the ear's `airc-replies.jsonl`. Queue replies across reconnects and flush DONE on stop. UPDATE replies first, then schedules a detached Apply; never run msiexec in the console process. Frozen airc.exe keeps Start-AircConsole ServiceMode parity (Sync, then Update). (18 lessons: harvest #2167, #1614, #1600, #1599, #1594, #1586 +3 more, 9 held intake rows)
