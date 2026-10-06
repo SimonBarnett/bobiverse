@@ -159,3 +159,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
   PR, issue, intake receipt or `harvest-outbox/` entry.
 - Add a separate `/bob/v1/harvest` endpoint — harvest is intake with the
   appropriate `kind`.
+
+## Harvested lessons (intake)
+
+- When Clear-BobiverseJobWorktrees removes 0 under low disk: file intake or GIVEUP / use a roomy drive — never hand-delete wt-bob-main/wt-airc/operator trees; write .bobiverse-seat so -Force skips live owners
