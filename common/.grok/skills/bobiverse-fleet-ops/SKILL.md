@@ -146,3 +146,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 - Quiet MSI bootstrap under SYSTEM: do not rely on per-user WindowsApps winget; prefer pinned nodejs.org MSI for Node and soft-fail git/python/node so install does not 1603 (FR #1825 / harvest #2020 / PR #2019).
 - UI MSI upgrades (FR #2564): require `/l*v` under `%ProgramData%\Bobiverse\logs`; never leave ircBob/Airc Stopped after a failed RunInstall — rollback recover + Install catch Start-Service; assert InstallRoot VERSION matches MSI ProductVersion.
 - Self-update backup (FR #2563): robocopy >=8 soft-fails without MaxAttempts burn; Ensure-ServiceRunning; -ForceCheck clears blocked-loop-guard (PR #2565).
+
+## Harvested lessons (intake)
+
+- LIVE-PROOF-TEST 2026-10-06: placeholder lesson used only to prove harvest->lesson PR->MRB offer; close unmerged
