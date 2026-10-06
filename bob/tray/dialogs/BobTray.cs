@@ -12,6 +12,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Management;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -40,8 +41,9 @@ namespace BobDialogs
         static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, int flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
 
-        public const int MaxWorkers = 2;   // t815u: hard cap per machine (tray click and !startworker alike)
+        public const int MaxWorkers = 2;   // t815u / FR #2667: hard AGENT-seat cap (plan/maintenance uncapped)
         static readonly Regex SeatName = new Regex("^bob-worker(-[0-9a-f]+)?$", RegexOptions.IgnoreCase);
+        static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance)\b", RegexOptions.IgnoreCase);
 
         // FR #2601: default on; set BOBIVERSE_WORKER_SEAT_HEAL=0 to disable TipForm top-up after irc-lost.
         public static bool SeatHealEnabled()
@@ -68,21 +70,79 @@ namespace BobDialogs
             return -1;
         }
 
-        // Live seats: a onefile exe is bootloader + same-named child = ONE seat (parent is itself a bob-worker => not counted).
+        static string ModeFromCommandLine(string cl)
+        {
+            if (string.IsNullOrEmpty(cl)) return "agent";
+            Match m = ModeArg.Match(cl);
+            return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "agent";
+        }
+
+        // FR #2667: agent-only by default (plan/maintenance do not count toward the hard cap).
         public static int Seats()
         {
-            List<int> ids = new List<int>(); List<int> parents = new List<int>();
-            foreach (Process p in Process.GetProcesses())
+            return SeatsForModes("agent");
+        }
+
+        public static int SeatsForModes(params string[] modes)
+        {
+            HashSet<string> wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (modes == null || modes.Length == 0) wanted.Add("agent");
+            else foreach (string m in modes) if (!string.IsNullOrEmpty(m)) wanted.Add(m.Trim().ToLowerInvariant());
+
+            List<int> ids = new List<int>();
+            List<int> parents = new List<int>();
+            List<string> seatModes = new List<string>();
+            try
             {
-                try { if (SeatName.IsMatch(p.ProcessName)) { ids.Add(p.Id); parents.Add(ParentOf(p)); } } catch { }
+                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
+                    "SELECT ProcessId, ParentProcessId, Name, CommandLine FROM Win32_Process WHERE Name LIKE 'bob-worker%'"))
+                {
+                    foreach (ManagementObject mo in q.Get())
+                    {
+                        try
+                        {
+                            string name = Convert.ToString(mo["Name"] ?? "");
+                            string baseName = Path.GetFileNameWithoutExtension(name);
+                            if (!SeatName.IsMatch(baseName)) continue;
+                            int pid = Convert.ToInt32(mo["ProcessId"]);
+                            int ppid = Convert.ToInt32(mo["ParentProcessId"]);
+                            string mode = ModeFromCommandLine(Convert.ToString(mo["CommandLine"] ?? ""));
+                            ids.Add(pid);
+                            parents.Add(ppid);
+                            seatModes.Add(mode);
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback without CommandLine: treat every root as agent (conservative for heal/cap).
+                foreach (Process p in Process.GetProcesses())
+                {
+                    try
+                    {
+                        if (!SeatName.IsMatch(p.ProcessName)) continue;
+                        ids.Add(p.Id);
+                        parents.Add(ParentOf(p));
+                        seatModes.Add("agent");
+                    }
+                    catch { }
+                }
             }
             int n = 0;
-            for (int i = 0; i < ids.Count; i++) if (!ids.Contains(parents[i])) n++;
+            for (int i = 0; i < ids.Count; i++)
+            {
+                if (ids.Contains(parents[i])) continue;
+                if (wanted.Contains(seatModes[i])) n++;
+            }
             return n;
         }
 
-        public static string CapRefusal()
+        public static string CapRefusal(string mode = "agent")
         {
+            if (!string.Equals(mode ?? "agent", "agent", StringComparison.OrdinalIgnoreCase))
+                return "";
             int n = Seats();
             return n >= MaxWorkers ? "Max " + MaxWorkers + " workers (" + n + " already running). Close a worker window first." : "";
         }
@@ -155,7 +215,7 @@ namespace BobDialogs
         public static int Launch(string root, string mode, string machine, out string error)
         {
             error = "";
-            string refusal = CapRefusal();
+            string refusal = CapRefusal(mode);
             if (refusal.Length > 0) { error = refusal; return 0; }
             string exe = Path.Combine(root, "worker\\bob-worker.exe");
             if (!File.Exists(exe)) { error = "bob-worker.exe is missing:\n" + exe + "\n\nReinstall or upgrade the bob MSI."; return 0; }

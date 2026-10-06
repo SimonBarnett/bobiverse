@@ -54,6 +54,7 @@ function Invoke-BobTrayStartWorkerQueue {
             $expires = [DateTimeOffset]::FromUnixTimeSeconds([int64]$req.expires).UtcDateTime
             if ($mode -notin @('agent', 'plan')) { $reason = 'bad-mode' }
             elseif ($Now -gt $expires) { $reason = 'expired' }
+            elseif ((Get-BobTrayWorkerCapRefusal -Mode $mode)) { $reason = 'cap' }
             else {
                 try {
                     $pidOut = [int](@(& $Launch $mode)[-1])
@@ -79,7 +80,8 @@ function Invoke-BobTrayStartWorkerQueue {
     }
 }
 
-# t815u: hard cap - never more than 2 worker seats (agent or plan) per machine, counted from LIVE bob-worker*.exe processes
+# t815u / FR #2522 / FR #2667: hard cap of 2 AGENT seats per machine (plan/monitor/maintenance are uncapped
+# and do not count). Count LIVE bob-worker*.exe seat roots whose CommandLine --mode is agent (default).
 # FR #2556: reclaim by seat root trees only (see Stop-BobWorkerSeatTrees); never flat Skip-N.
 # (a onefile exe = bootloader + same-named child = one seat; stale run dirs never count). Shared by the tray click and !startworker.
 # FR #2523: Watch-AgentHealth / legacy watch seats are NOT counted here and must not start as shop workers when bob-worker is installed.
@@ -111,23 +113,58 @@ function Test-BobWorkerProductActive {
     return $false
 }
 
+function Get-BobTrayWorkerSeatMode {
+    <# FR #2667: parse --mode from CommandLine; missing mode defaults to agent (same as startworker._entry_mode). #>
+    param($Proc)
+    $cl = ''
+    try { $cl = [string]$Proc.CommandLine } catch { $cl = '' }
+    if (-not $cl) {
+        try { $cl = [string]$Proc.mode } catch { $cl = '' }
+    }
+    if ($cl -match '(?i)--mode[=\s]+(agent|plan|monitor|maintenance)\b') {
+        return $Matches[1].ToLowerInvariant()
+    }
+    $low = ($cl).Trim().ToLowerInvariant()
+    if ($low -in @('agent', 'plan', 'monitor', 'maintenance')) { return $low }
+    return 'agent'
+}
+
 function Measure-BobTrayWorkerSeats {
-    param([object[]]$Procs)
-    # Only bob-worker*.exe seats (never Watch-AgentHealth / grok.exe watch seats) - FR #2523 / t815u.
+    <#
+    Root bob-worker*.exe seats (never Watch-AgentHealth) - FR #2523 / t815u.
+    FR #2667 / #2522: -Modes defaults to agent only (plan/maintenance do not count toward the hard cap).
+    #>
+    param(
+        [object[]]$Procs,
+        [string[]]$Modes = @('agent')
+    )
+    $wanted = @($Modes | ForEach-Object { ([string]$_).ToLowerInvariant() } | Select-Object -Unique)
     $w = @($Procs | Where-Object { $_.Name -match '^bob-worker(-[0-9a-f]+)?\.exe$' })
     $ids = @($w | ForEach-Object { [int]$_.ProcessId })
-    return @($w | Where-Object { $ids -notcontains [int]$_.ParentProcessId }).Count
+    $roots = @($w | Where-Object { $ids -notcontains [int]$_.ParentProcessId })
+    return @($roots | Where-Object { $wanted -contains (Get-BobTrayWorkerSeatMode $_) }).Count
 }
 
 function Get-BobTrayWorkerCapRefusal {
-    <# '' when another worker may start, else the short refusal text (tray dialog / log). -Procs is for tests. #>
-    param([object[]]$Procs = $null)
+    <#
+    '' when another worker may start, else the short refusal text (tray dialog / log).
+    FR #2667: -Mode plan|monitor|maintenance never refused; only agent starts are capped.
+    Count agent seat roots only (same as startworker.count_workers / bob_worker.worker_cap_refusal).
+    -Procs is for tests.
+    #>
+    param(
+        [object[]]$Procs = $null,
+        [string]$Mode = 'agent'
+    )
+    $modeL = ([string]$Mode).Trim().ToLowerInvariant()
+    if (-not $modeL) { $modeL = 'agent' }
+    if ($modeL -ne 'agent') { return '' }
     if ($null -eq $Procs) {
         $Procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
-                Select-Object ProcessId, ParentProcessId, Name)
+                Select-Object ProcessId, ParentProcessId, Name, CommandLine)
     }
     $cap = $script:BobTrayHardMaxWorkers
-    $n = Measure-BobTrayWorkerSeats -Procs $Procs
+    $n = Measure-BobTrayWorkerSeats -Procs $Procs -Modes @('agent')
     if ($n -ge $cap) { return ('Max {0} workers ({1} already running). Close a worker window first.' -f $cap, $n) }
     return ''
 }
