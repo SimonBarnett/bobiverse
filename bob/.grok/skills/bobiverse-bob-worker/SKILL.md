@@ -94,6 +94,8 @@ On EOF, socket error, server `ERROR`, KICK, or a ping timeout (no data for 90 s,
 tree - then exits with code 3**. It never reconnects and never leaves an orphaned agent. Start a new seat with the tray `Agent` click. If IRC cannot be reached at start (exit 2) NO agent is
 started. Closing the agent window by hand ends the seat too (exit 0, IRC QUIT).
 
+**FR #2601 seat-heal:** clean `irc-lost` (exit 3) does not fire the crash hook. TipForm `bob-tray.exe` Watchdog runs `HealWorkerSeats` beside `HealEngine` and tops **agent** seats back up to the hard cap of 2 (`seat-heal` in `tray-lifecycle.log`; `Launch` still applies `CapRefusal`). CLI/scheduled twin: `scripts\Ensure-BobWorkerSeats.ps1` (measure with `-Procs`, queue one agent startworker when missing). Opt out: `BOBIVERSE_WORKER_SEAT_HEAL=0`. Rebuild `bob-tray.exe` (`Build-BobDialogs.ps1`) after pull for TipForm heal.
+
 ## Agent health (while connected)
 
 Sampled every 5 s over the agent's own process tree. **Hung** means: input was injected and the tree then shows no CPU/IO activity at all for 300 s ("no output / heartbeat"; the "not responding window" rule only applies if the agent owns a GUI window). An idle agent that is just waiting for input is NOT hung. A hung agent is killed (its tree) and replaced
@@ -132,7 +134,7 @@ A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **
 | Click does nothing | `Open log` -> `worker: exe missing` = bob MSI older than this feature; reinstall. `--dry-run` shows what would start. |
 | Key prompt appears although you have tokens | the reading is unknown/stale: run `tools\Get-BobAgentFuel.ps1 -InstallRoot <ai root>\bob` and read the JSON (`null` = unknown). |
 | Exit 2, no agent | Ergo PASS missing/wrong or `irc.ntsa.uk:6697` unreachable; check `worker.log` (`IRC refused (464)` = bad PASS, `433` = nick clash - start again). |
-| Exit 3 soon after start | IRC dropped; this is by design. Check Ergo/network; start a new seat. |
+| Exit 3 soon after start | IRC dropped; this is by design. Check Ergo/network; start a new seat. TipForm should seat-heal back to cap 2 (FR #2601); if seats stay low, check `tray-lifecycle.log` for `seat-heal`, rebuild `bob-tray.exe`, or run `Ensure-BobWorkerSeats.ps1`. Opt out `BOBIVERSE_WORKER_SEAT_HEAL=0`. |
 | Two windows appear for one click | should never happen: report it (intake). The agent must be a child of the exe's console; look for `CREATE_NEW_CONSOLE` in `worker.log` / a second `bob-worker.exe`. |
 | `!bored` never posts | open ACK without DONE/NACK/GIVEUP (busy), agent restarting, or IRC lost. Look for `bored -> shop` / `bored: free-rx matched` / `bored: not sent` in `worker.log`. |
 | Messages do not reach the agent | agent not ready yet (6 s) or `inject failed` in `worker.log`; raw-mode TUIs may need the window to exist - never minimise-kill the console. |
