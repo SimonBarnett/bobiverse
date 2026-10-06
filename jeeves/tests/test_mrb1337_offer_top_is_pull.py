@@ -82,7 +82,16 @@ def test_offer_top_without_is_pull_kw_does_not_nameerror(tmp_path: Path):
     assert job["id"] == "#9"
 
 
-def test_assign_row_refuses_fr_that_is_pull(tmp_path: Path):
+def test_assign_row_refuses_fr_that_is_pull(tmp_path: Path, monkeypatch):
+    import bobreport
+    import registered_machines
+
+    digest = tmp_path / "digest"
+    digest.mkdir()
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(digest))
+    registered_machines.save_registered(digest, {"marchhare", "win-mpre8vi4u6u"})
+    bobreport._SEAT_ROSTER_CACHE["key"] = None
+
     home = _home(tmp_path)
     gitclaim._write_queue(
         gitclaim.queue_path(home),
@@ -105,7 +114,7 @@ def test_assign_row_refuses_fr_that_is_pull(tmp_path: Path):
     )
     st, res = gitclaim.assign_row(
         home,
-        "marchhare-1",
+        "marchhare-12345",
         "SimonBarnett/bobiverse",
         "FR",
         "#1278",

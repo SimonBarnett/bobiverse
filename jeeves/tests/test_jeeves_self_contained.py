@@ -45,8 +45,11 @@ def test_no_agentic_irc_env_or_home_names_in_jeeves_bob_code():
 
 def test_no_agentic_irc_repo_or_module_dependency():
     t = _text(SCRIPTS / "intake.py")
-    assert "agentic_irc" not in t
+    # FR #795 comment may name archived repos (including agentic_irc); that is not a dependency.
     assert "SimonBarnett/bobiverse" in t
+    assert "DEFAULT_ALLOW_REPOS" in t
+    assert "SimonBarnett/agentic_irc" not in t
+    assert not re.search(r"^\s*(import|from)\s+agentic_irc", t, re.M)
     # nothing imports an agentic_irc module
     for p in SCRIPTS.glob("*.py"):
         if AIRC_PRODUCT.search(p.name):

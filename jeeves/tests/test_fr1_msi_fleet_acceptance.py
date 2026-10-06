@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+from repo_layout import ROOT  # t773u / FR #2633: split repo; legacy flat paths resolve per service
+
 S = ROOT / "scripts"
 DOCS = ROOT / "docs"
 SKILLS = ROOT / ".grok" / "skills"
@@ -161,7 +162,9 @@ def test_s3_restart_bob_ear_and_tray_wiring():
     assert "ircBob" in ear
     assert "depart-request" in ear
     tray = _t(S / "Start-BobTray.ps1")
-    assert "Restart-BobEar" in tray
+    # Tray start recycles ircBob via Start-BobFleetTray (Restart-BobEar remains the ear-only path).
+    assert "Start-BobFleetTray" in tray or "Restart-BobEar" in tray
+    assert "ircBob" in tray
     assert (S / "bob_recycle.py").is_file()
 
 

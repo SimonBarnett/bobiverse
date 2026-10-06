@@ -34,8 +34,9 @@ def test_hostile_marchhare_blocked_when_pinned_ionos():
         labels=("feature-request",),
     )
     assert pin == "ionos"
-    assert gitclaim.seat_matches_require_machine("marchhare-1", pin) is False
-    assert gitclaim.seat_matches_require_machine("win-mpre8vi4u6u-7764", pin) is True
+    # Legacy short nicks parse without a digest roster (DIGEST_ID_FOLD ionos→win-mpre*).
+    assert gitclaim.seat_matches_require_machine("w-mh-1", pin) is False
+    assert gitclaim.seat_matches_require_machine("w-io-7764", pin) is True
 
 
 def test_hostile_source_mentions_2451():

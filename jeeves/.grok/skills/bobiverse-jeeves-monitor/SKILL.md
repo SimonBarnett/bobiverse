@@ -93,6 +93,8 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 | Worker | `<machine>-<pid>` | own `#{machine}` only - never `#bobiverse` |
 | Monitor (you) | session | intake only; do not drive assigns |
 
+- **MRB enqueue when resync blocked (harvest #1927 / product #1811 → #1993):** when `git-claim.lock` / token 403 drops issue+PR queue events while `gh pr list` still works, operator/chair remediation is `enqueue_unaccepted` per open PR plus `clear_seat_doing` for stale busy. Monitor reports only; prefer fixing the lock/token root.
+
 ## Reporting (intake only)
 
 1. Search open issues for the same gap; comment if found.

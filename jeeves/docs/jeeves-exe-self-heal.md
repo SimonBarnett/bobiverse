@@ -4,6 +4,8 @@ Living architecture FR: https://github.com/SimonBarnett/bobiverse/issues/1993
 
 `require_machine: ionos`
 
+**Do not twin FR** #1993: append WP evidence on this living architecture issue; never `Closes` it from a partial WP PR (use `Refs` only).
+
 ## Goal
 
 Ship **ircJeeves as a frozen Windows executable** (`jeeves.exe`) that runs **chair + BobCallback in one process**, stays fully deterministic (no LLM in the service), keeps IIS to `127.0.0.1:7700` webhooks rock-solid, and can **diagnose and heal itself** with a built-in test matrix.

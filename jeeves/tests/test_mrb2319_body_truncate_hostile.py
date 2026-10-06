@@ -66,8 +66,9 @@ def test_mrb2319_blank_line_before_trailing_pin():
     }
     gitclaim._stamp_require_machine(row, None)
     assert row.get("require_machine") == "ionos"
-    assert gitclaim.row_blocked_for_machine(row, "marchhare-1") is True
-    assert gitclaim.row_blocked_for_machine(row, "win-mpre8vi4u6u-9") is False
+    # Use legacy short nicks so seat parse works without a digest roster.
+    assert gitclaim.row_blocked_for_machine(row, "w-mh-9") is True
+    assert gitclaim.row_blocked_for_machine(row, "w-io-9") is False
 
 
 def test_mrb2319_ce_priority_trailing_pin():
