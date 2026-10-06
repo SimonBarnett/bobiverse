@@ -163,3 +163,4 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 ## Harvested lessons (intake)
 
 - When Clear-BobiverseJobWorktrees removes 0 under low disk: file intake or GIVEUP / use a roomy drive — never hand-delete wt-bob-main/wt-airc/operator trees; write .bobiverse-seat so -Force skips live owners
+- Harvest-lesson MRB: if a bullet duplicates behind-main #1647, fold unique pins into that discipline bullet — never leave it as a fake extra numbered review step under Harvest-lesson intake PRs
