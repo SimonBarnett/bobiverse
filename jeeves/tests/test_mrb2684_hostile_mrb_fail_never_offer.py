@@ -9,9 +9,12 @@ def test_mrb2684_verdict_title_case_and_spacing():
     assert gitclaim.issue_skip_fr_reason(title="MRB  PASS: spaced", labels=()) == "mrb_verdict_title"
 
 
-def test_mrb2684_verdict_title_without_colon_not_matched():
-    """Documented gap: boards must use MRB FAIL:/PASS: with a colon (FR letter)."""
-    assert gitclaim.issue_skip_fr_reason(title="MRB FAIL - dash form", labels=()) is None
+def test_mrb2684_verdict_title_dash_form_skip_fr2687():
+    """FR #2687 closed the colon-only gap: dash form is also SKIP_FR."""
+    assert (
+        gitclaim.issue_skip_fr_reason(title="MRB FAIL - dash form", labels=())
+        == "mrb_verdict_title"
+    )
 
 
 def test_mrb2684_giveup_count_string_coerces():
