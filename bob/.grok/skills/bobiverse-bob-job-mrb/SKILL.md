@@ -136,6 +136,15 @@ Wire (preferred after you already ACK'd):
 
 If you spot self-MRB **before** any review work and have not ACK'd yet, NACK MRB owner/repo#N with the same reason is also valid (job-irc: NACK = decline before work). After ACK, always **GIVEUP** — never go silent.
 
+## Harvest-lesson intake PRs (FR #2705)
+
+Non-draft PRs labelled `harvest-lesson` with title `lesson(<book>): …` edit a skill book `SKILL.md` under `## Harvested lessons (intake)`. They are offerable MRB work (gitclaim must not treat them as draft/receipt harvests).
+
+On review:
+1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
+2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
+3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
+
 ## Skill / markdown diff hygiene (harvest #1616)
 
 Hostile-read **skill and docs diffs line-by-line**, not only the code/tests. A mid-bullet or mid-paragraph insert that truncates a list item and leaves **orphan continuation text** (dangling clause on the next line, broken markdown list, severed mermaid/code fence) is an MRB **FAIL** even when pytest is green (MRB #1608 / fix #1610).
