@@ -3248,7 +3248,8 @@ class Supervisor:
                  log: Callable[[str], None], env_secret: Optional[SecretStr] = None, spawn: Callable = default_spawn,
                  kill: Callable[[int], bool] = kill_tree, probe: Callable[[int], Sample] = sample_tree,
                  inject: Callable[[int, str], bool] = inject_console, detector: Optional[HangDetector] = None,
-                 health_interval_s: float = 5.0, startup_grace_s: float = 60.0, clock: Callable[[], float] = time.monotonic,
+                 health_interval_s: float = 5.0, startup_grace_s: float = 60.0, startup_min_s: float | None = None,
+                 clock: Callable[[], float] = time.monotonic,
                  backoff: tuple = RULE_BACKOFF_S, restart_max: int = RULE_RESTART_MAX, restart_window_s: float = RULE_RESTART_WINDOW_S,
                  base_env: Optional[dict] = None, bored: Optional["BoredEmitter"] = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
@@ -3257,6 +3258,11 @@ class Supervisor:
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
         self.detector = detector or HangDetector()
         self.health_interval_s, self.startup_grace_s, self.clock = health_interval_s, startup_grace_s, clock
+        # FR #2884: floor before first-turn_ended can end the startup hold (malformed instant events).
+        self.startup_min_s = (
+            float(startup_min_s) if startup_min_s is not None
+            else _env_float("BOB_WORKER_STARTUP_MIN_S", 10.0, 0.0, 60.0)
+        )
         self.backoff, self.restart_max, self.restart_window_s = backoff, restart_max, restart_window_s
         # FR #2669: collapse doubled BOB_* paths; drop CURSOR_*/SAND_* inherited from agent shells.
         self.base_env = prepare_seat_child_env(os.environ if base_env is None else base_env)
@@ -3271,7 +3277,14 @@ class Supervisor:
         self._owned: set = set()
         self._shutting = False
         self._grace_timer: Optional[threading.Timer] = None
+        self._min_ready_timer: Optional[threading.Timer] = None
         self._agent_started_at: Optional[float] = None
+        # FR #2884: startup hold until first grok turn_ended (grace is fallback).
+        self._startup_hold_armed = False
+        self._startup_session_id: Optional[str] = None
+        self._startup_saw_turn_started = False
+        self._startup_turn_release_enabled = False
+        self._startup_ready_proc = None
         # FR #1643 / MRB #1658: capture create-parent while agent is still live (post-wait Toolhelp often misses it).
         self._agent_parent_pid: int = 0
         self._agent_parent_image: str = ''
@@ -3324,13 +3337,21 @@ class Supervisor:
             return (d / "events.jsonl") if d is not None else None
 
         def _on_started(turn: Optional[int], wall: float) -> None:
+            sid = sid_box.get("sid")
+            self._note_startup_turn_started(sid)
             if self.bored:
-                self.bored.turn_started(turn=turn, sid=sid_box.get("sid"))
+                self.bored.turn_started(turn=turn, sid=sid)
 
         def _on_ended(turn: Optional[int], wall: float) -> None:
+            sid = sid_box.get("sid")
             if self.bored:
                 # Use emitter clock for hold release; wall is only for logging/stale via hold_started mono.
-                self.bored.turn_ended(turn=turn, sid=sid_box.get("sid"))
+                self.bored.turn_ended(turn=turn, sid=sid)
+            # FR #2884: first turn_ended after spawn can end the startup inject/!bored hold.
+            try:
+                self._maybe_ready_on_first_turn_ended(sid)
+            except Exception:
+                pass
             # FR #2811: deliver parked assigns now that harvest hold can end.
             try:
                 if self.bored:
@@ -3460,7 +3481,7 @@ class Supervisor:
             if self.startup_grace_s > 0:
                 self.log(
                     f"agent: holding inject/!bored for startup_grace_s={self.startup_grace_s:.0f}s "
-                    f"(FR #955: wait for TUI boot before first assign)"
+                    f"(FR #955/#2884: first turn_ended ends hold; grace is fallback)"
                 )
             self.detector.reset(self.clock())
             self.relay.set_target(None)
@@ -3469,22 +3490,117 @@ class Supervisor:
             threading.Thread(target=self._wait_exit, args=(proc,), name="agent-wait", daemon=True).start()
             return True
 
-    def _arm_ready(self, proc) -> None:
-        def ready():
+    def _note_startup_turn_started(self, sid: Optional[str]) -> None:
+        """FR #2884: record turn_started for the armed startup session."""
+        with self._lock:
+            if not self._startup_hold_armed:
+                return
+            if sid and self._startup_session_id and sid != self._startup_session_id:
+                return
+            self._startup_saw_turn_started = True
+
+    def _maybe_ready_on_first_turn_ended(self, sid: Optional[str]) -> None:
+        """FR #2884: end startup hold on first grok turn_ended (after startup_min_s floor)."""
+        with self._lock:
+            if not self._startup_hold_armed or not self._startup_turn_release_enabled:
+                return
+            if self._shutting or self.proc is None:
+                return
+            if sid and self._startup_session_id and sid != self._startup_session_id:
+                return
+            proc = self.proc
+            started_at = self._agent_started_at
+            min_s = float(self.startup_min_s)
+        now = float(self.clock())
+        elapsed = now - float(started_at) if started_at is not None else min_s
+        if elapsed < min_s:
+            delay = max(0.0, min_s - elapsed)
+
+            def _later(p=proc):
+                self._ready_now(p, reason="turn")
+
+            t = threading.Timer(delay, _later)
+            t.daemon = True
             with self._lock:
-                if self.proc is not proc or self._shutting:
+                if not self._startup_hold_armed:
                     return
-            self.relay.set_target(lambda line, p=proc: self._inject_line(p, line))
-            if self.bored:
-                self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
-            self.log(f"agent: ready (startup_grace_s={self.startup_grace_s:.0f}); inject + !bored enabled")
+                old = self._min_ready_timer
+                self._min_ready_timer = t
+            if old is not None:
+                try:
+                    old.cancel()
+                except Exception:
+                    pass
+            t.start()
+            return
+        self._ready_now(proc, reason="turn")
+
+    def _ready_now(self, proc, *, reason: str = "grace") -> None:
+        """FR #955 / #2884: enable inject + !bored once per spawn (idempotent)."""
+        with self._lock:
+            if self._shutting or self.proc is not proc:
+                return
+            if not self._startup_hold_armed and reason != "force":
+                # Already released for this spawn (grace or turn); second caller is a no-op.
+                if self._startup_ready_proc is proc:
+                    return
+                # Hold not armed (e.g. startup_grace_s<=0 already ready) — still no-op when already ready.
+                return
+            self._startup_hold_armed = False
+            self._startup_ready_proc = proc
+            grace_t = self._grace_timer
+            min_t = self._min_ready_timer
+            self._grace_timer = None
+            self._min_ready_timer = None
+            started_at = self._agent_started_at
+        for t in (grace_t, min_t):
+            if t is None:
+                continue
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        self.relay.set_target(lambda line, p=proc: self._inject_line(p, line))
+        if self.bored:
+            self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
+        now = float(self.clock())
+        elapsed = now - float(started_at) if started_at is not None else 0.0
+        if reason == "turn":
+            self.log(
+                f"agent: ready (first turn_ended after {elapsed:.0f}s; "
+                f"startup_grace_s={self.startup_grace_s:.0f} fallback not needed)"
+            )
+        else:
+            self.log(
+                f"agent: ready (startup_grace_s={self.startup_grace_s:.0f} fallback); "
+                f"inject + !bored enabled"
+            )
+
+    def _arm_ready(self, proc) -> None:
+        """FR #955 / #2884: arm grace fallback; grok first turn_ended may release earlier."""
+        with self._lock:
+            self._startup_hold_armed = True
+            self._startup_ready_proc = None
+            self._startup_session_id = self.sessions[-1] if self.sessions else None
+            self._startup_saw_turn_started = False
+            self._startup_turn_release_enabled = should_start_turn_watcher(self.kind)
+            if self._min_ready_timer is not None:
+                try:
+                    self._min_ready_timer.cancel()
+                except Exception:
+                    pass
+                self._min_ready_timer = None
+
+        def ready():
+            self._ready_now(proc, reason="grace")
 
         if self.startup_grace_s <= 0:
             ready()
             return
         t = threading.Timer(self.startup_grace_s, ready)
         t.daemon = True
-        self._grace_timer = t
+        with self._lock:
+            self._grace_timer = t
         t.start()
 
     def _inject_line(self, proc, line: str) -> bool:
@@ -3690,7 +3806,18 @@ class Supervisor:
             self.bored.stop()  # no !bored after IRC loss / shutdown
         self.relay.close()
         if self._grace_timer:
-            self._grace_timer.cancel()
+            try:
+                self._grace_timer.cancel()
+            except Exception:
+                pass
+            self._grace_timer = None
+        if self._min_ready_timer:
+            try:
+                self._min_ready_timer.cancel()
+            except Exception:
+                pass
+            self._min_ready_timer = None
+        self._startup_hold_armed = False
         if proc is not None and proc.poll() is None:
             if proc.pid in self._owned:  # only the tree THIS exe started
                 self.kill(proc.pid)

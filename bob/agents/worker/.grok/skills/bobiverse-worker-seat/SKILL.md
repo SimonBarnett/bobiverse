@@ -80,6 +80,6 @@ Append ``PRIVMSG #<machine> :<text>`` to ``$env:BOB_OUTBOX`` (or the path from t
 
 File every issue / FR / bug and every learned playbook (CAST IRON rule at the top) before you finish.
 
-## Startup readiness (FR #955)
+## Startup readiness (FR #955 / #2884)
 
-Do not expect an assign in the first ~60s after tray Agent start. ``bob-worker`` holds inject and ``!bored`` for ``startup_grace_s`` (default 60, override ``BOB_WORKER_STARTUP_GRACE_S`` / ``--startup-grace-s``) so the Grok/Cursor TUI can finish booting. Early IRC assigns are held and flushed when ready. IRC connect retries up to 3 times before fail-closed.
+Do not expect an assign in the first seconds after tray Agent start. ``bob-worker`` holds inject and ``!bored`` until the first grok ``turn_ended`` after spawn (FR #2884; floor ``BOB_WORKER_STARTUP_MIN_S``, default 10 s) so the TUI can finish the startup prompt, then fires ``!bored reason=start``. ``startup_grace_s`` (default 60, override ``BOB_WORKER_STARTUP_GRACE_S`` / ``--startup-grace-s``) remains the **fallback** when no turn signal arrives (non-grok kinds, watcher failure, hung first turn). Early IRC assigns are held and flushed when ready. IRC connect retries up to 3 times before fail-closed.
