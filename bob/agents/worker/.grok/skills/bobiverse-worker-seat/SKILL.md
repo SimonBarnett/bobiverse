@@ -42,6 +42,8 @@ if (-not $outbox) { $outbox = '<outbox path from first instruction or FROM [outb
 Add-Content -LiteralPath $outbox -Value 'PRIVMSG #<machine> :done: <one short line>' -Encoding utf8
 ```
 
+**Always append the DONE/NACK/GIVEUP line - never check the outbox first.** The worker drains `outbox.txt` every 0.5 s, so it is almost always empty; a "skip if already there" guard (on WinPS 5.1 `(Get-Content -Raw) -notmatch` on an empty file is a falsy empty array) silently drops the line. Send it as **its own short command** (just the `Add-Content`), right after the verdict/PR URL is known and **before** harvest/prune/cleanup - never chained inside a long board/merge/harvest tool call that can be cut off. If unsure whether it went out, append it again: a duplicate DONE is harmless, a missing one strands the seat (#2875). Proof of send is `outbox: sent …` in worker.log, not the outbox file.
+
 Keep replies short (one line, under 400 characters). Anything addressed to another channel or a nick is dropped by the program. Never include a secret.
 
 ## What you may touch
@@ -68,7 +70,7 @@ Prunes job trees when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-Max
 
 ## Outbox path (FR #866 / #2380)
 
-Append ``PRIVMSG #<machine> :<text>`` to ``$env:BOB_OUTBOX`` (or the path from the first instruction / ``FROM … [outbox: …]`` footer). The worker drains by moving the file aside, then recreates an empty ``outbox.txt`` so the path stays writable for the whole seat lifetime. If a write ever fails with PathNotFound, recreate the parent run dir and retry once. After context compaction, re-read ``$env:BOB_OUTBOX`` — do not search the install tree for ``outbox.txt`` (that finds the ear).
+Append ``PRIVMSG #<machine> :<text>`` to ``$env:BOB_OUTBOX`` (or the path from the first instruction / ``FROM … [outbox: …]`` footer). The worker drains by moving the file aside, then recreates an empty ``outbox.txt`` so the path stays writable for the whole seat lifetime. The drain runs every 0.5 s, so the file is almost always empty — never use it as a sent/not-sent check (**never check the outbox first**; send DONE/NACK/GIVEUP as **its own short command**). If a write ever fails with PathNotFound, recreate the parent run dir and retry once. After context compaction, re-read ``$env:BOB_OUTBOX`` — do not search the install tree for ``outbox.txt`` (that finds the ear).
 
 ## If something breaks
 
