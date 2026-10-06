@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -215,9 +216,14 @@ def _scrub_pytest_env(env: dict) -> dict:
 
 
 def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path, digest_home: Path | None = None) -> int:
-    """Start bob-worker --mode maintenance in a new process; return pid."""
+    """Start bob-worker --mode maintenance in a new process; return pid.
+
+    FR #2698: prefer ``bob-worker --describe-launch`` so argv/cwd match the shared plan;
+    fall back to the hand-built maintenance argv when describe is unavailable.
+    """
+    run_exe = Path(exe)
     argv = [
-        str(exe),
+        str(run_exe),
         "--mode",
         "maintenance",
         "--install-root",
@@ -225,6 +231,38 @@ def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path, digest_home
         "--work-root",
         str(work_root),
     ]
+    cwd = str(work_root)
+    try:
+        out = subprocess.check_output(
+            [
+                str(exe),
+                "--describe-launch",
+                "--mode",
+                "maintenance",
+                "--install-root",
+                str(bob_install),
+                "--work-root",
+                str(work_root),
+            ],
+            text=True,
+            timeout=30,
+            stderr=subprocess.DEVNULL,
+        )
+        plan = json.loads(out)
+        if str(plan.get("mode") or "") == "maintenance" and plan.get("argv"):
+            cand = Path(str(plan.get("run_exe") or exe))
+            if not cand.is_file():
+                try:
+                    cand.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(exe), str(cand))
+                except OSError:
+                    cand = Path(exe)
+            run_exe = cand
+            argv = [str(run_exe)] + [str(a) for a in plan["argv"]]
+            if plan.get("cwd"):
+                cwd = str(plan["cwd"])
+    except Exception:
+        pass
     env = _scrub_pytest_env(dict(os.environ))
     if digest_home is not None:
         env["BOB_DIGEST_HOME"] = str(digest_home)
@@ -233,7 +271,7 @@ def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path, digest_home
         creation = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
     proc = subprocess.Popen(
         argv,
-        cwd=str(work_root),
+        cwd=cwd,
         close_fds=True,
         creationflags=creation,
         env=env,

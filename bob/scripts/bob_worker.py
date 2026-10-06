@@ -401,27 +401,33 @@ def prepare_seat_child_env(base_env: dict | None, extra: dict | None = None) -> 
     return scrub_agent_host_env(normalize_bob_path_envs(env))
 
 
+_WORKER_EXE_MODES = ("agent", "plan", "monitor", "maintenance")
+
+
 def describe_worker_exe_launch(
     install_root: str | Path,
     mode: str,
     machine_id: str = "",
     *,
+    work_root: str | Path | None = None,
     local_app_data: str | Path | None = None,
     source: str = "tray",
 ) -> dict:
-    """Canonical bob-worker.exe process launch (FR #2413).
+    """Canonical bob-worker.exe process launch (FR #2413 / FR #2698).
 
-    Tray Agent/Plan click, remote ``!startworker``, and CLI must use the same plan:
-    hashed run-copy under ``%LOCALAPPDATA%\\Bobiverse\\worker\\bin``, argv
-    ``--mode`` / ``--install-root`` / optional ``--machine-id``, cwd ``worker`` or ``plan``.
+    Tray Agent/Plan click, remote ``!startworker``, CLI, and maintenance/monitor
+    starters must use the same plan: hashed run-copy under
+    ``%LOCALAPPDATA%\\Bobiverse\\worker\\bin``, argv ``--mode`` / ``--install-root``
+    / optional ``--machine-id`` / ``--work-root``, cwd matching the mode.
 
-    ``source`` is recorded for callers but must not change argv/cwd/run_exe (tray == cli).
+    Unknown modes raise ``ValueError`` (never silently map to agent — FR #2698).
+    ``source`` is recorded by callers but must not change argv/cwd/run_exe.
     """
     src = (source or "tray").strip().lower() or "tray"
     root = Path(install_root)
-    mode_l = (mode or "agent").strip().lower()
-    if mode_l not in ("agent", "plan", "monitor"):
-        mode_l = "agent"
+    mode_l = (mode or "agent").strip().lower() or "agent"
+    if mode_l not in _WORKER_EXE_MODES:
+        raise ValueError("unknown bob-worker mode: %r (expected one of %s)" % (mode_l, ", ".join(_WORKER_EXE_MODES)))
     install_exe = root / "worker" / "bob-worker.exe"
     digest = hashlib.sha256(
         install_exe.read_bytes() if install_exe.is_file() else b"missing"
@@ -434,15 +440,31 @@ def describe_worker_exe_launch(
     mid = (machine_id or "").strip().lstrip("#")
     if mid:
         argv += ["--machine-id", mid]
-    if mode_l == "plan":
+    icon = None
+    if mode_l in ("monitor", "maintenance"):
+        wr = Path(work_root) if work_root else _default_jeeves_root(root)
+        argv += ["--work-root", str(wr)]
+        cwd = wr
+        if mode_l == "maintenance":
+            title = MAINTENANCE_TITLE
+            try:
+                ip = maintenance_icon_path(wr)
+                if ip is not None:
+                    icon = str(ip)
+            except Exception:
+                icon = None
+        else:
+            title = "Bob monitor - starting (closing this window ends the agent)"
+    elif mode_l == "plan":
         cwd = root / "plan"
+        title = "Bob plan - starting (closing this window ends the agent)"
     else:
         cwd = root / "worker"
+        title = "Bob agent - starting (closing this window ends the agent)"
     if not cwd.is_dir():
         cwd = root
-    title = "Bob %s - starting (closing this window ends the agent)" % mode_l
     _ = src  # recorded only by callers; must not diverge the plan (tray == cli)
-    return {
+    out = {
         "mode": mode_l,
         "machine_id": mid,
         "install_exe": str(install_exe),
@@ -451,6 +473,9 @@ def describe_worker_exe_launch(
         "cwd": str(cwd),
         "title": title,
     }
+    if icon is not None:
+        out["icon"] = icon
+    return out
 
 
 def describe_agent_child_launch(
@@ -3752,12 +3777,20 @@ def main(argv: Optional[list] = None) -> int:
     )
     args = p.parse_args(argv)
     if getattr(args, "describe_launch", False):
-        plan = describe_worker_exe_launch(
-            args.install_root,
-            args.mode,
-            args.machine_id or "",
-            source="cli",
-        )
+        try:
+            plan = describe_worker_exe_launch(
+                args.install_root,
+                args.mode,
+                args.machine_id or "",
+                work_root=(args.work_root or None),
+                source="cli",
+            )
+        except ValueError as e:
+            try:
+                print(str(e), file=sys.stderr)
+            except Exception:
+                pass
+            return EXIT_USAGE
         print(json.dumps(plan, sort_keys=True))
         return EXIT_OK
     if args.startup_grace_s is None:
