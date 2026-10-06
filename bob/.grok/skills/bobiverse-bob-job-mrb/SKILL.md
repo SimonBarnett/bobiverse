@@ -155,6 +155,7 @@ On review:
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
 4. **Twin harvest-lesson PRs** for the same book/lesson: FAIL-superseded board, close the later PR citing the merged first; never merge the misplaced raw duplicate tip (MRB #2741 / #2747 / #2750).
 5. **CAST IRON already covers it:** if the target book already has a CAST IRON / product paragraph for the lesson, FAIL-supersede and close as not planned — do not merge a weaker Harvested lessons duplicate (MRB #2732 / #2783).
+- Harvest-lesson MRB: FAIL-supersede a harvest bullet that restates After-ACK GIVEUP self-MRB for Invoke-BobiverseHarvest tips when bobiverse-bob-job-mrb Self-MRB already has Harvest-lesson self-MRB (#2735) — do not merge the misplaced twin
 
 ## Skill / markdown diff hygiene (harvest #1616)
 
