@@ -2593,6 +2593,21 @@ class AssignAckMiss:
 
 
 
+def done_miss_reminder_line(*, shop: str, outbox: str | Path, job_key: str) -> str:
+    """FR #2875: remind agent that turn ended with ACK open and no DONE/NACK/GIVEUP."""
+    key = (job_key or "job").strip() or "job"
+    return format_from(
+        "bob-worker",
+        shop,
+        (
+            f"Your turn ended with `{key}` ACKed but no DONE/NACK/GIVEUP in the outbox. "
+            "Append the DONE (or GIVEUP) line to $env:BOB_OUTBOX now; do not check the outbox first, "
+            "it is drained and always empty."
+        ),
+        outbox=outbox,
+    )
+
+
 def outbox_job_key(payload: str) -> Optional[str]:
     """Normalize `FR owner/repo#N` from a shop wire line; None if not a typed job line."""
     m = _OUT_JOB_KEY_RX.match((payload or "").strip())
@@ -2627,18 +2642,20 @@ class BoredEmitter:
         ``harvest_hold_s`` remains the fallback when no turn-end signal arrives;
       * FR #2834: when a turn is open (watcher saw ``turn_started``, no ``turn_ended`` yet), keep holding
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
+      * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
+        ``done_miss_grace_s``, then ``!bored`` reason ``done-miss`` if still open after the reminder turn);
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
         second per reason; only the seat's own shop; never after IRC loss/shutdown (stop()).
     Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S, BOB_WORKER_BORED_ON_TURN_END,
-    BOB_WORKER_TURN_HOLD_MAX_S.
+    BOB_WORKER_TURN_HOLD_MAX_S, BOB_WORKER_DONE_MISS_GRACE_S.
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
                  ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
                  nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None,
-                 turn_hold_max_s: float | None = None):
+                 turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
         self.nak_s = nak_s  # t817u: fixed timer from a Jeeves NAK to the next !bored (never while busy)
@@ -2655,6 +2672,11 @@ class BoredEmitter:
         self.turn_hold_max_s = (
             float(turn_hold_max_s) if turn_hold_max_s is not None
             else _env_float("BOB_WORKER_TURN_HOLD_MAX_S", 600.0, 90.0, 3600.0)
+        )
+        # FR #2875: after turn_ended with ACK open and no DONE, wait then remind / release.
+        self.done_miss_grace_s = (
+            float(done_miss_grace_s) if done_miss_grace_s is not None
+            else _env_float("BOB_WORKER_DONE_MISS_GRACE_S", 20.0, 5.0, 600.0)
         )
         self._nak_due: Optional[float] = None
         self._cv = threading.Condition()
@@ -2690,6 +2712,12 @@ class BoredEmitter:
         self._turn_hold_cap_logged = False
         # FR #2811: assign parked in Relay during harvest — blocks !bored, not turn_ended release.
         self._held_assign = False
+        # FR #2875: turn_ended with ACK open and no DONE/NACK/GIVEUP.
+        self._done_miss_armed_at: Optional[float] = None
+        self._done_miss_key: Optional[str] = None
+        self._done_miss_reminded = False
+        self._done_miss_release_pending = False
+        self.done_miss_remind_fn: Optional[Callable[[str], None]] = None
         self.sent: list = []  # (clock time, reason)
         self._thread: Optional[threading.Thread] = None
 
@@ -2739,6 +2767,29 @@ class BoredEmitter:
         with self._cv:
             self._held_assign = False
             self._cv.notify_all()
+
+    def _clear_done_miss(self) -> None:
+        """FR #2875: drop armed / reminded / release-pending done-miss state."""
+        self._done_miss_armed_at = None
+        self._done_miss_key = None
+        self._done_miss_reminded = False
+        self._done_miss_release_pending = False
+
+    def _fire_done_miss_remind(self, now: float) -> None:
+        """FR #2875: grace expired — inject one reminder (Supervisor sets done_miss_remind_fn)."""
+        if self._done_miss_armed_at is None or self._done_miss_reminded:
+            return
+        if now < float(self._done_miss_armed_at) + float(self.done_miss_grace_s):
+            return
+        key = self._done_miss_key or (self._ack_job_key or "job")
+        self._done_miss_reminded = True
+        self.log(f"done-miss: reminder injected for {key}")
+        fn = self.done_miss_remind_fn
+        if fn is not None:
+            try:
+                fn(key)
+            except Exception as e:
+                self.log(f"done-miss: remind inject failed {type(e).__name__}")
 
     @property
     def ack_open(self) -> bool:
@@ -2833,6 +2884,10 @@ class BoredEmitter:
             self._turn_watcher_armed = True
             self._turn_gen += 1
             self._turn_idle_pending = False
+            # FR #2875: a new turn inside done-miss grace cancels the pending reminder.
+            if self._done_miss_armed_at is not None and not self._done_miss_reminded:
+                self._done_miss_armed_at = None
+                self._done_miss_key = None
             self._cv.notify_all()
 
     def turn_ended(
@@ -2846,11 +2901,34 @@ class BoredEmitter:
         with self._cv:
             now = float(self.clock() if at is None else at)
             self._turn_open = False
-            # Open ACK or inject-pending: ignore (still busy).
-            if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
+            # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
+            if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
                 self._cv.notify_all()
                 return
-            if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
+            # FR #2875: turn ended with ACK open and no DONE/NACK/GIVEUP.
+            if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
+                key = self._ack_job_key or "job"
+                if self._done_miss_reminded:
+                    self._ack_open = False
+                    self._ack_job_key = None
+                    self._done_miss_armed_at = None
+                    self._done_miss_key = None
+                    self._done_miss_reminded = False
+                    self._done_miss_release_pending = True
+                    self._idle_since = now
+                    self._arm_skip = True
+                    self._hold_release_at = now
+                    self.log(
+                        f"done-miss: still no DONE for {key} after reminder - releasing seat"
+                    )
+                else:
+                    self._done_miss_armed_at = now
+                    self._done_miss_key = key
+                    self._done_miss_reminded = False
+                    self._done_miss_release_pending = False
+                    self.log(
+                        f"bored: turn ended with ACK open on {key} and no DONE/NACK/GIVEUP - done-miss armed"
+                    )
                 self._cv.notify_all()
                 return
 
@@ -2907,6 +2985,7 @@ class BoredEmitter:
                 self._inject_pending = False
                 self._inject_at = None
                 self._harvest_until = None
+                self._clear_done_miss()
             elif _OUT_DONE_RX.match(p):
                 job = outbox_job_key(p)
                 # FR #1732: DONE for another id must not clear an open ACK.
@@ -2917,6 +2996,7 @@ class BoredEmitter:
                 else:
                     self._ack_open = False
                     self._ack_job_key = None
+                    self._clear_done_miss()
                     self._done_key = p
                     self._begin_harvest_hold(now)
             elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP: free, then harvest hold before !bored (FR #161 / #1611)
@@ -2930,6 +3010,7 @@ class BoredEmitter:
                 else:
                     self._ack_open = False
                     self._ack_job_key = None
+                    self._clear_done_miss()
                     self._free_key = p
                     self._begin_harvest_hold(now)
                     self.log(f"bored: free-rx matched ({verb}) - harvest hold then !bored")
@@ -2984,6 +3065,9 @@ class BoredEmitter:
             self._idle_since = now
         if not self._start_sent:
             return "start"
+        # FR #2875: second turn_ended after done-miss reminder with ACK still open.
+        if self._done_miss_release_pending:
+            return "done-miss"
         # FR #2802: turn_started after a turn-end release bumps gen and gates done/free/turn.
         if self._release_gen is not None and self._release_gen != self._turn_gen:
             self._arm_skip = False
@@ -3014,6 +3098,13 @@ class BoredEmitter:
         wakes: list[float] = []
         if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
             wakes.append(self._ack_at + self.ack_stale_s)
+        # FR #2875: wake when done-miss grace expires so the reminder can fire.
+        if (
+            self._done_miss_armed_at is not None
+            and not self._done_miss_reminded
+            and not self._done_miss_release_pending
+        ):
+            wakes.append(float(self._done_miss_armed_at) + float(self.done_miss_grace_s))
         if self._harvest_until is not None and now < self._harvest_until:
             wakes.append(self._harvest_until)
         # FR #2834: while open-turn extends past harvest_hold_s, wake at the safety cap.
@@ -3077,6 +3168,9 @@ class BoredEmitter:
             self._hold_started_at = None
         if reason == "turn":
             self._turn_idle_pending = False
+        if reason == "done-miss":
+            self._done_miss_release_pending = False
+            self._clear_done_miss()
         self.sent.append((now, reason))
         self.log(f"bored -> shop reason={reason}")
 
@@ -3084,6 +3178,8 @@ class BoredEmitter:
         with self._cv:
             while not self._stopped:
                 now = self.clock()
+                # FR #2875: grace expiry injects reminder while ACK stays open (still busy).
+                self._fire_done_miss_remind(now)
                 r = self._reason(now)
                 if r:
                     self._fire(r, now)
@@ -3183,6 +3279,9 @@ class Supervisor:
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
         # FR #2383: assign injected + no run-dir ACK while agent keeps turning → remind then recycle.
         self.ack_miss = AssignAckMiss()
+        # FR #2875: turn_ended with ACK open and no DONE → remind via run-dir inject, then release.
+        if self.bored is not None:
+            self.bored.done_miss_remind_fn = self._inject_done_miss_reminder
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
         self.stale_build_check: Optional[Callable[[], Optional[str]]] = None
         # FR #2802: grok events.jsonl turn watcher (opt-out BOB_WORKER_BORED_ON_TURN_END=0).
@@ -3500,6 +3599,21 @@ class Supervisor:
                 continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
+
+    def _inject_done_miss_reminder(self, job_key: str) -> None:
+        """FR #2875: inject one FROM bob-worker reminder into the live agent console."""
+        outbox = outbox_path_for_run(self.run_dir)
+        shop = shop_channel(self.machine)
+        line = done_miss_reminder_line(shop=shop, outbox=outbox, job_key=job_key)
+        with self._lock:
+            proc = self.proc
+        if proc is None or proc.poll() is not None:
+            self.log(f"done-miss: no live agent to remind for {job_key}")
+            return
+        try:
+            self._inject_line(proc, line)
+        except Exception as e:
+            self.log(f"done-miss: remind inject failed {type(e).__name__}")
 
     def _check_ack_miss(self, proc) -> None:
         ack_open = bool(self.bored.ack_open) if self.bored else False
