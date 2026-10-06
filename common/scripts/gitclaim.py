@@ -108,6 +108,11 @@ GIVEUP_COOLDOWN_S = 600.0
 GIVEUP_NEEDS_HUMAN_COUNT = 2
 SAFE_TO_CLOSE_RE = re.compile(r"(?i)\bsafe\s+to\s+close\b")
 HARVEST_TITLE_RE = re.compile(r"(?i)^(harvest|skill)\b")
+# FR #2650: intake harvest receipt PRs (GhCliFiler draft) must never become MRB.
+_INTAKE_HARVEST_FOOTER_RE = re.compile(r"(?i)Invoke-BobiverseHarvest|Session summary:")
+_HARVEST_RECEIPT_STATUS_RE = re.compile(
+    r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|PASS|FAIL)\b|\bduplicate of\b"
+)
 # FR #628: chair-spam records (re-offer / drain loops filed by seats) are never real FR work.
 CRITICAL_SPAM_TITLE_RE = re.compile(r"(?i)^CRITICAL:|\bdrain FR-unaccepted\b|\b\d+(st|nd|rd|th)\+? re-offer\b")
 # FR #133 / bobiverse#258: evergreen MRB-home boards are not FR jobs.
@@ -590,6 +595,34 @@ def _label_names(labels) -> tuple[str, ...]:
         if name:
             out.append(name)
     return tuple(out)
+
+
+def is_intake_harvest_receipt_pr(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """True when a pull is an intake harvest/skill receipt, not shop MRB work (FR #2650).
+
+    Matches GhCliFiler drafts: ``harvest:`` / ``skill`` title plus ``via-intake``+``skill``
+    labels, ``Invoke-BobiverseHarvest`` / ``Session summary:`` footer, or a receipt
+    status word (DONE/PASS/FAIL/GIVEUP/SKIP/twin/…). Real worker promote PRs lack
+    ``via-intake`` and receipt-status titles.
+    """
+    title_s = (title or "").strip()
+    body_s = body or ""
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    harvestish = bool(HARVEST_TITLE_RE.match(title_s))
+    via_intake_skill = "via-intake" in labs and "skill" in labs
+    if via_intake_skill and (harvestish or _INTAKE_HARVEST_FOOTER_RE.search(body_s)):
+        return True
+    if harvestish and _INTAKE_HARVEST_FOOTER_RE.search(body_s):
+        return True
+    if harvestish and _HARVEST_RECEIPT_STATUS_RE.search(title_s):
+        return True
+    return False
+
 
 
 def issue_skip_fr_reason(
@@ -1195,6 +1228,15 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         pr = _pr_blob(payload)
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
+        labels = _label_names(pr.get("labels"))
+        # FR #2650 / #2604: draft open PRs never become MRB (resync already skips drafts).
+        if action in ("opened", "ready_for_review") and pr.get("draft") is True:
+            return None
+        # FR #2650: intake harvest receipt PRs never become MRB via webhook.
+        if action in ("opened", "ready_for_review") and is_intake_harvest_receipt_pr(
+            title=title, body=body, labels=labels
+        ):
+            return None
         # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB.
         if action in ("opened", "ready_for_review") and is_mrb_fix_pr_title(title):
             return None
@@ -1563,6 +1605,31 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                 _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "MRB", "FR", "PR"})
             changed = "updated"
         else:
+            # FR #2650: closed-unmerged must move ACC MRB to done as CLOSED (not leave
+            # it for _purge_dead_mrb_accepted to stamp MERGED).
+            kept_acc_cu: list[dict] = []
+            done_cu = doc.setdefault("done", [])
+            moved_cu = False
+            for row in doc.get("accepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                if (
+                    str(row.get("repo") or "") == claim.repo
+                    and str(row.get("task") or "").upper() == "MRB"
+                    and str(row.get("id") or "") == claim.id
+                ):
+                    fin = dict(row)
+                    fin["result"] = "CLOSED"
+                    fin["merged"] = False
+                    fin["done_ts"] = _utc_now()
+                    done_cu.append(fin)
+                    moved_cu = True
+                    continue
+                kept_acc_cu.append(row)
+            if moved_cu:
+                doc["accepted"] = kept_acc_cu
+                if len(done_cu) > DONE_CAP:
+                    doc["done"] = done_cu[-DONE_CAP:]
             for ref in claim.refs:
                 fr = GitClaim(
                     repo=claim.repo,
@@ -1618,11 +1685,9 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 _spool_pending(home, claim)
                 return "error:queue-write"
             # FR #2375 / #1323: ledger hold so MERGED PRs cannot re-offer if unaccepted leaks back.
-            if (
-                claim.event == "pull_request"
-                and claim.action == "closed"
-                and claim.merged
-            ):
+            # FR #2650: also hold closed-unmerged (ACC moved to CLOSED) so harvest receipts
+            # cannot bounce back onto the offer queue after FAIL-superseded close.
+            if claim.event == "pull_request" and claim.action == "closed":
                 with contextlib.suppress(Exception):
                     stamp_mrb_done(home, claim.repo, claim.id)
             return changed
@@ -2957,11 +3022,22 @@ def clear_orphan_digest_mrb_doing(
     return cleared
 
 
-def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None, home: Path | None = None) -> int:
+def _purge_dead_mrb_accepted(
+    doc: dict,
+    *,
+    pr_exists=None,
+    pr_merged=None,
+    home: Path | None = None,
+) -> int:
     """Move accepted MRB rows whose PR is already merged/closed into done.
 
     Without this, seats stay ``doing`` on MERGED PRs (#1171/#1236 class) and
     never !bored for new work — looks like an empty offer queue to monitors.
+
+    FR #2650: when ``pr_merged`` says the pull was not merged (closed unmerged),
+    stamp ``result=CLOSED`` instead of ``MERGED`` so queue.json matches GitHub.
+    When ``pr_merged`` is omitted, keep the historical MERGED stamp for dead rows
+    (open-only ``pr_exists`` cannot distinguish merged vs closed-unmerged).
     """
     before = len(doc.get("accepted") or [])
     kept: list[dict] = []
@@ -2971,7 +3047,21 @@ def _purge_dead_mrb_accepted(doc: dict, *, pr_exists=None, home: Path | None = N
             continue
         if _mrb_is_dead(doc, row, pr_exists=pr_exists, home=home):
             fin = dict(row)
-            fin["result"] = "MERGED"
+            repo = str(fin.get("repo") or "").strip()
+            num = str(fin.get("id") or "").strip().lstrip("#")
+            merged_known = None
+            if pr_merged is not None and repo and num:
+                try:
+                    merged_known = bool(pr_merged(repo, num))
+                except Exception:
+                    merged_known = None
+            if merged_known is False:
+                fin["result"] = "CLOSED"
+                fin["merged"] = False
+            else:
+                fin["result"] = "MERGED"
+                if merged_known is True:
+                    fin["merged"] = True
             fin["done_ts"] = _utc_now()
             done.append(fin)
             if home is not None:
@@ -4713,6 +4803,15 @@ def resync_from_github(
                 skipped_draft += 1
                 print(
                     f"resync skip draft PR {repo}#{num}",
+                    flush=True,
+                )
+                continue
+            # FR #2650: intake harvest receipt PRs (even non-draft) never become MRB.
+            pr_labels = _label_names(pr.get("labels"))
+            if is_intake_harvest_receipt_pr(title=title, body=body, labels=pr_labels):
+                skipped_draft += 1
+                print(
+                    f"resync skip harvest-receipt PR {repo}#{num}",
                     flush=True,
                 )
                 continue
