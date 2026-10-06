@@ -155,6 +155,7 @@ On review:
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
 4. **Twin harvest-lesson PRs** for the same book/lesson: FAIL-superseded board, close the later PR citing the merged first; never merge the misplaced raw duplicate tip (MRB #2741 / #2747 / #2750).
 5. **CAST IRON already covers it:** if the target book already has a CAST IRON / product paragraph for the lesson, FAIL-supersede and close as not planned — do not merge a weaker Harvested lessons duplicate (MRB #2732 / #2783).
+6. **Tip current with main (MRB #2818 / #2823):** when `rev-list --left-right --count origin/main...HEAD` is `0` behind, merge directly after the book/path check — no behind-main fold required. Still open one `docs/mrb-N` hostile PR from the new main tip that pins contiguous skill phrases (for example `path_fn` / `events.jsonl`), prior intake bullets in the same window, and UTF-8/no-BOM.
 
 ## Skill / markdown diff hygiene (harvest #1616)
 

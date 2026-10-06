@@ -1694,16 +1694,22 @@ _DROP_PREFIX = ("MOOT v1 ", "BOB DIGEST v1", "AGPK v1 ")
 
 
 _FLOW_RX = re.compile(r"(?i)^(?:@?[\w.\-\[\]\\`^{}|]+[:,]\s*)?(?:!bored\b|NAK\b|NACK\b)")
+_NOTHING_QUEUED_RX = re.compile(r"(?i)^nothing\s+queued\b")
 
 
 def inbound_kind(text: str, own_nick: str) -> str:
     """t817u: 'nak' | 'bored' | 'agent'. !bored and NAK/NACK are shop flow control handled by the exe itself; the model never sees them
-    (an optional leading ``<nick>:`` address is ignored when classifying)."""
+    (an optional leading ``<nick>:`` address is ignored when classifying).
+
+    FR #2806: Jeeves ``nothing queued`` is also ``nak`` so BoredEmitter.nak_s starts (still never relayed).
+    """
     t = (text or "").strip()
     n = (own_nick or "").strip()
     if n and re.match(r"(?i)^@?" + re.escape(n) + r"\s*[:,]\s*", t):
         t = re.sub(r"(?i)^@?" + re.escape(n) + r"\s*[:,]\s*", "", t, count=1)
     if re.match(r"(?i)^(NAK|NACK)\b", t):
+        return "nak"
+    if _NOTHING_QUEUED_RX.match(t):
         return "nak"
     if re.match(r"(?i)^!bored\b", t):
         return "bored"
@@ -1719,9 +1725,6 @@ def drop_text(text: str) -> bool:
     if t.startswith(_DROP_PREFIX) or t.startswith("\x01ACTION lost "):
         return True
     return bool(_DROP_RX.search(t))
-
-
-_NOTHING_QUEUED_RX = re.compile(r"(?i)^nothing\s+queued\b")
 
 
 def is_nothing_queued(text: str, own_nick: str = "") -> bool:
@@ -2285,7 +2288,14 @@ class IrcSeat:
         if kind != "agent":  # t817u: shop flow control is the exe's business, never the model's
             self.ignored += 1
             if kind == "nak":
-                self.log("irc: NAK from Jeeves -> !bored again in the NAK timer (exe-handled, not relayed)")
+                # FR #2806: nothing queued arms the same nak_s timer as NAK/NACK (never relayed).
+                if is_nothing_queued(text, self.nick):
+                    self.log(
+                        "irc: nothing queued from Jeeves -> !bored again in the NAK timer "
+                        "(exe-handled, not relayed)"
+                    )
+                else:
+                    self.log("irc: NAK from Jeeves -> !bored again in the NAK timer (exe-handled, not relayed)")
                 try:
                     self.on_nak()
                 except Exception as e:
