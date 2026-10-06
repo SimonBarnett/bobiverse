@@ -210,7 +210,7 @@ def test_fr2899_prune_heals_missing_mrb_url_and_names_drop(tmp_path, monkeypatch
     assert detail and any("mrb_not_offerable" in d for d in detail)
 
 
-def test_fr2899_idle_offer_logs(tmp_path, monkeypatch):
+def test_fr2899_idle_offer_logs(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _digest_live(tmp_path, [SIBLING])
     gitclaim.note_idle_after_empty(tmp_path, SIBLING, "#marchhare")
@@ -236,3 +236,21 @@ def test_fr2899_idle_offer_logs(tmp_path, monkeypatch):
     assert n == 1
     assert sent_lines and "MRB" in sent_lines[0] and "2896" in sent_lines[0]
     assert logs and "git-claim idle offered" in logs[0] and "2896" in logs[0]
+
+    # Enqueue/webhook path: omitted log= must still emit INFO (MRB #2900 fix).
+    gitclaim.note_idle_after_empty(tmp_path, SIBLING, "#marchhare")
+    gitclaim.note_worker_activity(tmp_path, SIBLING, 0.0)
+    doc2 = {
+        "v": 1,
+        "unaccepted": [_lesson_row(2897, author=AUTHOR)],
+        "accepted": [],
+        "done": [],
+    }
+    gitclaim._write_queue(gitclaim.queue_path(tmp_path), doc2)
+    monkeypatch.setattr(
+        bobreport, "enqueue_chair_fleet_privmsg", lambda *a, **k: True
+    )
+    n2 = gitclaim.push_idle_offers_via_chair_outbox(tmp_path, now=10_000.0)
+    assert n2 == 1
+    out = capsys.readouterr().out
+    assert "git-claim idle offered" in out and "2897" in out
