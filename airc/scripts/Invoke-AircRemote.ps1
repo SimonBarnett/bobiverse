@@ -400,6 +400,22 @@ function Invoke-AircRemoteWithRetry {
     throw ("retry exhausted after {0} attempts: {1}" -f $attempt, (Protect-AircRemoteSecret ([string]$last)))
 }
 
+function Test-AircRemoteBusyReply {
+    <#
+      FR #2632: DONE exit=1 with ``busy: prior shell still emitting`` is retryable
+      (compat with airc builds that still fail-closed on overlap instead of queueing).
+    #>
+    param($Parsed)
+    if ($null -eq $Parsed) { return $false }
+    try {
+        if ([int]$Parsed.ExitCode -ne 1) { return $false }
+    } catch {
+        return $false
+    }
+    $err = [string]$Parsed.StdErr
+    return [bool]($err -match '(?i)busy:\s*prior shell')
+}
+
 function Invoke-AircRemoteSelfTest {
     $script:SelfTestFailed = 0
     function Assert-True([bool]$Cond, [string]$Msg) {
@@ -512,6 +528,15 @@ function Invoke-AircRemoteSelfTest {
         Assert-True $true 'retry exhausted'
     }
 
+    $busyParsed = [pscustomobject]@{
+        ExitCode = 1
+        StdErr   = 'busy: prior shell still emitting'
+        StdOut   = ''
+    }
+    Assert-True (Test-AircRemoteBusyReply -Parsed $busyParsed) 'busy exit=1 is retryable'
+    Assert-True (-not (Test-AircRemoteBusyReply -Parsed ([pscustomobject]@{ ExitCode = 1; StdErr = 'other'; StdOut = '' }))) 'non-busy exit=1 not retryable'
+    Assert-True (-not (Test-AircRemoteBusyReply -Parsed ([pscustomobject]@{ ExitCode = 0; StdErr = 'busy: prior shell still emitting'; StdOut = '' }))) 'exit=0 not busy-retry'
+
     $pm = @(New-AircPrivmsgLines -MachineId 'ionos' -Bodies @('STATUS'))
     Assert-True ($pm.Count -eq 1 -and $pm[0] -eq 'PRIVMSG ionos_console :STATUS') 'PRIVMSG framing'
 
@@ -565,61 +590,95 @@ if ($SelfTest) {
 
 if (-not $MachineId) { throw '-MachineId is required unless -SelfTest' }
 
-$bodies = [string[]]@()
-$corr = if ($JobId) { $JobId } else { New-AircCorrelationId }
+if ($MaxRetries -lt 0 -or $MaxRetries -gt 5) { throw 'MaxRetries must be 0..5' }
 
-switch ($Action) {
-    'Put' {
-        if (-not $LocalFile) { throw 'Put requires -LocalFile' }
-        if (-not $Path) { throw 'Put requires -Path (remote)' }
-        $sandbox = $SandboxRoot
-        if (-not $sandbox) {
-            $ai = if ($env:AI_ROOT) { $env:AI_ROOT } else { 'C:\ai' }
-            $sandbox = Join-Path $ai 'airc\drop'
+function New-AircRemoteAttemptBodies {
+    param(
+        [string]$ActionName,
+        [string]$CorrId,
+        [string]$TextBody,
+        [string]$PathBody,
+        [string]$LocalFilePath,
+        [int]$ChunkSize,
+        [string]$Sandbox
+    )
+    $bodies = [string[]]@()
+    $corrOut = $CorrId
+    switch ($ActionName) {
+        'Put' {
+            if (-not $LocalFilePath) { throw 'Put requires -LocalFile' }
+            if (-not $PathBody) { throw 'Put requires -Path (remote)' }
+            $root = $Sandbox
+            if (-not $root) {
+                $ai = if ($env:AI_ROOT) { $env:AI_ROOT } else { 'C:\ai' }
+                $root = Join-Path $ai 'airc\drop'
+            }
+            $put = New-AircPutChunks -LocalFile $LocalFilePath -RemotePath $PathBody -ChunkBytes $ChunkSize -JobId $corrOut -SandboxRoot $root
+            $corrOut = $put.JobId
+            $bodies = [string[]]@($put.Lines)
         }
-        $put = New-AircPutChunks -LocalFile $LocalFile -RemotePath $Path -ChunkBytes $ChunkBytes -JobId $corr -SandboxRoot $sandbox
-        $corr = $put.JobId
-        $bodies = [string[]]@($put.Lines)
+        'Psb64' {
+            # FR #1546: pin correlation id so ear jsonl + Wait can match DONE.
+            $bodies = [string[]]@(('id={0} {1}' -f $corrOut, (New-AircRemoteBody -Action Psb64 -Text $TextBody)))
+        }
+        'Command' {
+            $bodies = [string[]]@(('id={0} {1}' -f $corrOut, (New-AircRemoteBody -Action Command -Text $TextBody)))
+        }
+        'Cmd' {
+            $bodies = [string[]]@(('id={0} {1}' -f $corrOut, (New-AircRemoteBody -Action Cmd -Text $TextBody)))
+        }
+        'Status' {
+            # FR #2570: pin id= so Wait matches DONE id= from STATUS (same as Command).
+            $bodies = [string[]]@(('id={0} STATUS' -f $corrOut))
+        }
+        default {
+            $bodies = [string[]]@((New-AircRemoteBody -Action $ActionName -Text $TextBody -Path $PathBody -JobId $corrOut))
+        }
     }
-    'Psb64' {
-        # FR #1546: pin correlation id so ear jsonl + Wait can match DONE.
-        $bodies = [string[]]@(('id={0} {1}' -f $corr, (New-AircRemoteBody -Action Psb64 -Text $Text)))
-    }
-    'Command' {
-        $bodies = [string[]]@(('id={0} {1}' -f $corr, (New-AircRemoteBody -Action Command -Text $Text)))
-    }
-    'Cmd' {
-        $bodies = [string[]]@(('id={0} {1}' -f $corr, (New-AircRemoteBody -Action Cmd -Text $Text)))
-    }
-    'Status' {
-        # FR #2570: pin id= so Wait matches DONE id= from STATUS (same as Command).
-        $bodies = [string[]]@(('id={0} STATUS' -f $corr))
-    }
-    default {
-        $bodies = [string[]]@((New-AircRemoteBody -Action $Action -Text $Text -Path $Path -JobId $corr))
-    }
+    return [pscustomobject]@{ Bodies = $bodies; JobId = $corrOut }
 }
 
-$privmsgs = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies $bodies)
-Write-Host ("INFO action={0} machine={1} id={2} lines={3}" -f $Action, $MachineId, $corr, $privmsgs.Count)
-
-$repliesJsonl = Resolve-AircRepliesJsonl -Outbox $Outbox -ReplyFile $ReplyFile
-$startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
-
-if ($Outbox) {
-    Write-AircOutbox -Outbox $Outbox -Lines $privmsgs -WhatIf:$WhatIf
-} elseif ($WhatIf) {
-    foreach ($l in $privmsgs) { Write-Host ('WHATIF {0}' -f (Protect-AircRemoteSecret $l)) }
-} else {
-    Write-Host 'WARN no -Outbox; printing bodies only (not sent)'
-    foreach ($l in $privmsgs) { Write-Host (Protect-AircRemoteSecret $l) }
-}
-
-# FR #1546: wait for ear-captured DONE when -ReplyFile is set (or jsonl path requested).
+$pinnedJobId = [bool]$JobId
+$corr = if ($JobId) { $JobId } else { New-AircCorrelationId }
 $wantWait = [bool]$ReplyFile -and -not $WhatIf
-if ($wantWait) {
+$repliesJsonl = Resolve-AircRepliesJsonl -Outbox $Outbox -ReplyFile $ReplyFile
+$deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec))
+$attempt = 0
+$parsed = $null
+$rawLines = @()
+
+# FR #2632: retry Command/Cmd/Psb64/Status when airc returns busy DONE (old fail-closed builds).
+$busyRetryActions = @('Command', 'Cmd', 'Psb64', 'Status')
+
+while ($true) {
+    $attempt++
+    $built = New-AircRemoteAttemptBodies -ActionName $Action -CorrId $corr -TextBody $Text -PathBody $Path `
+        -LocalFilePath $LocalFile -ChunkSize $ChunkBytes -Sandbox $SandboxRoot
+    $bodies = [string[]]@($built.Bodies)
+    $corr = [string]$built.JobId
+    $privmsgs = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies $bodies)
+    Write-Host ("INFO action={0} machine={1} id={2} lines={3} attempt={4}" -f $Action, $MachineId, $corr, $privmsgs.Count, $attempt)
+
+    $startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
+
+    if ($Outbox) {
+        Write-AircOutbox -Outbox $Outbox -Lines $privmsgs -WhatIf:$WhatIf
+    } elseif ($WhatIf) {
+        foreach ($l in $privmsgs) { Write-Host ('WHATIF {0}' -f (Protect-AircRemoteSecret $l)) }
+    } else {
+        Write-Host 'WARN no -Outbox; printing bodies only (not sent)'
+        foreach ($l in $privmsgs) { Write-Host (Protect-AircRemoteSecret $l) }
+    }
+
+    if (-not $wantWait) { break }
+
+    $remaining = [int][Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds)
+    if ($remaining -lt 1) {
+        Write-Host ("ERROR timeout budget exhausted before wait id={0}" -f $corr)
+        exit 2
+    }
     try {
-        $rawLines = @(Wait-AircRemoteReplies -RepliesJsonl $repliesJsonl -ExpectJobId $corr -TimeoutSec $TimeoutSec -StartOffset $startOffset)
+        $rawLines = @(Wait-AircRemoteReplies -RepliesJsonl $repliesJsonl -ExpectJobId $corr -TimeoutSec $remaining -StartOffset $startOffset)
     } catch {
         Write-Host ("ERROR {0}" -f (Protect-AircRemoteSecret ([string]$_)))
         exit 2
@@ -632,6 +691,18 @@ if ($wantWait) {
         [System.IO.File]::WriteAllLines($ReplyFile, $rawLines, (New-Object System.Text.UTF8Encoding $false))
     }
     $parsed = ConvertFrom-AircRemoteReply -Lines $rawLines -ExpectJobId $corr
+
+    $canBusyRetry = ($Action -in $busyRetryActions) -and (-not $pinnedJobId) -and ($attempt -le $MaxRetries) `
+        -and (Test-AircRemoteBusyReply -Parsed $parsed) -and ([datetime]::UtcNow -lt $deadline)
+    if (-not $canBusyRetry) { break }
+
+    $backoff = [Math]::Min(3, $attempt)
+    Write-Host ("INFO busy retry id={0} sleep={1}s attempt={2}/{3}" -f $corr, $backoff, $attempt, $MaxRetries)
+    Start-Sleep -Seconds $backoff
+    $corr = New-AircCorrelationId
+}
+
+if ($wantWait) {
     Write-Output $parsed
     if ($parsed.ExitCode -ne 0) { exit $parsed.ExitCode }
 }

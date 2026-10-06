@@ -21,6 +21,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
@@ -35,6 +36,9 @@ IRC_SAFE_PAYLOAD = 350
 PSB64_MAX_CHARS = 24_000
 SHELL_OUTPUT_MAX_BYTES = 64_000
 SHELL_TIMEOUT_S = 120.0
+# FR #2632: per-Query pending shell commands (beyond the one in flight). Overflow
+# still fail-closes with busy DONE so Wait never hangs without a DONE (#2612).
+SHELL_PENDING_MAX = 8
 UPDATE_PRODUCTS = frozenset({"airc", "bob", "jeeves"})
 _PRIVMSG_RE = re.compile(
     r"^:([^!\s]+)(?:![^@\s]*@\S+)?\s+PRIVMSG\s+(\S+)\s+:?(.*)$",
@@ -936,8 +940,21 @@ def format_shell_replies(
     return lines
 
 
+@dataclass
+class _ShellPending:
+    """One queued shell command (FR #2632); ``done`` signals completion for wait=True."""
+
+    command: str
+    done: threading.Event = field(default_factory=threading.Event)
+
+
 class ShellJobRunner:
-    """Run one FR #75 shell request; emit reply lines to the operator Query."""
+    """Run FR #75 shell requests; emit reply lines to the operator Query.
+
+    FR #2632: one in-flight shell per Query nick plus a short pending queue so
+    concurrent Invoke-AircRemote Commands both get a real DONE. Overflow still
+    fail-closes with busy DONE (FR #2612: no hang / no lost DONE).
+    """
 
     def __init__(
         self,
@@ -948,6 +965,7 @@ class ShellJobRunner:
         wait: bool = False,
         on_inflight: Callable[[str, str], None] | None = None,
         on_idle: Callable[[str], None] | None = None,
+        pending_max: int = SHELL_PENDING_MAX,
     ) -> None:
         self.on_reply = on_reply
         self.cwd = cwd
@@ -955,18 +973,35 @@ class ShellJobRunner:
         self.wait = wait
         self.on_inflight = on_inflight
         self.on_idle = on_idle
+        self.pending_max = max(0, int(pending_max))
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
+        self._pending: dict[str, deque[_ShellPending]] = {}
+        self._inflight_cmd: dict[str, _ShellPending] = {}
 
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
+        item = _ShellPending(command=command)
 
-        # FR #2612: overlapping shell on the same Query — fail closed with DONE so
-        # Invoke-AircRemote Wait does not hang while a prior job is still emitting.
         with self._lock:
+            q = self._pending.setdefault(key, deque())
             prev = self._threads.get(key)
             busy = prev is not None and prev.is_alive()
-        if busy:
+            # When a shell is live, at most pending_max more may wait; overflow fail-closes.
+            if busy and len(q) >= self.pending_max:
+                overflow = True
+            else:
+                overflow = False
+                q.append(item)
+                if not busy:
+                    t = threading.Thread(
+                        target=self._drain, args=(key,), name=f"airc-shell-{key}", daemon=True
+                    )
+                    self._threads[key] = t
+                    t.start()
+
+        if overflow:
+            # FR #2612 / #2632: queue full — fail closed with DONE (Wait must not hang).
             try:
                 req = parse_shell_request(command)
                 jid = req.job_id
@@ -979,41 +1014,58 @@ class ShellJobRunner:
             self._emit(key, f"DONE id={jid} exit=1")
             return key
 
-        def worker() -> None:
-            jid: str | None = None
-            try:
-                try:
-                    req = parse_shell_request(command)
-                except ShellRequestError as exc:
-                    jid = uuid.uuid4().hex[:8]
-                    self._emit(key, f"err id={jid} seq=1 {exc}")
-                    self._emit(key, f"DONE id={jid} exit=2")
+        if self.wait:
+            item.done.wait(timeout=self.timeout_s + 5)
+        return key
+
+    def _drain(self, key: str) -> None:
+        while True:
+            with self._lock:
+                q = self._pending.get(key)
+                if not q:
+                    self._pending.pop(key, None)
+                    self._threads.pop(key, None)
+                    self._inflight_cmd.pop(key, None)
                     return
-                jid = req.job_id
-                if self.on_inflight:
-                    try:
-                        self.on_inflight(key, jid)
-                    except Exception:
-                        pass
-                outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
-                for line in format_shell_replies(outcome):
-                    self._emit(key, line)
+                item = q.popleft()
+                self._inflight_cmd[key] = item
+            try:
+                self._run_one(key, item.command)
             finally:
+                item.done.set()
+                with self._lock:
+                    if self._inflight_cmd.get(key) is item:
+                        self._inflight_cmd.pop(key, None)
                 if self.on_idle:
                     try:
                         self.on_idle(key)
                     except Exception:
                         pass
-                with self._lock:
-                    self._threads.pop(key, None)
 
-        t = threading.Thread(target=worker, name=f"airc-shell-{key}", daemon=True)
-        with self._lock:
-            self._threads[key] = t
-        t.start()
-        if self.wait:
-            t.join(timeout=self.timeout_s + 5)
-        return key
+    def _run_one(self, key: str, command: str) -> None:
+        jid: str | None = None
+        try:
+            try:
+                req = parse_shell_request(command)
+            except ShellRequestError as exc:
+                jid = uuid.uuid4().hex[:8]
+                self._emit(key, f"err id={jid} seq=1 {exc}")
+                self._emit(key, f"DONE id={jid} exit=2")
+                return
+            jid = req.job_id
+            if self.on_inflight:
+                try:
+                    self.on_inflight(key, jid)
+                except Exception:
+                    pass
+            outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
+            for line in format_shell_replies(outcome):
+                self._emit(key, line)
+        except Exception:
+            # Keep drain alive for queued peers; always emit DONE when we have an id.
+            if jid:
+                self._emit(key, f"err id={jid} seq=1 shell runner fault")
+                self._emit(key, f"DONE id={jid} exit=1")
 
     def _emit(self, nick: str, line: str) -> None:
         # FR #2551: on_reply may raise ConnectionError after IRC drop; swallow so the
@@ -1025,9 +1077,15 @@ class ShellJobRunner:
                 return
 
     def close_nick(self, nick: str) -> None:
-        # Oneshoot threads are daemon; nothing durable to kill beyond tracking.
+        # Oneshoot threads are daemon; drop tracking + pending for this Query.
+        key = nick.strip().lower()
         with self._lock:
-            self._threads.pop(nick.strip().lower(), None)
+            self._threads.pop(key, None)
+            pending = self._pending.pop(key, None)
+            self._inflight_cmd.pop(key, None)
+        if pending:
+            for item in pending:
+                item.done.set()
 
 
 @dataclass
