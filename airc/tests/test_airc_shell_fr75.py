@@ -155,7 +155,8 @@ def test_service_console_out_chunks_instead_of_hard_clip(tmp_path, monkeypatch):
     )
     s = svc.AircConsoleService(args)
     sent: list[str] = []
-    s.send_privmsg = lambda target, text: sent.append(f"{target}:{text}")  # type: ignore[assignment]
+    # FR #2655: drain_out_queue passes flood=; stub must accept **kw.
+    s.send_privmsg = lambda target, text, **_kw: sent.append(f"{target}:{text}")  # type: ignore[assignment]
     long = "Z" * 900
     s._on_console_out("bob-tm", long)
     assert len(sent) >= 2
