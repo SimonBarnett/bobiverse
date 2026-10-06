@@ -4765,17 +4765,35 @@ def resync_from_github(
             fetched_set2 = set(fetched)
             # Premature DONE while GitHub issue/PR still open: pull those rows out of done
             # so resync can re-queue them (FR #1150 / #1444).
+            # FR #2617: keep DONE FR rows that carry a /pull/ URL while that implement PR
+            # is still open (or its repo was not fetched). Stripping them broke
+            # fr_superseded_by_done_pr and let the FR re-enter unaccepted right after DONE.
             if isinstance(doc.get("done"), list):
                 still_open = {(c.repo, c.task, c.id) for c in desired}
-                doc["done"] = [
-                    r
-                    for r in doc["done"]
-                    if not (
-                        isinstance(r, dict)
-                        and (str(r.get("repo") or ""), str(r.get("task") or ""), str(r.get("id") or ""))
-                        in still_open
+                kept_done: list = []
+                for r in doc["done"]:
+                    if not isinstance(r, dict):
+                        continue
+                    key = (
+                        str(r.get("repo") or ""),
+                        str(r.get("task") or ""),
+                        str(r.get("id") or ""),
                     )
-                ]
+                    if key not in still_open:
+                        kept_done.append(r)
+                        continue
+                    if str(r.get("task") or "").upper() == "FR":
+                        parsed = parse_github_pull_url(str(r.get("url") or ""))
+                        if parsed:
+                            pr_repo, pr_id = parsed
+                            if pr_repo not in fetched_set2:
+                                kept_done.append(r)
+                                continue
+                            if pr_id in (open_pulls_map.get(pr_repo) or set()):
+                                kept_done.append(r)
+                                continue
+                    # Drop premature DONE (issue/PR still open, no open implement PR).
+                doc["done"] = kept_done
             ledger_now = ledger_load(home)
 
             def _fr_done_hold(repo: str, ident: str) -> bool:
