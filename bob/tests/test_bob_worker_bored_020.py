@@ -360,6 +360,8 @@ import pytest  # noqa: E402
 @pytest.mark.parametrize("text,kind", [
     ("NAK !BORED wait", "nak"), ("marchhare-4242: NAK !BORED wait", "nak"), ("marchhare-4242, nack nothing for you", "nak"),
     ("NACK x", "nak"), ("!bored", "bored"), ("marchhare-4242: !bored", "bored"), ("!BORED", "bored"),
+    # FR #2806: Jeeves empty-queue reply arms the same nak_s timer.
+    ("nothing queued", "nak"), ("marchhare-4242: nothing queued", "nak"),
     ("marchhare-4242: FR o/r#1 https://x", "agent"), ("please nak this typo", "agent"), ("naked truth", "agent"),
     ("marchhare-4242: UAT o/r#2 https://x", "agent"), ("boredom is relative", "agent"),
 ])
