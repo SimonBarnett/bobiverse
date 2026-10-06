@@ -87,6 +87,11 @@ if (-not $IrcHost) { $IrcHost = [string]$env:BOB_IRC_HOST }
 if (-not $IrcHost) { $IrcHost = 'irc.ntsa.uk' }
 $IrcHost = $IrcHost.Trim()
 if ($IrcHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw "invalid -IrcHost '$IrcHost'" }
+# FR #2666: frozen bob-ear.exe resolves __file__ under _MEIPASS (often C:\Windows\Temp).
+# Export BOB_INSTALL_ROOT so startworker queue_dir sees InstallRoot\run\startworker (tray.alive)
+# even on an older bob-ear.exe that lacks --install-root / frozen-aware resolve. Do not pass
+# --install-root here until every live ear accepts that flag (unknown argv aborts start).
+$env:BOB_INSTALL_ROOT = $InstallRoot
 $earArgs = @('--nick', $nick, '--home', $BobHome, '--channel', $channel, '--host', $IrcHost)
 if ($useEarExe) {
     Write-Host "INFO ear host=$IrcHost nick=$nick channels=$channel via=bob-ear.exe (FR #1481)"
