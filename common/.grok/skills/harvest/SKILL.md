@@ -183,6 +183,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 - GET /bob/v1/report must never call GitHub pr_exists while holding gitclaim queue lock; snapshot under lock, check outside, re-lock with cached verdicts + single-flight + short lock_timeout
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
+- Frozen airc.exe UPDATE must resolve InstallRoot/updater via sys.executable (resolve_airc_install_root / resolve_fleet_update_install_root) and <InstallRoot>\scripts\Update-BobiverseService.ps1 — never Path(__file__) under _MEI (FR #2949).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
