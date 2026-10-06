@@ -55,6 +55,45 @@ function Get-BobiverseNssmApplication {
     return ''
 }
 
+function Get-BobiverseEarServiceHome {
+    <#
+      FR #2943 / VISION S3: home the live ircBob ear drains (LocalSystem Start-Bob → InstallRoot\home).
+      Interactive tray / Restart-BobEar must write depart-request + departure PRIVMSG here — not
+      %USERPROFILE%\.bobiverse — or the announce never reaches IRC.
+      Override: BOB_EAR_HOME. Else InstallRoot\home, else NSSM AppDirectory parent\home, else product root\home.
+    #>
+    param(
+        [string]$ServiceName = 'ircBob',
+        [string]$InstallRoot = ''
+    )
+    $ov = ([string]$env:BOB_EAR_HOME).Trim()
+    if ($ov) {
+        try { return [IO.Path]::GetFullPath($ov) } catch { return $ov }
+    }
+    $root = ([string]$InstallRoot).Trim()
+    if ($root) {
+        try { return [IO.Path]::GetFullPath((Join-Path $root 'home')) } catch { return (Join-Path $root 'home') }
+    }
+    try {
+        $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters"
+        if (Test-Path -LiteralPath $k) {
+            $ad = [string](Get-ItemProperty -LiteralPath $k -Name AppDirectory -ErrorAction SilentlyContinue).AppDirectory
+            if ($ad) {
+                $svcRoot = $ad
+                if ((Split-Path -Leaf $ad) -ieq 'scripts') { $svcRoot = Split-Path -Parent $ad }
+                return [IO.Path]::GetFullPath((Join-Path $svcRoot 'home'))
+            }
+        }
+    } catch { }
+    try {
+        if (Get-Command Get-BobiverseProductRoot -ErrorAction SilentlyContinue) {
+            $pr = [string](Get-BobiverseProductRoot -Product bob)
+            if ($pr) { return [IO.Path]::GetFullPath((Join-Path $pr 'home')) }
+        }
+    } catch { }
+    return ''
+}
+
 function Set-BobiverseNssmApplicationSafe {
     <#
       FR #2475: never point NSSM Application at a missing exe.

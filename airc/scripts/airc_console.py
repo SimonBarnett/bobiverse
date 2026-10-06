@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -160,6 +161,61 @@ class UpdateScheduleResult:
         return " ".join(bits)[:400]
 
 
+def _is_frozen_airc_runtime() -> bool:
+    """True under PyInstaller airc.exe (FR #2949)."""
+    return bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+
+
+def resolve_fleet_update_install_root(explicit: str | None = None) -> str:
+    """Install tree for UPDATE Check (frozen-aware; FR #2949).
+
+    Prefer an explicit root when it already contains the updater. Otherwise
+    re-resolve from ``sys.executable`` under frozen builds so ``_MEI*`` parents
+    of ``__file__`` are never used as InstallRoot.
+    """
+    name = "Update-BobiverseService.ps1"
+
+    def _has_updater(root: Path) -> bool:
+        return (root / "scripts" / name).is_file() or (root / name).is_file()
+
+    if explicit:
+        exp = Path(explicit)
+        if _has_updater(exp):
+            return str(exp.resolve())
+    if _is_frozen_airc_runtime():
+        exe = Path(sys.executable).resolve()
+        # Pack stages ``airc\\airc.exe`` under the install root.
+        cand = exe.parent.parent if exe.parent.name.lower() == "airc" else exe.parent
+        if _has_updater(cand):
+            return str(cand.resolve())
+        return str(cand.resolve())
+    if explicit:
+        return str(Path(explicit).resolve())
+    # Source / staged: parent of scripts/ (product tree).
+    return str(Path(__file__).resolve().parents[1])
+
+
+def _find_update_bobiverse_script(install_root: str, updater_script: str | None = None) -> Path | None:
+    """Locate Update-BobiverseService.ps1 under the install tree (FR #2949)."""
+    name = "Update-BobiverseService.ps1"
+    candidates: list[Path] = []
+    if updater_script:
+        candidates.append(Path(updater_script))
+    root = Path(install_root)
+    candidates.append(root / "scripts" / name)
+    candidates.append(root / name)
+    # Source tree / non-frozen fallbacks (never preferred under frozen _MEI).
+    if not _is_frozen_airc_runtime():
+        candidates.append(Path(__file__).resolve().parent / name)
+        candidates.append(
+            Path(__file__).resolve().parents[2] / "common" / "scripts" / name
+        )
+    for c in candidates:
+        if c.is_file():
+            return c
+    return candidates[0] if candidates else None
+
+
 def schedule_fleet_update(
     product: str,
     version: str | None = None,
@@ -179,19 +235,16 @@ def schedule_fleet_update(
     product = (product or "").strip().lower()
     if product not in UPDATE_PRODUCTS:
         return UpdateScheduleResult(False, "rejected-product", product=product, version=version)
-    script = Path(updater_script) if updater_script else Path(__file__).resolve().parent / "Update-BobiverseService.ps1"
-    if not script.is_file():
-        # staged/split tree: common/scripts sibling
-        alt = Path(__file__).resolve().parents[2] / "common" / "scripts" / "Update-BobiverseService.ps1"
-        if alt.is_file():
-            script = alt
-    if not script.is_file():
+    install_root = resolve_fleet_update_install_root(install_root)
+    script = _find_update_bobiverse_script(install_root, updater_script)
+    if script is None or not script.is_file():
         return UpdateScheduleResult(
-            False, "updater-missing", detail=str(script), product=product, version=version
+            False,
+            "updater-missing",
+            detail=str(script or (Path(install_root) / "scripts" / "Update-BobiverseService.ps1")),
+            product=product,
+            version=version,
         )
-    if not install_root:
-        # Prefer <ai root>\<product> next to this scripts dir's parent product root.
-        install_root = str(Path(__file__).resolve().parents[1])
     if not service_name:
         service_name = {"bob": "ircBob", "jeeves": "ircJeeves"}.get(product, "Airc")
     ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"

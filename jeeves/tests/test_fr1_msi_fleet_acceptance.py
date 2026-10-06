@@ -161,11 +161,16 @@ def test_s3_restart_bob_ear_and_tray_wiring():
     assert "Restart-Service" in ear
     assert "ircBob" in ear
     assert "depart-request" in ear
+    # FR #2943: service ear home (not profile-only .bobiverse) + outbox announce.
+    assert "Get-BobiverseEarServiceHome" in ear or ("home" in ear and "outbox.txt" in ear)
+    assert "outbox.txt" in ear
     tray = _t(S / "Start-BobTray.ps1")
     # Tray start recycles ircBob via Start-BobFleetTray (Restart-BobEar remains the ear-only path).
     assert "Start-BobFleetTray" in tray or "Restart-BobEar" in tray
     assert "ircBob" in tray
     assert (S / "bob_recycle.py").is_file()
+    common = _t(S / "Bobiverse-Common.ps1")
+    assert "function Get-BobiverseEarServiceHome" in common
 
 
 def test_s3_recycle_parse_jeeves_and_machine(monkeypatch):
