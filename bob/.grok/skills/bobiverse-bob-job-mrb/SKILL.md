@@ -48,7 +48,7 @@ flowchart TD
 
 ## Steps
 
-1. **ACK.** 2. Check out the PR in a temp worktree; read the intent, the FR and every changed file. Before `git worktree add`, if `Get-PSDrive C` FreeGB is under 2, run `..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob` (FR #877). After DONE, prune again with `-KeepPath` omitted so the MRB tree can go. 3. **Vision first**: read `VISION.md`/brief/README/AGENTS and quote 1-2 lines the PR is judged against. For **bob** ear/worker/tray changes prefer **`bob/VISION.md`** (FR #1615 / harvest #1632); the fleet umbrella stays `common/docs/vision.md` — do not treat the umbrella as the bob product vision.
+1. **ACK.** 2. Check out the PR in a temp worktree; read the intent, the FR and every changed file. Before `git worktree add`, if `Get-PSDrive C` FreeGB is under 2, run `..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob` (FR #877). **CAST IRON (FR #2727):** never hand-delete / `Remove-Item` paths Clear did not select; if FreeGB stays under 2 after Clear, file an intake disk issue and put the MRB tree on a roomy drive (or GIVEUP) — do not invent a `C:\ai\*` delete list. After DONE, prune again with `-KeepPath` omitted so the MRB tree can go. 3. **Vision first**: read `VISION.md`/brief/README/AGENTS and quote 1-2 lines the PR is judged against. For **bob** ear/worker/tray changes prefer **`bob/VISION.md`** (FR #1615 / harvest #1632); the fleet umbrella stays `common/docs/vision.md` — do not treat the umbrella as the bob product vision.
 No vision found: record "no vision source found", review against README + FR, and file ONE FR asking for a `VISION.md`. If the PR shows the vision itself should change, do not edit it - file an FR tagged `vision` for the owner.
 4. **Tests before verdict**: add the new tests the PR needs, then run existing + new. **FR #2655 (airc PRs):** before PASS, run the full `airc/tests` suite (not only the new FR file) — signature changes like `send_privmsg(..., flood=)` break 2-arg monkeypatch stubs elsewhere. 5. Hostile review + **drift check** (separate verdict line): serves the stated vision? contradicts CAST IRON / earlier decisions? scope creep? under-delivery (letter, not intent; code never wired)? Drift is a FAIL like a red test. **ACCEPTABLE drift (harvest #1663):** a partial FR that lands the core acceptance and files explicit follow-up issues for the remainder (e.g. SkipTidy autostart PASS while TipForm Restart still tidies; leftover #1642/#1643) may PASS — say so on the drift line; do not FAIL solely for intentional scoped follow-ups.
 6. Encoding: changed *.md are UTF-8 without BOM (no mojibake). **CAST IRON (FR #1634):** before every gh pr merge, run python common/scripts/check_conflict_markers.py --root <worktree> (or rely on the check-conflict-markers CI workflow) and **refuse merge** if any <<<<<<< / ======= / >>>>>>> conflict markers remain in the tip. **Behind-main (harvest #1647 / #1657):** if the PR head is behind origin/main, merge (or rebase) origin/main into the FR branch and re-run conflict-marker + tests **before** gh pr merge. 7. **PASS** -> review docs/skills/usage text for staleness; if stale open exactly ONE **separate** docs/mrb-<N>-... PR (never push onto the PR under review) and merge both; if not, merge the PR. Additive hostile tests that are not product fixes belong on that docs/mrb-N PR. **Body/docs-only nits** (e.g. missing Duplicates closed: line) while tests are green: PASS and merge without a separate **fix** PR — put wording nits on the docs PR or edit the PR body; close harvest twins as not planned (Duplicate of #N / fixed by PR #M).
@@ -110,6 +110,8 @@ When the assigned PR is already **closed**, or a **duplicate/superseded** of wor
 5. If the originating issue is still open only because this duplicate never merged, close it citing the merged fix URLs (not this PR).
 6. **DONE MRB owner/repo#N FAIL <assigned-pr-url>** — nothing after the URL.
 
+**Harvest-lesson twins:** the same rule applies when two `lesson(<book>):` / `harvest-lesson` tips carry the same playbook — FAIL-superseded the later one; never merge the misplaced raw duplicate tip into `harvest` when the playbook belongs (or already landed) in `bobiverse-bob-job-mrb` (MRB #2741 / #2747 / #2750).
+
 Self-MRB remains a separate hand-back (GIVEUP / NACK); this section is for hostile review of a head that lost the race to main.
 
 ## Fix-PR race after DONE (harvest #1981 / MRB #1847)
@@ -129,12 +131,24 @@ Never hostile-review or merge a PR **this seat opened** (same nick/session/workt
 
 Wire (preferred after you already ACK'd):
 
-1. Confirm authorship: branch you pushed, or PR head from this seat's FR promote.
+1. Confirm authorship: branch you pushed, PR head from this seat's FR promote, or a `lesson(<book>):` / harvest-lesson tip from this seat's `Invoke-BobiverseHarvest`.
 2. Outbox: GIVEUP MRB owner/repo#N
 3. Separate line: reason self-MRB - this seat opened PR #N; needs a different seat (and DIRTY/rebase needed when the head conflicts with main).
 4. Harvest the lesson; do not open a second MRB from this seat on that PR.
 
 If you spot self-MRB **before** any review work and have not ACK'd yet, NACK MRB owner/repo#N with the same reason is also valid (job-irc: NACK = decline before work). After ACK, always **GIVEUP** — never go silent.
+
+**Harvest-lesson self-MRB (MRB #2732 / #2735):** a harvest-lesson PR opened from this seat's `Invoke-BobiverseHarvest` is self-MRB for that seat — NACK/GIVEUP and leave it for another seat.
+
+## Harvest-lesson intake PRs (FR #2705)
+
+Non-draft PRs labelled `harvest-lesson` with title `lesson(<book>): …` edit a skill book `SKILL.md` under `## Harvested lessons (intake)`. They are offerable MRB work (gitclaim must not treat them as draft/receipt harvests).
+
+On review:
+1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
+2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
+3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
+4. **Twin harvest-lesson PRs** for the same book/lesson: FAIL-superseded board, close the later PR citing the merged first; never merge the misplaced raw duplicate tip (MRB #2741 / #2747 / #2750).
 
 ## Skill / markdown diff hygiene (harvest #1616)
 
@@ -160,5 +174,17 @@ Checks:
 - MRB PASS requires the claimed tests, a clean/rebased branch, and the merged PR's `Closes` lines. When an acceptance contract changes, expect a focused fix/nits PR and rerun the hostile tests rather than accepting stale evidence.
 - Chair side (FR #1585 / harvest #1613): an open GitHub pull must survive resync even if ledger `mrb_done` was stamped early — `mrb_already_done(pr_exists)` keeps open PRs; resync clears stale stamps.
 - After merge: switch to `main`, fast-forward from `origin/main`, sync the installed tree, and restart only the relevant service. Do not treat a harvest/MRB record as a new FR row.
-- **Behind-main + nits (harvest #1647 / MRB #1629):** merge `origin/main` into the FR branch before merge; put additive hostile tests on `docs/mrb-N`; missing `Duplicates closed:` is a body nit (close harvest twins as not planned); PASS without a fix PR when only body/docs nits remain and tests are green.
+- **Behind-main + nits (harvest #1647 / MRB #1629 / harvest #2740):** merge `origin/main` into the FR branch before merge; put additive hostile tests on `docs/mrb-N`; missing `Duplicates closed:` is a body nit (close harvest twins as not planned); PASS without a fix PR when only body/docs nits remain and tests are green. For Jeeves `!status` / frozen-VERSION style FRs, pin `Client.__init__` `_process_started` and `Build-Jeeves.ps1` `--add-data VERSION` (install-root resolve) on that docs/mrb-N PR (MRB #2733 / FR #2728).
 - **Harvest promote MRB (harvest #2296 / MRB #2289):** merge skill PR first → then `docs/mrb-N` hostile-test PR from **new** `origin/main` → verify skill issue closed via `Closes` before DONE PASS.
+
+## Harvest digest (lessons audit 2026-10-06)
+
+Generalised from 372 harvested lessons that never reached this book (audit for FR #2705). Per-lesson sources are the cited harvest issue numbers on each bullet (no separate audit table file on main).
+
+- **Self-MRB is per seat, not per machine:** a seat that opened, authored or pushed commits to the PR under review (including a `docs/mrb-N` PR stacked on its own tip) must ACK then GIVEUP with `reason=self-MRB`. NACK only before any work, and never DONE PASS/FAIL. A sibling seat on the same machine may review. The chair stamps `author_seat`/implementer on DONE and on `edited`/`synchronize` webhooks; a seat that only cited another seat's PR is informational (`FRW`) and does not block review. (42 lessons: harvest #2310, #2247, #2222, #2219, #2217, #2213 +40 more, 5 held intake rows)
+- **Re-offered or already-merged MRB:** ACK, then re-verify on `origin/main`: merge commit present, `Closes` closed the issue, claimed and parent tests green, board posted. DONE with the same verdict and the assigned PR URL. Do not merge again or open new worktrees. Additive hostile gates still go on `docs/mrb-N` from the new main tip. Repeated re-offers after DONE are a chair purge gap: comment on the existing issue. (79 lessons: harvest #2220, #2218, #2214, #2205, #2066, #2154 +68 more, 23 held intake rows)
+- **CONFLICTING or superseded heads:** compare with main first. If the acceptance already landed through another PR, post a FAIL-superseded board, close the duplicate and DONE citing the assigned URL. Never revive a closed head and never force-merge. If the head is unique, merge `origin/main` keeping both sides (for example both dated `skill-harvest-log` sections and both `Claim` fields), re-test, then merge. Fix PRs branch from `origin/main` after the original merges. When two open PRs fix the same gap, keep the fuller one and FAIL-close the subset. (109 lessons: harvest #2316, #2288, #2271, #2259, #2255, #2249 +101 more, 13 held intake rows, 1 recovered receipt)
+- **Pre-merge hygiene gates:** run `check_conflict_markers.py` (or grep `^<<<<<<<`) before every merge. Reject mojibake, C0 controls (a `\x08` that eats the first letter of a book name), new files without a trailing newline, and unreachable code after `return`/`raise`. New `.py`/`.ps1` read by WinPS must be ASCII, or carry a BOM where the encoding gate demands one. Write `gh pr` and board bodies with `--body-file` as UTF-8 without BOM so `Closes` still links. (35 lessons: harvest #2169, #2041, #2038, #2021, #2009, #1856 +17 more, 12 held intake rows)
+- **Hostile tests:** merge the product PR first, then put additive hostile tests on `docs/mrb-N` from the new main tip, and gate that commit on the pytest exit code. Prefer behavioural tests to string-contains checks: a PR that claims `assign_row` acceptance needs a test that calls `assign_row`. Parse PowerShell Assert scripts as well. Overlapping hostile suites from an earlier docs PR are additive, not a FAIL. (27 lessons: harvest #2264, #1362, #1146, #716, #1051, #590 +3 more, 17 held intake rows, 1 recovered receipt)
+- **Verdict boards are not FR work:** issues labelled `mrb-pass` or `mrb-home` (verdict and home boards) get ACK then GIVEUP or DONE with the issue URL, and are never implemented. `mrb-fail` remediation issues have been offerable FR work since #2464. MRB-checklist issues assigned as FR: run the verify suite, comment the evidence and close; an FR seat never merges the target PR. (77 lessons: harvest #2297, #2281, #2162, #1957, #1872, #1713 +92 more, 21 held intake rows, 2 recovered receipts)
+- **Prove the claim literally:** routing claims need explicit cases (empty labels, line-text skip, pull-URL repo match). State transitions must fire at the right wire event (`on_offer` at assign, `on_ack` only on ACK, no fan-out of remaining work to every seat). Intentional agent-overlay ordering, such as keep-the-flow first, is not a nit. (3 lessons: harvest #775, #723, #614)

@@ -49,12 +49,12 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 * Work in `<ai root>\bob\worker` and in the repos you are told to work on. You are NOT the ear, the chair or a service: do not restart `ircBob`, `ircJeeves`, `Airc` or any IRC server, do not close other windows, do not kill processes you did not start.
 * Hotpatching a service is allowed only following `bobiverse-fleet-ops` (backup first, one service, no Ergo).
 
-## Disk headroom (FR #877 / #890)
+## Disk headroom (FR #877 / #890 / #2727)
 
 `git worktree add` fails with **No space left on device** when FreeGB is near 0. Before a new job tree / when FreeGB < 2:
 
 ```powershell
-# Linked FR/MRB trees (FR #877)
+# Linked FR/MRB trees (FR #877) — the ONLY sanctioned worktree reclaim
 ..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob -KeepPath <current-job-wt>
 
 # Non-worktree seat caches: ~/.grok/sessions|downloads, pip/npm, aged Temp (FR #890)
@@ -62,6 +62,8 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 ```
 
 Prunes job trees when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-MaxExtraJobTrees 0`. Seat-disk `-WhatIf` reports without deleting. Never delete Ergo, secrets, the install root, or the live session id. Details: `bobiverse-bob-job-fr`.
+
+**CAST IRON (FR #2727):** never `Remove-Item` or `git worktree remove` a path that `Clear-BobiverseJobWorktrees.ps1` did not select. Clear printing `removed=0` is **not** permission to free space by guessing `C:\ai\*wt*` lists (operator `wt-bob-main-*`, airc trees, sibling seats). If FreeGB is still under 2 after Clear: file an intake issue and continue on a roomy drive (e.g. `D:\…\job-fr-N`), or GIVEUP. Write `.bobiverse-seat` (`{"nick":"<this-seat>","pid":<pid>}`) at your job tree root so Clear skips your live owner even with `-Force`.
 
 
 ## Outbox path (FR #866 / #2380)
