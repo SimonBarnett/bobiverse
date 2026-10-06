@@ -40,8 +40,9 @@ if (-not (Test-Path -LiteralPath $startWorker)) {
 $cap = [int]$script:BobTrayHardMaxWorkers
 if ($cap -lt 1) { $cap = 2 }
 $procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
-        Select-Object ProcessId, ParentProcessId, Name)
-$n = Measure-BobTrayWorkerSeats -Procs $procs
+        Select-Object ProcessId, ParentProcessId, Name, CommandLine)
+# FR #2667: heal tops up AGENT seats only (plan/maintenance do not consume the cap).
+$n = Measure-BobTrayWorkerSeats -Procs $procs -Modes @('agent')
 $missing = [Math]::Max(0, $cap - $n)
 Write-Output ("FR #2601 Ensure-BobWorkerSeats seats={0} cap={1} missing={2} dryRun={3}" -f $n, $cap, $missing, [bool]$DryRun)
 
@@ -52,7 +53,7 @@ if (("" + $env:BOBIVERSE_WORKER_SEAT_HEAL).Trim() -eq '0') {
 }
 if ($DryRun) { exit 0 }
 
-$refuse = Get-BobTrayWorkerCapRefusal
+$refuse = Get-BobTrayWorkerCapRefusal -Mode agent
 if ($refuse) {
     Write-Warning $refuse
     exit 0

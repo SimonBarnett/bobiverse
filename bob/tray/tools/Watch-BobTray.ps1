@@ -1698,8 +1698,8 @@ function Start-BobTrayWorkerExe {
     #>
     param([ValidateSet('agent', 'plan')][string]$Mode, [switch]$Quiet)
     try {
-        # t815u: hard cap of 2 live workers per machine (tray click and remote !startworker alike)
-        $capRefusal = Get-BobTrayWorkerCapRefusal
+        # t815u / FR #2667: hard cap of 2 AGENT seats only (plan is uncapped; same as startworker / bob_worker)
+        $capRefusal = Get-BobTrayWorkerCapRefusal -Mode $Mode
         if ($capRefusal) {
             Write-TrayLog ('{0}: refused: {1}' -f $Mode, $capRefusal)
             if (-not $Quiet) { try { [void][System.Windows.Forms.MessageBox]::Show($capRefusal, 'Bobiverse', 'OK', 'Information') } catch { } }
