@@ -632,3 +632,12 @@ Books: crash_report (common). Tip PR #2538; hostile docs this entry.
 | Lesson | Onefile bob-worker = bootloader+child = one seat; recycle/cap-kill must use worker_seat_roots / excess_worker_seat_roots + Stop-BobWorkerSeatTrees — never Sort ProcessId | Select -Skip N | Stop-Process (kills whole seats). |
 | Evidence | FR #2556 / PR #2557; hostile docs/mrb-2557; MarchHare 38244/40460 external kill after #2554 hotpatch |
 | Refs | SimonBarnett/bobiverse#2556 SimonBarnett/bobiverse#2557 |
+
+## 2026-10-06 - TipForm seat-heal after irc-lost (MRB #2602 / FR #2601)
+
+| Lesson | Fix / book |
+|--------|------------|
+| Clean bob-worker irc-lost (exit=3) ends the seat with no crash hook; TipForm used to leave the shop under the hard cap of 2 | Watchdog splits HealEngine + HealWorkerSeats; tops agent seats only; CapRefusal still gates; lifecycle seat-heal; Ensure-BobWorkerSeats.ps1 Measure -Procs twin; opt out BOBIVERSE_WORKER_SEAT_HEAL=0 |
+| TipForm heal needs rebuilt bob-tray.exe | Build-BobDialogs.ps1 after pull; source-only tree does not update the frozen tray binary |
+
+Books: bobiverse-bob-worker, post-install. Tip PR #2602; hostile docs/mrb-2602 this entry. Refs: SimonBarnett/bobiverse#2601 SimonBarnett/bobiverse#2602
