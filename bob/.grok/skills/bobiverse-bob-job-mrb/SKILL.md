@@ -179,7 +179,7 @@ Checks:
 
 ## Harvest digest (lessons audit 2026-10-06)
 
-Generalised from 372 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
+Generalised from 372 harvested lessons that never reached this book (audit for FR #2705). Per-lesson sources are the cited harvest issue numbers on each bullet (no separate audit table file on main).
 
 - **Self-MRB is per seat, not per machine:** a seat that opened, authored or pushed commits to the PR under review (including a `docs/mrb-N` PR stacked on its own tip) must ACK then GIVEUP with `reason=self-MRB`. NACK only before any work, and never DONE PASS/FAIL. A sibling seat on the same machine may review. The chair stamps `author_seat`/implementer on DONE and on `edited`/`synchronize` webhooks; a seat that only cited another seat's PR is informational (`FRW`) and does not block review. (42 lessons: harvest #2310, #2247, #2222, #2219, #2217, #2213 +40 more, 5 held intake rows)
 - **Re-offered or already-merged MRB:** ACK, then re-verify on `origin/main`: merge commit present, `Closes` closed the issue, claimed and parent tests green, board posted. DONE with the same verdict and the assigned PR URL. Do not merge again or open new worktrees. Additive hostile gates still go on `docs/mrb-N` from the new main tip. Repeated re-offers after DONE are a chair purge gap: comment on the existing issue. (79 lessons: harvest #2220, #2218, #2214, #2205, #2066, #2154 +68 more, 23 held intake rows)
