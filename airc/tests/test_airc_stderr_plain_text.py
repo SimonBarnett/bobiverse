@@ -29,6 +29,8 @@ def test_ps_error_stderr_is_plain_text_not_clixml():
     assert "ProgressPreference" not in out.stderr
     assert "OutputEncoding" not in out.stderr
     assert "UTF8Encoding" not in out.stderr
+    # FR #2918: one-line user script reports At line:1 (not preamble+1).
+    assert "At line:1 char:1" in out.stderr
 
 
 def test_write_error_stderr_is_plain_text_not_clixml():
@@ -47,12 +49,35 @@ def test_decode_clixml_stderr_unit():
         '<S S="Error">At line:1 char:1_x000D__x000A_</S>'
         "</Objs>"
     )
-    plain = ac.plain_text_powershell_stderr(raw)
+    # Fixture is not preamble-wrapped — keep absolute At line:1.
+    plain = ac.plain_text_powershell_stderr(raw, at_line_offset=0)
     assert "#< CLIXML" not in plain
     assert "<Objs" not in plain
     assert "_x000D_" not in plain
     assert "Cannot find path 'C:\\x'" in plain
     assert "At line:1 char:1" in plain
+
+
+def test_adjust_at_line_subtracts_preamble_offset():
+    raw = (
+        '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+        '<S S="Error">Get-Item : nope_x000D__x000A_</S>'
+        '<S S="Error">At line:4 char:1_x000D__x000A_</S>'
+        "</Objs>"
+    )
+    plain = ac.plain_text_powershell_stderr(raw)  # default = preamble line count
+    assert ac.ps_utf8_preamble_line_count() == 3
+    assert "At line:1 char:1" in plain
+    assert "At line:4" not in plain
+
+
+def test_multiline_script_error_reports_user_line_3():
+    body = "Write-Output a\nWrite-Output b\nGet-Item C:\\no_such_path_airc_L3 -ErrorAction Stop"
+    out = _run(body)
+    assert out.exit_code != 0
+    assert "Cannot find path 'C:\\no_such_path_airc_L3'" in out.stderr
+    assert "At line:3 char:1" in out.stderr
+    assert "At line:6" not in out.stderr
 
 
 def test_preamble_is_on_own_lines():
