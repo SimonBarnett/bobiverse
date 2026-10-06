@@ -8,16 +8,16 @@ REPO = "SimonBarnett/agentic_fomprep"
 
 
 def test_hard_pin_umbrella_ids_skip():
-    # FR #2521: #11 is FAIL remediation (offerable), not an evergreen home — omit from pin set.
-    for num in (3, 7, 8, 9, 20):
+    # FR #2562 / #2677: reverse #2521 — #11 (MRB FAIL verdict) is hard-pinned with homes.
+    for num in (3, 7, 8, 9, 11, 20):
         row = {"repo": REPO, "task": "FR", "id": f"#{num}", "title": "FR: something", "labels": []}
         assert gitclaim.row_skip_fr_reason(row) == "hard_pin_umbrella"
         row2 = dict(row, id=str(num))  # hashless
         assert gitclaim.row_skip_fr_reason(row2) == "hard_pin_umbrella"
 
 
-def test_fr2521_fomprep_11_not_hard_pinned_while_homes_stay():
-    """#11 FAIL remediation must be offerable; #8/#9 evergreen homes stay skipped."""
+def test_fr2521_fomprep_11_hard_pinned_with_homes():
+    """#11 verdict board and #8/#9 evergreen homes are all hard-pinned."""
     row11 = {
         "repo": REPO,
         "task": "FR",
@@ -25,8 +25,8 @@ def test_fr2521_fomprep_11_not_hard_pinned_while_homes_stay():
         "title": "MRB FAIL board",
         "labels": ["mrb", "mrb-fail", "feature-request"],
     }
-    assert gitclaim.row_skip_fr_reason(row11) is None
-    assert ("simonbarnett/agentic_fomprep", "#11") not in gitclaim._SKIP_FR_ISSUE_PINS
+    assert gitclaim.row_skip_fr_reason(row11) == "hard_pin_umbrella"
+    assert ("simonbarnett/agentic_fomprep", "#11") in gitclaim._SKIP_FR_ISSUE_PINS
     for num in (8, 9):
         row = {"repo": REPO, "task": "FR", "id": f"#{num}", "title": "FR: home", "labels": []}
         assert gitclaim.row_skip_fr_reason(row) == "hard_pin_umbrella"
@@ -101,8 +101,8 @@ def test_resync_drops_hard_pinned_umbrella_without_labels(tmp_path, monkeypatch)
     }
     assert "#8" not in ids
 
-def test_mrb2531_fomprep_11_empty_labels_not_hard_pinned():
-    """Hostile: removing #11 from pin set must not leave bare-id hard skip."""
+def test_mrb2531_fomprep_11_empty_labels_hard_pinned():
+    """FR #2562 / #2677: #11 is hard-pinned even with empty labels (verdict board)."""
     row = {"repo": REPO, "task": "FR", "id": "#11", "title": "MRB FAIL board", "labels": []}
-    assert gitclaim.row_skip_fr_reason(row) is None
-    assert ("simonbarnett/agentic_fomprep", "#11") not in gitclaim._SKIP_FR_ISSUE_PINS
+    assert gitclaim.row_skip_fr_reason(row) == "hard_pin_umbrella"
+    assert ("simonbarnett/agentic_fomprep", "#11") in gitclaim._SKIP_FR_ISSUE_PINS

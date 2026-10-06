@@ -1,25 +1,32 @@
-"""FR #2464: mrb-fail remediation issues are offerable FRs; mrb-pass / mrb-home stay skipped."""
+"""FR #2562 / #2677: reverse #2464 — mrb-fail verdict boards are NEVER offerable FRs.
+
+Kept under the old filename so historical MRB/hostile references still resolve;
+assertions now match the never-offer policy (remediation belongs on child FRs).
+"""
 from __future__ import annotations
 
 import gitclaim
 
 
-def test_mrb_fail_alone_is_offerable():
-    assert "mrb-fail" not in gitclaim.SKIP_FR_LABELS
-    assert "mrb_fail" not in gitclaim.SKIP_FR_LABELS
-    assert gitclaim.issue_skip_fr_reason(title="MRB FAIL", labels=("mrb-fail",)) is None
-    assert gitclaim.issue_skip_fr_reason(title="MRB FAIL", labels=("mrb_fail", "feature-request")) is None
-
-
-def test_mrb_plus_mrb_fail_is_offerable():
-    """agentic_fomprep #11/#42 shape: labels mrb + mrb-fail."""
-    assert (
-        gitclaim.issue_skip_fr_reason(
-            title="MRB FAIL board",
-            labels=("mrb", "mrb-fail"),
-        )
-        is None
+def test_mrb_fail_alone_is_skipped():
+    assert "mrb-fail" in gitclaim.SKIP_FR_LABELS
+    assert "mrb_fail" in gitclaim.SKIP_FR_LABELS
+    assert gitclaim.issue_skip_fr_reason(title="MRB FAIL", labels=("mrb-fail",)).startswith(
+        "label:"
     )
+    assert gitclaim.issue_skip_fr_reason(
+        title="MRB FAIL", labels=("mrb_fail", "feature-request")
+    ).startswith("label:")
+
+
+def test_mrb_plus_mrb_fail_is_skipped():
+    """agentic_fomprep #11/#42 shape: labels mrb + mrb-fail → skip (do not drop bare mrb)."""
+    reason = gitclaim.issue_skip_fr_reason(
+        title="MRB FAIL board",
+        labels=("mrb", "mrb-fail"),
+    )
+    assert reason is not None
+    assert reason.startswith("label:")
 
 
 def test_mrb_pass_still_skipped():
@@ -42,7 +49,7 @@ def test_bare_mrb_without_fail_still_skipped():
     assert gitclaim.issue_skip_fr_reason(title="MRB board", labels=("mrb",)) == "label:mrb"
 
 
-def test_mrb_fail_enqueues_from_payload():
+def test_mrb_fail_does_not_enqueue_from_payload():
     claim = gitclaim.claim_from_payload(
         "issues",
         {
@@ -51,7 +58,7 @@ def test_mrb_fail_enqueues_from_payload():
             "issue": {
                 "number": 11,
                 "title": "MRB FAIL",
-                "body": "fix the product",
+                "body": "verdict board — remediation is on child FRs",
                 "state": "open",
                 "labels": [
                     {"name": "mrb"},
@@ -61,9 +68,7 @@ def test_mrb_fail_enqueues_from_payload():
             },
         },
     )
-    assert claim is not None
-    assert claim.task == "FR"
-    assert claim.id in ("#11", "11", 11) or str(claim.id).endswith("11")
+    assert claim is None
 
 
 def test_mrb_pass_still_does_not_enqueue():

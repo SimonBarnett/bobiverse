@@ -119,6 +119,8 @@ CRITICAL_SPAM_TITLE_RE = re.compile(r"(?i)^CRITICAL:|\bdrain FR-unaccepted\b|\b\
 EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
     r"(?i)\bMRB\s+home\b|\bHostile\s+MRB\s+home\b|\bMRB:\s+\S+.*\bhandoff\b",
 )
+# FR #2562 / #2677: MRB FAIL:/PASS: verdict board titles are never FR jobs.
+MRB_VERDICT_TITLE_RE = re.compile(r"(?i)^MRB\s+(FAIL|PASS)\s*:")
 # bobiverse#224 / #765 / #781: FAIL-fix PRs (fix(mrb-N) / mrb-N-fix) are not MRB/UAT targets.
 _MRB_FIX_TITLE_RE = re.compile(
     r"(?i)(?:^|\b)(?:fix\s*\(\s*mrb[-_]?\d+|mrb[-_]?\d+[-_]fix\b)"
@@ -135,10 +137,13 @@ SKIP_FR_LABELS = frozenset(
         "evergreen",
         "evergreen-mrb",
         # FR #595: verdict / board labels are not implementable FRs.
-        # FR #2464: mrb-fail / mrb_fail are offerable remediation FRs (removed from skip).
+        # FR #2562 / #2677: reverse #2464 — mrb-fail / mrb_fail are verdict boards,
+        # never offerable FRs (remediation belongs on child product FRs).
         "mrb",
         "mrb-pass",
+        "mrb-fail",
         "mrb_pass",
+        "mrb_fail",
         # FR #628: held for a human / ionos / release gate.
         "needs-human",
         # needs-mrb1 must NOT be a SKIP_FR label (#1080/#1122/#1174 / PR #1236): that
@@ -637,10 +642,7 @@ def issue_skip_fr_reason(
         return "closed"
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = labs & SKIP_FR_LABELS
-    # FR #2464: mrb-fail remediation is offerable. Bare `mrb` must not block when
-    # `mrb-fail` / `mrb_fail` is also present (FAIL boards carry both labels).
-    if hit and ("mrb-fail" in labs or "mrb_fail" in labs):
-        hit = set(hit) - {"mrb"}
+    # FR #2562 / #2677: reverse #2464 — do not drop bare `mrb` when mrb-fail is present.
     if hit:
         return f"label:{sorted(hit)[0]}"
     title_s = (title or "").strip()
@@ -648,6 +650,8 @@ def issue_skip_fr_reason(
     # consolidate by skill book then open a harvest/* PR). Do not SKIP_FR them.
     if CRITICAL_SPAM_TITLE_RE.search(title_s):
         return "critical_spam_title"
+    if MRB_VERDICT_TITLE_RE.search(title_s):
+        return "mrb_verdict_title"
     blob = f"{title_s}\n{body or ''}"
     if SAFE_TO_CLOSE_RE.search(blob):
         return "safe_to_close"
@@ -736,10 +740,11 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
     """True when this seat must not take a needs_human row.
 
     After GIVEUP loops the chair stamps ``needs_human`` *and* ``giveup_seats``.
-    That used to block *every* seat, so marchhare sat idle while only ionos had
-    given up (bobiverse backlog NAK). When ``giveup_seats`` is set, only those
-    seats are blocked; other live seats may still be offered the row. A bare
-    ``needs_human`` with no giveup_seats stays a global human/vision gate.
+    Early GIVEUPs stay per-seat (FR #1236 / #1407) so one machine's GIVEUP does not
+    idle the fleet. FR #2562 / #2677: once ``giveup_count`` reaches
+    ``GIVEUP_NEEDS_HUMAN_COUNT``, ``needs_human`` blocks **all** seats — seat PID
+    recycle must not re-burn tokens on the same board (agentic_fomprep#11 class).
+    A bare ``needs_human`` with no giveup_seats stays a global human/vision gate.
     Seat match is canonical (``w-io-*`` == ``win-mpre8vi4u6u-*``).
     """
     v = row.get("needs_human")
@@ -749,6 +754,12 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
         flag = str(v or "").strip().lower() in ("1", "true", "yes")
     if not flag:
         return False
+    try:
+        giveups = int(row.get("giveup_count") or 0)
+    except (TypeError, ValueError):
+        giveups = 0
+    if giveups >= GIVEUP_NEEDS_HUMAN_COUNT:
+        return True
     seats = giveup_seat_set(row)
     me = (nick or "").strip()
     if seats and me and not nick_in_giveup_seats(row, me):
@@ -910,13 +921,14 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
 # Labels mrb-home/umbrella/parent-fr should SKIP_FR (#271), but stale queue rows
 # enqueued before labels (or when API label payloads were empty) kept being offered.
 # Hard-pin by (repo, #N) so resync/offer always prune.
-# FR #2521: do NOT pin #11 — that is FAIL remediation (offerable after #2464/#2469),
-# not an evergreen home. Homes remain #3/#7/#8/#9/#20.
+# FR #2562 / #2677: reverse #2521 — re-pin #11 (MRB FAIL verdict board). Remediation
+# belongs on child FRs (#9/#10), never on the verdict board itself.
 _SKIP_FR_ISSUE_PINS: set[tuple[str, str]] = {
     ("simonbarnett/agentic_fomprep", "#3"),
     ("simonbarnett/agentic_fomprep", "#7"),
     ("simonbarnett/agentic_fomprep", "#8"),
     ("simonbarnett/agentic_fomprep", "#9"),
+    ("simonbarnett/agentic_fomprep", "#11"),
     ("simonbarnett/agentic_fomprep", "#20"),
 }
 
