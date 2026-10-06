@@ -9,11 +9,17 @@ from pathlib import Path
 import bob_worker as bw
 from repo_layout import ROOT, resolve
 
-FLEET = resolve("third_party/bob-tray/tools/Start-BobFleetTray.ps1")
+# Prefer tracked bob/tray path; fall back to composed third_party alias.
+FLEET = resolve("bob/tray/tools/Start-BobFleetTray.ps1")
+if not FLEET.is_file():
+    FLEET = resolve("third_party/bob-tray/tools/Start-BobFleetTray.ps1")
 
 
 def test_fleet_tray_wrapper_does_not_double_backslashes(tmp_path):
-    """Ensure-BobSystraySeatWrapper must emit single-backslash paths in double-quoted env assigns."""
+    """Ensure-BobSystraySeatWrapper must emit single-backslash paths in single-quoted env assigns.
+
+    FR #2928: must dot-source safely (Start-BobFleetTray main/tidy must not run).
+    """
     root = tmp_path / "bob"
     tools = root / "tools"
     tools.mkdir(parents=True)
@@ -21,6 +27,9 @@ def test_fleet_tray_wrapper_does_not_double_backslashes(tmp_path):
     script = textwrap.dedent(
         f"""
         . '{FLEET}'
+        if (-not (Get-Command Ensure-BobSystraySeatWrapper -ErrorAction SilentlyContinue)) {{
+          throw 'Ensure-BobSystraySeatWrapper missing after dot-source'
+        }}
         $wrap = Ensure-BobSystraySeatWrapper -Root '{root}' -MachineId 'marchhare'
         Write-Output "WRAP=$wrap"
         Get-Content -LiteralPath $wrap -Raw
@@ -34,6 +43,9 @@ def test_fleet_tray_wrapper_does_not_double_backslashes(tmp_path):
     )
     out = (r.stdout or "") + (r.stderr or "")
     assert r.returncode == 0, out
+    # Must never have run tidy while loading the function.
+    assert "tidy: Stop-BobSystrayPriorAgents" not in out
+    assert "tidy: Cleanup-OrphanAgents" not in out
     # Wrapper must not contain C:\\Users style doubling inside the assigned string.
     fleet = FLEET.read_text(encoding="utf-8-sig")
     assert "FR #2669" in fleet
