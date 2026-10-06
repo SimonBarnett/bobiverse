@@ -99,7 +99,10 @@ def test_tray_worker_launch_never_resumes_and_gives_the_exe_its_one_visible_cons
     assert "Bobiverse\\worker\\bin" in fn                    # per-user run-copy: the installed exe is never locked by a seat
     assert "NEW agent every click" in fn
     # t787u: ProcessStartInfo + CreateNoWindow=false inherits the tray's HIDDEN console -> invisible agent. Own new console instead.
-    assert "Start-BobTrayVisibleProcessWithSessionEnv" in fn and "CreateNoWindow" not in fn.split("t787u", 1)[1].split("$wd =", 1)[1]
+    # t787u pin: after the own-console note the launch uses VisibleProcess helper and never CreateNoWindow
+    # ($wd is assigned earlier in the function; do not require a second $wd= after the marker).
+    after_t787u = fn.split("t787u", 1)[1]
+    assert "Start-BobTrayVisibleProcessWithSessionEnv" in fn and "CreateNoWindow" not in after_t787u
     assert "New-Object System.Diagnostics.ProcessStartInfo" not in fn and "Process]::Start" not in fn
     assert fn.count("Start-BobTrayVisibleProcessWithSessionEnv") == 1   # one process per click: no watcher/helper window
     assert "Resume" not in fn and "Attach" not in fn.replace("AttachConsole", "")
@@ -246,6 +249,8 @@ def test_stage_skills_carry_the_harvest_rule_with_install_absolute_paths(bob_sta
         bob_stage / "worker" / "AGENTS.md", bob_stage / "plan" / "AGENTS.md", bob_stage / "worker" / "CLAUDE.md",
         bob_stage / "plan" / "GROK.md", bob_stage / "worker" / ".cursor" / "rules" / "bobiverse-worker.mdc",
         bob_stage / "plan" / ".cursor" / "rules" / "bobiverse-plan.mdc"]
+    # FR #2835: Sync-BobiverseAgentFolders drops nested skill-dba\.grok; keep the pin if a copy sneaks back.
+    files = [f for f in files if "skill-dba" not in f.as_posix().split("/")]
     assert len(files) >= 11 + 8 + 6
     for f in files:
         t = f.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
@@ -253,9 +258,20 @@ def test_stage_skills_carry_the_harvest_rule_with_install_absolute_paths(bob_sta
             assert mk in t, f"{f.relative_to(bob_stage)}: missing {mk!r}"
         assert "..\\scripts\\Report-BobiverseIntakeIssue.ps1" in t, f.relative_to(bob_stage)
         assert ".\\scripts\\Report-BobiverseIntakeIssue.ps1" not in t.replace("..\\scripts\\", ""), f.relative_to(bob_stage)
-        assert "...\\scripts\\" not in t, f"{f.relative_to(bob_stage)}: staged path rewrite doubled the dot (FR #1704)"
+        # FR #1704: rewritten instruction paths must not gain a third leading dot. Fleet-ops prose may
+        # still name the triple-dot failure mode next to FR #1704 / "triple".
+        assert "...\\scripts\\Report-BobiverseIntakeIssue" not in t, f.relative_to(bob_stage)
+        assert "...\\scripts\\Invoke-BobiverseHarvest" not in t, f.relative_to(bob_stage)
+        for m in re.finditer(r"\.\.\.\\scripts\\", t):
+            window = t[max(0, m.start() - 240): m.end() + 120]
+            assert "FR #1704" in window or "triple" in window.lower(), (
+                f"{f.relative_to(bob_stage)}: staged path rewrite doubled the dot (FR #1704)"
+            )
         if f.name == "SKILL.md":
             assert t.index("CAST IRON RULE - HARVEST AND FILE EVERYTHING") < (t.find("\n## ") if "\n## " in t else 10**9), f
+    # Nested foreign skill-book snapshot must not land in the staged worker tree.
+    nested = [p for p in (bob_stage / "worker").rglob("SKILL.md") if "skill-dba/.grok/skills" in p.as_posix()]
+    assert nested == [], nested
 
 
 def test_worker_and_plan_folders_say_always_a_new_agent(bob_stage):

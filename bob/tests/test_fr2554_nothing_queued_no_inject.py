@@ -65,18 +65,24 @@ def test_pending_flush_skips_nothing_queued(tmp_path):
 
 
 def test_seat_does_not_inject_jeeves_nothing_queued(ircd, tmp_path):
+    # FR #2806 / t817u: nothing-queued is inbound_kind nak — handled on the seat before on_message,
+    # so Relay never sees it (Relay unit tests above still cover deliver-time skip + last-from).
     seat = make_seat(ircd, machine="win-mpre8vi4u6u", pid=22836)
     assert seat.nick == NICK
     got: list[str] = []
     logs: list[str] = []
-    relay = bw.Relay(logs.append, persist_dir=tmp_path / "run")
+    nakked: list[int] = []
+    seat.log = logs.append
+    seat.on_nak = lambda: nakked.append(1)
+    relay = bw.Relay(lambda _m: None, persist_dir=tmp_path / "run")
     relay.set_target(lambda line: got.append(line) or True)
     seat.on_message = relay.deliver
     seat.connect(timeout=5)
     ircd.send(f":Jeeves!j@h PRIVMSG {SHOP} :{NQ}")
-    assert wait_until(lambda: any("skipped nothing-queued" in m for m in logs), 2.0), logs
+    assert wait_until(
+        lambda: any("nothing queued" in m and "not relayed" in m for m in logs), 2.0
+    ), logs
     assert got == []
-    last = tmp_path / "run" / "last-from.txt"
-    assert wait_until(lambda: last.is_file(), 2.0), logs
-    assert "nothing queued" in last.read_text(encoding="utf-8")
+    assert nakked, "FR #2806: nothing queued must arm on_nak / BoredEmitter.nak_s"
+    assert bw.inbound_kind(NQ, NICK) == "nak"
     seat.close()
