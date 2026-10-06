@@ -43,6 +43,20 @@ namespace BobDialogs
         public const int MaxWorkers = 2;   // t815u: hard cap per machine (tray click and !startworker alike)
         static readonly Regex SeatName = new Regex("^bob-worker(-[0-9a-f]+)?$", RegexOptions.IgnoreCase);
 
+        // FR #2601: default on; set BOBIVERSE_WORKER_SEAT_HEAL=0 to disable TipForm top-up after irc-lost.
+        public static bool SeatHealEnabled()
+        {
+            string v = (Environment.GetEnvironmentVariable("BOBIVERSE_WORKER_SEAT_HEAL") ?? "").Trim();
+            if (v.Length == 0) return true;
+            return !(v == "0" || v.Equals("false", StringComparison.OrdinalIgnoreCase) || v.Equals("off", StringComparison.OrdinalIgnoreCase));
+        }
+
+        public static int SeatsMissing()
+        {
+            int n = Seats();
+            return n < MaxWorkers ? MaxWorkers - n : 0;
+        }
+
         static int ParentOf(Process p)
         {
             try
@@ -276,6 +290,7 @@ namespace BobDialogs
         long ackedSeq = -1;
         Process engine;
         int engineStarts; DateTime engineWindow = DateTime.Now;
+        int seatHeals; DateTime seatHealWindow = DateTime.Now;
         StatusForm statusForm; AboutForm aboutForm;
         public readonly List<string> MenuItems = new List<string>();
         public string ExitReason { get { return exitReason ?? ""; } }
@@ -361,14 +376,39 @@ namespace BobDialogs
         void Watchdog()
         {
             if (exiting || noEngine) return;
-            try
-            {
-                if (engine != null && !engine.HasExited) return;
-                if ((DateTime.Now - engineWindow).TotalMinutes > 5) { engineWindow = DateTime.Now; engineStarts = 0; }
-                if (++engineStarts > 3) return;       // no restart storm
-                StartEngine();
-            }
-            catch { }
+            try { HealEngine(); } catch { }
+            try { HealWorkerSeats(); } catch { }
+        }
+
+        void HealEngine()
+        {
+            if (engine != null && !engine.HasExited) return;
+            if ((DateTime.Now - engineWindow).TotalMinutes > 5) { engineWindow = DateTime.Now; engineStarts = 0; }
+            if (++engineStarts > 3) return;       // no restart storm
+            StartEngine();
+        }
+
+        // FR #2601: after bob-worker irc-lost (exit=3) the seat is gone; top agent seats back up to MaxWorkers.
+        // CapRefusal inside Launch still blocks >2. Opt out: BOBIVERSE_WORKER_SEAT_HEAL=0.
+        void HealWorkerSeats()
+        {
+            if (!WorkerLauncher.SeatHealEnabled()) return;
+            int missing = WorkerLauncher.SeatsMissing();
+            if (missing <= 0) return;
+            if ((DateTime.Now - seatHealWindow).TotalMinutes > 5) { seatHealWindow = DateTime.Now; seatHeals = 0; }
+            if (seatHeals >= 3) return;           // no start storm (one launch per tick, max 3 / 5 min)
+            seatHeals++;
+            ApplyEngineEnv();
+            string err;
+            string mid = machine.Length > 0 ? machine : Common.MachineId();
+            int pid = WorkerLauncher.Launch(root, "agent", mid, out err);
+            TrayLifecycle.Write(
+                "seat-heal",
+                "missing", missing.ToString(),
+                "pid", pid.ToString(),
+                "err", err ?? "",
+                "seats", WorkerLauncher.Seats().ToString(),
+                "via", "bob-tray-watchdog");
         }
 
         void Command(string cmd)
