@@ -18,8 +18,22 @@ namespace BobDialogs
     {
         static readonly object Gate = new object();
         static string InstalledFor;
-        static readonly Regex SecretRe = new Regex(
-            @"(?i)(password|passwd|secret|token|api[_-]?key|xai_api_key|cursor_api_key|BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|Bearer|NickServ|SASL)\s*[=:]\s*\S+",
+        // FR #2668: expand redaction parity with Python crash_report.redact
+        static readonly Regex AuthSchemeRe = new Regex(
+            @"(?i)\b(?:Authorization\s*[:=]\s*)?(Bearer|Basic)\s+\S+",
+            RegexOptions.Compiled);
+        static readonly Regex NickServRe = new Regex(
+            @"(?i)(?:PRIVMSG\s+NickServ\s+:)?(?:NickServ\s+)?(IDENTIFY|REGISTER)\s+\S+(?:\s+\S+)?",
+            RegexOptions.Compiled);
+        static readonly Regex IrcPassRe = new Regex(
+            @"(?i)\bPASS\s+\S+",
+            RegexOptions.Compiled);
+        static readonly Regex UrlUserinfoRe = new Regex(
+            @"(?i)(https?://)[^/\s:@]+:[^/\s@]+@",
+            RegexOptions.Compiled);
+        // Optional quotes around key/value (JSON "api_key": "…"); bare pass:
+        static readonly Regex SecretKvRe = new Regex(
+            @"(?i)""?(password|passwd|\bpass\b|secret|token|api[_-]?key|xai_api_key|cursor_api_key|BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|NickServ|SASL)""?\s*[:=]\s*""?[^\s"",}]+""?",
             RegexOptions.Compiled);
         static readonly Regex TokenBlobRe = new Regex(
             @"(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+)\b",
@@ -55,8 +69,13 @@ namespace BobDialogs
 
         public static string Redact(string text)
         {
+            // FR #2411 / FR #2668: parity with Python crash_report.redact
             if (string.IsNullOrEmpty(text)) return "";
-            string s = SecretRe.Replace(text, delegate(Match m) { return m.Groups[1].Value + "=<redacted>"; });
+            string s = AuthSchemeRe.Replace(text, delegate(Match m) { return m.Groups[1].Value + "=<redacted>"; });
+            s = NickServRe.Replace(s, delegate(Match m) { return "NickServ " + m.Groups[1].Value + " <redacted>"; });
+            s = IrcPassRe.Replace(s, "PASS <redacted>");
+            s = UrlUserinfoRe.Replace(s, "$1<redacted>@");
+            s = SecretKvRe.Replace(s, delegate(Match m) { return m.Groups[1].Value + "=<redacted>"; });
             return TokenBlobRe.Replace(s, "<redacted-token>");
         }
 

@@ -26,12 +26,23 @@ from typing import Any, Callable
 DEFAULT_REPO = "SimonBarnett/bobiverse"
 DEFAULT_INTAKE = "https://irc.ntsa.uk/bob/v1/intake"
 _SIG_RE = re.compile(r"crash-sig:([0-9a-f]{8,64})", re.I)
-_SECRET_RE = re.compile(
-    r"(?i)("
-    r"password|passwd|secret|token|api[_-]?key|xai_api_key|cursor_api_key|"
-    r"BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|Bearer|"
-    r"NickServ|SASL"
-    r")\s*[=:]\s*\S+"
+# FR #2668: Bearer/Basic must consume the token after the scheme (old KV rule left it).
+_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(?:Authorization\s*[:=]\s*)?(Bearer|Basic)\s+\S+"
+)
+# NickServ IDENTIFY|REGISTER [nick] <pw> and PRIVMSG NickServ :IDENTIFY ...
+_NICKSERV_RE = re.compile(
+    r"(?i)(?:PRIVMSG\s+NickServ\s+:)?(?:NickServ\s+)?(IDENTIFY|REGISTER)\s+\S+(?:\s+\S+)?"
+)
+_IRC_PASS_RE = re.compile(r"(?i)\bPASS\s+\S+")
+# https://user:pass@host → strip userinfo
+_URL_USERINFO_RE = re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@")
+# Optional quotes around key/value (JSON "api_key": "…"); include bare pass:
+_SECRET_KV_RE = re.compile(
+    r'(?i)"?(?P<key>'
+    r"password|passwd|\bpass\b|secret|token|api[_-]?key|xai_api_key|cursor_api_key|"
+    r"BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|NickServ|SASL"
+    r')"?\s*[:=]\s*"?[^\s",}]+"?'
 )
 _TOKEN_BLOB_RE = re.compile(
     r"(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -52,7 +63,13 @@ def spool_dir() -> Path:
 
 
 def redact(text: str) -> str:
-    s = _SECRET_RE.sub(lambda m: m.group(1) + "=<redacted>", text or "")
+    """Strip common secret shapes from crash titles/bodies (FR #2411 / FR #2668)."""
+    s = text or ""
+    s = _AUTH_SCHEME_RE.sub(r"\1=<redacted>", s)
+    s = _NICKSERV_RE.sub(lambda m: f"NickServ {m.group(1)} <redacted>", s)
+    s = _IRC_PASS_RE.sub("PASS <redacted>", s)
+    s = _URL_USERINFO_RE.sub(r"\1<redacted>@", s)
+    s = _SECRET_KV_RE.sub(lambda m: m.group("key") + "=<redacted>", s)
     return _TOKEN_BLOB_RE.sub("<redacted-token>", s)
 
 
