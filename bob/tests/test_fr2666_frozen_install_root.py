@@ -90,3 +90,72 @@ def test_start_bob_exports_bob_install_root():
     agent = (ROOT / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
     assert "--install-root" in agent
     assert "resolve_bob_install_root" in agent
+
+
+# --- MRB #2671 hostile additions ---
+
+
+def test_mrb2671_explicit_beats_env_and_frozen(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOB_INSTALL_ROOT", raising=False)
+    want = tmp_path / "explicit"
+    other = tmp_path / "env-root"
+    want.mkdir()
+    other.mkdir()
+    exe = (tmp_path / "scripts")
+    exe.mkdir()
+    ear = exe / "bob-ear.exe"
+    ear.write_bytes(b"MZ")
+    got = irc_agent.resolve_bob_install_root(
+        explicit=want,
+        env={"BOB_INSTALL_ROOT": str(other)},
+        frozen=True,
+        executable=ear,
+    )
+    assert got == want.resolve()
+
+
+def test_mrb2671_blank_explicit_falls_through_to_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOB_INSTALL_ROOT", raising=False)
+    want = tmp_path / "from-env"
+    want.mkdir()
+    got = irc_agent.resolve_bob_install_root(
+        explicit="   ",
+        env={"BOB_INSTALL_ROOT": str(want)},
+        frozen=True,
+    )
+    assert got == want.resolve()
+
+
+def test_mrb2671_client_empty_install_root_uses_env(tmp_path, monkeypatch):
+    want = tmp_path / "env-client"
+    want.mkdir()
+    monkeypatch.setenv("BOB_INSTALL_ROOT", str(want))
+    agent = irc_agent.Client.__new__(irc_agent.Client)
+    agent.args = SimpleNamespace(install_root="")
+    assert agent._install_root() == want.resolve()
+
+
+def test_mrb2671_frozen_mei_queue_dir_is_under_install_root(tmp_path, monkeypatch):
+    """Hostile: startworker.queue_dir must not land under Temp when __file__ is _MEI*."""
+    import startworker as sw
+
+    monkeypatch.delenv("BOB_INSTALL_ROOT", raising=False)
+    install = tmp_path / "ai" / "bob"
+    scripts = install / "scripts"
+    scripts.mkdir(parents=True)
+    exe = scripts / "bob-ear.exe"
+    exe.write_bytes(b"MZ")
+    mei = tmp_path / "_MEIhostile"
+    mei.mkdir()
+    fake = mei / "irc_agent.pyc"
+    fake.write_bytes(b"")
+    root = irc_agent.resolve_bob_install_root(
+        env={},
+        frozen=True,
+        executable=exe,
+        file_path=fake,
+    )
+    q = sw.queue_dir(root)
+    assert root == install.resolve()
+    assert q == (install / "run" / "startworker").resolve()
+    assert "_MEI" not in str(q)
