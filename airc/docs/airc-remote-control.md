@@ -6,6 +6,8 @@ See **[feature-request-airc-remote-control-2026-10-01.md](./feature-request-airc
 
 Authenticated PRIVMSG to `{machine}_console` runs PowerShell (or `cmd:` / `psb64:`) and returns Query lines `out`/`err`/`DONE id=… exit=…`. The bob ear appends those to `<bob home>\airc-replies.jsonl` (FR #1546). `Invoke-AircRemote.ps1 -Outbox … -ReplyFile …` prefixes `id=<corr>` and waits for matching DONE (non-zero exit on timeout).
 
+Concurrent Commands on the same Query are **queued** (FR #2632): one shell in flight plus a short pending list; each job still emits its own DONE. A full queue fail-closes with `busy: prior shell still emitting` + `DONE exit=1` (FR #2612: no hang). `Invoke-AircRemote` retries that busy reply within `-MaxRetries` / `-TimeoutSec` when `-JobId` was not pinned (compat with older airc).
+
 ```text
 PRIVMSG marchhare_console :id=aabbccdd Write-Output ping
 PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
