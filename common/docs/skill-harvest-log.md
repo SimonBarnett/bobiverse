@@ -678,3 +678,11 @@ Books: bobiverse-bob-job-fr, chair gitclaim resync. Tip PR #2621; hostile docs t
 | FLOOD_S 0.35s per line makes large outputs slow | Raise Invoke-AircRemote -TimeoutSec; avoid Restart-Service Airc during live ReplyFile Wait |
 
 Books: bobiverse-airc, bobiverse-airc-troubleshooting. Tip PR #2615; hostile docs/mrb-2615 this entry. Refs: SimonBarnett/bobiverse#2612 SimonBarnett/bobiverse#2615
+
+## 2026-10-06 - citing DONE FR must keep true implementer (MRB #2628 / FR #2623)
+
+| Lesson | Fix / book |
+|--------|------------|
+| DONE FR that only cites another seat's open PR overwrote author_seat/implementer_seat and stranded MRB on a two-seat shop | resolve_done_fr_implementer_seat + _append_unaccepted keep existing implementer stamps; FRW ledger role stays non-blocking (t860u) |
+
+Books: chair gitclaim/shop_listen. Tip PR #2628; hostile docs this entry. Refs: SimonBarnett/bobiverse#2623 SimonBarnett/bobiverse#2628
