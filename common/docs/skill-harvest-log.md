@@ -677,4 +677,4 @@ Books: bobiverse-bob-job-fr, chair gitclaim resync. Tip PR #2621; hostile docs t
 | Live MarchHare 80-line Command got only seq=1 then Wait timeout; airc-console.log showed probe interrupted -> stop then process restart mid-emit | Outbound Query queue survives in-process force_reconnect and drains after handshake; graceful stop flushes DONE exit=1 for in-flight shell ids; overlapping shell on same Query returns busy DONE |
 | FLOOD_S 0.35s per line makes large outputs slow | Raise Invoke-AircRemote -TimeoutSec; avoid Restart-Service Airc during live ReplyFile Wait |
 
-Books: bobiverse-airc, bobiverse-airc-troubleshooting. Refs: SimonBarnett/bobiverse#2612
+Books: bobiverse-airc, bobiverse-airc-troubleshooting. Tip PR #2615; hostile docs/mrb-2615 this entry. Refs: SimonBarnett/bobiverse#2612 SimonBarnett/bobiverse#2615
