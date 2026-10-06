@@ -660,6 +660,29 @@ function Sync-BobiverseWorkTree {
             $res.Bootstrapped = $true; $res.Pulled = $true; $res.Ok = $true; $res.Branch = $Branch
             return (Done "bootstrapped on $Branch")
         }
+        # FR #2944: existing .git with unborn/empty HEAD (e.g. leftover `master` with "No commits yet")
+        # never enters the bootstrap checkout path above. Heal like first bootstrap when origin/$Branch
+        # is reachable — empty HEAD is not agent work, so KEEP_BRANCH does not preserve it.
+        $hv = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', '--verify', 'HEAD')) -TimeoutSec 20
+        if ($hv.Code -ne 0) {
+            $sc = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('sparse-checkout', 'set', '--no-cone', "/$Product/", '/common/')) -TimeoutSec 30
+            if ($sc.Code -ne 0) {
+                foreach ($l in ($sc.Out | Select-Object -First 3)) { $log.Add("  $l") }
+                $res.Ok = $true
+                return (Done ("unborn HEAD heal sparse-checkout failed (exit $($sc.Code)); keeping the installed version"))
+            }
+            try { Write-BobiverseInstallGitExclude -InstallRoot $root -Product $Product } catch { }
+            $c = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('checkout', '-q', '-B', $Branch, '--track', "origin/$Branch")) -TimeoutSec 120
+            if ($c.Code -ne 0) {
+                foreach ($l in ($c.Out | Select-Object -First 3)) { $log.Add("  $l") }
+                $res.Ok = $true
+                $log.Add("ALERT worktree-heal-unborn failed (exit $($c.Code)); keeping the installed version")
+                return (Done ("unborn HEAD heal checkout failed (exit $($c.Code)); keeping the installed version"))
+            }
+            $res.Bootstrapped = $true; $res.Pulled = $true; $res.Ok = $true; $res.Branch = $Branch
+            $log.Add("INFO worktree-heal-unborn HEAD -> $Branch (FR #2944)")
+            return (Done "healed unborn HEAD onto $Branch")
+        }
         $res.Ok = $true
         $br = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('symbolic-ref', '--short', '-q', 'HEAD')) -TimeoutSec 20
         $cur = if ($br.Code -eq 0 -and $br.Out.Count) { "$($br.Out[0])".Trim() } else { '' }

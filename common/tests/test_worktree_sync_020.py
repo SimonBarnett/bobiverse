@@ -260,6 +260,32 @@ def test_fr1157_dirty_off_main_left_alone(world):
     assert "fetched only" in out.text
 
 
+def test_fr2944_unborn_empty_master_heals_to_main(world):
+    """FR #2944: existing .git with unborn HEAD (empty master / no commits) must checkout origin/main.
+
+    Live ionos installs sometimes had .git left after init+fetch without a successful first
+    checkout; Sync skipped bootstrap (because .git exists) and stranded on master with
+    'No commits yet', so workers could not branch/commit from the install dir.
+    """
+    r = world.root("bob")
+    seed_install(r)
+    git(r, "init", "-q", "-b", "master")
+    git(r, "remote", "add", "origin", str(world.bare))
+    git(r, "config", "core.longpaths", "true")
+    git(r, "sparse-checkout", "set", "--no-cone", "/bob/", "/common/")
+    assert git(r, "rev-parse", "--verify", "HEAD", check=False).returncode != 0
+    assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "master"
+    out = world.sync("bob")
+    assert out.returncode == 0, out.text
+    assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "main"
+    assert git(r, "rev-parse", "--verify", "HEAD", check=False).returncode == 0
+    assert (r / "bob/scripts/b1.ps1").is_file() and (r / "common/VERSION").is_file()
+    assert (r / "scripts/b1.ps1").is_file() and (r / "scripts/c1.ps1").is_file()
+    assert (r / "config/secret.txt").read_text() == "keep me\n"
+    assert "worktree-heal-unborn" in out.text
+    assert git(r, "status", "--porcelain").stdout.strip() == ""
+
+
 def test_agent_can_branch_commit_and_push_from_the_install_dir(world):
     r = world.root("bob")
     assert world.sync("bob").returncode == 0
