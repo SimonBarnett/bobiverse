@@ -60,7 +60,7 @@ Install root `<ai root>\jeeves`. Chair home `~\.jeeves` (queue, focus, ignore, c
 | Unaccepted / accepted / done | Chair queue (crash mirror + live webhook path) |
 | Focus | `!focus` / `!unfocus` / strict - sorts `!list` and assign-on-`!bored` |
 | Ignore | `!ignore` / `!unignore` - suppress a repo fleet-wide |
-| Assign | On `!bored`, Jeeves offers next row in focus order; optional owner/ear `!assign`. **FR #2803:** seats told `nothing queued` are tracked; when a row is enqueued/becomes offerable, Jeeves pushes `offer_focus_top` to those idle seats (oldest first) without waiting for the next `!bored` (no repeated empty chatter) |
+| Assign | On `!bored`, Jeeves offers next row in focus order; optional owner/ear `!assign`. **FR #2803:** seats told `nothing queued` are tracked; when a row is enqueued/becomes offerable, Jeeves pushes `offer_focus_top` to those idle seats (oldest first) without waiting for the next `!bored` (no repeated empty chatter). **Idle-push say False (MRB #2819 / #2821):** `offer_to_idle_seats` / chair-outbox push must treat `say` returning False (`enqueue_chair_fleet_privmsg` OSError/secret skip) or raise as undelivered — keep idle-after-empty and rate-limit; never clear on a silent False |
 | Seat ledger | Digest `machines.<id>.workers[]` with state **idle** / **offered** / **doing**; TipForm `working_on` |
 
 Monitor for: empty offer queue while open FRs exist; seats idle with unaccepted work; accepted rows stuck; GIVEUP loops; machine-pin / author-seat blocks leaving work stranded; hand-out empty / `nothing queued` under focus while outside-focus ungated rows remain or `require_machine` shrinks the offerable set (harvest #2243 / #2285).
@@ -131,7 +131,4 @@ On ionos, NSSM `ircJeeves` may use `-ChairHome ~/.jeeves` while live `queue.json
 - **CAST IRON keep seats busy (harvest #1967 / operator):** never clear digest busy on seats that are actively working (`doing`/`offered` with a live ACK path, or non-empty `working_on` while the seat process is alive). `idle_seats` and `seats_stuck_doing` are **report-only** by default. Call `clear_seat_doing` / orphan heal **only** for true stale busy: `queue.accepted` empty **and** the seat is a true orphan blocking `!bored` / nak-busy for the whole shop (no live ACK path). Prefer `--force-orphan-busy` (or equivalent explicit force) over casual clears. Related product: FR #1714; false-busy class: harvest #1712 / PR #1823.
 - **NAK busy / workers map (harvest #1715):** `bored nak busy` can key off `machines.workers.<pid>.working_on` / running state even when `worker_list` shows idle and queue `accepted` is empty (lost DONE). Clearing **only** `worker_list` is not enough - `clear_orphan` must also idle the `workers` map and machine `working_on`. Product fix tracked as FR #1714. Related false-busy: harvest #1712 (`seats_stuck_doing`).
 - Monitor checks observe and diagnose; they do not claim work, assign seats, or act as the chair.
-
-## Harvested lessons (intake)
-
-- MRB Jeeves idle-push: offer_to_idle_seats must treat say returning False (enqueue_chair_fleet_privmsg OSError/secret skip) as undelivered — keep idle-after-empty and rate-limit; never clear on a silent False
+- **Idle-push say False (MRB #2819 / fix #2821 / harvest-lesson #2824):** `offer_to_idle_seats` must treat `say` returning False (`enqueue_chair_fleet_privmsg` OSError/secret skip) or raise as undelivered — keep idle-after-empty and rate-limit; never clear on a silent False. Product tests: `jeeves/tests/test_mrb2819_hostile_chair_outbox_say_false.py`.
