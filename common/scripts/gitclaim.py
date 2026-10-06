@@ -3803,10 +3803,18 @@ def push_idle_offers_via_chair_outbox(
     issue_open=None,
     log=None,
 ) -> int:
-    """Enqueue shop assign PRIVMSGs on chair-outbox for idle seats (webhook / enqueue path)."""
+    """Enqueue shop assign PRIVMSGs on chair-outbox for idle seats (webhook / enqueue path).
+
+    FR #2899 / MRB #2900: when ``log`` is omitted, default to stdout ``INFO git-claim idle
+    offered …`` so enqueue/webhook idle pushes match bored-offer logging without each
+    caller wiring a callback.
+    """
 
     def _say(channel: str, text: str) -> bool:
         return bool(bobreport.enqueue_chair_fleet_privmsg(home, text, channel))
+
+    def _default_log(msg: str) -> None:
+        print(str(msg), flush=True)
 
     return offer_to_idle_seats(
         home,
@@ -3815,7 +3823,7 @@ def push_idle_offers_via_chair_outbox(
         pr_exists=pr_exists,
         is_pull=is_pull,
         issue_open=issue_open,
-        log=log,
+        log=_default_log if log is None else log,
     )
 
 
