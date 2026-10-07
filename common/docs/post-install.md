@@ -204,3 +204,7 @@ If `git -C <ai root>\<product> status` reports **No commits yet** on `master` (o
 ## Updater tip overlay when ff blocked (FR #2581)
 
 Dirty install worktrees (local hotpatches) can block `git merge --ff-only`, so Sync still robocopies a **stale** `Update-BobiverseService.ps1` even after `git fetch` refreshed `origin/main`. After scripts compose, `Sync-BobiverseFromRepo` calls `Sync-BobiverseUpdaterFromOrigin` to overlay `origin/<branch>:common/scripts/Update-BobiverseService.ps1` into flat `scripts\` and `common\scripts\`. That keeps #2563 soft-fail on disk without waiting for a clean ff. Manual one-shot: dot-source `Bobiverse-Common.ps1` and run `Sync-BobiverseUpdaterFromOrigin -InstallRoot <ai root>\bob`.
+
+## MSI payload wins over stale install-tree git (FR #2982)
+
+When `<ai root>\<product>` is also a sparse git work tree that is **dirty or behind** `origin/main`, RunInstall must not copy that checkout over the MSI heat payload. `Install-Bob` / `Install-Jeeves` / `Install-Airc` treat a forwarded `-MsiProductVersion` (x.y.z) as **SkipCopy** (scripts, tray `tools\`, skills). `Sync-BobiverseFromRepo` logs `sync-skip-stale-worktree` and keeps installed flat files when ff/fetch did not leave the work tree at tip; the FR #2581 tip updater overlay still runs. FR #2948 covered `VERSION` only; this covers the rest. Operator recompose after a successful manual ff: `-ComposeOnly`.

@@ -37,6 +37,13 @@ param(
 # #70: map MSI property strings onto the real switches (empty / unset = no-op).
 if ($MsiSkipErgo -eq '1') { $SkipErgo = $true }
 if ($MsiSkipCopy -eq '1') { $SkipCopy = $true }
+# FR #2982: MSI heat payload wins for scripts/skills when ProductVersion is forwarded.
+if (([string]$MsiProductVersion).Trim() -match '^\d+\.\d+\.\d+') {
+    if (-not $SkipCopy) {
+        Write-Host ("INFO FR #2982 MSI ProductVersion={0} -> SkipCopy (keep MSI-laid scripts/skills)" -f $MsiProductVersion.Trim())
+    }
+    $SkipCopy = $true
+}
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path

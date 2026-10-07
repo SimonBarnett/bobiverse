@@ -80,6 +80,7 @@ $git = Resolve-BobiverseGitExe
 $pulled = $false
 $clone = $null
 $viaWorkTree = $false
+$wtReason = ''
 
 # FR #269: operator/UAT hook - recompose flat scripts from the current tree without service restart or fetch.
 if ($ComposeOnly) {
@@ -110,10 +111,11 @@ if (-not $Product) {
 if (-not $explicitRepo -and $Product) {
     $wt = Sync-BobiverseWorkTree -InstallRoot $InstallRoot -Product $Product -Branch $Branch -GitExe $git -DryRun:$DryRun
     foreach ($l in @($wt.Log)) { Write-Host $l }
-    Write-Host ("INFO sync-worktree ok={0} pulled={1} branch={2}: {3}" -f $wt.Ok, $wt.Pulled, $wt.Branch, $wt.Reason)
+    $wtReason = [string]$wt.Reason
+    Write-Host ("INFO sync-worktree ok={0} pulled={1} branch={2}: {3}" -f $wt.Ok, $wt.Pulled, $wt.Branch, $wtReason)
     # FR #1074 / #2470: surface stale fetch/ff/behind so operators notice offer gates may lag main.
-    if ("$($wt.Reason)" -match 'timed out|ff-only not possible|fetch failed|not main|detached HEAD|still behind|behind origin') {
-        Write-Host ("ALERT sync-worktree-stale: {0}" -f $wt.Reason)
+    if ($wtReason -match 'timed out|ff-only not possible|fetch failed|not main|detached HEAD|still behind|behind origin') {
+        Write-Host ("ALERT sync-worktree-stale: {0}" -f $wtReason)
     }
     if ($wt.Ok -and (Test-Path -LiteralPath (Join-Path $InstallRoot "$Product\scripts"))) {
         $clone = $InstallRoot
@@ -243,6 +245,27 @@ if ($DryRun) {
     exit 0
 }
 
+# FR #2982: when the install dir is its own sparse work tree and ff/fetch left it
+# dirty or behind origin, robocopy would re-lay that stale checkout over the MSI
+# heat payload (scripts/tools/skills/worker). VERSION equality alone does not
+# protect this (common\VERSION may be stamped to the MSI version — FR #2948 class).
+# ComposeOnly is an operator hook after a manual ff — still compose.
+# Tip updater overlay (FR #2581) still runs so Update-BobiverseService soft-fail lands.
+$skipStaleCompose = $false
+if ($viaWorkTree -and -not $ComposeOnly) {
+    $tipOk = (
+        $wtReason -eq 'already up to date' -or
+        $wtReason -match '^fast-forwarded' -or
+        $wtReason -match '^bootstrapped' -or
+        $wtReason -match '^healed unborn'
+    )
+    if (-not $tipOk -and -not $pulled) {
+        $skipStaleCompose = $true
+        Write-Host ("ALERT sync-skip-stale-worktree: {0} - keeping installed (MSI) flat files; tip updater overlay still runs (FR #2982)" -f $wtReason)
+    }
+}
+
+if (-not $skipStaleCompose) {
 foreach ($d in @('scripts', 'third_party')) {
     $t = Join-Path $InstallRoot $d
     foreach ($s in @(Get-BobiverseRepoDirs -Root $clone -Sub $d)) {
@@ -263,10 +286,12 @@ foreach ($d in @('scripts', 'third_party')) {
         }
     }
 }
+} # end -not $skipStaleCompose (scripts/third_party)
 
 # FR #2581: when ff is blocked by dirty hotpatches, the robocopy above still
 # copies a stale Update-BobiverseService.ps1. Overlay origin/<Branch> tip so
 # #2563 soft-fail / ForceCheck escape reaches flat scripts\ without a clean ff.
+# FR #2982: still run this overlay when skipStaleCompose (MSI flat files kept).
 if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
     try {
         $upd = Sync-BobiverseUpdaterFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
@@ -280,6 +305,7 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
     }
 }
 
+if (-not $skipStaleCompose) {
 # t784u: runtime dirs the stage/MSI lays out under another name than the repo uses (the tray runs from tools\ src\ assets\, not
 # from third_party\bob-tray; jeeves tools\). Without this a work-tree ff would update third_party\ but not what actually runs.
 $mirror = @()
@@ -370,6 +396,7 @@ if ($Product) {
         & robocopy.exe $docsSrc (Join-Path $InstallRoot 'docs') '*.md' /XO /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
     }
 }
+} # end -not $skipStaleCompose (mirror/skills/agent)
 
 if (Test-Path -LiteralPath $verSrc) {
     if ($script:BobiverseSkipVersionCopyFromClone) {
