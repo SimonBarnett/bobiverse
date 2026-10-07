@@ -27,6 +27,7 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/skills-visionary",
         "SimonBarnett/agentic_fomprep",
         "SimonBarnett/a-search",  # FR #3023: Plan product; intake Flush must not drop
+        "SimonBarnett/trutex",  # FR #3050: private Plan product; allowlist ignores visibility
     }
 )
 _SECRETISH = re.compile(

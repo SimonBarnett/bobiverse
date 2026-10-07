@@ -74,6 +74,17 @@ def test_a_search_repo_allowed():
     assert norm["kind"] == "fr"
 
 
+def test_trutex_repo_allowed():
+    """FR #3050: private Plan product trutex must intake (visibility not a gate)."""
+    assert "SimonBarnett/trutex" in intake.DEFAULT_ALLOW_REPOS
+    err, norm = intake.validate_payload(
+        _base(repo="SimonBarnett/trutex", kind="fr", title="deposco mapping")
+    )
+    assert err is None
+    assert norm["repo"] == "SimonBarnett/trutex"
+    assert norm["kind"] == "fr"
+
+
 def test_unknown_repo_not_allowed():
     err, norm = intake.validate_payload(_base(repo="SimonBarnett/not-a-fleet-repo"))
     assert err == "repo_not_allowed"
