@@ -2330,16 +2330,22 @@ class Client:
             return True
         wnick, repo, task, ident = parsed
         self._refresh_ledger()
-        _gh_cache: dict = {}
+        # FR #3188: shared TTL caches (same as !bored) — never a fresh per-call dict.
         status, res = gitclaim.assign_row(
             self.home,
             wnick,
             repo,
             task,
             ident,
-            pr_exists=gitclaim.github_pr_exists_checker(home=self.home, cache=_gh_cache),
-            is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
-            issue_open=gitclaim.github_issue_open_checker(home=self.home, cache=_gh_cache),
+            pr_exists=gitclaim.github_pr_exists_checker(
+                home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
+            ),
+            is_pull=gitclaim.github_is_pull_checker(
+                home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
+            ),
+            issue_open=gitclaim.github_issue_open_checker(
+                home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
+            ),
         )
         if status != "ok" or not isinstance(res, dict):
             self._cmd_reply(src, "assign", [f"assign: refused - {res}"])
@@ -2427,8 +2433,10 @@ class Client:
             return
         # FR #1714 / #1508: heal orphan digest doing BEFORE busy gate — otherwise
         # stale workers-map working_on nak-busys forever and never reaches offer_focus_top.
-        _gh_cache: dict = {}
-        _pr_exists = gitclaim.github_pr_exists_checker(home=self.home, cache=_gh_cache)
+        # FR #3188: reuse process-wide TTL caches across !bored (never a fresh {} fan-out).
+        _pr_exists = gitclaim.github_pr_exists_checker(
+            home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
+        )
         try:
             n_orphan = gitclaim.clear_orphan_digest_mrb_doing(
                 self.home, pr_exists=_pr_exists
@@ -2454,14 +2462,19 @@ class Client:
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).
         # FR #595 / #247: skip MRB rows whose /pull/N 404s when a token is available.
+        # FR #3188: shared TTL + offer_focus_top call budget (at most one live GET).
         status, job = gitclaim.offer_focus_top(
             self.home,
             src,
             bobreport.normalize_channel(target),
             now=now,
             pr_exists=_pr_exists,
-            is_pull=gitclaim.github_is_pull_checker(home=self.home, cache=_gh_cache),
-            issue_open=gitclaim.github_issue_open_checker(home=self.home, cache=_gh_cache),
+            is_pull=gitclaim.github_is_pull_checker(
+                home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
+            ),
+            issue_open=gitclaim.github_issue_open_checker(
+                home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
+            ),
         )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)
