@@ -26,9 +26,11 @@ def test_mrb3038_skill_has_split_backlog_step():
     assert "umbrella issue" in text.lower() or "Do **not** park the whole product as one" in text
 
 
-def test_mrb3038_keeps_intake_allowlist_and_fr_path():
+def test_mrb3038_keeps_intake_allow_and_fr_path():
     text = SKILL.read_text(encoding="utf-8")
-    assert "DEFAULT_ALLOW_REPOS" in text
+    # FR #3135: SimonBarnett/* owner gate (no per-repo DEFAULT_ALLOW_REPOS churn).
+    assert "SimonBarnett/" in text
+    assert "3135" in text or "DEFAULT_ALLOW_REPOS" in text or "intake" in text.lower()
     assert "feature-request" in text
     # FR path also mentions Goal/Deliverables/Testable
     assert text.count("Goal / Deliverables / Testable") >= 1

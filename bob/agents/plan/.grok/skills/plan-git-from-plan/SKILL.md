@@ -54,13 +54,12 @@ python tools/validate-vision-pack.py docs/vision.md --mocks-dir docs/mocks
 
 1. **Create repo** — skill `plan-create-repo`.
    `gh repo create SimonBarnett/<name> --public`.
-   **Intake allowlist (FR #3023):** if harvest/FR filings will target
-   `SimonBarnett/<name>`, that repo must be on bobiverse
-   `common/scripts/intake.py` `DEFAULT_ALLOW_REPOS` (and the
-   `Invoke-BobiverseHarvest.ps1` Flush fallback). Missing → HTTP 403
-   `repo_not_allowed` / Flush drop. File an FR against
-   `SimonBarnett/bobiverse` when absent; after that merge, **ionos** must
-   Sync/compose ircJeeves so live `/bob/v1/intake` picks up the list.
+   **Intake allow (FR #3135):** any `SimonBarnett/<name>` matching the
+   intake repo regex is allowed — no per-repo `DEFAULT_ALLOW_REPOS` edit
+   for new Plan products. Non-SimonBarnett owners still 403. If live
+   intake still 403 after a rule change, **ionos** must Sync/compose
+   ircJeeves (FR #3117 / #3122 class). Queue suppress/prioritise via
+   `!ignore` / `!focus`, not a hardcoded intake list.
 
 2. **Bob git webhook** — skill `plan-bob-webhooks`.
    Hook URL `https://irc.ntsa.uk/bob/v1/git` only.

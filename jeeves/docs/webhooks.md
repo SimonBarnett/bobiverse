@@ -70,9 +70,9 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
 
 Use a **single** `/bob/v1/intake` for harvest; do not add `/bob/v1/harvest`.
 
-Intake `repo` must be on the default allow-list in `scripts/intake.py` (`DEFAULT_ALLOW_REPOS`) or the POST returns **403** `repo_not_allowed`. Current defaults: `SimonBarnett/bobiverse`, `skills-visionary`, `agentic_fomprep`, `a-search`, `trutex` (FR #94; FR #3023; FR #3050; FR #795 retired archived `gh-Jeeves` / `agentic_build` / `AgentMonitor` / `bob-design-uat` / `agentic_irc`). Private repos are allowlist-eligible (visibility is not a gate).
+Intake `repo` must match `owner/name` and be under **`SimonBarnett/*`** (FR #3135) or the POST returns **403** `repo_not_allowed`. Non-SimonBarnett owners stay denied unless explicitly listed in `DEFAULT_ALLOW_REPOS` later. Known products (`bobiverse`, `skills-visionary`, `agentic_fomprep`, `a-search`, `trutex`) remain documented examples (FR #94; FR #3023; FR #3050). Private repos are eligible (visibility is not a gate). Queue behaviour uses `!ignore` / `!focus` — not a second hardcoded intake list.
 
-After any `DEFAULT_ALLOW_REPOS` change merges to `main`, **Sync/compose (or restart) ircJeeves on ionos** so the live webhook picks it up — source-on-main alone does not update a stale install (FR #3117 class). Monitor: `Test-JeevesMonitorIntakeAllowlist.ps1`.
+After intake allow-rule changes merge to `main`, **Sync/compose (or restart) ircJeeves on ionos** so the live webhook picks it up — source-on-main alone does not update a stale install (FR #3117 / #3122 class). Monitor: `Test-JeevesMonitorIntakeAllowlist.ps1`.
 
 ### POST jira — no secret
 
