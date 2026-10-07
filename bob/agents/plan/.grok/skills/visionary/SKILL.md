@@ -55,12 +55,16 @@ Copy `docs/templates/vision.md` and fill it in this session **before**
 ### Feature request (existing repo)
 
 1. Confirm the **target repo**. Do **not** `gh repo create`.
-2. Reuse the repo's existing shape unless the FR explicitly changes it.
-3. Fill a vision pack for the **new surface** in the FR markdown (prefer
+2. **Before gap analysis:** `git fetch` + ff-only pull (or a fresh
+   worktree from `origin/main`) on the product clone. Closed GitHub FRs
+   do **not** mean the local tree is current — compare Success rows to
+   modules on `origin/main`, not a stale tip.
+3. Reuse the repo's existing shape unless the FR explicitly changes it.
+4. Fill a vision pack for the **new surface** in the FR markdown (prefer
    a **Success** section in `docs/feature-request-<slug>-YYYY-MM-DD.md`
    with the success table, plus gap vs current tree). A separate
    `docs/feature-request-<slug>-vision.md` is OK if cleaner.
-4. When the FR has a UI, add or update HTML wireframes in `docs/mocks/`
+5. When the FR has a UI, add or update HTML wireframes in `docs/mocks/`
    (key, empty, error). No generated PNGs.
 
 ## Decide (LOCKED or explicit UNKNOWN)
