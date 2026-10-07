@@ -130,6 +130,10 @@ Helpers: `tools/New-BobGitWebhook.ps1`, `tools/Grant-CursorGitHubApp.ps1`.
    the **existing** target repo.
 3. Open the GitHub issue. Build dispatch (`bob-job-loop`) is a build-seat
    concern — Plan seats do not install that pack.
+4. **Anti-omnibus:** file **many small** Goal/Deliverables/Testable
+   issues — **one small FR at a time**. Never open one omnibus issue (or
+   dump the whole backlog in a single turn). Keep remaining slices as
+   **unfiled drafts** in the plan folder until the next turn.
 
 ## Harvest (AUTOMATIC)
 
