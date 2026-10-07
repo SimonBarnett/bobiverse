@@ -60,8 +60,15 @@ def test_fr2970_detects_mrb_process_routing_lesson():
     assert intake.is_mrb_process_routing_lesson(
         "FAIL-supersede wrong-book lesson parked under harvest"
     )
+    assert intake.is_mrb_process_routing_lesson(
+        "FAIL-supersede wrong-book tip; keep MRB process out of harvest"
+    )
     assert not intake.is_mrb_process_routing_lesson(
         "MSI RunInstall: Copy-BobiverseVersion must honour -MsiProductVersion"
+    )
+    # MRB #2973: bare FAIL-supersede in a session summary is not process-routing.
+    assert not intake.is_mrb_process_routing_lesson(
+        "MRB #2967 FAIL-superseded: closed unmerged; filed covering PR"
     )
 
 
@@ -190,3 +197,34 @@ def test_fr2970_harvest_still_posts_real_product_lesson(tmp_path: Path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "SKIPPED harvest FAIL-supersede process loop" not in r.stdout
     assert "QUEUED" in r.stdout or "HARVESTED" in r.stdout
+
+
+def test_fr2970_bare_fail_supersede_summary_keeps_product_on_harvest(tmp_path: Path):
+    """MRB #2973: FAIL-superseded in the summary alone must not re-route a product tip."""
+    filer = intake.FakeGitHubFiler()
+    filer.repo_files[HARVEST_SKILL] = "# Harvest\n\nIntro only.\n"
+    filer.repo_files[MRB_SKILL] = MRB_COVERED
+    tip = "MSI RunInstall: Copy-BobiverseVersion must honour -MsiProductVersion"
+    err, norm = intake.validate_payload(
+        {
+            "kind": "harvest",
+            "repo": REPO,
+            "title": "harvest: MSI ProductVersion after prior FAIL-supersede",
+            "body": (
+                "Session summary:\n"
+                "Earlier MRB #2967 FAIL-superseded a twin; this tip is product MSI.\n\n"
+                f"Lessons:\n- {tip}\n"
+            ),
+            "source": {"skill_book": "harvest", "agent": "Invoke-BobiverseHarvest"},
+        }
+    )
+    assert err is None
+    rec = intake.file_submission(tmp_path, norm, filer, intake_id="in_2970_product")
+    assert rec["state"] == "filed"
+    assert rec.get("skill_book") == "harvest"
+    assert filer.prs
+    pr = filer.prs[-1]
+    assert str(pr["title"]).startswith("lesson(harvest):")
+    paths = [f.get("path") for f in pr.get("files") or []]
+    assert HARVEST_SKILL in paths
+    assert MRB_SKILL not in paths
