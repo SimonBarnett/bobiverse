@@ -63,3 +63,26 @@ def test_fr3129_offer_gap_issue_itself_not_forced_ionos_without_cues():
     )
     # Inline evidence require_machine= must not pin (#1824); title lacks jeeves/compose pair.
     assert mid == ""
+
+
+def test_fr3129_bare_sync_bobiverse_from_repo_does_not_pin():
+    """bob/airc Sync-BobiverseFromRepo on any fleet box must not force ionos."""
+    mid = gitclaim.infer_require_machine(
+        title="hotpatch bob ear then sync",
+        body="Run Sync-BobiverseFromRepo -Product bob on marchhare after hotpatch.",
+        labels=["feature-request"],
+        repo="SimonBarnett/bobiverse",
+        ident="#9997",
+    )
+    assert mid == ""
+
+
+def test_fr3129_sync_bobiverse_near_jeeves_still_pins():
+    mid = gitclaim.infer_require_machine(
+        title="stale intake allowlist",
+        body="Sync-BobiverseFromRepo then restart ircJeeves so compose picks up main.",
+        labels=["feature-request"],
+        repo="SimonBarnett/bobiverse",
+        ident="#9996",
+    )
+    assert mid == "ionos"

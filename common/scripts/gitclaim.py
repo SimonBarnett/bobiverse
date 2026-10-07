@@ -949,10 +949,12 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #852: recycle/recompose live ircJeeves / prune chair queue on ionos
     (re.compile(r"(?i)\b(?:recycle|recompose)\b.{0,60}\b(?:irc)?jeeves\b"), "ionos"),
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\b(?:recycle|recompose|recycled)\b"), "ionos"),
-    # FR #3129: Sync/compose (or Sync-BobiverseFromRepo) ircJeeves on ionos
+    # FR #3129: Sync/compose (or Sync-BobiverseFromRepo) ircJeeves on ionos.
+    # Do not bare-match Sync-BobiverseFromRepo alone (bob/airc Sync on any fleet box).
     (re.compile(r"(?i)\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b"), "ionos"),
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\b(?:sync(?:/compose)?|compose)\b"), "ionos"),
-    (re.compile(r"(?i)\bSync-BobiverseFromRepo\b"), "ionos"),
+    (re.compile(r"(?i)\bSync-BobiverseFromRepo\b.{0,80}\b(?:irc)?jeeves\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\bSync-BobiverseFromRepo\b"), "ionos"),
     (re.compile(r"(?i)\bOn\s+ionos\s*:\s*Sync-BobiverseFromRepo\b"), "ionos"),
     (re.compile(r"(?i)\bprune\b.{0,80}\bqueue\.json\b"), "ionos"),
     (re.compile(r"(?i)\bqueue\.json\b.{0,80}\b(?:prune|on\s+ionos)\b"), "ionos"),
@@ -1081,7 +1083,7 @@ def infer_require_machine(
 
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
     title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
-    recycle|recompose|Sync/compose Jeeves / Sync-BobiverseFromRepo / prune queue.json / install(+smoke) on ionos -> ionos;
+    recycle|recompose|Sync/compose Jeeves / Sync-BobiverseFromRepo near Jeeves / prune queue.json / install(+smoke) on ionos -> ionos;
     FR #587 / #852 / #2451 / #3129).
     """
     labs = labels or ()
