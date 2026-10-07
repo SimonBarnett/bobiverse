@@ -35,6 +35,5 @@ def test_harvest_fallback_lists_a_search():
 
 def test_webhooks_doc_lists_a_search():
     doc = (ROOT / "jeeves" / "docs" / "webhooks.md").read_text(encoding="utf-8-sig")
-    line = [ln for ln in doc.splitlines() if "Current defaults" in ln][0]
-    defaults = line.split("retired", 1)[0]
-    assert "a-search" in defaults
+    assert "a-search" in doc
+    assert "SimonBarnett/" in doc

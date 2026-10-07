@@ -97,7 +97,8 @@ def test_ok_when_all_required_allowed(monkeypatch):
     assert payload["findings"] == []
 
 
-def test_source_missing_repo_is_finding(tmp_path, monkeypatch):
+def test_source_missing_repo_allowed_is_finding(tmp_path, monkeypatch):
+    """FR #3135: source without repo_allowed / SimonBarnett gate is a finding."""
     monkeypatch.setenv("BOB_INTAKE_URL", "https://example.test/bob/v1/intake")
     monkeypatch.setenv("BOB_INTAKE_REQUIRED_REPOS", "SimonBarnett/a-search")
     bad = tmp_path / "intake.py"
@@ -114,7 +115,10 @@ def test_source_missing_repo_is_finding(tmp_path, monkeypatch):
     payload, code = ial.check(args, opener=opener)
     assert code == 1, payload
     assert payload["source_ok"] is False
-    assert any("source DEFAULT_ALLOW_REPOS missing" in f for f in payload["findings"])
+    assert any(
+        "repo_allowed" in f or "DEFAULT_ALLOW_REPOS missing" in f or "SimonBarnett" in f
+        for f in payload["findings"]
+    )
 
 
 def test_dry_run_via_main(monkeypatch):

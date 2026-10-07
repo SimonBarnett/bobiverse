@@ -19,8 +19,10 @@ MAX_BODY_BYTES = 256 * 1024
 MAX_FILES = 32
 MAX_FILE_BYTES = 128 * 1024
 DEFAULT_RATE_PER_MIN = 30
-# FR #795: drop archived superseded repos (gh-Jeeves, agentic_build, AgentMonitor,
-# bob-design-uat, agentic_irc). New work intakes to bobiverse (or live siblings).
+# FR #795: historical examples (archived gh-Jeeves / agentic_build / … retired from
+# the exclusive list). FR #3135: any SimonBarnett/<name> matching _REPO_RE is allowed;
+# DEFAULT_ALLOW_REPOS remains an optional extra allow for non-SimonBarnett owners later
+# and as documentation of known products (FR #3023 / #3050).
 DEFAULT_ALLOW_REPOS = frozenset(
     {
         "SimonBarnett/bobiverse",
@@ -30,11 +32,25 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/trutex",  # FR #3050: private Plan product; allowlist ignores visibility
     }
 )
+_ALLOW_OWNER = "simonbarnett"  # FR #3135: case-insensitive owner gate
 _SECRETISH = re.compile(
     r"(?i)(password\s*=\s*\S+|api[_-]?key\s*=\s*\S+|ghp_[A-Za-z0-9]{20,}|"
     r"sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+|bearer\s+\S{8,})"
 )
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def repo_allowed(repo: str, allow_repos: frozenset[str] | None = None) -> bool:
+    """FR #3135: allow any SimonBarnett/<name> matching _REPO_RE; else optional extra list."""
+    repo = (repo or "").strip()
+    if not repo or not _REPO_RE.fullmatch(repo):
+        return False
+    owner, _, name = repo.partition("/")
+    if owner.lower() == _ALLOW_OWNER and name:
+        return True
+    allow = DEFAULT_ALLOW_REPOS if allow_repos is None else allow_repos
+    return repo in allow
+
 _WORKER_RECEIPT_MARKER = re.compile(
     r"(?i)\b(?:GIVEUP|SKIP|self-MRB|twin|DONE|CLOSED|duplicate|merged)\b"
     r"|\b(?:FR|MRB|UAT)\s*#\d+\b"
@@ -732,7 +748,7 @@ def validate_payload(
         return "missing_repo", {}
     if not _REPO_RE.fullmatch(repo):
         return "bad_repo", {}
-    if repo not in cfg.allow_repos:
+    if not repo_allowed(repo, cfg.allow_repos):
         return "repo_not_allowed", {}
     title = str(payload.get("title") or "").strip()
     if not title or len(title) > 200:
@@ -842,7 +858,6 @@ def outbox_drop_reason(
     Permanent rejects: missing/bad repo, allow-list, HTTP 403, and HTTP 400 validation errors
     (``bad_title``, ``bad_kind``, ``payload_too_large``, ...).
     """
-    allow = DEFAULT_ALLOW_REPOS if allow_repos is None else allow_repos
     err = (error or "").strip().lower()
     if err in PERMANENT_INTAKE_ERRORS:
         return err
@@ -865,7 +880,7 @@ def outbox_drop_reason(
         return "missing_repo"
     if not _REPO_RE.fullmatch(repo):
         return "bad_repo"
-    if repo not in allow:
+    if not repo_allowed(repo, allow_repos):
         return "repo_not_allowed"
     title = str(payload.get("title") or "").strip()
     if not title or len(title) > 200:

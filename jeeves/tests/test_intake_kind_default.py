@@ -85,10 +85,11 @@ def test_trutex_repo_allowed():
     assert norm["kind"] == "fr"
 
 
-def test_unknown_repo_not_allowed():
+def test_unknown_simonbarnett_repo_allowed():
+    """FR #3135: any SimonBarnett/* matching _REPO_RE is allowed (no per-repo churn)."""
     err, norm = intake.validate_payload(_base(repo="SimonBarnett/not-a-fleet-repo"))
-    assert err == "repo_not_allowed"
-    assert norm == {}
+    assert err is None
+    assert norm["repo"] == "SimonBarnett/not-a-fleet-repo"
 
 
 def test_repo_not_allowed_is_http_403():
@@ -98,7 +99,7 @@ def test_repo_not_allowed_is_http_403():
     home.mkdir(parents=True, exist_ok=True)
     result = intake.process_intake(
         home,
-        {"repo": "SimonBarnett/not-a-fleet-repo", "title": "t", "body": "b"},
+        {"repo": "evil/x", "title": "t", "body": "b"},
         filer=filer,
         rate=rate,
         client_ip="127.0.0.1",

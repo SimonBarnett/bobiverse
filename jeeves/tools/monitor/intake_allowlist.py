@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Live intake DEFAULT_ALLOW_REPOS drift check (FR #3117).
+"""Live intake allow-rule drift check (FR #3117 / FR #3135).
 
 Probes POST /bob/v1/intake with do-not-file titles for each required repo.
-HTTP 403 error=repo_not_allowed means the live ircJeeves allowlist drifted
-behind common/scripts/intake.py (usually missing Sync/compose after an allowlist
-PR). Also asserts the on-disk intake.py source still lists the required set.
+HTTP 403 error=repo_not_allowed means the live ircJeeves allow rule drifted
+behind common/scripts/intake.py (usually missing Sync/compose after an allow
+PR). FR #3135: source must expose repo_allowed / SimonBarnett owner gate.
 """
 from __future__ import annotations
 
@@ -161,8 +161,15 @@ def check(args, opener: Optional[Callable[..., Any]] = None):
         try:
             text = source_path.read_text(encoding="utf-8-sig")
             source_repos = parse_default_allow_repos(text)
+            # FR #3135: prefer owner-gate helper; keep example DEFAULT_ALLOW_REPOS as docs.
+            if "def repo_allowed" not in text and "repo_allowed(" not in text:
+                source_ok = False
+                findings.append("source intake.py missing repo_allowed (FR #3135)")
+            if "simonbarnett" not in text.lower():
+                source_ok = False
+                findings.append("source intake.py missing SimonBarnett owner gate")
             missing_src = [r for r in required if r not in source_repos]
-            if missing_src:
+            if missing_src and "def repo_allowed" not in text:
                 source_ok = False
                 findings.append(
                     "source DEFAULT_ALLOW_REPOS missing: " + ", ".join(missing_src)

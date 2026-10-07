@@ -35,6 +35,5 @@ def test_harvest_fallback_lists_trutex():
 
 def test_webhooks_doc_lists_trutex():
     doc = (ROOT / "jeeves" / "docs" / "webhooks.md").read_text(encoding="utf-8-sig")
-    line = [ln for ln in doc.splitlines() if "Current defaults" in ln][0]
-    defaults = line.split("retired", 1)[0]
-    assert "trutex" in defaults
+    assert "trutex" in doc
+    assert "SimonBarnett/" in doc

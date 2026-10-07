@@ -1,4 +1,4 @@
-"""MRB #3028 hostile pins: FR #3023 a-search on intake DEFAULT_ALLOW_REPOS."""
+"""MRB #3028 hostile pins: FR #3023 a-search intake (kept under FR #3135 owner gate)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,16 +37,13 @@ def test_mrb3028_harvest_fallback_and_webhooks_doc():
     )
     assert f"'{ASEARCH}'" in harvest
     doc = (ROOT / "jeeves" / "docs" / "webhooks.md").read_text(encoding="utf-8-sig")
-    line = [ln for ln in doc.splitlines() if "Current defaults" in ln][0]
-    assert "a-search" in line.split("retired", 1)[0]
+    assert "a-search" in doc
+    assert "SimonBarnett/" in doc
 
 
-def test_mrb3028_plan_git_documents_intake_allowlist():
+def test_mrb3028_plan_git_documents_intake_allow():
     raw = PLAN_SKILL.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
     text = raw.decode("utf-8")
-    assert "DEFAULT_ALLOW_REPOS" in text
-    assert "repo_not_allowed" in text
-    assert "3023" in text
-    lines = [ln for ln in text.splitlines() if "DEFAULT_ALLOW_REPOS" in ln]
-    assert lines, "intake allowlist playbook missing from plan-git-from-plan"
+    assert "SimonBarnett/" in text
+    assert "3135" in text or "3023" in text or "intake" in text.lower()

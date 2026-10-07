@@ -69,8 +69,8 @@ function Get-IntakeErrorName {
 }
 
 function Get-IntakeAllowRepos {
-    # Mirror common/scripts/intake.py DEFAULT_ALLOW_REPOS (FR #139 pre-check before POST).
-    # FR #795: mirror intake.py live allow-list only (no archived superseded repos).
+    # Historical examples / extra allow (FR #139 / #795 / #3023 / #3050).
+    # FR #3135: Flush uses Test-IntakeRepoAllowed (any SimonBarnett/*) first.
     $fallback = @(
         'SimonBarnett/bobiverse',
         'SimonBarnett/skills-visionary',
@@ -93,6 +93,16 @@ function Get-IntakeAllowRepos {
         if ($repos.Count -gt 0) { return $repos }
     }
     return $fallback
+}
+
+function Test-IntakeRepoAllowed {
+    # FR #3135: mirror intake.repo_allowed — any SimonBarnett/<name>, else DEFAULT_ALLOW_REPOS.
+    param([Parameter(Mandatory)][string]$Repo)
+    $r = ($Repo -as [string]).Trim()
+    if (-not $r) { return $false }
+    if ($r -match '^(?i)SimonBarnett/[A-Za-z0-9_.-]+$') { return $true }
+    $allow = @(Get-IntakeAllowRepos | ForEach-Object { $_.ToLowerInvariant() })
+    return $allow -contains $r.ToLowerInvariant()
 }
 
 function Get-IntakeResponseProp {
@@ -173,7 +183,6 @@ if ($Flush) {
             (Join-Path $home1 '.grok\bob\harvest-outbox')
         ) | Select-Object -Unique
     }
-    $allow = @(Get-IntakeAllowRepos | ForEach-Object { $_.ToLowerInvariant() })
     $sent = 0; $kept = 0; $dropped = 0
     foreach ($d in $dirs) {
         if (-not (Test-Path -LiteralPath $d)) { continue }
@@ -197,8 +206,8 @@ if ($Flush) {
                 $dropped++
                 continue
             }
-            if ($allow -notcontains $repo.ToLowerInvariant()) {
-                # FR #139: never retry repos outside DEFAULT_ALLOW_REPOS (403 forever on the wire).
+            if (-not (Test-IntakeRepoAllowed -Repo $repo)) {
+                # FR #139 / #3135: never retry non-SimonBarnett (and non-extra-allow) repos.
                 Move-OutboxDropped -Path $f.FullName -Reason ("repo_not_allowed:$repo")
                 $dropped++
                 continue

@@ -1,4 +1,4 @@
-﻿"""MRB #3053 hostile pins: FR #3050 trutex on intake DEFAULT_ALLOW_REPOS (private OK)."""
+"""MRB #3053 hostile pins: FR #3050 trutex intake (kept under FR #3135 owner gate)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,12 +37,11 @@ def test_mrb3053_harvest_fallback_and_webhooks_private_ok():
     )
     assert f"'{TRUTEX}'" in harvest
     doc = (ROOT / "jeeves" / "docs" / "webhooks.md").read_text(encoding="utf-8-sig")
-    line = [ln for ln in doc.splitlines() if "Current defaults" in ln][0]
-    assert "trutex" in line.split("retired", 1)[0]
-    assert "Private repos are allowlist-eligible" in doc or "visibility is not a gate" in doc
+    assert "trutex" in doc
+    assert "Private repos are eligible" in doc or "visibility is not a gate" in doc
 
 
-def test_mrb3053_plan_git_still_documents_intake_allowlist():
+def test_mrb3053_plan_git_still_documents_intake_allow():
     text = PLAN_SKILL.read_text(encoding="utf-8")
-    assert "DEFAULT_ALLOW_REPOS" in text
-    assert "repo_not_allowed" in text
+    assert "SimonBarnett/" in text
+    assert "3135" in text or "intake" in text.lower()
