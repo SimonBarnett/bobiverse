@@ -1559,8 +1559,9 @@ class GrokTurnWatcher:
             self._stop.wait(self.poll_s)
 
 
-# --------------------------------------------------------------------------------------------- FR #3012: out-of-fuel
-# Detect agent 402 / usage-exhausted as out-of-fuel (not done-miss). Bare "402" in token counts must not match.
+# --------------------------------------------------------------------------------------------- FR #3012 / #3019: out-of-fuel
+# Detect agent 402 / usage-exhausted / NEEDS_AUTH as out-of-fuel (not done-miss).
+# Bare "402" in token counts must not match. Cursor parity: same contract without grok-only gate (FR #3019).
 _OUT_OF_FUEL_RX = re.compile(
     r"(?i)(?:"
     r"402\s*Payment\s*Required"
@@ -1568,15 +1569,20 @@ _OUT_OF_FUEL_RX = re.compile(
     r"|Grok\s+Build\s+usage\s+balance\s+exhausted"
     r"|usage\s+balance\s+exhausted"
     r"|out\s+of\s+credits"
+    r"|out\s+of\s+tokens"
     r"|insufficient\s*quota"
     r"|quota\s*exceeded"
+    r"|NEEDS_AUTH"
+    r"|OUTCOME_NEEDS_AUTH"
+    r"|unpaid\s+invoice"
+    r"|rate\s*limit(?:ed|ing)?\b"
     r")"
 )
 DEFAULT_DIGEST_REPORT_URL = "https://irc.ntsa.uk/bob/v1/report"
 
 
 def is_out_of_fuel_text(text: str) -> bool:
-    """True when agent/log text is a provider fuel/quota exhaustion (FR #3012)."""
+    """True when agent/log text is a provider fuel/quota/auth exhaustion (FR #3012 / #3019)."""
     return bool(_OUT_OF_FUEL_RX.search(text or ""))
 
 
@@ -1590,6 +1596,30 @@ def out_of_fuel_giveup_line(job_key: str) -> str:
 
 def default_unified_log_path() -> Path:
     return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "logs" / "unified.jsonl"
+
+
+def default_out_of_fuel_log_path(kind: str, *, env: Optional[dict] = None) -> Optional[Path]:
+    """Log path to tail for mid-job out-of-fuel (FR #3012 grok / FR #3019 cursor).
+
+    Override with ``BOB_WORKER_OUT_OF_FUEL_LOG``. Grok defaults to ``unified.jsonl``.
+    Cursor has no durable fleet enqueue log yet — returns the override only (watcher waits
+    until the path appears; mid-job fuel-reading poll still covers Cursor).
+    """
+    env = os.environ if env is None else env
+    override = (env.get("BOB_WORKER_OUT_OF_FUEL_LOG") or "").strip()
+    if override:
+        return Path(override)
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        return default_unified_log_path()
+    if k == "cursor":
+        return None
+    return None
+
+
+def should_start_fuel_watcher(kind: str) -> bool:
+    """FR #3019: out-of-fuel watcher for grok **and** cursor (not plan/monitor-only kinds)."""
+    return (kind or "").strip().lower() in ("grok", "cursor")
 
 
 def _http_post_json(url: str, payload: dict, timeout: float = 10.0) -> bool:
@@ -1637,7 +1667,7 @@ def post_digest_out_of_fuel(
 
 
 class GrokOutOfFuelWatcher:
-    """FR #3012: tail unified.jsonl (or a fake agent log) for 402 / usage-exhausted mid-job."""
+    """FR #3012 / #3019: tail agent fuel log (grok unified.jsonl, or Cursor override / test path)."""
 
     def __init__(
         self,
@@ -2904,12 +2934,15 @@ class BoredEmitter:
         self._done_miss_reminded = False
         self._done_miss_release_pending = False
         self.done_miss_remind_fn: Optional[Callable[[str], None]] = None
-        # FR #3012: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
+        # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
         self._out_of_fuel_at: Optional[float] = None
         self.out_of_fuel_release_fn: Optional[Callable[[str], None]] = None
         self.fuel_check_fn: Optional[Callable[[], bool]] = None
+        # FR #3019: while ACK open, True => mid-job fuel lost (Cursor/Grok reading exhausted).
+        self.fuel_lost_check_fn: Optional[Callable[[], bool]] = None
         self.fuel_poll_s = _env_float("BOB_WORKER_OUT_OF_FUEL_POLL_S", 30.0, 5.0, 600.0)
+        self._fuel_lost_checked_at: Optional[float] = None
         self.sent: list = []  # (clock time, reason)
         self._thread: Optional[threading.Thread] = None
 
@@ -3244,6 +3277,7 @@ class BoredEmitter:
                 self._inject_pending = False
                 self._inject_at = None
                 self._harvest_until = None
+                self._fuel_lost_checked_at = None  # FR #3019: re-arm mid-job fuel poll
                 self._clear_done_miss()
             elif _OUT_DONE_RX.match(p):
                 job = outbox_job_key(p)
@@ -3368,6 +3402,10 @@ class BoredEmitter:
         if self._out_of_fuel:
             base = float(self._out_of_fuel_at) if self._out_of_fuel_at is not None else now
             return max(now + 0.5, base + float(self.fuel_poll_s))
+        # FR #3019: while ACK open, also wake for mid-job fuel-lost poll (Cursor has no unified.jsonl).
+        if self._ack_open and self.fuel_lost_check_fn is not None:
+            base = float(self._fuel_lost_checked_at) if self._fuel_lost_checked_at is not None else now
+            wakes.append(base + float(self.fuel_poll_s))
         if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
             wakes.append(self._ack_at + self.ack_stale_s)
         # FR #2875: wake when done-miss grace expires so the reminder can fire.
@@ -3463,6 +3501,23 @@ class BoredEmitter:
                         self._idle_since = now
                         self._release_gen = self._turn_gen
                         self.log("out-of-fuel: cleared - seat may !bored again")
+                # FR #3019: mid-job fuel-lost poll while ACK open (Cursor parity / reading gate).
+                if (
+                    self._ack_open
+                    and not self._out_of_fuel
+                    and self.fuel_lost_check_fn is not None
+                ):
+                    due_check = True
+                    if self._fuel_lost_checked_at is not None:
+                        due_check = (now - float(self._fuel_lost_checked_at)) >= float(self.fuel_poll_s)
+                    if due_check:
+                        self._fuel_lost_checked_at = now
+                        try:
+                            lost = bool(self.fuel_lost_check_fn())
+                        except Exception:
+                            lost = False
+                        if lost:
+                            self.note_out_of_fuel("mid-job fuel reading exhausted")
                 # FR #2875: grace expiry injects reminder while ACK stays open (still busy).
                 if not self._out_of_fuel:
                     self._fire_done_miss_remind(now)
@@ -3594,13 +3649,14 @@ class Supervisor:
         # FR #2802: grok events.jsonl turn watcher (opt-out BOB_WORKER_BORED_ON_TURN_END=0).
         self._turn_watch_stop = threading.Event()
         self._turn_watch_thread: Optional[threading.Thread] = None
-        # FR #3012: unified.jsonl out-of-fuel watcher (402 / usage-exhausted).
+        # FR #3012 / #3019: out-of-fuel watcher (grok unified.jsonl + Cursor override / fuel poll).
         self._fuel_watch_stop = threading.Event()
         self._fuel_watch_thread: Optional[threading.Thread] = None
         self._out_of_fuel_log_path_fn: Optional[Callable[[], Path | str | None]] = None
         if self.bored is not None:
             self.bored.out_of_fuel_release_fn = self._release_out_of_fuel_job
             self.bored.fuel_check_fn = self._fuel_available_again
+            self.bored.fuel_lost_check_fn = self._fuel_lost_mid_job
         relay.on_inject = self._on_inject
         # FR #2811: park assigns during harvest hold; flush on turn_ended / before !bored.
         relay.hold_assigns_while = lambda: bool(self.bored and self.bored.holding_incoming_assigns)
@@ -3626,21 +3682,40 @@ class Supervisor:
         if th is not None and th.is_alive():
             th.join(timeout=2.0)
 
+    def _install_root_for_fuel(self) -> Path:
+        root = Path(DEFAULT_INSTALL_ROOT)
+        env = self.base_env if isinstance(self.base_env, dict) else {}
+        cand = (env.get("BOB_INSTALL_ROOT") or env.get("BOBIVERSE_INSTALL_ROOT") or "").strip()
+        if cand:
+            root = Path(cand)
+        return root
+
     def _fuel_available_again(self) -> bool:
         """FR #3012: True when local fuel readings show Cursor or Grok tokens again."""
-        root = Path(DEFAULT_INSTALL_ROOT)
         try:
-            env = self.base_env if isinstance(self.base_env, dict) else {}
-            cand = (env.get("BOB_INSTALL_ROOT") or env.get("BOBIVERSE_INSTALL_ROOT") or "").strip()
-            if cand:
-                root = Path(cand)
-            fuel = read_fuel(root)
+            fuel = read_fuel(self._install_root_for_fuel())
         except Exception:
             return bool(self.secret is not None)
         if cursor_has_tokens(fuel) or grok_has_tokens(fuel):
             return True
         # A session key handed to this seat counts as fuel for recovery.
         return self.secret is not None
+
+    def _fuel_lost_mid_job(self) -> bool:
+        """FR #3019: True when this seat's kind has no tokens left while a job is ACKed."""
+        kind = (self.kind or "").strip().lower()
+        try:
+            fuel = read_fuel(self._install_root_for_fuel())
+        except Exception:
+            return False
+        if kind == "cursor":
+            return not cursor_has_tokens(fuel)
+        if kind == "grok":
+            # Session key still counts as fuel for a dialog-started grok seat.
+            if self.secret is not None:
+                return False
+            return not grok_has_tokens(fuel)
+        return False
 
     def _release_out_of_fuel_job(self, job_key: str) -> None:
         """FR #3012: shop GIVEUP + digest so Jeeves / tray see out-of-fuel immediately."""
@@ -3675,14 +3750,21 @@ class Supervisor:
         self.log(f"out-of-fuel: posted {line}")
 
     def _start_fuel_watcher(self, agent_pid: int = 0) -> None:
-        """FR #3012: follow unified.jsonl for mid-job 402 / usage-exhausted."""
+        """FR #3012 / #3019: follow fuel log for mid-job 402 / NEEDS_AUTH / usage-exhausted.
+
+        Starts for grok **and** cursor. Cursor defaults to no log path (fuel-reading poll
+        covers it); set ``BOB_WORKER_OUT_OF_FUEL_LOG`` or ``_out_of_fuel_log_path_fn`` to tail a file.
+        """
         self._stop_fuel_watcher()
-        if (self.kind or "").strip().lower() != "grok":
+        if not should_start_fuel_watcher(self.kind):
             return
         if not self.bored:
             return
         self._fuel_watch_stop = threading.Event()
-        path_fn = self._out_of_fuel_log_path_fn or (lambda: default_unified_log_path())
+        kind = (self.kind or "").strip().lower()
+        path_fn = self._out_of_fuel_log_path_fn or (
+            lambda: default_out_of_fuel_log_path(kind, env=self.base_env if isinstance(self.base_env, dict) else None)
+        )
 
         def _on_hit(text: str) -> None:
             if self.bored:
@@ -3696,10 +3778,10 @@ class Supervisor:
             log=self.log,
             agent_pid=int(agent_pid or 0),
         )
-        th = threading.Thread(target=watcher.run, name="grok-fuel-watch", daemon=True)
+        th = threading.Thread(target=watcher.run, name="fuel-watch", daemon=True)
         self._fuel_watch_thread = th
         th.start()
-        self.log(f"out-of-fuel: watcher started (pid={agent_pid})")
+        self.log(f"out-of-fuel: watcher started (kind={kind} pid={agent_pid})")
 
     def _start_turn_watcher(self, session_id: str) -> None:
         """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
