@@ -319,6 +319,8 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
 # FR #2970: FAIL-supersede / wrong-book Harvest-lesson MRB *process* playbooks belong in
 # bobiverse-bob-job-mrb. Re-harvesting them with default -Book harvest opens twin lesson(harvest)
 # tips that the next MRB FAIL-supersedes again. Skip client-side (intake also gates).
+# FR #2991: also skip thin already-covered twins (FAIL-supersede + already cover / close thin
+# twins / citing product PRs) that lack job-mrb process cues — same class as tip #2990.
 function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
@@ -330,12 +332,21 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)wrong[- ]book') -or
         ($joined -match '(?i)process playbooks?')
     )
+    $isThinTwin = (
+        ($joined -match '(?i)already\s+cover(?:s|ed)?') -or
+        ($joined -match '(?i)close\s+thin\b') -or
+        ($joined -match '(?i)thin\s+harvest(?:ed)?[- ]?lessons?\b') -or
+        ($joined -match '(?i)thin\s+harvest\s+twin') -or
+        ($joined -match '(?i)Harvested-lessons\s+intake\s+twins?') -or
+        ($joined -match '(?i)citing\s+(?:the\s+)?product(?:/move)?\s*PRs?')
+    )
     if ($isFailSuper -and $isProcess) { return $true }
     if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
+    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 
