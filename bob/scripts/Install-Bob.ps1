@@ -31,6 +31,15 @@ param(
 
 # #70: map MSI property strings onto the real switches (empty / unset = no-op).
 if ($MsiSkipCopy -eq '1') { $SkipCopy = $true }
+# FR #2982: MSI RunInstall already heat-laid scripts/tools/skills/worker. When
+# InstallRoot is also a sparse git work tree (dirty/behind), repo-layout copies
+# would overwrite the payload with stale checkout bytes. ProductVersion set => SkipCopy.
+if (([string]$MsiProductVersion).Trim() -match '^\d+\.\d+\.\d+') {
+    if (-not $SkipCopy) {
+        Write-Host ("INFO FR #2982 MSI ProductVersion={0} -> SkipCopy (keep MSI-laid scripts/tools/skills)" -f $MsiProductVersion.Trim())
+    }
+    $SkipCopy = $true
+}
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -122,7 +131,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $trayVendor 'tools\Watch-BobTray.ps1
     $trayVendor = $null
 }
 if ($trayVendor) {
-    if (-not $SkipCopy -and -not (Test-BobiverseSamePath $trayVendor $InstallRoot)) {
+    # FR #2982: bob\tray under InstallRoot is the sparse checkout, not a separate vendor
+    # tree — Test-BobiverseSamePath(trayVendor, InstallRoot) is false for that subdir and
+    # previously re-laid stale tray tools over MSI-laid tools\.
+    $trayUnderInstall = $false
+    try {
+        $tvFull = [IO.Path]::GetFullPath($trayVendor).TrimEnd('\')
+        $irFull = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+        $trayUnderInstall = (Test-BobiverseSamePath $trayVendor $InstallRoot) -or
+            $tvFull.StartsWith($irFull + '\', [StringComparison]::OrdinalIgnoreCase)
+    } catch { }
+    if (-not $SkipCopy -and -not $trayUnderInstall) {
         foreach ($sub in @('tools', 'assets')) {
             $from = Join-Path $trayVendor $sub
             if (Test-Path -LiteralPath $from) {

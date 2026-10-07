@@ -14,9 +14,21 @@ param(
     [string]$Python = '',
     [switch]$NoStart,
     [switch]$ForceTools,
+    [switch]$SkipCopy,
+    # #70: MSI public property SKIPCOPY=1 (optional; FR #2982 also implies SkipCopy from ProductVersion).
+    [string]$MsiSkipCopy = '',
     # FR #2564: MSI ProductVersion forwarded by RunInstall for VERSION assert.
     [string]$MsiProductVersion = ''
 )
+
+# #70 / FR #2982: MSI property strings + ProductVersion => keep heat-laid files.
+if ($MsiSkipCopy -eq '1') { $SkipCopy = $true }
+if (([string]$MsiProductVersion).Trim() -match '^\d+\.\d+\.\d+') {
+    if (-not $SkipCopy) {
+        Write-Host ("INFO FR #2982 MSI ProductVersion={0} -> SkipCopy (keep MSI-laid scripts/skills)" -f $MsiProductVersion.Trim())
+    }
+    $SkipCopy = $true
+}
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -55,7 +67,9 @@ try {
 
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
-Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
+if (-not $SkipCopy) {
+    Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
+}
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot -MsiProductVersion $MsiProductVersion
 # FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
 Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product airc
@@ -64,7 +78,9 @@ $skillsSrc = Get-BobiverseRepoMergedDir -Root $repoRoot -Sub '.grok\skills'
 if (Test-Path $skillsSrc) {
     $skillsDest = Join-Path $InstallRoot '.grok\skills'
     New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
-    Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
+    if (-not $SkipCopy) {
+        Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
+    }
     Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames (Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'airc')
 }
 
