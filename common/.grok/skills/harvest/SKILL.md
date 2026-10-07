@@ -194,6 +194,7 @@ Default `repo` for this book: `SimonBarnett/bobiverse`.
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
+- plan-git-from-plan: after first vision commit split backlog into many small feature-request issues with Goal/Deliverables/Testable; prefer one PR per issue; harvest tip twins close as fixed-by product PR
 
 ## Harvest digest (lessons audit 2026-10-06)
 
