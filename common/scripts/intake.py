@@ -121,20 +121,55 @@ SKILL_BOOK_PATHS: dict[str, str] = {
     "bobiverse-airc-troubleshooting": "airc/.grok/skills/bobiverse-airc-troubleshooting/SKILL.md",
 }
 # (keywords_all_present_lowercase, book_name) - first match wins.
+# Product-specific cues before bare mrb/uat so "MRB #N PASS" + bob-worker lesson routes right.
 _SKILL_BOOK_KEYWORD_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("bob-worker",), "bobiverse-bob-worker"),
+    (("_release_gen",), "bobiverse-bob-worker"),
+    (("release_gen",), "bobiverse-bob-worker"),
+    (("done-miss",), "bobiverse-bob-worker"),
+    (("boredemitter",), "bobiverse-bob-worker"),
+    (("worker", "seat"), "bobiverse-worker-seat"),
+    (("outbox", "privmsg"), "bobiverse-worker-seat"),
+    (("fleet-ops",), "bobiverse-fleet-ops"),
+    (("hotpatch",), "bobiverse-fleet-ops"),
     (("mrb", "hostile"), "bobiverse-bob-job-mrb"),
     (("mrb",), "bobiverse-bob-job-mrb"),
     (("uat",), "bobiverse-bob-job-uat"),
-    (("worker", "seat"), "bobiverse-worker-seat"),
-    (("bob-worker",), "bobiverse-bob-worker"),
-    (("outbox", "privmsg"), "bobiverse-worker-seat"),
     (("jeeves", "monitor"), "bobiverse-jeeves-monitor"),
     (("jeeves",), "bobiverse-jeeves"),
     (("airc",), "bobiverse-airc"),
-    (("fleet-ops",), "bobiverse-fleet-ops"),
-    (("hotpatch",), "bobiverse-fleet-ops"),
     (("plan", "vision"), "bobiverse-bob-plan"),
 )
+# FR #3004: when source.skill_book is the soft default "harvest", only these strong cues
+# re-route. Bare "mrb"/"uat" appear in almost every job session summary and must not move
+# MSI/outbox product tips (or EncodedCommand tips) off harvest.
+_SOFT_HARVEST_OVERRIDE_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("bob-worker",), "bobiverse-bob-worker"),
+    (("_release_gen",), "bobiverse-bob-worker"),
+    (("release_gen",), "bobiverse-bob-worker"),
+    (("done-miss",), "bobiverse-bob-worker"),
+    (("boredemitter",), "bobiverse-bob-worker"),
+    (("fleet-ops",), "bobiverse-fleet-ops"),
+    (("hotpatch",), "bobiverse-fleet-ops"),
+)
+
+
+def infer_skill_book_from_text(title: str = "", body: str = "") -> str | None:
+    """Return the first keyword-hint book for title+body, or None (FR #2705 / #3004)."""
+    blob = f"{title or ''}\n{body or ''}".lower()
+    for keys, book in _SKILL_BOOK_KEYWORD_HINTS:
+        if all(k in blob for k in keys):
+            return book
+    return None
+
+
+def infer_soft_harvest_override(title: str = "", body: str = "") -> str | None:
+    """Product-book override when -Book default is harvest (FR #3004)."""
+    blob = f"{title or ''}\n{body or ''}".lower()
+    for keys, book in _SOFT_HARVEST_OVERRIDE_HINTS:
+        if all(k in blob for k in keys):
+            return book
+    return None
 
 
 def extract_harvest_lessons(body: str) -> list[str]:
@@ -165,6 +200,9 @@ def resolve_skill_book(
     """Map source.skill_book / path / keywords -> (book_name, repo-relative SKILL.md path).
 
     FR #2705: explicit book or path wins; else deterministic keyword routing; else harvest.
+    FR #3004: default ``harvest`` (Invoke-BobiverseHarvest -Book default) yields to a
+    keyword-inferred product book so bob-worker / fleet-ops playbooks are not parked
+    under harvest when the owning skill already has the lesson on main.
     """
     raw = str(skill_book or "").strip().replace("\\", "/")
     if raw:
@@ -182,6 +220,11 @@ def resolve_skill_book(
             # bare name without prefix
             pass
         if key in SKILL_BOOK_PATHS:
+            # Soft default only: harvest yields to strong product cues (not bare mrb/uat).
+            if key == DEFAULT_SKILL_BOOK:
+                soft = infer_soft_harvest_override(title, body)
+                if soft and soft in SKILL_BOOK_PATHS:
+                    return soft, SKILL_BOOK_PATHS[soft]
             return key, SKILL_BOOK_PATHS[key]
         # Unknown book name: still target harvest folder named after it under common.
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", key).strip("-") or DEFAULT_SKILL_BOOK
@@ -189,10 +232,9 @@ def resolve_skill_book(
             return safe, SKILL_BOOK_PATHS[safe]
         return safe, f"common/.grok/skills/{safe}/SKILL.md"
 
-    blob = f"{title or ''}\n{body or ''}".lower()
-    for keys, book in _SKILL_BOOK_KEYWORD_HINTS:
-        if all(k in blob for k in keys):
-            return book, SKILL_BOOK_PATHS[book]
+    inferred = infer_skill_book_from_text(title, body)
+    if inferred and inferred in SKILL_BOOK_PATHS:
+        return inferred, SKILL_BOOK_PATHS[inferred]
     return DEFAULT_SKILL_BOOK, SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
 
 

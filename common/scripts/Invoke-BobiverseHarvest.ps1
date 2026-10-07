@@ -376,6 +376,20 @@ $idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8
 # FR #2705: -Book sets source.skill_book so Lessons land in that SKILL.md (default harvest).
 $bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { 'harvest' }
 $bookName = $bookName.Substring(0, [Math]::Min(64, $bookName.Length))
+# FR #3004: default harvest yields to an inferred product book from Summary+Lesson cues
+# (mirrors intake resolve_skill_book soft override) so bob-worker playbooks are not
+# re-opened as lesson(harvest) when the owning skill already has the bullet.
+if ($bookName -eq 'harvest') {
+    # Strong product cues only — bare "MRB"/"UAT" in session summaries must not re-route.
+    $inferBlob = (($Summary + "`n" + (($Lesson | ForEach-Object { $_ }) -join "`n"))).ToLowerInvariant()
+    if ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter') {
+        $bookName = 'bobiverse-bob-worker'
+        Write-Host "INFO FR #3004 inferred skill_book=bobiverse-bob-worker from Summary/Lesson cues"
+    } elseif ($inferBlob -match 'fleet-ops|hotpatch') {
+        $bookName = 'bobiverse-fleet-ops'
+        Write-Host "INFO FR #3004 inferred skill_book=bobiverse-fleet-ops from Summary/Lesson cues"
+    }
+}
 # FR #2790: bob-worker seats export BOB_NICK (and BOB_AGENT_NICK alias); prefer BOB_NICK
 # so lesson PR footers carry seat=<nick> for Jeeves self-MRB blocking. Fall back to
 # BOB_AGENT_NICK for Watch-AgentHealth / legacy seats that only set that name.
