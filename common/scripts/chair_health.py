@@ -175,8 +175,58 @@ def configured_repos(home: Path) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def _owner_prefix(owners: set[str]) -> str:
+    """Pick a GitHub owner login for short focus keys (FR #3146)."""
+    lowered = {str(o).strip().lower() for o in (owners or set()) if str(o).strip()}
+    if "simonbarnett" in lowered:
+        return "SimonBarnett"
+    for o in sorted(lowered):
+        if o:
+            # Preserve common TitleCase for single-token owners when unknown.
+            return o[:1].upper() + o[1:] if o.islower() else o
+    return "SimonBarnett"
+
+
+def focus_repos(home: Path, owners: set[str]) -> list[str]:
+    """Union ``focus.repos`` into resync discovery (FR #3146).
+
+    Short keys like ``a-search`` expand to ``{Owner}/a-search`` using ``owners``
+    (SimonBarnett when that owner is allowed). Full ``owner/repo`` keys pass through
+    ``gitclaim.canonical_queue_repo``.
+    """
+    import focus_ignore
+    import gitclaim
+
+    try:
+        doc = focus_ignore.load_focus(home)
+    except Exception:  # noqa: BLE001
+        return []
+    raw = doc.get("repos") if isinstance(doc, dict) else None
+    if isinstance(raw, dict):
+        keys = list(raw.keys())
+    elif isinstance(raw, list):
+        keys = [str(x) for x in raw]
+    else:
+        keys = []
+    prefix = _owner_prefix(owners)
+    out: list[str] = []
+    for key in keys:
+        token = str(key or "").strip()
+        if not token:
+            continue
+        if "/" not in token:
+            token = f"{prefix}/{token}"
+        if not gitclaim.REPO_RE.fullmatch(token):
+            continue
+        # Owner allow-list: drop focus rows outside configured owners.
+        if token.partition("/")[0].lower() not in {str(o).lower() for o in owners}:
+            continue
+        out.append(gitclaim.canonical_queue_repo(token))
+    return list(dict.fromkeys(out))
+
+
 def discover_repos(home: Path, owners: set[str], getter, ignored) -> list[str]:
-    """Configured list, else repos already in the queue + the token's own repos (owner allow-list, not archived)."""
+    """Configured list, else queue + token repos; always union focus.repos (FR #3146)."""
     import gitclaim
     skip = {str(x).lower() for x in ignored}
     repos = configured_repos(home)
@@ -203,6 +253,8 @@ def discover_repos(home: Path, owners: set[str], getter, ignored) -> list[str]:
                 full = str(r.get("full_name") or "")
                 if full.partition("/")[0].lower() in owners:
                     repos.append(gitclaim.canonical_queue_repo(full))
+    # FR #3146: never let strict focus starve when queue/config/user-repos are empty.
+    repos.extend(focus_repos(home, owners))
     out = []
     for r in dict.fromkeys(repos):
         # FR #785: never keep a known-archived source name after rewrite.

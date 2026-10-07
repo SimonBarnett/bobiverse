@@ -9,6 +9,14 @@
 - Remediation: confirm source allow rule, then on **ionos** run `Sync-BobiverseFromRepo` (or restart `ircJeeves` so start-time ff+compose picks up `main`).
 - Overrides: `BOB_INTAKE_URL`, `BOB_INTAKE_REQUIRED_REPOS` (comma list), `BOB_INTAKE_PY`.
 
+## github_resync_focus (FR #3146)
+
+`Test-JeevesMonitorGithubResyncFocus.ps1` / `tools/monitor/github_resync_focus.py` flags when `focus.repos` is non-empty but the offer queue stays empty (`unaccepted=0`) or `discover_repos` misses focus keys.
+
+- Product: `common/scripts/chair_health.py` `discover_repos` **unions** `focus.repos` (short keys like `a-search` → `SimonBarnett/a-search`).
+- Ops: write digest-home `resync-repos.txt` with focused full names and run `!resync` (or wait for the 15m cycle after Sync/compose).
+- Silent `github_resync ok repos=0` with a live focus list is a finding, not ok.
+
 ## empty-offer playbook (FR #2448 / #2446)
 
 When seats hear `nothing queued` while `queue.json` still has unaccepted rows:

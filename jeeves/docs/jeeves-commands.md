@@ -103,7 +103,7 @@ per 30 minutes per nick (with a count of suppressed repeats); the WHOIS itself k
 | Job | Interval | What it does |
 |---|---|---|
 | webhook health probe | 30 min | `GET /bob/v1/report`, `/bob/v1/jira`, `/bob/v1/intake/jeeves-health-probe` and a synthetic `POST /bob/v1/git` ping (zen `jeeves-health-probe`, answered 204, no queue entry) against `http://127.0.0.1:7700` and `https://irc.ntsa.uk`. One retry before a target counts as down. State in `webhook-health.json`; announces to `#bobiverse` only on an up/down transition. |
-| GitHub FR/MRB merge-resync | 15 min | Authenticated (existing Jeeves token, source logged once per process in `resync-token-source.log`, value never logged). Merges open FR/MRB issues into the queue; keeps accepted jobs, other task kinds, offered rows, failed and ignored repos; drops closed FR/MRB rows. Repos: `JEEVES_RESYNC_REPOS` or `resync-repos.txt` in the chair home, else queued repos plus the token owner's repos. No token = run skipped, queue untouched. |
+| GitHub FR/MRB merge-resync | 15 min | Authenticated (existing Jeeves token, source logged once per process in `resync-token-source.log`, value never logged). Merges open FR/MRB issues into the queue; keeps accepted jobs, other task kinds, offered rows, failed and ignored repos; drops closed FR/MRB rows. Repos: `JEEVES_RESYNC_REPOS` or `resync-repos.txt` in the chair home, else queued repos plus the token owner's repos, **union `focus.repos`** (FR #3146; short keys expand to `SimonBarnett/<name>`). No token = run skipped, queue untouched. |
 
 `!resync` triggers the roster refresh and the GitHub resync immediately; `!status` reports both.
 
