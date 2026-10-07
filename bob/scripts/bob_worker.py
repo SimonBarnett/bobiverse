@@ -2644,6 +2644,8 @@ class BoredEmitter:
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
         ``done_miss_grace_s``, then ``!bored`` reason ``done-miss`` if still open after the reminder turn);
+      * FR #2996: done-miss release sets ``_release_gen = _turn_gen`` (same as normal turn-end) so later
+        ``nak``/``idle`` are not gated forever; ``_run`` clamps past-due waits to 0.5s (no ``wait(0)`` spin);
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
@@ -2916,6 +2918,9 @@ class BoredEmitter:
                     self._done_miss_reminded = False
                     self._done_miss_release_pending = True
                     self._idle_since = now
+                    # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
+                    # so post-done-miss nak/idle are not gated forever (stale gen + wait(0) spin).
+                    self._release_gen = self._turn_gen
                     self._arm_skip = True
                     self._hold_release_at = now
                     self.log(
@@ -3189,7 +3194,15 @@ class BoredEmitter:
                     self._cv.wait(0.02)
                     continue
                 due = self._next_due(now)
-                self._cv.wait(None if due is None else max(0.0, due - now))
+                # FR #2996: never busy-loop on wait(0) when due is already past and reason is None
+                # (stale _release_gen gate left idle/nak due in the past).
+                if due is None:
+                    self._cv.wait(None)
+                else:
+                    wait_s = max(0.0, due - now)
+                    if wait_s <= 0.0:
+                        wait_s = 0.5
+                    self._cv.wait(wait_s)
 
 # --------------------------------------------------------------------------------------------- FR #2782: stale build
 STALE_BUILD_SETTLE_S = 60.0  # install exe must be unchanged this long (a hotpatch copy may still be in flight)
