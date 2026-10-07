@@ -21,6 +21,7 @@ LIVE = frozenset(
         "SimonBarnett/bobiverse",
         "SimonBarnett/skills-visionary",
         "SimonBarnett/agentic_fomprep",
+        "SimonBarnett/a-search",  # FR #3023
     }
 )
 

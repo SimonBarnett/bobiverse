@@ -63,6 +63,17 @@ def test_agentic_fomprep_repo_allowed():
     assert norm["kind"] == "fr"
 
 
+def test_a_search_repo_allowed():
+    """FR #3023: Plan product a-search must intake (Flush must not drop)."""
+    assert "SimonBarnett/a-search" in intake.DEFAULT_ALLOW_REPOS
+    err, norm = intake.validate_payload(
+        _base(repo="SimonBarnett/a-search", kind="fr", title="scaffold")
+    )
+    assert err is None
+    assert norm["repo"] == "SimonBarnett/a-search"
+    assert norm["kind"] == "fr"
+
+
 def test_unknown_repo_not_allowed():
     err, norm = intake.validate_payload(_base(repo="SimonBarnett/not-a-fleet-repo"))
     assert err == "repo_not_allowed"

@@ -74,7 +74,8 @@ function Get-IntakeAllowRepos {
     $fallback = @(
         'SimonBarnett/bobiverse',
         'SimonBarnett/skills-visionary',
-        'SimonBarnett/agentic_fomprep'
+        'SimonBarnett/agentic_fomprep',
+        'SimonBarnett/a-search'  # FR #3023
     )
     $candidates = @(
         (Join-Path $PSScriptRoot 'intake.py'),

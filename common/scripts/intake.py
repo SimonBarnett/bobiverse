@@ -26,6 +26,7 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/bobiverse",
         "SimonBarnett/skills-visionary",
         "SimonBarnett/agentic_fomprep",
+        "SimonBarnett/a-search",  # FR #3023: Plan product; intake Flush must not drop
     }
 )
 _SECRETISH = re.compile(
