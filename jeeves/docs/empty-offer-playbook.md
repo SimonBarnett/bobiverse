@@ -1,6 +1,9 @@
 # Empty-offer operator playbook (FR #2448)
 
-When shop seats hear **`nothing queued`** but `queue.json` still has unaccepted rows, the offer filter is usually correct. The backlog has shrunk to gates the live shop cannot take. Product root-cause / heal for ledger-suppressed pins: **#2446**.
+When shop seats hear **`nothing queued`** but `queue.json` still has unaccepted rows, first compare **disk vs chair**:
+
+1. **Stale in-memory queue (MRB tip #3168):** `!status` / chair also reports **0 unaccepted** while digest-home `queue.json` still has rows → `Restart-Service ircJeeves` on ionos to reload the disk queue (**never** BobIrcd/Ergo). After reload, auto-offer should resume; ear `!assign <nick> owner/repo FR|MRB|UAT <n>` only if needed.
+2. **Offer gates (usual):** `!status` shows unaccepted > 0 but shops still hear nothing queued → the offer filter is usually correct. The backlog has shrunk to gates the live shop cannot take. Product root-cause / heal for ledger-suppressed pins: **#2446**.
 
 ## Where to look (CAST IRON short IRC line)
 
