@@ -2723,6 +2723,10 @@ def mrb_row_offerable(
         return True
     try:
         return bool(pr_exists(repo, num))
+    except GitHubLookupUnknown:
+        # FR #3188 / MRB #3207: unknown (rate limit, 5xx, !bored budget) is not "gone".
+        # The structural same-repo pull URL check above already passed - still offer.
+        return True
     except Exception:
         # Fail closed for MRB: do not offer a possibly-fake pull URL.
         return False
@@ -2833,6 +2837,163 @@ class TTLCache:
 
 
 PR_EXISTS_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+# FR #3188: shared TTL across !bored so two seats do not re-GET the same rows every cycle.
+ISSUE_OPEN_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+IS_PULL_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+
+# FR #3188: at most one live GitHub lookup while picking the next !bored offer.
+BORED_GITHUB_CALL_BUDGET = 1
+
+
+class GitHubLookupUnknown(Exception):
+    """GitHub state is unknown (non-404 error, timeout, budget). Never treat as closed."""
+
+
+def _log_github_lookup_failure(
+    kind: str,
+    repo: str,
+    num: str,
+    *,
+    code: int | None = None,
+    rate_remaining: str | None = None,
+    exc: BaseException | None = None,
+    log=None,
+) -> None:
+    """Log lookup failure without token (FR #3188 / #3158 item 2)."""
+    bits = [f"WARN git-claim {kind} unknown {repo}#{num}"]
+    if code is not None:
+        bits.append(f"http={code}")
+    if rate_remaining is not None and str(rate_remaining).strip() != "":
+        bits.append(f"rate_remaining={rate_remaining}")
+    if exc is not None:
+        bits.append(type(exc).__name__)
+    msg = " ".join(bits)
+    if log is not None:
+        try:
+            log(msg)
+            return
+        except Exception:
+            pass
+    print(msg, flush=True)
+
+
+def _rate_remaining_from_headers(hdrs) -> str | None:
+    if hdrs is None:
+        return None
+    try:
+        get = getattr(hdrs, "get", None)
+        if callable(get):
+            return get("X-RateLimit-Remaining") or get("x-ratelimit-remaining")
+    except Exception:
+        return None
+    return None
+
+
+def _cache_peek(store, key):
+    """Cache-only lookup for a checker store (TTLCache or plain dict); never network."""
+    try:
+        if hasattr(store, "get"):
+            return store.get(key, _CACHE_MISS)
+        return store[key] if key in store else _CACHE_MISS
+    except Exception:
+        return _CACHE_MISS
+
+
+def _budgeted_github(fn, budget: "_GithubCallBudget", kind: str | None = None):
+    """Wrap a checker so only real GitHub calls consume the shared !bored budget (FR #3188).
+
+    Fix for MRB #3207 FAIL: cache hits (checker ``peek``) are free, and repeat calls for the
+    same row in one pass share one verdict, so ``mrb_already_done`` + ``mrb_row_offerable``
+    cost one lookup, not two. Any checker failure surfaces as ``GitHubLookupUnknown``.
+    """
+    if fn is None:
+        return None
+    label = kind or getattr(fn, "__name__", "check")
+
+    def _check(repo: str, num: str):
+        return budget.call(fn, repo, num, kind=label)
+
+    _check.budget = budget
+    return _check
+
+
+class _GithubCallBudget:
+    """Shared network-call counter for one offer_focus_top / offer_top pass (FR #3188)."""
+
+    def __init__(self, limit: int = BORED_GITHUB_CALL_BUDGET) -> None:
+        self.limit = int(limit)
+        self.used = 0  # real (network) checker calls only
+        self._memo: dict = {}
+
+    def call(self, fn, repo: str, num: str, *, kind: str = "check"):
+        key = (kind, id(fn), str(repo or "").strip().lower(), str(num or "").strip().lstrip("#"))
+        if key in self._memo:
+            ok, val = self._memo[key]
+            if ok:
+                return val
+            raise val
+        peek = getattr(fn, "peek", None)
+        if callable(peek):
+            try:
+                hit = peek(repo, num)
+            except Exception:
+                hit = _CACHE_MISS
+            if hit is not _CACHE_MISS:
+                self._memo[key] = (True, hit)
+                return hit
+        if self.used >= self.limit:
+            raise GitHubLookupUnknown(
+                f"bored github call budget exhausted ({self.limit})"
+            )
+        self.used += 1
+        try:
+            val = fn(repo, num)
+        except GitHubLookupUnknown as e:
+            self._memo[key] = (False, e)
+            raise
+        except Exception as e:
+            err = GitHubLookupUnknown(f"{kind} {repo}#{num} {type(e).__name__}")
+            err.__cause__ = e
+            self._memo[key] = (False, err)
+            raise err from e
+        self._memo[key] = (True, val)
+        return val
+
+
+def _live_verdict(check, row: dict) -> bool | None:
+    """True/False from a (budgeted) checker for this row; None when unknown (FR #3188)."""
+    if check is None:
+        return None
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return None
+    try:
+        return bool(check(repo, num))
+    except Exception:
+        return None
+
+
+def _drop_unaccepted_row(doc: dict, row: dict, *, kind: str, reason: str, log=None) -> int:
+    """Remove one definitively-dead unaccepted row and log why (FR #3188 / MRB #3207)."""
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    task = _canon_task(row)
+    before = len(doc.get("unaccepted") or [])
+    doc["unaccepted"] = [
+        r
+        for r in (doc.get("unaccepted") or [])
+        if not (
+            isinstance(r, dict)
+            and str(r.get("repo") or "").strip() == repo
+            and str(r.get("id") or "").strip().lstrip("#") == num
+            and _canon_task(r) == task
+        )
+    ]
+    dropped = before - len(doc["unaccepted"])
+    if dropped:
+        _log_queue_purge(f"INFO git-claim purge {kind} {repo}#{num} reason={reason}", log=log)
+    return dropped
 
 
 def github_pr_exists_checker(
@@ -2845,6 +3006,9 @@ def github_pr_exists_checker(
     Merged or closed PRs still return HTTP 200 from GitHub; those must be False so
     seats are not re-offered MRB after DONE PASS/FAIL. Returns None when offline /
     no token (structural URL checks in ``mrb_row_offerable`` still apply).
+
+    FR #3188: HTTP 404/410 -> False (gone). Any other failure raises
+    ``GitHubLookupUnknown`` (never False) so purge paths cannot wipe the queue.
     """
     try:
         import gh_filer
@@ -2858,7 +3022,7 @@ def github_pr_exists_checker(
     token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
     if not token:
         return None
-    store: dict = cache if cache is not None else {}
+    store: dict = cache if cache is not None else PR_EXISTS_SHARED_CACHE
 
     def _check(repo: str, num: str) -> bool:
         key = f"{repo}#{num}"
@@ -2875,7 +3039,6 @@ def github_pr_exists_checker(
             },
             method="GET",
         )
-        ok = False
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
@@ -2886,15 +3049,32 @@ def github_pr_exists_checker(
                         body = {}
                     # FR #740 / #738: only open pulls are offerable MRB targets.
                     ok = str((body or {}).get("state") or "").lower() == "open"
+                    store[key] = ok
+                    return ok
+                raise GitHubLookupUnknown(
+                    f"pr_exists {repo}#{num} http={getattr(resp, 'status', '?')}"
+                )
         except urllib.error.HTTPError as e:
-            ok = False
-            if int(getattr(e, "code", 0) or 0) not in (404, 410):
-                pass  # non-404: still fail closed for offer
-        except Exception:
-            ok = False
-        store[key] = ok
-        return ok
+            code = int(getattr(e, "code", 0) or 0)
+            if code in (404, 410):
+                store[key] = False
+                return False
+            _log_github_lookup_failure(
+                "pr_exists",
+                repo,
+                num,
+                code=code,
+                rate_remaining=_rate_remaining_from_headers(getattr(e, "headers", None)),
+                exc=e,
+            )
+            raise GitHubLookupUnknown(f"pr_exists {repo}#{num} http={code}") from e
+        except GitHubLookupUnknown:
+            raise
+        except Exception as e:
+            _log_github_lookup_failure("pr_exists", repo, num, exc=e)
+            raise GitHubLookupUnknown(f"pr_exists {repo}#{num} {type(e).__name__}") from e
 
+    _check.peek = lambda repo, num: _cache_peek(store, f"{repo}#{num}")
     return _check
 
 
@@ -2907,6 +3087,8 @@ def github_is_pull_checker(
 
     Unlike ``github_pr_exists_checker`` (open-only for MRB), MERGED/CLOSED pulls still
     return True so they are never offered as FR. Returns None when offline / no token.
+
+    FR #3188: 404/410 -> False. Other failures raise ``GitHubLookupUnknown``.
     """
     try:
         import gh_filer
@@ -2919,11 +3101,16 @@ def github_is_pull_checker(
     token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
     if not token:
         return None
-    store: dict = cache if cache is not None else {}
+    store: dict = cache if cache is not None else IS_PULL_SHARED_CACHE
 
     def _check(repo: str, num: str) -> bool:
         key = f"is_pull:{repo}#{num}"
-        if key in store:
+        hit = store.get(key, _CACHE_MISS) if hasattr(store, "get") else (
+            store[key] if key in store else _CACHE_MISS
+        )
+        if hit is not _CACHE_MISS:
+            return hit
+        if key in store and not hasattr(store, "get"):
             return store[key]
         api = f"https://api.github.com/repos/{repo}/pulls/{num}"
         req = urllib.request.Request(
@@ -2935,19 +3122,32 @@ def github_is_pull_checker(
             },
             method="GET",
         )
-        ok = False
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
                 ok = 200 <= int(getattr(resp, "status", 200) or 200) < 300
+                store[key] = ok
+                return ok
         except urllib.error.HTTPError as e:
-            ok = False
-            if int(getattr(e, "code", 0) or 0) not in (404, 410):
-                pass
-        except Exception:
-            ok = False
-        store[key] = ok
-        return ok
+            code = int(getattr(e, "code", 0) or 0)
+            if code in (404, 410):
+                store[key] = False
+                return False
+            _log_github_lookup_failure(
+                "is_pull",
+                repo,
+                num,
+                code=code,
+                rate_remaining=_rate_remaining_from_headers(getattr(e, "headers", None)),
+                exc=e,
+            )
+            raise GitHubLookupUnknown(f"is_pull {repo}#{num} http={code}") from e
+        except GitHubLookupUnknown:
+            raise
+        except Exception as e:
+            _log_github_lookup_failure("is_pull", repo, num, exc=e)
+            raise GitHubLookupUnknown(f"is_pull {repo}#{num} {type(e).__name__}") from e
 
+    _check.peek = lambda repo, num: _cache_peek(store, f"is_pull:{repo}#{num}")
     return _check
 
 
@@ -2958,10 +3158,13 @@ def github_issue_open_checker(
 ):
     """Return ``issue_open(repo, num)`` -> True only for an **open** issue (FR #2340).
 
-    Closed issues and 404s return False so seats are not offered dead FR work.
+    Closed issues and 404/410 return False so seats are not offered dead FR work.
     Pull-request numbers that still appear under ``/issues/N`` also return False
     when ``state`` is not open (``is_pull`` remains the primary PR gate). Returns
     None when offline / no token (structural / stamped-state checks still apply).
+
+    FR #3188: non-404 failures raise ``GitHubLookupUnknown`` — never False — so a
+    rate-limit / 5xx / timeout cannot purge the whole unaccepted queue.
     """
     try:
         import gh_filer
@@ -2974,11 +3177,15 @@ def github_issue_open_checker(
     token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
     if not token:
         return None
-    store: dict = cache if cache is not None else {}
+    store: dict = cache if cache is not None else ISSUE_OPEN_SHARED_CACHE
 
     def _check(repo: str, num: str) -> bool:
         key = f"issue_open:{repo}#{num}"
-        if key in store:
+        if hasattr(store, "get"):
+            hit = store.get(key, _CACHE_MISS)
+            if hit is not _CACHE_MISS:
+                return hit
+        elif key in store:
             return store[key]
         api = f"https://api.github.com/repos/{repo}/issues/{num}"
         req = urllib.request.Request(
@@ -2990,7 +3197,6 @@ def github_issue_open_checker(
             },
             method="GET",
         )
-        ok = False
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
@@ -3004,15 +3210,32 @@ def github_issue_open_checker(
                     except (TypeError, ValueError, UnicodeDecodeError):
                         body = {}
                     ok = str((body or {}).get("state") or "").lower() == "open"
+                    store[key] = ok
+                    return ok
+                raise GitHubLookupUnknown(
+                    f"issue_open {repo}#{num} http={getattr(resp, 'status', '?')}"
+                )
         except urllib.error.HTTPError as e:
-            ok = False
-            if int(getattr(e, "code", 0) or 0) not in (404, 410):
-                pass
-        except Exception:
-            ok = False
-        store[key] = ok
-        return ok
+            code = int(getattr(e, "code", 0) or 0)
+            if code in (404, 410):
+                store[key] = False
+                return False
+            _log_github_lookup_failure(
+                "issue_open",
+                repo,
+                num,
+                code=code,
+                rate_remaining=_rate_remaining_from_headers(getattr(e, "headers", None)),
+                exc=e,
+            )
+            raise GitHubLookupUnknown(f"issue_open {repo}#{num} http={code}") from e
+        except GitHubLookupUnknown:
+            raise
+        except Exception as e:
+            _log_github_lookup_failure("issue_open", repo, num, exc=e)
+            raise GitHubLookupUnknown(f"issue_open {repo}#{num} {type(e).__name__}") from e
 
+    _check.peek = lambda repo, num: _cache_peek(store, f"issue_open:{repo}#{num}")
     return _check
 
 
@@ -3050,11 +3273,26 @@ def _fr_issue_is_closed(row: dict, *, issue_open=None) -> bool:
         return False
 
 
-def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None) -> int:
+def _log_queue_purge(msg: str, *, log=None) -> None:
+    """Log a queue purge with reason (FR #3188 / FR #2899 parity)."""
+    line = str(msg)
+    if log is not None:
+        try:
+            log(line)
+            return
+        except Exception:
+            pass
+    print(line, flush=True)
+
+
+def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None, log=None) -> int:
     """Drop unaccepted FR rows whose GitHub issue is CLOSED (FR #2340).
 
     Mirrors ``_purge_dead_mrb_unaccepted`` for FR: stamped ``state=closed`` and/or
     live ``issue_open(repo, num) is False`` remove the row before offer.
+
+    FR #3188: ``issue_open`` raising / unknown must not purge (see ``_fr_issue_is_closed``).
+    Every drop is logged with a reason so a wipe cannot happen silently.
     """
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
@@ -3062,6 +3300,14 @@ def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None) -> int:
         if not isinstance(row, dict):
             continue
         if _fr_issue_is_closed(row, issue_open=issue_open):
+            repo = str(row.get("repo") or "").strip()
+            ident = str(row.get("id") or "").strip()
+            stamped = str(row.get("state") or "").strip().lower() == "closed"
+            why = "stamped-state=closed" if stamped else "issue_open=False"
+            _log_queue_purge(
+                f"INFO git-claim purge closed-fr {repo}{ident} reason={why}",
+                log=log,
+            )
             continue
         kept.append(row)
     doc["unaccepted"] = kept
@@ -4336,6 +4582,10 @@ def offer_focus_top(
     attempts the pin clears and the nick is added to ``sticky_skip_seats`` so another seat can take it.
     ``pr_exists`` (optional) skips MRB rows whose pull URL 404s (FR #595 / #247).
     ``issue_open`` (optional) purges/skips FR rows whose issue is CLOSED (FR #2340).
+
+    FR #3188: bulk purge uses stamped/structural checks only (no per-row GitHub fan-out
+    on the IRC ``!bored`` path). Live checkers are budgeted to at most one call while
+    picking the offered row; unknown lookups never purge.
     """
     import time as _time
 
@@ -4345,6 +4595,10 @@ def offer_focus_top(
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
+    budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
+    pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
+    is_pull = _budgeted_github(is_pull, budget, "is_pull")
+    issue_open = _budgeted_github(issue_open, budget, "issue_open")
     try:
         with _lock(home):
             try:
@@ -4353,18 +4607,18 @@ def offer_focus_top(
                 return "error", None
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
             # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
-            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
-            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
-            purged = bool(
-                _purge_fr_that_are_pulls(doc, is_pull=is_pull, issue_open=issue_open)
-            ) or purged
-            # FR #2340: drop CLOSED-issue FR rows before picking (stamped state + live check).
-            purged = bool(_purge_closed_fr_unaccepted(doc, issue_open=issue_open)) or purged
-            # FR #2361: move accepted CLOSED FR rows to done (ACC #2340 class).
+            # FR #3188: no live pr_exists fan-out here — stamped/ledger only.
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=None, home=home))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=None, home=home)) or purged
+            purged = bool(_purge_fr_that_are_pulls(doc)) or purged
+            # FR #2340 / #3188: stamped CLOSED only at bulk; live check is budgeted in _eligible.
+            purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
+            # FR #2361: accepted list is small (busy seats) — live check OK under the shared budget.
             purged = bool(
                 _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
             ) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
+            # Budgeted: at most one live call shared with the offer pick.
             if pr_exists is not None:
                 with contextlib.suppress(Exception):
                     if clear_orphan_digest_mrb_doing(home, pr_exists=pr_exists):
@@ -4433,11 +4687,47 @@ def offer_focus_top(
                     doc, str(cand.get("repo") or ""), str(cand.get("id") or "")
                 ):
                     return None
+                # FR #3188: one budgeted live open-check; definitive closed -> purge this row only.
+                if _canon_task(cand) == "FR" and issue_open is not None:
+                    repo = str(cand.get("repo") or "").strip()
+                    num = str(cand.get("id") or "").strip().lstrip("#")
+                    if repo and num and str(cand.get("state") or "").strip().lower() != "closed":
+                        try:
+                            if not bool(issue_open(repo, num)):
+                                _log_queue_purge(
+                                    f"INFO git-claim purge closed-fr {repo}#{num} "
+                                    f"reason=issue_open=False"
+                                )
+                                doc["unaccepted"] = [
+                                    r
+                                    for r in (doc.get("unaccepted") or [])
+                                    if not (
+                                        isinstance(r, dict)
+                                        and str(r.get("repo") or "").strip() == repo
+                                        and str(r.get("id") or "").strip().lstrip("#") == num
+                                        and _canon_task(r) == "FR"
+                                    )
+                                ]
+                                purged = True
+                                return None
+                        except Exception:
+                            pass
+                # FR #1313 / MRB #3207: definitive is_pull=True on this FR row -> purge it only.
+                if _canon_task(cand) == "FR" and _live_verdict(is_pull, cand) is True:
+                    if _drop_unaccepted_row(doc, cand, kind="fr-is-pull", reason="is_pull=True"):
+                        purged = True
+                    return None
                 if not fr_row_offerable(
-                    cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=issue_open
+                    cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
+                    return None
+                # FR #740 / MRB #3207: one shared lookup per MRB row; definitive not-open
+                # purges this row only; unknown (budget / 403 / 5xx) still offers.
+                if _canon_task(cand) == "MRB" and _live_verdict(pr_exists, cand) is False:
+                    if _drop_unaccepted_row(doc, cand, kind="dead-mrb", reason="pr_exists=False"):
+                        purged = True
                     return None
                 if mrb_already_done(doc, cand, home=home, pr_exists=pr_exists):
                     return None
@@ -4607,6 +4897,10 @@ def offer_top(
     import time as _time
 
     now_f = _time.time() if now is None else float(now)
+    budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
+    pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
+    is_pull = _budgeted_github(is_pull, budget, "is_pull")
+    issue_open = _budgeted_github(issue_open, budget, "issue_open")
     try:
         with _lock(home):
             try:
@@ -4615,12 +4909,12 @@ def offer_top(
                 return "error", None
             if not doc["unaccepted"]:
                 return "empty", None
-            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=pr_exists, home=home))
-            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=pr_exists, home=home)) or purged
-            purged = bool(
-                _purge_fr_that_are_pulls(doc, is_pull=is_pull, issue_open=issue_open)
-            ) or purged
-            purged = bool(_purge_closed_fr_unaccepted(doc, issue_open=issue_open)) or purged
+            # FR #3188: stamped/structural bulk purge only; live checks are budgeted below.
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=None, home=home))
+            purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=None, home=home)) or purged
+            purged = bool(_purge_fr_that_are_pulls(doc)) or purged
+            purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
+            # Accepted list is small — live check under the shared budget (FR #2361).
             purged = bool(
                 _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
             ) or purged
@@ -4631,27 +4925,66 @@ def offer_top(
                         purged = True
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
-            for i, row in enumerate(doc["unaccepted"]):
+            i = 0
+            while i < len(doc.get("unaccepted") or []):
+                row = doc["unaccepted"][i]
                 if row_needs_human(row, nick or "") or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
+                    i += 1
                     continue
                 if row_awaits_mrb1(row):
+                    i += 1
                     continue  # legacy hook; always False (op 2026-10-04)
                 if repo_archived_for_queue(str(row.get("repo") or "")):
+                    i += 1
                     continue  # FR #785
                 if str(row.get("task") or "").upper() == "FR" and fr_is_superseded(
                     doc, str(row.get("repo") or ""), str(row.get("id") or "")
                 ):
+                    i += 1
                     continue  # FR #254
+                if _canon_task(row) == "FR" and issue_open is not None:
+                    repo = str(row.get("repo") or "").strip()
+                    num = str(row.get("id") or "").strip().lstrip("#")
+                    if repo and num and str(row.get("state") or "").strip().lower() != "closed":
+                        try:
+                            if not bool(issue_open(repo, num)):
+                                _log_queue_purge(
+                                    f"INFO git-claim purge closed-fr {repo}#{num} "
+                                    f"reason=issue_open=False"
+                                )
+                                del doc["unaccepted"][i]
+                                purged = True
+                                continue
+                        except Exception:
+                            pass
+                # FR #1313 / MRB #3207: definitive is_pull=True on this FR row -> purge it only.
+                if _canon_task(row) == "FR" and _live_verdict(is_pull, row) is True:
+                    if _drop_unaccepted_row(doc, row, kind="fr-is-pull", reason="is_pull=True"):
+                        purged = True
+                        continue
+                    i += 1
+                    continue
                 if not fr_row_offerable(
-                    row, is_pull=is_pull, pr_exists=pr_exists, issue_open=issue_open
+                    row, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
                 ):
+                    i += 1
                     continue  # FR #846 / #838 / #2340
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
+                    i += 1
+                    continue
+                # FR #740 / MRB #3207: definitive not-open MRB -> purge this row only.
+                if _canon_task(row) == "MRB" and _live_verdict(pr_exists, row) is False:
+                    if _drop_unaccepted_row(doc, row, kind="dead-mrb", reason="pr_exists=False"):
+                        purged = True
+                        continue
+                    i += 1
                     continue
                 if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
+                    i += 1
                     continue  # FR #740 / #1585
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
+                    i += 1
                     continue
                 row_eff = enrich_uat_author_fields(doc, row)
                 live = live_seat_nicks(home)
@@ -4659,6 +4992,7 @@ def offer_top(
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(
                     row_eff, (nick or "").strip(), live, ledger=led
                 ):
+                    i += 1
                     continue
                 pick_i = i
                 # Persist enrichment onto the queued row when we filled stamps.
