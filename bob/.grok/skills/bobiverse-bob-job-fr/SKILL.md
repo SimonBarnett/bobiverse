@@ -149,6 +149,18 @@ Chair lives on ionos (folds to win-mpre*). Non-matching seats must **GIVEUP** (o
 * Skill-promote jobs (FR #1682 / #1684) are **not** a reason to ignore a real `require_machine` pin — if the skill/harvest issue itself is pinned ionos and you are not on ionos, still GIVEUP.
 * **Skill-promote / harvest-backlog assigns (FR #1682 / FR #1684)** - chair **offers** `label:skill` / `harvest:` / `skill:` intakes as FR promote jobs (not product code FRs). Do **not** GIVEUP. Consolidate open skill receipts **by owner skill book**, close duplicate skill-book requests, open **one** `harvest/…` promote PR (`Closes` / `Duplicates closed:`), then DONE with the PR URL for hostile MRB. Full steps: `harvest-agent-skills` -> **Worker: consolidate open skill receipts -> promote PR**. Never one PR per receipt; never merge yourself. Skill/harvest still do **not** block repo UAT.
 
+## Product repo not created yet (plan STATUS gate)
+
+When the assigned FR’s **Fix** (or Goal) says work starts **after repo create**, and the plan pack `STATUS.md` still forbids `plan-git-from-plan` / says **Do not create the repo until** the human says so:
+
+1. **ACK** the FR.
+2. Confirm the product repo is missing (`gh repo view` GraphQL not found) and STATUS still blocks create.
+3. Comment the block on the issue (leave prior research intact).
+4. **GIVEUP** with a short reason (`blocked: product repo missing; STATUS waits plan-git-from-plan`).
+5. Leave the issue **OPEN** — do **not** create the repo from an FR seat; do **not** DONE with a bobiverse stub PR for product work that belongs in the missing repo.
+
+Repo create is Plan-seat `plan-git-from-plan` after explicit human go. Class of bobiverse#3096 (iphone-text-bridge).
+
 ## Twin / already-fixed FRs (FR #751 / #905 harvest)
 
 Older open FRs that **restate a defect already fixed** on main (e.g. closed-PR-as-FR twins of #838/#846 after #854+#867 merged) must **not** be re-implemented:
