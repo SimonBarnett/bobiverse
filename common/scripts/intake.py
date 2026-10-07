@@ -203,6 +203,8 @@ def resolve_skill_book(
 # summary mentions FAIL-superseded would otherwise re-route MSI/outbox tips into job-mrb.
 # Mirror Invoke-BobiverseHarvest Test-HarvestFailSupersedeProcessLoop: process cue required;
 # FAIL-supersede alone is insufficient.
+# FR #2991: thin already-covered twins ("fleet-ops already cover … close thin twins") also
+# lack process cues but must skip when FAIL-supersede + thin-twin restatement cues match.
 _FAIL_SUPERSEDE_RE = re.compile(r"(?i)FAIL[- ]supersede")
 _MRB_PROCESS_CUE_RE = re.compile(
     r"(?i)(?:"
@@ -215,6 +217,30 @@ _MRB_PROCESS_CUE_RE = re.compile(
     r"park(?:ed|s)?\s+under\s+harvest"
     r")"
 )
+_THIN_TWIN_CUE_RE = re.compile(
+    r"(?i)(?:"
+    r"already\s+cover(?:s|ed)?|"
+    r"close\s+thin\b|"
+    r"thin\s+harvest(?:ed)?[- ]?lessons?\b|"
+    r"thin\s+harvest\s+twin|"
+    r"Harvested-lessons\s+intake\s+twins?|"
+    r"citing\s+(?:the\s+)?product(?:/move)?\s*PRs?"
+    r")"
+)
+
+
+def is_fail_supersede_thin_twin_lesson(text: str) -> bool:
+    """True for FAIL-supersede tips that only restate already-covered / close-thin-twin.
+
+    FR #2991: requires FAIL-supersede AND a thin-twin cue. Bare FAIL-supersede plus a
+    real product playbook (no thin-twin wording) returns False (MRB #2973 spirit).
+    """
+    t = str(text or "")
+    if not t.strip():
+        return False
+    if not _FAIL_SUPERSEDE_RE.search(t):
+        return False
+    return bool(_THIN_TWIN_CUE_RE.search(t))
 
 
 def is_mrb_process_routing_lesson(text: str) -> bool:
@@ -247,6 +273,32 @@ def is_mrb_process_routing_lesson(text: str) -> bool:
     if _FAIL_SUPERSEDE_RE.search(t):
         return True
     return False
+
+
+def thin_twin_fail_supersede_already_covered(filer: Any, repo: str) -> bool:
+    """True when fleet-ops / harvest / job-mrb already carry twin-close or MSI SkipCopy gates.
+
+    FR #2991: thin FAIL-supersede restatements skip when CAST IRON coverage is on main.
+    """
+    harvest = _filer_get_file(filer, repo, SKILL_BOOK_PATHS["harvest"]).lower()
+    mrb = _filer_get_file(filer, repo, SKILL_BOOK_PATHS["bobiverse-bob-job-mrb"]).lower()
+    fleet_path = SKILL_BOOK_PATHS.get("bobiverse-fleet-ops") or (
+        "common/.grok/skills/bobiverse-fleet-ops/SKILL.md"
+    )
+    fleet = _filer_get_file(filer, repo, fleet_path).lower()
+    if mrb_process_routing_already_covered(filer, repo):
+        return True
+    harvest_ok = ("do not land a second copy" in harvest) or (
+        "fail-supersede" in harvest and "twin" in harvest
+    )
+    fleet_ok = (
+        ("skipcopy" in fleet.replace("-", "").replace(" ", ""))
+        or ("sync-skip-stale-worktree" in fleet)
+        or ("fr #2982" in fleet)
+        or ("msi productversion" in fleet)
+    )
+    mrb_twin = ("fail-supersede" in mrb) or ("re-offered or already-merged" in mrb)
+    return bool((harvest_ok and (fleet_ok or mrb_twin)) or (fleet_ok and mrb_twin))
 
 
 def _normalize_lesson_key(text: str) -> str:
@@ -938,6 +990,17 @@ def file_submission(
                     body=raw_body,
                 )
                 lesson_blob = "\n".join(lessons) + "\n" + raw_body + "\n" + title
+                # FR #2991: thin FAIL-supersede already-covered twins never open lesson(harvest).
+                # Meta restatements ("already cover / close thin twins") are not product tips.
+                if is_fail_supersede_thin_twin_lesson(lesson_blob):
+                    rec["state"] = "lesson_already_covered"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = 0
+                    rec["queued"] = False
+                    if thin_twin_fail_supersede_already_covered(filer, repo):
+                        rec["thin_twin_coverage"] = True
+                    _save_record(home, rec)
+                    return rec
                 # FR #2970: MRB process-routing lessons never open lesson(harvest).
                 if is_mrb_process_routing_lesson(lesson_blob):
                     book = "bobiverse-bob-job-mrb"
