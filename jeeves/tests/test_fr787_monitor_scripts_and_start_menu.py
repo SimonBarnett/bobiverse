@@ -34,6 +34,7 @@ CHECKS = (
     "seats_stuck_doing",
     "skill_promote_backlog",
     "intake_allowlist",
+    "github_resync_focus",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
@@ -49,6 +50,7 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorSeatsStuckDoing.ps1",
     "Test-JeevesMonitorSkillPromoteBacklog.ps1",
     "Test-JeevesMonitorIntakeAllowlist.ps1",
+    "Test-JeevesMonitorGithubResyncFocus.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",
 )
