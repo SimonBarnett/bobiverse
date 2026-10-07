@@ -72,6 +72,8 @@ Use a **single** `/bob/v1/intake` for harvest; do not add `/bob/v1/harvest`.
 
 Intake `repo` must be on the default allow-list in `scripts/intake.py` (`DEFAULT_ALLOW_REPOS`) or the POST returns **403** `repo_not_allowed`. Current defaults: `SimonBarnett/bobiverse`, `skills-visionary`, `agentic_fomprep`, `a-search`, `trutex` (FR #94; FR #3023; FR #3050; FR #795 retired archived `gh-Jeeves` / `agentic_build` / `AgentMonitor` / `bob-design-uat` / `agentic_irc`). Private repos are allowlist-eligible (visibility is not a gate).
 
+After any `DEFAULT_ALLOW_REPOS` change merges to `main`, **Sync/compose (or restart) ircJeeves on ionos** so the live webhook picks it up — source-on-main alone does not update a stale install (FR #3117 class). Monitor: `Test-JeevesMonitorIntakeAllowlist.ps1`.
+
 ### POST jira — no secret
 
 ```bash

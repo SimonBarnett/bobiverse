@@ -33,6 +33,7 @@ CHECKS = (
     "focus_redundant_items",
     "seats_stuck_doing",
     "skill_promote_backlog",
+    "intake_allowlist",
 )
 PS_WRAPPERS = (
     "Test-JeevesMonitorHealth.ps1",
@@ -47,6 +48,7 @@ PS_WRAPPERS = (
     "Test-JeevesMonitorFocusRedundantItems.ps1",
     "Test-JeevesMonitorSeatsStuckDoing.ps1",
     "Test-JeevesMonitorSkillPromoteBacklog.ps1",
+    "Test-JeevesMonitorIntakeAllowlist.ps1",
     "Invoke-JeevesMonitorCheck.ps1",
     "Start-JeevesMonitor.ps1",
 )

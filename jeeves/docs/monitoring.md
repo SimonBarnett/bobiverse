@@ -1,5 +1,14 @@
 # Jeeves monitoring checks
 
+## intake_allowlist (FR #3117)
+
+`Test-JeevesMonitorIntakeAllowlist.ps1` / `tools/monitor/intake_allowlist.py` probes live `POST /bob/v1/intake` with do-not-file titles for each required `DEFAULT_ALLOW_REPOS` entry (including `SimonBarnett/a-search` and `SimonBarnett/trutex`).
+
+- HTTP **403** `repo_not_allowed` → EXIT 1 (live ircJeeves allowlist drifted; usually missing Sync/compose after an allowlist PR).
+- Also asserts on-disk `common/scripts/intake.py` still lists the required set when the file is present.
+- Remediation: confirm source allowlist, then on **ionos** run `Sync-BobiverseFromRepo` (or restart `ircJeeves` so start-time ff+compose picks up `main`).
+- Overrides: `BOB_INTAKE_URL`, `BOB_INTAKE_REQUIRED_REPOS` (comma list), `BOB_INTAKE_PY`.
+
 ## empty-offer playbook (FR #2448 / #2446)
 
 When seats hear `nothing queued` while `queue.json` still has unaccepted rows:
