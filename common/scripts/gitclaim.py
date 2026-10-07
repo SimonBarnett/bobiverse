@@ -2723,6 +2723,10 @@ def mrb_row_offerable(
         return True
     try:
         return bool(pr_exists(repo, num))
+    except GitHubLookupUnknown:
+        # FR #3188 / MRB #3207: unknown (rate limit, 5xx, !bored budget) is not "gone".
+        # The structural same-repo pull URL check above already passed - still offer.
+        return True
     except Exception:
         # Fail closed for MRB: do not offer a possibly-fake pull URL.
         return False
@@ -2885,31 +2889,111 @@ def _rate_remaining_from_headers(hdrs) -> str | None:
     return None
 
 
-def _budgeted_github(fn, budget: "_GithubCallBudget"):
-    """Wrap a checker so each real call consumes the shared !bored budget (FR #3188)."""
+def _cache_peek(store, key):
+    """Cache-only lookup for a checker store (TTLCache or plain dict); never network."""
+    try:
+        if hasattr(store, "get"):
+            return store.get(key, _CACHE_MISS)
+        return store[key] if key in store else _CACHE_MISS
+    except Exception:
+        return _CACHE_MISS
+
+
+def _budgeted_github(fn, budget: "_GithubCallBudget", kind: str | None = None):
+    """Wrap a checker so only real GitHub calls consume the shared !bored budget (FR #3188).
+
+    Fix for MRB #3207 FAIL: cache hits (checker ``peek``) are free, and repeat calls for the
+    same row in one pass share one verdict, so ``mrb_already_done`` + ``mrb_row_offerable``
+    cost one lookup, not two. Any checker failure surfaces as ``GitHubLookupUnknown``.
+    """
     if fn is None:
         return None
+    label = kind or getattr(fn, "__name__", "check")
 
     def _check(repo: str, num: str):
-        return budget.call(fn, repo, num)
+        return budget.call(fn, repo, num, kind=label)
 
+    _check.budget = budget
     return _check
 
 
 class _GithubCallBudget:
-    """Shared call counter for one offer_focus_top / offer_top pass (FR #3188)."""
+    """Shared network-call counter for one offer_focus_top / offer_top pass (FR #3188)."""
 
     def __init__(self, limit: int = BORED_GITHUB_CALL_BUDGET) -> None:
         self.limit = int(limit)
-        self.used = 0
+        self.used = 0  # real (network) checker calls only
+        self._memo: dict = {}
 
-    def call(self, fn, repo: str, num: str):
+    def call(self, fn, repo: str, num: str, *, kind: str = "check"):
+        key = (kind, id(fn), str(repo or "").strip().lower(), str(num or "").strip().lstrip("#"))
+        if key in self._memo:
+            ok, val = self._memo[key]
+            if ok:
+                return val
+            raise val
+        peek = getattr(fn, "peek", None)
+        if callable(peek):
+            try:
+                hit = peek(repo, num)
+            except Exception:
+                hit = _CACHE_MISS
+            if hit is not _CACHE_MISS:
+                self._memo[key] = (True, hit)
+                return hit
         if self.used >= self.limit:
             raise GitHubLookupUnknown(
                 f"bored github call budget exhausted ({self.limit})"
             )
         self.used += 1
-        return fn(repo, num)
+        try:
+            val = fn(repo, num)
+        except GitHubLookupUnknown as e:
+            self._memo[key] = (False, e)
+            raise
+        except Exception as e:
+            err = GitHubLookupUnknown(f"{kind} {repo}#{num} {type(e).__name__}")
+            err.__cause__ = e
+            self._memo[key] = (False, err)
+            raise err from e
+        self._memo[key] = (True, val)
+        return val
+
+
+def _live_verdict(check, row: dict) -> bool | None:
+    """True/False from a (budgeted) checker for this row; None when unknown (FR #3188)."""
+    if check is None:
+        return None
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    if not repo or not num:
+        return None
+    try:
+        return bool(check(repo, num))
+    except Exception:
+        return None
+
+
+def _drop_unaccepted_row(doc: dict, row: dict, *, kind: str, reason: str, log=None) -> int:
+    """Remove one definitively-dead unaccepted row and log why (FR #3188 / MRB #3207)."""
+    repo = str(row.get("repo") or "").strip()
+    num = str(row.get("id") or "").strip().lstrip("#")
+    task = _canon_task(row)
+    before = len(doc.get("unaccepted") or [])
+    doc["unaccepted"] = [
+        r
+        for r in (doc.get("unaccepted") or [])
+        if not (
+            isinstance(r, dict)
+            and str(r.get("repo") or "").strip() == repo
+            and str(r.get("id") or "").strip().lstrip("#") == num
+            and _canon_task(r) == task
+        )
+    ]
+    dropped = before - len(doc["unaccepted"])
+    if dropped:
+        _log_queue_purge(f"INFO git-claim purge {kind} {repo}#{num} reason={reason}", log=log)
+    return dropped
 
 
 def github_pr_exists_checker(
@@ -2990,6 +3074,7 @@ def github_pr_exists_checker(
             _log_github_lookup_failure("pr_exists", repo, num, exc=e)
             raise GitHubLookupUnknown(f"pr_exists {repo}#{num} {type(e).__name__}") from e
 
+    _check.peek = lambda repo, num: _cache_peek(store, f"{repo}#{num}")
     return _check
 
 
@@ -3062,6 +3147,7 @@ def github_is_pull_checker(
             _log_github_lookup_failure("is_pull", repo, num, exc=e)
             raise GitHubLookupUnknown(f"is_pull {repo}#{num} {type(e).__name__}") from e
 
+    _check.peek = lambda repo, num: _cache_peek(store, f"is_pull:{repo}#{num}")
     return _check
 
 
@@ -3149,6 +3235,7 @@ def github_issue_open_checker(
             _log_github_lookup_failure("issue_open", repo, num, exc=e)
             raise GitHubLookupUnknown(f"issue_open {repo}#{num} {type(e).__name__}") from e
 
+    _check.peek = lambda repo, num: _cache_peek(store, f"issue_open:{repo}#{num}")
     return _check
 
 
@@ -4509,9 +4596,9 @@ def offer_focus_top(
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
     budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
-    pr_exists = _budgeted_github(pr_exists, budget)
-    is_pull = _budgeted_github(is_pull, budget)
-    issue_open = _budgeted_github(issue_open, budget)
+    pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
+    is_pull = _budgeted_github(is_pull, budget, "is_pull")
+    issue_open = _budgeted_github(issue_open, budget, "issue_open")
     try:
         with _lock(home):
             try:
@@ -4625,11 +4712,22 @@ def offer_focus_top(
                                 return None
                         except Exception:
                             pass
+                # FR #1313 / MRB #3207: definitive is_pull=True on this FR row -> purge it only.
+                if _canon_task(cand) == "FR" and _live_verdict(is_pull, cand) is True:
+                    if _drop_unaccepted_row(doc, cand, kind="fr-is-pull", reason="is_pull=True"):
+                        purged = True
+                    return None
                 if not fr_row_offerable(
                     cand, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
                 ):
                     return None
                 if str(cand.get("task") or "").upper() == "UAT" and not is_repo_uat(cand):
+                    return None
+                # FR #740 / MRB #3207: one shared lookup per MRB row; definitive not-open
+                # purges this row only; unknown (budget / 403 / 5xx) still offers.
+                if _canon_task(cand) == "MRB" and _live_verdict(pr_exists, cand) is False:
+                    if _drop_unaccepted_row(doc, cand, kind="dead-mrb", reason="pr_exists=False"):
+                        purged = True
                     return None
                 if mrb_already_done(doc, cand, home=home, pr_exists=pr_exists):
                     return None
@@ -4800,9 +4898,9 @@ def offer_top(
 
     now_f = _time.time() if now is None else float(now)
     budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
-    pr_exists = _budgeted_github(pr_exists, budget)
-    is_pull = _budgeted_github(is_pull, budget)
-    issue_open = _budgeted_github(issue_open, budget)
+    pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
+    is_pull = _budgeted_github(is_pull, budget, "is_pull")
+    issue_open = _budgeted_github(issue_open, budget, "issue_open")
     try:
         with _lock(home):
             try:
@@ -4859,6 +4957,13 @@ def offer_top(
                                 continue
                         except Exception:
                             pass
+                # FR #1313 / MRB #3207: definitive is_pull=True on this FR row -> purge it only.
+                if _canon_task(row) == "FR" and _live_verdict(is_pull, row) is True:
+                    if _drop_unaccepted_row(doc, row, kind="fr-is-pull", reason="is_pull=True"):
+                        purged = True
+                        continue
+                    i += 1
+                    continue
                 if not fr_row_offerable(
                     row, is_pull=is_pull, pr_exists=pr_exists, issue_open=None
                 ):
@@ -4866,6 +4971,13 @@ def offer_top(
                     continue  # FR #846 / #838 / #2340
                 # FR #818 / t853u: never offer legacy per-PR UAT (same gate as offer_focus_top).
                 if str(row.get("task") or "").upper() == "UAT" and not is_repo_uat(row):
+                    i += 1
+                    continue
+                # FR #740 / MRB #3207: definitive not-open MRB -> purge this row only.
+                if _canon_task(row) == "MRB" and _live_verdict(pr_exists, row) is False:
+                    if _drop_unaccepted_row(doc, row, kind="dead-mrb", reason="pr_exists=False"):
+                        purged = True
+                        continue
                     i += 1
                     continue
                 if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
