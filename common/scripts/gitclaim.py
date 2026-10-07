@@ -859,15 +859,29 @@ def issue_blocks_repo_uat(
 
     FR #1682 / #1684: skill / harvest: / skill: receipts are offerable
     promote jobs but must not hold repo UAT (honesty-box backlog is not product work).
+
+    FR #2971: ``feature-request`` (incl. via-intake product FRs) always blocks UAT.
+    Do not treat a prose title that merely starts with the word ``Harvest`` /
+    ``Skill`` as a harvest receipt — require ``harvest:`` / ``skill:`` (colon) or
+    the ``skill`` label. Live miss: #2970 title ``Harvest re-promotes…`` left the
+    repo "clear" and UAT #0 was offered.
     """
     if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state):
         return False
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     if "needs-mrb1" in labs:
         return False
+    # Ordinary product FRs — including via-intake — block UAT even if the title
+    # starts with the word Harvest/Skill (FR #2971).
+    if "feature-request" in labs:
+        return True
     if "skill" in labs:
         return False
-    if HARVEST_TITLE_RE.match((title or "").strip()):
+    title_s = (title or "").strip()
+    # Receipt titles only: "harvest: …" / "skill: …", not "Harvest re-promotes…".
+    if re.match(r"(?i)^(harvest|skill)\s*:", title_s):
+        return False
+    if HARVEST_TITLE_RE.match(title_s) and "via-intake" not in labs:
         return False
     return True
 
@@ -5698,8 +5712,9 @@ def resync_from_github(
                     if (
                         row.get("repo") in fetched_set
                         and not repo_clear.get(str(row.get("repo")), True)
-                        and not row.get("offered_to")
                     ):
+                        # FR #2971: drop even when offered_to is set — sticky shop
+                        # offers must not survive after a blocking FR opens.
                         dropped_detail.append(f"{_row_drop_label(row)} uat_repo_not_clear")
                         continue  # new issue / PR opened: the repo is no longer clear, UAT waits
                 if task_u == "FR" and row_skip_fr_reason(row):
