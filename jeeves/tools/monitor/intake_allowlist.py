@@ -206,9 +206,9 @@ def check(args, opener: Optional[Callable[..., Any]] = None):
             "probes": probes,
             "findings": findings,
             "remediation": (
-                "Confirm common/scripts/intake.py DEFAULT_ALLOW_REPOS; "
+                "Confirm common/scripts/intake.py repo_allowed / SimonBarnett owner gate (FR #3135); "
                 "on ionos run Sync-BobiverseFromRepo (or service restart compose) "
-                "so live ircJeeves picks up the allowlist."
+                "so live ircJeeves picks up the allow rule."
             ),
         },
         EXIT_OK if ok else EXIT_FINDING,

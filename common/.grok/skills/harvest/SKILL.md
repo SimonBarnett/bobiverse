@@ -147,12 +147,16 @@ Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
 Expect `202 {intake_id, url}` or `202 {intake_id, queued:true}`. Check status
 with `GET /bob/v1/intake/<id>`.
 
-`-Flush` (FR #139) inspects `payload.repo` against `DEFAULT_ALLOW_REPOS` in
-`intake.py` before POST. Repos outside the allowlist, or HTTP 403
-`repo_not_allowed`, are **DROPPED** into `report-outbox/dropped/` (or the
-matching outbox `dropped/`) so Flush stays clean. Transient errors stay KEPT
-for retry. To allow a new product repo, add it to `DEFAULT_ALLOW_REPOS` and
-deploy the intake host (see FR #94 / PR #99 for `agentic_fomprep`).
+`-Flush` (FR #139 / FR #3135) inspects `payload.repo` via `Test-IntakeRepoAllowed`
+(mirrors `intake.repo_allowed`): any `SimonBarnett/<name>` matching the intake
+repo regex is allowed; non-SimonBarnett owners stay denied unless listed in
+`DEFAULT_ALLOW_REPOS` (optional extra / docs examples). Outside that rule, or
+HTTP 403 `repo_not_allowed`, payloads are **DROPPED** into
+`report-outbox/dropped/` (or the matching outbox `dropped/`) so Flush stays
+clean. Transient errors stay KEPT for retry. New Plan products under
+`SimonBarnett/*` need **no** per-repo allowlist edit — after an allow-*rule*
+change merges, **ionos** must Sync/compose ircJeeves so live intake picks it up
+(FR #3117 / #3122). Queue suppress/prioritise with `!ignore` / `!focus`.
 
 Prefer `gh` and repo scripts over free-form reasoning.
 
@@ -201,4 +205,4 @@ Generalised from 81 harvested lessons that never reached this book (audit for FR
 
 - **Legacy harvest-as-FR twins (before FR #2705):** when a closed or duplicate harvest/skill receipt is offered as work, ACK, confirm the lesson is already on main or in an open promote/lesson PR, DONE with that covering PR URL, and close the receipt as `Duplicate of #N / fixed by PR #M`. Never open a second promote PR and never re-harvest the twin playbook itself. Since FR #2705, lessons land as `lesson(<book>)` PRs, so these receipts should no longer reach seats. (71 lessons: harvest #2275, #2242, #2239, #2235, #2232, #2229 +95 more, 5 held intake rows)
 - **Skill and harvest rows offered as FR:** a promote assign means consolidating by book into one skills PR with `Closes` (never GIVEUP or SKIP_FR it). A harvest-of-harvest or receipt-only row is not work: ACK, then DONE or GIVEUP citing the covering PR. Invoke-BobiverseHarvest skips GIVEUP-of-skill, twin-DONE-only, FAIL-supersede process-routing, and thin already-covered FAIL-supersede twin loops (FR #936 / #2237 / #2970 / #2991); default `-Book harvest` yields to the owning product book and intake returns `lesson_already_covered` when that skill already has the bullet (FR #3004); intake skips or re-routes those lessons so they never open a second `lesson(harvest)` tip. (8 lessons: harvest #1835, #1698, #1530, #927, #948, #937 +1 more, 1 held intake row)
-- **Intake and Flush:** WinPS clients POST UTF-8 bytes and read optional response properties through PSObject.Properties. Permanent 400s are dropped, not retried. Intake 502.3 on irc.ntsa.uk means the chair listener is down (an ionos-only heal): queue offline and Flush later. Archived repos leave `DEFAULT_ALLOW_REPOS`. Drain held outboxes with `drain --dry-run` first. Receipts never drop Lessons (FR #2705). (2 lessons: harvest #919, #904, #721)
+- **Intake and Flush:** WinPS clients POST UTF-8 bytes and read optional response properties through PSObject.Properties. Permanent 400s are dropped, not retried. Intake 502.3 on irc.ntsa.uk means the chair listener is down (an ionos-only heal): queue offline and Flush later. FR #3135 allows any `SimonBarnett/*`; use `!ignore` / `!focus` for queue behaviour (archived SimonBarnett repos are intake-allowed again under the owner gate). Drain held outboxes with `drain --dry-run` first. Receipts never drop Lessons (FR #2705). (2 lessons: harvest #919, #904, #721; FR #3135)
