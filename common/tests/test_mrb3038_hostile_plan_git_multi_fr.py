@@ -1,4 +1,4 @@
-﻿"""MRB #3038 hostile pins: FR #3027 multi-FR Goal/Deliverables/Testable in plan-git-from-plan."""
+"""MRB #3038 hostile pins: FR #3027 multi-FR Goal/Deliverables/Testable in plan-git-from-plan."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,7 +30,8 @@ def test_mrb3038_keeps_intake_allow_and_fr_path():
     text = SKILL.read_text(encoding="utf-8")
     # FR #3135: SimonBarnett/* owner gate (no per-repo DEFAULT_ALLOW_REPOS churn).
     assert "SimonBarnett/" in text
-    assert "3135" in text or "DEFAULT_ALLOW_REPOS" in text or "intake" in text.lower()
+    assert "3135" in text
+    assert "no per-repo" in text.lower() or "DEFAULT_ALLOW_REPOS" in text
     assert "feature-request" in text
     # FR path also mentions Goal/Deliverables/Testable
     assert text.count("Goal / Deliverables / Testable") >= 1
