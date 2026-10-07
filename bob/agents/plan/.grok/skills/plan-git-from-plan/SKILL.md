@@ -36,8 +36,10 @@ stay in their packs; Plan does not install them.
 no target repo yet.
 
 **Feature request** — do **not** run create. Confirm target repo; commit
-FR markdown + mocks there; open the GitHub issue. Webhook/Cursor app
-should already exist on that repo.
+FR markdown + mocks there; open GitHub issue(s) with
+**Goal / Deliverables / Testable** (prefer many small `feature-request`
+issues, one PR per issue). Webhook/Cursor app should already exist on
+that repo.
 
 ## New-product sequence (same turn)
 
@@ -81,18 +83,30 @@ python tools/validate-vision-pack.py docs/vision.md --mocks-dir docs/mocks
      `github:` set to **this new product repo** (same pattern as
      agentic_build). AUTOMATIC harvest of later learnings is PR-only.
 
-5. Open a GitHub issue titled from the spec, body linking those paths,
-   label `feature-request` (`gh label create feature-request --force`
-   first; a new repo has no such label and `gh issue create --label` fails).
-   Push. Confirm Jeeves announced `GIT issues SimonBarnett/<name> opened #N`
-   on `#bobiverse` (`~/.agentic-irc-bobiverse/irc.log`). If not, run
-   `python tools/bob_git_hook.py SimonBarnett/<name> --replay-missed`.
-   Tell the human the issue URL + SHA + the Jeeves line.
+5. **Split the backlog into many small FRs** (after the first vision
+   commit / before Bob pickup). Do **not** park the whole product as one
+   umbrella issue.
+
+   - `gh label create feature-request --force` first (a new repo has no
+     such label and `gh issue create --label` fails).
+   - Open **many** small GitHub issues labeled `feature-request`, each
+     with **Goal / Deliverables / Testable** sections (and Out of scope
+     when helpful). One seat-sized slice per issue — e.g. scaffold,
+     one module, one testable accept path.
+   - Prefer **one PR per issue** for Bob FR seats (`Closes #N`).
+   - Optionally keep `docs/fr/FR-00N.md` mirrors that match the issue
+     bodies (a-search pattern).
+   - Push. Confirm Jeeves announced `GIT issues SimonBarnett/<name>
+     opened #N` on `#bobiverse` (`~/.agentic-irc-bobiverse/irc.log`).
+     If not, run
+     `python tools/bob_git_hook.py SimonBarnett/<name> --replay-missed`.
+   - Tell the human the issue URLs + SHA + the Jeeves line(s).
 
 6. **Stop for Plan seats.** Do not run `bob-job-loop` /
    `bob-build-dispatch` unless a build seat with the build pack is
    intentionally next. Plan's job ends when git + hooks + PR path are
-   ready and the vision pack is on the remote.
+   ready, the vision pack is on the remote, and the small FR backlog
+   is filed for Bob.
 
 ## Quick command checklist
 
