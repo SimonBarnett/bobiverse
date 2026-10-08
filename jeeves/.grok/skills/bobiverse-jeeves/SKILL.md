@@ -104,3 +104,7 @@ Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Servic
 ## Self-test / heal checks are extensible (FR #2522)
 
 `jeeves.exe --self-test` runs the builtins (`imports`, `locks`, `http`, `queue`, `offer`; `health` on request) **plus** every `check_<name>.py` plugin found in `jeeves/checks` (bundled into the exe by `Build-Jeeves.ps1`; `JEEVES_CHECKS_DIR` overrides for tests). A plugin defines `CHECK_NAME` and `run(home, chair_home) -> (detail, findings, errors)`; `INCLUDE_IN_DEFAULT = False` makes it `--check <name>` only. Add/change checks and their pytest only via PR + MRB - never by editing the running exe.
+
+## Harvested lessons (intake)
+
+- BobCallback hours webhook (FR #3450): /bob/v1/hours create/heartbeat/close/withdraw/list/summary/export under digest home hours/; no Priority write; no secret; reject credential fields; IIS BobHoursWebhook rewrite
