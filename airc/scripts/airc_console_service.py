@@ -1191,6 +1191,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import crash_report
 
+        # FR #3291: expose install root so crash-report.json / airc shell=off defaults resolve.
+        try:
+            _cr_root = resolve_airc_install_root()
+            if _cr_root is not None:
+                os.environ.setdefault("BOB_INSTALL_ROOT", str(_cr_root))
+            os.environ.setdefault("BOB_PRODUCT", "airc")
+        except Exception:
+            pass
         crash_report.install("airc")
     except Exception:
         pass

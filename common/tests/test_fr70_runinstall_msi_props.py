@@ -31,6 +31,9 @@ def test_pack_declares_public_msi_properties_and_forwards_them_to_runinstall():
     # FR #2564 / MRB #2566: ProductVersion must reach Install-*.ps1 for VERSION assert
     assert "-MsiProductVersion &quot;[ProductVersion]&quot;" in p
     assert "#70: RunInstall forwards" in p or "#70: public MSI properties" in p
+    # FR #3291: crash-report opt-out MSI property
+    assert 'Property Id="BOBIVERSE_CRASH_REPORT"' in p
+    assert "-CrashReport &quot;[BOBIVERSE_CRASH_REPORT]&quot;" in p
 
 
 def test_install_jeeves_maps_msi_skip_strings_to_switches():

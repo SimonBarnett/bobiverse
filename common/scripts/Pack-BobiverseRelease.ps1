@@ -438,17 +438,20 @@ function Build-Msi([string]$Name, [string]$Stage) {
     $installArgs = switch ($Name) {
         'jeeves' {
             # FR #3290: BOBIVERSE_SKIP_TOOLS=1 skips Install-BootstrapTools.
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -OperFile &quot;[OPERFILE]&quot; -OperName &quot;[OPERNAME]&quot; -OpAccounts &quot;[OPACCOUNTS]&quot; -MsiSkipErgo &quot;[SKIPERGO]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -MsiSkipTools &quot;[BOBIVERSE_SKIP_TOOLS]&quot;'
+            # FR #3291: BOBIVERSE_CRASH_REPORT opt-out (empty = fleet default on / prior config).
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -OperFile &quot;[OPERFILE]&quot; -OperName &quot;[OPERNAME]&quot; -OpAccounts &quot;[OPACCOUNTS]&quot; -MsiSkipErgo &quot;[SKIPERGO]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -MsiSkipTools &quot;[BOBIVERSE_SKIP_TOOLS]&quot; -CrashReport &quot;[BOBIVERSE_CRASH_REPORT]&quot;'
         }
         'bob' {
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -IrcHost &quot;[IRCHOST]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -MsiSkipTools &quot;[BOBIVERSE_SKIP_TOOLS]&quot;'
+            # FR #3290 / #3291: skip-tools + crash-report MSI props.
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -IrcHost &quot;[IRCHOST]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -MsiSkipTools &quot;[BOBIVERSE_SKIP_TOOLS]&quot; -CrashReport &quot;[BOBIVERSE_CRASH_REPORT]&quot;'
         }
         'airc' {
             # FR #3287: capability + account MSI props (empty = installer defaults / prior identity).
             # FR #3289: AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (empty = fresh sync off / self_update on, or keep prior).
             # FR #3290: AIRC_INSTALL_TOOLS=1 opts into git/gh/python/node bootstrap (default skip when airc.exe present).
             # FR #3292: AIRC_PROFILE=workstation / AIRC_AGENT_LAYER=0 skips agent briefings/skills.
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -ShellMode &quot;[AIRC_SHELL]&quot; -Jobs &quot;[AIRC_JOBS]&quot; -UpdateCap &quot;[AIRC_UPDATE]&quot; -RequireAccount &quot;[AIRC_REQUIRE_ACCOUNT]&quot; -Accounts &quot;[AIRC_ACCOUNTS]&quot; -SyncFromRepo &quot;[AIRC_SYNC_FROM_REPO]&quot; -SelfUpdate &quot;[AIRC_SELF_UPDATE]&quot; -InstallTools &quot;[AIRC_INSTALL_TOOLS]&quot; -Profile &quot;[AIRC_PROFILE]&quot; -AgentLayer &quot;[AIRC_AGENT_LAYER]&quot;'
+            # FR #3291: BOBIVERSE_CRASH_REPORT (empty = preserve / shell=off => crash-report.json enabled=false).
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -ShellMode &quot;[AIRC_SHELL]&quot; -Jobs &quot;[AIRC_JOBS]&quot; -UpdateCap &quot;[AIRC_UPDATE]&quot; -RequireAccount &quot;[AIRC_REQUIRE_ACCOUNT]&quot; -Accounts &quot;[AIRC_ACCOUNTS]&quot; -SyncFromRepo &quot;[AIRC_SYNC_FROM_REPO]&quot; -SelfUpdate &quot;[AIRC_SELF_UPDATE]&quot; -InstallTools &quot;[AIRC_INSTALL_TOOLS]&quot; -Profile &quot;[AIRC_PROFILE]&quot; -AgentLayer &quot;[AIRC_AGENT_LAYER]&quot; -CrashReport &quot;[BOBIVERSE_CRASH_REPORT]&quot;'
         }
     }
     $msiProps = switch ($Name) {
@@ -460,6 +463,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="SKIPERGO" Secure="yes" />
     <Property Id="SKIPCOPY" Secure="yes" />
     <Property Id="BOBIVERSE_SKIP_TOOLS" Secure="yes" />
+    <Property Id="BOBIVERSE_CRASH_REPORT" Secure="yes" />
 "@
         }
         'bob' {
@@ -468,6 +472,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="IRCHOST" Secure="yes" />
     <Property Id="SKIPCOPY" Secure="yes" />
     <Property Id="BOBIVERSE_SKIP_TOOLS" Secure="yes" />
+    <Property Id="BOBIVERSE_CRASH_REPORT" Secure="yes" />
 "@
         }
         'airc' {
@@ -484,6 +489,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="AIRC_PROFILE" Secure="yes" />
     <Property Id="AIRC_AGENT_LAYER" Secure="yes" />
     <Property Id="AIRC_PURGE" Secure="yes" />
+    <Property Id="BOBIVERSE_CRASH_REPORT" Secure="yes" />
 "@
         }
     }
