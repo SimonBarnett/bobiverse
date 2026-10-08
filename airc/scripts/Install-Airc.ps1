@@ -27,7 +27,9 @@ param(
     [string]$Accounts = '',
     # FR #3289: MSI AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (0|1|true|false; empty = preserve / fresh default).
     [string]$SyncFromRepo = '',
-    [string]$SelfUpdate = ''
+    [string]$SelfUpdate = '',
+    # FR #3291: MSI BOBIVERSE_CRASH_REPORT (0|off|local-only|1|full|no-log-tail; empty = preserve / shell=off default).
+    [string]$CrashReport = ''
 )
 
 # #70 / FR #2982: MSI property strings + ProductVersion => keep heat-laid files.
@@ -300,6 +302,38 @@ try {
     Write-Host ("INFO FR #3287/#3289 wrote {0} shell={1} jobs={2} update={3} sync_from_repo={4} self_update={5}" -f $capPath, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedSync, $resolvedSelf)
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
+}
+
+# FR #3291: crash-report.json (MSI BOBIVERSE_CRASH_REPORT > prior file > shell=off => disabled).
+try {
+    $crPath = Join-Path $InstallRoot 'config\crash-report.json'
+    $priorCr = $null
+    if (Test-Path -LiteralPath $crPath) {
+        try { $priorCr = Get-Content -LiteralPath $crPath -Raw -Encoding utf8 | ConvertFrom-Json } catch {}
+    }
+    $expCr = ([string]$CrashReport).Trim().ToLowerInvariant()
+    $crObj = $null
+    if ($expCr -in @('0', 'false', 'no', 'off')) {
+        $crObj = [ordered]@{ enabled = $false; mode = 'off'; source = 'msi' }
+    } elseif ($expCr -in @('local', 'local-only', 'local_only', 'spool')) {
+        $crObj = [ordered]@{ enabled = $false; mode = 'local-only'; source = 'msi' }
+    } elseif ($expCr -in @('1', 'true', 'yes', 'on', 'full')) {
+        $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $true; source = 'msi' }
+    } elseif ($expCr -in @('no-log-tail', 'nologtail', 'no_log_tail')) {
+        $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $false; source = 'msi' }
+    } elseif ($null -ne $priorCr) {
+        # Upgrade preserve: leave prior file untouched.
+        Write-Host ("INFO FR #3291 keep prior {0}" -f $crPath)
+    } elseif ($resolvedShell -eq 'off') {
+        $crObj = [ordered]@{ enabled = $false; mode = 'off'; source = 'airc-shell-off' }
+    }
+    if ($null -ne $crObj) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $crPath) | Out-Null
+        ($crObj | ConvertTo-Json) | Set-Content -LiteralPath $crPath -Encoding utf8
+        Write-Host ("INFO FR #3291 wrote {0} enabled={1} mode={2}" -f $crPath, $crObj.enabled, $crObj.mode)
+    }
+} catch {
+    Write-Host ("WARN crash-report.json: {0}" -f $_.Exception.Message)
 }
 
 $installLegacy = Join-Path $InstallRoot 'scripts\Install-AircConsole.ps1'

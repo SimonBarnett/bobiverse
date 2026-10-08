@@ -6,6 +6,10 @@ FR #2431: exe `probe` / messages with `do-not-file` or `probe-shape-only` are sk
 FR #2535: WinError 448 (untrusted mount) on pytest-of-*/pytest-current is skipped; shipped
 exe install is a no-op under PYTEST_CURRENT_TEST so product mains do not steal pytest's
 excepthook (sessionfinish cleanup noise was filing as crash: jeeves).
+FR #3291: opt-out via ``BOB_CRASH_REPORT`` / ``config/crash-report.json`` / MSI
+``BOBIVERSE_CRASH_REPORT``; modes ``off`` / ``local-only`` / ``full`` / ``no-log-tail``.
+When disabled, crashes still spool locally and never call intake or ``gh``.
+Airc ``shell=off`` (no-agent) defaults crash-report off.
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -53,6 +58,190 @@ _TOKEN_BLOB_RE = re.compile(
 _installed_for: str | None = None
 _prev_sys_hook: Callable | None = None
 _prev_thread_hook: Callable | None = None
+_policy_cache: CrashReportPolicy | None = None
+
+
+@dataclass(frozen=True)
+class CrashReportPolicy:
+    """FR #3291: whether crash_report may leave the box."""
+
+    send: bool = True
+    include_log_tail: bool = True
+    source: str = "default"
+    mode: str = "full"  # full | local-only | off
+
+    @property
+    def log_label(self) -> str:
+        if not self.send:
+            if self.mode == "local-only":
+                return "local-only"
+            return "off"
+        if not self.include_log_tail:
+            return "on (no-log-tail)"
+        return "on"
+
+
+def _read_crash_config(path: Path) -> dict[str, Any]:
+    try:
+        if not path.is_file():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resolve_crash_config_path(*, env: dict[str, str], install_root: Path | None = None) -> Path | None:
+    override = (env.get("BOB_CRASH_REPORT_CONFIG") or "").strip()
+    if override:
+        return Path(override)
+    roots: list[Path] = []
+    if install_root:
+        roots.append(Path(install_root))
+    for key in ("BOB_INSTALL_ROOT", "AIRC_INSTALL_ROOT", "BOB_PRODUCT_ROOT"):
+        v = (env.get(key) or "").strip()
+        if v:
+            roots.append(Path(v))
+    for root in roots:
+        cand = root / "config" / "crash-report.json"
+        if cand.is_file():
+            return cand
+        cand2 = root / "crash-report.json"
+        if cand2.is_file():
+            return cand2
+    return None
+
+
+def _airc_shell_off(install_root: Path | None, env: dict[str, str]) -> bool:
+    if not install_root:
+        return False
+    airc_json = Path(install_root) / "config" / "airc.json"
+    try:
+        if not airc_json.is_file():
+            return False
+        data = json.loads(airc_json.read_text(encoding="utf-8"))
+        shell = str((data or {}).get("shell") or "").strip().lower()
+        return shell in {"off", "0", "false", "no"}
+    except Exception:
+        return False
+
+
+def _guess_install_root(env: dict[str, str], product: str | None = None) -> Path | None:
+    """Best-effort install tree (frozen exe parent or BOB_*_ROOT)."""
+    for key in ("BOB_INSTALL_ROOT", "AIRC_INSTALL_ROOT", "BOB_PRODUCT_ROOT"):
+        v = (env.get(key) or "").strip()
+        if v:
+            return Path(v)
+    try:
+        exe = Path(sys.executable).resolve()
+        # Frozen pack: <ai root>\airc\airc.exe or <ai root>\bob\bob-ear.exe
+        parent = exe.parent
+        if (parent / "config").is_dir() or (parent / "scripts").is_dir():
+            return parent
+        # Source/dev: .../airc/scripts/*.py under a non-frozen interpreter is uncommon here.
+    except Exception:
+        pass
+    prod = (product or env.get("BOB_PRODUCT") or "").strip().lower()
+    if prod:
+        for key in ("BOB_AI_ROOT", "AI_ROOT"):
+            v = (env.get(key) or "").strip()
+            if v:
+                cand = Path(v) / prod
+                if cand.is_dir():
+                    return cand
+    return None
+
+
+def load_crash_report_policy(
+    *,
+    env: dict[str, str] | None = None,
+    install_root: Path | str | None = None,
+    product: str | None = None,
+    use_cache: bool = False,
+) -> CrashReportPolicy:
+    """Resolve send/local-only/no-log-tail (FR #3291).
+
+    Precedence: BOB_CRASH_REPORT env > crash-report.json > airc shell=off default > fleet on.
+    """
+    global _policy_cache
+    if use_cache and _policy_cache is not None:
+        return _policy_cache
+    e = dict(env) if env is not None else dict(os.environ)
+    root = Path(install_root) if install_root else _guess_install_root(e, product)
+
+    include_tail = True
+    send: bool | None = None
+    mode = "full"
+    source = "default"
+
+    cfg_path = _resolve_crash_config_path(env=e, install_root=root)
+    if cfg_path is not None:
+        cfg = _read_crash_config(cfg_path)
+        if "include_log_tail" in cfg:
+            include_tail = bool(cfg.get("include_log_tail"))
+        if cfg.get("no_log_tail"):
+            include_tail = False
+        mode_raw = str(cfg.get("mode") or "").strip().lower()
+        if mode_raw in {"local", "local-only", "local_only", "spool"}:
+            send = False
+            mode = "local-only"
+            source = "config"
+        elif "enabled" in cfg:
+            send = bool(cfg.get("enabled"))
+            mode = "full" if send else "off"
+            source = "config"
+
+    prod = (product or e.get("BOB_PRODUCT") or "").strip().lower()
+    if send is None and (
+        prod == "airc"
+        or (root is not None and (root / "config" / "airc.json").is_file())
+    ):
+        if _airc_shell_off(root, e):
+            send = False
+            mode = "off"
+            source = "airc-shell-off"
+
+    env_raw = (e.get("BOB_CRASH_REPORT") or "").strip().lower()
+    if env_raw:
+        if env_raw in {"local", "local-only", "local_only", "spool"}:
+            send = False
+            mode = "local-only"
+            source = "env"
+        elif env_raw in {"full", "on", "1", "true", "yes"}:
+            send = True
+            mode = "full"
+            source = "env"
+        elif env_raw in {"0", "false", "no", "off"}:
+            send = False
+            mode = "off"
+            source = "env"
+        elif env_raw in {"no-log-tail", "nologtail", "no_log_tail"}:
+            if send is None:
+                send = True
+            include_tail = False
+            source = "env"
+
+    if send is None:
+        send = True
+        mode = "full"
+        source = "default"
+
+    policy = CrashReportPolicy(
+        send=bool(send),
+        include_log_tail=bool(include_tail),
+        source=source,
+        mode=mode if not send else ("full" if include_tail else "full"),
+    )
+    if use_cache:
+        _policy_cache = policy
+    return policy
+
+
+def _log_crash_policy(policy: CrashReportPolicy) -> None:
+    try:
+        print(f"INFO crash-report={policy.log_label} ({policy.source})", flush=True)
+    except Exception:
+        pass
 
 
 def spool_dir() -> Path:
@@ -187,6 +376,7 @@ def format_report(
     tb,
     version: str | None = None,
     log_tail: str = "",
+    include_log_tail: bool = True,
 ) -> tuple[str, str, str]:
     sig = signature(exc_type, exc_value, tb)
     et = getattr(exc_type, "__name__", "?") if exc_type else "?"
@@ -206,7 +396,7 @@ def format_report(
         f"exception: {et}: {msg}\n\n"
         f"```\n{tb_text}\n```\n"
     )
-    if log_tail:
+    if include_log_tail and log_tail:
         body += f"\n### log tail\n```\n{redact(log_tail)[-4000:]}\n```\n"
     body += (
         f"\n---\n_via-crash-hook exe=`{exe}` sig=`{sig}` "
@@ -237,7 +427,11 @@ def _write_spool(payload: dict[str, Any]) -> Path:
 
 
 def _post_intake(title: str, body: str, *, repo: str, sig: str, exe: str) -> dict[str, Any]:
-    url = (os.environ.get("BOB_INTAKE_URL") or DEFAULT_INTAKE).strip()
+    policy = load_crash_report_policy()
+    if not policy.send:
+        raise RuntimeError("crash-report disabled")
+    raw_url = (os.environ.get("BOB_INTAKE_URL") or "").strip()
+    url = raw_url or DEFAULT_INTAKE
     payload = {
         "kind": "issue",
         "repo": repo,
@@ -331,14 +525,36 @@ def report_exception(
     try:
         if should_skip_report(exe, exc_value):
             return {"ok": True, "skipped": True, "reason": "probe-or-do-not-file"}
+        policy = load_crash_report_policy()
+        log_tail = _read_log_tail(log_path) if policy.include_log_tail else ""
         title, body, sig = format_report(
             exe=exe,
             exc_type=exc_type,
             exc_value=exc_value,
             tb=tb,
             version=version,
-            log_tail=_read_log_tail(log_path),
+            log_tail=log_tail,
+            include_log_tail=policy.include_log_tail,
         )
+        if not policy.send:
+            path = _write_spool(
+                {
+                    "title": title,
+                    "body": body,
+                    "repo": repo,
+                    "sig": sig,
+                    "exe": exe,
+                    "local_only": True,
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            )
+            return {
+                "ok": True,
+                "local_only": True,
+                "spooled": str(path),
+                "sig": sig,
+                "reason": f"crash-report={policy.log_label}",
+            }
         existing = _gh_search_open_sig(repo, sig)
         if existing:
             ok = _gh_comment(repo, existing, body)
@@ -406,9 +622,14 @@ def flush_spool(
     """Retry spooled crashes. Never raises."""
     sent = kept = dropped = 0
     try:
+        policy = load_crash_report_policy()
         d = spool_dir()
         if not d.is_dir():
             return {"sent": 0, "kept": 0, "dropped": 0}
+        if not policy.send:
+            # FR #3291: keep spool locally; never intake/gh while disabled/local-only.
+            kept = len(list(d.glob("crash-*.json")))
+            return {"sent": 0, "kept": kept, "dropped": 0}
         post = filer_post or _post_intake
         for path in sorted(d.glob("crash-*.json")):
             try:
@@ -559,7 +780,9 @@ def install(
         except Exception:
             pass
 
-        if flush:
+        policy = load_crash_report_policy(use_cache=True)
+        _log_crash_policy(policy)
+        if flush and policy.send:
             flush_spool(repo=repo)
         _installed_for = exe
     except Exception:

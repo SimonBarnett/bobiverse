@@ -26,7 +26,9 @@ param(
     # #70: MSI public property SKIPCOPY=1 arrives via RunInstall as a string.
     [string]$MsiSkipCopy = '',
     # FR #2564: MSI ProductVersion forwarded by RunInstall for VERSION assert.
-    [string]$MsiProductVersion = ''
+    [string]$MsiProductVersion = '',
+    # FR #3291: MSI BOBIVERSE_CRASH_REPORT (0|off|local-only|1|full|no-log-tail; empty = preserve prior).
+    [string]$CrashReport = ''
 )
 
 # #70: map MSI property strings onto the real switches (empty / unset = no-op).
@@ -112,6 +114,36 @@ if (-not $SkipCopy) {
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot -MsiProductVersion $MsiProductVersion
 # FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
 Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product bob
+
+# FR #3291: optional crash-report.json from MSI BOBIVERSE_CRASH_REPORT (preserve prior when empty).
+try {
+    $crPath = Join-Path $InstallRoot 'config\crash-report.json'
+    $priorCr = $null
+    if (Test-Path -LiteralPath $crPath) {
+        try { $priorCr = Get-Content -LiteralPath $crPath -Raw -Encoding utf8 | ConvertFrom-Json } catch {}
+    }
+    $expCr = ([string]$CrashReport).Trim().ToLowerInvariant()
+    $crObj = $null
+    if ($expCr -in @('0', 'false', 'no', 'off')) {
+        $crObj = [ordered]@{ enabled = $false; mode = 'off'; source = 'msi' }
+    } elseif ($expCr -in @('local', 'local-only', 'local_only', 'spool')) {
+        $crObj = [ordered]@{ enabled = $false; mode = 'local-only'; source = 'msi' }
+    } elseif ($expCr -in @('1', 'true', 'yes', 'on', 'full')) {
+        $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $true; source = 'msi' }
+    } elseif ($expCr -in @('no-log-tail', 'nologtail', 'no_log_tail')) {
+        $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $false; source = 'msi' }
+    } elseif ($null -ne $priorCr) {
+        Write-Host ("INFO FR #3291 keep prior {0}" -f $crPath)
+    }
+    if ($null -ne $crObj) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $crPath) | Out-Null
+        ($crObj | ConvertTo-Json) | Set-Content -LiteralPath $crPath -Encoding utf8
+        Write-Host ("INFO FR #3291 wrote {0} enabled={1} mode={2}" -f $crPath, $crObj.enabled, $crObj.mode)
+    }
+} catch {
+    Write-Host ("WARN crash-report.json: {0}" -f $_.Exception.Message)
+}
+
 Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'bob'
 # t762u: worker\ + plan\ agent folders (skills/AGENTS). The MSI lays them (plus worker\bob-worker.exe); repo installs build them here. Never deletes plan\work.
 if ((Test-Path -LiteralPath (Get-BobiverseRepoPath -Root $repoRoot -Rel 'bob-agents\worker\AGENTS.md')) -and ([IO.Path]::GetFullPath($repoRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\'))) {
