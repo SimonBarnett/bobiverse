@@ -23,7 +23,14 @@ def test_mrb2684_giveup_count_string_coerces():
         "giveup_count": str(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT),
         "giveup_seats": "marchhare-1",
     }
-    assert gitclaim.row_needs_human(row, "ionos-99") is True
+    # FR #3277: with giveup_seats set, only listed seats are blocked (string coerce still works).
+    assert gitclaim.row_needs_human(row, "marchhare-1") is True
+    assert gitclaim.row_needs_human(row, "ionos-99") is False
+    bare = {
+        "needs_human": True,
+        "giveup_count": str(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT),
+    }
+    assert gitclaim.row_needs_human(bare, "ionos-99") is True
 
 
 def test_mrb2684_fomprep11_pin_and_label_both_skip():

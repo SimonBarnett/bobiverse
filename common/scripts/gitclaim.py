@@ -808,10 +808,10 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
 
     After GIVEUP loops the chair stamps ``needs_human`` *and* ``giveup_seats``.
     Early GIVEUPs stay per-seat (FR #1236 / #1407) so one machine's GIVEUP does not
-    idle the fleet. FR #2562 / #2677: once ``giveup_count`` reaches
-    ``GIVEUP_NEEDS_HUMAN_COUNT``, ``needs_human`` blocks **all** seats — seat PID
-    recycle must not re-burn tokens on the same board (agentic_fomprep#11 class).
-    A bare ``needs_human`` with no giveup_seats stays a global human/vision gate.
+    idle the fleet. FR #3277: when ``giveup_seats`` is set, only those seats are
+    blocked — even after ``giveup_count`` reaches ``GIVEUP_NEEDS_HUMAN_COUNT`` —
+    so a self-MRB author's GIVEUPs cannot strand every other seat. A bare
+    ``needs_human`` with no giveup_seats stays a global human/vision gate.
     Seat match is canonical (``w-io-*`` == ``win-mpre8vi4u6u-*``).
     """
     v = row.get("needs_human")
@@ -821,16 +821,20 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
         flag = str(v or "").strip().lower() in ("1", "true", "yes")
     if not flag:
         return False
+    seats = giveup_seat_set(row)
+    me = (nick or "").strip()
+    # FR #3277 / #1236: giveup_seats is the seat-scoped gate; do not let a high
+    # giveup_count short-circuit into a fleet-wide block when seats are listed.
+    if seats:
+        if me:
+            return nick_in_giveup_seats(row, me)
+        return True
     try:
         giveups = int(row.get("giveup_count") or 0)
     except (TypeError, ValueError):
         giveups = 0
     if giveups >= GIVEUP_NEEDS_HUMAN_COUNT:
         return True
-    seats = giveup_seat_set(row)
-    me = (nick or "").strip()
-    if seats and me and not nick_in_giveup_seats(row, me):
-        return False
     return True
 
 
@@ -4404,6 +4408,55 @@ def row_author_seats(row: dict) -> list[str]:
     return found
 
 
+def nick_is_row_author(row: dict, nick: str) -> bool:
+    """True when ``nick`` matches any of ``row_author_seats`` (canonical seat form)."""
+    authors = row_author_seats(row)
+    if not authors or not (nick or "").strip():
+        return False
+    return nick_in_giveup_seats({"giveup_seats": ",".join(authors)}, nick)
+
+
+def mrb_author_extra_from_doc(doc: dict, claim: "GitClaim") -> dict[str, str]:
+    """FR #3277: author/implementer stamps for an MRB claim from queue truth.
+
+    Used by DONE FR enqueue, PR webhook, and resync re-add so a missing
+    ``author_seat`` cannot leave the PR offerable to its own implementer.
+    """
+    if str(getattr(claim, "task", "") or "").upper() != "MRB":
+        return {}
+    if getattr(claim, "harvest_lesson", False):
+        opener = str(getattr(claim, "opened_by", "") or "").strip()
+        if opener and bobreport.parse_seat_nick(opener):
+            seat = canonical_worker_nick(opener) or opener
+            return {"author_seat": seat, "implementer_seat": seat}
+        return {}
+    implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
+    if not implementer:
+        # Fall back: DONE FR that already named this pull URL.
+        pull_num = str(claim.id or "").lstrip("#")
+        pull_needle = f"/pull/{pull_num}"
+        for row in doc.get("done") or []:
+            if str(row.get("task") or "").upper() != "FR":
+                continue
+            url = str(row.get("url") or row.get("result") or "")
+            if pull_needle not in url:
+                continue
+            parsed = parse_github_pull_url(url)
+            if parsed and parsed[0] == claim.repo and _norm_row_id(parsed[1]) == _norm_row_id(claim.id):
+                seat = str(row.get("nick") or row.get("done_by") or "").strip()
+                if seat and bobreport.parse_seat_nick(seat):
+                    implementer = canonical_worker_nick(seat) or seat
+                    break
+            if claim.repo.lower() in url.lower():
+                seat = str(row.get("nick") or row.get("done_by") or "").strip()
+                if seat and bobreport.parse_seat_nick(seat):
+                    implementer = canonical_worker_nick(seat) or seat
+                    break
+    if not implementer:
+        return {}
+    return {"author_seat": implementer, "implementer_seat": implementer}
+
+
 def _row_author_seat(row: dict) -> str:
     """Primary blocked seat (legacy single-value API; prefer ``row_author_seats``)."""
     seats = row_author_seats(row)
@@ -6379,6 +6432,8 @@ def resync_from_github(
                                 r["url"] = mrb_url
                     # FR #1093: refresh title/body/labels and stamp require_machine on stale rows
                     # (resync used to skip already-queued FRs, so WP0 pins never landed).
+                    # FR #3277: heal missing author_seat/implementer_seat from DONE FR / Closes refs.
+                    author_extra = mrb_author_extra_from_doc(doc, claim) if claim.task == "MRB" else {}
                     for r in doc["unaccepted"]:
                         if not _same(r, claim.repo, claim.task, claim.id):
                             continue
@@ -6390,6 +6445,10 @@ def resync_from_github(
                             r["labels"] = list(claim.labels)
                         if claim.harvest_lesson:
                             _heal_lesson_mrb_row(r, claim.opened_by)
+                        elif author_extra and not row_author_seats(r):
+                            for k, v in author_extra.items():
+                                if v:
+                                    r[k] = v
                         _stamp_require_machine(r, claim)
                     # Clear *stale* needs_human (keep-the-flow) but keep the intentional
                     # FR #180 gate after GIVEUP_NEEDS_HUMAN_COUNT giveups.
@@ -6402,7 +6461,12 @@ def resync_from_github(
                             continue
                         r.pop("needs_human", None)
                     continue
-                if _append_unaccepted(doc, claim, **({"url": mrb_url} if mrb_url else {})) == "added":
+                extra_add: dict[str, str] = {}
+                if mrb_url:
+                    extra_add["url"] = mrb_url
+                if claim.task == "MRB":
+                    extra_add.update(mrb_author_extra_from_doc(doc, claim))
+                if _append_unaccepted(doc, claim, **extra_add) == "added":
                     added += 1
             for urepo, (merged, linked) in uat_plan.items():
                 if any(
