@@ -319,11 +319,26 @@ if ($profForOps -eq 'client') {
     $Operators = @()
     Write-Host 'INFO FR #3401 client profile: no operators.txt (IRC +o/+h auth)'
 } elseif (Get-Command Resolve-BobiverseAircOperatorNicks -ErrorAction SilentlyContinue) {
-    # FR #3512: Resolve returns a flat string[] (NoEnumerate); do not nest under a second @(...).
-    $Operators = [string[]]@(
-        Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators `
-            -OperatorsExtra $OperatorsExtra -InstallRoot $InstallRoot
-    )
+    # FR #3512: flatten Resolve output. `return , $arr` / NoEnumerate + `@()` / [string[]]@()
+    # can still nest so operators.txt gets one space-joined nick. Absorbed from PR #3555.
+    $resolvedOps = Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators `
+        -OperatorsExtra $OperatorsExtra -InstallRoot $InstallRoot
+    $flatOps = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($resolvedOps)) {
+        if ($null -eq $item) { continue }
+        if (($item -is [System.Array]) -and -not ($item -is [string])) {
+            foreach ($n in $item) {
+                foreach ($p in @(([string]$n) -split '[,;\s]+' | Where-Object { $_ })) {
+                    [void]$flatOps.Add($p.Trim())
+                }
+            }
+        } else {
+            foreach ($p in @(([string]$item) -split '[,;\s]+' | Where-Object { $_ })) {
+                [void]$flatOps.Add($p.Trim())
+            }
+        }
+    }
+    $Operators = [string[]]$flatOps.ToArray()
 } elseif ($profForOps -ne 'workstation') {
     $extra = @(([string]$OperatorsExtra) -split '[,;\s]+' | Where-Object { $_ })
     $roster = @()
