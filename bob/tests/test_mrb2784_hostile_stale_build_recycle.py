@@ -15,15 +15,15 @@ PRODUCT = ROOT / "bob" / "tests" / "test_fr2782_stale_build_recycle.py"
 
 def test_mrb2784_skill_bullet_and_product_suite():
     text = SKILL.read_text(encoding="utf-8")
-    assert "Stale build recycle (FR #2782)" in text
-    assert "EXIT" in text or "exits `8`" in text or "exits 8" in text or "!bored" in text
+    assert "Stale build notice (FR #2782 / FR #3180)" in text or "Stale build" in text
+    assert "restart me manually" in text.lower() or "manual only" in text.lower() or "FR #3180" in text
     assert "BOB_WORKER_STALE_BUILD_RECYCLE=0" in text
     assert PRODUCT.is_file()
     assert "test_idle_stale_seat_recycles_instead_of_bored" in PRODUCT.read_text(encoding="utf-8")
 
 
 def test_mrb2784_exit_code_and_helper_exist():
-    assert bw.EXIT_STALE_BUILD == 8
+    assert bw.EXIT_STALE_BUILD == 8  # legacy constant retained
     assert callable(bw.stale_build_reason)
 
 
@@ -40,7 +40,8 @@ def test_mrb2784_stale_differs_same_and_opt_out(tmp_path):
     assert why == f"run=d409556250b4 install={digest}"
     assert bw.stale_build_reason(rf"C:\x\bob-worker-{digest}.exe", root, env={}) is None
     assert bw.stale_build_reason(r"C:\x\bob-worker-d409556250b4.exe", root, env={"BOB_WORKER_STALE_BUILD_RECYCLE": "0"}) is None
-    assert bw.stale_build_reason(r"C:\x\bob-worker-d409556250b4.exe", root, env={"BOBIVERSE_WORKER_SEAT_HEAL": "0"}) is None
+    # FR #3180: heal env no longer disables detection
+    assert bw.stale_build_reason(r"C:\x\bob-worker-d409556250b4.exe", root, env={"BOBIVERSE_WORKER_SEAT_HEAL": "0"}) is not None
 
 
 def test_mrb2784_post_bored_recycles_not_bored(tmp_path):
@@ -75,5 +76,6 @@ def test_mrb2784_post_bored_recycles_not_bored(tmp_path):
     sup.stale_build_check = lambda: "run=old install=new"
     assert sup.post_bored() is False
     assert ("#marchhare", "!bored") not in irc.said
-    assert sup.done.wait(5.0)
-    assert sup.exit_code == bw.EXIT_STALE_BUILD
+    assert not sup.done.wait(0.3)
+    assert sup.exit_code != bw.EXIT_STALE_BUILD
+    assert any("stale build" in m.lower() for m in logs)
