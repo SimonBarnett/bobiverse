@@ -1279,6 +1279,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
     pull_request opened/ready_for_review -> MRB (with refs to linked issues)
     pull_request closed -> MRB row used for supersede (merged flag set)
     issues closed -> FR/UAT removal via apply_queue_event (task FR id)
+    issues/pull_request labeled|unlabeled -> update matching row labels; re-eval FR skip (FR #3275)
     """
     if not isinstance(payload, dict):
         return None
@@ -1327,6 +1328,32 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         if ident is None:
             return None
         return GitClaim(repo=repo, task="FR", id=ident, event=ev, action=action, line=src)
+
+    # FR #3275: labeled/unlabeled mutate queue labels in place (zero REST).
+    if ev in ("issues", "pull_request") and action in ("labeled", "unlabeled"):
+        ident = _payload_number(ev, payload)
+        if ident is None:
+            return None
+        blob = _issue_blob(payload) if ev == "issues" else _pr_blob(payload)
+        if ev == "issues" and blob.get("pull_request"):
+            return None
+        title = str(blob.get("title") or "")
+        body = str(blob.get("body") or "")
+        labels = _label_names(blob.get("labels"))
+        state = str(blob.get("state") or "open")
+        task = "FR" if ev == "issues" else "MRB"
+        return GitClaim(
+            repo=repo,
+            task=task,
+            id=ident,
+            event=ev,
+            action=action,
+            line=src or title,
+            title=title,
+            body=body,
+            labels=labels,
+            state=state,
+        )
 
     # FR #924: include synchronize so author_seat backfill runs on push without waiting for edited.
     if ev == "pull_request" and action in ("opened", "ready_for_review", "edited", "synchronize"):
@@ -1557,7 +1584,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
                     row["refs"] = list(claim.refs)
                 if claim.title:
                     row["title"] = claim.title
-                if claim.labels:
+                if claim.action in ("labeled", "unlabeled") or claim.labels:
                     row["labels"] = list(claim.labels)
                 if claim.state:
                     row["state"] = str(claim.state).strip().lower()
@@ -1645,12 +1672,66 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         row["require_machine"] = req
 
 
+def _apply_label_mutation(doc: dict, claim: GitClaim) -> str:
+    """FR #3275: labeled/unlabeled update labels on matching rows; re-eval FR skip locally."""
+    updated = False
+    found_unaccepted = False
+    for bucket in ("unaccepted", "accepted"):
+        for row in doc.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if not _same(row, claim.repo, claim.task, claim.id):
+                continue
+            if bucket == "unaccepted":
+                found_unaccepted = True
+            row["labels"] = list(claim.labels)
+            row["action"] = claim.action
+            row["event"] = claim.event
+            if claim.title:
+                row["title"] = claim.title
+            if claim.body:
+                row["body"] = _body_for_queue(claim.body)
+            if claim.state:
+                row["state"] = str(claim.state).strip().lower()
+            _stamp_require_machine(row, claim)
+            updated = True
+
+    if claim.task == "FR":
+        skip = issue_skip_fr_reason(
+            title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
+        )
+        if skip:
+            n = _remove_unaccepted(doc, claim.repo, "FR", claim.id)
+            if n:
+                return "removed"
+            return "updated" if updated else "noop"
+        if not found_unaccepted and not repo_archived_for_queue(claim.repo):
+            ch = _append_unaccepted(doc, claim)
+            if ch == "skipped":
+                return "noop"
+            if ch == "added":
+                return "added"
+            return "updated" if updated or ch == "duplicate" else "noop"
+        return "updated" if updated else "noop"
+
+    # MRB: mutate existing rows only (do not invent an MRB from a label event).
+    return "updated" if updated else "noop"
+
+
 def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
     """Mutate queue doc for one claim. Returns added|removed|updated|duplicate|noop|error."""
-    if claim.task not in TASK_KINDS and claim.action not in ("closed", "edited"):
+    if claim.task not in TASK_KINDS and claim.action not in (
+        "closed",
+        "edited",
+        "labeled",
+        "unlabeled",
+    ):
         return "error"
     ev, action = claim.event, claim.action
     changed = "noop"
+
+    if ev in ("issues", "pull_request") and action in ("labeled", "unlabeled"):
+        return _apply_label_mutation(doc, claim)
 
     if ev == "issues" and action in ("opened", "reopened"):
         if issue_skip_fr_reason(
