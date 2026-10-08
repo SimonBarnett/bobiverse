@@ -97,6 +97,9 @@ if (Test-Path -LiteralPath $bootstrap) {
     }
 }
 
+# FR #3394: lock ProgramData\Bobiverse (+ logs) before any MSI log / manifest write.
+Ensure-BobiverseProgramDataRoot -FailClosed | Out-Null
+
 # FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
 Write-BobiverseMsiInstallLog -Product airc -Message ("install-begin installRoot=$InstallRoot msiVer=$MsiProductVersion")
 $script:AircInstallOk = $false
@@ -104,6 +107,8 @@ try {
 
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
+# FR #3394: fail-closed lock BEFORE LocalSystem starts airc.exe / runs scripts from this tree.
+Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -FailClosed
 if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
@@ -419,7 +424,8 @@ $args = @{
 if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }
 if ($Python) { $args.Python = $Python }
-if ($NoStart) { $args.NoStart = $true }
+# FR #3394: always delay Start-Service until Protect FailClosed after Install-AircConsole.
+$args.NoStart = $true
 if ($resolvedRequire) { $args.RequireAccount = $true }
 if ($resolvedAccounts.Count -gt 0) { $args.Accounts = $resolvedAccounts }
 # FR #1552: pass through prior PasswordFile / OperatorsFile / Launcher when still on disk.
@@ -449,11 +455,21 @@ try {
 # Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
 Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
 
-# FR #3289: SYSTEM + Administrators full; Users read/execute only (no Authenticated Users modify).
-try {
-    Protect-BobiverseInstallTree -Path $InstallRoot -Recurse
-} catch {
-    Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
+# FR #3289 / #3394: SYSTEM + Administrators full; Users RX only. Fail closed before Start-Service.
+Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -FailClosed
+
+# FR #3394: start only after the tree is locked (Install-AircConsole ran with -NoStart).
+if (-not $NoStart) {
+    Write-Host 'INFO FR #3394 starting Airc after Protect FailClosed'
+    $prevEa = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Start-Service -Name 'Airc' -ErrorAction Continue
+    } finally {
+        $ErrorActionPreference = $prevEa
+    }
+} else {
+    Write-Host 'INFO Install-Airc -NoStart set; service not started'
 }
 
 # ONE all-users Start Menu folder "Bobiverse" (shared with bob/jeeves); dedupes older scattered entries.
@@ -465,8 +481,8 @@ try {
 
 # FR #3292: durable install manifest for purge uninstall (paths + profile).
 try {
-    $pd = Join-Path $env:ProgramData 'Bobiverse'
-    New-Item -ItemType Directory -Force -Path $pd | Out-Null
+    $pd = Ensure-BobiverseProgramDataRoot -FailClosed
+    if (-not $pd) { throw 'Ensure-BobiverseProgramDataRoot returned empty' }
     $manPath = Join-Path $pd 'airc-install-manifest.json'
     $paths = @(
         $InstallRoot,
