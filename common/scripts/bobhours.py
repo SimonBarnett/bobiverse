@@ -17,10 +17,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 HOURS_PATH = "/bob/v1/hours"
-LONDON = ZoneInfo("Europe/London")
+# FR #3629: do not resolve Europe/London at import — Windows CI without the
+# ``tzdata`` package raises ZoneInfoNotFoundError and breaks bobcallback import.
+_LONDON: Any = None
 OPEN_TIMEOUT_ENV = "BOB_HOURS_OPEN_TIMEOUT_MIN"
 DEFAULT_OPEN_TIMEOUT_MIN = 120
 MAX_HOURS_BYTES = 64 * 1024
@@ -125,8 +127,33 @@ def _parse_iso(raw: str) -> datetime | None:
     return dt
 
 
+def london_tz():
+    """Europe/London zone; lazy so ``import bobhours`` works without tzdata (FR #3629)."""
+    global _LONDON
+    if _LONDON is not None:
+        return _LONDON
+    try:
+        _LONDON = ZoneInfo("Europe/London")
+    except ZoneInfoNotFoundError:
+        # Hosted Windows Python often lacks IANA data until ``pip install tzdata``.
+        try:
+            import tzdata  # noqa: F401
+
+            _LONDON = ZoneInfo("Europe/London")
+        except Exception:
+            _LONDON = timezone.utc
+    return _LONDON
+
+
+# Back-compat alias used by tests/callers; resolves on first attribute access via property-like helper.
+def __getattr__(name: str):
+    if name == "LONDON":
+        return london_tz()
+    raise AttributeError(name)
+
+
 def _london_day(dt: datetime) -> date:
-    return dt.astimezone(LONDON).date()
+    return dt.astimezone(london_tz()).date()
 
 
 def _parse_day(raw: str) -> date | None:
