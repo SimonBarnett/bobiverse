@@ -540,7 +540,10 @@ function Resolve-BobiverseAircOperatorNicks {
         $seen[$k] = $true
         [void]$out.Add($n)
     }
-    return , $out.ToArray()
+    # FR #3512: `return , $arr` + caller `@()` nests as Object[]{ string[] }, which
+    # Install-AircConsole / -join then collapses to one operators.txt line.
+    # Emit a flat string[] via NoEnumerate; Install-Airc also flattens defensively.
+    Write-Output -NoEnumerate ([string[]]$out.ToArray())
 }
 
 function Merge-BobiverseAircOperatorsFile {
@@ -564,8 +567,21 @@ function Merge-BobiverseAircOperatorsFile {
     $MachineId = ($MachineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
     $bobNick = "bob-$MachineId"
     $want = New-Object System.Collections.Generic.List[string]
+    # FR #3512: split space/comma-joined tokens so a nested @() nick array cannot
+    # land as a single operators.txt line ("Simon bob-other").
     foreach ($o in @($Nicks)) {
-        if ($o -and ([string]$o).Trim()) { [void]$want.Add(([string]$o).Trim()) }
+        if ($null -eq $o) { continue }
+        if (($o -is [System.Array]) -and -not ($o -is [string])) {
+            foreach ($n in $o) {
+                foreach ($p in @(([string]$n) -split '[,;\s]+' | Where-Object { $_ })) {
+                    [void]$want.Add($p.Trim())
+                }
+            }
+            continue
+        }
+        foreach ($p in @(([string]$o) -split '[,;\s]+' | Where-Object { $_ })) {
+            [void]$want.Add($p.Trim())
+        }
     }
     if (-not $NoEnsureBobLocal) {
         if (-not ($want | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
