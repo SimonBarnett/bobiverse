@@ -276,6 +276,25 @@ def test_install_client_profile_wiring():
     assert "irc_ops" in t
 
 
+def test_fr3462_client_workstation_force_sync_off_ignore_prior():
+    """FR #3462: client/workstation sync_from_repo=false unless MSI/CLI explicit (ignore prior)."""
+    t = INSTALL.read_text(encoding="utf-8-sig")
+    assert "FR #3462" in t
+    # Contiguous force-off mirrors self_update (priorSync must not win for client/workstation).
+    assert (
+        "elseif ($prof -in @('workstation', 'client')) { $resolvedSync = $false }" in t
+    )
+    # Explicit MSI/CLI still wins first.
+    assert "if ($null -ne $expSync) { $resolvedSync = [bool]$expSync }" in t
+    # Order: expSync -> client/workstation force false -> priorSync (fleet only).
+    i_exp = t.index("if ($null -ne $expSync) { $resolvedSync = [bool]$expSync }")
+    i_force = t.index(
+        "elseif ($prof -in @('workstation', 'client')) { $resolvedSync = $false }"
+    )
+    i_prior = t.index("elseif ($null -ne $priorSync) { $resolvedSync = [bool]$priorSync }")
+    assert i_exp < i_force < i_prior
+
+
 def test_install_console_and_common_skip_operators_for_client():
     c = INSTALL_CONSOLE.read_text(encoding="utf-8-sig")
     _no_bom(INSTALL_CONSOLE)
