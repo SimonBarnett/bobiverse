@@ -71,6 +71,8 @@ Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (com
    allowed owners. `!resync` runs it now; `!status` shows `github_resync:`, `webhooks:`, and `github-api:` remaining.
    **Open-PR MRB vs stale `mrb_done` (FR #1585 / harvest #1613):** premature `mrb_done` must not purge an MRB whose GitHub pull is still **open**. `mrb_already_done(..., pr_exists=)` treats open `pr_exists` as winning (keep/requeue the MRB); resync clears stale `mrb_done` stamps the same way it heals stale `fr_done`. Merged PR #1606.
 
+**Offer order (FR #3205):** within focus priority, hand out **MRB then UAT then FR**, **lowest issue/PR number** first (not queue `seq` / arrival order). Same-priority repos interleave by kind then number (repo name is the final tie-break — not focus timestamp). A seat that cannot take waiting MRB/UAT rows still gets the next eligible FR (never `nothing queued` while one exists). `rebuild_offer_precompute` (resync / after offer stamp) writes `offer-precompute.json`; when its fingerprint matches the queue, `!bored` uses **zero** live GitHub calls (FR #3188 budget of 1 remains when precompute is stale).
+
 ## Services and identity
 
 - `ircJeeves` (nick **Jeeves**) and `BobIrcd` (Ergo). Legacy `BobJeeves` (gh-Jeeves) must be removed from the SCM: it fights for the nick.

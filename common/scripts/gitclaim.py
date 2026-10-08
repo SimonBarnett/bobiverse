@@ -2426,17 +2426,89 @@ def load_accepted(home: Path) -> list[dict]:
 
 
 def _sort_key(row: dict) -> tuple:
-    try:
-        seq = int(row.get("seq") or 0)
-    except (TypeError, ValueError):
-        seq = 0
+    """FR #3205 fallback / claim_top key: MRB < UAT < FR, then lowest number, then repo.
+
+    Prefer ``focus_ignore.offer_sort_key`` / ``ordered_unaccepted`` when a home is available.
+    """
+    import focus_ignore as _fi
+
+    task = str(row.get("task") or "").strip().upper()
     return (
-        seq,
-        str(row.get("ts") or ""),
-        str(row.get("repo") or ""),
-        str(row.get("task") or ""),
+        _fi._TASK_ORDER.get(task, 3),
+        _fi.row_offer_number(row),
+        str(row.get("repo") or "").lower(),
         str(row.get("id") or ""),
     )
+
+
+OFFER_PRECOMPUTE_FILE = "offer-precompute.json"
+
+
+def offer_precompute_path(home: Path) -> Path:
+    return bobreport.fleet_digest_home(Path(home)) / OFFER_PRECOMPUTE_FILE
+
+
+def _offer_row_fingerprint(rows: list[dict]) -> str:
+    parts = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        parts.append(
+            f"{r.get('repo')}|{r.get('task')}|{str(r.get('id') or '').lstrip('#')}"
+        )
+    return "|".join(sorted(parts))
+
+
+def rebuild_offer_precompute(home: Path, rows: list[dict] | None = None) -> list[dict]:
+    """FR #3205: rebuild ordered candidate list from local queue + focus (no GitHub).
+
+    Written under the digest home so !bored can walk a pre-validated order with
+    zero live GitHub calls when the fingerprint still matches.
+    """
+    import focus_ignore as _fi
+
+    src = list(rows) if rows is not None else list(load_unaccepted(home))
+    ordered = _fi.sort_unaccepted_rows(home, src)
+    payload = {
+        "v": 1,
+        "ts": _utc_now(),
+        "fingerprint": _offer_row_fingerprint(src),
+        "order": [
+            {
+                "repo": str(r.get("repo") or ""),
+                "task": str(r.get("task") or ""),
+                "id": str(r.get("id") or ""),
+            }
+            for r in ordered
+            if isinstance(r, dict)
+        ],
+    }
+    path = offer_precompute_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=0) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return ordered
+
+
+def load_offer_precompute(home: Path) -> dict | None:
+    path = offer_precompute_path(home)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def offer_precompute_fresh(home: Path, rows: list[dict] | None = None) -> bool:
+    """True when on-disk precompute matches the current unaccepted fingerprint."""
+    doc = load_offer_precompute(home)
+    if not doc:
+        return False
+    src = list(rows) if rows is not None else list(load_unaccepted(home))
+    return str(doc.get("fingerprint") or "") == _offer_row_fingerprint(src)
 
 
 def claim_top(home: Path, nick: str, channel: str) -> tuple[str, dict | None]:
@@ -4596,7 +4668,21 @@ def offer_focus_top(
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
-    budget = _GithubCallBudget(BORED_GITHUB_CALL_BUDGET)
+    # FR #3205: when an on-disk precompute fingerprint matches the queue, !bored uses
+    # zero GitHub calls (local eligibility only). Otherwise keep the FR #3188 budget of 1.
+    # Resync / webhook / explicit rebuild_offer_precompute refresh the file off the IRC path.
+    try:
+        with _lock(home):
+            try:
+                _peek = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                _peek = None
+        _rows_peek = list((_peek or {}).get("unaccepted") or []) if _peek else []
+    except (TimeoutError, OSError):
+        _rows_peek = []
+    precompute_ok = offer_precompute_fresh(home, _rows_peek)
+    bored_budget = 0 if precompute_ok else BORED_GITHUB_CALL_BUDGET
+    budget = _GithubCallBudget(bored_budget)
     pr_exists = _budgeted_github(pr_exists, budget, "pr_exists")
     is_pull = _budgeted_github(is_pull, budget, "is_pull")
     issue_open = _budgeted_github(issue_open, budget, "issue_open")
@@ -4614,13 +4700,17 @@ def offer_focus_top(
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             # FR #2340 / #3188: stamped CLOSED only at bulk; live check is budgeted in _eligible.
             purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
-            # FR #2361: accepted list is small (busy seats) — live check OK under the shared budget.
-            purged = bool(
-                _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
-            ) or purged
+            # FR #2361: accepted list is small (busy seats) — live check OK under the shared budget
+            # unless FR #3205 precompute says zero GitHub on this !bored.
+            if bored_budget > 0:
+                purged = bool(
+                    _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
+                ) or purged
+            else:
+                purged = bool(_purge_closed_fr_accepted(doc, issue_open=None, home=home)) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
-            # Budgeted: at most one live call shared with the offer pick.
-            if pr_exists is not None:
+            # Budgeted: at most one live call shared with the offer pick (skipped when budget 0).
+            if bored_budget > 0 and pr_exists is not None:
                 with contextlib.suppress(Exception):
                     if clear_orphan_digest_mrb_doing(home, pr_exists=pr_exists):
                         purged = True
@@ -4831,7 +4921,8 @@ def offer_focus_top(
                         r for r in (doc.get("unaccepted") or [])
                         if isinstance(r, dict)
                     ]
-                fallback.sort(key=_sort_key)
+                # FR #3205: fallback uses the same kind+number order as focus walk.
+                fallback.sort(key=lambda r: focus_ignore.offer_sort_key(home, r))
                 for cand in fallback:
                     pick = _eligible(cand)
                     if pick is not None:
@@ -4879,6 +4970,10 @@ def offer_focus_top(
                 _write_queue(queue_path(home), doc)
             except OSError:
                 return "error", None
+            # FR #3205: keep precompute fingerprint in sync after stamp so the next
+            # !bored can stay on the zero-GitHub path when the set of rows is unchanged.
+            with contextlib.suppress(Exception):
+                rebuild_offer_precompute(home, list(doc.get("unaccepted") or []))
             return "ok", job
     except (TimeoutError, OSError):
         return "error", None
@@ -6316,6 +6411,9 @@ def resync_from_github(
                 focus_pruned = 0
                 focus_redundant = 0
             _write_queue(queue_path(home), doc)
+            # FR #3205: refresh ordered offer candidates off the IRC thread (resync path).
+            with contextlib.suppress(Exception):
+                rebuild_offer_precompute(home, list(doc.get("unaccepted") or []))
             if cleared_fr_done or cleared_mrb_done:
                 def _clear_stale_done_stamps(led: dict) -> None:
                     if cleared_fr_done:
