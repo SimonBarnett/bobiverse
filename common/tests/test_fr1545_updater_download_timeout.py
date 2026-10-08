@@ -45,7 +45,9 @@ def test_fr1545_fleet_wrapper_delegates_service_mode():
 def test_fr1545_start_airc_still_updates_in_service_mode():
     t = START.read_text(encoding="utf-8-sig")
     assert "Update-BobiverseService.ps1" in t
-    assert "if ($ServiceMode)" in t
+    # FR #3289 / #3396: policy-gated self-update under ServiceMode.
+    assert "if ($ServiceMode -and $aircPolicy.SelfUpdate)" in t
+    assert "Get-AircStartUpdatePolicy" in t
 
 
 @win

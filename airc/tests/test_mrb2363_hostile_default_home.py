@@ -50,7 +50,8 @@ def test_mrb2363_default_home_regex_matches_orphan_paths():
 def test_mrb2363_remap_runs_after_consolehome_resolved():
     t = _install()
     i_new = t.index("New-Item -ItemType Directory -Force -Path $ConsoleHome")
-    i_remap = t.index("FR #2355: remap even when")
+    # FR #3288 / #3396: comment wording changed; keep order gate (New-Item then remap).
+    i_remap = t.index("FR #2355 / #3288: remap user-profile homes")
     assert i_remap > i_new
     assert "Resolve-AircSafeConsoleHome" in t[i_remap : i_remap + 800]
 

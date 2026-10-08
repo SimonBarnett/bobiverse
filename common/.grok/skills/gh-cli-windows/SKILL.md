@@ -8,6 +8,18 @@ description: >
 
 # gh CLI on Windows PowerShell
 
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
+
 Fleet seats run **Windows PowerShell 5.1**. Prefer `--body-file` (UTF-8 **no BOM**) over multiline `--body`. Never print tokens.
 
 ## HTTP 500 empty-body fallback (FR #3160)
@@ -37,7 +49,7 @@ If it keeps happening: file intake with `gh` verbose request ids; keep this skil
 
 - WinPS can split multiline `--body` into many argv (`accepts at most 1 arg(s)`).
 - Write temp `.md` as UTF-8 **no BOM**:
-  `[System.IO.File]::WriteAllText($path, $body, (New-Object System.Text.UTF8Encoding $false))`
+  `[IO.File]::WriteAllText($path, $body, (New-Object System.Text.UTF8Encoding $false))`
 - Then `gh pr create|edit|comment --body-file $path`.
 - `Set-Content -Encoding utf8` on PS 5.1 writes a **BOM** and can break `closingIssuesReferences`.
 
