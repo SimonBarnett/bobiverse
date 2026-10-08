@@ -86,16 +86,27 @@ def test_protect_bobiverse_secret_path_strips_users(tmp_path: Path):
         $denied = $false
         try {{ Get-Content -LiteralPath '{secret}' -ErrorAction Stop | Out-Null }} catch {{ $denied = $true }}
         if (-not $denied) {{
+            # FR #3583: WindowsIdentity.Groups never contains the mandatory integrity
+            # label (that lives in TokenIntegrityLevel / whoami Label). Use IsInRole.
             $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-            $high = [bool]($id.Groups | Where-Object {{ $_.Value -eq 'S-1-16-12288' }})
-            if (-not $high) {{ throw 'expected Get-Content access denied for Medium-IL token' }}
+            $elevated = ([Security.Principal.WindowsPrincipal]$id).IsInRole(
+                [Security.Principal.WindowsBuiltInRole]::Administrator)
+            if (-not $elevated) {{
+                throw 'expected Get-Content access denied for Medium-IL / non-admin token'
+            }}
+            # Elevated admin keeps FullControl — read success is OK; ACLs already asserted.
+            Write-Output 'READ_OK_ELEVATED'
+        }} else {{
+            Write-Output 'READ_DENIED'
         }}
         Write-Output 'ACL_OK'
         """
     )
     r = _ps(script)
     assert r.returncode == 0, r.stdout + "\n" + r.stderr
-    assert "ACL_OK" in (r.stdout or "")
+    out = r.stdout or ""
+    assert "ACL_OK" in out
+    assert ("READ_DENIED" in out) or ("READ_OK_ELEVATED" in out)
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL only")
 def test_write_airc_secret_file_source_has_no_username_grant():
@@ -121,3 +132,17 @@ def test_protect_helper_exists_in_common():
     assert "function Protect-BobiverseSecretPath" in text
     assert "S-1-5-18" in text
     assert "S-1-5-32-544" in text
+
+
+def test_fr3583_elevation_check_uses_isinrole_not_groups_integrity():
+    """FR #3583: do not look up High-IL via WindowsIdentity.Groups (always empty)."""
+    text = Path(__file__).read_text(encoding="utf-8")
+    assert "WindowsBuiltInRole]::Administrator" in text
+    assert "IsInRole" in text
+    assert "READ_OK_ELEVATED" in text
+    # Scan only the embedded Protect script (not this assert helper).
+    embed = text[text.find("$denied = $false") : text.find("Write-Output 'ACL_OK'")]
+    assert "IsInRole" in embed
+    assert "WindowsBuiltInRole" in embed
+    assert "$id.Groups" not in embed
+    assert ("S-1-16-" + "12288") not in embed
