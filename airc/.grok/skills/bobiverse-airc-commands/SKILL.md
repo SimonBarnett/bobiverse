@@ -20,7 +20,7 @@ description: >
 
 ## Remote shell protocol (FR #75)
 
-An authorized sender (`bob-*` ear) PRIVMSGs the console:
+An authorized sender (operators list / seeded `bob-<machine>` ear) PRIVMSGs the console:
 
 ```text
 PRIVMSG <machine>_console :Get-Service Airc
@@ -30,7 +30,7 @@ PRIVMSG <machine>_console :psb64:<base64>
 
 - Default is **PowerShell 5.1** (`-NoProfile`); `cmd:` uses COMSPEC; `psb64:` is `-EncodedCommand` (UTF-16LE or UTF-8 payload).
 - Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
-- Allowlist: `bob-*` ears may always PRIVMSG `*_console`. Nothing else is authorized.
+- Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
 - PUT/RUN/JOB/UPDATE are separate FRs — see `docs/airc-remote-control.md`.
 
 ## Safe diagnostic commands

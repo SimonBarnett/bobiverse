@@ -20,7 +20,7 @@ param(
     [string]$PasswordFile = '',
     # Optional explicit Ergo server PASS source file (copied into ConsoleHome\ergo.password).
     [string]$ErgoPasswordFile = '',
-    # Simon + bob-{COMPUTERNAME} seeded; runtime also allows any bob-* fleet nick (#302).
+    # Simon + bob-{COMPUTERNAME} seeded as operators (FR #3286: nick pattern alone is not auth).
     [string[]]$Operators = @('Simon'),
     [string]$ServiceName = 'AircConsole',
     # Absolute python.exe for LocalSystem (#282). Empty = auto-resolve at install.
