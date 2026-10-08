@@ -78,7 +78,8 @@ def test_mrb2672_ensure_and_watch_pass_mode():
     ensure = ENSURE.read_text(encoding="utf-8-sig")
     assert "Measure-BobTrayWorkerSeats" in ensure
     assert "-Modes @('agent')" in ensure or '-Modes @("agent")' in ensure
-    assert "Get-BobTrayWorkerCapRefusal -Mode agent" in ensure or "Get-BobTrayWorkerCapRefusal -Mode 'agent'" in ensure
+    # FR #3180: Ensure is report-only (no CapRefusal / no req queue); Watch still gates Launch.
+    assert "report-only" in ensure.lower() or "FR #3180" in ensure
     watch = WATCH_PS1.read_text(encoding="utf-8-sig")
     i = watch.index("function Start-BobTrayWorkerExe")
     body = watch[i : i + 3000]

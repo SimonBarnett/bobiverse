@@ -55,12 +55,13 @@ def test_hotpatch_in_flight_waits_for_settle(tmp_path):
     assert bw.stale_build_reason(r"C:\x\bob-worker-d409556250b4.exe", root, env=_clean_env(), now=later)
 
 
-def test_opt_out_and_no_seat_heal(tmp_path):
+def test_opt_out_stale_recycle(tmp_path):
     root, _ = _install(tmp_path)
     run = r"C:\x\bob-worker-d409556250b4.exe"
     assert bw.stale_build_reason(run, root, env={"BOB_WORKER_STALE_BUILD_RECYCLE": "0"}) is None
-    # Nobody would refill the seat: never drop below the cap.
-    assert bw.stale_build_reason(run, root, env={"BOBIVERSE_WORKER_SEAT_HEAL": "0"}) is None
+    # FR #3180: seat-heal env no longer gates detection (manual-only starts).
+    why = bw.stale_build_reason(run, root, env={"BOBIVERSE_WORKER_SEAT_HEAL": "0"})
+    assert why is not None and why.startswith("run=")
 
 
 class _Irc:
@@ -92,15 +93,18 @@ def _sup(tmp_path, irc):
 
 
 def test_idle_stale_seat_recycles_instead_of_bored(tmp_path):
-    """FAILS on main (no stale_build_check): the stale seat posts !bored and takes the next assign on the old build."""
+    """FR #3180: stale seat keeps running, skips !bored, announces manual restart (no EXIT_STALE_BUILD)."""
     irc = _Irc()
     sup, logs = _sup(tmp_path, irc)
     sup.stale_build_check = lambda: "run=d409556250b4 install=e5dbd4368d62"
     assert sup.post_bored() is False
     assert ("#marchhare", "!bored") not in irc.said
-    assert sup.done.wait(5.0)
-    assert sup.exit_code == bw.EXIT_STALE_BUILD == 8
+    assert not sup.done.wait(0.3)
+    assert sup.exit_code != bw.EXIT_STALE_BUILD
     assert any("stale build (run=d409556250b4 install=e5dbd4368d62)" in m for m in logs)
+    assert any("manual" in m.lower() or "restart" in m.lower() for m in logs) or any(
+        "manual" in str(s).lower() or "restart" in str(s).lower() for s in irc.said
+    )
 
 
 def test_current_build_still_posts_bored(tmp_path):
