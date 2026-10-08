@@ -69,14 +69,19 @@ def test_mrb_fail_claim_from_payload_is_none():
 
 
 def test_needs_human_global_after_giveup_threshold():
+    # FR #3277: with giveup_seats set, only those seats stay blocked at threshold.
     row = {
         "needs_human": True,
         "giveup_count": 2,
         "giveup_seats": "marchhare-111,marchhare-222",
     }
-    assert gitclaim.row_needs_human(row, "marchhare-333") is True
-    assert gitclaim.row_needs_human(row, "ionos-1") is True
-    # Below threshold: still per-seat
+    assert gitclaim.row_needs_human(row, "marchhare-111") is True
+    assert gitclaim.row_needs_human(row, "marchhare-333") is False
+    assert gitclaim.row_needs_human(row, "ionos-1") is False
+    # Bare needs_human (no giveup_seats) remains global at/above threshold.
+    bare = {"needs_human": True, "giveup_count": 2}
+    assert gitclaim.row_needs_human(bare, "marchhare-333") is True
+    # Below threshold with seats: still per-seat
     early = {
         "needs_human": True,
         "giveup_count": 1,

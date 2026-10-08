@@ -517,13 +517,25 @@ def return_job_to_unaccepted(
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
             gave_up_by = str(job.get("nick") or "").strip()
+            # FR #3277: self-MRB GIVEUP (author/implementer) must not burn the
+            # GIVEUP_NEEDS_HUMAN_COUNT budget or stamp needs_human — self_mrb
+            # already blocks re-offer to the author; other seats must stay free.
+            self_mrb_giveup = (
+                str(job.get("task") or "").upper() == "MRB"
+                and bool(gave_up_by)
+                and gitclaim.nick_is_row_author(job, gave_up_by)
+            )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
-                count = int(job.get("giveup_count") or 0) + 1
+                prior = int(job.get("giveup_count") or 0)
             except (TypeError, ValueError):
-                count = 1
-            job["giveup_count"] = count
+                prior = 0
+            if self_mrb_giveup:
+                count = prior
+            else:
+                count = prior + 1
+                job["giveup_count"] = count
             job["giveup_ts"] = gitclaim._utc_now()
             # FR #628: never hand this row back to a seat that already gave it up.
             # Store canonical <machine>-<pid> so w-io-* / w-mh-* match later offers.
@@ -550,7 +562,7 @@ def return_job_to_unaccepted(
             )
             # FR #180 / #1363: always stamp cooldown_until after GIVEUP/NACK.
             job["cooldown_until"] = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            if count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
+            if (not self_mrb_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
                 job["needs_human"] = True
             # needs-mrb1 must not force needs_human (operator 2026-10-04: hallucination).
             doc.setdefault("unaccepted", []).append(job)
