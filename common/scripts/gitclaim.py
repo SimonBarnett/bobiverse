@@ -2262,6 +2262,11 @@ def _coerce_row(row: dict) -> dict | None:
     # FR #2939: one-shot announce when every live seat is self-UAT for repo UAT #0.
     if row.get("self_uat_escalated"):
         out["self_uat_escalated"] = True
+    # FR #3400: orphan-ACK release marker (retry + prior ACK void note) must survive reload.
+    if row.get("retry"):
+        out["retry"] = True
+    if row.get("note"):
+        out["note"] = str(row.get("note"))
     return out
 
 
@@ -5885,6 +5890,75 @@ def parse_assign_cmd(body: str) -> tuple[str, str, str, str] | None:
     return m.group(1), m.group(2).strip().strip("{}"), m.group(3).upper(), f"#{int(m.group(4))}"
 
 
+def _accepted_holder_nick(row: dict) -> str:
+    """Seat that owns an accepted row (``nick`` or legacy ``accepted_by``)."""
+    raw = str(row.get("nick") or row.get("accepted_by") or "").strip()
+    return canonical_worker_nick(raw) or raw
+
+
+def _row_to_unaccepted_retry(row: dict) -> dict:
+    """FR #3400: strip accept/offer stamps and mark prior ACK void for re-offer."""
+    out = dict(row)
+    for key in (
+        "nick",
+        "channel",
+        "accepted_ts",
+        "accepted_by",
+        "offered_to",
+        "offered_ts",
+        "offered_channel",
+    ):
+        out.pop(key, None)
+    out["retry"] = True
+    out["note"] = "prior ACK void"
+    return out
+
+
+def _release_accepted_for_nick_unlocked(doc: dict, nick: str) -> list[dict]:
+    """Move accepted rows held by ``nick`` back onto ``unaccepted`` (caller holds lock)."""
+    want = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not want:
+        return []
+    kept: list[dict] = []
+    released: list[dict] = []
+    for row in list(doc.get("accepted") or []):
+        if not isinstance(row, dict):
+            continue
+        holder = _accepted_holder_nick(row).lower()
+        if holder == want:
+            released.append(_row_to_unaccepted_retry(row))
+        else:
+            kept.append(row)
+    if not released:
+        return []
+    doc["accepted"] = kept
+    doc["unaccepted"] = list(doc.get("unaccepted") or []) + released
+    return released
+
+
+def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
+    """FR #3400: seat left the shop — return its ACKed rows to unaccepted (prior ACK void).
+
+    Local queue only; no GitHub. Live seats are never passed here (worker-remove / reconcile).
+    """
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return []
+            released = _release_accepted_for_nick_unlocked(doc, nick)
+            if not released:
+                return []
+            try:
+                _write_queue(queue_path(home), doc)
+            except OSError:
+                return []
+            return released
+    except (TimeoutError, OSError):
+        return []
+
+
 def assign_row(
     home: Path,
     nick: str,
@@ -5902,6 +5976,9 @@ def assign_row(
     The same eligibility as ``offer_focus_top`` applies: real seat nick, not busy, row queued and
     unaccepted, no self-MRB/UAT, not needs-human/skip/cooldown/machine-pinned/already given up by
     this seat, not offered to another seat inside OFFER_TIMEOUT_S.
+
+    FR #3400: refuse assign to a nick not in the shop (not a live seat). If the named job is only
+    on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
     """
     import time as _time
 
@@ -5917,6 +5994,20 @@ def assign_row(
     task_u = (task or "").upper()
     num = str(ident or "").strip().lstrip("#")
     live = live_seat_nicks(home)
+    live_l = {n.lower() for n in live}
+    # FR #3400: refuse assign to a nick absent from the machine's worker_list when that
+    # list is non-empty (reconcile/PART already dropped them). Empty list = unknown
+    # presence (tests / cold digest) — do not block.
+    seat_mid = bobreport.parse_seat_nick(me)
+    if seat_mid:
+        try:
+            dig = bobreport.load_digest(_root(home))
+            ent = (dig.get("machines") or {}).get(seat_mid[0]) or {}
+            shop_rows = bobreport._coerce_worker_list(ent.get("worker_list"))
+        except Exception:
+            shop_rows = []
+        if shop_rows and me.lower() not in {str(r.get("nick") or "").lower() for r in shop_rows}:
+            return "refused", f"{me}: not in the shop channel (not a live seat)"
     free = free_seat_nicks(home, live)
     try:
         with _lock(home):
@@ -5934,7 +6025,35 @@ def assign_row(
                     idx = i
                     break
             if idx is None:
-                return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
+                # FR #3400: orphan accepted under a departed seat — release then offer.
+                acc_idx = None
+                for i, row in enumerate(doc.get("accepted") or []):
+                    if (
+                        str(row.get("task") or "").upper() == task_u
+                        and str(row.get("id") or "").strip().lstrip("#") == num
+                        and repo_match(repo, str(row.get("repo") or ""))
+                    ):
+                        acc_idx = i
+                        break
+                if acc_idx is None:
+                    return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
+                holder = _accepted_holder_nick(doc["accepted"][acc_idx])
+                if holder.lower() in live_l:
+                    return (
+                        "refused",
+                        f"{repo}#{num} {task_u}: accepted by live seat {holder}",
+                    )
+                _release_accepted_for_nick_unlocked(doc, holder)
+                for i, row in enumerate(doc["unaccepted"]):
+                    if (
+                        str(row.get("task") or "").upper() == task_u
+                        and str(row.get("id") or "").strip().lstrip("#") == num
+                        and repo_match(repo, str(row.get("repo") or ""))
+                    ):
+                        idx = i
+                        break
+                if idx is None:
+                    return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
             if row_needs_human(cand, me):
                 return "refused", "row is needs-human"
