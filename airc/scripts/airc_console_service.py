@@ -767,6 +767,9 @@ class AircConsoleService:
             self.send_notice(hr.nick, hr.reply)
             info(f"INFO pong to={hr.nick} {hr.reply}")
         elif hr.action == "deny" and hr.nick and hr.reply:
+            # FR #3286: log denials without echoing the command body.
+            acct = self.account_map.get(hr.nick) if getattr(self, "account_map", None) else None
+            info(f"auth-deny nick={hr.nick} account={acct or '-'}")
             self.send_privmsg(hr.nick, hr.reply)
         elif hr.action in {"help", "close", "update"} and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
@@ -989,9 +992,12 @@ def selftest() -> int:
     )
     assert parse_chanserv_info("Channel #marchhare is registered", "#marchhare") == "registered"
     assert parse_chanserv_info("Registered at: Tue, 29 Sep 2026 17:50:35 UTC", "#marchhare") == "registered"
-    auth = AuthPolicy(operators={"simon"}, accounts=set())
+    auth = AuthPolicy(operators={"simon"}, accounts=set(), machine="ionos")
     assert auth.allow("Simon")
     assert not auth.allow("stranger")
+    # FR #3286: arbitrary bob-* must not bypass operators.
+    assert not auth.allow("bob-evil")
+    assert auth.allow("bob-ionos")  # seeded via machine=
     core = AircConsoleCore(
         machine="ionos", auth=auth, sessions=ConsoleSessionManager(on_output=None), nick="ionos_console"
     )
@@ -1000,6 +1006,8 @@ def selftest() -> int:
     assert r and r.action == "silent_channel"
     r2 = core.handle_raw(":evil!e@h PRIVMSG ionos_console :whoami")
     assert r2 and r2.action == "deny"
+    r3 = core.handle_raw(":bob-evil!e@h PRIVMSG ionos_console :whoami")
+    assert r3 and r3.action == "deny"
     assert isinstance(is_frozen_airc_exe(), bool)
     _ = resolve_airc_install_root()  # must not raise
     info("INFO selftest ok")

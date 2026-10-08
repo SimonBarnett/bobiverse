@@ -53,7 +53,8 @@ _UPDATE_CMD_RE = re.compile(
     r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+))?\s*$",
     re.IGNORECASE,
 )
-# Issue #302: fleet ear nicks bob-{machine} are already authenticated; machine varies.
+# Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth — AuthPolicy
+# must still require operators (+ account when --require-account / --accounts).
 _BOB_FLEET_NICK_RE = re.compile(r"^bob-[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 
 ShopProbeResult = Literal["registered", "missing", "unknown"]
@@ -539,7 +540,10 @@ def parse_ping_command(text: str) -> str | None:
 
 
 def is_bob_fleet_nick(nick: str) -> bool:
-    """True for fleet ear nicks ``bob-{machinename}`` (issue #302)."""
+    """True for fleet ear nick shape ``bob-{machinename}`` (issue #302).
+
+    FR #3286: this is a naming helper only — never treat the pattern as authentication.
+    """
     return bool(_BOB_FLEET_NICK_RE.match((nick or "").strip()))
 
 
@@ -551,16 +555,14 @@ class AuthPolicy:
     accounts: set[str] = field(default_factory=set)
     account_map: AccountMap | None = None
     require_account: bool = False
-    # When set, also allow bob-<machine> for this box; bob-* fleet nicks always allowed (#302).
+    # When set, also treat bob-<machine> as an operator nick for this box (still subject
+    # to --require-account / --accounts). Never allow arbitrary bob-* by regex (FR #3286).
     machine: str | None = None
 
     def allow(self, nick: str, account: str | None = None) -> bool:
         n = (nick or "").strip().lower()
         if not n:
             return False
-        # Fleet bob-{machine} seats are already authenticated on Ergo (#302).
-        if is_bob_fleet_nick(n):
-            return True
         ops = {x.lower() for x in self.operators}
         mid = machine_id(self.machine) if self.machine is not None else None
         if mid:
