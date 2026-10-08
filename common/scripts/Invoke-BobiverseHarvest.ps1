@@ -464,6 +464,9 @@ if ($bobTooling -and -not $script:ExplicitRepo) {
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/skills-visionary$')) {
     $bookName = 'harvest-skills-visionary'
     Write-Host "INFO FR #3317 product default skill_book=harvest-skills-visionary for SimonBarnett/skills-visionary"
+} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$')) {
+    $bookName = 'harvest-agent-skills'
+    Write-Host "INFO FR #3318 product default skill_book=harvest-agent-skills for SimonBarnett/agentic_fomprep"
 }
 
 # FR #3317: DryRun (and payload) emit the owning skill-book path inside that repo.
