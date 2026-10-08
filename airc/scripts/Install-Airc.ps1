@@ -28,6 +28,8 @@ param(
     [string]$UpdateCap = '',
     [string]$RequireAccount = '',
     [string]$Accounts = '',
+    # FR #3397: MSI AIRC_OPERATORS=nick1,nick2 appends to operators.txt (fleet only).
+    [string]$OperatorsExtra = '',
     # FR #3289: MSI AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (0|1|true|false; empty = preserve / fresh default).
     [string]$SyncFromRepo = '',
     [string]$SelfUpdate = '',
@@ -97,6 +99,9 @@ if (Test-Path -LiteralPath $bootstrap) {
     }
 }
 
+# FR #3394: lock ProgramData\Bobiverse (+ logs) before any MSI log / manifest write.
+Ensure-BobiverseProgramDataRoot -FailClosed | Out-Null
+
 # FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
 Write-BobiverseMsiInstallLog -Product airc -Message ("install-begin installRoot=$InstallRoot msiVer=$MsiProductVersion")
 $script:AircInstallOk = $false
@@ -104,6 +109,8 @@ try {
 
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
+# FR #3394: fail-closed lock BEFORE LocalSystem starts airc.exe / runs scripts from this tree.
+Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -FailClosed
 if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
@@ -139,6 +146,12 @@ if ($wantAgentLayer) {
     }
 } else {
     Write-Host 'INFO agent-layer skipped (workstation / AIRC_AGENT_LAYER=0) FR #3292'
+    # FR #3392: MSI already laid AGENTS/CLAUDE/GROK/.cursor/.grok + agent scripts before RunInstall.
+    # Strip them so AIRC_PROFILE=workstation leaves an agent-free tree.
+    $purged = @(Remove-BobiverseAircWorkstationAgentPayload -InstallRoot $InstallRoot)
+    foreach ($p in $purged) {
+        if ($p) { [void]$script:AircManifestPaths.Add(("removed:{0}" -f $p)) }
+    }
 }
 
 # Package ergo.password into staged config if available on packer
@@ -249,26 +262,38 @@ if (-not $priorShell -and (Test-Path -LiteralPath $capPathGuess)) {
 $expShell = ([string]$ShellMode).Trim().ToLowerInvariant()
 if ($expShell -notin @('off', 'operators')) { $expShell = '' }
 if ($priorShell) { $priorShell = $priorShell.Trim().ToLowerInvariant() }
+# FR #3393: workstation defaults shell=off unless MSI/CLI set explicitly (ignore prior).
 if ($expShell) { $resolvedShell = $expShell }
+elseif ($prof -eq 'workstation') { $resolvedShell = 'off' }
 elseif ($priorShell -in @('off', 'operators')) { $resolvedShell = $priorShell }
 elseif ($hadPriorService) { $resolvedShell = 'operators' }
 else { $resolvedShell = 'off' }
 
-$resolvedJobs = ([string]$Jobs).Trim().ToLowerInvariant()
-if ($resolvedJobs -notin @('off', 'on')) {
-    if ($priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) { $resolvedJobs = ([string]$priorId.Jobs).Trim().ToLowerInvariant() }
-}
-if ($resolvedJobs -notin @('off', 'on')) { $resolvedJobs = 'on' }
+$expJobs = ([string]$Jobs).Trim().ToLowerInvariant()
+if ($expJobs -in @('off', 'on')) { $resolvedJobs = $expJobs }
+elseif ($prof -eq 'workstation') { $resolvedJobs = 'off' }
+elseif ($priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) {
+    $resolvedJobs = ([string]$priorId.Jobs).Trim().ToLowerInvariant()
+    if ($resolvedJobs -notin @('off', 'on')) { $resolvedJobs = 'on' }
+} else { $resolvedJobs = 'on' }
 
-$resolvedUpdate = ([string]$UpdateCap).Trim().ToLowerInvariant()
-if ($resolvedUpdate -notin @('off', 'on')) {
-    if ($priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) { $resolvedUpdate = ([string]$priorId.UpdateCap).Trim().ToLowerInvariant() }
-}
-if ($resolvedUpdate -notin @('off', 'on')) { $resolvedUpdate = 'on' }
+$expUpdate = ([string]$UpdateCap).Trim().ToLowerInvariant()
+if ($expUpdate -in @('off', 'on')) { $resolvedUpdate = $expUpdate }
+elseif ($prof -eq 'workstation') { $resolvedUpdate = 'off' }
+elseif ($priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) {
+    $resolvedUpdate = ([string]$priorId.UpdateCap).Trim().ToLowerInvariant()
+    if ($resolvedUpdate -notin @('off', 'on')) { $resolvedUpdate = 'on' }
+} else { $resolvedUpdate = 'on' }
 
-$resolvedRequire = $false
-if (([string]$RequireAccount).Trim() -in @('1', 'true', 'yes', 'on')) { $resolvedRequire = $true }
+# FR #3393: workstation defaults require_account=true unless MSI/CLI set explicitly.
+$expRequire = $null
+$reqRaw = ([string]$RequireAccount).Trim().ToLowerInvariant()
+if ($reqRaw -in @('1', 'true', 'yes', 'on')) { $expRequire = $true }
+elseif ($reqRaw -in @('0', 'false', 'no', 'off')) { $expRequire = $false }
+if ($null -ne $expRequire) { $resolvedRequire = [bool]$expRequire }
+elseif ($prof -eq 'workstation') { $resolvedRequire = $true }
 elseif ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount) { $resolvedRequire = [bool]$priorId.RequireAccount }
+else { $resolvedRequire = $false }
 
 $resolvedAccounts = @()
 if (([string]$Accounts).Trim()) {
@@ -276,6 +301,19 @@ if (([string]$Accounts).Trim()) {
 } elseif ($priorId -and $priorId.PSObject.Properties['Accounts'] -and $priorId.Accounts) {
     $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
 }
+
+# FR #3397: fleet AIRC_OPERATORS / -OperatorsExtra unions into -Operators; workstation ignores extra.
+$profForOps = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { ([string]$Profile).Trim().ToLowerInvariant() })
+if (-not $profForOps) { $profForOps = 'fleet' }
+if (Get-Command Resolve-BobiverseAircOperatorNicks -ErrorAction SilentlyContinue) {
+    $Operators = @(Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators -OperatorsExtra $OperatorsExtra)
+} elseif ($profForOps -ne 'workstation' -and ([string]$OperatorsExtra).Trim()) {
+    $extra = @(([string]$OperatorsExtra) -split '[,;\s]+' | Where-Object { $_ })
+    $Operators = @($Operators + $extra | Select-Object -Unique)
+} elseif ($profForOps -eq 'workstation' -and ([string]$OperatorsExtra).Trim()) {
+    Write-Host 'INFO FR #3397 workstation profile: ignoring AIRC_OPERATORS / OperatorsExtra'
+}
+Write-Host ("INFO FR #3397 operators={0}" -f (($Operators | Where-Object { $_ }) -join ','))
 
 # FR #3289: sync_from_repo default OFF (unsigned main must not run as SYSTEM); self_update default ON.
 function ConvertTo-AircBoolOrNull {
@@ -300,7 +338,9 @@ $expSelf = ConvertTo-AircBoolOrNull -Raw $SelfUpdate
 if ($null -ne $expSync) { $resolvedSync = [bool]$expSync }
 elseif ($null -ne $priorSync) { $resolvedSync = [bool]$priorSync }
 else { $resolvedSync = $false }
+# FR #3393: workstation defaults self_update=false (no SYSTEM GitHub MSI channel) unless MSI/CLI set.
 if ($null -ne $expSelf) { $resolvedSelf = [bool]$expSelf }
+elseif ($prof -eq 'workstation') { $resolvedSelf = $false }
 elseif ($null -ne $priorSelf) { $resolvedSelf = [bool]$priorSelf }
 else { $resolvedSelf = $true }
 
@@ -347,7 +387,7 @@ try {
         self_update = $resolvedSelf
     }
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
-    Write-Host ("INFO FR #3287/#3289 wrote {0} shell={1} jobs={2} update={3} sync_from_repo={4} self_update={5}" -f $capPath, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedSync, $resolvedSelf)
+    Write-Host ("INFO FR #3287/#3289/#3393 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf)
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
 }
@@ -369,6 +409,9 @@ try {
         $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $true; source = 'msi' }
     } elseif ($expCr -in @('no-log-tail', 'nologtail', 'no_log_tail')) {
         $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $false; source = 'msi' }
+    } elseif ($prof -eq 'workstation') {
+        # FR #3393: workstation defaults crash-report off (no intake from client boxes).
+        $crObj = [ordered]@{ enabled = $false; mode = 'off'; source = 'workstation-profile' }
     } elseif ($null -ne $priorCr) {
         # Upgrade preserve: leave prior file untouched.
         Write-Host ("INFO FR #3291 keep prior {0}" -f $crPath)
@@ -396,7 +439,8 @@ $args = @{
 if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }
 if ($Python) { $args.Python = $Python }
-if ($NoStart) { $args.NoStart = $true }
+# FR #3394: always delay Start-Service until Protect FailClosed after Install-AircConsole.
+$args.NoStart = $true
 if ($resolvedRequire) { $args.RequireAccount = $true }
 if ($resolvedAccounts.Count -gt 0) { $args.Accounts = $resolvedAccounts }
 # FR #1552: pass through prior PasswordFile / OperatorsFile / Launcher when still on disk.
@@ -414,11 +458,35 @@ try {
     & $installLegacy @args
 } catch {
     Write-Host "ERROR Install-AircConsole: $($_.Exception.Message)"
-    $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
-    if (Test-Path -LiteralPath $report) {
-        try {
-            & $report -Title 'airc install: Install-AircConsole failed' -Body $_.Exception.Message -InstallRoot $InstallRoot
-        } catch {}
+    # FR #3395: always leave a local MSI log trail; intake only when crash-report allows send.
+    try {
+        Write-BobiverseMsiInstallLog -Product airc -Message ("Install-AircConsole-fail: {0}" -f $_.Exception.Message)
+    } catch { }
+    # FR #3395 / MRB #3440: fail closed on policy helper errors (prefer local log over public intake).
+    $allowIntake = $false
+    try {
+        $allowIntake = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
+    } catch {
+        $allowIntake = $false
+        Write-Host ("WARN FR #3395 crash-report policy check failed; skip intake: {0}" -f $_.Exception.Message)
+    }
+    if ($allowIntake) {
+        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
+        if (-not (Test-Path -LiteralPath $report)) {
+            $report = Join-Path (Split-Path -Parent $here) 'common\scripts\Report-BobiverseIntakeIssue.ps1'
+        }
+        if (Test-Path -LiteralPath $report) {
+            try {
+                & $report -Title 'airc install: Install-AircConsole failed' `
+                    -Body $_.Exception.Message `
+                    -Repo 'SimonBarnett/bobiverse' `
+                    -InstallRoot $InstallRoot
+            } catch {
+                Write-Host ("WARN FR #3395 intake report failed: {0}" -f $_.Exception.Message)
+            }
+        }
+    } else {
+        Write-Host 'INFO FR #3395 skip intake (crash-report opt-out / local-only); failure logged locally'
     }
     throw
 }
@@ -426,11 +494,21 @@ try {
 # Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
 Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
 
-# FR #3289: SYSTEM + Administrators full; Users read/execute only (no Authenticated Users modify).
-try {
-    Protect-BobiverseInstallTree -Path $InstallRoot -Recurse
-} catch {
-    Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
+# FR #3289 / #3394: SYSTEM + Administrators full; Users RX only. Fail closed before Start-Service.
+Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -FailClosed
+
+# FR #3394: start only after the tree is locked (Install-AircConsole ran with -NoStart).
+if (-not $NoStart) {
+    Write-Host 'INFO FR #3394 starting Airc after Protect FailClosed'
+    $prevEa = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Start-Service -Name 'Airc' -ErrorAction Continue
+    } finally {
+        $ErrorActionPreference = $prevEa
+    }
+} else {
+    Write-Host 'INFO Install-Airc -NoStart set; service not started'
 }
 
 # ONE all-users Start Menu folder "Bobiverse" (shared with bob/jeeves); dedupes older scattered entries.
@@ -442,8 +520,8 @@ try {
 
 # FR #3292: durable install manifest for purge uninstall (paths + profile).
 try {
-    $pd = Join-Path $env:ProgramData 'Bobiverse'
-    New-Item -ItemType Directory -Force -Path $pd | Out-Null
+    $pd = Ensure-BobiverseProgramDataRoot -FailClosed
+    if (-not $pd) { throw 'Ensure-BobiverseProgramDataRoot returned empty' }
     $manPath = Join-Path $pd 'airc-install-manifest.json'
     $paths = @(
         $InstallRoot,

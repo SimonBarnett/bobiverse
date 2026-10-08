@@ -635,11 +635,17 @@ def resolve_shell_mode_for_install(
     prior_shell: str | None,
     explicit: str | None,
     had_prior_service: bool,
+    profile: str | None = None,
 ) -> str:
-    """Fresh MSI default ``off``; upgrade of an existing fleet box defaults ``operators``."""
+    """Fresh MSI default ``off``; upgrade of an existing fleet box defaults ``operators``.
+
+    FR #3393: ``AIRC_PROFILE=workstation`` defaults ``off`` unless explicit.
+    """
     exp = (explicit or "").strip().lower()
     if exp in SHELL_MODE_TOKENS:
         return exp
+    if (profile or "").strip().lower() == "workstation":
+        return "off"
     prior = (prior_shell or "").strip().lower()
     if prior in SHELL_MODE_TOKENS:
         return prior
@@ -757,7 +763,8 @@ class AircStartUpdatePolicy:
     """FR #3289: whether service start may git-sync ``main`` or run signed MSI self-update.
 
     Fresh MSI default: ``sync_from_repo=False`` (unsigned main must not run as SYSTEM).
-    ``self_update`` defaults True (sha256-checked release MSI path); lock workstations set it false.
+    ``self_update`` defaults True (sha256-checked release MSI path); FR #3393
+    ``AIRC_PROFILE=workstation`` install writes False unless MSI sets it.
     """
 
     sync_from_repo: bool = False
@@ -821,13 +828,72 @@ def resolve_self_update_for_install(
     *,
     prior: bool | None,
     explicit: bool | None,
+    profile: str | None = None,
 ) -> bool:
-    """Fresh / omitted → True; explicit wins; else keep prior (FR #3289)."""
+    """Fresh / omitted → True; explicit wins; else keep prior (FR #3289).
+
+    FR #3393: ``AIRC_PROFILE=workstation`` defaults False (no SYSTEM GitHub MSI
+    channel) unless MSI/CLI sets ``AIRC_SELF_UPDATE`` explicitly.
+    """
     if explicit is not None:
         return bool(explicit)
+    if (profile or "").strip().lower() == "workstation":
+        return False
     if prior is not None:
         return bool(prior)
     return True
+
+
+def resolve_jobs_for_install(
+    *,
+    prior: str | None,
+    explicit: str | None,
+    profile: str | None = None,
+) -> str:
+    """Fleet default ``on``; workstation default ``off`` unless explicit (FR #3393)."""
+    exp = (explicit or "").strip().lower()
+    if exp in {"off", "on"}:
+        return exp
+    if (profile or "").strip().lower() == "workstation":
+        return "off"
+    prior_l = (prior or "").strip().lower()
+    if prior_l in {"off", "on"}:
+        return prior_l
+    return "on"
+
+
+def resolve_update_cap_for_install(
+    *,
+    prior: str | None,
+    explicit: str | None,
+    profile: str | None = None,
+) -> str:
+    """Fleet default ``on``; workstation default ``off`` unless explicit (FR #3393)."""
+    exp = (explicit or "").strip().lower()
+    if exp in {"off", "on"}:
+        return exp
+    if (profile or "").strip().lower() == "workstation":
+        return "off"
+    prior_l = (prior or "").strip().lower()
+    if prior_l in {"off", "on"}:
+        return prior_l
+    return "on"
+
+
+def resolve_require_account_for_install(
+    *,
+    prior: bool | None,
+    explicit: bool | None,
+    profile: str | None = None,
+) -> bool:
+    """Fleet default False; workstation default True unless explicit (FR #3393)."""
+    if explicit is not None:
+        return bool(explicit)
+    if (profile or "").strip().lower() == "workstation":
+        return True
+    if prior is not None:
+        return bool(prior)
+    return False
 
 
 @dataclass

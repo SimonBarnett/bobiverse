@@ -304,13 +304,21 @@ function Protect-BobiverseInstallTree {
       FR #3289: lock an airc (or other product) install tree so standard users cannot
       create/modify scripts that LocalSystem will run. Removes inheritance; grants
       SYSTEM + Administrators FullControl and BUILTIN\Users ReadAndExecute only.
-      Does not grant Authenticated Users modify. Best-effort; never throws.
+      Does not grant Authenticated Users modify.
+      FR #3394: -FailClosed rethrows so Install-Airc cannot leave a user-writable tree
+      that LocalSystem is about to run. Default remains best-effort (WARN only).
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
-        [switch]$Recurse
+        [switch]$Recurse,
+        [switch]$FailClosed
     )
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        if ($FailClosed -and $Path) {
+            throw ("Protect-BobiverseInstallTree FailClosed: path missing '{0}'" -f $Path)
+        }
+        return
+    }
     try {
         $item = Get-Item -LiteralPath $Path -Force
         $entries = New-Object System.Collections.Generic.List[object]
@@ -353,8 +361,243 @@ function Protect-BobiverseInstallTree {
         Write-Host ("INFO Protect-BobiverseInstallTree locked {0}" -f $Path)
     } catch {
         Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
+        if ($FailClosed) { throw }
     }
 }
+
+function Test-BobiverseAircPurgePathAllowed {
+    <#
+      FR #3394: uninstall purge may only delete paths under known prefixes so a
+      user-owned airc-install-manifest.json cannot point SYSTEM at arbitrary deletes.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$InstallRoot = '',
+        [string]$ConsoleHome = '',
+        [string]$ProgramDataRoot = ''
+    )
+    $raw = ([string]$Path).Trim()
+    if (-not $raw) { return $false }
+    if ($raw -match '(?i)^removed:') { return $false }
+    try {
+        $full = [IO.Path]::GetFullPath($raw)
+    } catch {
+        return $false
+    }
+    if (-not $ProgramDataRoot) {
+        $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
+        $ProgramDataRoot = Join-Path $pd 'Bobiverse'
+    }
+    $prefixes = New-Object System.Collections.Generic.List[string]
+    foreach ($p in @($InstallRoot, $ConsoleHome, $ProgramDataRoot)) {
+        if (-not $p) { continue }
+        try {
+            [void]$prefixes.Add(([IO.Path]::GetFullPath([string]$p)).TrimEnd('\') + '\')
+            [void]$prefixes.Add(([IO.Path]::GetFullPath([string]$p)).TrimEnd('\'))
+        } catch { }
+    }
+    $sysBob = Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local\Bobiverse'
+    try {
+        [void]$prefixes.Add(([IO.Path]::GetFullPath($sysBob)).TrimEnd('\') + '\')
+        [void]$prefixes.Add(([IO.Path]::GetFullPath($sysBob)).TrimEnd('\'))
+    } catch { }
+    foreach ($leaf in @('.airc', '.airc-console')) {
+        $def = Join-Path $env:SystemDrive ('Users\Default\' + $leaf)
+        $defLocal = Join-Path $env:SystemDrive ('Users\Default\AppData\Local\' + $leaf)
+        foreach ($d in @($def, $defLocal)) {
+            try {
+                [void]$prefixes.Add(([IO.Path]::GetFullPath($d)).TrimEnd('\') + '\')
+                [void]$prefixes.Add(([IO.Path]::GetFullPath($d)).TrimEnd('\'))
+            } catch { }
+        }
+    }
+    foreach ($pre in $prefixes) {
+        if (-not $pre) { continue }
+        if ($full.Equals($pre.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if ($full.StartsWith($pre, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Ensure-BobiverseProgramDataRoot {
+    <#
+      FR #3394: create/lock %ProgramData%\Bobiverse (+ logs) so Users cannot own the
+      purge manifest or MSI install log. SYSTEM + Administrators Full; Users RX.
+      Pre-existing user-owned trees are re-locked (WARN) when possible; -FailClosed throws.
+      -Root overrides the default for tests.
+    #>
+    param(
+        [string]$Root = '',
+        [switch]$FailClosed
+    )
+    try {
+        if (-not $Root) {
+            $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
+            $Root = Join-Path $pd 'Bobiverse'
+        }
+        $rootFull = [IO.Path]::GetFullPath($Root)
+        $existed = Test-Path -LiteralPath $rootFull
+        New-Item -ItemType Directory -Force -Path $rootFull | Out-Null
+        $logs = Join-Path $rootFull 'logs'
+        New-Item -ItemType Directory -Force -Path $logs | Out-Null
+        if ($existed) {
+            Write-Host ("WARN FR #3394 Ensure-BobiverseProgramDataRoot re-locking pre-existing {0}" -f $rootFull)
+        }
+        # One -Recurse pass covers logs\; a second Protect on the child can hit SeSecurityPrivilege
+        # after inheritance is already stripped.
+        Protect-BobiverseInstallTree -Path $rootFull -Recurse -FailClosed:$FailClosed
+        Write-Host ("INFO FR #3394 ProgramData Bobiverse locked {0}" -f $rootFull)
+        return $rootFull
+    } catch {
+        Write-Host ("WARN Ensure-BobiverseProgramDataRoot: {0}" -f $_.Exception.Message)
+        if ($FailClosed) { throw }
+        return ''
+    }
+}
+
+function Test-BobiverseCrashReportAllowsIntake {
+    <#
+      FR #3395: whether installer/crash paths may POST to public intake.
+      Precedence (mirrors crash_report.load_crash_report_policy): BOB_CRASH_REPORT /
+      BOBIVERSE_CRASH_REPORT env > InstallRoot\config\crash-report.json > allow (fleet default).
+      enabled=false / mode off|local-only => $false.
+    #>
+    param(
+        [string]$InstallRoot = ''
+    )
+    $envRaw = ''
+    if ($env:BOB_CRASH_REPORT -and ([string]$env:BOB_CRASH_REPORT).Trim()) {
+        $envRaw = ([string]$env:BOB_CRASH_REPORT).Trim().ToLowerInvariant()
+    } elseif ($env:BOBIVERSE_CRASH_REPORT -and ([string]$env:BOBIVERSE_CRASH_REPORT).Trim()) {
+        $envRaw = ([string]$env:BOBIVERSE_CRASH_REPORT).Trim().ToLowerInvariant()
+    }
+    if ($envRaw) {
+        if ($envRaw -in @('0', 'false', 'no', 'off', 'local', 'local-only', 'local_only', 'spool')) {
+            return $false
+        }
+        if ($envRaw -in @('1', 'true', 'yes', 'on', 'full', 'no-log-tail', 'nologtail', 'no_log_tail')) {
+            return $true
+        }
+    }
+    if ($InstallRoot) {
+        $cfg = Join-Path $InstallRoot 'config\crash-report.json'
+        if (-not (Test-Path -LiteralPath $cfg)) {
+            $cfg = Join-Path $InstallRoot 'crash-report.json'
+        }
+        if (Test-Path -LiteralPath $cfg) {
+            try {
+                $obj = Get-Content -LiteralPath $cfg -Raw -Encoding utf8 | ConvertFrom-Json
+                $mode = ''
+                if ($null -ne $obj.mode) { $mode = ([string]$obj.mode).Trim().ToLowerInvariant() }
+                if ($mode -in @('local', 'local-only', 'local_only', 'spool', 'off')) {
+                    return $false
+                }
+                if ($null -ne $obj.enabled) {
+                    return [bool]$obj.enabled
+                }
+            } catch {
+                # MRB #3440: unreadable/corrupt crash-report.json => deny intake.
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
+
+function Resolve-BobiverseAircOperatorNicks {
+    <#
+      FR #3397: build the operator nick list for Install-Airc / operators.txt.
+      Fleet: union -Operators with -OperatorsExtra (MSI AIRC_OPERATORS).
+      Workstation: ignore OperatorsExtra (no fleet cross-machine roster).
+    #>
+    param(
+        [string]$Profile = '',
+        [string[]]$Operators = @(),
+        [string]$OperatorsExtra = ''
+    )
+    $ops = New-Object System.Collections.Generic.List[string]
+    foreach ($o in @($Operators)) {
+        if ($o -and ([string]$o).Trim()) { [void]$ops.Add(([string]$o).Trim()) }
+    }
+    $prof = ([string]$Profile).Trim().ToLowerInvariant()
+    if ($prof -ne 'workstation') {
+        $extra = ([string]$OperatorsExtra).Trim()
+        if ($extra) {
+            foreach ($o in @($extra -split '[,;\s]+' | Where-Object { $_ })) {
+                $n = ([string]$o).Trim()
+                if ($n) { [void]$ops.Add($n) }
+            }
+        }
+    }
+    $seen = @{}
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($n in $ops) {
+        $k = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        [void]$out.Add($n)
+    }
+    return , $out.ToArray()
+}
+
+function Merge-BobiverseAircOperatorsFile {
+    <#
+      FR #3397: create or union-update operators.txt (UTF-8 no BOM). Case-insensitive unique.
+      Ensures bob-<machineId> unless -NoEnsureBobLocal.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string[]]$Nicks = @(),
+        [string]$MachineId = '',
+        [switch]$NoEnsureBobLocal
+    )
+    if (-not $MachineId) {
+        $MachineId = ($env:AIRC_CONSOLE_MACHINE, $env:BOB_MACHINE_ID | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
+    }
+    if (-not $MachineId) {
+        $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+    }
+    if (-not $MachineId) { $MachineId = 'unknown' }
+    $MachineId = ($MachineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+    $bobNick = "bob-$MachineId"
+    $want = New-Object System.Collections.Generic.List[string]
+    foreach ($o in @($Nicks)) {
+        if ($o -and ([string]$o).Trim()) { [void]$want.Add(([string]$o).Trim()) }
+    }
+    if (-not $NoEnsureBobLocal) {
+        if (-not ($want | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
+            [void]$want.Add($bobNick)
+        }
+    }
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $existing = @()
+    if (Test-Path -LiteralPath $Path) {
+        $raw = [IO.File]::ReadAllText($Path)
+        $clean = $raw.TrimStart([char]0xFEFF)
+        $existing = @($clean -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^#' })
+    }
+    $seen = @{}
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($n in @($existing + @($want))) {
+        if (-not $n) { continue }
+        $k = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        [void]$lines.Add($n)
+    }
+    if ($lines.Count -eq 0) {
+        throw 'Merge-BobiverseAircOperatorsFile: no operator nicks'
+    }
+    $body = (($lines.ToArray()) -join "`n") + "`n"
+    [IO.File]::WriteAllText($Path, $body, [Text.UTF8Encoding]::new($false))
+    Write-Host ("INFO FR #3397 operators.txt union {0} ({1} nicks)" -f $Path, $lines.Count)
+    return $Path
+}
+
 
 function Set-BobiverseNssmAppExitRestart {
     <#
@@ -1173,7 +1416,12 @@ function Get-BobiverseMsiLogDir {
     <#
       Canonical verbose / CA log directory for UI and quiet msiexec (FR #2564).
       Prefer %ProgramData%\Bobiverse\logs so a UI install without /l*v still leaves a known trail.
+      FR #3394: Ensure-BobiverseProgramDataRoot locks the tree before append (Users RX only).
     #>
+    $root = Ensure-BobiverseProgramDataRoot
+    if ($root) {
+        return (Join-Path $root 'logs')
+    }
     $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
     $dir = Join-Path $pd 'Bobiverse\logs'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -1810,4 +2058,58 @@ function Install-BobiverseAgentLayer {
         foreach ($d in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) { Copy-Item -LiteralPath $agentsSrc -Destination (Join-Path $InstallRoot $d) -Force; $n++ }
     }
     Write-Host "INFO agent layer files refreshed in ${InstallRoot}: $n"
+}
+
+# FR #3392: MSI Stage-Product always lays AGENTS/CLAUDE/GROK/.cursor/.grok and the union of
+# common/bob/jeeves agent scripts. Workstation / AIRC_AGENT_LAYER=0 must strip that payload
+# after copy (Install-Airc) so the box stays agent-free. Returns paths removed (for manifest).
+function Remove-BobiverseAircWorkstationAgentPayload {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot
+    )
+    $removed = New-Object System.Collections.Generic.List[string]
+    if (-not $InstallRoot -or -not (Test-Path -LiteralPath $InstallRoot)) {
+        return @($removed)
+    }
+    $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+    $targets = New-Object System.Collections.Generic.List[string]
+    foreach ($f in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) {
+        [void]$targets.Add((Join-Path $root $f))
+    }
+    [void]$targets.Add((Join-Path $root '.cursor'))
+    [void]$targets.Add((Join-Path $root '.grok'))
+    # Fleet / agent launcher scripts laid by Pack union of common+bob+jeeves scripts.
+    $agentScripts = @(
+        'agent_control.py',
+        'startworker.py',
+        'grok_talk.py',
+        'bobtalk.py',
+        'irc_agent.py',
+        'chan_workers.py',
+        'talk_seat_ghost.py',
+        'talk_seat_pid.py',
+        'worker_irc_seats.py',
+        'Install-BootstrapTools.ps1',
+        'Invoke-BobiverseHarvest.ps1',
+        'Report-BobiverseIntakeIssue.ps1',
+        'Sync-BobiverseFromRepo.ps1',
+        'Start-BobCallbackSupervised.ps1',
+        'Restart-BobService.ps1'
+    )
+    $scriptsDir = Join-Path $root 'scripts'
+    foreach ($name in $agentScripts) {
+        [void]$targets.Add((Join-Path $scriptsDir $name))
+    }
+    foreach ($path in $targets) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            [void]$removed.Add($path)
+            Write-Host ("INFO FR #3392 removed workstation agent payload: {0}" -f $path)
+        } catch {
+            Write-Host ("WARN FR #3392 remove {0}: {1}" -f $path, $_.Exception.Message)
+        }
+    }
+    Write-Host ("INFO FR #3392 workstation agent payload purged count={0}" -f $removed.Count)
+    return @($removed)
 }

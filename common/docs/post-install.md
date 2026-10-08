@@ -178,7 +178,7 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 - **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
 - **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
-- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
+- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_OPERATORS=bob-ionos,bob-flamingo` (FR #3397 fleet only; unions into operators.txt), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
 
@@ -186,15 +186,22 @@ airc status-only workstation (no remote shell):
 `msiexec /i airc-x.y.z.msi /qn AIRC_SHELL=off AIRC_REQUIRE_ACCOUNT=1 AIRC_ACCOUNTS=simon`  
 Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
 
+
+Fleet cross-machine ears after #3286 (FR #3397): nick ACL is operators.txt only (no bob-* bypass). Before/with fleet upgrades that other ears drive, pass AIRC_OPERATORS=bob-<other1>,bob-<other2> (or edit ConsoleHome operators.txt) so those ears stay authorised. AIRC_PROFILE=workstation ignores AIRC_OPERATORS. Example: msiexec /i airc-x.y.z.msi /qn AIRC_OPERATORS=bob-win-mpre8vi4u6u,bob-flamingo.
+
 Locked workstation (no GitHub `main` pull as SYSTEM, optional no MSI self-update):  
-`msiexec /i airc-x.y.z.msi /qn AIRC_SYNC_FROM_REPO=0 AIRC_SELF_UPDATE=0`  
-Fresh MSI defaults `sync_from_repo=false` and `self_update=true` in `config\airc.json`. Service start logs `INFO sync-from-repo=off (config)`. Opt-in fleet git sync: `AIRC_SYNC_FROM_REPO=1` or set `"sync_from_repo": true`. Env overrides: `BOBIVERSE_SYNC_FROM_REPO`, `BOBIVERSE_SELF_UPDATE`, `BOBIVERSE_NO_UPDATE=1`. Install also locks the install tree ACL (SYSTEM + Administrators full; Users read/execute only) via `Protect-BobiverseInstallTree` (FR #3289).
+`msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (preferred; FR #3393) or legacy `AIRC_SYNC_FROM_REPO=0 AIRC_SELF_UPDATE=0`.  
+Fleet fresh MSI defaults `sync_from_repo=false` and `self_update=true` in `config\airc.json`. **Workstation profile** defaults `self_update=false` (no SYSTEM GitHub release MSI channel), plus `shell=off`, `jobs=off`, `update=off`, `require_account=true`, and crash-report off, unless each property is set explicitly. Service start logs `INFO sync-from-repo=off (config)` / `INFO self-update=off (config)`. Opt-in fleet git sync: `AIRC_SYNC_FROM_REPO=1` or set `"sync_from_repo": true`. Env overrides: `BOBIVERSE_SYNC_FROM_REPO`, `BOBIVERSE_SELF_UPDATE`, `BOBIVERSE_NO_UPDATE=1`. Install also locks the install tree ACL (SYSTEM + Administrators full; Users read/execute only) via `Protect-BobiverseInstallTree` (FR #3289 / #3393).
 
 Agent-free airc workstation (no git/gh/Python/Node from bootstrap):  
 `msiexec /i airc-x.y.z.msi /qn` — when `airc.exe` is present, `Install-Airc` **skips** `Install-BootstrapTools` by default and logs `INFO bootstrap-tools skipped (airc exe; AIRC_INSTALL_TOOLS not set)`. Opt in with `AIRC_INSTALL_TOOLS=1` or `Install-Airc.ps1 -WithTools`. bob/jeeves opt **out** with `BOBIVERSE_SKIP_TOOLS=1`. Tools actually installed are recorded in `%ProgramData%\Bobiverse\installed-tools.json` (FR #3290).
 
-Workstation profile (no agent briefings/skills; purge uninstall):  
-`msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (or `AIRC_AGENT_LAYER=0`) skips `Install-BobiverseAgentLayer` / `.grok\skills` and never writes the installing user's `%USERPROFILE%\.grok\skills`. Manifest: `%ProgramData%\Bobiverse\airc-install-manifest.json`. Uninstall: fleet default still **keeps** ConsoleHome (FR #1566/#1599); workstation default purges secrets/homes, or pass `msiexec /x … AIRC_PURGE=1` (FR #3292).
+Workstation profile (no agent briefings/skills; no self-update; purge uninstall):  
+`msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (or `AIRC_AGENT_LAYER=0`) skips `Install-BobiverseAgentLayer` / skill copy **and** strips MSI-laid `AGENTS.md` / `CLAUDE.md` / `GROK.md` / `.cursor` / `.grok` plus fleet agent scripts (`agent_control.py`, `startworker.py`, `grok_talk.py`, harvest/sync/bootstrap helpers) via `Remove-BobiverseAircWorkstationAgentPayload` (FR #3392 — the MSI payload still stages them before RunInstall). Never writes the installing user's `%USERPROFILE%\.grok\skills`. Writes `config\airc.json` with `self_update=false`, `shell=off`, `jobs=off`, `update=off`, `require_account=true` (FR #3393). Manifest: `%ProgramData%\Bobiverse\airc-install-manifest.json`. Uninstall: fleet default still **keeps** ConsoleHome (FR #1566/#1599); workstation default purges secrets/homes, `ProgramData\Bobiverse\logs\install-airc.log`, and the LocalSystem crash spool, or pass `msiexec /x ... AIRC_PURGE=1` (FR #3292 / #3392).
+
+ACL fail-closed (FR #3394): `Install-Airc` calls `Ensure-BobiverseProgramDataRoot -FailClosed` before MSI logs/manifest writes, and `Protect-BobiverseInstallTree -FailClosed` on the install tree **before** `Start-Service Airc` (Install-AircConsole runs with `-NoStart` first). Protect failure fails the install. Purge uninstall refuses manifest paths outside `install_root` / `console_home` / `ProgramData\Bobiverse` (and known systemprofile / Default-user airc homes) via `Test-BobiverseAircPurgePathAllowed`.
+
+Crash-report opt-out on install failures (FR #3395): when `config\crash-report.json` has `enabled=false` / `mode=local-only` (or `BOBIVERSE_CRASH_REPORT=0|local-only`), an `Install-AircConsole` failure is written only to `ProgramData\Bobiverse\logs\install-airc.log` — it does **not** call public intake. When intake is allowed, `Report-BobiverseIntakeIssue` is called with `-Repo SimonBarnett/bobiverse`.
 
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 

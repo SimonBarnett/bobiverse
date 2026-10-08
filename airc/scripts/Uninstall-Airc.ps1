@@ -133,11 +133,31 @@ if ($doPurge) {
         [void]$targets.Add($InstallRoot)
     }
     if ($manifest -and $manifest.paths) {
+        # FR #3394: only trust manifest paths under install_root / console_home / ProgramData\Bobiverse
+        # (and known systemprofile / Default-user airc homes). Refuse canaries like C:\Windows\Temp\...
+        $manInstall = ''
+        $manHome = ''
+        if ($manifest.install_root) { $manInstall = [string]$manifest.install_root }
+        if ($manifest.console_home) { $manHome = [string]$manifest.console_home }
+        if (-not $manInstall) { $manInstall = [string]$InstallRoot }
+        if (-not $manHome) { $manHome = [string]$keptHome }
         foreach ($p in @($manifest.paths)) {
-            if ($p) { [void]$targets.Add([string]$p) }
+            if (-not $p) { continue }
+            $candidate = [string]$p
+            if (Test-BobiverseAircPurgePathAllowed -Path $candidate -InstallRoot $manInstall -ConsoleHome $manHome) {
+                [void]$targets.Add($candidate)
+            } else {
+                Write-Host ("WARN FR #3394 refuse purge path outside allow-list: {0}" -f $candidate)
+            }
         }
     }
     [void]$targets.Add((Join-Path $env:ProgramData 'Bobiverse\update\airc'))
+    # FR #3392: CA install log + LocalSystem crash spool left behind by MSI / crash hook.
+    [void]$targets.Add((Join-Path $env:ProgramData 'Bobiverse\logs\install-airc.log'))
+    [void]$targets.Add((Join-Path $env:ProgramData 'Bobiverse\logs'))
+    $sysSpool = Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local\Bobiverse\crash-spool'
+    [void]$targets.Add($sysSpool)
+    [void]$targets.Add((Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local\Bobiverse'))
     # Legacy Default-profile homes (FR #2355 / #3288).
     foreach ($leaf in @('.airc', '.airc-console')) {
         [void]$targets.Add((Join-Path $env:SystemDrive ('Users\Default\' + $leaf)))
@@ -147,7 +167,7 @@ if ($doPurge) {
         Remove-AircPathBestEffort -Path $t
     }
     Remove-AircPathBestEffort -Path $manPath
-    Write-Host 'INFO FR #3292: Uninstall-Airc purge done'
+    Write-Host 'INFO FR #3292/#3392: Uninstall-Airc purge done'
 } else {
     Write-Host 'INFO FR #1566: Uninstall-Airc done (ConsoleHome secrets kept; tree is MSI RemoveFiles)'
 }
