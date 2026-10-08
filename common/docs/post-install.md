@@ -113,6 +113,7 @@ Expect:
 - Legacy **`BobJeeves` absent** from SCM (Install-Jeeves removes it â€” both chairs fight for nick `Jeeves`; `<ai root>\ergo` tree may remain)
 - `ircJeeves` Running; ObjectName = fleet user when `service.password` / `BOBIVERSE_SERVICE_PASSWORD` was supplied
 - Log: `joined #bobiverse,#â€¦ as Jeeves`
+- Scheduled task **`BobAutoFocus` absent** (FR #3190): the interim ops `auto-focus.py` PT2M per-item `!focus` spammer is retired. Post-upgrade restarts only `BobCallback` / `BobAutoFeed`; leftovers are unregistered via `Unregister-BobAutoFocus.ps1`. Use repo-level `!focus <Owner/repo>` only.
 
 ### LocalSystem / DPAPI pitfalls
 

@@ -36,6 +36,7 @@ Per service start: (1) repo fast-forward of the install work tree (sparse `<prod
   `#bobiverse` + `#<machine>`. **Airc** console (service `Airc`, nick `<machine>_console`): remote shell over PRIVMSG.
 - **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://irc.ntsa.uk/bob/v1/digest` is 404.
   Public URL `https://irc.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
+- **BobAutoFocus retired (FR #3190):** do not re-enable the interim scheduled task that ran `<ai root>\ops\auto-focus.py` every 2 minutes and appended per-item `!focus` lines. Jeeves MSI post-upgrade restarts only `BobCallback` / `BobAutoFeed`, then calls `Unregister-BobAutoFocus.ps1` for leftovers. Repo-level `!focus <Owner/repo>` is the only focus path. `jeeves/tools/monitor/auto_focus.py` is a read-only MONITORING health check, not that ops spammer.
 - **Digest** (`digest.json` + `registered-machines.json` roster + `chair-outbox.txt`) lives in the digest home
   (`BOB_DIGEST_HOME`, default `~\.bobiverse`). Roster = ChanServ-registered `#<machine>` shop channels, mirrored every ~2 min.
 - All logic is deterministic Python/PowerShell. **No LLM and no secret is needed to run any of it.**

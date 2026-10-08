@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Auto-focus check (ported intent from ops/auto-focus.py): focus file present / stale."""
+"""Monitor check: focus file present / stale (NOT the retired BobAutoFocus ops spammer).
+
+FR #3190 retired ``C:\\ai\\ops\\auto-focus.py`` / scheduled task ``BobAutoFocus``, which
+appended per-item ``!focus`` lines every 2 minutes. This module only *reads* focus.json
+for Jeeves MONITORING health — it never writes focus or PRIVMSG.
+"""
 from __future__ import annotations
 
 import json
