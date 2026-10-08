@@ -1811,3 +1811,57 @@ function Install-BobiverseAgentLayer {
     }
     Write-Host "INFO agent layer files refreshed in ${InstallRoot}: $n"
 }
+
+# FR #3392: MSI Stage-Product always lays AGENTS/CLAUDE/GROK/.cursor/.grok and the union of
+# common/bob/jeeves agent scripts. Workstation / AIRC_AGENT_LAYER=0 must strip that payload
+# after copy (Install-Airc) so the box stays agent-free. Returns paths removed (for manifest).
+function Remove-BobiverseAircWorkstationAgentPayload {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot
+    )
+    $removed = New-Object System.Collections.Generic.List[string]
+    if (-not $InstallRoot -or -not (Test-Path -LiteralPath $InstallRoot)) {
+        return @($removed)
+    }
+    $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+    $targets = New-Object System.Collections.Generic.List[string]
+    foreach ($f in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) {
+        [void]$targets.Add((Join-Path $root $f))
+    }
+    [void]$targets.Add((Join-Path $root '.cursor'))
+    [void]$targets.Add((Join-Path $root '.grok'))
+    # Fleet / agent launcher scripts laid by Pack union of common+bob+jeeves scripts.
+    $agentScripts = @(
+        'agent_control.py',
+        'startworker.py',
+        'grok_talk.py',
+        'bobtalk.py',
+        'irc_agent.py',
+        'chan_workers.py',
+        'talk_seat_ghost.py',
+        'talk_seat_pid.py',
+        'worker_irc_seats.py',
+        'Install-BootstrapTools.ps1',
+        'Invoke-BobiverseHarvest.ps1',
+        'Report-BobiverseIntakeIssue.ps1',
+        'Sync-BobiverseFromRepo.ps1',
+        'Start-BobCallbackSupervised.ps1',
+        'Restart-BobService.ps1'
+    )
+    $scriptsDir = Join-Path $root 'scripts'
+    foreach ($name in $agentScripts) {
+        [void]$targets.Add((Join-Path $scriptsDir $name))
+    }
+    foreach ($path in $targets) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            [void]$removed.Add($path)
+            Write-Host ("INFO FR #3392 removed workstation agent payload: {0}" -f $path)
+        } catch {
+            Write-Host ("WARN FR #3392 remove {0}: {1}" -f $path, $_.Exception.Message)
+        }
+    }
+    Write-Host ("INFO FR #3392 workstation agent payload purged count={0}" -f $removed.Count)
+    return @($removed)
+}
