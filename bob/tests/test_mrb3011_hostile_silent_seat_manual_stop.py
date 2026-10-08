@@ -1,4 +1,4 @@
-"""Hostile MRB pins for FR #3010 / PR #3011: silent FR #2996 seat needs manual stop."""
+"""Hostile MRB pins for FR #3010 / PR #3011: silent FR #2996 seat needs manual stop (FR #3180)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,18 +20,19 @@ def test_mrb3011_product_test_module_present():
     assert "FR #3010" in t
     assert "FR #2996" in t
     assert "post_bored" in t
-    assert "seat-heal" in t.lower() or "seat heal" in t.lower()
+    assert "manual" in t.lower()
 
 
 def test_mrb3011_skill_stale_build_fr3010_contiguous():
     t = _text(SKILL)
-    i = t.index("Stale build recycle (FR #2782)")
+    assert "Stale build notice (FR #2782 / FR #3180)" in t or "Stale build" in t
+    i = t.lower().index("stale build")
     window = t[i : i + 900]
     assert "FR #3010" in window
     assert "FR #2996" in window
     assert "post_bored" in window
     assert "PID" in window or "pid" in window
-    assert "seat-heal" in window.lower() or "seat heal" in window.lower()
+    assert "manual" in window.lower()
     assert "will **not**" in window or "will not" in window.lower() or "never reaches" in window.lower()
 
 
@@ -44,7 +45,7 @@ def test_mrb3011_troubleshooting_row_fr3010_contiguous():
     assert "FR #3010" in body
     assert "stop" in body.lower()
     assert "PID" in body or "pid" in body
-    assert "seat-heal" in body.lower() or "seat heal" in body.lower()
+    assert "manual" in body.lower()
     assert "post_bored" in body
     assert "never reaches" in body.lower() or "never fires" in body.lower()
 
@@ -57,4 +58,4 @@ def test_mrb3011_harvested_lesson_fr3010():
     assert "FR #3010" in body
     assert "post_bored" in body
     assert "PID" in body or "pid" in body
-    assert "seat-heal" in body.lower() or "seat heal" in body.lower()
+    assert "manual" in body.lower()
