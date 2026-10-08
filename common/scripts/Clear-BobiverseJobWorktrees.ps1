@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Remove leftover FR/MRB/UAT git worktrees when C: is low on free space (FR #877).
+  Remove leftover FR/MRB/UAT git worktrees when C: is low on free space (FR #877 / FR #3641).
 
 .DESCRIPTION
   Linked job trees under %TEMP%\bobiverse-* (and similar) accumulate until
@@ -20,11 +20,19 @@
     git/python/PyInstaller process whose CommandLine cites the path. This script
     is the only sanctioned reclaim path - seats must not hand-delete other
     `C:\ai\*` trees when removed=0.
+  - FR #3641: a fresh `.bobiverse-seat` protects mid-FR trees even when the
+    recorded pid is dead/wrong (soft-cap and non-Force reclaim). Live pid always
+    protects. -Force / low-disk may reclaim only when the marker mtime is older
+    than -StaleSeatHours (default 48) and the pid is not alive.
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
 
 .EXAMPLE
   ..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot C:\ai\bob -KeepPath $env:TEMP\bobiverse-fr877-wt
+
+.EXAMPLE
+  # Full reclaim that may drop abandoned seat markers older than 48h:
+  ..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot C:\ai\bob -Force
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -32,6 +40,8 @@ param(
     [string]$KeepPath = '',
     [double]$MinFreeGB = 2,
     [int]$MaxExtraJobTrees = 0,
+    # FR #3641: hours after which a dead-pid .bobiverse-seat no longer protects.
+    [double]$StaleSeatHours = 48,
     [switch]$Force
 )
 
@@ -78,7 +88,8 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
 }
 
 function Test-WorktreeProtected([string]$Path) {
-    # True when a live seat marker or busy tool process owns the tree (FR #2727).
+    # True when a live / fresh seat marker or busy tool process owns the tree
+    # (FR #2727 / FR #3641).
     if (-not $Path) { return $false }
     try {
         $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
@@ -87,21 +98,47 @@ function Test-WorktreeProtected([string]$Path) {
     }
     $marker = Join-Path $full '.bobiverse-seat'
     if (Test-Path -LiteralPath $marker) {
+        $seatPid = 0
+        $parseOk = $false
         try {
             $raw = Get-Content -LiteralPath $marker -Raw -Encoding UTF8
             $obj = $raw | ConvertFrom-Json
-            $seatPid = 0
+            $parseOk = $true
             if ($obj.PSObject.Properties.Name -contains 'pid') {
                 $seatPid = [int]$obj.pid
             }
-            if ($seatPid -gt 0) {
-                $alive = Get-Process -Id $seatPid -ErrorAction SilentlyContinue
-                if ($null -ne $alive) {
-                    return $true
-                }
+        } catch {
+            # Malformed JSON: still honour a fresh marker file (FR #3641).
+            $parseOk = $false
+            $seatPid = 0
+        }
+        if ($seatPid -gt 0) {
+            $alive = Get-Process -Id $seatPid -ErrorAction SilentlyContinue
+            if ($null -ne $alive) {
+                return $true
+            }
+        }
+        # FR #3641: fresh marker protects mid-FR trees even when pid is dead/wrong.
+        # Stale markers (mtime older than StaleSeatHours) are reclaimable under
+        # -Force / low-disk full reclaim so abandoned seats do not pin disk forever.
+        try {
+            $mtime = (Get-Item -LiteralPath $marker).LastWriteTimeUtc
+            $ageHours = ([datetime]::UtcNow - $mtime).TotalHours
+            $staleHours = 48
+            if ($null -ne $script:ClearStaleSeatHours) {
+                $staleHours = [double]$script:ClearStaleSeatHours
+            }
+            if ($ageHours -lt $staleHours) {
+                return $true
+            }
+            # Stale + no live pid: not protected (Force/lowDisk may reclaim).
+            if (-not $parseOk) {
+                # Unparseable stale marker: do not protect forever.
+                return $false
             }
         } catch {
-            # Malformed marker: do not treat as protected forever.
+            # If we cannot read mtime, fail closed (protect) for safety.
+            return $true
         }
     }
     # Busy tool heuristic: CommandLine cites this path (cwd is not exposed via CIM).
@@ -137,8 +174,11 @@ if ($KeepPath) {
     $keepFull = [System.IO.Path]::GetFullPath($KeepPath)
 }
 
+# FR #3641: expose StaleSeatHours to Test-WorktreeProtected.
+$script:ClearStaleSeatHours = [double]$StaleSeatHours
+
 $freeGb = Get-FreeGB $rootFull
-Write-Host ("FreeGB={0} MinFreeGB={1} RepoRoot={2} KeepPath={3}" -f $freeGb, $MinFreeGB, $rootFull, $keepFull)
+Write-Host ("FreeGB={0} MinFreeGB={1} RepoRoot={2} KeepPath={3} StaleSeatHours={4}" -f $freeGb, $MinFreeGB, $rootFull, $keepFull, $StaleSeatHours)
 
 # FR #1661: low-disk / -Force = full reclaim; soft cap still runs when FreeGB is healthy.
 $lowDisk = $Force -or ($freeGb -lt $MinFreeGB)
