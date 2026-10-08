@@ -1,5 +1,6 @@
 // FR #2411: unhandled exception in tray dialogs -> GitHub issue (dedupe + spool).
 // FR #2436: skip probe / do-not-file / probe-shape-only (parity with crash_report.should_skip_report).
+// FR #3328: honour BOB_CRASH_REPORT / crash-report.json opt-out (parity with FR #3291 / crash_report.CrashReportPolicy).
 // Mirrors common/scripts/crash_report.py for WinForms exes compiled by Build-BobDialogs.ps1.
 using System;
 using System.Collections.Generic;
@@ -14,10 +15,35 @@ using System.Windows.Forms;
 
 namespace BobDialogs
 {
+    /// <summary>FR #3328 / FR #3291: whether CrashHook may leave the box (parity with Python CrashReportPolicy).</summary>
+    internal sealed class CrashReportPolicy
+    {
+        public bool Send = true;
+        public bool IncludeLogTail = true;
+        public string Source = "default";
+        public string Mode = "full"; // full | local-only | off
+
+        public string LogLabel
+        {
+            get
+            {
+                if (!Send)
+                {
+                    if (string.Equals(Mode, "local-only", StringComparison.OrdinalIgnoreCase))
+                        return "local-only";
+                    return "off";
+                }
+                if (!IncludeLogTail) return "on (no-log-tail)";
+                return "on";
+            }
+        }
+    }
+
     internal static class CrashHook
     {
         static readonly object Gate = new object();
         static string InstalledFor;
+        static CrashReportPolicy PolicyCache;
         // FR #2668: expand redaction parity with Python crash_report.redact
         static readonly Regex AuthSchemeRe = new Regex(
             @"(?i)\b(?:Authorization\s*[:=]\s*)?(Bearer|Basic)\s+\S+",
@@ -43,6 +69,195 @@ namespace BobDialogs
             @"(?i)do-not-file|probe-shape-only",
             RegexOptions.Compiled);
 
+        /// <summary>
+        /// FR #3328: resolve send/local-only/off (parity with crash_report.load_crash_report_policy).
+        /// Precedence: BOB_CRASH_REPORT env &gt; crash-report.json &gt; airc shell=off default &gt; fleet on.
+        /// </summary>
+        public static CrashReportPolicy LoadCrashReportPolicy()
+        {
+            return LoadCrashReportPolicy(useCache: false);
+        }
+
+        public static CrashReportPolicy LoadCrashReportPolicy(bool useCache)
+        {
+            if (useCache && PolicyCache != null) return PolicyCache;
+            CrashReportPolicy policy = ResolveCrashReportPolicy();
+            if (useCache) PolicyCache = policy;
+            return policy;
+        }
+
+        static CrashReportPolicy ResolveCrashReportPolicy()
+        {
+            CrashReportPolicy policy = new CrashReportPolicy();
+            bool? send = null;
+            string mode = "full";
+            string source = "default";
+            bool includeTail = true;
+
+            string root = GuessInstallRoot();
+            string cfgPath = ResolveCrashConfigPath(root);
+            if (cfgPath != null)
+            {
+                Dictionary<string, object> cfg = ReadCrashConfig(cfgPath);
+                if (cfg != null)
+                {
+                    if (cfg.ContainsKey("include_log_tail"))
+                        includeTail = ToBool(cfg["include_log_tail"], true);
+                    if (cfg.ContainsKey("no_log_tail") && ToBool(cfg["no_log_tail"], false))
+                        includeTail = false;
+                    string modeRaw = (Convert.ToString(cfg.ContainsKey("mode") ? cfg["mode"] : "") ?? "").Trim().ToLowerInvariant();
+                    if (modeRaw == "local" || modeRaw == "local-only" || modeRaw == "local_only" || modeRaw == "spool")
+                    {
+                        send = false;
+                        mode = "local-only";
+                        source = "config";
+                    }
+                    else if (cfg.ContainsKey("enabled"))
+                    {
+                        send = ToBool(cfg["enabled"], true);
+                        mode = send.Value ? "full" : "off";
+                        source = "config";
+                    }
+                }
+            }
+
+            string prod = (Environment.GetEnvironmentVariable("BOB_PRODUCT") ?? "").Trim().ToLowerInvariant();
+            bool looksAirc = prod == "airc"
+                || (root != null && File.Exists(Path.Combine(root, "config", "airc.json")));
+            if (send == null && looksAirc && AircShellOff(root))
+            {
+                send = false;
+                mode = "off";
+                source = "airc-shell-off";
+            }
+
+            string envRaw = (Environment.GetEnvironmentVariable("BOB_CRASH_REPORT") ?? "").Trim().ToLowerInvariant();
+            if (envRaw.Length > 0)
+            {
+                if (envRaw == "local" || envRaw == "local-only" || envRaw == "local_only" || envRaw == "spool")
+                {
+                    send = false;
+                    mode = "local-only";
+                    source = "env";
+                }
+                else if (envRaw == "full" || envRaw == "on" || envRaw == "1" || envRaw == "true" || envRaw == "yes")
+                {
+                    send = true;
+                    mode = "full";
+                    source = "env";
+                }
+                else if (envRaw == "0" || envRaw == "false" || envRaw == "no" || envRaw == "off")
+                {
+                    send = false;
+                    mode = "off";
+                    source = "env";
+                }
+                else if (envRaw == "no-log-tail" || envRaw == "nologtail" || envRaw == "no_log_tail")
+                {
+                    if (send == null) send = true;
+                    includeTail = false;
+                    source = "env";
+                }
+            }
+
+            if (send == null)
+            {
+                send = true;
+                mode = "full";
+                source = "default";
+            }
+
+            policy.Send = send.Value;
+            policy.IncludeLogTail = includeTail;
+            policy.Source = source;
+            policy.Mode = send.Value ? "full" : mode;
+            return policy;
+        }
+
+        static bool ToBool(object value, bool defaultValue)
+        {
+            if (value == null) return defaultValue;
+            if (value is bool) return (bool)value;
+            string s = Convert.ToString(value) ?? "";
+            s = s.Trim().ToLowerInvariant();
+            if (s == "1" || s == "true" || s == "yes" || s == "on") return true;
+            if (s == "0" || s == "false" || s == "no" || s == "off") return false;
+            return defaultValue;
+        }
+
+        static string GuessInstallRoot()
+        {
+            foreach (string key in new string[] { "BOB_INSTALL_ROOT", "AIRC_INSTALL_ROOT", "BOB_PRODUCT_ROOT" })
+            {
+                string v = (Environment.GetEnvironmentVariable(key) ?? "").Trim();
+                if (v.Length > 0) return v;
+            }
+            try
+            {
+                string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+                if (string.Equals(Path.GetFileName(root), "tools", StringComparison.OrdinalIgnoreCase))
+                    root = Path.GetDirectoryName(root) ?? root;
+                if (Directory.Exists(Path.Combine(root, "config")) || Directory.Exists(Path.Combine(root, "scripts")))
+                    return root;
+            }
+            catch { }
+            return null;
+        }
+
+        static string ResolveCrashConfigPath(string installRoot)
+        {
+            string overridePath = (Environment.GetEnvironmentVariable("BOB_CRASH_REPORT_CONFIG") ?? "").Trim();
+            if (overridePath.Length > 0) return overridePath;
+            List<string> roots = new List<string>();
+            if (!string.IsNullOrEmpty(installRoot)) roots.Add(installRoot);
+            foreach (string key in new string[] { "BOB_INSTALL_ROOT", "AIRC_INSTALL_ROOT", "BOB_PRODUCT_ROOT" })
+            {
+                string v = (Environment.GetEnvironmentVariable(key) ?? "").Trim();
+                if (v.Length > 0 && !roots.Contains(v)) roots.Add(v);
+            }
+            foreach (string root in roots)
+            {
+                string cand = Path.Combine(root, "config", "crash-report.json");
+                if (File.Exists(cand)) return cand;
+                string cand2 = Path.Combine(root, "crash-report.json");
+                if (File.Exists(cand2)) return cand2;
+            }
+            return null;
+        }
+
+        static Dictionary<string, object> ReadCrashConfig(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+                JavaScriptSerializer ser = new JavaScriptSerializer();
+                return ser.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as Dictionary<string, object>;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        static bool AircShellOff(string installRoot)
+        {
+            if (string.IsNullOrEmpty(installRoot)) return false;
+            try
+            {
+                string aircJson = Path.Combine(installRoot, "config", "airc.json");
+                if (!File.Exists(aircJson)) return false;
+                JavaScriptSerializer ser = new JavaScriptSerializer();
+                Dictionary<string, object> data = ser.DeserializeObject(File.ReadAllText(aircJson, Encoding.UTF8)) as Dictionary<string, object>;
+                if (data == null) return false;
+                string shell = (Convert.ToString(data.ContainsKey("shell") ? data["shell"] : "") ?? "").Trim().ToLowerInvariant();
+                return shell == "off" || shell == "0" || shell == "false" || shell == "no";
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static void Install(string exeName)
         {
             if (string.IsNullOrEmpty(exeName)) exeName = "bob-dialog";
@@ -62,7 +277,9 @@ namespace BobDialogs
                 {
                     try { Report(exeName, e.ExceptionObject as Exception); } catch { }
                 };
-                try { FlushSpool(); } catch { }
+                // FR #3328: cache policy; only flush network when send is allowed.
+                CrashReportPolicy policy = LoadCrashReportPolicy(useCache: true);
+                try { if (policy.Send) FlushSpool(); } catch { }
                 InstalledFor = exeName;
             }
         }
@@ -184,6 +401,14 @@ namespace BobDialogs
                     "\n---\n_via-crash-hook exe=`" + exeName + "` sig=`" + sig + "` ts=`" +
                     DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ") + "`_\n";
 
+                // FR #3328: when opt-out / local-only, spool only — never intake/gh.
+                CrashReportPolicy policy = LoadCrashReportPolicy();
+                if (!policy.Send)
+                {
+                    WriteSpool(title, body, sig, exeName, "local_only");
+                    return;
+                }
+
                 if (!TryPostIntake(title, body, sig, exeName))
                 {
                     WriteSpool(title, body, sig, exeName, "post_failed");
@@ -210,6 +435,9 @@ namespace BobDialogs
             {
                 string dir = SpoolDir();
                 if (!Directory.Exists(dir)) return;
+                // FR #3328: keep spool locally; never intake while disabled/local-only.
+                CrashReportPolicy policy = LoadCrashReportPolicy();
+                if (!policy.Send) return;
                 string[] files = Directory.GetFiles(dir, "crash-*.json");
                 Array.Sort(files);
                 JavaScriptSerializer ser = new JavaScriptSerializer();
@@ -282,6 +510,9 @@ namespace BobDialogs
         {
             try
             {
+                // FR #3328: refuse network when policy.send is false (parity with crash_report._post_intake).
+                CrashReportPolicy policy = LoadCrashReportPolicy();
+                if (!policy.Send) return false;
                 string script = FindReportScript();
                 if (script == null) return false;
                 string ps = null;
