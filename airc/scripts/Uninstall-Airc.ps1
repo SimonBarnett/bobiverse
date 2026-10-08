@@ -73,8 +73,10 @@ if (-not $keptHome -and $InstallRoot) {
         } catch { }
     }
 }
+# FR #3516: never take console_home / install_root from the ProgramData manifest -
+# a pre-created user-owned manifest can plant C:\ and arbitrary homes.
 if (-not $keptHome -and $manifest -and $manifest.console_home) {
-    $keptHome = [string]$manifest.console_home
+    Write-Host 'WARN FR #3516 ignoring manifest.console_home (untrusted); need AppParameters or config\airc-install.json'
 }
 
 $purgeRaw = ([string]$Purge).Trim().ToLowerInvariant()
@@ -125,6 +127,10 @@ function Remove-AircPathBestEffort {
 
 if ($doPurge) {
     $targets = New-Object System.Collections.Generic.List[string]
+    # FR #3516: allow-list bases from MSI/arg InstallRoot + trusted ConsoleHome only -
+    # never manifest.install_root / manifest.console_home (attacker-controlled).
+    $allowInstall = [string]$InstallRoot
+    $allowHome = [string]$keptHome
     if ($keptHome) { [void]$targets.Add($keptHome) }
     if ($InstallRoot) {
         foreach ($rel in @('config', 'logs', '.git', '.grok', '.cursor', 'home')) {
@@ -133,21 +139,14 @@ if ($doPurge) {
         [void]$targets.Add($InstallRoot)
     }
     if ($manifest -and $manifest.paths) {
-        # FR #3394: only trust manifest paths under install_root / console_home / ProgramData\Bobiverse
-        # (and known systemprofile / Default-user airc homes). Refuse canaries like C:\Windows\Temp\...
-        $manInstall = ''
-        $manHome = ''
-        if ($manifest.install_root) { $manInstall = [string]$manifest.install_root }
-        if ($manifest.console_home) { $manHome = [string]$manifest.console_home }
-        if (-not $manInstall) { $manInstall = [string]$InstallRoot }
-        if (-not $manHome) { $manHome = [string]$keptHome }
+        # FR #3394 / #3516: manifest paths only; bases are trusted InstallRoot/ConsoleHome.
         foreach ($p in @($manifest.paths)) {
             if (-not $p) { continue }
             $candidate = [string]$p
-            if (Test-BobiverseAircPurgePathAllowed -Path $candidate -InstallRoot $manInstall -ConsoleHome $manHome) {
+            if (Test-BobiverseAircPurgePathAllowed -Path $candidate -InstallRoot $allowInstall -ConsoleHome $allowHome) {
                 [void]$targets.Add($candidate)
             } else {
-                Write-Host ("WARN FR #3394 refuse purge path outside allow-list: {0}" -f $candidate)
+                Write-Host ("WARN FR #3394/#3516 refuse purge path outside allow-list: {0}" -f $candidate)
             }
         }
     }
@@ -164,10 +163,18 @@ if ($doPurge) {
         [void]$targets.Add((Join-Path $env:SystemDrive ('Users\Default\AppData\Local\' + $leaf)))
     }
     foreach ($t in @($targets | Select-Object -Unique)) {
-        Remove-AircPathBestEffort -Path $t
+        # FR #3516: every purge target (including ConsoleHome) must pass the allow-list.
+        if (Test-BobiverseAircPurgePathAllowed -Path $t -InstallRoot $allowInstall -ConsoleHome $allowHome) {
+            Remove-AircPathBestEffort -Path $t
+        } else {
+            Write-Host ("WARN FR #3516 refuse purge target outside allow-list: {0}" -f $t)
+        }
     }
-    Remove-AircPathBestEffort -Path $manPath
-    Write-Host 'INFO FR #3292/#3392: Uninstall-Airc purge done'
+    # Manifest file itself lives under ProgramData\Bobiverse (hardcoded allow prefix).
+    if (Test-BobiverseAircPurgePathAllowed -Path $manPath -InstallRoot $allowInstall -ConsoleHome $allowHome) {
+        Remove-AircPathBestEffort -Path $manPath
+    }
+    Write-Host 'INFO FR #3292/#3392/#3516: Uninstall-Airc purge done'
 } else {
     Write-Host 'INFO FR #1566: Uninstall-Airc done (ConsoleHome secrets kept; tree is MSI RemoveFiles)'
 }
