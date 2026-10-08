@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- Install-Airc client/fleet install failures call Send-BobiverseAircInstallFailureIntake (Redact-BobiverseCrashText + FR #3395 opt-out); Report script kept on client purge (FR #3514); outer catch reports Protect/Start failures too.
