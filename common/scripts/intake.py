@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, NamedTuple, Protocol
 
 KINDS = frozenset({"issue", "fr", "skill", "harvest"})
 MAX_BODY_BYTES = 256 * 1024
@@ -111,11 +111,72 @@ _LESSONS_SECTION_RE = re.compile(
 _LESSON_BULLET_RE = re.compile(r"(?m)^\s*[-*]\s+(?P<text>.+?)\s*$")
 _LESSON_PLACEHOLDER_RE = re.compile(r"(?i)^\(?\s*no new playbook line\s*\)?$")
 HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
+# FR #3299: MRB must check owning repo (re-file / hold-open), not only the book path in-repo.
 LESSON_PR_MRB_INSTRUCTION = (
-    "MRB: verify that the lesson is generalised and placed in the right SKILL.md "
-    "(move or reword it if not), then merge."
+    "MRB: verify that the lesson is generalised and placed in the right repo and SKILL.md "
+    "(re-file or move if the owning repo/book is wrong; leave OPEN if the owner repo does not "
+    "exist yet), then merge."
 )
 DEFAULT_SKILL_BOOK = "harvest"
+
+# Planned products that may not exist on GitHub yet (hold harvest tip OPEN; do not FAIL-close).
+MISSING_PRODUCT_REPOS = frozenset(
+    {
+        "simonbarnett/iphone-text-bridge",
+    }
+)
+
+
+class LessonOwner(NamedTuple):
+    """FR #3299: owning GitHub repo for a harvest/skill lesson tip."""
+
+    repo: str | None
+    missing: bool = False
+
+
+def lesson_owner_repo(title: str = "", body: str = "", source: str = "") -> LessonOwner:
+    """Return the skill-book owning repo for a harvest/skill lesson (FR #3299).
+
+    ``missing=True`` means the intended owner is a planned product that does not
+    exist yet — MRB must leave the tip OPEN (never FAIL-close).
+    ``repo=None`` means ownership could not be decided from the text.
+    """
+    blob = f"{title or ''}\n{body or ''}\n{source or ''}"
+    low = blob.lower()
+
+    # Explicit owner/name first.
+    m = re.search(r"(?i)\b(SimonBarnett/[A-Za-z0-9_.-]+)\b", blob)
+    if m:
+        repo = m.group(1)
+        repo_l = repo.lower()
+        # Normalise casing to SimonBarnett/...
+        parts = repo.split("/", 1)
+        repo = f"SimonBarnett/{parts[1]}" if len(parts) == 2 else repo
+        return LessonOwner(repo, missing=(repo_l in MISSING_PRODUCT_REPOS))
+
+    # Product / plan cues (fixtures from FR #3299).
+    if re.search(r"(?i)iphone[- ]?text[- ]?bridge|shortcuts?\s+all-?sms", low):
+        return LessonOwner("SimonBarnett/iphone-text-bridge", missing=True)
+    if re.search(r"(?i)skills-visionary|plan-seat|plan\s+xlsx|harvest-skills-visionary", low):
+        return LessonOwner("SimonBarnett/skills-visionary", missing=False)
+    if re.search(r"(?i)\ba-search\b|awin\s+local|defaultqueryparts|cdk\s+synth", low):
+        return LessonOwner("SimonBarnett/a-search", missing=False)
+    if re.search(r"(?i)\btrutex\b", low):
+        return LessonOwner("SimonBarnett/trutex", missing=False)
+    if re.search(r"(?i)agentic_fomprep|priority\s+catalog|cat-t\d+", low):
+        return LessonOwner("SimonBarnett/agentic_fomprep", missing=False)
+
+    # Bob fleet tooling stays in bobiverse.
+    if re.search(
+        r"(?i)bob-worker|_release_gen|bobiverse-bob|ircjeeves|ircbob|jeeves|airc|"
+        r"harvest-lesson|invoke-bobiverseharvest|gitclaim|!bored|outbox\.txt",
+        low,
+    ):
+        return LessonOwner("SimonBarnett/bobiverse", missing=False)
+
+    return LessonOwner(None, missing=False)
+
+
 # FR #3189: product repos own their skill trees (not bobiverse common/harvest).
 # Map lowercased owner/name -> (book_name, repo-relative SKILL.md path).
 PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
@@ -1178,7 +1239,11 @@ def file_submission(
                 return rec
             else:
                 try:
-                    out = filer.create_draft_pr(repo, title, body, branch, files, labels)
+                    # FR #3299: draft skill (no Lessons:) still carries the owning-repo MRB line.
+                    draft_body = body
+                    if kind == "skill" and LESSON_PR_MRB_INSTRUCTION not in (body or ""):
+                        draft_body = f"{LESSON_PR_MRB_INSTRUCTION}\n\n{body}".rstrip() + "\n"
+                    out = filer.create_draft_pr(repo, title, draft_body, branch, files, labels)
                     rec["url"] = out["url"]
                     rec["number"] = out["number"]
                     rec["branch"] = out.get("branch")

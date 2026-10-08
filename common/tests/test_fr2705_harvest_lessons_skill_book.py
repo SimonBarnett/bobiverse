@@ -10,7 +10,7 @@ import intake
 
 REPO = "SimonBarnett/bobiverse"
 HARVEST_SKILL = "common/.grok/skills/harvest/SKILL.md"
-MRB_INSTRUCTION = "verify that the lesson is generalised and placed in the right SKILL.md"
+MRB_INSTRUCTION = "verify that the lesson is generalised and placed in the right repo and SKILL.md"
 
 
 def _pr_opened_payload(
