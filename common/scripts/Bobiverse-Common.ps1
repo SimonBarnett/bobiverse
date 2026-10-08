@@ -588,6 +588,159 @@ function Test-BobiverseCrashReportAllowsIntake {
 }
 
 
+function Redact-BobiverseCrashText {
+    <#
+      FR #3515: mirror crash_report.redact for PowerShell install-failure intake
+      (Bearer/Basic, NickServ, PASS, URL userinfo, secret KV, token blobs).
+    #>
+    param(
+        [AllowNull()][string]$Text = ''
+    )
+    $s = if ($null -eq $Text) { '' } else { [string]$Text }
+    if (-not $s) { return '' }
+    $s = [regex]::Replace($s, '(?i)\b(?:Authorization\s*[:=]\s*)?(Bearer|Basic)\s+\S+', '$1=<redacted>')
+    $s = [regex]::Replace(
+        $s,
+        '(?i)(?:PRIVMSG\s+NickServ\s+:)?(?:NickServ\s+)?(IDENTIFY|REGISTER)\s+\S+(?:\s+\S+)?',
+        { param($m) "NickServ $($m.Groups[1].Value) <redacted>" }
+    )
+    $s = [regex]::Replace($s, '(?i)\bPASS\s+\S+', 'PASS <redacted>')
+    $s = [regex]::Replace($s, '(?i)(https?://)[^/\s:@]+:[^/\s@]+@', '$1<redacted>@')
+    $s = [regex]::Replace(
+        $s,
+        '(?i)"?(?<key>password|passwd|\bpass\b|secret|token|api[_-]?key|xai_api_key|cursor_api_key|BOB_IRC_PASSWORD|GH_TOKEN|GITHUB_TOKEN|Authorization|NickServ|SASL)"?\s*[:=]\s*(?:"[^"]*"|[^\s",}]+)',
+        { param($m) "$($m.Groups['key'].Value)=<redacted>" }
+    )
+    $s = [regex]::Replace(
+        $s,
+        '(?i)\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]+)\b',
+        '<redacted-token>'
+    )
+    return $s
+}
+
+
+function Resolve-BobiverseAircIntakeReportScript {
+    <#
+      FR #3515: find Report-BobiverseIntakeIssue.ps1 after client allow-list purge.
+      Prefer InstallRoot\scripts (kept by FR #3514), then ScriptsDir / beside Common.
+    #>
+    param(
+        [string]$InstallRoot = '',
+        [string]$ScriptsDir = ''
+    )
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($InstallRoot) {
+        [void]$candidates.Add((Join-Path $InstallRoot 'scripts\Report-BobiverseIntakeIssue.ps1'))
+    }
+    if ($ScriptsDir) {
+        [void]$candidates.Add((Join-Path $ScriptsDir 'Report-BobiverseIntakeIssue.ps1'))
+        [void]$candidates.Add((Join-Path (Split-Path -Parent $ScriptsDir) 'common\scripts\Report-BobiverseIntakeIssue.ps1'))
+    }
+    if ($PSScriptRoot) {
+        [void]$candidates.Add((Join-Path $PSScriptRoot 'Report-BobiverseIntakeIssue.ps1'))
+    }
+    foreach ($p in @($candidates)) {
+        if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+    }
+    return $null
+}
+
+
+function Send-BobiverseAircInstallFailureIntake {
+    <#
+      FR #3515 / #3395: local MSI log always; redacted intake when crash-report allows.
+      Returns a small object: skipped / dry_run / title / body / report (or $null on hard skip).
+    #>
+    param(
+        [string]$InstallRoot = '',
+        [string]$ScriptsDir = '',
+        [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][string]$Body,
+        [string]$Repo = 'SimonBarnett/bobiverse',
+        [string]$IntakeUrl = '',
+        [switch]$DryRun
+    )
+    $safeTitle = Redact-BobiverseCrashText -Text $Title
+    $safeBody = Redact-BobiverseCrashText -Text $Body
+    try {
+        Write-BobiverseMsiInstallLog -Product airc -Message ("install-fail-intake: {0}" -f $safeBody)
+    } catch { }
+
+    $allowIntake = $false
+    try {
+        $allowIntake = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
+    } catch {
+        $allowIntake = $false
+        Write-Host ("WARN FR #3515 crash-report policy check failed; skip intake: {0}" -f $_.Exception.Message)
+    }
+    if (-not $allowIntake) {
+        Write-Host 'INFO FR #3515 skip intake (crash-report opt-out / local-only); failure logged locally'
+        return [pscustomobject]@{
+            skipped = $true
+            dry_run = [bool]$DryRun
+            title   = $safeTitle
+            body    = $safeBody
+            report  = $null
+        }
+    }
+
+    $report = Resolve-BobiverseAircIntakeReportScript -InstallRoot $InstallRoot -ScriptsDir $ScriptsDir
+    if (-not $report) {
+        Write-Host 'WARN FR #3515 Report-BobiverseIntakeIssue.ps1 missing after purge; intake skipped'
+        return [pscustomobject]@{
+            skipped = $true
+            dry_run = [bool]$DryRun
+            title   = $safeTitle
+            body    = $safeBody
+            report  = $null
+            missing_report = $true
+        }
+    }
+
+    try {
+        $splat = @{
+            Title       = $safeTitle
+            Body        = $safeBody
+            Repo        = $Repo
+            InstallRoot = $InstallRoot
+        }
+        if ($DryRun) { $splat.DryRun = $true }
+        if ($IntakeUrl) { $splat.IntakeUrl = $IntakeUrl }
+        $r = & $report @splat
+        if ($r -and ($r.PSObject.Properties.Name -contains 'dry_run' -or $r.PSObject.Properties.Name -contains 'title')) {
+            # Prefer report payload fields when present; always expose redacted title/body.
+            return [pscustomobject]@{
+                skipped = [bool]($(if ($r.PSObject.Properties['skipped_crash_opt_out']) { $r.skipped_crash_opt_out } else { $false }))
+                dry_run = [bool]($(if ($r.PSObject.Properties['dry_run']) { $r.dry_run } else { [bool]$DryRun }))
+                title   = $safeTitle
+                body    = $safeBody
+                report  = $report
+                raw     = $r
+            }
+        }
+        return [pscustomobject]@{
+            skipped = $false
+            dry_run = [bool]$DryRun
+            title   = $safeTitle
+            body    = $safeBody
+            report  = $report
+            raw     = $r
+        }
+    } catch {
+        Write-Host ("WARN FR #3515 intake report failed: {0}" -f $_.Exception.Message)
+        return [pscustomobject]@{
+            skipped = $true
+            dry_run = [bool]$DryRun
+            title   = $safeTitle
+            body    = $safeBody
+            report  = $report
+            error   = $_.Exception.Message
+        }
+    }
+}
+
+
 function Get-BobiverseAircFleetOperatorRoster {
     <#
       FR #3513: nick list for fleet cross-machine ears (one nick per line, # comments ok).
