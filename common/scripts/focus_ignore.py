@@ -363,9 +363,59 @@ def repo_row_admitted(row: dict, now: float | None = None) -> bool:
     return True
 
 
+def row_offer_number(row: dict) -> int:
+    """Issue/PR number from ``id`` (#N). Missing/unparseable → large sentinel (sort last)."""
+    raw = str(row.get("id") or "").strip().lstrip("#")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 10**12
+
+
+def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
+    """FR #3205 offer order key.
+
+    1. Per-item focus rank (if any)
+    2. Repo focus priority (lower wins); unfocused last
+    3. Task kind: MRB < UAT < FR
+    4. Lowest issue/PR number
+    5. Repo name (final tie-break — not focus timestamp)
+    """
+    if doc is None:
+        doc = load_focus(home)
+    ir = item_rank(doc, row)
+    if ir is not None:
+        return (0, ir, 0, 0, "", row_offer_number(row), str(row.get("repo") or "").lower())
+    ent = _repo_entry(doc, str(row.get("repo") or ""))
+    if ent is None:
+        # Unfocused: still kind + number so fallback paths stay consistent.
+        return (
+            1,
+            UNFOCUSED_RANK,
+            _task_order(row),
+            row_offer_number(row),
+            str(row.get("repo") or "").lower(),
+            0,
+            "",
+        )
+    # FR #3205: same priority → kind then number; drop focus timestamp (ent[1]).
+    return (
+        1,
+        int(ent[0]),
+        _task_order(row),
+        row_offer_number(row),
+        str(row.get("repo") or "").lower(),
+        0,
+        "",
+    )
+
+
 def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
-    """Drop ignored rows; strict drops unfocused rows; then item rank > repo priority (focus order)
-    > MRB, UAT, FR > seq. A repo-level focus admits every real offerable row of that repo (FR #628)."""
+    """Drop ignored rows; strict drops unfocused rows; then FR #3205 offer order.
+
+    Item rank > repo priority > MRB/UAT/FR > lowest number > repo name.
+    A repo-level focus admits every real offerable row of that repo (FR #628).
+    """
     ignored = ignored_list(home)
     doc = load_focus(home)
     kept = [
@@ -379,20 +429,7 @@ def sort_unaccepted_rows(home: Path, rows: list[dict]) -> list[dict]:
             or (repo_priority(doc, str(r.get("repo") or "")) is not None and repo_row_admitted(r))
         ]
 
-    def key(r: dict) -> tuple:
-        try:
-            seq = int(r.get("seq") or 0)
-        except (TypeError, ValueError):
-            seq = 0
-        ir = item_rank(doc, r)
-        if ir is not None:
-            return (0, ir, "", "", 0, seq)
-        ent = _repo_entry(doc, str(r.get("repo") or ""))
-        if ent is None:
-            return (1, UNFOCUSED_RANK, "", "", 0, seq)
-        return (1, ent[0], ent[1], str(r.get("repo") or "").lower(), _task_order(r), seq)
-
-    return sorted(kept, key=key)
+    return sorted(kept, key=lambda r: offer_sort_key(home, r, doc=doc))
 
 
 # ---------------------------------------------------------------- commands
