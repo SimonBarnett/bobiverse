@@ -185,3 +185,7 @@ Generalised from 73 harvested lessons that never reached this book (audit for FR
 - **Greenfield product FRs:** ship the VISION and a foundation with a testable gate (for example DNS ownership) first, then file child FRs. Children wait for the foundation PR. Never store customer keys in project infrastructure (device-only), never log secrets, and make no live vendor calls in a foundation PR. (5 lessons: harvest #1179, #1168, #1155, #1152, #1133)
 - **Closes vs Refs:** living or multi-WP FRs get `Refs` only, so after `gh pr create` verify that `closingIssuesReferences` is empty. Never write `Closes` next to an unrelated issue number, even in prose. If an unrelated PR closed a harvest/skill issue, strip the link and reopen the issue. (2 lessons: harvest #2253, #1919)
 - **Test harness gotchas:** register seat machines (registered_machines plus a cleared roster cache) in sibling and author-block tests. Fixture real queue/digest shapes, use `repo_layout.ROOT`, and give sparse worktrees `common/tests` or PYTHONPATH. Grep existing gate ids before adding a new one. Stub the cap-refusal in queue tests on a live two-agent box. (3 lessons: harvest #964, #129, #141)
+
+## Harvested lessons (intake)
+
+- FR airc ACL: force Install-AircConsole -NoStart then Protect-BobiverseInstallTree -FailClosed before Start-Service; Ensure-BobiverseProgramDataRoot before MSI log/manifest; uninstall allow-list refuses canary paths; write gh pr body UTF-8 no BOM so Closes links
