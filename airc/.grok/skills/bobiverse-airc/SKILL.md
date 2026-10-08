@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- Ensure-BobiverseProgramDataRoot -ProtectMode LogsOnly once per process for MSI log writes; never Full-Recurse ProgramData on every Write-BobiverseMsiInstallLog line; BOBIVERSE_PROGRAMDATA_ROOT redirects pytest away from the live tree.
