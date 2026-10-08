@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- Fleet airc (FR #3639): Install + service default auth_mode=irc_ops for profile fleet|client; Resolve-BobiverseAircOperatorNicks returns empty for fleet; no operators.txt / fleet-operators roster gate; update peer 3513/3397 pins; commit early when Clear may prune D:\bobfleet-build\job-fr-* mid-edit
