@@ -86,7 +86,8 @@ def test_focus_order_item_then_repo_then_seq(_home):
     fi.handle_focus_cmd(_home, "o/b")          # repo focus high
     fi.handle_focus_cmd(_home, "o/d#4")        # item focus beats repo focus
     got = [r["id"] for r in gitclaim.ordered_unaccepted(_home)]
-    assert got == ["#4", "#2", "#1", "#3"]
+    # FR #3205: among unfocused, MRB before FR (kind then number) — #3 before #1.
+    assert got == ["#4", "#2", "#3", "#1"]
 
 
 def test_item_rank_ordering_between_items(_home):
