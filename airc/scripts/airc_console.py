@@ -568,9 +568,15 @@ class ChannelMemberMap:
         self.synced = False
 
     def set_channel(self, channel: str) -> None:
+        """Bind the control channel and always drop prior prefixes (FR #3511).
+
+        Same-channel reconnect used to keep ``synced`` and stale ``@``/``%`` for
+        nicks that left while the console was offline. Always clear so auth
+        refuses until a fresh NAMES/366 cycle.
+        """
         ch = (channel or "").strip()
-        if ch.lower() != (self.channel or "").lower():
-            self.clear()
+        # FR #3511: clear even when the channel name is unchanged (reconnect).
+        self.clear()
         self.channel = ch
 
     def apply_names(self, names_blob: str) -> None:
