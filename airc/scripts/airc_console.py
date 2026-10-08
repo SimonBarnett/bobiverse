@@ -707,62 +707,80 @@ def resolve_crash_report_enabled_for_install(
 
 @dataclass
 class AuthPolicy:
-    """Only authenticated operators may drive the console via PRIVMSG."""
+    """Authorise by live IRC channel status only (FR #3401 / #3639).
 
-    operators: set[str] = field(default_factory=set)
-    accounts: set[str] = field(default_factory=set)
-    account_map: AccountMap | None = None
-    require_account: bool = False
-    # When set, also treat bob-<machine> as an operator nick for this box (still subject
-    # to --require-account / --accounts). Never allow arbitrary bob-* by regex (FR #3286).
-    machine: str | None = None
-    # FR #3401: ``operators`` (fleet/workstation nick ACL) or ``irc_ops`` (channel +o/+h).
-    auth_mode: Literal["operators", "irc_ops"] = "operators"
+    A sender may drive the console when it holds ops (``+o``) or half-ops (``+h``)
+    -- or higher (``+a`` / ``+q``) -- in the console's control channel, per the live
+    NAMES/MODE/JOIN/PART map. There is no operators.txt, no fleet-operators roster
+    and no nick allow-list on any profile (fleet, workstation or client). Voice is
+    not enough. Auth refuses until NAMES/366 has synced the map (FR #3511), and the
+    console never authorises its own nick.
+
+    ``account_map`` is only the IRCv3 ``account`` tag cache used for logging; it is
+    never an allow-list.
+    """
+
     members: ChannelMemberMap | None = None
     self_nicks: set[str] = field(default_factory=set)
+    account_map: AccountMap | None = None
+    # FR #3639: the only mode. Kept as a field so callers / logs can read it.
+    auth_mode: Literal["irc_ops"] = "irc_ops"
 
     def deny_reason(self, nick: str, account: str | None = None) -> str:
         """Why ``allow`` is False (for auth-deny logs; never includes command body)."""
         n = (nick or "").strip().lower()
-        if self.auth_mode == "irc_ops":
-            if n and n in {x.lower() for x in self.self_nicks}:
-                return "self-nick"
-            if self.members is None or not self.members.synced:
-                return "channel-state-unknown"
-            if not self.members.has_chan_priv(n):
-                return "not-op"
+        if not n:
+            return "no-nick"
+        if n in {x.lower() for x in self.self_nicks}:
+            return "self-nick"
+        if self.members is None or not self.members.synced:
+            return "channel-state-unknown"
+        if not self.members.has_chan_priv(n):
             return "not-op"
-        if not self.allow(nick, account):
-            return "not-operator"
         return ""
 
     def allow(self, nick: str, account: str | None = None) -> bool:
         n = (nick or "").strip().lower()
         if not n:
             return False
-        if self.auth_mode == "irc_ops":
-            if n in {x.lower() for x in self.self_nicks}:
-                return False
-            if self.members is None or not self.members.synced:
-                return False
-            return self.members.has_chan_priv(n)
-        ops = {x.lower() for x in self.operators}
-        mid = machine_id(self.machine) if self.machine is not None else None
-        if mid:
-            ops.add(f"bob-{mid}")
-        accts = {x.lower() for x in self.accounts}
-        if self.account_map is not None and account is None:
-            account = self.account_map.get(n)
-        acct = (account or "").strip().lower()
-        need_acct = self.require_account or bool(accts)
-        if need_acct:
-            if not acct or acct == "*":
-                return False
-            if accts and acct not in accts:
-                return False
-        if ops:
-            return n in ops
-        return need_acct
+        if n in {x.lower() for x in self.self_nicks}:
+            return False
+        if self.members is None or not self.members.synced:
+            return False
+        return self.members.has_chan_priv(n)
+
+
+def resolve_channel_commands(cfg: dict | None) -> bool:
+    """FR #3401 / #3639: read commands from the control channel only on the client profile.
+
+    Fleet and workstation consoles take commands by DM only and stay silent in channel
+    (the fleet control channel carries chair / git-claim traffic). A missing or unknown
+    profile is treated as fleet (DM only) - fail safe.
+    """
+    prof = str((cfg or {}).get("profile") or "").strip().lower()
+    return prof == "client"
+
+
+def legacy_operator_input_log_lines(args: object, cfg: dict | None) -> list[str]:
+    """FR #3639: INFO lines for retired operator-list inputs (accepted, never read).
+
+    Old NSSM AppParameters / airc.json may still carry ``--operators-file``,
+    ``--operators``, ``--auth-mode operators``, ``--require-account`` / ``--accounts``
+    or ``auth_mode=operators``. They are accepted so an upgraded service still starts,
+    but authorisation is live control-channel +o/+h only.
+    """
+    out: list[str] = []
+    if getattr(args, "operators_file", None):
+        out.append("INFO FR #3639 ignoring --operators-file (no operators list; channel +o/+h auth)")
+    if list(getattr(args, "operators", None) or []):
+        out.append("INFO FR #3639 ignoring --operators (no operators list; channel +o/+h auth)")
+    cli_mode = str(getattr(args, "auth_mode", None) or "").strip().lower()
+    cfg_mode = str((cfg or {}).get("auth_mode") or "").strip().lower()
+    if cli_mode == "operators" or cfg_mode == "operators":
+        out.append("INFO FR #3639 auth_mode=operators is retired; using irc_ops")
+    if getattr(args, "require_account", False) or list(getattr(args, "accounts", None) or []):
+        out.append("INFO FR #3639 ignoring --require-account/--accounts for auth (channel +o/+h only)")
+    return out
 
 
 @dataclass(frozen=True)
@@ -1961,6 +1979,7 @@ class AircConsoleCore:
         install_root: str | None = None,
         job_protocol: JobProtocol | None = None,
         capabilities: ConsoleCapabilities | None = None,
+        channel_commands: bool = False,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -1974,6 +1993,12 @@ class AircConsoleCore:
         self.job_protocol = job_protocol
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
+        # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
+        # *Where* commands are read is separate: client profile also reads them from the
+        # control channel; fleet / workstation read DMs only and stay silent in channel,
+        # because the fleet control channel (#<machine>) carries chair / git-claim
+        # traffic (issue titles) that must never be executed as a shell line.
+        self.channel_commands = bool(channel_commands)
 
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
@@ -1992,24 +2017,15 @@ class AircConsoleCore:
     def _deny_result(
         self, nick: str, target: str, text: str, account: str | None
     ) -> HandleResult:
-        """FR #3401: irc_ops denials use DONE exit=126 not-op; fleet keeps legacy text."""
-        if getattr(self.auth, "auth_mode", "operators") == "irc_ops":
-            reason = self.auth.deny_reason(nick, account) or "not-op"
-            return HandleResult(
-                action="deny",
-                nick=nick,
-                target=target,
-                text=text,
-                reply="DONE exit=126 not-op",
-                deny_reason=reason,
-            )
+        """FR #3401 / #3639: every profile denies with DONE exit=126 not-op."""
+        reason = self.auth.deny_reason(nick, account) or "not-op"
         return HandleResult(
             action="deny",
             nick=nick,
             target=target,
             text=text,
-            reply="denied: authenticate / not an operator",
-            deny_reason="not-operator",
+            reply="DONE exit=126 not-op",
+            deny_reason=reason,
         )
 
     def handle_raw(self, line: str) -> HandleResult | None:
@@ -2019,8 +2035,9 @@ class AircConsoleCore:
             return None
         nick, target, text = m.group(1), m.group(2), m.group(3)
         account = tags.get("account")
-        if self.auth.account_map is not None and account:
-            self.auth.account_map.set(nick, account)
+        amap = getattr(self.auth, "account_map", None)
+        if amap is not None and account:
+            amap.set(nick, account)
 
         # Issue #298: CTCP PING / "ping [pattern]" — no operator auth; presence only.
         ctcp_payload = parse_ctcp_ping(text or "")
@@ -2048,12 +2065,12 @@ class AircConsoleCore:
             # Direct ping that does not match us — ignore quietly.
             return HandleResult(action="ping_miss", nick=nick, target=target, text=text)
 
-        irc_ops = getattr(self.auth, "auth_mode", "operators") == "irc_ops"
         if is_channel_target(target):
-            # Fleet: silent in channel. Client (irc_ops): accept commands on the
-            # selected control channel only (FR #3401).
+            # Fleet / workstation: silent in channel (DM only). Client: accept commands
+            # on the selected control channel only (FR #3401). Auth is the same live
+            # channel +o/+h check either way (FR #3639).
             self.channel_traffic.append(text)
-            if not irc_ops:
+            if not self.channel_commands:
                 return HandleResult(action="silent_channel", nick=nick, target=target, text=text)
             ctrl = (self.channel or "").strip().lower()
             if target.strip().lower() != ctrl:
@@ -2183,21 +2200,6 @@ class AircConsoleCore:
             )
         self.sessions.pipe(nick, cmd)
         return HandleResult(action="pipe", nick=nick, target=target, text=text)
-
-
-def load_operators(path: Path | None, cli: list[str] | None = None) -> set[str]:
-    ops: set[str] = set()
-    if cli:
-        ops.update(x.strip().lstrip("\ufeff") for x in cli if x and x.strip())
-    if path and path.is_file():
-        # utf-8-sig strips BOM from PowerShell Set-Content -Encoding utf8 (issue #289).
-        text = path.read_text(encoding="utf-8-sig")
-        for line in text.splitlines():
-            s = line.strip().lstrip("\ufeff")
-            if not s or s.startswith("#"):
-                continue
-            ops.add(s)
-    return ops
 
 
 def home_dir(explicit: str | None = None) -> Path:

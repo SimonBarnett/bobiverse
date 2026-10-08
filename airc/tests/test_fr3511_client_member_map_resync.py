@@ -24,7 +24,6 @@ def test_reconnect_clears_stale_halfop_absent_from_names():
         auth_mode="irc_ops",
         members=m,
         self_nicks={"bvt0126m"},
-        machine="bvt0126m",
     )
     assert auth.allow("bvt_usr")
     assert auth.allow("bvt_op")
@@ -67,7 +66,6 @@ def test_self_kick_clears_map_ops_denied_until_resync():
         auth_mode="irc_ops",
         members=m,
         self_nicks={"bvt0126m"},
-        machine="bvt0126m",
     )
     assert auth.allow("bvt_op")
 

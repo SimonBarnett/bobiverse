@@ -10,7 +10,8 @@ param(
     [string]$InstallRoot = '',   # '' = <discovered ai root>\airc (t780u)
     [string]$MachineId = '',
     [string]$ConsoleHome = '',
-    [string[]]$Operators = @('Simon'),
+    # FR #3639: retired (no operators list; auth is live control-channel +o/+h). Accepted, ignored.
+    [string[]]$Operators = @(),
     [string]$Python = '',
     [switch]$NoStart,
     [switch]$ForceTools,
@@ -28,7 +29,7 @@ param(
     [string]$UpdateCap = '',
     [string]$RequireAccount = '',
     [string]$Accounts = '',
-    # FR #3397: MSI AIRC_OPERATORS=nick1,nick2 appends to operators.txt (fleet only).
+    # FR #3639: retired MSI AIRC_OPERATORS / -OperatorsExtra. Accepted (old callers bind), logged, ignored.
     [string]$OperatorsExtra = '',
     # FR #3289: MSI AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (0|1|true|false; empty = preserve / fresh default).
     [string]$SyncFromRepo = '',
@@ -313,52 +314,15 @@ if (([string]$Accounts).Trim()) {
     $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
 }
 
-# FR #3397 / #3401 / #3513 / #3639: fleet + client use IRC +o/+h (no operators.txt);
-# workstation may still seed operators.txt; roster/extra ignored for fleet auth.
-$profForOps = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { ([string]$Profile).Trim().ToLowerInvariant() })
-if (-not $profForOps) { $profForOps = 'fleet' }
-if ($profForOps -in @('client', 'fleet')) {
-    $Operators = @()
-    if ($profForOps -eq 'client') {
-        Write-Host 'INFO FR #3401 client profile: no operators.txt (IRC +o/+h auth)'
-    } else {
-        Write-Host 'INFO FR #3639 fleet profile: no operators.txt / no fleet-operators roster (IRC +o/+h auth)'
-    }
-} elseif (Get-Command Resolve-BobiverseAircOperatorNicks -ErrorAction SilentlyContinue) {
-    # FR #3512: flatten Resolve output. `return , $arr` / NoEnumerate + `@()` / [string[]]@()
-    # can still nest so operators.txt gets one space-joined nick. Absorbed from PR #3555.
-    $resolvedOps = Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators `
-        -OperatorsExtra $OperatorsExtra -InstallRoot $InstallRoot
-    $flatOps = New-Object System.Collections.Generic.List[string]
-    foreach ($item in @($resolvedOps)) {
-        if ($null -eq $item) { continue }
-        if (($item -is [System.Array]) -and -not ($item -is [string])) {
-            foreach ($n in $item) {
-                foreach ($p in @(([string]$n) -split '[,;\s]+' | Where-Object { $_ })) {
-                    [void]$flatOps.Add($p.Trim())
-                }
-            }
-        } else {
-            foreach ($p in @(([string]$item) -split '[,;\s]+' | Where-Object { $_ })) {
-                [void]$flatOps.Add($p.Trim())
-            }
-        }
-    }
-    $Operators = [string[]]$flatOps.ToArray()
-} elseif ($profForOps -ne 'workstation') {
-    $extra = @(([string]$OperatorsExtra) -split '[,;\s]+' | Where-Object { $_ })
-    $roster = @()
-    if (Get-Command Get-BobiverseAircFleetOperatorRoster -ErrorAction SilentlyContinue) {
-        $roster = [string[]]@(Get-BobiverseAircFleetOperatorRoster -InstallRoot $InstallRoot)
-    }
-    $Operators = @($Operators + $extra + $roster | Select-Object -Unique)
-    if (([string]$OperatorsExtra).Trim() -or $roster.Count -gt 0) {
-        Write-Host ("INFO FR #3513 operators union extra+roster count={0}" -f $Operators.Count)
-    }
-} elseif ($profForOps -eq 'workstation' -and ([string]$OperatorsExtra).Trim()) {
-    Write-Host 'INFO FR #3397 workstation profile: ignoring AIRC_OPERATORS / OperatorsExtra'
+# FR #3401 / #3639: every profile (fleet, workstation, client) authorises by live
+# control-channel +o/+h. No operators.txt, no fleet-operators roster, no nick allow-list.
+if (([string]$OperatorsExtra).Trim()) {
+    Write-Host 'INFO FR #3639 ignoring AIRC_OPERATORS / -OperatorsExtra (auth is control-channel +o/+h)'
 }
-Write-Host ("INFO FR #3397/#3513 operators={0}" -f (($Operators | Where-Object { $_ }) -join ','))
+if (@($Operators | Where-Object { $_ -and ([string]$_).Trim() }).Count -gt 0) {
+    Write-Host 'INFO FR #3639 ignoring -Operators (auth is control-channel +o/+h)'
+}
+$Operators = @()
 
 # FR #3289: sync_from_repo default OFF (unsigned main must not run as SYSTEM); self_update default ON.
 function ConvertTo-AircBoolOrNull {
@@ -402,7 +366,6 @@ try {
         ConsoleHome  = $ConsoleHome
         MachineId    = $MachineId
         PasswordFile = $(if ($priorId.PasswordFile) { $priorId.PasswordFile } else { Join-Path $ConsoleHome 'console.password' })
-        OperatorsFile = $(if ($priorId.OperatorsFile) { $priorId.OperatorsFile } else { Join-Path $ConsoleHome 'operators.txt' })
         Launcher     = $(if ($priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) { $priorId.Launcher } else { '' })
         ShellMode    = $resolvedShell
         Jobs         = $resolvedJobs
@@ -425,8 +388,8 @@ try {
 try {
     $capPath = Join-Path $InstallRoot 'config\airc.json'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capPath) | Out-Null
-    # FR #3401 client + FR #3639 fleet: channel +o/+h; workstation keeps nick ACL.
-    $authMode = $(if ($prof -in @('client', 'fleet')) { 'irc_ops' } else { 'operators' })
+    # FR #3639: irc_ops on every profile (control-channel +o/+h; no operators list).
+    $authMode = 'irc_ops'
     $capObj = [ordered]@{
         shell = $resolvedShell
         jobs = $resolvedJobs
@@ -486,12 +449,11 @@ $installLegacy = Join-Path $InstallRoot 'scripts\Install-AircConsole.ps1'
 $args = @{
     ServiceName = 'Airc'
     ConsoleHome = $ConsoleHome
-    Operators   = $Operators
     ShellMode   = $resolvedShell
     Jobs        = $resolvedJobs
     UpdateCap   = $resolvedUpdate
     Profile     = $prof
-    AuthMode    = $(if ($prof -in @('client', 'fleet')) { 'irc_ops' } else { 'operators' })
+    AuthMode    = 'irc_ops'
 }
 if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }
@@ -500,15 +462,13 @@ if ($Python) { $args.Python = $Python }
 $args.NoStart = $true
 if ($resolvedRequire) { $args.RequireAccount = $true }
 if ($resolvedAccounts.Count -gt 0) { $args.Accounts = $resolvedAccounts }
-# FR #1552: pass through prior PasswordFile / OperatorsFile / Launcher when still on disk.
+# FR #1552: pass through prior PasswordFile / Launcher when still on disk (FR #3639: no OperatorsFile).
 if ($priorId -and $priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
     $args.PasswordFile = $priorId.PasswordFile
 }
 if ($priorId -and $priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) {
     $args.Launcher = $priorId.Launcher
 }
-# OperatorsFile is not a direct Install-AircConsole param; Install-AircConsole re-reads
-# AppParameters / opsFile. Snapshot still records OperatorsFile for the json fallback.
 
 # Patch launcher path expectation: Install-AircConsole looks beside itself
 try {

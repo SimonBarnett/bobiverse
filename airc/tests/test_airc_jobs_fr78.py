@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import airc_console as ac
+from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
 import airc_jobs as jobs
 
 
@@ -233,7 +234,7 @@ def test_bounded_cleanup(home, monkeypatch):
 
 
 def test_core_routes_status_and_denies_unauth(home):
-    auth = ac.AuthPolicy(operators={"bob-tm"}, machine="tm")
+    auth = ops_auth("bob-tm")
     store = jobs.JobStore(home)
     replies: list[str] = []
     proto = jobs.JobProtocol(

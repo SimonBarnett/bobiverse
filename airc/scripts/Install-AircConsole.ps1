@@ -20,8 +20,9 @@ param(
     [string]$PasswordFile = '',
     # Optional explicit Ergo server PASS source file (copied into ConsoleHome\ergo.password).
     [string]$ErgoPasswordFile = '',
-    # Simon + bob-{COMPUTERNAME} seeded as operators (FR #3286: nick pattern alone is not auth).
-    [string[]]$Operators = @('Simon'),
+    # FR #3639: retired - airc authorises by live control-channel +o/+h only (no operators list).
+    # Accepted so older callers still bind; never written to disk.
+    [string[]]$Operators = @(),
     [string]$ServiceName = 'AircConsole',
     # Absolute python.exe for LocalSystem (#282). Empty = auto-resolve at install.
     [string]$Python = '',
@@ -39,9 +40,10 @@ param(
     [string]$UpdateCap = '',
     [switch]$RequireAccount,
     [string[]]$Accounts = @(),
-    # FR #3401: AIRC_PROFILE=client -> AuthMode=irc_ops (no operators.txt).
+    # FR #3401 / #3639: every profile authorises by live control-channel +o/+h (irc_ops).
     [ValidateSet('', 'fleet', 'workstation', 'client')]
     [string]$Profile = '',
+    # FR #3639: 'operators' is retired and mapped to irc_ops (kept so old callers bind).
     [ValidateSet('', 'operators', 'irc_ops')]
     [string]$AuthMode = ''
 )
@@ -142,7 +144,7 @@ if ($priorId -and ($priorId.ConsoleHome -or $priorId.MachineId -or $priorId.Pass
     }
 }
 
-# Resolve fleet machine id early (operators seed + NSSM env + Start -MachineId).
+# Resolve fleet machine id early (NSSM env + Start -MachineId).
 if (-not $MachineId) {
     $MachineId = ($env:AIRC_CONSOLE_MACHINE, $env:BOB_MACHINE_ID | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
 }
@@ -319,69 +321,16 @@ function Initialize-AircConsoleHomeSecrets {
         # Issue #294: packaged release config\ergo.password (not target ~/.grok).
         [string]$PackagedErgoFile = ''
     )
-    $opsFile = Join-Path $ConsoleHomeDir 'operators.txt'
-    # FR #3401: irc_ops / client profile never creates or requires operators.txt.
-    if (([string]$script:AircConsoleAuthMode).Trim().ToLowerInvariant() -eq 'irc_ops') {
-        if (Test-Path -LiteralPath $opsFile) {
-            Write-Host "INFO FR #3401 AuthMode=irc_ops: leaving existing $opsFile unused"
-        } else {
-            Write-Host 'INFO FR #3401 AuthMode=irc_ops: no operators.txt'
-        }
-        # Fall through to NickServ / ergo secrets below without writing ops.
-        $opsFile = $null
+    # FR #3401 / #3639: no profile creates, updates or reads operators.txt. Auth is live
+    # control-channel +o/+h. A leftover file from an older install is left in place
+    # (rollback to a pre-#3639 build still finds it) but nothing reads it.
+    $legacyOps = Join-Path $ConsoleHomeDir 'operators.txt'
+    if (Test-Path -LiteralPath $legacyOps) {
+        Write-Host "INFO FR #3639 legacy $legacyOps left unused (auth is control-channel +o/+h)"
     } else {
-    # Issue #289: never UTF-8 BOM. Issue #302: always include bob-{machinename}.
-    # FR #3397: union OperatorNicks into existing operators.txt (cross-machine ears).
-    # Prefer fleet id (BOB_MACHINE_ID) over Windows COMPUTERNAME.
-    $machineId = ($script:AircConsoleMachineId)
-    if (-not $machineId) {
-        $machineId = ($env:AIRC_CONSOLE_MACHINE, $env:BOB_MACHINE_ID | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
+        Write-Host 'INFO FR #3639 no operators.txt (auth is control-channel +o/+h)'
     }
-    if (-not $machineId) {
-        $machineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
-    }
-    if (-not $machineId) { $machineId = 'unknown' }
-    $machineId = ($machineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
-    if (Get-Command Merge-BobiverseAircOperatorsFile -ErrorAction SilentlyContinue) {
-        [void](Merge-BobiverseAircOperatorsFile -Path $opsFile -Nicks @($OperatorNicks) -MachineId $machineId)
-    } else {
-        # Fallback when Common is missing (direct invoke): prior seed/keep behaviour.
-        $bobNick = "bob-$machineId"
-        $seedOps = [System.Collections.Generic.List[string]]::new()
-        foreach ($o in @($OperatorNicks)) {
-            if ($o -and $o.Trim()) { [void]$seedOps.Add($o.Trim()) }
-        }
-        if (-not ($seedOps | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
-            [void]$seedOps.Add($bobNick)
-        }
-        if ($seedOps.Count -gt 0 -and -not (Test-Path -LiteralPath $opsFile)) {
-            $body = ($seedOps -join "`n") + "`n"
-            [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
-            Write-Host "INFO wrote $opsFile (no BOM; includes $bobNick)"
-        } elseif (Test-Path -LiteralPath $opsFile) {
-            $raw = [IO.File]::ReadAllText($opsFile)
-            $clean = $raw.TrimStart([char]0xFEFF)
-            $lines = @($clean -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^#' })
-            $changed = ($clean -ne $raw)
-            foreach ($o in $seedOps) {
-                if (-not ($lines | Where-Object { $_.ToLowerInvariant() -eq $o.ToLowerInvariant() })) {
-                    $lines = @($lines + $o)
-                    $changed = $true
-                }
-            }
-            if ($changed) {
-                $body = (($lines | Select-Object -Unique) -join "`n") + "`n"
-                [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
-                Write-Host "INFO updated $opsFile (BOM strip / union nicks) (#289/#302/#3397)"
-            } else {
-                Write-Host "INFO keep $opsFile"
-            }
-        } else {
-            throw 'operators.txt missing and -Operators empty (FR #253)'
-        }
-    }
-
-    }  # end non-irc_ops operators seed
+    $opsFile = $null
 
     # #271 NickServ GUID - mint here so first service start is unattended.
     if (-not $NickServPasswordFile) {
@@ -427,17 +376,16 @@ function Initialize-AircConsoleHomeSecrets {
 # Packaged secret lives at <unpack>\config\ergo.password (scripts\.. = unpack root).
 $packRoot = Split-Path -Parent $scriptDir
 $packagedErgo = Join-Path $packRoot 'config\ergo.password'
-# FR #3401: resolve auth mode (client => irc_ops, no operators list).
-if (-not $AuthMode) {
-    if (([string]$Profile).Trim().ToLowerInvariant() -eq 'client') { $AuthMode = 'irc_ops' }
-    else { $AuthMode = 'operators' }
+# FR #3401 / #3639: every profile is irc_ops (control-channel +o/+h); no operators list.
+if (([string]$AuthMode).Trim().ToLowerInvariant() -eq 'operators') {
+    Write-Host 'INFO FR #3639 AuthMode=operators is retired; using irc_ops'
 }
-$AuthMode = ([string]$AuthMode).Trim().ToLowerInvariant()
+$AuthMode = 'irc_ops'
 $script:AircConsoleAuthMode = $AuthMode
-if ($AuthMode -eq 'irc_ops') {
-    $Operators = @()
-    Write-Host 'INFO FR #3401 AuthMode=irc_ops: skipping operators.txt seed'
+if (@($Operators | Where-Object { $_ -and ([string]$_).Trim() }).Count -gt 0) {
+    Write-Host 'INFO FR #3639 ignoring -Operators (no operators list; control-channel +o/+h auth)'
 }
+$Operators = @()
 
 $secrets = Initialize-AircConsoleHomeSecrets -ConsoleHomeDir $ConsoleHome -OperatorNicks $Operators `
     -NickServPasswordFile $PasswordFile -ErgoSourceFile $ErgoPasswordFile -PackagedErgoFile $packagedErgo
@@ -499,10 +447,7 @@ function Remove-AircConsoleService {
 Remove-AircConsoleService -Exe $Nssm -Name $ServiceName
 Write-Host "INFO Installing $ServiceName"
 
-# FR #1552: prefer prior OperatorsFile path when it still exists (fleet custom ops list).
-if ($priorId -and $priorId.OperatorsFile -and (Test-Path -LiteralPath $priorId.OperatorsFile)) {
-    $opsFile = $priorId.OperatorsFile
-}
+# FR #3639: no --operators-file / -OperatorsFile in AppParameters (prior OperatorsFile is not carried).
 
 # FR #2397: prefer one-file airc.exe (no system Python). Legacy: powershell + Start-AircConsole.ps1.
 $aircExe = Join-Path $packRoot 'airc\airc.exe'
@@ -515,8 +460,8 @@ if ($useAircExe) {
     }
     $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl"
     if ($MachineId) { $appParams += " --machine `"$MachineId`"" }
-    if ($AuthMode -ne 'irc_ops' -and $opsFile -and (Test-Path -LiteralPath $opsFile)) { $appParams += " --operators-file `"$opsFile`"" }
-    if ($AuthMode -in @('operators', 'irc_ops')) { $appParams += " --auth-mode $AuthMode" }
+    # FR #3639: always irc_ops; never --operators-file.
+    $appParams += " --auth-mode $AuthMode"
     # FR #3287: bake capability flags into AppParameters (survive NSSM re-register on upgrade).
     if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
         $ShellMode = [string]$priorId.ShellMode
@@ -568,8 +513,8 @@ if ($useAircExe) {
     $appParams += " -Python `"$Python`""
     $appParams += " -PasswordFile `"$PasswordFile`""
     if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
-    if ($AuthMode -ne 'irc_ops' -and $opsFile -and (Test-Path -LiteralPath $opsFile)) { $appParams += " -OperatorsFile `"$opsFile`"" }
-    if ($AuthMode -in @('operators', 'irc_ops')) { $appParams += " -AuthMode $AuthMode" }
+    # FR #3639: always irc_ops; never -OperatorsFile.
+    $appParams += " -AuthMode $AuthMode"
     # FR #3287: legacy Start-AircConsole.ps1 capability params.
     if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
         $ShellMode = [string]$priorId.ShellMode
@@ -693,4 +638,4 @@ if ($NoStart) {
 
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
 Write-Host 'INFO Install complete (unattended #277).'
-Write-Host "INFO home=$ConsoleHome operators + console.password (NickServ GUID) + ergo.password (from release config\\ergo.password)"
+Write-Host "INFO home=$ConsoleHome auth=control-channel +o/+h (FR #3639) + console.password (NickServ GUID) + ergo.password (from release config\\ergo.password)"

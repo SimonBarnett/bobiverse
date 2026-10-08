@@ -16,6 +16,7 @@ param(
     [string]$MachineId = '',
     [string]$ConsoleHome = '',
     [string]$PasswordFile = '',
+    # FR #3639: retired (no operators list). Accepted so old AppParameters bind; not forwarded.
     [string]$OperatorsFile = '',
     [ValidateSet('auto', 'registered', 'domain-lobby')]
     [string]$ShopMode = 'auto',
@@ -40,7 +41,6 @@ $launchArgs = @{
 if ($MachineId) { $launchArgs['MachineId'] = $MachineId }
 if ($ConsoleHome) { $launchArgs['ConsoleHome'] = $ConsoleHome }
 if ($PasswordFile) { $launchArgs['PasswordFile'] = $PasswordFile }
-if ($OperatorsFile) { $launchArgs['OperatorsFile'] = $OperatorsFile }
 if ($Python) { $launchArgs['Python'] = $Python }
 if ($PSBoundParameters.ContainsKey('Sasl')) { $launchArgs['Sasl'] = $Sasl }
 if ($NoSasl) { $launchArgs['NoSasl'] = $true }
