@@ -30,7 +30,10 @@ param(
     [string]$Accounts = '',
     # FR #3289: MSI AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (0|1|true|false; empty = preserve / fresh default).
     [string]$SyncFromRepo = '',
-    [string]$SelfUpdate = ''
+    [string]$SelfUpdate = '',
+    # FR #3292: MSI AIRC_PROFILE=fleet|workstation; AIRC_AGENT_LAYER=0 skips agent briefings/skills.
+    [string]$Profile = '',
+    [string]$AgentLayer = ''
 )
 
 # #70 / FR #2982: MSI property strings + ProductVersion => keep heat-laid files.
@@ -105,15 +108,35 @@ if (-not $SkipCopy) {
 Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot -MsiProductVersion $MsiProductVersion
 # FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
 Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product airc
-Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'airc'
-$skillsSrc = Get-BobiverseRepoMergedDir -Root $repoRoot -Sub '.grok\skills'
-if (Test-Path $skillsSrc) {
-    $skillsDest = Join-Path $InstallRoot '.grok\skills'
-    New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
-    if (-not $SkipCopy) {
-        Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
+
+# FR #3292: workstation / AgentLayer=0 → no agent briefings or skills (agent-free box).
+$prof = ([string]$Profile).Trim().ToLowerInvariant()
+if ($prof -notin @('fleet', 'workstation')) { $prof = '' }
+$agentLayerRaw = ([string]$AgentLayer).Trim().ToLowerInvariant()
+$wantAgentLayer = $true
+if ($prof -eq 'workstation') { $wantAgentLayer = $false }
+if ($agentLayerRaw -in @('0', 'false', 'no', 'off')) { $wantAgentLayer = $false }
+if ($agentLayerRaw -in @('1', 'true', 'yes', 'on')) { $wantAgentLayer = $true }
+if (-not $prof) { $prof = $(if ($wantAgentLayer) { 'fleet' } else { 'workstation' }) }
+$script:AircInstallProfile = $prof
+$script:AircWantAgentLayer = $wantAgentLayer
+$script:AircManifestPaths = New-Object System.Collections.Generic.List[string]
+
+if ($wantAgentLayer) {
+    Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product 'airc'
+    $skillsSrc = Get-BobiverseRepoMergedDir -Root $repoRoot -Sub '.grok\skills'
+    if (Test-Path $skillsSrc) {
+        $skillsDest = Join-Path $InstallRoot '.grok\skills'
+        New-Item -ItemType Directory -Force -Path $skillsDest | Out-Null
+        if (-not $SkipCopy) {
+            Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
+        }
+        # FR #3292: install-root skills only — never copy into the installing user's profile from airc MSI.
+        Write-Host ("INFO FR #3292 skills under install root only: {0}" -f $skillsDest)
+        [void]$script:AircManifestPaths.Add($skillsDest)
     }
-    Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames (Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'airc')
+} else {
+    Write-Host 'INFO agent-layer skipped (workstation / AIRC_AGENT_LAYER=0) FR #3292'
 }
 
 # Package ergo.password into staged config if available on packer
@@ -298,6 +321,8 @@ try {
         Accounts     = ($resolvedAccounts -join ',')
         SyncFromRepo = $resolvedSync
         SelfUpdate   = $resolvedSelf
+        Profile      = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { 'fleet' })
+        AgentLayer   = [bool]$script:AircWantAgentLayer
         updated      = (Get-Date).ToUniversalTime().ToString('o')
     }
     ($snap | ConvertTo-Json) | Set-Content -LiteralPath $idPath -Encoding utf8
@@ -379,6 +404,40 @@ try {
     [void](Install-BobiverseStartMenu -Product airc -InstallRoot $InstallRoot -MachineId $MachineId)
 } catch {
     Write-Host ("WARN Start Menu folder: {0}" -f $_.Exception.Message)
+}
+
+# FR #3292: durable install manifest for purge uninstall (paths + profile).
+try {
+    $pd = Join-Path $env:ProgramData 'Bobiverse'
+    New-Item -ItemType Directory -Force -Path $pd | Out-Null
+    $manPath = Join-Path $pd 'airc-install-manifest.json'
+    $paths = @(
+        $InstallRoot,
+        $ConsoleHome,
+        (Join-Path $InstallRoot 'config'),
+        (Join-Path $InstallRoot 'logs'),
+        (Join-Path $InstallRoot '.git'),
+        (Join-Path $InstallRoot '.grok'),
+        (Join-Path $InstallRoot '.cursor'),
+        (Join-Path $env:ProgramData 'Bobiverse\update\airc')
+    )
+    if ($script:AircManifestPaths) { $paths = @($paths + @($script:AircManifestPaths)) }
+    $paths = @($paths | Where-Object { $_ } | Select-Object -Unique)
+    $man = [ordered]@{
+        v            = 1
+        product      = 'airc'
+        profile      = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { 'fleet' })
+        agent_layer  = [bool]$script:AircWantAgentLayer
+        purge_default = ($(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { 'fleet' }) -eq 'workstation')
+        install_root = $InstallRoot
+        console_home = $ConsoleHome
+        paths        = @($paths)
+        updated      = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    ($man | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $manPath -Encoding utf8
+    Write-Host ("INFO FR #3292 wrote {0} profile={1} agent_layer={2}" -f $manPath, $man.profile, $man.agent_layer)
+} catch {
+    Write-Host ("WARN airc-install-manifest.json: {0}" -f $_.Exception.Message)
 }
 
 Write-Host 'INFO Install-Airc done (service Airc)'

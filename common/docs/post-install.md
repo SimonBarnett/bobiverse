@@ -178,7 +178,7 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 - **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
 - **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
-- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290)
+- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
 
@@ -192,6 +192,9 @@ Fresh MSI defaults `sync_from_repo=false` and `self_update=true` in `config\airc
 
 Agent-free airc workstation (no git/gh/Python/Node from bootstrap):  
 `msiexec /i airc-x.y.z.msi /qn` — when `airc.exe` is present, `Install-Airc` **skips** `Install-BootstrapTools` by default and logs `INFO bootstrap-tools skipped (airc exe; AIRC_INSTALL_TOOLS not set)`. Opt in with `AIRC_INSTALL_TOOLS=1` or `Install-Airc.ps1 -WithTools`. bob/jeeves opt **out** with `BOBIVERSE_SKIP_TOOLS=1`. Tools actually installed are recorded in `%ProgramData%\Bobiverse\installed-tools.json` (FR #3290).
+
+Workstation profile (no agent briefings/skills; purge uninstall):  
+`msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (or `AIRC_AGENT_LAYER=0`) skips `Install-BobiverseAgentLayer` / `.grok\skills` and never writes the installing user's `%USERPROFILE%\.grok\skills`. Manifest: `%ProgramData%\Bobiverse\airc-install-manifest.json`. Uninstall: fleet default still **keeps** ConsoleHome (FR #1566/#1599); workstation default purges secrets/homes, or pass `msiexec /x … AIRC_PURGE=1` (FR #3292).
 
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 
