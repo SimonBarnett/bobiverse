@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- Install-Airc ProgramData Ensure must use -ProtectMode LogsOnly (never default Full): Full -Recurse walks update\bob + update\jeeves backups and hangs fleet upgrades; write install-begin before Ensure so CA logs show progress
