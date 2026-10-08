@@ -504,6 +504,101 @@ function Test-BobiverseCrashReportAllowsIntake {
     return $true
 }
 
+
+function Resolve-BobiverseAircOperatorNicks {
+    <#
+      FR #3397: build the operator nick list for Install-Airc / operators.txt.
+      Fleet: union -Operators with -OperatorsExtra (MSI AIRC_OPERATORS).
+      Workstation: ignore OperatorsExtra (no fleet cross-machine roster).
+    #>
+    param(
+        [string]$Profile = '',
+        [string[]]$Operators = @(),
+        [string]$OperatorsExtra = ''
+    )
+    $ops = New-Object System.Collections.Generic.List[string]
+    foreach ($o in @($Operators)) {
+        if ($o -and ([string]$o).Trim()) { [void]$ops.Add(([string]$o).Trim()) }
+    }
+    $prof = ([string]$Profile).Trim().ToLowerInvariant()
+    if ($prof -ne 'workstation') {
+        $extra = ([string]$OperatorsExtra).Trim()
+        if ($extra) {
+            foreach ($o in @($extra -split '[,;\s]+' | Where-Object { $_ })) {
+                $n = ([string]$o).Trim()
+                if ($n) { [void]$ops.Add($n) }
+            }
+        }
+    }
+    $seen = @{}
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($n in $ops) {
+        $k = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        [void]$out.Add($n)
+    }
+    return , $out.ToArray()
+}
+
+function Merge-BobiverseAircOperatorsFile {
+    <#
+      FR #3397: create or union-update operators.txt (UTF-8 no BOM). Case-insensitive unique.
+      Ensures bob-<machineId> unless -NoEnsureBobLocal.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string[]]$Nicks = @(),
+        [string]$MachineId = '',
+        [switch]$NoEnsureBobLocal
+    )
+    if (-not $MachineId) {
+        $MachineId = ($env:AIRC_CONSOLE_MACHINE, $env:BOB_MACHINE_ID | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
+    }
+    if (-not $MachineId) {
+        $MachineId = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+    }
+    if (-not $MachineId) { $MachineId = 'unknown' }
+    $MachineId = ($MachineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+    $bobNick = "bob-$MachineId"
+    $want = New-Object System.Collections.Generic.List[string]
+    foreach ($o in @($Nicks)) {
+        if ($o -and ([string]$o).Trim()) { [void]$want.Add(([string]$o).Trim()) }
+    }
+    if (-not $NoEnsureBobLocal) {
+        if (-not ($want | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
+            [void]$want.Add($bobNick)
+        }
+    }
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $existing = @()
+    if (Test-Path -LiteralPath $Path) {
+        $raw = [IO.File]::ReadAllText($Path)
+        $clean = $raw.TrimStart([char]0xFEFF)
+        $existing = @($clean -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^#' })
+    }
+    $seen = @{}
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($n in @($existing + @($want))) {
+        if (-not $n) { continue }
+        $k = $n.ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { continue }
+        $seen[$k] = $true
+        [void]$lines.Add($n)
+    }
+    if ($lines.Count -eq 0) {
+        throw 'Merge-BobiverseAircOperatorsFile: no operator nicks'
+    }
+    $body = (($lines.ToArray()) -join "`n") + "`n"
+    [IO.File]::WriteAllText($Path, $body, [Text.UTF8Encoding]::new($false))
+    Write-Host ("INFO FR #3397 operators.txt union {0} ({1} nicks)" -f $Path, $lines.Count)
+    return $Path
+}
+
+
 function Set-BobiverseNssmAppExitRestart {
     <#
     FR #1055: pin NSSM to Restart on Default AND exit code 0.
