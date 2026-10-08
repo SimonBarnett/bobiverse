@@ -47,12 +47,13 @@ namespace BobDialogs
         static readonly Regex SeatName = new Regex("^bob-worker(-[0-9a-f]+)?$", RegexOptions.IgnoreCase);
         static readonly Regex ModeArg = new Regex(@"--mode[=\s]+(agent|plan|monitor|maintenance)\b", RegexOptions.IgnoreCase);
 
-        // FR #2601: default on; set BOBIVERSE_WORKER_SEAT_HEAL=0 to disable TipForm top-up after irc-lost.
+        // FR #3180: LaunchCalls counts WorkerLauncher.Launch invocations (headless --watchdog-ticks harness).
+        public static int LaunchCalls = 0;
+
+        // FR #3180: seat starts are manual only. Kept as always-false so old callers / docs refs compile-safe.
         public static bool SeatHealEnabled()
         {
-            string v = (Environment.GetEnvironmentVariable("BOBIVERSE_WORKER_SEAT_HEAL") ?? "").Trim();
-            if (v.Length == 0) return true;
-            return !(v == "0" || v.Equals("false", StringComparison.OrdinalIgnoreCase) || v.Equals("off", StringComparison.OrdinalIgnoreCase));
+            return false;
         }
 
         public static int SeatsMissing()
@@ -248,6 +249,7 @@ namespace BobDialogs
         // its own visible console (CREATE_NEW_CONSOLE). Returns the pid, or 0 with `error` set.
         public static int Launch(string root, string mode, string machine, out string error)
         {
+            LaunchCalls++;
             error = "";
             string refusal = CapRefusal(mode);
             if (refusal.Length > 0) { error = refusal; return 0; }
@@ -386,7 +388,7 @@ namespace BobDialogs
         long ackedSeq = -1;
         Process engine;
         int engineStarts; DateTime engineWindow = DateTime.Now;
-        int seatHeals; DateTime seatHealWindow = DateTime.Now;
+        int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
         StatusForm statusForm; AboutForm aboutForm;
         public readonly List<string> MenuItems = new List<string>();
         public string ExitReason { get { return exitReason ?? ""; } }
@@ -474,11 +476,15 @@ namespace BobDialogs
             catch { engine = null; }
         }
 
-        void Watchdog()
+        // FR #3180: public for headless --watchdog-ticks harness (tests).
+        public void Watchdog()
         {
-            if (exiting || noEngine) return;
-            try { HealEngine(); } catch { }
-            try { HealWorkerSeats(); } catch { }
+            if (exiting) return;
+            if (!noEngine)
+            {
+                try { HealEngine(); } catch { }
+            }
+            try { ObserveWorkerSeats(); } catch { }
         }
 
         void HealEngine()
@@ -489,27 +495,22 @@ namespace BobDialogs
             StartEngine();
         }
 
-        // FR #2601: after bob-worker irc-lost (exit=3) the seat is gone; top agent seats back up to MaxWorkers.
-        // CapRefusal inside Launch still blocks >2. Opt out: BOBIVERSE_WORKER_SEAT_HEAL=0.
-        void HealWorkerSeats()
+        // FR #3180: seats are manual only (Agent/Plan click, !startworker, or human bob-worker).
+        // Watchdog may log a seat drop; it must never call WorkerLauncher.Launch.
+        void ObserveWorkerSeats()
         {
-            if (!WorkerLauncher.SeatHealEnabled()) return;
-            int missing = WorkerLauncher.SeatsMissing();
-            if (missing <= 0) return;
-            if ((DateTime.Now - seatHealWindow).TotalMinutes > 5) { seatHealWindow = DateTime.Now; seatHeals = 0; }
-            if (seatHeals >= 3) return;           // no start storm (one launch per tick, max 3 / 5 min)
-            seatHeals++;
-            ApplyEngineEnv();
-            string err;
-            string mid = machine.Length > 0 ? machine : Common.MachineId();
-            int pid = WorkerLauncher.Launch(root, "agent", mid, out err);
-            TrayLifecycle.Write(
-                "seat-heal",
-                "missing", missing.ToString(),
-                "pid", pid.ToString(),
-                "err", err ?? "",
-                "seats", WorkerLauncher.Seats().ToString(),
-                "via", "bob-tray-watchdog");
+            int n = WorkerLauncher.Seats();
+            if (lastSeatCount < 0) { lastSeatCount = n; return; }
+            if (n < lastSeatCount)
+            {
+                TrayLifecycle.Write(
+                    "seat-exit",
+                    "action", "not restarted",
+                    "was", lastSeatCount.ToString(),
+                    "now", n.ToString(),
+                    "via", "bob-tray-watchdog");
+            }
+            lastSeatCount = n;
         }
 
         void Command(string cmd)
@@ -726,6 +727,21 @@ namespace BobDialogs
                 return 0;
             }
             if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
+            // FR #3180: headless watchdog harness — N ticks must launch 0 seats (manual-only).
+            string ticksArg = Common.Arg(args, "--watchdog-ticks");
+            if (ticksArg.Length > 0)
+            {
+                int ticks;
+                if (!int.TryParse(ticksArg, out ticks) || ticks < 0) ticks = 0;
+                int before = WorkerLauncher.LaunchCalls;
+                TrayContext harness = new TrayContext(root, machine, true, args);
+                for (int i = 0; i < ticks; i++) harness.Watchdog();
+                string textOut = Common.Arg(args, "--text-out");
+                string report = "seats=" + WorkerLauncher.Seats() + "\r\nlaunches=" + (WorkerLauncher.LaunchCalls - before) + "\r\nticks=" + ticks + "\r\n";
+                if (textOut.Length > 0) File.WriteAllText(textOut, report, new UTF8Encoding(false));
+                else Console.Out.Write(report);
+                return 0;
+            }
             bool timing = Common.Arg(args, "--timing-out").Length > 0;
             string dumpMenu = Common.Arg(args, "--dump-menu");
             // FR #2585: second instance must log already-running (never unexpected) and must not tray-up.

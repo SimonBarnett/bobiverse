@@ -52,7 +52,7 @@ EXIT_NO_AGENT = 4  # nothing to start (no key given / no agent installed)
 EXIT_GAVE_UP = 5  # hang-restart bound exceeded
 EXIT_LAUNCH_FAIL = 6
 EXIT_REFUSED = 7  # t815u: already the maximum number of workers running
-EXIT_STALE_BUILD = 8  # FR #2782: idle seat exits so the tray seat-heal relaunches it on the hotpatched build
+EXIT_STALE_BUILD = 8  # FR #2782 legacy; FR #3180 keeps the seat running and asks for a manual restart instead
 
 def _default_install_root() -> str:
     """<drive>:\\ai\\bob on the fixed disk that really holds the fleet (t780u); never a hard-coded C:."""
@@ -3565,20 +3565,18 @@ _stale_build_cache: dict = {}
 
 def stale_build_reason(run_exe: str | Path, install_root: str | Path, *, now: float | None = None,
                        env: Optional[dict] = None) -> Optional[str]:
-    """FR #2782: why this seat is running an older build than the install, or None.
+    """FR #2782 / #3180: why this seat is running an older build than the install, or None.
 
     A seat runs ``%LOCALAPPDATA%\\Bobiverse\\worker\\bin\\bob-worker-<digest>.exe`` where ``<digest>`` is the first
     12 hex of sha256(<install_root>\\worker\\bob-worker.exe) at launch (``describe_worker_exe_launch``). A hotpatch
     replaces the install exe, but a running seat keeps its old run copy until it exits, so fixes such as the FR #2696
     submit-verify never reach it. When the install exe now hashes differently (and has settled for
     ``STALE_BUILD_SETTLE_S``), the seat is stale. Returns None for dev runs (python / un-hashed exe name), a missing
-    install exe, opt-out ``BOB_WORKER_STALE_BUILD_RECYCLE=0``, or when tray seat-heal is disabled
-    (``BOBIVERSE_WORKER_SEAT_HEAL=0``: nobody would refill the seat).
+    install exe, or opt-out ``BOB_WORKER_STALE_BUILD_RECYCLE=0``. FR #3180: seat-heal is gone; detection still runs
+    so the seat can announce and skip ``!bored`` without exiting.
     """
     e = os.environ if env is None else env
     if str(e.get("BOB_WORKER_STALE_BUILD_RECYCLE") or "1").strip().lower() in ("0", "false", "no", "off"):
-        return None
-    if str(e.get("BOBIVERSE_WORKER_SEAT_HEAL") or "1").strip().lower() in ("0", "false", "no", "off"):
         return None
     m = _RUN_EXE_DIGEST_RX.match(Path(str(run_exe or "")).name)
     if not m:
@@ -3896,9 +3894,8 @@ class Supervisor:
                 return False
         except Exception:
             pass
-        # FR #2782: !bored is only sent when idle (no open ACK, no harvest hold, no pending inject), so this is the
-        # one safe point to leave a stale build: exit instead of taking new work; tray seat-heal relaunches the seat
-        # from the current install exe. Never mid-job.
+        # FR #2782 / #3180: !bored is only sent when idle. A stale build must not take new work, but seat starts
+        # are manual only — keep running, log, and tell the operator to restart (never EXIT_STALE_BUILD).
         why = None
         if self.stale_build_check is not None:
             try:
@@ -3906,10 +3903,14 @@ class Supervisor:
             except Exception:
                 why = None
         if why:
-            self.log(f"worker: stale build ({why}) - idle, recycling seat for the installed build instead of !bored")
-            # shutdown() stops the BoredEmitter, whose lock is held by our caller: run it off-thread.
-            threading.Thread(target=self.shutdown, args=(f"stale-build: {why}", EXIT_STALE_BUILD),
-                             name="stale-build", daemon=True).start()
+            prev = getattr(self, "_stale_build_announced", None)
+            self.log(f"worker: stale build ({why}) - keep running; restart me manually (FR #3180)")
+            if prev != why:
+                self._stale_build_announced = why
+                try:
+                    self.irc.say(self.irc.shop, f"stale build ({why}) - restart me manually")
+                except Exception:
+                    pass
             return False
         return bool(self.irc.say(self.irc.shop, "!bored"))
 
