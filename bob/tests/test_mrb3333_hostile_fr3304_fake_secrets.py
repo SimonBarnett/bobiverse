@@ -18,9 +18,11 @@ def _utf8_no_bom(path: Path) -> str:
 
 def test_mrb3333_skill_fr3304_bullet_contiguous():
     text = _utf8_no_bom(SKILL)
-    assert "Test fixtures (FR #3304)" in text
-    idx = text.index("Test fixtures (FR #3304)")
-    window = text[idx : idx + 480]
+    lines = text.splitlines()
+    matches = [ln for ln in lines if "Test fixtures (FR #3304)" in ln]
+    assert len(matches) == 1, matches
+    bullet = matches[0]
+    assert bullet.lstrip().startswith("* **Test fixtures (FR #3304):**")
     for needle in (
         "never write realistic secret literals",
         "fakeSecrets.js",
@@ -28,25 +30,22 @@ def test_mrb3333_skill_fr3304_bullet_contiguous():
         "runtime",
         "FAKE_",
         "EXAMPLE",
+        "force-push",
     ):
-        assert needle in window, needle
-    # bullet must remain one contiguous markdown list item (no orphan next line)
-    rest = text[idx:]
-    first_nl = rest.index("\n")
-    bullet = rest[:first_nl]
-    assert bullet.lstrip().startswith("* **Test fixtures (FR #3304):**")
-    assert "force-push" in bullet or "force-pushing" in bullet
+        assert needle in bullet, needle
 
 
 def test_mrb3333_agents_hard_rule_contiguous():
     text = _utf8_no_bom(AGENTS)
-    assert "Never write realistic secret literals in tests" in text
-    idx = text.index("Never write realistic secret literals in tests")
-    window = text[idx : idx + 280]
-    assert "FR #3304" in window
-    assert "fakeSecrets.js" in window
-    line = text[idx:].splitlines()[0]
+    lines = text.splitlines()
+    matches = [
+        ln for ln in lines if "Never write realistic secret literals in tests" in ln
+    ]
+    assert len(matches) == 1, matches
+    line = matches[0]
     assert line.lstrip().startswith("- Never write realistic secret literals in tests")
+    assert "FR #3304" in line
+    assert "fakeSecrets.js" in line
 
 
 def test_mrb3333_product_pin_module_present():
