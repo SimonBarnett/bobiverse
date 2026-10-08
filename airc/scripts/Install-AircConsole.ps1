@@ -316,6 +316,7 @@ function Initialize-AircConsoleHomeSecrets {
     )
     $opsFile = Join-Path $ConsoleHomeDir 'operators.txt'
     # Issue #289: never UTF-8 BOM. Issue #302: always include bob-{machinename}.
+    # FR #3397: union OperatorNicks into existing operators.txt (cross-machine ears).
     # Prefer fleet id (BOB_MACHINE_ID) over Windows COMPUTERNAME.
     $machineId = ($script:AircConsoleMachineId)
     if (-not $machineId) {
@@ -326,36 +327,43 @@ function Initialize-AircConsoleHomeSecrets {
     }
     if (-not $machineId) { $machineId = 'unknown' }
     $machineId = ($machineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
-    $bobNick = "bob-$machineId"
-    $seedOps = [System.Collections.Generic.List[string]]::new()
-    foreach ($o in @($OperatorNicks)) {
-        if ($o -and $o.Trim()) { [void]$seedOps.Add($o.Trim()) }
-    }
-    if (-not ($seedOps | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
-        [void]$seedOps.Add($bobNick)
-    }
-    if ($seedOps.Count -gt 0 -and -not (Test-Path -LiteralPath $opsFile)) {
-        $body = ($seedOps -join "`n") + "`n"
-        [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
-        Write-Host "INFO wrote $opsFile (no BOM; includes $bobNick)"
-    } elseif (Test-Path -LiteralPath $opsFile) {
-        $raw = [IO.File]::ReadAllText($opsFile)
-        $clean = $raw.TrimStart([char]0xFEFF)
-        $lines = @($clean -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^#' })
-        $changed = ($clean -ne $raw)
-        if (-not ($lines | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
-            $lines = @($lines + $bobNick)
-            $changed = $true
-        }
-        if ($changed) {
-            $body = (($lines | Select-Object -Unique) -join "`n") + "`n"
-            [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
-            Write-Host "INFO updated $opsFile (BOM strip / ensure $bobNick) (#289/#302)"
-        } else {
-            Write-Host "INFO keep $opsFile"
-        }
+    if (Get-Command Merge-BobiverseAircOperatorsFile -ErrorAction SilentlyContinue) {
+        [void](Merge-BobiverseAircOperatorsFile -Path $opsFile -Nicks @($OperatorNicks) -MachineId $machineId)
     } else {
-        throw 'operators.txt missing and -Operators empty (FR #253)'
+        # Fallback when Common is missing (direct invoke): prior seed/keep behaviour.
+        $bobNick = "bob-$machineId"
+        $seedOps = [System.Collections.Generic.List[string]]::new()
+        foreach ($o in @($OperatorNicks)) {
+            if ($o -and $o.Trim()) { [void]$seedOps.Add($o.Trim()) }
+        }
+        if (-not ($seedOps | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
+            [void]$seedOps.Add($bobNick)
+        }
+        if ($seedOps.Count -gt 0 -and -not (Test-Path -LiteralPath $opsFile)) {
+            $body = ($seedOps -join "`n") + "`n"
+            [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
+            Write-Host "INFO wrote $opsFile (no BOM; includes $bobNick)"
+        } elseif (Test-Path -LiteralPath $opsFile) {
+            $raw = [IO.File]::ReadAllText($opsFile)
+            $clean = $raw.TrimStart([char]0xFEFF)
+            $lines = @($clean -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^#' })
+            $changed = ($clean -ne $raw)
+            foreach ($o in $seedOps) {
+                if (-not ($lines | Where-Object { $_.ToLowerInvariant() -eq $o.ToLowerInvariant() })) {
+                    $lines = @($lines + $o)
+                    $changed = $true
+                }
+            }
+            if ($changed) {
+                $body = (($lines | Select-Object -Unique) -join "`n") + "`n"
+                [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
+                Write-Host "INFO updated $opsFile (BOM strip / union nicks) (#289/#302/#3397)"
+            } else {
+                Write-Host "INFO keep $opsFile"
+            }
+        } else {
+            throw 'operators.txt missing and -Operators empty (FR #253)'
+        }
     }
 
     # #271 NickServ GUID - mint here so first service start is unattended.
