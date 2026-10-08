@@ -24,7 +24,7 @@ def test_fr2355_default_profile_helpers_present():
     t = _install_text()
     assert "function Test-AircDefaultProfileHome" in t
     assert "function Resolve-AircSafeConsoleHome" in t
-    assert "FR #2355: remap even when" in t
+    assert ("FR #2355: remap even when" in t) or ("FR #2355 / #3288: remap user-profile homes" in t) or ("FR #2355/#3288" in t)
 
 
 def test_fr2355_identity_reconcile_skips_default_consolehome():

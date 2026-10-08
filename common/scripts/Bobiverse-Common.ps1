@@ -10,6 +10,66 @@ function Test-BobiverseIsAdmin {
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Protect-BobiverseSecretPath {
+    <#
+      FR #3288: lock a secret file or directory to SYSTEM + Administrators only.
+      Removes inheritance and drops Users / Authenticated Users / Everyone / CREATOR OWNER /
+      installing-user ACEs. Optional -ServiceAccount gets Read when it is not LocalSystem.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$ServiceAccount = '',
+        [switch]$Recurse
+    )
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force
+    # Snapshot paths first. Apply files before directories so a locked parent cannot
+    # block Get-Item on children (and so Medium-IL tokens finish the walk).
+    $entries = New-Object System.Collections.Generic.List[object]
+    [void]$entries.Add([pscustomobject]@{ FullName = $item.FullName; IsDir = [bool]$item.PSIsContainer })
+    if ($Recurse -and $item.PSIsContainer) {
+        Get-ChildItem -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            [void]$entries.Add([pscustomobject]@{ FullName = $_.FullName; IsDir = [bool]$_.PSIsContainer })
+        }
+    }
+    $ordered = @($entries | Sort-Object @{ Expression = { if ($_.IsDir) { 1 } else { 0 } } }, @{ Expression = { $_.FullName.Length }; Descending = $true })
+    $sys = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-18'
+    $adm = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+    $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+    $read = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+    $svcSid = $null
+    if ($ServiceAccount -and ($ServiceAccount -notmatch '(?i)^(NT AUTHORITY\\)?SYSTEM$|^S-1-5-18$')) {
+        try {
+            $svcSid = (New-Object System.Security.Principal.NTAccount($ServiceAccount)).Translate(
+                [type]'System.Security.Principal.SecurityIdentifier'
+            )
+        } catch {
+            Write-Host ("WARN Protect-BobiverseSecretPath: cannot resolve ServiceAccount={0}: {1}" -f $ServiceAccount, $_.Exception.Message)
+        }
+    }
+    foreach ($e in $ordered) {
+        $t = [string]$e.FullName
+        $isDir = [bool]$e.IsDir
+        if ($isDir) {
+            $acl = New-Object System.Security.AccessControl.DirectorySecurity
+            $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+                [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+        } else {
+            $acl = New-Object System.Security.AccessControl.FileSecurity
+            $inherit = [System.Security.AccessControl.InheritanceFlags]::None
+        }
+        $prop = [System.Security.AccessControl.PropagationFlags]::None
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sys, $full, $inherit, $prop, $allow)))
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($adm, $full, $inherit, $prop, $allow)))
+        if ($svcSid) {
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($svcSid, $read, $inherit, $prop, $allow)))
+        }
+        Set-Acl -LiteralPath $t -AclObject $acl
+    }
+}
+
 function Get-BobiverseScriptDir {
     if ($PSScriptRoot) { return $PSScriptRoot }
     if ($PSCommandPath) { return (Split-Path -Parent $PSCommandPath) }
