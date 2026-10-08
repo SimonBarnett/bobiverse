@@ -50,12 +50,14 @@ def test_fr3395_common_helper_exists():
 
 def test_fr3395_install_gates_intake_and_passes_repo():
     t = INSTALL.read_text(encoding="utf-8-sig")
-    assert "FR #3395" in t
-    assert "Test-BobiverseCrashReportAllowsIntake" in t
-    assert "SimonBarnett/bobiverse" in t
-    assert "Report-BobiverseIntakeIssue" in t
+    common = COMMON.read_text(encoding="utf-8-sig")
+    # FR #3515 moved the gate into Send-BobiverseAircInstallFailureIntake (still FR #3395 policy).
+    assert "Send-BobiverseAircInstallFailureIntake" in t or "Test-BobiverseCrashReportAllowsIntake" in t
+    assert "Test-BobiverseCrashReportAllowsIntake" in common
+    assert "SimonBarnett/bobiverse" in common or "SimonBarnett/bobiverse" in t
+    assert "Report-BobiverseIntakeIssue" in common or "Report-BobiverseIntakeIssue" in t
     # Must not call report without -Repo anymore.
-    assert "-Repo" in t or "Repo SimonBarnett/bobiverse" in t
+    assert "-Repo" in common or "Repo = 'SimonBarnett/bobiverse'" in common or "Repo SimonBarnett/bobiverse" in t
 
 
 def test_fr3395_report_honours_opt_out_for_airc_installroot():
@@ -191,10 +193,13 @@ def test_fr3395_report_dryrun_posts_when_enabled(tmp_path: Path, monkeypatch):
 
 
 def test_mrb3440_install_fail_closed_on_policy_error():
-    t = INSTALL.read_text(encoding="utf-8")
-    assert "$allowIntake = $false" in t
-    assert "catch { $allowIntake = $true }" not in t
-    assert "policy check failed" in t or "skip intake" in t.lower()
+    # FR #3515: fail-closed lives in Send-BobiverseAircInstallFailureIntake (Common).
+    common = COMMON.read_text(encoding="utf-8")
+    install = INSTALL.read_text(encoding="utf-8")
+    blob = common + "\n" + install
+    assert "$allowIntake = $false" in common
+    assert "catch { $allowIntake = $true }" not in blob
+    assert "policy check failed" in blob.lower() or "skip intake" in blob.lower()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows only")
