@@ -342,7 +342,10 @@ if (Test-Path -LiteralPath $capPathGuess) {
 }
 $expSync = ConvertTo-AircBoolOrNull -Raw $SyncFromRepo
 $expSelf = ConvertTo-AircBoolOrNull -Raw $SelfUpdate
+# FR #3289 fresh default sync off; FR #3462: client/workstation ignore prior fleet sync=true
+# unless MSI/CLI AIRC_SYNC_FROM_REPO is explicit (mirrors self_update force-off).
 if ($null -ne $expSync) { $resolvedSync = [bool]$expSync }
+elseif ($prof -in @('workstation', 'client')) { $resolvedSync = $false }  # FR #3462 / #3393/#3401
 elseif ($null -ne $priorSync) { $resolvedSync = [bool]$priorSync }
 else { $resolvedSync = $false }
 # FR #3393: workstation defaults self_update=false (no SYSTEM GitHub MSI channel) unless MSI/CLI set.
