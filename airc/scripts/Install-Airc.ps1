@@ -18,7 +18,13 @@ param(
     # #70: MSI public property SKIPCOPY=1 (optional; FR #2982 also implies SkipCopy from ProductVersion).
     [string]$MsiSkipCopy = '',
     # FR #2564: MSI ProductVersion forwarded by RunInstall for VERSION assert.
-    [string]$MsiProductVersion = ''
+    [string]$MsiProductVersion = '',
+    # FR #3287: MSI AIRC_SHELL / AIRC_JOBS / AIRC_UPDATE / AIRC_REQUIRE_ACCOUNT / AIRC_ACCOUNTS.
+    [string]$ShellMode = '',
+    [string]$Jobs = '',
+    [string]$UpdateCap = '',
+    [string]$RequireAccount = '',
+    [string]$Accounts = ''
 )
 
 # #70 / FR #2982: MSI property strings + ProductVersion => keep heat-laid files.
@@ -168,6 +174,49 @@ if (-not (Test-Path -LiteralPath $ConsoleHome)) {
     }
 }
 
+# FR #3287: resolve capabilities (MSI props > prior AppParameters/json > fresh off / upgrade operators).
+$hadPriorService = [bool](Get-Service -Name 'Airc' -ErrorAction SilentlyContinue) -or [bool]$priorAppParams -or ($priorId -and $priorId.ConsoleHome)
+$priorShell = ''
+if ($priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) { $priorShell = [string]$priorId.ShellMode }
+$capPathGuess = Join-Path $InstallRoot 'config\airc.json'
+if (-not $priorShell -and (Test-Path -LiteralPath $capPathGuess)) {
+    try {
+        $priorCap = Get-Content -LiteralPath $capPathGuess -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($priorCap.shell) { $priorShell = [string]$priorCap.shell }
+        elseif ($priorCap.shell_mode) { $priorShell = [string]$priorCap.shell_mode }
+    } catch {}
+}
+$expShell = ([string]$ShellMode).Trim().ToLowerInvariant()
+if ($expShell -notin @('off', 'operators')) { $expShell = '' }
+if ($priorShell) { $priorShell = $priorShell.Trim().ToLowerInvariant() }
+if ($expShell) { $resolvedShell = $expShell }
+elseif ($priorShell -in @('off', 'operators')) { $resolvedShell = $priorShell }
+elseif ($hadPriorService) { $resolvedShell = 'operators' }
+else { $resolvedShell = 'off' }
+
+$resolvedJobs = ([string]$Jobs).Trim().ToLowerInvariant()
+if ($resolvedJobs -notin @('off', 'on')) {
+    if ($priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) { $resolvedJobs = ([string]$priorId.Jobs).Trim().ToLowerInvariant() }
+}
+if ($resolvedJobs -notin @('off', 'on')) { $resolvedJobs = 'on' }
+
+$resolvedUpdate = ([string]$UpdateCap).Trim().ToLowerInvariant()
+if ($resolvedUpdate -notin @('off', 'on')) {
+    if ($priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) { $resolvedUpdate = ([string]$priorId.UpdateCap).Trim().ToLowerInvariant() }
+}
+if ($resolvedUpdate -notin @('off', 'on')) { $resolvedUpdate = 'on' }
+
+$resolvedRequire = $false
+if (([string]$RequireAccount).Trim() -in @('1', 'true', 'yes', 'on')) { $resolvedRequire = $true }
+elseif ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount) { $resolvedRequire = [bool]$priorId.RequireAccount }
+
+$resolvedAccounts = @()
+if (([string]$Accounts).Trim()) {
+    $resolvedAccounts = @(([string]$Accounts) -split '[,;\s]+' | Where-Object { $_ })
+} elseif ($priorId -and $priorId.PSObject.Properties['Accounts'] -and $priorId.Accounts) {
+    $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
+}
+
 # Snapshot identity for the next upgrade (opaque paths only; no secret contents).
 try {
     $idPath = Join-Path $InstallRoot 'config\airc-install.json'
@@ -180,6 +229,11 @@ try {
         PasswordFile = $(if ($priorId.PasswordFile) { $priorId.PasswordFile } else { Join-Path $ConsoleHome 'console.password' })
         OperatorsFile = $(if ($priorId.OperatorsFile) { $priorId.OperatorsFile } else { Join-Path $ConsoleHome 'operators.txt' })
         Launcher     = $(if ($priorId.Launcher -and (Test-Path -LiteralPath $priorId.Launcher)) { $priorId.Launcher } else { '' })
+        ShellMode    = $resolvedShell
+        Jobs         = $resolvedJobs
+        UpdateCap    = $resolvedUpdate
+        RequireAccount = $resolvedRequire
+        Accounts     = ($resolvedAccounts -join ',')
         updated      = (Get-Date).ToUniversalTime().ToString('o')
     }
     ($snap | ConvertTo-Json) | Set-Content -LiteralPath $idPath -Encoding utf8
@@ -188,16 +242,38 @@ try {
     Write-Host ("WARN airc-install.json: {0}" -f $_.Exception.Message)
 }
 
+# FR #3287: admin-readable capability file (ACL tightened by Install-AircConsole when present).
+try {
+    $capPath = Join-Path $InstallRoot 'config\airc.json'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capPath) | Out-Null
+    $capObj = [ordered]@{
+        shell = $resolvedShell
+        jobs = $resolvedJobs
+        update = $resolvedUpdate
+        require_account = $resolvedRequire
+        accounts = @($resolvedAccounts)
+    }
+    ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
+    Write-Host ("INFO FR #3287 wrote {0} shell={1} jobs={2} update={3}" -f $capPath, $resolvedShell, $resolvedJobs, $resolvedUpdate)
+} catch {
+    Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
+}
+
 $installLegacy = Join-Path $InstallRoot 'scripts\Install-AircConsole.ps1'
 $args = @{
     ServiceName = 'Airc'
     ConsoleHome = $ConsoleHome
     Operators   = $Operators
+    ShellMode   = $resolvedShell
+    Jobs        = $resolvedJobs
+    UpdateCap   = $resolvedUpdate
 }
 if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }
 if ($Python) { $args.Python = $Python }
 if ($NoStart) { $args.NoStart = $true }
+if ($resolvedRequire) { $args.RequireAccount = $true }
+if ($resolvedAccounts.Count -gt 0) { $args.Accounts = $resolvedAccounts }
 # FR #1552: pass through prior PasswordFile / OperatorsFile / Launcher when still on disk.
 if ($priorId -and $priorId.PasswordFile -and (Test-Path -LiteralPath $priorId.PasswordFile)) {
     $args.PasswordFile = $priorId.PasswordFile

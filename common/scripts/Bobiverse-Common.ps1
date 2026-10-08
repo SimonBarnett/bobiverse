@@ -214,13 +214,28 @@ function Get-BobiverseAircIdentityFromAppParameters {
     if (-not $passwordFile) { $passwordFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'password-file' }
     $operatorsFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'OperatorsFile'
     if (-not $operatorsFile) { $operatorsFile = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'operators-file' }
+    # FR #3287: capability / account flags (argparse --shell-mode / --jobs / --update / --require-account / --accounts).
+    $shellMode = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'shell-mode'
+    if (-not $shellMode) { $shellMode = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'ShellMode' }
+    $jobs = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'jobs'
+    $updateCap = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'update'
+    $requireAccount = $false
+    if ($AppParameters -match '(^|\s)--require-account(\s|$)') { $requireAccount = $true }
+    elseif ((Get-BobiverseAppParam -AppParameters $AppParameters -Name 'RequireAccount') -eq '1') { $requireAccount = $true }
+    $accounts = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'accounts'
+    if (-not $accounts) { $accounts = Get-BobiverseAppParam -AppParameters $AppParameters -Name 'Accounts' }
     return [pscustomobject]@{
-        ConsoleHome   = $consoleHome
-        MachineId     = $machineId
-        PasswordFile  = $passwordFile
-        OperatorsFile = $operatorsFile
-        Launcher      = $launcher
-        Raw           = [string]$AppParameters
+        ConsoleHome     = $consoleHome
+        MachineId       = $machineId
+        PasswordFile    = $passwordFile
+        OperatorsFile   = $operatorsFile
+        Launcher        = $launcher
+        ShellMode       = $shellMode
+        Jobs            = $jobs
+        UpdateCap       = $updateCap
+        RequireAccount  = $requireAccount
+        Accounts        = $accounts
+        Raw             = [string]$AppParameters
     }
 }
 
