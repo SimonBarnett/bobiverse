@@ -138,6 +138,12 @@ if ($doPurge) {
         }
     }
     [void]$targets.Add((Join-Path $env:ProgramData 'Bobiverse\update\airc'))
+    # FR #3392: CA install log + LocalSystem crash spool left behind by MSI / crash hook.
+    [void]$targets.Add((Join-Path $env:ProgramData 'Bobiverse\logs\install-airc.log'))
+    [void]$targets.Add((Join-Path $env:ProgramData 'Bobiverse\logs'))
+    $sysSpool = Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local\Bobiverse\crash-spool'
+    [void]$targets.Add($sysSpool)
+    [void]$targets.Add((Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local\Bobiverse'))
     # Legacy Default-profile homes (FR #2355 / #3288).
     foreach ($leaf in @('.airc', '.airc-console')) {
         [void]$targets.Add((Join-Path $env:SystemDrive ('Users\Default\' + $leaf)))
@@ -147,7 +153,7 @@ if ($doPurge) {
         Remove-AircPathBestEffort -Path $t
     }
     Remove-AircPathBestEffort -Path $manPath
-    Write-Host 'INFO FR #3292: Uninstall-Airc purge done'
+    Write-Host 'INFO FR #3292/#3392: Uninstall-Airc purge done'
 } else {
     Write-Host 'INFO FR #1566: Uninstall-Airc done (ConsoleHome secrets kept; tree is MSI RemoveFiles)'
 }
