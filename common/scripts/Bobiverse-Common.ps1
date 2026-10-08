@@ -307,6 +307,8 @@ function Protect-BobiverseInstallTree {
       Does not grant Authenticated Users modify.
       FR #3394: -FailClosed rethrows so Install-Airc cannot leave a user-writable tree
       that LocalSystem is about to run. Default remains best-effort (WARN only).
+      FR #3516: takeown /A (Administrators) so a pre-created user-owned
+      ProgramData\Bobiverse (or install tree) cannot keep WRITE_DAC after re-ACL.
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -358,6 +360,27 @@ function Protect-BobiverseInstallTree {
                 Set-Acl -LiteralPath $t -AclObject $acl
             }
         }
+        # FR #3516: best-effort takeown /A so a pre-created user owner cannot keep
+        # WRITE_DAC after the DACL lock. Install/uninstall run elevated (LocalSystem /
+        # admin); unit tests may lack elevation - owner reset never FailClosed-throws
+        # (DACL lock above is the FailClosed gate).
+        try {
+            $takeown = Join-Path $env:SystemRoot 'System32\takeown.exe'
+            if (Test-Path -LiteralPath $takeown) {
+                # cmd swallows stderr so unelevated unit tests do not NativeCommandError.
+                if ($item.PSIsContainer) {
+                    $tc = 'takeown /F "' + $item.FullName + '" /A /R /D Y >nul 2>&1'
+                } else {
+                    $tc = 'takeown /F "' + $item.FullName + '" /A >nul 2>&1'
+                }
+                cmd.exe /c $tc | Out-Null
+                if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+                    Write-Host ("WARN FR #3516 takeown exit={0} path={1}" -f $LASTEXITCODE, $item.FullName)
+                }
+            }
+        } catch {
+            Write-Host ("WARN FR #3516 Protect owner reset: {0}" -f $_.Exception.Message)
+        }
         Write-Host ("INFO Protect-BobiverseInstallTree locked {0}" -f $Path)
     } catch {
         Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
@@ -365,10 +388,37 @@ function Protect-BobiverseInstallTree {
     }
 }
 
+function Test-BobiverseAircPurgePrefixIsSafe {
+    <#
+      FR #3516: refuse drive roots and single-segment paths (C:\, C:\Windows) so a
+      planted manifest install_root=C:\ cannot make every path "under" the allow-list.
+      Require at least two path segments under the drive (e.g. C:\ai\airc).
+    #>
+    param([Parameter(Mandatory)][string]$Prefix)
+    $raw = ([string]$Prefix).Trim()
+    if (-not $raw) { return $false }
+    try {
+        $full = [IO.Path]::GetFullPath($raw).TrimEnd('\')
+    } catch {
+        return $false
+    }
+    if ($full -match '^[A-Za-z]:$') { return $false }
+    $driveRoot = [IO.Path]::GetPathRoot($full)
+    if (-not $driveRoot) { return $false }
+    $driveTrim = $driveRoot.TrimEnd('\')
+    if ($full.Equals($driveTrim, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $rel = $full.Substring([Math]::Min($full.Length, $driveRoot.Length)).TrimStart('\')
+    $parts = @($rel -split '[\\/]' | Where-Object { $_ })
+    if ($parts.Count -lt 2) { return $false }
+    return $true
+}
+
 function Test-BobiverseAircPurgePathAllowed {
     <#
       FR #3394: uninstall purge may only delete paths under known prefixes so a
       user-owned airc-install-manifest.json cannot point SYSTEM at arbitrary deletes.
+      FR #3516: InstallRoot / ConsoleHome / ProgramDataRoot must pass
+      Test-BobiverseAircPurgePrefixIsSafe (no drive-root allow-list base).
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -391,6 +441,7 @@ function Test-BobiverseAircPurgePathAllowed {
     $prefixes = New-Object System.Collections.Generic.List[string]
     foreach ($p in @($InstallRoot, $ConsoleHome, $ProgramDataRoot)) {
         if (-not $p) { continue }
+        if (-not (Test-BobiverseAircPurgePrefixIsSafe -Prefix ([string]$p))) { continue }
         try {
             [void]$prefixes.Add(([IO.Path]::GetFullPath([string]$p)).TrimEnd('\') + '\')
             [void]$prefixes.Add(([IO.Path]::GetFullPath([string]$p)).TrimEnd('\'))
@@ -424,6 +475,7 @@ function Ensure-BobiverseProgramDataRoot {
       FR #3394: create/lock %ProgramData%\Bobiverse (+ logs) so Users cannot own the
       purge manifest or MSI install log. SYSTEM + Administrators Full; Users RX.
       Pre-existing user-owned trees are re-locked (WARN) when possible; -FailClosed throws.
+      FR #3516: Protect SetOwner Administrators so CREATOR OWNER cannot keep WRITE_DAC.
       -Root overrides the default for tests.
     #>
     param(
