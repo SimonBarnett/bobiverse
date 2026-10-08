@@ -1414,7 +1414,10 @@ function Sync-BobiverseWorkTree {
             }
             if ($cur -ne $Branch) {
                 # FR #1074: still off-main after #1157 gates - alert so operators notice offer gates may lag.
+                # FR #3622: append "; dirty" when porcelain is non-empty so Sync-BobiverseFromRepo can
+                # tip-ok compose a clean agent branch while still sync-skip-stale for dirty trees (FR #2982).
                 $why = if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' }
+                if ($dirty) { $why = "$why; dirty" }
                 $behindOff = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
                 if ($behindOff -gt 0) {
                     $why = "$why; HEAD behind origin/$Branch by $behindOff commit(s)"

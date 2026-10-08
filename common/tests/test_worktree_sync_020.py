@@ -185,6 +185,7 @@ def test_diverged_local_commit_is_kept(world):
 
 
 def test_agent_branch_is_left_alone_but_origin_is_fetched(world):
+    """FR 020 / FR #3622: clean agent branch stays put; origin is fetched; flat compose uses agent tip."""
     r = world.root("jeeves")
     assert world.sync("jeeves").returncode == 0
     git(r, "switch", "-q", "-c", "fix/my-work")
@@ -197,9 +198,11 @@ def test_agent_branch_is_left_alone_but_origin_is_fetched(world):
     assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "fix/my-work"
     assert git(r, "rev-parse", "HEAD").stdout == mine
     assert git(r, "rev-parse", "origin/main").stdout == git(world.bare, "rev-parse", "main").stdout   # fetched
-    # the running (flat) copy is built from the agent's branch work
+    # the running (flat) copy is built from the agent's branch work (FR #3622 tip-ok)
     assert (r / "scripts/j1.ps1").read_text() == "# agent change\n"
     assert "fix/my-work" in out.text
+    assert "sync-skip-stale-worktree" not in out.text
+    assert "; dirty" not in out.text
 
 
 def test_fr1157_stale_behind_branch_returns_to_main(world):
@@ -250,6 +253,8 @@ def test_fr1157_keep_branch_opt_out(world):
 def test_fr1157_dirty_off_main_left_alone(world):
     r = world.root("jeeves")
     assert world.sync("jeeves").returncode == 0
+    # Seed flat scripts with a known MSI-like payload so FR #3622 skip is observable.
+    write(r / "scripts/j1.ps1", "# MSI flat payload\n")
     git(r, "switch", "-q", "-c", "fix/dirty-stale")
     world.upstream("jeeves/scripts/j1.ps1", "# upstream\n")
     write(r / "jeeves/scripts/j1.ps1", "# dirty local\n")  # uncommitted
@@ -258,6 +263,10 @@ def test_fr1157_dirty_off_main_left_alone(world):
     assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "fix/dirty-stale"
     assert (r / "jeeves/scripts/j1.ps1").read_text() == "# dirty local\n"
     assert "fetched only" in out.text
+    assert "; dirty" in out.text
+    # FR #2982 / #3622: dirty off-main must not compose dirty tree over MSI flat files
+    assert "sync-skip-stale-worktree" in out.text
+    assert (r / "scripts/j1.ps1").read_text() == "# MSI flat payload\n"
 
 
 def test_fr2944_unborn_empty_master_heals_to_main(world):
