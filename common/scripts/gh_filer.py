@@ -120,6 +120,51 @@ class GhCliFiler:
             number = int(m.group(1))
         return {"url": url, "number": number}
 
+    def ensure_labels(self, repo: str, labels: list[str]) -> None:
+        """Create missing labels best-effort so hold stamps like ``owner-missing`` stick (FR #3658)."""
+        ensure_gh_token_env()
+        for lab in labels or []:
+            name = str(lab or "").strip()
+            if not name:
+                continue
+            # GET first — 0 means present.
+            try:
+                probe = subprocess.run(
+                    [self.gh_bin, "api", f"repos/{repo}/labels/{name}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                    env=os.environ.copy(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if probe.returncode == 0:
+                continue
+            # Create with a stable color; ignore race if another process created it.
+            try:
+                subprocess.run(
+                    [
+                        self.gh_bin,
+                        "label",
+                        "create",
+                        name,
+                        "-R",
+                        str(repo),
+                        "--color",
+                        "B60205",
+                        "--description",
+                        "Held until intended owner repo exists (FR #3317 / #3658)",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                    env=os.environ.copy(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+
     def create_issue(
         self,
         repo: str,
@@ -130,13 +175,26 @@ class GhCliFiler:
         ensure_gh_token_env()
         if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
             raise GitHubDown("gh not found")
+        labs = list(labels or [])
+        if labs:
+            self.ensure_labels(repo, labs)
         try:
-            proc = self._run_create(repo, title, body, list(labels or []))
+            proc = self._run_create(repo, title, body, labs)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise GitHubDown(str(exc)) from exc
-        if proc.returncode != 0 and labels:
+        if proc.returncode != 0 and labs:
             err = (proc.stderr or proc.stdout or "").strip()
             if _LABEL_FAIL.search(err):
+                # Self-heal once more after ensure, then fall back to unlabeled create
+                # (title SKIP_FR still covers harvest: hold for … — FR #3658).
+                self.ensure_labels(repo, labs)
+                try:
+                    proc = self._run_create(repo, title, body, labs)
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise GitHubDown(str(exc)) from exc
+            if proc.returncode != 0 and _LABEL_FAIL.search(
+                (proc.stderr or proc.stdout or "").strip()
+            ):
                 try:
                     proc = self._run_create(repo, title, body, [])
                 except (OSError, subprocess.TimeoutExpired) as exc:

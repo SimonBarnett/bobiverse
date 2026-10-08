@@ -125,7 +125,7 @@ def test_fr3317_missing_owner_holds_issue_not_pr(tmp_path: Path):
     assert issue["repo"] == "SimonBarnett/bobiverse"
     labs = {str(x).lower() for x in (issue.get("labels") or [])}
     assert intake.OWNER_MISSING_LABEL in labs
-    # Not offerable as FR.
+    # Not offerable as FR (label path).
     assert (
         gitclaim.issue_skip_fr_reason(
             title=issue["title"],
@@ -133,6 +133,15 @@ def test_fr3317_missing_owner_holds_issue_not_pr(tmp_path: Path):
             labels=tuple(issue.get("labels") or ()),
         )
         == f"label:{intake.OWNER_MISSING_LABEL}"
+    )
+    # FR #3658: still not offerable if labels were dropped on create.
+    assert (
+        gitclaim.issue_skip_fr_reason(
+            title=issue["title"],
+            body=issue.get("body") or "",
+            labels=(),
+        )
+        == "owner_missing_hold_title"
     )
 
 
