@@ -24,6 +24,7 @@ param(
     [string[]]$Lesson = @(),
     [string[]]$SkillFile = @(),
     [string]$Repo = 'SimonBarnett/bobiverse',
+    [string]$JobRepo = '',  # FR #3189: offered job owner/name (or BOB_JOB_REPO / run\job-repo.txt)
     [string]$ExistingPrUrl = '',  # FR #1812: when set / already in Summary, intake links PR (no fallback skill issue)
     [string]$Book = 'harvest',  # FR #2705: sets source.skill_book for lesson → SKILL.md routing
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
@@ -272,6 +273,26 @@ if ($Flush) {
 }
 
 if (-not $Summary.Trim()) { throw '-Summary is required (what broke / what you fixed / "nothing new")' }
+
+# FR #3189: harvest repo keys on the job's product repo (a-search → SimonBarnett/a-search).
+# Explicit -Repo wins; else -JobRepo, else BOB_JOB_REPO, else run\job-repo.txt beside BOB_OUTBOX.
+$script:ExplicitRepo = $PSBoundParameters.ContainsKey('Repo')
+if (-not $JobRepo -or -not $JobRepo.Trim()) {
+    if ($env:BOB_JOB_REPO -and ([string]$env:BOB_JOB_REPO).Trim()) {
+        $JobRepo = ([string]$env:BOB_JOB_REPO).Trim()
+    } elseif ($env:BOB_OUTBOX -and ([string]$env:BOB_OUTBOX).Trim()) {
+        try {
+            $marker = Join-Path (Split-Path -Parent ([string]$env:BOB_OUTBOX)) 'job-repo.txt'
+            if (Test-Path -LiteralPath $marker) {
+                $JobRepo = ((Get-Content -LiteralPath $marker -TotalCount 1 -ErrorAction SilentlyContinue) -as [string]).Trim()
+            }
+        } catch { }
+    }
+}
+if (-not $script:ExplicitRepo -and $JobRepo -and ($JobRepo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
+    $Repo = $JobRepo.Trim()
+}
+
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) { throw "Repo must be owner/name (got '$Repo')" }
 if (-not $Machine) { $Machine = if ($env:BOB_MACHINE_ID) { [string]$env:BOB_MACHINE_ID } else { [string]$env:COMPUTERNAME } }
 
@@ -380,19 +401,18 @@ if ($ExistingPrUrl) {
     }
 }
 $title = 'harvest: ' + $Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length))
-$sha = [Security.Cryptography.SHA256]::Create()
-$idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$Repo|$title|$body"))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
 
 # FR #1812: when -Summary/-Lesson already cite https://github.com/.../pull/N (or pass -ExistingPrUrl), intake links that PR and does not file a fallback skill issue.
 # FR #2705: -Book sets source.skill_book so Lessons land in that SKILL.md (default harvest).
 $bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { 'harvest' }
 $bookName = $bookName.Substring(0, [Math]::Min(64, $bookName.Length))
+$inferBlob = (($Summary + "`n" + (($Lesson | ForEach-Object { $_ }) -join "`n"))).ToLowerInvariant()
+$script:ExplicitBook = $PSBoundParameters.ContainsKey('Book')
 # FR #3004: default harvest yields to an inferred product book from Summary+Lesson cues
 # (mirrors intake resolve_skill_book soft override) so bob-worker playbooks are not
 # re-opened as lesson(harvest) when the owning skill already has the bullet.
 if ($bookName -eq 'harvest') {
     # Strong product cues only — bare "MRB"/"UAT" in session summaries must not re-route.
-    $inferBlob = (($Summary + "`n" + (($Lesson | ForEach-Object { $_ }) -join "`n"))).ToLowerInvariant()
     if ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter') {
         $bookName = 'bobiverse-bob-worker'
         Write-Host "INFO FR #3004 inferred skill_book=bobiverse-bob-worker from Summary/Lesson cues"
@@ -401,6 +421,25 @@ if ($bookName -eq 'harvest') {
         Write-Host "INFO FR #3004 inferred skill_book=bobiverse-fleet-ops from Summary/Lesson cues"
     }
 }
+# FR #3189 split: Bob tooling (worker/fleet/chair/tray/intake process) stays on bobiverse
+# even when the seat's job row is a product repo. Product playbooks keep the job repo.
+$bobTooling = (
+    ($bookName -match '^bobiverse-') -or
+    ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter|fleet-ops|hotpatch') -or
+    ($inferBlob -match '(?i)\b(jeeves|ircjeeves|bob-tray|tipform|chair outbox|intake allowlist)\b')
+)
+if ($bobTooling -and -not $script:ExplicitRepo) {
+    if ($Repo -notmatch '(?i)^SimonBarnett/bobiverse$') {
+        Write-Host "INFO FR #3189 split: Bob tooling lesson -> repo=SimonBarnett/bobiverse (was $Repo)"
+    }
+    $Repo = 'SimonBarnett/bobiverse'
+} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/a-search$')) {
+    $bookName = 'harvest-agent-skills'
+    Write-Host "INFO FR #3189 product default skill_book=harvest-agent-skills for SimonBarnett/a-search"
+}
+
+$sha = [Security.Cryptography.SHA256]::Create()
+$idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$Repo|$title|$body"))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
 # FR #2790: bob-worker seats export BOB_NICK (and BOB_AGENT_NICK alias); prefer BOB_NICK
 # so lesson PR footers carry seat=<nick> for Jeeves self-MRB blocking. Fall back to
 # BOB_AGENT_NICK for Watch-AgentHealth / legacy seats that only set that name.

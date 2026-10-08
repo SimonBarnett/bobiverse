@@ -182,6 +182,12 @@ Example: jeeves.exe chair+HTTP one-process plan lives at #1993, not on harvest r
 
 Default `repo` for this book: `SimonBarnett/bobiverse`.
 
+**FR #3189 (job-repo routing):** when the seat's offered job is a product repo (e.g. `SimonBarnett/a-search`),
+`Invoke-BobiverseHarvest` uses `-JobRepo` / `$env:BOB_JOB_REPO` / `run\job-repo.txt` so the harvest lands in **that**
+repo (a-search default book `harvest-agent-skills` at `.grok/skills/harvest-agent-skills/SKILL.md`). Do **not** park
+a-search product tips under bobiverse `harvest/SKILL.md`. Bob tooling (bob-worker, fleet-ops, jeeves, tray) still
+routes to bobiverse via the split rule.
+
 ## Do not
 
 - Push harvest to `main`, or commit "nothing found".
