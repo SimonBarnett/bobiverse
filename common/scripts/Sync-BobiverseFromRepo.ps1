@@ -10,7 +10,7 @@
   2) git fetch + merge --ff-only origin/main, only while on main (best-effort: never destroys local edits/commits/branches,
      never blocks service start, falls back to the installed files). FR #1157: if HEAD is on another branch but the tree is
      clean and either HEAD is already an ancestor of origin/main or that branch's upstream was deleted (gone), auto
-     ``git switch main`` then ff — so a leftover fix/* after hotpatch cannot strand robocopy on a stale tip. Active agent
+     ``git switch main`` then ff - so a leftover fix/* after hotpatch cannot strand robocopy on a stale tip. Active agent
      work (dirty tree, never-pushed branch, or unique commits with a live upstream) is left alone. Opt out:
      BOBIVERSE_KEEP_BRANCH=1 (or BOBIVERSE_NO_UPDATE=1).
   3) Robocopy scripts + third_party + skills + docs into InstallRoot (never deleting); copy VERSION
@@ -61,7 +61,7 @@ if (-not (Test-Path -LiteralPath $InstallRoot)) {
 }
 
 # FR #3289 defense-in-depth (airc only): default sync_from_repo=off via config\airc.json.
-# BOBIVERSE_SYNC_FROM_REPO=0|1 overrides. Missing key / missing file → off when -Product airc.
+# BOBIVERSE_SYNC_FROM_REPO=0|1 overrides. Missing key / missing file -> off when -Product airc.
 if ($Product -eq 'airc') {
     $syncOn = $false
     $capPath = Join-Path $InstallRoot 'config\airc.json'
@@ -270,8 +270,8 @@ if ($DryRun) {
 # FR #2982: when the install dir is its own sparse work tree and ff/fetch left it
 # dirty or behind origin, robocopy would re-lay that stale checkout over the MSI
 # heat payload (scripts/tools/skills/worker). VERSION equality alone does not
-# protect this (common\VERSION may be stamped to the MSI version — FR #2948 class).
-# ComposeOnly is an operator hook after a manual ff — still compose.
+# protect this (common\VERSION may be stamped to the MSI version - FR #2948 class).
+# ComposeOnly is an operator hook after a manual ff - still compose.
 # Tip updater overlay (FR #2581) still runs so Update-BobiverseService soft-fail lands.
 $skipStaleCompose = $false
 if ($viaWorkTree -and -not $ComposeOnly) {

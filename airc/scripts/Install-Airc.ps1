@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Install Airc service (renamed from airc-console). Tree <ai root>\airc (the <drive>:\ai found on the fixed disks), service Airc.
-  Nick {machinename}_console — see airc_console_service shop-mode.
+  Nick {machinename}_console - see airc_console_service shop-mode.
 #>
 [CmdletBinding()]
 param(
@@ -111,7 +111,7 @@ Copy-BobiverseVersion -InstallRoot $InstallRoot -RepoRoot $repoRoot -MsiProductV
 # FR #2564: fail closed when MSI ProductVersion disagrees with the laid VERSION file.
 Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiProductVersion -Product airc
 
-# FR #3292: workstation / AgentLayer=0 → no agent briefings or skills (agent-free box).
+# FR #3292: workstation / AgentLayer=0 -> no agent briefings or skills (agent-free box).
 $prof = ([string]$Profile).Trim().ToLowerInvariant()
 if ($prof -notin @('fleet', 'workstation')) { $prof = '' }
 $agentLayerRaw = ([string]$AgentLayer).Trim().ToLowerInvariant()
@@ -133,7 +133,7 @@ if ($wantAgentLayer) {
         if (-not $SkipCopy) {
             Copy-BobiverseTree -Source $skillsSrc -Destination $skillsDest -ContentsOnly
         }
-        # FR #3292: install-root skills only — never copy into the installing user's profile from airc MSI.
+        # FR #3292: install-root skills only - never copy into the installing user's profile from airc MSI.
         Write-Host ("INFO FR #3292 skills under install root only: {0}" -f $skillsDest)
         [void]$script:AircManifestPaths.Add($skillsDest)
     }
@@ -171,7 +171,7 @@ if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
 
 # FR #1552: MSI / reinstall must keep the live service identity (ConsoleHome, MachineId,
 # PasswordFile, OperatorsFile). Never default to the invoking user's profile when Airc
-# is already registered — that caused SASL 904 / NickServ 433 after 0.1.20->0.1.21.
+# is already registered - that caused SASL 904 / NickServ 433 after 0.1.20->0.1.21.
 # Prefer live AppParameters; fall back to config\airc-install.json when the service is gone.
 $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName 'Airc'
 $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
@@ -188,7 +188,7 @@ if (-not $priorAppParams) {
                 Launcher      = [string]($snap.Launcher)
                 Raw           = ''
             }
-            Write-Host "INFO FR #1552: no AppParameters — using $snapPath"
+            Write-Host "INFO FR #1552: no AppParameters - using $snapPath"
         } catch {
             Write-Host ("WARN airc-install.json read: {0}" -f $_.Exception.Message)
         }
@@ -206,7 +206,7 @@ if ($priorId -and ($priorId.ConsoleHome -or $priorId.MachineId -or $priorId.Pass
     }
 }
 
-# Under MSI LocalSystem, USERPROFILE is often C:\Users\Default — that loses the
+# Under MSI LocalSystem, USERPROFILE is often C:\Users\Default - that loses the
 # Admin NickServ GUID and breaks {machine}_console reclaim (marchhare 2026-09-30).
 # Mirror Install-Jeeves: prefer existing Admin home, else InstallRoot\home.
 # Only when no prior service identity and no explicit -ConsoleHome.
