@@ -100,11 +100,14 @@ if (Test-Path -LiteralPath $bootstrap) {
     }
 }
 
-# FR #3394: lock ProgramData\Bobiverse (+ logs) before any MSI log / manifest write.
-Ensure-BobiverseProgramDataRoot -FailClosed | Out-Null
-
-# FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
+# FR #2564 / #3652: write install-begin FIRST so CA / install-airc.log show progress
+# even if a later ACL pass is slow. Get-BobiverseMsiLogDir already uses LogsOnly.
 Write-BobiverseMsiInstallLog -Product airc -Message ("install-begin installRoot=$InstallRoot msiVer=$MsiProductVersion")
+
+# FR #3394 / #3652: lock ProgramData\Bobiverse root + logs only. Default Full -Recurse
+# walks update\bob + update\jeeves self-update backups (100k+ files on fleet boxes) and
+# hung ionos airc upgrades 55+ min. Jeeves/bob MSI log paths already use LogsOnly.
+Ensure-BobiverseProgramDataRoot -FailClosed -ProtectMode LogsOnly | Out-Null
 $script:AircInstallOk = $false
 # FR #3584: inner Install-AircConsole catch may already have filed intake before rethrow.
 $script:AircInstallFailReported = $false
@@ -517,7 +520,8 @@ try {
 
 # FR #3292: durable install manifest for purge uninstall (paths + profile).
 try {
-    $pd = Ensure-BobiverseProgramDataRoot -FailClosed
+    # FR #3652: LogsOnly - never Full-Recurse the shared ProgramData update\ tree here.
+    $pd = Ensure-BobiverseProgramDataRoot -FailClosed -ProtectMode LogsOnly
     if (-not $pd) { throw 'Ensure-BobiverseProgramDataRoot returned empty' }
     $manPath = Join-Path $pd 'airc-install-manifest.json'
     $paths = @(
