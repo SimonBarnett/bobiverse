@@ -52,6 +52,7 @@ def test_fr1565_arp_blocks_newer_clone_version_and_heals_file(tmp_path):
     install = _seed_airc_install(tmp_path, file_ver="0.1.22", clone_ver="0.1.22")
     env = {**os.environ}
     env.pop("BOBIVERSE_NO_UPDATE", None)
+    env["BOBIVERSE_SYNC_FROM_REPO"] = "1"  # FR #3289: sync-off default
     p = subprocess.run(
         [
             PS,
@@ -84,6 +85,7 @@ def test_fr1565_matching_arp_and_clone_still_copies(tmp_path):
     install = _seed_airc_install(tmp_path, file_ver="0.1.21", clone_ver="0.1.21")
     env = {**os.environ}
     env.pop("BOBIVERSE_NO_UPDATE", None)
+    env["BOBIVERSE_SYNC_FROM_REPO"] = "1"  # FR #3289: sync-off default
     p = subprocess.run(
         [
             PS,
@@ -116,6 +118,7 @@ def test_fr1565_no_arp_allows_clone_version_copy(tmp_path):
     install = _seed_airc_install(tmp_path, file_ver="0.1.20", clone_ver="0.1.21")
     env = {**os.environ}
     env.pop("BOBIVERSE_NO_UPDATE", None)
+    env["BOBIVERSE_SYNC_FROM_REPO"] = "1"  # FR #3289: sync-off default
     p = subprocess.run(
         [
             PS,
