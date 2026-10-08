@@ -33,10 +33,12 @@ from airc_console import (
     AircConsoleCore,
     AircStartUpdatePolicy,
     AuthPolicy,
+    ChannelMemberMap,
     ConsoleSessionManager,
     ShellJobRunner,
     chunk_irc_text,
     console_nick,
+    control_channel_log_line,
     domain_channel,
     domain_lobby_nick,
     domain_or_workgroup_id,
@@ -173,10 +175,6 @@ class AircConsoleService:
             f"INFO domain={self.domain} shop={self.shop_channel} "
             f"lobby={self.domain_channel} shop-mode={self.shop_mode}"
         )
-        ops = load_operators(
-            Path(args.operators_file) if args.operators_file else self.home / "operators.txt",
-            args.operators,
-        )
         # FR #77 / #2949: frozen airc.exe must use resolve_airc_install_root
         # (sys.executable parent), never Path(__file__).parents[1] under _MEI*.
         _root = resolve_airc_install_root()
@@ -196,6 +194,29 @@ class AircConsoleService:
         )
         self.capabilities = caps
         info(caps.log_line())
+        # FR #3401: auth_mode from CLI / airc.json profile=client -> irc_ops (no operators.txt).
+        auth_mode = (getattr(args, "auth_mode", None) or "").strip().lower()
+        if auth_mode not in {"operators", "irc_ops"}:
+            try:
+                from airc_console import _read_airc_json_dict
+
+                cfg = _read_airc_json_dict(install_root)
+            except Exception:
+                cfg = {}
+            auth_mode = str(cfg.get("auth_mode") or "").strip().lower()
+            if auth_mode not in {"operators", "irc_ops"}:
+                prof = str(cfg.get("profile") or "").strip().lower()
+                auth_mode = "irc_ops" if prof == "client" else "operators"
+        self.auth_mode = auth_mode
+        self.members = ChannelMemberMap(channel=self.channel)
+        if auth_mode == "irc_ops":
+            ops = set()
+            info("INFO FR #3401 auth_mode=irc_ops (channel +o/+h; operators.txt ignored)")
+        else:
+            ops = load_operators(
+                Path(args.operators_file) if args.operators_file else self.home / "operators.txt",
+                args.operators,
+            )
         accts = {x.strip().lower() for x in (args.accounts or []) if x.strip()}
         accts.update(a.lower() for a in caps.accounts)
         amap = AccountMap()
@@ -207,10 +228,15 @@ class AircConsoleService:
             operators=ops,
             accounts=accts,
             account_map=amap,
-            require_account=bool(args.require_account or caps.require_account or accts),
+            require_account=bool(args.require_account or caps.require_account or accts)
+            if auth_mode != "irc_ops"
+            else False,
             machine=self.machine,
+            auth_mode=auth_mode,  # type: ignore[arg-type]
+            members=self.members,
+            self_nicks={self.nick.lower()} if self.nick else set(),
         )
-        if not ops and not accts:
+        if auth_mode != "irc_ops" and not ops and not accts:
             raise SystemExit("airc console: refuse empty operators/accounts (FR #253)")
         cwd = args.cwd or str(self.home)
         self.sessions = ConsoleSessionManager(
@@ -538,6 +564,12 @@ class AircConsoleService:
             self.send(cmd)
         self._joined_shop = True
         info(f"INFO joined {self.channel} as {self.nick} (silent)")
+        # FR #3401: resync channel member prefixes after JOIN (server sends 353/366).
+        if getattr(self, "members", None) is not None:
+            self.members.set_channel(self.channel)
+            self.core.auth.members = self.members
+            self.core.auth.self_nicks = {self.nick.lower()} if self.nick else set()
+            self.core.channel = self.channel
 
     def _start_chanserv_probe(self) -> None:
         self._probe_state = "waiting"
@@ -559,6 +591,7 @@ class AircConsoleService:
                 if self.nick.lower() != want.lower():
                     self._set_nick(want)
             info(f"INFO shop-mode=registered channel={self.channel} nick={self.nick}")
+            info(control_channel_log_line(self.channel, "registered"))
             self.register_or_identify()
             if not self._joined_shop:
                 self.join_shop()
@@ -580,6 +613,7 @@ class AircConsoleService:
                 # handler re-nicks and re-JOINs.
                 self._set_nick(want)
         info(f"INFO shop-mode=domain-lobby channel={self.channel} nick={self.nick}")
+        info(control_channel_log_line(self.channel, "domain-lobby"))
         self.register_or_identify()
         if not self._joined_shop:
             self.join_shop()
@@ -774,6 +808,51 @@ class AircConsoleService:
             self.account_map.set(nick, acct_tag)
             self.account_map.save(self.amap_path)
 
+        # FR #3401: keep ChannelMemberMap current for irc_ops auth.
+        if getattr(self, "members", None) is not None and getattr(self, "auth_mode", "") == "irc_ops":
+            if cmd == "353":
+                # NAMES: "<me> = #chan :@nick %nick2"
+                names = trailing or ""
+                self.members.apply_names(names)
+            elif cmd == "366":
+                self.members.mark_synced()
+                info(f"INFO FR #3401 names-synced channel={self.channel} n={len(self.members._members)}")
+            elif cmd == "JOIN":
+                jnick = parse_prefix_nick(":" + prefix) if prefix else None
+                # channel may be args[0] or trailing
+                ch = (args[0] if args else "") or trailing
+                if jnick and ch and ch.lstrip("#").lower() == (self.channel or "").lstrip("#").lower():
+                    self.members.on_join(jnick)
+            elif cmd == "PART":
+                pnick = parse_prefix_nick(":" + prefix) if prefix else None
+                if pnick:
+                    self.members.on_part(pnick)
+            elif cmd == "QUIT":
+                qnick = parse_prefix_nick(":" + prefix) if prefix else None
+                if qnick:
+                    self.members.on_quit(qnick)
+            elif cmd == "KICK":
+                # KICK #chan nick :reason
+                knick = args[1] if len(args) >= 2 else ""
+                if knick:
+                    self.members.on_kick(knick)
+            elif cmd == "NICK":
+                new_nick = (trailing or (args[0] if args else "")).lstrip(":")
+                old_nick = (parse_prefix_nick(":" + prefix) if prefix else "") or ""
+                if old_nick and new_nick:
+                    self.members.on_nick(old_nick, new_nick)
+                    # Keep self_nicks current when we rename.
+                    if old_nick.lower() == (self.nick or "").lower():
+                        self.core.auth.self_nicks = {new_nick.lower()}
+            elif cmd == "MODE":
+                ch = args[0] if args else ""
+                modes = args[1] if len(args) >= 2 else ""
+                mode_args = args[2:] if len(args) > 2 else []
+                if trailing and not mode_args:
+                    # rare forms
+                    pass
+                self.members.on_mode(ch, modes, mode_args)
+
         hr = self.core.handle_raw(line)
         if not hr:
             return
@@ -788,9 +867,10 @@ class AircConsoleService:
             self.send_notice(hr.nick, hr.reply)
             info(f"INFO pong to={hr.nick} {hr.reply}")
         elif hr.action == "deny" and hr.nick and hr.reply:
-            # FR #3286: log denials without echoing the command body.
+            # FR #3286 / #3401: log denials without echoing the command body.
             acct = self.account_map.get(hr.nick) if getattr(self, "account_map", None) else None
-            info(f"auth-deny nick={hr.nick} account={acct or '-'}")
+            reason = getattr(hr, "deny_reason", None) or "not-operator"
+            info(f"auth-deny nick={hr.nick} account={acct or '-'} reason={reason}")
             self.send_privmsg(hr.nick, hr.reply)
         elif hr.action == "capability_deny" and hr.nick and hr.reply:
             # FR #3287 / MRB #3300: shell/jobs/update gates must emit DONE exit=126 to the nick
@@ -992,6 +1072,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--operators", nargs="*", default=[])
     p.add_argument("--operators-file", default=None)
+    p.add_argument(
+        "--auth-mode",
+        default=None,
+        choices=["operators", "irc_ops"],
+        help="FR #3401: operators=nick ACL (default); irc_ops=channel +o/+h (AIRC_PROFILE=client)",
+    )
     p.add_argument("--accounts", nargs="*", default=[], help="services account allowlist")
     p.add_argument("--require-account", action="store_true")
     p.add_argument(

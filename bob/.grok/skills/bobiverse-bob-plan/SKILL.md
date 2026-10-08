@@ -12,10 +12,10 @@ description: >
 > 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary -Kind harvest -Title "short title" -Body "what / where / evidence / fix"`
->    (FR #3318: Plan process → skills-visionary; product decisions → `-Repo SimonBarnett/<product>`; never bobiverse harvest for those).
+>    (FR #3318: Plan process -> skills-visionary; never park Plan lessons under bobiverse harvest. **Harvest how-to-plan only** - process, pitfalls, repo-setup steps; never the plan itself: requirements, designs, product decisions and FR/issue lists stay in `work\plan-*` and the product repo's vision/FR docs, never a skill book; test case bobiverse#3097. Bob fleet tooling lessons (bob-worker/tray) -> `-Repo SimonBarnett/bobiverse`).
 > 3. BEFORE finishing ANY debugging session run the harvest step:
 >    `.\scripts\Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/skills-visionary -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
->    (use `-Repo SimonBarnett/<product>` for product decisions) then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush`.
+>    (how-to-plan lessons only; product decisions are plan content, not harvests; `-Repo SimonBarnett/bobiverse` only for bob-worker/tray/fleet tooling) then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush`.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
 How to start a **Plan** agent from the bob install. A Plan is a NEW agent whose working folder is `<ai root>\bob\plan` and whose first instruction is to read the skills in that folder

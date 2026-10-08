@@ -38,7 +38,12 @@ param(
     [ValidateSet('', 'off', 'on')]
     [string]$UpdateCap = '',
     [switch]$RequireAccount,
-    [string[]]$Accounts = @()
+    [string[]]$Accounts = @(),
+    # FR #3401: AIRC_PROFILE=client -> AuthMode=irc_ops (no operators.txt).
+    [ValidateSet('', 'fleet', 'workstation', 'client')]
+    [string]$Profile = '',
+    [ValidateSet('', 'operators', 'irc_ops')]
+    [string]$AuthMode = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -315,7 +320,18 @@ function Initialize-AircConsoleHomeSecrets {
         [string]$PackagedErgoFile = ''
     )
     $opsFile = Join-Path $ConsoleHomeDir 'operators.txt'
+    # FR #3401: irc_ops / client profile never creates or requires operators.txt.
+    if (([string]$script:AircConsoleAuthMode).Trim().ToLowerInvariant() -eq 'irc_ops') {
+        if (Test-Path -LiteralPath $opsFile) {
+            Write-Host "INFO FR #3401 AuthMode=irc_ops: leaving existing $opsFile unused"
+        } else {
+            Write-Host 'INFO FR #3401 AuthMode=irc_ops: no operators.txt'
+        }
+        # Fall through to NickServ / ergo secrets below without writing ops.
+        $opsFile = $null
+    } else {
     # Issue #289: never UTF-8 BOM. Issue #302: always include bob-{machinename}.
+    # FR #3397: union OperatorNicks into existing operators.txt (cross-machine ears).
     # Prefer fleet id (BOB_MACHINE_ID) over Windows COMPUTERNAME.
     $machineId = ($script:AircConsoleMachineId)
     if (-not $machineId) {
@@ -326,37 +342,46 @@ function Initialize-AircConsoleHomeSecrets {
     }
     if (-not $machineId) { $machineId = 'unknown' }
     $machineId = ($machineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
-    $bobNick = "bob-$machineId"
-    $seedOps = [System.Collections.Generic.List[string]]::new()
-    foreach ($o in @($OperatorNicks)) {
-        if ($o -and $o.Trim()) { [void]$seedOps.Add($o.Trim()) }
-    }
-    if (-not ($seedOps | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
-        [void]$seedOps.Add($bobNick)
-    }
-    if ($seedOps.Count -gt 0 -and -not (Test-Path -LiteralPath $opsFile)) {
-        $body = ($seedOps -join "`n") + "`n"
-        [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
-        Write-Host "INFO wrote $opsFile (no BOM; includes $bobNick)"
-    } elseif (Test-Path -LiteralPath $opsFile) {
-        $raw = [IO.File]::ReadAllText($opsFile)
-        $clean = $raw.TrimStart([char]0xFEFF)
-        $lines = @($clean -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^#' })
-        $changed = ($clean -ne $raw)
-        if (-not ($lines | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
-            $lines = @($lines + $bobNick)
-            $changed = $true
-        }
-        if ($changed) {
-            $body = (($lines | Select-Object -Unique) -join "`n") + "`n"
-            [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
-            Write-Host "INFO updated $opsFile (BOM strip / ensure $bobNick) (#289/#302)"
-        } else {
-            Write-Host "INFO keep $opsFile"
-        }
+    if (Get-Command Merge-BobiverseAircOperatorsFile -ErrorAction SilentlyContinue) {
+        [void](Merge-BobiverseAircOperatorsFile -Path $opsFile -Nicks @($OperatorNicks) -MachineId $machineId)
     } else {
-        throw 'operators.txt missing and -Operators empty (FR #253)'
+        # Fallback when Common is missing (direct invoke): prior seed/keep behaviour.
+        $bobNick = "bob-$machineId"
+        $seedOps = [System.Collections.Generic.List[string]]::new()
+        foreach ($o in @($OperatorNicks)) {
+            if ($o -and $o.Trim()) { [void]$seedOps.Add($o.Trim()) }
+        }
+        if (-not ($seedOps | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {
+            [void]$seedOps.Add($bobNick)
+        }
+        if ($seedOps.Count -gt 0 -and -not (Test-Path -LiteralPath $opsFile)) {
+            $body = ($seedOps -join "`n") + "`n"
+            [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
+            Write-Host "INFO wrote $opsFile (no BOM; includes $bobNick)"
+        } elseif (Test-Path -LiteralPath $opsFile) {
+            $raw = [IO.File]::ReadAllText($opsFile)
+            $clean = $raw.TrimStart([char]0xFEFF)
+            $lines = @($clean -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^#' })
+            $changed = ($clean -ne $raw)
+            foreach ($o in $seedOps) {
+                if (-not ($lines | Where-Object { $_.ToLowerInvariant() -eq $o.ToLowerInvariant() })) {
+                    $lines = @($lines + $o)
+                    $changed = $true
+                }
+            }
+            if ($changed) {
+                $body = (($lines | Select-Object -Unique) -join "`n") + "`n"
+                [IO.File]::WriteAllText($opsFile, $body, [Text.UTF8Encoding]::new($false))
+                Write-Host "INFO updated $opsFile (BOM strip / union nicks) (#289/#302/#3397)"
+            } else {
+                Write-Host "INFO keep $opsFile"
+            }
+        } else {
+            throw 'operators.txt missing and -Operators empty (FR #253)'
+        }
     }
+
+    }  # end non-irc_ops operators seed
 
     # #271 NickServ GUID - mint here so first service start is unattended.
     if (-not $NickServPasswordFile) {
@@ -393,7 +418,7 @@ function Initialize-AircConsoleHomeSecrets {
     Write-AircSecretFile -Path $ergoDest -Secret $secret
     Write-Host "INFO seeded ergo.password from package ($source) -> $ergoDest"
     return [pscustomobject]@{
-        OperatorsFile       = $opsFile
+        OperatorsFile       = $(if ($opsFile) { $opsFile } else { '' })
         NickServPasswordFile = $NickServPasswordFile
         ErgoPasswordFile    = $ergoDest
     }
@@ -402,6 +427,18 @@ function Initialize-AircConsoleHomeSecrets {
 # Packaged secret lives at <unpack>\config\ergo.password (scripts\.. = unpack root).
 $packRoot = Split-Path -Parent $scriptDir
 $packagedErgo = Join-Path $packRoot 'config\ergo.password'
+# FR #3401: resolve auth mode (client => irc_ops, no operators list).
+if (-not $AuthMode) {
+    if (([string]$Profile).Trim().ToLowerInvariant() -eq 'client') { $AuthMode = 'irc_ops' }
+    else { $AuthMode = 'operators' }
+}
+$AuthMode = ([string]$AuthMode).Trim().ToLowerInvariant()
+$script:AircConsoleAuthMode = $AuthMode
+if ($AuthMode -eq 'irc_ops') {
+    $Operators = @()
+    Write-Host 'INFO FR #3401 AuthMode=irc_ops: skipping operators.txt seed'
+}
+
 $secrets = Initialize-AircConsoleHomeSecrets -ConsoleHomeDir $ConsoleHome -OperatorNicks $Operators `
     -NickServPasswordFile $PasswordFile -ErgoSourceFile $ErgoPasswordFile -PackagedErgoFile $packagedErgo
 $opsFile = $secrets.OperatorsFile
@@ -478,7 +515,8 @@ if ($useAircExe) {
     }
     $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl"
     if ($MachineId) { $appParams += " --machine `"$MachineId`"" }
-    if (Test-Path -LiteralPath $opsFile) { $appParams += " --operators-file `"$opsFile`"" }
+    if ($AuthMode -ne 'irc_ops' -and $opsFile -and (Test-Path -LiteralPath $opsFile)) { $appParams += " --operators-file `"$opsFile`"" }
+    if ($AuthMode -in @('operators', 'irc_ops')) { $appParams += " --auth-mode $AuthMode" }
     # FR #3287: bake capability flags into AppParameters (survive NSSM re-register on upgrade).
     if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
         $ShellMode = [string]$priorId.ShellMode
@@ -530,7 +568,8 @@ if ($useAircExe) {
     $appParams += " -Python `"$Python`""
     $appParams += " -PasswordFile `"$PasswordFile`""
     if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
-    if (Test-Path -LiteralPath $opsFile) { $appParams += " -OperatorsFile `"$opsFile`"" }
+    if ($AuthMode -ne 'irc_ops' -and $opsFile -and (Test-Path -LiteralPath $opsFile)) { $appParams += " -OperatorsFile `"$opsFile`"" }
+    if ($AuthMode -in @('operators', 'irc_ops')) { $appParams += " -AuthMode $AuthMode" }
     # FR #3287: legacy Start-AircConsole.ps1 capability params.
     if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
         $ShellMode = [string]$priorId.ShellMode

@@ -28,10 +28,12 @@ param(
     [string]$UpdateCap = '',
     [string]$RequireAccount = '',
     [string]$Accounts = '',
+    # FR #3397: MSI AIRC_OPERATORS=nick1,nick2 appends to operators.txt (fleet only).
+    [string]$OperatorsExtra = '',
     # FR #3289: MSI AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (0|1|true|false; empty = preserve / fresh default).
     [string]$SyncFromRepo = '',
     [string]$SelfUpdate = '',
-    # FR #3292: MSI AIRC_PROFILE=fleet|workstation; AIRC_AGENT_LAYER=0 skips agent briefings/skills.
+    # FR #3292 / #3401: MSI AIRC_PROFILE=fleet|workstation|client; AIRC_AGENT_LAYER=0 skips agent briefings/skills.
     [string]$Profile = '',
     [string]$AgentLayer = '',
     # FR #3291: MSI BOBIVERSE_CRASH_REPORT (0|off|local-only|1|full|no-log-tail; empty = preserve / shell=off default).
@@ -118,10 +120,10 @@ Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiPr
 
 # FR #3292: workstation / AgentLayer=0 -> no agent briefings or skills (agent-free box).
 $prof = ([string]$Profile).Trim().ToLowerInvariant()
-if ($prof -notin @('fleet', 'workstation')) { $prof = '' }
+if ($prof -notin @('fleet', 'workstation', 'client')) { $prof = '' }
 $agentLayerRaw = ([string]$AgentLayer).Trim().ToLowerInvariant()
 $wantAgentLayer = $true
-if ($prof -eq 'workstation') { $wantAgentLayer = $false }
+if ($prof -in @('workstation', 'client')) { $wantAgentLayer = $false }
 if ($agentLayerRaw -in @('0', 'false', 'no', 'off')) { $wantAgentLayer = $false }
 if ($agentLayerRaw -in @('1', 'true', 'yes', 'on')) { $wantAgentLayer = $true }
 if (-not $prof) { $prof = $(if ($wantAgentLayer) { 'fleet' } else { 'workstation' }) }
@@ -143,7 +145,7 @@ if ($wantAgentLayer) {
         [void]$script:AircManifestPaths.Add($skillsDest)
     }
 } else {
-    Write-Host 'INFO agent-layer skipped (workstation / AIRC_AGENT_LAYER=0) FR #3292'
+    Write-Host 'INFO agent-layer skipped (workstation|client / AIRC_AGENT_LAYER=0) FR #3292/#3401'
     # FR #3392: MSI already laid AGENTS/CLAUDE/GROK/.cursor/.grok + agent scripts before RunInstall.
     # Strip them so AIRC_PROFILE=workstation leaves an agent-free tree.
     $purged = @(Remove-BobiverseAircWorkstationAgentPayload -InstallRoot $InstallRoot)
@@ -263,6 +265,7 @@ if ($priorShell) { $priorShell = $priorShell.Trim().ToLowerInvariant() }
 # FR #3393: workstation defaults shell=off unless MSI/CLI set explicitly (ignore prior).
 if ($expShell) { $resolvedShell = $expShell }
 elseif ($prof -eq 'workstation') { $resolvedShell = 'off' }
+elseif ($prof -eq 'client') { $resolvedShell = 'operators' }  # FR #3401 full remote
 elseif ($priorShell -in @('off', 'operators')) { $resolvedShell = $priorShell }
 elseif ($hadPriorService) { $resolvedShell = 'operators' }
 else { $resolvedShell = 'off' }
@@ -270,6 +273,7 @@ else { $resolvedShell = 'off' }
 $expJobs = ([string]$Jobs).Trim().ToLowerInvariant()
 if ($expJobs -in @('off', 'on')) { $resolvedJobs = $expJobs }
 elseif ($prof -eq 'workstation') { $resolvedJobs = 'off' }
+elseif ($prof -eq 'client') { $resolvedJobs = 'on' }  # FR #3401
 elseif ($priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) {
     $resolvedJobs = ([string]$priorId.Jobs).Trim().ToLowerInvariant()
     if ($resolvedJobs -notin @('off', 'on')) { $resolvedJobs = 'on' }
@@ -278,6 +282,7 @@ elseif ($priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) {
 $expUpdate = ([string]$UpdateCap).Trim().ToLowerInvariant()
 if ($expUpdate -in @('off', 'on')) { $resolvedUpdate = $expUpdate }
 elseif ($prof -eq 'workstation') { $resolvedUpdate = 'off' }
+elseif ($prof -eq 'client') { $resolvedUpdate = 'on' }  # FR #3401 ops-gated UPDATE
 elseif ($priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) {
     $resolvedUpdate = ([string]$priorId.UpdateCap).Trim().ToLowerInvariant()
     if ($resolvedUpdate -notin @('off', 'on')) { $resolvedUpdate = 'on' }
@@ -290,6 +295,7 @@ if ($reqRaw -in @('1', 'true', 'yes', 'on')) { $expRequire = $true }
 elseif ($reqRaw -in @('0', 'false', 'no', 'off')) { $expRequire = $false }
 if ($null -ne $expRequire) { $resolvedRequire = [bool]$expRequire }
 elseif ($prof -eq 'workstation') { $resolvedRequire = $true }
+elseif ($prof -eq 'client') { $resolvedRequire = $false }  # FR #3401: IRC ops, no account ACL
 elseif ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount) { $resolvedRequire = [bool]$priorId.RequireAccount }
 else { $resolvedRequire = $false }
 
@@ -299,6 +305,22 @@ if (([string]$Accounts).Trim()) {
 } elseif ($priorId -and $priorId.PSObject.Properties['Accounts'] -and $priorId.Accounts) {
     $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
 }
+
+# FR #3397 / #3401: fleet unions OperatorsExtra; workstation/client ignore extra; client uses no operators.txt.
+$profForOps = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { ([string]$Profile).Trim().ToLowerInvariant() })
+if (-not $profForOps) { $profForOps = 'fleet' }
+if ($profForOps -eq 'client') {
+    $Operators = @()
+    Write-Host 'INFO FR #3401 client profile: no operators.txt (IRC +o/+h auth)'
+} elseif (Get-Command Resolve-BobiverseAircOperatorNicks -ErrorAction SilentlyContinue) {
+    $Operators = @(Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators -OperatorsExtra $OperatorsExtra)
+} elseif ($profForOps -ne 'workstation' -and ([string]$OperatorsExtra).Trim()) {
+    $extra = @(([string]$OperatorsExtra) -split '[,;\s]+' | Where-Object { $_ })
+    $Operators = @($Operators + $extra | Select-Object -Unique)
+} elseif ($profForOps -eq 'workstation' -and ([string]$OperatorsExtra).Trim()) {
+    Write-Host 'INFO FR #3397 workstation profile: ignoring AIRC_OPERATORS / OperatorsExtra'
+}
+Write-Host ("INFO FR #3397 operators={0}" -f (($Operators | Where-Object { $_ }) -join ','))
 
 # FR #3289: sync_from_repo default OFF (unsigned main must not run as SYSTEM); self_update default ON.
 function ConvertTo-AircBoolOrNull {
@@ -325,7 +347,7 @@ elseif ($null -ne $priorSync) { $resolvedSync = [bool]$priorSync }
 else { $resolvedSync = $false }
 # FR #3393: workstation defaults self_update=false (no SYSTEM GitHub MSI channel) unless MSI/CLI set.
 if ($null -ne $expSelf) { $resolvedSelf = [bool]$expSelf }
-elseif ($prof -eq 'workstation') { $resolvedSelf = $false }
+elseif ($prof -in @('workstation', 'client')) { $resolvedSelf = $false }  # FR #3393/#3401
 elseif ($null -ne $priorSelf) { $resolvedSelf = [bool]$priorSelf }
 else { $resolvedSelf = $true }
 
@@ -362,6 +384,7 @@ try {
 try {
     $capPath = Join-Path $InstallRoot 'config\airc.json'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capPath) | Out-Null
+    $authMode = $(if ($prof -eq 'client') { 'irc_ops' } else { 'operators' })
     $capObj = [ordered]@{
         shell = $resolvedShell
         jobs = $resolvedJobs
@@ -370,6 +393,8 @@ try {
         accounts = @($resolvedAccounts)
         sync_from_repo = $resolvedSync
         self_update = $resolvedSelf
+        profile = $prof
+        auth_mode = $authMode
     }
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
     Write-Host ("INFO FR #3287/#3289/#3393 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf)
@@ -397,6 +422,9 @@ try {
     } elseif ($prof -eq 'workstation') {
         # FR #3393: workstation defaults crash-report off (no intake from client boxes).
         $crObj = [ordered]@{ enabled = $false; mode = 'off'; source = 'workstation-profile' }
+    } elseif ($prof -eq 'client') {
+        # FR #3401: client keeps crash reports ON (redacted intake); explicit off still wins above.
+        $crObj = [ordered]@{ enabled = $true; mode = 'full'; source = 'client-profile' }
     } elseif ($null -ne $priorCr) {
         # Upgrade preserve: leave prior file untouched.
         Write-Host ("INFO FR #3291 keep prior {0}" -f $crPath)
@@ -420,6 +448,8 @@ $args = @{
     ShellMode   = $resolvedShell
     Jobs        = $resolvedJobs
     UpdateCap   = $resolvedUpdate
+    Profile     = $prof
+    AuthMode    = $(if ($prof -eq 'client') { 'irc_ops' } else { 'operators' })
 }
 if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }
@@ -525,7 +555,7 @@ try {
         product      = 'airc'
         profile      = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { 'fleet' })
         agent_layer  = [bool]$script:AircWantAgentLayer
-        purge_default = ($(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { 'fleet' }) -eq 'workstation')
+        purge_default = ($(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { 'fleet' }) -in @('workstation', 'client'))
         install_root = $InstallRoot
         console_home = $ConsoleHome
         paths        = @($paths)

@@ -43,10 +43,21 @@ if ($tq) {
 }
 
 if (-not $OpsRoot) {
+    # FR #3396: never hard-code C:\ai - discover via BOB_AI_ROOT / Get-BobiverseAiRoot.
     if ($env:BOB_AI_ROOT -and (Test-Path -LiteralPath (Join-Path $env:BOB_AI_ROOT 'ops'))) {
         $OpsRoot = Join-Path $env:BOB_AI_ROOT 'ops'
-    } elseif (Test-Path -LiteralPath 'C:\ai\ops') {
-        $OpsRoot = 'C:\ai\ops'
+    } else {
+        $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+        if (Test-Path -LiteralPath $common) {
+            try {
+                . $common
+                $ai = Get-BobiverseAiRoot
+                if ($ai) {
+                    $cand = Join-Path $ai 'ops'
+                    if (Test-Path -LiteralPath $cand) { $OpsRoot = $cand }
+                }
+            } catch { }
+        }
     }
 }
 if ($OpsRoot) {

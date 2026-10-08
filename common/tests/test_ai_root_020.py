@@ -167,7 +167,15 @@ def test_ps_no_creation_when_found_and_creation_when_none(tmp_path):
     assert sorted(p.name for p in (tmp_path / "D").iterdir()) == before and list((tmp_path / "D" / "ai").iterdir()) == []
     # none found: -Create makes <SystemDrive>\ai. Use a throw-away subst drive as the "system drive".
     used = subprocess.run(["cmd", "/c", "subst"], capture_output=True, text=True).stdout
-    free = [chr(c) for c in range(ord("T"), ord("Z") + 1) if not Path(chr(c) + ":\\").exists()]
+
+    def _drive_free(letter: str) -> bool:
+        # FR #3396: Path.exists() can raise OSError (WinError 1326) on stale mapped letters.
+        try:
+            return not Path(f"{letter}:\\").exists()
+        except OSError:
+            return False
+
+    free = [chr(c) for c in range(ord("T"), ord("Z") + 1) if _drive_free(chr(c))]
     if not free:
         pytest.skip("no free drive letter for subst")
     L = free[0]

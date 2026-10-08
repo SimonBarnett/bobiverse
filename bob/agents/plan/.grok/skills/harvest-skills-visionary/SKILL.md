@@ -41,4 +41,16 @@ shape/stack/mocks, plan-git webhook/PR path), edit the skill **now**,
 append `docs/skill-harvest-log.md`, commit on a branch, open a PR. Do not
 push `origin/main`. Do not leave the playbook only in `~/.grok/skills`.
 
+## What belongs here (how-to-plan only)
+
+Harvest only reusable lessons about HOW to plan: process, pitfalls,
+repo-setup steps (plan-git, webhooks, PRs), tooling for plan inputs.
+Never harvest plan content: requirements, designs, architecture or
+product decisions, FR/issue lists, numbering maps. Plan content stays in
+the plan's `work\plan-*` folder and, once approved, in the product
+repo's `docs/vision.md` / FR markdown / issues. Not in any skill book,
+and not as an `owner-missing` hold (test case bobiverse#3097).
+Test: would this line help a Plan seat plan a DIFFERENT product? If not,
+it is plan content.
+
 Empty harvest: no commit. Do not stamp UAT.

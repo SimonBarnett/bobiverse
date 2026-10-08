@@ -178,13 +178,16 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 - **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
 - **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
-- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
+- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_OPERATORS=bob-ionos,bob-flamingo` (FR #3397 fleet only; unions into operators.txt), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
 
 airc status-only workstation (no remote shell):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_SHELL=off AIRC_REQUIRE_ACCOUNT=1 AIRC_ACCOUNTS=simon`  
 Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
+
+
+Fleet cross-machine ears after #3286 (FR #3397): nick ACL is operators.txt only (no bob-* bypass). Before/with fleet upgrades that other ears drive, pass AIRC_OPERATORS=bob-<other1>,bob-<other2> (or edit ConsoleHome operators.txt) so those ears stay authorised. AIRC_PROFILE=workstation ignores AIRC_OPERATORS. Example: msiexec /i airc-x.y.z.msi /qn AIRC_OPERATORS=bob-win-mpre8vi4u6u,bob-flamingo.
 
 Locked workstation (no GitHub `main` pull as SYSTEM, optional no MSI self-update):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (preferred; FR #3393) or legacy `AIRC_SYNC_FROM_REPO=0 AIRC_SELF_UPDATE=0`.  
@@ -195,6 +198,9 @@ Agent-free airc workstation (no git/gh/Python/Node from bootstrap):
 
 Workstation profile (no agent briefings/skills; no self-update; purge uninstall):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (or `AIRC_AGENT_LAYER=0`) skips `Install-BobiverseAgentLayer` / skill copy **and** strips MSI-laid `AGENTS.md` / `CLAUDE.md` / `GROK.md` / `.cursor` / `.grok` plus fleet agent scripts (`agent_control.py`, `startworker.py`, `grok_talk.py`, harvest/sync/bootstrap helpers) via `Remove-BobiverseAircWorkstationAgentPayload` (FR #3392 — the MSI payload still stages them before RunInstall). Never writes the installing user's `%USERPROFILE%\.grok\skills`. Writes `config\airc.json` with `self_update=false`, `shell=off`, `jobs=off`, `update=off`, `require_account=true` (FR #3393). Manifest: `%ProgramData%\Bobiverse\airc-install-manifest.json`. Uninstall: fleet default still **keeps** ConsoleHome (FR #1566/#1599); workstation default purges secrets/homes, `ProgramData\Bobiverse\logs\install-airc.log`, and the LocalSystem crash spool, or pass `msiexec /x ... AIRC_PURGE=1` (FR #3292 / #3392).
+
+Client profile (minimal full remote control; FR #3401):  
+`msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=client` (place `config\ergo.password` beforehand). One property installs **airc.exe + service only** (same agent-payload strip as workstation), enables **full** shell/pipe/jobs, turns **off** `sync_from_repo` and `self_update`, and keeps **crash reports ON** (explicit `BOBIVERSE_CRASH_REPORT=off` still suppresses). **No `operators.txt` / no nick allow-list.** Auth is live IRC channel status: sender must hold **ops (+o / `@`) or half-ops (+h / `%`)** (or higher `+a`/`+q`) in the selected control channel; otherwise `DONE exit=126 not-op` and `auth-deny nick= reason=not-op` (command body never logged). Commands may arrive in the control channel or as a DM. Control channel selection on every connect: ChanServ INFO `#<machinename>` — if registered, join it (`reason=registered-machine`); else join `#<domain-or-workgroup>` (`reason=domain-fallback`), creating it by JOIN if needed. Log: `INFO control-channel=#name reason=...`. Fleet `AIRC_PROFILE` behaviour is unchanged.
 
 ACL fail-closed (FR #3394): `Install-Airc` calls `Ensure-BobiverseProgramDataRoot -FailClosed` before MSI logs/manifest writes, and `Protect-BobiverseInstallTree -FailClosed` on the install tree **before** `Start-Service Airc` (Install-AircConsole runs with `-NoStart` first). Protect failure fails the install. Purge uninstall refuses manifest paths outside `install_root` / `console_home` / `ProgramData\Bobiverse` (and known systemprofile / Default-user airc homes) via `Test-BobiverseAircPurgePathAllowed`.
 
