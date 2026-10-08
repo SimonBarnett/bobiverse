@@ -84,6 +84,7 @@ See `bobiverse-fleet-ops`. Jeeves specifics: the installer also registers task `
 (IIS rewrite incl. public `/bob/v1/digest`), provisions the chair oper credential, and builds the single Start Menu folder
 `Bobiverse` (Restart ircJeeves, Services, Logs, Skill books, Agent guide, Jeeves command reference - all with the systray icon).
 Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Service ircJeeves` ONLY.
+**FR #3190:** do not re-enable retired task `BobAutoFocus` (ops `auto-focus.py` per-item `!focus` spam). Post-upgrade restarts `BobCallback` / `BobAutoFeed` only and runs `Unregister-BobAutoFocus.ps1`. Use repo-level `!focus <Owner/repo>`.
 
 ## Cutover checklist (Ergo host)
 

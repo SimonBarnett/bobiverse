@@ -685,8 +685,9 @@ function Invoke-Apply {
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { throw "service $ServiceName not running after install" }
 
         # FR #1018: MSI upgrade left BobCallback on old code (digest PermissionError / seats stuck doing).
+        # FR #3190: do NOT restart BobAutoFocus — that ops task spammed per-item !focus every 2 min and is retired.
         if ($Product -eq 'jeeves') {
-            foreach ($tn in @('BobCallback', 'BobAutoFeed', 'BobAutoFocus')) {
+            foreach ($tn in @('BobCallback', 'BobAutoFeed')) {
                 try {
                     $tq = Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue
                     if (-not $tq) {
@@ -699,6 +700,16 @@ function Invoke-Apply {
                 } catch {
                     Write-UpdLog "post-upgrade-task-warn $tn $($_.Exception.Message)"
                 }
+            }
+            # FR #3190: if a leftover BobAutoFocus task still exists, disable it (never re-enable).
+            try {
+                $retire = Join-Path $PSScriptRoot 'Unregister-BobAutoFocus.ps1'
+                if (Test-Path -LiteralPath $retire) {
+                    & $retire -Quiet
+                    Write-UpdLog 'post-upgrade-bobautofocus-retired'
+                }
+            } catch {
+                Write-UpdLog "post-upgrade-bobautofocus-retire-warn $($_.Exception.Message)"
             }
         }
 
