@@ -1,4 +1,4 @@
-"""FR #3512: Merge defensive nick split + Install flatten (absorbed into #3513/#3557)."""
+"""FR #3512 / #3639 (empty Profile keeps Extra flatten; fleet returns empty): Merge defensive nick split + Install flatten (absorbed into #3513/#3557)."""
 from __future__ import annotations
 
 import os
@@ -94,7 +94,7 @@ def test_fr3512_install_flatten_writes_one_nick_per_line(tmp_path: Path):
         . '{COMMON}'
         $Operators = @('Simon')
         $OperatorsExtra = 'bob-win-mpre8vi4u6u'
-        $resolvedOps = Resolve-BobiverseAircOperatorNicks -Profile 'fleet' -Operators $Operators -OperatorsExtra $OperatorsExtra
+        $resolvedOps = Resolve-BobiverseAircOperatorNicks -Profile '' -Operators $Operators -OperatorsExtra $OperatorsExtra
         $flatOps = New-Object System.Collections.Generic.List[string]
         foreach ($item in @($resolvedOps)) {{
           if ($null -eq $item) {{ continue }}
