@@ -135,3 +135,7 @@ On ionos, NSSM `ircJeeves` may use `-ChairHome ~/.jeeves` while live `queue.json
 - **NAK busy / workers map (harvest #1715):** `bored nak busy` can key off `machines.workers.<pid>.working_on` / running state even when `worker_list` shows idle and queue `accepted` is empty (lost DONE). Clearing **only** `worker_list` is not enough - `clear_orphan` must also idle the `workers` map and machine `working_on`. Product fix tracked as FR #1714. Related false-busy: harvest #1712 (`seats_stuck_doing`).
 - Monitor checks observe and diagnose; they do not claim work, assign seats, or act as the chair.
 - **Idle-push say False (MRB #2819 / fix #2821 / harvest-lesson #2824):** `offer_to_idle_seats` must treat `say` returning False (`enqueue_chair_fleet_privmsg` OSError/secret skip) or raise as undelivered — keep idle-after-empty and rate-limit; never clear on a silent False. Product tests: `jeeves/tests/test_mrb2819_hostile_chair_outbox_say_false.py`.
+
+## Harvested lessons (intake)
+
+- gitclaim infer_require_machine: BobCallback body cues must require DOWN/502/Bad Gateway/no LISTEN/restart/recycle — bare :7700 or design prose (Hours webhook #3450) must not stamp ionos
