@@ -310,7 +310,7 @@ function Protect-BobiverseInstallTree {
       FR #3516: takeown /A (Administrators) so a pre-created user-owned
       ProgramData\Bobiverse (or install tree) cannot keep WRITE_DAC after re-ACL.
       FR #3581: SetOwner Administrators after DACL Set-Acl (never on the same ACL
-      object — unelevated SetOwner breaks Set-Acl); takeown /R /D Y only when
+      object - unelevated SetOwner breaks Set-Acl); takeown /R /D Y only when
       -Recurse (LogsOnly must not walk update\ via takeown /R). Directory ACEs keep
       ContainerInherit|ObjectInherit: inherit=None on a parent empties child DACLs.
     #>
@@ -348,7 +348,7 @@ function Protect-BobiverseInstallTree {
             if ($isDir) {
                 $acl = New-Object System.Security.AccessControl.DirectorySecurity
                 # Always CI|OI on dirs. inherit=None + SetAccessRuleProtection empties
-                # child DACLs (update\ becomes Access denied) — FR #3581.
+                # child DACLs (update\ becomes Access denied) - FR #3581.
                 $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
                     [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
             } else {
@@ -360,7 +360,7 @@ function Protect-BobiverseInstallTree {
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sys, $full, $inherit, $prop, $allow)))
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($adm, $full, $inherit, $prop, $allow)))
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($usr, $rx, $inherit, $prop, $allow)))
-            # DACL first — do not SetOwner on this object (unelevated Set-Acl fails).
+            # DACL first - do not SetOwner on this object (unelevated Set-Acl fails).
             Set-Acl -LiteralPath $t -AclObject $acl
             # FR #3581: in-process owner reset after DACL (elevated MSI); best-effort.
             try {
@@ -370,9 +370,9 @@ function Protect-BobiverseInstallTree {
             } catch { }
         }
         # FR #3516 / #3581: best-effort takeown /A fallback. /R /D Y only when -Recurse
-        # (directory alone must not recurse — LogsOnly protects root+logs without
+        # (directory alone must not recurse - LogsOnly protects root+logs without
         # walking update\). Install/uninstall run elevated; unit tests may lack
-        # elevation — owner reset never FailClosed-throws (DACL lock is the gate).
+        # elevation - owner reset never FailClosed-throws (DACL lock is the gate).
         try {
             $takeown = Join-Path $env:SystemRoot 'System32\takeown.exe'
             if (Test-Path -LiteralPath $takeown) {
@@ -2484,13 +2484,15 @@ function Get-BobiverseAircClientAllowedScriptNames {
 function Remove-BobiverseAircClientExtraPayload {
     <#
     .SYNOPSIS
-      FR #3514: AIRC_PROFILE=client keep-only tree (airc.exe + service + install tooling).
+      FR #3514 / #3582: AIRC_PROFILE=client keep-only tree (airc.exe + service + install tooling).
 
     .DESCRIPTION
       The MSI stages the 4-product script union. Workstation uses a deny-list strip
       (Remove-BobiverseAircWorkstationAgentPayload) that still leaves Jeeves/Bob/docs.
-      Client uses this allow-list: keep VERSION/BUILD.json, config\, logs\, airc\,
-      third_party\nssm\, and Get-BobiverseAircClientAllowedScriptNames; delete the rest.
+      Client uses this allow-list: keep VERSION/BUILD.json, config\ (install-generated
+      only), logs\, airc\, third_party\nssm\, and Get-BobiverseAircClientAllowedScriptNames;
+      delete the rest. FR #3582: always drop config\fleet-operators.txt - client never
+      reads the fleet roster (Install sets Operators=@(); file header says client ignores it).
     #>
     param(
         [Parameter(Mandatory)][string]$InstallRoot
@@ -2566,6 +2568,9 @@ function Remove-BobiverseAircClientExtraPayload {
             }
         }
     }
+
+    # FR #3582: fleet roster is dead weight on client (never read; leaks seat nicks).
+    Add-RemovedPath (Join-Path $root 'config\fleet-operators.txt')
 
     Write-Host ("INFO FR #3514 client allow-list purge count={0}" -f $removed.Count)
     return @($removed)
