@@ -40,6 +40,38 @@ GONE_SCRIPTS = (
     "Sync-BobiverseFromRepo.ps1",
 )
 
+# FR #3582: exact remaining files after client purge when airc.exe is present (24).
+# SkipAircExe pack stages omit airc\airc.exe → 23; both must exclude fleet-operators.txt.
+CLIENT_REMAINING_FILES = frozenset(
+    {
+        "BUILD.json",
+        "VERSION",
+        r"airc\airc.exe",
+        r"third_party\nssm\win64\nssm.exe",
+        r"scripts\airc_console.py",
+        r"scripts\airc_console_service.py",
+        r"scripts\airc_jobs.py",
+        r"scripts\Bobiverse-Common.ps1",
+        r"scripts\crash_report.py",
+        r"scripts\Install-Airc.cmd",
+        r"scripts\Install-Airc.ps1",
+        r"scripts\Install-AircConsole.cmd",
+        r"scripts\Install-AircConsole.ps1",
+        r"scripts\Recover-BobiverseService.cmd",
+        r"scripts\Recover-BobiverseService.ps1",
+        r"scripts\Report-BobiverseIntakeIssue.ps1",
+        r"scripts\Resolve-AircConsoleNssm.ps1",
+        r"scripts\Resolve-AircConsolePython.ps1",
+        r"scripts\Start-AircConsole.cmd",
+        r"scripts\Start-AircConsole.ps1",
+        r"scripts\Start-AircConsole-Fleet.ps1",
+        r"scripts\Uninstall-Airc.cmd",
+        r"scripts\Uninstall-Airc.ps1",
+        r"scripts\Update-BobiverseService.ps1",
+    }
+)
+assert len(CLIENT_REMAINING_FILES) == 24
+
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -63,10 +95,63 @@ def test_fr3514_common_defines_client_allowlist_helpers():
     assert "function Remove-BobiverseAircClientExtraPayload" in t
     assert "function Get-BobiverseAircClientAllowedScriptNames" in t
     assert "FR #3514" in t
+    assert "FR #3582" in t
+    assert r"config\fleet-operators.txt" in t
     for name in KEEP_SCRIPTS:
         assert name in t, name
     # Deny-list workstation helper remains for non-client.
     assert "function Remove-BobiverseAircWorkstationAgentPayload" in t
+
+
+def test_fr3582_client_purge_drops_fleet_operators(tmp_path: Path):
+    """Synthetic stage: fleet-operators.txt must not survive client allow-list."""
+    stage = tmp_path / "client-stage"
+    (stage / "config").mkdir(parents=True)
+    (stage / "scripts").mkdir()
+    (stage / "airc").mkdir()
+    (stage / "third_party" / "nssm" / "win64").mkdir(parents=True)
+    (stage / "VERSION").write_text("0.0.0\n", encoding="utf-8")
+    (stage / "BUILD.json").write_text("{}\n", encoding="utf-8")
+    (stage / "config" / "fleet-operators.txt").write_text(
+        "bob-example\n", encoding="utf-8"
+    )
+    (stage / "airc" / "airc.exe").write_bytes(b"MZ")
+    (stage / "third_party" / "nssm" / "win64" / "nssm.exe").write_bytes(b"MZ")
+    for name in KEEP_SCRIPTS:
+        (stage / "scripts" / name).write_text("# stub\n", encoding="utf-8")
+    # Extra allow-listed scripts from Get-BobiverseAircClientAllowedScriptNames.
+    for name in (
+        "Install-Airc.cmd",
+        "Install-AircConsole.cmd",
+        "Uninstall-Airc.cmd",
+        "Recover-BobiverseService.cmd",
+        "Resolve-AircConsolePython.ps1",
+        "Start-AircConsole.cmd",
+        "Start-AircConsole-Fleet.ps1",
+        "Update-BobiverseService.ps1",
+        "airc_console.py",
+        "airc_jobs.py",
+    ):
+        (stage / "scripts" / name).write_text("# stub\n", encoding="utf-8")
+
+    strip = (
+        f". '{COMMON}'; "
+        f"$null = @(Remove-BobiverseAircClientExtraPayload -InstallRoot '{stage}'); "
+        f"if (Test-Path -LiteralPath (Join-Path '{stage}' 'config\\fleet-operators.txt')) "
+        f"{{ Write-Output 'fleet_ops=present' }} else {{ Write-Output 'fleet_ops=gone' }}"
+    )
+    proc = _ps(strip, timeout=60)
+    text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    assert proc.returncode == 0, text
+    assert "fleet_ops=gone" in text, text
+    assert not (stage / "config" / "fleet-operators.txt").exists()
+
+    rels = {
+        str(p.relative_to(stage)).replace("/", "\\")
+        for p in stage.rglob("*")
+        if p.is_file()
+    }
+    assert rels == CLIENT_REMAINING_FILES, sorted(rels)
 
 
 def test_fr3514_install_uses_client_allowlist_not_only_deny():
@@ -82,9 +167,13 @@ def test_fr3514_docs_skill_describe_client_allowlist():
     post = POST.read_text(encoding="utf-8")
     assert "FR #3514" in post
     assert "Remove-BobiverseAircClientExtraPayload" in post or "allow-list" in post.lower()
+    assert "FR #3582" in post
+    assert "fleet-operators" in post
     skill = SKILL.read_text(encoding="utf-8")
     assert "FR #3514" in skill
     assert "allow-list" in skill.lower() or "allowlist" in skill.lower() or "ClientExtra" in skill
+    assert "FR #3582" in skill
+    assert "fleet-operators" in skill
 
 
 def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
@@ -138,6 +227,24 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
 
     for name in GONE_SCRIPTS:
         assert not (stage / "scripts" / name).exists(), f"still present {name}"
+
+    # FR #3582: fleet roster must not remain on client; pin remaining-file set.
+    assert not (stage / "config" / "fleet-operators.txt").exists(), text2
+    rels = {
+        str(p.relative_to(stage)).replace("/", "\\")
+        for p in stage.rglob("*")
+        if p.is_file()
+    }
+    assert r"config\fleet-operators.txt" not in rels
+    expected = set(CLIENT_REMAINING_FILES)
+    if not (stage / "airc" / "airc.exe").is_file():
+        # Pack -SkipAircExe (unit stage) omits airc.exe → 23 files.
+        expected.discard(r"airc\airc.exe")
+    assert rels == expected, (
+        f"client remaining files mismatch (got {len(rels)}, want {len(expected)}): "
+        + ", ".join(sorted(rels))
+    )
+    assert len(expected) in (23, 24)
 
     # Allow-list size: only the named install/runtime set (no 45+ py / 69+ ps1).
     script_files = list((stage / "scripts").glob("*"))
