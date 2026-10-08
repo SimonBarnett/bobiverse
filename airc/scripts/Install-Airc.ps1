@@ -311,21 +311,33 @@ if (([string]$Accounts).Trim()) {
     $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
 }
 
-# FR #3397 / #3401: fleet unions OperatorsExtra; workstation/client ignore extra; client uses no operators.txt.
+# FR #3397 / #3401 / #3513: fleet unions OperatorsExtra + fleet-operators roster;
+# workstation/client ignore roster/extra; client uses no operators.txt.
 $profForOps = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { ([string]$Profile).Trim().ToLowerInvariant() })
 if (-not $profForOps) { $profForOps = 'fleet' }
 if ($profForOps -eq 'client') {
     $Operators = @()
     Write-Host 'INFO FR #3401 client profile: no operators.txt (IRC +o/+h auth)'
 } elseif (Get-Command Resolve-BobiverseAircOperatorNicks -ErrorAction SilentlyContinue) {
-    $Operators = @(Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators -OperatorsExtra $OperatorsExtra)
-} elseif ($profForOps -ne 'workstation' -and ([string]$OperatorsExtra).Trim()) {
+    # FR #3512: Resolve returns a flat string[] (NoEnumerate); do not nest under a second @(...).
+    $Operators = [string[]]@(
+        Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators `
+            -OperatorsExtra $OperatorsExtra -InstallRoot $InstallRoot
+    )
+} elseif ($profForOps -ne 'workstation') {
     $extra = @(([string]$OperatorsExtra) -split '[,;\s]+' | Where-Object { $_ })
-    $Operators = @($Operators + $extra | Select-Object -Unique)
+    $roster = @()
+    if (Get-Command Get-BobiverseAircFleetOperatorRoster -ErrorAction SilentlyContinue) {
+        $roster = [string[]]@(Get-BobiverseAircFleetOperatorRoster -InstallRoot $InstallRoot)
+    }
+    $Operators = @($Operators + $extra + $roster | Select-Object -Unique)
+    if (([string]$OperatorsExtra).Trim() -or $roster.Count -gt 0) {
+        Write-Host ("INFO FR #3513 operators union extra+roster count={0}" -f $Operators.Count)
+    }
 } elseif ($profForOps -eq 'workstation' -and ([string]$OperatorsExtra).Trim()) {
     Write-Host 'INFO FR #3397 workstation profile: ignoring AIRC_OPERATORS / OperatorsExtra'
 }
-Write-Host ("INFO FR #3397 operators={0}" -f (($Operators | Where-Object { $_ }) -join ','))
+Write-Host ("INFO FR #3397/#3513 operators={0}" -f (($Operators | Where-Object { $_ }) -join ','))
 
 # FR #3289: sync_from_repo default OFF (unsigned main must not run as SYSTEM); self_update default ON.
 function ConvertTo-AircBoolOrNull {

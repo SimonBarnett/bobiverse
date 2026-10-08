@@ -353,6 +353,15 @@ function Stage-Product([string]$Name) {
             Copy-Item -LiteralPath $aexe -Destination (Join-Path $aircExeDir 'airc.exe') -Force
             Write-Host 'INFO airc staged airc\airc.exe'
         }
+        # FR #3513: fleet cross-machine ear roster (Install-Airc unions into operators.txt).
+        $fleetOpsSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'airc\config\fleet-operators.txt'
+        if (Test-Path -LiteralPath $fleetOpsSrc) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $stage 'config') | Out-Null
+            Copy-Item -LiteralPath $fleetOpsSrc -Destination (Join-Path $stage 'config\fleet-operators.txt') -Force
+            Write-Host 'INFO airc staged config\fleet-operators.txt (FR #3513)'
+        } else {
+            Write-Host 'WARN airc missing airc\config\fleet-operators.txt (FR #3513)'
+        }
     }
     return $stage
 }
