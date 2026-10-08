@@ -14,6 +14,9 @@ param(
     [string]$Python = '',
     [switch]$NoStart,
     [switch]$ForceTools,
+    # FR #3290: opt-in agent toolchain (git/gh/python/node). Fresh airc.exe MSI skips by default.
+    [switch]$WithTools,
+    [string]$InstallTools = '',   # MSI AIRC_INSTALL_TOOLS=1
     [switch]$SkipCopy,
     # #70: MSI public property SKIPCOPY=1 (optional; FR #2982 also implies SkipCopy from ProductVersion).
     [string]$MsiSkipCopy = '',
@@ -64,9 +67,29 @@ if (-not (Test-BobiverseIsAdmin)) {
 }
 
 $repoRoot = if ($splitRepo) { $splitRepo } else { Split-Path -Parent $here }
+# FR #3290: frozen airc.exe needs no git/gh/python/node. Skip bootstrap unless opt-in or legacy (no exe).
+$installToolsOn = $WithTools -or $ForceTools
+$itRaw = ([string]$InstallTools).Trim().ToLowerInvariant()
+if ($itRaw -in @('1', 'true', 'yes', 'on')) { $installToolsOn = $true }
+$hasAircExe = $false
+foreach ($cand in @(
+        (Join-Path $InstallRoot 'airc\airc.exe'),
+        (Join-Path $InstallRoot 'airc.exe'),
+        (Join-Path $repoRoot 'airc\airc.exe'),
+        (Join-Path $repoRoot 'airc.exe')
+    )) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $hasAircExe = $true; break }
+}
 $bootstrap = Join-Path $here 'Install-BootstrapTools.ps1'
 if (Test-Path -LiteralPath $bootstrap) {
-    if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
+    if ($installToolsOn) {
+        if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
+    } elseif (-not $hasAircExe) {
+        Write-Host 'INFO bootstrap-tools legacy (no airc.exe; installing agent toolchain)'
+        & $bootstrap
+    } else {
+        Write-Host 'INFO bootstrap-tools skipped (airc exe; AIRC_INSTALL_TOOLS not set) FR #3290'
+    }
 }
 
 # FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.

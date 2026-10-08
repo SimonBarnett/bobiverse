@@ -26,7 +26,9 @@ param(
     # #70: MSI public property SKIPCOPY=1 arrives via RunInstall as a string.
     [string]$MsiSkipCopy = '',
     # FR #2564: MSI ProductVersion forwarded by RunInstall for VERSION assert.
-    [string]$MsiProductVersion = ''
+    [string]$MsiProductVersion = '',
+    # FR #3290: MSI BOBIVERSE_SKIP_TOOLS=1 skips Install-BootstrapTools.
+    [string]$MsiSkipTools = ''
 )
 
 # #70: map MSI property strings onto the real switches (empty / unset = no-op).
@@ -68,7 +70,16 @@ if (-not (Test-BobiverseIsAdmin)) {
 $repoRoot = if ($splitRepo) { $splitRepo } else { Split-Path -Parent $here }
 $bootstrap = Join-Path $here 'Install-BootstrapTools.ps1'
 if (Test-Path -LiteralPath $bootstrap) {
-    if ($ForceTools) { & $bootstrap -ForceTools } else { & $bootstrap }
+    # FR #3290: BOBIVERSE_SKIP_TOOLS=1 / -MsiSkipTools 1 skips agent toolchain install.
+    $skipTools = ($MsiSkipTools -eq '1') -or ($env:BOBIVERSE_SKIP_TOOLS -eq '1')
+    if ($skipTools -and -not $ForceTools) {
+        Write-Host 'INFO bootstrap-tools skipped (BOBIVERSE_SKIP_TOOLS) FR #3290'
+        & $bootstrap -SkipTools
+    } elseif ($ForceTools) {
+        & $bootstrap -ForceTools
+    } else {
+        & $bootstrap
+    }
 }
 
 if (-not $MachineId) {
