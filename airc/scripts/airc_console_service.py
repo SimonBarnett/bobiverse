@@ -527,6 +527,10 @@ class AircConsoleService:
         self._sasl_failed = False
         self._pending_join_deadline = 0.0
         self.core.nick = self.nick
+        # FR #3511: drop stale +o/+h map before any reconnect session so auth
+        # refuses until JOIN + NAMES/366 (same channel name is not enough).
+        if getattr(self, "members", None) is not None:
+            self.members.clear()
         # Order matches irc_agent: PASS → CAP → NICK/USER → (SASL) → CAP END.
         self.send_server_pass()
         self.request_caps()
@@ -564,12 +568,34 @@ class AircConsoleService:
             self.send(cmd)
         self._joined_shop = True
         info(f"INFO joined {self.channel} as {self.nick} (silent)")
-        # FR #3401: resync channel member prefixes after JOIN (server sends 353/366).
+        # FR #3401 / #3511: clear then resync prefixes after JOIN (353/366).
+        # set_channel always clears (same-channel reconnect must not keep stale %).
         if getattr(self, "members", None) is not None:
+            self.members.clear()
             self.members.set_channel(self.channel)
             self.core.auth.members = self.members
             self.core.auth.self_nicks = {self.nick.lower()} if self.nick else set()
             self.core.channel = self.channel
+
+    def _lost_control_channel(self, reason: str) -> None:
+        """FR #3511: console PART/KICK from control channel — refuse until NAMES/366.
+
+        Dropping only the console nick left ``synced=True`` and every other ``@``/``%``
+        still authorised while the console was not in the channel. Clear the map and
+        rejoin so auth is ``channel-state-unknown`` until resync.
+        """
+        if getattr(self, "members", None) is not None:
+            self.members.clear()
+        self._joined_shop = False
+        info(
+            f"INFO FR #3511 lost-control reason={reason} "
+            f"channel={self.channel} -> clear members, rejoin"
+        )
+        try:
+            self.join_shop()
+        except Exception as e:
+            info(f"INFO FR #3511 rejoin-err {e}")
+            self._force_reconnect = True
 
     def _start_chanserv_probe(self) -> None:
         self._probe_state = "waiting"
@@ -808,10 +834,15 @@ class AircConsoleService:
             self.account_map.set(nick, acct_tag)
             self.account_map.save(self.amap_path)
 
-        # FR #3401: keep ChannelMemberMap current for irc_ops auth.
+        # FR #3401 / #3511: keep ChannelMemberMap current for irc_ops auth.
         if getattr(self, "members", None) is not None and getattr(self, "auth_mode", "") == "irc_ops":
             if cmd == "353":
                 # NAMES: "<me> = #chan :@nick %nick2"
+                # FR #3511: a fresh NAMES while still synced must replace, not merge
+                # (otherwise absent nicks keep stale @/% across unexpected resync).
+                if self.members.synced:
+                    self.members.clear()
+                    self.members.set_channel(self.channel)
                 names = trailing or ""
                 self.members.apply_names(names)
             elif cmd == "366":
@@ -827,6 +858,9 @@ class AircConsoleService:
                 pnick = parse_prefix_nick(":" + prefix) if prefix else None
                 if pnick:
                     self.members.on_part(pnick)
+                # FR #3511: console left its control channel — refuse until resync.
+                if pnick and pnick.lower() == (self.nick or "").lower():
+                    self._lost_control_channel("self-part")
             elif cmd == "QUIT":
                 qnick = parse_prefix_nick(":" + prefix) if prefix else None
                 if qnick:
@@ -836,6 +870,9 @@ class AircConsoleService:
                 knick = args[1] if len(args) >= 2 else ""
                 if knick:
                     self.members.on_kick(knick)
+                # FR #3511: console kicked from control channel — clear ops map + rejoin.
+                if knick and knick.lower() == (self.nick or "").lower():
+                    self._lost_control_channel("self-kick")
             elif cmd == "NICK":
                 new_nick = (trailing or (args[0] if args else "")).lstrip(":")
                 old_nick = (parse_prefix_nick(":" + prefix) if prefix else "") or ""
