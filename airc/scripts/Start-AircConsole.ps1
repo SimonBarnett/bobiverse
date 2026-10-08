@@ -67,22 +67,48 @@ if (-not $RepoRoot -or -not (Test-Path -LiteralPath $RepoRoot)) {
     $RepoRoot = Split-Path -Parent $scriptDir
 }
 
-# t781u/t782u start-up update order (dev path first, release path second):
-#   1. repo fast-forward: <InstallRoot> is a sparse git work tree (airc + common) -> fetch + ff-only origin/main, flat runtime files
-#      recomposed from it (Sync-BobiverseFromRepo.ps1). Never destroys local edits/commits, never blocks the start, falls back to the
-#      installed version on any failure. BOBIVERSE_REPO (explicit dev override) syncs from that clone instead.
-#   2. release self-update (Update-BobiverseService.ps1): only when a GitHub release is newer than the VERSION now installed (the
-#      ff'd tree counts), so the MSI path stays the safety net for boxes where git is unavailable.
-#   Opt out of BOTH with BOBIVERSE_NO_UPDATE=1; of the release check only with BOB_AUTOUPDATE=0.
+# FR #3289 start-up update policy (config\airc.json + env):
+#   sync_from_repo default OFF for MSI (unsigned main must not run as SYSTEM).
+#   self_update default ON (sha256-checked release MSI). Lock workstations set both false.
+#   BOBIVERSE_NO_UPDATE=1 skips both; BOBIVERSE_SYNC_FROM_REPO / BOBIVERSE_SELF_UPDATE override;
+#   BOB_AUTOUPDATE=0 skips self-update only.
+function Get-AircStartUpdatePolicy {
+    param([Parameter(Mandatory)][string]$InstallRoot)
+    $syncOn = $false
+    $selfOn = $true
+    if ($env:BOBIVERSE_NO_UPDATE -eq '1') {
+        return [pscustomobject]@{ SyncFromRepo = $false; SelfUpdate = $false }
+    }
+    $capPath = Join-Path $InstallRoot 'config\airc.json'
+    if (Test-Path -LiteralPath $capPath) {
+        try {
+            $cap = Get-Content -LiteralPath $capPath -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($null -ne $cap.PSObject.Properties['sync_from_repo']) {
+                $syncOn = [bool]$cap.sync_from_repo
+            }
+            if ($null -ne $cap.PSObject.Properties['self_update']) {
+                $selfOn = [bool]$cap.self_update
+            }
+        } catch { }
+    }
+    if ($env:BOBIVERSE_SYNC_FROM_REPO -eq '1') { $syncOn = $true }
+    elseif ($env:BOBIVERSE_SYNC_FROM_REPO -eq '0') { $syncOn = $false }
+    if ($env:BOBIVERSE_SELF_UPDATE -eq '1') { $selfOn = $true }
+    elseif ($env:BOBIVERSE_SELF_UPDATE -eq '0') { $selfOn = $false }
+    if ($env:BOB_AUTOUPDATE -eq '0') { $selfOn = $false }
+    return [pscustomobject]@{ SyncFromRepo = $syncOn; SelfUpdate = $selfOn }
+}
+$aircPolicy = Get-AircStartUpdatePolicy -InstallRoot $RepoRoot
+Write-Host ("INFO sync-from-repo={0} (config)" -f $(if ($aircPolicy.SyncFromRepo) { 'on' } else { 'off' }))
+Write-Host ("INFO self-update={0} (config)" -f $(if ($aircPolicy.SelfUpdate) { 'on' } else { 'off' }))
 $sync = Join-Path $scriptDir 'Sync-BobiverseFromRepo.ps1'
-if ((Test-Path -LiteralPath $sync) -and ($env:BOBIVERSE_NO_UPDATE -ne '1')) {
+if ($aircPolicy.SyncFromRepo -and (Test-Path -LiteralPath $sync)) {
     try { & $sync -Product airc -InstallRoot $RepoRoot }
     catch { Write-Host "WARN sync-from-repo: $($_.Exception.Message)" }
 }
 # v0.1.17 self-update on service start: token-less GitHub latest-release check; when newer, a DETACHED
 # helper (scheduled task) downloads + sha256-verifies the MSI, replaces the install and rolls back on failure.
-# Never blocks or fails the start. Never touches Ergo. Opt out: BOB_AUTOUPDATE=0 (or BOBIVERSE_NO_UPDATE=1).
-if ($ServiceMode) {
+if ($ServiceMode -and $aircPolicy.SelfUpdate) {
     $updater = Join-Path $scriptDir 'Update-BobiverseService.ps1'
     if (Test-Path -LiteralPath $updater) {
         try { & $updater -Product airc -InstallRoot $RepoRoot -ServiceName Airc }

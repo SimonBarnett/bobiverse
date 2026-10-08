@@ -24,7 +24,10 @@ param(
     [string]$Jobs = '',
     [string]$UpdateCap = '',
     [string]$RequireAccount = '',
-    [string]$Accounts = ''
+    [string]$Accounts = '',
+    # FR #3289: MSI AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (0|1|true|false; empty = preserve / fresh default).
+    [string]$SyncFromRepo = '',
+    [string]$SelfUpdate = ''
 )
 
 # #70 / FR #2982: MSI property strings + ProductVersion => keep heat-laid files.
@@ -217,6 +220,33 @@ if (([string]$Accounts).Trim()) {
     $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
 }
 
+# FR #3289: sync_from_repo default OFF (unsigned main must not run as SYSTEM); self_update default ON.
+function ConvertTo-AircBoolOrNull {
+    param([string]$Raw)
+    $t = ([string]$Raw).Trim().ToLowerInvariant()
+    if (-not $t) { return $null }
+    if ($t -in @('1', 'true', 'yes', 'on')) { return $true }
+    if ($t -in @('0', 'false', 'no', 'off')) { return $false }
+    return $null
+}
+$priorSync = $null
+$priorSelf = $null
+if (Test-Path -LiteralPath $capPathGuess) {
+    try {
+        $priorCap2 = Get-Content -LiteralPath $capPathGuess -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($null -ne $priorCap2.PSObject.Properties['sync_from_repo']) { $priorSync = [bool]$priorCap2.sync_from_repo }
+        if ($null -ne $priorCap2.PSObject.Properties['self_update']) { $priorSelf = [bool]$priorCap2.self_update }
+    } catch {}
+}
+$expSync = ConvertTo-AircBoolOrNull -Raw $SyncFromRepo
+$expSelf = ConvertTo-AircBoolOrNull -Raw $SelfUpdate
+if ($null -ne $expSync) { $resolvedSync = [bool]$expSync }
+elseif ($null -ne $priorSync) { $resolvedSync = [bool]$priorSync }
+else { $resolvedSync = $false }
+if ($null -ne $expSelf) { $resolvedSelf = [bool]$expSelf }
+elseif ($null -ne $priorSelf) { $resolvedSelf = [bool]$priorSelf }
+else { $resolvedSelf = $true }
+
 # Snapshot identity for the next upgrade (opaque paths only; no secret contents).
 try {
     $idPath = Join-Path $InstallRoot 'config\airc-install.json'
@@ -234,6 +264,8 @@ try {
         UpdateCap    = $resolvedUpdate
         RequireAccount = $resolvedRequire
         Accounts     = ($resolvedAccounts -join ',')
+        SyncFromRepo = $resolvedSync
+        SelfUpdate   = $resolvedSelf
         updated      = (Get-Date).ToUniversalTime().ToString('o')
     }
     ($snap | ConvertTo-Json) | Set-Content -LiteralPath $idPath -Encoding utf8
@@ -242,7 +274,7 @@ try {
     Write-Host ("WARN airc-install.json: {0}" -f $_.Exception.Message)
 }
 
-# FR #3287: admin-readable capability file (ACL tightened by Install-AircConsole when present).
+# FR #3287 / #3289: admin-readable capability + start-update policy file.
 try {
     $capPath = Join-Path $InstallRoot 'config\airc.json'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capPath) | Out-Null
@@ -252,9 +284,11 @@ try {
         update = $resolvedUpdate
         require_account = $resolvedRequire
         accounts = @($resolvedAccounts)
+        sync_from_repo = $resolvedSync
+        self_update = $resolvedSelf
     }
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
-    Write-Host ("INFO FR #3287 wrote {0} shell={1} jobs={2} update={3}" -f $capPath, $resolvedShell, $resolvedJobs, $resolvedUpdate)
+    Write-Host ("INFO FR #3287/#3289 wrote {0} shell={1} jobs={2} update={3} sync_from_repo={4} self_update={5}" -f $capPath, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedSync, $resolvedSelf)
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
 }
@@ -300,6 +334,13 @@ try {
 
 # Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
 Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
+
+# FR #3289: SYSTEM + Administrators full; Users read/execute only (no Authenticated Users modify).
+try {
+    Protect-BobiverseInstallTree -Path $InstallRoot -Recurse
+} catch {
+    Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
+}
 
 # ONE all-users Start Menu folder "Bobiverse" (shared with bob/jeeves); dedupes older scattered entries.
 try {

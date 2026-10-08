@@ -31,6 +31,7 @@ from account_map import AccountMap, account_from_tags, parse_message_tags, parse
 from airc_console import (
     IRC_SAFE_PAYLOAD,
     AircConsoleCore,
+    AircStartUpdatePolicy,
     AuthPolicy,
     ConsoleSessionManager,
     ShellJobRunner,
@@ -43,6 +44,7 @@ from airc_console import (
     home_dir,
     load_capabilities,
     load_operators,
+    load_start_update_policy,
     machine_console_nick,
     machine_id,
     normalize_shell_cli,
@@ -1117,38 +1119,51 @@ def _run_ps1_best_effort(script: Path, args: list[str], label: str) -> None:
         info(f"WARN {label}: {exc}")
 
 
-def kick_frozen_service_start_hooks() -> None:
-    """Parity with Start-AircConsole -ServiceMode when NSSM runs airc.exe (FR #2401).
+def kick_frozen_service_start_hooks(
+    *,
+    _is_frozen: bool | None = None,
+    _root: Path | None = None,
+    _run_ps1=None,
+    _env: dict[str, str] | None = None,
+) -> AircStartUpdatePolicy | None:
+    """Parity with Start-AircConsole -ServiceMode when NSSM runs airc.exe (FR #2401 / #3289).
 
     Legacy powershell + Start-AircConsole.ps1 already runs Sync/Update before Python;
     only the frozen exe path needs this (otherwise we would double-check every start).
-    Opt-outs: BOBIVERSE_NO_UPDATE=1 skips both; BOB_AUTOUPDATE=0 / autoupdate.disabled
-    are honoured inside Update-BobiverseService.ps1.
+
+    FR #3289: default ``sync_from_repo=off`` via ``config\\airc.json`` (MSI
+    ``AIRC_SYNC_FROM_REPO``). ``BOBIVERSE_NO_UPDATE=1`` still skips both.
+    ``BOB_AUTOUPDATE=0`` / ``autoupdate.disabled`` remain honoured inside the updater.
     """
-    if not is_frozen_airc_exe():
-        return
-    root = resolve_airc_install_root()
+    frozen = is_frozen_airc_exe() if _is_frozen is None else bool(_is_frozen)
+    if not frozen:
+        return None
+    root = resolve_airc_install_root() if _root is None else _root
     if root is None:
-        return
-    scripts = root / "scripts"
-    no_update = (os.environ.get("BOBIVERSE_NO_UPDATE") or "").strip() == "1"
-    if not no_update:
+        return None
+    run_ps1 = _run_ps1_best_effort if _run_ps1 is None else _run_ps1
+    policy = load_start_update_policy(root, env=_env)
+    for line in policy.log_lines():
+        info(line)
+    scripts = Path(root) / "scripts"
+    if policy.sync_from_repo:
         sync = scripts / "Sync-BobiverseFromRepo.ps1"
         if sync.is_file():
             try:
                 info(f"INFO frozen sync-from-repo InstallRoot={root}")
-                _run_ps1_best_effort(
+                run_ps1(
                     sync,
                     ["-Product", "airc", "-InstallRoot", str(root)],
                     "sync-from-repo",
                 )
             except Exception as exc:  # noqa: BLE001
                 info(f"WARN sync-from-repo: {exc}")
+    if policy.self_update:
         updater = scripts / "Update-BobiverseService.ps1"
         if updater.is_file():
             try:
                 info("INFO frozen self-update check (Update-BobiverseService)")
-                _run_ps1_best_effort(
+                run_ps1(
                     updater,
                     [
                         "-Product",
@@ -1162,7 +1177,7 @@ def kick_frozen_service_start_hooks() -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 info(f"WARN self-update: {exc}")
-
+    return policy
 
 def main(argv: list[str] | None = None) -> int:
     try:

@@ -178,13 +178,17 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 - **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`
 - **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`
-- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287)
+- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289)
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
 
 airc status-only workstation (no remote shell):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_SHELL=off AIRC_REQUIRE_ACCOUNT=1 AIRC_ACCOUNTS=simon`  
 Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
+
+Locked workstation (no GitHub `main` pull as SYSTEM, optional no MSI self-update):  
+`msiexec /i airc-x.y.z.msi /qn AIRC_SYNC_FROM_REPO=0 AIRC_SELF_UPDATE=0`  
+Fresh MSI defaults `sync_from_repo=false` and `self_update=true` in `config\airc.json`. Service start logs `INFO sync-from-repo=off (config)`. Opt-in fleet git sync: `AIRC_SYNC_FROM_REPO=1` or set `"sync_from_repo": true`. Env overrides: `BOBIVERSE_SYNC_FROM_REPO`, `BOBIVERSE_SELF_UPDATE`, `BOBIVERSE_NO_UPDATE=1`. Install also locks the install tree ACL (SYSTEM + Administrators full; Users read/execute only) via `Protect-BobiverseInstallTree` (FR #3289).
 
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 
