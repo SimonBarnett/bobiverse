@@ -32,3 +32,13 @@ def test_mrb3302_skill_documents_secret_acls():
     assert "Protect-BobiverseSecretPath" in text
     assert "FR #3288" in text
     assert "SYSTEM" in text and "Administrators" in text
+
+
+def test_mrb3302_fr3583_secret_acl_test_elevation_aware():
+    """Hostile pin: elevated runs must not use Groups for High-IL (FR #3583)."""
+    t = (REPO / "airc" / "tests" / "test_fr3288_secret_acl.py").read_text(encoding="utf-8")
+    embed = t[t.find("$denied = $false") : t.find("Write-Output 'ACL_OK'")]
+    assert "IsInRole" in embed
+    assert "WindowsBuiltInRole" in embed
+    assert "$id.Groups" not in embed
+    assert ("S-1-16-" + "12288") not in embed
