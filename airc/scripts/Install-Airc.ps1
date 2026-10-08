@@ -420,11 +420,31 @@ try {
     & $installLegacy @args
 } catch {
     Write-Host "ERROR Install-AircConsole: $($_.Exception.Message)"
-    $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
-    if (Test-Path -LiteralPath $report) {
-        try {
-            & $report -Title 'airc install: Install-AircConsole failed' -Body $_.Exception.Message -InstallRoot $InstallRoot
-        } catch {}
+    # FR #3395: always leave a local MSI log trail; intake only when crash-report allows send.
+    try {
+        Write-BobiverseMsiInstallLog -Product airc -Message ("Install-AircConsole-fail: {0}" -f $_.Exception.Message)
+    } catch { }
+    $allowIntake = $true
+    try {
+        $allowIntake = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
+    } catch { $allowIntake = $true }
+    if ($allowIntake) {
+        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
+        if (-not (Test-Path -LiteralPath $report)) {
+            $report = Join-Path (Split-Path -Parent $here) 'common\scripts\Report-BobiverseIntakeIssue.ps1'
+        }
+        if (Test-Path -LiteralPath $report) {
+            try {
+                & $report -Title 'airc install: Install-AircConsole failed' `
+                    -Body $_.Exception.Message `
+                    -Repo 'SimonBarnett/bobiverse' `
+                    -InstallRoot $InstallRoot
+            } catch {
+                Write-Host ("WARN FR #3395 intake report failed: {0}" -f $_.Exception.Message)
+            }
+        }
+    } else {
+        Write-Host 'INFO FR #3395 skip intake (crash-report opt-out / local-only); failure logged locally'
     }
     throw
 }

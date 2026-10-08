@@ -356,6 +356,52 @@ function Protect-BobiverseInstallTree {
     }
 }
 
+function Test-BobiverseCrashReportAllowsIntake {
+    <#
+      FR #3395: whether installer/crash paths may POST to public intake.
+      Precedence (mirrors crash_report.load_crash_report_policy): BOB_CRASH_REPORT /
+      BOBIVERSE_CRASH_REPORT env > InstallRoot\config\crash-report.json > allow (fleet default).
+      enabled=false / mode off|local-only => $false.
+    #>
+    param(
+        [string]$InstallRoot = ''
+    )
+    $envRaw = ''
+    if ($env:BOB_CRASH_REPORT -and ([string]$env:BOB_CRASH_REPORT).Trim()) {
+        $envRaw = ([string]$env:BOB_CRASH_REPORT).Trim().ToLowerInvariant()
+    } elseif ($env:BOBIVERSE_CRASH_REPORT -and ([string]$env:BOBIVERSE_CRASH_REPORT).Trim()) {
+        $envRaw = ([string]$env:BOBIVERSE_CRASH_REPORT).Trim().ToLowerInvariant()
+    }
+    if ($envRaw) {
+        if ($envRaw -in @('0', 'false', 'no', 'off', 'local', 'local-only', 'local_only', 'spool')) {
+            return $false
+        }
+        if ($envRaw -in @('1', 'true', 'yes', 'on', 'full', 'no-log-tail', 'nologtail', 'no_log_tail')) {
+            return $true
+        }
+    }
+    if ($InstallRoot) {
+        $cfg = Join-Path $InstallRoot 'config\crash-report.json'
+        if (-not (Test-Path -LiteralPath $cfg)) {
+            $cfg = Join-Path $InstallRoot 'crash-report.json'
+        }
+        if (Test-Path -LiteralPath $cfg) {
+            try {
+                $obj = Get-Content -LiteralPath $cfg -Raw -Encoding utf8 | ConvertFrom-Json
+                $mode = ''
+                if ($null -ne $obj.mode) { $mode = ([string]$obj.mode).Trim().ToLowerInvariant() }
+                if ($mode -in @('local', 'local-only', 'local_only', 'spool', 'off')) {
+                    return $false
+                }
+                if ($null -ne $obj.enabled) {
+                    return [bool]$obj.enabled
+                }
+            } catch { }
+        }
+    }
+    return $true
+}
+
 function Set-BobiverseNssmAppExitRestart {
     <#
     FR #1055: pin NSSM to Restart on Default AND exit code 0.

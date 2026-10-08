@@ -196,6 +196,8 @@ Agent-free airc workstation (no git/gh/Python/Node from bootstrap):
 Workstation profile (no agent briefings/skills; purge uninstall):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (or `AIRC_AGENT_LAYER=0`) skips `Install-BobiverseAgentLayer` / skill copy **and** strips MSI-laid `AGENTS.md` / `CLAUDE.md` / `GROK.md` / `.cursor` / `.grok` plus fleet agent scripts (`agent_control.py`, `startworker.py`, `grok_talk.py`, harvest/sync/bootstrap helpers) via `Remove-BobiverseAircWorkstationAgentPayload` (FR #3392 — the MSI payload still stages them before RunInstall). Never writes the installing user's `%USERPROFILE%\.grok\skills`. Manifest: `%ProgramData%\Bobiverse\airc-install-manifest.json`. Uninstall: fleet default still **keeps** ConsoleHome (FR #1566/#1599); workstation default purges secrets/homes, `ProgramData\Bobiverse\logs\install-airc.log`, and the LocalSystem crash spool, or pass `msiexec /x … AIRC_PURGE=1` (FR #3292 / #3392).
 
+Crash-report opt-out on install failures (FR #3395): when `config\crash-report.json` has `enabled=false` / `mode=local-only` (or `BOBIVERSE_CRASH_REPORT=0|local-only`), an `Install-AircConsole` failure is written only to `ProgramData\Bobiverse\logs\install-airc.log` — it does **not** call public intake. When intake is allowed, `Report-BobiverseIntakeIssue` is called with `-Repo SimonBarnett/bobiverse`.
+
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 
 ## Upgrade and Ergo / BobIrcd (#70)
