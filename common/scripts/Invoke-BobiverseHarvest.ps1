@@ -436,6 +436,39 @@ if ($bobTooling -and -not $script:ExplicitRepo) {
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/a-search$')) {
     $bookName = 'harvest-agent-skills'
     Write-Host "INFO FR #3189 product default skill_book=harvest-agent-skills for SimonBarnett/a-search"
+} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/skills-visionary$')) {
+    $bookName = 'harvest-skills-visionary'
+    Write-Host "INFO FR #3317 product default skill_book=harvest-skills-visionary for SimonBarnett/skills-visionary"
+}
+
+# FR #3317: DryRun (and payload) emit the owning skill-book path inside that repo.
+$skillBookPath = ''
+switch -Regex ($bookName) {
+    '^harvest-agent-skills$' {
+        if ($Repo -match '(?i)^SimonBarnett/bobiverse$') {
+            $skillBookPath = 'common/.grok/skills/harvest-agent-skills/SKILL.md'
+        } else {
+            $skillBookPath = '.grok/skills/harvest-agent-skills/SKILL.md'
+        }
+    }
+    '^harvest-skills-visionary$' { $skillBookPath = '.grok/skills/harvest-skills-visionary/SKILL.md' }
+    '^harvest$' { $skillBookPath = 'common/.grok/skills/harvest/SKILL.md' }
+    '^bobiverse-bob-worker$' { $skillBookPath = 'bob/.grok/skills/bobiverse-bob-worker/SKILL.md' }
+    '^bobiverse-fleet-ops$' { $skillBookPath = 'common/.grok/skills/bobiverse-fleet-ops/SKILL.md' }
+    '^bobiverse-bob-job-mrb$' { $skillBookPath = 'bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md' }
+    '^bobiverse-bob-job-irc$' { $skillBookPath = 'bob/.grok/skills/bobiverse-bob-job-irc/SKILL.md' }
+    '^bobiverse-bob-job-fr$' { $skillBookPath = 'bob/.grok/skills/bobiverse-bob-job-fr/SKILL.md' }
+    '^bobiverse-bob-job-uat$' { $skillBookPath = 'bob/.grok/skills/bobiverse-bob-job-uat/SKILL.md' }
+    '^bobiverse-jeeves' { $skillBookPath = "jeeves/.grok/skills/$bookName/SKILL.md" }
+    '^bobiverse-airc' { $skillBookPath = "airc/.grok/skills/$bookName/SKILL.md" }
+    '^bobiverse-' { $skillBookPath = "bob/.grok/skills/$bookName/SKILL.md" }
+    default {
+        if ($Repo -match '(?i)^SimonBarnett/bobiverse$') {
+            $skillBookPath = "common/.grok/skills/$bookName/SKILL.md"
+        } else {
+            $skillBookPath = ".grok/skills/$bookName/SKILL.md"
+        }
+    }
 }
 
 $sha = [Security.Cryptography.SHA256]::Create()
@@ -452,11 +485,16 @@ if ($env:BOB_NICK -and ([string]$env:BOB_NICK).Trim()) {
 if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
-    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; version = ''; seat = $seatNick }
+    skill_book_path = $skillBookPath
+    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; skill_book_path = $skillBookPath; version = ''; seat = $seatNick }
 }
 if ($files.Count) { $payload.files = $files }
 $json = $payload | ConvertTo-Json -Depth 6
-if ($DryRun) { Write-Host $json; return }
+if ($DryRun) {
+    Write-Host ("INFO FR #3317 DryRun repo={0} skill_book={1} skill_book_path={2}" -f $Repo, $bookName, $skillBookPath)
+    Write-Host $json
+    return
+}
 try {
     $r = Send-Payload $json
     $intakeId = Get-IntakeResponseProp -Response $r -Name 'intake_id' -Default ''

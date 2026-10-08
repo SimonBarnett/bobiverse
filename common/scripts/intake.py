@@ -111,20 +111,24 @@ _LESSONS_SECTION_RE = re.compile(
 _LESSON_BULLET_RE = re.compile(r"(?m)^\s*[-*]\s+(?P<text>.+?)\s*$")
 _LESSON_PLACEHOLDER_RE = re.compile(r"(?i)^\(?\s*no new playbook line\s*\)?$")
 HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
-# FR #3299: MRB must check owning repo (re-file / hold-open), not only the book path in-repo.
+# FR #3299 / #3317: light triage in the owning repo (useful / generalised / vision);
+# re-file / hold-open only when ownership is wrong or the owner repo is missing.
 LESSON_PR_MRB_INSTRUCTION = (
-    "MRB: verify that the lesson is generalised and placed in the right repo and SKILL.md "
-    "(re-file or move if the owning repo/book is wrong; leave OPEN if the owner repo does not "
-    "exist yet), then merge."
+    "MRB (light triage): is the lesson useful, generalised, non-duplicate, and a fit for this "
+    "repo's vision/AGENTS.md? PASS -> merge. Not useful / off-vision -> close with a one-line "
+    "reason (board CLOSED not-useful). Duplicate -> close citing the existing lesson. Wrong "
+    "owner -> re-file or MOVED (FR #3299); leave OPEN if the owner repo does not exist yet."
 )
 DEFAULT_SKILL_BOOK = "harvest"
 
-# Planned products that may not exist on GitHub yet (hold harvest tip OPEN; do not FAIL-close).
+# Planned products that may not exist on GitHub yet (hold as bobiverse issue; do not open a PR).
 MISSING_PRODUCT_REPOS = frozenset(
     {
         "simonbarnett/iphone-text-bridge",
     }
 )
+# Label on held harvest issues so Jeeves skips FR/MRB offer (FR #3317).
+OWNER_MISSING_LABEL = "owner-missing"
 
 
 class LessonOwner(NamedTuple):
@@ -183,6 +187,10 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
     "simonbarnett/a-search": (
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
+    "simonbarnett/skills-visionary": (
+        "harvest-skills-visionary",
+        ".grok/skills/harvest-skills-visionary/SKILL.md",
     ),
 }
 SKILL_BOOK_PATHS: dict[str, str] = {
@@ -1140,6 +1148,49 @@ def file_submission(
             lessons = extract_harvest_lessons(raw_body)
             if kind in ("harvest", "skill") and lessons:
                 src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
+                # FR #3317: planned/missing owner product -> held bobiverse issue (no PR).
+                owner = lesson_owner_repo(
+                    title=title,
+                    body=raw_body,
+                    source=str((src or {}).get("skill_book") or ""),
+                )
+                repo_l = str(repo or "").strip().lower()
+                hold_repo = owner.repo if owner.missing else None
+                if hold_repo is None and repo_l in MISSING_PRODUCT_REPOS:
+                    hold_repo = (
+                        f"SimonBarnett/{str(repo).split('/', 1)[-1]}"
+                        if "/" in str(repo)
+                        else str(repo)
+                    )
+                if hold_repo or owner.missing:
+                    intended = hold_repo or owner.repo or str(repo or "")
+                    hold_title = f"harvest: hold for {intended} — {title}"[:200]
+                    hold_body = (
+                        f"FR #3317: owner repo `{intended}` does not exist yet "
+                        f"(or is listed as a planned product). Held on bobiverse; "
+                        f"not offerable as MRB until the repo exists, then re-file.\n\n"
+                        f"Intended owner: `{intended}`\n\n"
+                        f"{raw_body}"
+                    )
+                    hold_labels = [
+                        "via-intake",
+                        "harvest",
+                        OWNER_MISSING_LABEL,
+                        "feature-request",
+                    ]
+                    out = filer.create_issue(
+                        "SimonBarnett/bobiverse",
+                        hold_title,
+                        hold_body,
+                        hold_labels,
+                    )
+                    rec["url"] = out["url"]
+                    rec["number"] = out["number"]
+                    rec["state"] = "held_owner_missing"
+                    rec["intended_owner"] = intended
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 book, skill_path = resolve_skill_book(
                     skill_book=str((src or {}).get("skill_book") or ""),
                     title=title,

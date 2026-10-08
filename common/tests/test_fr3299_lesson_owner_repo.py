@@ -10,8 +10,8 @@ import re
 
 def test_fr3299_lesson_pr_mrb_instruction_mentions_owning_repo():
     text = intake.LESSON_PR_MRB_INSTRUCTION
-    assert "right repo and SKILL.md" in text
-    assert "re-file" in text.lower() or "owning repo" in text.lower()
+    assert "light triage" in text.lower() or "useful" in text.lower()
+    assert "re-file" in text.lower() or "MOVED" in text
     assert "OPEN" in text
 
 
@@ -90,7 +90,7 @@ def test_fr3299_draft_skill_body_prepending_mrb_instruction(tmp_path: Path):
     pr = filer.prs[-1]
     body = pr.get("body") or ""
     assert intake.LESSON_PR_MRB_INSTRUCTION in body
-    assert "right repo and SKILL.md" in body
+    assert "light triage" in body.lower() or "useful" in body.lower()
 
 
 def test_fr3299_mrb_moved_verdict_title_is_skip_fr():

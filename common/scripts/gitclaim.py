@@ -132,7 +132,8 @@ EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
 )
 # FR #2562 / #2677 / #2687: MRB FAIL:/PASS: (or dash) verdict board titles are never FR jobs.
 # FR #3299: MOVED owner/repo#N boards are also verdicts (done, not mrb-fail / not re-offered as FR).
-MRB_VERDICT_TITLE_RE = re.compile(r"(?i)^MRB\s+(FAIL|PASS|MOVED)\s*[-:]")
+# FR #3317: CLOSED not-useful (light harvest triage) is also a done verdict.
+MRB_VERDICT_TITLE_RE = re.compile(r"(?i)^MRB\s+(FAIL|PASS|MOVED|CLOSED)\s*[-:]")
 # bobiverse#224 / #765 / #781: FAIL-fix PRs (fix(mrb-N) / mrb-N-fix) are not MRB/UAT targets.
 _MRB_FIX_TITLE_RE = re.compile(
     r"(?i)(?:^|\b)(?:fix\s*\(\s*mrb[-_]?\d+|mrb[-_]?\d+[-_]fix\b)"
@@ -164,6 +165,8 @@ SKIP_FR_LABELS = frozenset(
         # (row_awaits_mrb1 always False). Intake no longer stamps the label.
         "blocked",
         "release-gate",
+        # FR #3317: harvest tip held until the intended product repo exists.
+        "owner-missing",
     }
 )
 

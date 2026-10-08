@@ -145,13 +145,24 @@ If you spot self-MRB **before** any review work and have not ACK'd yet, NACK MRB
 
 **Harvest-lesson self-MRB (MRB #2732 / #2735):** a harvest-lesson PR opened from this seat's `Invoke-BobiverseHarvest` is self-MRB for that seat — NACK/GIVEUP and leave it for another seat.
 
-## Harvest-lesson intake PRs (FR #2705 / FR #3299)
+## Harvest-lesson intake PRs (FR #2705 / FR #3299 / FR #3317)
 
 Non-draft PRs labelled `harvest-lesson` with title `lesson(<book>): …` edit a skill book `SKILL.md` under `## Harvested lessons (intake)`. They are offerable MRB work (gitclaim must not treat them as draft/receipt harvests). The same owning-repo rules apply to draft `harvest:` / label `skill` PRs.
 
+**FR #3317 — seats open harvest PRs in the owning skill book** (job/product/plan repo; Bob tooling stays bobiverse). MRB is a **light triage**, not a re-route. Cost cap: use the short checklist below; **no full test suite** unless the tip also touches code/tests.
+
+**Short triage checklist (FR #3317):**
+
+1. **Useful?** Adds a durable playbook an agent would re-run.
+2. **Generalised?** Fleet-reusable, not a one-box anecdote.
+3. **Non-duplicate?** Not already on main in this book (CAST IRON / product paragraph / earlier harvest tip).
+4. **Vision / AGENTS fit?** Matches this repo's vision and harvest-home rules.
+
+Exits: **PASS** → merge. **Not useful / off-vision** → close with a one-line reason; board **`MRB CLOSED - not-useful: …`** then `DONE MRB … PASS <url>` (CLOSED/MOVED count as done, not `mrb-fail`). **Duplicate** → close citing the existing lesson (or fold the delta). **Wrong owner** (should be rare after direct filing) → step 0 / FR #3299 re-file / **MOVED**.
+
 On review:
 
-0. **Who owns this lesson (owning repo)?** Decide from the job repo / product named in the lesson, the plan's product, and the skill-book ownership lines (`harvest-agent-skills` domain table and `github:` frontmatter, `harvest-skills-visionary`, product `AGENTS.md` harvest routing). Bob fleet tooling (chair, worker, intake, tray, harvest process) stays in bobiverse. **Owner is this repo:** continue with steps 1–10. **Owner is another repo that exists:** twin-check its main and open PRs; if the lesson is already there, link it; otherwise **re-file** as a branch + PR in that repo's skill-book layout (its `harvest-agent-skills` or the specific skill, plus `docs/skill-harvest-log.md`), linking the original; if a PR cannot be opened, file a `harvest:` issue there with the full text; then comment `Moved to owner/repo#N` on the original and close it; board verdict **MOVED owner/repo#N** (not FAIL), then `DONE MRB … PASS <assigned-url>`. **Owner repo does not exist yet** (planned product): leave the original **OPEN** with a comment naming the intended owner — do not FAIL-close it. **Never** FAIL / FAIL-supersede / close a harvest PR as wrong-book unless the board cites a link where the lesson text actually sits (a skill book on main, or a reviewable skill-book PR). A product/FR PR does not count unless it carries the lesson text in a skill book.
+0. **Who owns this lesson (owning repo)?** Decide from the job repo / product named in the lesson, the plan's product, and the skill-book ownership lines (`harvest-agent-skills` domain table and `github:` frontmatter, `harvest-skills-visionary`, product `AGENTS.md` harvest routing). Bob fleet tooling (chair, worker, intake, tray, harvest process) stays in bobiverse. **Owner is this repo:** continue with the short triage (and steps 1–10 when needed). **Owner is another repo that exists:** twin-check its main and open PRs; if the lesson is already there, link it; otherwise **re-file** as a branch + PR in that repo's skill-book layout (its `harvest-agent-skills` or the specific skill, plus `docs/skill-harvest-log.md`), linking the original; if a PR cannot be opened, file a `harvest:` issue there with the full text; then comment `Moved to owner/repo#N` on the original and close it; board verdict **MOVED owner/repo#N** (not FAIL), then `DONE MRB … PASS <assigned-url>`. **Owner repo does not exist yet** (planned product): leave the original **OPEN** with a comment naming the intended owner — do not FAIL-close it. Held bobiverse issues labelled `owner-missing` are not offerable until the repo exists (FR #3317). **Never** FAIL / FAIL-supersede / close a harvest PR as wrong-book unless the board cites a link where the lesson text actually sits (a skill book on main, or a reviewable skill-book PR). A product/FR PR does not count unless it carries the lesson text in a skill book.
 
 1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
 2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong) **after** step 0 confirms this repo owns it.
