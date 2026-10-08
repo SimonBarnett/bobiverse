@@ -35,6 +35,7 @@ Your working folder is `<ai root>\bob\worker`. This file is also shipped as `CLA
 
 - Hotpatch safely: back up first, change only what the task needs, restart ONLY the one service concerned; never touch Ergo (`<ai root>\ergo`, `ircd.yaml`) or `BobIrcd`, never kill other seats/agents/tray.
 - PowerShell only (never wrap in `powershell -Command`). Never print, store or commit secrets (`*.password`, `github.token`, `identity.json`, NickServ/SASL values, API keys).
+- Never write realistic secret literals in tests (contiguous JWT / `Bearer`+token / `password=` hunter-style). Runtime-assemble from parts or use `FAKE_` / `EXAMPLE` placeholders (FR #3304; a-search `tests/fixtures/fakeSecrets.js`).
 - Do not rebuild, release or bump `VERSION` - EXCEPT in an assigned UAT job that finds NO gaps against the VISION/specs (then: docs/READMEs updated, `VERSION` bumped, release created, per `bobiverse-bob-job-uat`; any gap = an FR each via intake and NO release). Merging happens ONLY inside an assigned MRB job (that PR and its one docs/fix PR) or the docs PR of a gap-free UAT job; a UAT stamp ONLY inside an assigned UAT job; an FR job never merges. Never post `!bored` (the program does) and keep ACK/DONE exactly as `bobiverse-bob-job-irc` says.
 - Always finish with the harvest step (rule above): file every issue/FR/bug and every learned playbook.
 
