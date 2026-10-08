@@ -2,7 +2,7 @@
 
 Default public base: `https://irc.ntsa.uk`. Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
 
-Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to copy between machines. Protection is validation instead: body size caps (413), strict JSON/op schema (400), per-machine rate limit (429), GitHub hooks only for allow-listed owners (`BOB_GIT_OWNERS`, default `SimonBarnett`; 403 otherwise), and `POST /bob/v1/report` only from machine ids on the **roster Jeeves publishes** (`registered-machines.json`, mirrored from ChanServ by the chair; 403 otherwise). The receiver only reads that file - it never talks to ChanServ or IRC. A stray `X-Bob-Secret` header is ignored. `POST /bob/v1/intake` and `POST|GET /bob/v1/jira` stay open with their own rate limits and repo allow-lists.
+Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to copy between machines. Protection is validation instead: body size caps (413), strict JSON/op schema (400), per-machine rate limit (429), GitHub hooks only for allow-listed owners (`BOB_GIT_OWNERS`, default `SimonBarnett`; 403 otherwise), and `POST /bob/v1/report` only from machine ids on the **roster Jeeves publishes** (`registered-machines.json`, mirrored from ChanServ by the chair; 403 otherwise). The receiver only reads that file - it never talks to ChanServ or IRC. A stray `X-Bob-Secret` header is ignored. `POST /bob/v1/intake`, `POST|GET /bob/v1/jira`, and `POST|GET /bob/v1/hours` stay open with their own rate limits / schema gates (hours also rejects obvious credential fields and never logs request bodies).
 
 ## Paths
 
@@ -13,6 +13,11 @@ Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to
 | POST | `/bob/v1/git` | GitHub git webhook → digest queue |
 | POST | `/bob/v1/intake` | Harvest/intake (`kind`: issue\|fr\|skill\|harvest); **`repo` required** (`owner/name`) — **open, no secret** — **not** `/bob/v1/harvest` |
 | POST/GET | `/bob/v1/jira` | Jira-style intake — **open, no secret** |
+| POST | `/bob/v1/hours` | Create a work-time entry (open or closed); needs `idempotency_key` — **open, no secret** (FR #3450) |
+| POST | `/bob/v1/hours/{id}/heartbeat\|close\|withdraw` | Heartbeat, close, or soft-withdraw an entry |
+| GET | `/bob/v1/hours?user=…&from=…&to=…` | List entries (Europe/London days); optional `agent`/`customer`/`project`/`ticket`/`status` |
+| GET | `/bob/v1/hours/summary?user=…&date=…` | Day totals: raw + de-overlapped minutes, overlaps |
+| GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
 Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
@@ -80,6 +85,28 @@ After intake allow-rule changes merge to `main`, **Sync/compose (or restart) irc
 curl -sS -X POST "https://irc.ntsa.uk/bob/v1/jira" \
   -H "Content-Type: application/json" \
   -d "{\"summary\":\"example\",\"description\":\"…\",\"project\":\"BOB\"}"
+```
+
+### Hours webhook (FR #3450) — no secret
+
+Agents POST partial work-time entries as source material for Priority timesheets. Nothing here writes to Priority. Day filters use **Europe/London**. Open entries with no heartbeat past `BOB_HOURS_OPEN_TIMEOUT_MIN` (default 120) become `auto_closed`. Store lives under digest home `hours/`.
+
+```bash
+# Create (open entry)
+curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours" \
+  -H "Content-Type: application/json" \
+  -d "{\"idempotency_key\":\"seat-1\",\"agent\":\"Haitch\",\"on_behalf_of\":\"SimonB\",\"start\":\"2026-10-08T09:15:00+01:00\",\"customer\":\"ce-priority\",\"project\":\"dayworks\",\"repo_url\":\"https://github.com/SimonBarnett/ce-priority\",\"description\":\"Draft Day Works hours\",\"source\":\"marchhare\"}"
+
+# Heartbeat / close / withdraw
+curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/heartbeat" -H "Content-Type: application/json" -d "{}"
+curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/close" -H "Content-Type: application/json" \
+  -d "{\"end\":\"2026-10-08T11:00:00+01:00\"}"
+curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/withdraw" -H "Content-Type: application/json" -d "{}"
+
+# List / summary / export
+curl -sS "https://irc.ntsa.uk/bob/v1/hours?user=SimonB&from=2026-10-08&to=2026-10-08"
+curl -sS "https://irc.ntsa.uk/bob/v1/hours/summary?user=SimonB&date=2026-10-08"
+curl -sS "https://irc.ntsa.uk/bob/v1/hours/export?user=SimonB&from=2026-10-08&to=2026-10-08&format=csv"
 ```
 
 ## Local assert
