@@ -55,27 +55,28 @@ def test_fr3328_csharp_precedence_mirrors_python_fr3291():
     assert "airc-shell-off" in py or "airc shell=off" in py.lower()
 
 
-def test_fr3328_python_opt_out_still_green():
-    """Runtime sanity: Python side the C# gate mirrors still works (FR #3291)."""
-    import os
+def test_fr3328_python_opt_out_still_green(tmp_path, monkeypatch):
+    """Runtime sanity: Python side the C# gate mirrors still works (FR #3291).
+
+    FR #3452: isolate BOB_CRASH_SPOOL so the deliberate raise never lands in the
+    machine spool (that path previously flushed to intake as crash twins #3452/#3453).
+    """
     from unittest import mock
 
     import crash_report
 
-    os.environ["BOB_CRASH_REPORT"] = "0"
-    try:
-        crash_report._policy_cache = None
-        p = crash_report.load_crash_report_policy()
-        assert p.send is False
-        with mock.patch("crash_report.urllib.request.urlopen") as urlopen:
-            try:
-                raise RuntimeError("fr3328-parity")
-            except RuntimeError as exc:
-                result = crash_report.report_exception(
-                    "bob-tray", type(exc), exc, exc.__traceback__
-                )
-        assert result.get("local_only") is True
-        urlopen.assert_not_called()
-    finally:
-        os.environ.pop("BOB_CRASH_REPORT", None)
-        crash_report._policy_cache = None
+    monkeypatch.setenv("BOB_CRASH_SPOOL", str(tmp_path / "crash-spool"))
+    monkeypatch.setenv("BOB_CRASH_REPORT", "0")
+    crash_report._policy_cache = None
+    p = crash_report.load_crash_report_policy()
+    assert p.send is False
+    with mock.patch("crash_report.urllib.request.urlopen") as urlopen:
+        try:
+            raise RuntimeError("fr3328-parity")
+        except RuntimeError as exc:
+            result = crash_report.report_exception(
+                "bob-tray", type(exc), exc, exc.__traceback__
+            )
+    assert result.get("local_only") is True
+    urlopen.assert_not_called()
+    crash_report._policy_cache = None

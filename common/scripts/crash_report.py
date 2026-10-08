@@ -646,6 +646,21 @@ def flush_spool(
             sig = str(payload.get("sig") or path.stem)
             exe = str(payload.get("exe") or "unknown")
             r = str(payload.get("repo") or repo)
+            # FR #3452: opt-out / local-only stamps must never POST later when send
+            # becomes true (Python sets local_only=True; C# WriteSpool uses error=local_only).
+            err_raw = str(payload.get("error") or "").strip().lower()
+            if payload.get("local_only") or err_raw in {
+                "local_only",
+                "local-only",
+                "local",
+                "spool",
+            }:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                dropped += 1
+                continue
             if should_skip_report(exe, None, body=body, title=title):
                 try:
                     path.unlink(missing_ok=True)

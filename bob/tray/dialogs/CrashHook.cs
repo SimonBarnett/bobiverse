@@ -1,6 +1,7 @@
 // FR #2411: unhandled exception in tray dialogs -> GitHub issue (dedupe + spool).
 // FR #2436: skip probe / do-not-file / probe-shape-only (parity with crash_report.should_skip_report).
 // FR #3328: honour BOB_CRASH_REPORT / crash-report.json opt-out (parity with FR #3291 / crash_report.CrashReportPolicy).
+// FR #3452: local_only / error=local_only spool must never TryPostIntake on later FlushSpool.
 // Mirrors common/scripts/crash_report.py for WinForms exes compiled by Build-BobDialogs.ps1.
 using System;
 using System.Collections.Generic;
@@ -451,6 +452,24 @@ namespace BobDialogs
                         string body = Convert.ToString(payload.ContainsKey("body") ? payload["body"] : "") ?? "";
                         string sig = Convert.ToString(payload.ContainsKey("sig") ? payload["sig"] : Path.GetFileNameWithoutExtension(path)) ?? "unknown";
                         string exe = Convert.ToString(payload.ContainsKey("exe") ? payload["exe"] : "unknown") ?? "unknown";
+                        // FR #3452: opt-out / local-only stamps must never POST later when Send becomes true.
+                        bool localOnlyFlag = false;
+                        if (payload.ContainsKey("local_only"))
+                        {
+                            object lo = payload["local_only"];
+                            if (lo is bool) localOnlyFlag = (bool)lo;
+                            else
+                            {
+                                string los = Convert.ToString(lo) ?? "";
+                                localOnlyFlag = los.Equals("true", StringComparison.OrdinalIgnoreCase) || los == "1";
+                            }
+                        }
+                        string errRaw = (Convert.ToString(payload.ContainsKey("error") ? payload["error"] : "") ?? "").Trim().ToLowerInvariant();
+                        if (localOnlyFlag || errRaw == "local_only" || errRaw == "local-only" || errRaw == "local" || errRaw == "spool")
+                        {
+                            try { File.Delete(path); } catch { }
+                            continue;
+                        }
                         // FR #2436: drop probe / do-not-file spool payloads (parity with crash_report.flush_spool).
                         if (ShouldSkipReport(exe, null, body, title))
                         {
@@ -573,6 +592,10 @@ namespace BobDialogs
             payload["sig"] = sig;
             payload["exe"] = exeName;
             payload["error"] = error;
+            // FR #3452: stamp local_only bool when opt-out (parity with crash_report._write_spool).
+            string errNorm = (error ?? "").Trim().ToLowerInvariant();
+            if (errNorm == "local_only" || errNorm == "local-only" || errNorm == "local" || errNorm == "spool")
+                payload["local_only"] = true;
             payload["ts"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
             long epoch = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
             string path = Path.Combine(dir, "crash-" + sig + "-" + epoch + ".json");
