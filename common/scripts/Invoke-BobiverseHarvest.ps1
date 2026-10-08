@@ -4,7 +4,7 @@
   Harvest step for any Bobiverse debugging/maintenance session: file what you learned to the intake webhook.
 
 .DESCRIPTION
-  Builds ONE harvest payload (kind=harvest, repo SimonBarnett/bobiverse by default) from -Summary / -Lesson /
+  Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
   optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
@@ -23,7 +23,7 @@ param(
     [string]$Summary = '',
     [string[]]$Lesson = @(),
     [string[]]$SkillFile = @(),
-    [string]$Repo = 'SimonBarnett/bobiverse',
+    [string]$Repo = '',  # a-search fix: no silent bobiverse default; resolved below (job repo / lesson owner)
     [string]$JobRepo = '',  # FR #3189: offered job owner/name (or BOB_JOB_REPO / run\job-repo.txt)
     [string]$ExistingPrUrl = '',  # FR #1812: when set / already in Summary, intake links PR (no fallback skill issue)
     [string]$Book = 'harvest',  # FR #2705: sets source.skill_book for lesson -> SKILL.md routing
@@ -289,8 +289,33 @@ if (-not $JobRepo -or -not $JobRepo.Trim()) {
         } catch { }
     }
 }
+# a-search fix: job keys arrive typed ("FR SimonBarnett/a-search#637") or with "#N"; normalise.
+if ($JobRepo) {
+    $JobRepo = ([string]$JobRepo).Trim()
+    $JobRepo = $JobRepo -replace '(?i)^\s*(?:(?:ACK|DONE|NACK|GIVEUP)\s+)?(?:FR|MRB|UAT)\s+', ''
+    $JobRepo = ($JobRepo -replace '\s*#\s*\d+.*$', '').Trim()
+}
 if (-not $script:ExplicitRepo -and $JobRepo -and ($JobRepo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
     $Repo = $JobRepo.Trim()
+}
+# a-search fix: never fall back to bobiverse silently. No job repo -> the product named in
+# the lesson owns it (a-search, agentic_fomprep, skills-visionary); Bob tooling -> bobiverse;
+# a worker seat with neither must pass -Repo (throw so the agent retries with the job repo).
+if (-not $Repo -or -not $Repo.Trim()) {
+    $ownerBlob = ($Summary + "`n" + (($Lesson | ForEach-Object { $_ }) -join "`n"))
+    $bobCue = ($ownerBlob -match '(?i)bob-worker|_release_gen|release_gen|done-miss|boredemitter|fleet-ops|hotpatch|\b(jeeves|ircjeeves|bob-tray|tipform|chair outbox|intake allowlist|gitclaim|airc)\b')
+    if ($ownerBlob -match '(?i)\bSimonBarnett/a-search\b|\ba-search\b') {
+        $Repo = 'SimonBarnett/a-search'
+    } elseif ($ownerBlob -match '(?i)\bagentic_fomprep\b') {
+        $Repo = 'SimonBarnett/agentic_fomprep'
+    } elseif ($ownerBlob -match '(?i)\bskills-visionary\b') {
+        $Repo = 'SimonBarnett/skills-visionary'
+    } elseif ($bobCue -or -not ($env:BOB_OUTBOX -and ([string]$env:BOB_OUTBOX).Trim())) {
+        $Repo = 'SimonBarnett/bobiverse'
+    } else {
+        throw "harvest repo unknown: pass -Repo <owner/repo of the job you worked> (e.g. -Repo SimonBarnett/a-search). Never default product lessons to SimonBarnett/bobiverse."
+    }
+    Write-Host "INFO harvest repo inferred: $Repo (pass -Repo to be explicit)"
 }
 
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) { throw "Repo must be owner/name (got '$Repo')" }
