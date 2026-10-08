@@ -20,7 +20,7 @@ param(
     [string]$PasswordFile = '',
     # Optional explicit Ergo server PASS source file (copied into ConsoleHome\ergo.password).
     [string]$ErgoPasswordFile = '',
-    # Simon + bob-{machine} seeded as operators (FR #3286: nick pattern alone is not auth).
+    # Simon + bob-{COMPUTERNAME} seeded as operators (FR #3286: nick pattern alone is not auth).
     [string[]]$Operators = @('Simon'),
     [string]$ServiceName = 'AircConsole',
     # Absolute python.exe for LocalSystem (#282). Empty = auto-resolve at install.
@@ -29,7 +29,16 @@ param(
     # Required on boxes where COMPUTERNAME is not the fleet id (e.g. WIN-...).
     [string]$MachineId = '',
     # #277: default starts the service so Running is the unattended end state.
-    [switch]$NoStart
+    [switch]$NoStart,
+    # FR #3287: remote capability gates (Install-Airc also writes config\airc.json).
+    [ValidateSet('', 'off', 'operators')]
+    [string]$ShellMode = '',
+    [ValidateSet('', 'off', 'on')]
+    [string]$Jobs = '',
+    [ValidateSet('', 'off', 'on')]
+    [string]$UpdateCap = '',
+    [switch]$RequireAccount,
+    [string[]]$Accounts = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -470,6 +479,31 @@ if ($useAircExe) {
     $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl"
     if ($MachineId) { $appParams += " --machine `"$MachineId`"" }
     if (Test-Path -LiteralPath $opsFile) { $appParams += " --operators-file `"$opsFile`"" }
+    # FR #3287: bake capability flags into AppParameters (survive NSSM re-register on upgrade).
+    if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
+        $ShellMode = [string]$priorId.ShellMode
+    }
+    if (-not $Jobs -and $priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) {
+        $Jobs = [string]$priorId.Jobs
+    }
+    if (-not $UpdateCap -and $priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) {
+        $UpdateCap = [string]$priorId.UpdateCap
+    }
+    if ($ShellMode -in @('off', 'operators')) { $appParams += " --shell-mode $ShellMode" }
+    if ($Jobs -in @('off', 'on')) { $appParams += " --jobs $Jobs" }
+    if ($UpdateCap -in @('off', 'on')) { $appParams += " --update $UpdateCap" }
+    if ($RequireAccount -or ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount)) {
+        $appParams += ' --require-account'
+        $RequireAccount = $true
+    }
+    if ($Accounts.Count -eq 0 -and $priorId -and $priorId.PSObject.Properties['Accounts'] -and $priorId.Accounts) {
+        $Accounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
+    }
+    if ($Accounts.Count -gt 0) {
+        $appParams += ' --accounts'
+        foreach ($a in $Accounts) { $appParams += " $a" }
+    }
+    Write-Host ("INFO FR #3287 AppParameters capabilities shell={0} jobs={1} update={2} require_account={3} accounts={4}" -f $(if ($ShellMode) { $ShellMode } else { '-' }), $(if ($Jobs) { $Jobs } else { '-' }), $(if ($UpdateCap) { $UpdateCap } else { '-' }), [int][bool]$RequireAccount, $Accounts.Count)
     $appTarget = $aircExe
     $appDirectory = $packRoot
     Write-Host "INFO Airc Application=airc.exe (FR #2397 cutover)"
@@ -497,6 +531,30 @@ if ($useAircExe) {
     $appParams += " -PasswordFile `"$PasswordFile`""
     if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
     if (Test-Path -LiteralPath $opsFile) { $appParams += " -OperatorsFile `"$opsFile`"" }
+    # FR #3287: legacy Start-AircConsole.ps1 capability params.
+    if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
+        $ShellMode = [string]$priorId.ShellMode
+    }
+    if (-not $Jobs -and $priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) {
+        $Jobs = [string]$priorId.Jobs
+    }
+    if (-not $UpdateCap -and $priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) {
+        $UpdateCap = [string]$priorId.UpdateCap
+    }
+    if ($ShellMode -in @('off', 'operators')) { $appParams += " -ShellMode $ShellMode" }
+    if ($Jobs -in @('off', 'on')) { $appParams += " -Jobs $Jobs" }
+    if ($UpdateCap -in @('off', 'on')) { $appParams += " -UpdateCap $UpdateCap" }
+    if ($RequireAccount -or ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount)) {
+        $appParams += ' -RequireAccount'
+        $RequireAccount = $true
+    }
+    if ($Accounts.Count -eq 0 -and $priorId -and $priorId.PSObject.Properties['Accounts'] -and $priorId.Accounts) {
+        $Accounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
+    }
+    if ($Accounts.Count -gt 0) {
+        $appParams += ' -Accounts'
+        foreach ($a in $Accounts) { $appParams += " $a" }
+    }
     $appTarget = 'powershell.exe'
     $appDirectory = (Split-Path $Launcher -Parent)
     Write-Host 'INFO Airc Application=powershell Start-AircConsole.ps1 (legacy; no airc\airc.exe)'

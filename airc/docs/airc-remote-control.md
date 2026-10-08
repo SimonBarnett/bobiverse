@@ -30,7 +30,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 
 ## UPDATE (FR #77) — shipped
 
-Authorized PRIVMSG only (`bob-*` / operators):
+Authorized PRIVMSG only (operators list; `bob-<machine>` when seeded — FR #3286, never arbitrary `bob-*`):
 
 ```text
 PRIVMSG marchhare_console :UPDATE airc

@@ -178,9 +178,13 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 - **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`
 - **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`
-- **airc**: `MACHINEID=`
+- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287)
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
+
+airc status-only workstation (no remote shell):  
+`msiexec /i airc-x.y.z.msi /qn AIRC_SHELL=off AIRC_REQUIRE_ACCOUNT=1 AIRC_ACCOUNTS=simon`  
+Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
 
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 

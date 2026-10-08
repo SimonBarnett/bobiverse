@@ -39,7 +39,7 @@ Prefer **one** live console per box. `Install-Airc` **removes** leftover `AircCo
 
 ## Remote shell via PRIVMSG (FR #75 / helper FR #76)
 
-Authenticated fleet ears (`bob-*`) may Query the console. Default shell is **PowerShell 5.1** (`-NoProfile`); use `cmd:` for COMSPEC; `psb64:` for EncodedCommand. Replies use `out`/`err`/`DONE id= exit=` framing (chunked, not silent 400 clip).
+Operators (and the seeded `bob-<machine>` ear nick) may Query the console when AuthPolicy allows them; arbitrary `bob-*` nicks are denied (FR #3286). Default shell is **PowerShell 5.1** (`-NoProfile`); use `cmd:` for COMSPEC; `psb64:` for EncodedCommand. Replies use `out`/`err`/`DONE id= exit=` framing (chunked, not silent 400 clip).
 
 Driving-box helper:
 

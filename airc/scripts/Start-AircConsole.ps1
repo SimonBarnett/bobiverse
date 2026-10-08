@@ -33,6 +33,13 @@ param(
     [string]$OperatorsFile = '',
     [string[]]$Accounts = @(),
     [switch]$RequireAccount,
+    # FR #3287: capability gates (also --shell off|operators on the Python host).
+    [ValidateSet('', 'off', 'operators')]
+    [string]$ShellMode = '',
+    [ValidateSet('', 'off', 'on')]
+    [string]$Jobs = '',
+    [ValidateSet('', 'off', 'on')]
+    [string]$UpdateCap = '',
     [switch]$TlsInsecure,
     [switch]$ServiceMode,
     # Reserved {machine}_console needs SASL before NICK (Ergo nick reservation).
@@ -189,6 +196,10 @@ if ($Accounts.Count -gt 0) {
     $argsList += $Accounts
 }
 if ($RequireAccount) { $argsList += '--require-account' }
+# FR #3287
+if ($ShellMode -in @('off', 'operators')) { $argsList += @('--shell-mode', $ShellMode) }
+if ($Jobs -in @('off', 'on')) { $argsList += @('--jobs', $Jobs) }
+if ($UpdateCap -in @('off', 'on')) { $argsList += @('--update', $UpdateCap) }
 if ($TlsInsecure) { $argsList += '--tls-insecure' }
 # #34: always pass the choice explicitly (a bare omission must never silently flip it).
 if ($Sasl) { $argsList += '--sasl' } else {

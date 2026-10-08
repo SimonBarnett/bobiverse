@@ -26,6 +26,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
+import json
 
 from account_map import AccountMap, parse_message_tags
 from airc_jobs import JobProtocol, parse_job_verb
@@ -41,6 +42,9 @@ SHELL_TIMEOUT_S = 120.0
 # still fail-closes with busy DONE so Wait never hangs without a DONE (#2612).
 SHELL_PENDING_MAX = 8
 UPDATE_PRODUCTS = frozenset({"airc", "bob", "jeeves"})
+SHELL_MODE_TOKENS = frozenset({"off", "operators"})
+JOBS_TOKENS = frozenset({"off", "on"})
+UPDATE_CAP_TOKENS = frozenset({"off", "on"})
 _PRIVMSG_RE = re.compile(
     r"^:([^!\s]+)(?:![^@\s]*@\S+)?\s+PRIVMSG\s+(\S+)\s+:?(.*)$",
     re.IGNORECASE,
@@ -53,7 +57,8 @@ _UPDATE_CMD_RE = re.compile(
     r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+))?\s*$",
     re.IGNORECASE,
 )
-# Issue #302: fleet ear nicks bob-{machine} are already authenticated; machine varies.
+# Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth — AuthPolicy
+# must still require operators (+ account when --require-account / --accounts).
 _BOB_FLEET_NICK_RE = re.compile(r"^bob-[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 
 ShopProbeResult = Literal["registered", "missing", "unknown"]
@@ -539,7 +544,10 @@ def parse_ping_command(text: str) -> str | None:
 
 
 def is_bob_fleet_nick(nick: str) -> bool:
-    """True for fleet ear nicks ``bob-{machinename}`` (issue #302)."""
+    """True for fleet ear nick shape ``bob-{machinename}`` (issue #302).
+
+    FR #3286: this is a naming helper only — never treat the pattern as authentication.
+    """
     return bool(_BOB_FLEET_NICK_RE.match((nick or "").strip()))
 
 
@@ -551,16 +559,14 @@ class AuthPolicy:
     accounts: set[str] = field(default_factory=set)
     account_map: AccountMap | None = None
     require_account: bool = False
-    # When set, also allow bob-<machine> for this box; bob-* fleet nicks always allowed (#302).
+    # When set, also treat bob-<machine> as an operator nick for this box (still subject
+    # to --require-account / --accounts). Never allow arbitrary bob-* by regex (FR #3286).
     machine: str | None = None
 
     def allow(self, nick: str, account: str | None = None) -> bool:
         n = (nick or "").strip().lower()
         if not n:
             return False
-        # Fleet bob-{machine} seats are already authenticated on Ergo (#302).
-        if is_bob_fleet_nick(n):
-            return True
         ops = {x.lower() for x in self.operators}
         mid = machine_id(self.machine) if self.machine is not None else None
         if mid:
@@ -578,6 +584,139 @@ class AuthPolicy:
         if ops:
             return n in ops
         return need_acct
+
+
+@dataclass(frozen=True)
+class ConsoleCapabilities:
+    """FR #3287: install-time remote capability gates (survive MSI upgrade).
+
+    ``shell_mode``: ``off`` = STATUS/ping only; ``operators`` = FR #75 shell for auth nicks.
+    ``jobs`` / ``update``: finer gates when shell is ``operators``.
+    """
+
+    shell_mode: Literal["off", "operators"] = "operators"
+    jobs: Literal["off", "on"] = "on"
+    update: Literal["on", "off"] = "on"
+    require_account: bool = False
+    accounts: tuple[str, ...] = ()
+
+    def log_line(self) -> str:
+        return (
+            f"INFO capabilities shell={self.shell_mode} jobs={self.jobs} "
+            f"update={self.update} require_account={int(bool(self.require_account))} "
+            f"accounts={len(self.accounts)}"
+        )
+
+
+def normalize_shell_cli(value: str | None) -> tuple[str | None, str | None]:
+    """Return ``(shell_mode, powershell_path)`` for a ``--shell`` CLI token.
+
+    FR #3287: exact ``off`` / ``operators`` are capability modes; any other value
+    remains the PowerShell executable path (legacy ``--shell``).
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return None, None
+    low = raw.lower()
+    if low in SHELL_MODE_TOKENS:
+        return low, None
+    return None, raw
+
+
+def _norm_on_off(value: str | None, *, default: str) -> str:
+    raw = (value or "").strip().lower()
+    if raw in {"on", "off"}:
+        return raw
+    return default
+
+
+def resolve_shell_mode_for_install(
+    *,
+    prior_shell: str | None,
+    explicit: str | None,
+    had_prior_service: bool,
+) -> str:
+    """Fresh MSI default ``off``; upgrade of an existing fleet box defaults ``operators``."""
+    exp = (explicit or "").strip().lower()
+    if exp in SHELL_MODE_TOKENS:
+        return exp
+    prior = (prior_shell or "").strip().lower()
+    if prior in SHELL_MODE_TOKENS:
+        return prior
+    return "operators" if had_prior_service else "off"
+
+
+def load_capabilities(
+    *,
+    install_root: Path | str | None = None,
+    console_home: Path | str | None = None,
+    cli_shell: str | None = None,
+    cli_shell_mode: str | None = None,
+    cli_jobs: str | None = None,
+    cli_update: str | None = None,
+    cli_require_account: bool | None = None,
+    cli_accounts: list[str] | tuple[str, ...] | None = None,
+    default_shell_mode: str = "operators",
+) -> ConsoleCapabilities:
+    """Merge CLI + ``config\\airc.json`` (install root, then console home)."""
+    data: dict = {}
+    roots: list[Path] = []
+    if install_root:
+        roots.append(Path(install_root))
+    if console_home:
+        roots.append(Path(console_home))
+    for root in roots:
+        for rel in ("config/airc.json", "airc.json"):
+            path = root / rel
+            if not path.is_file():
+                continue
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(raw, dict):
+                data.update(raw)
+                break
+
+    mode_cli, _path = normalize_shell_cli(cli_shell)
+    mode = (cli_shell_mode or mode_cli or data.get("shell") or data.get("shell_mode") or default_shell_mode)
+    mode = str(mode).strip().lower()
+    if mode not in SHELL_MODE_TOKENS:
+        mode = default_shell_mode
+
+    jobs = _norm_on_off(cli_jobs if cli_jobs is not None else data.get("jobs"), default="on")
+    update = _norm_on_off(
+        cli_update if cli_update is not None else data.get("update"), default="on"
+    )
+
+    req = cli_require_account
+    if req is None:
+        req = bool(data.get("require_account"))
+    accts: list[str] = []
+    if cli_accounts:
+        accts.extend(str(x).strip() for x in cli_accounts if str(x).strip())
+    cfg_accts = data.get("accounts")
+    if isinstance(cfg_accts, str):
+        accts.extend(x.strip() for x in re.split(r"[,;\s]+", cfg_accts) if x.strip())
+    elif isinstance(cfg_accts, (list, tuple)):
+        accts.extend(str(x).strip() for x in cfg_accts if str(x).strip())
+    # dedupe preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for a in accts:
+        k = a.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(a)
+
+    return ConsoleCapabilities(
+        shell_mode=mode,  # type: ignore[arg-type]
+        jobs=jobs,  # type: ignore[arg-type]
+        update=update,  # type: ignore[arg-type]
+        require_account=bool(req),
+        accounts=tuple(uniq),
+    )
 
 
 @dataclass
@@ -1448,6 +1587,7 @@ class AircConsoleCore:
         update_scheduler: Callable[..., UpdateScheduleResult] | None = None,
         install_root: str | None = None,
         job_protocol: JobProtocol | None = None,
+        capabilities: ConsoleCapabilities | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -1459,6 +1599,8 @@ class AircConsoleCore:
         self.update_scheduler = update_scheduler or schedule_fleet_update
         self.install_root = install_root
         self.job_protocol = job_protocol
+        # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
+        self.capabilities = capabilities or ConsoleCapabilities()
 
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
@@ -1539,18 +1681,39 @@ class AircConsoleCore:
                 target=target,
                 text=text,
                 reply=(
-                    "airc console (FR #75): default PowerShell -NoProfile; "
+                    "airc console (FR #75/#3287): default PowerShell -NoProfile; "
                     "cmd: COMSPEC escape; psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit=; "
                     "STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update; "
+                    f"capabilities shell={self.capabilities.shell_mode} "
+                    f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
                     ".quit closes; silent on channel; answers ping"
                 ),
             )
 
+        caps = self.capabilities
+
         # FR #77: UPDATE schedules Update-BobiverseService Check (detached); never msiexec here.
         parsed = parse_update_command(cmd)
         if parsed is not None:
+            # FR #3287: shell=off is status-only; update=off refuses even when shell=operators.
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.update == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 update-disabled",
+                )
             product, ver = parsed
             try:
                 result = self.update_scheduler(
@@ -1577,15 +1740,48 @@ class AircConsoleCore:
         parsed = parse_job_verb(cmd)
         if parsed is not None and self.job_protocol is not None:
             verb, kv = parsed
+            # FR #3287: shell=off keeps STATUS only; jobs=off refuses write/exec verbs.
+            if caps.shell_mode == "off" and verb != "STATUS":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.jobs == "off" and verb != "STATUS":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 jobs-disabled",
+                )
             self.job_protocol.handle_async(nick, verb, kv)
             return HandleResult(action="job", nick=nick, target=target, text=text)
 
         # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.
         if self.shell_runner is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
             self.shell_runner.start(nick, cmd)
             return HandleResult(action="shell", nick=nick, target=target, text=text)
 
         # Legacy interactive pipe (tests / AIRC without runner).
+        if caps.shell_mode == "off":
+            return HandleResult(
+                action="capability_deny",
+                nick=nick,
+                target=target,
+                text=text,
+                reply="DONE exit=126 shell-disabled",
+            )
         self.sessions.pipe(nick, cmd)
         return HandleResult(action="pipe", nick=nick, target=target, text=text)
 
