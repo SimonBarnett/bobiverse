@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, NamedTuple, Protocol
 
 KINDS = frozenset({"issue", "fr", "skill", "harvest"})
 MAX_BODY_BYTES = 256 * 1024
@@ -111,17 +111,86 @@ _LESSONS_SECTION_RE = re.compile(
 _LESSON_BULLET_RE = re.compile(r"(?m)^\s*[-*]\s+(?P<text>.+?)\s*$")
 _LESSON_PLACEHOLDER_RE = re.compile(r"(?i)^\(?\s*no new playbook line\s*\)?$")
 HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
+# FR #3299 / #3317: light triage in the owning repo (useful / generalised / vision);
+# re-file / hold-open only when ownership is wrong or the owner repo is missing.
 LESSON_PR_MRB_INSTRUCTION = (
-    "MRB: verify that the lesson is generalised and placed in the right SKILL.md "
-    "(move or reword it if not), then merge."
+    "MRB (light triage): is the lesson useful, generalised, non-duplicate, and a fit for this "
+    "repo's vision/AGENTS.md? PASS -> merge. Not useful / off-vision -> close with a one-line "
+    "reason (board CLOSED not-useful). Duplicate -> close citing the existing lesson. Wrong "
+    "owner -> re-file or MOVED (FR #3299); leave OPEN if the owner repo does not exist yet."
 )
 DEFAULT_SKILL_BOOK = "harvest"
+
+# Planned products that may not exist on GitHub yet (hold as bobiverse issue; do not open a PR).
+MISSING_PRODUCT_REPOS = frozenset(
+    {
+        "simonbarnett/iphone-text-bridge",
+    }
+)
+# Label on held harvest issues so Jeeves skips FR/MRB offer (FR #3317).
+OWNER_MISSING_LABEL = "owner-missing"
+
+
+class LessonOwner(NamedTuple):
+    """FR #3299: owning GitHub repo for a harvest/skill lesson tip."""
+
+    repo: str | None
+    missing: bool = False
+
+
+def lesson_owner_repo(title: str = "", body: str = "", source: str = "") -> LessonOwner:
+    """Return the skill-book owning repo for a harvest/skill lesson (FR #3299).
+
+    ``missing=True`` means the intended owner is a planned product that does not
+    exist yet — MRB must leave the tip OPEN (never FAIL-close).
+    ``repo=None`` means ownership could not be decided from the text.
+    """
+    blob = f"{title or ''}\n{body or ''}\n{source or ''}"
+    low = blob.lower()
+
+    # Explicit owner/name first.
+    m = re.search(r"(?i)\b(SimonBarnett/[A-Za-z0-9_.-]+)\b", blob)
+    if m:
+        repo = m.group(1)
+        repo_l = repo.lower()
+        # Normalise casing to SimonBarnett/...
+        parts = repo.split("/", 1)
+        repo = f"SimonBarnett/{parts[1]}" if len(parts) == 2 else repo
+        return LessonOwner(repo, missing=(repo_l in MISSING_PRODUCT_REPOS))
+
+    # Product / plan cues (fixtures from FR #3299).
+    if re.search(r"(?i)iphone[- ]?text[- ]?bridge|shortcuts?\s+all-?sms", low):
+        return LessonOwner("SimonBarnett/iphone-text-bridge", missing=True)
+    if re.search(r"(?i)skills-visionary|plan-seat|plan\s+xlsx|harvest-skills-visionary", low):
+        return LessonOwner("SimonBarnett/skills-visionary", missing=False)
+    if re.search(r"(?i)\ba-search\b|awin\s+local|defaultqueryparts|cdk\s+synth", low):
+        return LessonOwner("SimonBarnett/a-search", missing=False)
+    if re.search(r"(?i)\btrutex\b", low):
+        return LessonOwner("SimonBarnett/trutex", missing=False)
+    if re.search(r"(?i)agentic_fomprep|priority\s+catalog|cat-t\d+", low):
+        return LessonOwner("SimonBarnett/agentic_fomprep", missing=False)
+
+    # Bob fleet tooling stays in bobiverse.
+    if re.search(
+        r"(?i)bob-worker|_release_gen|bobiverse-bob|ircjeeves|ircbob|jeeves|airc|"
+        r"harvest-lesson|invoke-bobiverseharvest|gitclaim|!bored|outbox\.txt",
+        low,
+    ):
+        return LessonOwner("SimonBarnett/bobiverse", missing=False)
+
+    return LessonOwner(None, missing=False)
+
+
 # FR #3189: product repos own their skill trees (not bobiverse common/harvest).
 # Map lowercased owner/name -> (book_name, repo-relative SKILL.md path).
 PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
     "simonbarnett/a-search": (
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
+    "simonbarnett/skills-visionary": (
+        "harvest-skills-visionary",
+        ".grok/skills/harvest-skills-visionary/SKILL.md",
     ),
 }
 SKILL_BOOK_PATHS: dict[str, str] = {
@@ -1079,6 +1148,49 @@ def file_submission(
             lessons = extract_harvest_lessons(raw_body)
             if kind in ("harvest", "skill") and lessons:
                 src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
+                # FR #3317: planned/missing owner product -> held bobiverse issue (no PR).
+                owner = lesson_owner_repo(
+                    title=title,
+                    body=raw_body,
+                    source=str((src or {}).get("skill_book") or ""),
+                )
+                repo_l = str(repo or "").strip().lower()
+                hold_repo = owner.repo if owner.missing else None
+                if hold_repo is None and repo_l in MISSING_PRODUCT_REPOS:
+                    hold_repo = (
+                        f"SimonBarnett/{str(repo).split('/', 1)[-1]}"
+                        if "/" in str(repo)
+                        else str(repo)
+                    )
+                if hold_repo or owner.missing:
+                    intended = hold_repo or owner.repo or str(repo or "")
+                    hold_title = f"harvest: hold for {intended} — {title}"[:200]
+                    hold_body = (
+                        f"FR #3317: owner repo `{intended}` does not exist yet "
+                        f"(or is listed as a planned product). Held on bobiverse; "
+                        f"not offerable as MRB until the repo exists, then re-file.\n\n"
+                        f"Intended owner: `{intended}`\n\n"
+                        f"{raw_body}"
+                    )
+                    hold_labels = [
+                        "via-intake",
+                        "harvest",
+                        OWNER_MISSING_LABEL,
+                        "feature-request",
+                    ]
+                    out = filer.create_issue(
+                        "SimonBarnett/bobiverse",
+                        hold_title,
+                        hold_body,
+                        hold_labels,
+                    )
+                    rec["url"] = out["url"]
+                    rec["number"] = out["number"]
+                    rec["state"] = "held_owner_missing"
+                    rec["intended_owner"] = intended
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 book, skill_path = resolve_skill_book(
                     skill_book=str((src or {}).get("skill_book") or ""),
                     title=title,
@@ -1178,7 +1290,11 @@ def file_submission(
                 return rec
             else:
                 try:
-                    out = filer.create_draft_pr(repo, title, body, branch, files, labels)
+                    # FR #3299: draft skill (no Lessons:) still carries the owning-repo MRB line.
+                    draft_body = body
+                    if kind == "skill" and LESSON_PR_MRB_INSTRUCTION not in (body or ""):
+                        draft_body = f"{LESSON_PR_MRB_INSTRUCTION}\n\n{body}".rstrip() + "\n"
+                    out = filer.create_draft_pr(repo, title, draft_body, branch, files, labels)
                     rec["url"] = out["url"]
                     rec["number"] = out["number"]
                     rec["branch"] = out.get("branch")

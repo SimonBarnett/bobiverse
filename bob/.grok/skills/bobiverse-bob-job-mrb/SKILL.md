@@ -113,9 +113,9 @@ When the assigned PR is already **closed**, or a **duplicate/superseded** of wor
 5. If the originating issue is still open only because this duplicate never merged, close it citing the merged fix URLs (not this PR).
 6. **DONE MRB owner/repo#N FAIL <assigned-pr-url>** — nothing after the URL.
 
-**Harvest-lesson twins:** the same rule applies when two `lesson(<book>):` / `harvest-lesson` tips carry the same playbook — FAIL-superseded the later one; never merge the misplaced raw duplicate tip into `harvest` when the playbook belongs (or already landed) in `bobiverse-bob-job-mrb` (MRB #2741 / #2747 / #2750).
+**Harvest-lesson twins:** the same rule applies when two `lesson(<book>):` / `harvest-lesson` tips carry the same playbook — FAIL-superseded the later one; never merge the misplaced raw duplicate tip into `harvest` when the playbook belongs (or already landed) in `bobiverse-bob-job-mrb` (MRB #2741 / #2747 / #2750). Wrong-**repo** tips follow **Harvest-lesson intake PRs** step 0 (re-file / MOVED / hold-open) — never FAIL-close without a skill-book link (FR #3299).
 
-**CAST IRON already covers it (MRB #2732 / #2783):** if the same skill book already has a CAST IRON / product paragraph covering the lesson (for example FR #2727 Clear `removed=0`), FAIL-supersede and close as not planned — do not merge a weaker `## Harvested lessons` duplicate.
+**CAST IRON already covers it (MRB #2732 / #2783):** if the same skill book already has a CAST IRON / product paragraph covering the lesson (for example FR #2727 Clear `removed=0`), FAIL-supersede and close as not planned — do not merge a weaker `## Harvested lessons` duplicate. Cite the skill-book location on main (step 0).
 
 Self-MRB remains a separate hand-back (GIVEUP / NACK); this section is for hostile review of a head that lost the race to main.
 
@@ -145,20 +145,34 @@ If you spot self-MRB **before** any review work and have not ACK'd yet, NACK MRB
 
 **Harvest-lesson self-MRB (MRB #2732 / #2735):** a harvest-lesson PR opened from this seat's `Invoke-BobiverseHarvest` is self-MRB for that seat — NACK/GIVEUP and leave it for another seat.
 
-## Harvest-lesson intake PRs (FR #2705)
+## Harvest-lesson intake PRs (FR #2705 / FR #3299 / FR #3317)
 
-Non-draft PRs labelled `harvest-lesson` with title `lesson(<book>): …` edit a skill book `SKILL.md` under `## Harvested lessons (intake)`. They are offerable MRB work (gitclaim must not treat them as draft/receipt harvests).
+Non-draft PRs labelled `harvest-lesson` with title `lesson(<book>): …` edit a skill book `SKILL.md` under `## Harvested lessons (intake)`. They are offerable MRB work (gitclaim must not treat them as draft/receipt harvests). The same owning-repo rules apply to draft `harvest:` / label `skill` PRs.
+
+**FR #3317 — seats open harvest PRs in the owning skill book** (job/product/plan repo; Bob tooling stays bobiverse). MRB is a **light triage**, not a re-route. Cost cap: use the short checklist below; **no full test suite** unless the tip also touches code/tests.
+
+**Short triage checklist (FR #3317):**
+
+1. **Useful?** Adds a durable playbook an agent would re-run.
+2. **Generalised?** Fleet-reusable, not a one-box anecdote.
+3. **Non-duplicate?** Not already on main in this book (CAST IRON / product paragraph / earlier harvest tip).
+4. **Vision / AGENTS fit?** Matches this repo's vision and harvest-home rules.
+
+Exits: **PASS** → merge. **Not useful / off-vision** → close with a one-line reason; board **`MRB CLOSED - not-useful: …`** then `DONE MRB … PASS <url>` (CLOSED/MOVED count as done, not `mrb-fail`). **Duplicate** → close citing the existing lesson (or fold the delta). **Wrong owner** (should be rare after direct filing) → step 0 / FR #3299 re-file / **MOVED**.
 
 On review:
+
+0. **Who owns this lesson (owning repo)?** Decide from the job repo / product named in the lesson, the plan's product, and the skill-book ownership lines (`harvest-agent-skills` domain table and `github:` frontmatter, `harvest-skills-visionary`, product `AGENTS.md` harvest routing). Bob fleet tooling (chair, worker, intake, tray, harvest process) stays in bobiverse. **Owner is this repo:** continue with the short triage (and steps 1–10 when needed). **Owner is another repo that exists:** twin-check its main and open PRs; if the lesson is already there, link it; otherwise **re-file** as a branch + PR in that repo's skill-book layout (its `harvest-agent-skills` or the specific skill, plus `docs/skill-harvest-log.md`), linking the original; if a PR cannot be opened, file a `harvest:` issue there with the full text; then comment `Moved to owner/repo#N` on the original and close it; board verdict **MOVED owner/repo#N** (not FAIL), then `DONE MRB … PASS <assigned-url>`. **Owner repo does not exist yet** (planned product): leave the original **OPEN** with a comment naming the intended owner — do not FAIL-close it. Held bobiverse issues labelled `owner-missing` are not offerable until the repo exists (FR #3317). **Never** FAIL / FAIL-supersede / close a harvest PR as wrong-book unless the board cites a link where the lesson text actually sits (a skill book on main, or a reviewable skill-book PR). A product/FR PR does not count unless it carries the lesson text in a skill book.
+
 1. Verify each lesson is generalised (fleet-reusable playbook, not a one-box anecdote).
-2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong).
+2. Confirm it sits in the right `SKILL.md` (move or reword if the book/path is wrong) **after** step 0 confirms this repo owns it.
 3. Then merge. Pure status receipts with no Lessons stay `receipt_recorded` and are never offered.
 4. **Twin harvest-lesson PRs** for the same book/lesson: FAIL-superseded board, close the later PR citing the merged first; never merge the misplaced raw duplicate tip (MRB #2741 / #2747 / #2750).
-5. **CAST IRON already covers it:** if the target book already has a CAST IRON / product paragraph for the lesson, FAIL-supersede and close as not planned — do not merge a weaker Harvested lessons duplicate (MRB #2732 / #2783).
+5. **CAST IRON already covers it:** if the target book already has a CAST IRON / product paragraph for the lesson, FAIL-supersede and close as not planned — do not merge a weaker Harvested lessons duplicate (MRB #2732 / #2783). Cite the skill-book link on main (step 0).
 6. **Tip current with main (MRB #2818 / #2823):** when `rev-list --left-right --count origin/main...HEAD` is `0` behind, merge directly after the book/path check — no behind-main fold required. Still open one `docs/mrb-N` hostile PR from the new main tip that pins contiguous skill phrases (for example `path_fn` / `events.jsonl`), prior intake bullets in the same window, and UTF-8/no-BOM.
-7. **Nothing-queued `nak_s` product MRB (MRB #2825 / #2828 / FR #2806):** merge the **product** PR first, then open `docs/mrb-N` from the **new** `origin/main` tip with a `nak-beats-repeat_s` hostile pin (and skill contiguous FR #2806 / never-inject). First idle `!bored` cycle before `nak_due` is **ACCEPTABLE drift** when the worker skill already cites sooner-than-`repeat_s` — do not FAIL solely for that timing window. If intake parks this playbook under `harvest`, move it here (do not leave a second copy in harvest).
-8. **Wrong-book bob-worker product lesson already on main (MRB #2826 / #2831):** if intake parks a bob-worker IRC/product classifier lesson under `common/.../harvest/SKILL.md` and the durable text is already on `main` in `bobiverse-bob-worker` (product + docs merge), **FAIL-supersede** and close the harvest PR unmerged — do not land a second copy in harvest. Do not re-home that product paragraph into this job-mrb book either; the worker skill is the home. Cite the superseding worker/product PR on the board.
-9. **FR #2811 giveup/hold hostile MRB (MRB #2832 / #2842 / #2850):** merge `origin/main` into the FR tip first. Hostile/docs pins: NQ skipped while `hold_assigns_while` is true; docs/mrb contiguous `**FR #2811:** while the harvest hold` window must be wide enough for `held_until_turn_end` / `post_bored`. Product/home text stays in `bobiverse-bob-worker` (+ job-irc as needed). If intake parks this MRB playbook under `harvest`, move it here — do not leave a second copy in harvest (twin #2850 landed wrong-book; #2842 FAIL-superseded).
+7. **Nothing-queued `nak_s` product MRB (MRB #2825 / #2828 / FR #2806):** merge the **product** PR first, then open `docs/mrb-N` from the **new** `origin/main` tip with a `nak-beats-repeat_s` hostile pin (and skill contiguous FR #2806 / never-inject). First idle `!bored` cycle before `nak_due` is **ACCEPTABLE drift** when the worker skill already cites sooner-than-`repeat_s` — do not FAIL solely for that timing window. If intake parks this playbook under `harvest`, apply step 0 (re-file / move here); do not leave a second copy in harvest.
+8. **Wrong-book bob-worker product lesson already on main (MRB #2826 / #2831):** if intake parks a bob-worker IRC/product classifier lesson under `common/.../harvest/SKILL.md` and the durable text is already on `main` in `bobiverse-bob-worker` (product + docs merge), **FAIL-supersede** and close the harvest PR unmerged — do not land a second copy in harvest. Do not re-home that product paragraph into this job-mrb book either; the worker skill is the home. Cite the superseding worker/product **skill-book** PR on the board (step 0: never FAIL-close without that link).
+9. **FR #2811 giveup/hold hostile MRB (MRB #2832 / #2842 / #2850):** merge `origin/main` into the FR tip first. Hostile/docs pins: NQ skipped while `hold_assigns_while` is true; docs/mrb contiguous `**FR #2811:** while the harvest hold` window must be wide enough for `held_until_turn_end` / `post_bored`. Product/home text stays in `bobiverse-bob-worker` (+ job-irc as needed). If intake parks this MRB playbook under `harvest`, apply step 0 and move it here — do not leave a second copy in harvest (twin #2850 landed wrong-book; #2842 FAIL-superseded).
 10. **Fold into existing Harvested playbook (MRB #2824 / #2844):** when the target product skill already has a `## Harvested … playbook` (or similar) section — for example `bobiverse-jeeves-monitor` beside FR #2803 Assign — fold thin intake lessons into that section next to the related FR docs; do not open a second thin heading. Still merge `origin/main` first when behind; put hostile pins on `docs/mrb-N` after the skill merge.
 
 ## Skill / markdown diff hygiene (harvest #1616)
