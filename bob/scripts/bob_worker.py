@@ -339,11 +339,52 @@ def outbox_path_for_run(run_dir: Path | str) -> Path:
 
 DEFAULT_HARVEST_REPO = "SimonBarnett/bobiverse"
 _JOB_REF_REPO_RX = re.compile(r"(?i)^\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*#\s*\d+\s*$")
+# a-search harvest fix: outbox_job_key() returns ``FR owner/repo#N`` (typed key). Strip the
+# job type (and a leading ACK/DONE verb) before parsing, or every typed ACK key fell back
+# to DEFAULT_HARVEST_REPO and job-repo.txt said bobiverse for a-search jobs.
+_JOB_REF_TYPE_PREFIX_RX = re.compile(r"(?i)^\s*(?:(?:ACK|DONE|NACK|GIVEUP)\s+)?(?:FR|MRB|UAT)\s+")
+_JOB_REF_URL_RX = re.compile(
+    r"(?i)github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/(\d+)"
+)
+
+
+def _strip_job_ref(raw: str) -> str:
+    """Normalise ``FR owner/repo#N`` / issue-or-PR URL to ``owner/repo#N``."""
+    t = (raw or "").strip()
+    m = _JOB_REF_URL_RX.search(t)
+    if m:
+        return f"{m.group(1)}#{m.group(2)}"
+    return _JOB_REF_TYPE_PREFIX_RX.sub("", t, count=1).strip()
+
+
+def parse_job_repo(job_ref: str | None) -> str:
+    """Return ``owner/name`` from a job ref (typed or not), or ``""`` when it cannot be read.
+
+    Never invents a default: callers that need a repo must decide explicitly.
+    """
+    raw = _strip_job_ref(job_ref or "")
+    if not raw:
+        return ""
+    m = _JOB_REF_REPO_RX.match(raw)
+    repo = m.group(1) if m else (raw.split("#", 1)[0].strip() if "#" in raw else raw)
+    if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo or ""):
+        return ""
+    owner, _, name = repo.partition("/")
+    if owner.lower() == "simonbarnett":
+        if name.lower() == "a-search":
+            return "SimonBarnett/a-search"
+        if name.lower() == "bobiverse":
+            return DEFAULT_HARVEST_REPO
+        return f"SimonBarnett/{name}"
+    return f"{owner}/{name}"
 
 
 def harvest_repo_for_job(job_ref: str | None) -> str:
-    """FR #3189: map ``owner/repo#N`` (ACK/assign key) to harvest ``-Repo`` owner/name."""
-    raw = (job_ref or "").strip()
+    """FR #3189: map ``owner/repo#N`` (ACK/assign key) to harvest ``-Repo`` owner/name.
+
+    Accepts typed keys (``FR SimonBarnett/a-search#5``) and issue/PR URLs too.
+    """
+    raw = _strip_job_ref(job_ref or "")
     if not raw:
         return DEFAULT_HARVEST_REPO
     m = _JOB_REF_REPO_RX.match(raw)
@@ -364,9 +405,19 @@ def harvest_invoke_repo_args(job_ref: str | None) -> list[str]:
 
 
 def write_job_repo_marker(run_dir: Path | str, job_ref: str | None) -> str:
-    """Persist job repo beside the outbox so agent-invoked harvest sees it (FR #3189)."""
-    repo = harvest_repo_for_job(job_ref)
+    """Persist job repo beside the outbox so agent-invoked harvest sees it (FR #3189).
+
+    Writes only a repo parsed from the job ref (typed ``FR owner/repo#N`` keys included);
+    an unreadable ref removes the marker instead of writing a bobiverse default.
+    """
+    repo = parse_job_repo(job_ref)
     path = Path(run_dir) / "job-repo.txt"
+    if not repo:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return ""
     try:
         path.write_text(repo + "\n", encoding="utf-8")
     except OSError:
@@ -596,8 +647,11 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"MRB/UAT = 'DONE <MRB|UAT> owner/repo#N PASS|FAIL <url>' "
         f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
         f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). "
-        f"FR #3189: harvest with -Repo / -JobRepo from the job (`$env:BOB_JOB_REPO`); a-search jobs go to "
-        f"SimonBarnett/a-search (harvest-agent-skills), not bobiverse harvest/SKILL.md; Bob tooling stays bobiverse. "
+        f"HARVEST REPO (FR #3189): ALWAYS pass the job's repo explicitly: "
+        f"`..\\scripts\\Invoke-BobiverseHarvest.ps1 -Repo <owner/repo from the job id> -Summary ... -Lesson ...` "
+        f"(e.g. job `FR SimonBarnett/a-search#637` -> `-Repo SimonBarnett/a-search`; it then lands in a-search "
+        f"`.grok/skills/harvest-agent-skills/SKILL.md`). Never run it without -Repo for a product job: a-search lessons "
+        f"must never go to SimonBarnett/bobiverse. Only Bob fleet tooling lessons (worker, Jeeves, tray, intake) use -Repo SimonBarnett/bobiverse. "
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "

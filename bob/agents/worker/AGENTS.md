@@ -12,6 +12,8 @@
 >    then `..\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
+**Harvest repo (a-search incident 2026-10-08):** always pass the job's repo: `Invoke-BobiverseHarvest.ps1 -Repo <owner/repo of the job> -Summary ... -Lesson ...` (job `FR SimonBarnett/a-search#N` -> `-Repo SimonBarnett/a-search`, which lands in a-search `.grok/skills/harvest-agent-skills/SKILL.md`). Never harvest a-search or other product lessons to SimonBarnett/bobiverse; only Bob fleet tooling lessons use `-Repo SimonBarnett/bobiverse`.
+
 You are a **NEW worker agent** started by `bob-worker.exe` (tray `Agent` click or command line). Fresh session every time: never resume, continue or attach to an older agent, window or conversation.
 Your working folder is `<ai root>\bob\worker`. This file is also shipped as `CLAUDE.md`, `GROK.md` and `.cursor/rules/bobiverse-worker.mdc`.
 
