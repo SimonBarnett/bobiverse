@@ -105,6 +105,8 @@ Ensure-BobiverseProgramDataRoot -FailClosed | Out-Null
 # FR #2564: CA log under ProgramData\Bobiverse\logs even when UI msiexec omitted /l*v.
 Write-BobiverseMsiInstallLog -Product airc -Message ("install-begin installRoot=$InstallRoot msiVer=$MsiProductVersion")
 $script:AircInstallOk = $false
+# FR #3584: inner Install-AircConsole catch may already have filed intake before rethrow.
+$script:AircInstallFailReported = $false
 try {
 
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
@@ -508,7 +510,9 @@ try {
     & $installLegacy @args
 } catch {
     Write-Host "ERROR Install-AircConsole: $($_.Exception.Message)"
-    # FR #3395 / #3515: local MSI log + redacted intake when crash-report allows (Report kept on client purge).
+    # FR #3395 / #3515 / #3584: local MSI log + redacted intake when crash-report allows (Report kept on client purge).
+    # Set the flag even if Send throws so the outer catch does not double-file.
+    $script:AircInstallFailReported = $true
     try {
         [void](Send-BobiverseAircInstallFailureIntake -InstallRoot $InstallRoot -ScriptsDir $here `
             -Title 'airc install: Install-AircConsole failed' `
@@ -584,16 +588,22 @@ Write-Host 'INFO Install-Airc done (service Airc)'
 Write-BobiverseMsiInstallLog -Product airc -Message 'install-ok'
 $script:AircInstallOk = $true
 } catch {
-    # FR #3515: outer catch covers Protect / ProgramData / VERSION / Start failures (not only Install-AircConsole).
+    # FR #3515 / #3584: outer catch covers Protect / ProgramData / VERSION / Start failures.
+    # Skip intake when the nested Install-AircConsole catch already reported (same failure).
     try {
         Write-BobiverseMsiInstallLog -Product airc -Message ("install-fail $($_.Exception.Message)")
     } catch { }
-    try {
-        [void](Send-BobiverseAircInstallFailureIntake -InstallRoot $InstallRoot -ScriptsDir $here `
-            -Title 'airc install: Install-Airc failed' `
-            -Body $_.Exception.Message)
-    } catch {
-        Write-Host ("WARN FR #3515 outer install-fail intake: {0}" -f $_.Exception.Message)
+    if (-not $script:AircInstallFailReported) {
+        try {
+            [void](Send-BobiverseAircInstallFailureIntake -InstallRoot $InstallRoot -ScriptsDir $here `
+                -Title 'airc install: Install-Airc failed' `
+                -Body $_.Exception.Message)
+            $script:AircInstallFailReported = $true
+        } catch {
+            Write-Host ("WARN FR #3515 outer install-fail intake: {0}" -f $_.Exception.Message)
+        }
+    } else {
+        Write-Host 'INFO FR #3584 skip outer install-fail intake (already reported by Install-AircConsole catch)'
     }
     throw
 } finally {
