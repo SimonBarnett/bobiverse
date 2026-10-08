@@ -26,7 +26,7 @@ param(
     [string]$Repo = 'SimonBarnett/bobiverse',
     [string]$JobRepo = '',  # FR #3189: offered job owner/name (or BOB_JOB_REPO / run\job-repo.txt)
     [string]$ExistingPrUrl = '',  # FR #1812: when set / already in Summary, intake links PR (no fallback skill issue)
-    [string]$Book = 'harvest',  # FR #2705: sets source.skill_book for lesson → SKILL.md routing
+    [string]$Book = 'harvest',  # FR #2705: sets source.skill_book for lesson -> SKILL.md routing
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
     [string]$Machine = '',
     [string]$OutboxDir = '',
@@ -97,7 +97,7 @@ function Get-IntakeAllowRepos {
 }
 
 function Test-IntakeRepoAllowed {
-    # FR #3135: mirror intake.repo_allowed — any SimonBarnett/<name>, else DEFAULT_ALLOW_REPOS.
+    # FR #3135: mirror intake.repo_allowed - any SimonBarnett/<name>, else DEFAULT_ALLOW_REPOS.
     param([Parameter(Mandatory)][string]$Repo)
     $r = ($Repo -as [string]).Trim()
     if (-not $r) { return $false }
@@ -107,7 +107,7 @@ function Test-IntakeRepoAllowed {
 }
 
 function Get-IntakeResponseProp {
-    # FR #2379: StrictMode — optional intake JSON keys (url / queued) may be absent on 202.
+    # FR #2379: StrictMode - optional intake JSON keys (url / queued) may be absent on 202.
     param($Response, [Parameter(Mandatory)][string]$Name, $Default = $null)
     if ($null -eq $Response) { return $Default }
     $prop = $Response.PSObject.Properties[$Name]
@@ -119,7 +119,7 @@ function Get-IntakeHttpStatus {
     param($ErrorRecord)
     $ex = $ErrorRecord.Exception
     while ($null -ne $ex) {
-        # FR #1842: StrictMode — only touch .Response when the property exists.
+        # FR #1842: StrictMode - only touch .Response when the property exists.
         $respProp = $ex.PSObject.Properties['Response']
         if ($null -ne $respProp -and $null -ne $respProp.Value) {
             $resp = $respProp.Value
@@ -149,7 +149,7 @@ function Get-IntakeHttpStatus {
 
 function Move-OutboxDropped {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Reason)
-    # FR #1910: concurrent Flush may have already removed/moved the source — treat as success.
+    # FR #1910: concurrent Flush may have already removed/moved the source - treat as success.
     if (-not (Test-Path -LiteralPath $Path)) {
         Write-Host "DROPPED $Path (already gone; $Reason)"
         return
@@ -233,7 +233,7 @@ if ($Flush) {
             }
             try {
                 $r = Send-Payload $raw
-                # FR #1910: another Flush may have archived the file after SENT — do not fail the cycle.
+                # FR #1910: another Flush may have archived the file after SENT - do not fail the cycle.
                 if (Test-Path -LiteralPath $f.FullName) {
                     Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
                 }
@@ -274,7 +274,7 @@ if ($Flush) {
 
 if (-not $Summary.Trim()) { throw '-Summary is required (what broke / what you fixed / "nothing new")' }
 
-# FR #3189: harvest repo keys on the job's product repo (a-search → SimonBarnett/a-search).
+# FR #3189: harvest repo keys on the job's product repo (a-search -> SimonBarnett/a-search).
 # Explicit -Repo wins; else -JobRepo, else BOB_JOB_REPO, else run\job-repo.txt beside BOB_OUTBOX.
 $script:ExplicitRepo = $PSBoundParameters.ContainsKey('Repo')
 if (-not $JobRepo -or -not $JobRepo.Trim()) {
@@ -296,7 +296,7 @@ if (-not $script:ExplicitRepo -and $JobRepo -and ($JobRepo -match '^[A-Za-z0-9_.
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) { throw "Repo must be owner/name (got '$Repo')" }
 if (-not $Machine) { $Machine = if ($env:BOB_MACHINE_ID) { [string]$env:BOB_MACHINE_ID } else { [string]$env:COMPUTERNAME } }
 
-# FR #936: do not file harvest skill issues for GIVEUP-of-skill sessions — live chair
+# FR #936: do not file harvest skill issues for GIVEUP-of-skill sessions - live chair
 # (pre-recompose) re-offers them as FR and each GIVEUP+harvest creates another skill issue.
 function Test-HarvestSkillGiveupLoop([string]$SummaryText, [string[]]$LessonLines) {
     $s = [string]$SummaryText
@@ -352,7 +352,7 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
 # bobiverse-bob-job-mrb. Re-harvesting them with default -Book harvest opens twin lesson(harvest)
 # tips that the next MRB FAIL-supersedes again. Skip client-side (intake also gates).
 # FR #2991: also skip thin already-covered twins (FAIL-supersede + already cover / close thin
-# twins / citing product PRs) that lack job-mrb process cues — same class as tip #2990.
+# twins / citing product PRs) that lack job-mrb process cues - same class as tip #2990.
 function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
@@ -412,7 +412,7 @@ $script:ExplicitBook = $PSBoundParameters.ContainsKey('Book')
 # (mirrors intake resolve_skill_book soft override) so bob-worker playbooks are not
 # re-opened as lesson(harvest) when the owning skill already has the bullet.
 if ($bookName -eq 'harvest') {
-    # Strong product cues only — bare "MRB"/"UAT" in session summaries must not re-route.
+    # Strong product cues only - bare "MRB"/"UAT" in session summaries must not re-route.
     if ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter') {
         $bookName = 'bobiverse-bob-worker'
         Write-Host "INFO FR #3004 inferred skill_book=bobiverse-bob-worker from Summary/Lesson cues"

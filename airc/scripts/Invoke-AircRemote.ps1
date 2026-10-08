@@ -540,7 +540,7 @@ function Invoke-AircRemoteSelfTest {
     $pm = @(New-AircPrivmsgLines -MachineId 'ionos' -Bodies @('STATUS'))
     Assert-True ($pm.Count -eq 1 -and $pm[0] -eq 'PRIVMSG ionos_console :STATUS') 'PRIVMSG framing'
 
-    # FR #1546: replies jsonl wait + Resolve path (avoid $HOME — read-only automatic var)
+    # FR #1546: replies jsonl wait + Resolve path (avoid $HOME - read-only automatic var)
     $replyHome = Join-Path $env:TEMP ('airc-replies-home-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $replyHome | Out-Null
     try {

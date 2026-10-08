@@ -16,7 +16,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Write-Host "INFO restart $ServiceName reason=$Reason"
-# Do not use $Home — automatic variable is read-only in PowerShell.
+# Do not use $Home - automatic variable is read-only in PowerShell.
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $common = Join-Path $scriptDir 'Bobiverse-Common.ps1'
 if (Test-Path -LiteralPath $common) { . $common }

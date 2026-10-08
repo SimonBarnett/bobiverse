@@ -92,7 +92,7 @@ if (Test-Path -LiteralPath $bootstrap) {
 $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing - pack third_party\nssm\win64\nssm.exe or pass -Nssm' }
 if (-not $Python) { $Python = Resolve-BobiversePython }
-# Chair home: under MSI LocalSystem, $env:USERPROFILE is often C:\Users\Default — that
+# Chair home: under MSI LocalSystem, $env:USERPROFILE is often C:\Users\Default - that
 # breaks DPAPI identity and loses the real Administrator chair. Prefer an existing
 # Admin chair, else InstallRoot\home-jeeves (issue: win-mpre cutover 2026-09-29).
 if (-not $ChairHome) {
@@ -273,7 +273,7 @@ if (-not $useJeevesExe) {
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 # FR #1055: Restart on Default and on exit 0 (graceful quit).
 Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $ServiceName -RestartDelayMs 2000
-# Keep crash loops out of the airc console pipe — always log to files.
+# Keep crash loops out of the airc console pipe - always log to files.
 $logsDir = Join-Path $InstallRoot 'logs'
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdout', (Join-Path $logsDir 'stdout.log')))
@@ -316,7 +316,7 @@ try {
     Write-Host ("WARN Start Menu folder: {0}" -f $_.Exception.Message)
 }
 # Prefer Ergo up before chair when both are installed
-# IIS rewrite → bobcallback :7700 (report/git/intake/jira)
+# IIS rewrite -> bobcallback :7700 (report/git/intake/jira)
 $installWh = Join-Path $here 'Install-BobWebhooks.ps1'
 if (Test-Path -LiteralPath $installWh) {
     try { & $installWh } catch {
@@ -350,7 +350,7 @@ if ($useJeevesExe) {
         Write-Host "WARN BobCallback unregister: $($_.Exception.Message)"
     }
 } else {
-# Supervised BobCallback (ONSTART) — FR #1316: same account as digest home owner (not SYSTEM).
+# Supervised BobCallback (ONSTART) - FR #1316: same account as digest home owner (not SYSTEM).
 # SYSTEM + --home C:\Users\Administrator\.bobiverse wedges :7700 via cross-principal digest.lock/ACL.
 try {
     $pyCb = if ($Python) { $Python } else { Resolve-BobiversePython }
@@ -360,7 +360,7 @@ try {
         $regCb = Join-Path $PSScriptRoot 'Register-BobCallbackTask.ps1'
     }
     # MRB #1353: when digest home is Admin .bobiverse (or install is LocalSystem), force RunAsUser=Administrator
-    # — never pass $env:USERNAME blindly (MSI/LocalSystem can yield SYSTEM / machine$ and recreate the wedge).
+    # - never pass $env:USERNAME blindly (MSI/LocalSystem can yield SYSTEM / machine$ and recreate the wedge).
     $cbRunAs = if ($env:USERNAME) { $env:USERNAME } else { 'Administrator' }
     $adminDigestNorm = (Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse')
     if (

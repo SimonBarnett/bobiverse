@@ -40,7 +40,7 @@ $cap = [int]$script:BobTrayHardMaxWorkers
 if ($cap -lt 1) { $cap = 2 }
 $procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
         Select-Object ProcessId, ParentProcessId, Name, CommandLine)
-# Agent seats only (plan/maintenance do not consume the cap) — measure only.
+# Agent seats only (plan/maintenance do not consume the cap) - measure only.
 $n = Measure-BobTrayWorkerSeats -Procs $procs -Modes @('agent')
 $missing = [Math]::Max(0, $cap - $n)
 Write-Output ("FR #3180 Ensure-BobWorkerSeats report-only seats={0} cap={1} missing={2} dryRun={3} (manual only; never queues req)" -f $n, $cap, $missing, [bool]$DryRun)
