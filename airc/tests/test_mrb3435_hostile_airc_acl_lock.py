@@ -48,8 +48,10 @@ def test_mrb3435_install_forces_nostart_then_protect_then_start():
     assert idx_legacy > 0
     assert idx_final_protect > idx_legacy
     assert idx_start > idx_final_protect
-    # Early ProgramData lock before MSI log / manifest.
-    assert t.find("Ensure-BobiverseProgramDataRoot") < t.find("Write-BobiverseMsiInstallLog")
+    # FR #3652: install-begin (Write-BobiverseMsiInstallLog) before ProgramData Ensure
+    # so CA logs show progress; Ensure itself must be LogsOnly (not Full -Recurse).
+    assert t.find("install-begin") < t.find("Ensure-BobiverseProgramDataRoot -FailClosed -ProtectMode LogsOnly")
+    assert "Ensure-BobiverseProgramDataRoot -FailClosed -ProtectMode LogsOnly" in t
 
 
 def test_mrb3435_skill_post_contiguous_failclosed():
