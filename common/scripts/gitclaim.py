@@ -4648,10 +4648,10 @@ def offer_focus_top(
     """Focus-ordered offer for !bored (#39 gap 2). Stamps offered_to (ACK accepts it, FR #207).
 
     "ok" job | "empty" (nothing queued / nothing eligible under strict focus or ignore) | "error".
-    A row offered to another seat within OFFER_TIMEOUT_S is skipped; a row already offered to
-    this nick is re-offered (rebroadcast) instead of burning a second job.
-    FR #2309: same-nick rebroadcast does not refresh ``offered_ts``; after OFFER_STICKY_MAX
-    attempts the pin clears and the nick is added to ``sticky_skip_seats`` so another seat can take it.
+    A row offered to another seat within OFFER_TIMEOUT_S is skipped.
+    FR #3192: a seat that still holds a live ``offered_to`` is not rebroadcast a second job
+    (``bored_gate`` busy + early empty return); sticky-max clear (FR #2309) still runs so
+    another seat can take a dead pin after ``OFFER_STICKY_MAX`` no-ACK attempts.
     ``pr_exists`` (optional) skips MRB rows whose pull URL 404s (FR #595 / #247).
     ``issue_open`` (optional) purges/skips FR rows whose issue is CLOSED (FR #2340).
 
