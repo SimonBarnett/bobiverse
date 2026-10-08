@@ -133,8 +133,22 @@ if ($doPurge) {
         [void]$targets.Add($InstallRoot)
     }
     if ($manifest -and $manifest.paths) {
+        # FR #3394: only trust manifest paths under install_root / console_home / ProgramData\Bobiverse
+        # (and known systemprofile / Default-user airc homes). Refuse canaries like C:\Windows\Temp\...
+        $manInstall = ''
+        $manHome = ''
+        if ($manifest.install_root) { $manInstall = [string]$manifest.install_root }
+        if ($manifest.console_home) { $manHome = [string]$manifest.console_home }
+        if (-not $manInstall) { $manInstall = [string]$InstallRoot }
+        if (-not $manHome) { $manHome = [string]$keptHome }
         foreach ($p in @($manifest.paths)) {
-            if ($p) { [void]$targets.Add([string]$p) }
+            if (-not $p) { continue }
+            $candidate = [string]$p
+            if (Test-BobiverseAircPurgePathAllowed -Path $candidate -InstallRoot $manInstall -ConsoleHome $manHome) {
+                [void]$targets.Add($candidate)
+            } else {
+                Write-Host ("WARN FR #3394 refuse purge path outside allow-list: {0}" -f $candidate)
+            }
         }
     }
     [void]$targets.Add((Join-Path $env:ProgramData 'Bobiverse\update\airc'))
