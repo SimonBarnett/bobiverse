@@ -131,7 +131,8 @@ EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
     r"(?i)\bMRB\s+home\b|\bHostile\s+MRB\s+home\b|\bMRB:\s+\S+.*\bhandoff\b",
 )
 # FR #2562 / #2677 / #2687: MRB FAIL:/PASS: (or dash) verdict board titles are never FR jobs.
-MRB_VERDICT_TITLE_RE = re.compile(r"(?i)^MRB\s+(FAIL|PASS)\s*[-:]")
+# FR #3299: MOVED owner/repo#N boards are also verdicts (done, not mrb-fail / not re-offered as FR).
+MRB_VERDICT_TITLE_RE = re.compile(r"(?i)^MRB\s+(FAIL|PASS|MOVED)\s*[-:]")
 # bobiverse#224 / #765 / #781: FAIL-fix PRs (fix(mrb-N) / mrb-N-fix) are not MRB/UAT targets.
 _MRB_FIX_TITLE_RE = re.compile(
     r"(?i)(?:^|\b)(?:fix\s*\(\s*mrb[-_]?\d+|mrb[-_]?\d+[-_]fix\b)"
