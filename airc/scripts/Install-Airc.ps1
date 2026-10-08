@@ -249,26 +249,38 @@ if (-not $priorShell -and (Test-Path -LiteralPath $capPathGuess)) {
 $expShell = ([string]$ShellMode).Trim().ToLowerInvariant()
 if ($expShell -notin @('off', 'operators')) { $expShell = '' }
 if ($priorShell) { $priorShell = $priorShell.Trim().ToLowerInvariant() }
+# FR #3393: workstation defaults shell=off unless MSI/CLI set explicitly (ignore prior).
 if ($expShell) { $resolvedShell = $expShell }
+elseif ($prof -eq 'workstation') { $resolvedShell = 'off' }
 elseif ($priorShell -in @('off', 'operators')) { $resolvedShell = $priorShell }
 elseif ($hadPriorService) { $resolvedShell = 'operators' }
 else { $resolvedShell = 'off' }
 
-$resolvedJobs = ([string]$Jobs).Trim().ToLowerInvariant()
-if ($resolvedJobs -notin @('off', 'on')) {
-    if ($priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) { $resolvedJobs = ([string]$priorId.Jobs).Trim().ToLowerInvariant() }
-}
-if ($resolvedJobs -notin @('off', 'on')) { $resolvedJobs = 'on' }
+$expJobs = ([string]$Jobs).Trim().ToLowerInvariant()
+if ($expJobs -in @('off', 'on')) { $resolvedJobs = $expJobs }
+elseif ($prof -eq 'workstation') { $resolvedJobs = 'off' }
+elseif ($priorId -and $priorId.PSObject.Properties['Jobs'] -and $priorId.Jobs) {
+    $resolvedJobs = ([string]$priorId.Jobs).Trim().ToLowerInvariant()
+    if ($resolvedJobs -notin @('off', 'on')) { $resolvedJobs = 'on' }
+} else { $resolvedJobs = 'on' }
 
-$resolvedUpdate = ([string]$UpdateCap).Trim().ToLowerInvariant()
-if ($resolvedUpdate -notin @('off', 'on')) {
-    if ($priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) { $resolvedUpdate = ([string]$priorId.UpdateCap).Trim().ToLowerInvariant() }
-}
-if ($resolvedUpdate -notin @('off', 'on')) { $resolvedUpdate = 'on' }
+$expUpdate = ([string]$UpdateCap).Trim().ToLowerInvariant()
+if ($expUpdate -in @('off', 'on')) { $resolvedUpdate = $expUpdate }
+elseif ($prof -eq 'workstation') { $resolvedUpdate = 'off' }
+elseif ($priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) {
+    $resolvedUpdate = ([string]$priorId.UpdateCap).Trim().ToLowerInvariant()
+    if ($resolvedUpdate -notin @('off', 'on')) { $resolvedUpdate = 'on' }
+} else { $resolvedUpdate = 'on' }
 
-$resolvedRequire = $false
-if (([string]$RequireAccount).Trim() -in @('1', 'true', 'yes', 'on')) { $resolvedRequire = $true }
+# FR #3393: workstation defaults require_account=true unless MSI/CLI set explicitly.
+$expRequire = $null
+$reqRaw = ([string]$RequireAccount).Trim().ToLowerInvariant()
+if ($reqRaw -in @('1', 'true', 'yes', 'on')) { $expRequire = $true }
+elseif ($reqRaw -in @('0', 'false', 'no', 'off')) { $expRequire = $false }
+if ($null -ne $expRequire) { $resolvedRequire = [bool]$expRequire }
+elseif ($prof -eq 'workstation') { $resolvedRequire = $true }
 elseif ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount) { $resolvedRequire = [bool]$priorId.RequireAccount }
+else { $resolvedRequire = $false }
 
 $resolvedAccounts = @()
 if (([string]$Accounts).Trim()) {
@@ -300,7 +312,9 @@ $expSelf = ConvertTo-AircBoolOrNull -Raw $SelfUpdate
 if ($null -ne $expSync) { $resolvedSync = [bool]$expSync }
 elseif ($null -ne $priorSync) { $resolvedSync = [bool]$priorSync }
 else { $resolvedSync = $false }
+# FR #3393: workstation defaults self_update=false (no SYSTEM GitHub MSI channel) unless MSI/CLI set.
 if ($null -ne $expSelf) { $resolvedSelf = [bool]$expSelf }
+elseif ($prof -eq 'workstation') { $resolvedSelf = $false }
 elseif ($null -ne $priorSelf) { $resolvedSelf = [bool]$priorSelf }
 else { $resolvedSelf = $true }
 
@@ -347,7 +361,7 @@ try {
         self_update = $resolvedSelf
     }
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
-    Write-Host ("INFO FR #3287/#3289 wrote {0} shell={1} jobs={2} update={3} sync_from_repo={4} self_update={5}" -f $capPath, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedSync, $resolvedSelf)
+    Write-Host ("INFO FR #3287/#3289/#3393 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf)
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
 }
@@ -369,6 +383,9 @@ try {
         $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $true; source = 'msi' }
     } elseif ($expCr -in @('no-log-tail', 'nologtail', 'no_log_tail')) {
         $crObj = [ordered]@{ enabled = $true; mode = 'full'; include_log_tail = $false; source = 'msi' }
+    } elseif ($prof -eq 'workstation') {
+        # FR #3393: workstation defaults crash-report off (no intake from client boxes).
+        $crObj = [ordered]@{ enabled = $false; mode = 'off'; source = 'workstation-profile' }
     } elseif ($null -ne $priorCr) {
         # Upgrade preserve: leave prior file untouched.
         Write-Host ("INFO FR #3291 keep prior {0}" -f $crPath)
