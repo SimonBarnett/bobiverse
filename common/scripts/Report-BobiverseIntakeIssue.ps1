@@ -40,7 +40,7 @@ if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
     throw "Repo must be owner/name (got '$Repo'). Intake requires an explicit target repo."
 }
 
-# FR #3395: defence in depth for airc installer kind=issue reports — honour crash-report opt-out.
+# FR #3395: defence in depth for airc installer kind=issue reports - honour crash-report opt-out.
 $script:BobiverseCrashOptOutSkip = $false
 $isAircInstallRoot = $false
 if ($InstallRoot -and $InstallRoot.Trim()) {
