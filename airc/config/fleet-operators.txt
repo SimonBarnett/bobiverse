@@ -1,0 +1,5 @@
+# FR #3513: fleet cross-machine ears unioned into operators.txt on every fleet
+# Install-Airc / self-update (AIRC_PROFILE=fleet). One nick per line.
+# Ops may also maintain %ProgramData%\Bobiverse\fleet-operators.txt (unioned too).
+# Workstation and client profiles ignore this file.
+bob-win-mpre8vi4u6u
