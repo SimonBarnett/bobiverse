@@ -206,6 +206,7 @@ routes to bobiverse via the split rule.
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
+- AIRC_PROFILE=fleet: ship config/fleet-operators.txt and union via Get-BobiverseAircFleetOperatorRoster on Install; Update-BobiverseService must forward AIRC_OPERATORS from prior ops+roster on msiexec or self-update cuts cross-machine ears after strict nick ACL
 
 ## Harvest digest (lessons audit 2026-10-06)
 
