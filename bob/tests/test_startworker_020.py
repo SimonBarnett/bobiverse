@@ -28,6 +28,8 @@ def _env(monkeypatch):
     for k in ("BOB_STARTWORKER_MAX", "BOB_STARTWORKER_COOLDOWN_S", "BOB_STARTWORKER_DISABLE", "BOB_OP_ACCOUNTS"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("JEEVES_OWNER_ACCOUNT", "simon")
+    # FR #3181: decide() reads live IRC seat markers; keep tests isolated from this box's seats.
+    monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 0)
 
 
 @pytest.fixture
@@ -78,9 +80,10 @@ def test_extra_owner_accounts_from_env(monkeypatch):
 
 
 # ------------------------------------------------------------------------------------------------ decisions
-def test_owner_in_the_machine_channel_is_acked_and_the_request_is_queued(q):
+def test_owner_in_the_machine_channel_is_acked_and_the_request_is_queued(q, monkeypatch):
+    monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 0)
     d = ask(q)
-    assert d.ok and d.line.startswith("ACK startworker agent on marchhare") and "workers 1/2" in d.line
+    assert d.ok and d.line.startswith("ACK startworker agent on marchhare") and "IRC-agents 1/2" in d.line
     f = list(q.glob("req-*.json"))
     assert len(f) == 1
     req = json.loads(f[0].read_text())
@@ -135,22 +138,30 @@ def test_tray_alive_stays_true_across_12s_engine_stall_when_host_heartbeat_is_fr
     assert ask(q, now=NOW + 24.0).ok
 
 
-def test_hard_cap_is_two_seats_counted_from_live_processes_not_the_onefile_bootloader_children(q):
-    one = [(10, 1, "bob-worker-aaa.exe"), (11, 10, "bob-worker-aaa.exe"), (99, 1, "grok.exe"), (98, 11, "python.exe")]   # ONE seat
-    two = one + [(20, 1, "bob-worker-aaa.exe"), (21, 20, "bob-worker-aaa.exe")]                                       # TWO seats
+def test_hard_cap_is_two_irc_joined_agent_seats_not_process_roots(q, monkeypatch):
+    # FR #3181: process roots without IRC markers do not count; missing cmdline => unknown (0 agents).
+    one = [(10, 1, "bob-worker-aaa.exe"), (11, 10, "bob-worker-aaa.exe"), (99, 1, "grok.exe"), (98, 11, "python.exe")]
+    two = one + [(20, 1, "bob-worker-aaa.exe"), (21, 20, "bob-worker-aaa.exe")]
     three = two + [(30, 1, "bob-worker.exe")]
-    assert (sw.count_workers([]), sw.count_workers(one), sw.count_workers(two), sw.count_workers(three)) == (0, 1, 2, 3)
-    d = ask(q, gate=sw.StartGate(max_workers=9, cooldown_s=0), procs=lambda: two)           # env/gate can never raise the cap above 2
-    assert not d.ok and d.reason == "cap" and d.line == "NACK startworker: max 2 workers (2 running on marchhare)"
+    assert (sw.count_workers([]), sw.count_workers(one), sw.count_workers(two), sw.count_workers(three)) == (0, 0, 0, 0)
+    # Explicit agent 4-tuples still count for the process helper (heal/diagnostics).
+    one_a = [(10, 1, "bob-worker-aaa.exe", "agent"), (11, 10, "bob-worker-aaa.exe", "agent")]
+    two_a = one_a + [(20, 1, "bob-worker-aaa.exe", "agent"), (21, 20, "bob-worker-aaa.exe", "agent")]
+    assert (sw.count_workers(one_a), sw.count_workers(two_a)) == (1, 2)
+    monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 2)
+    d = ask(q, gate=sw.StartGate(max_workers=9, cooldown_s=0), procs=lambda: two)
+    assert not d.ok and d.reason == "cap" and d.line == "NACK startworker: max 2 workers (2 IRC-joined on marchhare)"
+    monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 3)
     assert ask(q, gate=sw.StartGate(max_workers=9, cooldown_s=0), procs=lambda: three).reason == "cap"
-    assert ask(q, gate=sw.StartGate(max_workers=9, cooldown_s=0), procs=lambda: one).ok      # 1 running -> the 2nd is allowed
-    assert len(list(q.glob("req-*.json"))) == 1                                              # refusals queue nothing
+    monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 1)
+    assert ask(q, gate=sw.StartGate(max_workers=9, cooldown_s=0), procs=lambda: one).ok  # 1 IRC seat -> 2nd allowed
+    assert len(list(q.glob("req-*.json"))) == 1  # refusals queue nothing
 
 
-def test_the_gate_can_lower_the_cap_but_never_raise_it(q):
-    one = [(10, 1, "bob-worker.exe")]
-    d = ask(q, gate=sw.StartGate(max_workers=1, cooldown_s=0), procs=lambda: one)
-    assert not d.ok and "max 1 workers" in d.line
+def test_the_gate_can_lower_the_cap_but_never_raise_it(q, monkeypatch):
+    monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 1)
+    d = ask(q, gate=sw.StartGate(max_workers=1, cooldown_s=0), procs=lambda: [])
+    assert not d.ok and "max 1 workers" in d.line and "IRC-joined" in d.line
 
 
 def test_cooldown_blocks_a_second_start_until_it_passes(q):
@@ -405,21 +416,35 @@ Remove-Job $sub -Force -ErrorAction SilentlyContinue
 
 
 @WIN
-def test_tray_cap_refuses_a_third_live_worker_and_ignores_stale_state(tmp_path):
+def test_tray_cap_refuses_a_third_irc_joined_agent_and_ignores_process_only_roots(tmp_path):
+    # FR #3181: CapRefusal counts IRC seat markers; process roots without cmdline are unknown (0).
+    import os as _os
+    seats = tmp_path / "Bobiverse" / "worker" / "run" / "seats"
+    seats.mkdir(parents=True)
+    pid = _os.getpid()
+    for nick in ("a1", "a2"):
+        (seats / ("%s.irc.json" % nick)).write_text(
+            json.dumps({"v": 1, "nick": nick, "pid": pid, "machine": "m", "mode": "agent"}),
+            encoding="utf-8",
+        )
     out = _ps(tmp_path, r'''
 . "%s"
-function P($id, $pp, $n) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $pp; Name = $n } }
-$one = @((P 10 1 'bob-worker-aaa.exe'), (P 11 10 'bob-worker-aaa.exe'), (P 50 1 'grok.exe'))
-$two = $one + @((P 20 1 'bob-worker-aaa.exe'), (P 21 20 'bob-worker-aaa.exe'))
-$three = $two + @((P 30 1 'bob-worker.exe'))
+$env:LOCALAPPDATA = "%s"
+function P($id, $pp, $n, $cl) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $pp; Name = $n; CommandLine = $cl } }
+$one = @((P 10 1 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'), (P 11 10 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'), (P 50 1 'grok.exe' ''))
+$two = $one + @((P 20 1 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'), (P 21 20 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'))
+$three = $two + @((P 30 1 'bob-worker.exe' 'bob-worker.exe --mode agent'))
+$bare = @((P 10 1 'bob-worker.exe' ''), (P 20 1 'bob-worker.exe' ''))
 "SEATS=" + (Measure-BobTrayWorkerSeats -Procs @()) + "," + (Measure-BobTrayWorkerSeats -Procs $one) + "," + (Measure-BobTrayWorkerSeats -Procs $two) + "," + (Measure-BobTrayWorkerSeats -Procs $three)
-"ONE=[" + (Get-BobTrayWorkerCapRefusal -Procs $one) + "]"
-"TWO=[" + (Get-BobTrayWorkerCapRefusal -Procs $two) + "]"
-"THREE=[" + (Get-BobTrayWorkerCapRefusal -Procs $three) + "]"
-''' % (TRAY_TOOLS / "BobTrayStartWorker.ps1"))
-    assert "SEATS=0,1,2,3" in out and "ONE=[]" in out
-    assert "TWO=[Max 2 workers (2 already running). Close a worker window first.]" in out
-    assert "THREE=[Max 2 workers (3 already running)" in out
+"BARE=" + (Measure-BobTrayWorkerSeats -Procs $bare)
+"IRC=" + (Measure-BobTrayIrcAgentSeats)
+"CAP=[" + (Get-BobTrayWorkerCapRefusal) + "]"
+"EMPTY_SEATS=[" + (Get-BobTrayWorkerCapRefusal) + "]"
+''' % (TRAY_TOOLS / "BobTrayStartWorker.ps1", tmp_path))
+    assert "SEATS=0,1,2,3" in out, out
+    assert "BARE=0" in out, out  # no CommandLine => unknown, not agent
+    assert "IRC=2" in out, out
+    assert "CAP=[Max 2 workers (2 IRC-joined agent seats). Close a worker window first.]" in out, out
 
 
 def test_tray_launch_checks_the_cap_first_with_a_short_message_and_the_remote_path_stays_quiet():

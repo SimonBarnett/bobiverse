@@ -35,8 +35,18 @@ def _ps(script: str) -> str:
     return out
 
 
-def test_fr2667_measure_counts_agent_only_ignores_plan_maintenance():
-    """Fails on tip: Measure counts every bob-worker root."""
+def test_fr2667_measure_counts_agent_only_ignores_plan_maintenance(tmp_path):
+    """Measure still mode-filters processes; CapRefusal uses IRC seat markers (FR #3181)."""
+    seats = tmp_path / "seats"
+    seats.mkdir()
+    # Two live-looking markers using this pytest process pid so Get-Process succeeds.
+    import os, json
+    pid = os.getpid()
+    for nick in ("a1", "a2"):
+        (seats / f"{nick}.irc.json").write_text(
+            json.dumps({"v": 1, "nick": nick, "pid": pid, "machine": "m", "mode": "agent"}),
+            encoding="utf-8",
+        )
     script = textwrap.dedent(
         f"""
         . '{START_PS1}'
@@ -55,6 +65,10 @@ def test_fr2667_measure_counts_agent_only_ignores_plan_maintenance():
           (P 40 1 'bob-worker.exe' 'bob-worker.exe --mode maintenance'),
           (P 41 40 'bob-worker.exe' 'bob-worker.exe --mode maintenance')
         )
+        $env:LOCALAPPDATA = '{tmp_path}'
+        $seatDir = Join-Path $env:LOCALAPPDATA 'Bobiverse/worker/run/seats'
+        New-Item -ItemType Directory -Force -Path $seatDir | Out-Null
+        Copy-Item -Force '{seats}/*.irc.json' $seatDir
         "AGENT=" + (Measure-BobTrayWorkerSeats -Procs $mixed)
         "ALL=" + (Measure-BobTrayWorkerSeats -Procs $mixed -Modes @('agent','plan','maintenance','monitor'))
         "PLAN_REF=[" + (Get-BobTrayWorkerCapRefusal -Procs $mixed -Mode plan) + "]"
@@ -69,7 +83,7 @@ def test_fr2667_measure_counts_agent_only_ignores_plan_maintenance():
     assert "PLAN_REF=[]" in out, out
     assert "MAINT_REF=[]" in out, out
     assert "ONE_AGENT_PLAN=[]" in out, out
-    assert "AGENT_REF=[Max 2 workers (2 already running)" in out, out
+    assert "AGENT_REF=[Max 2 workers (2 IRC-joined agent seats)" in out, out
 
 
 def test_fr2667_startworker_queue_writes_reason_cap():
@@ -86,6 +100,7 @@ def test_fr2667_startworker_queue_writes_reason_cap():
 
 def test_fr2667_csharp_cap_refusal_mode_aware():
     cs = TRAY_CS.read_text(encoding="utf-8")
+    assert "CountIrcAgentSeats" in cs
     assert "CapRefusal(string mode" in cs or "CapRefusal(string mode =" in cs
     assert 'mode, "agent"' in cs or 'Equals(mode, "agent"' in cs or 'mode == "agent"' in cs.lower() or 'OrdinalIgnoreCase' in cs
     # Launch must pass mode into CapRefusal

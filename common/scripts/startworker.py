@@ -25,6 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
+try:
+    from worker_irc_seats import count_irc_agent_seats
+except ImportError:  # pragma: no cover
+    from common.scripts.worker_irc_seats import count_irc_agent_seats  # type: ignore
+
 CMD = "!startworker"
 MODES = ("agent", "plan")
 DEFAULT_MODE = "agent"
@@ -103,20 +108,21 @@ def authorize(nick: str, account, *, machine_of_nick: Callable[[str], str | None
 
 def _entry_mode(entry) -> str:
     if not isinstance(entry, (tuple, list)) or len(entry) < 4:
-        return "agent"
+        return "unknown"
     raw = str(entry[3] or "").strip().lower()
     if raw in ("agent", "plan", "monitor", "maintenance"):
         return raw
     import re as _re
     m = _re.search(r"--mode[=\s]+(agent|plan|monitor|maintenance)", raw)
-    return m.group(1) if m else "agent"
+    return m.group(1) if m else "unknown"
 
 
 def count_workers(procs: Iterable[tuple], *, modes: tuple = ("agent",)) -> int:
     """Root bob-worker*.exe seats whose mode is in ``modes`` (default: agent/worker only).
 
-    FR #2522: plan/maintenance never count toward the IRC ``!startworker`` cap. Optional 4th
-    tuple field is mode or cmdline; missing mode defaults to agent.
+    FR #2522 / FR #3181: plan/maintenance never count toward the IRC ``!startworker`` cap.
+    Optional 4th tuple field is mode or cmdline; missing/unreadable mode is ``unknown``
+    (never counted as agent). Cap enforcement uses ``count_irc_agent_seats``, not this helper.
     """
     rows = []
     for entry in procs:
@@ -254,11 +260,11 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
     if not tray_alive(qdir, now):
         return nack("no_interactive_session",
                     "nobody is logged in with the Bob tray running (start the tray from the Start menu)", mode=mode, kind=kind)
-    # FR #2522: only agent starts are capped; plan may start on top of 2 workers.
-    have = count_workers((procs or snapshot_procs)(), modes=("agent",))
+    # FR #3181: cap counts IRC-joined agent seats only (not Plan/maintenance/key-dialog).
+    have = count_irc_agent_seats(machine=local)
     cap = min(gate.max_workers, HARD_MAX_WORKERS)
     if mode == "agent" and have >= cap:
-        return nack("cap", f"max {cap} workers ({have} running on {local})", mode=mode, kind=kind)
+        return nack("cap", f"max {cap} workers ({have} IRC-joined on {local})", mode=mode, kind=kind)
     left = gate.remaining(now)
     if left > 0:
         return nack("cooldown", f"cooldown {int(left + 0.999)}s", mode=mode, kind=kind)
@@ -270,8 +276,8 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
             return nack("queue_error", f"could not queue the request ({type(e).__name__})", mode=mode, kind=kind)
     gate.arm(now)
     slot = (
-        f"workers {have + 1}/{cap}" if mode == "agent"
-        else f"plan (uncapped; workers {have}/{cap})"
+        f"IRC-agents {have + 1}/{cap}" if mode == "agent"
+        else f"plan (uncapped; IRC-agents {have}/{cap})"
     )
     return Decision(True, "ok", f"ACK startworker {mode} on {local} (queued {rid or '-'}; {slot}; by {nick})",
                     mode, kind, rid)

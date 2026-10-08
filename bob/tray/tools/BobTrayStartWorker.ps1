@@ -114,7 +114,7 @@ function Test-BobWorkerProductActive {
 }
 
 function Get-BobTrayWorkerSeatMode {
-    <# FR #2667: parse --mode from CommandLine; missing mode defaults to agent (same as startworker._entry_mode). #>
+    <# FR #2667 / FR #3181: parse --mode from CommandLine; missing/unreadable => unknown (never agent). #>
     param($Proc)
     $cl = ''
     try { $cl = [string]$Proc.CommandLine } catch { $cl = '' }
@@ -126,7 +126,35 @@ function Get-BobTrayWorkerSeatMode {
     }
     $low = ($cl).Trim().ToLowerInvariant()
     if ($low -in @('agent', 'plan', 'monitor', 'maintenance')) { return $low }
-    return 'agent'
+    return 'unknown'
+}
+
+
+function Get-BobTrayIrcSeatsDir {
+    $la = $env:LOCALAPPDATA
+    if (-not $la) { $la = Join-Path $env:USERPROFILE 'AppData\Local' }
+    return (Join-Path $la 'Bobiverse\worker\run\seats')
+}
+
+function Measure-BobTrayIrcAgentSeats {
+    <# FR #3181: count IRC-joined agent seat markers with live pids. #>
+    param([string]$SeatsDir = '')
+    if (-not $SeatsDir) { $SeatsDir = Get-BobTrayIrcSeatsDir }
+    if (-not (Test-Path -LiteralPath $SeatsDir)) { return 0 }
+    $count = 0
+    Get-ChildItem -LiteralPath $SeatsDir -Filter '*.irc.json' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $j = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.mode -and ([string]$j.mode).ToLowerInvariant() -ne 'agent') { return }
+            $seatPid = [int]$j.pid
+            if ($seatPid -le 0) { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue; return }
+            if (Get-Process -Id $seatPid -ErrorAction SilentlyContinue) { $count++ }
+            else { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+        } catch {
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return [int]$count
 }
 
 function Measure-BobTrayWorkerSeats {
@@ -159,13 +187,10 @@ function Get-BobTrayWorkerCapRefusal {
     $modeL = ([string]$Mode).Trim().ToLowerInvariant()
     if (-not $modeL) { $modeL = 'agent' }
     if ($modeL -ne 'agent') { return '' }
-    if ($null -eq $Procs) {
-        $Procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
-                Select-Object ProcessId, ParentProcessId, Name, CommandLine)
-    }
     $cap = $script:BobTrayHardMaxWorkers
-    $n = Measure-BobTrayWorkerSeats -Procs $Procs -Modes @('agent')
-    if ($n -ge $cap) { return ('Max {0} workers ({1} already running). Close a worker window first.' -f $cap, $n) }
+    # FR #3181: IRC-joined agent seats only (Plan/key-dialog never count).
+    $n = Measure-BobTrayIrcAgentSeats
+    if ($n -ge $cap) { return ('Max {0} workers ({1} IRC-joined agent seats). Close a worker window first.' -f $cap, $n) }
     return ''
 }
 

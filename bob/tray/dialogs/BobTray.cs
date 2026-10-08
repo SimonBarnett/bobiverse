@@ -74,15 +74,47 @@ namespace BobDialogs
 
         static string ModeFromCommandLine(string cl)
         {
-            if (string.IsNullOrEmpty(cl)) return "agent";
+            // FR #3181: missing/unreadable cmdline is unknown (never count as agent).
+            if (string.IsNullOrEmpty(cl)) return "unknown";
             Match m = ModeArg.Match(cl);
-            return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "agent";
+            return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "unknown";
         }
 
-        // FR #2667: agent-only by default (plan/maintenance do not count toward the hard cap).
+        // FR #3181: hard cap counts IRC-joined agent seats only.
         public static int Seats()
         {
-            return SeatsForModes("agent");
+            return CountIrcAgentSeats();
+        }
+
+        static int CountIrcAgentSeats()
+        {
+            try
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Bobiverse", "worker", "run", "seats");
+                if (!Directory.Exists(dir)) return 0;
+                int n = 0;
+                foreach (string f in Directory.GetFiles(dir, "*.irc.json"))
+                {
+                    try
+                    {
+                        string text = File.ReadAllText(f);
+                        Match modeM = Regex.Match(text, "\"mode\"\\s*:\\s*\"([^\"]+)\"");
+                        if (modeM.Success && !string.Equals(modeM.Groups[1].Value, "agent", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        int pid = 0;
+                        Match m = Regex.Match(text, "\"pid\"\\s*:\\s*(\\d+)");
+                        if (m.Success) int.TryParse(m.Groups[1].Value, out pid);
+                        if (pid <= 0) { try { File.Delete(f); } catch { } continue; }
+                        try { Process.GetProcessById(pid); n++; }
+                        catch { try { File.Delete(f); } catch { } }
+                    }
+                    catch { }
+                }
+                return n;
+            }
+            catch { return 0; }
         }
 
         public static int SeatsForModes(params string[] modes)
@@ -119,7 +151,7 @@ namespace BobDialogs
             }
             catch
             {
-                // Fallback without CommandLine: treat every root as agent (conservative for heal/cap).
+                // FR #3181: WMI/CommandLine failure → unknown (do not count as agent for the hard cap).
                 foreach (Process p in Process.GetProcesses())
                 {
                     try
@@ -127,7 +159,7 @@ namespace BobDialogs
                         if (!SeatName.IsMatch(p.ProcessName)) continue;
                         ids.Add(p.Id);
                         parents.Add(ParentOf(p));
-                        seatModes.Add("agent");
+                        seatModes.Add("unknown");
                     }
                     catch { }
                 }
@@ -146,7 +178,7 @@ namespace BobDialogs
             if (!string.Equals(mode ?? "agent", "agent", StringComparison.OrdinalIgnoreCase))
                 return "";
             int n = Seats();
-            return n >= MaxWorkers ? "Max " + MaxWorkers + " workers (" + n + " already running). Close a worker window first." : "";
+            return n >= MaxWorkers ? "Max " + MaxWorkers + " workers (" + n + " IRC-joined agent seats). Close a worker window first." : "";
         }
 
         // FR #1643: true when another process still has the hashed bob-worker-*.exe open (seat holds the run copy).
