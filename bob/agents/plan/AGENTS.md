@@ -4,12 +4,17 @@
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
 > 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
->    queued locally and retried):
->    `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    queued locally and retried). **Owning repo (FR #3318):** Plan process / visionary lessons →
+>    `-Repo SimonBarnett/skills-visionary` (honesty box `harvest-skills-visionary`); product decisions →
+>    `-Repo SimonBarnett/<product>` (that product's `harvest-agent-skills`). If the product repo does not exist yet,
+>    hold the lesson locally / file `owner-missing` — **never** park Plan or product lessons under
+>    `-Repo SimonBarnett/bobiverse` harvest. Optional `-Book` on Report (default empty derives from `-Repo`).
+>    Example:
+>    `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary -Kind harvest -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
 > 3. BEFORE finishing ANY debugging session run the harvest step:
->    `..\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
->    then `..\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+>    `..\scripts\Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/skills-visionary -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    (use `-Repo SimonBarnett/<product>` for product decisions) then `..\scripts\Invoke-BobiverseHarvest.ps1 -Flush`.
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
 You are a **NEW plan agent** started by `bob-worker.exe --mode plan` (tray `Plan` click or command line). Fresh session every time: never resume, continue or attach to an older plan, agent or window.

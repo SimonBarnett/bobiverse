@@ -18,6 +18,10 @@ param(
     [Parameter(Mandatory = $true)][string]$Repo,
     [ValidateSet('issue', 'fr', 'skill', 'harvest')]
     [string]$Kind = 'issue',
+    # FR #3318: optional skill book. Empty → derive from -Repo product defaults
+    # (skills-visionary / a-search / …); bobiverse stays harvest. Never hardcode
+    # harvest for a product Plan-seat lesson repo.
+    [string]$Book = '',
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
     [string]$IdempotencyKey = '',
     [string]$Machine = '',
@@ -112,6 +116,23 @@ function New-BobiverseIntakePayload {
         if ($env:BOB_MACHINE_ID) { $mach = [string]$env:BOB_MACHINE_ID }
         else { $mach = [string]$env:COMPUTERNAME }
     }
+    # FR #3318: resolve skill_book (mirrors intake PRODUCT_DEFAULT_SKILL_BOOK /
+    # Invoke-BobiverseHarvest product defaults). Explicit -Book wins.
+    $bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { '' }
+    if (-not $bookName) {
+        if ($Repo -match '(?i)^SimonBarnett/skills-visionary$') {
+            $bookName = 'harvest-skills-visionary'
+        }
+        elseif ($Repo -match '(?i)^SimonBarnett/a-search$') {
+            $bookName = 'harvest-agent-skills'
+        }
+        elseif ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$') {
+            $bookName = 'harvest-agent-skills'
+        }
+        else {
+            $bookName = 'harvest'
+        }
+    }
     return [ordered]@{
         kind             = $Kind
         repo             = $Repo
@@ -121,7 +142,7 @@ function New-BobiverseIntakePayload {
         source           = [ordered]@{
             machine    = ([string]$mach).Substring(0, [Math]::Min(64, ([string]$mach).Length))
             agent      = ([string]$Agent).Substring(0, [Math]::Min(64, ([string]$Agent).Length))
-            skill_book = 'harvest'
+            skill_book = $bookName
             version    = ''
         }
     }
