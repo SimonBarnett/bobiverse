@@ -53,7 +53,8 @@ if ($InstallRoot -and $InstallRoot.Trim()) {
     )
 }
 if ($Kind -eq 'issue' -and $isAircInstallRoot) {
-    $allow = $true
+    # MRB #3440: fail closed until policy explicitly allows intake.
+    $allow = $false
     $commonBeside = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
     if (Test-Path -LiteralPath $commonBeside) {
         try {
@@ -61,7 +62,9 @@ if ($Kind -eq 'issue' -and $isAircInstallRoot) {
             if (Get-Command Test-BobiverseCrashReportAllowsIntake -ErrorAction SilentlyContinue) {
                 $allow = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
             }
-        } catch { }
+        } catch {
+            $allow = $false
+        }
     }
     if (-not $allow) {
         $script:BobiverseCrashOptOutSkip = $true

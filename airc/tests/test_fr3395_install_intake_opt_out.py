@@ -178,3 +178,37 @@ def test_fr3395_report_dryrun_posts_when_enabled(tmp_path: Path, monkeypatch):
     proc = _ps(script, env={"BOB_CRASH_REPORT": "", "BOBIVERSE_CRASH_REPORT": ""})
     assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
     assert "report-dryrun-ok" in (proc.stdout or "")
+
+
+def test_mrb3440_install_fail_closed_on_policy_error():
+    t = INSTALL.read_text(encoding="utf-8")
+    assert "$allowIntake = $false" in t
+    assert "catch { $allowIntake = $true }" not in t
+    assert "policy check failed" in t or "skip intake" in t.lower()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows only")
+def test_mrb3440_corrupt_crash_report_json_denies_intake(tmp_path: Path):
+    root = tmp_path / "airc"
+    cfg = root / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "crash-report.json").write_text("{not-json", encoding="utf-8")
+    script = textwrap.dedent(
+        f"""
+        $ErrorActionPreference = 'Stop'
+        . '{COMMON}'
+        $ok = Test-BobiverseCrashReportAllowsIntake -InstallRoot '{root}'
+        if ($ok) {{ throw 'corrupt json must deny intake' }}
+        Write-Output 'corrupt-deny-ok'
+        """
+    )
+    proc = _ps(script)
+    assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+    assert "corrupt-deny-ok" in (proc.stdout or "")
+
+
+def test_mrb3440_report_defaults_deny_until_policy_allows():
+    t = REPORT.read_text(encoding="utf-8-sig")
+    assert "MRB #3440" in t
+    assert "$allow = $false" in t
+

@@ -304,13 +304,21 @@ function Protect-BobiverseInstallTree {
       FR #3289: lock an airc (or other product) install tree so standard users cannot
       create/modify scripts that LocalSystem will run. Removes inheritance; grants
       SYSTEM + Administrators FullControl and BUILTIN\Users ReadAndExecute only.
-      Does not grant Authenticated Users modify. Best-effort; never throws.
+      Does not grant Authenticated Users modify.
+      FR #3394: -FailClosed rethrows so Install-Airc cannot leave a user-writable tree
+      that LocalSystem is about to run. Default remains best-effort (WARN only).
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
-        [switch]$Recurse
+        [switch]$Recurse,
+        [switch]$FailClosed
     )
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        if ($FailClosed -and $Path) {
+            throw ("Protect-BobiverseInstallTree FailClosed: path missing '{0}'" -f $Path)
+        }
+        return
+    }
     try {
         $item = Get-Item -LiteralPath $Path -Force
         $entries = New-Object System.Collections.Generic.List[object]
@@ -353,6 +361,97 @@ function Protect-BobiverseInstallTree {
         Write-Host ("INFO Protect-BobiverseInstallTree locked {0}" -f $Path)
     } catch {
         Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
+        if ($FailClosed) { throw }
+    }
+}
+
+function Test-BobiverseAircPurgePathAllowed {
+    <#
+      FR #3394: uninstall purge may only delete paths under known prefixes so a
+      user-owned airc-install-manifest.json cannot point SYSTEM at arbitrary deletes.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$InstallRoot = '',
+        [string]$ConsoleHome = '',
+        [string]$ProgramDataRoot = ''
+    )
+    $raw = ([string]$Path).Trim()
+    if (-not $raw) { return $false }
+    if ($raw -match '(?i)^removed:') { return $false }
+    try {
+        $full = [IO.Path]::GetFullPath($raw)
+    } catch {
+        return $false
+    }
+    if (-not $ProgramDataRoot) {
+        $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
+        $ProgramDataRoot = Join-Path $pd 'Bobiverse'
+    }
+    $prefixes = New-Object System.Collections.Generic.List[string]
+    foreach ($p in @($InstallRoot, $ConsoleHome, $ProgramDataRoot)) {
+        if (-not $p) { continue }
+        try {
+            [void]$prefixes.Add(([IO.Path]::GetFullPath([string]$p)).TrimEnd('\') + '\')
+            [void]$prefixes.Add(([IO.Path]::GetFullPath([string]$p)).TrimEnd('\'))
+        } catch { }
+    }
+    $sysBob = Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local\Bobiverse'
+    try {
+        [void]$prefixes.Add(([IO.Path]::GetFullPath($sysBob)).TrimEnd('\') + '\')
+        [void]$prefixes.Add(([IO.Path]::GetFullPath($sysBob)).TrimEnd('\'))
+    } catch { }
+    foreach ($leaf in @('.airc', '.airc-console')) {
+        $def = Join-Path $env:SystemDrive ('Users\Default\' + $leaf)
+        $defLocal = Join-Path $env:SystemDrive ('Users\Default\AppData\Local\' + $leaf)
+        foreach ($d in @($def, $defLocal)) {
+            try {
+                [void]$prefixes.Add(([IO.Path]::GetFullPath($d)).TrimEnd('\') + '\')
+                [void]$prefixes.Add(([IO.Path]::GetFullPath($d)).TrimEnd('\'))
+            } catch { }
+        }
+    }
+    foreach ($pre in $prefixes) {
+        if (-not $pre) { continue }
+        if ($full.Equals($pre.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if ($full.StartsWith($pre, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Ensure-BobiverseProgramDataRoot {
+    <#
+      FR #3394: create/lock %ProgramData%\Bobiverse (+ logs) so Users cannot own the
+      purge manifest or MSI install log. SYSTEM + Administrators Full; Users RX.
+      Pre-existing user-owned trees are re-locked (WARN) when possible; -FailClosed throws.
+      -Root overrides the default for tests.
+    #>
+    param(
+        [string]$Root = '',
+        [switch]$FailClosed
+    )
+    try {
+        if (-not $Root) {
+            $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
+            $Root = Join-Path $pd 'Bobiverse'
+        }
+        $rootFull = [IO.Path]::GetFullPath($Root)
+        $existed = Test-Path -LiteralPath $rootFull
+        New-Item -ItemType Directory -Force -Path $rootFull | Out-Null
+        $logs = Join-Path $rootFull 'logs'
+        New-Item -ItemType Directory -Force -Path $logs | Out-Null
+        if ($existed) {
+            Write-Host ("WARN FR #3394 Ensure-BobiverseProgramDataRoot re-locking pre-existing {0}" -f $rootFull)
+        }
+        # One -Recurse pass covers logs\; a second Protect on the child can hit SeSecurityPrivilege
+        # after inheritance is already stripped.
+        Protect-BobiverseInstallTree -Path $rootFull -Recurse -FailClosed:$FailClosed
+        Write-Host ("INFO FR #3394 ProgramData Bobiverse locked {0}" -f $rootFull)
+        return $rootFull
+    } catch {
+        Write-Host ("WARN Ensure-BobiverseProgramDataRoot: {0}" -f $_.Exception.Message)
+        if ($FailClosed) { throw }
+        return ''
     }
 }
 
@@ -396,7 +495,10 @@ function Test-BobiverseCrashReportAllowsIntake {
                 if ($null -ne $obj.enabled) {
                     return [bool]$obj.enabled
                 }
-            } catch { }
+            } catch {
+                # MRB #3440: unreadable/corrupt crash-report.json => deny intake.
+                return $false
+            }
         }
     }
     return $true
@@ -1219,7 +1321,12 @@ function Get-BobiverseMsiLogDir {
     <#
       Canonical verbose / CA log directory for UI and quiet msiexec (FR #2564).
       Prefer %ProgramData%\Bobiverse\logs so a UI install without /l*v still leaves a known trail.
+      FR #3394: Ensure-BobiverseProgramDataRoot locks the tree before append (Users RX only).
     #>
+    $root = Ensure-BobiverseProgramDataRoot
+    if ($root) {
+        return (Join-Path $root 'logs')
+    }
     $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
     $dir = Join-Path $pd 'Bobiverse\logs'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
