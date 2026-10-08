@@ -30,6 +30,8 @@ def test_allowlist_helper_keeps_runtime_and_drops_union():
     assert "function Get-BobiverseAircClientAllowedScriptNames" in t
     assert "function Remove-BobiverseAircClientExtraPayload" in t
     assert "FR #3514" in t
+    assert "FR #3582" in t
+    assert r"config\fleet-operators.txt" in t
     for name in KEEP:
         assert name in t, name
     # Allow-list body must not name foreign product scripts as keepers.
@@ -54,7 +56,10 @@ def test_skill_and_post_install_cite_allowlist_and_keep_3511():
     assert "Remove-BobiverseAircClientExtraPayload" in skill or "allow-list" in skill.lower()
     assert "FR #3511" in skill  # keep-both after behind-main skill merge
     assert "lost-control" in skill or "ChannelMemberMap" in skill
+    assert "FR #3582" in skill
+    assert "fleet-operators" in skill
     post = POST.read_text(encoding="utf-8")
     assert "FR #3514" in post
+    assert "FR #3582" in post
     raw = SKILL.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")

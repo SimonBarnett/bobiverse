@@ -2472,13 +2472,15 @@ function Get-BobiverseAircClientAllowedScriptNames {
 function Remove-BobiverseAircClientExtraPayload {
     <#
     .SYNOPSIS
-      FR #3514: AIRC_PROFILE=client keep-only tree (airc.exe + service + install tooling).
+      FR #3514 / #3582: AIRC_PROFILE=client keep-only tree (airc.exe + service + install tooling).
 
     .DESCRIPTION
       The MSI stages the 4-product script union. Workstation uses a deny-list strip
       (Remove-BobiverseAircWorkstationAgentPayload) that still leaves Jeeves/Bob/docs.
-      Client uses this allow-list: keep VERSION/BUILD.json, config\, logs\, airc\,
-      third_party\nssm\, and Get-BobiverseAircClientAllowedScriptNames; delete the rest.
+      Client uses this allow-list: keep VERSION/BUILD.json, config\ (install-generated
+      only), logs\, airc\, third_party\nssm\, and Get-BobiverseAircClientAllowedScriptNames;
+      delete the rest. FR #3582: always drop config\fleet-operators.txt — client never
+      reads the fleet roster (Install sets Operators=@(); file header says client ignores it).
     #>
     param(
         [Parameter(Mandatory)][string]$InstallRoot
@@ -2554,6 +2556,9 @@ function Remove-BobiverseAircClientExtraPayload {
             }
         }
     }
+
+    # FR #3582: fleet roster is dead weight on client (never read; leaks seat nicks).
+    Add-RemovedPath (Join-Path $root 'config\fleet-operators.txt')
 
     Write-Host ("INFO FR #3514 client allow-list purge count={0}" -f $removed.Count)
     return @($removed)
