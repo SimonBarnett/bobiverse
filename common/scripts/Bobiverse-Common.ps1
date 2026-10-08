@@ -2115,3 +2115,124 @@ function Remove-BobiverseAircWorkstationAgentPayload {
     Write-Host ("INFO FR #3392 workstation agent payload purged count={0}" -f $removed.Count)
     return @($removed)
 }
+
+function Get-BobiverseAircClientAllowedScriptNames {
+    <#
+    .SYNOPSIS
+      FR #3514: scripts kept under AIRC_PROFILE=client (allow-list, not deny-list).
+    #>
+    return @(
+        'Bobiverse-Common.ps1',
+        'Install-Airc.ps1',
+        'Install-Airc.cmd',
+        'Install-AircConsole.ps1',
+        'Install-AircConsole.cmd',
+        'Uninstall-Airc.ps1',
+        'Uninstall-Airc.cmd',
+        'Recover-BobiverseService.ps1',
+        'Recover-BobiverseService.cmd',
+        'Resolve-AircConsoleNssm.ps1',
+        'Resolve-AircConsolePython.ps1',
+        'Start-AircConsole.ps1',
+        'Start-AircConsole.cmd',
+        'Start-AircConsole-Fleet.ps1',
+        'Update-BobiverseService.ps1',
+        # FR #3514 / #3515: install-failure intake + python crash path
+        'Report-BobiverseIntakeIssue.ps1',
+        'crash_report.py',
+        # Legacy host when airc\airc.exe is absent (SkipAircExe / pre-exe trees)
+        'airc_console.py',
+        'airc_console_service.py',
+        'airc_jobs.py'
+    )
+}
+
+function Remove-BobiverseAircClientExtraPayload {
+    <#
+    .SYNOPSIS
+      FR #3514: AIRC_PROFILE=client keep-only tree (airc.exe + service + install tooling).
+
+    .DESCRIPTION
+      The MSI stages the 4-product script union. Workstation uses a deny-list strip
+      (Remove-BobiverseAircWorkstationAgentPayload) that still leaves Jeeves/Bob/docs.
+      Client uses this allow-list: keep VERSION/BUILD.json, config\, logs\, airc\,
+      third_party\nssm\, and Get-BobiverseAircClientAllowedScriptNames; delete the rest.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot
+    )
+    $removed = New-Object System.Collections.Generic.List[string]
+    if (-not $InstallRoot -or -not (Test-Path -LiteralPath $InstallRoot)) {
+        return @($removed)
+    }
+    $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+
+    function Add-RemovedPath([string]$Path) {
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            [void]$removed.Add($Path)
+            Write-Host ("INFO FR #3514 removed client extra: {0}" -f $Path)
+        } catch {
+            Write-Host ("WARN FR #3514 remove {0}: {1}" -f $Path, $_.Exception.Message)
+        }
+    }
+
+    # Top-level files/dirs that must go (docs/src/assets/agent briefings).
+    foreach ($name in @(
+            'AGENTS.md', 'CLAUDE.md', 'GROK.md',
+            '.cursor', '.grok',
+            'docs', 'src', 'assets'
+        )) {
+        Add-RemovedPath (Join-Path $root $name)
+    }
+
+    # Any other unexpected top-level entry outside the keep set.
+    $keepTop = @{
+        'version'      = $true
+        'build.json'   = $true
+        'config'       = $true
+        'logs'         = $true
+        'scripts'      = $true
+        'airc'         = $true
+        'third_party'  = $true
+        'home'         = $true  # rare; ConsoleHome is usually separate
+    }
+    Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $key = $_.Name.ToLowerInvariant()
+        if (-not $keepTop.ContainsKey($key)) {
+            Add-RemovedPath $_.FullName
+        }
+    }
+
+    # third_party: keep only nssm (win64\nssm.exe tree).
+    $tp = Join-Path $root 'third_party'
+    if (Test-Path -LiteralPath $tp) {
+        Get-ChildItem -LiteralPath $tp -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Name -ne 'nssm') {
+                Add-RemovedPath $_.FullName
+            }
+        }
+    }
+
+    # scripts: allow-list only.
+    $allowed = @{}
+    foreach ($n in @(Get-BobiverseAircClientAllowedScriptNames)) {
+        $allowed[$n.ToLowerInvariant()] = $true
+    }
+    $scriptsDir = Join-Path $root 'scripts'
+    if (Test-Path -LiteralPath $scriptsDir) {
+        Get-ChildItem -LiteralPath $scriptsDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.PSIsContainer) {
+                Add-RemovedPath $_.FullName
+                return
+            }
+            if (-not $allowed.ContainsKey($_.Name.ToLowerInvariant())) {
+                Add-RemovedPath $_.FullName
+            }
+        }
+    }
+
+    Write-Host ("INFO FR #3514 client allow-list purge count={0}" -f $removed.Count)
+    return @($removed)
+}

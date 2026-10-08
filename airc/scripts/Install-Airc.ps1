@@ -146,9 +146,14 @@ if ($wantAgentLayer) {
     }
 } else {
     Write-Host 'INFO agent-layer skipped (workstation|client / AIRC_AGENT_LAYER=0) FR #3292/#3401'
-    # FR #3392: MSI already laid AGENTS/CLAUDE/GROK/.cursor/.grok + agent scripts before RunInstall.
-    # Strip them so AIRC_PROFILE=workstation leaves an agent-free tree.
-    $purged = @(Remove-BobiverseAircWorkstationAgentPayload -InstallRoot $InstallRoot)
+    # FR #3392: workstation deny-list strip of agent briefings/scripts.
+    # FR #3514: client uses an allow-list (airc.exe + service + install tooling only).
+    if ($prof -eq 'client') {
+        $purged = @(Remove-BobiverseAircClientExtraPayload -InstallRoot $InstallRoot)
+        Write-Host 'INFO FR #3514 client allow-list payload applied'
+    } else {
+        $purged = @(Remove-BobiverseAircWorkstationAgentPayload -InstallRoot $InstallRoot)
+    }
     foreach ($p in $purged) {
         if ($p) { [void]$script:AircManifestPaths.Add(("removed:{0}" -f $p)) }
     }
