@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- AIRC operators flatten (Resolve NoEnumerate + Install flatOps + Merge [,;\s]+) belongs in bobiverse-airc Capabilities, never harvest/SKILL.md; fold onto the open product PR skill then close the harvest tip as MOVED.
