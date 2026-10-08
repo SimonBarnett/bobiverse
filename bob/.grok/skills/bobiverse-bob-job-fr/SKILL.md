@@ -71,12 +71,13 @@ Skill-intake consolidation: when a worker takes an FR from skill intake (label:s
 Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude` starts with `/*` so composed flat runtime files stay invisible. Linked `git worktree add` FR trees **share that exclude**.
 
 * Prefer: `git -C <install> worktree add -b fr-N <temp> origin/main` then `git sparse-checkout disable` in the temp tree.
+* **FR #3641 — write `.bobiverse-seat` immediately after `worktree add`:** before any edit, write `{"nick":"<seat>","pid":$PID,"issue":N,"repo":"owner/repo"}` (UTF-8) at the job tree root. Soft-cap (`MaxExtraJobTrees=0`) and sibling Clear runs skip a **fresh** marker even when the recorded pid is dead; live pid always protects; `-Force` may reclaim only markers older than `-StaleSeatHours` (default 48h) with a dead pid. Mid-FR trees without a marker can vanish (class of #3639 / #3641).
 * New untracked files under paths still masked by exclude are skipped by plain `git add` - use **`git add -f`** (or `git check-ignore -v` to confirm).
 * Bootstrap exclude un-ignores `/$Product/`, `/common/`, `/airc/`, `/jeeves/`; paths outside those still need `-f`.
 
 * **FR #963 / pytest ``repo_layout``:** canonical helper is ``common/scripts/repo_layout.py``. Prefer ``git sparse-checkout disable`` in the temp tree. If you keep a partial sparse set, always include ``common/scripts`` (and root ``conftest.py`` / ``pytest.ini`` when running from repo root). Service ``*/tests/conftest.py`` also puts ``common/scripts`` on ``sys.path``, so ``python -m pytest jeeves/tests/...`` works without ``PYTHONPATH=common/tests``.
 
-## Job worktree cleanup (FR #877 / FR #2727)
+## Job worktree cleanup (FR #877 / FR #2727 / FR #3641)
 
 * **StrictMode `.Count`:** wrap `Sort-Object`/`Where-Object` results with `@()` before `.Count` (FR #1664 / Clear-BobiverseJobWorktrees). FreeGB capacity shortfalls are separate FRs - do not close them as duplicates of the StrictMode fix (harvest #1689).
 Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` until `git worktree add` fails with **No space left on device**.
@@ -87,7 +88,7 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 * Default gates (FR #877 / **FR #1661**):
   * **Low disk:** prune when **FreeGB < 2** (`-MinFreeGB 2`) - removes all job trees + orphan `%TEMP%\bobiverse-*`.
   * **Earlier prune / soft cap:** even when FreeGB ≥ MinFreeGB, remove extras beyond `-MaxExtraJobTrees` (default **0** = keep only `-KeepPath` + install root). Do not wait until FreeGB is critical.
-* **CAST IRON (FR #2727):** `Clear-BobiverseJobWorktrees.ps1` is the **only** sanctioned reclaim path. Never `Remove-Item` or `git worktree remove` a path that Clear did not select. Never hand-delete arbitrary `C:\ai\*` / `wt-*` / operator build trees (`wt-bob-main-*`, `wt-airc-*`, `wt-main`) when Clear prints `removed=0`. Prefer durable job trees on a roomy drive (e.g. `D:\…\job-fr-N`) and write `.bobiverse-seat` (`{"nick":"<seat>","pid":123}`) at the tree root so Clear skips a live owner even with `-Force`.
+* **CAST IRON (FR #2727 / FR #3641):** `Clear-BobiverseJobWorktrees.ps1` is the **only** sanctioned reclaim path. Never `Remove-Item` or `git worktree remove` a path that Clear did not select. Never hand-delete arbitrary `C:\ai\*` / `wt-*` / operator build trees (`wt-bob-main-*`, `wt-airc-*`, `wt-main`) when Clear prints `removed=0`. Prefer durable job trees on a roomy drive (e.g. `D:\…\job-fr-N`) and write `.bobiverse-seat` **immediately after** `git worktree add` so Clear skips the tree under soft-cap (fresh marker) and under `-Force` while the pid is live.
 * If FreeGB is still under 2 after Clear: **file an intake issue** for disk capacity and continue with a tree on a roomy drive, or **GIVEUP** — do not invent a delete list.
 * Manual remove **only on your own job tree** (the `-KeepPath` / current FR tree you created this seat): `git -C <install> worktree remove --force <your-own-job-wt>; git -C <install> worktree prune`. Never a guessed list of sibling `C:\ai\*` dirs.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
