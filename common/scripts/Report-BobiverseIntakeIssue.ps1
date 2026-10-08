@@ -28,7 +28,9 @@ param(
     [string]$Agent = 'Report-BobiverseIntakeIssue',
     [string]$OutboxDir = '',
     [string]$InstallRoot = '',
-    [int]$TimeoutSec = 30
+    [int]$TimeoutSec = 30,
+    # FR #3395: skip HTTP; return the payload shape (tests / installer dry paths).
+    [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -36,6 +38,43 @@ $ErrorActionPreference = 'Stop'
 
 if (-not ($Repo -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')) {
     throw "Repo must be owner/name (got '$Repo'). Intake requires an explicit target repo."
+}
+
+# FR #3395: defence in depth for airc installer kind=issue reports - honour crash-report opt-out.
+$script:BobiverseCrashOptOutSkip = $false
+$isAircInstallRoot = $false
+if ($InstallRoot -and $InstallRoot.Trim()) {
+    $ir = $InstallRoot.Trim()
+    $isAircInstallRoot = (
+        (Test-Path -LiteralPath (Join-Path $ir 'config\airc.json')) -or
+        (Test-Path -LiteralPath (Join-Path $ir 'config\crash-report.json')) -or
+        (Test-Path -LiteralPath (Join-Path $ir 'airc.exe')) -or
+        (Test-Path -LiteralPath (Join-Path $ir 'airc\airc.exe'))
+    )
+}
+if ($Kind -eq 'issue' -and $isAircInstallRoot) {
+    # MRB #3440: fail closed until policy explicitly allows intake.
+    $allow = $false
+    $commonBeside = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+    if (Test-Path -LiteralPath $commonBeside) {
+        try {
+            . $commonBeside
+            if (Get-Command Test-BobiverseCrashReportAllowsIntake -ErrorAction SilentlyContinue) {
+                $allow = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
+            }
+        } catch {
+            $allow = $false
+        }
+    }
+    if (-not $allow) {
+        $script:BobiverseCrashOptOutSkip = $true
+        Write-Host 'SKIPPED intake FR #3395 crash-report opt-out (airc InstallRoot; kind=issue)'
+        try {
+            if (Get-Command Write-BobiverseMsiInstallLog -ErrorAction SilentlyContinue) {
+                Write-BobiverseMsiInstallLog -Product airc -Message ("intake-skipped-opt-out title={0}" -f $Title)
+            }
+        } catch { }
+    }
 }
 
 $titleTrim = $Title.Trim()
@@ -198,6 +237,43 @@ function Get-IntakeResponseProp {
     $prop = $Response.PSObject.Properties[$Name]
     if ($null -eq $prop) { return $Default }
     return $prop.Value
+}
+
+if ($script:BobiverseCrashOptOutSkip) {
+    return [pscustomobject]@{
+        ok                     = $true
+        queued_local           = $false
+        skipped_crash_opt_out  = $true
+        dry_run                = $false
+        intake_id              = $null
+        url                    = $null
+        queued                 = $false
+        repo                   = $Repo
+        idempotency_key        = $payload.idempotency_key
+        outbox                 = @()
+        error                  = $null
+        intake_error           = $null
+        http_status            = $null
+    }
+}
+
+if ($DryRun) {
+    Write-Host ("DRYRUN Report-BobiverseIntakeIssue repo={0} kind={1} title={2}" -f $Repo, $Kind, $titleTrim)
+    return [pscustomobject]@{
+        ok                     = $true
+        queued_local           = $false
+        skipped_crash_opt_out  = $false
+        dry_run                = $true
+        intake_id              = $null
+        url                    = $null
+        queued                 = $false
+        repo                   = $Repo
+        idempotency_key        = $payload.idempotency_key
+        outbox                 = @()
+        error                  = $null
+        intake_error           = $null
+        http_status            = $null
+    }
 }
 
 $bodyJson = ($payload | ConvertTo-Json -Depth 6 -Compress)

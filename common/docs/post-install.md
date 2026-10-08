@@ -198,6 +198,8 @@ Workstation profile (no agent briefings/skills; no self-update; purge uninstall)
 
 ACL fail-closed (FR #3394): `Install-Airc` calls `Ensure-BobiverseProgramDataRoot -FailClosed` before MSI logs/manifest writes, and `Protect-BobiverseInstallTree -FailClosed` on the install tree **before** `Start-Service Airc` (Install-AircConsole runs with `-NoStart` first). Protect failure fails the install. Purge uninstall refuses manifest paths outside `install_root` / `console_home` / `ProgramData\Bobiverse` (and known systemprofile / Default-user airc homes) via `Test-BobiverseAircPurgePathAllowed`.
 
+Crash-report opt-out on install failures (FR #3395): when `config\crash-report.json` has `enabled=false` / `mode=local-only` (or `BOBIVERSE_CRASH_REPORT=0|local-only`), an `Install-AircConsole` failure is written only to `ProgramData\Bobiverse\logs\install-airc.log` — it does **not** call public intake. When intake is allowed, `Report-BobiverseIntakeIssue` is called with `-Repo SimonBarnett/bobiverse`.
+
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 
 ## Upgrade and Ergo / BobIrcd (#70)
