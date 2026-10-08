@@ -719,6 +719,117 @@ def load_capabilities(
     )
 
 
+def _read_airc_json_dict(install_root: Path | str | None) -> dict:
+    """Load ``config\\airc.json`` (or ``airc.json``) from an install root."""
+    if not install_root:
+        return {}
+    root = Path(install_root)
+    for rel in ("config/airc.json", "airc.json"):
+        path = root / rel
+        if not path.is_file():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(raw, dict):
+            return raw
+    return {}
+
+
+def _coerce_bool(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+@dataclass
+class AircStartUpdatePolicy:
+    """FR #3289: whether service start may git-sync ``main`` or run signed MSI self-update.
+
+    Fresh MSI default: ``sync_from_repo=False`` (unsigned main must not run as SYSTEM).
+    ``self_update`` defaults True (sha256-checked release MSI path); lock workstations set it false.
+    """
+
+    sync_from_repo: bool = False
+    self_update: bool = True
+
+    def log_lines(self) -> tuple[str, ...]:
+        return (
+            f"INFO sync-from-repo={'on' if self.sync_from_repo else 'off'} (config)",
+            f"INFO self-update={'on' if self.self_update else 'off'} (config)",
+        )
+
+
+def load_start_update_policy(
+    install_root: Path | str | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> AircStartUpdatePolicy:
+    """Merge env + ``config\\airc.json`` into start-hook policy (FR #3289).
+
+    Precedence:
+    - ``BOBIVERSE_NO_UPDATE=1`` → both off
+    - ``BOBIVERSE_SYNC_FROM_REPO=0|1`` / ``BOBIVERSE_SELF_UPDATE=0|1`` when set
+    - ``BOB_AUTOUPDATE=0`` → self_update off (updater also honours this)
+    - ``airc.json`` ``sync_from_repo`` / ``self_update``
+    - defaults: sync off, self_update on
+    """
+    e = env if env is not None else os.environ
+    if (e.get("BOBIVERSE_NO_UPDATE") or "").strip() == "1":
+        return AircStartUpdatePolicy(sync_from_repo=False, self_update=False)
+
+    data = _read_airc_json_dict(install_root)
+    sync = _coerce_bool(data.get("sync_from_repo"), default=False)
+    self_upd = _coerce_bool(data.get("self_update"), default=True)
+
+    sync_env = (e.get("BOBIVERSE_SYNC_FROM_REPO") or "").strip()
+    if sync_env != "":
+        sync = _coerce_bool(sync_env, default=sync)
+    self_env = (e.get("BOBIVERSE_SELF_UPDATE") or "").strip()
+    if self_env != "":
+        self_upd = _coerce_bool(self_env, default=self_upd)
+    if (e.get("BOB_AUTOUPDATE") or "").strip() == "0":
+        self_upd = False
+
+    return AircStartUpdatePolicy(sync_from_repo=sync, self_update=self_upd)
+
+
+def resolve_sync_from_repo_for_install(
+    *,
+    prior: bool | None,
+    explicit: bool | None,
+) -> bool:
+    """Fresh / omitted → False; explicit MSI/CLI wins; else keep prior (FR #3289)."""
+    if explicit is not None:
+        return bool(explicit)
+    if prior is not None:
+        return bool(prior)
+    return False
+
+
+def resolve_self_update_for_install(
+    *,
+    prior: bool | None,
+    explicit: bool | None,
+) -> bool:
+    """Fresh / omitted → True; explicit wins; else keep prior (FR #3289)."""
+    if explicit is not None:
+        return bool(explicit)
+    if prior is not None:
+        return bool(prior)
+    return True
+
+
 @dataclass
 class ConsoleSession:
     nick: str

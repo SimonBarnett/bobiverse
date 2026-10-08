@@ -444,7 +444,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
         }
         'airc' {
             # FR #3287: capability + account MSI props (empty = installer defaults / prior identity).
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -ShellMode &quot;[AIRC_SHELL]&quot; -Jobs &quot;[AIRC_JOBS]&quot; -UpdateCap &quot;[AIRC_UPDATE]&quot; -RequireAccount &quot;[AIRC_REQUIRE_ACCOUNT]&quot; -Accounts &quot;[AIRC_ACCOUNTS]&quot;'
+            # FR #3289: AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (empty = fresh sync off / self_update on, or keep prior).
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -ShellMode &quot;[AIRC_SHELL]&quot; -Jobs &quot;[AIRC_JOBS]&quot; -UpdateCap &quot;[AIRC_UPDATE]&quot; -RequireAccount &quot;[AIRC_REQUIRE_ACCOUNT]&quot; -Accounts &quot;[AIRC_ACCOUNTS]&quot; -SyncFromRepo &quot;[AIRC_SYNC_FROM_REPO]&quot; -SelfUpdate &quot;[AIRC_SELF_UPDATE]&quot;'
         }
     }
     $msiProps = switch ($Name) {
@@ -472,6 +473,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="AIRC_UPDATE" Secure="yes" />
     <Property Id="AIRC_REQUIRE_ACCOUNT" Secure="yes" />
     <Property Id="AIRC_ACCOUNTS" Secure="yes" />
+    <Property Id="AIRC_SYNC_FROM_REPO" Secure="yes" />
+    <Property Id="AIRC_SELF_UPDATE" Secure="yes" />
 "@
         }
     }

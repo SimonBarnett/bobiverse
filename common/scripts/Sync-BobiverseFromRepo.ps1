@@ -14,7 +14,8 @@
      work (dirty tree, never-pushed branch, or unique commits with a live upstream) is left alone. Opt out:
      BOBIVERSE_KEEP_BRANCH=1 (or BOBIVERSE_NO_UPDATE=1).
   3) Robocopy scripts + third_party + skills + docs into InstallRoot (never deleting); copy VERSION
-  Skips when BOBIVERSE_NO_UPDATE=1. Does not overwrite config\, home\, or secrets.
+  Skips when BOBIVERSE_NO_UPDATE=1. For -Product airc, also skips when config\airc.json
+  sync_from_repo is false/absent (FR #3289; override BOBIVERSE_SYNC_FROM_REPO=1). Does not overwrite config\, home\, or secrets.
   FR #269: flat scripts/ is always refreshed from the split-repo script dirs (no robocopy /XO on scripts).
   Git checkout mtimes are often older than a previous flat compose, so /XO left scripts/gitclaim.py stale after ff.
   Use -ComposeOnly after a manual git pull --ff-only to recompose without restarting the service.
@@ -57,6 +58,27 @@ $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 if (-not (Test-Path -LiteralPath $InstallRoot)) {
     Write-Host "WARN sync-skip missing install root $InstallRoot"
     exit 1
+}
+
+# FR #3289 defense-in-depth (airc only): default sync_from_repo=off via config\airc.json.
+# BOBIVERSE_SYNC_FROM_REPO=0|1 overrides. Missing key / missing file → off when -Product airc.
+if ($Product -eq 'airc') {
+    $syncOn = $false
+    $capPath = Join-Path $InstallRoot 'config\airc.json'
+    if (Test-Path -LiteralPath $capPath) {
+        try {
+            $cap = Get-Content -LiteralPath $capPath -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($null -ne $cap.PSObject.Properties['sync_from_repo']) {
+                $syncOn = [bool]$cap.sync_from_repo
+            }
+        } catch { }
+    }
+    if ($env:BOBIVERSE_SYNC_FROM_REPO -eq '1') { $syncOn = $true }
+    elseif ($env:BOBIVERSE_SYNC_FROM_REPO -eq '0') { $syncOn = $false }
+    if (-not $syncOn) {
+        Write-Host 'INFO sync-skip sync_from_repo=off (config) FR #3289'
+        exit 0
+    }
 }
 
 function Resolve-BobiverseClone {

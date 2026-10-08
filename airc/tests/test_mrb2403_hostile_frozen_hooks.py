@@ -52,7 +52,8 @@ def test_kick_honours_bobiverse_no_update(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_kick_runs_sync_then_update_when_frozen(tmp_path, monkeypatch):
+def test_kick_default_sync_off_self_update_on_when_frozen(tmp_path, monkeypatch):
+    """FR #3289: fresh MSI / no airc.json → sync off, self_update on."""
     root = tmp_path / 'install'
     scripts = root / 'scripts'
     scripts.mkdir(parents=True)
@@ -60,6 +61,34 @@ def test_kick_runs_sync_then_update_when_frozen(tmp_path, monkeypatch):
     upd = scripts / 'Update-BobiverseService.ps1'
     sync.write_text('# sync', encoding='utf-8')
     upd.write_text('# upd', encoding='utf-8')
+    calls = []
+
+    def capture(script, args, label):
+        calls.append((Path(script).name, list(args), label))
+
+    monkeypatch.setattr(svc, 'is_frozen_airc_exe', lambda: True)
+    monkeypatch.setattr(svc, 'resolve_airc_install_root', lambda: root)
+    monkeypatch.setattr(svc, '_run_ps1_best_effort', capture)
+    monkeypatch.delenv('BOBIVERSE_NO_UPDATE', raising=False)
+    monkeypatch.delenv('BOBIVERSE_SYNC_FROM_REPO', raising=False)
+    monkeypatch.delenv('BOBIVERSE_SELF_UPDATE', raising=False)
+    svc.kick_frozen_service_start_hooks()
+    assert [c[0] for c in calls] == ['Update-BobiverseService.ps1']
+    assert calls[0][1] == ['-Product', 'airc', '-InstallRoot', str(root), '-ServiceName', 'Airc']
+
+
+def test_kick_runs_sync_then_update_when_sync_from_repo_on(tmp_path, monkeypatch):
+    """Opt-in fleet: config sync_from_repo=true (or BOBIVERSE_SYNC_FROM_REPO=1)."""
+    root = tmp_path / 'install'
+    scripts = root / 'scripts'
+    scripts.mkdir(parents=True)
+    sync = scripts / 'Sync-BobiverseFromRepo.ps1'
+    upd = scripts / 'Update-BobiverseService.ps1'
+    sync.write_text('# sync', encoding='utf-8')
+    upd.write_text('# upd', encoding='utf-8')
+    cfg = root / 'config' / 'airc.json'
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('{"sync_from_repo": true, "self_update": true}\n', encoding='utf-8')
     calls = []
 
     def capture(script, args, label):

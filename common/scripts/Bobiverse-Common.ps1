@@ -299,6 +299,63 @@ function Get-BobiverseAircIdentityFromAppParameters {
     }
 }
 
+function Protect-BobiverseInstallTree {
+    <#
+      FR #3289: lock an airc (or other product) install tree so standard users cannot
+      create/modify scripts that LocalSystem will run. Removes inheritance; grants
+      SYSTEM + Administrators FullControl and BUILTIN\Users ReadAndExecute only.
+      Does not grant Authenticated Users modify. Best-effort; never throws.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [switch]$Recurse
+    )
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    try {
+        $item = Get-Item -LiteralPath $Path -Force
+        $entries = New-Object System.Collections.Generic.List[object]
+        [void]$entries.Add([pscustomobject]@{ FullName = $item.FullName; IsDir = [bool]$item.PSIsContainer })
+        if ($Recurse -and $item.PSIsContainer) {
+            Get-ChildItem -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                [void]$entries.Add([pscustomobject]@{ FullName = $_.FullName; IsDir = [bool]$_.PSIsContainer })
+            }
+        }
+        # Files before dirs so a locked parent cannot block children (same order as FR #3288).
+        $ordered = @($entries | Sort-Object @{ Expression = { if ($_.IsDir) { 1 } else { 0 } } }, @{ Expression = { $_.FullName.Length }; Descending = $true })
+        $sys = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-18'
+        $adm = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+        $usr = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-545'
+        $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+        $rx = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+        $allow = [System.Security.AccessControl.AccessControlType]::Allow
+        foreach ($e in $ordered) {
+            $t = [string]$e.FullName
+            $isDir = [bool]$e.IsDir
+            if ($isDir) {
+                $acl = New-Object System.Security.AccessControl.DirectorySecurity
+                $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+                    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+            } else {
+                $acl = New-Object System.Security.AccessControl.FileSecurity
+                $inherit = [System.Security.AccessControl.InheritanceFlags]::None
+            }
+            $prop = [System.Security.AccessControl.PropagationFlags]::None
+            $acl.SetAccessRuleProtection($true, $false)
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sys, $full, $inherit, $prop, $allow)))
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($adm, $full, $inherit, $prop, $allow)))
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($usr, $rx, $inherit, $prop, $allow)))
+            if ($isDir) {
+                Set-Acl -LiteralPath $t -AclObject $acl
+            } else {
+                Set-Acl -LiteralPath $t -AclObject $acl
+            }
+        }
+        Write-Host ("INFO Protect-BobiverseInstallTree locked {0}" -f $Path)
+    } catch {
+        Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
+    }
+}
+
 function Set-BobiverseNssmAppExitRestart {
     <#
     FR #1055: pin NSSM to Restart on Default AND exit code 0.
