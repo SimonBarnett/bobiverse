@@ -132,7 +132,10 @@ def test_fr3395_report_skips_http_when_opt_out(tmp_path: Path, monkeypatch):
     (cfg / "airc.json").write_text("{}", encoding="utf-8")
     outbox = tmp_path / "outbox"
     outbox.mkdir()
-    # Port 9 / blackhole URL — connection would fail if Report ignored opt-out.
+    # FR #3554: never touch live C:\ProgramData\Bobiverse during pytest log writes.
+    pd = tmp_path / "ProgramDataBobiverse"
+    pd.mkdir()
+    # Port 9 / blackhole URL - connection would fail if Report ignored opt-out.
     script = textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
@@ -146,7 +149,14 @@ def test_fr3395_report_skips_http_when_opt_out(tmp_path: Path, monkeypatch):
         Write-Output 'report-skip-ok'
         """
     )
-    proc = _ps(script, env={"BOB_CRASH_REPORT": "", "BOBIVERSE_CRASH_REPORT": ""})
+    proc = _ps(
+        script,
+        env={
+            "BOB_CRASH_REPORT": "",
+            "BOBIVERSE_CRASH_REPORT": "",
+            "BOBIVERSE_PROGRAMDATA_ROOT": str(pd),
+        },
+    )
     assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
     assert "report-skip-ok" in (proc.stdout or "")
     # Must not have queued a network-failure outbox from a real POST attempt.

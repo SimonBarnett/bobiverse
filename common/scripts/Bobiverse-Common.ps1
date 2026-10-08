@@ -419,34 +419,65 @@ function Test-BobiverseAircPurgePathAllowed {
     return $false
 }
 
+# FR #3554: once-per-process Protect cache keyed by root|mode (avoid re-ACLing a huge
+# ProgramData\Bobiverse tree on every MSI log line).
+if (-not (Get-Variable -Name BobiverseProgramDataProtectCache -Scope Script -ErrorAction SilentlyContinue)) {
+    $script:BobiverseProgramDataProtectCache = @{}
+}
+
 function Ensure-BobiverseProgramDataRoot {
     <#
       FR #3394: create/lock %ProgramData%\Bobiverse (+ logs) so Users cannot own the
       purge manifest or MSI install log. SYSTEM + Administrators Full; Users RX.
       Pre-existing user-owned trees are re-locked (WARN) when possible; -FailClosed throws.
-      -Root overrides the default for tests.
+      FR #3554: -ProtectMode Full|LogsOnly|None; process cache skips repeat Protect;
+      env BOBIVERSE_PROGRAMDATA_ROOT (or -Root) redirects for tests so pytest never
+      touches the live C:\ProgramData\Bobiverse tree.
     #>
     param(
         [string]$Root = '',
-        [switch]$FailClosed
+        [switch]$FailClosed,
+        [ValidateSet('Full', 'LogsOnly', 'None')][string]$ProtectMode = 'Full'
     )
     try {
         if (-not $Root) {
-            $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
-            $Root = Join-Path $pd 'Bobiverse'
+            if ($env:BOBIVERSE_PROGRAMDATA_ROOT -and ([string]$env:BOBIVERSE_PROGRAMDATA_ROOT).Trim()) {
+                $Root = ([string]$env:BOBIVERSE_PROGRAMDATA_ROOT).Trim()
+            } else {
+                $pd = if ($env:ProgramData) { $env:ProgramData } else { 'C:\ProgramData' }
+                $Root = Join-Path $pd 'Bobiverse'
+            }
         }
         $rootFull = [IO.Path]::GetFullPath($Root)
         $existed = Test-Path -LiteralPath $rootFull
         New-Item -ItemType Directory -Force -Path $rootFull | Out-Null
         $logs = Join-Path $rootFull 'logs'
         New-Item -ItemType Directory -Force -Path $logs | Out-Null
+
+        if ($ProtectMode -eq 'None') {
+            return $rootFull
+        }
+
+        $cacheKey = ($rootFull.ToLowerInvariant() + '|' + $ProtectMode)
+        if ($script:BobiverseProgramDataProtectCache.ContainsKey($cacheKey)) {
+            Write-Host ("INFO FR #3554 ProgramData protect skipped (cached) mode={0} root={1}" -f $ProtectMode, $rootFull)
+            return $rootFull
+        }
+
         if ($existed) {
             Write-Host ("WARN FR #3394 Ensure-BobiverseProgramDataRoot re-locking pre-existing {0}" -f $rootFull)
         }
-        # One -Recurse pass covers logs\; a second Protect on the child can hit SeSecurityPrivilege
-        # after inheritance is already stripped.
-        Protect-BobiverseInstallTree -Path $rootFull -Recurse -FailClosed:$FailClosed
-        Write-Host ("INFO FR #3394 ProgramData Bobiverse locked {0}" -f $rootFull)
+        if ($ProtectMode -eq 'LogsOnly') {
+            # FR #3554: MSI log path only needs root + logs\ locked, not update\ (GB-scale).
+            Protect-BobiverseInstallTree -Path $rootFull -FailClosed:$FailClosed
+            Protect-BobiverseInstallTree -Path $logs -FailClosed:$FailClosed
+            Write-Host ("INFO FR #3554 ProgramData Bobiverse locked LogsOnly {0}" -f $rootFull)
+        } else {
+            # One -Recurse pass covers logs\; install-time FailClosed keeps Full.
+            Protect-BobiverseInstallTree -Path $rootFull -Recurse -FailClosed:$FailClosed
+            Write-Host ("INFO FR #3394 ProgramData Bobiverse locked {0}" -f $rootFull)
+        }
+        $script:BobiverseProgramDataProtectCache[$cacheKey] = $true
         return $rootFull
     } catch {
         Write-Host ("WARN Ensure-BobiverseProgramDataRoot: {0}" -f $_.Exception.Message)
@@ -1493,9 +1524,17 @@ function Get-BobiverseMsiLogDir {
     <#
       Canonical verbose / CA log directory for UI and quiet msiexec (FR #2564).
       Prefer %ProgramData%\Bobiverse\logs so a UI install without /l*v still leaves a known trail.
-      FR #3394: Ensure-BobiverseProgramDataRoot locks the tree before append (Users RX only).
+      FR #3394 / #3554: Ensure locks root+logs once per process (LogsOnly), not Full -Recurse
+      on every append (fleet ProgramData trees are GB-scale).
+      Honours BOBIVERSE_PROGRAMDATA_ROOT for tests.
     #>
-    $root = Ensure-BobiverseProgramDataRoot
+    # FR #3554: pytest sets BOBIVERSE_PROGRAMDATA_ROOT - create dirs only (Protect would
+    # Users-RX the tmp tree and unelevated AppendAllText fails). Live MSI uses LogsOnly.
+    $mode = 'LogsOnly'
+    if ($env:BOBIVERSE_PROGRAMDATA_ROOT -and ([string]$env:BOBIVERSE_PROGRAMDATA_ROOT).Trim()) {
+        $mode = 'None'
+    }
+    $root = Ensure-BobiverseProgramDataRoot -ProtectMode $mode
     if ($root) {
         return (Join-Path $root 'logs')
     }
@@ -1506,7 +1545,10 @@ function Get-BobiverseMsiLogDir {
 }
 
 function Write-BobiverseMsiInstallLog {
-    <# Append one UTF-8 (no BOM) line to ProgramData\Bobiverse\logs\install-<product>.log (FR #2564). #>
+    <#
+      Append one UTF-8 (no BOM) line to ProgramData\Bobiverse\logs\install-<product>.log (FR #2564).
+      FR #3554: uses Get-BobiverseMsiLogDir (LogsOnly + process Protect cache).
+    #>
     param(
         [Parameter(Mandatory)][ValidateSet('bob', 'jeeves', 'airc')][string]$Product,
         [Parameter(Mandatory)][string]$Message,
