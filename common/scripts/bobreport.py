@@ -1989,6 +1989,13 @@ def _apply_worker_op(home: Path, op: str, mid: str, payload: dict, briefer_nick:
         doc["ts"] = now_iso
         _note_event(doc, event, machine=mid, nick=nick)
         save_digest(home, doc)
+        # FR #3400: ACKed jobs held by a departed seat return to unaccepted (prior ACK void).
+        try:
+            import gitclaim as _gitclaim
+
+            _gitclaim.release_accepted_for_departed_nick(home, nick)
+        except Exception:
+            pass
         return CallbackOutcome(ok=True, changed=True)
     else:
         if idx < 0:
