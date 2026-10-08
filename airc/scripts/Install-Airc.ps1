@@ -139,6 +139,12 @@ if ($wantAgentLayer) {
     }
 } else {
     Write-Host 'INFO agent-layer skipped (workstation / AIRC_AGENT_LAYER=0) FR #3292'
+    # FR #3392: MSI already laid AGENTS/CLAUDE/GROK/.cursor/.grok + agent scripts before RunInstall.
+    # Strip them so AIRC_PROFILE=workstation leaves an agent-free tree.
+    $purged = @(Remove-BobiverseAircWorkstationAgentPayload -InstallRoot $InstallRoot)
+    foreach ($p in $purged) {
+        if ($p) { [void]$script:AircManifestPaths.Add(("removed:{0}" -f $p)) }
+    }
 }
 
 # Package ergo.password into staged config if available on packer
