@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- AIRC_PROFILE=client: Remove-BobiverseAircClientExtraPayload must delete config\fleet-operators.txt (client never reads FR #3513 roster); pin exact remaining-file frozenset (24 with airc.exe / 23 SkipAircExe) so payload growth fails the test
