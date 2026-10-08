@@ -990,7 +990,7 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
         r"(?i)\bBobCallback\b.{0,160}\b(?:502|Bad Gateway|DOWN|not[- ]listening|no LISTEN|restart|recycle)\b"
     ), "ionos"),
     (re.compile(
-        r"(?i)\b(?:502|Bad Gateway|DOWN|not[- ]listening|no LISTEN)\b.{0,160}\bBobCallback\b"
+        r"(?i)\b(?:502|Bad Gateway|DOWN|not[- ]listening|no LISTEN|restart|recycle)\b.{0,160}\bBobCallback\b"
     ), "ionos"),
     (re.compile(r"(?i)\b(?:ARR|reverse[- ]proxy)\b.{0,140}\b(?:intake|BobCallback|/bob/v1)\b"), "ionos"),
     (re.compile(r"(?i)\b(?:intake|BobCallback|/bob/v1)\b.{0,140}\b(?:ARR|reverse[- ]proxy)\b"), "ionos"),
