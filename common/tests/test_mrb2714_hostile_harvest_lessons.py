@@ -107,6 +107,6 @@ def test_mrb2714_job_mrb_skill_documents_harvest_lesson_review():
         / "SKILL.md"
     )
     text = skill.read_text(encoding="utf-8")
-    assert "## Harvest-lesson intake PRs (FR #2705)" in text
+    assert "## Harvest-lesson intake PRs (FR #2705" in text  # prefix: heading may append / FR #3299 / #3317
     assert "harvest-lesson" in text
     assert "generalised" in text or "generalized" in text

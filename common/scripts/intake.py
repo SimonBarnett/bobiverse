@@ -19,7 +19,7 @@ MAX_BODY_BYTES = 256 * 1024
 MAX_FILES = 32
 MAX_FILE_BYTES = 128 * 1024
 DEFAULT_RATE_PER_MIN = 30
-# FR #795: historical examples (archived gh-Jeeves / agentic_build / … retired from
+# FR #795: historical examples (archived gh-Jeeves / agentic_build / ... retired from
 # the exclusive list). FR #3135: any SimonBarnett/<name> matching _REPO_RE is allowed;
 # DEFAULT_ALLOW_REPOS remains an optional extra allow for non-SimonBarnett owners later
 # and as documentation of known products (FR #3023 / #3050).
@@ -145,7 +145,7 @@ def lesson_owner_repo(title: str = "", body: str = "", source: str = "") -> Less
     """Return the skill-book owning repo for a harvest/skill lesson (FR #3299).
 
     ``missing=True`` means the intended owner is a planned product that does not
-    exist yet — MRB must leave the tip OPEN (never FAIL-close).
+    exist yet - MRB must leave the tip OPEN (never FAIL-close).
     ``repo=None`` means ownership could not be decided from the text.
     """
     blob = f"{title or ''}\n{body or ''}\n{source or ''}"
@@ -308,7 +308,7 @@ def resolve_skill_book(
     keyword-inferred product book so bob-worker / fleet-ops playbooks are not parked
     under harvest when the owning skill already has the lesson on main.
     FR #3189: when ``repo`` is a product (e.g. SimonBarnett/a-search), never return
-    bobiverse ``common/.grok/skills/harvest/SKILL.md`` — use that product's default
+    bobiverse ``common/.grok/skills/harvest/SKILL.md`` - use that product's default
     honesty-box path (``.grok/skills/harvest-agent-skills/SKILL.md``).
     """
     repo_l = str(repo or "").strip().lower()
@@ -372,11 +372,11 @@ def resolve_skill_book(
 # FR #2970: FAIL-supersede / wrong-book / Harvest-lesson MRB *process* playbooks belong in
 # bobiverse-bob-job-mrb. Default -Book harvest must not open lesson(harvest) twins that
 # restate that routing and get FAIL-superseded forever.
-# MRB #2973 hostile: bare "FAIL-supersede" alone must NOT match — a product harvest whose
+# MRB #2973 hostile: bare "FAIL-supersede" alone must NOT match - a product harvest whose
 # summary mentions FAIL-superseded would otherwise re-route MSI/outbox tips into job-mrb.
 # Mirror Invoke-BobiverseHarvest Test-HarvestFailSupersedeProcessLoop: process cue required;
 # FAIL-supersede alone is insufficient.
-# FR #2991: thin already-covered twins ("fleet-ops already cover … close thin twins") also
+# FR #2991: thin already-covered twins ("fleet-ops already cover ... close thin twins") also
 # lack process cues but must skip when FAIL-supersede + thin-twin restatement cues match.
 _FAIL_SUPERSEDE_RE = re.compile(r"(?i)FAIL[- ]supersede")
 _MRB_PROCESS_CUE_RE = re.compile(
@@ -442,7 +442,7 @@ def is_mrb_process_routing_lesson(text: str) -> bool:
         r"(?i)bobiverse-bob-job-mrb|harvest", t
     ):
         return True
-    # FAIL-supersede + process cue (e.g. wrong-book) — same AND as the PS1 client skip.
+    # FAIL-supersede + process cue (e.g. wrong-book) - same AND as the PS1 client skip.
     if _FAIL_SUPERSEDE_RE.search(t):
         return True
     return False
@@ -1172,7 +1172,7 @@ def file_submission(
                     )
                 if hold_repo or owner.missing:
                     intended = hold_repo or owner.repo or str(repo or "")
-                    hold_title = f"harvest: hold for {intended} — {title}"[:200]
+                    hold_title = f"harvest: hold for {intended} - {title}"[:200]
                     hold_body = (
                         f"FR #3317: owner repo `{intended}` does not exist yet "
                         f"(or is listed as a planned product). Held on bobiverse; "
