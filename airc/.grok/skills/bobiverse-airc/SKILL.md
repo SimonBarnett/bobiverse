@@ -28,9 +28,10 @@ Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick
 | Piece | Where |
 |---|---|
 | Install root | `<ai root>\airc` (`scripts\`, `config\`, `logs\`, `assets\`, `.grok\skills\`, `VERSION`) |
-| ConsoleHome | `%USERPROFILE%\.airc`; LocalSystem: `C:\Users\Administrator\.airc` or `<ai root>\airc\home` — **never** `C:\Users\Default\.airc` |
+| ConsoleHome | LocalSystem / MSI: `<ai root>\airc\home` (FR #3288; migrate off any `Users\<profile>` path). Never `C:\Users\Default\.airc` (FR #2355). |
 | NickServ GUID | `<ConsoleHome>\console.password` (minted; not the Ergo PASS) |
 | Ergo PASS | `<ai root>\airc\config\ergo.password` (Install copies; never invent) |
+| Secret ACLs | `Protect-BobiverseSecretPath`: SYSTEM + Administrators only (`AreAccessRulesProtected`); no Users / Authenticated Users / installing-user (FR #3288). Install also deletes `Users\Default\.airc*`. |
 | Logs | `<ai root>\airc\logs\*.log`, `<ConsoleHome>\*.log` |
 | IRC | SASL on by default for reserved `<MachineId>_console` |
 

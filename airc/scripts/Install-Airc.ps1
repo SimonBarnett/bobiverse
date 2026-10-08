@@ -96,6 +96,8 @@ if (Test-Path $skillsSrc) {
 # Package ergo.password into staged config if available on packer
 $packErgo = Join-Path $repoRoot 'config\ergo.password'
 $destErgo = Join-Path $InstallRoot 'config\ergo.password'
+$configDir = Join-Path $InstallRoot 'config'
+New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 if (-not (Test-Path $destErgo)) {
     foreach ($c in @($packErgo, (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'))) {
         if (Test-Path -LiteralPath $c) {
@@ -103,6 +105,13 @@ if (-not (Test-Path $destErgo)) {
             Write-Host "INFO staged config\ergo.password from $c"
             break
         }
+    }
+}
+# FR #3288: lock staged config secrets (and upgrade existing world-readable ACLs).
+if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
+    Protect-BobiverseSecretPath -Path $configDir -Recurse
+    if (Test-Path -LiteralPath $destErgo) {
+        Protect-BobiverseSecretPath -Path $destErgo
     }
 }
 
