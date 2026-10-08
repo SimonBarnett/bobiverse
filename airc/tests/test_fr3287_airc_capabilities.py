@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import airc_console as ac
+from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
 from repo_layout import ROOT
 
 PACK = ROOT / "common/scripts/Pack-BobiverseRelease.ps1"
@@ -21,7 +22,7 @@ def _no_bom(path: Path) -> None:
 
 
 def _core(*, shell_mode="operators", jobs="on", update="on", runner=None, job_protocol=None):
-    auth = ac.AuthPolicy(operators={"op"}, machine="tm")
+    auth = ops_auth("op")
     return ac.AircConsoleCore(
         machine="tm",
         auth=auth,
@@ -75,7 +76,7 @@ def test_jobs_off_refuses_put_run_allows_shell_when_operators():
 
 def test_update_off_refuses_update_verb():
     sched = MagicMock()
-    auth = ac.AuthPolicy(operators={"op"}, machine="tm")
+    auth = ops_auth("op")
     core = ac.AircConsoleCore(
         machine="tm",
         auth=auth,

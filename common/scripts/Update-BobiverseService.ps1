@@ -535,71 +535,7 @@ function Invoke-Rollback {
     }
 }
 
-function Get-AircSelfUpdateOperatorsProperty {
-    <#
-      FR #3513: comma-separated AIRC_OPERATORS for msiexec self-update.
-      Unions existing ConsoleHome operators.txt (from AppParameters / .airc) with
-      InstallRoot\config\fleet-operators.txt and ProgramData roster.
-    #>
-    param([string]$InstallRoot)
-    $nicks = New-Object System.Collections.Generic.List[string]
-    $seen = @{}
-    function Add-Nick([string]$Nick) {
-        if (-not $Nick) { return }
-        $k = $Nick.ToLowerInvariant()
-        if ($seen.ContainsKey($k)) { return }
-        $seen[$k] = $true
-        [void]$nicks.Add($Nick)
-    }
-    # Prior operators file from live AppParameters or default .airc path.
-    $opsFiles = New-Object System.Collections.Generic.List[string]
-    try {
-        $svc = Get-CimInstance Win32_Service -Filter "Name='Airc'" -ErrorAction SilentlyContinue
-        $pathName = [string]($svc.PathName)
-        if ($pathName -match '(?i)-OperatorsFile\s+\"([^\"]+)\"') {
-            [void]$opsFiles.Add($Matches[1])
-        } elseif ($pathName -match "(?i)-OperatorsFile\s+(\S+)") {
-            [void]$opsFiles.Add($Matches[1].Trim('"'))
-        }
-    } catch { }
-    $defaultOps = Join-Path $env:USERPROFILE '.airc\operators.txt'
-    if (Test-Path -LiteralPath $defaultOps) { [void]$opsFiles.Add($defaultOps) }
-    $adminOps = 'C:\Users\Administrator\.airc\operators.txt'
-    if (Test-Path -LiteralPath $adminOps) { [void]$opsFiles.Add($adminOps) }
-    foreach ($of in $opsFiles) {
-        if (-not (Test-Path -LiteralPath $of)) { continue }
-        try {
-            $raw = [IO.File]::ReadAllText($of).TrimStart([char]0xFEFF)
-            foreach ($ln in @($raw -split "`r?`n")) {
-                $t = ([string]$ln).Trim()
-                if (-not $t -or $t.StartsWith('#')) { continue }
-                foreach ($piece in @($t -split '[,;\s]+' | Where-Object { $_ })) {
-                    Add-Nick $piece.Trim()
-                }
-            }
-        } catch { }
-    }
-    # Fleet roster from install tree / ProgramData (may already be staged in the new MSI).
-    $rosterPaths = @(
-        (Join-Path $InstallRoot 'config\fleet-operators.txt'),
-        (Join-Path $env:ProgramData 'Bobiverse\fleet-operators.txt')
-    )
-    foreach ($rp in $rosterPaths) {
-        if (-not (Test-Path -LiteralPath $rp)) { continue }
-        try {
-            $raw = [IO.File]::ReadAllText($rp).TrimStart([char]0xFEFF)
-            foreach ($ln in @($raw -split "`r?`n")) {
-                $t = ([string]$ln).Trim()
-                if (-not $t -or $t.StartsWith('#')) { continue }
-                foreach ($piece in @($t -split '[,;\s]+' | Where-Object { $_ })) {
-                    Add-Nick $piece.Trim()
-                }
-            }
-        } catch { }
-    }
-    if ($nicks.Count -eq 0) { return '' }
-    return ($nicks.ToArray() -join ',')
-}
+# FR #3639: Get-AircSelfUpdateOperatorsProperty removed - airc has no operators list to forward.
 
 function Invoke-Apply {
     if (-not (Test-Path -LiteralPath $PlanFile)) { Write-UpdLog 'apply-abort plan missing'; return }
@@ -691,8 +627,7 @@ function Invoke-Apply {
 
         $mlog = Join-Path $StateDir ('msiexec-{0}.log' -f $tag)
         # FR #2475: serialise msiexec + retry 1618 (ERROR_INSTALL_ALREADY_RUNNING)
-        # FR #3513: airc self-update forwards AIRC_OPERATORS (existing ops file + fleet roster)
-        # so MajorUpgrade does not drop cross-machine ears when the property was never set.
+        # FR #3639: no AIRC_OPERATORS forwarding - airc auth is live control-channel +o/+h.
         $msiArgs = [System.Collections.Generic.List[string]]::new()
         [void]$msiArgs.Add('/i')
         [void]$msiArgs.Add(('"{0}"' -f $msi))
@@ -701,13 +636,6 @@ function Invoke-Apply {
         [void]$msiArgs.Add('REBOOT=ReallySuppress')
         [void]$msiArgs.Add('/l*v')
         [void]$msiArgs.Add(('"{0}"' -f $mlog))
-        if (([string]$Product).Trim().ToLowerInvariant() -eq 'airc') {
-            $opsProp = Get-AircSelfUpdateOperatorsProperty -InstallRoot $InstallRoot
-            if ($opsProp) {
-                [void]$msiArgs.Add(('AIRC_OPERATORS={0}' -f $opsProp))
-                Write-UpdLog ("FR #3513 AIRC_OPERATORS forwarded ({0} chars)" -f $opsProp.Length)
-            }
-        }
         if (Get-Command Invoke-BobiverseMsiexecSerialized -ErrorAction SilentlyContinue) {
             $msiResult = Invoke-BobiverseMsiexecSerialized -ArgumentList @($msiArgs.ToArray()) -LogPath $mlog -TimeoutMs 1200000
             $code = [int]$msiResult.ExitCode

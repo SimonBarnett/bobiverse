@@ -178,7 +178,7 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 - **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
 - **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
-- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_OPERATORS=bob-ionos,bob-flamingo` (FR #3397 fleet only; unions into operators.txt), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
+- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
 
@@ -187,7 +187,7 @@ airc status-only workstation (no remote shell):
 Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
 
 
-Fleet cross-machine ears after #3286 (FR #3397 / #3513): nick ACL is operators.txt only (no bob-* bypass). Fleet installs union `config\fleet-operators.txt` (shipped; includes `bob-win-mpre8vi4u6u`) and optional `%ProgramData%\Bobiverse\fleet-operators.txt` into ConsoleHome `operators.txt`. Self-update (`Update-BobiverseService`) forwards `AIRC_OPERATORS` from the prior ops file + roster so a silent 0.1.26+ upgrade does not cut ionos/other ears off MarchHare. You can still pass `AIRC_OPERATORS=bob-<other1>,bob-<other2>` on msiexec. `AIRC_PROFILE=workstation` ignores roster and `AIRC_OPERATORS`. Example: `msiexec /i airc-x.y.z.msi /qn AIRC_OPERATORS=bob-win-mpre8vi4u6u,bob-flamingo`.
+Fleet airc authorisation (FR #3401 / #3639): live IRC channel status only. A sender holding ops (+o) or half-ops (+h) (or higher) in the one control channel the console joined is authorised; everyone else gets `DONE exit=126 not-op`. There is no `operators.txt`, no `config\fleet-operators.txt` roster and no nick allow-list on any profile (fleet, workstation or client), and the retired `AIRC_OPERATORS` MSI property is ignored. Fleet and workstation consoles take commands by DM only and stay silent in their control channel; `AIRC_PROFILE=client` also accepts commands in the control channel. Auth refuses until NAMES/366 has synced the channel, and the console never authorises its own nick.
 
 Locked workstation (no GitHub `main` pull as SYSTEM, optional no MSI self-update):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (preferred; FR #3393) or legacy `AIRC_SYNC_FROM_REPO=0 AIRC_SELF_UPDATE=0`.  

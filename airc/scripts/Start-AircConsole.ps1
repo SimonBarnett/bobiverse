@@ -29,6 +29,7 @@ param(
     [Alias('Home')]
     [string]$ConsoleHome = '',
     [string]$PasswordFile = '',
+    # FR #3639: retired (no operators list; auth is live control-channel +o/+h). Accepted, ignored.
     [string[]]$Operators = @(),
     [string]$OperatorsFile = '',
     [string[]]$Accounts = @(),
@@ -36,7 +37,7 @@ param(
     # FR #3287: capability gates (also --shell off|operators on the Python host).
     [ValidateSet('', 'off', 'operators')]
     [string]$ShellMode = '',
-    # FR #3401: operators (nick ACL) or irc_ops (channel +o/+h; AIRC_PROFILE=client).
+    # FR #3401 / #3639: always irc_ops (control-channel +o/+h); 'operators' is retired -> irc_ops.
     [ValidateSet('', 'operators', 'irc_ops')]
     [string]$AuthMode = '',
     [ValidateSet('', 'off', 'on')]
@@ -212,15 +213,9 @@ if (-not $PasswordFile) {
     $PasswordFile = Join-Path $ConsoleHome 'console.password'
 }
 $argsList += @('--password-file', $PasswordFile)
-if ($AuthMode -ne 'irc_ops') {
-    if ($OperatorsFile) { $argsList += @('--operators-file', $OperatorsFile) }
-    elseif (Test-Path -LiteralPath (Join-Path $ConsoleHome 'operators.txt')) {
-        $argsList += @('--operators-file', (Join-Path $ConsoleHome 'operators.txt'))
-    }
-}
-if ($Operators.Count -gt 0) {
-    $argsList += '--operators'
-    $argsList += $Operators
+# FR #3639: never pass --operators-file / --operators (no operators list on any profile).
+if ($OperatorsFile -or $Operators.Count -gt 0) {
+    Write-Host 'INFO FR #3639 ignoring -OperatorsFile / -Operators (auth is control-channel +o/+h)'
 }
 if ($Accounts.Count -gt 0) {
     $argsList += '--accounts'
@@ -229,7 +224,7 @@ if ($Accounts.Count -gt 0) {
 if ($RequireAccount) { $argsList += '--require-account' }
 # FR #3287
 if ($ShellMode -in @('off', 'operators')) { $argsList += @('--shell-mode', $ShellMode) }
-if ($AuthMode -in @('operators', 'irc_ops')) { $argsList += @('--auth-mode', $AuthMode) }
+$argsList += @('--auth-mode', 'irc_ops')  # FR #3639
 if ($Jobs -in @('off', 'on')) { $argsList += @('--jobs', $Jobs) }
 if ($UpdateCap -in @('off', 'on')) { $argsList += @('--update', $UpdateCap) }
 if ($TlsInsecure) { $argsList += '--tls-insecure' }

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import airc_console as ac
+from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
 
 
 pytestmark = pytest.mark.skipif(
@@ -112,7 +113,7 @@ def test_malformed_and_oversized_psb64_rejected():
 
 
 def test_core_help_mentions_ps_and_psb64():
-    auth = ac.AuthPolicy(operators={"bob-tm"}, machine="tm")
+    auth = ops_auth("bob-tm")
     replies: list[tuple[str, str]] = []
     runner = ac.ShellJobRunner(on_reply=lambda n, line: replies.append((n, line)))
     core = ac.AircConsoleCore(
@@ -129,7 +130,7 @@ def test_core_help_mentions_ps_and_psb64():
 
 
 def test_core_runs_plain_command_with_done_via_runner(monkeypatch):
-    auth = ac.AuthPolicy(operators={"bob-tm"}, machine="tm")
+    auth = ops_auth("bob-tm")
     replies: list[str] = []
     runner = ac.ShellJobRunner(on_reply=lambda n, line: replies.append(line), wait=True)
     core = ac.AircConsoleCore(

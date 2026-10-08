@@ -126,7 +126,6 @@ def test_auth_policy_irc_ops_live_status_and_self_deny():
         auth_mode="irc_ops",
         members=m,
         self_nicks={"acme_console"},
-        machine="acme",
     )
     assert auth.allow("simon")
     assert auth.allow("helper")
@@ -146,10 +145,21 @@ def test_auth_policy_irc_ops_live_status_and_self_deny():
     assert auth2.allow("simon")
 
 
-def test_auth_policy_operators_mode_unchanged():
-    auth = ac.AuthPolicy(operators={"bob-tm"}, machine="tm")
-    assert auth.allow("bob-tm")
-    assert not auth.allow("evil")
+def test_auth_policy_has_no_operators_list_fr3639():
+    """FR #3639: the operators nick list is gone on every profile (fleet included)."""
+    import dataclasses
+
+    names = {f.name for f in dataclasses.fields(ac.AuthPolicy)}
+    assert "operators" not in names
+    assert "accounts" not in names
+    assert "require_account" not in names
+    assert "machine" not in names
+    assert ac.AuthPolicy().auth_mode == "irc_ops"
+    # bob-<machine> is not implicitly trusted any more: no channel status, no auth.
+    m = ac.ChannelMemberMap(channel="#tm")
+    m.apply_names("bob-tm")
+    m.mark_synced()
+    assert not ac.AuthPolicy(members=m).allow("bob-tm")
 
 
 # --- Core: channel + DM commands under irc_ops ------------------------------------
@@ -168,11 +178,10 @@ def test_core_irc_ops_allows_channel_and_dm_for_op_denies_others():
         auth_mode="irc_ops",
         members=m,
         self_nicks={"acme_console"},
-        machine="acme",
     )
     jobs = _StubJobs()
     core = ac.AircConsoleCore(
-        machine="acme", auth=auth, nick="acme_console", job_protocol=jobs
+        machine="acme", auth=auth, nick="acme_console", job_protocol=jobs, channel_commands=True
     )
     core.channel = "#acme"
 
@@ -204,10 +213,10 @@ def test_core_irc_ops_allows_channel_and_dm_for_op_denies_others():
     assert hr is not None
     assert hr.action == "deny"
 
-    # Fleet silent-in-channel preserved when auth_mode=operators.
+    # Fleet (channel_commands off): same channel +o/+h auth, but silent in channel (DM only).
     fleet = ac.AircConsoleCore(
         machine="acme",
-        auth=ac.AuthPolicy(operators={"simon"}, machine="acme"),
+        auth=auth,
         nick="acme_console",
     )
     fleet.channel = "#acme"
@@ -224,7 +233,7 @@ def test_core_irc_ops_unknown_state_and_self_nick_refuse():
         members=m,
         self_nicks={"acme_console"},
     )
-    core = ac.AircConsoleCore(machine="acme", auth=auth, nick="acme_console")
+    core = ac.AircConsoleCore(machine="acme", auth=auth, nick="acme_console", channel_commands=True)
     core.channel = "#acme"
     hr = core.handle_raw(":simon!u@h PRIVMSG acme_console :STATUS")
     assert hr is not None
@@ -302,11 +311,9 @@ def test_install_console_and_common_skip_operators_for_client():
     assert "irc_ops" in c or "AuthMode" in c
     common = COMMON.read_text(encoding="utf-8-sig")
     assert "client" in common
-    # Resolve-BobiverseAircOperatorNicks treats client like empty ops (FR #3513 grew the
-    # docstring — keep a wide window so the client gate stays visible).
-    chunk = common[common.find("Resolve-BobiverseAircOperatorNicks") :][:2500]
-    assert "client" in chunk
-    assert "never seeds operators.txt" in chunk or "prof -eq 'client'" in chunk
+    # FR #3639: no profile builds an operators list any more (client included).
+    assert "function Resolve-BobiverseAircOperatorNicks" not in common
+    assert "function Merge-BobiverseAircOperatorsFile" not in common
 
 
 def test_service_wires_irc_ops_and_control_channel_log():

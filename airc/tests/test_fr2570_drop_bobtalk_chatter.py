@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import airc_console as ac
+from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
 import airc_jobs as jobs
 from repo_layout import ROOT
 
@@ -47,7 +48,7 @@ def test_handle_raw_drops_bobtalk_chatter_without_shell(tmp_path):
         machine="tm",
         airc_running=True,
     )
-    auth = ac.AuthPolicy(operators={"bob-tm"}, machine="tm")
+    auth = ops_auth("bob-tm")
     core = ac.AircConsoleCore(
         machine="tm",
         auth=auth,

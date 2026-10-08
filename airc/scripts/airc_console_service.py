@@ -45,7 +45,8 @@ from airc_console import (
     ensure_nickserv_password,
     home_dir,
     load_capabilities,
-    load_operators,
+    legacy_operator_input_log_lines,
+    resolve_channel_commands,
     load_start_update_policy,
     machine_console_nick,
     machine_id,
@@ -194,50 +195,33 @@ class AircConsoleService:
         )
         self.capabilities = caps
         info(caps.log_line())
-        # FR #3401: auth_mode from CLI / airc.json profile=client -> irc_ops (no operators.txt).
-        auth_mode = (getattr(args, "auth_mode", None) or "").strip().lower()
-        if auth_mode not in {"operators", "irc_ops"}:
-            try:
-                from airc_console import _read_airc_json_dict
+        # FR #3401 / #3639: every profile authorises by live channel +o/+h only.
+        # No operators.txt / fleet-operators roster / nick allow-list is read anywhere.
+        try:
+            from airc_console import _read_airc_json_dict
 
-                cfg = _read_airc_json_dict(install_root)
-            except Exception:
-                cfg = {}
-            auth_mode = str(cfg.get("auth_mode") or "").strip().lower()
-            if auth_mode not in {"operators", "irc_ops"}:
-                prof = str(cfg.get("profile") or "").strip().lower()
-                auth_mode = "irc_ops" if prof == "client" else "operators"
-        self.auth_mode = auth_mode
+            cfg = _read_airc_json_dict(install_root)
+        except Exception:
+            cfg = {}
+        for line in legacy_operator_input_log_lines(args, cfg):
+            info(line)
+        self.auth_mode = "irc_ops"
+        self.channel_commands = resolve_channel_commands(cfg)
         self.members = ChannelMemberMap(channel=self.channel)
-        if auth_mode == "irc_ops":
-            ops = set()
-            info("INFO FR #3401 auth_mode=irc_ops (channel +o/+h; operators.txt ignored)")
-        else:
-            ops = load_operators(
-                Path(args.operators_file) if args.operators_file else self.home / "operators.txt",
-                args.operators,
-            )
-        accts = {x.strip().lower() for x in (args.accounts or []) if x.strip()}
-        accts.update(a.lower() for a in caps.accounts)
+        info(
+            "INFO FR #3639 auth_mode=irc_ops (control-channel +o/+h; no operators list) "
+            f"channel_commands={int(self.channel_commands)}"
+        )
         amap = AccountMap()
         amap_path = self.home / "accounts.json"
         amap.load(amap_path)
         self.account_map = amap
         self.amap_path = amap_path
         auth = AuthPolicy(
-            operators=ops,
-            accounts=accts,
-            account_map=amap,
-            require_account=bool(args.require_account or caps.require_account or accts)
-            if auth_mode != "irc_ops"
-            else False,
-            machine=self.machine,
-            auth_mode=auth_mode,  # type: ignore[arg-type]
             members=self.members,
             self_nicks={self.nick.lower()} if self.nick else set(),
+            account_map=amap,
         )
-        if auth_mode != "irc_ops" and not ops and not accts:
-            raise SystemExit("airc console: refuse empty operators/accounts (FR #253)")
         cwd = args.cwd or str(self.home)
         self.sessions = ConsoleSessionManager(
             shell=shell_path or resolve_powershell(),
@@ -272,6 +256,7 @@ class AircConsoleService:
             install_root=install_root,
             job_protocol=self.job_protocol,
             capabilities=caps,
+            channel_commands=self.channel_commands,
         )
         self.core.channel = self.channel
         self.sock: ssl.SSLSocket | socket.socket | None = None
@@ -1107,16 +1092,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="SASL PLAIN after server PASS (default on; required for reserved "
         "{machine}_console nick). Use --no-sasl only on lab nets without NickServ.",
     )
-    p.add_argument("--operators", nargs="*", default=[])
-    p.add_argument("--operators-file", default=None)
+    # FR #3639: retired operator-list inputs - accepted so old AppParameters still start,
+    # logged and ignored. Auth is live control-channel +o/+h on every profile.
+    p.add_argument("--operators", nargs="*", default=[], help="FR #3639: ignored (no operators list)")
+    p.add_argument("--operators-file", default=None, help="FR #3639: ignored (no operators list)")
     p.add_argument(
         "--auth-mode",
         default=None,
         choices=["operators", "irc_ops"],
-        help="FR #3401: operators=nick ACL (default); irc_ops=channel +o/+h (AIRC_PROFILE=client)",
+        help="FR #3401 / #3639: always irc_ops (control-channel +o/+h); 'operators' is retired and ignored",
     )
-    p.add_argument("--accounts", nargs="*", default=[], help="services account allowlist")
-    p.add_argument("--require-account", action="store_true")
+    p.add_argument("--accounts", nargs="*", default=[], help="FR #3639: ignored for auth (channel +o/+h only)")
+    p.add_argument("--require-account", action="store_true", help="FR #3639: ignored for auth")
     p.add_argument(
         "--shell",
         default=None,
@@ -1164,20 +1151,26 @@ def selftest() -> int:
     )
     assert parse_chanserv_info("Channel #marchhare is registered", "#marchhare") == "registered"
     assert parse_chanserv_info("Registered at: Tue, 29 Sep 2026 17:50:35 UTC", "#marchhare") == "registered"
-    auth = AuthPolicy(operators={"simon"}, accounts=set(), machine="ionos")
+    # FR #3639: auth is live control-channel +o/+h only (no operators list).
+    members = ChannelMemberMap(channel="#ionos")
+    members.apply_names("@Simon %bob-other +voiced plain ionos_console")
+    members.mark_synced()
+    auth = AuthPolicy(members=members, self_nicks={"ionos_console"})
     assert auth.allow("Simon")
+    assert auth.allow("bob-other")
+    assert not auth.allow("voiced")
+    assert not auth.allow("plain")
     assert not auth.allow("stranger")
-    # FR #3286: arbitrary bob-* must not bypass operators.
-    assert not auth.allow("bob-evil")
-    assert auth.allow("bob-ionos")  # seeded via machine=
+    assert not auth.allow("ionos_console")
+    assert not AuthPolicy(members=ChannelMemberMap(channel="#ionos")).allow("Simon")  # unsynced
     core = AircConsoleCore(
         machine="ionos", auth=auth, sessions=ConsoleSessionManager(on_output=None), nick="ionos_console"
     )
     assert core.may_speak_on_channel() is False
-    r = core.handle_raw(":evil!e@h PRIVMSG #ionos :whoami")
-    assert r and r.action == "silent_channel"
-    r2 = core.handle_raw(":evil!e@h PRIVMSG ionos_console :whoami")
-    assert r2 and r2.action == "deny"
+    r = core.handle_raw(":Simon!s@h PRIVMSG #ionos :whoami")
+    assert r and r.action == "silent_channel"  # fleet: DM only
+    r2 = core.handle_raw(":plain!e@h PRIVMSG ionos_console :whoami")
+    assert r2 and r2.action == "deny" and r2.reply == "DONE exit=126 not-op"
     r3 = core.handle_raw(":bob-evil!e@h PRIVMSG ionos_console :whoami")
     assert r3 and r3.action == "deny"
     assert isinstance(is_frozen_airc_exe(), bool)

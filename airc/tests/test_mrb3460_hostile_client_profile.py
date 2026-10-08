@@ -20,12 +20,11 @@ def test_mrb3460_auth_irc_ops_contiguous_and_fleet_silent():
         auth_mode="irc_ops",
         members=m,
         self_nicks={"box_console"},
-        machine="box",
     )
     assert auth.allow("op") and auth.allow("hop") and not auth.allow("plain")
     assert not auth.allow("box_console")
     core = ac.AircConsoleCore(
-        machine="box", auth=auth, nick="box_console"
+        machine="box", auth=auth, nick="box_console", channel_commands=True
     )
     core.channel = "#box"
     deny = core.handle_raw(":plain!u@h PRIVMSG box_console :STATUS")
@@ -33,7 +32,7 @@ def test_mrb3460_auth_irc_ops_contiguous_and_fleet_silent():
     assert deny.reply == "DONE exit=126 not-op"
     fleet = ac.AircConsoleCore(
         machine="box",
-        auth=ac.AuthPolicy(operators={"op"}, machine="box"),
+        auth=auth,
         nick="box_console",
     )
     fleet.channel = "#box"
@@ -47,9 +46,10 @@ def test_mrb3460_install_client_caps_and_auth_mode_wiring():
     assert "elseif ($prof -eq 'client') { $resolvedShell = 'operators' }" in t
     assert "elseif ($prof -eq 'client') { $resolvedJobs = 'on' }" in t
     assert "elseif ($prof -in @('workstation', 'client')) { $resolvedSelf = $false }" in t
-    assert "authMode = $(if ($prof -eq 'client') { 'irc_ops' } else { 'operators' })" in t
+    # FR #3639: irc_ops on every profile, not only client.
+    assert "$authMode = 'irc_ops'" in t
     assert "client keeps crash reports ON" in t or "source = 'client-profile'" in t
-    assert "no operators.txt (IRC +o/+h auth)" in t
+    assert "control-channel +o/+h" in t
 
 
 def test_mrb3460_service_control_channel_log_and_names_wiring():

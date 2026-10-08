@@ -14,6 +14,7 @@ import pytest
 from repo_layout import ROOT
 
 import airc_console as ac
+from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
 
 S = ROOT / "scripts"
 UPD = S / "Update-BobiverseService.ps1"
@@ -25,7 +26,7 @@ win = pytest.mark.skipif(os.name != "nt" or not PS, reason="needs Windows PowerS
 
 
 def _core(auth_ops=("bob-marchhare",), machine="marchhare", **kw):
-    auth = ac.AuthPolicy(operators=set(auth_ops), machine=machine)
+    auth = ops_auth(*auth_ops, channel=f"#{machine}")
     return ac.AircConsoleCore(machine=machine, auth=auth, nick=f"{machine}_console", **kw)
 
 

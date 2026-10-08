@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import airc_console as ac
+from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
 from repo_layout import ROOT
 
 SVC = ROOT / "airc" / "scripts" / "airc_console_service.py"
@@ -24,7 +25,7 @@ def test_service_dispatches_capability_deny_to_privmsg():
 def test_shell_off_stranger_still_auth_denied_not_capability():
     """Auth gate runs before capability; strangers never see shell-disabled."""
     runner = MagicMock()
-    auth = ac.AuthPolicy(operators={"op"}, machine="tm")
+    auth = ops_auth("op")
     core = ac.AircConsoleCore(
         machine="tm",
         auth=auth,
@@ -36,13 +37,13 @@ def test_shell_off_stranger_still_auth_denied_not_capability():
     hr = core.handle_raw(":evil!u@h PRIVMSG tm_console :Write-Output 1")
     assert hr is not None
     assert hr.action == "deny"
-    assert "authenticate" in (hr.reply or "").lower()
+    assert "not-op" in (hr.reply or "").lower()
     runner.start.assert_not_called()
 
 
 def test_jobs_off_allows_status_only():
     job = MagicMock()
-    auth = ac.AuthPolicy(operators={"op"}, machine="tm")
+    auth = ops_auth("op")
     core = ac.AircConsoleCore(
         machine="tm",
         auth=auth,

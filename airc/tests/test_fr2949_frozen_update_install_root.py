@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import airc_console as ac
+from airc_auth_helpers import ops_auth  # FR #3639: channel +o/+h auth
 import airc_console_service as svc
 
 
@@ -103,7 +104,7 @@ def test_fr2949_update_missing_still_action_update_not_shell():
             product=product, version=version,
         )
 
-    auth = ac.AuthPolicy(operators={"bob-marchhare"}, machine="marchhare")
+    auth = ops_auth("bob-marchhare")
     core = ac.AircConsoleCore(
         machine="marchhare",
         auth=auth,
