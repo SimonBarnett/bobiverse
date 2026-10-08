@@ -104,14 +104,19 @@ def test_fr3192_release_stale_busy_respects_pending_offer(tmp_path, monkeypatch)
 
 
 def test_fr3192_stale_bored_after_ack_skips_second_offer(tmp_path, monkeypatch):
-    """After ACK, a late offer_focus_top for the same seat must not stamp a new row."""
+    """After ACK, a late offer_focus_top for the same seat must not stamp a new row.
+
+    Offer order is kind+number (FR #3205): with FR+#MRB queued, MRB may be first.
+    Assert against whichever row was offered, not a hard-coded FR id.
+    """
     home = _home(tmp_path, monkeypatch)
     _queue(home, [_row("o/a", "FR", 1, 1), _row("o/b", "MRB", 2, 2, url="https://github.com/o/b/pull/2")])
     t0 = time.time()
     s1, j1 = gitclaim.offer_focus_top(home, "marchhare-1", "#marchhare", now=t0)
-    assert s1 == "ok" and j1["id"] == "#1"
+    assert s1 == "ok" and j1 is not None
+    offered_id = j1["id"]
     st, acc = gitclaim.accept_offered(home, "marchhare-1", "#marchhare")
-    assert st == "ok" and acc["id"] == "#1"
+    assert st == "ok" and acc["id"] == offered_id
     # Stale !bored processing continues: gate must be busy (accepted), not ok with a new offer.
     gate = gitclaim.bored_gate(home, "marchhare-1", "#marchhare", t0 + 5)
     assert gate == "busy"
