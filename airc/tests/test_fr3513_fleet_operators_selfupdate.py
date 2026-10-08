@@ -1,4 +1,4 @@
-"""FR #3513: fleet self-update unions fleet-operators roster; FR #3512 flat nick list."""
+"""FR #3513 helpers + FR #3512 flat nicks; FR #3639 fleet Resolve returns empty (irc_ops)."""
 from __future__ import annotations
 
 import os
@@ -53,7 +53,7 @@ def test_fr3513_common_helpers_and_install_update_wire():
     assert "Write-Output -NoEnumerate" in common  # FR #3512 flat return
     inst = INSTALL.read_text(encoding="utf-8-sig")
     assert "InstallRoot" in inst and "Resolve-BobiverseAircOperatorNicks" in inst
-    assert "FR #3513" in inst or "fleet-operators" in inst
+    assert "FR #3513" in inst or "fleet-operators" in inst or "FR #3639" in inst
     upd = UPDATE.read_text(encoding="utf-8-sig")
     assert "Get-AircSelfUpdateOperatorsProperty" in upd
     assert "AIRC_OPERATORS=" in upd
@@ -64,13 +64,13 @@ def test_fr3513_common_helpers_and_install_update_wire():
 
 def test_fr3513_docs_skill_call_out_self_update_break():
     blob = POST.read_text(encoding="utf-8") + "\n" + SKILL.read_text(encoding="utf-8")
-    assert "3513" in blob
-    assert "fleet-operators" in blob.lower() or "AIRC_OPERATORS" in blob
+    assert "3513" in blob or "3639" in blob
+    assert "fleet-operators" in blob.lower() or "AIRC_OPERATORS" in blob or "irc_ops" in blob
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell")
 def test_fr3513_resolve_unions_roster_and_stays_flat(tmp_path: Path):
-    """Self-update case: no AIRC_OPERATORS, roster still adds bob-win; list stays flat (#3512)."""
+    """FR #3639: fleet Resolve returns empty; workstation stays flat (#3512)."""
     root = tmp_path / "airc"
     cfg = root / "config"
     cfg.mkdir(parents=True)
@@ -83,38 +83,27 @@ def test_fr3513_resolve_unions_roster_and_stays_flat(tmp_path: Path):
         . '{COMMON}'
         $ops = Resolve-BobiverseAircOperatorNicks -Profile 'fleet' `
             -Operators @('Simon') -OperatorsExtra '' -InstallRoot '{root}'
-        if ($ops -isnot [Array]) {{ throw "expected array, got $($ops.GetType().FullName)" }}
-        # FR #3512: must not be a 1-element array whose only element is another array.
-        if ($ops.Count -eq 1 -and $ops[0] -is [Array]) {{
-            throw "nested array (FR #3512): $($ops[0] -join ' ')"
-        }}
         $join = (@($ops) -join ',')
-        if ($join -notmatch '(?i)Simon') {{ throw "lost Simon: $join" }}
-        if ($join -notmatch '(?i)bob-win-mpre8vi4u6u') {{ throw "missing roster ear: $join" }}
-        # Workstation ignores roster.
+        if ($join) {{ throw "FR #3639 fleet must be empty: $join" }}
         $ws = Resolve-BobiverseAircOperatorNicks -Profile 'workstation' `
             -Operators @('Simon') -OperatorsExtra 'bob-evil' -InstallRoot '{root}'
+        if ($ws.Count -eq 1 -and $ws[0] -is [Array]) {{
+            throw "nested array (FR #3512): $($ws[0] -join ' ')"
+        }}
         $wsj = (@($ws) -join ',')
-        if ($wsj -match '(?i)bob-win-mpre8vi4u6u') {{ throw "workstation absorbed roster: $wsj" }}
-        if ($wsj -match '(?i)bob-evil') {{ throw "workstation absorbed AIRC_OPERATORS: $wsj" }}
-        Write-Output ('ok:' + $join)
+        if ($wsj -notmatch '(?i)^Simon$') {{ throw "workstation ops unexpected: $wsj" }}
+        Write-Output ('ok:' + $wsj)
         """
     )
     proc = _ps(script)
     text = (proc.stdout or "") + "\n" + (proc.stderr or "")
     assert proc.returncode == 0, text
     assert "ok:" in text
-    assert "bob-win-mpre8vi4u6u" in text
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell")
 def test_fr3513_merge_after_resolve_authorises_cross_machine(tmp_path: Path):
-    """Upgrade simulation: existing Simon+bob-local + roster -> bob-win present for AuthPolicy."""
-    root = tmp_path / "inst"
-    (root / "config").mkdir(parents=True)
-    (root / "config" / "fleet-operators.txt").write_text(
-        "bob-win-mpre8vi4u6u\n", encoding="utf-8"
-    )
+    """FR #3639: fleet Resolve empty; Merge still writes flat nicks (workstation path)."""
     home = tmp_path / ".airc"
     home.mkdir()
     ops = home / "operators.txt"
@@ -124,14 +113,14 @@ def test_fr3513_merge_after_resolve_authorises_cross_machine(tmp_path: Path):
         $ErrorActionPreference = 'Stop'
         . '{COMMON}'
         $ops = Resolve-BobiverseAircOperatorNicks -Profile 'fleet' `
-            -Operators @('Simon') -OperatorsExtra '' -InstallRoot '{root}'
-        Merge-BobiverseAircOperatorsFile -Path '{ops}' -Nicks @($ops) -MachineId 'marchhare'
+            -Operators @('Simon') -OperatorsExtra 'bob-win-mpre8vi4u6u' -InstallRoot '{tmp_path}'
+        if ((@($ops) -join ',')) {{ throw "fleet resolve must be empty: $(@($ops) -join ',')" }}
+        Merge-BobiverseAircOperatorsFile -Path '{ops}' -Nicks @('Simon', 'bob-other') -MachineId 'marchhare'
         $lines = @(Get-Content -LiteralPath '{ops}' | ForEach-Object {{ $_.Trim() }} | Where-Object {{ $_ }})
         $join = ($lines -join ',')
-        if ($join -notmatch '(?i)bob-win-mpre8vi4u6u') {{ throw "missing after merge: $join" }}
         if ($join -notmatch '(?i)bob-marchhare') {{ throw "lost local ear: $join" }}
         if ($join -notmatch '(?i)Simon') {{ throw "lost Simon: $join" }}
-        # Space-joined single line must not appear (FR #3512).
+        if ($join -notmatch '(?i)bob-other') {{ throw "missing merged nick: $join" }}
         if ($lines.Count -eq 1 -and $lines[0] -match '\\s') {{
             throw "single space-joined line (FR #3512): $($lines[0])"
         }}
@@ -142,3 +131,4 @@ def test_fr3513_merge_after_resolve_authorises_cross_machine(tmp_path: Path):
     text = (proc.stdout or "") + "\n" + (proc.stderr or "")
     assert proc.returncode == 0, text
     assert "merge-ok:" in text
+

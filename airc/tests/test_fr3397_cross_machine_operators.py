@@ -121,16 +121,16 @@ def test_fr3397_workstation_ignores_operators_extra_in_install_text():
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows only")
 def test_fr3397_resolve_operators_extra_workstation_vs_fleet():
-    """Behavioral: fleet unions; workstation drops OperatorsExtra."""
+    """Behavioral: FR #3639 fleet empty (irc_ops); workstation drops OperatorsExtra."""
     script = textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
         . '{COMMON}'
         $fleet = Resolve-BobiverseAircOperatorNicks -Profile 'fleet' -Operators @('Simon') -OperatorsExtra 'bob-ionos,bob-flamingo'
-        if ($fleet.Count -lt 3) {{ throw ('fleet expected >=3 got ' + ($fleet -join ',')) }}
-        if ($fleet -notcontains 'bob-ionos') {{ throw 'fleet missing bob-ionos' }}
+        if ((@($fleet) -join ',')) {{ throw ('FR #3639 fleet must be empty got ' + ($fleet -join ',')) }}
         $ws = Resolve-BobiverseAircOperatorNicks -Profile 'workstation' -Operators @('Simon') -OperatorsExtra 'bob-ionos,bob-evil'
         if ($ws -contains 'bob-ionos' -or $ws -contains 'bob-evil') {{ throw 'workstation must ignore OperatorsExtra' }}
+        if ((@($ws) -join ',') -notmatch '(?i)^Simon$') {{ throw ('workstation ops unexpected: ' + ($ws -join ',')) }}
         Write-Output 'resolve-ok'
         """
     )
