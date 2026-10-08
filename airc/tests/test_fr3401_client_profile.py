@@ -302,8 +302,11 @@ def test_install_console_and_common_skip_operators_for_client():
     assert "irc_ops" in c or "AuthMode" in c
     common = COMMON.read_text(encoding="utf-8-sig")
     assert "client" in common
-    # Resolve-BobiverseAircOperatorNicks treats client like empty ops
-    assert "client" in common[common.find("Resolve-BobiverseAircOperatorNicks") :][:800]
+    # Resolve-BobiverseAircOperatorNicks treats client like empty ops (FR #3513 grew the
+    # docstring — keep a wide window so the client gate stays visible).
+    chunk = common[common.find("Resolve-BobiverseAircOperatorNicks") :][:2500]
+    assert "client" in chunk
+    assert "never seeds operators.txt" in chunk or "prof -eq 'client'" in chunk
 
 
 def test_service_wires_irc_ops_and_control_channel_log():

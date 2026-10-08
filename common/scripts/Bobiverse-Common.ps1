@@ -505,16 +505,68 @@ function Test-BobiverseCrashReportAllowsIntake {
 }
 
 
+function Get-BobiverseAircFleetOperatorRoster {
+    <#
+      FR #3513: nick list for fleet cross-machine ears (one nick per line, # comments ok).
+      Reads InstallRoot\config\fleet-operators.txt then %ProgramData%\Bobiverse\fleet-operators.txt.
+      Workstation/client callers should ignore the result.
+    #>
+    param(
+        [string]$InstallRoot = '',
+        [string[]]$ExtraPaths = @()
+    )
+    $paths = New-Object System.Collections.Generic.List[string]
+    if ($InstallRoot) {
+        [void]$paths.Add((Join-Path $InstallRoot 'config\fleet-operators.txt'))
+    }
+    $pd = [string]$env:ProgramData
+    if ($pd) {
+        [void]$paths.Add((Join-Path $pd 'Bobiverse\fleet-operators.txt'))
+    }
+    foreach ($p in @($ExtraPaths)) {
+        if ($p -and ([string]$p).Trim()) { [void]$paths.Add(([string]$p).Trim()) }
+    }
+    $seen = @{}
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($path in $paths) {
+        if (-not $path -or -not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            $raw = [IO.File]::ReadAllText($path)
+        } catch {
+            Write-Host ("WARN FR #3513 roster read {0}: {1}" -f $path, $_.Exception.Message)
+            continue
+        }
+        $clean = $raw.TrimStart([char]0xFEFF)
+        foreach ($ln in @($clean -split "`r?`n")) {
+            $n = ([string]$ln).Trim()
+            if (-not $n -or $n.StartsWith('#')) { continue }
+            # Allow comma-separated leftovers on one line without treating as one nick (FR #3512).
+            foreach ($piece in @($n -split '[,;\s]+' | Where-Object { $_ })) {
+                $nick = ([string]$piece).Trim()
+                if (-not $nick) { continue }
+                $k = $nick.ToLowerInvariant()
+                if ($seen.ContainsKey($k)) { continue }
+                $seen[$k] = $true
+                [void]$out.Add($nick)
+            }
+        }
+    }
+    Write-Output -NoEnumerate ($out.ToArray())
+}
+
 function Resolve-BobiverseAircOperatorNicks {
     <#
-      FR #3397: build the operator nick list for Install-Airc / operators.txt.
-      Fleet: union -Operators with -OperatorsExtra (MSI AIRC_OPERATORS).
-      Workstation: ignore OperatorsExtra (no fleet cross-machine roster).
+      FR #3397 / #3513: build the operator nick list for Install-Airc / operators.txt.
+      Fleet: union -Operators with -OperatorsExtra (MSI AIRC_OPERATORS) and fleet-operators roster.
+      Workstation: ignore OperatorsExtra and roster (no fleet cross-machine roster).
+      FR #3512: return a flat string[] via Write-Output -NoEnumerate (never nest under @(...)).
     #>
     param(
         [string]$Profile = '',
         [string[]]$Operators = @(),
-        [string]$OperatorsExtra = ''
+        [string]$OperatorsExtra = '',
+        [string]$InstallRoot = '',
+        [string[]]$RosterExtra = @()
     )
     $ops = New-Object System.Collections.Generic.List[string]
     foreach ($o in @($Operators)) {
@@ -522,7 +574,10 @@ function Resolve-BobiverseAircOperatorNicks {
     }
     $prof = ([string]$Profile).Trim().ToLowerInvariant()
     # FR #3401: client profile never seeds operators.txt (IRC +o/+h auth).
-    if ($prof -eq 'client') { return @() }
+    if ($prof -eq 'client') {
+        Write-Output -NoEnumerate @()
+        return
+    }
     if ($prof -ne 'workstation') {
         $extra = ([string]$OperatorsExtra).Trim()
         if ($extra) {
@@ -530,6 +585,13 @@ function Resolve-BobiverseAircOperatorNicks {
                 $n = ([string]$o).Trim()
                 if ($n) { [void]$ops.Add($n) }
             }
+        }
+        # FR #3513: fleet roster survives self-update (msiexec has no AIRC_OPERATORS).
+        foreach ($o in @(Get-BobiverseAircFleetOperatorRoster -InstallRoot $InstallRoot)) {
+            if ($o -and ([string]$o).Trim()) { [void]$ops.Add(([string]$o).Trim()) }
+        }
+        foreach ($o in @($RosterExtra)) {
+            if ($o -and ([string]$o).Trim()) { [void]$ops.Add(([string]$o).Trim()) }
         }
     }
     $seen = @{}
@@ -540,7 +602,7 @@ function Resolve-BobiverseAircOperatorNicks {
         $seen[$k] = $true
         [void]$out.Add($n)
     }
-    return , $out.ToArray()
+    Write-Output -NoEnumerate ($out.ToArray())
 }
 
 function Merge-BobiverseAircOperatorsFile {
@@ -564,8 +626,21 @@ function Merge-BobiverseAircOperatorsFile {
     $MachineId = ($MachineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
     $bobNick = "bob-$MachineId"
     $want = New-Object System.Collections.Generic.List[string]
+    # FR #3512: split space/comma-joined tokens so a nested @() nick array cannot
+    # land as a single operators.txt line ("Simon bob-other"). Absorbed from PR #3555.
     foreach ($o in @($Nicks)) {
-        if ($o -and ([string]$o).Trim()) { [void]$want.Add(([string]$o).Trim()) }
+        if ($null -eq $o) { continue }
+        if (($o -is [System.Array]) -and -not ($o -is [string])) {
+            foreach ($n in $o) {
+                foreach ($p in @(([string]$n) -split '[,;\s]+' | Where-Object { $_ })) {
+                    [void]$want.Add($p.Trim())
+                }
+            }
+            continue
+        }
+        foreach ($p in @(([string]$o) -split '[,;\s]+' | Where-Object { $_ })) {
+            [void]$want.Add($p.Trim())
+        }
     }
     if (-not $NoEnsureBobLocal) {
         if (-not ($want | Where-Object { $_.ToLowerInvariant() -eq $bobNick })) {

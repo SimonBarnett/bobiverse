@@ -187,7 +187,7 @@ airc status-only workstation (no remote shell):
 Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
 
 
-Fleet cross-machine ears after #3286 (FR #3397): nick ACL is operators.txt only (no bob-* bypass). Before/with fleet upgrades that other ears drive, pass AIRC_OPERATORS=bob-<other1>,bob-<other2> (or edit ConsoleHome operators.txt) so those ears stay authorised. AIRC_PROFILE=workstation ignores AIRC_OPERATORS. Example: msiexec /i airc-x.y.z.msi /qn AIRC_OPERATORS=bob-win-mpre8vi4u6u,bob-flamingo.
+Fleet cross-machine ears after #3286 (FR #3397 / #3513): nick ACL is operators.txt only (no bob-* bypass). Fleet installs union `config\fleet-operators.txt` (shipped; includes `bob-win-mpre8vi4u6u`) and optional `%ProgramData%\Bobiverse\fleet-operators.txt` into ConsoleHome `operators.txt`. Self-update (`Update-BobiverseService`) forwards `AIRC_OPERATORS` from the prior ops file + roster so a silent 0.1.26+ upgrade does not cut ionos/other ears off MarchHare. You can still pass `AIRC_OPERATORS=bob-<other1>,bob-<other2>` on msiexec. `AIRC_PROFILE=workstation` ignores roster and `AIRC_OPERATORS`. Example: `msiexec /i airc-x.y.z.msi /qn AIRC_OPERATORS=bob-win-mpre8vi4u6u,bob-flamingo`.
 
 Locked workstation (no GitHub `main` pull as SYSTEM, optional no MSI self-update):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_PROFILE=workstation` (preferred; FR #3393) or legacy `AIRC_SYNC_FROM_REPO=0 AIRC_SELF_UPDATE=0`.  
