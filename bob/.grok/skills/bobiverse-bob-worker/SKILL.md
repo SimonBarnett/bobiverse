@@ -90,13 +90,20 @@ An unknown reading is "not available" (falls through), never "available". Readin
 * **Reply path (FR #2380)**: the agent appends `PRIVMSG #<machine> :text` (or plain text) lines to `$env:BOB_OUTBOX` (bob-worker sets it on every agent child) or the path in the first instruction / each injected `FROM ... [outbox: <path>]` footer
   (`%LOCALAPPDATA%\Bobiverse\worker\run\worker-<machine>-<pid>-<id>\outbox.txt`). **Never** the ear's `home\outbox.txt`. Lines for any other target are refused.
 
-## If IRC is lost: the seat ends (no reconnect loop)
+## If IRC is lost: reconnect with grace (FR #3456)
 
-On EOF, socket error, server `ERROR`, KICK, or a ping timeout (no data for 90 s, then a client PING unanswered for 45 s) the exe **kills the agent process tree it started - and only that
-tree - then exits with code 3**. It never reconnects and never leaves an orphaned agent. Start a new seat with the tray `Agent` click. If IRC cannot be reached at start (exit 2) NO agent is
-started. Closing the agent window by hand ends the seat too (exit 0, IRC QUIT).
+On IRC loss the seat **keeps the agent** and tries to reconnect with backoff for
+`BOB_WORKER_IRC_RECONNECT_GRACE_S` (default **600** seconds / 10 minutes). Same nick, shop
+`#<machine>` only. Outbox ACK/DONE lines that fail to send are **held and flushed** after
+reconnect; the seat also re-sends ACK for the open job so Jeeves keeps the assignment.
 
-**FR #3180 manual only (supersedes FR #2601 seat-heal):** clean `irc-lost` (exit 3) does not fire the crash hook and does **not** auto-respawn. TipForm Watchdog keeps `HealEngine` for the hidden PS engine and may log `seat-exit` / `not restarted` when a seat drops; it never calls `WorkerLauncher.Launch`. Seats start only from the tray Agent/Plan click, an explicit `!startworker`, or a human running `bob-worker`. `scripts\Ensure-BobWorkerSeats.ps1` is report-only (measure with `-Procs`; never queues `req-*.json`). Rebuild `bob-tray.exe` (`Build-BobDialogs.ps1`) after pull.
+When grace is exhausted the seat exits cleanly with code 3 (`EXIT_IRC_LOST`). Jeeves FR #3400
+releases any orphaned accepted row on PART/QUIT. Set `BOB_WORKER_IRC_RECONNECT_GRACE_S=0` for
+the legacy behaviour (kill agent tree immediately, no reconnect).
+
+**FR #2601 seat-heal:** clean `irc-lost` (exit 3) does not fire the crash hook. TipForm
+`bob-tray.exe` Watchdog tops **agent** seats back up to the hard cap of 2 after a final exit.
+Opt out heal: `BOBIVERSE_WORKER_SEAT_HEAL=0`.
 
 ## Agent health (while connected)
 

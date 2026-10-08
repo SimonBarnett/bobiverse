@@ -512,7 +512,7 @@ def test_flood_is_coalesced_not_dropped_or_spammed(tmp_path):
 # ----------------------------------------------------------------------------------------------- IRC loss => end the agent, close self
 def test_irc_loss_kills_only_its_own_agent_tree_and_exits(ircd, tmp_path):
     seat = make_seat(ircd)
-    rig = Rig(tmp_path, irc=seat)
+    rig = Rig(tmp_path, irc=seat, reconnect_grace_s=0)
     seat.log = rig.logs.append
     seat.on_message = rig.relay.deliver
     seat.connect(timeout=5)
@@ -530,7 +530,7 @@ def test_irc_loss_kills_only_its_own_agent_tree_and_exits(ircd, tmp_path):
 
 def test_ping_timeout_counts_as_irc_loss(ircd, tmp_path):
     seat = bw.IrcSeat("127.0.0.1", ircd.port, "marchhare-1", "marchhare", tls=False, log=lambda m: None, ping_every=0.15, ping_grace=0.15)
-    rig = Rig(tmp_path, irc=seat)
+    rig = Rig(tmp_path, irc=seat, reconnect_grace_s=0)
     seat.connect(timeout=5)
     rig.sup.start_agent()
     ircd.silent = True                                    # link is dead: no PONG ever
