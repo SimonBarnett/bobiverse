@@ -2239,6 +2239,22 @@ class Relay:
                 n += 1
         return n
 
+    def has_pending_work(self) -> bool:
+        """FR #3192: True while an undelivered/unacked assign is parked in the relay.
+
+        Covers ``held`` (no inject target), ``held_until_turn_end``, ``inject_failed``, and
+        coalesced overflow lines that still look like Jeeves assigns — so BoredEmitter must
+        not post ``!bored`` until the seat has consumed the assign (or it is dropped).
+        """
+        with self._lock:
+            for line in self._pending:
+                if assign_job_ref(line):
+                    return True
+            for line in self._overflow:
+                if assign_job_ref(line):
+                    return True
+        return False
+
     def close(self) -> None:
         with self._lock:
             self._inject = None
@@ -3011,6 +3027,8 @@ class BoredEmitter:
         self.fuel_lost_check_fn: Optional[Callable[[], bool]] = None
         self.fuel_poll_s = _env_float("BOB_WORKER_OUT_OF_FUEL_POLL_S", 30.0, 5.0, 600.0)
         self._fuel_lost_checked_at: Optional[float] = None
+        # FR #3192: optional Relay — when set, undelivered assigns block !bored (has_pending_work).
+        self.relay: Optional["Relay"] = None
         self.sent: list = []  # (clock time, reason)
         self._thread: Optional[threading.Thread] = None
 
@@ -3410,11 +3428,23 @@ class BoredEmitter:
         # FR #2834: turn still open after harvest_hold_s — keep busy until turn_ended or max.
         if self._extend_hold_for_open_turn(now):
             return True
-        # FR #2811: held assign blocks idle/nak/repeat, but must NOT block done/free —
-        # those fire post_bored, which flushes the held line (harvest_hold_s fallback).
+        # FR #3192 / #2811: undelivered Relay assign (held / inject_failed / hold-until-turn)
+        # blocks idle/nak/turn, but must NOT block done/free — those fire post_bored, which
+        # flushes then suppresses !bored. Mirror _held_assign so plain ``held`` (no inject
+        # target) is covered even when note_held_assign was never called.
+        pending_done = bool(self._done_key and self._done_key != self._last_done_key)
+        pending_free = bool(self._free_key and self._free_key != self._last_free_key)
+        try:
+            if (
+                self.relay is not None
+                and self.relay.has_pending_work()
+                and not pending_done
+                and not pending_free
+            ):
+                return True
+        except Exception:
+            pass
         if self._held_assign:
-            pending_done = bool(self._done_key and self._done_key != self._last_done_key)
-            pending_free = bool(self._free_key and self._free_key != self._last_free_key)
             if not pending_done and not pending_free:
                 return True
         if self._inject_pending and self._inject_at is not None:
@@ -3530,6 +3560,15 @@ class BoredEmitter:
             self._retry_at = now + 1.0
             if reason == "turn":
                 self._turn_idle_pending = False
+            return
+        # FR #3192: re-check busy after turn_ended may have flushed a held assign into
+        # inject-pending (or Relay still parks one) so we do not !bored on a stale reason.
+        now2 = self.clock()
+        if self._busy(now2):
+            if reason == "turn":
+                self._turn_idle_pending = False
+            self._retry_at = now2 + self.retry_s
+            self.log(f"bored: skip {reason} - became busy before send")
             return
         ok = False
         try:
@@ -3737,6 +3776,10 @@ class Supervisor:
         relay.on_hold_assign = lambda _line: (
             self.bored.note_held_assign() if self.bored else None
         )
+        # FR #3192: BoredEmitter consults Relay.has_pending_work so !bored stays quiet
+        # while an assign is held/inject_failed (not only hold_assigns_while).
+        if self.bored is not None:
+            self.bored.relay = relay
         if irc and self.bored:
             irc.on_nak = self.bored.nak  # t817u
         if irc:
@@ -3891,11 +3934,14 @@ class Supervisor:
                 self._maybe_ready_on_first_turn_ended(sid)
             except Exception:
                 pass
-            # FR #2811: deliver parked assigns now that harvest hold can end.
+            # FR #2811 / #3192: flush parked assigns before clearing the held flag so a
+            # racing BoredEmitter tick sees either has_pending_work or inject-pending.
             try:
+                n = self.relay.release_held_assigns()
+                if n and self.bored:
+                    self.bored.activity(mark_work=True)
                 if self.bored:
                     self.bored.clear_held_assign()
-                self.relay.release_held_assigns()
             except Exception:
                 pass
 
