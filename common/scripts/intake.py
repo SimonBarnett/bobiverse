@@ -116,6 +116,14 @@ LESSON_PR_MRB_INSTRUCTION = (
     "(move or reword it if not), then merge."
 )
 DEFAULT_SKILL_BOOK = "harvest"
+# FR #3189: product repos own their skill trees (not bobiverse common/harvest).
+# Map lowercased owner/name -> (book_name, repo-relative SKILL.md path).
+PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
+    "simonbarnett/a-search": (
+        "harvest-agent-skills",
+        ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
+}
 SKILL_BOOK_PATHS: dict[str, str] = {
     "harvest": "common/.grok/skills/harvest/SKILL.md",
     "harvest-agent-skills": "common/.grok/skills/harvest-agent-skills/SKILL.md",
@@ -214,6 +222,7 @@ def resolve_skill_book(
     skill_book: str = "",
     title: str = "",
     body: str = "",
+    repo: str = "",
 ) -> tuple[str, str]:
     """Map source.skill_book / path / keywords -> (book_name, repo-relative SKILL.md path).
 
@@ -221,38 +230,65 @@ def resolve_skill_book(
     FR #3004: default ``harvest`` (Invoke-BobiverseHarvest -Book default) yields to a
     keyword-inferred product book so bob-worker / fleet-ops playbooks are not parked
     under harvest when the owning skill already has the lesson on main.
+    FR #3189: when ``repo`` is a product (e.g. SimonBarnett/a-search), never return
+    bobiverse ``common/.grok/skills/harvest/SKILL.md`` — use that product's default
+    honesty-box path (``.grok/skills/harvest-agent-skills/SKILL.md``).
     """
+    repo_l = str(repo or "").strip().lower()
+    product = PRODUCT_DEFAULT_SKILL_BOOK.get(repo_l)
+
+    def _product_or_bobiverse(book: str, path: str) -> tuple[str, str]:
+        if product and (
+            path.replace("\\", "/") == SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
+            or book == DEFAULT_SKILL_BOOK
+            or book == "harvest-agent-skills"
+        ):
+            # a-search harvest-agent-skills lives at repo-root .grok/skills/, not common/.
+            if book in (DEFAULT_SKILL_BOOK, "harvest-agent-skills") or path.endswith(
+                "harvest/SKILL.md"
+            ):
+                return product[0], product[1]
+        return book, path
+
     raw = str(skill_book or "").strip().replace("\\", "/")
     if raw:
         lower = raw.lower()
         if lower.endswith("skill.md") or "/.grok/skills/" in lower:
             path = raw.lstrip("/")
             name = Path(path).parent.name or DEFAULT_SKILL_BOOK
-            return name, path
+            return _product_or_bobiverse(name, path)
         key = lower
-        if key.startswith("bobiverse-"):
-            pass
-        elif key in SKILL_BOOK_PATHS:
-            pass
-        else:
-            # bare name without prefix
-            pass
         if key in SKILL_BOOK_PATHS:
             # Soft default only: harvest yields to strong product cues (not bare mrb/uat).
             if key == DEFAULT_SKILL_BOOK:
                 soft = infer_soft_harvest_override(title, body)
                 if soft and soft in SKILL_BOOK_PATHS:
+                    # Soft bobiverse books on a product repo payload: still avoid
+                    # bobiverse harvest path; product default unless soft is explicit.
+                    if product and soft.startswith("bobiverse-"):
+                        return product[0], product[1]
                     return soft, SKILL_BOOK_PATHS[soft]
+                return _product_or_bobiverse(key, SKILL_BOOK_PATHS[key])
+            if key == "harvest-agent-skills" and product:
+                return product[0], product[1]
             return key, SKILL_BOOK_PATHS[key]
-        # Unknown book name: still target harvest folder named after it under common.
+        # Unknown book name: product folder skills (a-search-awin) or common harvest tree.
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", key).strip("-") or DEFAULT_SKILL_BOOK
+        if product and (safe.startswith("a-search-") or safe == "harvest-agent-skills"):
+            return safe, f".grok/skills/{safe}/SKILL.md"
         if safe in SKILL_BOOK_PATHS:
-            return safe, SKILL_BOOK_PATHS[safe]
+            return _product_or_bobiverse(safe, SKILL_BOOK_PATHS[safe])
+        if product:
+            return product[0], product[1]
         return safe, f"common/.grok/skills/{safe}/SKILL.md"
 
     inferred = infer_skill_book_from_text(title, body)
     if inferred and inferred in SKILL_BOOK_PATHS:
-        return inferred, SKILL_BOOK_PATHS[inferred]
+        if product and inferred.startswith("bobiverse-"):
+            return product[0], product[1]
+        return _product_or_bobiverse(inferred, SKILL_BOOK_PATHS[inferred])
+    if product:
+        return product[0], product[1]
     return DEFAULT_SKILL_BOOK, SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
 
 
@@ -1047,6 +1083,7 @@ def file_submission(
                     skill_book=str((src or {}).get("skill_book") or ""),
                     title=title,
                     body=raw_body,
+                    repo=str(repo or ""),
                 )
                 lesson_blob = "\n".join(lessons) + "\n" + raw_body + "\n" + title
                 # FR #2991: thin FAIL-supersede already-covered twins never open lesson(harvest).
