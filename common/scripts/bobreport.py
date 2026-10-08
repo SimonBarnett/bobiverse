@@ -2329,6 +2329,7 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
     if hit:
         line = redact_git_announce_line(line, hit)
     import gitclaim
+    import github_api_budget as gab
 
     claim = gitclaim.claim_from_payload(event, payload, line=line)
     if claim is not None:
@@ -2337,6 +2338,8 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
         if isinstance(queued, str) and queued.startswith("error"):
             err = queued.split(":", 1)[1] if ":" in queued else "queue"
             return GitWebhookOutcome(ok=False, err=err or "queue")
+    # FR #3212: stamp delivery time for gap-triggered reconcile (even announce-only events).
+    gab.stamp_git_webhook(home)
     if not enqueue_chair_fleet_privmsg(home, line):
         return GitWebhookOutcome(ok=False, err="outbox")
     return GitWebhookOutcome(ok=True, announced=True)

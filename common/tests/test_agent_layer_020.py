@@ -92,7 +92,7 @@ def test_agents_files_cover_the_required_topics():
                   "digest.json*.tmp", "chanreg", "ChanServ"):
         assert topic in fleet, topic
     jv = (SKILLS / "bobiverse-jeeves" / "SKILL.md").read_text(encoding="utf-8")
-    for topic in ("webhook-health.json", "15 min", "30 min", "config\\github.token", "resync-token-source.log", "7700", "6697"):
+    for topic in ("webhook-health.json", "hourly", "30 min", "config\\github.token", "resync-token-source.log", "7700", "6697"):
         assert topic in jv, topic
     assert "docs/jeeves-commands.md" in (SKILLS / "bobiverse-jeeves-commands" / "SKILL.md").read_text(encoding="utf-8")
 

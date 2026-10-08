@@ -122,7 +122,7 @@ def check(args):
             f"focus.repos={focus_n} discoverable={discovered} but unaccepted=0 — queue starve / need !resync"
         )
         remediation.append(
-            "run !resync on the chair (or wait for 15m github_resync cycle after Sync/compose)"
+            "run !resync on the chair (or wait for hourly/gap github_resync after Sync/compose; FR #3212)"
         )
         remediation.append(
             "ops immediate: digest-home resync-repos.txt with focused full names then !resync"

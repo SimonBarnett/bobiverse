@@ -2122,7 +2122,7 @@ class Client:
         return st
 
     def _jobs(self):
-        """Chair background jobs: 30-min webhook health probe + 15-min authenticated GitHub resync."""
+        """Chair background jobs: 30-min webhook health probe + hourly/gap authenticated GitHub resync (FR #3212)."""
         j = getattr(self, "_jobs_obj", None)
         if j is None:
             j = chair_health.ChairJobs(
@@ -2148,6 +2148,13 @@ class Client:
                 out.append("webhooks: " + " ".join(f"{k}={'up' if v.get('up') else 'DOWN'}" for k, v in sorted(tg.items())))
             else:
                 out.append(f"webhooks: not probed yet (every {int(chair_health.WEBHOOK_PROBE_S // 60)} min)")
+            # FR #3212: expose hourly budget + X-RateLimit-Remaining on !status.
+            try:
+                bud = getattr(j, "api_budget", None)
+                if bud is not None:
+                    out.append(bud.status_line())
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
         return out
@@ -2433,13 +2440,10 @@ class Client:
             return
         # FR #1714 / #1508: heal orphan digest doing BEFORE busy gate — otherwise
         # stale workers-map working_on nak-busys forever and never reaches offer_focus_top.
-        # FR #3188: reuse process-wide TTL caches across !bored (never a fresh {} fan-out).
-        _pr_exists = gitclaim.github_pr_exists_checker(
-            home=self.home, cache=gitclaim.PR_EXISTS_SHARED_CACHE
-        )
+        # FR #3212: !bored is local-state only — stamped/ledger orphan clear, no live GET.
         try:
             n_orphan = gitclaim.clear_orphan_digest_mrb_doing(
-                self.home, pr_exists=_pr_exists
+                self.home, pr_exists=None
             )
             if n_orphan:
                 info(f"INFO git-claim bored cleared orphan digest doing n={n_orphan} nick={src}")
@@ -2461,20 +2465,15 @@ class Client:
         self._refresh_ledger()
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
         # Acceptance is still the seat's ACK (FR #207).
-        # FR #595 / #247: skip MRB rows whose /pull/N 404s when a token is available.
-        # FR #3188: shared TTL + offer_focus_top call budget (at most one live GET).
+        # FR #3212: zero REST on !bored — webhooks + stamped state only (budget=0).
         status, job = gitclaim.offer_focus_top(
             self.home,
             src,
             bobreport.normalize_channel(target),
             now=now,
-            pr_exists=_pr_exists,
-            is_pull=gitclaim.github_is_pull_checker(
-                home=self.home, cache=gitclaim.IS_PULL_SHARED_CACHE
-            ),
-            issue_open=gitclaim.github_issue_open_checker(
-                home=self.home, cache=gitclaim.ISSUE_OPEN_SHARED_CACHE
-            ),
+            pr_exists=None,
+            is_pull=None,
+            issue_open=None,
         )
         if status == "ok" and isinstance(job, dict):
             gitclaim.note_worker_activity(self.home, src, now)

@@ -74,7 +74,7 @@ def test_offer_focus_top_http_403_purges_zero_of_130(tmp_path: Path):
 
 
 def test_offer_focus_top_at_most_one_github_call_per_bored(tmp_path: Path):
-    """Live issue_open may run for at most one row per offer_focus_top (!bored)."""
+    """FR #3212: !bored budget is 0 — live issue_open must not dial out at all."""
     home = _home(tmp_path)
     rows = [_fr(i) for i in range(1, 131)]
     gitclaim._write_queue(
@@ -91,13 +91,14 @@ def test_offer_focus_top_at_most_one_github_call_per_bored(tmp_path: Path):
         home, "marchhare-40596", "#marchhare", issue_open=counting
     )
     assert st == "ok" and job is not None
-    assert len(calls) <= 1, f"expected <=1 GitHub call, got {len(calls)}: {calls[:5]}"
+    assert calls == [], f"expected 0 GitHub calls, got {len(calls)}: {calls[:5]}"
+    assert gitclaim.BORED_GITHUB_CALL_BUDGET == 0
 
 
 def test_offer_focus_top_closed_first_row_purges_only_that_row(tmp_path: Path):
-    """Live False (closed/404) on the one budgeted check: purge that row only, offer next."""
+    """Budget 0: live False is never dialed; stamped closed still purges at bulk."""
     home = _home(tmp_path)
-    rows = [_fr(1), _fr(2), _fr(3)]
+    rows = [_fr(1, state="closed"), _fr(2), _fr(3)]
     gitclaim._write_queue(
         gitclaim.queue_path(home),
         {"v": 1, "unaccepted": rows, "accepted": [], "done": [], "workers": {}},
@@ -118,7 +119,7 @@ def test_offer_focus_top_closed_first_row_purges_only_that_row(tmp_path: Path):
     assert "#1" not in left
     assert "#2" in left or job["id"] == "#2"
     assert "#3" in left
-    assert len(calls) <= 1
+    assert calls == []
 
 
 def test_purge_closed_fr_logs_reason_per_row():
@@ -161,13 +162,17 @@ def test_github_issue_open_checker_raises_on_403(monkeypatch):
     assert raised, "403 must raise unknown — never return False as closed"
 
 
-def test_irc_bored_uses_shared_ttl_cache():
-    """_git_bored must reuse process-wide TTL caches, not a fresh dict every call."""
+def test_irc_bored_is_local_state_only():
+    """FR #3212: _git_bored must not pass live GitHub checkers (local stamped state only)."""
     import inspect
     import irc_agent
 
     src = inspect.getsource(irc_agent.Client._git_bored)
-    assert "ISSUE_OPEN_SHARED_CACHE" in src
-    assert "PR_EXISTS_SHARED_CACHE" in src
-    # Fresh per-bored dict alone is the wipe amplifier — shared cache required.
+    assert "pr_exists=None" in src
+    assert "issue_open=None" in src
+    assert "is_pull=None" in src
+    # Fresh per-bored dict alone is the wipe amplifier — must stay gone.
     assert "_gh_cache: dict = {}" not in src
+    # Live shared-cache checkers must not be wired on the !bored path anymore.
+    assert "ISSUE_OPEN_SHARED_CACHE" not in src
+    assert "PR_EXISTS_SHARED_CACHE" not in src

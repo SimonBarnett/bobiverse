@@ -3,9 +3,10 @@
 * webhook health probes every 30 min  (``WEBHOOK_PROBE_S``): GET report, GET jira, GET intake/<id> (404 = up) and a
   synthetic ``ping`` to POST git, against the local receiver and the public https URL. State in
   ``webhook-health.json``; announce on #bobiverse (via chair-outbox) ONLY when a target flips up<->down.
-* authenticated ``gitclaim.resync_from_github`` every 15 min (``RESYNC_S``) using the existing Jeeves token
-  (``config\\github.token`` through ``gh_filer`` - token handling is NOT changed here). The token SOURCE (never the
-  value) is written once per process to ``resync-token-source.log``.
+* authenticated ``gitclaim.resync_from_github`` on a **low cadence** (``RESYNC_S`` = 1h, FR #3212) plus gap-triggered
+  reconcile when git webhooks go quiet (``WEBHOOK_GAP_S``). Uses ETag/304 conditional GETs and the shared
+  ``github_api_budget`` hourly counter. Token SOURCE (never the value) is written once per process to
+  ``resync-token-source.log``. Webhooks remain the source of truth; REST is the exception path.
 
 Everything network/clock/disk is injectable so tests use fakes.
 """
@@ -19,8 +20,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import github_api_budget as gab
+
 WEBHOOK_PROBE_S = 1800.0
-RESYNC_S = 900.0
+# FR #3212: hourly (or slower) reconcile — webhooks carry live state; 15-min polling burned the core bucket.
+RESYNC_S = 3600.0
+WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
 FIRST_RESYNC_DELAY_S = 120.0
 FIRST_PROBE_DELAY_S = 45.0
 STATE_NAME = "webhook-health.json"
@@ -265,18 +270,39 @@ def discover_repos(home: Path, owners: set[str], getter, ignored) -> list[str]:
     return out[:MAX_REPOS]
 
 
-def resync_cycle(home: Path, *, token: str, ignored, fetch_json=None, owners: set[str] | None = None) -> dict:
+def resync_cycle(
+    home: Path,
+    *,
+    token: str,
+    ignored,
+    fetch_json=None,
+    owners: set[str] | None = None,
+    budget: gab.GithubApiBudget | None = None,
+    essential: bool = False,
+    log=None,
+) -> dict:
     import gitclaim
     if owners is None:
         owners = {"simonbarnett"}
-    getter = fetch_json
-    if getter is None:
-        def getter(url, _tok=token):  # noqa: E306
-            req = urllib.request.Request(url, headers={
-                "Accept": "application/vnd.github+json", "User-Agent": "bobiverse-jeeves",
-                "Authorization": "Bearer " + _tok})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+    bud = budget or gab.GithubApiBudget(home, clock=time.time, log=log or (lambda _s: None))
+    if fetch_json is None:
+        if not bud.allow("reconcile", essential=essential):
+            return {
+                "ok": True,
+                "unaccepted": len(gitclaim.load_unaccepted(home)),
+                "added": 0,
+                "dropped": 0,
+                "repos": [],
+                "failed": [],
+                "note": "budget-backoff",
+                "pruned": 0,
+                "pruned_detail": [],
+                "dropped_detail": [],
+                "budget": bud.status_line(),
+            }
+        getter = gab.make_budgeted_fetch(bud, token, path="reconcile", essential=essential)
+    else:
+        getter = fetch_json
     # FR #180: drop skill/harvest/safe-to-close junk before GitHub merge so they cannot be re-offered.
     pruned = gitclaim.prune_unassignable_queue(home)
     repos = discover_repos(home, owners, getter, ignored)
@@ -284,11 +310,12 @@ def resync_cycle(home: Path, *, token: str, ignored, fetch_json=None, owners: se
         return {"ok": True, "unaccepted": len(gitclaim.load_unaccepted(home)), "added": 0, "dropped": 0,
                 "repos": [], "failed": [], "note": "no repos", "pruned": pruned.get("dropped", 0),
                 "pruned_detail": list(pruned.get("dropped_detail") or []),
-                "dropped_detail": []}
+                "dropped_detail": [], "budget": bud.status_line()}
     out = gitclaim.resync_from_github(home, repos, fetch_json=getter, token=token, ignored=list(ignored))
     if isinstance(out, dict):
         out["pruned"] = int(pruned.get("dropped") or 0)
         out["pruned_detail"] = list(pruned.get("dropped_detail") or [])
+        out["budget"] = bud.status_line()
     return out
 
 
@@ -318,6 +345,8 @@ class ChairJobs:
         self._token_logged = False
         self.last_resync: dict = {}
         self.last_resync_at = 0.0
+        self._startup_resync_done = False
+        self.api_budget = gab.GithubApiBudget(self.home, clock=self.clock, log=self.log)
 
     def _announce(self, text: str) -> None:
         import bobreport
@@ -328,6 +357,11 @@ class ChairJobs:
 
     def tick(self) -> bool:
         now = self.clock()
+        # FR #3212: gap in webhook delivery pulls reconcile forward (still one-at-a-time via busy lock).
+        if now < self.next_resync and gab.webhook_gap_due(
+            self.home, now=now, gap_s=WEBHOOK_GAP_S
+        ):
+            self.next_resync = now
         if now < min(self.next_probe, self.next_resync):
             return False
         if not self.busy.acquire(blocking=False):
@@ -362,6 +396,11 @@ class ChairJobs:
                 for line in out["announce"]:
                     self.announce(line)
                     self.log("INFO webhook-health announced: " + line)
+                # WEBHOOK DOWN on any target is a gap signal — pull reconcile forward.
+                for tname, tdoc in (out.get("state") or {}).get("targets", {}).items():
+                    if isinstance(tdoc, dict) and not tdoc.get("up"):
+                        self.next_resync = min(self.next_resync, now)
+                        break
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN webhook-health probe failed: {type(exc).__name__}: {exc}")
         now = self.clock()
@@ -389,14 +428,29 @@ class ChairJobs:
             if not token:
                 self.last_resync = {"ok": False, "error": "no token"}
                 return
-            res = resync_cycle(self.home, token=token, ignored=list(self.ignored_loader()),
-                               fetch_json=self.fetch_json, owners=self.owners)
+            essential = not self._startup_resync_done
+            res = resync_cycle(
+                self.home,
+                token=token,
+                ignored=list(self.ignored_loader()),
+                fetch_json=self.fetch_json,
+                owners=self.owners,
+                budget=self.api_budget,
+                essential=essential,
+                log=self.log,
+            )
+            self._startup_resync_done = True
             self.last_resync, self.last_resync_at = res, self.clock()
             if res.get("ok"):
-                self.log(f"INFO github-resync ok repos={len(res.get('repos') or [])} failed={len(res.get('failed') or [])} "
-                         f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
-                         f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
-                         f"unaccepted={res.get('unaccepted', 0)}")
+                note = res.get("note") or ""
+                self.log(
+                    f"INFO github-resync ok repos={len(res.get('repos') or [])} "
+                    f"failed={len(res.get('failed') or [])} "
+                    f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
+                    f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
+                    f"unaccepted={res.get('unaccepted', 0)}"
+                    + (f" note={note}" if note else "")
+                )
                 # FR #2899: name every dropped row + reason (never only dropped=N).
                 for detail in list(res.get("dropped_detail") or [])[:40]:
                     self.log(f"INFO github-resync dropped {detail}")

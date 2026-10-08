@@ -1,4 +1,4 @@
-﻿"""Chair background jobs (FR t760u): 30-min webhook health probe + 15-min authenticated GitHub resync. All fakes."""
+﻿"""Chair background jobs (FR t760u / #3212): 30-min webhook health probe + hourly authenticated GitHub resync. All fakes."""
 from __future__ import annotations
 
 import json
@@ -194,7 +194,7 @@ def make_jobs(tmp_path, clock, http, token=("TOK-VALUE", "file:C:\\ai\\jeeves\\c
     return j, logs, ann, seen
 
 
-def test_jobs_schedule_probe_30m_resync_15m(tmp_path, monkeypatch):
+def test_jobs_schedule_probe_30m_resync_hourly(tmp_path, monkeypatch):
     monkeypatch.setenv("JEEVES_RESYNC_REPOS", "o/a")
     clk = Clock()
     h = FakeHttp()
@@ -208,12 +208,13 @@ def test_jobs_schedule_probe_30m_resync_15m(tmp_path, monkeypatch):
     assert j.tick() is True and j.last_resync["ok"]
     n_resync = len([u for u in seen if "/issues" in u])
     clk.t += 600
-    j.tick(); assert len([u for u in seen if "/issues" in u]) == n_resync          # <15 min: nothing
-    clk.t += 400
-    j.tick(); assert len([u for u in seen if "/issues" in u]) == 2 * n_resync        # 15 min later
-    clk.t += 1000
-    j.tick(); assert probes() == 2                                                  # 30 min after the first probe
+    j.tick(); assert len([u for u in seen if "/issues" in u]) == n_resync          # <1h: nothing
+    clk.t += ch.RESYNC_S
+    j.tick(); assert len([u for u in seen if "/issues" in u]) == 2 * n_resync        # hourly later
+    # Hourly step may also land on a probe boundary; require at least the 30-min probe.
+    assert probes() >= 2
     assert [u for u in logs if "webhook-health" in u] and [u for u in logs if "github-resync ok" in u]
+    assert ch.RESYNC_S >= 3600.0
 
 
 def test_token_source_logged_once_to_file_and_value_never(tmp_path, monkeypatch):
