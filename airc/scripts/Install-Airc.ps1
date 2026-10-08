@@ -313,13 +313,17 @@ if (([string]$Accounts).Trim()) {
     $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
 }
 
-# FR #3397 / #3401 / #3513: fleet unions OperatorsExtra + fleet-operators roster;
-# workstation/client ignore roster/extra; client uses no operators.txt.
+# FR #3397 / #3401 / #3513 / #3639: fleet + client use IRC +o/+h (no operators.txt);
+# workstation may still seed operators.txt; roster/extra ignored for fleet auth.
 $profForOps = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { ([string]$Profile).Trim().ToLowerInvariant() })
 if (-not $profForOps) { $profForOps = 'fleet' }
-if ($profForOps -eq 'client') {
+if ($profForOps -in @('client', 'fleet')) {
     $Operators = @()
-    Write-Host 'INFO FR #3401 client profile: no operators.txt (IRC +o/+h auth)'
+    if ($profForOps -eq 'client') {
+        Write-Host 'INFO FR #3401 client profile: no operators.txt (IRC +o/+h auth)'
+    } else {
+        Write-Host 'INFO FR #3639 fleet profile: no operators.txt / no fleet-operators roster (IRC +o/+h auth)'
+    }
 } elseif (Get-Command Resolve-BobiverseAircOperatorNicks -ErrorAction SilentlyContinue) {
     # FR #3512: flatten Resolve output. `return , $arr` / NoEnumerate + `@()` / [string[]]@()
     # can still nest so operators.txt gets one space-joined nick. Absorbed from PR #3555.
@@ -421,7 +425,8 @@ try {
 try {
     $capPath = Join-Path $InstallRoot 'config\airc.json'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capPath) | Out-Null
-    $authMode = $(if ($prof -eq 'client') { 'irc_ops' } else { 'operators' })
+    # FR #3401 client + FR #3639 fleet: channel +o/+h; workstation keeps nick ACL.
+    $authMode = $(if ($prof -in @('client', 'fleet')) { 'irc_ops' } else { 'operators' })
     $capObj = [ordered]@{
         shell = $resolvedShell
         jobs = $resolvedJobs
@@ -486,7 +491,7 @@ $args = @{
     Jobs        = $resolvedJobs
     UpdateCap   = $resolvedUpdate
     Profile     = $prof
-    AuthMode    = $(if ($prof -eq 'client') { 'irc_ops' } else { 'operators' })
+    AuthMode    = $(if ($prof -in @('client', 'fleet')) { 'irc_ops' } else { 'operators' })
 }
 if ($Nssm) { $args.Nssm = $Nssm }
 if ($MachineId) { $args.MachineId = $MachineId }

@@ -194,7 +194,8 @@ class AircConsoleService:
         )
         self.capabilities = caps
         info(caps.log_line())
-        # FR #3401: auth_mode from CLI / airc.json profile=client -> irc_ops (no operators.txt).
+        # FR #3401 / #3639: auth_mode from CLI / airc.json; client+fleet -> irc_ops
+        # (no operators.txt / no fleet-operators roster). Workstation keeps nick ACL.
         auth_mode = (getattr(args, "auth_mode", None) or "").strip().lower()
         if auth_mode not in {"operators", "irc_ops"}:
             try:
@@ -206,12 +207,17 @@ class AircConsoleService:
             auth_mode = str(cfg.get("auth_mode") or "").strip().lower()
             if auth_mode not in {"operators", "irc_ops"}:
                 prof = str(cfg.get("profile") or "").strip().lower()
-                auth_mode = "irc_ops" if prof == "client" else "operators"
+                auth_mode = (
+                    "irc_ops" if prof in ("client", "fleet") else "operators"
+                )
         self.auth_mode = auth_mode
         self.members = ChannelMemberMap(channel=self.channel)
         if auth_mode == "irc_ops":
             ops = set()
-            info("INFO FR #3401 auth_mode=irc_ops (channel +o/+h; operators.txt ignored)")
+            info(
+                "INFO FR #3401/#3639 auth_mode=irc_ops "
+                "(channel +o/+h; operators.txt ignored)"
+            )
         else:
             ops = load_operators(
                 Path(args.operators_file) if args.operators_file else self.home / "operators.txt",
