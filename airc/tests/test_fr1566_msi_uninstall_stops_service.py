@@ -27,12 +27,13 @@ def test_uninstall_airc_script_exists_and_tears_down_service_only():
     assert "Remove-BobiverseService" in t
     assert "Airc" in t
     assert "Resolve-BobiverseNssm" in t
-    # Must never wipe ConsoleHome / password files
-    low = t.lower()
-    assert "remove-item" not in low or "consolehome" not in low.split("remove-item", 1)[-1][:200].lower()
-    assert "console.password" not in low or "remove-item" not in low
+    # Fleet default keeps ConsoleHome (#1599). FR #3292 purge is gated (doPurge / AIRC_PURGE).
     assert "FR #1566" in t or "FR 1566" in t
     assert "ConsoleHome" in t  # documented keep
+    assert "keeping ConsoleHome" in t or "ConsoleHome secrets kept" in t
+    assert "doPurge" in t
+    assert "AIRC_PURGE" in t
+    assert "if ($doPurge)" in t
 
 
 def test_uninstall_cmd_launches_ps1():

@@ -14,10 +14,19 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$ForceTools
+    [switch]$ForceTools,
+    # FR #3290: MSI BOBIVERSE_SKIP_TOOLS=1 / callers that already decided to skip.
+    [switch]$SkipTools
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($SkipTools) {
+    Write-Host 'INFO bootstrap-tools skipped (SkipTools) FR #3290'
+    return
+}
+
+$script:BobiverseToolsInstalled = New-Object System.Collections.Generic.List[string]
 
 # Pinned Node LTS x64 MSI (nodejs.org). Override with BOB_BOOTSTRAP_NODE_MSI_URL / BOB_BOOTSTRAP_NODE_MSI_SHA256.
 $script:NodeMsiVersion = '24.21.0'
@@ -180,6 +189,10 @@ function Ensure-Tool {
         }
         throw "$Label still missing after winget install"
     }
+    # FR #3290: record tools this run actually installed (for uninstall offer).
+    if ($installed -and $script:BobiverseToolsInstalled -and -not ($script:BobiverseToolsInstalled -contains $Label)) {
+        [void]$script:BobiverseToolsInstalled.Add($Label)
+    }
 }
 
 # Soft-fail under LocalSystem quiet MSI when winget cannot install (FR #1825 / issue #10).
@@ -203,5 +216,31 @@ if ($pyPath) {
     }
 } else {
     Write-Host 'WARN tool-missing python - skip python deps (FR #1825)'
+}
+
+# FR #3290: durable list of tools this bootstrap installed (uninstall can offer to remove).
+try {
+    if ($script:BobiverseToolsInstalled -and $script:BobiverseToolsInstalled.Count -gt 0) {
+        $pd = Join-Path $env:ProgramData 'Bobiverse'
+        New-Item -ItemType Directory -Force -Path $pd | Out-Null
+        $recPath = Join-Path $pd 'installed-tools.json'
+        $prior = @()
+        if (Test-Path -LiteralPath $recPath) {
+            try {
+                $old = Get-Content -LiteralPath $recPath -Raw -Encoding utf8 | ConvertFrom-Json
+                if ($old.tools) { $prior = @($old.tools) }
+            } catch { }
+        }
+        $merged = @($prior + @($script:BobiverseToolsInstalled) | Select-Object -Unique)
+        $rec = [ordered]@{
+            v       = 1
+            updated = (Get-Date).ToUniversalTime().ToString('o')
+            tools   = @($merged)
+        }
+        ($rec | ConvertTo-Json) | Set-Content -LiteralPath $recPath -Encoding utf8
+        Write-Host ("INFO wrote {0} tools={1}" -f $recPath, ($merged -join ','))
+    }
+} catch {
+    Write-Host ("WARN installed-tools.json: {0}" -f $_.Exception.Message)
 }
 Write-Host 'INFO bootstrap-tools done'
