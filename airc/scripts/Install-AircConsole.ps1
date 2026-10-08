@@ -20,7 +20,7 @@ param(
     [string]$PasswordFile = '',
     # Optional explicit Ergo server PASS source file (copied into ConsoleHome\ergo.password).
     [string]$ErgoPasswordFile = '',
-    # Simon + bob-{COMPUTERNAME} seeded; runtime also allows any bob-* fleet nick (#302).
+    # Simon + bob-{machine} seeded as operators (FR #3286: nick pattern alone is not auth).
     [string[]]$Operators = @('Simon'),
     [string]$ServiceName = 'AircConsole',
     # Absolute python.exe for LocalSystem (#282). Empty = auto-resolve at install.
@@ -185,10 +185,17 @@ function Test-AircDefaultProfileHome {
     return [bool](($Path) -and ($Path -match '(?i)(?:^|[\\/])Users[\\/]Default(?:[\\/]|$)'))
 }
 
+function Test-AircUserProfileHome {
+    <# FR #3288: any Users\<profile>\… home is unsafe for a LocalSystem console service. #>
+    param([string]$Path)
+    return [bool](($Path) -and ($Path -match '(?i)(?:^|[\\/])Users[\\/][^\\/]+(?:[\\/]|$)'))
+}
+
 function Resolve-AircSafeConsoleHome {
     <#
       FR #2355: never keep ConsoleHome under Users\Default (prior-identity restore / FR #1552
       can re-bake the orphan NickServ home). Migrate files to <install>\home and rewrite paths.
+      FR #3288: also migrate any Users\<profile> home to <install>\home for LocalSystem Airc.
     #>
     param(
         # FR #2499: never name this $Home - automatic $Home is read-only under bind.
@@ -196,56 +203,79 @@ function Resolve-AircSafeConsoleHome {
         [Alias('Home')]
         [string]$HomePath,
         [Parameter(Mandatory)][string]$SafeHome,
-        [string]$PasswordFilePath = ''
+        [string]$PasswordFilePath = '',
+        [switch]$MigrateAnyUserProfile
     )
-    if (-not (Test-AircDefaultProfileHome -Path $HomePath)) {
-        return [pscustomobject]@{ ConsoleHome = $HomePath; PasswordFile = $PasswordFilePath; Migrated = $false }
+    $mustMove = Test-AircDefaultProfileHome -Path $HomePath
+    if (-not $mustMove -and $MigrateAnyUserProfile -and (Test-AircUserProfileHome -Path $HomePath)) {
+        $mustMove = $true
     }
-    Write-Host "WARN FR #2355: ConsoleHome under Users\Default ($HomePath) - migrating to $SafeHome"
+    if (-not $mustMove) {
+        return [pscustomobject]@{ ConsoleHome = $HomePath; PasswordFile = $PasswordFilePath; Migrated = $false; SourceHome = $HomePath }
+    }
+    Write-Host "WARN FR #2355/#3288: ConsoleHome under user profile ($HomePath) - migrating to $SafeHome"
     New-Item -ItemType Directory -Force -Path $SafeHome | Out-Null
     if (Test-Path -LiteralPath $HomePath) {
         Copy-Item -LiteralPath (Join-Path $HomePath '*') -Destination $SafeHome -Recurse -Force -ErrorAction SilentlyContinue
     }
     $pf = $PasswordFilePath
-    if ($pf -and (Test-AircDefaultProfileHome -Path $pf)) {
+    if ($pf -and (Test-AircUserProfileHome -Path $pf)) {
         $leaf = Split-Path -Leaf $pf
         if (-not $leaf) { $leaf = 'console.password' }
         $pf = Join-Path $SafeHome $leaf
     }
-    return [pscustomobject]@{ ConsoleHome = $SafeHome; PasswordFile = $pf; Migrated = $true }
+    return [pscustomobject]@{ ConsoleHome = $SafeHome; PasswordFile = $pf; Migrated = $true; SourceHome = $HomePath }
+}
+
+function Remove-AircDefaultProfileSecrets {
+    <# FR #3288: delete Users\Default\.airc* so new local profiles do not inherit secrets. #>
+    param([string]$SystemDrive = $env:SystemDrive)
+    if (-not $SystemDrive) { $SystemDrive = 'C:' }
+    $defaultRoot = Join-Path $SystemDrive 'Users\Default'
+    foreach ($name in @('.airc', '.airc-console')) {
+        $p = Join-Path $defaultRoot $name
+        if (Test-Path -LiteralPath $p) {
+            try {
+                Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop
+                Write-Host "INFO FR #3288 removed $p"
+            } catch {
+                Write-Host ("WARN FR #3288 could not remove {0}: {1}" -f $p, $_.Exception.Message)
+                if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
+                    Protect-BobiverseSecretPath -Path $p -Recurse
+                }
+            }
+        }
+    }
 }
 
 # LocalSystem / quiet MSI: never bake C:\Users\Default\.airc* (NickServ GUID orphan).
+# FR #3288: LocalSystem ConsoleHome defaults to <install>\home (never a user profile).
 if (-not $ConsoleHome) {
-    $adminHome = Join-Path $env:SystemDrive 'Users\Administrator\.airc'
     $isSystem = $false
     try {
         $id = [Security.Principal.WindowsIdentity]::GetCurrent()
         $isSystem = ($id.User.Value -eq 'S-1-5-18') -or ($id.Name -match 'SYSTEM$')
     } catch { }
     if ($isSystem) {
-        if (Test-Path -LiteralPath $adminHome) {
-            $ConsoleHome = $adminHome
-            Write-Host "INFO LocalSystem using existing Admin ConsoleHome=$ConsoleHome"
-        } else {
-            $installGuess = Split-Path -Parent (Split-Path -Parent $Launcher)
-            if (-not $installGuess) { $installGuess = if (Get-Command Get-BobiverseAiRoot -ErrorAction SilentlyContinue) { Join-Path (Get-BobiverseAiRoot) 'airc' } else { throw 'cannot derive the airc install dir (dot-source Bobiverse-Common.ps1 or pass -ConsoleHome)' } }
-            $ConsoleHome = Join-Path $installGuess 'home'
-            Write-Host "INFO LocalSystem ConsoleHome=$ConsoleHome (avoid Default profile)"
-        }
+        $installGuess = Split-Path -Parent (Split-Path -Parent $Launcher)
+        if (-not $installGuess) { $installGuess = if (Get-Command Get-BobiverseAiRoot -ErrorAction SilentlyContinue) { Join-Path (Get-BobiverseAiRoot) 'airc' } else { throw 'cannot derive the airc install dir (dot-source Bobiverse-Common.ps1 or pass -ConsoleHome)' } }
+        $ConsoleHome = Join-Path $installGuess 'home'
+        Write-Host "INFO LocalSystem ConsoleHome=$ConsoleHome (FR #3288 install\home)"
     } else {
         $ConsoleHome = Join-Path $env:USERPROFILE '.airc-console'
     }
 }
 New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
 
-# FR #2355: remap even when -ConsoleHome / prior identity restored Users\Default.
+# FR #2355 / #3288: remap user-profile homes (Default or Admin) to <install>\home.
 $installRootForHome = Split-Path -Parent (Split-Path -Parent $Launcher)
 if (-not $installRootForHome) { $installRootForHome = Split-Path -Parent $scriptDir }
 $safeConsoleHome = Join-Path $installRootForHome 'home'
-$homeFix = Resolve-AircSafeConsoleHome -Home $ConsoleHome -SafeHome $safeConsoleHome -PasswordFilePath $PasswordFile
+$migrateProfiles = $true
+$homeFix = Resolve-AircSafeConsoleHome -Home $ConsoleHome -SafeHome $safeConsoleHome -PasswordFilePath $PasswordFile -MigrateAnyUserProfile:$migrateProfiles
 $ConsoleHome = $homeFix.ConsoleHome
 if ($homeFix.PasswordFile) { $PasswordFile = $homeFix.PasswordFile }
+Remove-AircDefaultProfileSecrets
 New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
 
 function Write-AircSecretFile {
@@ -257,9 +287,11 @@ function Write-AircSecretFile {
     if (-not $text) { throw "refusing empty secret for $Path" }
     # ASCII one-line; no BOM - same shape as connect.password / NickServ GUID.
     [IO.File]::WriteAllText($Path, $text + "`n", [Text.UTF8Encoding]::new($false))
-    icacls $Path /grant 'SYSTEM:(R)' 2>$null | Out-Null
-    if ($env:USERNAME) {
-        icacls $Path /grant ("{0}:(R)" -f $env:USERNAME) 2>$null | Out-Null
+    # FR #3288: SYSTEM + Administrators only — never grant the installing user.
+    if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
+        Protect-BobiverseSecretPath -Path $Path
+    } else {
+        icacls $Path /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' 2>$null | Out-Null
     }
 }
 
@@ -509,12 +541,28 @@ foreach ($pair in $setPairs) {
     }
 }
 
-icacls $ConsoleHome /grant 'SYSTEM:(OI)(CI)(M)' /T 2>$null | Out-Null
-foreach ($sec in @($PasswordFile, $ergoFile, $opsFile)) {
-    if ($sec -and (Test-Path -LiteralPath $sec)) {
-        icacls $sec /grant 'SYSTEM:(R)' 2>$null | Out-Null
+# FR #3288: lock ConsoleHome + secret files to SYSTEM + Administrators (no Users inheritance).
+if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
+    Protect-BobiverseSecretPath -Path $ConsoleHome -Recurse
+    $acctJson = Join-Path $ConsoleHome 'accounts.json'
+    foreach ($sec in @($PasswordFile, $ergoFile, $opsFile, $acctJson)) {
+        if ($sec -and (Test-Path -LiteralPath $sec)) {
+            Protect-BobiverseSecretPath -Path $sec
+        }
+    }
+    $cfgDir = Join-Path $installRootForHome 'config'
+    if (Test-Path -LiteralPath $cfgDir) {
+        Protect-BobiverseSecretPath -Path $cfgDir -Recurse
+    }
+} else {
+    icacls $ConsoleHome /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T 2>$null | Out-Null
+    foreach ($sec in @($PasswordFile, $ergoFile, $opsFile)) {
+        if ($sec -and (Test-Path -LiteralPath $sec)) {
+            icacls $sec /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' 2>$null | Out-Null
+        }
     }
 }
+Remove-AircDefaultProfileSecrets
 
 $appGet = Invoke-AircNssm -Exe $Nssm -NssmArgs @('get', $ServiceName, 'Application')
 $parGet = Invoke-AircNssm -Exe $Nssm -NssmArgs @('get', $ServiceName, 'AppParameters')
