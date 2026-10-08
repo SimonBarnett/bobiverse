@@ -146,6 +146,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 - On live Windows hosts, restart only the affected BobCallback task or `ircJeeves` service. Never restart BobIrcd/Ergo as a shortcut, and preserve queue/outbox evidence while recovering a callback or worker.
 - For upgrades and resync, verify the installed VERSION, clean/main worktree, fetch result, service/task state, and endpoint health; record an ALERT when fetch/ff/worktree state is stale.
 - After MSI, treat ARP `DisplayVersion` as VERSION truth for Sync heal; never let a newer repo/clone VERSION overwrite the MSI stamp (FR #1565 / harvest #1589).
+- After FR #3289 `sync_from_repo` default-off, Sync-BobiverseFromRepo pytest that asserts heal/copy must set `BOBIVERSE_SYNC_FROM_REPO=1` (or config `sync_from_repo:true`) or the suite hits `sync-skip sync_from_repo=off`.
 - MSI RunInstall (FR #2948): `Copy-BobiverseVersion` must honour `-MsiProductVersion` and must not clobber `InstallRoot\VERSION` with stale `common\VERSION` when `RepoRoot==InstallRoot` (PR #2950).
 - MSI RunInstall (FR #2982): when `-MsiProductVersion` is set, SkipCopy so heat-laid scripts/tools/skills win; Sync must `sync-skip-stale-worktree` when ff/fetch did not tip the install tree — VERSION equality alone is not enough (PR #2983).
 - Quiet MSI bootstrap under SYSTEM: do not rely on per-user WindowsApps winget; prefer pinned nodejs.org MSI for Node and soft-fail git/python/node so install does not 1603 (FR #1825 / harvest #2020 / PR #2019).
