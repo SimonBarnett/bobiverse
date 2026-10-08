@@ -2476,6 +2476,23 @@ class Client:
             issue_open=None,
         )
         if status == "ok" and isinstance(job, dict):
+            # FR #3192: slow offer path — drop if the seat ACKed (or held another offer)
+            # while we were computing; unstamp the row we just pinned so it is free again.
+            try:
+                if gitclaim.should_drop_stale_bored(
+                    self.home, src, time.time(), except_job=job
+                ):
+                    cleared = False
+                    with contextlib.suppress(Exception):
+                        cleared = bool(gitclaim.clear_seat_offer(self.home, src, job))
+                    info(
+                        f"INFO git-claim bored drop-stale nick={src} "
+                        f"job={job.get('repo')}/{job.get('task')}{job.get('id')} "
+                        f"cleared={int(bool(cleared))}"
+                    )
+                    return
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN git-claim bored drop-stale {type(exc).__name__}")
             gitclaim.note_worker_activity(self.home, src, now)
             with contextlib.suppress(Exception):
                 gitclaim.clear_idle_after_empty(self.home, src)  # FR #2803
