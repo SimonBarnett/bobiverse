@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- Protect-BobiverseSecretPath tests: never detect High-IL via WindowsIdentity.Groups (SID absent); use WindowsPrincipal.IsInRole(Administrator); elevated read OK after ACL assert, Medium-IL still requires Get-Content denied
