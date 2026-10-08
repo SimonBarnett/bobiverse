@@ -984,8 +984,14 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #1899: intake/ARR/BobCallback 502 ops live on the Ergo/chair host (not flamingo)
     (re.compile(r"(?i)\b(?:intake|/bob/v1/intake)\b.{0,140}\b(?:502|Bad Gateway)\b"), "ionos"),
     (re.compile(r"(?i)\b(?:502|Bad Gateway)\b.{0,140}\b(?:intake|/bob/v1/intake|BobCallback|harvest-outbox)\b"), "ionos"),
-    (re.compile(r"(?i)\bBobCallback\b.{0,120}\b(?:502|Bad Gateway|LISTEN|:7700)\b"), "ionos"),
-    (re.compile(r"(?i)\b(?:502|Bad Gateway|LISTEN|:7700)\b.{0,120}\bBobCallback\b"), "ionos"),
+    # FR #3610: outage/ops wording only — bare :7700 or LISTEN in design prose
+    # (e.g. Hours webhook FR #3450 "BobCallback (default 127.0.0.1:7700)") must not pin.
+    (re.compile(
+        r"(?i)\bBobCallback\b.{0,160}\b(?:502|Bad Gateway|DOWN|not[- ]listening|no LISTEN|restart|recycle)\b"
+    ), "ionos"),
+    (re.compile(
+        r"(?i)\b(?:502|Bad Gateway|DOWN|not[- ]listening|no LISTEN)\b.{0,160}\bBobCallback\b"
+    ), "ionos"),
     (re.compile(r"(?i)\b(?:ARR|reverse[- ]proxy)\b.{0,140}\b(?:intake|BobCallback|/bob/v1)\b"), "ionos"),
     (re.compile(r"(?i)\b(?:intake|BobCallback|/bob/v1)\b.{0,140}\b(?:ARR|reverse[- ]proxy)\b"), "ionos"),
     (re.compile(r"(?i)\bharvest-outbox\b.{0,100}\b(?:502|Bad Gateway|KEPT)\b"), "ionos"),
