@@ -63,7 +63,7 @@ Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (com
 2. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /
    `github_api_budget` (ETag/304 conditional GETs, hourly call budget, backoff floor). Authenticated with the existing
    Jeeves token from `config\github.token` via `gh_filer`; token handling is unchanged and the value is never logged - only
-   the token SOURCE is written once per process to `resync-token-source.log`. **Webhooks update the queue with zero REST**;
+   the token SOURCE is written once per process to `resync-token-source.log`. **Webhooks update the queue with zero REST** (including `issues`/`pull_request` `labeled`/`unlabeled` label mutations — FR #3275);
    reconcile is the exception path (startup, gap in deliveries, or hourly). It MERGES: open issues -> FR, open PRs -> MRB;
    closed/superseded FR/MRB rows of successfully fetched repos are dropped; accepted jobs, other kinds, failed repos and
    ignored repos are untouched; 403/401/429/5xx never purge. `!bored` is local-state only (budget 0). Repos:
