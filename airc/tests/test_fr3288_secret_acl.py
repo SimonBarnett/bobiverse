@@ -40,7 +40,7 @@ def test_protect_bobiverse_secret_path_strips_users(tmp_path: Path):
     """
     secret = tmp_path / "ergo.password"
     secret.write_text("dummy-not-a-real-secret\n", encoding="utf-8")
-    # Never name a PowerShell var $home — automatic $HOME is read-only (FR #259 / #2499).
+    # Never name a PowerShell var $home - automatic $HOME is read-only (FR #259 / #2499).
     console_home = tmp_path / "console-home"
     console_home.mkdir()
     files = [
