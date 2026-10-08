@@ -38,7 +38,12 @@ param(
     [ValidateSet('', 'off', 'on')]
     [string]$UpdateCap = '',
     [switch]$RequireAccount,
-    [string[]]$Accounts = @()
+    [string[]]$Accounts = @(),
+    # FR #3401: AIRC_PROFILE=client -> AuthMode=irc_ops (no operators.txt).
+    [ValidateSet('', 'fleet', 'workstation', 'client')]
+    [string]$Profile = '',
+    [ValidateSet('', 'operators', 'irc_ops')]
+    [string]$AuthMode = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -315,6 +320,16 @@ function Initialize-AircConsoleHomeSecrets {
         [string]$PackagedErgoFile = ''
     )
     $opsFile = Join-Path $ConsoleHomeDir 'operators.txt'
+    # FR #3401: irc_ops / client profile never creates or requires operators.txt.
+    if (([string]$script:AircConsoleAuthMode).Trim().ToLowerInvariant() -eq 'irc_ops') {
+        if (Test-Path -LiteralPath $opsFile) {
+            Write-Host "INFO FR #3401 AuthMode=irc_ops: leaving existing $opsFile unused"
+        } else {
+            Write-Host 'INFO FR #3401 AuthMode=irc_ops: no operators.txt'
+        }
+        # Fall through to NickServ / ergo secrets below without writing ops.
+        $opsFile = $null
+    } else {
     # Issue #289: never UTF-8 BOM. Issue #302: always include bob-{machinename}.
     # FR #3397: union OperatorNicks into existing operators.txt (cross-machine ears).
     # Prefer fleet id (BOB_MACHINE_ID) over Windows COMPUTERNAME.
@@ -366,6 +381,8 @@ function Initialize-AircConsoleHomeSecrets {
         }
     }
 
+    }  # end non-irc_ops operators seed
+
     # #271 NickServ GUID - mint here so first service start is unattended.
     if (-not $NickServPasswordFile) {
         $NickServPasswordFile = Join-Path $ConsoleHomeDir 'console.password'
@@ -401,7 +418,7 @@ function Initialize-AircConsoleHomeSecrets {
     Write-AircSecretFile -Path $ergoDest -Secret $secret
     Write-Host "INFO seeded ergo.password from package ($source) -> $ergoDest"
     return [pscustomobject]@{
-        OperatorsFile       = $opsFile
+        OperatorsFile       = $(if ($opsFile) { $opsFile } else { '' })
         NickServPasswordFile = $NickServPasswordFile
         ErgoPasswordFile    = $ergoDest
     }
@@ -410,6 +427,18 @@ function Initialize-AircConsoleHomeSecrets {
 # Packaged secret lives at <unpack>\config\ergo.password (scripts\.. = unpack root).
 $packRoot = Split-Path -Parent $scriptDir
 $packagedErgo = Join-Path $packRoot 'config\ergo.password'
+# FR #3401: resolve auth mode (client => irc_ops, no operators list).
+if (-not $AuthMode) {
+    if (([string]$Profile).Trim().ToLowerInvariant() -eq 'client') { $AuthMode = 'irc_ops' }
+    else { $AuthMode = 'operators' }
+}
+$AuthMode = ([string]$AuthMode).Trim().ToLowerInvariant()
+$script:AircConsoleAuthMode = $AuthMode
+if ($AuthMode -eq 'irc_ops') {
+    $Operators = @()
+    Write-Host 'INFO FR #3401 AuthMode=irc_ops: skipping operators.txt seed'
+}
+
 $secrets = Initialize-AircConsoleHomeSecrets -ConsoleHomeDir $ConsoleHome -OperatorNicks $Operators `
     -NickServPasswordFile $PasswordFile -ErgoSourceFile $ErgoPasswordFile -PackagedErgoFile $packagedErgo
 $opsFile = $secrets.OperatorsFile
@@ -486,7 +515,8 @@ if ($useAircExe) {
     }
     $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl"
     if ($MachineId) { $appParams += " --machine `"$MachineId`"" }
-    if (Test-Path -LiteralPath $opsFile) { $appParams += " --operators-file `"$opsFile`"" }
+    if ($AuthMode -ne 'irc_ops' -and $opsFile -and (Test-Path -LiteralPath $opsFile)) { $appParams += " --operators-file `"$opsFile`"" }
+    if ($AuthMode -in @('operators', 'irc_ops')) { $appParams += " --auth-mode $AuthMode" }
     # FR #3287: bake capability flags into AppParameters (survive NSSM re-register on upgrade).
     if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
         $ShellMode = [string]$priorId.ShellMode
@@ -538,7 +568,8 @@ if ($useAircExe) {
     $appParams += " -Python `"$Python`""
     $appParams += " -PasswordFile `"$PasswordFile`""
     if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
-    if (Test-Path -LiteralPath $opsFile) { $appParams += " -OperatorsFile `"$opsFile`"" }
+    if ($AuthMode -ne 'irc_ops' -and $opsFile -and (Test-Path -LiteralPath $opsFile)) { $appParams += " -OperatorsFile `"$opsFile`"" }
+    if ($AuthMode -in @('operators', 'irc_ops')) { $appParams += " -AuthMode $AuthMode" }
     # FR #3287: legacy Start-AircConsole.ps1 capability params.
     if (-not $ShellMode -and $priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) {
         $ShellMode = [string]$priorId.ShellMode

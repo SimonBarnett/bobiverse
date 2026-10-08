@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Launch airc console service host (FR #253). Use -ServiceMode under NSSM.
@@ -8,7 +8,7 @@
   Windows PowerShell 5.1 leaves $PSScriptRoot empty while evaluating defaults
   (mapped drives / download zips included). Resolve the script dir in the body.
 
-  Never name a parameter $Home — PowerShell's automatic $Home is read-only and
+  Never name a parameter $Home - PowerShell's automatic $Home is read-only and
   binding -Home fails with VariableNotWritable (same class of seat bugs).
 #>
 [CmdletBinding()]
@@ -19,7 +19,7 @@ param(
     [int]$Port = 6697,
     # Empty/auto -> Python {machine}_console (ChanServ shop) / {machine} lobby.
     [string]$Nick = 'auto',
-    # Fleet shop id (ionos/flamingo/…). Prefer BOB_MACHINE_ID over COMPUTERNAME.
+    # Fleet shop id (ionos/flamingo/...). Prefer BOB_MACHINE_ID over COMPUTERNAME.
     [string]$MachineId = '',
     # Domain/workgroup lobby channel id; default AIRC_CONSOLE_DOMAIN / Windows join.
     [string]$Domain = '',
@@ -36,6 +36,9 @@ param(
     # FR #3287: capability gates (also --shell off|operators on the Python host).
     [ValidateSet('', 'off', 'operators')]
     [string]$ShellMode = '',
+    # FR #3401: operators (nick ACL) or irc_ops (channel +o/+h; AIRC_PROFILE=client).
+    [ValidateSet('', 'operators', 'irc_ops')]
+    [string]$AuthMode = '',
     [ValidateSet('', 'off', 'on')]
     [string]$Jobs = '',
     [ValidateSet('', 'off', 'on')]
@@ -134,7 +137,7 @@ if ($MachineId) {
     $env:AIRC_CONSOLE_MACHINE = $MachineId
     Write-Host "INFO machineId=$MachineId (fleet shop #${MachineId})"
 } else {
-    Write-Warning ("airc-console: no -MachineId / BOB_MACHINE_ID; falling back to COMPUTERNAME={0}. Pass -MachineId ionos (etc.) so the console joins #ionos, not #win-…" -f $env:COMPUTERNAME)
+    Write-Warning ("airc-console: no -MachineId / BOB_MACHINE_ID; falling back to COMPUTERNAME={0}. Pass -MachineId ionos (etc.) so the console joins #ionos, not #win-..." -f $env:COMPUTERNAME)
 }
 
 # Seed Ergo server PASS from release zip when ConsoleHome lacks ergo.password.
@@ -151,11 +154,11 @@ if (-not (Test-Path -LiteralPath $ergoDest) -or -not (Get-Content -LiteralPath $
 }
 if (-not (Test-Path -LiteralPath $ergoDest) -or -not (Get-Content -LiteralPath $ergoDest -Raw -ErrorAction SilentlyContinue).Trim()) {
     if (-not $env:BOB_IRC_PASSWORD -and -not $env:AGENTIC_IRC_PASSWORD -and -not $env:AIRC_CONSOLE_SERVER_PASSWORD) {
-        throw 'Ergo server PASS missing: need ConsoleHome\ergo.password or package config\ergo.password (or AGENTIC_IRC_PASSWORD). Without PASS, irc.ntsa.uk drops the TLS link (EOF) — looks like "does not connect".'
+        throw 'Ergo server PASS missing: need ConsoleHome\ergo.password or package config\ergo.password (or AGENTIC_IRC_PASSWORD). Without PASS, irc.ntsa.uk drops the TLS link (EOF) - looks like "does not connect".'
     }
 }
 
-# Issue #282: LocalSystem service has no user PATH — resolve absolute python.exe.
+# Issue #282: LocalSystem service has no user PATH - resolve absolute python.exe.
 $resolvePy = Join-Path $scriptDir 'Resolve-AircConsolePython.ps1'
 if (Test-Path -LiteralPath $resolvePy) { . $resolvePy }
 if (-not $Python -or -not (Test-Path -LiteralPath $Python)) {
@@ -204,14 +207,16 @@ if ($ShopMode -and $ShopMode -ne 'auto') {
 } elseif ($ShopMode -eq 'auto') {
     $argsList += @('--shop-mode', 'auto')
 }
-# #271: always point at console.password — Python mints a GUID if missing.
+# #271: always point at console.password - Python mints a GUID if missing.
 if (-not $PasswordFile) {
     $PasswordFile = Join-Path $ConsoleHome 'console.password'
 }
 $argsList += @('--password-file', $PasswordFile)
-if ($OperatorsFile) { $argsList += @('--operators-file', $OperatorsFile) }
-elseif (Test-Path -LiteralPath (Join-Path $ConsoleHome 'operators.txt')) {
-    $argsList += @('--operators-file', (Join-Path $ConsoleHome 'operators.txt'))
+if ($AuthMode -ne 'irc_ops') {
+    if ($OperatorsFile) { $argsList += @('--operators-file', $OperatorsFile) }
+    elseif (Test-Path -LiteralPath (Join-Path $ConsoleHome 'operators.txt')) {
+        $argsList += @('--operators-file', (Join-Path $ConsoleHome 'operators.txt'))
+    }
 }
 if ($Operators.Count -gt 0) {
     $argsList += '--operators'
@@ -224,6 +229,7 @@ if ($Accounts.Count -gt 0) {
 if ($RequireAccount) { $argsList += '--require-account' }
 # FR #3287
 if ($ShellMode -in @('off', 'operators')) { $argsList += @('--shell-mode', $ShellMode) }
+if ($AuthMode -in @('operators', 'irc_ops')) { $argsList += @('--auth-mode', $AuthMode) }
 if ($Jobs -in @('off', 'on')) { $argsList += @('--jobs', $Jobs) }
 if ($UpdateCap -in @('off', 'on')) { $argsList += @('--update', $UpdateCap) }
 if ($TlsInsecure) { $argsList += '--tls-insecure' }

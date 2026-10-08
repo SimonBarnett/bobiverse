@@ -521,6 +521,8 @@ function Resolve-BobiverseAircOperatorNicks {
         if ($o -and ([string]$o).Trim()) { [void]$ops.Add(([string]$o).Trim()) }
     }
     $prof = ([string]$Profile).Trim().ToLowerInvariant()
+    # FR #3401: client profile never seeds operators.txt (IRC +o/+h auth).
+    if ($prof -eq 'client') { return @() }
     if ($prof -ne 'workstation') {
         $extra = ([string]$OperatorsExtra).Trim()
         if ($extra) {

@@ -551,6 +551,154 @@ def is_bob_fleet_nick(nick: str) -> bool:
     return bool(_BOB_FLEET_NICK_RE.match((nick or "").strip()))
 
 
+# FR #3401: IRC channel status prefixes that grant client remote control.
+_CHAN_PRIV_PREFIXES = frozenset("@%&~")  # op, half-op, admin, owner (never +voice alone)
+
+
+@dataclass
+class ChannelMemberMap:
+    """Live NAMES/MODE/JOIN/PART map for the selected control channel (FR #3401)."""
+
+    channel: str = ""
+    synced: bool = False
+    _members: dict[str, str] = field(default_factory=dict)  # nick.lower -> prefix chars
+
+    def clear(self) -> None:
+        self._members.clear()
+        self.synced = False
+
+    def set_channel(self, channel: str) -> None:
+        ch = (channel or "").strip()
+        if ch.lower() != (self.channel or "").lower():
+            self.clear()
+        self.channel = ch
+
+    def apply_names(self, names_blob: str) -> None:
+        for tok in (names_blob or "").split():
+            prefixes = ""
+            nick = tok
+            while nick and nick[0] in "@%&~+":
+                if nick[0] in _CHAN_PRIV_PREFIXES:
+                    prefixes += nick[0]
+                nick = nick[1:]
+            if nick:
+                self._members[nick.lower()] = prefixes
+
+    def mark_synced(self) -> None:
+        self.synced = True
+
+    def known(self, nick: str) -> bool:
+        return (nick or "").strip().lower() in self._members
+
+    def has_chan_priv(self, nick: str) -> bool:
+        p = self._members.get((nick or "").strip().lower(), "")
+        return any(c in _CHAN_PRIV_PREFIXES for c in p)
+
+    def on_join(self, nick: str, prefixes: str = "") -> None:
+        n = (nick or "").strip()
+        if not n:
+            return
+        cleaned = "".join(c for c in (prefixes or "") if c in _CHAN_PRIV_PREFIXES)
+        self._members[n.lower()] = cleaned
+
+    def on_part(self, nick: str) -> None:
+        self._members.pop((nick or "").strip().lower(), None)
+
+    def on_kick(self, nick: str) -> None:
+        self.on_part(nick)
+
+    def on_quit(self, nick: str) -> None:
+        self.on_part(nick)
+
+    def on_nick(self, old: str, new: str) -> None:
+        o = (old or "").strip().lower()
+        n = (new or "").strip()
+        if not o or not n:
+            return
+        prefs = self._members.pop(o, None)
+        if prefs is not None:
+            self._members[n.lower()] = prefs
+
+    def on_mode(self, channel: str, modes: str, mode_args: list[str]) -> None:
+        ch = (channel or "").strip().lower().lstrip("#")
+        mine = (self.channel or "").strip().lower().lstrip("#")
+        if mine and ch and ch != mine:
+            return
+        args = list(mode_args or [])
+        arg_i = 0
+        sign = "+"
+        for ch_m in modes or "":
+            if ch_m in "+-":
+                sign = ch_m
+                continue
+            if ch_m in "ohvaqOHVAQ":
+                if arg_i >= len(args):
+                    break
+                nick = (args[arg_i] or "").strip()
+                arg_i += 1
+                if not nick:
+                    continue
+                key = nick.lower()
+                prefs = list(self._members.get(key, ""))
+                # Map mode letter -> prefix char.
+                letter = ch_m.lower()
+                pref = {"o": "@", "h": "%", "v": "+", "a": "&", "q": "~"}.get(letter)
+                if pref is None:
+                    continue
+                if letter == "v":
+                    # Voice alone never grants client control; track but ignore for auth.
+                    continue
+                if sign == "+":
+                    if pref not in prefs:
+                        prefs.append(pref)
+                else:
+                    prefs = [p for p in prefs if p != pref]
+                self._members[key] = "".join(prefs)
+            elif ch_m in "klbeI":
+                # Modes that consume a parameter — skip the arg.
+                if arg_i < len(args):
+                    arg_i += 1
+
+
+def control_channel_reason(mode: str) -> str:
+    """FR #3401: human reason token for control-channel selection logs."""
+    m = (mode or "").strip().lower()
+    if m == "registered":
+        return "registered-machine"
+    return "domain-fallback"
+
+
+def control_channel_log_line(channel: str, mode: str) -> str:
+    """FR #3401: ``INFO control-channel=#name reason=registered-machine|domain-fallback``."""
+    return (
+        f"INFO control-channel={channel} reason={control_channel_reason(mode)}"
+    )
+
+
+def resolve_crash_report_enabled_for_install(
+    *,
+    prior: bool | None,
+    explicit: bool | None,
+    profile: str | None = None,
+) -> bool:
+    """FR #3401: client defaults crash reports ON; workstation defaults OFF.
+
+    Explicit MSI/CLI wins. Fleet fresh default follows prior when set, else ON
+    when shell is remote-capable is handled by Install-Airc.ps1; this helper is
+    the profile-aware default used by tests and shared callers.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    prof = (profile or "").strip().lower()
+    if prof == "workstation":
+        return False
+    if prof == "client":
+        return True
+    if prior is not None:
+        return bool(prior)
+    return True
+
+
 @dataclass
 class AuthPolicy:
     """Only authenticated operators may drive the console via PRIVMSG."""
@@ -562,11 +710,36 @@ class AuthPolicy:
     # When set, also treat bob-<machine> as an operator nick for this box (still subject
     # to --require-account / --accounts). Never allow arbitrary bob-* by regex (FR #3286).
     machine: str | None = None
+    # FR #3401: ``operators`` (fleet/workstation nick ACL) or ``irc_ops`` (channel +o/+h).
+    auth_mode: Literal["operators", "irc_ops"] = "operators"
+    members: ChannelMemberMap | None = None
+    self_nicks: set[str] = field(default_factory=set)
+
+    def deny_reason(self, nick: str, account: str | None = None) -> str:
+        """Why ``allow`` is False (for auth-deny logs; never includes command body)."""
+        n = (nick or "").strip().lower()
+        if self.auth_mode == "irc_ops":
+            if n and n in {x.lower() for x in self.self_nicks}:
+                return "self-nick"
+            if self.members is None or not self.members.synced:
+                return "channel-state-unknown"
+            if not self.members.has_chan_priv(n):
+                return "not-op"
+            return "not-op"
+        if not self.allow(nick, account):
+            return "not-operator"
+        return ""
 
     def allow(self, nick: str, account: str | None = None) -> bool:
         n = (nick or "").strip().lower()
         if not n:
             return False
+        if self.auth_mode == "irc_ops":
+            if n in {x.lower() for x in self.self_nicks}:
+                return False
+            if self.members is None or not self.members.synced:
+                return False
+            return self.members.has_chan_priv(n)
         ops = {x.lower() for x in self.operators}
         mid = machine_id(self.machine) if self.machine is not None else None
         if mid:
@@ -640,12 +813,16 @@ def resolve_shell_mode_for_install(
     """Fresh MSI default ``off``; upgrade of an existing fleet box defaults ``operators``.
 
     FR #3393: ``AIRC_PROFILE=workstation`` defaults ``off`` unless explicit.
+    FR #3401: ``AIRC_PROFILE=client`` defaults ``operators`` (full remote, IRC-ops auth).
     """
     exp = (explicit or "").strip().lower()
     if exp in SHELL_MODE_TOKENS:
         return exp
-    if (profile or "").strip().lower() == "workstation":
+    prof = (profile or "").strip().lower()
+    if prof == "workstation":
         return "off"
+    if prof == "client":
+        return "operators"
     prior = (prior_shell or "").strip().lower()
     if prior in SHELL_MODE_TOKENS:
         return prior
@@ -834,10 +1011,12 @@ def resolve_self_update_for_install(
 
     FR #3393: ``AIRC_PROFILE=workstation`` defaults False (no SYSTEM GitHub MSI
     channel) unless MSI/CLI sets ``AIRC_SELF_UPDATE`` explicitly.
+    FR #3401: ``AIRC_PROFILE=client`` also defaults False (no automatic update).
     """
     if explicit is not None:
         return bool(explicit)
-    if (profile or "").strip().lower() == "workstation":
+    prof = (profile or "").strip().lower()
+    if prof in {"workstation", "client"}:
         return False
     if prior is not None:
         return bool(prior)
@@ -850,12 +1029,15 @@ def resolve_jobs_for_install(
     explicit: str | None,
     profile: str | None = None,
 ) -> str:
-    """Fleet default ``on``; workstation default ``off`` unless explicit (FR #3393)."""
+    """Fleet default ``on``; workstation default ``off``; client default ``on`` (FR #3393/#3401)."""
     exp = (explicit or "").strip().lower()
     if exp in {"off", "on"}:
         return exp
-    if (profile or "").strip().lower() == "workstation":
+    prof = (profile or "").strip().lower()
+    if prof == "workstation":
         return "off"
+    if prof == "client":
+        return "on"
     prior_l = (prior or "").strip().lower()
     if prior_l in {"off", "on"}:
         return prior_l
@@ -868,12 +1050,15 @@ def resolve_update_cap_for_install(
     explicit: str | None,
     profile: str | None = None,
 ) -> str:
-    """Fleet default ``on``; workstation default ``off`` unless explicit (FR #3393)."""
+    """Fleet default ``on``; workstation default ``off``; client default ``on`` (ops-gated, FR #3401)."""
     exp = (explicit or "").strip().lower()
     if exp in {"off", "on"}:
         return exp
-    if (profile or "").strip().lower() == "workstation":
+    prof = (profile or "").strip().lower()
+    if prof == "workstation":
         return "off"
+    if prof == "client":
+        return "on"
     prior_l = (prior or "").strip().lower()
     if prior_l in {"off", "on"}:
         return prior_l
@@ -886,11 +1071,14 @@ def resolve_require_account_for_install(
     explicit: bool | None,
     profile: str | None = None,
 ) -> bool:
-    """Fleet default False; workstation default True unless explicit (FR #3393)."""
+    """Fleet default False; workstation default True; client default False (FR #3393/#3401)."""
     if explicit is not None:
         return bool(explicit)
-    if (profile or "").strip().lower() == "workstation":
+    prof = (profile or "").strip().lower()
+    if prof == "workstation":
         return True
+    if prof == "client":
+        return False
     if prior is not None:
         return bool(prior)
     return False
@@ -1031,6 +1219,7 @@ class HandleResult:
     target: str | None = None
     text: str | None = None
     reply: str | None = None
+    deny_reason: str | None = None  # FR #3401: not-op / self-nick / channel-state-unknown
 
 
 class ShellRequestError(ValueError):
@@ -1746,6 +1935,7 @@ class HandleResult:
     target: str | None = None
     text: str | None = None
     reply: str | None = None
+    deny_reason: str | None = None  # FR #3401
 
 
 
@@ -1793,6 +1983,29 @@ class AircConsoleCore:
     def may_speak_on_channel(self) -> bool:
         return False
 
+    def _deny_result(
+        self, nick: str, target: str, text: str, account: str | None
+    ) -> HandleResult:
+        """FR #3401: irc_ops denials use DONE exit=126 not-op; fleet keeps legacy text."""
+        if getattr(self.auth, "auth_mode", "operators") == "irc_ops":
+            reason = self.auth.deny_reason(nick, account) or "not-op"
+            return HandleResult(
+                action="deny",
+                nick=nick,
+                target=target,
+                text=text,
+                reply="DONE exit=126 not-op",
+                deny_reason=reason,
+            )
+        return HandleResult(
+            action="deny",
+            nick=nick,
+            target=target,
+            text=text,
+            reply="denied: authenticate / not an operator",
+            deny_reason="not-operator",
+        )
+
     def handle_raw(self, line: str) -> HandleResult | None:
         tags, rest = parse_message_tags(line.rstrip("\r\n"))
         m = _PRIVMSG_RE.match(rest)
@@ -1829,20 +2042,23 @@ class AircConsoleCore:
             # Direct ping that does not match us — ignore quietly.
             return HandleResult(action="ping_miss", nick=nick, target=target, text=text)
 
+        irc_ops = getattr(self.auth, "auth_mode", "operators") == "irc_ops"
         if is_channel_target(target):
-            # Silent in channel: ignore public traffic (do not reply on channel).
+            # Fleet: silent in channel. Client (irc_ops): accept commands on the
+            # selected control channel only (FR #3401).
             self.channel_traffic.append(text)
-            return HandleResult(action="silent_channel", nick=nick, target=target, text=text)
-
-        # Direct PRIVMSG to console nick
-        if not self.auth.allow(nick, account):
-            return HandleResult(
-                action="deny",
-                nick=nick,
-                target=target,
-                text=text,
-                reply="denied: authenticate / not an operator",
-            )
+            if not irc_ops:
+                return HandleResult(action="silent_channel", nick=nick, target=target, text=text)
+            ctrl = (self.channel or "").strip().lower()
+            if target.strip().lower() != ctrl:
+                return HandleResult(action="silent_channel", nick=nick, target=target, text=text)
+            if not self.auth.allow(nick, account):
+                return self._deny_result(nick, target, text, account)
+            # Fall through to command routing (same as DM).
+        else:
+            # Direct PRIVMSG to console nick
+            if not self.auth.allow(nick, account):
+                return self._deny_result(nick, target, text, account)
 
         # FR #2570: strip Halloy/bobtalk Heard:/@nick noise before verb/shell routing.
         cmd = sanitize_console_operator_text(text or "")
