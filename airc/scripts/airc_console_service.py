@@ -41,9 +41,11 @@ from airc_console import (
     domain_or_workgroup_id,
     ensure_nickserv_password,
     home_dir,
+    load_capabilities,
     load_operators,
     machine_console_nick,
     machine_id,
+    normalize_shell_cli,
     parse_chanserv_info,
     resolve_powershell,
     resolve_server_password,
@@ -173,7 +175,27 @@ class AircConsoleService:
             Path(args.operators_file) if args.operators_file else self.home / "operators.txt",
             args.operators,
         )
+        # FR #77 / #2949: frozen airc.exe must use resolve_airc_install_root
+        # (sys.executable parent), never Path(__file__).parents[1] under _MEI*.
+        _root = resolve_airc_install_root()
+        install_root = str(_root) if _root is not None else str(Path(__file__).resolve().parents[1])
+        # FR #3287: --shell off|operators is a capability; other values remain PowerShell path.
+        _mode_tok, shell_path = normalize_shell_cli(getattr(args, "shell", None))
+        caps = load_capabilities(
+            install_root=install_root,
+            console_home=self.home,
+            cli_shell=getattr(args, "shell", None),
+            cli_shell_mode=getattr(args, "shell_mode", None) or _mode_tok,
+            cli_jobs=getattr(args, "jobs", None),
+            cli_update=getattr(args, "update_cap", None),
+            cli_require_account=bool(args.require_account) if getattr(args, "require_account", False) else None,
+            cli_accounts=list(args.accounts or []),
+            default_shell_mode="operators",
+        )
+        self.capabilities = caps
+        info(caps.log_line())
         accts = {x.strip().lower() for x in (args.accounts or []) if x.strip()}
+        accts.update(a.lower() for a in caps.accounts)
         amap = AccountMap()
         amap_path = self.home / "accounts.json"
         amap.load(amap_path)
@@ -183,14 +205,14 @@ class AircConsoleService:
             operators=ops,
             accounts=accts,
             account_map=amap,
-            require_account=bool(args.require_account or accts),
+            require_account=bool(args.require_account or caps.require_account or accts),
             machine=self.machine,
         )
         if not ops and not accts:
             raise SystemExit("airc console: refuse empty operators/accounts (FR #253)")
         cwd = args.cwd or str(self.home)
         self.sessions = ConsoleSessionManager(
-            shell=args.shell or resolve_powershell(),
+            shell=shell_path or resolve_powershell(),
             cwd=cwd,
             on_output=self._on_console_out,
             idle_sec=float(args.idle_sec),
@@ -202,10 +224,6 @@ class AircConsoleService:
             on_inflight=self.note_shell_inflight,
             on_idle=self.clear_shell_inflight,
         )
-        # FR #77 / #2949: frozen airc.exe must use resolve_airc_install_root
-        # (sys.executable parent), never Path(__file__).parents[1] under _MEI*.
-        _root = resolve_airc_install_root()
-        install_root = str(_root) if _root is not None else str(Path(__file__).resolve().parents[1])
         ai_root = Path(os.environ.get("AI_ROOT") or self.home.parent.parent)
         # Verb matrix: empty write/exec sets => any base-authenticated nick (documented).
         self.job_store = JobStore(self.home)
@@ -225,6 +243,7 @@ class AircConsoleService:
             shell_runner=self.shell_runner,
             install_root=install_root,
             job_protocol=self.job_protocol,
+            capabilities=caps,
         )
         self.core.channel = self.channel
         self.sock: ssl.SSLSocket | socket.socket | None = None
@@ -771,6 +790,11 @@ class AircConsoleService:
             acct = self.account_map.get(hr.nick) if getattr(self, "account_map", None) else None
             info(f"auth-deny nick={hr.nick} account={acct or '-'}")
             self.send_privmsg(hr.nick, hr.reply)
+        elif hr.action == "capability_deny" and hr.nick and hr.reply:
+            # FR #3287 / MRB #3300: shell/jobs/update gates must emit DONE exit=126 to the nick
+            # (Invoke-AircRemote / ReplyFile wait on DONE; never start a subprocess).
+            self.send_privmsg(hr.nick, hr.reply)
+            info(f"INFO capability-deny to={hr.nick} {hr.reply}")
         elif hr.action in {"help", "close", "update"} and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
@@ -968,7 +992,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--operators-file", default=None)
     p.add_argument("--accounts", nargs="*", default=[], help="services account allowlist")
     p.add_argument("--require-account", action="store_true")
-    p.add_argument("--shell", default=None)
+    p.add_argument(
+        "--shell",
+        default=None,
+        help="PowerShell path, or FR #3287 capability token off|operators",
+    )
+    p.add_argument(
+        "--shell-mode",
+        default=None,
+        choices=["off", "operators"],
+        help="FR #3287: off=STATUS/ping only; operators=remote shell (default from config/airc.json)",
+    )
+    p.add_argument(
+        "--jobs",
+        default=None,
+        choices=["off", "on"],
+        help="FR #3287: off refuses PUT/RUN/JOB file protocol (STATUS still allowed)",
+    )
+    p.add_argument(
+        "--update",
+        dest="update_cap",
+        default=None,
+        choices=["off", "on"],
+        help="FR #3287: off refuses UPDATE airc|bob|jeeves",
+    )
     p.add_argument("--cwd", default=None)
     p.add_argument("--idle-sec", type=float, default=3600.0)
     p.add_argument("--selftest", action="store_true", help="offline smoke then exit 0")
