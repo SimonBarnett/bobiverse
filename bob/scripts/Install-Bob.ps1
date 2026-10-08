@@ -175,7 +175,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $trayVendor 'tools\Watch-BobTray.ps1
 }
 if ($trayVendor) {
     # FR #2982: bob\tray under InstallRoot is the sparse checkout, not a separate vendor
-    # tree — Test-BobiverseSamePath(trayVendor, InstallRoot) is false for that subdir and
+    # tree - Test-BobiverseSamePath(trayVendor, InstallRoot) is false for that subdir and
     # previously re-laid stale tray tools over MSI-laid tools\.
     $trayUnderInstall = $false
     try {
@@ -256,7 +256,7 @@ $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', "bobiverse Bob ear ($MachineId)"))
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
-# FR #1055: Restart on Default and on exit 0 (graceful quit) — same pin as ircJeeves.
+# FR #1055: Restart on Default and on exit 0 (graceful quit) - same pin as ircJeeves.
 Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $ServiceName -RestartDelayMs 2000
 
 # Issue #6: msiexec /qn is UserInteractive=$true but has no console - never Get-Credential unless -PromptServicePassword
@@ -290,8 +290,8 @@ if ($env:BOB_IRC_PASSWORD) {
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppEnvironmentExtra', ($envExtra -join "`n")))
 # t794u: the systray (interactive user) stops ircBob on Exit and restarts it on Start Systray.
 [void](Grant-BobiverseServiceUserControl -Name $ServiceName)
-# Watch-AgentHealth bundle → Desktop (IF MISSING folder, or refresh scripts when pack present)
-# FR #2523: when bob-worker.exe is present, do not (re)install Desktop Watch-AgentHealth — shop seats are bob-worker only.
+# Watch-AgentHealth bundle -> Desktop (IF MISSING folder, or refresh scripts when pack present)
+# FR #2523: when bob-worker.exe is present, do not (re)install Desktop Watch-AgentHealth - shop seats are bob-worker only.
 if (-not $SkipWatchAgentHealth) {
     $bobWorkerExe = Join-Path $InstallRoot 'worker\bob-worker.exe'
     if (Test-Path -LiteralPath $bobWorkerExe) {
@@ -340,7 +340,7 @@ if (-not $SkipIcons) {
             -WorkingDirectory $InstallRoot `
             -Description $trayDesc `
             -IconLocation $(if ($trayIco) { "$trayIco,0" } else { '' })
-        # Per-user Startup (interactive logon companion) — never BobFleet-* scheduled tasks
+        # Per-user Startup (interactive logon companion) - never BobFleet-* scheduled tasks
         $startup = [Environment]::GetFolderPath('Startup')
         if ($startup) {
             New-BobiverseShortcut -LinkPath (Join-Path $startup 'Bobiverse Tray.lnk') `

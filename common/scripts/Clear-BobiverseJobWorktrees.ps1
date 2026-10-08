@@ -18,7 +18,7 @@
   - FR #2727: never selects operator/build trees (`wt-bob-main-*`, `wt-airc-*`,
     `wt-main`). Skips trees with a live `.bobiverse-seat` marker or a
     git/python/PyInstaller process whose CommandLine cites the path. This script
-    is the only sanctioned reclaim path — seats must not hand-delete other
+    is the only sanctioned reclaim path - seats must not hand-delete other
     `C:\ai\*` trees when removed=0.
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
@@ -69,10 +69,10 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
     if ($full.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -and ($leaf -match '(?i)^bobiverse-')) {
         return $true
     }
-    # Durable job trees under C:\ai (or D:\…): bob-wt-fr-N / job-fr-N / docs-mrb-N …
+    # Durable job trees under C:\ai (or D:\...): bob-wt-fr-N / job-fr-N / docs-mrb-N ...
     if ($leaf -match '(?i)^(bob-wt-|job-)?(fr|mrb|uat|docs-mrb)-\d') { return $true }
     if ($leaf -match '(?i)^(bobiverse-|fr-\d|mrb-|uat-)') { return $true }
-    # Temp-style …-wt suffix only when the leaf already looks like a job id.
+    # Temp-style ...-wt suffix only when the leaf already looks like a job id.
     if ($leaf -match '(?i)^(bobiverse-|fr-|mrb-|uat-|docs-mrb-).*-wt$') { return $true }
     return $false
 }
@@ -143,7 +143,7 @@ Write-Host ("FreeGB={0} MinFreeGB={1} RepoRoot={2} KeepPath={3}" -f $freeGb, $Mi
 # FR #1661: low-disk / -Force = full reclaim; soft cap still runs when FreeGB is healthy.
 $lowDisk = $Force -or ($freeGb -lt $MinFreeGB)
 
-# FR #1740 / #1664: force Object[] of line strings — a single-line git capture is a scalar string and
+# FR #1740 / #1664: force Object[] of line strings - a single-line git capture is a scalar string and
 # `foreach` would iterate characters under StrictMode.
 $list = @(
     & git -C $rootFull worktree list --porcelain 2>&1 |
@@ -235,7 +235,7 @@ foreach ($p in $toRemove) {
     }
 }
 
-# Orphan TEMP bobiverse-* dirs (full reclaim only — FR #1661 soft cap leaves orphans alone)
+# Orphan TEMP bobiverse-* dirs (full reclaim only - FR #1661 soft cap leaves orphans alone)
 $tempRoot = $env:TEMP
 if ($lowDisk -and $tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
     Get-ChildItem -LiteralPath $tempRoot -Directory -Filter 'bobiverse-*' -ErrorAction SilentlyContinue | ForEach-Object {

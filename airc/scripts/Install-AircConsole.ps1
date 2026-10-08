@@ -195,7 +195,7 @@ function Test-AircDefaultProfileHome {
 }
 
 function Test-AircUserProfileHome {
-    <# FR #3288: any Users\<profile>\… home is unsafe for a LocalSystem console service. #>
+    <# FR #3288: any Users\<profile>\... home is unsafe for a LocalSystem console service. #>
     param([string]$Path)
     return [bool](($Path) -and ($Path -match '(?i)(?:^|[\\/])Users[\\/][^\\/]+(?:[\\/]|$)'))
 }
@@ -296,7 +296,7 @@ function Write-AircSecretFile {
     if (-not $text) { throw "refusing empty secret for $Path" }
     # ASCII one-line; no BOM - same shape as connect.password / NickServ GUID.
     [IO.File]::WriteAllText($Path, $text + "`n", [Text.UTF8Encoding]::new($false))
-    # FR #3288: SYSTEM + Administrators only — never grant the installing user.
+    # FR #3288: SYSTEM + Administrators only - never grant the installing user.
     if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
         Protect-BobiverseSecretPath -Path $Path
     } else {

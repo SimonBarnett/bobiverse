@@ -186,7 +186,7 @@ if ((Test-Path -LiteralPath $callback) -and -not (Test-BobCallbackListening)) {
         if (Wait-BobCallbackListening -TimeoutSec 20) {
             Write-Host 'INFO bobcallback listening on 127.0.0.1:7700'
         } else {
-            # FR #1316: task Running but no LISTENING after 15–20s = wedge (SYSTEM vs Admin home).
+            # FR #1316: task Running but no LISTENING after 15-20s = wedge (SYSTEM vs Admin home).
             Write-Host 'WARN bobcallback not listening on 127.0.0.1:7700 after start (ARR intake will 502.3)'
             if ($cbTask) {
                 Write-Host 'WARN BobCallback wedge: stopping task and falling back to supervised user-context (FR #1472)'
@@ -205,10 +205,10 @@ if ((Test-Path -LiteralPath $callback) -and -not (Test-BobCallbackListening)) {
     }
 }
 
-# FR #1316 monitor: task claims Running but nothing listens after 15s → treat as wedge.
+# FR #1316 monitor: task claims Running but nothing listens after 15s -> treat as wedge.
 $cbTaskState = Get-ScheduledTask -TaskName 'BobCallback' -ErrorAction SilentlyContinue
 if ($cbTaskState -and $cbTaskState.State -eq 'Running' -and -not (Test-BobCallbackListening)) {
-    Write-Host 'WARN BobCallback task Running but :7700 not LISTENING — wedge (FR #1316)'
+    Write-Host 'WARN BobCallback task Running but :7700 not LISTENING - wedge (FR #1316)'
 }
 
 $watchWh = Join-Path $scriptDir 'Watch-BobWebhooks.ps1'

@@ -18,8 +18,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Repo,
     [ValidateSet('issue', 'fr', 'skill', 'harvest')]
     [string]$Kind = 'issue',
-    # FR #3318: optional skill book. Empty → derive from -Repo product defaults
-    # (skills-visionary / a-search / …); bobiverse stays harvest. Never hardcode
+    # FR #3318: optional skill book. Empty -> derive from -Repo product defaults
+    # (skills-visionary / a-search / ...); bobiverse stays harvest. Never hardcode
     # harvest for a product Plan-seat lesson repo.
     [string]$Book = '',
     [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
@@ -47,7 +47,7 @@ if ($titleTrim.Length -gt 200) {
 }
 
 function Get-ExceptionHttpResponse {
-    # FR #2461 / #1842: StrictMode — Exception.Response is absent on many exception types.
+    # FR #2461 / #1842: StrictMode - Exception.Response is absent on many exception types.
     param($Exception)
     if ($null -eq $Exception) { return $null }
     $prop = $Exception.PSObject.Properties['Response']
@@ -192,7 +192,7 @@ if ($env:BOB_INTAKE_KEY) {
 }
 
 function Get-IntakeResponseProp {
-    # FR #2379: StrictMode — optional intake JSON keys (url / queued) may be absent on 202.
+    # FR #2379: StrictMode - optional intake JSON keys (url / queued) may be absent on 202.
     param($Response, [Parameter(Mandatory)][string]$Name, $Default = $null)
     if ($null -eq $Response) { return $Default }
     $prop = $Response.PSObject.Properties[$Name]

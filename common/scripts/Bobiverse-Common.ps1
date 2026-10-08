@@ -117,9 +117,9 @@ function Get-BobiverseNssmApplication {
 
 function Get-BobiverseEarServiceHome {
     <#
-      FR #2943 / VISION S3: home the live ircBob ear drains (LocalSystem Start-Bob → InstallRoot\home).
-      Interactive tray / Restart-BobEar must write depart-request + departure PRIVMSG here — not
-      %USERPROFILE%\.bobiverse — or the announce never reaches IRC.
+      FR #2943 / VISION S3: home the live ircBob ear drains (LocalSystem Start-Bob -> InstallRoot\home).
+      Interactive tray / Restart-BobEar must write depart-request + departure PRIVMSG here - not
+      %USERPROFILE%\.bobiverse - or the announce never reaches IRC.
       Override: BOB_EAR_HOME. Else InstallRoot\home, else NSSM AppDirectory parent\home, else product root\home.
     #>
     param(
@@ -794,7 +794,7 @@ function Sync-BobiverseWorkTree {
         }
         # FR #2944: existing .git with unborn/empty HEAD (e.g. leftover `master` with "No commits yet")
         # never enters the bootstrap checkout path above. Heal like first bootstrap when origin/$Branch
-        # is reachable — empty HEAD is not agent work, so KEEP_BRANCH does not preserve it.
+        # is reachable - empty HEAD is not agent work, so KEEP_BRANCH does not preserve it.
         $hv = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', '--verify', 'HEAD')) -TimeoutSec 20
         if ($hv.Code -ne 0) {
             $sc = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('sparse-checkout', 'set', '--no-cone', "/$Product/", '/common/')) -TimeoutSec 30
@@ -845,7 +845,7 @@ function Sync-BobiverseWorkTree {
                 }
             }
             if ($cur -ne $Branch) {
-                # FR #1074: still off-main after #1157 gates — alert so operators notice offer gates may lag.
+                # FR #1074: still off-main after #1157 gates - alert so operators notice offer gates may lag.
                 $why = if ($cur) { "on branch '$cur' (not $Branch); fetched only, work tree untouched" } else { 'detached HEAD; fetched only, work tree untouched' }
                 $behindOff = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
                 if ($behindOff -gt 0) {
@@ -870,7 +870,7 @@ function Sync-BobiverseWorkTree {
         }
         $after = (Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', 'HEAD')) -TimeoutSec 20).Out | Select-Object -First 1
         $res.Pulled = ("$before" -ne "$after")
-        # FR #2470: verify tip after ff — a silent miss left marchhare common/scripts 403 commits behind origin/main.
+        # FR #2470: verify tip after ff - a silent miss left marchhare common/scripts 403 commits behind origin/main.
         $behind = Get-BobiverseWorkTreeBehindCount -Git $git -GitArgsBase $G -Branch $Branch
         if ($behind -gt 0) {
             $log.Add("ALERT sync-behind: HEAD behind origin/$Branch by $behind commit(s) after ff-only; live common/scripts may lag tip (FR #2470)")
@@ -1125,7 +1125,7 @@ function Copy-BobiverseTree {
         Write-Host "INFO copy-skip same-path $srcFull (MSI staged)"
         return
     }
-    # Also skip when Source is Dest\* already (scripts → InstallRoot\scripts and $here is that scripts dir)
+    # Also skip when Source is Dest\* already (scripts -> InstallRoot\scripts and $here is that scripts dir)
     if ($ContentsOnly) {
         $parentOfSrc = Split-Path -Parent $srcFull
         if (Test-BobiverseSamePath $parentOfSrc $dstFull) {
