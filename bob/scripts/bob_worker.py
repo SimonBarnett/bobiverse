@@ -337,24 +337,71 @@ def outbox_path_for_run(run_dir: Path | str) -> Path:
     return Path(run_dir) / "outbox.txt"
 
 
-def seat_env_extra(run_dir: Path | str, machine: str, nick: str) -> dict:
+DEFAULT_HARVEST_REPO = "SimonBarnett/bobiverse"
+_JOB_REF_REPO_RX = re.compile(r"(?i)^\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\s*#\s*\d+\s*$")
+
+
+def harvest_repo_for_job(job_ref: str | None) -> str:
+    """FR #3189: map ``owner/repo#N`` (ACK/assign key) to harvest ``-Repo`` owner/name."""
+    raw = (job_ref or "").strip()
+    if not raw:
+        return DEFAULT_HARVEST_REPO
+    m = _JOB_REF_REPO_RX.match(raw)
+    repo = m.group(1) if m else (raw.split("#", 1)[0].strip() if "#" in raw else raw)
+    if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo or ""):
+        return DEFAULT_HARVEST_REPO
+    owner, _, name = repo.partition("/")
+    if owner.lower() == "simonbarnett" and name.lower() == "a-search":
+        return "SimonBarnett/a-search"
+    if owner.lower() == "simonbarnett" and name.lower() == "bobiverse":
+        return DEFAULT_HARVEST_REPO
+    return f"{owner}/{name}"
+
+
+def harvest_invoke_repo_args(job_ref: str | None) -> list[str]:
+    """Argv fragment ``['-Repo', owner/name]`` for Invoke-BobiverseHarvest (FR #3189)."""
+    return ["-Repo", harvest_repo_for_job(job_ref)]
+
+
+def write_job_repo_marker(run_dir: Path | str, job_ref: str | None) -> str:
+    """Persist job repo beside the outbox so agent-invoked harvest sees it (FR #3189)."""
+    repo = harvest_repo_for_job(job_ref)
+    path = Path(run_dir) / "job-repo.txt"
+    try:
+        path.write_text(repo + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return repo
+
+
+def seat_env_extra(
+    run_dir: Path | str,
+    machine: str,
+    nick: str,
+    job_repo: str | None = None,
+) -> dict:
     """Env vars every agent child must inherit so compaction cannot lose the outbox (FR #2380).
 
     FR #2790: also export ``BOB_AGENT_NICK`` (same value as ``BOB_NICK``) so
     ``Invoke-BobiverseHarvest.ps1`` and legacy Watch-AgentHealth readers stamp
     ``source.seat`` / footer ``seat=`` for lesson-PR self-MRB blocking.
+    FR #3189: optional ``BOB_JOB_REPO`` so harvest targets the offered product repo.
     """
     outbox = str(outbox_path_for_run(run_dir))
     mid = (machine or "").strip().lstrip("#")
     shop = f"#{mid}"
     nick_s = (nick or "").strip()
-    return {
+    out = {
         "BOB_OUTBOX": outbox,
         "BOB_SHOP": shop,
         "BOB_NICK": nick_s,
         "BOB_AGENT_NICK": nick_s,
         "BOB_MACHINE": mid.lower(),
     }
+    jr = (job_repo or "").strip()
+    if jr:
+        out["BOB_JOB_REPO"] = harvest_repo_for_job(jr if "#" in jr else f"{jr}#1")
+    return out
 
 
 # FR #2669: tray wrapper used to write C:\\Users\\... into BOB_*_HOME; scrub agent-host vars too.
@@ -548,7 +595,10 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"FR = 'DONE FR owner/repo#N <pr-url>' (no PASS/FAIL — FR #2419); "
         f"MRB/UAT = 'DONE <MRB|UAT> owner/repo#N PASS|FAIL <url>' "
         f"(nothing after the URL); if you cannot, append 'NACK <TYPE> owner/repo#N'. After DONE/NACK/GIVEUP, CAST IRON harvest skills and file any separate genuine issue/FR/bug with {Path(worker_dir).parent}\\scripts\\Report-BobiverseIntakeIssue.ps1 "
-        f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
+        f"in the same turn BEFORE the program's next !bored (the exe holds !bored while you harvest). "
+        f"FR #3189: harvest with -Repo / -JobRepo from the job (`$env:BOB_JOB_REPO`); a-search jobs go to "
+        f"SimonBarnett/a-search (harvest-agent-skills), not bobiverse harvest/SKILL.md; Bob tooling stays bobiverse. "
+        f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
         f"Never print or store secrets."
@@ -2901,6 +2951,7 @@ class BoredEmitter:
         self._ack_open = False
         self._ack_at: Optional[float] = None
         self._ack_job_key: Optional[str] = None  # FR #1732: open ACK job id
+        self.run_dir: Optional[Path] = None  # FR #3189: write job-repo.txt for harvest routing
         self._idle_since: Optional[float] = None
         self._last_bored: Optional[float] = None
         self._last_reason = ""
@@ -3274,6 +3325,12 @@ class BoredEmitter:
             if _OUT_ACK_RX.match(p):
                 self._ack_open, self._ack_at, self._idle_since = True, now, None
                 self._ack_job_key = outbox_job_key(p)
+                # FR #3189: persist offered repo so Invoke-BobiverseHarvest targets the product.
+                if self.run_dir is not None and self._ack_job_key:
+                    try:
+                        write_job_repo_marker(self.run_dir, self._ack_job_key)
+                    except Exception:
+                        pass
                 self._inject_pending = False
                 self._inject_at = None
                 self._harvest_until = None
@@ -3639,6 +3696,8 @@ class Supervisor:
         self._agent_parent_image: str = ''
         self._agent_parent_cmd: str = ''
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
+        if self.bored is not None and getattr(self.bored, "run_dir", None) is None:
+            self.bored.run_dir = self.run_dir  # FR #3189 job-repo.txt for harvest
         # FR #2383: assign injected + no run-dir ACK while agent keeps turning → remind then recycle.
         self.ack_miss = AssignAckMiss()
         # FR #2875: turn_ended with ACK open and no DONE → remind via run-dir inject, then release.
