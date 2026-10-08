@@ -72,3 +72,7 @@ Self-update on start uses **`Update-BobiverseService.ps1`** (detached Apply - ne
 ## Do not
 
 - Run `Airc` and `AircConsole` together; invent an Ergo PASS; stamp UAT; put secrets on IRC; call retired `Check-BobiverseUpdate.ps1` for fleet ops.
+
+## Harvested lessons (intake)
+
+- Uninstall-Airc purge allow-list bases must be MSI/arg InstallRoot + trusted ConsoleHome only — never manifest.install_root/console_home; Test-BobiverseAircPurgePrefixIsSafe refuses drive roots; Protect-BobiverseInstallTree takeown /A after DACL lock.
