@@ -309,6 +309,10 @@ function Protect-BobiverseInstallTree {
       that LocalSystem is about to run. Default remains best-effort (WARN only).
       FR #3516: takeown /A (Administrators) so a pre-created user-owned
       ProgramData\Bobiverse (or install tree) cannot keep WRITE_DAC after re-ACL.
+      FR #3581: SetOwner Administrators after DACL Set-Acl (never on the same ACL
+      object - unelevated SetOwner breaks Set-Acl); takeown /R /D Y only when
+      -Recurse (LogsOnly must not walk update\ via takeown /R). Directory ACEs keep
+      ContainerInherit|ObjectInherit: inherit=None on a parent empties child DACLs.
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -343,6 +347,8 @@ function Protect-BobiverseInstallTree {
             $isDir = [bool]$e.IsDir
             if ($isDir) {
                 $acl = New-Object System.Security.AccessControl.DirectorySecurity
+                # Always CI|OI on dirs. inherit=None + SetAccessRuleProtection empties
+                # child DACLs (update\ becomes Access denied) - FR #3581.
                 $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
                     [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
             } else {
@@ -354,21 +360,24 @@ function Protect-BobiverseInstallTree {
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sys, $full, $inherit, $prop, $allow)))
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($adm, $full, $inherit, $prop, $allow)))
             $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($usr, $rx, $inherit, $prop, $allow)))
-            if ($isDir) {
-                Set-Acl -LiteralPath $t -AclObject $acl
-            } else {
-                Set-Acl -LiteralPath $t -AclObject $acl
-            }
+            # DACL first - do not SetOwner on this object (unelevated Set-Acl fails).
+            Set-Acl -LiteralPath $t -AclObject $acl
+            # FR #3581: in-process owner reset after DACL (elevated MSI); best-effort.
+            try {
+                $aclOwner = Get-Acl -LiteralPath $t
+                $aclOwner.SetOwner($adm)
+                Set-Acl -LiteralPath $t -AclObject $aclOwner
+            } catch { }
         }
-        # FR #3516: best-effort takeown /A so a pre-created user owner cannot keep
-        # WRITE_DAC after the DACL lock. Install/uninstall run elevated (LocalSystem /
-        # admin); unit tests may lack elevation - owner reset never FailClosed-throws
-        # (DACL lock above is the FailClosed gate).
+        # FR #3516 / #3581: best-effort takeown /A fallback. /R /D Y only when -Recurse
+        # (directory alone must not recurse - LogsOnly protects root+logs without
+        # walking update\). Install/uninstall run elevated; unit tests may lack
+        # elevation - owner reset never FailClosed-throws (DACL lock is the gate).
         try {
             $takeown = Join-Path $env:SystemRoot 'System32\takeown.exe'
             if (Test-Path -LiteralPath $takeown) {
                 # cmd swallows stderr so unelevated unit tests do not NativeCommandError.
-                if ($item.PSIsContainer) {
+                if ($Recurse -and $item.PSIsContainer) {
                     $tc = 'takeown /F "' + $item.FullName + '" /A /R /D Y >nul 2>&1'
                 } else {
                     $tc = 'takeown /F "' + $item.FullName + '" /A >nul 2>&1'
@@ -520,9 +529,12 @@ function Ensure-BobiverseProgramDataRoot {
             Write-Host ("WARN FR #3394 Ensure-BobiverseProgramDataRoot re-locking pre-existing {0}" -f $rootFull)
         }
         if ($ProtectMode -eq 'LogsOnly') {
-            # FR #3554: MSI log path only needs root + logs\ locked, not update\ (GB-scale).
+            # FR #3554 / #3581: lock root + logs without -Recurse on root so takeown
+            # does not /R the GB-scale update\ tree. Root Set-Acl keeps CI|OI (fast
+            # inherited ACE refresh); takeown /A only on the path itself. Recurse
+            # logs\ (small) so install-*.log files get Admin Full + Users RX.
             Protect-BobiverseInstallTree -Path $rootFull -FailClosed:$FailClosed
-            Protect-BobiverseInstallTree -Path $logs -FailClosed:$FailClosed
+            Protect-BobiverseInstallTree -Path $logs -Recurse -FailClosed:$FailClosed
             Write-Host ("INFO FR #3554 ProgramData Bobiverse locked LogsOnly {0}" -f $rootFull)
         } else {
             # One -Recurse pass covers logs\; install-time FailClosed keeps Full.
@@ -2479,7 +2491,7 @@ function Remove-BobiverseAircClientExtraPayload {
       (Remove-BobiverseAircWorkstationAgentPayload) that still leaves Jeeves/Bob/docs.
       Client uses this allow-list: keep VERSION/BUILD.json, config\ (install-generated
       only), logs\, airc\, third_party\nssm\, and Get-BobiverseAircClientAllowedScriptNames;
-      delete the rest. FR #3582: always drop config\fleet-operators.txt — client never
+      delete the rest. FR #3582: always drop config\fleet-operators.txt - client never
       reads the fleet roster (Install sets Operators=@(); file header says client ignores it).
     #>
     param(
