@@ -28,6 +28,8 @@ param(
     [string]$UpdateCap = '',
     [string]$RequireAccount = '',
     [string]$Accounts = '',
+    # FR #3397: MSI AIRC_OPERATORS=nick1,nick2 appends to operators.txt (fleet only).
+    [string]$OperatorsExtra = '',
     # FR #3289: MSI AIRC_SYNC_FROM_REPO / AIRC_SELF_UPDATE (0|1|true|false; empty = preserve / fresh default).
     [string]$SyncFromRepo = '',
     [string]$SelfUpdate = '',
@@ -299,6 +301,19 @@ if (([string]$Accounts).Trim()) {
 } elseif ($priorId -and $priorId.PSObject.Properties['Accounts'] -and $priorId.Accounts) {
     $resolvedAccounts = @(([string]$priorId.Accounts) -split '[,;\s]+' | Where-Object { $_ })
 }
+
+# FR #3397: fleet AIRC_OPERATORS / -OperatorsExtra unions into -Operators; workstation ignores extra.
+$profForOps = $(if ($script:AircInstallProfile) { $script:AircInstallProfile } else { ([string]$Profile).Trim().ToLowerInvariant() })
+if (-not $profForOps) { $profForOps = 'fleet' }
+if (Get-Command Resolve-BobiverseAircOperatorNicks -ErrorAction SilentlyContinue) {
+    $Operators = @(Resolve-BobiverseAircOperatorNicks -Profile $profForOps -Operators $Operators -OperatorsExtra $OperatorsExtra)
+} elseif ($profForOps -ne 'workstation' -and ([string]$OperatorsExtra).Trim()) {
+    $extra = @(([string]$OperatorsExtra) -split '[,;\s]+' | Where-Object { $_ })
+    $Operators = @($Operators + $extra | Select-Object -Unique)
+} elseif ($profForOps -eq 'workstation' -and ([string]$OperatorsExtra).Trim()) {
+    Write-Host 'INFO FR #3397 workstation profile: ignoring AIRC_OPERATORS / OperatorsExtra'
+}
+Write-Host ("INFO FR #3397 operators={0}" -f (($Operators | Where-Object { $_ }) -join ','))
 
 # FR #3289: sync_from_repo default OFF (unsigned main must not run as SYSTEM); self_update default ON.
 function ConvertTo-AircBoolOrNull {
