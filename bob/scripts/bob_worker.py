@@ -2308,6 +2308,7 @@ class IrcSeat:
                  tls: bool = True, log: Callable[[str], None] = lambda m: None, ping_every: float = 90.0, ping_grace: float = 45.0,
                  send_gap_s: float = 0.4, pm_allowed: tuple = ("jeeves",), connect: Optional[Callable] = None):
         self.host, self.port, self.nick, self.machine = host, port, nick, machine
+        self.mode = "agent"  # FR #3181: only agent seats register IRC markers
         self.shop = shop_channel(machine)
         self.password, self.sasl, self.tls, self.log = password, sasl, tls, log
         self.ping_every, self.ping_grace, self.send_gap_s = ping_every, ping_grace, send_gap_s
@@ -2473,6 +2474,12 @@ class IrcSeat:
 
     # ---- reading
     def _lost(self, why: str) -> None:
+        # FR #3181: clear IRC seat marker so the cap frees immediately
+        if clear_seat_irc is not None:
+            try:
+                clear_seat_irc(getattr(self, "nick", None), pid=os.getpid())
+            except OSError:
+                pass
         if self._lost_once or self._stop.is_set():
             return
         self._lost_once = True
@@ -2554,6 +2561,16 @@ class IrcSeat:
             if params and params[0].lower() == self.shop.lower():
                 self.joined.set()
                 self.log("irc: joined " + self.shop)
+                if getattr(self, "mode", "agent") == "agent" and write_seat_irc is not None:
+                    try:
+                        write_seat_irc(
+                            nick=self.nick,
+                            pid=os.getpid(),
+                            machine=getattr(self, "machine", "") or "",
+                            shop=self.shop,
+                        )
+                    except OSError as e:
+                        self.log("irc: seat marker write failed: %s" % e)
             else:
                 self.log("irc: forced join elsewhere, parting " + (params[0] if params else "?"))
                 if params:
@@ -4900,6 +4917,16 @@ def format_external_kill_log(
 
 
 # --------------------------------------------------------------------------------------------- t815u: hard cap of live workers
+try:
+    from worker_irc_seats import clear_seat_irc, count_irc_agent_seats, write_seat_irc
+except ImportError:
+    try:
+        from common.scripts.worker_irc_seats import clear_seat_irc, count_irc_agent_seats, write_seat_irc
+    except ImportError:
+        clear_seat_irc = None  # type: ignore
+        count_irc_agent_seats = None  # type: ignore
+        write_seat_irc = None  # type: ignore
+
 HARD_MAX_WORKERS = 2          # FR #2522/Simon: ONLY worker seats (mode=agent). Plan + maintenance MAY start on top and never count.
 # FR #2556: onefile = bootloader+child = ONE seat; recycle/cap-kill MUST use
 # worker_seat_roots / recycle_to_cap / excess_worker_seat_roots (never flat PID Skip-N).
@@ -4954,22 +4981,23 @@ def snapshot_procs() -> list:
 
 
 def _proc_mode(entry) -> str:
-    """Optional 4th tuple field: mode name or full cmdline. Default agent (worker seat)."""
+    """Optional 4th tuple field: mode name or full cmdline.\n\n    FR #3181: missing cmdline => unknown (not agent).\n    """
     if not isinstance(entry, (tuple, list)) or len(entry) < 4:
-        return "agent"
+        return "unknown"
     raw = str(entry[3] or "").strip().lower()
     if raw in ("agent", "plan", "monitor", "maintenance"):
         return raw
     m = re.search(r"--mode[=\s]+(agent|plan|monitor|maintenance)", raw)
-    return m.group(1) if m else "agent"
+    return m.group(1) if m else "unknown"
 
 
 def other_live_workers(procs: list, my_pid: int, *, modes: tuple = ("agent",)) -> int:
     """Live SEATS other than this one whose mode is in ``modes`` (default: worker/agent only).
 
-    FR #2522 / Simon 2026-10-05: the hard cap is worker seats only. Plan and maintenance may
+    FR #2522 / FR #3181: the hard cap is IRC-joined agent seats only. Plan and maintenance may
     sit on top of 2 workers and must not be counted. ``procs`` entries are
-    ``(pid, ppid, exe[, mode_or_cmdline])``; missing mode defaults to agent.
+    ``(pid, ppid, exe[, mode_or_cmdline])``; missing mode is ``unknown`` (never agent).
+    Cap enforcement uses ``count_irc_agent_seats`` / ``worker_cap_refusal``.
     """
     rows = {}
     for entry in procs:
@@ -5048,12 +5076,21 @@ def recycle_to_cap(procs: list, keep: int, *, modes: tuple = ("agent",)) -> list
 
 
 def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:
-    """'' = free to start. Plan/monitor/maintenance are never refused by the worker cap."""
+    """'' = free to start. Plan/monitor/maintenance are never refused by the worker cap.
+
+    FR #3181: IRC-joined agent seats only. ``procs`` kept for callers; not the cap source of truth.
+    """
     if str(for_mode).lower() not in CAPPED_MODES:
         return ""
-    n, cap = other_live_workers(procs, my_pid, modes=("agent",)), max_workers()
+    if count_irc_agent_seats is None:
+        n, cap = other_live_workers(procs, my_pid, modes=("agent",)), max_workers()
+        if n >= cap:
+            return "max %d workers (%d already running on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
+        return ""
+    n = count_irc_agent_seats(exclude_pid=my_pid)
+    cap = max_workers()
     if n >= cap:
-        return "max %d workers (%d already running on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
+        return "max %d workers (%d IRC-joined agent seats on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
     return ""
 
 

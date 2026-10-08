@@ -125,9 +125,13 @@ A `!bored` written by the agent into `outbox.txt` is refused. Jeeves answers by 
 The MSI installs `worker\bob-worker.exe`, `worker\AGENTS.md`, `worker\.grok\skills\*`, `plan\...`; the self-updater and `Sync-BobiverseFromRepo.ps1` refresh them. Running seats use the
 per-user run copy, so replacing the installed exe never kills or locks a seat; an uninstall leaves running seats alone (they end when their IRC link or window ends). Tray bin refresh **defers** delete of a hashed run-copy while exclusive-open shows it locked by a live seat (FR #1643 / #1678) - that defer is correct, not a stuck cleanup bug.
 
+## Hard cap: IRC-joined agent seats only (FR #3181 / #2522 / #2667)
+
+The hard max of **2** applies only to **agent** seats that have joined `#<machine>` on IRC. Plan, maintenance, monitor, and seats still at the key dialog (or still connecting) never count and are never refused. Shared registry: `%LOCALAPPDATA%\Bobiverse\worker\run\seats\<nick>.irc.json` (written after JOIN, cleared on PART/QUIT/irc-lost/exit). Readers: `common/scripts/worker_irc_seats.py`, tray `Measure-BobTrayIrcAgentSeats` / `CountIrcAgentSeats`, `startworker.decide`, `bob_worker.worker_cap_refusal`. Missing/unreadable `--mode` is **unknown**, never agent. Enforcement needs rebuilt `bob-worker.exe` + `bob-tray.exe` (not a safe live hotpatch).
+
 ## Hard cap recycle / seat roots (FR #2556 / t815u)
 
-A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **bootloader + same-named child = ONE seat**. Cap *counting* already uses seat roots (`other_live_workers` / tray `ParentProcessId` filter). When reclaiming over the hard max, **never** `Sort-Object ProcessId | Select -Skip N | Stop-Process` on a flat PID list — that destroys whole seats (MarchHare killed seat 38244/40460 after FR #2554 hotpatch). Use `worker_seat_roots` / `worker_seat_tree_pids` / `excess_worker_seat_roots` in `bob_worker.py`, and tray `Stop-BobWorkerSeatTrees` (root + children only).
+A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **bootloader + same-named child = ONE seat**. Process-root helpers still use `ParentProcessId` filters for heal/reclaim. When reclaiming over the hard max, **never** `Sort-Object ProcessId | Select -Skip N | Stop-Process` on a flat PID list — that destroys whole seats (MarchHare killed seat 38244/40460 after FR #2554 hotpatch). Use `worker_seat_roots` / `worker_seat_tree_pids` / `excess_worker_seat_roots` in `bob_worker.py`, and tray `Stop-BobWorkerSeatTrees` (root + children only). Cap *enforcement* for new agent starts is IRC markers (FR #3181), not process roots alone.
 
 ## Troubleshooting
 
