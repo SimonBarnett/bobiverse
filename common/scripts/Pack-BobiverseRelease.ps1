@@ -443,7 +443,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
             ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -IrcHost &quot;[IRCHOST]&quot; -MsiSkipCopy &quot;[SKIPCOPY]&quot; -MsiProductVersion &quot;[ProductVersion]&quot;'
         }
         'airc' {
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot;'
+            # FR #3287: capability + account MSI props (empty = installer defaults / prior identity).
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -ShellMode &quot;[AIRC_SHELL]&quot; -Jobs &quot;[AIRC_JOBS]&quot; -UpdateCap &quot;[AIRC_UPDATE]&quot; -RequireAccount &quot;[AIRC_REQUIRE_ACCOUNT]&quot; -Accounts &quot;[AIRC_ACCOUNTS]&quot;'
         }
     }
     $msiProps = switch ($Name) {
@@ -466,6 +467,11 @@ function Build-Msi([string]$Name, [string]$Stage) {
         'airc' {
             @"
     <Property Id="MACHINEID" Secure="yes" />
+    <Property Id="AIRC_SHELL" Secure="yes" />
+    <Property Id="AIRC_JOBS" Secure="yes" />
+    <Property Id="AIRC_UPDATE" Secure="yes" />
+    <Property Id="AIRC_REQUIRE_ACCOUNT" Secure="yes" />
+    <Property Id="AIRC_ACCOUNTS" Secure="yes" />
 "@
         }
     }
