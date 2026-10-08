@@ -268,18 +268,26 @@ if ($DryRun) {
 }
 
 # FR #2982: when the install dir is its own sparse work tree and ff/fetch left it
-# dirty or behind origin, robocopy would re-lay that stale checkout over the MSI
+# dirty or blocked, robocopy would re-lay that stale checkout over the MSI
 # heat payload (scripts/tools/skills/worker). VERSION equality alone does not
 # protect this (common\VERSION may be stamped to the MSI version - FR #2948 class).
+# FR #3622: a *clean* off-main agent branch ("fetched only, work tree untouched"
+# without "; dirty") is tip-ok - compose that branch into flat scripts (FR 020).
+# Only skip when dirty, ff-only not possible, fetch failed / timed out, or still behind.
 # ComposeOnly is an operator hook after a manual ff - still compose.
 # Tip updater overlay (FR #2581) still runs so Update-BobiverseService soft-fail lands.
 $skipStaleCompose = $false
 if ($viaWorkTree -and -not $ComposeOnly) {
+    $cleanAgentFetchedOnly = (
+        $wtReason -match 'fetched only, work tree untouched' -and
+        $wtReason -notmatch '\bdirty\b'
+    )
     $tipOk = (
         $wtReason -eq 'already up to date' -or
         $wtReason -match '^fast-forwarded' -or
         $wtReason -match '^bootstrapped' -or
-        $wtReason -match '^healed unborn'
+        $wtReason -match '^healed unborn' -or
+        $cleanAgentFetchedOnly
     )
     if (-not $tipOk -and -not $pulled) {
         $skipStaleCompose = $true
