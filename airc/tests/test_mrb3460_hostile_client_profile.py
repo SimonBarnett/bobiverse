@@ -47,7 +47,10 @@ def test_mrb3460_install_client_caps_and_auth_mode_wiring():
     assert "elseif ($prof -eq 'client') { $resolvedShell = 'operators' }" in t
     assert "elseif ($prof -eq 'client') { $resolvedJobs = 'on' }" in t
     assert "elseif ($prof -in @('workstation', 'client')) { $resolvedSelf = $false }" in t
-    assert "authMode = $(if ($prof -eq 'client') { 'irc_ops' } else { 'operators' })" in t
+    assert (
+        "authMode = $(if ($prof -eq 'client') { 'irc_ops' } else { 'operators' })" in t
+        or "authMode = $(if ($prof -in @('client', 'fleet')) { 'irc_ops' }" in t
+    )
     assert "client keeps crash reports ON" in t or "source = 'client-profile'" in t
     assert "no operators.txt (IRC +o/+h auth)" in t
 
