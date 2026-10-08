@@ -18,7 +18,9 @@ def test_fr1432_start_airc_calls_updater_in_service_mode():
     assert "Update-BobiverseService.ps1" in START_AIRC
     assert "-Product airc" in START_AIRC
     assert "-ServiceName Airc" in START_AIRC
-    assert "if ($ServiceMode)" in START_AIRC
+    # FR #3289 / #3311 / #3396: policy-gated (ServiceMode AND self_update), not bare if ($ServiceMode).
+    assert "if ($ServiceMode -and $aircPolicy.SelfUpdate)" in START_AIRC
+    assert "Get-AircStartUpdatePolicy" in START_AIRC
     # updater must run before the long-lived python host
     assert START_AIRC.index("Update-BobiverseService.ps1") < START_AIRC.index("airc_console_service.py")
 

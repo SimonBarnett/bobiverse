@@ -27,8 +27,11 @@ def test_fr2401_frozen_host_wires_update_and_sync():
     assert 'BOBIVERSE_NO_UPDATE' in text
     assert "-ServiceName" in text and "Airc" in text
     assert "kick_frozen_service_start_hooks()" in text
-    # Only frozen path — legacy Start-AircConsole must not double-run via unguarded call
-    assert "if not is_frozen_airc_exe()" in text or "if not is_frozen_airc_exe():" in text
+    # Only frozen path — legacy Start-AircConsole must not double-run via unguarded call.
+    # FR #3311 / #3396: kick_frozen_service_start_hooks uses injectable _is_frozen and
+    # `if not frozen:` (not a bare `if not is_frozen_airc_exe()`).
+    assert "frozen = is_frozen_airc_exe() if _is_frozen is None else bool(_is_frozen)" in text
+    assert "if not frozen:" in text
     assert "args.selftest" in text
     # In main(): selftest returns before the hooks call
     main_idx = text.index("def main(")

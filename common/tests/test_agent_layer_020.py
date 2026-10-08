@@ -123,7 +123,13 @@ def test_installers_and_updaters_refresh_the_layer():
     for n, prod in (("Install-Jeeves.ps1", "jeeves"), ("Install-Bob.ps1", "bob"), ("Install-Airc.ps1", "airc")):
         t = (sc / n).read_text(encoding="utf-8-sig")
         assert f"Install-BobiverseAgentLayer -RepoRoot $repoRoot -InstallRoot $InstallRoot -Product '{prod}'" in t, n
-        assert f"Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product '{prod}'" in t, n
+        if prod == "airc":
+            # FR #3292 / #3396: airc fleet copies install-root skills only (never profile
+            # Install-BobiverseSkills / Get-BobiverseSkillNames refresh). Workstation strips MSI payload.
+            assert "skills under install root only" in t or ".grok\\skills" in t or ".grok/skills" in t
+            assert "Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'airc'" not in t
+        else:
+            assert f"Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product '{prod}'" in t, n
     upd = (sc / "Update-BobiverseService.ps1").read_text(encoding="utf-8-sig")
     assert "bobiverse-fleet-ops" in upd and '-like "bobiverse-$Product-*"' in upd
     syn = (sc / "Sync-BobiverseFromRepo.ps1").read_text(encoding="utf-8-sig")
@@ -134,9 +140,25 @@ def test_installers_and_updaters_refresh_the_layer():
 @pytest.mark.parametrize("prod", PRODUCTS)
 def test_pack_stages_the_agent_layer_for_each_product(tmp_path, prod):
     out = tmp_path / "dist"
-    run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                          str(ROOT / "scripts" / "Pack-BobiverseRelease.ps1"), "-Product", prod, "-SkipMsi", "-KeepStage", "-SkipWorkerExe",
-                          "-OutDir", str(out)], capture_output=True, text=True, timeout=300)
+    # FR #3396: SkipEarExe/SkipAircExe so stage tests do not need PyInstaller/network.
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(ROOT / "scripts" / "Pack-BobiverseRelease.ps1"),
+        "-Product",
+        prod,
+        "-SkipMsi",
+        "-KeepStage",
+        "-SkipWorkerExe",
+        "-SkipEarExe",
+        "-SkipAircExe",
+        "-OutDir",
+        str(out),
+    ]
+    run = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stdout[-1500:] + run.stderr[-1500:]
     ver = (ROOT / "src" / "VERSION").read_text().strip()
     stage = out / f"{prod}-{ver}"
