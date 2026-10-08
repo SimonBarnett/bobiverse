@@ -787,6 +787,11 @@ class AircConsoleService:
             info(f"INFO pong to={hr.nick} {hr.reply}")
         elif hr.action == "deny" and hr.nick and hr.reply:
             self.send_privmsg(hr.nick, hr.reply)
+        elif hr.action == "capability_deny" and hr.nick and hr.reply:
+            # FR #3287 / MRB #3300: shell/jobs/update gates must emit DONE exit=126 to the nick
+            # (Invoke-AircRemote / ReplyFile wait on DONE; never start a subprocess).
+            self.send_privmsg(hr.nick, hr.reply)
+            info(f"INFO capability-deny to={hr.nick} {hr.reply}")
         elif hr.action in {"help", "close", "update"} and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
