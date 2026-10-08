@@ -128,13 +128,14 @@ def test_drain_applies_job_bookkeeping_when_say_fails(tmp_path):
     ob = tmp_path / "outbox.txt"
     ob.write_text("PRIVMSG #marchhare :ACK FR SimonBarnett/bobiverse#161\n", encoding="utf-8")
     assert bw.drain_outbox(ob, FailSay(), logs.append, e.on_outbox) == 0
-    assert any("say failed; applied busy bookkeeping for ACK" in m for m in logs)
+    assert any("say failed" in m and "ACK" in m for m in logs)
+    assert "ACK FR SimonBarnett/bobiverse#161" in ob.read_text(encoding="utf-8")
     time.sleep(IDLE + REPEAT + 0.2)
     assert len(sent) == 1, "failed ACK must still mark the seat busy"
     ob.write_text("PRIVMSG #marchhare :GIVEUP FR SimonBarnett/bobiverse#161\n", encoding="utf-8")
     t = time.monotonic()
     assert bw.drain_outbox(ob, FailSay(), logs.append, e.on_outbox) == 0
-    assert any("say failed; applied busy bookkeeping for GIVEUP" in m for m in logs)
+    assert any("say failed" in m and "GIVEUP" in m for m in logs)
     assert any("free-rx matched (GIVEUP)" in m for m in logs)
     assert wait_until(lambda: len(sent) >= 2, 1.0)
     assert sent[-1] - t < 0.25
@@ -290,9 +291,11 @@ def bored_lines(ircd):
     return [r for r in ircd.received if r == "PRIVMSG #marchhare :!bored"]
 
 
-def rig_with_bored(ircd, tmp_path):
+def rig_with_bored(ircd, tmp_path, **sup_kw):
     seat = make_seat(ircd)
-    rig = Rig(tmp_path, irc=seat)
+    # FR #3456: wire tests that drop IRC expect legacy immediate exit unless overridden.
+    sup_kw.setdefault("reconnect_grace_s", 0)
+    rig = Rig(tmp_path, irc=seat, **sup_kw)
     seat.log = rig.logs.append
     seat.on_message = rig.relay.deliver
     seat.connect(timeout=5)

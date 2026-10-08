@@ -16,7 +16,9 @@ Rules (CAST IRON, Simon t762u-t765u)
     when that grok session still exists; otherwise it starts NEW. Worker/plan/monitor never resume.
   * IRC: blocking socket reader thread; a message is injected into the agent's console input from that very thread
     (no poll/timer between receive and inject). PING/PONG and the fleet `ping` liveness are answered here, not by the agent.
-  * IRC lost  => kill the agent process tree THIS exe started (and only that) and exit. No reconnect loop, no orphan.
+  * IRC lost  => FR #3456: reconnect with backoff for BOB_WORKER_IRC_RECONNECT_GRACE_S (default 600s), keep the
+    agent and ACKed job, hold outbox lines and flush + re-ACK after reconnect. Grace 0 = legacy: kill agent tree
+    and exit (EXIT_IRC_LOST). After grace exhausted: clean exit (Jeeves #3400 releases the orphan ACK).
   * Agent hung => bounded restart (new agent) with backoff, each restart logged; give up after the bound.
 """
 from __future__ import annotations
@@ -47,7 +49,7 @@ from typing import Callable, Optional
 EXIT_OK = 0
 EXIT_USAGE = 64
 EXIT_IRC_FAIL = 2  # could not connect / register: no agent was started
-EXIT_IRC_LOST = 3  # connection lost while running: agent tree killed
+EXIT_IRC_LOST = 3  # IRC lost for good (grace 0 immediate, or reconnect grace exhausted): agent tree killed
 EXIT_NO_AGENT = 4  # nothing to start (no key given / no agent installed)
 EXIT_GAVE_UP = 5  # hang-restart bound exceeded
 EXIT_LAUNCH_FAIL = 6
@@ -2375,7 +2377,11 @@ def parse_irc_line(line: str):
 
 
 class IrcSeat:
-    """One IRC connection, one blocking reader thread. No reconnect: when the link is gone on_lost fires once."""
+    """One IRC connection, one blocking reader thread.
+
+    FR #3456: when the link drops, ``on_lost`` fires once per connection. The Supervisor may call
+    ``prepare_reconnect()`` + ``connect`` / ``connect_with_retries`` to resume with the same nick.
+    """
 
     def __init__(self, host: str, port: int, nick: str, machine: str, password: Optional[SecretStr] = None, sasl: Optional[tuple] = None,
                  tls: bool = True, log: Callable[[str], None] = lambda m: None, ping_every: float = 90.0, ping_grace: float = 45.0,
@@ -2403,6 +2409,35 @@ class IrcSeat:
         self.joined = threading.Event()
         self._reader: Optional[threading.Thread] = None
         self._writer: Optional[threading.Thread] = None
+
+    def prepare_reconnect(self) -> None:
+        """FR #3456: tear down a lost socket so ``connect`` / ``connect_with_retries`` can run again."""
+        self._stop.set()
+        try:
+            if self.sock is not None:
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.sock = None
+        try:
+            self._outq.put_nowait(None)
+        except Exception:
+            pass
+        for th in (self._reader, self._writer):
+            if th is not None and th.is_alive() and th is not threading.current_thread():
+                th.join(timeout=0.5)
+        self._reader = None
+        self._writer = None
+        self._outq = queue.Queue()
+        self._stop.clear()
+        self._lost_once = False
+        self.registered.clear()
+        self.joined.clear()
+        self.failed = None
+        self._last_rx = time.monotonic()
 
     @property
     def alive(self) -> bool:
@@ -3768,7 +3803,8 @@ class Supervisor:
                  health_interval_s: float = 5.0, startup_grace_s: float = 60.0, startup_min_s: float | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  backoff: tuple = RULE_BACKOFF_S, restart_max: int = RULE_RESTART_MAX, restart_window_s: float = RULE_RESTART_WINDOW_S,
-                 base_env: Optional[dict] = None, bored: Optional["BoredEmitter"] = None):
+                 base_env: Optional[dict] = None, bored: Optional["BoredEmitter"] = None,
+                 reconnect_grace_s: float | None = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
         self.run_dir, self.irc, self.relay, self.log = Path(run_dir), irc, relay, log
         self.secret = env_secret
@@ -3807,6 +3843,14 @@ class Supervisor:
         self._agent_parent_image: str = ''
         self._agent_parent_cmd: str = ''
         self.bored = bored if bored is not None else (BoredEmitter(self.post_bored, log) if irc else None)
+        # FR #3456: IRC reconnect grace (0 = legacy immediate EXIT_IRC_LOST + kill agent).
+        self.reconnect_grace_s = (
+            float(reconnect_grace_s) if reconnect_grace_s is not None
+            else _env_float("BOB_WORKER_IRC_RECONNECT_GRACE_S", 600.0, 0.0, 3600.0)
+        )
+        self._irc_reconnecting = False
+        self._irc_lost_at: Optional[float] = None
+        self._reconnect_thread: Optional[threading.Thread] = None
         if self.bored is not None and getattr(self.bored, "run_dir", None) is None:
             self.bored.run_dir = self.run_dir  # FR #3189 job-repo.txt for harvest
         # FR #2383: assign injected + no run-dir ACK while agent keeps turning → remind then recycle.
@@ -3840,7 +3884,7 @@ class Supervisor:
         if irc and self.bored:
             irc.on_nak = self.bored.nak  # t817u
         if irc:
-            irc.on_lost = lambda why: self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
+            irc.on_lost = self._on_irc_lost
 
     def _stop_turn_watcher(self) -> None:
         self._turn_watch_stop.set()
@@ -4436,7 +4480,107 @@ class Supervisor:
             self.shutdown("restart-launch-failed", EXIT_LAUNCH_FAIL)
 
     # ---- end
+
+    def _on_irc_lost(self, why: str) -> None:
+        """FR #3456: reconnect with grace (keep agent); grace 0 = legacy immediate exit."""
+        if self._shutting or self.stop.is_set():
+            return
+        if float(self.reconnect_grace_s) <= 0:
+            self.shutdown("irc-lost: " + why, EXIT_IRC_LOST)
+            return
+        with self._lock:
+            if self._irc_reconnecting:
+                return
+            self._irc_reconnecting = True
+            self._irc_lost_at = self.clock()
+        self.log(
+            f"irc: lost ({why}); reconnect grace {self.reconnect_grace_s:.0f}s - keeping agent"
+        )
+        th = threading.Thread(
+            target=self._reconnect_loop, args=(why,), name="irc-reconnect", daemon=True
+        )
+        self._reconnect_thread = th
+        th.start()
+
+    def _reconnect_loop(self, why: str) -> None:
+        backoff = (1.0, 2.0, 5.0, 10.0, 20.0, 30.0)
+        i = 0
+        try:
+            while not self.stop.is_set() and not self._shutting:
+                lost_at = float(self._irc_lost_at or self.clock())
+                elapsed = self.clock() - lost_at
+                if elapsed >= float(self.reconnect_grace_s):
+                    self.log(f"irc: reconnect grace exhausted ({elapsed:.0f}s); exiting cleanly")
+                    self.shutdown("irc-lost-grace: " + why, EXIT_IRC_LOST)
+                    return
+                delay = float(backoff[min(i, len(backoff) - 1)])
+                left = float(self.reconnect_grace_s) - elapsed
+                self.stop.wait(min(delay, max(0.1, left)))
+                if self.stop.is_set() or self._shutting:
+                    return
+                if self.irc is None:
+                    self.shutdown("irc-lost-grace: no irc", EXIT_IRC_LOST)
+                    return
+                try:
+                    self.irc.prepare_reconnect()
+                    self.irc.connect_with_retries(attempts=1, timeout=20.0, backoff_s=(0.0,))
+                    self.log("irc: reconnected; flushing outbox and re-ACK")
+                    self._after_irc_reconnect()
+                    with self._lock:
+                        self._irc_reconnecting = False
+                        self._irc_lost_at = None
+                    return
+                except Exception as e:
+                    self.log(
+                        f"irc: reconnect attempt failed {type(e).__name__}: {str(e)[:100]}"
+                    )
+                    i += 1
+        finally:
+            with self._lock:
+                if self._shutting:
+                    self._irc_reconnecting = False
+
+    def _after_irc_reconnect(self) -> None:
+        """Rebind handlers, flush held outbox, re-ACK open job (FR #3456)."""
+        if self.irc is None:
+            return
+        self.irc.on_message = self.relay.deliver
+        self.irc.on_lost = self._on_irc_lost
+        if self.bored is not None:
+            self.irc.on_nak = self.bored.nak
+        ob = self.run_dir / "outbox.txt"
+        try:
+            drain_outbox(ob, self.irc, self.log, self.on_outbox_wire)
+        except Exception as e:
+            self.log(f"irc: post-reconnect outbox flush {type(e).__name__}")
+        if self.bored is None:
+            return
+        key = None
+        try:
+            with self.bored._cv:
+                if self.bored._ack_open and self.bored._ack_job_key:
+                    key = self.bored._ack_job_key
+        except Exception:
+            key = None
+        if not key:
+            return
+        line = "ACK " + str(key)
+        try:
+            if self.irc.say(self.irc.shop, line):
+                self.log("irc: re-ACK after reconnect: " + line)
+            else:
+                # hold for next drain
+                try:
+                    ensure_outbox(ob)
+                    prev = ob.read_text(encoding="utf-8") if ob.is_file() else ""
+                    ob.write_text("PRIVMSG " + self.irc.shop + " :" + line + "\n" + prev, encoding="utf-8")
+                except OSError:
+                    pass
+        except Exception as e:
+            self.log(f"irc: re-ACK failed {type(e).__name__}")
+
     def shutdown(self, reason: str, code: int) -> None:
+
         with self._lock:
             if self._shutting:
                 return
@@ -4512,6 +4656,7 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
     except OSError:
         return 0
     n = 0
+    unsent: list[str] = []
     try:
         for ln in tmp.read_text(encoding="utf-8-sig", errors="replace").splitlines():
             ln = ln.strip()
@@ -4536,21 +4681,40 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
                         on_payload(text)  # ACK / DONE / NACK / GIVEUP drive busy-idle for !bored
                     except Exception:
                         pass
-            elif on_payload and is_job:
-                # FR #161: say() failure must not leave the seat stuck busy (or skip DONE/free bookkeeping).
-                try:
-                    on_payload(text)
-                except Exception:
-                    pass
-                verb = payload.split(None, 1)[0] if payload else "JOB"
-                log(f"outbox: say failed; applied busy bookkeeping for {verb}")
+            else:
+                # FR #3456: hold unsent lines for reconnect flush (do not drop DONE/ACK).
+                # Do not re-queue target-refused lines (seat may only speak in its shop).
+                shop = (getattr(irc, "shop", None) or "").lower()
+                refused_target = (target or "").lower() != shop
+                if not refused_target:
+                    unsent.append(ln)
+                if on_payload and is_job:
+                    # FR #161: local busy bookkeeping still applies so !bored stays quiet.
+                    try:
+                        on_payload(text)
+                    except Exception:
+                        pass
+                    verb = payload.split(None, 1)[0] if payload else "JOB"
+                    log(f"outbox: say failed; held for retry + busy bookkeeping for {verb}")
     finally:
         try:
             tmp.unlink()
         except OSError:
             pass
-        # FR #866: recreate empty outbox so the path stays available for the next agent write.
-        ensure_outbox(path)
+        if unsent:
+            try:
+                prev = ""
+                if path.is_file():
+                    prev = path.read_text(encoding="utf-8-sig", errors="replace")
+                body = chr(10).join(unsent) + chr(10)
+                if prev.strip():
+                    body = body + prev
+                path.write_text(body, encoding="utf-8")
+            except OSError:
+                ensure_outbox(path)
+        else:
+            # FR #866: recreate empty outbox so the path stays available for the next agent write.
+            ensure_outbox(path)
     return n
 
 
