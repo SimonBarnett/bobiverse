@@ -70,7 +70,7 @@ The monitoring agent uses the **harvest skill on itself**: after every finding, 
 
 ## What you are looking at
 
-Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks + 15-min authenticated GitHub resync), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !assign !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
+Jeeves is the deterministic, token-less fleet chair: channel privileges (+o/+h), ChanServ roster, job queue (webhooks as source of truth + hourly/gap authenticated GitHub resync, FR #3212), the gh-Jeeves command set (`!help !list !filter !status !resync !sweep !ignore !focus !assign !recycle ping`), the digest and the public webhooks (`/bob/v1/report|digest|git|intake|jira` behind IIS). A 30-min probe watches the webhooks and announces only on up<->down.
 
 Worker status on the digest: seats cycle **idle** â†’ **offered** â†’ **doing** (ACK) â†’ idle (DONE/NACK/GIVEUP). Shop wire in `#<machine>` only: `!bored`, `ACK` / `DONE` / `NACK` / `GIVEUP`. Job kinds: **FR** (implement, open PR, never merge) â†’ **MRB** (hostile review + merge) â†’ **UAT** (vision gaps or release). UAT is per-repo.
 

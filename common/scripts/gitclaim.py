@@ -2914,7 +2914,8 @@ ISSUE_OPEN_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
 IS_PULL_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
 
 # FR #3188: at most one live GitHub lookup while picking the next !bored offer.
-BORED_GITHUB_CALL_BUDGET = 1
+# FR #3212: !bored is local-state only — zero live GitHub calls on the IRC offer path.
+BORED_GITHUB_CALL_BUDGET = 0
 
 
 class GitHubLookupUnknown(Exception):
@@ -5976,17 +5977,19 @@ def resync_from_github(
 ) -> dict:
     """Rebuild FR/MRB rows from GitHub: open issues without a closing PR -> FR, open PRs -> MRB.
 
-    Merge, not wipe (the chair runs this every 15 min):
+    Merge, not wipe (the chair runs this hourly / on webhook gap — FR #3212):
     * rows of other kinds (UAT/BUILD/FIX/PR), ``accepted`` jobs, and rows of repos whose fetch FAILED are kept;
     * a stale FR/MRB row of a successfully fetched repo (closed/merged/superseded) is dropped;
     * safe-to-close/umbrella/board issues are never (re)added and are pruned from unaccepted (FR #180);
     * skill/harvest receipts ARE added as FR promote jobs (FR #1682 / #1684; operator 2026-10-04);
     * existing rows keep their seq/offer fields; new items are appended; repos in ``ignored`` are skipped.
+    * ``NotModified`` / 304 from a budgeted ETag getter leaves that repo's rows untouched (not failed).
 
     ``token`` (optional) is sent as ``Authorization: Bearer``; it is never logged or returned.
     ``fetch_json(url) -> dict|list`` is the test seam; default is urllib with the token.
     """
     import urllib.request
+    import github_api_budget as gab
 
     def _default_fetch(url: str):
         hdrs = {"Accept": "application/vnd.github+json", "User-Agent": "bobiverse-jeeves"}
@@ -6043,6 +6046,9 @@ def resync_from_github(
             prs = _fetch_all_pages(
                 f"https://api.github.com/repos/{repo}/pulls?state=open"
             )
+        except gab.NotModified:
+            # FR #3212: ETag/304 — repo unchanged; keep prior rows (do not mark fetched or failed).
+            continue
         except Exception:  # noqa: BLE001 - one bad repo (404/403/rate limit) must not wipe its rows
             failed.append(repo)
             continue

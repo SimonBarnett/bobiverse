@@ -30,7 +30,7 @@ Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> 
 One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too.
 
 `ircJeeves` runs `irc_agent.py --chair --nick Jeeves --home <chair home>` (NSSM, `Start-Jeeves.ps1`). Everything is
-deterministic and token-less except the optional GitHub token used for filing issues and the 15-min FR/MRB resync.
+deterministic and token-less except the optional GitHub token used for filing issues and the hourly / webhook-gap FR/MRB resync (FR #3212; webhooks are the source of truth).
 
 | Piece | Where |
 |---|---|
@@ -60,12 +60,15 @@ Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (com
    announce). One retry before calling a target down. Each run is logged (`INFO webhook-health ...`); state is
    `webhook-health.json`; `#bobiverse` is told ONLY on up<->down transitions (`WEBHOOK DOWN ...` / `WEBHOOK RECOVERED ...`)
    through `chair-outbox.txt`.
-2. **GitHub resync, every 15 min** (`gitclaim.resync_from_github`, authenticated with the existing Jeeves token from
-   `config\github.token` via `gh_filer`; token handling is unchanged and the value is never logged - only the token SOURCE is
-   written once per process to `resync-token-source.log`). It MERGES: open issues -> FR, open PRs -> MRB; closed/superseded
-   FR/MRB rows of successfully fetched repos are dropped; accepted jobs, other kinds, failed repos and ignored repos are untouched.
-   Repos: `JEEVES_RESYNC_REPOS` / `resync-repos.txt` in the chair home, else repos already queued + the token's own repos
-   under the allowed owners. `!resync` runs it now; `!status` shows `github_resync:` and `webhooks:`.
+2. **GitHub resync, hourly + webhook gap** (FR #3212; was 15 min): `gitclaim.resync_from_github` via `chair_health` /
+   `github_api_budget` (ETag/304 conditional GETs, hourly call budget, backoff floor). Authenticated with the existing
+   Jeeves token from `config\github.token` via `gh_filer`; token handling is unchanged and the value is never logged - only
+   the token SOURCE is written once per process to `resync-token-source.log`. **Webhooks update the queue with zero REST**;
+   reconcile is the exception path (startup, gap in deliveries, or hourly). It MERGES: open issues -> FR, open PRs -> MRB;
+   closed/superseded FR/MRB rows of successfully fetched repos are dropped; accepted jobs, other kinds, failed repos and
+   ignored repos are untouched; 403/401/429/5xx never purge. `!bored` is local-state only (budget 0). Repos:
+   `JEEVES_RESYNC_REPOS` / `resync-repos.txt` in the chair home, else repos already queued + the token's own repos under the
+   allowed owners. `!resync` runs it now; `!status` shows `github_resync:`, `webhooks:`, and `github-api:` remaining.
    **Open-PR MRB vs stale `mrb_done` (FR #1585 / harvest #1613):** premature `mrb_done` must not purge an MRB whose GitHub pull is still **open**. `mrb_already_done(..., pr_exists=)` treats open `pr_exists` as winning (keep/requeue the MRB); resync clears stale `mrb_done` stamps the same way it heals stale `fr_done`. Merged PR #1606.
 
 **Offer order (FR #3205):** within focus priority, hand out **MRB then UAT then FR**, **lowest issue/PR number** first (not queue `seq` / arrival order). Same-priority repos interleave by kind then number (repo name is the final tie-break — not focus timestamp). A seat that cannot take waiting MRB/UAT rows still gets the next eligible FR (never `nothing queued` while one exists). `rebuild_offer_precompute` (resync / after offer stamp) writes `offer-precompute.json`; when its fingerprint matches the queue, `!bored` uses **zero** live GitHub calls (FR #3188 budget of 1 remains when precompute is stale).

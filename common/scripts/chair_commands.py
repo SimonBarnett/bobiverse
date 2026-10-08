@@ -73,7 +73,7 @@ COMMANDS: tuple = (
     CommandSpec("status", "!status", "Jeeves version, uptime, queue counts, roster, last roster/queue refresh",
                 ALL_ROLES, "!status", "Read-only snapshot from the digest home (queue.json / roster).",
                 ("list", "resync", "help")),
-    CommandSpec("resync", "!resync", "refresh the roster (ChanServ) now and re-sync open FR/MRB from GitHub with the Jeeves token (also automatic every 15 min); purges ignored repos", OPS_ROLES, "!resync",
+    CommandSpec("resync", "!resync", "refresh the roster (ChanServ) now and re-sync open FR/MRB from GitHub with the Jeeves token (also automatic hourly / on webhook gap, FR #3212); purges ignored repos", OPS_ROLES, "!resync",
                 "Restricted to simon and bob-* nicks. Webhook model: no GitHub token; the roster mirror is "
                 "re-read from ChanServ and ignored repos are purged from the queue.", ("list", "status")),
     CommandSpec("sweep", "!sweep [channel]", "re-apply +h/+o grants in a channel", OPS_ROLES, "!sweep #bobiverse",

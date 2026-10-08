@@ -1,10 +1,9 @@
-"""Fix for MRB #3207 FAIL (FR #3188): MRB rows must still be offered by !bored under the
-one-call GitHub budget.
+"""Fix for MRB #3207 FAIL (FR #3188) + FR #3212: MRB rows stay offerable under the
+!bored GitHub budget.
 
-* only real network calls count against the budget (checker ``peek`` cache hits are free);
-* ``mrb_already_done`` + ``mrb_row_offerable`` share one lookup per row;
-* with the budget used up (or a 403), an MRB is "unknown, still offer" - never skipped/purged;
-* a definitive not-open verdict purges only that row, with a logged reason.
+FR #3212 sets ``BORED_GITHUB_CALL_BUDGET = 0`` (local-state only on !bored). Cache
+hits remain free and may purge; live network calls never run on this path; unknown
+rows stay offerable and are never purged.
 """
 from __future__ import annotations
 
@@ -57,13 +56,12 @@ class _Counting:
 
 
 def test_one_open_mrb_with_live_pr_exists_is_offered(tmp_path: Path):
-    """The #3207 FAIL repro: one open MRB + live pr_exists must be offered, not 'empty'."""
+    """Budget 0: no live GET; open MRB still offered from local state."""
     home = _home(tmp_path, [_mrb(301)])
     chk = _Counting(True)
     st, job = gitclaim.offer_focus_top(home, "marchhare-22372", "#marchhare", pr_exists=chk)
     assert st == "ok" and job is not None and job["id"] == "#301"
-    # mrb_already_done + mrb_row_offerable share one lookup for the row.
-    assert chk.calls == ["301"]
+    assert chk.calls == []
 
 
 def test_offer_top_one_open_mrb_with_live_pr_exists_is_offered(tmp_path: Path):
@@ -71,17 +69,17 @@ def test_offer_top_one_open_mrb_with_live_pr_exists_is_offered(tmp_path: Path):
     chk = _Counting(True)
     st, job = gitclaim.offer_top(home, "marchhare-22372", "#marchhare", pr_exists=chk)
     assert st == "ok" and job is not None and job["id"] == "#301"
-    assert chk.calls == ["301"]
+    assert chk.calls == []
 
 
 def test_budget_used_up_mrb_is_unknown_and_still_offered(tmp_path: Path):
-    """Budget spent on an earlier row: later MRB is unknown -> still offered, never purged."""
+    """Budget 0: every live check is unknown; first row offered, none purged."""
     home = _home(tmp_path, [_mrb(10), _mrb(11), _mrb(12)])
-    chk = _Counting(lambda n: n != "10")  # #10 closed, others open
+    chk = _Counting(lambda n: n != "10")  # would close #10 if dialed
     st, job = gitclaim.offer_focus_top(home, "marchhare-40596", "#marchhare", pr_exists=chk)
-    assert st == "ok" and job["id"] == "#11"
-    assert chk.calls == ["10"]  # one network call total
-    assert _ids(home) == ["#11", "#12"]  # only the definitively-closed row is gone
+    assert st == "ok" and job["id"] == "#10"
+    assert chk.calls == []
+    assert _ids(home) == ["#10", "#11", "#12"]
 
 
 def test_http_403_mrb_is_unknown_offered_and_not_purged(tmp_path: Path):
@@ -91,17 +89,17 @@ def test_http_403_mrb_is_unknown_offered_and_not_purged(tmp_path: Path):
     chk = _Counting(err)
     st, job = gitclaim.offer_focus_top(home, "marchhare-40596", "#marchhare", pr_exists=chk)
     assert st == "ok" and job["id"] == "#1"
-    assert len(chk.calls) == 1
+    assert chk.calls == []
     assert len(_ids(home)) == 40
 
 
 def test_cache_hits_are_free_against_the_budget(tmp_path: Path, capsys):
-    """Cached closed verdicts purge (with reason) without spending the one network call."""
+    """Cached closed verdicts purge (with reason) without spending a network call."""
     home = _home(tmp_path, [_mrb(1), _mrb(2), _mrb(3), _mrb(4)])
     chk = _Counting(True, cached={"1": False, "2": False, "3": False})
     st, job = gitclaim.offer_focus_top(home, "marchhare-22372", "#marchhare", pr_exists=chk)
     assert st == "ok" and job["id"] == "#4"
-    assert chk.calls == ["4"]  # #1-#3 came from cache; #4 used the single network call
+    assert chk.calls == []  # #1-#3 cache; #4 would need network but budget=0 -> unknown -> offer
     assert _ids(home) == ["#4"]
     out = capsys.readouterr().out
     for n in (1, 2, 3):
@@ -117,19 +115,17 @@ def test_all_cached_open_costs_zero_network_calls(tmp_path: Path):
 
 
 def test_budget_counts_network_not_calls():
-    b = gitclaim._GithubCallBudget(1)
+    b = gitclaim._GithubCallBudget(0)
     chk = _Counting(True, cached={"7": True})
     wrapped = gitclaim._budgeted_github(chk, b, "pr_exists")
     assert wrapped(REPO, "7") is True and b.used == 0  # cache hit: free
-    assert wrapped(REPO, "8") is True and b.used == 1  # network
-    assert wrapped(REPO, "#8") is True and b.used == 1  # same row: memoized
     try:
-        wrapped(REPO, "9")
+        wrapped(REPO, "8")
     except gitclaim.GitHubLookupUnknown:
         pass
     else:
-        raise AssertionError("budget should be exhausted")
-    assert chk.calls == ["8"]
+        raise AssertionError("budget 0 should refuse network")
+    assert chk.calls == []
 
 
 def test_mrb_row_offerable_unknown_still_offers():
@@ -138,3 +134,7 @@ def test_mrb_row_offerable_unknown_still_offers():
 
     assert gitclaim.mrb_row_offerable(_mrb(5), pr_exists=unknown) is True
     assert gitclaim.mrb_row_offerable(_mrb(5), pr_exists=lambda r, n: False) is False
+
+
+def test_bored_budget_is_zero():
+    assert gitclaim.BORED_GITHUB_CALL_BUDGET == 0
