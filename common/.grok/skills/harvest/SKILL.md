@@ -206,6 +206,7 @@ routes to bobiverse via the split rule.
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
+- MRB twin-close: match exact lesson/title needle only (never Phase-2|normalize|stack broad regex); cite each tip own durable product/skill PR unless exact twin of assigned head (FR #3414 / MRB #3366 incident)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
