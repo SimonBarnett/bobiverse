@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Idempotent IIS URL Rewrite rules for bobcallback on 127.0.0.1:7700
-  (report, digest, git, intake, jira). Site default: irc-ntsa.
+  (report, digest, git, intake, jira, hours). Site default: irc-ntsa.
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +29,8 @@ $rules = @(
     @{ Name = 'BobDigestWebhook'; Match = '^bob/v1/digest$'; Url = "$Backend/bob/v1/digest" },
     @{ Name = 'BobGitWebhook'; Match = '^bob/v1/git$'; Url = "$Backend/bob/v1/git" },
     @{ Name = 'BobIntakeWebhook'; Match = '^bob/v1/intake'; Url = "$Backend/bob/v1/intake" },
-    @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" }
+    @{ Name = 'BobJiraWebhook'; Match = '^bob/v1/jira'; Url = "$Backend/bob/v1/jira" },
+    @{ Name = 'BobHoursWebhook'; Match = '^bob/v1/hours'; Url = "$Backend/bob/v1/hours" }
 )
 
 # Prefer editing web.config rewrite section if present; else write minimal config
@@ -58,6 +59,10 @@ $rewriteXml = @"
         <rule name="BobJiraWebhook" stopProcessing="true">
           <match url="^bob/v1/jira(.*)" ignoreCase="true" />
           <action type="Rewrite" url="$Backend/bob/v1/jira{R:1}" />
+        </rule>
+        <rule name="BobHoursWebhook" stopProcessing="true">
+          <match url="^bob/v1/hours(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
         </rule>
       </rules>
     </rewrite>
@@ -107,6 +112,16 @@ if (Test-Path -LiteralPath $webConfig) {
         </rule>
 "@
         $updated = $updated -replace '</rules>', ($digestRule + '</rules>')
+    }
+    if ($updated -notmatch 'bob/v1/hours' -and $updated -match '</rules>') {
+        # FR #3450: hours webhook (create/list/summary/export + heartbeat/close/withdraw).
+        $hoursRule = @"
+        <rule name="BobHoursWebhook" stopProcessing="true">
+          <match url="^bob/v1/hours(.*)" ignoreCase="true" />
+          <action type="Rewrite" url="$Backend/bob/v1/hours{R:1}" />
+        </rule>
+"@
+        $updated = $updated -replace '</rules>', ($hoursRule + '</rules>')
     }
     [IO.File]::WriteAllText($webConfig, $updated, [Text.UTF8Encoding]::new($false))
     Write-Host "INFO updated $webConfig"

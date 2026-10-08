@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Digest callback: report/git/intake/jira; public GET digest (#174, #149).
+"""Digest callback: report/git/intake/jira/hours; public GET digest (#174, #149).
 
 Public IIS front-door GET is **/bob/v1/report** only (FR #149 / FR #354). Local bobcallback
 also serves `/bob/v1/digest` and `/digest` with the same JSON body; those aliases are not
@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import bobhours
 import bobreport
 import intake
 import jira_webhook
@@ -33,6 +34,7 @@ REPORT_PATH = "/bob/v1/report"
 GIT_WEBHOOK_PATH = "/bob/v1/git"
 INTAKE_PATH = "/bob/v1/intake"
 JIRA_PATH = "/bob/v1/jira"
+HOURS_PATH = bobhours.HOURS_PATH
 DIGEST_PATH = "/bob/v1/digest"
 HEALTH_PATH = "/health"
 HEALTH_PROBE_ZEN = "jeeves-health-probe"
@@ -42,15 +44,15 @@ DEFAULT_HEALTH_WATCHDOG_S = 30.0
 # Public readers (IIS / browsers / UAT): use reportUrl. Local bobcallback still answers DIGEST_*.
 PUBLIC_DIGEST_PATH = REPORT_PATH
 CLI_DESCRIPTION = (
-    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira; "
+    "POST /bob/v1/report|/bob/v1/git|/bob/v1/intake|/bob/v1/jira|/bob/v1/hours; "
     "front-door GET is /bob/v1/report (local bobcallback also serves /bob/v1/digest); "
-    "GET /bob/v1/jira"
+    "GET /bob/v1/jira; GET|POST /bob/v1/hours"
 )
 ALLOW_ENV = "BOB_REPORT_ALLOW"
 DEFAULT_PORT = 7700
 # Public read paths (GET/HEAD). REPORT_PATH is also the write URL (POST).
 DIGEST_GET_PATHS = frozenset({DIGEST_PATH, DIGEST_ALIAS, REPORT_PATH})
-POST_ROUTES = frozenset({REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH})
+POST_ROUTES = frozenset({REPORT_PATH, GIT_WEBHOOK_PATH, INTAKE_PATH, JIRA_PATH, HOURS_PATH})
 # v0.1.16: NO route needs a password/secret. Every POST route is open and protected by input
 # validation, size limits, per-machine rate limiting and the Jeeves-published roster instead.
 MAX_BODY_BYTES = 1024 * 1024          # hard cap for any POST body (413 above)
@@ -81,12 +83,18 @@ def resolve_listen_port(port: int) -> int:
     return DEFAULT_PORT
 
 
+def _is_allowed_post_route(route: str) -> bool:
+    if route in POST_ROUTES:
+        return True
+    return bobhours.is_hours_post_route(route)
+
+
 def _check_post_route(
     verb: str, route: str, peer_ip: str, allow_ips: set[str] | None
 ) -> tuple[int, set[str]] | tuple[int, bytes]:
     """Return (0, allow_set) on success, or (http_code, body) on failure."""
     allow = allow_ips if allow_ips is not None else load_allow_ips()
-    if route not in POST_ROUTES:
+    if not _is_allowed_post_route(route):
         return 404, b""
     if verb != "POST":
         return 405, b""
@@ -643,12 +651,27 @@ def handle_request(
         if verb == "HEAD":
             return code, b""
         return code, payload
+    # FR #3450: hours list/summary/export (no auth; schema + size + rate on writes).
+    if verb in ("GET", "HEAD") and bobhours.is_hours_route(route):
+        hours_rate = report_rate or intake.RateLimiter(per_min=bobhours.hours_rate_per_min())
+        code, payload, _ctype = bobhours.handle_hours_request(
+            verb, path, body, home, peer_ip=peer_ip, rate=hours_rate
+        )
+        if verb == "HEAD":
+            return code, b""
+        return code, payload
     # POST to digest-only aliases is not a write path.
     if route in (DIGEST_PATH, DIGEST_ALIAS):
         return 405, b""
     gate = _check_post_route(verb, route, peer_ip, allow_ips)
     if gate[0] != 0:
         return gate[0], gate[1]
+    if bobhours.is_hours_post_route(route):
+        hours_rate = report_rate or intake.RateLimiter(per_min=bobhours.hours_rate_per_min())
+        code, payload, _ctype = bobhours.handle_hours_request(
+            verb, path, body, home, peer_ip=peer_ip, rate=hours_rate
+        )
+        return code, payload
     if route == GIT_WEBHOOK_PATH:
         return handle_git_webhook(headers, body, home, rate=report_rate)
     if route == INTAKE_PATH:
@@ -795,8 +818,15 @@ def make_handler(
             self.send_response(code)
             if payload:
                 ctype = "application/json; charset=utf-8"
-                if self.path.split("?", 1)[0] == JIRA_PATH and method == "POST" and code == 400:
+                route = self.path.split("?", 1)[0]
+                if route == JIRA_PATH and method == "POST" and code == 400:
                     ctype = "text/plain; charset=utf-8"
+                elif (
+                    route == HOURS_PATH + "/export"
+                    and "format=csv" in (self.path or "").lower()
+                    and code == 200
+                ):
+                    ctype = "text/csv; charset=utf-8"
                 self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
@@ -992,8 +1022,8 @@ def main() -> None:
         raise SystemExit(1) from exc
     host, port = httpd.server_address[:2]
     print(
-        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH} "
-        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH}",
+        f"INFO report listen {host}:{port} GET {REPORT_PATH}|{DIGEST_PATH}|{JIRA_PATH}|{HOURS_PATH} "
+        f"POST {REPORT_PATH} POST {GIT_WEBHOOK_PATH} POST {INTAKE_PATH} POST {JIRA_PATH} POST {HOURS_PATH}",
         flush=True,
     )
     try:
