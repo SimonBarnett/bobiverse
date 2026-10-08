@@ -140,13 +140,16 @@ def test_fr2309_sticky_rebroadcast_does_not_refresh_offered_ts(_home, monkeypatc
             )
         ],
     )
+    # FR #3192: while the seat still holds a live offered_to, offer_focus_top returns
+    # empty (no rebroadcast). offered_ts / offered_count stay as stamped.
     st, job = gitclaim.offer_focus_top(
         _home, "win-mpre8vi4u6u-14452", "#win-mpre8vi4u6u", now=time.time()
     )
-    assert st == "ok" and job is not None
-    assert job["offered_to"] == "win-mpre8vi4u6u-14452"
-    assert job.get("offered_ts") == first_ts
-    assert int(job.get("offered_count") or 0) == 2
+    assert st == "empty" and job is None
+    row = gitclaim.load_queue(_home)["unaccepted"][0]
+    assert row.get("offered_to") == "win-mpre8vi4u6u-14452"
+    assert row.get("offered_ts") == first_ts
+    assert int(row.get("offered_count") or 0) == 1
 
 
 def test_fr2309_sticky_max_clears_offer_for_other_seat(_home):

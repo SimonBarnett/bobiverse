@@ -4654,6 +4654,46 @@ def offer_focus_top(
                     cand.pop("offered_via", None)
                     purged = True
 
+            # FR #3192: while this seat still holds a live offered_to, do not rebroadcast
+            # and do not burn a second row — unless sticky max is already reached (FR #2309
+            # clears the pin so another seat can take it). bored_gate already returns busy;
+            # this is defense when offer_focus_top is called directly.
+            me_l = me.lower()
+            holding_live = False
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                if not to:
+                    continue
+                them = (canonical_worker_nick(to) or to).strip().lower()
+                if them != me_l:
+                    continue
+                try:
+                    age = now_f - datetime.fromisoformat(
+                        str(cand.get("offered_ts") or "").replace("Z", "+00:00")
+                    ).timestamp()
+                except ValueError:
+                    age = offer_timeout_s(cand) + 1
+                if age >= offer_timeout_s(cand):
+                    continue
+                try:
+                    oc = int(cand.get("offered_count") or 0)
+                except (TypeError, ValueError):
+                    oc = 0
+                if oc >= OFFER_STICKY_MAX:
+                    # Fall through to _eligible sticky-clear path.
+                    continue
+                holding_live = True
+                break
+            if holding_live:
+                if purged:
+                    try:
+                        _write_queue(queue_path(home), doc)
+                    except OSError:
+                        return "error", None
+                return "empty", None
+
             def _same_seat(a: str, b: str) -> bool:
                 ca = (canonical_worker_nick(a) or a or "").strip().lower()
                 cb = (canonical_worker_nick(b) or b or "").strip().lower()
@@ -6339,6 +6379,145 @@ def resync_from_github(
         return {"ok": False, "error": str(exc)}
 
 
+def _offer_age_s(row: dict, now: float) -> float:
+    """Seconds since ``offered_ts`` (or +inf when missing/unparseable)."""
+    try:
+        return float(now) - datetime.fromisoformat(
+            str(row.get("offered_ts") or "").replace("Z", "+00:00")
+        ).timestamp()
+    except ValueError:
+        return OFFER_TIMEOUT_S + 1.0
+
+
+def seat_pending_offer(home: Path, nick: str, now: float | None = None) -> dict | None:
+    """FR #3192: live unaccepted row still offered to this nick within ``OFFER_TIMEOUT_S``."""
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return None
+    try:
+        doc = load_queue(home)
+    except Exception:  # noqa: BLE001
+        return None
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        to = str(row.get("offered_to") or "").strip()
+        if not to:
+            continue
+        them = (canonical_worker_nick(to) or to).strip().lower()
+        if them != me:
+            continue
+        if _offer_age_s(row, now_f) < OFFER_TIMEOUT_S:
+            return row
+    return None
+
+
+def should_drop_stale_bored(
+    home: Path,
+    nick: str,
+    now: float | None = None,
+    *,
+    except_job: dict | None = None,
+) -> bool:
+    """FR #3192: drop a !bored reply when the seat already ACKed or still holds an offer.
+
+    Used after slow GitHub work on the IRC thread so a late offer does not land on a seat
+    that accepted (or was assigned) while the offer was being computed.
+
+    ``except_job``: when called *after* ``offer_focus_top`` stamped a new offer, pass that
+    job so the just-stamped row does not count as a pre-existing pending offer.
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+    try:
+        for row in load_accepted(home):
+            if not isinstance(row, dict):
+                continue
+            raw = str(
+                row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+            ).strip()
+            them = (canonical_worker_nick(raw) or raw).strip().lower()
+            if them == me:
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    pending = seat_pending_offer(home, nick, now_f)
+    if not pending:
+        return False
+    if except_job is not None and _same(
+        pending,
+        str(except_job.get("repo") or ""),
+        str(except_job.get("task") or ""),
+        str(except_job.get("id") or ""),
+    ):
+        return False
+    return True
+
+
+def clear_seat_offer(
+    home: Path,
+    nick: str,
+    job: dict,
+) -> bool:
+    """FR #3192: unstamp a just-made offer when the stale-bored drop fires after stamp."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me or not isinstance(job, dict):
+        return False
+    repo = str(job.get("repo") or "")
+    task = str(job.get("task") or "")
+    jid = str(job.get("id") or "")
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            changed = False
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                if not _same(cand, repo, task, jid):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                them = (canonical_worker_nick(to) or to).strip().lower()
+                if them != me:
+                    continue
+                cand.pop("offered_to", None)
+                cand.pop("offered_ts", None)
+                cand.pop("offered_channel", None)
+                cand.pop("offered_via", None)
+                changed = True
+            if changed:
+                _write_queue(queue_path(home), doc)
+            return changed
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _seat_has_accepted(home: Path, nick: str) -> bool:
+    """True when the accepted queue still lists this nick (ACK landed)."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+    try:
+        for row in load_accepted(home):
+            if not isinstance(row, dict):
+                continue
+            raw = str(
+                row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+            ).strip()
+            them = (canonical_worker_nick(raw) or raw).strip().lower()
+            if them == me:
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
     """ignore, wait, busy, or ok. wait is checked before busy so retries stay quiet."""
     shop = worker_shop_channel(nick)
@@ -6347,6 +6526,16 @@ def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
     last = last_worker_activity(home, nick)
     if last is not None and (float(now) - last) < IDLE_S:
         return "wait"
+    # FR #3192: outstanding offered_to (pending ACK / undelivered assign) is busy —
+    # never re-offer the same row and never treat it as stale digest doing.
+    if seat_pending_offer(home, nick, now):
+        return "busy"
+    # FR #3192: accepted row is busy even before digest on_ack paints working_on
+    # (stale !bored after slow GH work must NAK-busy, not stamp a second offer).
+    if _seat_has_accepted(home, nick):
+        if release_stale_busy(home, nick, now):
+            return "ok"
+        return "busy"
     if worker_working_on(home, nick):
         if release_stale_busy(home, nick, now):
             return "ok"
@@ -6366,6 +6555,9 @@ def release_stale_busy(home: Path, nick: str, now: float) -> bool:
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
         return False
+    # FR #3192: assigned/offered-but-not-ACKed is not stale busy — keep digest doing.
+    if seat_pending_offer(home, nick, now):
+        return False
 
     def _owner(r: dict) -> str:
         # Match ACC purge seats (#2361): nick / accepted_by / offered_to.
@@ -6377,6 +6569,16 @@ def release_stale_busy(home: Path, nick: str, now: float) -> bool:
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
+            # Re-check pending offer under the lock (race with assign / offer_focus_top).
+            for cand in doc.get("unaccepted") or []:
+                if not isinstance(cand, dict):
+                    continue
+                to = str(cand.get("offered_to") or "").strip()
+                if not to:
+                    continue
+                them = (canonical_worker_nick(to) or to).strip().lower()
+                if them == me and _offer_age_s(cand, float(now)) < OFFER_TIMEOUT_S:
+                    return False
             acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
             mine = [r for r in acc if _owner(r) == me]
             for r in mine:

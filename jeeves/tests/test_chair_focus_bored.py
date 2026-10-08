@@ -144,8 +144,9 @@ def test_row_offered_to_other_seat_is_skipped_then_reoffered_to_same_seat(_home)
     s1, j1 = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos", now=t0)
     s2, j2 = gitclaim.offer_focus_top(_home, "ionos-2", "#ionos", now=t0 + 5)
     assert (j1["id"], j2["id"]) == ("#1", "#2")          # one open offer per job
+    # FR #3192: same seat still holding #1 must not rebroadcast / burn a second job.
     s3, j3 = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos", now=t0 + 6)
-    assert j3["id"] == "#1"                              # rebroadcast, no second job burned
+    assert s3 == "empty" and j3 is None
     s4, j4 = gitclaim.offer_focus_top(_home, "ionos-3", "#ionos", now=t0 + 200)   # offers expired
     assert j4["id"] == "#1"
 

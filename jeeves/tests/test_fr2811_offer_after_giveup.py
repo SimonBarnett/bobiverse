@@ -285,12 +285,13 @@ def test_bored_rebroadcast_same_row_no_second_job(home):
         home, nick, channel, say=lambda ch, t: said.append(t), now=1000.0
     )
     assert n == 1
+    # FR #3192: seat already holds #20 from offer_after_giveup — no rebroadcast.
     st, job = gitclaim.offer_focus_top(home, nick, channel, now=1001.0)
-    assert st == "ok" and job and job.get("id") == "#20"
-    # Still one unaccepted alternative (rebroadcast), not a second distinct job.
+    assert st == "empty" and job is None
     unas = gitclaim.load_queue(home)["unaccepted"]
     alts = [r for r in unas if r.get("id") == "#20"]
     assert len(alts) == 1
+    assert alts[0].get("offered_to") == nick
 
 
 def test_offer_via_giveup_extends_sticky_timeout(home):
