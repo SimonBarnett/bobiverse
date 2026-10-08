@@ -306,7 +306,13 @@ def test_install_console_and_common_skip_operators_for_client():
     # docstring — keep a wide window so the client gate stays visible).
     chunk = common[common.find("Resolve-BobiverseAircOperatorNicks") :][:2500]
     assert "client" in chunk
-    assert "never seeds operators.txt" in chunk or "prof -eq 'client'" in chunk
+    # FR #3639: client+fleet share the empty-ops gate (`-in @('client', 'fleet')`).
+    assert (
+        "never seeds operators.txt" in chunk
+        or "prof -eq 'client'" in chunk
+        or "client', 'fleet'" in chunk
+        or '@(\'client\', \'fleet\')' in chunk
+    )
 
 
 def test_service_wires_irc_ops_and_control_channel_log():
