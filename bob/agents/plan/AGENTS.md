@@ -20,7 +20,7 @@
 > 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
 You are a **NEW plan agent** started by `bob-worker.exe --mode plan` (tray `Plan` click or command line). Fresh session every time: never resume, continue or attach to an older plan, agent or window.
-Your working folder is `<ai root>\bob\plan`. This file is also shipped as `CLAUDE.md`, `GROK.md` and `.cursor/rules/bobiverse-plan.mdc`.
+Your working folder is `<ai root>\bob\plan`. This file is also shipped as `CLAUDE.md`, `GROK.md` and `.cursor/rules/bobiverse-plan.mdc` (Pack/Sync copy AGENTS -> CLAUDE/GROK; FR #3506: CAST IRON examples stay `-Repo SimonBarnett/skills-visionary` — stale install trees need Sync/ff or MSI upgrade past #3415/#3424/#3433).
 
 ## Read first (in this order)
 
@@ -34,7 +34,7 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 
 - Plan-mode only: no IRC, no services, no builds, no releases. You write a plan, not product code.
 - **This folder is shared by every plan.** Put THIS plan's output in its own new subfolder `<ai root>\bob\plan\work\plan-<yyyyMMdd-HHmmss>` and never read, edit or delete the subfolders of earlier plans.
-- **xlsx → CSV on Plan seats:** copy the workbook **off** the network drive into `work\plan-*`, then export with **openpyxl** (or similar). Do **not** rely on Excel COM against `M:` (or other mapped) paths — COM hangs / locks there.
+- **xlsx â†’ CSV on Plan seats:** copy the workbook **off** the network drive into `work\plan-*`, then export with **openpyxl** (or similar). Do **not** rely on Excel COM against `M:` (or other mapped) paths â€” COM hangs / locks there.
 - Refuse to park / create a repo / dispatch until the visionary gates pass (`python tools/validate-vision-pack.py <vision.md>` exits 0).
 - Never print, store or commit secrets (tokens, keys, `*.password`, NickServ values). PowerShell only (never wrap in `powershell -Command`).
 - Always finish with the harvest step (rule above): file every issue/FR/bug and every learned how-to-plan playbook.
