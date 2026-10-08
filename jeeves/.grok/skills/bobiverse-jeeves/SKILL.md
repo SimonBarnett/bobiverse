@@ -39,7 +39,7 @@ deterministic and token-less except the optional GitHub token used for filing is
 | Digest home (`digest.json`, `registered-machines.json`, `chair-outbox.txt`, `webhook-queue`) | `BOB_DIGEST_HOME` = `~\.bobiverse` |
 | Ergo (IRC server, separate service `BobIrcd`) | `<ai root>\ergo` - NEVER edit `ircd.yaml`, never restart for non-Ergo work |
 | Webhook receiver | task `BobCallback` (SYSTEM) `python scripts\bobcallback.py --home <digest home> --bind 127.0.0.1 --port 7700` |
-| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira` -> 127.0.0.1:7700 |
+| Public webhooks | IIS site `irc-ntsa` (`C:\inetpub\irc-ntsa\web.config`, written by `Install-BobWebhooks.ps1`): `/bob/v1/report`, `/digest`, `/git`, `/intake`, `/jira`, `/hours` (FR #3450) -> 127.0.0.1:7700 |
 | Ports | 6697 TLS (public), 6667 plaintext loopback, 7700 bobcallback loopback |
 | Logs | `<ai root>\jeeves\logs\stdout.log` / `stderr.log` (INFO/WARN/ERROR, no timestamps - use the chair `cmd-trace.log` for timed command replies) |
 | Chair-home files | `cmd-trace.log` (time/nick/command/reply), `webhook-health.json`, `resync-token-source.log`, `operators.txt`, `identity.json` (DPAPI) |
@@ -48,7 +48,7 @@ deterministic and token-less except the optional GitHub token used for filing is
 Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (command registry/auth/help),
 `focus_ignore.py`, `gitclaim.py` (queue + `resync_from_github`), `chan_privs.py` (op/halfop grants + hard cap),
 `registered_machines.py` (ChanServ roster mirror), `bobreport.py` (digest + chair outbox), `bobcallback.py` (webhooks),
-`intake.py` (intake + filing), `chair_health.py` (background jobs), `bob_recycle.py`.
+`intake.py` (intake + filing), `bobhours.py` (FR #3450 hours webhook — timesheet source entries; no Priority write), `chair_health.py` (background jobs), `bob_recycle.py`.
 
 **Living architecture FR (harvest #1989 / FR #1993):** approved ionos chair plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: ionos` (and `needs-ionos` when stamped). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
 
