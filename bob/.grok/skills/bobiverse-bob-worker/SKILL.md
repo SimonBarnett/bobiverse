@@ -65,7 +65,8 @@ An unknown reading is "not available" (falls through), never "available". Readin
 
 * **CWD `<ai root>\bob\worker`** and a first instruction to read the skills in `<ai root>\bob\worker\.grok\skills` and `<ai root>\bob\worker\AGENTS.md`
   (`bobiverse-worker-seat`, `bobiverse-bob-worker`, `harvest`; the CAST IRON harvest rule is at the top of each).
-* Grok: `agent.exe --no-auto-update --no-alt-screen --cwd <worker> -s <new-uuid> --rules <text> <prompt>`.
+* Grok: `agent.exe --no-auto-update --no-alt-screen --cwd <worker> --disallowed-tools ask_user_question -s <new-uuid> --rules <text> <prompt>`
+  (FR #3623: headless agent seats must never block on interactive `ask_user_question`; plan/monitor/maintenance omit the deny).
   Cursor: a generated launcher reads the prompt from a file (IRC text never lands on a command line) and runs `agent.cmd --trust --force --workspace <worker> -- $prompt`.
 
 ## IRC (owned by the exe, not by the agent)
@@ -110,6 +111,8 @@ Opt out heal: `BOBIVERSE_WORKER_SEAT_HEAL=0`.
 Sampled every 5 s over the agent's own process tree. **Hung** means: input was injected and the tree then shows no CPU/IO activity at all for 300 s ("no output / heartbeat"; the "not responding window" rule only applies if the agent owns a GUI window). An idle agent that is just waiting for input is NOT hung. A hung agent is killed (its tree) and replaced
 by a **NEW agent** (never a resume) after a backoff of 5 s, then 15 s, then 45 s; at most 3 restarts per 30 min - the 4th hang ends the seat (exit 5). Every restart is logged
 (`HUNG (<reason>); restart n/3 after Ns backoff`), and the message that was in flight is re-delivered to the new agent.
+
+**FR #3623 ask_user pending:** a Grok `ask_user_question` that stays open (events.jsonl `tool_started` without `tool_completed`) leaves the process alive with ACK held, so HangDetector never fires. Agent launches deny that tool; if it still appears, after `BOB_WORKER_ASK_USER_PENDING_S` (default 60 s) the seat logs `stuck: ask_user pending <s>s`, sends Enter once (auto-answer), then after `BOB_WORKER_ASK_USER_ENTER_GRACE_S` (default 15 s) recycles with reason `ask-user-pending` (NEW agent; prior ACK void / job re-offered via re-deliver). Needs rebuilt `bob-worker.exe`.
 
 ## `!bored`, ACK and DONE (the program posts `!bored`, you write ACK/DONE)
 

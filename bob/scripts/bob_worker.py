@@ -814,6 +814,12 @@ def rules_text(folder: str, kind: str) -> str:
         "plan": "PLAN SEAT ONLY: no IRC, no builds.",
         "monitor": "JEEVES MONITORING ONLY: no IRC shop claims; never act as chair; prefer token-free monitor scripts; self-harvest after every finding.",
         "maintenance": "JEEVES MAINTENANCE ONLY (FR #2412/#2522): diagnose after heal still failing; safe hotpatch only; file intake issue; check/test changes only via PR+MRB; harvest BEFORE writing the done file; never Ergo/BobIrcd; never act as chair.",
+        # FR #3623: headless shop seats must never block on interactive ask_user_question.
+        "agent": (
+            "Worker seat: IRC is handled for you. "
+            "Never call ask_user_question (or any interactive ask-user tool); there is no human at this console. "
+            "If blocked, proceed with a safe default or NACK/GIVEUP."
+        ),
     }.get(kind, "Worker seat: IRC is handled for you.")
     head = ("Maintenance session (resumed when a previous one exists, else new). " if kind == "maintenance" else "NEW session. ")
     return (f"{head}Read the skills in {folder}\\.grok\\skills and {folder}\\AGENTS.md before doing anything. "
@@ -864,6 +870,9 @@ def build_launch(kind: str, mode: str, cwd: str, prompt: str, exe: str, run_dir:
         # FR #2699: every grok seat (agent/plan/monitor/maintenance) shares the same
         # --no-auto-update + --no-alt-screen prefix so Plan cannot self-update mid-session.
         prefix = [exe, "--no-auto-update", "--no-alt-screen", "--cwd", cwd]
+        # FR #3623: headless agent seats must not block on ask_user_question (TUI waits forever).
+        if mode == "agent":
+            prefix = prefix + ["--disallowed-tools", "ask_user_question"]
         if mode == "plan":
             argv = prefix + ["--permission-mode", "plan", "--session-id", sid, "--rules", rules, prompt]
         elif resume_session_id:
@@ -2781,6 +2790,100 @@ class HangDetector:
         return None
 
 
+# FR #3623: ask_user_question leaves the Grok TUI Pending with a live process; HangDetector
+# never fires (ACK open, cpu still ticks). Detect via events.jsonl and auto-Enter then recycle.
+ASK_USER_TOOL_NAMES = frozenset({"ask_user_question"})
+
+
+def probe_ask_user_pending_age(
+    session_dir: Path | str,
+    *,
+    now_wall: float | None = None,
+    tool_names: frozenset | set | None = None,
+) -> Optional[float]:
+    """Seconds since oldest unanswered ask_user tool_started in events.jsonl, or None.
+
+    ``session_dir`` may be the session folder or the events.jsonl path itself.
+    """
+    names = tool_names if tool_names is not None else ASK_USER_TOOL_NAMES
+    p = Path(session_dir)
+    path = p if p.name == "events.jsonl" else (p / "events.jsonl")
+    if not path.is_file():
+        return None
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    pending_since: Optional[float] = None
+    for line in data.splitlines():
+        line = line.strip()
+        if not line or "ask_user" not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        name = str(obj.get("tool_name") or "").strip()
+        if name not in names:
+            continue
+        typ = str(obj.get("type") or "").strip()
+        ts = _parse_iso_ts(str(obj.get("ts") or ""))
+        if typ in ("tool_started", "permission_requested"):
+            if pending_since is None and ts is not None:
+                pending_since = ts
+        elif typ in ("tool_completed", "tool_failed"):
+            pending_since = None
+    if pending_since is None:
+        return None
+    now = float(time.time() if now_wall is None else now_wall)
+    return max(0.0, now - float(pending_since))
+
+
+class AskUserPendingWatch:
+    """FR #3623: pending ask_user → Enter once → recycle if still pending.
+
+    Returns from ``tick``: None, ``\"enter\"``, or ``\"recycle\"``.
+    """
+
+    def __init__(
+        self,
+        *,
+        pending_s: float | None = None,
+        enter_grace_s: float | None = None,
+    ):
+        self.pending_s = (
+            float(pending_s)
+            if pending_s is not None
+            else _env_float("BOB_WORKER_ASK_USER_PENDING_S", 60.0, 5.0, 3600.0)
+        )
+        self.enter_grace_s = (
+            float(enter_grace_s)
+            if enter_grace_s is not None
+            else _env_float("BOB_WORKER_ASK_USER_ENTER_GRACE_S", 15.0, 1.0, 600.0)
+        )
+        self._enter_at: Optional[float] = None
+        self._logged_age: Optional[int] = None
+
+    def clear(self) -> None:
+        self._enter_at = None
+        self._logged_age = None
+
+    def tick(self, age_s: Optional[float], now: float) -> Optional[str]:
+        if age_s is None:
+            self.clear()
+            return None
+        age = float(age_s)
+        if age < self.pending_s:
+            return None
+        if self._enter_at is None:
+            self._enter_at = float(now)
+            self._logged_age = int(age)
+            return "enter"
+        if float(now) - float(self._enter_at) >= self.enter_grace_s:
+            return "recycle"
+        return None
+
+
 def sample_tree(root_pid: int) -> Sample:  # pragma: no cover - needs a live Windows tree
     if os.name != "nt":
         return Sample()
@@ -3804,12 +3907,19 @@ class Supervisor:
                  clock: Callable[[], float] = time.monotonic,
                  backoff: tuple = RULE_BACKOFF_S, restart_max: int = RULE_RESTART_MAX, restart_window_s: float = RULE_RESTART_WINDOW_S,
                  base_env: Optional[dict] = None, bored: Optional["BoredEmitter"] = None,
-                 reconnect_grace_s: float | None = None):
+                 reconnect_grace_s: float | None = None,
+                 send_enter: Optional[Callable[[int], bool]] = None,
+                 ask_user_watch: Optional["AskUserPendingWatch"] = None,
+                 sessions_root: Optional[Path] = None):
         self.kind, self.exe, self.cwd, self.machine, self.nick = kind, exe, cwd, machine, nick
         self.run_dir, self.irc, self.relay, self.log = Path(run_dir), irc, relay, log
         self.secret = env_secret
         self.spawn, self.kill, self.probe, self.inject = spawn, kill, probe, inject
         self.detector = detector or HangDetector()
+        # FR #3623: ask_user pending → Enter then hang-restart.
+        self.send_enter = send_enter if send_enter is not None else send_console_enter
+        self.ask_user_watch = ask_user_watch if ask_user_watch is not None else AskUserPendingWatch()
+        self.sessions_root = sessions_root
         self.health_interval_s, self.startup_grace_s, self.clock = health_interval_s, startup_grace_s, clock
         # FR #2884: floor before first-turn_ended can end the startup hold (malformed instant events).
         self.startup_min_s = (
@@ -4389,6 +4499,40 @@ class Supervisor:
         self.shutdown("agent-exited", EXIT_OK)
 
     # ---- health
+    def _ask_user_events_path(self) -> Optional[Path]:
+        """FR #3623: current grok session events.jsonl when kind=grok."""
+        if (self.kind or "").strip().lower() != "grok":
+            return None
+        sid = self.sessions[-1] if self.sessions else None
+        if not sid:
+            return None
+        d = grok_session_dir(str(self.cwd), sid, sessions_root=self.sessions_root)
+        if d is None:
+            return None
+        return d / "events.jsonl"
+
+    def _check_ask_user_pending(self, proc) -> bool:
+        """FR #3623: Enter once for pending ask_user, then recycle. True if handled this tick."""
+        path = self._ask_user_events_path()
+        age = probe_ask_user_pending_age(path) if path is not None else None
+        action = self.ask_user_watch.tick(age, self.clock())
+        if not action:
+            return False
+        age_s = float(age or 0.0)
+        if action == "enter":
+            self.log(f"stuck: ask_user pending {age_s:.0f}s; sending Enter (auto-answer)")
+            try:
+                self.send_enter(int(proc.pid))
+            except Exception as e:
+                self.log(f"stuck: ask_user Enter failed {type(e).__name__}")
+            return True
+        if action == "recycle":
+            self.log(f"stuck: ask_user pending {age_s:.0f}s; recycling seat (NEW agent)")
+            self.ask_user_watch.clear()
+            self.restart_agent("ask-user-pending")
+            return True
+        return False
+
     def health_loop(self) -> None:
         while not self.stop.wait(self.health_interval_s):
             with self._lock:
@@ -4402,6 +4546,9 @@ class Supervisor:
             reason = self.detector.check(s, self.clock())
             if reason:
                 self.restart_agent(reason)
+                continue
+            # FR #3623: ask_user_question Pending (alive process, ACK held) — Enter then recycle.
+            if self._check_ask_user_pending(proc):
                 continue
             # FR #2383: agent still alive/turning but never ACK'd via run-dir outbox.
             self._check_ack_miss(proc)
@@ -4467,6 +4614,7 @@ class Supervisor:
             self.shutdown("hang-restart-limit", EXIT_GAVE_UP)
             return
         self.log(f"agent: HUNG ({reason}); restart {n + 1}/{self.restart_max} after {delay:.0f}s backoff (old pid={old.pid}) - NEW agent, no resume")
+        self.ask_user_watch.clear()
         self.relay.set_target(None)
         if self.bored:
             self.bored.set_ready(False)
