@@ -144,6 +144,11 @@ honesty-box harvest to the **relevant home repo in the same turn**
 `SimonBarnett/skills-visionary`. New product skill books -> that product
 repo's `harvest-agent-skills` twin. Do not ask permission; do not defer.
 
+Harvest **how-to-plan lessons only** (process, pitfalls, repo-setup
+steps). The plan itself - requirements, designs, architecture or product
+decisions, FR/issue lists - is never a harvest: it goes in the vision
+pack / FR markdown / issues of the product repo (bobiverse#3097).
+
 ## Do not
 
 - Start park/create with no vision pack (new product or FR).
