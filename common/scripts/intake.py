@@ -192,6 +192,11 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "harvest-skills-visionary",
         ".grok/skills/harvest-skills-visionary/SKILL.md",
     ),
+    # FR #3318: Priority Agent / Plan product homes use repo-root honesty box.
+    "simonbarnett/agentic_fomprep": (
+        "harvest-agent-skills",
+        ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
 }
 SKILL_BOOK_PATHS: dict[str, str] = {
     "harvest": "common/.grok/skills/harvest/SKILL.md",
