@@ -804,9 +804,9 @@ function Get-BobiverseAircFleetOperatorRoster {
 
 function Resolve-BobiverseAircOperatorNicks {
     <#
-      FR #3397 / #3513: build the operator nick list for Install-Airc / operators.txt.
-      Fleet: union -Operators with -OperatorsExtra (MSI AIRC_OPERATORS) and fleet-operators roster.
-      Workstation: ignore OperatorsExtra and roster (no fleet cross-machine roster).
+      FR #3397 / #3513 / #3639: build the operator nick list for Install-Airc / operators.txt.
+      FR #3639: fleet + client never seed operators.txt (IRC +o/+h auth; ignore roster/extra).
+      Workstation: use -Operators only; ignore OperatorsExtra and roster.
       FR #3512: return a flat string[] via Write-Output -NoEnumerate (never nest under @(...)).
     #>
     param(
@@ -821,8 +821,8 @@ function Resolve-BobiverseAircOperatorNicks {
         if ($o -and ([string]$o).Trim()) { [void]$ops.Add(([string]$o).Trim()) }
     }
     $prof = ([string]$Profile).Trim().ToLowerInvariant()
-    # FR #3401: client profile never seeds operators.txt (IRC +o/+h auth).
-    if ($prof -eq 'client') {
+    # FR #3401 / #3639: client + fleet never seed operators.txt (IRC +o/+h auth).
+    if ($prof -in @('client', 'fleet')) {
         Write-Output -NoEnumerate @()
         return
     }
@@ -834,7 +834,7 @@ function Resolve-BobiverseAircOperatorNicks {
                 if ($n) { [void]$ops.Add($n) }
             }
         }
-        # FR #3513: fleet roster survives self-update (msiexec has no AIRC_OPERATORS).
+        # Legacy empty-profile path only (fleet/client already returned).
         foreach ($o in @(Get-BobiverseAircFleetOperatorRoster -InstallRoot $InstallRoot)) {
             if ($o -and ([string]$o).Trim()) { [void]$ops.Add(([string]$o).Trim()) }
         }
