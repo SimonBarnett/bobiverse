@@ -588,6 +588,8 @@ class Client:
         self._privmsg_text_max: int | None = None  # None → derive from nick/target/linelen
         # FR #2728: chair !status uptime from process/agent construction, not first command.
         self._process_started = time.time()
+        # FR #3742: IRC session boundary for lost-DONE reconcile (updated in session()).
+        self._irc_session_started = self._process_started
         self.ready = threading.Event()
         self.joined = threading.Event()
         self.dead = threading.Event()
@@ -2449,7 +2451,13 @@ class Client:
                 info(f"INFO git-claim bored cleared orphan digest doing n={n_orphan} nick={src}")
         except Exception as exc:  # noqa: BLE001
             info(f"WARN git-claim bored orphan clear {type(exc).__name__}")
-        gate = gitclaim.bored_gate(self.home, src, target, now)
+        # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).
+        session_started = getattr(self, "_irc_session_started", None)
+        if session_started is None:
+            session_started = getattr(self, "_process_started", None)
+        gate = gitclaim.bored_gate(
+            self.home, src, target, now, session_started=session_started
+        )
         if gate == "ignore":
             info(f"INFO git-claim bored ignore nick={src}")
             return
@@ -3105,6 +3113,8 @@ class Client:
         self.live_nick = self.original_nick
         self._pending_joins = {c.lower() for c in self.channels}
         self._chair_reset_session()
+        # FR #3742: each IRC (re)connect is a new session for lost-DONE !bored heal.
+        self._irc_session_started = time.time()
         if getattr(self.args, "chair", False):
             self._privs().announce()      # created here, before the reader/outbox threads exist
         self._outbox_gen += 1
