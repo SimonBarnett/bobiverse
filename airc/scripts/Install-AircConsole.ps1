@@ -344,8 +344,10 @@ function Initialize-AircConsoleHomeSecrets {
         Write-Host "INFO keep $NickServPasswordFile"
     }
 
-    # #294: Ergo server PASS comes from the *release zip* (config\ergo.password),
-    # not from the target machine's ~/.grok (most clients have none).
+    # #294 / FR #3756: Ergo server PASS comes from the *release zip*
+    # (config\ergo.password), -ErgoPasswordFile, env, or an existing home file -
+    # not from the target machine's ~/.grok (most clients have none). Public MSIs
+    # do not embed the PASS (issue #4); private fleet zips may.
     $ergoDest = Join-Path $ConsoleHomeDir 'ergo.password'
     $secret = $null
     $source = $null
@@ -361,8 +363,31 @@ function Initialize-AircConsoleHomeSecrets {
         $secret = (Get-Content -LiteralPath $ergoDest -Raw).Trim()
         $source = $ergoDest
     }
+    # FR #3756: same env keys as Pack-AircConsoleRelease / Start-AircConsole.
     if (-not $secret) {
-        throw "Ergo server PASS missing in release: expected config\ergo.password beside the unpack tree (issue #294). Re-download airc-console zip packed with the fleet secret."
+        foreach ($key in @(
+                'AIRC_PACK_ERGO_PASSWORD',
+                'AGENTIC_IRC_PASSWORD',
+                'AIRC_CONSOLE_SERVER_PASSWORD',
+                'BOB_IRC_PASSWORD'
+            )) {
+            $v = [Environment]::GetEnvironmentVariable($key)
+            if ($v -and $v.Trim()) {
+                $secret = $v.Trim()
+                $source = "env:$key"
+                break
+            }
+        }
+    }
+    if (-not $secret) {
+        throw @"
+Ergo server PASS missing (FR #3756 / issue #294). Provide one of:
+  1) release unpack config\ergo.password (private zip packed with fleet secret),
+  2) -ErgoPasswordFile <path>,
+  3) env AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD / BOB_IRC_PASSWORD,
+  4) pre-seed ConsoleHome\ergo.password.
+Public MSIs never embed the PASS (issue #4). Never invent the secret.
+"@
     }
     Write-AircSecretFile -Path $ergoDest -Secret $secret
     Write-Host "INFO seeded ergo.password from package ($source) -> $ergoDest"
