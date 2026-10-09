@@ -628,7 +628,7 @@ function Invoke-Apply {
         $mlog = Join-Path $StateDir ('msiexec-{0}.log' -f $tag)
         # FR #2475: serialise msiexec + retry 1618 (ERROR_INSTALL_ALREADY_RUNNING)
         # FR #3639: no AIRC_OPERATORS forwarding - airc auth is live control-channel +o/+h.
-        $msiArgs = [System.Collections.Generic.List[string]]::new()
+        $msiArgs = New-Object 'System.Collections.Generic.List[string]'
         [void]$msiArgs.Add('/i')
         [void]$msiArgs.Add(('"{0}"' -f $msi))
         [void]$msiArgs.Add('/qn')
