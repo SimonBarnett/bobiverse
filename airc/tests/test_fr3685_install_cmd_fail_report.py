@@ -38,9 +38,10 @@ def test_fr3685_pack_runinstall_return_check_and_cmd_call_wrap():
     p = PACK.read_text(encoding="utf-8-sig")
     assert 'Id="RunInstall"' in p
     assert 'Return="check"' in p
-    # CAQuietExec must invoke via cmd /c call so .cmd exit codes reach the CA (FR #3685).
-    assert "cmd.exe /d /c call" in p
+    # CAQuietExec must invoke via quoted System64Folder cmd /c call (FR #3685 + #3741).
+    assert "&quot;[System64Folder]cmd.exe&quot; /d /c call" in p
     assert "FR #3685" in p or "3685" in p
+    assert "FR #3741" in p or "3741" in p
 
 
 def test_fr3685_outer_reporter_exists_no_requires_51():

@@ -13,9 +13,9 @@ def test_mrb3720_fr70_and_pack_share_cmd_call_wrap():
     pack = PACK.read_text(encoding="utf-8")
     fr70 = FR70.read_text(encoding="utf-8")
     mrb = MRB.read_text(encoding="utf-8")
-    assert "cmd.exe /d /c call" in pack
+    assert "&quot;[System64Folder]cmd.exe&quot; /d /c call" in pack
     assert "$installArgs" in pack
     assert 'Id="SetInstallCmd"' in pack or "SetInstallCmd" in pack
-    assert "cmd.exe /d /c call" in fr70
+    assert "&quot;[System64Folder]cmd.exe&quot; /d /c call" in fr70
     assert "$installArgs" in fr70
     assert "test_mrb3693_fr70_pin_tracks_cmd_call_wrap" in mrb

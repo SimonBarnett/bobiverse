@@ -24,8 +24,8 @@ def test_pack_declares_public_msi_properties_and_forwards_them_to_runinstall():
     assert 'Property Id="SKIPCOPY"' in p
     assert 'Property Id="IRCHOST"' in p
     # SetInstallCmd must still forward $installArgs (not a hard-coded -InstallRoot-only line).
-    # FR #3685 wraps with cmd.exe /d /c call so .cmd exit codes reach CAQuietExec (FR #3715).
-    assert "cmd.exe /d /c call" in p
+    # FR #3685 wraps with cmd /d /c call; FR #3741 quotes System64Folder cmd.exe for QuietExec.
+    assert "&quot;[System64Folder]cmd.exe&quot; /d /c call" in p
     assert '[INSTALLDIR]scripts\\$installCmd&quot;$installArgs"' in p
     assert 'Id="SetInstallCmd"' in p
     assert "-OperFile &quot;[OPERFILE]&quot;" in p
