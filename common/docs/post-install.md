@@ -182,6 +182,8 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
 
+**Same-version reinstall / repair (FR #3762):** Pack schedules `SetInstallCmd` / `RunInstall` (and rollback recover) with condition `NOT REMOVE~="ALL"`, so a second `msiexec /i <same-version>.msi /qn ...` on an already-registered product still re-runs `Install-*.cmd` (Windows Installer maintenance mode no longer skips the CA). Full uninstall (`REMOVE=ALL`) still skips RunInstall. Operators may also use explicit repair: `msiexec /fa <msi>` or `msiexec /i <msi> REINSTALL=ALL REINSTALLMODE=vamus /qn ...`. After a failed first install that left the product in ARP with no healthy service, re-run `/i` (or `/fa`) rather than requiring `/x` then `/i` only because RunInstall was skipped.
+
 airc status-only workstation (no remote shell):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_SHELL=off AIRC_REQUIRE_ACCOUNT=1 AIRC_ACCOUNTS=simon`  
 Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).

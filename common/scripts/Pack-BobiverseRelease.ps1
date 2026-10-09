@@ -566,9 +566,11 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <CustomAction Id="SetRollbackRecoverCmd" Property="RollbackRecover" Value="&quot;[INSTALLDIR]scripts\Recover-BobiverseService.cmd&quot; -Product $Name -InstallRoot &quot;[INSTALLDIR].&quot; -Why msi-rollback" Execute="immediate" />
     <CustomAction Id="RollbackRecover" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="rollback" Impersonate="no" Return="ignore" />
 "@
+    # FR #3762: same-version msiexec /i is maintenance mode (Installed=1, REINSTALL unset) and
+    # skipped RunInstall under "NOT Installed OR REINSTALL". Schedule whenever not full uninstall.
     $rollbackCaSeq = @"
-      <Custom Action="SetRollbackRecoverCmd" After="SetInstallCmd">NOT Installed OR REINSTALL</Custom>
-      <Custom Action="RollbackRecover" After="SetRollbackRecoverCmd">NOT Installed OR REINSTALL</Custom>
+      <Custom Action="SetRollbackRecoverCmd" After="SetInstallCmd">NOT REMOVE~="ALL"</Custom>
+      <Custom Action="RollbackRecover" After="SetRollbackRecoverCmd">NOT REMOVE~="ALL"</Custom>
 "@
     $guidMark = [guid]::NewGuid().ToString().ToUpper()
     # FR #3687: airc AgentLayerFeature Level=0 when client|workstation|AIRC_AGENT_LAYER=0
@@ -630,9 +632,10 @@ $rollbackCaDecls
     <InstallExecuteSequence>
       <Custom Action="FindAiRoot" Before="CostInitialize">NOT AIROOT</Custom>
       <Custom Action="SetInstallDirFromAiRoot" Before="CostFinalize"></Custom>
-      <Custom Action="SetInstallCmd" After="InstallFiles">NOT Installed OR REINSTALL</Custom>
+      <!-- FR #3762: NOT REMOVE~="ALL" so same-version /i (maintenance) and repair re-run Install-*.cmd; uninstall still skips. -->
+      <Custom Action="SetInstallCmd" After="InstallFiles">NOT REMOVE~="ALL"</Custom>
 $rollbackCaSeq
-      <Custom Action="RunInstall" After="RollbackRecover">NOT Installed OR REINSTALL</Custom>
+      <Custom Action="RunInstall" After="RollbackRecover">NOT REMOVE~="ALL"</Custom>
 $uninstallCaSeq
     </InstallExecuteSequence>
   </Product>
