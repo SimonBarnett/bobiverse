@@ -1692,6 +1692,43 @@ function Write-BobiverseMsiInstallLog {
     }
 }
 
+function Assert-BobiverseStageVersionAligned {
+    <#
+      FR #3686: pack-time gate. Stage VERSION, src\VERSION, and BUILD.json.version
+      must equal the MSI ProductVersion ($ExpectedVersion). Fail the pack if not.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Stage,
+        [Parameter(Mandatory)][string]$ExpectedVersion,
+        [string]$Product = ''
+    )
+    $want = ([string]$ExpectedVersion).Trim()
+    if ($want -notmatch '^\d+\.\d+\.\d+') {
+        throw "Assert-BobiverseStageVersionAligned: bad ExpectedVersion '$want'"
+    }
+    foreach ($rel in @('VERSION', 'src\VERSION')) {
+        $p = Join-Path $Stage $rel
+        if (-not (Test-Path -LiteralPath $p)) {
+            throw "Assert-BobiverseStageVersionAligned: missing $p (expected $want)"
+        }
+        $got = (Get-Content -LiteralPath $p -Raw -ErrorAction Stop).Trim()
+        if ($got -ne $want) {
+            throw ("Assert-BobiverseStageVersionAligned: {0}='{1}' expected '{2}' (FR #3686)" -f $rel, $got, $want)
+        }
+    }
+    $buildPath = Join-Path $Stage 'BUILD.json'
+    if (-not (Test-Path -LiteralPath $buildPath)) {
+        throw "Assert-BobiverseStageVersionAligned: missing $buildPath"
+    }
+    $build = Get-Content -LiteralPath $buildPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $bv = [string]$build.version
+    if ($bv.Trim() -ne $want) {
+        throw ("Assert-BobiverseStageVersionAligned: BUILD.json.version='{0}' expected '{1}' (FR #3686)" -f $bv, $want)
+    }
+    $label = if ($Product) { $Product } else { 'pack' }
+    Write-Host ("INFO FR #3686 stage version aligned product={0} version={1}" -f $label, $want)
+}
+
 function Assert-BobiverseInstallVersion {
     <#
       FR #2564: when MSI forwards ProductVersion, InstallRoot\VERSION must match.
