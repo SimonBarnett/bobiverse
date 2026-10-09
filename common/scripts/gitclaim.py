@@ -134,6 +134,13 @@ EVERGREEN_MRB_HOME_TITLE_RE = re.compile(
 # FR #3299: MOVED owner/repo#N boards are also verdicts (done, not mrb-fail / not re-offered as FR).
 # FR #3317: CLOSED not-useful (light harvest triage) is also a done verdict.
 MRB_VERDICT_TITLE_RE = re.compile(r"(?i)^MRB\s+(FAIL|PASS|MOVED|CLOSED)\s*[-:]")
+# FR #3658 / #3317: intake hold issues titled ``harvest: hold for <owner/repo> - …``
+# must never be offered as FR even when the ``owner-missing`` label failed to apply
+# (gh_filer retries create without labels when a label is missing on the repo).
+# Carve-out from FR #1682 (plain ``harvest:`` promote titles stay offerable).
+HARVEST_OWNER_MISSING_HOLD_TITLE_RE = re.compile(
+    r"(?i)^harvest:\s*hold\s+for\b"
+)
 # bobiverse#224 / #765 / #781: FAIL-fix PRs (fix(mrb-N) / mrb-N-fix) are not MRB/UAT targets.
 _MRB_FIX_TITLE_RE = re.compile(
     r"(?i)(?:^|\b)(?:fix\s*\(\s*mrb[-_]?\d+|mrb[-_]?\d+[-_]fix\b)"
@@ -710,8 +717,12 @@ def issue_skip_fr_reason(
     if hit:
         return f"label:{sorted(hit)[0]}"
     title_s = (title or "").strip()
+    # FR #3658 / #3317: owner-missing hold titles (even with empty labels).
+    if HARVEST_OWNER_MISSING_HOLD_TITLE_RE.search(title_s):
+        return "owner_missing_hold_title"
     # FR #1682 / #1684: harvest:/skill: titles are offerable promote jobs (workers
-    # consolidate by skill book then open a harvest/* PR). Do not SKIP_FR them.
+    # consolidate by skill book then open a harvest/* PR). Do not SKIP_FR them —
+    # except the hold-title carve-out above.
     # FR #628 / #2670: drain / Nth re-offer shapes are always spam.
     if CRITICAL_SPAM_SHAPE_RE.search(title_s):
         return "critical_spam_title"
