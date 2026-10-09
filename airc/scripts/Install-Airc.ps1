@@ -410,8 +410,15 @@ try {
         profile = $prof
         auth_mode = $authMode
     }
+    # FR #3774: client presence-only JOIN #bobiverse (commands stay on control channel).
+    # Empty array disables. Fleet/workstation omit / empty by default.
+    if ($prof -eq 'client') {
+        $capObj['presence_channels'] = @('#bobiverse')
+    } else {
+        $capObj['presence_channels'] = @()
+    }
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
-    Write-Host ("INFO FR #3287/#3289/#3393 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf)
+    Write-Host ("INFO FR #3287/#3289/#3393/#3774 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7} presence_channels={8}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf, (($capObj['presence_channels'] -join ',')))
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
 }
