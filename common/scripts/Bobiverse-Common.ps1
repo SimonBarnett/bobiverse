@@ -2427,6 +2427,85 @@ function Get-BobiverseAircClientAllowedScriptNames {
     )
 }
 
+function Get-BobiverseAircMsiAgentLayerScriptNames {
+    <#
+    .SYNOPSIS
+      FR #3687: scripts that belong in the MSI AgentLayer Feature (not laid for
+      AIRC_PROFILE=client|workstation). Omits Report-BobiverseIntakeIssue.ps1 —
+      client keeps that for install-failure intake (FR #3514/#3515).
+    #>
+    return @(
+        'agent_control.py',
+        'startworker.py',
+        'grok_talk.py',
+        'bobtalk.py',
+        'irc_agent.py',
+        'chan_workers.py',
+        'talk_seat_ghost.py',
+        'talk_seat_pid.py',
+        'worker_irc_seats.py',
+        'Install-BootstrapTools.ps1',
+        'Invoke-BobiverseHarvest.ps1',
+        'Sync-BobiverseFromRepo.ps1',
+        'Start-BobCallbackSupervised.ps1',
+        'Restart-BobService.ps1'
+    )
+}
+
+function Test-BobiverseAircMsiAgentLayerSource {
+    <#
+    .SYNOPSIS
+      FR #3687: true when a heat File Source path is agent-layer (briefings/skills/launchers).
+    #>
+    param([Parameter(Mandatory)][string]$Source)
+    $s = ([string]$Source).Replace('/', '\')
+    if ($s -match '(?i)[\\/](AGENTS|CLAUDE|GROK)\.md$') { return $true }
+    if ($s -match '(?i)[\\/]\.cursor([\\/]|$)') { return $true }
+    if ($s -match '(?i)[\\/]\.grok([\\/]|$)') { return $true }
+    $leaf = [IO.Path]::GetFileName($s)
+    if (-not $leaf) { return $false }
+    if ((Get-BobiverseAircMsiAgentLayerScriptNames) -contains $leaf -and $s -match '(?i)[\\/]scripts[\\/]') {
+        return $true
+    }
+    return $false
+}
+
+function Remove-BobiverseAircMsiAgentLayerFromStage {
+    <#
+    .SYNOPSIS
+      FR #3687: apply the MSI AgentLayer Feature exclusion to a staged tree without
+      running Install-Airc.ps1 (defence-in-depth purge remains separate).
+    #>
+    param([Parameter(Mandatory)][string]$InstallRoot)
+    $removed = New-Object System.Collections.Generic.List[string]
+    if (-not $InstallRoot -or -not (Test-Path -LiteralPath $InstallRoot)) {
+        return @($removed)
+    }
+    $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+    $targets = New-Object System.Collections.Generic.List[string]
+    foreach ($f in @('AGENTS.md', 'CLAUDE.md', 'GROK.md')) {
+        [void]$targets.Add((Join-Path $root $f))
+    }
+    [void]$targets.Add((Join-Path $root '.cursor'))
+    [void]$targets.Add((Join-Path $root '.grok'))
+    $scriptsDir = Join-Path $root 'scripts'
+    foreach ($name in @(Get-BobiverseAircMsiAgentLayerScriptNames)) {
+        [void]$targets.Add((Join-Path $scriptsDir $name))
+    }
+    foreach ($path in $targets) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            [void]$removed.Add($path)
+            Write-Host ("INFO FR #3687 removed MSI agent-layer path: {0}" -f $path)
+        } catch {
+            Write-Host ("WARN FR #3687 remove {0}: {1}" -f $path, $_.Exception.Message)
+        }
+    }
+    Write-Host ("INFO FR #3687 MSI agent-layer stripped count={0}" -f $removed.Count)
+    return @($removed)
+}
+
 function Remove-BobiverseAircClientExtraPayload {
     <#
     .SYNOPSIS
