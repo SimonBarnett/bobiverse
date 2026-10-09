@@ -154,6 +154,8 @@ class AircConsoleService:
             if args.password_file
             else (self.home / "console.password")
         )
+        # FR #3763: marker that NickServ account exists for this home (after 903 / REGISTER).
+        self._nickserv_ok_path = self.home / "console.nickserv-ok"
         self.nickserv_password = ensure_nickserv_password(nickserv_path, mint=True)
         self.password = self.nickserv_password  # SASL / identify use NickServ secret
         self.server_password = resolve_server_password(
@@ -460,10 +462,38 @@ class AircConsoleService:
         self.send("PASS " + self.server_password)
         info("INFO sent server PASS")
 
+    def _nickserv_account_known(self) -> bool:
+        """FR #3763: True once this ConsoleHome has successfully SASL'd or registered."""
+        try:
+            return self._nickserv_ok_path.is_file()
+        except OSError:
+            return False
+
+    def _mark_nickserv_ok(self, reason: str) -> None:
+        """FR #3763: persist that {machine}_console NickServ account matches console.password."""
+        try:
+            self.home.mkdir(parents=True, exist_ok=True)
+            if not self._nickserv_ok_path.is_file():
+                self._nickserv_ok_path.write_text(f"{reason}\n", encoding="ascii")
+                info(f"INFO FR #3763 wrote {self._nickserv_ok_path.name} ({reason})")
+            else:
+                # Refresh reason for operators reading the file; keep file present.
+                self._nickserv_ok_path.write_text(f"{reason}\n", encoding="ascii")
+        except OSError as e:
+            info(f"INFO FR #3763 nickserv-ok write failed: {e}")
+
     def request_caps(self) -> None:
         # account-tag powers operator account allowlists (FR #230). SASL is best-effort.
+        # FR #3763: do not attempt SASL until console.nickserv-ok exists (fresh client
+        # would 904 "not registered yet" and look like a password error).
         caps = "account-notify extended-join account-tag"
-        if self.nickserv_password and self.args.sasl:
+        want = bool(self.nickserv_password and self.args.sasl and self._nickserv_account_known())
+        if self.nickserv_password and self.args.sasl and not self._nickserv_account_known():
+            info(
+                "INFO FR #3763 skip SASL until NickServ account exists "
+                f"(no {self._nickserv_ok_path.name}); will REGISTER via NickServ"
+            )
+        if want:
             caps = "sasl " + caps
             self._want_sasl = True
         else:
@@ -471,7 +501,7 @@ class AircConsoleService:
         self.send(f"CAP REQ :{caps}")
 
     def sasl_plain(self) -> None:
-        if not self.nickserv_password or not self.args.sasl:
+        if not self.nickserv_password or not self.args.sasl or not self._nickserv_account_known():
             return
         # Minimal PLAIN; failures must CAP END so registration can proceed.
         self._want_sasl = True
@@ -671,15 +701,23 @@ class AircConsoleService:
             return
         if cmd == "903":
             self._sasl_done = True
+            self._mark_nickserv_ok("sasl-903")
             self.send("CAP END")
             return
         if cmd in {"904", "905", "906", "907"}:
-            self._sasl_failed = True
-            info(
-                f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
-                f"with console.password, or the account is not registered yet. Reset it "
-                f"(NickServ SAPASSWD) or fix console.password; continuing so registration can finish"
-            )
+            if self._nickserv_account_known():
+                self._sasl_failed = True
+                info(
+                    f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
+                    f"with console.password. Reset it (NickServ SAPASSWD) or fix console.password; "
+                    f"continuing so registration can finish"
+                )
+            else:
+                # FR #3763: fresh ConsoleHome — account not registered yet; not a loud error.
+                info(
+                    f"INFO FR #3763 console account {self.nick} SASL {cmd} "
+                    f"(account not registered yet); continuing with NickServ REGISTER"
+                )
             self.send("CAP END")
             return
 
@@ -802,6 +840,23 @@ class AircConsoleService:
                 elif status == "missing":
                     self._apply_shop_mode("domain-lobby")
                 # unknown: keep waiting until timeout
+            # FR #3763: NickServ REGISTER / IDENTIFY success -> allow SASL next connect.
+            if src_l in {"nickserv", "ns"} and trailing:
+                t = trailing.lower()
+                # Avoid bare "successful" (too broad); keep Atheme/Ergo success phrases.
+                if any(
+                    p in t
+                    for p in (
+                        "is now registered",
+                        "account registered",
+                        "you are now logged in",
+                        "password accepted",
+                        "already registered",
+                        "authentication successful",
+                        "sasl authentication successful",
+                    )
+                ):
+                    self._mark_nickserv_ok("nickserv-notice")
 
         if cmd == "JOIN":
             nick = parse_prefix_nick(":" + prefix) if prefix else None
