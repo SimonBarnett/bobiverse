@@ -61,7 +61,7 @@ def test_fr3762_docs_and_skill_repair_path():
 def test_fr3762_pack_ascii_no_bom():
     raw = PACK.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
-    # Allow UTF-8 BOM-less with only ASCII in the FR #3762 comment region — full file
+    # Allow UTF-8 BOM-less with only ASCII in the FR #3762 comment region - full file
     # may historically contain non-ASCII elsewhere; pin the new condition tokens as ASCII.
     assert b'NOT REMOVE~="ALL"' in raw
     assert b"FR #3762" in raw
