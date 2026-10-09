@@ -115,8 +115,11 @@ try {
 
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
-# FR #3394: fail-closed lock BEFORE LocalSystem starts airc.exe / runs scripts from this tree.
-Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -FailClosed
+# FR #3394 / FR #3678: lock install-root directory (not -Recurse) before copy so the
+# folder itself is not user-writable; CI|OI ACEs cover new children. One Full
+# -Recurse FailClosed runs after Install-AircConsole before Start-Service
+# (ionos: two -Recurse + takeown /R passes cost ~12 min on ~5k items).
+Protect-BobiverseInstallTree -Path $InstallRoot -FailClosed
 if (-not $SkipCopy) {
     Copy-BobiverseTree -Source $here -Destination (Join-Path $InstallRoot 'scripts') -ContentsOnly
 }
@@ -494,7 +497,8 @@ try {
 # Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
 Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
 
-# FR #3289 / #3394: SYSTEM + Administrators full; Users RX only. Fail closed before Start-Service.
+# FR #3289 / FR #3394 / FR #3678: one Full -Recurse FailClosed before Start-Service
+# (skips takeown /R when root already protected; early pass was root-only).
 Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -FailClosed
 
 # FR #3394: start only after the tree is locked (Install-AircConsole ran with -NoStart).
