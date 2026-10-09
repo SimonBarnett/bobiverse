@@ -444,36 +444,16 @@ function Build-Msi([string]$Name, [string]$Stage) {
         }
         Write-Host ("INFO marked {0} ergo.exe component(s) Permanent+NeverOverwrite" -f $ergoFiles.Count)
     }
-    # FR #3687: airc agent briefings/skills/launchers live in BobiverseAircAgentLayerFiles
+    # FR #3687 / #3740: airc agent briefings/skills/launchers live in BobiverseAircAgentLayerFiles
     # (AgentLayerFeature Condition Level=0 for client|workstation|AIRC_AGENT_LAYER=0).
+    # heat puts Components under DirectoryRef and ComponentRef under the group - move refs
+    # (Move-BobiverseAircMsiAgentLayerComponents). Fail closed when 0 match (FR #3740).
     # Report-BobiverseIntakeIssue.ps1 stays in the main group (client allow-list).
     $agentCg = $null
     if ($Name -eq 'airc') {
         $agentCg = 'BobiverseAircAgentLayerFiles'
-        $mainGroup = $hx.SelectSingleNode("//w:ComponentGroup[@Id='$cg']", $wns)
-        if (-not $mainGroup) { throw "heat ComponentGroup $cg missing after harvest" }
-        $agentGroup = $hx.CreateElement('ComponentGroup', $mainGroup.NamespaceURI)
-        $agentGroup.SetAttribute('Id', $agentCg)
-        $toMove = New-Object System.Collections.Generic.List[System.Xml.XmlElement]
-        foreach ($comp in @($mainGroup.SelectNodes('w:Component', $wns))) {
-            $isAgent = $false
-            foreach ($f in @($comp.SelectNodes('w:File', $wns))) {
-                if (Test-BobiverseAircMsiAgentLayerSource -Source ([string]$f.GetAttribute('Source'))) {
-                    $isAgent = $true
-                    break
-                }
-            }
-            if ($isAgent) { [void]$toMove.Add($comp) }
-        }
-        foreach ($comp in $toMove) {
-            [void]$mainGroup.RemoveChild($comp)
-            [void]$agentGroup.AppendChild($comp)
-        }
-        [void]$mainGroup.ParentNode.AppendChild($agentGroup)
-        Write-Host ("INFO FR #3687 moved {0} agent-layer component(s) to {1}" -f $toMove.Count, $agentCg)
-        if ($toMove.Count -lt 1) {
-            Write-Host 'WARN FR #3687 no agent-layer File components matched (stage may lack AGENTS/.grok)'
-        }
+        [void](Move-BobiverseAircMsiAgentLayerComponents -HarvestXml $hx -NamespaceManager $wns `
+                -MainGroupId $cg -AgentGroupId $agentCg -FailIfNone)
     }
     $hx.Save($harvested)
     Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+NeverOverwrite" -f $nssmFiles.Count)

@@ -21,6 +21,7 @@ SKILL = ROOT / "airc/.grok/skills/bobiverse-airc/SKILL.md"
 def test_mrb3695_pack_agent_layer_feature_condition_contiguous():
     t = PACK.read_text(encoding="utf-8-sig")
     assert "FR #3687" in t
+    assert "FR #3740" in t
     assert 'Feature Id="AgentLayerFeature"' in t
     assert "BobiverseAircAgentLayerFiles" in t
     needle = (
@@ -28,7 +29,8 @@ def test_mrb3695_pack_agent_layer_feature_condition_contiguous():
         'AIRC_PROFILE ~= "workstation" OR AIRC_AGENT_LAYER = "0"]]></Condition>'
     )
     assert needle in t
-    assert "Test-BobiverseAircMsiAgentLayerSource" in t
+    assert "Move-BobiverseAircMsiAgentLayerComponents" in t
+    assert "-FailIfNone" in t
     # airc-only split
     assert "$Name -eq 'airc'" in t
 
@@ -54,7 +56,9 @@ def test_mrb3695_common_helpers_and_ascii():
     assert all(ord(c) < 128 for c in text), "Bobiverse-Common.ps1 must stay ASCII for WinPS"
     assert "function Test-BobiverseAircMsiAgentLayerSource" in text
     assert "function Remove-BobiverseAircMsiAgentLayerFromStage" in text
+    assert "function Move-BobiverseAircMsiAgentLayerComponents" in text
     assert "FR #3687" in text
+    assert "FR #3740" in text
 
 
 def test_mrb3695_docs_skill_feature_gate():

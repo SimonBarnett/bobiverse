@@ -56,7 +56,9 @@ def test_fr3687_common_defines_msi_agent_layer_helpers():
     assert "function Get-BobiverseAircMsiAgentLayerScriptNames" in t
     assert "function Test-BobiverseAircMsiAgentLayerSource" in t
     assert "function Remove-BobiverseAircMsiAgentLayerFromStage" in t
+    assert "function Move-BobiverseAircMsiAgentLayerComponents" in t
     assert "FR #3687" in t
+    assert "FR #3740" in t
     for name in AGENT_SCRIPTS:
         assert name in t, name
     # Intake stays on MainFeature / client allow-list (FR #3514/#3515).
@@ -73,13 +75,15 @@ def test_fr3687_pack_wix_agent_layer_feature_condition():
     """WiX source: AgentLayerFeature Condition Level=0 for client|workstation|AGENT_LAYER=0."""
     t = PACK.read_text(encoding="utf-8-sig")
     assert "FR #3687" in t
+    assert "FR #3740" in t
     assert "AgentLayerFeature" in t
     assert "BobiverseAircAgentLayerFiles" in t
     assert 'Condition Level="0"' in t
     assert 'AIRC_PROFILE ~= "client"' in t
     assert 'AIRC_PROFILE ~= "workstation"' in t
     assert 'AIRC_AGENT_LAYER = "0"' in t
-    assert "Test-BobiverseAircMsiAgentLayerSource" in t
+    assert "Move-BobiverseAircMsiAgentLayerComponents" in t
+    assert "-FailIfNone" in t
     # Split only for airc product.
     assert "$Name -eq 'airc'" in t
 
@@ -113,7 +117,7 @@ def test_fr3687_classifier_pins_agent_vs_core():
 
 
 def test_fr3687_heat_component_split_moves_agent_files(tmp_path: Path):
-    """Synthetic heat XML: agent File Components move to BobiverseAircAgentLayerFiles."""
+    """Nested-Component shape: agent File Components move to BobiverseAircAgentLayerFiles."""
     harvested = tmp_path / "HarvestedFiles.wxs"
     harvested.write_text(
         """<?xml version="1.0" encoding="utf-8"?>
@@ -153,28 +157,14 @@ def test_fr3687_heat_component_split_moves_agent_files(tmp_path: Path):
         "[xml]$hx = Get-Content -LiteralPath $harvested -Raw -Encoding UTF8; "
         "$wns = New-Object System.Xml.XmlNamespaceManager($hx.NameTable); "
         "$wns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi'); "
-        "$mainGroup = $hx.SelectSingleNode(\"//w:ComponentGroup[@Id='$cg']\", $wns); "
-        "$agentGroup = $hx.CreateElement('ComponentGroup', $mainGroup.NamespaceURI); "
-        "$agentGroup.SetAttribute('Id', $agentCg); "
-        "$toMove = New-Object System.Collections.Generic.List[System.Xml.XmlElement]; "
-        "foreach ($comp in @($mainGroup.SelectNodes('w:Component', $wns))) { "
-        "  $isAgent = $false; "
-        "  foreach ($f in @($comp.SelectNodes('w:File', $wns))) { "
-        "    if (Test-BobiverseAircMsiAgentLayerSource -Source ([string]$f.GetAttribute('Source'))) { "
-        "      $isAgent = $true; break "
-        "    } "
-        "  }; "
-        "  if ($isAgent) { [void]$toMove.Add($comp) } "
-        "}; "
-        "foreach ($comp in $toMove) { "
-        "  [void]$mainGroup.RemoveChild($comp); "
-        "  [void]$agentGroup.AppendChild($comp) "
-        "}; "
-        "[void]$mainGroup.ParentNode.AppendChild($agentGroup); "
+        "$moved = Move-BobiverseAircMsiAgentLayerComponents -HarvestXml $hx -NamespaceManager $wns "
+        "-MainGroupId $cg -AgentGroupId $agentCg -FailIfNone; "
         "$hx.Save($harvested); "
+        "$mainGroup = $hx.SelectSingleNode(\"//w:ComponentGroup[@Id='$cg']\", $wns); "
+        "$agentGroup = $hx.SelectSingleNode(\"//w:ComponentGroup[@Id='$agentCg']\", $wns); "
         "$mainIds = @($mainGroup.SelectNodes('w:Component', $wns) | ForEach-Object { $_.GetAttribute('Id') }); "
         "$agentIds = @($agentGroup.SelectNodes('w:Component', $wns) | ForEach-Object { $_.GetAttribute('Id') }); "
-        "@{ moved=$toMove.Count; main=$mainIds; agent=$agentIds } | ConvertTo-Json -Compress | "
+        "@{ moved=$moved; main=$mainIds; agent=$agentIds } | ConvertTo-Json -Compress | "
         f"Set-Content -LiteralPath '{out_json}' -Encoding utf8"
     )
     proc = _ps(script, timeout=60)
@@ -185,6 +175,145 @@ def test_fr3687_heat_component_split_moves_agent_files(tmp_path: Path):
     assert data["moved"] == 3, data
     assert set(data["agent"]) == {"cmpAgents", "cmpGrokSkill", "cmpAgentCtl"}
     assert set(data["main"]) == {"cmpIntake", "cmpInstall", "cmpNssm"}
+
+
+def test_fr3740_heat_componentref_split_moves_agent_files(tmp_path: Path):
+    """Real heat shape: Components under DirectoryRef, ComponentRef under ComponentGroup."""
+    harvested = tmp_path / "HarvestedFiles.wxs"
+    harvested.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="cmpAgents" Guid="*">
+        <File Id="filAgents" KeyPath="yes" Source="$(var.StageDir)\\AGENTS.md" />
+      </Component>
+      <Component Id="cmpClaude" Guid="*">
+        <File Id="filClaude" KeyPath="yes" Source="$(var.StageDir)\\CLAUDE.md" />
+      </Component>
+      <Component Id="cmpGrok" Guid="*">
+        <File Id="filGrok" KeyPath="yes" Source="$(var.StageDir)\\GROK.md" />
+      </Component>
+      <Directory Id="dirGrok" Name=".grok">
+        <Directory Id="dirSkills" Name="skills">
+          <Directory Id="dirX" Name="x">
+            <Component Id="cmpSkill" Guid="*">
+              <File Id="filSkill" KeyPath="yes" Source="$(var.StageDir)\\.grok\\skills\\x\\SKILL.md" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+      <Directory Id="dirScripts" Name="scripts">
+        <Component Id="cmpAgentCtl" Guid="*">
+          <File Id="filAgentCtl" KeyPath="yes" Source="$(var.StageDir)\\scripts\\agent_control.py" />
+        </Component>
+        <Component Id="cmpIntake" Guid="*">
+          <File Id="filIntake" KeyPath="yes" Source="$(var.StageDir)\\scripts\\Report-BobiverseIntakeIssue.ps1" />
+        </Component>
+        <Component Id="cmpInstall" Guid="*">
+          <File Id="filInstall" KeyPath="yes" Source="$(var.StageDir)\\scripts\\Install-Airc.ps1" />
+        </Component>
+      </Directory>
+    </DirectoryRef>
+  </Fragment>
+  <Fragment>
+    <ComponentGroup Id="BobiverseaircFiles">
+      <ComponentRef Id="cmpAgents" />
+      <ComponentRef Id="cmpClaude" />
+      <ComponentRef Id="cmpGrok" />
+      <ComponentRef Id="cmpSkill" />
+      <ComponentRef Id="cmpAgentCtl" />
+      <ComponentRef Id="cmpIntake" />
+      <ComponentRef Id="cmpInstall" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
+""",
+        encoding="utf-8",
+    )
+    out_json = tmp_path / "split.json"
+    script = (
+        f". '{COMMON}'; "
+        f"$harvested = '{harvested}'; "
+        "$cg = 'BobiverseaircFiles'; "
+        "$agentCg = 'BobiverseAircAgentLayerFiles'; "
+        "[xml]$hx = Get-Content -LiteralPath $harvested -Raw -Encoding UTF8; "
+        "$wns = New-Object System.Xml.XmlNamespaceManager($hx.NameTable); "
+        "$wns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi'); "
+        # Old FR #3687 loop (Components under group only) must move 0 on heat shape.
+        "$mainGroup = $hx.SelectSingleNode(\"//w:ComponentGroup[@Id='$cg']\", $wns); "
+        "$legacy = @($mainGroup.SelectNodes('w:Component', $wns)).Count; "
+        "$moved = Move-BobiverseAircMsiAgentLayerComponents -HarvestXml $hx -NamespaceManager $wns "
+        "-MainGroupId $cg -AgentGroupId $agentCg -FailIfNone; "
+        "$hx.Save($harvested); "
+        "$mainGroup = $hx.SelectSingleNode(\"//w:ComponentGroup[@Id='$cg']\", $wns); "
+        "$agentGroup = $hx.SelectSingleNode(\"//w:ComponentGroup[@Id='$agentCg']\", $wns); "
+        "$mainIds = @($mainGroup.SelectNodes('w:ComponentRef', $wns) | ForEach-Object { $_.GetAttribute('Id') }); "
+        "$agentIds = @($agentGroup.SelectNodes('w:ComponentRef', $wns) | ForEach-Object { $_.GetAttribute('Id') }); "
+        # Components stay under DirectoryRef; only refs move.
+        "$dirAgents = @($hx.SelectNodes('//w:DirectoryRef//w:Component[@Id=\"cmpAgents\"]', $wns)).Count; "
+        "@{ legacyUnderGroup=$legacy; moved=$moved; main=$mainIds; agent=$agentIds; dirAgents=$dirAgents } | "
+        "ConvertTo-Json -Compress | "
+        f"Set-Content -LiteralPath '{out_json}' -Encoding utf8"
+    )
+    proc = _ps(script, timeout=60)
+    assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+    import json
+
+    data = json.loads(out_json.read_text(encoding="utf-8-sig"))
+    assert data["legacyUnderGroup"] == 0, data
+    assert data["moved"] == 5, data
+    assert set(data["agent"]) == {
+        "cmpAgents",
+        "cmpClaude",
+        "cmpGrok",
+        "cmpSkill",
+        "cmpAgentCtl",
+    }
+    assert set(data["main"]) == {"cmpIntake", "cmpInstall"}
+    assert data["dirAgents"] == 1
+
+
+def test_fr3740_fail_closed_when_zero_agent_components(tmp_path: Path):
+    """FailIfNone throws when harvest has no agent-layer File Sources."""
+    harvested = tmp_path / "HarvestedFiles.wxs"
+    harvested.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="cmpInstall" Guid="*">
+        <File Id="filInstall" KeyPath="yes" Source="$(var.StageDir)\\scripts\\Install-Airc.ps1" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+  <Fragment>
+    <ComponentGroup Id="BobiverseaircFiles">
+      <ComponentRef Id="cmpInstall" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
+""",
+        encoding="utf-8",
+    )
+    script = (
+        f". '{COMMON}'; "
+        f"$harvested = '{harvested}'; "
+        "[xml]$hx = Get-Content -LiteralPath $harvested -Raw -Encoding UTF8; "
+        "$wns = New-Object System.Xml.XmlNamespaceManager($hx.NameTable); "
+        "$wns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi'); "
+        "try { "
+        "  Move-BobiverseAircMsiAgentLayerComponents -HarvestXml $hx -NamespaceManager $wns "
+        "    -MainGroupId 'BobiverseaircFiles' -AgentGroupId 'BobiverseAircAgentLayerFiles' -FailIfNone; "
+        "  Write-Output 'UNEXPECTED_OK'; exit 0 "
+        "} catch { "
+        "  if ($_.Exception.Message -match 'FR #3740') { Write-Output 'FAIL_CLOSED'; exit 0 } "
+        "  Write-Output $_.Exception.Message; exit 1 "
+        "}"
+    )
+    proc = _ps(script, timeout=60)
+    assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+    assert "FAIL_CLOSED" in (proc.stdout or "")
 
 
 def test_fr3687_stage_strip_without_install_airc(tmp_path: Path):
