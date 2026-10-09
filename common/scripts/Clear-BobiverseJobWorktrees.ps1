@@ -30,6 +30,10 @@
     `job-fr-bobiverse-N` / `fr-bobiverse-N`. When RepoRoot FreeGB stays below
     MinFreeGB after reclaim (candidates on another volume do not free this
     drive), print WARN FR #3698.
+  - FR #3717: before `git worktree remove`, delete `cdk.out*` under the job
+    tree with `cmd rmdir /s /q` (a-search CDK asset hashes hit Windows
+    Filename too long / MAX_PATH). Leftover paths after git deregister also
+    use cmd rmdir (Remove-Item fails the same way).
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
 
@@ -189,6 +193,36 @@ function Test-WorktreeProtected {
     return $false
 }
 
+function Remove-BobiverseDeepWorktreeDirs {
+    <#
+      FR #3717: pre-delete cdk.out* under a job worktree so git worktree remove
+      does not fail with Filename too long on deep a-search Lambda asset trees.
+      Uses cmd rmdir /s /q (MAX_PATH-safer than Remove-Item -Recurse on WinPS 5.1).
+    #>
+    param([Parameter(Mandatory)][string]$WorktreePath)
+    if (-not $WorktreePath -or -not (Test-Path -LiteralPath $WorktreePath)) { return }
+    Get-ChildItem -LiteralPath $WorktreePath -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'cdk.out*' } |
+        ForEach-Object {
+            $target = $_.FullName
+            Write-Host ("FR #3717 pre-rmdir deep tree {0}" -f $target)
+            cmd.exe /c ('rmdir /s /q "' + $target + '"') | Out-Null
+        }
+}
+
+function Remove-BobiversePathForce {
+    <#
+      FR #3717: force-delete a leftover worktree directory after git deregister.
+      Prefer cmd rmdir /s /q; fall back to Remove-Item if the path remains.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    cmd.exe /c ('rmdir /s /q "' + $Path + '"') | Out-Null
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not $RepoRoot) {
     # common/scripts -> repo root
     $here = $PSScriptRoot
@@ -291,6 +325,8 @@ foreach ($p in $toRemove) {
     }
     if ($PSCmdlet.ShouldProcess($p, 'git worktree remove --force')) {
         Write-Host "Removing worktree $p"
+        # FR #3717: drop cdk.out* asset trees before git so remove is not Filename too long.
+        Remove-BobiverseDeepWorktreeDirs -WorktreePath $p
         # FR #2460: under StrictMode + ErrorActionPreference Stop, git stderr piped as
         # ErrorRecords (e.g. Permission denied) can terminate before LASTEXITCODE fallback.
         # Stringify every record so native stderr stays non-terminating.
@@ -304,9 +340,11 @@ foreach ($p in $toRemove) {
         }
         if ($gitExit -ne 0) {
             Write-Warning "worktree remove failed for $p (will try prune / rmdir)"
-            if (Test-Path -LiteralPath $p) {
-                Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
-            }
+        }
+        # FR #3717: git may deregister yet leave the directory (Filename too long).
+        if (Test-Path -LiteralPath $p) {
+            Write-Host ("FR #3717 leftover rmdir {0}" -f $p)
+            Remove-BobiversePathForce -Path $p
         }
         $removed++
     }
