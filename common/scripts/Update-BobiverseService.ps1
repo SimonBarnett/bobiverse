@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 4.0
 <#
 .SYNOPSIS
   Service-start self-update for ircBob / ircJeeves / Airc (v0.1.17). Small, deterministic, token-less.
