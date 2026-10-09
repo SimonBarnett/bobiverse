@@ -1,4 +1,4 @@
-"""FR #3764: client update=on vs self-update=off is intentional — clarify logs/docs.
+"""FR #3764: client update=on vs self-update=off is intentional - clarify logs/docs.
 
 ``capabilities update=`` gates the remote UPDATE verb (ops-gated, FR #3401).
 ``self-update=`` / ``sync_from_repo=`` are start-time automatic channels (off on client).
