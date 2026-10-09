@@ -302,7 +302,7 @@ function Get-BobiverseAircIdentityFromAppParameters {
 function Test-BobiverseInstallPathProtectedTarget {
     <#
       FR #3678: true when Path already has the Protect-BobiverseInstallTree target
-      shape — inheritance disabled; SYSTEM + Administrators FullControl; Users RX;
+      shape - inheritance disabled; SYSTEM + Administrators FullControl; Users RX;
       owner Administrators or SYSTEM. Used to skip takeown /R and redundant Set-Acl.
     #>
     param([Parameter(Mandatory)][string]$Path)
@@ -402,7 +402,7 @@ function Protect-BobiverseInstallTree {
         foreach ($e in $ordered) {
             $t = [string]$e.FullName
             $isDir = [bool]$e.IsDir
-            # FR #3678: already-locked entry — skip Set-Acl + SetOwner (upgrade hot path).
+            # FR #3678: already-locked entry - skip Set-Acl + SetOwner (upgrade hot path).
             if (Test-BobiverseInstallPathProtectedTarget -Path $t) {
                 $skippedAcl++
                 continue
@@ -2267,7 +2267,7 @@ function Get-BobiverseSkillNames {
 function Assert-BobiversePlanCastIronSkillsVisionary {
     <#
       FR #3667: after Sync/Pack of plan\, CAST IRON examples must use
-      -Repo SimonBarnett/skills-visionary (FR #3506 / #3510). Soft WARN only —
+      -Repo SimonBarnett/skills-visionary (FR #3506 / #3510). Soft WARN only -
       do not hard-fail Sync when a stale dest still shows the bobiverse example;
       operators heal with Sync-BobiverseFromRepo / service ff. Does not re-land #3510 text.
     #>
@@ -2479,7 +2479,7 @@ function Get-BobiverseAircMsiAgentLayerScriptNames {
     <#
     .SYNOPSIS
       FR #3687: scripts that belong in the MSI AgentLayer Feature (not laid for
-      AIRC_PROFILE=client|workstation). Omits Report-BobiverseIntakeIssue.ps1 —
+      AIRC_PROFILE=client|workstation). Omits Report-BobiverseIntakeIssue.ps1 -
       client keeps that for install-failure intake (FR #3514/#3515).
     #>
     return @(
