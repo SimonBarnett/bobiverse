@@ -383,27 +383,35 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
     $isProcess = (
         ($joined -match '(?i)belong(?:s)? in\s+`?bobiverse-bob-job-mrb') -or
+        # FR #3827: tip #3826 used "stay in" / "durable in" instead of "belong(s) in"
+        ($joined -match '(?i)(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb') -or
         ($joined -match '(?i)docs/mrb-N after skill merge') -or
         ($joined -match '(?i)Harvest-lesson MRB:\s*process') -or
         ($joined -match '(?i)never merge a second copy') -or
+        ($joined -match '(?i)(?:do not|never)\s+(?:append|merge|land)\s+a\s+second\s+copy') -or
+        ($joined -match '(?i)second\s+copy\s+under\s+harvest') -or
         ($joined -match '(?i)wrong[- ]book') -or
-        ($joined -match '(?i)process playbooks?')
+        ($joined -match '(?i)process playbooks?') -or
+        ($joined -match '(?i)restatement playbooks?')
     )
     $isThinTwin = (
         ($joined -match '(?i)already\s+cover(?:s|ed)?') -or
+        ($joined -match '(?i)already\s+CAST\s+IRON') -or
         ($joined -match '(?i)close\s+thin\b') -or
         ($joined -match '(?i)thin\s+harvest(?:ed)?[- ]?lessons?\b') -or
         ($joined -match '(?i)thin\s+harvest\s+twin') -or
+        # FR #3827: tip #3826 said "thin harvest tip" / restatement
+        ($joined -match '(?i)thin\s+harvest\s+(?:tip|restatement)s?\b') -or
         ($joined -match '(?i)Harvested-lessons\s+intake\s+twins?') -or
         ($joined -match '(?i)citing\s+(?:the\s+)?product(?:/move)?\s*PRs?')
     )
     if ($isFailSuper -and $isProcess) { return $true }
     if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
-    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991
+    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 

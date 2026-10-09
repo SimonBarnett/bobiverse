@@ -136,6 +136,8 @@ PowerShell:
 # job-mrb already carry that CAST IRON routing — never open another lesson(harvest) twin.
 # FR #2991: FAIL-supersede + thin already-covered / close-thin-twin restatements (no job-mrb
 # process cue) also skip — tip #2990 class after #2988.
+# FR #3827: also catch "stay in"/"durable in bobiverse-bob-job-mrb", "thin harvest tip",
+# "do not append a second copy under harvest" (tip #3826 after #3825 missed belong(s) in).
 # FR #3004: default -Book harvest yields to keyword-inferred product books (bob-worker /
 # fleet-ops / job-mrb); if the owning skill already has the lesson, intake returns
 # lesson_already_covered — never open lesson(harvest) twins like #3001-#3003 after #2997.
@@ -208,6 +210,7 @@ routes to bobiverse via the split rule.
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
+- FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
