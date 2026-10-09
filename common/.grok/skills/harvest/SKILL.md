@@ -207,6 +207,7 @@ routes to bobiverse via the split rule.
 - Harvest-lesson MRB playbooks (fold duplicates into behind-main #1647; never leave a fake extra numbered review step) belong in `bobiverse-bob-job-mrb`. If intake files them under `harvest`, MRB moves/folds them there - do not land a second copy in this book (MRB #2740 / #2749).
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
+- airc client/workstation: Pack heat-split agent files into AgentLayerFeature Condition Level=0 (AIRC_PROFILE client|workstation or AIRC_AGENT_LAYER=0); intake stays MainFeature; script purge is defence-in-depth only. Behind-main MRB: keep FR-3687 docs with FR-3684 PS floor; ASCII-only Bobiverse-Common for WinPS parse gate.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
