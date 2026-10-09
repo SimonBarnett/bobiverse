@@ -21,9 +21,15 @@
     is the only sanctioned reclaim path - seats must not hand-delete other
     `C:\ai\*` trees when removed=0.
   - FR #3641: a fresh `.bobiverse-seat` protects mid-FR trees even when the
-    recorded pid is dead/wrong (soft-cap and non-Force reclaim). Live pid always
-    protects. -Force / low-disk may reclaim only when the marker mtime is older
-    than -StaleSeatHours (default 48) and the pid is not alive.
+    recorded pid is dead/wrong (soft-cap and non-Force reclaim). -Force /
+    low-disk may reclaim only when the marker mtime is older than
+    -StaleSeatHours (default 48) and the pid is not an owner of this tree.
+  - FR #3698: a live marker pid protects only when that process CommandLine
+    cites this worktree (one long-lived bob-worker must not shield every
+    leftover marker that recorded its pid). Expand job leaf matchers for
+    `job-fr-bobiverse-N` / `fr-bobiverse-N`. When RepoRoot FreeGB stays below
+    MinFreeGB after reclaim (candidates on another volume do not free this
+    drive), print WARN FR #3698.
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
 
@@ -79,17 +85,39 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
     if ($full.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -and ($leaf -match '(?i)^bobiverse-')) {
         return $true
     }
-    # Durable job trees under C:\ai (or D:\...): bob-wt-fr-N / job-fr-N / docs-mrb-N ...
-    if ($leaf -match '(?i)^(bob-wt-|job-)?(fr|mrb|uat|docs-mrb)-\d') { return $true }
-    if ($leaf -match '(?i)^(bobiverse-|fr-\d|mrb-|uat-)') { return $true }
-    # Temp-style ...-wt suffix only when the leaf already looks like a job id.
+    # Durable job trees under C:\ai (or D:\...): bob-wt-fr-N / job-fr-N / docs-mrb-N /
+    # job-fr-bobiverse-N / fr-bobiverse-N (FR #3698 name segment before the id).
+    if ($leaf -match '(?i)^(bob-wt-|job-)?(fr|mrb|uat|docs-mrb)(-[a-z0-9_.]+)*-\d+$') { return $true }
+    if ($leaf -match '(?i)^(bobiverse-|mrb-|uat-|docs-mrb-)') { return $true }
+    if ($leaf -match '(?i)^fr-\d') { return $true }
+    # Temp-style ...-wt / tmp-*-fr* probe trees.
     if ($leaf -match '(?i)^(bobiverse-|fr-|mrb-|uat-|docs-mrb-).*-wt$') { return $true }
+    if ($leaf -match '(?i)^tmp-.*-(fr|mrb|uat)') { return $true }
     return $false
 }
 
-function Test-WorktreeProtected([string]$Path) {
+function Test-ProcessCitesPath([int]$ProcessId, [string]$FullPath) {
+    # FR #3698: true when Win32_Process.CommandLine contains this worktree path.
+    if ($ProcessId -le 0 -or -not $FullPath) { return $false }
+    try {
+        $proc = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+        if (-not $proc) { return $false }
+        $cl = [string]$proc.CommandLine
+        if ($cl -and $cl.IndexOf($FullPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    } catch { }
+    return $false
+}
+
+function Test-WorktreeProtected {
     # True when a live / fresh seat marker or busy tool process owns the tree
-    # (FR #2727 / FR #3641).
+    # (FR #2727 / FR #3641 / FR #3698).
+    param(
+        [Parameter(Mandatory = $false, Position = 0)]
+        [string]$Path,
+        [switch]$FullReclaim
+    )
     if (-not $Path) { return $false }
     try {
         $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
@@ -115,7 +143,10 @@ function Test-WorktreeProtected([string]$Path) {
         if ($seatPid -gt 0) {
             $alive = Get-Process -Id $seatPid -ErrorAction SilentlyContinue
             if ($null -ne $alive) {
-                return $true
+                # FR #3698: live pid protects only when that process cites this tree.
+                if (Test-ProcessCitesPath -ProcessId $seatPid -FullPath $full) {
+                    return $true
+                }
             }
         }
         # FR #3641: fresh marker protects mid-FR trees even when pid is dead/wrong.
@@ -142,8 +173,13 @@ function Test-WorktreeProtected([string]$Path) {
         }
     }
     # Busy tool heuristic: CommandLine cites this path (cwd is not exposed via CIM).
+    # FR #3698: skip this process ($PID) — Clear / test harness CommandLines embed paths.
+    $selfPid = [int]$PID
     $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '(?i)^(git|python|pyinstaller|py|pwsh|powershell)\.exe$' })
+        Where-Object {
+            $_.Name -match '(?i)^(git|python|pyinstaller|py|pwsh|powershell)\.exe$' -and
+            [int]$_.ProcessId -ne $selfPid
+        })
     foreach ($proc in $procs) {
         $cl = [string]$proc.CommandLine
         if ($cl -and $cl.IndexOf($full, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
@@ -206,9 +242,10 @@ $skippedProtected = 0
 # FR #1664 / #1740: pipeline/filter of one path is a scalar string; always force Object[] before .Count (StrictMode).
 $jobTrees = @($paths.ToArray() | Where-Object { Test-IsJobWorktreePath $_ $rootFull $keepFull })
 $jobTrees = @($jobTrees)
-# FR #2727: drop live-seat / busy-tool trees before cap math (even with -Force).
-$protectedTrees = @($jobTrees | Where-Object { Test-WorktreeProtected $_ })
-$jobTrees = @($jobTrees | Where-Object { -not (Test-WorktreeProtected $_) })
+# FR #2727 / #3698: drop live-seat / busy-tool trees before cap math (even with -Force).
+# Pass FullReclaim so soft-cap freshness rules stay distinct from Force/low-disk.
+$protectedTrees = @($jobTrees | Where-Object { Test-WorktreeProtected -Path $_ -FullReclaim:$lowDisk })
+$jobTrees = @($jobTrees | Where-Object { -not (Test-WorktreeProtected -Path $_ -FullReclaim:$lowDisk) })
 foreach ($pt in $protectedTrees) {
     Write-Host "FR #2727 skip protected worktree $pt"
     $skippedProtected++
@@ -319,3 +356,15 @@ if ($removed -gt 0 -or $Force) {
 
 $freeAfter = Get-FreeGB $rootFull
 Write-Host ("Done removed={0} FreeGB_now={1} skipped_protected={2}" -f $removed, $freeAfter, $skippedProtected)
+# FR #3698: job trees on another volume cannot raise RepoRoot FreeGB (C: vs D:).
+if ($freeAfter -lt $MinFreeGB) {
+    $rootDrive = [System.IO.Path]::GetPathRoot($rootFull).TrimEnd('\').TrimEnd(':')
+    $otherVol = 0
+    foreach ($pt in $protectedTrees) {
+        try {
+            $pd = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($pt)).TrimEnd('\').TrimEnd(':')
+            if ($pd -and ($pd -ine $rootDrive)) { $otherVol++ }
+        } catch { }
+    }
+    Write-Warning ("FR #3698: RepoRoot drive FreeGB={0} still below MinFreeGB={1} after reclaim (removed={2}, skipped_protected={3}, skipped_other_volume={4}). Job trees on another volume do not free this drive; clear %TEMP% / agent caches on the install drive, or pass -StaleSeatHours lower once mid-FR markers are abandoned." -f $freeAfter, $MinFreeGB, $removed, $skippedProtected, $otherVol)
+}
