@@ -1,3 +1,4 @@
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   POST kind=issue|fr|skill|harvest to https://irc.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
@@ -202,7 +203,7 @@ function Write-BobiverseIntakeOutbox {
         if (-not $dir) { continue }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $path = Join-Path $dir $name
-        [IO.File]::WriteAllText($path, $json + "`n", [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path, $json + "`n", (New-Object System.Text.UTF8Encoding $false))
         $written += $path
     }
     return $written
