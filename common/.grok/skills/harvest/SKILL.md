@@ -208,6 +208,7 @@ routes to bobiverse via the split rule.
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
+- Fresh airc {machine}_console: skip SASL until ConsoleHome\console.nickserv-ok exists; REGISTER via NickServ; write marker on 903 / specific NickServ success NOTICE; loud ERROR 904 only after the marker exists
 
 ## Harvest digest (lessons audit 2026-10-06)
 
