@@ -26,7 +26,7 @@ def test_fr3773_list2cmdline_doubles_trailing_backslash_repro():
     """Pin the Windows bug class: list argv mangles ``dir C:\\``."""
     body = "dir C:" + "\\"
     cl = subprocess.list2cmdline(["cmd.exe", "/d", "/c", body])
-    # Doubled backslash before closing quote — the broken form.
+    # Doubled backslash before closing quote - the broken form.
     assert cl.endswith('"')
     assert 'C:\\\\"' in cl.replace("/", "\\") or cl.rstrip().endswith('\\\\"')
 
