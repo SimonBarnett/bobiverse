@@ -444,6 +444,37 @@ function Build-Msi([string]$Name, [string]$Stage) {
         }
         Write-Host ("INFO marked {0} ergo.exe component(s) Permanent+NeverOverwrite" -f $ergoFiles.Count)
     }
+    # FR #3687: airc agent briefings/skills/launchers live in BobiverseAircAgentLayerFiles
+    # (AgentLayerFeature Condition Level=0 for client|workstation|AIRC_AGENT_LAYER=0).
+    # Report-BobiverseIntakeIssue.ps1 stays in the main group (client allow-list).
+    $agentCg = $null
+    if ($Name -eq 'airc') {
+        $agentCg = 'BobiverseAircAgentLayerFiles'
+        $mainGroup = $hx.SelectSingleNode("//w:ComponentGroup[@Id='$cg']", $wns)
+        if (-not $mainGroup) { throw "heat ComponentGroup $cg missing after harvest" }
+        $agentGroup = $hx.CreateElement('ComponentGroup', $mainGroup.NamespaceURI)
+        $agentGroup.SetAttribute('Id', $agentCg)
+        $toMove = New-Object System.Collections.Generic.List[System.Xml.XmlElement]
+        foreach ($comp in @($mainGroup.SelectNodes('w:Component', $wns))) {
+            $isAgent = $false
+            foreach ($f in @($comp.SelectNodes('w:File', $wns))) {
+                if (Test-BobiverseAircMsiAgentLayerSource -Source ([string]$f.GetAttribute('Source'))) {
+                    $isAgent = $true
+                    break
+                }
+            }
+            if ($isAgent) { [void]$toMove.Add($comp) }
+        }
+        foreach ($comp in $toMove) {
+            [void]$mainGroup.RemoveChild($comp)
+            [void]$agentGroup.AppendChild($comp)
+        }
+        [void]$mainGroup.ParentNode.AppendChild($agentGroup)
+        Write-Host ("INFO FR #3687 moved {0} agent-layer component(s) to {1}" -f $toMove.Count, $agentCg)
+        if ($toMove.Count -lt 1) {
+            Write-Host 'WARN FR #3687 no agent-layer File components matched (stage may lack AGENTS/.grok)'
+        }
+    }
     $hx.Save($harvested)
     Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+NeverOverwrite" -f $nssmFiles.Count)
 
@@ -560,6 +591,27 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <Custom Action="RollbackRecover" After="SetRollbackRecoverCmd">NOT Installed OR REINSTALL</Custom>
 "@
     $guidMark = [guid]::NewGuid().ToString().ToUpper()
+    # FR #3687: airc AgentLayerFeature Level=0 when client|workstation|AIRC_AGENT_LAYER=0
+    # so msiexec never lays AGENTS/CLAUDE/GROK/.cursor/.grok/agent scripts even if RunInstall fails.
+    if ($Name -eq 'airc') {
+        $featureXml = @"
+    <Feature Id="MainFeature" Title="bobiverse $Name" Level="1">
+      <ComponentGroupRef Id="$cg" />
+      <ComponentRef Id="CmpInstallDirMark" />
+    </Feature>
+    <Feature Id="AgentLayerFeature" Title="bobiverse airc agent layer" Level="1">
+      <Condition Level="0"><![CDATA[AIRC_PROFILE ~= "client" OR AIRC_PROFILE ~= "workstation" OR AIRC_AGENT_LAYER = "0"]]></Condition>
+      <ComponentGroupRef Id="BobiverseAircAgentLayerFiles" />
+    </Feature>
+"@
+    } else {
+        $featureXml = @"
+    <Feature Id="MainFeature" Title="bobiverse $Name" Level="1">
+      <ComponentGroupRef Id="$cg" />
+      <ComponentRef Id="CmpInstallDirMark" />
+    </Feature>
+"@
+    }
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
@@ -568,10 +620,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
     <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
-    <Feature Id="MainFeature" Title="bobiverse $Name" Level="1">
-      <ComponentGroupRef Id="$cg" />
-      <ComponentRef Id="CmpInstallDirMark" />
-    </Feature>
+$featureXml
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="INSTALLDIR" Name="$installDirName" />
     </Directory>
