@@ -173,7 +173,7 @@ function Test-WorktreeProtected {
         }
     }
     # Busy tool heuristic: CommandLine cites this path (cwd is not exposed via CIM).
-    # FR #3698: skip this process ($PID) — Clear / test harness CommandLines embed paths.
+    # FR #3698: skip this process ($PID) - Clear / test harness CommandLines embed paths.
     $selfPid = [int]$PID
     $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
