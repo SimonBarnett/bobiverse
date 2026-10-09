@@ -761,6 +761,71 @@ def resolve_channel_commands(cfg: dict | None) -> bool:
     return prof == "client"
 
 
+# FR #3774: fleet lobby channel for optional client presence-only JOIN.
+FLEET_PRESENCE_CHANNEL = "#bobiverse"
+
+
+def normalize_irc_channel(name: str) -> str:
+    """Return ``#lowercase`` channel id, or ``\"\"`` when empty."""
+    s = (name or "").strip()
+    if not s:
+        return ""
+    return "#" + s.lstrip("#").lower()
+
+
+def same_irc_channel(a: str, b: str) -> bool:
+    """True when two IRC channel names refer to the same channel (FR #3774)."""
+    return normalize_irc_channel(a) == normalize_irc_channel(b) and bool(
+        normalize_irc_channel(a)
+    )
+
+
+def _coerce_presence_channel_list(raw: object) -> list[str] | None:
+    """Parse presence_channels from JSON list / string; ``None`` means key absent."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",")]
+        return [normalize_irc_channel(p) for p in parts if normalize_irc_channel(p)]
+    if isinstance(raw, (list, tuple)):
+        out: list[str] = []
+        for item in raw:
+            ch = normalize_irc_channel(str(item or ""))
+            if ch and ch not in out:
+                out.append(ch)
+        return out
+    return None
+
+
+def resolve_presence_channels(
+    cfg: dict | None = None,
+    *,
+    profile: str | None = None,
+    prefer_env: bool = True,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Extra channels to JOIN for presence only (FR #3774). Never command targets.
+
+    Resolution order:
+    1. ``presence_channels`` in ``airc.json`` when the key is present (including ``[]``).
+    2. Else ``AIRC_PRESENCE_CHANNELS`` (comma-separated; empty string = none) when set.
+    3. Else client profile defaults to ``#bobiverse``; fleet/workstation default none.
+    """
+    data = cfg or {}
+    if "presence_channels" in data:
+        parsed = _coerce_presence_channel_list(data.get("presence_channels"))
+        return parsed if parsed is not None else []
+
+    environ = env if env is not None else os.environ
+    if prefer_env and "AIRC_PRESENCE_CHANNELS" in environ:
+        return _coerce_presence_channel_list(environ.get("AIRC_PRESENCE_CHANNELS") or "") or []
+
+    prof = (profile or str(data.get("profile") or "")).strip().lower()
+    if prof == "client":
+        return [FLEET_PRESENCE_CHANNEL]
+    return []
+
+
 def legacy_operator_input_log_lines(args: object, cfg: dict | None) -> list[str]:
     """FR #3639: INFO lines for retired operator-list inputs (accepted, never read).
 
@@ -2012,6 +2077,7 @@ class AircConsoleCore:
         job_protocol: JobProtocol | None = None,
         capabilities: ConsoleCapabilities | None = None,
         channel_commands: bool = False,
+        presence_channels: list[str] | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -2031,6 +2097,12 @@ class AircConsoleCore:
         # because the fleet control channel (#<machine>) carries chair / git-claim
         # traffic (issue titles) that must never be executed as a shell line.
         self.channel_commands = bool(channel_commands)
+        # FR #3774: extra JOIN targets for presence only (never command targets).
+        self.presence_channels = [
+            normalize_irc_channel(c)
+            for c in (presence_channels or [])
+            if normalize_irc_channel(c)
+        ]
 
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
@@ -2040,8 +2112,21 @@ class AircConsoleCore:
         ]
 
     def join_commands(self) -> list[str]:
-        # Ergo creates channel on first JOIN when permitted; silent — no PRIVMSG.
-        return [f"JOIN {self.channel}"]
+        """JOIN control channel plus optional presence channels (FR #3774).
+
+        Presence channels (e.g. ``#bobiverse`` on client) are silent for commands —
+        ``handle_raw`` only executes channel traffic on ``self.channel``.
+        """
+        ordered: list[str] = []
+        ctrl = normalize_irc_channel(self.channel) or self.channel
+        if ctrl:
+            ordered.append(ctrl)
+        for ch in self.presence_channels:
+            if ch and ch not in ordered:
+                ordered.append(ch)
+        if not ordered:
+            return []
+        return [f"JOIN {','.join(ordered)}"]
 
     def may_speak_on_channel(self) -> bool:
         return False

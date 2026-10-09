@@ -47,6 +47,8 @@ from airc_console import (
     load_capabilities,
     legacy_operator_input_log_lines,
     resolve_channel_commands,
+    resolve_presence_channels,
+    same_irc_channel,
     load_start_update_policy,
     machine_console_nick,
     machine_id,
@@ -209,11 +211,19 @@ class AircConsoleService:
             info(line)
         self.auth_mode = "irc_ops"
         self.channel_commands = resolve_channel_commands(cfg)
+        # FR #3774: client defaults to presence JOIN #bobiverse; never a command target.
+        self.presence_channels = resolve_presence_channels(cfg)
         self.members = ChannelMemberMap(channel=self.channel)
         info(
             "INFO FR #3639 auth_mode=irc_ops (control-channel +o/+h; no operators list) "
             f"channel_commands={int(self.channel_commands)}"
         )
+        if self.presence_channels:
+            info(
+                "INFO FR #3774 presence_channels="
+                + ",".join(self.presence_channels)
+                + " (join only; commands stay on control channel)"
+            )
         amap = AccountMap()
         amap_path = self.home / "accounts.json"
         amap.load(amap_path)
@@ -259,8 +269,10 @@ class AircConsoleService:
             job_protocol=self.job_protocol,
             capabilities=caps,
             channel_commands=self.channel_commands,
+            presence_channels=self.presence_channels,
         )
         self.core.channel = self.channel
+        self.core.presence_channels = list(self.presence_channels)
         self.sock: ssl.SSLSocket | socket.socket | None = None
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
@@ -579,12 +591,19 @@ class AircConsoleService:
             return
         self._pending_join_deadline = 0.0
         self.core.channel = self.channel
+        self.core.presence_channels = list(getattr(self, "presence_channels", None) or [])
         for cmd in self.core.join_commands():
             self.send(cmd)
         self._joined_shop = True
-        info(f"INFO joined {self.channel} as {self.nick} (silent)")
+        presence = list(getattr(self, "presence_channels", None) or [])
+        extra = ",".join(presence) if presence else "-"
+        info(
+            f"INFO joined {self.channel} as {self.nick} (silent)"
+            + (f" presence={extra}" if presence else "")
+        )
         # FR #3401 / #3511: clear then resync prefixes after JOIN (353/366).
         # set_channel always clears (same-channel reconnect must not keep stale %).
+        # FR #3774: member map is control-channel only — presence NAMES must not sync here.
         if getattr(self, "members", None) is not None:
             self.members.clear()
             self.members.set_channel(self.channel)
@@ -875,44 +894,68 @@ class AircConsoleService:
             self.account_map.save(self.amap_path)
 
         # FR #3401 / #3511: keep ChannelMemberMap current for irc_ops auth.
+        # FR #3774: ignore NAMES/MODE/PART/KICK for presence channels (e.g. #bobiverse).
         if getattr(self, "members", None) is not None and getattr(self, "auth_mode", "") == "irc_ops":
+            ctrl = self.channel or ""
+
+            def _names_channel() -> str:
+                # 353: <me> = #chan :nicks  |  366: <me> #chan :End
+                if len(args) >= 3 and str(args[1]) in {"=", "*", "@"}:
+                    return str(args[2] or "")
+                if len(args) >= 2:
+                    return str(args[1] or "")
+                return ""
+
             if cmd == "353":
                 # NAMES: "<me> = #chan :@nick %nick2"
-                # FR #3511: a fresh NAMES while still synced must replace, not merge
-                # (otherwise absent nicks keep stale @/% across unexpected resync).
-                if self.members.synced:
-                    self.members.clear()
-                    self.members.set_channel(self.channel)
-                names = trailing or ""
-                self.members.apply_names(names)
+                ch = _names_channel()
+                if not same_irc_channel(ch, ctrl):
+                    pass  # presence-channel NAMES must not pollute control auth map
+                else:
+                    # FR #3511: a fresh NAMES while still synced must replace, not merge
+                    # (otherwise absent nicks keep stale @/% across unexpected resync).
+                    if self.members.synced:
+                        self.members.clear()
+                        self.members.set_channel(self.channel)
+                    names = trailing or ""
+                    self.members.apply_names(names)
             elif cmd == "366":
-                self.members.mark_synced()
-                info(f"INFO FR #3401 names-synced channel={self.channel} n={len(self.members._members)}")
+                ch = _names_channel()
+                if same_irc_channel(ch, ctrl):
+                    self.members.mark_synced()
+                    info(
+                        f"INFO FR #3401 names-synced channel={self.channel} "
+                        f"n={len(self.members._members)}"
+                    )
             elif cmd == "JOIN":
                 jnick = parse_prefix_nick(":" + prefix) if prefix else None
                 # channel may be args[0] or trailing
                 ch = (args[0] if args else "") or trailing
-                if jnick and ch and ch.lstrip("#").lower() == (self.channel or "").lstrip("#").lower():
+                if jnick and same_irc_channel(str(ch or ""), ctrl):
                     self.members.on_join(jnick)
             elif cmd == "PART":
                 pnick = parse_prefix_nick(":" + prefix) if prefix else None
-                if pnick:
-                    self.members.on_part(pnick)
-                # FR #3511: console left its control channel — refuse until resync.
-                if pnick and pnick.lower() == (self.nick or "").lower():
-                    self._lost_control_channel("self-part")
+                ch = (args[0] if args else "") or ""
+                if same_irc_channel(str(ch or ""), ctrl):
+                    if pnick:
+                        self.members.on_part(pnick)
+                    # FR #3511: console left its control channel — refuse until resync.
+                    if pnick and pnick.lower() == (self.nick or "").lower():
+                        self._lost_control_channel("self-part")
             elif cmd == "QUIT":
                 qnick = parse_prefix_nick(":" + prefix) if prefix else None
                 if qnick:
                     self.members.on_quit(qnick)
             elif cmd == "KICK":
                 # KICK #chan nick :reason
+                ch = args[0] if args else ""
                 knick = args[1] if len(args) >= 2 else ""
-                if knick:
-                    self.members.on_kick(knick)
-                # FR #3511: console kicked from control channel — clear ops map + rejoin.
-                if knick and knick.lower() == (self.nick or "").lower():
-                    self._lost_control_channel("self-kick")
+                if same_irc_channel(str(ch or ""), ctrl):
+                    if knick:
+                        self.members.on_kick(knick)
+                    # FR #3511: console kicked from control channel — clear ops map + rejoin.
+                    if knick and knick.lower() == (self.nick or "").lower():
+                        self._lost_control_channel("self-kick")
             elif cmd == "NICK":
                 new_nick = (trailing or (args[0] if args else "")).lstrip(":")
                 old_nick = (parse_prefix_nick(":" + prefix) if prefix else "") or ""
@@ -928,7 +971,8 @@ class AircConsoleService:
                 if trailing and not mode_args:
                     # rare forms
                     pass
-                self.members.on_mode(ch, modes, mode_args)
+                if same_irc_channel(str(ch or ""), ctrl):
+                    self.members.on_mode(ch, modes, mode_args)
 
         hr = self.core.handle_raw(line)
         if not hr:
