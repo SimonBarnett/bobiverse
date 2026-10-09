@@ -42,6 +42,7 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | Console log floods with keepalive PING / no timestamps / wrong path | AppStdout should be `<ai root>\airc\logs\airc-console.log` with rotate; service uses ISO-UTC + `info_keepalive` (~1/hour). Reinstall or `nssm set Airc AppStdout ...` after merge if live box still points at an agent folder. |
 | DisplayName still `#{machine}` | `Install-AircConsole.ps1` expands DisplayName/Description with machine id. Re-run install or set NSSM DisplayName after upgrade. |
 | MSI msiexec exit 0 / Install-Airc.cmd ok but no Airc service; log has install-fail (FR #3759, PS 4.0) | PowerShell 4.0 powershell.exe -File can exit 0 after an uncaught throw. Tip: Install-Airc.ps1 uses `$script:AircExitCode` + `exit` after finally; .cmd also treats install-airc-fail-reported.flag as FAIL when EC=0. Hotpatch/redeploy tip MSI. Related: #3685 CAQuietExec Return=check. |
+| `Ergo server PASS missing` / `config\ergo.password beside the unpack tree` (FR #3756) | Public MSI/zip has no embedded PASS (issue #4). Supply `-ErgoPasswordFile`, set `AGENTIC_IRC_PASSWORD` (or `AIRC_PACK_ERGO_PASSWORD` / `AIRC_CONSOLE_SERVER_PASSWORD` / `BOB_IRC_PASSWORD`), place `config\ergo.password` beside the unpack tree, or re-download a **private** fleet zip packed with `-EmbedErgoPassword`. Never invent the Ergo PASS. |
 
 Finish every session with the harvest step.
 
