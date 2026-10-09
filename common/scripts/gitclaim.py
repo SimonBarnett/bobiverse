@@ -570,8 +570,39 @@ def _payload_number(event: str, payload: dict) -> str | None:
 
 
 
+def _repo_key(repo: str) -> str:
+    """FR #3817: case-folded owner/name for queue identity compares."""
+    return str(repo or "").strip().lower()
+
+
+def _prefer_repo_casing(a: str, b: str) -> str:
+    """Prefer GitHub-style casing (any uppercase) over an all-lowercase twin (FR #3817)."""
+    left = str(a or "").strip()
+    right = str(b or "").strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if _repo_key(left) != _repo_key(right):
+        return left
+    if left != left.lower() and right == right.lower():
+        return left
+    if right != right.lower() and left == left.lower():
+        return right
+    return left
+
+
+def _job_key(repo: str, task: str, ident: str) -> tuple[str, str, str]:
+    """FR #3817: case-insensitive repo + task + normalised id."""
+    return (_repo_key(repo), str(task or "").upper(), _norm_row_id(ident))
+
+
 def canonical_queue_repo(repo: str) -> str:
-    """FR #785: map archived/legacy repos to their live successor (identity otherwise)."""
+    """FR #785: map archived/legacy repos to their live successor (identity otherwise).
+
+    FR #3817: comparisons use ``_repo_key`` (case-insensitive); this helper still
+    returns the successor spelling (or the input spelling) for storage.
+    """
     key = (repo or "").strip()
     if not key:
         return key
@@ -1474,12 +1505,13 @@ def _remove_unaccepted(doc: dict, repo: str, task: str, ident: str) -> int:
 def _remove_unaccepted_tasks(doc: dict, repo: str, ident: str, tasks: set[str]) -> int:
     before = len(doc["unaccepted"])
     want_id = _norm_row_id(ident)
+    want_repo = _repo_key(repo)
     want_tasks = {str(t).upper() for t in tasks}
     doc["unaccepted"] = [
         r
         for r in doc["unaccepted"]
         if not (
-            str(r.get("repo") or "") == str(repo or "")
+            _repo_key(r.get("repo")) == want_repo
             and _norm_row_id(r.get("id")) == want_id
             and str(r.get("task") or "").upper() in want_tasks
         )
@@ -1602,11 +1634,17 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
         return "skipped"
     if claim.task == "FR" and fr_is_superseded(doc, claim.repo, claim.id):
         return "skipped"  # FR #254: MRB / open implement PR supersedes FR
-    if _already(doc, claim.repo, claim.task, claim.id):
-        # refresh refs/line on existing unaccepted row
+    store_repo = canonical_queue_repo(claim.repo)
+    if _already(doc, store_repo, claim.task, claim.id):
+        # refresh refs/line on existing unaccepted row (case-insensitive match, FR #3817)
         for row in doc["unaccepted"]:
-            if _same(row, claim.repo, claim.task, claim.id):
-                row["line"] = claim.line
+            if _same(row, store_repo, claim.task, claim.id):
+                row["repo"] = _prefer_repo_casing(str(row.get("repo") or ""), store_repo)
+                # Do not wipe a useful GIT announce line with an empty resync/webhook line.
+                new_line = str(claim.line or "")
+                old_line = str(row.get("line") or "")
+                if new_line.strip() or not old_line.strip():
+                    row["line"] = claim.line
                 row["event"] = claim.event
                 row["action"] = claim.action
                 if claim.refs:
@@ -1634,7 +1672,7 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
         except (TypeError, ValueError):
             continue
     row = {
-        "repo": claim.repo,
+        "repo": store_repo,
         "task": claim.task,
         "id": claim.id,
         "ts": _utc_now(),
@@ -2493,8 +2531,9 @@ def _heal_mrb_pull_url(row: dict, *, force: bool = False) -> bool:
 
 
 def _same(row: dict, repo: str, task: str, ident: str) -> bool:
+    """True when row matches repo/task/id. Repo compare is case-insensitive (FR #3817)."""
     return (
-        str(row.get("repo") or "") == str(repo or "")
+        _repo_key(row.get("repo")) == _repo_key(repo)
         and str(row.get("task") or "").upper() == str(task or "").upper()
         and _norm_row_id(row.get("id")) == _norm_row_id(ident)
     )
@@ -2504,6 +2543,57 @@ def _already(doc: dict, repo: str, task: str, ident: str) -> bool:
     return any(_same(row, repo, task, ident) for row in doc["unaccepted"]) or any(
         _same(row, repo, task, ident) for row in doc["accepted"]
     )
+
+
+def collapse_case_variant_twins(doc: dict) -> int:
+    """FR #3817: merge unaccepted/accepted rows that differ only by repo-name casing.
+
+    Prefers mixed-case ``owner/name`` (GitHub ``full_name``) and a non-empty ``line``.
+    Returns how many duplicate rows were dropped.
+    """
+    dropped = 0
+    for bucket in ("unaccepted", "accepted"):
+        rows = [r for r in (doc.get(bucket) or []) if isinstance(r, dict)]
+        if len(rows) < 2:
+            continue
+        best: dict[tuple[str, str, str], dict] = {}
+        order: list[tuple[str, str, str]] = []
+        for row in rows:
+            key = _job_key(row.get("repo"), row.get("task"), row.get("id"))
+            prev = best.get(key)
+            if prev is None:
+                best[key] = row
+                order.append(key)
+                continue
+            dropped += 1
+            prev["repo"] = _prefer_repo_casing(
+                str(prev.get("repo") or ""), str(row.get("repo") or "")
+            )
+            if str(row.get("line") or "").strip() and not str(prev.get("line") or "").strip():
+                prev["line"] = row.get("line")
+            for field in (
+                "title",
+                "body",
+                "labels",
+                "event",
+                "action",
+                "url",
+                "require_machine",
+                "state",
+                "refs",
+            ):
+                if row.get(field) and not prev.get(field):
+                    prev[field] = row.get(field)
+            try:
+                a = int(prev.get("seq") or 0)
+                b = int(row.get("seq") or 0)
+                if b and (not a or b < a):
+                    prev["seq"] = b
+            except (TypeError, ValueError):
+                pass
+            best[key] = prev
+        doc[bucket] = [best[k] for k in order]
+    return dropped
 
 
 def enqueue_unaccepted(home: Path, claim: GitClaim) -> str:
@@ -2858,19 +2948,21 @@ def mrb_row_should_survive_resync(
 
     Previously resync kept MRB rows with ``offered_to`` that were no longer in the
     open-pull want set — those phantoms got re-offered after DONE PASS.
+    FR #3817: ``want`` / ``fetched`` membership is case-insensitive on repo.
     """
     if not isinstance(row, dict):
         return False
     repo = str(row.get("repo") or "")
     task = str(row.get("task") or "").upper()
     ident = _norm_row_id(row.get("id"))
-    if repo not in fetched:
+    fetched_keys = {_repo_key(x) for x in (fetched or ())}
+    if _repo_key(repo) not in fetched_keys:
         return True
     if task not in ("FR", "MRB"):
         return True
-    if (repo, task, ident) in want:
+    # want may be legacy (repo, task, id) or FR #3817 _job_key tuples.
+    if _job_key(repo, task, ident) in want or (repo, task, ident) in want:
         return True
-    # FR/MRB not open on GitHub anymore — never keep (offered_to does not save it).
     return False
 
 
@@ -6464,23 +6556,52 @@ def resync_from_github(
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
-            want = {(c.repo, c.task, _norm_row_id(c.id)) for c in desired}
+            # FR #3817: fold SimonBarnett/x vs simonbarnett/x twins before want/drop logic.
+            collapsed_n = collapse_case_variant_twins(doc)
+            want = {_job_key(c.repo, c.task, c.id) for c in desired}
             fetched_set = set(fetched)
+            fetched_keys = {_repo_key(r) for r in fetched}
+            # Case-insensitive open-pull and skipped-pull indexes (FR #3817).
+            open_pulls_by_key: dict[str, set[str]] = {}
+            for rname, nums in (open_pulls_map or {}).items():
+                open_pulls_by_key.setdefault(_repo_key(rname), set()).update(nums or ())
+            skipped_pulls_by_key: set[tuple[str, str]] = {
+                (_repo_key(r), _norm_row_id(i)) for (r, i) in (skipped_open_pulls or set())
+            }
+
+            def _row_fetched(repo_s: str) -> bool:
+                return _repo_key(repo_s) in fetched_keys
+
+            def _row_open_pulls(repo_s: str) -> set[str]:
+                return open_pulls_by_key.get(_repo_key(repo_s)) or set()
+
+            def _repo_clear_for(repo_s: str) -> bool:
+                if repo_s in repo_clear:
+                    return bool(repo_clear.get(repo_s, True))
+                rk = _repo_key(repo_s)
+                for name, clear in repo_clear.items():
+                    if _repo_key(name) == rk:
+                        return bool(clear)
+                return True
+
             before = len(doc["unaccepted"])
             keep = []
             dropped_detail: list[str] = []
+            if collapsed_n:
+                dropped_detail.append(f"case_twin_collapse x{collapsed_n}")
             for row in doc["unaccepted"]:
                 task_u = str(row.get("task") or "").upper()
                 repo_s = str(row.get("repo") or "")
                 ident_n = _norm_row_id(row.get("id"))
+                job_k = _job_key(repo_s, task_u, ident_n)
                 if task_u == "UAT":
                     # FR #818 / t853u: only keep real repo-level UAT (#0 + repo_uat).
                     if not is_repo_uat(row):
                         dropped_detail.append(f"{_row_drop_label(row)} uat_not_repo_level")
                         continue
                     if (
-                        row.get("repo") in fetched_set
-                        and not repo_clear.get(str(row.get("repo")), True)
+                        _row_fetched(repo_s)
+                        and not _repo_clear_for(repo_s)
                     ):
                         # FR #2971: drop even when offered_to is set — sticky shop
                         # offers must not survive after a blocking FR opens.
@@ -6503,21 +6624,21 @@ def resync_from_github(
                     continue  # FR #254
                 # FR #846: drop FR whose id is an open pull number for this repo.
                 if task_u == "FR":
-                    if ident_n in (open_pulls_map.get(repo_s) or set()):
+                    if ident_n in _row_open_pulls(repo_s):
                         dropped_detail.append(f"{_row_drop_label(row)} fr_is_open_pull")
                         continue
                 if (
-                    repo_s in fetched_set
+                    _row_fetched(repo_s)
                     and task_u == "FR"
-                    and (repo_s, "FR", ident_n) not in want
+                    and job_k not in want
                 ):
                     # FR #846: do not preserve closed-issue / closed-PR phantoms via offered_to.
                     dropped_detail.append(f"{_row_drop_label(row)} fr_not_in_want")
                     continue
                 if (
-                    repo_s in fetched_set
+                    _row_fetched(repo_s)
                     and task_u in ("FR", "MRB")
-                    and (repo_s, task_u, ident_n) not in want
+                    and job_k not in want
                     and not mrb_row_should_survive_resync(
                         row, want=want, fetched=fetched_set
                     )
@@ -6526,8 +6647,8 @@ def resync_from_github(
                     # want miss) must survive — unless this cycle classified it draft/receipt.
                     if (
                         task_u == "MRB"
-                        and ident_n in (open_pulls_map.get(repo_s) or set())
-                        and (repo_s, ident_n) not in skipped_open_pulls
+                        and ident_n in _row_open_pulls(repo_s)
+                        and (_repo_key(repo_s), ident_n) not in skipped_pulls_by_key
                     ):
                         _heal_mrb_pull_url(row, force=True)
                         keep.append(row)
@@ -6541,10 +6662,10 @@ def resync_from_github(
                 if (
                     task_u == "MRB"
                     and mrb_ledger_done_hold(home, repo_s, ident_n)
-                    and (repo_s, "MRB", ident_n) not in want
+                    and job_k not in want
                     and not (
-                        ident_n in (open_pulls_map.get(repo_s) or set())
-                        and (repo_s, ident_n) not in skipped_open_pulls
+                        ident_n in _row_open_pulls(repo_s)
+                        and (_repo_key(repo_s), ident_n) not in skipped_pulls_by_key
                     )
                 ):
                     dropped_detail.append(f"{_row_drop_label(row)} mrb_ledger_done")
@@ -6611,7 +6732,10 @@ def resync_from_github(
 
             # Drop stale unaccepted FR rows that are still inside the hold *and* not wanted
             # by GitHub (PR open / issue closed). Wanted FRs must stay enqueueable.
-            want_fr = {(c.repo, c.id) for c in desired if c.task == "FR"}
+            # FR #3817: want_fr keys are case-insensitive on repo.
+            want_fr = {
+                (_repo_key(c.repo), _norm_row_id(c.id)) for c in desired if c.task == "FR"
+            }
             doc["unaccepted"] = [
                 r
                 for r in doc["unaccepted"]
@@ -6619,7 +6743,11 @@ def resync_from_github(
                     isinstance(r, dict)
                     and str(r.get("task") or "").upper() == "FR"
                     and _fr_done_hold(str(r.get("repo") or ""), str(r.get("id") or ""))
-                    and (str(r.get("repo") or ""), str(r.get("id") or "")) not in want_fr
+                    and (
+                        _repo_key(r.get("repo")),
+                        _norm_row_id(r.get("id")),
+                    )
+                    not in want_fr
                 )
             ]
             cleared_fr_done: list[str] = []

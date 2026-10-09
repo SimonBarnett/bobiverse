@@ -260,13 +260,20 @@ def discover_repos(home: Path, owners: set[str], getter, ignored) -> list[str]:
                     repos.append(gitclaim.canonical_queue_repo(full))
     # FR #3146: never let strict focus starve when queue/config/user-repos are empty.
     repos.extend(focus_repos(home, owners))
-    out = []
-    for r in dict.fromkeys(repos):
+    # FR #3817: one entry per owner/name ignoring case (prefer mixed-case spelling).
+    by_key: dict[str, str] = {}
+    for r in repos:
         # FR #785: never keep a known-archived source name after rewrite.
         if gitclaim.repo_archived_for_queue(r):
             continue
-        if gitclaim.REPO_RE.fullmatch(r) and r.lower() not in skip and r.split("/", 1)[-1].lower() not in skip:
-            out.append(r)
+        if not gitclaim.REPO_RE.fullmatch(r):
+            continue
+        if r.lower() in skip or r.split("/", 1)[-1].lower() in skip:
+            continue
+        k = gitclaim._repo_key(r)
+        prev = by_key.get(k)
+        by_key[k] = gitclaim._prefer_repo_casing(prev or "", r) if prev else r
+    out = list(by_key.values())
     return out[:MAX_REPOS]
 
 
