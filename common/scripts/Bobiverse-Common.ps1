@@ -750,6 +750,15 @@ function Send-BobiverseAircInstallFailureIntake {
         Write-BobiverseMsiInstallLog -Product airc -Message ("install-fail-intake: {0}" -f $safeBody)
     } catch { }
 
+    # FR #3685: tell Install-Airc.cmd the PS path already handled reporting (skip outer double-file).
+    try {
+        $flagDir = Join-Path $env:ProgramData 'Bobiverse\logs'
+        if (-not (Test-Path -LiteralPath $flagDir)) {
+            New-Item -ItemType Directory -Force -Path $flagDir | Out-Null
+        }
+        Set-Content -LiteralPath (Join-Path $flagDir 'install-airc-fail-reported.flag') -Value '1' -Encoding ascii
+    } catch { }
+
     $allowIntake = $false
     try {
         $allowIntake = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
@@ -2456,6 +2465,8 @@ function Get-BobiverseAircClientAllowedScriptNames {
         'Update-BobiverseService.ps1',
         # FR #3514 / #3515: install-failure intake + python crash path
         'Report-BobiverseIntakeIssue.ps1',
+        # FR #3685: .cmd outer reporter when Install-Airc.ps1 never runs (#Requires refuse)
+        'Report-AircInstallCmdFailure.ps1',
         'crash_report.py',
         # Legacy host when airc\airc.exe is absent (SkipAircExe / pre-exe trees)
         'airc_console.py',
