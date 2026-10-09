@@ -557,9 +557,11 @@ $msiProps
       <CreateFolder />
       <RegistryValue Root="HKLM" Key="Software\SimonBarnett\bobiverse\$Name" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
     </Component>
-    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
+    <!-- FR #3685: cmd.exe /d /c call so .cmd exit codes reach CAQuietExec (bare .cmd CreateProcess can lose them). -->
+    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="cmd.exe /d /c call &quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
     <!-- #70: RunInstall forwards OPERFILE/SKIPERGO/MACHINEID/... via public Property Ids. -->
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
+    <!-- Return=check: nonzero Install-*.cmd must fail the MSI (1603) and roll back (FR #3685 / #2564). -->
     <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
 $uninstallCaDecls
 $rollbackCaDecls
