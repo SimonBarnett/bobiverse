@@ -41,6 +41,8 @@ def test_433_on_reserved_nick_does_not_fall_back_or_register(tmp_path, monkeypat
 
 
 def test_sasl_904_is_loud_error(tmp_path, monkeypatch):
+    # FR #3763: loud ERROR only once console.nickserv-ok says the account exists.
+    (tmp_path / "console.nickserv-ok").write_text("prior\n", encoding="ascii")
     s = make(tmp_path, monkeypatch)
     s.on_line(":srv 904 * :SASL authentication failed")
     assert any(m.startswith("ERROR console account tm_console SASL failed") for m in s.logs)
