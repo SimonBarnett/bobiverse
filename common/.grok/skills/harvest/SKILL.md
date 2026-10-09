@@ -208,6 +208,7 @@ routes to bobiverse via the split rule.
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
+- Twin-close harvest tips with PowerShell -match or short shared needles like 'lessons that already live' sweeps unrelated PRs (MRB #3792); use -eq or StartsWith of the full lesson title (FR #3803 / bobiverse_exact_title.py)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
