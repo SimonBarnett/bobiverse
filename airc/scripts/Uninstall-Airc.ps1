@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   FR #1566 / #3292: stop and remove the Airc Windows service; optional full purge.

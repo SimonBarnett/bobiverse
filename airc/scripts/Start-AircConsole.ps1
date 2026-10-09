@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   Launch airc console service host (FR #253). Use -ServiceMode under NSSM.
@@ -148,7 +148,7 @@ if (-not (Test-Path -LiteralPath $ergoDest) -or -not (Get-Content -LiteralPath $
     if (Test-Path -LiteralPath $packagedErgo) {
         $secret = (Get-Content -LiteralPath $packagedErgo -Raw).Trim()
         if ($secret) {
-            [IO.File]::WriteAllText($ergoDest, $secret + "`n", [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($ergoDest, $secret + "`n", (New-Object System.Text.UTF8Encoding $false))
             Write-Host "INFO seeded ergo.password from package $packagedErgo"
         }
     }

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   FR #2564: WiX rollback / failed MSI CA best-effort Start-Service for bob/jeeves/airc.

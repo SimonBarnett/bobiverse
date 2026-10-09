@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   Register NSSM service AircConsole (Automatic). FR #253 / #256 / #305.
@@ -302,7 +302,7 @@ function Write-AircSecretFile {
     $text = ($Secret -replace '[\r\n]+$', '').Trim()
     if (-not $text) { throw "refusing empty secret for $Path" }
     # ASCII one-line; no BOM - same shape as connect.password / NickServ GUID.
-    [IO.File]::WriteAllText($Path, $text + "`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($Path, $text + "`n", (New-Object System.Text.UTF8Encoding $false))
     # FR #3288: SYSTEM + Administrators only - never grant the installing user.
     if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
         Protect-BobiverseSecretPath -Path $Path

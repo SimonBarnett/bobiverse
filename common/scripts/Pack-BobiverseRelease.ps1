@@ -102,13 +102,20 @@ function Stage-Product([string]$Name) {
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') (Join-Path $stage 'VERSION') -Force
-    Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') (Join-Path $stage 'src\VERSION') -Force
+    # FR #3686 / regression of #1552: stage VERSION from the pack $Version (MSI ProductVersion),
+    # never by copying common\VERSION alone. A release pack with -Version 0.1.27 while
+    # common\VERSION still said 0.1.25 shipped BUILD.json=0.1.27 + VERSION=0.1.25 (walrus).
+    $verUtf8 = New-Object Text.UTF8Encoding $false
+    $verText = $Version.Trim() + [Environment]::NewLine
+    [IO.File]::WriteAllText((Join-Path $stage 'VERSION'), $verText, $verUtf8)
+    [IO.File]::WriteAllText((Join-Path $stage 'src\VERSION'), $verText, $verUtf8)
     # t797u: BUILD.json = what the tray About dialog shows as version / build date / commit for this install folder.
     $buildCommit = ''
     try { $buildCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
     ([ordered]@{ product = $Name; version = $Version; built_utc = [datetime]::UtcNow.ToString('o'); commit = $buildCommit.Trim() } |
         ConvertTo-Json -Compress) | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding ascii
+    # FR #3686: pack fails closed if VERSION / BUILD.json / ProductVersion disagree.
+    Assert-BobiverseStageVersionAligned -Stage $stage -ExpectedVersion $msiVersion -Product $Name
 
     # Product AGENTS.md (repo AGENTS.<product>.md -> stage AGENTS.md)
     $agentsSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel "AGENTS.$Name.md"
@@ -400,6 +407,27 @@ function Build-Msi([string]$Name, [string]$Stage) {
         # Stable component GUID (per product) so every release refers to the SAME component, not a fresh one.
         $nc.SetAttribute('Guid', '{' + ([guid]::new([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("bobiverse-$Name-nssm-component"))).ToString().ToUpper()) + '}')
     }
+    # FR #3686: unversioned VERSION files follow create/modify-date rules; a hand-touched
+    # older install keeps stale VERSION across MajorUpgrade. RemoveFile On=install on the
+    # same component deletes the target before the new file is laid.
+    $verFiles = @($hx.SelectNodes('//w:File', $wns) | Where-Object {
+            $srcAttr = [string]$_.GetAttribute('Source')
+            $srcAttr -match '(?i)[\\/]VERSION$'
+        })
+    $rmIdx = 0
+    foreach ($vf in $verFiles) {
+        $vc = $vf.ParentNode
+        $rm = $hx.CreateElement('RemoveFile', 'http://schemas.microsoft.com/wix/2006/wi')
+        $rmIdx++
+        $rm.SetAttribute('Id', ("RmStaleVersion{0}" -f $rmIdx))
+        $rm.SetAttribute('Name', 'VERSION')
+        $rm.SetAttribute('On', 'install')
+        [void]$vc.AppendChild($rm)
+    }
+    if ($verFiles.Count -lt 1) {
+        throw 'FR #3686: no VERSION File entries in harvested WiX (cannot force overwrite)'
+    }
+    Write-Host ("INFO FR #3686 RemoveFile On=install on {0} VERSION component(s)" -f $verFiles.Count)
     # #70 (v0.1.20): the same for ergo\ergo.exe. <ai root>\ergo\ergo.exe was found HARD-LINKED to the pack's
     # <ai root>\jeeves\ergo\ergo.exe, so the MSI rewriting its own copy rewrote the running Ergo binary and Windows
     # Restart Manager bounced BobIrcd (pid change, every client reconnected). The pack keeps shipping ergo.exe (fresh
@@ -523,6 +551,13 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="AIRC_AGENT_LAYER" Secure="yes" />
     <Property Id="AIRC_PURGE" Secure="yes" />
     <Property Id="BOBIVERSE_CRASH_REPORT" Secure="yes" />
+    <!-- FR #3684: Windows PowerShell >= 4.0 (Server 2012 R2 / walrus client baseline). -->
+    <Property Id="POWERSHELLVERSION">
+      <RegistrySearch Id="FindPowerShellVersion" Root="HKLM" Key="SOFTWARE\Microsoft\PowerShell\3\PowerShellEngine" Name="PowerShellVersion" Type="raw" Win64="yes" />
+    </Property>
+    <Condition Message="bobiverse airc requires Windows PowerShell 4.0 or newer (this machine: [POWERSHELLVERSION]).">
+      <![CDATA[Installed OR (POWERSHELLVERSION >= "4.0")]]>
+    </Condition>
 "@
         }
     }
@@ -599,9 +634,11 @@ $msiProps
       <CreateFolder />
       <RegistryValue Root="HKLM" Key="Software\SimonBarnett\bobiverse\$Name" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
     </Component>
-    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
+    <!-- FR #3685: cmd.exe /d /c call so .cmd exit codes reach CAQuietExec (bare .cmd CreateProcess can lose them). -->
+    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="cmd.exe /d /c call &quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
     <!-- #70: RunInstall forwards OPERFILE/SKIPERGO/MACHINEID/... via public Property Ids. -->
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
+    <!-- Return=check: nonzero Install-*.cmd must fail the MSI (1603) and roll back (FR #3685 / #2564). -->
     <CustomAction Id="RunInstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="yes" Return="check" />
 $uninstallCaDecls
 $rollbackCaDecls
