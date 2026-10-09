@@ -177,12 +177,16 @@ SKIP_FR_LABELS = frozenset(
     }
 )
 
-# Labels safe to detect in free text (title/line/body). Bare ``mrb`` is labels-only ΓÇö
-# otherwise titles like "harden MRB/FR routing" (#595) would false-positive.
+# Labels safe to detect in free text (title/line only when GitHub labels empty).
+# Bare ``mrb`` is labels-only — otherwise titles like "harden MRB/FR routing" (#595)
+# would false-positive. ``owner-missing`` is also labels-only (FR #3661 / class of
+# #987): remediation PRs that *mention* the hold-label name must stay offerable as
+# MRB; real holds are gated by HARVEST_OWNER_MISSING_HOLD_TITLE_RE + the label itself.
 SKIP_FR_LABELS_IN_TEXT = frozenset(
     lab
     for lab in SKIP_FR_LABELS
-    if lab not in {"mrb", "needs-human", "blocked", "release-gate"}
+    if lab
+    not in {"mrb", "needs-human", "blocked", "release-gate", "owner-missing"}
 )
 
 
