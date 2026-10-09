@@ -49,5 +49,6 @@ harvest, harvest-agent-skills), `docs\templates\vision.md`, `tools\` (vision-pac
 * `%LOCALAPPDATA%\Bobiverse\worker\logs\bob-worker-plan.log` (selection, `plan: started NEW <kind> agent pid=... session=...`); tray `Open log`.
 * Exit codes: `0` the plan agent ended, `4` no agent possible / key prompt cancelled, `6` launch failed, `64` plan folder missing (bob MSI older than this feature).
 * Nothing happens on click: `Open log`; run `--mode plan --dry-run`; check `tools\Get-BobAgentFuel.ps1` output.
+* Plan CAST IRON still shows `-Repo SimonBarnett/bobiverse` examples (FR #3667 / twin of #3506): install `plan\` is stale vs tip. Heal with `Sync-BobiverseFromRepo -Product bob` / `Sync-BobiverseAgentFolders` (preserves `plan\work`). Sync emits `WARN FR #3667` when dest AGENTS is still pre-#3510. Do not re-land #3510 source text.
 
 File every problem you find: CAST IRON rule at the top.

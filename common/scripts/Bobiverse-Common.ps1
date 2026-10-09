@@ -2147,6 +2147,41 @@ function Get-BobiverseSkillNames {
             ForEach-Object { $_.Name })
 }
 
+function Assert-BobiversePlanCastIronSkillsVisionary {
+    <#
+      FR #3667: after Sync/Pack of plan\, CAST IRON examples must use
+      -Repo SimonBarnett/skills-visionary (FR #3506 / #3510). Soft WARN only —
+      do not hard-fail Sync when a stale dest still shows the bobiverse example;
+      operators heal with Sync-BobiverseFromRepo / service ff. Does not re-land #3510 text.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot
+    )
+    if (-not $InstallRoot) { return }
+    $agentsPath = Join-Path $InstallRoot 'plan\AGENTS.md'
+    if (-not (Test-Path -LiteralPath $agentsPath)) {
+        Write-Host ("WARN FR #3667 plan AGENTS missing at {0} (run Sync-BobiverseAgentFolders / Sync-BobiverseFromRepo)" -f $agentsPath)
+        return
+    }
+    $text = [IO.File]::ReadAllText($agentsPath)
+    $idx = $text.IndexOf('CAST IRON RULE - HARVEST')
+    if ($idx -lt 0) {
+        Write-Host ("WARN FR #3667 plan AGENTS has no CAST IRON harvest block: {0}" -f $agentsPath)
+        return
+    }
+    $blockLen = [Math]::Min(2500, $text.Length - $idx)
+    $block = $text.Substring($idx, $blockLen)
+    $goodReport = $block.Contains('Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary')
+    $goodHarvest = $block.Contains('Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/skills-visionary')
+    $badReport = $block.Contains('Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse')
+    $badHarvest = $block.Contains('Invoke-BobiverseHarvest.ps1 -Repo SimonBarnett/bobiverse')
+    if ($goodReport -and $goodHarvest -and -not $badReport -and -not $badHarvest) {
+        Write-Host ("INFO FR #3667 plan CAST IRON skills-visionary ok: {0}" -f $agentsPath)
+        return
+    }
+    Write-Host ("WARN FR #3667 plan CAST IRON stale (want skills-visionary Report/Harvest examples; not bobiverse). Heal: Sync-BobiverseFromRepo / Sync-BobiverseAgentFolders / MSI past #3510. path={0}" -f $agentsPath)
+}
+
 function Sync-BobiverseAgentFolders {
     <#
     .SYNOPSIS
@@ -2155,6 +2190,7 @@ function Sync-BobiverseAgentFolders {
       Used by Pack-BobiverseRelease (Destination = the MSI stage), Install-Bob (repo installs) and Sync-BobiverseFromRepo (dev sync).
       Writes AGENTS.md + CLAUDE.md + GROK.md + .cursor\rules\bobiverse-<n>.mdc + .grok\skills\* (every skill carries the CAST IRON harvest rule) and
       NEVER deletes anything: plan\work\* (the plans' outputs) and a running worker\bob-worker.exe are left alone. The exe is built by Build-BobWorker.ps1.
+      FR #3667: after plan\ refresh, Assert-BobiversePlanCastIronSkillsVisionary soft-checks CAST IRON examples.
     #>
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
@@ -2204,6 +2240,8 @@ function Sync-BobiverseAgentFolders {
         Write-Host ("INFO agent folder {0}\ refreshed ({1} skills)" -f $n, @(Get-ChildItem -LiteralPath (Join-Path $dest '.grok\skills') -Directory).Count)
         $made++
     }
+    # FR #3667: surface stale plan CAST IRON (pre-#3510 bobiverse examples) after refresh.
+    Assert-BobiversePlanCastIronSkillsVisionary -InstallRoot $Destination
     return $made
 }
 

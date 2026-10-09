@@ -118,6 +118,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 |---|---|---|
 | `sasl-fail 904` / `433` loop, nick reserved | NickServ account password lost / wrong GUID | Oper `NickServ PASSWD <account> <the password file's value>` then restart that service; never mint a new password for a registered account |
 | Installed skill paths show `...\scripts\` (triple dot) | `Sync-BobiverseAgentFolders` used plain Replace on `.\scripts\` | Rewrite only bare `.\scripts\` with `(?<!\.)` lookbehind (FR #1704 / PR #1709) |
+| Plan `AGENTS.md` CAST IRON still shows `-Repo SimonBarnett/bobiverse` examples after #3506/#3510 | Install plan\ tree not ff/synced from tip (class of #3667) | `Sync-BobiverseFromRepo -Product bob` (or Sync-BobiverseAgentFolders) so plan CAST IRON uses skills-visionary; Sync soft-WARNs `WARN FR #3667` when dest still stale. Do not re-edit #3510 source text. |
 | `Pack-BobiverseRelease.ps1` refused by WinPS 5.1 / weird first-char parse | Double-encoded UTF-8 BOM (`c3afc2bbc2bf`) | Re-save as UTF-8 (single BOM or no BOM per contract); do not Latin-1 round-trip BOM files |
 | Config/JSON/ps1 "unexpected character" | UTF-8 BOM in a file that must have none (outbox, intake JSON) or missing BOM in a ps1 with non-ASCII | Outbox/JSON: write UTF-8 NO BOM. Read JSON with `utf-8-sig`. Keep BOM on existing `.ps1` |
 | Ear restarts every 30-60 s, `+h`/`+o` re-granted each time | Watcher/tray kills an ear whose command line lacks `--host` | `Start-Bob.ps1 -IrcHost` passes `--host`; the MSI bakes `-IrcHost` into the NSSM service |
