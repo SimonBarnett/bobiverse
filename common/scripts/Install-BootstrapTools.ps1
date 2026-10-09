@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   Install git, gh, Python 3.12+, Node LTS IF MISSING (bobiverse).

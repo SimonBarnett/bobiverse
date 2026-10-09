@@ -492,6 +492,13 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="AIRC_AGENT_LAYER" Secure="yes" />
     <Property Id="AIRC_PURGE" Secure="yes" />
     <Property Id="BOBIVERSE_CRASH_REPORT" Secure="yes" />
+    <!-- FR #3684: Windows PowerShell >= 4.0 (Server 2012 R2 / walrus client baseline). -->
+    <Property Id="POWERSHELLVERSION">
+      <RegistrySearch Id="FindPowerShellVersion" Root="HKLM" Key="SOFTWARE\Microsoft\PowerShell\3\PowerShellEngine" Name="PowerShellVersion" Type="raw" Win64="yes" />
+    </Property>
+    <Condition Message="bobiverse airc requires Windows PowerShell 4.0 or newer (this machine: [POWERSHELLVERSION]).">
+      <![CDATA[Installed OR (POWERSHELLVERSION >= "4.0")]]>
+    </Condition>
 "@
         }
     }

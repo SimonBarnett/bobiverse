@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   Legacy NSSM entry wrapper for Airc fleet installs (FR #1545).

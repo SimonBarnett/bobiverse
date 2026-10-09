@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 4.0
 # Dot-source only. Issue #266: prefer release-bundled NSSM over <ai root>\ergo\nssm.exe.
 function Resolve-AircConsoleNssmPath {
     param(

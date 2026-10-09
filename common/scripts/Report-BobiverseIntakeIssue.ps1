@@ -1,3 +1,4 @@
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   POST kind=issue|fr|skill|harvest to https://irc.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
