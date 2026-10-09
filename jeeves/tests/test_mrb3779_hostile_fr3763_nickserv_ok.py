@@ -24,8 +24,10 @@ def test_mrb3779_hostile_service_nickserv_ok_gate():
     assert "_nickserv_account_known" in text
     assert "_mark_nickserv_ok" in text
     assert "skip SASL until NickServ account exists" in text
-    # Loud ERROR path only when marker known.
-    assert "password mismatch with console.password" in text
+    # Loud ERROR path only when marker known (message is split across f-string lines).
+    assert "password mismatch" in text
+    assert "with console.password" in text
+    assert "ERROR console account" in text
     # Hostile: NickServ NOTICE matcher must not use bare "successful" alone.
     assert '"successful",' not in text and "'successful'," not in text
     assert "authentication successful" in text or "sasl authentication successful" in text
