@@ -843,6 +843,7 @@ class AircConsoleService:
             # FR #3763: NickServ REGISTER / IDENTIFY success -> allow SASL next connect.
             if src_l in {"nickserv", "ns"} and trailing:
                 t = trailing.lower()
+                # Avoid bare "successful" (too broad); keep Atheme/Ergo success phrases.
                 if any(
                     p in t
                     for p in (
@@ -851,7 +852,8 @@ class AircConsoleService:
                         "you are now logged in",
                         "password accepted",
                         "already registered",
-                        "successful",
+                        "authentication successful",
+                        "sasl authentication successful",
                     )
                 ):
                     self._mark_nickserv_ok("nickserv-notice")
