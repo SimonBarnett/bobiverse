@@ -41,6 +41,7 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | `UPDATE airc …` replies `updater-missing` under `_MEI*` (FR #2949) | Frozen `airc.exe` used `Path(__file__).parents[1]` for UPDATE InstallRoot / script lookup. Fixed: `resolve_airc_install_root` / `resolve_fleet_update_install_root` + look under `<InstallRoot>\scripts\Update-BobiverseService.ps1`. UPDATE stays `action=update` (never shell fallthrough). Needs rebuilt/redeployed `airc.exe`. Workaround: run `Update-BobiverseService.ps1 -Product airc -Mode Check -ForceCheck` via Command. |
 | Console log floods with keepalive PING / no timestamps / wrong path | AppStdout should be `<ai root>\airc\logs\airc-console.log` with rotate; service uses ISO-UTC + `info_keepalive` (~1/hour). Reinstall or `nssm set Airc AppStdout ...` after merge if live box still points at an agent folder. |
 | DisplayName still `#{machine}` | `Install-AircConsole.ps1` expands DisplayName/Description with machine id. Re-run install or set NSSM DisplayName after upgrade. |
+| MSI msiexec exit 0 / Install-Airc.cmd ok but no Airc service; log has install-fail (FR #3759, PS 4.0) | PowerShell 4.0 powershell.exe -File can exit 0 after an uncaught throw. Tip: Install-Airc.ps1 uses `$script:AircExitCode` + `exit` after finally; .cmd also treats install-airc-fail-reported.flag as FAIL when EC=0. Hotpatch/redeploy tip MSI. Related: #3685 CAQuietExec Return=check. |
 
 Finish every session with the harvest step.
 
