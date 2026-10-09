@@ -18,7 +18,7 @@ def test_mrb3679_install_airc_protect_shape():
     assert "-Recurse" not in t[early : early + 80]
     recurse = list(
         re.finditer(
-            r"Protect-BobiverseInstallTree -Path \$InstallRoot -Recurse -FailClosed",
+            r"Protect-BobiverseInstallTree -Path \$InstallRoot -Recurse -Force -FailClosed",
             t,
         )
     )
@@ -33,6 +33,9 @@ def test_mrb3679_common_skip_takeown_and_elapsed():
     assert "skip takeown; root already protected" in t
     assert "elapsed_ms" in t
     assert "skipped_acl" in t
+    assert "FR #3716" in t
+    assert "skip ACL walk" in t
+    assert "[switch]$Force" in t
     assert "$Recurse -and $item.PSIsContainer" in t
     assert "/R /D Y" in t
 
