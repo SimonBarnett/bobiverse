@@ -96,6 +96,16 @@ def test_common_exports_client_allowlist_includes_install_scripts():
     assert "Report-BobiverseIntakeIssue.ps1" in t
 
 
+def test_mrb3688_client_path_no_ps5_new_operator():
+    """MRB #3688 fix: PS 5+ Type::new() throws on Windows PowerShell 4.0."""
+    bad = []
+    for rel in CLIENT_PS1_RELATIVE:
+        text = (ROOT / rel).read_text(encoding="utf-8-sig")
+        if "::new(" in text:
+            bad.append(rel)
+    assert not bad, f"replace ::new() with New-Object for PS 4.0: {bad}"
+
+
 def test_pack_airc_msi_powershell_launch_condition():
     p = PACK.read_text(encoding="utf-8")
     _no_bom_optional(PACK)
