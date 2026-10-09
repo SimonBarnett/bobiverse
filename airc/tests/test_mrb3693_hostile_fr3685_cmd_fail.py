@@ -34,6 +34,17 @@ def test_mrb3693_pack_cmd_call_wrap_and_return_check():
     assert i >= 0
     window = p[i : i + 400]
     assert "cmd.exe /d /c call" in window
+    assert "$installArgs" in window
+
+
+def test_mrb3693_fr70_pin_tracks_cmd_call_wrap():
+    """FR #3715: keep FR #70 SetInstallCmd pin aligned with FR #3685 cmd wrap."""
+    fr70 = (ROOT / "common/tests/test_fr70_runinstall_msi_props.py").read_text(
+        encoding="utf-8"
+    )
+    assert "cmd.exe /d /c call" in fr70
+    assert "$installArgs" in fr70
+    assert "SetInstallCmd" in fr70
 
 
 def test_mrb3693_outer_reporter_no_requires_and_redact():
