@@ -111,6 +111,9 @@ Ensure-BobiverseProgramDataRoot -FailClosed -ProtectMode LogsOnly | Out-Null
 $script:AircInstallOk = $false
 # FR #3584: inner Install-AircConsole catch may already have filed intake before rethrow.
 $script:AircInstallFailReported = $false
+# FR #3759: PS 4.0 powershell.exe -File leaves process exit 0 on uncaught throw.
+# Track nonzero exit explicitly; call exit after finally so Install-Airc.cmd sees it.
+$script:AircExitCode = 0
 try {
 
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
@@ -580,10 +583,13 @@ $script:AircInstallOk = $true
     } else {
         Write-Host 'INFO FR #3584 skip outer install-fail intake (already reported by Install-AircConsole catch)'
     }
-    throw
+    # FR #3759: do not bare-throw here - PS 4.0 -File would still exit 0.
+    $script:AircExitCode = 1
 } finally {
     # FR #2564: best-effort Start-Service Airc after a failed RunInstall.
     if (-not $script:AircInstallOk) {
         [void](Restore-BobiverseServiceAfterFailedInstall -ServiceName 'Airc' -Product airc -Why 'Install-Airc-catch')
     }
 }
+# FR #3759: explicit exit after finally (finally still ran). Install-Airc.cmd reads %ERRORLEVEL%.
+exit [int]$script:AircExitCode
