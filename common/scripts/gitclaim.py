@@ -2241,7 +2241,8 @@ def _coerce_row(row: dict) -> dict | None:
                 "offered_via",  # FR #2811: giveup-push sticky window
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
-                "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by"):
+                "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by",
+                "reconcile"):  # FR #3742: LOST_DONE_RESTART vs STALE_BUSY audit
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -6911,8 +6912,20 @@ def _seat_has_accepted(home: Path, nick: str) -> bool:
     return False
 
 
-def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
-    """ignore, wait, busy, or ok. wait is checked before busy so retries stay quiet."""
+def bored_gate(
+    home: Path,
+    nick: str,
+    channel: str,
+    now: float,
+    *,
+    session_started: float | None = None,
+) -> str:
+    """ignore, wait, busy, or ok. wait is checked before busy so retries stay quiet.
+
+    FR #3742: pass ``session_started`` (chair IRC session / process start) so an
+    accepted row ACKed before this session is healed on ``!bored`` without waiting
+    ``BUSY_STALE_S`` (lost DONE while the chair was down).
+    """
     shop = worker_shop_channel(nick)
     if shop is None or _channel(channel) != shop:
         return "ignore"
@@ -6926,11 +6939,11 @@ def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
     # FR #3192: accepted row is busy even before digest on_ack paints working_on
     # (stale !bored after slow GH work must NAK-busy, not stamp a second offer).
     if _seat_has_accepted(home, nick):
-        if release_stale_busy(home, nick, now):
+        if release_stale_busy(home, nick, now, session_started=session_started):
             return "ok"
         return "busy"
     if worker_working_on(home, nick):
-        if release_stale_busy(home, nick, now):
+        if release_stale_busy(home, nick, now, session_started=session_started):
             return "ok"
         return "busy"
     return "ok"
@@ -6943,8 +6956,55 @@ def bored_gate(home: Path, nick: str, channel: str, now: float) -> str:
 BUSY_STALE_S = 3600.0
 
 
-def release_stale_busy(home: Path, nick: str, now: float) -> bool:
-    """Heal a lost-DONE seat on !bored: drop its stale accepted row(s), set it idle. True if healed."""
+def _accepted_row_age_s(row: dict, now: float) -> float:
+    """Age of an accepted row from accepted_ts/offered_ts/ts; missing/bad => older than BUSY_STALE_S."""
+    ts = str(row.get("accepted_ts") or row.get("offered_ts") or row.get("ts") or "")
+    try:
+        return float(now) - datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return BUSY_STALE_S + 1.0
+
+
+def _accepted_ts_epoch(row: dict) -> float | None:
+    ts = str(row.get("accepted_ts") or row.get("offered_ts") or row.get("ts") or "")
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _digest_work_pull_url(home: Path, nick: str) -> str:
+    """Local-only completion hint: digest working_on / worker work containing a pull URL."""
+    try:
+        work = str(worker_working_on(home, nick) or "")
+    except Exception:  # noqa: BLE001
+        work = ""
+    if not work:
+        return ""
+    m = re.search(r"https://github\.com/\S+/pull/\d+", work)
+    return m.group(0) if m else ""
+
+
+def release_stale_busy(
+    home: Path,
+    nick: str,
+    now: float,
+    *,
+    session_started: float | None = None,
+    log=None,
+) -> bool:
+    """Heal a lost-DONE seat on !bored: drop its stale accepted row(s), set it idle. True if healed.
+
+    Stale when:
+    * row age >= ``BUSY_STALE_S`` (FR #2369), or
+    * ``session_started`` is set and the row's accepted_ts is strictly before that
+      session (FR #3742 — lost DONE across chair restart / IRC reconnect).
+
+    A seat that ``!bored`` is claiming idle; do not heal a fresh ACK from *this*
+    session (accepted_ts >= session_started and age < BUSY_STALE_S).
+    """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
         return False
@@ -6959,6 +7019,7 @@ def release_stale_busy(home: Path, nick: str, now: float) -> bool:
         ).strip()
         return (canonical_worker_nick(raw) or raw).strip().lower()
 
+    healed_rows: list[tuple[dict, str]] = []
     try:
         with _lock(home):
             doc = _load_queue_unlocked(home)
@@ -6975,29 +7036,51 @@ def release_stale_busy(home: Path, nick: str, now: float) -> bool:
             acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
             mine = [r for r in acc if _owner(r) == me]
             for r in mine:
-                ts = str(r.get("accepted_ts") or r.get("offered_ts") or r.get("ts") or "")
-                try:
-                    age = float(now) - datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-                except ValueError:
-                    age = BUSY_STALE_S + 1
-                if age < BUSY_STALE_S:
-                    return False  # genuinely recent job: honour busy
+                age = _accepted_row_age_s(r, float(now))
+                if age >= BUSY_STALE_S:
+                    continue  # stale by age
+                if session_started is not None:
+                    epoch = _accepted_ts_epoch(r)
+                    # Missing/bad ts: treat as pre-session (same as age path).
+                    if epoch is None or epoch < float(session_started):
+                        continue  # stale by FR #3742 session boundary
+                return False  # genuinely recent job in this session: honour busy
             if mine:
                 # Drop (not requeue): github-resync re-adds the row if the item is still open,
                 # so a closed/merged job is never handed out again.
-                # Audit stamp (MRB #2373 / FR #2369): keep a done trail for stale busy releases.
+                # Audit stamp (MRB #2373 / FR #2369 / FR #3742).
+                pull_hint = _digest_work_pull_url(home, nick)
                 done = doc.setdefault("done", [])
                 for r in mine:
                     fin = dict(r)
-                    fin["result"] = "STALE_BUSY"
+                    age = _accepted_row_age_s(r, float(now))
+                    if age >= BUSY_STALE_S:
+                        reason = "STALE_BUSY"
+                    else:
+                        reason = "LOST_DONE_RESTART"
+                    # FR #3742: when digest already carries a pull URL, prefer that as result.
+                    fin["result"] = pull_hint or reason
                     fin["done_ts"] = _utc_now()
+                    fin["reconcile"] = reason
                     done.append(fin)
+                    healed_rows.append((fin, reason))
                 if len(done) > DONE_CAP:
                     doc["done"] = done[-DONE_CAP:]
                 doc["accepted"] = [r for r in acc if _owner(r) != me]
                 _write_queue(queue_path(home), doc)
     except Exception:  # noqa: BLE001
         return False
+    for fin, reason in healed_rows:
+        row_id = str(fin.get("id") or "")
+        repo = str(fin.get("repo") or "")
+        task = str(fin.get("task") or "")
+        result = str(fin.get("result") or reason)
+        _log_queue_purge(
+            f"INFO seat-reconcile nick={nick} row={task} {repo}{row_id} "
+            f"result={result} reason={reason}",
+            log=log,
+        )
+    # Digested "doing" with no accepted row (or after drop): clear so !bored can offer.
     try:
         out = bobreport.clear_seat_doing(_root(home), nick)
     except Exception:  # noqa: BLE001
