@@ -18,9 +18,9 @@ def test_mrb3726_clear_helpers_and_call_order():
     assert "FR #3717 leftover rmdir" in t
     assert "cdk.out*" in t or "cdk.out" in t
     assert "rmdir /s /q" in t
-    # Pre-rmdir before git worktree remove; leftover force after.
+    # Live remove loop: pre-rmdir, then native git remove, then leftover PathForce.
     i_deep = t.find("Remove-BobiverseDeepWorktreeDirs -WorktreePath")
-    i_git = t.find("git worktree remove")
+    i_git = t.find("& git -C $rootFull worktree remove --force")
     i_force = t.find("Remove-BobiversePathForce -Path")
     assert i_deep > 0 and i_git > 0 and i_force > 0
     assert i_deep < i_git < i_force
