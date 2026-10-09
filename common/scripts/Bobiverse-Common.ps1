@@ -299,6 +299,57 @@ function Get-BobiverseAircIdentityFromAppParameters {
     }
 }
 
+function Test-BobiverseInstallPathProtectedTarget {
+    <#
+      FR #3678: true when Path already has the Protect-BobiverseInstallTree target
+      shape — inheritance disabled; SYSTEM + Administrators FullControl; Users RX;
+      owner Administrators or SYSTEM. Used to skip takeown /R and redundant Set-Acl.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+        if (-not $acl.AreAccessRulesProtected) { return $false }
+        $sys = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-18'
+        $adm = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+        $usr = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-545'
+        $ownerSid = $null
+        try {
+            $ownerSid = (New-Object System.Security.Principal.NTAccount($acl.Owner)).Translate(
+                [System.Security.Principal.SecurityIdentifier]
+            )
+        } catch {
+            return $false
+        }
+        if ($ownerSid.Value -ne $adm.Value -and $ownerSid.Value -ne $sys.Value) {
+            return $false
+        }
+        $full = [int][System.Security.AccessControl.FileSystemRights]::FullControl
+        $rx = [int][System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+        $allow = [System.Security.AccessControl.AccessControlType]::Allow
+        $hasSys = $false
+        $hasAdm = $false
+        $hasUsr = $false
+        foreach ($rule in @($acl.Access)) {
+            if ($rule.AccessControlType -ne $allow) { continue }
+            if ($rule.IsInherited) { continue }
+            $sid = $null
+            try {
+                $sid = $rule.IdentityReference.Translate(
+                    [System.Security.Principal.SecurityIdentifier]
+                )
+            } catch { continue }
+            $rights = [int]$rule.FileSystemRights
+            if ($sid.Value -eq $sys.Value -and ($rights -band $full) -eq $full) { $hasSys = $true }
+            if ($sid.Value -eq $adm.Value -and ($rights -band $full) -eq $full) { $hasAdm = $true }
+            if ($sid.Value -eq $usr.Value -and ($rights -band $rx) -eq $rx) { $hasUsr = $true }
+        }
+        return ($hasSys -and $hasAdm -and $hasUsr)
+    } catch {
+        return $false
+    }
+}
+
 function Protect-BobiverseInstallTree {
     <#
       FR #3289: lock an airc (or other product) install tree so standard users cannot
@@ -313,6 +364,9 @@ function Protect-BobiverseInstallTree {
       object - unelevated SetOwner breaks Set-Acl); takeown /R /D Y only when
       -Recurse (LogsOnly must not walk update\ via takeown /R). Directory ACEs keep
       ContainerInherit|ObjectInherit: inherit=None on a parent empties child DACLs.
+      FR #3678: skip takeown when root already matches the protected target; skip
+      Set-Acl on entries already locked; log protect begin/end elapsed_ms. Install-Airc
+      does one Full -Recurse (before Start-Service); early pass is root-only.
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -325,6 +379,8 @@ function Protect-BobiverseInstallTree {
         }
         return
     }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host ("INFO Protect-BobiverseInstallTree begin path={0} recurse={1}" -f $Path, [bool]$Recurse)
     try {
         $item = Get-Item -LiteralPath $Path -Force
         $entries = New-Object System.Collections.Generic.List[object]
@@ -342,9 +398,15 @@ function Protect-BobiverseInstallTree {
         $full = [System.Security.AccessControl.FileSystemRights]::FullControl
         $rx = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
         $allow = [System.Security.AccessControl.AccessControlType]::Allow
+        $skippedAcl = 0
         foreach ($e in $ordered) {
             $t = [string]$e.FullName
             $isDir = [bool]$e.IsDir
+            # FR #3678: already-locked entry — skip Set-Acl + SetOwner (upgrade hot path).
+            if (Test-BobiverseInstallPathProtectedTarget -Path $t) {
+                $skippedAcl++
+                continue
+            }
             if ($isDir) {
                 $acl = New-Object System.Security.AccessControl.DirectorySecurity
                 # Always CI|OI on dirs. inherit=None + SetAccessRuleProtection empties
@@ -373,24 +435,33 @@ function Protect-BobiverseInstallTree {
         # (directory alone must not recurse - LogsOnly protects root+logs without
         # walking update\). Install/uninstall run elevated; unit tests may lack
         # elevation - owner reset never FailClosed-throws (DACL lock is the gate).
+        # FR #3678: skip takeown when root already matches protected target (ionos
+        # upgrade spent ~11 min in two takeown /R walks over ~5k items).
         try {
             $takeown = Join-Path $env:SystemRoot 'System32\takeown.exe'
             if (Test-Path -LiteralPath $takeown) {
-                # cmd swallows stderr so unelevated unit tests do not NativeCommandError.
-                if ($Recurse -and $item.PSIsContainer) {
-                    $tc = 'takeown /F "' + $item.FullName + '" /A /R /D Y >nul 2>&1'
+                $rootAlready = Test-BobiverseInstallPathProtectedTarget -Path $item.FullName
+                if ($rootAlready) {
+                    Write-Host ("INFO FR #3678 skip takeown; root already protected path={0}" -f $item.FullName)
                 } else {
-                    $tc = 'takeown /F "' + $item.FullName + '" /A >nul 2>&1'
-                }
-                cmd.exe /c $tc | Out-Null
-                if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-                    Write-Host ("WARN FR #3516 takeown exit={0} path={1}" -f $LASTEXITCODE, $item.FullName)
+                    # cmd swallows stderr so unelevated unit tests do not NativeCommandError.
+                    if ($Recurse -and $item.PSIsContainer) {
+                        $tc = 'takeown /F "' + $item.FullName + '" /A /R /D Y >nul 2>&1'
+                    } else {
+                        $tc = 'takeown /F "' + $item.FullName + '" /A >nul 2>&1'
+                    }
+                    cmd.exe /c $tc | Out-Null
+                    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+                        Write-Host ("WARN FR #3516 takeown exit={0} path={1}" -f $LASTEXITCODE, $item.FullName)
+                    }
                 }
             }
         } catch {
             Write-Host ("WARN FR #3516 Protect owner reset: {0}" -f $_.Exception.Message)
         }
-        Write-Host ("INFO Protect-BobiverseInstallTree locked {0}" -f $Path)
+        $sw.Stop()
+        Write-Host ("INFO Protect-BobiverseInstallTree locked {0} entries={1} skipped_acl={2} elapsed_ms={3}" -f `
+            $Path, $ordered.Count, $skippedAcl, $sw.ElapsedMilliseconds)
     } catch {
         Write-Host ("WARN Protect-BobiverseInstallTree: {0}" -f $_.Exception.Message)
         if ($FailClosed) { throw }
