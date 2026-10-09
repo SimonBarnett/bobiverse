@@ -25,24 +25,24 @@ def test_mrb3693_cmd_ec_capture_log_and_outer_reporter():
 
 def test_mrb3693_pack_cmd_call_wrap_and_return_check():
     p = PACK.read_text(encoding="utf-8-sig")
-    assert "cmd.exe /d /c call" in p
+    assert "&quot;[System64Folder]cmd.exe&quot; /d /c call" in p
     assert 'Id="RunInstall"' in p
     assert 'Return="check"' in p
     assert "FR #3685" in p
-    # Contiguous SetInstallCmd Value uses cmd wrap (not bare .cmd path alone).
+    # Contiguous SetInstallCmd Value uses quoted cmd wrap (not bare .cmd path alone).
     i = p.find('Id="SetInstallCmd"')
     assert i >= 0
     window = p[i : i + 400]
-    assert "cmd.exe /d /c call" in window
+    assert "&quot;[System64Folder]cmd.exe&quot; /d /c call" in window
     assert "$installArgs" in window
 
 
 def test_mrb3693_fr70_pin_tracks_cmd_call_wrap():
-    """FR #3715: keep FR #70 SetInstallCmd pin aligned with FR #3685 cmd wrap."""
+    """FR #3715/#3741: keep FR #70 SetInstallCmd pin aligned with QuietExec-quoted cmd wrap."""
     fr70 = (ROOT / "common/tests/test_fr70_runinstall_msi_props.py").read_text(
         encoding="utf-8"
     )
-    assert "cmd.exe /d /c call" in fr70
+    assert "&quot;[System64Folder]cmd.exe&quot; /d /c call" in fr70
     assert "$installArgs" in fr70
     assert "SetInstallCmd" in fr70
 
@@ -75,11 +75,13 @@ def test_mrb3693_docs_skill_and_product_tests():
     skill = SKILL.read_text(encoding="utf-8")
     assert "FR #3685" in skill or "#3685" in skill
     assert "Report-AircInstallCmdFailure" in skill
-    assert "cmd.exe /d /c call" in skill
+    assert "/d /c call" in skill
+    assert "System64Folder" in skill or "3741" in skill
     post = POST.read_text(encoding="utf-8")
     assert "FR #3685" in post
     assert "Report-AircInstallCmdFailure" in post
-    assert "cmd.exe /d /c call" in post
+    assert "/d /c call" in post
+    assert "System64Folder" in post or "3741" in post
     assert "install-airc-fail-reported.flag" in post
     assert PRODUCT.is_file()
     # New FR #3685 skill/post paragraphs must stay UTF-8 (no mojibake in the window).

@@ -634,8 +634,9 @@ $msiProps
       <CreateFolder />
       <RegistryValue Root="HKLM" Key="Software\SimonBarnett\bobiverse\$Name" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
     </Component>
-    <!-- FR #3685: cmd.exe /d /c call so .cmd exit codes reach CAQuietExec (bare .cmd CreateProcess can lose them). -->
-    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="cmd.exe /d /c call &quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
+    <!-- FR #3685: cmd /d /c call so .cmd exit codes reach CAQuietExec (bare .cmd CreateProcess can lose them). -->
+    <!-- FR #3741: QuietExec requires the first token quoted; bare cmd.exe => 0x80070057 / msiexec 1603. -->
+    <CustomAction Id="SetInstallCmd" Property="RunInstall" Value="&quot;[System64Folder]cmd.exe&quot; /d /c call &quot;[INSTALLDIR]scripts\$installCmd&quot;$installArgs" Execute="immediate" />
     <!-- #70: RunInstall forwards OPERFILE/SKIPERGO/MACHINEID/... via public Property Ids. -->
     <!-- Impersonate=yes so ObjectName resolves to the installing user (issue #3 LocalSystem). -->
     <!-- Return=check: nonzero Install-*.cmd must fail the MSI (1603) and roll back (FR #3685 / #2564). -->
