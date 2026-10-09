@@ -208,6 +208,8 @@ ACL fail-closed (FR #3394 / #3516 / #3554 / #3581 / #3652 / #3678): `Install-Air
 
 Crash-report opt-out on install failures (FR #3395): when `config\crash-report.json` has `enabled=false` / `mode=local-only` (or `BOBIVERSE_CRASH_REPORT=0|local-only`), an `Install-AircConsole` failure is written only to `ProgramData\Bobiverse\logs\install-airc.log` — it does **not** call public intake. When intake is allowed, `Report-BobiverseIntakeIssue` is called with `-Repo SimonBarnett/bobiverse`.
 
+**Install-Airc.cmd exit + outer fail report (FR #3685):** Pack `SetInstallCmd` runs `cmd.exe /d /c call "[INSTALLDIR]scripts\Install-Airc.cmd" ...` so CAQuietExec sees the real `.cmd` exit (`Return="check"` => msiexec **1603** on failure). The `.cmd` captures `EC=%ERRORLEVEL%` after `Install-Airc.ps1`, always appends start/FAIL/ok lines to `%ProgramData%\Bobiverse\logs\install-airc.log`, and on nonzero exit calls `Report-AircInstallCmdFailure.ps1` (no `#Requires`; PS 4.0-safe log + redact + intake) unless `install-airc-fail-reported.flag` was set by `Send-BobiverseAircInstallFailureIntake` inside the ps1. Honour `BOBIVERSE_CRASH_REPORT=off`. Client allow-list keeps the outer reporter script.
+
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 
 ## Upgrade and Ergo / BobIrcd (#70)
