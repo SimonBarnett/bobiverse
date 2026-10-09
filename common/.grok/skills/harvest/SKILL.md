@@ -141,6 +141,10 @@ PowerShell:
 # lesson_already_covered — never open lesson(harvest) twins like #3001-#3003 after #2997.
 # MRB #2973: bare "FAIL-supersede" in a summary alone is not enough to re-route; a process
 # cue is required so real product lessons still open under harvest.
+# FR #3824: one harvest per seat+lesson — client skips when an open harvest-lesson PR from
+# this seat already carries the same lesson; idempotency_key prefers seat+normalized lesson
+# (Summary drift / DONE retries must not mint a second tip). Intake claims state=filing early,
+# settles filing/open_lesson_twin, and links open seat+lesson twins instead of opening #3823.
 # or:
 Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
   -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
@@ -208,6 +212,7 @@ routes to bobiverse via the split rule.
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
+- FR #3824: one harvest per seat+lesson — skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
 
 ## Harvest digest (lessons audit 2026-10-06)
 

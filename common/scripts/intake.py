@@ -478,6 +478,18 @@ def _normalize_lesson_key(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
 
 
+_SEAT_FOOTER_RE = re.compile(
+    r"(?i)\bseat=`?(?P<seat>[A-Za-z0-9_.+-]+)`?",
+)
+
+
+def extract_seat_from_text(*parts: str) -> str:
+    """Best-effort seat= nick from provenance footer or free text (FR #3824)."""
+    blob = "\n".join(str(p or "") for p in parts)
+    m = _SEAT_FOOTER_RE.search(blob)
+    return (m.group("seat") if m else "").strip()
+
+
 def filter_new_lessons(existing_md: str, lessons: list[str]) -> list[str]:
     """Drop lessons already present in existing_md (FR #2970 de-dupe)."""
     base = _normalize_lesson_key(existing_md)
@@ -495,6 +507,65 @@ def filter_new_lessons(existing_md: str, lessons: list[str]) -> list[str]:
             continue
         out.append(line)
     return out
+
+
+def _filer_list_open_pulls(filer: Any, repo: str) -> list[dict[str, Any]]:
+    """Open PRs for repo (FakeGitHubFiler.prs or GhCliFiler.list_open_pulls)."""
+    lister = getattr(filer, "list_open_pulls", None)
+    if callable(lister):
+        try:
+            rows = lister(repo)
+        except Exception:
+            return []
+        return [r for r in (rows or []) if isinstance(r, dict)]
+    out: list[dict[str, Any]] = []
+    for row in getattr(filer, "prs", []) or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("repo") or "") != str(repo or ""):
+            continue
+        if row.get("closed"):
+            continue
+        labs = {str(x).lower() for x in (row.get("labels") or [])}
+        if "harvest-lesson" in labs or str(row.get("title") or "").lower().startswith(
+            "lesson("
+        ):
+            out.append(row)
+    return out
+
+
+def find_open_harvest_lesson_twin(
+    filer: Any,
+    repo: str,
+    lessons: list[str],
+    *,
+    seat: str = "",
+) -> dict[str, Any] | None:
+    """Return an open harvest-lesson PR that already carries the same lesson+seat.
+
+    FR #3824: same seat + same lesson text must not open a second tip PR
+    (incident #3822/#3823, 26s apart, two intake ids).
+    """
+    keys = [_normalize_lesson_key(x) for x in (lessons or []) if str(x or "").strip()]
+    keys = [k for k in keys if k and k != "(no new playbook line)"]
+    if not keys:
+        return None
+    want_seat = str(seat or "").strip().lower()
+    for pr in _filer_list_open_pulls(filer, repo):
+        title = str(pr.get("title") or "")
+        body = str(pr.get("body") or "")
+        blob = _normalize_lesson_key(f"{title}\n{body}")
+        if not any(k in blob for k in keys):
+            continue
+        pr_seat = extract_seat_from_text(body, title).lower()
+        if want_seat and pr_seat and want_seat != pr_seat:
+            continue
+        if want_seat and not pr_seat:
+            # Require seat match when the new harvest stamped a seat; skip
+            # unlabeled open tips so we do not over-collapse unrelated PRs.
+            continue
+        return pr
+    return None
 
 
 def mrb_process_routing_already_covered(filer: Any, repo: str) -> bool:
@@ -771,6 +842,17 @@ class FakeGitHubFiler:
                     "branch": row.get("branch"),
                 }
         return None
+
+    def list_open_pulls(self, repo: str) -> list[dict[str, Any]]:
+        """FR #3824: open (non-closed) pulls for open-lesson twin checks."""
+        out: list[dict[str, Any]] = []
+        for row in self.prs:
+            if str(row.get("repo") or "") != str(repo or ""):
+                continue
+            if row.get("closed"):
+                continue
+            out.append(row)
+        return out
 
 
 @dataclass
@@ -1134,6 +1216,9 @@ def file_submission(
         "url": None,
         "queued": False,
     }
+    # FR #3824: claim the idempotency key before create_pr so a concurrent /
+    # retry POST with the same key cannot open a twin tip while we are filing.
+    _save_record(home, rec)
     # FR #2595: probes never file. Harvest worker receipts record-only (no draft PR)
     # unless FR #1812 already cites an existing PR URL (link, still no second filing).
     # FR #2705: Lessons always open a non-draft skill-book PR (receipt / existing-PR
@@ -1228,6 +1313,25 @@ def file_submission(
                         rec["queued"] = False
                         _save_record(home, rec)
                         return rec
+                # FR #3824: open harvest-lesson tip with same seat+lesson -> link, no twin.
+                # Check before main-tip filter: open tips are not on main yet.
+                src_seat = ""
+                if isinstance(src, dict):
+                    src_seat = str(src.get("seat") or "").strip()
+                if not src_seat:
+                    src_seat = extract_seat_from_text(raw_body, title)
+                twin = find_open_harvest_lesson_twin(
+                    filer, repo, lessons, seat=src_seat
+                )
+                if twin and twin.get("url"):
+                    rec["url"] = twin.get("url")
+                    rec["number"] = twin.get("number")
+                    rec["state"] = "open_lesson_twin"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = len(lessons)
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)
                 new_lessons = filter_new_lessons(existing_md, lessons)
                 if not new_lessons:
@@ -1416,6 +1520,7 @@ def process_intake(
         )
     # FR #2595: receipt_recorded / dropped_probe also settle the idempotency key.
     # FR #2970: lesson_already_covered settles too (no lesson PR opened).
+    # FR #3824: filing + open_lesson_twin settle so retries/races cannot twin.
     if existing and str(existing.get("state") or "") in (
         "receipt_recorded",
         "dropped_probe",
@@ -1423,6 +1528,9 @@ def process_intake(
         "filed",
         "linked_existing_pr",
         "filed_issue_fallback",
+        "filing",
+        "open_lesson_twin",
+        "held_owner_missing",
     ):
         return IntakeResult(
             202,

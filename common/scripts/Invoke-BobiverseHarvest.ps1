@@ -407,6 +407,45 @@ if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Les
     return
 }
 
+# FR #3824: if an open harvest-lesson PR from this seat already carries the same
+# lesson text, skip filing (intake also links open twins; this avoids a second POST).
+function Test-HarvestOpenLessonTwin {
+    param(
+        [string]$RepoName,
+        [string[]]$LessonLines,
+        [string]$Seat
+    )
+    if (-not $Seat -or -not $RepoName) { return $false }
+    $lessons = @(
+        $LessonLines |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ -and $_ -ne '(no new playbook line)' }
+    )
+    if (-not $lessons.Count) { return $false }
+    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $ghCmd) { return $false }
+    try {
+        $raw = & gh pr list --repo $RepoName --state open --label harvest-lesson --limit 40 --json title,body,url 2>$null
+        if (-not $raw) { return $false }
+        $prs = $raw | ConvertFrom-Json
+        if (-not $prs) { return $false }
+        $seatL = $Seat.ToLowerInvariant()
+        foreach ($pr in @($prs)) {
+            $blob = ((([string]$pr.title) + "`n" + ([string]$pr.body))).ToLowerInvariant()
+            $blob = ($blob -replace '\s+', ' ')
+            $seatHit = $blob -match ("seat=`?" + [regex]::Escape($seatL))
+            if (-not $seatHit) { continue }
+            foreach ($L in $lessons) {
+                $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
+                if ($key -and $blob.Contains($key)) { return $true }
+            }
+        }
+    } catch {
+        return $false
+    }
+    return $false
+}
+
 $files = @()
 foreach ($sf in $SkillFile) {
     if (-not (Test-Path -LiteralPath $sf)) { throw "skill file not found: $sf" }
@@ -499,8 +538,6 @@ switch -Regex ($bookName) {
     }
 }
 
-$sha = [Security.Cryptography.SHA256]::Create()
-$idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$Repo|$title|$body"))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
 # FR #2790: bob-worker seats export BOB_NICK (and BOB_AGENT_NICK alias); prefer BOB_NICK
 # so lesson PR footers carry seat=<nick> for Jeeves self-MRB blocking. Fall back to
 # BOB_AGENT_NICK for Watch-AgentHealth / legacy seats that only set that name.
@@ -511,6 +548,31 @@ if ($env:BOB_NICK -and ([string]$env:BOB_NICK).Trim()) {
     $seatNick = ([string]$env:BOB_AGENT_NICK).Trim()
 }
 if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
+
+# FR #3824: client-side skip when an open tip from this seat already has the lesson.
+if (Test-HarvestOpenLessonTwin -RepoName $Repo -LessonLines $Lesson -Seat $seatNick) {
+    Write-Host "SKIPPED harvest open lesson twin (FR #3824): open harvest-lesson PR from seat=$seatNick already carries this lesson"
+    return
+}
+
+# FR #3824: prefer seat+normalized-lesson idempotency material so Summary drift /
+# DONE retries do not mint a second intake id for the same tip.
+$lessonKeyParts = @(
+    $Lesson |
+        ForEach-Object {
+            $t = ([string]$_).Trim().ToLowerInvariant()
+            $t = ($t -replace '\s+', ' ')
+            if ($t -and $t -ne '(no new playbook line)') { $t }
+        }
+)
+$lessonKey = ($lessonKeyParts -join '|')
+if ($lessonKey) {
+    $idemMaterial = "$Repo|$bookName|$seatNick|$lessonKey"
+} else {
+    $idemMaterial = "$Repo|$title|$body"
+}
+$sha = [Security.Cryptography.SHA256]::Create()
+$idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($idemMaterial))) -replace '-', '').Substring(0, 24).ToLowerInvariant()
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
     skill_book_path = $skillBookPath
