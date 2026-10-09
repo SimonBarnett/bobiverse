@@ -44,7 +44,8 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | MSI msiexec exit 0 / Install-Airc.cmd ok but no Airc service; log has install-fail (FR #3759, PS 4.0) | PowerShell 4.0 powershell.exe -File can exit 0 after an uncaught throw. Tip: Install-Airc.ps1 uses `$script:AircExitCode` + `exit` after finally; .cmd also treats install-airc-fail-reported.flag as FAIL when EC=0. Hotpatch/redeploy tip MSI. Related: #3685 CAQuietExec Return=check. |
 | `Ergo server PASS missing` / `config\ergo.password beside the unpack tree` (FR #3756) | Public MSI/zip has no embedded PASS (issue #4). Supply `-ErgoPasswordFile`, set `AGENTIC_IRC_PASSWORD` (or `AIRC_PACK_ERGO_PASSWORD` / `AIRC_CONSOLE_SERVER_PASSWORD` / `BOB_IRC_PASSWORD`), place `config\ergo.password` beside the unpack tree, or re-download a **private** fleet zip packed with `-EmbedErgoPassword`. Never invent the Ergo PASS. |
 
-| Fresh client SASL 904 for `{machine}_console` then continues (FR #3763) | Account not registered yet. Tip skips SASL until `ConsoleHome\console.nickserv-ok` exists; first connect REGISTERs via NickServ and writes the marker on 903 / NickServ success NOTICE. Loud ERROR 904 only after the marker exists (real password mismatch — see #34 / #1552). |
+| Same-version msiexec /i skips RunInstall / no re-run after failed install (FR #3762) | Pack condition is `NOT REMOVE~="ALL"` (not only `NOT Installed OR REINSTALL`). Redeploy tip MSI; or `msiexec /fa` / `REINSTALL=ALL`. Related: #3759 exit code, #3756 Ergo PASS. |
+| Fresh client SASL 904 for `{machine}_console` then continues (FR #3763) | Account not registered yet. Tip skips SASL until `ConsoleHome\console.nickserv-ok` exists; first connect REGISTERs via NickServ and writes the marker on 903 / NickServ success NOTICE. Loud ERROR 904 only after the marker exists (real password mismatch - see #34 / #1552). |
 
 Finish every session with the harvest step.
 
