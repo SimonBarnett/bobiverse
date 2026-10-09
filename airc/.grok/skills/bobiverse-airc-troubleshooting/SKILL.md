@@ -48,6 +48,8 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | Same-version msiexec /i skips RunInstall / no re-run after failed install (FR #3762) | Pack condition is `NOT REMOVE~="ALL"` (not only `NOT Installed OR REINSTALL`). Redeploy tip MSI; or `msiexec /fa` / `REINSTALL=ALL`. Related: #3759 exit code, #3756 Ergo PASS. |
 | Fresh client SASL 904 for `{machine}_console` then continues (FR #3763) | Account not registered yet. Tip skips SASL until `ConsoleHome\console.nickserv-ok` exists; first connect REGISTERs via NickServ and writes the marker on 903 / NickServ success NOTICE. Loud ERROR 904 only after the marker exists (real password mismatch - see #34 / #1552). |
 
+| Client log `update=on` with `self-update=off` (FR #3764) | Intentional (FR #3401). `update=` is the **ops-gated remote UPDATE** IRC verb; `self-update=` / `sync_from_repo=` are automatic start channels (client defaults both off). Capabilities log now says `update=on (remote UPDATE; not auto self-update)`. |
+
 Finish every session with the harvest step.
 
 ## FR #2355

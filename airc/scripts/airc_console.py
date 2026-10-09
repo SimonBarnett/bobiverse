@@ -789,6 +789,10 @@ class ConsoleCapabilities:
 
     ``shell_mode``: ``off`` = STATUS/ping only; ``operators`` = FR #75 shell for auth nicks.
     ``jobs`` / ``update``: finer gates when shell is ``operators``.
+
+    FR #3764: ``update`` is the **remote** UPDATE verb (ops-gated IRC command). It is
+    not automatic MSI self-update / git sync — those are ``self_update`` /
+    ``sync_from_repo`` in ``AircStartUpdatePolicy`` (client defaults both off).
     """
 
     shell_mode: Literal["off", "operators"] = "operators"
@@ -798,9 +802,11 @@ class ConsoleCapabilities:
     accounts: tuple[str, ...] = ()
 
     def log_line(self) -> str:
+        # FR #3764: spell out remote UPDATE so client logs are not read as auto self-update.
         return (
             f"INFO capabilities shell={self.shell_mode} jobs={self.jobs} "
-            f"update={self.update} require_account={int(bool(self.require_account))} "
+            f"update={self.update} (remote UPDATE; not auto self-update) "
+            f"require_account={int(bool(self.require_account))} "
             f"accounts={len(self.accounts)}"
         )
 
@@ -2127,7 +2133,8 @@ class AircConsoleCore:
                     "cmd: COMSPEC escape; psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit=; "
                     "STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL; "
-                    "UPDATE airc|bob|jeeves [ver] schedules detached MSI update; "
+                    "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
+                    "(ops-gated remote; not auto self-update — FR #3764); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
                     ".quit closes; silent on channel; answers ping"
