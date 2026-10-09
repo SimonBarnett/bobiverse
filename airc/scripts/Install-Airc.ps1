@@ -497,9 +497,11 @@ try {
 # Prefer one console per box: remove leftover agentic_irc AircConsole (distinct UpgradeCode).
 Remove-BobiverseLegacyService -Name 'AircConsole' -Nssm $Nssm
 
-# FR #3289 / FR #3394 / FR #3678: one Full -Recurse FailClosed before Start-Service
-# (skips takeown /R when root already protected; early pass was root-only).
-Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -FailClosed
+# FR #3289 / FR #3394 / FR #3678 / FR #3716: one Full -Recurse -Force FailClosed before
+# Start-Service. -Force walks children after the early root-only protect (FR #3716
+# otherwise skips the ACL walk when the root is already locked). Without -Force,
+# upgrades that only re-protect an already-locked tree stay seconds (skip takeown + walk).
+Protect-BobiverseInstallTree -Path $InstallRoot -Recurse -Force -FailClosed
 
 # FR #3394: start only after the tree is locked (Install-AircConsole ran with -NoStart).
 if (-not $NoStart) {

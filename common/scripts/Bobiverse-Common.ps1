@@ -367,11 +367,15 @@ function Protect-BobiverseInstallTree {
       FR #3678: skip takeown when root already matches the protected target; skip
       Set-Acl on entries already locked; log protect begin/end elapsed_ms. Install-Airc
       does one Full -Recurse (before Start-Service); early pass is root-only.
+      FR #3716: when -Recurse and root already protected, skip the per-item Get-Acl
+      walk (and takeown) unless -Force. Install-Airc post-copy Full -Recurse passes
+      -Force so newly copied children still get locked after the early root-only pass.
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
         [switch]$Recurse,
-        [switch]$FailClosed
+        [switch]$FailClosed,
+        [switch]$Force
     )
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
         if ($FailClosed -and $Path) {
@@ -380,9 +384,20 @@ function Protect-BobiverseInstallTree {
         return
     }
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    Write-Host ("INFO Protect-BobiverseInstallTree begin path={0} recurse={1}" -f $Path, [bool]$Recurse)
+    Write-Host ("INFO Protect-BobiverseInstallTree begin path={0} recurse={1} force={2}" -f $Path, [bool]$Recurse, [bool]$Force)
     try {
         $item = Get-Item -LiteralPath $Path -Force
+        # FR #3716: already-locked -Recurse without -Force is a no-op (seconds, not
+        # O(tree) Get-Acl). Install-Airc Full -Recurse uses -Force after copy.
+        if ($Recurse -and -not $Force -and $item.PSIsContainer -and
+            (Test-BobiverseInstallPathProtectedTarget -Path $item.FullName)) {
+            Write-Host ("INFO FR #3716 skip ACL walk; root already protected path={0}" -f $item.FullName)
+            Write-Host ("INFO FR #3678 skip takeown; root already protected path={0}" -f $item.FullName)
+            $sw.Stop()
+            Write-Host ("INFO Protect-BobiverseInstallTree locked {0} entries={1} skipped_acl={2} elapsed_ms={3}" -f `
+                $Path, 0, 0, $sw.ElapsedMilliseconds)
+            return
+        }
         $entries = New-Object System.Collections.Generic.List[object]
         [void]$entries.Add([pscustomobject]@{ FullName = $item.FullName; IsDir = [bool]$item.PSIsContainer })
         if ($Recurse -and $item.PSIsContainer) {

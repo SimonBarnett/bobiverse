@@ -49,12 +49,12 @@ def test_fr3678_install_airc_one_full_recurse_before_start():
     # Exactly one Full -Recurse FailClosed, and it must be after Install-AircConsole.
     recurse_calls = list(
         re.finditer(
-            r"Protect-BobiverseInstallTree -Path \$InstallRoot -Recurse -FailClosed",
+            r"Protect-BobiverseInstallTree -Path \$InstallRoot -Recurse -Force -FailClosed",
             t,
         )
     )
     assert len(recurse_calls) == 1, (
-        f"expected exactly one Full -Recurse Protect; got {len(recurse_calls)}"
+        f"expected exactly one Full -Recurse -Force Protect; got {len(recurse_calls)}"
     )
     assert recurse_calls[0].start() > t.find("& $installLegacy")
     assert recurse_calls[0].start() < t.find("Start-Service -Name 'Airc'")
@@ -66,6 +66,10 @@ def test_fr3678_common_skips_takeown_when_already_protected():
     assert "FR #3678" in t
     assert "skip takeown" in t.lower()
     assert "elapsed_ms" in t
+    # FR #3716: already-locked -Recurse without -Force skips the Get-Acl walk.
+    assert "FR #3716" in t
+    assert "skip ACL walk" in t
+    assert "[switch]$Force" in t
     # /R still gated on -Recurse (FR #3581 pin must remain).
     assert "$Recurse -and $item.PSIsContainer" in t
     assert "/R /D Y" in t
@@ -110,6 +114,9 @@ def test_fr3678_reprotect_already_locked_tree_fast(tmp_path: Path):
         $sw.Stop()
         if ($out -notmatch 'FR #3678 skip takeown') {{
           throw ('expected skip takeown on second pass; out=' + $out)
+        }}
+        if ($out -notmatch 'FR #3716 skip ACL walk') {{
+          throw ('expected skip ACL walk on second pass; out=' + $out)
         }}
         if ($sw.Elapsed.TotalSeconds -gt 10) {{
           throw ('second protect too slow s=' + $sw.Elapsed.TotalSeconds)
