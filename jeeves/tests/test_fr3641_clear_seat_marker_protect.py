@@ -116,7 +116,11 @@ def test_fr3641_fresh_seat_marker_survives_soft_cap_with_dead_pid(tmp_path: Path
 
 @WIN
 def test_fr3641_force_reclaims_stale_seat_marker(tmp_path: Path):
-    """-Force may reclaim a marked tree whose seat marker is older than StaleSeatHours."""
+    """-Force may reclaim a marked tree whose seat marker is older than StaleSeatHours.
+
+    FR #3698: a live marker pid protects only when CommandLine cites the worktree
+    (StaleSeatHours=0 disables fresh-mtime protection). Hold a citing powershell.
+    """
     repo = _init_repo(tmp_path)
     stale = tmp_path / "job-fr-3641-stale"
     live = tmp_path / "job-fr-3641-live"
@@ -127,24 +131,41 @@ def test_fr3641_force_reclaims_stale_seat_marker(tmp_path: Path):
         encoding="utf-8",
     )
     # Age the marker beyond StaleSeatHours=0 (immediate stale).
-    old = time.time() - 3600
-    os.utime(stale / ".bobiverse-seat", (old, old))
-    (live / ".bobiverse-seat").write_text(
-        json.dumps({"nick": "marchhare-34384", "pid": os.getpid()}) + "\n",
-        encoding="utf-8",
+    aged = time.time() - 3600
+    os.utime(stale / ".bobiverse-seat", (aged, aged))
+    holder = subprocess.Popen(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"Start-Sleep -Seconds 180; Write-Output '{live}'",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-    keep = tmp_path / "keep"
-    keep.mkdir()
-    r = _run_clear(
-        repo,
-        "-KeepPath",
-        str(keep),
-        "-Force",
-        "-MinFreeGB",
-        "999",
-        "-StaleSeatHours",
-        "0",
-    )
-    assert r.returncode == 0, r.stdout + "\n" + r.stderr
-    assert live.is_dir(), "live pid marker must still skip even with -Force"
-    assert not stale.is_dir(), "stale dead-pid marker reclaimable with -Force + StaleSeatHours=0"
+    try:
+        (live / ".bobiverse-seat").write_text(
+            json.dumps({"nick": "marchhare-34384", "pid": holder.pid}) + "\n",
+            encoding="utf-8",
+        )
+        keep = tmp_path / "keep"
+        keep.mkdir()
+        r = _run_clear(
+            repo,
+            "-KeepPath",
+            str(keep),
+            "-Force",
+            "-MinFreeGB",
+            "999",
+            "-StaleSeatHours",
+            "0",
+        )
+        assert r.returncode == 0, r.stdout + "\n" + r.stderr
+        assert live.is_dir(), "live citing pid marker must still skip even with -Force (FR #3698)"
+        assert not stale.is_dir(), "stale dead-pid marker reclaimable with -Force + StaleSeatHours=0"
+    finally:
+        holder.kill()
+        try:
+            holder.wait(timeout=10)
+        except Exception:
+            pass
