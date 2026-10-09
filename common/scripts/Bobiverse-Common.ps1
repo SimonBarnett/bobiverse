@@ -2569,6 +2569,89 @@ function Remove-BobiverseAircMsiAgentLayerFromStage {
     return @($removed)
 }
 
+function Move-BobiverseAircMsiAgentLayerComponents {
+    <#
+    .SYNOPSIS
+      FR #3740 / #3687: move agent-layer WiX Components into BobiverseAircAgentLayerFiles.
+
+    .DESCRIPTION
+      heat dir -cg emits Component elements under DirectoryRef and only ComponentRef
+      elements inside the ComponentGroup. The original FR #3687 loop selected
+      w:Component under the group and moved 0. This helper finds agent File Sources
+      anywhere in the harvest, then retargets matching ComponentRef (heat shape) or
+      nested Component (synthetic) nodes into $AgentGroupId.
+    #>
+    param(
+        [Parameter(Mandatory)][xml]$HarvestXml,
+        [Parameter(Mandatory)][System.Xml.XmlNamespaceManager]$NamespaceManager,
+        [Parameter(Mandatory)][string]$MainGroupId,
+        [Parameter(Mandatory)][string]$AgentGroupId,
+        [switch]$FailIfNone
+    )
+    $wns = $NamespaceManager
+    $hx = $HarvestXml
+    $mainGroup = $hx.SelectSingleNode("//w:ComponentGroup[@Id='$MainGroupId']", $wns)
+    if (-not $mainGroup) {
+        throw "FR #3740: heat ComponentGroup $MainGroupId missing after harvest"
+    }
+    $existingAgent = $hx.SelectSingleNode("//w:ComponentGroup[@Id='$AgentGroupId']", $wns)
+    if ($existingAgent) {
+        $agentGroup = $existingAgent
+    } else {
+        $agentGroup = $hx.CreateElement('ComponentGroup', $mainGroup.NamespaceURI)
+        $agentGroup.SetAttribute('Id', $AgentGroupId)
+        [void]$mainGroup.ParentNode.AppendChild($agentGroup)
+    }
+
+    $agentIds = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($comp in @($hx.SelectNodes('//w:Component', $wns))) {
+        $isAgent = $false
+        foreach ($f in @($comp.SelectNodes('w:File', $wns))) {
+            if (Test-BobiverseAircMsiAgentLayerSource -Source ([string]$f.GetAttribute('Source'))) {
+                $isAgent = $true
+                break
+            }
+        }
+        if ($isAgent) {
+            $cid = [string]$comp.GetAttribute('Id')
+            if ($cid) { [void]$agentIds.Add($cid) }
+        }
+    }
+
+    $moved = 0
+    # Heat shape: ComponentRef children of the main group.
+    foreach ($cref in @($mainGroup.SelectNodes('w:ComponentRef', $wns))) {
+        $rid = [string]$cref.GetAttribute('Id')
+        if (-not $rid -or -not $agentIds.Contains($rid)) { continue }
+        [void]$mainGroup.RemoveChild($cref)
+        [void]$agentGroup.AppendChild($cref)
+        $moved++
+    }
+    # Synthetic / alternate shape: Component elements nested under the main group.
+    $nestedMove = New-Object System.Collections.Generic.List[System.Xml.XmlElement]
+    foreach ($comp in @($mainGroup.SelectNodes('w:Component', $wns))) {
+        $cid = [string]$comp.GetAttribute('Id')
+        if ($cid -and $agentIds.Contains($cid)) {
+            [void]$nestedMove.Add($comp)
+        }
+    }
+    foreach ($comp in $nestedMove) {
+        [void]$mainGroup.RemoveChild($comp)
+        [void]$agentGroup.AppendChild($comp)
+        $moved++
+    }
+
+    Write-Host ("INFO FR #3687 moved {0} agent-layer component(s) to {1}" -f $moved, $AgentGroupId)
+    if ($moved -lt 1) {
+        $msg = 'FR #3740 / #3687: no agent-layer File components matched (stage may lack AGENTS/.grok)'
+        if ($FailIfNone) {
+            throw $msg
+        }
+        Write-Host ("WARN {0}" -f $msg)
+    }
+    return $moved
+}
+
 function Remove-BobiverseAircClientExtraPayload {
     <#
     .SYNOPSIS
