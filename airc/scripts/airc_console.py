@@ -1542,14 +1542,35 @@ def parse_shell_request(text: str) -> ShellRequest:
     return req
 
 
+def prepare_cmd_body(body: str) -> str:
+    """Prefix ``chcp 65001`` for UTF-8 capture unless the operator already set CP (FR #2580)."""
+    text = body or ""
+    stripped = text.lstrip().lower()
+    if not stripped.startswith("chcp "):
+        text = "chcp 65001>nul & " + text
+    return text
+
+
+def build_cmd_command_line(body: str) -> str:
+    """CreateProcess command line for ``cmd.exe /d /s /c`` (FR #3773).
+
+    ``subprocess`` list argv goes through ``list2cmdline``, which doubles a
+    trailing backslash before the closing quote (CreateProcess argv rules).
+    cmd.exe then re-parses ``/c`` and treats ``dir C:\\\\`` as a bad path.
+    Build a single string with ``/s`` so operator text such as ``dir C:\\`` and
+    ``dir \"C:\\Program Files\\\"`` keeps a single trailing backslash.
+    """
+    com = resolve_comspec()
+    prepared = prepare_cmd_body(body)
+    return f'{com} /d /s /c "{prepared}"'
+
+
 def build_shell_argv(req: ShellRequest) -> list[str]:
     if req.kind == "cmd":
-        # FR #2580: OEM code page mangles non-ASCII; force UTF-8 CP for capture.
-        body = req.body or ""
-        stripped = body.lstrip().lower()
-        if not stripped.startswith("chcp "):
-            body = "chcp 65001>nul & " + body
-        return [resolve_comspec(), "/d", "/c", body]
+        # Shape for inspectors/tests. Execution uses build_cmd_command_line
+        # (FR #3773) — do not subprocess.run this list for trailing-\\ bodies.
+        body = prepare_cmd_body(req.body or "")
+        return [resolve_comspec(), "/d", "/s", "/c", body]
     if req.kind == "psb64":
         enc = prepare_psb64_encoded_command(req.body)
     else:
@@ -1577,10 +1598,15 @@ def run_shell_request(
     timeout_s: float = SHELL_TIMEOUT_S,
     cwd: str | None = None,
 ) -> ShellOutcome:
-    argv = build_shell_argv(req)
+    # FR #3773: cmd must use a pre-built command-line string, not list argv.
+    args: str | list[str]
+    if req.kind == "cmd":
+        args = build_cmd_command_line(req.body or "")
+    else:
+        args = build_shell_argv(req)
     try:
         proc = subprocess.run(
-            argv,
+            args,
             capture_output=True,
             timeout=timeout_s,
             cwd=cwd,
