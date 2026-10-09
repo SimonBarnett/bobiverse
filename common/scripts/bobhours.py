@@ -166,8 +166,34 @@ def _parse_day(raw: str) -> date | None:
         return None
 
 
-def _json_error(code: int, error: str) -> tuple[int, bytes]:
-    return code, json.dumps({"error": error}, separators=(",", ":")).encode("utf-8")
+def _json_error(
+    code: int, error: str, *, hint: str | None = None, **extra: Any
+) -> tuple[int, bytes]:
+    # FR #3673: optional hint / extra fields so agents do not misread opaque codes.
+    obj: dict[str, Any] = {"error": error}
+    if hint:
+        obj["hint"] = hint
+    for k, v in extra.items():
+        if v is not None:
+            obj[k] = v
+    return code, json.dumps(obj, separators=(",", ":")).encode("utf-8")
+
+
+_START_ALIASES = ("started_at", "start_at", "started", "from")
+
+
+def _start_field_error(payload: dict[str, Any], *, missing: bool) -> dict[str, Any]:
+    """Build create error for a missing or unparseable ``start`` (FR #3673)."""
+    if missing:
+        rejected = [k for k in _START_ALIASES if k in payload]
+        err: dict[str, Any] = {"error": "missing_start", "hint": "expected: start"}
+        if rejected:
+            err["rejected_aliases"] = rejected
+        return err
+    return {
+        "error": "bad_start",
+        "hint": "start must be ISO-8601 datetime",
+    }
 
 
 def _json_ok(code: int, obj: Any) -> tuple[int, bytes]:
@@ -264,9 +290,15 @@ def validate_create_payload(payload: dict[str, Any]) -> tuple[str | None, dict[s
     on_behalf = str(payload.get("on_behalf_of") or "").strip()
     if not on_behalf or len(on_behalf) > 64:
         return "bad_on_behalf_of", {}
-    start = _parse_iso(str(payload.get("start") or ""))
+    # FR #3673: missing/empty ``start`` is ``missing_start`` (with hint); a present
+    # but unparseable value stays ``bad_start``. Rejected aliases (started_at, …)
+    # are listed so agents do not treat the code as a timestamp-format failure.
+    start_raw = payload.get("start")
+    if start_raw in (None, ""):
+        return "missing_start", _start_field_error(payload, missing=True)
+    start = _parse_iso(str(start_raw))
     if start is None:
-        return "bad_start", {}
+        return "bad_start", _start_field_error(payload, missing=False)
     end_raw = payload.get("end")
     end: datetime | None = None
     if end_raw not in (None, ""):
@@ -368,6 +400,9 @@ def validate_create_payload(payload: dict[str, Any]) -> tuple[str | None, dict[s
 def create_entry(home: Path, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     err, norm = validate_create_payload(payload)
     if err:
+        # ``norm`` may already carry hint / rejected_aliases for start-field errors.
+        if isinstance(norm, dict) and norm.get("error"):
+            return 400, norm
         return 400, {"error": err}
     existing = _find_by_idempotency(home, norm["idempotency_key"])
     if existing is not None:
@@ -816,7 +851,8 @@ def handle_hours_request(
             return code, b, None
         user = qs.get("user", "")
         if not user:
-            code, b = _json_error(400, "user_required")
+            # FR #3673: include discovery hint (agents misread opaque codes).
+            code, b = _json_error(400, "user_required", hint="?user=USERLOGIN")
             return code, b, None
         entries = filter_entries(
             list_entries(home),
@@ -835,7 +871,7 @@ def handle_hours_request(
     if verb in ("GET", "HEAD") and route == HOURS_PATH + "/summary":
         user = qs.get("user", "")
         if not user:
-            code, b = _json_error(400, "user_required")
+            code, b = _json_error(400, "user_required", hint="?user=USERLOGIN")
             return code, b, None
         if qs.get("date"):
             d = _parse_day(qs["date"])
@@ -861,7 +897,7 @@ def handle_hours_request(
     if verb in ("GET", "HEAD") and route == HOURS_PATH + "/export":
         user = qs.get("user", "")
         if not user:
-            code, b = _json_error(400, "user_required")
+            code, b = _json_error(400, "user_required", hint="?user=USERLOGIN")
             return code, b, None
         day_from = _parse_day(qs.get("from", "")) if qs.get("from") else None
         day_to = _parse_day(qs.get("to", "")) if qs.get("to") else None

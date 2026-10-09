@@ -48,7 +48,7 @@ deterministic and token-less except the optional GitHub token used for filing is
 Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (command registry/auth/help),
 `focus_ignore.py`, `gitclaim.py` (queue + `resync_from_github`), `chan_privs.py` (op/halfop grants + hard cap),
 `registered_machines.py` (ChanServ roster mirror), `bobreport.py` (digest + chair outbox), `bobcallback.py` (webhooks),
-`intake.py` (intake + filing), `bobhours.py` (FR #3450 hours webhook — timesheet source entries; no Priority write), `chair_health.py` (background jobs), `bob_recycle.py`.
+`intake.py` (intake + filing), `bobhours.py` (FR #3450 hours webhook — timesheet source entries; no Priority write; FR #3673 `missing_start` / `user_required` hints + agent field map in `jeeves/docs/webhooks.md`), `chair_health.py` (background jobs), `bob_recycle.py`.
 
 **Living architecture FR (harvest #1989 / FR #1993):** approved ionos chair plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: ionos` (and `needs-ionos` when stamped). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
 

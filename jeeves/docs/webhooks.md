@@ -89,7 +89,20 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/jira" \
 
 ### Hours webhook (FR #3450) — no secret
 
-Agents POST partial work-time entries as source material for Priority timesheets. Nothing here writes to Priority. Day filters use **Europe/London**. Open entries with no heartbeat past `BOB_HOURS_OPEN_TIMEOUT_MIN` (default 120) become `auto_closed`. Store lives under digest home `hours/`.
+Agents POST partial work-time entries as source material for Priority timesheets. Nothing here writes to Priority. Day filters use **Europe/London**. Open entries with no heartbeat past `BOB_HOURS_OPEN_TIMEOUT_MIN` (default 120) become `auto_closed`. Store lives under digest home `hours/`. Canonical field names live here (FR #3673); agent skill books must match this schema.
+
+**Agent field map (accepted vs rejected):**
+
+| Accepted body / query field | Rejected aliases (do not send) |
+|---|---|
+| `start` (ISO-8601 datetime) | `started_at`, `start_at`, `started`, `from` |
+| `end` (ISO-8601; omit for open) | `ended_at`, `finish` |
+| `customer` | `customer_slug` |
+| `project` | `project_slug` |
+| `on_behalf_of` | — |
+| `idempotency_key`, `agent`, `repo_url`, `description`, `source`, optional `tickets`, `billable_hint` | credential keys (`password`, `token`, …) — rejected |
+
+**Create errors (FR #3673):** missing/empty `start` → `{"error":"missing_start","hint":"expected: start"}` (adds `rejected_aliases` when an alias was sent). Unparseable `start` → `{"error":"bad_start","hint":"start must be ISO-8601 datetime"}`. GET list/summary/export without `user` → `{"error":"user_required","hint":"?user=USERLOGIN"}`.
 
 ```bash
 # Create (open entry)
@@ -97,13 +110,18 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours" \
   -H "Content-Type: application/json" \
   -d "{\"idempotency_key\":\"seat-1\",\"agent\":\"Haitch\",\"on_behalf_of\":\"SimonB\",\"start\":\"2026-10-08T09:15:00+01:00\",\"customer\":\"ce-priority\",\"project\":\"dayworks\",\"repo_url\":\"https://github.com/SimonBarnett/ce-priority\",\"description\":\"Draft Day Works hours\",\"source\":\"marchhare\"}"
 
+# Create closed in one POST (start + end) — returns status:closed and duration_minutes
+curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours" \
+  -H "Content-Type: application/json" \
+  -d "{\"idempotency_key\":\"seat-1-closed\",\"agent\":\"Haitch\",\"on_behalf_of\":\"SimonB\",\"start\":\"2026-10-08T09:00:00+01:00\",\"end\":\"2026-10-08T17:00:00+01:00\",\"customer\":\"trutex\",\"project\":\"deposco\",\"description\":\"Closed day\",\"source\":\"cloud\"}"
+
 # Heartbeat / close / withdraw
 curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/heartbeat" -H "Content-Type: application/json" -d "{}"
 curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/close" -H "Content-Type: application/json" \
   -d "{\"end\":\"2026-10-08T11:00:00+01:00\"}"
 curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/withdraw" -H "Content-Type: application/json" -d "{}"
 
-# List / summary / export
+# List / summary / export (user= is required)
 curl -sS "https://irc.ntsa.uk/bob/v1/hours?user=SimonB&from=2026-10-08&to=2026-10-08"
 curl -sS "https://irc.ntsa.uk/bob/v1/hours/summary?user=SimonB&date=2026-10-08"
 curl -sS "https://irc.ntsa.uk/bob/v1/hours/export?user=SimonB&from=2026-10-08&to=2026-10-08&format=csv"
