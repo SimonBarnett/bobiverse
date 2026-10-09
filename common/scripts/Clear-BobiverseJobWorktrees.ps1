@@ -87,9 +87,9 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
     }
     # Durable job trees under C:\ai (or D:\...): bob-wt-fr-N / job-fr-N / docs-mrb-N /
     # job-fr-bobiverse-N / fr-bobiverse-N (FR #3698 name segment before the id).
-    if ($leaf -match '(?i)^(bob-wt-|job-)?(fr|mrb|uat|docs-mrb)(-[a-z0-9_.]+)*-\d+$') { return $true }
-    if ($leaf -match '(?i)^(bobiverse-|mrb-|uat-|docs-mrb-)') { return $true }
-    if ($leaf -match '(?i)^fr-\d') { return $true }
+    # Prefix -\d (not end-anchored) keeps job-fr-3641-unmarked reclaimable (FR #3641).
+    if ($leaf -match '(?i)^(bob-wt-|job-)?(fr|mrb|uat|docs-mrb)(-[a-z0-9_.]+)?-\d') { return $true }
+    if ($leaf -match '(?i)^(bobiverse-|fr-\d|mrb-|uat-|docs-mrb-)') { return $true }
     # Temp-style ...-wt / tmp-*-fr* probe trees.
     if ($leaf -match '(?i)^(bobiverse-|fr-|mrb-|uat-|docs-mrb-).*-wt$') { return $true }
     if ($leaf -match '(?i)^tmp-.*-(fr|mrb|uat)') { return $true }

@@ -126,6 +126,8 @@ def test_fr3698_leaf_matcher_accepts_bobiverse_named(tmp_path: Path):
         "docs-mrb-3433",
         "job-fr-3400",
         "tmp-main-fr3391-check",
+        "job-fr-3641-unmarked",
+        "job-fr-3641-stale",
     ]
     for leaf in leaves:
         (root / leaf).mkdir()
