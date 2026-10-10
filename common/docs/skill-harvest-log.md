@@ -711,3 +711,9 @@ Books: bobiverse-jeeves-monitor, bobiverse-bob, bobiverse-bob-job-mrb. Tip PR fo
 ## 2026-10-10 — docs/mrb-3869 (FR #3863 / PR #3869)
 
 Hostile pins for airc upgrade SASL: reused `console.password` without `console.nickserv-ok` must try SASL; minted-this-run still skips (FR #3763). Contiguous source/skill phrases in `test_mrb3869_hostile_upgrade_sasl.py`.
+
+## 2026-10-10 - docs/mrb-3871 (FR #3867 / PR #3871)
+
+Hostile pins for lost-ACK digest reconcile: repo-scoped promote (same numeric id across repos), drop unaccepted twin when already accepted (no double-offer), full owner/repo parse form, troubleshooting skill + irc_agent session wire. Small heal: already-accepted path drops the unaccepted twin and persists the write.
+
+Books: bobiverse-jeeves-troubleshooting, gitclaim. Product PR #3871; hostile docs this entry. Refs: SimonBarnett/bobiverse#3867 SimonBarnett/bobiverse#3871

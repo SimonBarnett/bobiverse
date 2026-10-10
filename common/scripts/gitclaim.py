@@ -7192,6 +7192,7 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
         return False
 
     promoted = 0
+    dropped_dup = 0
     keep: list[dict] = []
     for row in unacc:
         matched_nick = ""
@@ -7199,8 +7200,13 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
             if row_matches_digest_work(row, wo):
                 matched_nick = nick
                 break
-        if not matched_nick or _already_accepted(row):
+        if not matched_nick:
             keep.append(row)
+            continue
+        # Already accepted for this repo/task/id: drop the unaccepted twin so
+        # offer_focus_top cannot double-offer (MRB #3871 hostile).
+        if _already_accepted(row):
+            dropped_dup += 1
             continue
         job = dict(row)
         job["nick"] = (canonical_worker_nick(matched_nick) or matched_nick).strip()
@@ -7218,13 +7224,14 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
             f"{job.get('repo')}{job.get('id')} result=LOST_ACK_RESTART reason=LOST_ACK_RESTART",
             log=log,
         )
-    if not promoted:
+    if not promoted and not dropped_dup:
         return 0
     if len(accepted) > ACCEPTED_CAP:
         accepted = accepted[-ACCEPTED_CAP:]
     doc["unaccepted"] = keep
     doc["accepted"] = accepted
-    return promoted
+    # Caller writes when return > 0; count drops so twin-purge alone still persists.
+    return promoted + dropped_dup
 
 
 def reconcile_lost_ack_from_digest(home: Path, *, log=None) -> int:

@@ -1,4 +1,4 @@
-﻿"""FR #3867: offer lost across chair restart — digest working_on promotes unaccepted to accepted."""
+"""FR #3867: offer lost across chair restart — digest working_on promotes unaccepted to accepted."""
 from __future__ import annotations
 
 import time
