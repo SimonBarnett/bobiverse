@@ -217,6 +217,7 @@ routes to bobiverse via the split rule.
 - FR #3824: one harvest per seat+lesson — skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
+- When digest workers.<pid>.working_on still names an unaccepted queue row after chair restart, promote that row to accepted (LOST_ACK_RESTART) before offer_focus_top; do not FR #1714-clear map working_on that still matches unaccepted
 
 ## Harvest digest (lessons audit 2026-10-06)
 
