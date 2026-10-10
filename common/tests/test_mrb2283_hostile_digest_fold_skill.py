@@ -15,7 +15,7 @@ SKILL = ROOT / "bob/.grok/skills/bobiverse-bob/SKILL.md"
 
 
 def test_mrb2283_fold_still_on_main_product():
-    assert it.channel_list_for_machine("ionos") == "#bobiverse,#win-mpre8vi4u6u"
+    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
 
 
 def test_mrb2283_docs_skill_log_keep_both_no_markers():

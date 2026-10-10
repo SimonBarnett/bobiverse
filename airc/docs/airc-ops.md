@@ -20,10 +20,13 @@ Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / 
 `Install-Airc.ps1` / `Install-AircConsole.ps1` read `HKLM\...\Services\Airc\Parameters\AppParameters` first; they also write `<ai root>\airc\config\airc-install.json` (paths only, no secrets) and **read that json as fallback** when AppParameters are missing (service already removed).
 Fresh installs still migrate legacy `.airc-console` / Default homes when no prior service / json exists.
 
-## Shop vs lobby
+## Shop vs #wonderland (FR #3834)
 
-- If ChanServ reports `#{MachineId}` registered → JOIN shop as `{MachineId}_console`.
-- Else JOIN `#{domain|workgroup}` lobby (`shop-mode=auto` probes `INFO #{machine}`).
+- If ChanServ reports `#{MachineId}` registered -> JOIN shop as `{MachineId}_console` (`reason=registered-machine`).
+- Else JOIN `#wonderland` as `{MachineId}_console` (`reason=wonderland-fallback`). Never join `#{domain|workgroup}`.
+- Probe timeout / no ChanServ answer also falls back to `#wonderland`.
+- `#wonderland` is registered once by Simon (founder); airc is a plain member (no ops).
+- Bob ears also JOIN `#wonderland`; Jeeves grants them `+o`. Workers / seats do not join it.
 - Ergo reply `Channel #x is registered` counts as registered.
 - SASL is on by default for the reserved `{MachineId}_console` nick (NickServ GUID in ConsoleHome).
 

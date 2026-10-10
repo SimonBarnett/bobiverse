@@ -2,8 +2,7 @@
 """airc console service core (FR #253).
 
 Installable Windows service: on ChanServ-registered ``#{machinename}`` sit as
-``{machinename}_console``; otherwise lobby on ``#{domain_or_workgroup}`` as
-``{machinename}`` / ``{machinename}_N``. Silent in channel. Authenticated
+``{machinename}_console``; otherwise join ``#wonderland`` as ``{machinename}_console`` (FR #3834). Silent in channel. Authenticated
 PRIVMSG sessions get a per-user console pipe.
 
 Offline-testable: auth, channel naming, session lifecycle, silent policy.
@@ -666,19 +665,39 @@ class ChannelMemberMap:
                     arg_i += 1
 
 
+# FR #3834: fixed registered fallback control channel (replaces #<domain|workgroup>).
+WONDERLAND_CHANNEL = "#wonderland"
+
+
+def wonderland_channel() -> str:
+    """FR #3834: single shared client fallback control channel."""
+    return WONDERLAND_CHANNEL
+
+
 def control_channel_reason(mode: str) -> str:
-    """FR #3401: human reason token for control-channel selection logs."""
+    """FR #3401 / #3834: human reason token for control-channel selection logs."""
     m = (mode or "").strip().lower()
     if m == "registered":
         return "registered-machine"
-    return "domain-fallback"
+    # wonderland + legacy domain-lobby alias both log wonderland-fallback
+    return "wonderland-fallback"
 
 
 def control_channel_log_line(channel: str, mode: str) -> str:
-    """FR #3401: ``INFO control-channel=#name reason=registered-machine|domain-fallback``."""
+    """FR #3401 / #3834: ``INFO control-channel=#name reason=registered-machine|wonderland-fallback``."""
     return (
         f"INFO control-channel={channel} reason={control_channel_reason(mode)}"
     )
+
+
+def normalize_shop_mode(mode: str | None) -> str:
+    """FR #3834: auto|registered|wonderland; domain-lobby is a compat alias for wonderland."""
+    m = (mode or "auto").strip().lower()
+    if m == "domain-lobby":
+        return "wonderland"
+    if m in {"auto", "registered", "wonderland"}:
+        return m
+    return "auto"
 
 
 def resolve_crash_report_enabled_for_install(

@@ -11,8 +11,8 @@ IRC = ROOT / "common/scripts/irc_agent.py"
 
 
 def test_mrb2262_ionos_channel_list_not_hash_ionos():
-    assert it.channel_list_for_machine("ionos") == "#bobiverse,#win-mpre8vi4u6u"
-    assert it.channel_list_for_machine("win-mpre8vi4u6u") == "#bobiverse,#win-mpre8vi4u6u"
+    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
+    assert it.channel_list_for_machine("win-mpre8vi4u6u") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
 
 
 def test_mrb2262_scrub_and_always_on_hook():

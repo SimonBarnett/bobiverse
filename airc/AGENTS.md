@@ -17,7 +17,7 @@ Product tree: `<ai root>\airc`. Services: **Airc** (console nick `<machine>_cons
 
 ## What you are looking at
 
-Airc is the remote console: authorized fleet ears PRIVMSG short cmd.exe commands to `<machine>_console` and read the reply. It joins the shop `#<machine>` when registered, else the domain/workgroup lobby. Distinct from the legacy agentic_irc `AircConsole`.
+Airc is the remote console: authorized fleet ears PRIVMSG short cmd.exe commands to `<machine>_console` and read the reply. It joins the shop `#<machine>` when registered, else #wonderland (FR #3834). Distinct from the legacy agentic_irc `AircConsole`.
 
 ## Read first (in this order)
 

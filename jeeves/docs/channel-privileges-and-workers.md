@@ -5,8 +5,8 @@ Both are enforced chair-side by Jeeves. They are deterministic, need no token, a
 
 ## Privilege rules (`scripts/chan_privs.py`)
 
-1. Jeeves holds +o in `#bobiverse` and in every machine channel (existing upkeep, now retried at once when it loses ops).
-2. The ear `bob-<machine>` of a registered machine gets +o in its own `#<machine>` and +h in `#bobiverse`.
+1. Jeeves holds +o in `#bobiverse`, `#wonderland` and in every machine channel (existing upkeep, now retried at once when it loses ops).
+2. The ear `bob-<machine>` of a registered machine gets +o in its own `#<machine>`, +o in `#wonderland` (FR #3834), and +h in `#bobiverse`.
 3. Simon gets +o only while logged in to a NickServ account listed in `BOB_OP_ACCOUNTS`. The account must be learned
    this session from `extended-join`, `account-notify`, `account-tag` or `WHOIS` (numeric 330). A nick alone never earns ops:
    `simon` without a matching account is not granted, and de-opped if it holds +o. Logging out revokes what Jeeves granted.

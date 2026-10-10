@@ -21,10 +21,10 @@ param(
     [string]$Nick = 'auto',
     # Fleet shop id (ionos/flamingo/...). Prefer BOB_MACHINE_ID over COMPUTERNAME.
     [string]$MachineId = '',
-    # Domain/workgroup lobby channel id; default AIRC_CONSOLE_DOMAIN / Windows join.
+    # Legacy domain/workgroup id (FR #3834: unused for control channel; log only).
     [string]$Domain = '',
-    # auto | registered | domain-lobby
-    [ValidateSet('auto', 'registered', 'domain-lobby')]
+    # auto | registered | wonderland (domain-lobby is a compat alias for wonderland)
+    [ValidateSet('auto', 'registered', 'wonderland', 'domain-lobby')]
     [string]$ShopMode = 'auto',
     [Alias('Home')]
     [string]$ConsoleHome = '',
@@ -231,7 +231,8 @@ if ($TlsInsecure) { $argsList += '--tls-insecure' }
 # #34: always pass the choice explicitly (a bare omission must never silently flip it).
 if ($Sasl) { $argsList += '--sasl' } else {
     $argsList += '--no-sasl'
-    if ($ShopMode -ne 'domain-lobby') {
+    # FR #3834: all modes use reserved console nick
+    if ($true) {
         Write-Warning "airc-console: --no-sasl in shop mode ($ShopMode): reserved {machine}_console cannot be held without SASL (#34)"
     }
 }

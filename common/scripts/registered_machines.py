@@ -25,7 +25,8 @@ SOURCE_REGISTER = "register-command"
 
 # Registered channels that are NOT machine shops. Anything with a character outside
 # [a-z0-9-] (e.g. #agentic_irc) is excluded by the id check below.
-NON_MACHINE_CHANNELS = frozenset({"bobiverse"})
+# FR #3834: #wonderland is the shared airc client fallback (not a machine shop).
+NON_MACHINE_CHANNELS = frozenset({"bobiverse", "wonderland"})
 EXCLUDE_ENV = "BOB_CHANSERV_EXCLUDE"  # extra comma-separated channel names to ignore
 
 _SAFE_MID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$", re.I)

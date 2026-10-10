@@ -2,9 +2,9 @@
 
 Enforced by Jeeves (the chair) on every JOIN, on MODE drift and on a periodic reconcile (NAMES):
 
-1. Jeeves holds +o in #bobiverse and every machine channel (``Client._ensure_chan_ops``).
-2. Each registered machine's ear ``bob-<machine>`` gets +o in its OWN ``#<machine>`` channel and
-   +h in #bobiverse.
+1. Jeeves holds +o in #bobiverse, #wonderland and every machine channel (``Client._ensure_chan_ops``).
+2. Each registered machine's ear ``bob-<machine>`` gets +o in its OWN ``#<machine>`` channel,
+   +o in #wonderland (FR #3834), and +h in #bobiverse.
 3. Simon gets +o ONLY while logged in to a NickServ account listed in ``BOB_OP_ACCOUNTS``
    (default: ``JEEVES_OWNER_ACCOUNT``, else ``simon`` - the account the focus/ignore owner rule
    already uses). The account must be learned THIS SESSION from the wire (extended-join, account-notify,
@@ -28,6 +28,7 @@ OP_NICKS_ENV = "BOB_OP_NICKS"
 OWNER_ACCOUNT_ENV = "JEEVES_OWNER_ACCOUNT"
 DEFAULT_OWNER_ACCOUNT = "simon"
 FLEET_CHANNEL = "#bobiverse"
+WONDERLAND_CHANNEL = "#wonderland"  # FR #3834: Bob ears get +o here
 
 PREFIX_MODE = {"~": "q", "&": "a", "@": "o", "%": "h", "+": "v"}
 MODE_RANK = {"q": 5, "a": 4, "o": 3, "h": 2, "v": 1}
@@ -276,6 +277,16 @@ def plan(
         if mid:
             if cl == f"#{mid}" and rank < MODE_RANK["o"]:
                 acts.append(Action("grant", chan, nick, "o", f"bob-{mid} ear is ops in its own channel"))
+            elif cl == WONDERLAND_CHANNEL and rank < MODE_RANK["o"]:
+                acts.append(
+                    Action(
+                        "grant",
+                        chan,
+                        nick,
+                        "o",
+                        f"bob-{mid} ear is ops in {WONDERLAND_CHANNEL}",
+                    )
+                )
             elif cl == FLEET_CHANNEL and rank < MODE_RANK["h"]:
                 acts.append(Action("grant", chan, nick, "h", f"bob-{mid} ear is half-op in {FLEET_CHANNEL}"))
             continue
@@ -350,7 +361,7 @@ class ChanPrivEngine:
         if src == "default":
             note = f" (NEEDS Simon's value: set {OP_ACCOUNTS_ENV}=<his NickServ account>; assuming the default)"
         self.log(
-            f"INFO chan-privs rules: jeeves +o everywhere; bob-<machine> +o own #channel / +h {FLEET_CHANNEL}; "
+            f"INFO chan-privs rules: jeeves +o everywhere; bob-<machine> +o own #channel / +o {WONDERLAND_CHANNEL} / +h {FLEET_CHANNEL}; "
             f"ops only for verified account(s) {','.join(sorted(self.accounts))} [source {src}]{note}; "
             f"candidate nick(s) {','.join(sorted(self.nicks))}; never granted on nick alone"
         )

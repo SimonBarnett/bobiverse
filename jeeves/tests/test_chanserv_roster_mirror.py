@@ -35,6 +35,8 @@ def test_collector_parses_ergo_list_notices():
 
 def test_machine_filter_excludes_bobiverse_and_non_machine(monkeypatch):
     assert rm.machine_ids_from_channels(["#bobiverse", "#BobIverse", "#a_b", "##x", "nochan", "#ok-1"]) == {"ok-1"}
+    # FR #3834: #wonderland is never a machine shop.
+    assert rm.machine_ids_from_channels(["#wonderland", "#Wonderland", "#flamingo"]) == {"flamingo"}
     monkeypatch.setenv(rm.EXCLUDE_ENV, "#general, lobby")
     assert rm.machine_ids_from_channels(["#general", "#lobby", "#flamingo"]) == {"flamingo"}
 
@@ -61,7 +63,7 @@ def test_sync_adds_and_removes_mirror(tmp_path):
     assert rm.load_registered(tmp_path) == {"new-box"}
     out = bobreport.build_digest_object(tmp_path, "Jeeves")
     assert out["roster_machine_ids"] == ["new-box"]
-    assert out["chair_channels"] == ["#bobiverse", "#new-box"]
+    assert out["chair_channels"] == ["#bobiverse", "#wonderland", "#new-box"]
     assert set(out["machines"]) == {"new-box"}
 
 
@@ -86,7 +88,7 @@ def test_no_hardcoded_fleet_fallback(tmp_path):
     assert not hasattr(bobreport, "FLEET_MACHINE_IDS")
     assert bobreport.roster_machine_ids(tmp_path) == ()
     assert "ionos" not in bobreport.roster_machine_ids(tmp_path)
-    assert bobreport.chair_channels(tmp_path) == ["#bobiverse"]
+    assert bobreport.chair_channels(tmp_path) == ["#bobiverse", "#wonderland"]
     assert bobreport.empty_digest()["machines"] == {}
     assert bobreport.build_digest_object(tmp_path, "Jeeves")["roster_machine_ids"] == []
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Live IRC host for airc console service (FR #253).
 
-ChanServ-registered ``#{machinename}`` → nick ``{machinename}_console``.
-Otherwise lobby on ``#{domain_or_workgroup}`` as ``{machinename}`` / ``_N``.
-Silent in channel; authenticated PRIVMSG → per-user console pipe (NSSM).
+ChanServ-registered ``#{machinename}`` -> nick ``{machinename}_console``.
+Otherwise join ``#wonderland`` as ``{machinename}_console`` (FR #3834; never
+``#{domain|workgroup}``). Silent in channel; authenticated PRIVMSG -> pipe (NSSM).
 """
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ from airc_console import (
     home_dir,
     load_capabilities,
     legacy_operator_input_log_lines,
+    normalize_shop_mode,
     resolve_channel_commands,
     resolve_presence_channels,
     same_irc_channel,
@@ -57,6 +58,7 @@ from airc_console import (
     resolve_powershell,
     resolve_server_password,
     shop_channel,
+    wonderland_channel,
 )
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 
@@ -118,26 +120,22 @@ class AircConsoleService:
         self.home.mkdir(parents=True, exist_ok=True)
         self.machine = machine_id(args.machine)
         self.domain = domain_or_workgroup_id(getattr(args, "domain", None))
-        self.domain_channel = domain_channel(self.domain)
+        self.domain_channel = domain_channel(self.domain)  # retained for log only (FR #3834)
+        self.wonderland_channel = wonderland_channel()
         self.shop_channel = shop_channel(self.machine)
-        # auto | registered | domain-lobby
-        mode = (getattr(args, "shop_mode", None) or "auto").strip().lower()
-        if mode not in {"auto", "registered", "domain-lobby"}:
-            mode = "auto"
-        self.shop_mode = mode
+        # auto | registered | wonderland (domain-lobby is a compat alias -> wonderland)
+        self.shop_mode = normalize_shop_mode(getattr(args, "shop_mode", None))
         nick_arg = getattr(args, "nick", None)
         self._nick_explicit = bool(
             nick_arg and str(nick_arg).strip() and str(nick_arg).strip().lower() != "auto"
         )
         if self._nick_explicit:
             self.nick = console_nick(self.machine, nick_arg)
-        elif self.shop_mode == "domain-lobby":
-            self.nick = domain_lobby_nick(self.machine)
         else:
-            # Provisional / registered-shop nick.
+            # FR #3834: always {machine}_console (wonderland is shared; keep reserved nick).
             self.nick = machine_console_nick(self.machine)
-        if self.shop_mode == "domain-lobby":
-            self.channel = self.domain_channel
+        if self.shop_mode == "wonderland":
+            self.channel = self.wonderland_channel
         else:
             self.channel = self.shop_channel
         self._nick_retries = 0
@@ -166,7 +164,7 @@ class AircConsoleService:
         )
         if self.nickserv_password:
             info(f"INFO nickserv-password file={nickserv_path} (GUID store+reuse)")
-        if not getattr(args, "sasl", True) and self.shop_mode != "domain-lobby":
+        if not getattr(args, "sasl", True):
             info(
                 f"ERROR --no-sasl with shop-mode={self.shop_mode}: the reserved "
                 f"{machine_console_nick(self.machine)} nick needs SASL (Ergo nick reservation); "
@@ -178,7 +176,7 @@ class AircConsoleService:
             info("INFO no-server-pass (set AGENTIC_IRC_PASSWORD or ergo.password)")
         info(
             f"INFO domain={self.domain} shop={self.shop_channel} "
-            f"lobby={self.domain_channel} shop-mode={self.shop_mode}"
+            f"wonderland={self.wonderland_channel} shop-mode={self.shop_mode}"
         )
         # FR #77 / #2949: frozen airc.exe must use resolve_airc_install_root
         # (sys.executable parent), never Path(__file__).parents[1] under _MEI*.
@@ -537,10 +535,9 @@ class AircConsoleService:
 
     def _may_register_nick(self) -> bool:
         """#34: never auto-register {machine}_N accounts in registered-shop mode."""
-        if self._nick_explicit or self.shop_mode == "domain-lobby":
+        if self._nick_explicit:
             return True
-        if self._active_mode == "domain-lobby":
-            return True
+        # FR #3834: wonderland and registered both use {machine}_console.
         return self.nick.lower() == machine_console_nick(self.machine).lower()
 
     def handshake(self) -> None:
@@ -638,7 +635,13 @@ class AircConsoleService:
         self.send(f"PRIVMSG ChanServ :INFO {self.shop_channel}")
 
     def _apply_shop_mode(self, mode: str) -> None:
-        """Settle registered shop vs domain lobby after ChanServ probe (or forced mode)."""
+        """Settle registered shop vs #wonderland after ChanServ probe (or forced mode).
+
+        FR #3834: unregistered / unknown #<machine> joins #wonderland (never #<domain>).
+        """
+        mode = normalize_shop_mode(mode) if mode != "registered" else "registered"
+        if mode == "auto":
+            mode = "wonderland"
         if self._probe_state == "done" and self._active_mode == mode and self._joined_shop:
             return
         self._probe_state = "done"
@@ -657,31 +660,28 @@ class AircConsoleService:
                 self.join_shop()
             return
 
-        # domain-lobby
-        self.channel = self.domain_channel
+        # wonderland fallback (FR #3834) — keep {machine}_console nick
+        self.channel = self.wonderland_channel
         self.core.channel = self.channel
         if not self._nick_explicit:
-            want = domain_lobby_nick(self.machine)
+            want = machine_console_nick(self.machine)
             if self.nick.lower() != want.lower():
                 self._nick_retries = 0
                 info(
-                    f"INFO shop-mode=domain-lobby channel={self.channel} "
+                    f"INFO shop-mode=wonderland channel={self.channel} "
                     f"nick={want} (changing from {self.nick})"
                 )
-                # Issue #321: do not wait for a NICK echo — Ergo may omit it and
-                # we would never JOIN. Optimistic NICK then register+JOIN; 433
-                # handler re-nicks and re-JOINs.
                 self._set_nick(want)
-        info(f"INFO shop-mode=domain-lobby channel={self.channel} nick={self.nick}")
-        info(control_channel_log_line(self.channel, "domain-lobby"))
+        info(f"INFO shop-mode=wonderland channel={self.channel} nick={self.nick}")
+        info(control_channel_log_line(self.channel, "wonderland"))
         self.register_or_identify()
         if not self._joined_shop:
             self.join_shop()
 
     def _finish_lobby_nick(self) -> None:
-        """Legacy helper — lobby path no longer blocks on NICK ack (#321)."""
+        """Legacy helper — wonderland path no longer blocks on NICK ack (#321 / #3834)."""
         self._awaiting_lobby_nick = False
-        info(f"INFO shop-mode=domain-lobby channel={self.channel} nick={self.nick}")
+        info(f"INFO shop-mode=wonderland channel={self.channel} nick={self.nick}")
         self.register_or_identify()
         if not self._joined_shop:
             self.join_shop()
@@ -703,8 +703,8 @@ class AircConsoleService:
             return
         if time.monotonic() < self._probe_deadline:
             return
-        info("INFO chanserv-probe timeout -> domain-lobby")
-        self._apply_shop_mode("domain-lobby")
+        info("INFO chanserv-probe timeout -> wonderland")
+        self._apply_shop_mode("wonderland")
 
     def _handle_sasl_line(self, cmd: str, args: list[str], trailing: str) -> None:
         tokens = [a.lower() for a in args] + ([trailing.lower()] if trailing else [])
@@ -782,49 +782,38 @@ class AircConsoleService:
             self._nick_retries = 0
             self.server_nick = args[0] if args else None
             if self._nick_explicit:
-                # Explicit nick: join current channel (shop unless domain-lobby forced).
+                # Explicit nick: join current channel (shop unless wonderland forced).
                 self._apply_shop_mode(
-                    "domain-lobby" if self.shop_mode == "domain-lobby" else "registered"
+                    "wonderland" if self.shop_mode == "wonderland" else "registered"
                 )
             elif self.shop_mode == "registered":
                 self._apply_shop_mode("registered")
-            elif self.shop_mode == "domain-lobby":
-                self._apply_shop_mode("domain-lobby")
+            elif self.shop_mode == "wonderland":
+                self._apply_shop_mode("wonderland")
             else:
                 self._start_chanserv_probe()
 
         if cmd == "433":
             # Nickname already in use — never get 001/JOIN without recovery.
+            # FR #3834: wonderland keeps {machine}_console; never invent {machine}_N.
             self._nick_retries += 1
-            lobby = self._active_mode == "domain-lobby" or self.shop_mode == "domain-lobby"
-            limit = NICK_RETRIES_LOBBY if lobby else NICK_RETRIES_SHOP
-            if self._nick_retries > limit:
+            base = machine_console_nick(self.machine)
+            if base.lower() == self.nick.lower() or self._nick_explicit:
+                info(
+                    f"ERROR nick {self.nick} refused (433, reserved by NickServ). "
+                    f"{'SASL failed for this account; ' if self._sasl_failed else ''}"
+                    f"NOT falling back to {self.machine}_N. Fix the account password "
+                    f"(console.password) and restart the Airc service."
+                )
+                self._force_reconnect = True
+                return
+            if self._nick_retries > NICK_RETRIES_SHOP:
                 info(f"INFO nick-collision giving up on {self.nick}")
                 self._force_reconnect = True
                 return
-            if lobby:
-                alt = domain_lobby_nick(self.machine, self._nick_retries)
-            else:
-                # #34: shop mode never falls back to {machine}_N. The reserved console
-                # nick is only usable by a SASL-authenticated session; fail loudly.
-                base = machine_console_nick(self.machine)
-                if base.lower() == self.nick.lower() or self._nick_explicit:
-                    info(
-                        f"ERROR nick {self.nick} refused (433, reserved by NickServ). "
-                        f"{'SASL failed for this account; ' if self._sasl_failed else ''}"
-                        f"NOT falling back to {self.machine}_N. Fix the account password "
-                        f"(console.password) and restart the Airc service."
-                    )
-                    self._force_reconnect = True
-                    return
-                alt = base
+            alt = base
             info(f"INFO nick-in-use 433 {self.nick} -> {alt}")
             self._set_nick(alt)
-            if lobby and self._active_mode == "domain-lobby":
-                # Re-IDENTIFY and re-JOIN under the collision nick (#321).
-                self.register_or_identify()
-                self._joined_shop = False
-                self.join_shop()
             return
 
         if cmd == "NICK":
@@ -857,7 +846,7 @@ class AircConsoleService:
                 if status == "registered":
                     self._apply_shop_mode("registered")
                 elif status == "missing":
-                    self._apply_shop_mode("domain-lobby")
+                    self._apply_shop_mode("wonderland")
                 # unknown: keep waiting until timeout
             # FR #3763: NickServ REGISTER / IDENTIFY success -> allow SASL next connect.
             if src_l in {"nickserv", "ns"} and trailing:
@@ -1163,7 +1152,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--nick",
         default="auto",
-        help="IRC nick (default auto = {machine}_console provisional; lobby uses {machine}/_{n})",
+        help="IRC nick (default auto = {machine}_console for registered and #wonderland)",
     )
     p.add_argument(
         "--machine",
@@ -1173,14 +1162,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--domain",
         default=None,
-        help="domain/workgroup id for lobby channel; default AIRC_CONSOLE_DOMAIN / Windows join",
+        help="legacy domain/workgroup id (FR #3834: unused for control channel; log only)",
     )
     p.add_argument(
         "--shop-mode",
         default=os.environ.get("AIRC_CONSOLE_SHOP_MODE", "auto"),
-        choices=["auto", "registered", "domain-lobby"],
+        choices=["auto", "registered", "wonderland", "domain-lobby"],
         help="auto=ChanServ INFO #{machine}; registered=#{machine} as {machine}_console; "
-        "domain-lobby=#{domain} as {machine}",
+        "wonderland=#wonderland as {machine}_console (domain-lobby is a compat alias)",
     )
     p.add_argument("--home", default=None)
     p.add_argument("--password-file", default=None)
