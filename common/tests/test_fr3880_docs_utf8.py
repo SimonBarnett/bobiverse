@@ -1,4 +1,4 @@
-﻿"""FR #3880: product docs/*.md must decode as UTF-8 (no lone cp1252 0x97).
+"""FR #3880: product docs/*.md must decode as UTF-8 (no lone cp1252 0x97).
 
 Commit a23df418 left a Windows-1252 em dash (0x97) in skill-harvest-log.md;
 25 harvest-log readers failed with UnicodeDecodeError. The byte was rewritten
