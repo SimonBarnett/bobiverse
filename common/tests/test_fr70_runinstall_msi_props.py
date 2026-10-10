@@ -1,6 +1,6 @@
 """FR #70: MSI RunInstall must forward public properties (OPERFILE/SKIPERGO/MACHINEID/...).
 
-Also locks the already-shipped nssm/ergo Permanent+NeverOverwrite wiring that stops BobIrcd
+Also locks nssm Permanent+stable GUID (no NeverOverwrite; FR #3899) and ergo Permanent+NeverOverwrite wiring that stops BobIrcd
 bounces on jeeves MSI upgrade.
 """
 from __future__ import annotations
@@ -53,12 +53,18 @@ def test_install_bob_maps_msi_skipcopy_string():
     assert "if ($MsiSkipCopy -eq '1') { $SkipCopy = $true }" in t
 
 
-def test_pack_keeps_nssm_and_jeeves_ergo_permanent_neveroverwrite():
+def test_pack_keeps_nssm_permanent_stable_guid_and_ergo_neveroverwrite():
+    """nssm: Permanent+stable GUID without NeverOverwrite (FR #3899). ergo: still NeverOverwrite."""
     p = _t("Pack-BobiverseRelease.ps1")
     assert "bobiverse-$Name-nssm-component" in p
     assert "bobiverse-$Name-ergo-component" in p
     assert "SetAttribute('Permanent', 'yes')" in p
-    assert "SetAttribute('NeverOverwrite', 'yes')" in p
+    nssm_idx = p.index("nssm.exe component not found")
+    nssm_block = p[nssm_idx : nssm_idx + 900]
+    assert "SetAttribute('NeverOverwrite', 'yes')" not in nssm_block
+    ergo_idx = p.index("ergo\\ergo.exe component not found")
+    ergo_block = p[ergo_idx - 200 : ergo_idx + 500]
+    assert "SetAttribute('NeverOverwrite', 'yes')" in ergo_block
 
 
 def test_watch_bobircd_is_ascii_or_bom_and_has_no_smart_dash():
