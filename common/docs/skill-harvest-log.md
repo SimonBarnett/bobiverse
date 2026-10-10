@@ -726,5 +726,10 @@ Books: bobiverse-jeeves-troubleshooting, gitclaim. Product PR #3871; hostile doc
 
 Hostile pins for product docs UTF-8 gate: product docs trees decode as UTF-8; no lone cp1252 0x97; skill-harvest-log no BOM; gate test module itself UTF-8/no-BOM; PRODUCT_DOCS covers common/bob/jeeves/airc.
 
-Books: harvest, skill-harvest-log. Product PR #3881; hostile docs this entry. Refs: SimonBarnett/bobiverse#3880 SimonBarnett/bobiverse#3881
+Books: harvest, skill-harvest-log. Product PR #3881; hostile docs this entry. Refs: SimonBarnett/bobiverse#3880 SimonBarnett/bobiverse#3881\n
+## 2026-10-10 - docs/mrb-3882 (harvest tip #3882 / FR #3880)
 
+Hostile pin: contiguous harvest lesson for product docs UTF-8 / repo_layout.REPO / lone cp1252 0x97. Twin tip #3884 closed as duplicate.
+
+Books: harvest. Tip PR #3882; hostile docs this entry. Refs: SimonBarnett/bobiverse#3880 SimonBarnett/bobiverse#3882
+\n
