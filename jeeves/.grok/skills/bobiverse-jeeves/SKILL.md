@@ -50,6 +50,14 @@ Modules worth knowing: `irc_agent.py` (client + chair), `chair_commands.py` (com
 `registered_machines.py` (ChanServ roster mirror), `bobreport.py` (digest + chair outbox), `bobcallback.py` (webhooks),
 `intake.py` (intake + filing), `bobhours.py` (FR #3450 hours webhook — timesheet source entries; no Priority write; FR #3673 `missing_start` / `user_required` hints + agent field map in `jeeves/docs/webhooks.md`), `chair_health.py` (background jobs), `bob_recycle.py`.
 
+**Registered channels + `#wonderland` (FR #3836):** Jeeves JOINs every ChanServ-registered channel (LIST mirror
+`channels` field; paced joins on connect/resync; `INFO channel-sync registered=<n> joined=<list>`). Machine shops
+stay the digest roster (`machines`); `#wonderland` is never a machine id. Privilege policy: `bob-<machine>` gets
+`+o` in its own shop, `+h` in `#bobiverse`, and `+o` in `#wonderland` (`INFO op-grant nick=… channel=…`). Never op
+`*_console` or worker/seat nicks. Simon setup (once): `/msg ChanServ FLAGS #wonderland Jeeves +Oo`. Never touch
+`ircd.yaml`. GIT announces remain `#bobiverse`-only; shop behaviour unchanged. Details:
+`jeeves/docs/channel-privileges-and-workers.md`.
+
 **Living architecture FR (harvest #1989 / FR #1993):** approved ionos chair plans (e.g. `jeeves.exe` chair+HTTP one process, self-test/heal) are filed as **one** SimonBarnett/bobiverse FR with `require_machine: ionos` (and `needs-ionos` when stamped). Append WP evidence to **that same FR body** — do not open twin FRs per WP. Product work stays on #1993 until merged.
 
 ## Chair background jobs (inside ircJeeves, no extra task)

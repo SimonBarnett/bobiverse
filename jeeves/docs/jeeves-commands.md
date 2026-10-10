@@ -89,7 +89,8 @@ Differences from gh-Jeeves @8d76d9a, deliberate:
 
 ## Privilege grants (`+h` / `+o`) - hard cap
 
-`chan_privs.py` grants `+h bob-<machine>` in `#bobiverse` and `+o bob-<machine>` in `#<machine>`. Idempotent: nothing is sent
+`chan_privs.py` grants `+h bob-<machine>` in `#bobiverse`, `+o bob-<machine>` in `#<machine>`, and `+o bob-<machine>` in
+`#wonderland` (FR #3836; never `*_console` / worker seats). Idempotent: nothing is sent
 when NAMES / MODE already show the rank (`%` halfop and multi-prefix `%+` are parsed; our own and server-sourced
 (SAMODE) MODE echoes are recorded but never re-planned). **Hard cap: at most 3 sends per (channel, nick, mode) in any
 10 minutes**; the 4th is suppressed with one `WARN ... suppressed: already sent 3x in 600s (hard cap 3)` per window.

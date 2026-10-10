@@ -1,4 +1,4 @@
-﻿import json
+import json
 import time
 from types import SimpleNamespace
 
@@ -35,8 +35,9 @@ def test_collector_parses_ergo_list_notices():
 
 def test_machine_filter_excludes_bobiverse_and_non_machine(monkeypatch):
     assert rm.machine_ids_from_channels(["#bobiverse", "#BobIverse", "#a_b", "##x", "nochan", "#ok-1"]) == {"ok-1"}
-    # FR #3834: #wonderland is never a machine shop.
+    # FR #3834 / #3836: #wonderland is never a machine shop.
     assert rm.machine_ids_from_channels(["#wonderland", "#Wonderland", "#flamingo"]) == {"flamingo"}
+    assert rm.machine_ids_from_channels(["#bobiverse", "#wonderland", "#flamingo"]) == {"flamingo"}
     monkeypatch.setenv(rm.EXCLUDE_ENV, "#general, lobby")
     assert rm.machine_ids_from_channels(["#general", "#lobby", "#flamingo"]) == {"flamingo"}
 
@@ -63,7 +64,8 @@ def test_sync_adds_and_removes_mirror(tmp_path):
     assert rm.load_registered(tmp_path) == {"new-box"}
     out = bobreport.build_digest_object(tmp_path, "Jeeves")
     assert out["roster_machine_ids"] == ["new-box"]
-    assert out["chair_channels"] == ["#bobiverse", "#wonderland", "#new-box"]
+    # FR #3836: chair_channels mirrors the LIST exactly (wonderland only if registered).
+    assert out["chair_channels"] == ["#bobiverse", "#new-box"]
     assert set(out["machines"]) == {"new-box"}
 
 
@@ -128,7 +130,8 @@ class _FakeAgent:
     _apply_chanserv_channels = irc_agent.Client._apply_chanserv_channels
 
 
-def test_chair_sends_list_then_mirrors_and_joins_parts(tmp_path):
+def test_chair_sends_list_then_mirrors_and_joins_parts(tmp_path, monkeypatch):
+    monkeypatch.setattr(irc_agent, "FLOOD_S", 0.0)
     rm.save_registered(tmp_path, {"gone-box"})
     a = _FakeAgent(tmp_path)
     a.channels += ["#gone-box"]
@@ -140,8 +143,10 @@ def test_chair_sends_list_then_mirrors_and_joins_parts(tmp_path):
         a._on_chanserv_notice(ln)
     assert rm.load_registered(tmp_path) == {"flamingo", "win-mpre8vi4u6u", "ce-priority-dev1"}
     assert "JOIN #flamingo" in a.sent and "JOIN #win-mpre8vi4u6u" in a.sent
+    assert "JOIN #agentic_irc" in a.sent  # FR #3836: every registered channel, not only shops
     assert any(s.startswith("PART #gone-box") for s in a.sent)
     assert "#gone-box" not in a.channels
+    assert "#agentic_irc" in rm.load_registered_channels(tmp_path)
     n = len(a.sent)
     a._maybe_chanserv_sync()                        # fresh -> within TTL, no LIST
     assert len(a.sent) == n

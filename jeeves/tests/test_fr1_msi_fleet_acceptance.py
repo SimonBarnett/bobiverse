@@ -145,12 +145,14 @@ def test_s2_chan_privs_grant_bob_plus_o_shop_and_plus_h_fleet():
     assert "+o in its OWN" in t or "ear is ops in its own channel" in t
     assert "+h in #bobiverse" in t or "half-op in" in t
     assert 'FLEET_CHANNEL = "#bobiverse"' in t
+    assert "WONDERLAND_CHANNEL" in t and "wonderland" in t  # FR #3836
     # plan_actions must emit grant o on shop and grant h on fleet
     assert 'Action("grant", chan, nick, "o"' in t
     assert 'Action("grant", chan, nick, "h"' in t
     irc = _t(S / "irc_agent.py")
     assert "!register" in irc
     assert "operators only" in irc or "ERR !register denied" in irc
+    assert "channel-sync registered=" in irc
 
 
 # --- S3: recycle / systray restart ------------------------------------------
