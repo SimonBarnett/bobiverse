@@ -2090,6 +2090,11 @@ def worker_working_on(home: Path, nick: str) -> str:
         if not map_wo and map_state in ("running", "doing", "offered", "busy"):
             map_wo = map_state
     if map_wo and not list_busy:
+        # FR #3867: map still names an unaccepted queue row → lost ACK across restart;
+        # keep the evidence (do not FR #1714-clear) so reconcile can promote to accepted.
+        with contextlib.suppress(Exception):
+            if unaccepted_matches_digest_work(home, map_wo):
+                return map_wo
         # Split brain: list idle, map busy → clear map (CAST IRON: do not clear when list busy).
         needle = ""
         m = _MRB_DOING_RX.search(map_wo)
@@ -3796,6 +3801,84 @@ _MRB_DOING_RX = re.compile(
     r"(?i)\bMRB\b(?:\s+(?:SimonBarnett/)?([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?))?\s*#\s*(\d+)"
 )
 
+# Digest / tray work text (shop_listen.short_work): ``a-search FR #1018``.
+# Also task-first ``FR SimonBarnett/a-search#1018`` and bare ``FR #1018``.
+_DIGEST_WORK_RXES = (
+    re.compile(
+        r"(?i)\b(?P<repo>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)\s+"
+        r"(?P<task>FR|MRB|UAT)\s*#\s*(?P<num>\d+)"
+    ),
+    re.compile(
+        r"(?i)\b(?P<task>FR|MRB|UAT)\s+"
+        r"(?P<repo>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)\s*#\s*(?P<num>\d+)"
+    ),
+    re.compile(r"(?i)\b(?P<task>FR|MRB|UAT)\s*#\s*(?P<num>\d+)"),
+)
+
+
+def parse_digest_work(work: str) -> dict | None:
+    """Parse digest ``working_on`` / worker_list work into task/id/repo hints (FR #3867)."""
+    text = str(work or "").strip()
+    if not text:
+        return None
+    for rx in _DIGEST_WORK_RXES:
+        m = rx.search(text)
+        if not m:
+            continue
+        gd = m.groupdict()
+        task = str(gd.get("task") or "").strip().upper()
+        num = str(gd.get("num") or "").strip()
+        if not task or not num:
+            continue
+        repo_raw = str(gd.get("repo") or "").strip()
+        out: dict = {"task": task, "id": f"#{int(num)}", "repo_short": "", "repo": ""}
+        if repo_raw:
+            if "/" in repo_raw:
+                out["repo"] = repo_raw
+                out["repo_short"] = repo_raw.rsplit("/", 1)[-1]
+            else:
+                out["repo_short"] = repo_raw
+                out["repo"] = f"SimonBarnett/{repo_raw}"
+        return out
+    return None
+
+
+def row_matches_digest_work(row: dict, work: str) -> bool:
+    """True when a queue row is the job named by digest work text (FR #3867)."""
+    if not isinstance(row, dict):
+        return False
+    parsed = parse_digest_work(work)
+    if not parsed:
+        return False
+    if str(row.get("task") or "").strip().upper() != parsed["task"]:
+        return False
+    rid = str(row.get("id") or "").strip().lstrip("#")
+    if rid != str(parsed["id"]).lstrip("#"):
+        return False
+    repo = str(row.get("repo") or "").strip()
+    full = str(parsed.get("repo") or "").strip()
+    short = str(parsed.get("repo_short") or "").strip()
+    if full and "/" in full:
+        return repo.lower() == full.lower() or repo.lower().endswith("/" + full.rsplit("/", 1)[-1].lower())
+    if short:
+        return repo.lower() == short.lower() or repo.lower().endswith("/" + short.lower())
+    # Bare ``FR #N``: task+id only (caller should prefer unique matches).
+    return True
+
+
+def unaccepted_matches_digest_work(home: Path, work: str) -> bool:
+    """True when any unaccepted queue row matches digest work text (FR #3867)."""
+    if not parse_digest_work(work):
+        return False
+    try:
+        doc = load_queue(home)
+    except Exception:  # noqa: BLE001
+        return False
+    for row in doc.get("unaccepted") or []:
+        if row_matches_digest_work(row, work):
+            return True
+    return False
+
 
 def _orphan_mrb_repo_num(
     work: str, *, default_repo: str = "SimonBarnett/bobiverse"
@@ -4949,10 +5032,13 @@ def offer_focus_top(
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return "error", None
+            # FR #3867: promote unaccepted rows a digest seat is already working (lost ACK
+            # across chair restart) before purging offered_to or picking a new offer.
+            purged = bool(_reconcile_lost_ack_unlocked(home, doc))
             # FR #740 / #738: drop MERGED/CLOSED/already-DONE MRB before picking.
             # Also free seats stuck on accepted MERGED MRBs (#1171/#1236 class).
             # FR #3188: no live pr_exists fan-out here — stamped/ledger only.
-            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=None, home=home))
+            purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             # FR #2340 / #3188: stamped CLOSED only at bulk; live check is budgeted in _eligible.
@@ -7040,6 +7126,131 @@ def _seat_has_accepted(home: Path, nick: str) -> bool:
     return False
 
 
+def _iter_digest_work_claims(home: Path) -> list[tuple[str, str]]:
+    """Collect (nick, working_on) claims from digest workers map + doing list (FR #3867)."""
+    import bobreport as _br
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    try:
+        dig = _br.load_digest(_root(home))
+    except Exception:  # noqa: BLE001
+        return out
+    machines = dig.get("machines") if isinstance(dig.get("machines"), dict) else {}
+    for mid, ent in list(machines.items()):
+        if not isinstance(ent, dict):
+            continue
+        workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+        for pid_s, w in list(workers.items()):
+            if not isinstance(w, dict):
+                continue
+            wo = str(w.get("working_on") or "").strip()
+            if not wo or not parse_digest_work(wo):
+                continue
+            nick = str(w.get("nick") or "").strip() or f"{mid}-{pid_s}"
+            key = (canonical_worker_nick(nick) or nick).strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((nick, wo))
+        for row in list(ent.get("worker_list") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("state") or "").strip().lower() not in ("doing", "running", "busy", "offered"):
+                continue
+            wo = str(row.get("work") or row.get("working_on") or "").strip()
+            if not wo or not parse_digest_work(wo):
+                continue
+            nick = str(row.get("nick") or "").strip()
+            if not nick:
+                continue
+            key = (canonical_worker_nick(nick) or nick).strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((nick, wo))
+    return out
+
+
+def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
+    """Promote unaccepted rows claimed by digest working_on into accepted (FR #3867).
+
+    Mutates ``doc`` under the caller's lock. Returns how many rows were promoted.
+    """
+    claims = _iter_digest_work_claims(home)
+    if not claims:
+        return 0
+    unacc = [r for r in (doc.get("unaccepted") or []) if isinstance(r, dict)]
+    if not unacc:
+        return 0
+    accepted = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
+
+    def _already_accepted(row: dict) -> bool:
+        for a in accepted:
+            if _same(a, str(row.get("repo") or ""), str(row.get("task") or ""), str(row.get("id") or "")):
+                return True
+        return False
+
+    promoted = 0
+    keep: list[dict] = []
+    for row in unacc:
+        matched_nick = ""
+        for nick, wo in claims:
+            if row_matches_digest_work(row, wo):
+                matched_nick = nick
+                break
+        if not matched_nick or _already_accepted(row):
+            keep.append(row)
+            continue
+        job = dict(row)
+        job["nick"] = (canonical_worker_nick(matched_nick) or matched_nick).strip()
+        job["accepted_ts"] = _utc_now()
+        job["reconcile"] = "LOST_ACK_RESTART"
+        # Drop stale offer stamps; ownership is now accepted.
+        job.pop("offered_to", None)
+        job.pop("offered_ts", None)
+        job.pop("offered_channel", None)
+        job.pop("offered_via", None)
+        accepted.append(job)
+        promoted += 1
+        _log_queue_purge(
+            f"INFO seat-reconcile nick={job['nick']} row={job.get('task')} "
+            f"{job.get('repo')}{job.get('id')} result=LOST_ACK_RESTART reason=LOST_ACK_RESTART",
+            log=log,
+        )
+    if not promoted:
+        return 0
+    if len(accepted) > ACCEPTED_CAP:
+        accepted = accepted[-ACCEPTED_CAP:]
+    doc["unaccepted"] = keep
+    doc["accepted"] = accepted
+    return promoted
+
+
+def reconcile_lost_ack_from_digest(home: Path, *, log=None) -> int:
+    """FR #3867: on chair start / before offer, accept unaccepted rows a digest seat is working.
+
+    When an offer lands and the chair restarts before ACK is recorded, the seat may still
+    paint ``workers.<pid>.working_on`` while the row stays in ``unaccepted``. Promote those
+    rows to ``accepted`` so they are never re-offered to another seat.
+    """
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return 0
+            n = _reconcile_lost_ack_unlocked(home, doc, log=log)
+            if n:
+                try:
+                    _write_queue(queue_path(home), doc)
+                except OSError:
+                    return 0
+            return n
+    except (TimeoutError, OSError):
+        return 0
+
+
 def bored_gate(
     home: Path,
     nick: str,
@@ -7054,6 +7265,9 @@ def bored_gate(
     accepted row ACKed before this session is healed on ``!bored`` without waiting
     ``BUSY_STALE_S`` (lost DONE while the chair was down).
     """
+    # FR #3867: heal lost-ACK rows from digest before busy/ok decisions.
+    with contextlib.suppress(Exception):
+        reconcile_lost_ack_from_digest(home)
     shop = worker_shop_channel(nick)
     if shop is None or _channel(channel) != shop:
         return "ignore"
