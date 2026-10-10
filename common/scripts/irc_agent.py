@@ -3133,6 +3133,16 @@ class Client:
         self._irc_session_started = time.time()
         if getattr(self.args, "chair", False):
             self._privs().announce()      # created here, before the reader/outbox threads exist
+            # FR #3867: digest working_on may still name a job whose ACK was lost in the
+            # restart window — promote matching unaccepted rows to accepted before !bored.
+            try:
+                import gitclaim as _gc_reconcile
+
+                n = _gc_reconcile.reconcile_lost_ack_from_digest(self.home)
+                if n:
+                    info(f"INFO seat-reconcile lost-ack promoted={n} (FR #3867)")
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN seat-reconcile lost-ack error {type(exc).__name__}")
         self._outbox_gen += 1
         gen = self._outbox_gen
         info(
