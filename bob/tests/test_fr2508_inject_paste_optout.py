@@ -26,9 +26,9 @@ def test_fr2508_opt_out_skips_clipboard_set(monkeypatch):
 
     sets = []
     monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "0")
-    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda: "prior")
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t: sets.append(t) or True)
-    monkeypatch.setattr(bw, "_clipboard_restore_unicode", lambda t: True)
+    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: "prior")
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t, log=None: sets.append(t) or True)
+    monkeypatch.setattr(bw, "_clipboard_restore_unicode", lambda t, log=None: True)
     monkeypatch.setattr(bw, "_write_console_all", lambda *a, **k: True)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
 

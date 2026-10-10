@@ -29,9 +29,9 @@ def test_mrb2510_opt_out_still_key_event_fallback(monkeypatch):
 
     wrote = []
     monkeypatch.setenv("BOB_WORKER_INJECT_PASTE", "0")
-    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda: "prior")
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t: (_ for _ in ()).throw(AssertionError("clipboard set")))
-    monkeypatch.setattr(bw, "_clipboard_restore_unicode", lambda t: True)
+    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: "prior")
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t, log=None: (_ for _ in ()).throw(AssertionError("clipboard set")))
+    monkeypatch.setattr(bw, "_clipboard_restore_unicode", lambda t, log=None: True)
     monkeypatch.setattr(bw, "_write_console_all", lambda *a, **k: wrote.append(a) or True)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
 
