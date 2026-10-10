@@ -2697,9 +2697,45 @@ class Client:
                                 src, target, shop_listen.activity_description(job2)
                             )
                         info(f"INFO git-claim giveup-offer nick={src} n={n}")
+                    else:
+                        try:
+                            _stats = gitclaim.clamp_empty_reply_stats(
+                                gitclaim.summarize_empty_offer(self._digest_home(), src)
+                            )
+                            _detail = gitclaim.format_empty_offer_detail(src, _stats)
+                        except Exception:  # noqa: BLE001
+                            _detail = f"{src}: nothing queued"
+                        info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
                 except Exception as offer_exc:  # noqa: BLE001
                     info(f"WARN giveup-offer {type(offer_exc).__name__}")
-        # Never PRIVMSG the shop channel for ACK/DONE (FR #211). GIVEUP/NACK may push one assign (FR #2811).
+        elif verb == "DONE" and status in ("ok", "missing"):
+            # FR #3893: same push as GIVEUP/NACK — do not wait for the seat's next !bored
+            # when the queue still holds eligible work (regression of idle-after-DONE).
+            try:
+                n, job2 = gitclaim.offer_after_done(
+                    self._digest_home(),
+                    src,
+                    bobreport.normalize_channel(target),
+                    say=lambda ch, t: self._git_say(ch, t),
+                )
+                if n and isinstance(job2, dict):
+                    with contextlib.suppress(Exception):
+                        self._workers().on_offer(
+                            src, target, shop_listen.activity_description(job2)
+                        )
+                    info(f"INFO git-claim done-offer nick={src} n={n}")
+                else:
+                    try:
+                        _stats = gitclaim.clamp_empty_reply_stats(
+                            gitclaim.summarize_empty_offer(self._digest_home(), src)
+                        )
+                        _detail = gitclaim.format_empty_offer_detail(src, _stats)
+                    except Exception:  # noqa: BLE001
+                        _detail = f"{src}: nothing queued"
+                    info(f"INFO git-claim done-offer empty nick={src} {_detail}")
+            except Exception as offer_exc:  # noqa: BLE001
+                info(f"WARN done-offer {type(offer_exc).__name__}")
+        # Never PRIVMSG the shop channel for ACK (FR #211). DONE/GIVEUP/NACK may push one assign (FR #2811 / #3893).
         return True
 
     def handle_privmsg(self, prefix: str, target: str, body: str) -> None:
