@@ -30,6 +30,17 @@ SOURCE_REGISTER = "register-command"
 NON_MACHINE_CHANNELS = frozenset({"bobiverse", "wonderland"})
 EXCLUDE_ENV = "BOB_CHANSERV_EXCLUDE"  # extra comma-separated channel names to ignore
 WONDERLAND_CHANNEL = "#wonderland"
+# Bobiverse #3868: the fleet channel is where ears send !assign / !resync / !bored. It is not
+# necessarily ChanServ-registered on Ergo (live LIST omits it), so the chair ALWAYS joins it in
+# addition to every registered channel, and channel-sync never PARTs it.
+FLEET_CHANNEL = "#bobiverse"
+ALWAYS_JOIN_CHANNELS = (FLEET_CHANNEL,)
+
+
+def chair_join_channels(registered) -> list[str]:
+    """Chair join list: the always-join static channels (#bobiverse) PLUS every registered
+    channel (deduped, case-insensitive, static first). Bobiverse #3868."""
+    return registered_channels_from_list(list(ALWAYS_JOIN_CHANNELS) + list(registered or []))
 
 _SAFE_MID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$", re.I)
 _IRC_FMT = re.compile(r"[\x00-\x1f\x7f]|\x03\d{0,2}(,\d{1,2})?")

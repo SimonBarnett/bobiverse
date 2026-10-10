@@ -491,7 +491,8 @@ def chair_channels(home: Path | None = None) -> list[str]:
     if home is not None:
         chans = registered_machines.load_registered_channels(Path(home))
         if chans:
-            return chans
+            # #3868: #bobiverse is always joined even when ChanServ LIST omits it.
+            return registered_machines.chair_join_channels(chans)
     shops = [shop_channel(mid) for mid in roster_machine_ids(home, fold=False)]   # still joins legacy #ionos
     return [FLEET_CHANNEL, WONDERLAND_CHANNEL] + shops
 

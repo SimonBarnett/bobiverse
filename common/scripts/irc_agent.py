@@ -1254,7 +1254,10 @@ class Client:
         added, removed = res
         info(f"INFO chanserv-sync ok machines={len(registered_machines.load_registered(digest))} "
              f"+{sorted(added)} -{sorted(removed)}")
-        desired = registered_machines.load_registered_channels(digest)
+        registered = registered_machines.load_registered_channels(digest)
+        # #3868: always keep #bobiverse (ears' !assign/!resync/!bored land there) PLUS every
+        # registered channel; a LIST that omits #bobiverse must never PART it.
+        desired = registered_machines.chair_join_channels(registered)
         desired_l = {c.lower() for c in desired}
         have = {c.lower(): c for c in self.channels}
         for ch in desired:
@@ -1277,7 +1280,7 @@ class Client:
                 pass
             time.sleep(FLOOD_S)
         info(
-            f"INFO channel-sync registered={len(desired)} joined={','.join(desired)}"
+            f"INFO channel-sync registered={len(registered)} joined={','.join(desired)}"
         )
 
     def _handle_register_command(self, asker: str, body: str) -> bool:
