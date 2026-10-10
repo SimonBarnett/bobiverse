@@ -155,9 +155,10 @@ def load_registered_channels(home: Path) -> list[str]:
     raw = doc.get("channels")
     if isinstance(raw, list) and raw:
         return registered_channels_from_list(raw)
-    # Legacy / !register-only: synthesize shops + fleet (+ wonderland if ever present as mid)
+    # Legacy / !register-only: synthesize fleet + wonderland + shops (FR #3834 fallback
+    # until a ChanServ LIST has written the full ``channels`` field).
     mids = load_registered(home)
-    out = ["#bobiverse"] + [f"#{m}" for m in sorted(mids)]
+    out = ["#bobiverse", WONDERLAND_CHANNEL] + [f"#{m}" for m in sorted(mids)]
     return registered_channels_from_list(out)
 
 
