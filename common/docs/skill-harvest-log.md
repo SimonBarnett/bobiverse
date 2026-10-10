@@ -707,3 +707,7 @@ Books: bobiverse-airc, bobiverse-airc-troubleshooting. Product PR #2634; hostile
 
 Books: bobiverse-jeeves-monitor, bobiverse-bob, bobiverse-bob-job-mrb. Tip PR for FR #2633.
 
+
+## 2026-10-10 — docs/mrb-3869 (FR #3863 / PR #3869)
+
+Hostile pins for airc upgrade SASL: reused `console.password` without `console.nickserv-ok` must try SASL; minted-this-run still skips (FR #3763). Contiguous source/skill phrases in `test_mrb3869_hostile_upgrade_sasl.py`.
