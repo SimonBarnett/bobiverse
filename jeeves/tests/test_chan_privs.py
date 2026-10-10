@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
+import pytest
 from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
 import bobreport
@@ -11,7 +11,7 @@ import chan_privs as cp
 import irc_agent
 import registered_machines as rm
 
-CHANS = ["#bobiverse", "#marchhare", "#win-mpre8vi4u6u"]
+CHANS = ["#bobiverse", "#wonderland", "#marchhare", "#win-mpre8vi4u6u"]
 
 
 class Fake:
@@ -69,6 +69,18 @@ def test_bob_gets_o_in_own_channel_and_h_in_bobiverse(irc):
     irc.names("#marchhare", "@Jeeves bob-marchhare")
     irc.names("#bobiverse", "@Jeeves bob-marchhare")
     assert irc.modes() == ["MODE #marchhare +o bob-marchhare", "MODE #bobiverse +h bob-marchhare"]
+
+
+def test_bob_gets_o_in_wonderland(irc):
+    """FR #3834: Bob ears get +o in #wonderland."""
+    irc.names("#wonderland", "@Jeeves bob-marchhare")
+    assert irc.modes() == ["MODE #wonderland +o bob-marchhare"]
+
+
+def test_bob_join_wonderland_is_applied_immediately(irc):
+    irc.names("#wonderland", "@Jeeves")
+    irc.line(":bob-marchhare!u@h JOIN #wonderland")
+    assert irc.modes() == ["MODE #wonderland +o bob-marchhare"]
 
 
 def test_bob_never_gets_ops_in_another_machines_channel(irc):

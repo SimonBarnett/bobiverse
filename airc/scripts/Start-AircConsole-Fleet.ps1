@@ -18,7 +18,7 @@ param(
     [string]$PasswordFile = '',
     # FR #3639: retired (no operators list). Accepted so old AppParameters bind; not forwarded.
     [string]$OperatorsFile = '',
-    [ValidateSet('auto', 'registered', 'domain-lobby')]
+    [ValidateSet('auto', 'registered', 'wonderland', 'domain-lobby')]
     [string]$ShopMode = 'auto',
     [string]$HostName = 'irc.ntsa.uk',
     [int]$Port = 6697,

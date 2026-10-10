@@ -56,7 +56,8 @@ def test_mrb3460_service_control_channel_log_and_names_wiring():
     t = SERVICE.read_text(encoding="utf-8")
     assert "control_channel_log_line" in t
     assert 'info(control_channel_log_line(self.channel, "registered"))' in t
-    assert 'info(control_channel_log_line(self.channel, "domain-lobby"))' in t
+    # FR #3834: wonderland replaced domain-lobby control log.
+    assert 'info(control_channel_log_line(self.channel, "wonderland"))' in t
     assert "ChannelMemberMap" in t
     assert 'choices=["operators", "irc_ops"]' in t or '"irc_ops"' in t
 
@@ -66,4 +67,4 @@ def test_mrb3460_docs_skill_single_property_command():
     assert "AIRC_PROFILE=client" in SKILL.read_text(encoding="utf-8")
     assert "irc_ops" in SKILL.read_text(encoding="utf-8")
     assert ac.control_channel_reason("registered") == "registered-machine"
-    assert ac.control_channel_reason("domain-lobby") == "domain-fallback"
+    assert ac.control_channel_reason("wonderland") == "wonderland-fallback"

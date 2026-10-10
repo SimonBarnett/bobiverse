@@ -38,10 +38,11 @@ def test_service_wires_lost_control_from_self_part_and_kick():
 def test_353_while_synced_clears_before_apply_names():
     """Hostile: unexpected 353 while synced replaces the map."""
     t = SERVICE.read_text(encoding="utf-8")
-    # Contiguous intent: synced → clear → set_channel before apply_names
+    # Contiguous intent: synced -> clear -> set_channel before apply_names
+    # Window 900: FR #3774 presence-channel guard + comments sit inside the 353 block.
     i = t.find("if cmd == \"353\"")
     assert i > 0
-    chunk = t[i : i + 500]
+    chunk = t[i : i + 900]
     assert "if self.members.synced" in chunk
     assert "members.clear()" in chunk
     assert "apply_names" in chunk

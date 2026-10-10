@@ -54,7 +54,7 @@ bob-worker.exe (one window)
   └─ program posts !bored; never the model
 
 ircBob ear
-  ├─ Nick Bob-{machine}; JOIN #bobiverse + #{machine}
+  ├─ Nick Bob-{machine}; JOIN #bobiverse + #wonderland + #{machine} (FR #3834)
   ├─ digest report, recycle, outbox PRIVMSG (incl. airc)
   └─ never self-REGISTER shop (Jeeves !register only)
 ```

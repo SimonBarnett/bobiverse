@@ -60,11 +60,14 @@ def canonical_machine_id(machine_id: str) -> str:
 
 
 def channel_list_for_machine(machine_id: str) -> str:
-    """Identical Start-Bob --channel value on every fleet box (aliases folded)."""
+    """Identical Start-Bob --channel value on every fleet box (aliases folded).
+
+    FR #3834: includes #wonderland between fleet and shop.
+    """
     mid = canonical_machine_id(machine_id)
     if not mid:
         raise ValueError("machine_id required")
-    return f"#bobiverse,#{mid}"
+    return f"#bobiverse,#wonderland,#{mid}"
 
 
 def ear_recovery_plan(

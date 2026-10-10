@@ -67,17 +67,17 @@ def test_append_rotates_when_over_max(tmp_path):
 
 @pytest.mark.parametrize("mid", list(it.FLEET_EAR_MACHINES))
 def test_channel_list_identical_for_fleet_machines(mid):
-    assert it.channel_list_for_machine(mid) == f"#bobiverse,#{mid}"
+    assert it.channel_list_for_machine(mid) == f"#bobiverse,#wonderland,#{mid}"
 
 
 def test_channel_list_sanitizes():
-    assert it.channel_list_for_machine("MarchHare") == "#bobiverse,#marchhare"
+    assert it.channel_list_for_machine("MarchHare") == "#bobiverse,#wonderland,#marchhare"
 
 
 def test_channel_list_folds_ionos_alias_to_win_mpre():
     """DIGEST_ID_FOLD: ionos shop is #win-mpre8vi4u6u, never #ionos (MRB #2262)."""
     assert it.canonical_machine_id("ionos") == "win-mpre8vi4u6u"
-    assert it.channel_list_for_machine("ionos") == "#bobiverse,#win-mpre8vi4u6u"
+    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
     assert "win-mpre8vi4u6u" in it.FLEET_EAR_MACHINES
 
 

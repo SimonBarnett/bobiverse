@@ -253,14 +253,16 @@ def test_core_irc_ops_unknown_state_and_self_nick_refuse():
 
 
 def test_control_channel_reason_helpers():
+    # FR #3834 superseded domain-fallback with wonderland-fallback.
     assert ac.control_channel_reason("registered") == "registered-machine"
-    assert ac.control_channel_reason("domain-lobby") == "domain-fallback"
+    assert ac.control_channel_reason("wonderland") == "wonderland-fallback"
+    assert ac.control_channel_reason("domain-lobby") == "wonderland-fallback"
     assert "control-channel=" in ac.control_channel_log_line("#acme", "registered")
     assert "reason=registered-machine" in ac.control_channel_log_line(
         "#acme", "registered"
     )
-    assert "reason=domain-fallback" in ac.control_channel_log_line(
-        "#workgroup", "domain-lobby"
+    assert "reason=wonderland-fallback" in ac.control_channel_log_line(
+        "#wonderland", "wonderland"
     )
 
 
