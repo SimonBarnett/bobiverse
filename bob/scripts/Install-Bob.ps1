@@ -100,9 +100,25 @@ $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing' }
 if (-not $Python) { $Python = Resolve-BobiversePython }
 $user = Resolve-BobiverseServiceUser
+
+# FR #3904: read prior identity BEFORE Remove-BobiverseService (airc FR #1552 pattern).
+# 0.1.22 may have baked -BobHome to %USERPROFILE%\.bobiverse; MSI LocalSystem defaults
+# to InstallRoot\home and must migrate nickserv.password into that home.
+$priorAppParams = Get-BobiverseServiceAppParameters -ServiceName $ServiceName
+$priorBobHome = Get-BobiverseAppParam -AppParameters $priorAppParams -Name 'BobHome'
+$hadPriorService = [bool](Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -or [bool]$priorAppParams
+$hadPriorInstall = $hadPriorService -or (Test-Path -LiteralPath (Join-Path $InstallRoot 'VERSION'))
 if (-not $BobHome) {
     if (-not $user -or (Test-BobiverseIsLocalSystem)) {
+        # Canonical service home under LocalSystem / MSI (issue #7 / FR #3904).
+        # Prior -BobHome (often %USERPROFILE%\.bobiverse) is a migrate source only.
         $BobHome = Join-Path $InstallRoot 'home'
+        if ($priorBobHome) {
+            Write-Host "INFO FR #3904 LocalSystem BobHome=$BobHome (prior AppParameters BobHome kept as migrate source)"
+        }
+    } elseif ($priorBobHome -and (Test-Path -LiteralPath $priorBobHome)) {
+        $BobHome = $priorBobHome
+        Write-Host "INFO FR #3904 preserving prior BobHome from AppParameters"
     } else {
         # Profile of service user when known; else current profile
         $BobHome = Join-Path $env:USERPROFILE '.bobiverse'
@@ -246,7 +262,22 @@ if (Test-Path $skillsSrc) {
 }
 
 Install-BobiversePythonDeps -Python $Python
+# FR #3904: resolve Ergo PASS from sibling airc/jeeves when bob config is empty; seed local copy.
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
+if (-not $env:BOB_IRC_PASSWORD) {
+    Write-Host 'WARN BOB_IRC_PASSWORD unset - place config\ergo.password (or sibling airc/jeeves) before start (FR #3904 / issue #4)'
+}
+
+# FR #3904: migrate nickserv.password from prior/legacy homes into BobHome; fail closed on upgrade.
+$legacyNs = @()
+if ($priorBobHome) { $legacyNs += $priorBobHome }
+$adminBob = Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse'
+if ($adminBob -notin $legacyNs) { $legacyNs += $adminBob }
+$profileBob = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bobiverse' } else { '' }
+if ($profileBob -and $profileBob -notin $legacyNs) { $legacyNs += $profileBob }
+$nsResult = Ensure-BobiverseBobNickServPassword -BobHome $BobHome -InstallRoot $InstallRoot `
+    -LegacyHomes $legacyNs -FailIfMissing:$hadPriorInstall
+Write-Host ("INFO FR #3904 nickserv ok={0} migrated={1} reason={2}" -f $nsResult.Ok, $nsResult.Migrated, $nsResult.Reason)
 
 # Quote-safe NSSM: no -Python path in AppParameters (issue #3); Start-Bob resolves python.
 $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
@@ -258,6 +289,13 @@ $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 # FR #1055: Restart on Default and on exit 0 (graceful quit) - same pin as ircJeeves.
 Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $ServiceName -RestartDelayMs 2000
+# FR #3904: default stdout/stderr under install logs (flamingo NICKNAME_RESERVED was invisible).
+$logsDir = Join-Path $InstallRoot 'logs'
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdout', (Join-Path $logsDir 'stdout.log')))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderr', (Join-Path $logsDir 'stderr.log')))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdoutCreationDisposition', '4'))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderrCreationDisposition', '4'))
 
 # Issue #6: msiexec /qn is UserInteractive=$true but has no console - never Get-Credential unless -PromptServicePassword
 # and not under MSI/quiet.
