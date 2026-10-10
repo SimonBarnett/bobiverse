@@ -66,3 +66,7 @@ Finish every session with the harvest step.
 Generalised from 18 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
 
 - **Console job protocol:** background emits must swallow ConnectionError on a dead IRC socket and force a reconnect, and handle KeyboardInterrupt explicitly on service stop. STATUS pins `id=` and frames output as `out id= seq=` followed by `DONE id=`. Sanitize bobtalk/Halloy `Heard:` wrappers, but never strip PowerShell `@(`, `@'` or `@"`. ReplyFile must be the ear's `airc-replies.jsonl`. Queue replies across reconnects and flush DONE on stop. UPDATE replies first, then schedules a detached Apply; never run msiexec in the console process. Frozen airc.exe keeps Start-AircConsole ServiceMode parity (Sync, then Update). (18 lessons: harvest #2167, #1614, #1600, #1599, #1594, #1586 +3 more, 9 held intake rows)
+
+## Harvested lessons (intake)
+
+- Install-Airc.cmd must delete install-airc-fail-reported.flag before invoking Install-Airc.ps1 so a stale prior-run flag cannot trip the FR #3759 EC=0 belt on a later successful install; same-run flag writes still FAIL (FR #3887).
