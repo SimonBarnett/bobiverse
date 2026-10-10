@@ -1881,21 +1881,58 @@ function Resolve-BobiverseServiceUser {
 }
 
 function Get-BobiverseErgoPasswordPath {
+    <# FR #3904: also look beside sibling fleet products (airc/jeeves) under the same <ai root>.
+       Public MSI never embeds PASS (issue #4); flamingo 0.1.30 left bob without it while airc had one. #>
     param([string]$InstallRoot = '', [string]$HomeDir = '')
-    foreach ($c in @(
-            $(if ($HomeDir) { Join-Path $HomeDir 'ergo.password' } else { $null }),
-            $(if ($InstallRoot) { Join-Path $InstallRoot 'config\ergo.password' } else { $null }),
-            (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'),
-            (Join-Path $env:USERPROFILE '.grok\ergo\ergo.password')
-        )) {
+    $siblings = @()
+    if ($InstallRoot) {
+        try {
+            $aiRoot = Split-Path -Parent ([IO.Path]::GetFullPath($InstallRoot.TrimEnd('\')))
+            if ($aiRoot) {
+                $siblings += @(
+                    (Join-Path $aiRoot 'airc\config\ergo.password'),
+                    (Join-Path $aiRoot 'jeeves\config\ergo.password')
+                )
+            }
+        } catch { }
+    }
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if ($HomeDir) { [void]$candidates.Add((Join-Path $HomeDir 'ergo.password')) }
+    if ($InstallRoot) { [void]$candidates.Add((Join-Path $InstallRoot 'config\ergo.password')) }
+    foreach ($s in $siblings) { if ($s) { [void]$candidates.Add($s) } }
+    [void]$candidates.Add((Join-Path $env:USERPROFILE '.grok\ergo\connect.password'))
+    [void]$candidates.Add((Join-Path $env:USERPROFILE '.grok\ergo\ergo.password'))
+    foreach ($c in $candidates) {
         if ($c -and (Test-Path -LiteralPath $c)) { return $c }
     }
     return $null
 }
 
+function Seed-BobiverseErgoPassword {
+    <# FR #3904: when InstallRoot\config\ergo.password is missing, copy from the resolved path
+       (sibling airc/jeeves / home / .grok) so the next start does not depend on airc still being present. #>
+    param([string]$InstallRoot = '', [string]$HomeDir = '')
+    if (-not $InstallRoot) { return $false }
+    $dest = Join-Path $InstallRoot 'config\ergo.password'
+    if ((Test-Path -LiteralPath $dest) -and ((Get-Content -LiteralPath $dest -Raw -ErrorAction SilentlyContinue).Trim())) {
+        return $true
+    }
+    $src = Get-BobiverseErgoPasswordPath -InstallRoot $InstallRoot -HomeDir $HomeDir
+    if (-not $src) { return $false }
+    if ([IO.Path]::GetFullPath($src) -ieq [IO.Path]::GetFullPath($dest)) { return $true }
+    $secret = (Get-Content -LiteralPath $src -Raw).Trim()
+    if (-not $secret) { return $false }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+    [IO.File]::WriteAllText($dest, $secret + "`n", (New-Object System.Text.UTF8Encoding $false))
+    try { Protect-BobiverseSecretPath -Path $dest } catch { }
+    Write-Host "INFO FR #3904 seeded config\ergo.password from $src"
+    return $true
+}
+
 function Import-BobiverseErgoPassword {
     param([string]$InstallRoot = '', [string]$HomeDir = '')
     if ($env:BOB_IRC_PASSWORD) { return $true }
+    if ($InstallRoot) { [void](Seed-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $HomeDir) }
     $path = Get-BobiverseErgoPasswordPath -InstallRoot $InstallRoot -HomeDir $HomeDir
     if (-not $path) { return $false }
     $secret = (Get-Content -LiteralPath $path -Raw).Trim()
@@ -1903,6 +1940,60 @@ function Import-BobiverseErgoPassword {
     $env:BOB_IRC_PASSWORD = $secret
     Write-Host "INFO loaded BOB_IRC_PASSWORD from $path"
     return $true
+}
+
+function Ensure-BobiverseBobNickServPassword {
+    <# FR #3904: migrate home\nickserv.password into BobHome from prior/legacy homes.
+       On upgrade (-FailIfMissing) throw when the file cannot be found (MSI 1603).
+       Never mint a fresh GUID for a reserved Bob-* account. Never print the secret. #>
+    param(
+        [Parameter(Mandatory)][string]$BobHome,
+        [string]$InstallRoot = '',
+        [string[]]$LegacyHomes = @(),
+        [switch]$FailIfMissing
+    )
+    New-Item -ItemType Directory -Force -Path $BobHome | Out-Null
+    $dest = Join-Path $BobHome 'nickserv.password'
+    $existing = ''
+    if (Test-Path -LiteralPath $dest) {
+        $existing = (Get-Content -LiteralPath $dest -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+    if ($existing) {
+        return [pscustomobject]@{ Ok = $true; Migrated = $false; Path = $dest; Reason = 'present' }
+    }
+    $cands = [System.Collections.Generic.List[string]]::new()
+    foreach ($h in @($LegacyHomes)) {
+        if ($h) { [void]$cands.Add((Join-Path $h 'nickserv.password')) }
+    }
+    if ($InstallRoot) {
+        $ih = Join-Path $InstallRoot 'home\nickserv.password'
+        if ($ih -notin $cands) { [void]$cands.Add($ih) }
+    }
+    foreach ($base in @(
+            $(if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bobiverse' } else { $null }),
+            $(if ($env:SystemDrive) { Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse' } else { $null })
+        )) {
+        if ($base) {
+            $p = Join-Path $base 'nickserv.password'
+            if ($p -notin $cands) { [void]$cands.Add($p) }
+        }
+    }
+    foreach ($src in $cands) {
+        if (-not $src -or -not (Test-Path -LiteralPath $src)) { continue }
+        try {
+            if ([IO.Path]::GetFullPath($src) -ieq [IO.Path]::GetFullPath($dest)) { continue }
+        } catch { }
+        $secret = (Get-Content -LiteralPath $src -Raw -ErrorAction SilentlyContinue).Trim()
+        if (-not $secret) { continue }
+        [IO.File]::WriteAllText($dest, $secret + "`n", (New-Object System.Text.UTF8Encoding $false))
+        try { Protect-BobiverseSecretPath -Path $dest } catch { }
+        Write-Host "INFO FR #3904 migrated nickserv.password from $src -> $dest (len=$($secret.Length))"
+        return [pscustomobject]@{ Ok = $true; Migrated = $true; Path = $dest; Reason = "from:$src" }
+    }
+    $msg = "FR #3904 nickserv.password missing under $BobHome (and no legacy home had one). Restore the NickServ password for bob-<machine> or oper SAREGISTER/RESETPASS; never mint a fresh GUID for a reserved account. MSI exits 1603 on upgrade when this file cannot be migrated."
+    if ($FailIfMissing) { throw $msg }
+    Write-Host "WARN $msg"
+    return [pscustomobject]@{ Ok = $false; Migrated = $false; Path = $dest; Reason = 'missing' }
 }
 
 function Get-BobiverseServicePasswordSecure {
