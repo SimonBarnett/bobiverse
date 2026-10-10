@@ -214,9 +214,9 @@ Crash-report opt-out on install failures (FR #3395): when `config\crash-report.j
 
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 
-## Upgrade and Ergo / BobIrcd (#70)
+## Upgrade and Ergo / BobIrcd (#70 / FR #3899)
 
-Jeeves MSI packs mark `third_party\nssm\win64\nssm.exe` and `ergo\ergo.exe` as **Permanent + NeverOverwrite** so an upgrade does not rewrite the service binary or a hard-linked Ergo image. `Install-Jeeves` also runs `Repair-BobiverseErgoHardlink` when `<ai root>\ergo\ergo.exe` still shares a hard link with the pack copy (no service stop).
+MSI packs mark `third_party\nssm\win64\nssm.exe` as **Permanent** with a **stable per-product component GUID** (no `NeverOverwrite` — FR #3899: `NeverOverwrite` + `MajorUpgrade` afterInstallInitialize skipped FileCopy after the old component FileRemove, so airc upgrades from pre-stable-GUID builds left `nssm missing` / msiexec 1603). Jeeves still marks `ergo\ergo.exe` **Permanent + NeverOverwrite**. `Install-Jeeves` also runs `Repair-BobiverseErgoHardlink` when `<ai root>\ergo\ergo.exe` still shares a hard link with the pack copy (no service stop). `Install-AircConsole` re-runs `Fetch-Nssm` into the install tree when the bundled path is missing.
 
 Complete service logon after quiet MSI: Desktop / Start Menu **Complete bobiverse service logon**, or set `BOBIVERSE_SERVICE_PASSWORD` / `config\service.password` before install (see ObjectName above).
 
