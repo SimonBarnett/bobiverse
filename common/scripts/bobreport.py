@@ -470,7 +470,12 @@ def shop_channel(machine_id: str) -> str:
 
 
 def chair_channels(home: Path | None = None) -> list[str]:
-    """Jeeves: #bobiverse + ChanServ-registered shops only (registry or bootstrap fleet)."""
+    """Jeeves: every ChanServ-registered channel (FR #3836).
+
+    Prefer the persisted full ``channels`` list from the ChanServ LIST mirror (shops,
+    #bobiverse, #wonderland, other registered names). Fall back to #bobiverse + shops
+    when the registry has no ``channels`` field yet. Never invent unregistered channels.
+    """
     if home is None:
         env_home = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
         home = Path(env_home) if env_home else None
@@ -480,6 +485,10 @@ def chair_channels(home: Path | None = None) -> list[str]:
                 # Prefer digest home sibling used by Start-Jeeves
                 cand = Path(chair) / ".bobiverse"
                 home = cand if cand.is_dir() else None
+    if home is not None:
+        chans = registered_machines.load_registered_channels(Path(home))
+        if chans:
+            return chans
     shops = [shop_channel(mid) for mid in roster_machine_ids(home, fold=False)]   # still joins legacy #ionos
     return [FLEET_CHANNEL] + shops
 

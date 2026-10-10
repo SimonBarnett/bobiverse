@@ -6,13 +6,39 @@ Both are enforced chair-side by Jeeves. They are deterministic, need no token, a
 ## Privilege rules (`scripts/chan_privs.py`)
 
 1. Jeeves holds +o in `#bobiverse` and in every machine channel (existing upkeep, now retried at once when it loses ops).
-2. The ear `bob-<machine>` of a registered machine gets +o in its own `#<machine>` and +h in `#bobiverse`.
+2. The ear `bob-<machine>` of a registered machine gets +o in its own `#<machine>`, +h in `#bobiverse`, and +o in
+   `#wonderland` (FR #3836). Identification is the existing `bob_machine` nick pattern against the ChanServ roster —
+   never by host. `*_console` nicks and worker/seat nicks (`{machine}-{pid}`) never match and are never opped.
 3. Simon gets +o only while logged in to a NickServ account listed in `BOB_OP_ACCOUNTS`. The account must be learned
    this session from `extended-join`, `account-notify`, `account-tag` or `WHOIS` (numeric 330). A nick alone never earns ops:
    `simon` without a matching account is not granted, and de-opped if it holds +o. Logging out revokes what Jeeves granted.
 
 Re-applied on JOIN, on every MODE change in the channel (drift), and on a periodic `NAMES` reconcile (every 60 s).
-Every decision is logged: `INFO chan-privs GRANT|REVOKE ...`, `WARN chan-privs cannot ...`.
+Every decision is logged: `INFO chan-privs GRANT|REVOKE ...`, `WARN chan-privs cannot ...`. Bob-ear +o grants also log
+`INFO op-grant nick=<nick> channel=<chan>`.
+
+## Channels Jeeves joins (FR #3836)
+
+Jeeves mirrors `ChanServ LIST` into `registered-machines.json` (`machines` = shop ids only; `channels` = every
+registered name including `#bobiverse` and `#wonderland`). On connect and on each quiet resync it JOINs every
+channel in that list (paced) and PARTs anything no longer registered. Unregistered channels are never joined
+(Jeeves must not become first-joiner op of a stray channel). Log shape:
+`INFO channel-sync registered=<n> joined=<list>`.
+
+GIT announces stay `#bobiverse`-only; shop assignment output stays limited to the shop / nothing-queued path.
+Jeeves stays silent in other channels.
+
+### Setup (manual, Simon) — founder / AMODE for Jeeves in `#wonderland`
+
+Never edit Ergo `ircd.yaml`. From an account that already has founder (or `+F`) on `#wonderland`:
+
+```
+/msg ChanServ FLAGS #wonderland Jeeves +Oo
+```
+
+That grants Jeeves auto-op (`+O`) and the op flag (`+o`) so it can `MODE #wonderland +o bob-<machine>` for Bob ears.
+Confirm with `/msg ChanServ FLAGS #wonderland` and a chair log line `INFO op-grant nick=bob-… channel=#wonderland`
+after an ear joins.
 
 Config (first match wins): env `BOB_OP_ACCOUNTS` (comma list) > `<config>/op-accounts.txt` (one per line, `#` comments;
 written by `Install-Jeeves.ps1 -OpAccounts simon`) > `JEEVES_OWNER_ACCOUNT` > default `simon`.

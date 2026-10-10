@@ -25,8 +25,11 @@ SOURCE_REGISTER = "register-command"
 
 # Registered channels that are NOT machine shops. Anything with a character outside
 # [a-z0-9-] (e.g. #agentic_irc) is excluded by the id check below.
-NON_MACHINE_CHANNELS = frozenset({"bobiverse"})
+# FR #3836: #wonderland is a fixed registered control channel (airc fallback / Bob ears);
+# never treat it as a machine shop id in the digest roster.
+NON_MACHINE_CHANNELS = frozenset({"bobiverse", "wonderland"})
 EXCLUDE_ENV = "BOB_CHANSERV_EXCLUDE"  # extra comma-separated channel names to ignore
+WONDERLAND_CHANNEL = "#wonderland"
 
 _SAFE_MID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$", re.I)
 _IRC_FMT = re.compile(r"[\x00-\x1f\x7f]|\x03\d{0,2}(,\d{1,2})?")
@@ -112,17 +115,71 @@ def _atomic_write(path: Path, text: str) -> None:
             tmp.unlink()
 
 
+def normalize_channel_name(raw: str) -> str | None:
+    """Return ``#name`` for a ChanServ LIST channel, or None if unusable."""
+    s = (raw or "").strip()
+    if not s.startswith("#") or s.startswith("##"):
+        return None
+    name = s[1:].lower()
+    if not name or not _SAFE_MID.match(name):
+        # Allow underscore names that are registered but not machine shops (e.g. #agentic_irc)
+        # only when they are already #prefixed and printable; still reject ## and empty.
+        if not re.match(r"^[a-z0-9][a-z0-9_-]{0,62}$", name, re.I):
+            return None
+    return f"#{name}"
+
+
+def registered_channels_from_list(channels) -> list[str]:
+    """All ChanServ-registered channels from a LIST (deduped, stable order).
+
+    Includes machine shops, #bobiverse, #wonderland, and other safe registered names.
+    Excludes ##* and names that fail the safe pattern. FR #3836.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for ch in channels or []:
+        norm = normalize_channel_name(str(ch or ""))
+        if not norm:
+            continue
+        key = norm.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(norm)
+    return out
+
+
+def load_registered_channels(home: Path) -> list[str]:
+    """Persisted full registered channel list (FR #3836), or synthesize from machines."""
+    doc = _read_doc(home)
+    raw = doc.get("channels")
+    if isinstance(raw, list) and raw:
+        return registered_channels_from_list(raw)
+    # Legacy / !register-only: synthesize shops + fleet (+ wonderland if ever present as mid)
+    mids = load_registered(home)
+    out = ["#bobiverse"] + [f"#{m}" for m in sorted(mids)]
+    return registered_channels_from_list(out)
+
+
 def save_registered(
     home: Path,
     machines: set[str],
     *,
     source: str | None = None,
     refreshed_at: float | None = None,
+    channels: list[str] | None = None,
 ) -> None:
-    """Persist the set. ``refreshed_at`` (epoch) is only passed by a successful ChanServ sync."""
+    """Persist machines (+ optional full ``channels`` list). ``refreshed_at`` only on ChanServ sync."""
     home = Path(home)
     prev = _read_doc(home)
-    payload: dict = {"v": 2, "machines": sorted(machines)}
+    # Never persist wonderland (etc.) as a machine id
+    skip = _excluded_names()
+    clean_mids = {m for m in machines if m and m not in skip}
+    payload: dict = {"v": 3, "machines": sorted(clean_mids)}
+    if channels is not None:
+        payload["channels"] = registered_channels_from_list(channels)
+    elif isinstance(prev.get("channels"), list) and prev.get("channels"):
+        payload["channels"] = registered_channels_from_list(prev["channels"])
     payload["source"] = source or prev.get("source") or SOURCE_REGISTER
     if refreshed_at is not None:
         payload["refreshed_ts"] = float(refreshed_at)
@@ -229,7 +286,10 @@ class ChanServListCollector:
 def sync_from_chanserv(
     home: Path, channels, *, now: float | None = None, allow_empty: bool = False
 ) -> tuple[set[str], set[str]] | None:
-    """Mirror a COMPLETE ChanServ LIST into the registry. Returns ``(added, removed)``.
+    """Mirror a COMPLETE ChanServ LIST into the registry. Returns ``(added, removed)`` machine ids.
+
+    Also persists the full registered ``channels`` list (FR #3836) so the chair can JOIN every
+    registered channel (#bobiverse, shops, #wonderland, …), not only machine shops.
 
     ``None`` = rejected, last good list kept: a result with zero machine channels is treated as
     a bad query (an oper losing ``chanreg`` must not wipe the roster) unless ``allow_empty``.
@@ -239,8 +299,13 @@ def sync_from_chanserv(
         return None
     cur = load_registered(home)
     added, removed = ids - cur, cur - ids
+    full = registered_channels_from_list(channels)
     save_registered(
-        Path(home), ids, source=SOURCE_CHANSERV, refreshed_at=time.time() if now is None else now
+        Path(home),
+        ids,
+        source=SOURCE_CHANSERV,
+        refreshed_at=time.time() if now is None else now,
+        channels=full,
     )
     return added, removed
 
