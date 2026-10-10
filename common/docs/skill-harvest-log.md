@@ -711,3 +711,7 @@ Books: bobiverse-jeeves-monitor, bobiverse-bob, bobiverse-bob-job-mrb. Tip PR fo
 ## 2026-10-10 — docs/mrb-3869 (FR #3863 / PR #3869)
 
 Hostile pins for airc upgrade SASL: reused `console.password` without `console.nickserv-ok` must try SASL; minted-this-run still skips (FR #3763). Contiguous source/skill phrases in `test_mrb3869_hostile_upgrade_sasl.py`.
+
+## 2026-10-10 — docs/mrb-3873 (FR #3868 / PR #3873)
+
+Hostile pins: `CHAIR_REQUIRED_CHANNELS` is only `#bobiverse`; ChanServ sync never invents `#wonderland`; never PART fleet channel; ear outbox send/404 logging. Docstring nits corrected.

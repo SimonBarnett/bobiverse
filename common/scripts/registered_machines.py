@@ -154,7 +154,7 @@ def registered_channels_from_list(channels) -> list[str]:
 
 
 def with_chair_required_channels(channels) -> list[str]:
-    """FR #3868: always keep #bobiverse (+ #wonderland) in the chair channel set."""
+    """FR #3868: always keep #bobiverse in the chair channel set (never invent #wonderland — MRB #3851)."""
     return registered_channels_from_list(list(CHAIR_REQUIRED_CHANNELS) + list(channels or []))
 
 
@@ -163,7 +163,7 @@ def load_registered_channels(home: Path) -> list[str]:
     doc = _read_doc(home)
     raw = doc.get("channels")
     if isinstance(raw, list) and raw:
-        # FR #3868: backfill fleet/wonderland if a partial LIST persisted without them.
+        # FR #3868: backfill #bobiverse if a partial LIST persisted without it (wonderland stays LIST-exact).
         return with_chair_required_channels(raw)
     # Legacy / !register-only: synthesize fleet + wonderland + shops (FR #3834 fallback
     # until a ChanServ LIST has written the full ``channels`` field).
