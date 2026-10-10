@@ -238,6 +238,39 @@ function Invoke-BobiverseMsiexecSerialized {
 }
 
 
+
+function Get-BobiverseHeadlessPowerShellLaunch {
+    <# FR #3909: scheduled-task / Startup launches that use powershell.exe -WindowStyle Hidden still
+       create a visible console briefly (or for the whole run). On Win10 21H2+ / Server 2022, wrap with
+       conhost.exe --headless so no window is ever shown. Older builds fall back to bare powershell. #>
+    param(
+        [Parameter(Mandatory)][string]$PowerShellArguments,
+        [string]$PowerShellExe = ''
+    )
+    if (-not $PowerShellExe) {
+        try { $PowerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source }
+        catch { $PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe' }
+    }
+    $args = ([string]$PowerShellArguments).Trim()
+    $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+    $build = 0
+    try {
+        $build = [int](Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name CurrentBuildNumber -ErrorAction Stop).CurrentBuildNumber
+    } catch { $build = 0 }
+    # --headless landed in Windows 10 21H2 (19044); Server 2022 is 20348.
+    if ((Test-Path -LiteralPath $conhost) -and $build -ge 19044) {
+        return [pscustomobject]@{
+            Execute  = $conhost
+            Argument = ('--headless "{0}" {1}' -f $PowerShellExe, $args)
+            Mode     = 'conhost-headless'
+        }
+    }
+    return [pscustomobject]@{
+        Execute  = $PowerShellExe
+        Argument = $args
+        Mode     = 'powershell-windowstyle'
+    }
+}
 function Get-BobiverseServiceAppParameters {
     <# FR #1552: read NSSM AppParameters from the service registry (no secret values logged). #>
     param([Parameter(Mandatory)][string]$ServiceName)

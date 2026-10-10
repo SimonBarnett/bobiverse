@@ -6,15 +6,18 @@
   Quiet MSI / airc install often runs in session 0. TipForm must appear on the
   console/RDP desktop. This registers (or runs) a logon task with /IT so
   Start-BobTray.ps1 lands in the interactive session.
+  FR #3909: BobiverseTray + BobiverseTrayWatchdog launch via conhost.exe --headless
+  (Win10 21H2+ / Server 2022) so -WindowStyle Hidden never flashes a blank console.
 #>
 [CmdletBinding()]
 param(
     [string]$InstallRoot = '',   # '' = installed root / discovered <ai root>\bob (t780u)
     [string]$MachineId = '',
     [string]$TaskName = 'BobiverseTray',
-    # FR #1642: minute probe that relaunches Start-BobTray -ForceNew -SkipTidy when the tray dies unexpectedly.
+    # FR #1642: periodic probe that relaunches Start-BobTray -ForceNew -SkipTidy when the tray dies unexpectedly.
+    # FR #3909: default 5 minutes (was 1); a 1-minute Interactive powershell host stole focus for up to a minute.
     [string]$WatchdogTaskName = 'BobiverseTrayWatchdog',
-    [int]$WatchdogMinutes = 1,
+    [int]$WatchdogMinutes = 5,
     [string]$RunAsUser = '',
     [switch]$RunNow,
     [switch]$RegisterOnly,
@@ -26,11 +29,12 @@ param(
 $ErrorActionPreference = 'Stop'
 # t780u: no hard-coded C:\ai. Installed: this script lives in <install>\scripts, so the install root is its parent. Otherwise the
 # <drive>:\ai root is discovered on the fixed disks (Bobiverse-Common.ps1; BOB_AI_ROOT overrides).
+$cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+if (Test-Path -LiteralPath $cm) { . $cm }
 if (-not $InstallRoot) {
     $selfRoot = Split-Path -Parent $PSScriptRoot
-    $cm = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
     if (Test-Path -LiteralPath (Join-Path $selfRoot 'tools\Watch-BobTray.ps1')) { $InstallRoot = $selfRoot }
-    elseif (Test-Path -LiteralPath $cm) { . $cm; $InstallRoot = Get-BobiverseProductRoot -Product bob }
+    elseif (Get-Command Get-BobiverseProductRoot -ErrorAction SilentlyContinue) { $InstallRoot = Get-BobiverseProductRoot -Product bob }
     else { $InstallRoot = $selfRoot }
 }
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
@@ -47,7 +51,13 @@ if (-not $MachineId) {
 $ps = (Get-Command powershell.exe).Source
 # FR #1636: persistent ONLOGON / Startup always -ForceNew -SkipTidy (replace prior tray only; keep seats).
 $trayArgsPersistent = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tray`" -InstallRoot `"$InstallRoot`" -MachineId {0} -ForceNew -SkipTidy" -f $MachineId
-$tr = ('"{0}" {1}' -f $ps, $trayArgsPersistent)
+# FR #3909: prefer conhost --headless so Interactive tasks never flash a console.
+if (Get-Command Get-BobiverseHeadlessPowerShellLaunch -ErrorAction SilentlyContinue) {
+    $trayLaunch = Get-BobiverseHeadlessPowerShellLaunch -PowerShellArguments $trayArgsPersistent -PowerShellExe $ps
+} else {
+    $trayLaunch = [pscustomobject]@{ Execute = $ps; Argument = $trayArgsPersistent; Mode = 'powershell-windowstyle' }
+}
+$tr = ('"{0}" {1}' -f $trayLaunch.Execute, $trayLaunch.Argument)
 
 # Prefer explicit user; else Administrator when present; else current user.
 if (-not $RunAsUser) {
@@ -63,12 +73,12 @@ cmd /c "schtasks /Delete /TN `"$TaskName`" /F >nul 2>&1" | Out-Null
 # Workgroup Admin ONLOGON may need a password; prefer Register-ScheduledTask when available.
 $created = $false
 try {
-    $action = New-ScheduledTaskAction -Execute $ps -Argument $trayArgsPersistent
+    $action = New-ScheduledTaskAction -Execute $trayLaunch.Execute -Argument $trayLaunch.Argument
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $RunAsUser
     $principal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
     $created = $true
-    Write-Host ("INFO Register-ScheduledTask {0} user={1} (ForceNew+SkipTidy FR #1636)" -f $TaskName, $RunAsUser)
+    Write-Host ("INFO Register-ScheduledTask {0} user={1} mode={2} (ForceNew+SkipTidy FR #1636 / headless FR #3909)" -f $TaskName, $RunAsUser, $trayLaunch.Mode)
 } catch {
     Write-Host ("WARN Register-ScheduledTask: {0}" -f $_.Exception.Message)
     $create = cmd /c "schtasks /Create /TN `"$TaskName`" /SC ONLOGON /RU `"$RunAsUser`" /RL LIMITED /IT /F /TR $tr"
@@ -87,12 +97,12 @@ if ($RunNow -and -not $RegisterOnly) {
         $lnk = Join-Path $adminStartup 'Bobiverse Tray.lnk'
         $ws = New-Object -ComObject WScript.Shell
         $s = $ws.CreateShortcut($lnk)
-        $s.TargetPath = $ps
-        $s.Arguments = $trayArgsPersistent
+        $s.TargetPath = $trayLaunch.Execute
+        $s.Arguments = $trayLaunch.Argument
         $s.WorkingDirectory = $InstallRoot
-        $s.Description = 'bob TipForm (interactive; SkipTidy FR #1636)'
+        $s.Description = 'bob TipForm (interactive; SkipTidy FR #1636; headless FR #3909)'
         $s.Save()
-        Write-Host "INFO Startup shortcut $lnk (SkipTidy)"
+        Write-Host "INFO Startup shortcut $lnk (SkipTidy / $($trayLaunch.Mode))"
     }
 }
 # FR #1642: register unexpected-exit watchdog (SkipTidy only; never tidies seats).
@@ -100,8 +110,13 @@ $ensure = Join-Path $InstallRoot 'scripts\Ensure-BobTrayRunning.ps1'
 if (Test-Path -LiteralPath $ensure) {
     cmd /c "schtasks /Delete /TN `"$WatchdogTaskName`" /F >nul 2>&1" | Out-Null
     $wdArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ensure`" -InstallRoot `"$InstallRoot`" -MachineId {0}" -f $MachineId
+    if (Get-Command Get-BobiverseHeadlessPowerShellLaunch -ErrorAction SilentlyContinue) {
+        $wdLaunch = Get-BobiverseHeadlessPowerShellLaunch -PowerShellArguments $wdArgs -PowerShellExe $ps
+    } else {
+        $wdLaunch = [pscustomobject]@{ Execute = $ps; Argument = $wdArgs; Mode = 'powershell-windowstyle' }
+    }
     try {
-        $wdAction = New-ScheduledTaskAction -Execute $ps -Argument $wdArgs
+        $wdAction = New-ScheduledTaskAction -Execute $wdLaunch.Execute -Argument $wdLaunch.Argument
         $wdLogon = New-ScheduledTaskTrigger -AtLogOn -User $RunAsUser
         $wdWatch = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
             -RepetitionInterval (New-TimeSpan -Minutes ([Math]::Max(1, $WatchdogMinutes))) `
@@ -112,10 +127,10 @@ if (Test-Path -LiteralPath $ensure) {
         $wdPrincipal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
         Register-ScheduledTask -TaskName $WatchdogTaskName -Action $wdAction -Trigger @($wdLogon, $wdWatch) `
             -Settings $wdSettings -Principal $wdPrincipal -Force -ErrorAction Stop | Out-Null
-        Write-Host ("INFO Register-ScheduledTask {0} every {1}m (ForceNew+SkipTidy relaunch FR #1642)" -f $WatchdogTaskName, $WatchdogMinutes)
+        Write-Host ("INFO Register-ScheduledTask {0} every {1}m mode={2} (ForceNew+SkipTidy relaunch FR #1642 / headless FR #3909)" -f $WatchdogTaskName, $WatchdogMinutes, $wdLaunch.Mode)
     } catch {
         Write-Host ("WARN Register-ScheduledTask {0}: {1}" -f $WatchdogTaskName, $_.Exception.Message)
-        $wdTr = ('"{0}" {1}' -f $ps, $wdArgs)
+        $wdTr = ('"{0}" {1}' -f $wdLaunch.Execute, $wdLaunch.Argument)
         $createWd = cmd /c "schtasks /Create /TN `"$WatchdogTaskName`" /SC MINUTE /MO $WatchdogMinutes /RU `"$RunAsUser`" /RL LIMITED /IT /F /TR $wdTr"
         Write-Host ("INFO schtasks create {0}: {1}" -f $WatchdogTaskName, (($createWd | Out-String).Trim()))
     }

@@ -142,7 +142,10 @@ function Test-BobTrayProcessPresent {
     # True when bob-tray.exe or Watch-BobTray / seat-wrapper is alive (FR #1642 watchdog).
     # FR #2585: Name -eq bob-tray.exe is enough (ExecutablePath may be null); already-running
     # duplicate exits must not look like a missing tray to the watchdog.
+    # FR #3909: Get-Process bob-tray first — Win32_Process CIM can take ~1 minute on a busy box
+    # and made the Interactive BobiverseTrayWatchdog host look hung (blank console steal focus).
     param([string]$InstallRoot = '')
+    if (@(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
     $root = [string]$InstallRoot
     if (-not $root) { $root = [string]$env:BOB_AI_ROOT }
     $toolsPrefix = ''
