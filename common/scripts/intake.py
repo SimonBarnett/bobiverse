@@ -383,19 +383,29 @@ _MRB_PROCESS_CUE_RE = re.compile(
     r"(?i)(?:"
     r"wrong[- ]book|"
     r"belong(?:s)? in\s+`?bobiverse-bob-job-mrb`?|"
+    # FR #3827: tip #3826 used "stay in" / "durable in" instead of "belong(s) in"
+    r"(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb`?|"
     r"docs/mrb-N after skill merge|"
     r"Harvest-lesson MRB:\s*process|"
     r"never merge a second copy(?:\s+that says keep MRB process)?\s+in harvest|"
+    # FR #3827: "do not append a second copy under harvest/SKILL.md"
+    r"(?:do not|never)\s+(?:append|merge|land)\s+a\s+second\s+copy|"
+    r"second\s+copy\s+under\s+harvest|"
     r"process playbooks?|"
+    r"restatement playbooks?|"
     r"park(?:ed|s)?\s+under\s+harvest"
     r")"
 )
 _THIN_TWIN_CUE_RE = re.compile(
     r"(?i)(?:"
     r"already\s+cover(?:s|ed)?|"
+    r"already\s+CAST\s+IRON|"
     r"close\s+thin\b|"
     r"thin\s+harvest(?:ed)?[- ]?lessons?\b|"
     r"thin\s+harvest\s+twin|"
+    # FR #3827: tip #3826 summary said "thin harvest tip" / "restatement"
+    r"thin\s+harvest\s+(?:tip|restatement)s?\b|"
+    r"thin\s+harvest\s+restatement|"
     r"Harvested-lessons\s+intake\s+twins?|"
     r"citing\s+(?:the\s+)?product(?:/move)?\s*PRs?"
     r")"
@@ -430,15 +440,20 @@ def is_mrb_process_routing_lesson(text: str) -> bool:
     # Strong process anchors: durable home is job-mrb / parked under harvest / promote order.
     if re.search(r"(?i)belong(?:s)? in\s+`?bobiverse-bob-job-mrb", t):
         return True
+    # FR #3827: "stay in" / "durable in" synonyms for belong(s) in
+    if re.search(r"(?i)(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb", t):
+        return True
     if re.search(r"(?i)park(?:ed|s)?\s+under\s+harvest", t):
         return True
     if re.search(
         r"(?i)docs/mrb-N after skill merge|Harvest-lesson MRB:\s*process|"
-        r"never merge a second copy",
+        r"never merge a second copy|"
+        r"(?:do not|never)\s+(?:append|merge|land)\s+a\s+second\s+copy|"
+        r"second\s+copy\s+under\s+harvest",
         t,
     ):
         return True
-    if re.search(r"(?i)process playbooks?", t) and re.search(
+    if re.search(r"(?i)(?:process|restatement) playbooks?", t) and re.search(
         r"(?i)bobiverse-bob-job-mrb|harvest", t
     ):
         return True

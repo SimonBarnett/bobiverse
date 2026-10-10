@@ -15,10 +15,12 @@ from repo_layout import ROOT
 REPO = "SimonBarnett/bobiverse"
 HARVEST_SKILL = "common/.grok/skills/harvest/SKILL.md"
 HARVEST = ROOT / "scripts" / "Invoke-BobiverseHarvest.ps1"
+# Product playbook (no FAIL-supersede / thin-harvest process cues). FR #3827
+# skips tip-#3826-class FAIL-supersede restatements before the open-twin gate;
+# this fixture must stay a real product lesson so open_lesson_twin is exercised.
 LESSON = (
-    "When product FR-3817 queue case-fold already merged, FAIL-supersede "
-    "harvest/SKILL.md restatement tips; cite product+docs/mrb; DONE FAIL "
-    "with assigned URL"
+    "FR-3817: queue _repo_key case-fold; collapse_case_variant_twins prefers "
+    "mixed-case + non-empty GIT line; discover_repos dedupes casing"
 )
 
 
@@ -86,7 +88,7 @@ def test_find_open_harvest_lesson_twin_matches_seat_and_lesson():
 def test_second_file_submission_links_open_lesson_twin(tmp_path: Path):
     filer = intake.FakeGitHubFiler()
     filer.repo_files[HARVEST_SKILL] = "# Harvest\n\n## Harvested lessons (intake)\n"
-    summary = "MRB bobiverse#3821 FAIL-superseded thin harvest tip"
+    summary = "MRB bobiverse#3818 PASS: FR-3817 case-insensitive queue repo dedupe"
     norm1 = _norm(
         summary=summary,
         lesson=LESSON,
