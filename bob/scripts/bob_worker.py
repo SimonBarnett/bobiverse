@@ -251,6 +251,51 @@ def grok_has_tokens(f: Fuel) -> bool:
     return f.grok_state == "available"  # Grok 1.0.41: no % but verified local auth + current weekly period
 
 
+def fuel_reading_known(f: Fuel, kind: str) -> bool:
+    """True when the helper returned a parseable reading for this seat kind (FR #3923).
+
+    Empty ``Fuel()`` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        if f.grok_pct is not None:
+            return True
+        st = (f.grok_state or "unknown").strip().lower()
+        return st != "unknown"
+    if k == "cursor":
+        return f.cursor_high is not None or f.cursor_low is not None
+    return False
+
+
+def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
+    """True only for an explicit zero/exhausted reading (FR #3923 mid-job gate).
+
+    Unknown / unreadable readings must **not** trip mid-job GIVEUP. Seat *selection*
+    still uses ``grok_has_tokens`` / ``cursor_has_tokens`` (unknown = not available).
+    """
+    k = (kind or "").strip().lower()
+    if not fuel_reading_known(f, k):
+        return False
+    if k == "grok":
+        if f.grok_pct is not None:
+            return int(f.grok_pct) <= 0
+        st = (f.grok_state or "").strip().lower()
+        return st in ("exhausted", "empty", "none", "unavailable")
+    if k == "cursor":
+        return not cursor_has_tokens(f)
+    return False
+
+
+def format_fuel_reading(f: Fuel, kind: str = "") -> str:
+    """One-line fuel snapshot for mid-job logs (no secrets)."""
+    k = (kind or "").strip().lower()
+    return (
+        f"kind={k or '-'} pct={f.grok_pct!s} state={f.grok_state!s} "
+        f"cursor_high={f.cursor_high!s} cursor_low={f.cursor_low!s} "
+        f"known={fuel_reading_known(f, k)} exhausted={fuel_explicitly_exhausted(f, k)}"
+    )
+
+
 @dataclass(frozen=True)
 class Decision:
     kind: str  # cursor | grok | dialog | none
@@ -3317,6 +3362,12 @@ class BoredEmitter:
         self.fuel_lost_check_fn: Optional[Callable[[], bool]] = None
         self.fuel_poll_s = _env_float("BOB_WORKER_OUT_OF_FUEL_POLL_S", 30.0, 5.0, 600.0)
         self._fuel_lost_checked_at: Optional[float] = None
+        # FR #3923: require N consecutive explicit exhausted readings before GIVEUP
+        # (unknown/timeout must not kill a live ACK; one transient 0 must not either).
+        self.fuel_lost_streak_need = max(
+            1, int(_env_float("BOB_WORKER_OUT_OF_FUEL_STREAK", 2.0, 1.0, 10.0))
+        )
+        self._fuel_lost_streak = 0
         # FR #3192: optional Relay — when set, undelivered assigns block !bored (has_pending_work).
         self.relay: Optional["Relay"] = None
         self.sent: list = []  # (clock time, reason)
@@ -3660,6 +3711,7 @@ class BoredEmitter:
                 self._inject_at = None
                 self._harvest_until = None
                 self._fuel_lost_checked_at = None  # FR #3019: re-arm mid-job fuel poll
+                self._fuel_lost_streak = 0  # FR #3923: new ACK starts a fresh streak
                 self._clear_done_miss()
             elif _OUT_DONE_RX.match(p):
                 job = outbox_job_key(p)
@@ -3904,7 +3956,9 @@ class BoredEmitter:
                         self._idle_since = now
                         self._release_gen = self._turn_gen
                         self.log("out-of-fuel: cleared - seat may !bored again")
-                # FR #3019: mid-job fuel-lost poll while ACK open (Cursor parity / reading gate).
+                # FR #3019 / #3923: mid-job fuel-lost poll while ACK open.
+                # Unknown readings must return False from fuel_lost_check_fn; require
+                # fuel_lost_streak_need consecutive True polls before GIVEUP.
                 if (
                     self._ack_open
                     and not self._out_of_fuel
@@ -3920,7 +3974,23 @@ class BoredEmitter:
                         except Exception:
                             lost = False
                         if lost:
-                            self.note_out_of_fuel("mid-job fuel reading exhausted")
+                            self._fuel_lost_streak = int(self._fuel_lost_streak) + 1
+                            need = int(self.fuel_lost_streak_need)
+                            self.log(
+                                f"out-of-fuel: mid-job exhausted reading streak="
+                                f"{self._fuel_lost_streak}/{need}"
+                            )
+                            if self._fuel_lost_streak >= need:
+                                self.note_out_of_fuel(
+                                    f"mid-job fuel reading exhausted (streak={self._fuel_lost_streak})"
+                                )
+                        else:
+                            if self._fuel_lost_streak:
+                                self.log(
+                                    f"out-of-fuel: mid-job streak reset "
+                                    f"(was {self._fuel_lost_streak})"
+                                )
+                            self._fuel_lost_streak = 0
                 # FR #2875: grace expiry injects reminder while ACK stays open (still busy).
                 if not self._out_of_fuel:
                     self._fire_done_miss_remind(now)
@@ -4125,19 +4195,30 @@ class Supervisor:
         return self.secret is not None
 
     def _fuel_lost_mid_job(self) -> bool:
-        """FR #3019: True when this seat's kind has no tokens left while a job is ACKed."""
+        """FR #3019 / #3923: True only on an **explicit** exhausted reading while ACKed.
+
+        Unknown / timeout / empty ``Fuel()`` is **not** lost (selection still treats
+        unknown as unavailable). Logs pct/state/helper snapshot every poll.
+        """
         kind = (self.kind or "").strip().lower()
         try:
             fuel = read_fuel(self._install_root_for_fuel())
-        except Exception:
+        except Exception as e:
+            self.log(f"out-of-fuel: mid-job read_fuel failed {type(e).__name__} - treat as unknown")
             return False
+        snap = format_fuel_reading(fuel, kind)
         if kind == "cursor":
-            return not cursor_has_tokens(fuel)
+            lost = fuel_explicitly_exhausted(fuel, "cursor")
+            self.log(f"out-of-fuel: mid-job reading {snap}")
+            return lost
         if kind == "grok":
             # Session key still counts as fuel for a dialog-started grok seat.
             if self.secret is not None:
+                self.log(f"out-of-fuel: mid-job reading {snap} (session key present)")
                 return False
-            return not grok_has_tokens(fuel)
+            lost = fuel_explicitly_exhausted(fuel, "grok")
+            self.log(f"out-of-fuel: mid-job reading {snap}")
+            return lost
         return False
 
     def _release_out_of_fuel_job(self, job_key: str) -> None:
