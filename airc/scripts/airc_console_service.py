@@ -513,6 +513,83 @@ class AircConsoleService:
         except OSError as e:
             info(f"INFO FR #3763 nickserv-ok write failed: {e}")
 
+    def _legacy_console_password_paths(self) -> list[Path]:
+        """FR #3900: candidate console.password files from pre-Airc / profile homes."""
+        home = Path(self.home)
+        drive = Path(home.anchor) if home.anchor else Path("C:/")
+        userprofile = Path(os.environ.get("USERPROFILE") or "")
+        out: list[Path] = []
+        for base in (
+            userprofile / ".airc",
+            userprofile / ".airc-console",
+            drive / "Users" / "Administrator" / ".airc",
+            drive / "Users" / "Administrator" / ".airc-console",
+            drive / "Users" / "Default" / ".airc",
+            drive / "Users" / "Default" / ".airc-console",
+        ):
+            if not base or str(base) in (".", ""):
+                continue
+            out.append(base / "console.password")
+        # Dedupe while preserving order; skip the live home file.
+        seen: set[str] = set()
+        live = str((home / "console.password").resolve()) if (home / "console.password").exists() else ""
+        uniq: list[Path] = []
+        for p in out:
+            try:
+                key = str(p.resolve()) if p.exists() else str(p)
+            except OSError:
+                key = str(p)
+            if live and key.lower() == live.lower():
+                continue
+            if key.lower() in seen:
+                continue
+            seen.add(key.lower())
+            uniq.append(p)
+        return uniq
+
+    def _try_heal_console_password_from_legacy(self) -> bool:
+        """FR #3900: on SASL 904, adopt a different legacy console.password if present.
+
+        Installs that moved ConsoleHome to ``<ai root>\\airc\\home`` while minting a
+        fresh GUID leave NickServ holding the old AircConsole password. Prefer the
+        older file over an indefinite unauthenticated console.
+        """
+        if getattr(self, "_fr3900_heal_attempted", False):
+            return False
+        self._fr3900_heal_attempted = True
+        current = (self.nickserv_password or "").strip()
+        nickserv_path = (
+            Path(self.args.password_file)
+            if getattr(self.args, "password_file", None)
+            else (Path(self.home) / "console.password")
+        )
+        for cand in self._legacy_console_password_paths():
+            try:
+                if not cand.is_file():
+                    continue
+                other = cand.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if not other or other == current:
+                continue
+            try:
+                nickserv_path.parent.mkdir(parents=True, exist_ok=True)
+                nickserv_path.write_text(other + "\n", encoding="utf-8")
+            except OSError as e:
+                info(f"INFO FR #3900 legacy password write failed: {e}")
+                continue
+            self.nickserv_password = other
+            self.password = other
+            # Force a fresh SASL attempt on reconnect; marker may be stale/wrong.
+            try:
+                if self._nickserv_ok_path.is_file():
+                    self._nickserv_ok_path.unlink()
+            except OSError:
+                pass
+            info(f"INFO FR #3900 healed console.password from legacy {cand}; reconnecting")
+            return True
+        return False
+
     def request_caps(self) -> None:
         # account-tag powers operator account allowlists (FR #230). SASL is best-effort.
         # FR #3763: skip SASL only when console.password was minted this run (fresh
@@ -758,6 +835,11 @@ class AircConsoleService:
         if cmd in {"904", "905", "906", "907"}:
             if self._nickserv_account_known():
                 self._sasl_failed = True
+                # FR #3900: try one legacy-home password heal before staying unauthenticated.
+                if cmd == "904" and self._try_heal_console_password_from_legacy():
+                    self.send("CAP END")
+                    self._force_reconnect = True
+                    return
                 info(
                     f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
                     f"with console.password. Reset it (NickServ SAPASSWD) or fix console.password; "
