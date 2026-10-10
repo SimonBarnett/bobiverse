@@ -3299,6 +3299,27 @@ class Client:
             if self._consume_control_quit():
                 break
 
+    def _surface_nickname_reserved(self, gate: str) -> None:
+        """FR #3904: NICKNAME_RESERVED must not loop silently — crash-report once per process."""
+        if getattr(self, "_nickname_reserved_reported", False):
+            return
+        self._nickname_reserved_reported = True
+        info(
+            "INFO FR #3904 surface NICKNAME_RESERVED - fix home\\nickserv.password "
+            "or oper SAREGISTER; filing crash report"
+        )
+        try:
+            import crash_report
+
+            crash_report.report_exception(
+                "bob-ear",
+                TimeoutError,
+                TimeoutError(gate or "NICKNAME_RESERVED"),
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            info(f"WARN FR #3904 crash-report skipped {type(exc).__name__}")
+
     def run_forever(self) -> None:
         backoff = 1.0
         attempt = 0
@@ -3308,8 +3329,11 @@ class Client:
                 self.session()
                 backoff = 1.0
                 attempt = 0
-            except TimeoutError:
-                pass
+            except TimeoutError as te:
+                # FR #3904: reserved-nick credential failure was invisible without AppStdout.
+                gate = str(te) if te else ""
+                if "NICKNAME_RESERVED" in gate or getattr(self, "_nickname_reserved", False):
+                    self._surface_nickname_reserved(gate or "NICKNAME_RESERVED")
             except Exception as e:
                 info(f"INFO session end {type(e).__name__}")
             try:
