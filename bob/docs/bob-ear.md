@@ -7,12 +7,12 @@ Build/pack: `scripts\Build-BobEar.ps1` (PyInstaller) -> staged by `Pack-Bobivers
 
 ## Channels and homes
 
-- JOIN `#bobiverse` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#<machine>` on every box — Ionos host, MarchHare, Flamingo, …)
+- JOIN `#bobiverse` + `#wonderland` + `#{MachineId}` (identical `Start-Bob` `--channel #bobiverse,#wonderland,#<machine>` on every box — Ionos host, MarchHare, Flamingo, …). **FR #3835:** `#wonderland` is fixed (not configurable); every reconnect re-JOINs it. Log: `INFO joined channel=#wonderland reason=bob-ear-fleet-channel`. Bob ears never take/request ops there (Jeeves grants ops). Workers / seats never join `#wonderland`.
 - **DIGEST_ID_FOLD (harvest #2280 / PR #2279):** digest aliases fold to the real shop id — `ionos` -> `win-mpre8vi4u6u`, `dev1` -> `ce-priority-dev1`. Helpers (`inbound_transcript.channel_list_for_machine` / `canonical_machine_id`) must never emit `#ionos` or `#dev1` as the shop channel.
 - After Jeeves `!register`: expect **+o** on shop, **+h** on `#bobiverse`
 - Home: `<ai root>\bob\home` when ObjectName is LocalSystem; else often `~\.bobiverse`
 - **`--home` isolation (FR #2350):** an explicit scratch `--home` (UAT under `%TEMP%`, …) does **not** merge `~\.agentic-irc-bobiverse`. Fleet basenames `home` / `.bobiverse` still one-time migrate. Opt-in: `BOB_MIGRATE_LEGACY=1`. Opt-out: `BOB_HOME_NO_MIGRATE=1`.
-- Agents: nick `{machine}-{pid}`, JOIN **shop only**
+- Agents: nick `{machine}-{pid}`, JOIN **shop only** (never `#bobiverse` / `#wonderland`)
 
 ## Listen (inbound transcript) — FR #2174
 
@@ -82,7 +82,8 @@ Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai roo
 Get-Service ircBob
 Get-Content <ai root>\bob\home\inbound-transcript.log -Tail 40 -ErrorAction SilentlyContinue
 Get-Content <ai root>\bob\home\irc.log -Tail 40 -ErrorAction SilentlyContinue  # only when BOB_IRC_DEBUG=1
-# Expect: SASL user=bob-<machine>, joined #bobiverse,#<machine> as Bob-<machine>
+# Expect: SASL user=bob-<machine>, joined #bobiverse,#wonderland,#<machine> as Bob-<machine>
+# Expect: INFO joined channel=#wonderland reason=bob-ear-fleet-channel
 # Expect: inbound-transcript.log lines like: 2026-10-04T12:00:00Z #marchhare Jeeves …
 # Scratch UAT: $env:BOB_IRC_DEBUG=1; bob-ear.exe --nick ear-test --home $tmp --channel #x --host irc.ntsa.uk --once
 # Expect irc.log contains debug-open + tcp-ok + tls-ok; process exits after JOIN

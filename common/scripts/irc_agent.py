@@ -3166,6 +3166,10 @@ class Client:
             self.send("JOIN " + ch)
         if not self.joined.wait(30):
             self._abort_gate("NO JOIN")
+        # FR #3835: one INFO when this ear joined fixed #wonderland (Bob-* only).
+        wonder = getattr(bobreport, "WONDERLAND_CHANNEL", "#wonderland")
+        if any(c.lower() == wonder.lower() for c in self.channels):
+            info(f"INFO joined channel={wonder} reason=bob-ear-fleet-channel")
         # FR #313: bob-* REGISTER #{machine} with ChanServ (founder persists).
         self._maybe_register_shop_chanserv()
         mid = self._local_machine_id()

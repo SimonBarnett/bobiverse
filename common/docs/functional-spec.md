@@ -11,7 +11,7 @@ Pulled from LOCKED vision (`common/docs/vision.md`) + session plan (2026-09-29),
 ## Behaviour summary
 
 - Jeeves: `!register <machine>` (Simon/operators); +o all registered channels; `!recycle jeeves` restarts+updates chair; owns `!bored` → assign (ear OFFER retired).
-- Bob: JOIN `#bobiverse` + `#{machine}`; on JOIN if registered get +o shop / +h bobiverse from Jeeves; listen `!recycle` / `!recycle {mid}`; systray Restart restarts `ircBob` after departure announce.
+- Bob: JOIN `#bobiverse` + `#wonderland` + `#{machine}` (FR #3835; workers never join `#wonderland`); on JOIN if registered get +o shop / +h bobiverse from Jeeves; listen `!recycle` / `!recycle {mid}`; systray Restart restarts `ircBob` after departure announce.
 - airc: JOIN `#{mid}` if registered else `#{domain|workgroup}`.
 - Agents: `{machine}-{pid}`, shop only.
 - Self-update: GitHub Release MSI on service start (work-tree ff first).

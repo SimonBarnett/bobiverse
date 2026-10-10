@@ -82,7 +82,8 @@ $earExe = Join-Path $scriptDir 'bob-ear.exe'
 $useEarExe = Test-Path -LiteralPath $earExe -PathType Leaf
 $agent = Join-Path $scriptDir 'irc_agent.py'
 $shop = "#$MachineId"
-$channel = "#bobiverse,$shop"
+# FR #3835: every Bob ear also joins fixed #wonderland (workers/seats never).
+$channel = "#bobiverse,#wonderland,$shop"
 if (-not $IrcHost) { $IrcHost = [string]$env:BOB_IRC_HOST }
 if (-not $IrcHost) { $IrcHost = 'irc.ntsa.uk' }
 $IrcHost = $IrcHost.Trim()

@@ -29,6 +29,9 @@ BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://irc.ntsa.uk/bob/v1/report"
 DIGEST_PREFIX = "BOB DIGEST v1 "
 MAX_DIGEST_LINE = 350
 FLEET_CHANNEL = "#bobiverse"
+# FR #3835: fixed extra channel every Bob-* ear joins (workers/seats never).
+# Control channel for airc clients with no registered #<machine> (see airc #3834).
+WONDERLAND_CHANNEL = "#wonderland"
 ACTION_COOLDOWN_S = 30.0
 DISCONNECT_DEDUPE_S = 30.0
 # LEGACY aliases (#42): old short/handle -> current machine name. Never the roster.
@@ -548,12 +551,13 @@ def parse_channel_list(raw: str) -> list[str]:
 
 
 def channels_for_nick(nick: str, requested: str) -> list[str]:
-    """bob-* → fleet + shop; talk seats / w-* → own #{machine} only.
+    """bob-* -> fleet + wonderland + shop; talk seats / w-* -> own #{machine} only.
 
     First JOIN creates #{machine} on Ergo. CAST IRON (Simon 2026-09-25): worker
     processes - talk seats ({machine}-{pid}) and w-* - JOIN their own #{machine}
-    ONLY, never #bobiverse or extras (#agentic_irc). Only bob-{machine}, Jeeves and
-    humans belong in #bobiverse. Supersedes issue #108 / PR #107.
+    ONLY, never #bobiverse, #wonderland, or extras (#agentic_irc). Only bob-{machine},
+    Jeeves and humans belong in #bobiverse / #wonderland. Supersedes issue #108 / PR #107.
+    FR #3835: every Bob-* ear also joins #wonderland on every connect/reconnect.
     """
     req = parse_channel_list(requested)
     worker = parse_worker_nick(nick)
@@ -562,7 +566,7 @@ def channels_for_nick(nick: str, requested: str) -> list[str]:
     mid = machine_from_nick(nick)
     if mid:
         shop = shop_channel(mid)
-        return [FLEET_CHANNEL, shop]
+        return [FLEET_CHANNEL, WONDERLAND_CHANNEL, shop]
     talk_mid = parse_talk_seat_nick(nick)
     if talk_mid:
         return [shop_channel(talk_mid)]

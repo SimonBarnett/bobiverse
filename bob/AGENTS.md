@@ -17,7 +17,7 @@ Product tree: `<ai root>\bob`. Services: **ircBob** (ear nick `Bob-<machine>`) +
 
 ## What you are looking at
 
-The Bob ear is this box's presence on IRC (`#bobiverse` + `#<machine>`): shop channel, digest reports, local `!recycle`, outbox PRIVMSGs, talk seats. It is also an authorized principal for Jeeves ops commands. The tray is an interactive companion, not a service.
+The Bob ear is this box's presence on IRC (`#bobiverse` + `#wonderland` + `#<machine>`, FR #3835): shop channel, digest reports, local `!recycle`, outbox PRIVMSGs, talk seats. It is also an authorized principal for Jeeves ops commands. The tray is an interactive companion, not a service.
 
 ## Read first (in this order)
 

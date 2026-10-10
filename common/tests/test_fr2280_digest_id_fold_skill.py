@@ -15,8 +15,8 @@ SKILL = ROOT / "bob/.grok/skills/bobiverse-bob/SKILL.md"
 
 
 def test_fr2280_channel_list_folds_ionos_alias():
-    assert it.channel_list_for_machine("ionos") == "#bobiverse,#win-mpre8vi4u6u"
-    assert it.channel_list_for_machine("win-mpre8vi4u6u") == "#bobiverse,#win-mpre8vi4u6u"
+    assert it.channel_list_for_machine("ionos") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
+    assert it.channel_list_for_machine("win-mpre8vi4u6u") == "#bobiverse,#wonderland,#win-mpre8vi4u6u"
     assert "#ionos" not in it.channel_list_for_machine("ionos")
 
 

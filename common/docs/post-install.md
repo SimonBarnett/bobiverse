@@ -41,7 +41,7 @@
    MSI already stages `<ai root>\<product>`. Install scripts skip copying onto themselves (issue #2).
 
 6. **Ear CLI**  
-   `Start-Bob.ps1` uses `--channel "#bobiverse,#<machine>"` (issue #3).
+   `Start-Bob.ps1` uses `--channel "#bobiverse,#wonderland,#<machine>"` (issue #3; FR #3835).
 
 7. **Python deps**  
    Install runs `pip install cryptography` into the selected Python.
@@ -81,7 +81,8 @@ Expect:
 
 - `INFO SASL user=bob-<machine> from â€¦\nickserv.password` (when file present)
 - `INFO connecting irc.ntsa.uk:6697`
-- `INFO joined #bobiverse,#<machine> as Bob-<machine>`
+- `INFO joined #bobiverse,#wonderland,#<machine> as Bob-<machine>`
+- `INFO joined channel=#wonderland reason=bob-ear-fleet-channel` (FR #3835)
 
 If you see `INFO no-sasl` then `INFO NICKNAME_RESERVED` / `NO 001`, fix NickServ SASL credentials before retrying.
 

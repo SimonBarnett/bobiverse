@@ -46,10 +46,10 @@ def test_irc_agent_always_appends_inbound_transcript():
 
 def test_start_bob_channel_list_matches_helper_for_fleet_machines():
     t = START.read_text(encoding="utf-8-sig")
-    assert '$channel = "#bobiverse,$shop"' in t
+    assert '#bobiverse,#wonderland,$shop' in t
     assert "$shop = \"#$MachineId\"" in t or "$shop = \"#$MachineId\"" in t.replace("'", '"')
     for mid in it.FLEET_EAR_MACHINES:
-        assert it.channel_list_for_machine(mid) == f"#bobiverse,#{mid}"
+        assert it.channel_list_for_machine(mid) == f"#bobiverse,#wonderland,#{mid}"
 
 
 def test_docs_describe_listen_and_identical_outbox():

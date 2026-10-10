@@ -13,7 +13,7 @@ LOCKED
 
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
-| S1 | Ear present | `ircBob` Running; nick `Bob-{mid}` on `#bobiverse` + `#{mid}` | `Get-Service ircBob`; `bob/home/irc.log` JOIN lines | Service stopped or shop not joined |
+| S1 | Ear present | `ircBob` Running; nick `Bob-{mid}` on `#bobiverse` + `#wonderland` + `#{mid}` (FR #3835) | `Get-Service ircBob`; `bob/home/irc.log` JOIN lines; INFO `reason=bob-ear-fleet-channel` | Service stopped or shop / wonderland not joined |
 | S2 | One-window worker | Tray **Agent** starts one `bob-worker.exe` = one console = one agent | `pytest bob/tests/test_bob_worker_020.py` one-window cases; no `CREATE_NEW_CONSOLE` for agent | Second console / orphan agent |
 | S3 | Inject submits | Jeeves `FROM` lines auto-submit in the TUI (no manual Enter) | `inject_console` gap ≥ 0.20s + double Enter; submit-verify probe + Enter-only retry never re-paste (FR #2696); stop early only when open ACK matches the injected job (`assign_job_ref` / `ack_job_ref`, FR #2791); `test_fr1601_inject_submit_gap.py` + `test_fr2696_inject_submit_verify.py` + `test_fr2791_submit_verify_stop_matches_job.py` | Line sits waiting for Enter (`relay: injected` but agent idle; no `submit-verify ok` / retries exhausted); unrelated open ACK skips retries (`stop/ACK` at 0.0s) |
 | S4 | Shop wire | Program posts `!bored` (after DONE/NACK/GIVEUP harvest hold, FR #1611 / #2802: grok `turn_ended` releases hold early; `harvest_hold_s` fallback); agent writes ACK/DONE only to `#{mid}` outbox | `bobiverse-bob-job-irc`; worker.log `bored -> shop` / `harvest-hold` / `turn ended`; `test_fr2802_bored_on_turn_end.py` | Model posts `!bored` or PRIVMSG nick/`#bobiverse`; immediate `!bored` before harvest |
@@ -54,7 +54,7 @@ bob-worker.exe (one window)
   └─ program posts !bored; never the model
 
 ircBob ear
-  ├─ Nick Bob-{machine}; JOIN #bobiverse + #{machine}
+  ├─ Nick Bob-{machine}; JOIN #bobiverse + #wonderland + #{machine} (FR #3835)
   ├─ digest report, recycle, outbox PRIVMSG (incl. airc)
   └─ never self-REGISTER shop (Jeeves !register only)
 ```
