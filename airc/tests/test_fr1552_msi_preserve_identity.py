@@ -41,6 +41,8 @@ def test_install_airc_reads_existing_appparameters_before_defaults():
     # MRB #1570: json fallback when AppParameters empty (FR letter "or install.json").
     assert "ConvertFrom-Json" in t
     assert t.index("airc-install.json") < t.index("LocalSystem using existing Admin ConsoleHome")
+    # FR #3900: legacy AircConsole AppParameters before minting a new home.
+    assert "AircConsole" in t and "FR #3900" in t
 
 
 def test_install_aircconsole_captures_before_teardown():
