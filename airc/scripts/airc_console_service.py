@@ -156,7 +156,18 @@ class AircConsoleService:
         )
         # FR #3763: marker that NickServ account exists for this home (after 903 / REGISTER).
         self._nickserv_ok_path = self.home / "console.nickserv-ok"
+        # FR #3863: only a GUID minted *this* process skips SASL. A reused
+        # console.password (upgrade from builds that never wrote nickserv-ok)
+        # must try SASL or the reserved nick 433-loops forever.
+        pw_existed = False
+        try:
+            pw_existed = nickserv_path.is_file() and bool(
+                nickserv_path.read_text(encoding="utf-8").strip()
+            )
+        except OSError:
+            pw_existed = False
         self.nickserv_password = ensure_nickserv_password(nickserv_path, mint=True)
+        self._nickserv_pw_minted = bool(self.nickserv_password) and not pw_existed
         self.password = self.nickserv_password  # SASL / identify use NickServ secret
         self.server_password = resolve_server_password(
             home=self.home,
@@ -473,11 +484,21 @@ class AircConsoleService:
         info("INFO sent server PASS")
 
     def _nickserv_account_known(self) -> bool:
-        """FR #3763: True once this ConsoleHome has successfully SASL'd or registered."""
+        """True when SASL is safe to attempt for this ConsoleHome.
+
+        FR #3763: marker after successful SASL/REGISTER.
+        FR #3863: reused console.password (not minted this run) also counts —
+        upgrades from pre-marker builds must not skip SASL or they 433-loop.
+        """
         try:
-            return self._nickserv_ok_path.is_file()
+            if self._nickserv_ok_path.is_file():
+                return True
         except OSError:
-            return False
+            pass
+        # Upgrade / GUID reuse: password already on disk → account almost certainly exists.
+        if self.nickserv_password and not getattr(self, "_nickserv_pw_minted", True):
+            return True
+        return False
 
     def _mark_nickserv_ok(self, reason: str) -> None:
         """FR #3763: persist that {machine}_console NickServ account matches console.password."""
@@ -494,8 +515,9 @@ class AircConsoleService:
 
     def request_caps(self) -> None:
         # account-tag powers operator account allowlists (FR #230). SASL is best-effort.
-        # FR #3763: do not attempt SASL until console.nickserv-ok exists (fresh client
-        # would 904 "not registered yet" and look like a password error).
+        # FR #3763: skip SASL only when console.password was minted this run (fresh
+        # client would 904 "not registered yet"). FR #3863: reused password → try SASL
+        # even without console.nickserv-ok (upgrade path).
         caps = "account-notify extended-join account-tag"
         want = bool(self.nickserv_password and self.args.sasl and self._nickserv_account_known())
         if self.nickserv_password and self.args.sasl and not self._nickserv_account_known():
@@ -503,6 +525,16 @@ class AircConsoleService:
                 "INFO FR #3763 skip SASL until NickServ account exists "
                 f"(no {self._nickserv_ok_path.name}); will REGISTER via NickServ"
             )
+        elif want and self.nickserv_password and not getattr(self, "_nickserv_pw_minted", True):
+            try:
+                has_marker = self._nickserv_ok_path.is_file()
+            except OSError:
+                has_marker = False
+            if not has_marker:
+                info(
+                    "INFO FR #3863 try SASL: console.password reused "
+                    f"(no {self._nickserv_ok_path.name} yet; upgrade path)"
+                )
         if want:
             caps = "sasl " + caps
             self._want_sasl = True
