@@ -2807,16 +2807,21 @@ def last_worker_activity(home: Path, nick: str) -> float | None:
 
 
 OFFER_TIMEOUT_S = 90.0
-# FR #2811: giveup-push offers stay sticky through harvest_hold_s so a held assign is not stolen.
+# FR #2811 / FR #3893: giveup/done-push offers stay sticky through harvest_hold_s so a held assign is not stolen.
 GIVEUP_OFFER_EXTRA_S = 90.0
 # FR #2309: max same-nick rebroadcasts without ACK before clearing the pin.
 OFFER_STICKY_MAX = 3
+# Sticky via values that get the extended offer window (harvest hold / seat turn end).
+_RELEASE_OFFER_VIA = frozenset({"giveup", "done", "nack"})
 
 
 def offer_timeout_s(row: dict | None) -> float:
-    """Sticky offer window; giveup-pushed rows get OFFER_TIMEOUT_S + GIVEUP_OFFER_EXTRA_S (FR #2811)."""
+    """Sticky offer window; giveup/done-pushed rows get OFFER_TIMEOUT_S + GIVEUP_OFFER_EXTRA_S (FR #2811 / #3893)."""
     base = float(OFFER_TIMEOUT_S)
-    if isinstance(row, dict) and str(row.get("offered_via") or "").strip().lower() == "giveup":
+    via = ""
+    if isinstance(row, dict):
+        via = str(row.get("offered_via") or "").strip().lower()
+    if via in _RELEASE_OFFER_VIA:
         return base + float(GIVEUP_OFFER_EXTRA_S)
     return base
 
@@ -4521,7 +4526,7 @@ def push_idle_offers_via_chair_outbox(
     )
 
 
-def offer_after_giveup(
+def offer_after_release(
     home: Path,
     nick: str,
     channel: str,
@@ -4531,11 +4536,14 @@ def offer_after_giveup(
     pr_exists=None,
     is_pull=None,
     issue_open=None,
+    offered_via: str = "giveup",
 ) -> tuple[int, dict | None]:
-    """FR #2811: after GIVEUP/NACK, push the next eligible job to that seat (no empty chatter).
+    """FR #2811 / FR #3893: after GIVEUP/NACK/DONE, push the next eligible job (no empty chatter).
 
     Uses the same ``offer_focus_top`` gates as ``!bored``. Returns ``(1, job)`` if delivered.
+    ``offered_via`` stamps sticky window (``giveup`` / ``done`` / ``nack``).
     """
+    via = str(offered_via or "giveup").strip().lower() or "giveup"
     status, job = offer_focus_top(
         home,
         nick,
@@ -4544,7 +4552,7 @@ def offer_after_giveup(
         pr_exists=pr_exists,
         is_pull=is_pull,
         issue_open=issue_open,
-        offered_via="giveup",
+        offered_via=via,
     )
     if status != "ok" or not isinstance(job, dict):
         return 0, None
@@ -4560,6 +4568,56 @@ def offer_after_giveup(
     with contextlib.suppress(Exception):
         clear_idle_after_empty(home, nick)
     return 1, job
+
+
+def offer_after_giveup(
+    home: Path,
+    nick: str,
+    channel: str,
+    *,
+    say,
+    now: float | None = None,
+    pr_exists=None,
+    is_pull=None,
+    issue_open=None,
+) -> tuple[int, dict | None]:
+    """FR #2811: after GIVEUP/NACK, push the next eligible job to that seat (no empty chatter)."""
+    return offer_after_release(
+        home,
+        nick,
+        channel,
+        say=say,
+        now=now,
+        pr_exists=pr_exists,
+        is_pull=is_pull,
+        issue_open=issue_open,
+        offered_via="giveup",
+    )
+
+
+def offer_after_done(
+    home: Path,
+    nick: str,
+    channel: str,
+    *,
+    say,
+    now: float | None = None,
+    pr_exists=None,
+    is_pull=None,
+    issue_open=None,
+) -> tuple[int, dict | None]:
+    """FR #3893: after DONE, push the next eligible job to that seat (no empty chatter)."""
+    return offer_after_release(
+        home,
+        nick,
+        channel,
+        say=say,
+        now=now,
+        pr_exists=pr_exists,
+        is_pull=is_pull,
+        issue_open=issue_open,
+        offered_via="done",
+    )
 
 
 def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
