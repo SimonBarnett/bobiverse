@@ -722,3 +722,9 @@ Hostile pins for lost-ACK digest reconcile: repo-scoped promote (same numeric id
 
 Books: bobiverse-jeeves-troubleshooting, gitclaim. Product PR #3871; hostile docs this entry. Refs: SimonBarnett/bobiverse#3867 SimonBarnett/bobiverse#3871
 
+## 2026-10-10 - docs/mrb-3881 (FR #3880 / PR #3881)
+
+Hostile pins for product docs UTF-8 gate: product docs trees decode as UTF-8; no lone cp1252 0x97; skill-harvest-log no BOM; gate test module itself UTF-8/no-BOM; PRODUCT_DOCS covers common/bob/jeeves/airc.
+
+Books: harvest, skill-harvest-log. Product PR #3881; hostile docs this entry. Refs: SimonBarnett/bobiverse#3880 SimonBarnett/bobiverse#3881
+
