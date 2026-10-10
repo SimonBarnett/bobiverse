@@ -1239,6 +1239,12 @@ class Client:
             self._apply_chanserv_channels(col.channels)
 
     def _apply_chanserv_channels(self, channels: list[str]) -> None:
+        """Mirror ChanServ LIST, then JOIN every registered channel and PART the rest (FR #3836).
+
+        Joins are paced with ``FLOOD_S`` so reconnect / resync never floods Ergo. Unregistered
+        channels are never joined. GIT announces and shop assignment behaviour are unchanged
+        (those paths still target #bobiverse / the shop only).
+        """
         digest = self._digest_home()
         res = registered_machines.sync_from_chanserv(digest, channels)
         if res is None:
@@ -1248,22 +1254,31 @@ class Client:
         added, removed = res
         info(f"INFO chanserv-sync ok machines={len(registered_machines.load_registered(digest))} "
              f"+{sorted(added)} -{sorted(removed)}")
-        have = {c.lower() for c in self.channels}
-        for mid in sorted(added):
-            shop = f"#{mid}"
-            if shop.lower() not in have:
-                self.channels.append(shop)
-                try:
-                    self.send(f"JOIN {shop}")
-                except OSError:
-                    pass
-        for mid in sorted(removed):
-            shop = f"#{mid}"
-            self.channels = [c for c in self.channels if c.lower() != shop.lower()]
+        desired = registered_machines.load_registered_channels(digest)
+        desired_l = {c.lower() for c in desired}
+        have = {c.lower(): c for c in self.channels}
+        for ch in desired:
+            if ch.lower() in have:
+                continue
+            self.channels.append(ch)
+            have[ch.lower()] = ch
             try:
-                self.send(f"PART {shop} :no longer registered")
+                self.send(f"JOIN {ch}")
             except OSError:
                 pass
+            time.sleep(FLOOD_S)
+        for cl, ch in list(have.items()):
+            if cl in desired_l:
+                continue
+            self.channels = [c for c in self.channels if c.lower() != cl]
+            try:
+                self.send(f"PART {ch} :no longer registered")
+            except OSError:
+                pass
+            time.sleep(FLOOD_S)
+        info(
+            f"INFO channel-sync registered={len(desired)} joined={','.join(desired)}"
+        )
 
     def _handle_register_command(self, asker: str, body: str) -> bool:
         """Chair: !register <machine> → ChanServ REGISTER #{machine} + persist."""
@@ -1294,15 +1309,16 @@ class Client:
         return True
 
     def _maybe_grant_bob_modes(self, nick: str) -> None:
-        """Merged into chan_privs (v0.1.18): bob-<machine> +o in #<machine>, +h in #bobiverse, re-applied
-        on JOIN / mode drift / reconcile by the privilege engine. Kept as an explicit re-apply hook."""
+        """Merged into chan_privs (v0.1.18): bob-<machine> +o in #<machine>, +h in #bobiverse,
+        +o in #wonderland (FR #3836); re-applied on JOIN / mode drift / reconcile by the privilege
+        engine. Kept as an explicit re-apply hook. Never ops *_console or worker seats."""
         if not getattr(self.args, "chair", False):
             return
         mid = registered_machines.machine_from_bob_nick(nick)
         if not mid:
             return
         eng = self._privs()
-        for ch in (f"#{mid}", bobreport.FLEET_CHANNEL):
+        for ch in (f"#{mid}", bobreport.FLEET_CHANNEL, registered_machines.WONDERLAND_CHANNEL):
             eng.apply(ch, "bob-join")
 
     def _handle_recycle_command(self, asker: str, body: str) -> None:

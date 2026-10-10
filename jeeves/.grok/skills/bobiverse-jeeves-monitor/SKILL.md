@@ -91,8 +91,8 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 
 | Role | Nick | Channels |
 |---|---|---|
-| Chair | `Jeeves` | `#bobiverse` + every `#{machine}` (silent) |
-| Ear | `bob-<machine>` | own shop + `#bobiverse` |
+| Chair | `Jeeves` | every ChanServ-registered channel (FR #3836: `#bobiverse`, shops, `#wonderland`, …; silent outside fleet/shop paths) |
+| Ear | `bob-<machine>` | own shop + `#bobiverse` (+ `#wonderland` when that FR is live) |
 | Worker | `<machine>-<pid>` | own `#{machine}` only - never `#bobiverse` |
 | Monitor (you) | session | intake only; do not drive assigns |
 
