@@ -728,3 +728,8 @@ Hostile pins for product docs UTF-8 gate: product docs trees decode as UTF-8; no
 
 Books: harvest, skill-harvest-log. Product PR #3881; hostile docs this entry. Refs: SimonBarnett/bobiverse#3880 SimonBarnett/bobiverse#3881
 
+## 2026-10-10 - docs/mrb-3882 (harvest tip #3882 / FR #3880)
+
+Hostile pin: contiguous harvest lesson for product docs UTF-8 / repo_layout.REPO / lone cp1252 0x97. Twin tip #3884 closed as duplicate.
+
+Books: harvest. Tip PR #3882; hostile docs this entry. Refs: SimonBarnett/bobiverse#3880 SimonBarnett/bobiverse#3882
