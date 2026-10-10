@@ -446,6 +446,41 @@ class GhCliFiler:
             return None
         return {"url": url, "number": number, "branch": head_branch}
 
+    def list_open_pulls(self, repo: str) -> list[dict[str, Any]]:
+        """Open pulls for FR #3824 open-lesson twin checks (label/title filtered upstream)."""
+        repo = str(repo or "").strip()
+        if not repo or "/" not in repo:
+            return []
+        try:
+            rows = self._api("GET", f"repos/{repo}/pulls?state=open&per_page=50")
+        except GitHubDown:
+            return []
+        if not isinstance(rows, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            labs = []
+            for lab in row.get("labels") or []:
+                if isinstance(lab, dict):
+                    labs.append(str(lab.get("name") or ""))
+                else:
+                    labs.append(str(lab))
+            out.append(
+                {
+                    "repo": repo,
+                    "number": int(row.get("number") or 0),
+                    "title": str(row.get("title") or ""),
+                    "body": str(row.get("body") or ""),
+                    "labels": labs,
+                    "url": str(row.get("html_url") or ""),
+                    "branch": str((row.get("head") or {}).get("ref") or ""),
+                    "draft": bool(row.get("draft")),
+                }
+            )
+        return out
+
 
 def default_filer() -> GitHubFiler:
     return GhCliFiler()
