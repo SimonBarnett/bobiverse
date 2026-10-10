@@ -8,6 +8,8 @@
   TipForm Exit. Opt out: BOBIVERSE_TRAY_WATCHDOG=0.
   FR #2585: duplicate bob-tray.exe exits log process-exit reason=already-running (not unexpected);
   this probe only relaunches when no tray process is present, so already-running never triggers a relaunch.
+  FR #3909: prefer Get-Process bob-tray before Win32_Process CIM (CIM can take ~1 min and the
+  Interactive scheduled-task host used to flash a blank console for that whole time).
 #>
 [CmdletBinding()]
 param(
@@ -49,6 +51,8 @@ if (-not (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue)
 if (-not (Get-Command Test-BobTrayProcessPresent -ErrorAction SilentlyContinue)) {
     function Test-BobTrayProcessPresent {
         param([string]$InstallRoot = '')
+        # FR #3909: fast path — bob-tray.exe is the normal TipForm host.
+        if (@(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
         $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                 ($_.CommandLine -and ($_.CommandLine -match 'Watch-BobTray\.ps1' -or $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1')) -or
                 ($_.Name -eq 'bob-tray.exe')
