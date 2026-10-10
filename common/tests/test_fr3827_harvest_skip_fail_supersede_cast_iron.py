@@ -113,12 +113,14 @@ def test_fr3827_intake_skips_incident_lesson_when_covered(tmp_path: Path):
     assert filer.prs == []
 
 
-def test_fr3827_harvest_script_skips_incident_wording():
+def test_fr3827_harvest_script_skips_incident_wording(tmp_path: Path):
     text = HARVEST_PS1.read_text(encoding="utf-8-sig")
     assert "FR #3827" in text
     assert "stay in" in text.lower() or "durable in" in text.lower()
     assert "thin harvest tip" in text.lower() or "thin\\s+harvest\\s+tip" in text.lower()
 
+    # FR #3859: OutboxDir must be pytest tmp_path (no host D: drive required).
+    outbox = tmp_path / "harvest-outbox"
     r = _run_harvest(
         "-Repo",
         REPO,
@@ -127,7 +129,7 @@ def test_fr3827_harvest_script_skips_incident_wording():
         "-Lesson",
         INCIDENT_LESSON,
         "-OutboxDir",
-        str(Path("D:/bobfleet-build/job-fr-bobiverse-3827") / "_tmp_hv_3827"),
+        str(outbox),
     )
     assert r.returncode == 0, r.stdout + r.stderr
     assert "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991" in r.stdout or (
@@ -137,7 +139,9 @@ def test_fr3827_harvest_script_skips_incident_wording():
     assert "QUEUED" not in r.stdout
 
 
-def test_fr3827_real_product_lesson_still_posts():
+def test_fr3827_real_product_lesson_still_posts(tmp_path: Path):
+    # FR #3859: OutboxDir must be pytest tmp_path (no host D: drive required).
+    outbox = tmp_path / "harvest-outbox"
     r = _run_harvest(
         "-Repo",
         REPO,
@@ -146,8 +150,31 @@ def test_fr3827_real_product_lesson_still_posts():
         "-Lesson",
         "Install-Airc QuietExec: quote SetInstallCmd paths on WinPS 5.1 (FR #3741).",
         "-OutboxDir",
-        str(Path("D:/bobfleet-build/job-fr-bobiverse-3827") / "_tmp_hv_3827_prod"),
+        str(outbox),
     )
     assert r.returncode == 0, r.stdout + r.stderr
     assert "SKIPPED harvest FAIL-supersede" not in r.stdout
     assert "QUEUED" in r.stdout or "HARVESTED" in r.stdout
+
+
+def test_fr3859_outbox_dir_uses_tmp_path_not_host_d_drive():
+    """Pin: -OutboxDir must use pytest tmp_path (hosts without a fixed drive letter)."""
+    src = Path(__file__).read_text(encoding="utf-8")
+    # Assemble needles so this pin source does not contain the forbidden literals.
+    drive = "D:"
+    slash = "/"
+    bslash = "\\"
+    old_job = "job-fr-bobiverse-" + "3827"
+    forbidden = (
+        f'Path("{drive}{slash}',
+        f"Path('{drive}{slash}",
+        f'Path(r"{drive}{bslash}',
+        old_job,
+    )
+    for needle in forbidden:
+        assert needle not in src, f"hardcoded OutboxDir residue: {needle!r}"
+    assert "tmp_path: Path" in src
+    assert 'tmp_path / "harvest-outbox"' in src
+    # Both harvest-script tests take tmp_path
+    assert src.count("tmp_path: Path") >= 2
+    assert src.count('tmp_path / "harvest-outbox"') >= 2
