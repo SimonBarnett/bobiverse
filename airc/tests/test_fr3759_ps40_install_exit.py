@@ -47,6 +47,11 @@ def test_fr3759_install_cmd_fail_flag_belt_and_cleanup():
     assert 'if "%EC%"=="0" if exist "%FAILFLAG%"' in text
     # Stale flag must be deleted on the ok path too.
     assert 'if exist "%FAILFLAG%" del' in text or "del /f /q \"%FAILFLAG%\"" in text
+    # FR #3887: prior-run stale flag cleared before ps1 so it cannot fake FR #3759.
+    assert "FR3887 clearing stale fail-flag before install" in text
+    clear_at = text.lower().find("fr3887 clearing stale")
+    invoke_at = text.find('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HERE%Install-Airc.ps1"')
+    assert 0 <= clear_at < invoke_at
 
 
 def test_fr3759_troubleshooting_skill_row():
