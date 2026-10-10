@@ -219,6 +219,7 @@ routes to bobiverse via the split rule.
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
 - When appending skill-harvest-log entries, write a real trailing newline byte; a literal backslash-n fails endswith(b'\n') harvest-log gates on CI
+- Harvest-lesson MRB: when airc troubleshooting + product/docs already carry AircConsole→Airc SASL 904 heal on main, FAIL-supersede the thin harvest/SKILL.md tip.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
