@@ -33,10 +33,10 @@ def test_fr2504_inject_restores_prior_after_paste(monkeypatch):
     prior = "operator-prior-clip"
     sets: list[str] = []
     restores: list[object] = []
-    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda: prior)
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t: sets.append(t) or True)
+    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: prior)
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t, log=None: sets.append(t) or True)
     monkeypatch.setattr(
-        bw, "_clipboard_restore_unicode", lambda t: restores.append(t) or True
+        bw, "_clipboard_restore_unicode", lambda t, log=None: restores.append(t) or True
     )
     monkeypatch.setattr(bw, "_write_console_all", lambda *a, **k: True)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
@@ -77,10 +77,10 @@ def test_fr2504_inject_restores_none_when_prior_empty(monkeypatch):
         pytest.skip("windows")
 
     restores: list[object] = []
-    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda: None)
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t: True)
+    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: None)
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t, log=None: True)
     monkeypatch.setattr(
-        bw, "_clipboard_restore_unicode", lambda t: restores.append(t) or True
+        bw, "_clipboard_restore_unicode", lambda t, log=None: restores.append(t) or True
     )
     monkeypatch.setattr(bw, "_write_console_all", lambda *a, **k: True)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
@@ -114,7 +114,7 @@ def test_fr2504_inject_restores_none_when_prior_empty(monkeypatch):
 
 def test_fr2504_restore_helper_delegates_to_set(monkeypatch):
     seen = []
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t: seen.append(t) or True)
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t, log=None: seen.append(t) or True)
     assert bw._clipboard_restore_unicode("abc") is True
     assert seen == ["abc"]
 
@@ -152,14 +152,14 @@ def test_mrb2506_restore_after_gap_before_enter(monkeypatch):
     prior = "prior-clip-mrb"
     events: list[str] = []
 
-    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda: prior)
+    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: prior)
     monkeypatch.setattr(
-        bw, "_clipboard_set_unicode", lambda t: events.append(f"set:{t[:12]}") or True
+        bw, "_clipboard_set_unicode", lambda t, log=None: events.append(f"set:{t[:12]}") or True
     )
     monkeypatch.setattr(
         bw,
         "_clipboard_restore_unicode",
-        lambda t: events.append(f"restore:{t}") or True,
+        lambda t, log=None: events.append(f"restore:{t}") or True,
     )
 
     def write_all(_k32, _h, recs, _wt):
@@ -193,10 +193,10 @@ def test_mrb2506_finally_restores_on_early_key_fail(monkeypatch):
     restores: list[object] = []
     calls = {"n": 0}
 
-    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda: prior)
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t: True)
+    monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: prior)
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda t, log=None: True)
     monkeypatch.setattr(
-        bw, "_clipboard_restore_unicode", lambda t: restores.append(t) or True
+        bw, "_clipboard_restore_unicode", lambda t, log=None: restores.append(t) or True
     )
 
     def write_all(_k32, _h, recs, _wt):
