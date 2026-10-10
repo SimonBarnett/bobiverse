@@ -1167,18 +1167,32 @@ class Client:
         self._chair_log_status()
 
     def _chair_status_line(self) -> str:
-        ops = sorted(c for c in (x.lower() for x in self.channels) if self._chan_op.get(c))
-        missing = sorted(c.lower() for c in self.channels if not self._chan_op.get(c.lower()))
+        # FR #3868: always surface #bobiverse — if ChanServ sync PARTed it, op-in alone
+        # used to hide the gap (channel gone from self.channels → not in NOT-op-in either).
+        fleet = bobreport.FLEET_CHANNEL.lower()
+        joined_l = {c.lower() for c in self.channels}
+        ops = sorted(c for c in joined_l if self._chan_op.get(c))
+        missing = sorted(c for c in joined_l if not self._chan_op.get(c))
+        extra = ""
+        if fleet not in joined_l:
+            extra = f" missing-fleet={bobreport.FLEET_CHANNEL}"
+        elif fleet not in ops and fleet not in missing:
+            missing = sorted(set(missing) | {fleet})
         return (
             f"oper={self._oper_state} chanserv-list={self._cs_list_status} "
-            f"op-in={','.join(ops) or '-'} NOT-op-in={','.join(missing) or '-'}"
+            f"op-in={','.join(ops) or '-'} NOT-op-in={','.join(missing) or '-'}{extra}"
         )
 
     def _chair_log_status(self, force: bool = False) -> None:
         line = self._chair_status_line()
         now = time.time()
         if force or line != self._chair_status_last or now - self._chair_status_at > 300.0:
-            level = "INFO" if (self._oper_state == "ok" and "NOT-op-in=-" in line) else "WARN"
+            ok = (
+                self._oper_state == "ok"
+                and "NOT-op-in=-" in line
+                and "missing-fleet=" not in line
+            )
+            level = "INFO" if ok else "WARN"
             info(f"{level} chair-status {line}")
             self._chair_status_last = line
             self._chair_status_at = now
@@ -1244,6 +1258,8 @@ class Client:
         Joins are paced with ``FLOOD_S`` so reconnect / resync never floods Ergo. Unregistered
         channels are never joined. GIT announces and shop assignment behaviour are unchanged
         (those paths still target #bobiverse / the shop only).
+
+        FR #3868: never PART #bobiverse even if a LIST omitted it (wonderland stays LIST-exact).
         """
         digest = self._digest_home()
         res = registered_machines.sync_from_chanserv(digest, channels)
@@ -1256,6 +1272,7 @@ class Client:
              f"+{sorted(added)} -{sorted(removed)}")
         desired = registered_machines.load_registered_channels(digest)
         desired_l = {c.lower() for c in desired}
+        keep_l = {c.lower() for c in registered_machines.CHAIR_REQUIRED_CHANNELS}
         have = {c.lower(): c for c in self.channels}
         for ch in desired:
             if ch.lower() in have:
@@ -1268,7 +1285,7 @@ class Client:
                 pass
             time.sleep(FLOOD_S)
         for cl, ch in list(have.items()):
-            if cl in desired_l:
+            if cl in desired_l or cl in keep_l:
                 continue
             self.channels = [c for c in self.channels if c.lower() != cl]
             try:
@@ -1279,6 +1296,13 @@ class Client:
         info(
             f"INFO channel-sync registered={len(desired)} joined={','.join(desired)}"
         )
+        # FR #3868: refresh status so missing-fleet shows right after a sync.
+        log_status = getattr(self, "_chair_log_status", None)
+        if callable(log_status):
+            try:
+                log_status()
+            except Exception:  # noqa: BLE001 - never kill sync over status logging
+                pass
 
     def _handle_register_command(self, asker: str, body: str) -> bool:
         """Chair: !register <machine> → ChanServ REGISTER #{machine} + persist."""
@@ -2981,6 +3005,10 @@ class Client:
                         # ERR_CHANOPRIVSNEEDED: shop KICK/MODE without op (Ergo: creator-only op).
                         info(f"INFO shop-op 482 not channel operator: {' '.join(parts[2:4])}"[:200])
 
+                    if cmd == "404":
+                        # FR #3868: ERR_CANNOTSENDTOCHAN — outbox !assign to a channel we left.
+                        self._on_cannot_send_numeric(cmd, parts, trailing)
+
                     if cmd == "JOIN":
                         ch = parts[1].lstrip(":") if len(parts) > 1 else ""
                         if not ch and trailing:
@@ -3041,6 +3069,13 @@ class Client:
         finally:
             self.dead.set()
 
+    def _on_cannot_send_numeric(self, cmd: str, parts: list[str], trailing: str) -> None:
+        """FR #3868: log ERR_CANNOTSENDTOCHAN (404) so a silent outbox drop is visible."""
+        # Wire: 404 <me> <channel> :Cannot send to channel
+        ch = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 else "?")
+        why = (trailing or "").strip().replace("\n", " ")[:80] or "Cannot send to channel"
+        info(f"WARN outbox/send ERR_CANNOTSENDTOCHAN {cmd} {ch}: {why}")
+
     def _drain_outbox_path(self, path: Path) -> list[str]:
         if self.sock is None or not path.exists():
             return []
@@ -3064,7 +3099,19 @@ class Client:
                 continue
             op = shop_ops.raw_op_line(line, self.original_nick)
             if kind == "privmsg" or line.upper().startswith("PRIVMSG "):
-                wire = self.send_privmsg_lines(line)
+                # FR #3868: log every outbox send (and failures) so a lost !assign is visible.
+                try:
+                    wire = self.send_privmsg_lines(line)
+                except OSError as exc:
+                    preview = line if len(line) <= 160 else (line[:157] + "...")
+                    info(
+                        f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
+                    )
+                    continue
+                for w in wire:
+                    head = w.split(" :", 1)[0]
+                    prev = w if len(w) <= 160 else (w[:157] + "...")
+                    info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                 sent.extend(wire)
                 time.sleep(FLOOD_S)
             elif op:
