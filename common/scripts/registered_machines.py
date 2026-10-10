@@ -30,6 +30,10 @@ SOURCE_REGISTER = "register-command"
 NON_MACHINE_CHANNELS = frozenset({"bobiverse", "wonderland"})
 EXCLUDE_ENV = "BOB_CHANSERV_EXCLUDE"  # extra comma-separated channel names to ignore
 WONDERLAND_CHANNEL = "#wonderland"
+# FR #3868: always keep #bobiverse even when ChanServ LIST omits it (PART of the
+# fleet channel dropped ear !assign). Do NOT invent #wonderland here — MRB #3851
+# requires LIST-exact channels when channels[] is persisted from ChanServ.
+CHAIR_REQUIRED_CHANNELS = ("#bobiverse",)
 
 _SAFE_MID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$", re.I)
 _IRC_FMT = re.compile(r"[\x00-\x1f\x7f]|\x03\d{0,2}(,\d{1,2})?")
@@ -149,12 +153,18 @@ def registered_channels_from_list(channels) -> list[str]:
     return out
 
 
+def with_chair_required_channels(channels) -> list[str]:
+    """FR #3868: always keep #bobiverse in the chair channel set (never invent #wonderland — MRB #3851)."""
+    return registered_channels_from_list(list(CHAIR_REQUIRED_CHANNELS) + list(channels or []))
+
+
 def load_registered_channels(home: Path) -> list[str]:
     """Persisted full registered channel list (FR #3836), or synthesize from machines."""
     doc = _read_doc(home)
     raw = doc.get("channels")
     if isinstance(raw, list) and raw:
-        return registered_channels_from_list(raw)
+        # FR #3868: backfill #bobiverse if a partial LIST persisted without it (wonderland stays LIST-exact).
+        return with_chair_required_channels(raw)
     # Legacy / !register-only: synthesize fleet + wonderland + shops (FR #3834 fallback
     # until a ChanServ LIST has written the full ``channels`` field).
     mids = load_registered(home)
@@ -178,9 +188,9 @@ def save_registered(
     clean_mids = {m for m in machines if m and m not in skip}
     payload: dict = {"v": 3, "machines": sorted(clean_mids)}
     if channels is not None:
-        payload["channels"] = registered_channels_from_list(channels)
+        payload["channels"] = with_chair_required_channels(channels)
     elif isinstance(prev.get("channels"), list) and prev.get("channels"):
-        payload["channels"] = registered_channels_from_list(prev["channels"])
+        payload["channels"] = with_chair_required_channels(prev["channels"])
     payload["source"] = source or prev.get("source") or SOURCE_REGISTER
     if refreshed_at is not None:
         payload["refreshed_ts"] = float(refreshed_at)
@@ -300,7 +310,9 @@ def sync_from_chanserv(
         return None
     cur = load_registered(home)
     added, removed = ids - cur, cur - ids
-    full = registered_channels_from_list(channels)
+    # FR #3868: union required chair channels so a LIST that omitted #bobiverse
+    # cannot persist a roster that makes the chair PART the fleet channel.
+    full = with_chair_required_channels(channels)
     save_registered(
         Path(home),
         ids,
