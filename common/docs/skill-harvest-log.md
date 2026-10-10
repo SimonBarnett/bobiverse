@@ -708,12 +708,17 @@ Books: bobiverse-airc, bobiverse-airc-troubleshooting. Product PR #2634; hostile
 Books: bobiverse-jeeves-monitor, bobiverse-bob, bobiverse-bob-job-mrb. Tip PR for FR #2633.
 
 
-## 2026-10-10 � docs/mrb-3869 (FR #3863 / PR #3869)
+## 2026-10-10 — docs/mrb-3869 (FR #3863 / PR #3869)
 
 Hostile pins for airc upgrade SASL: reused `console.password` without `console.nickserv-ok` must try SASL; minted-this-run still skips (FR #3763). Contiguous source/skill phrases in `test_mrb3869_hostile_upgrade_sasl.py`.
 
+## 2026-10-10 — docs/mrb-3873 (FR #3868 / PR #3873)
+
+Hostile pins: `CHAIR_REQUIRED_CHANNELS` is only `#bobiverse`; ChanServ sync never invents `#wonderland`; never PART fleet channel; ear outbox send/404 logging. Docstring nits corrected.
+
 ## 2026-10-10 - docs/mrb-3871 (FR #3867 / PR #3871)
 
-Hostile pins for lost-ACK digest reconcile: repo-scoped promote (same numeric id across repos), drop unaccepted twin when already accepted (no double-offer), full owner/repo parse form, troubleshooting skill + irc_agent session wire. Small heal: already-accepted path drops the unaccepted twin and persists the write.
+Hostile pins for lost-ACK digest reconcile: repo-scoped promote (same numeric id across repos), drop unaccepted twin when already accepted (no double-offer), full owner/repo parse form, troubleshooting skill + irc_agent session wire. Small heal: already-accepted path drops the unaccepted twin and persists the write. Also rewrote main tip cp1252 em-dashes in the 3869 harvest headings to UTF-8 so harvest-log UTF-8 gates stay green.
 
 Books: bobiverse-jeeves-troubleshooting, gitclaim. Product PR #3871; hostile docs this entry. Refs: SimonBarnett/bobiverse#3867 SimonBarnett/bobiverse#3871
+
