@@ -156,6 +156,15 @@ class AircConsoleService:
         )
         # FR #3763: marker that NickServ account exists for this home (after 903 / REGISTER).
         self._nickserv_ok_path = self.home / "console.nickserv-ok"
+        # FR #3863: reuse of an existing console.password means the NickServ account
+        # almost certainly already exists (upgrade from builds that never wrote
+        # nickserv-ok). Only a GUID minted in this process is "fresh".
+        self._nickserv_password_reused = False
+        try:
+            if nickserv_path.is_file() and nickserv_path.read_text(encoding="utf-8").strip():
+                self._nickserv_password_reused = True
+        except OSError:
+            self._nickserv_password_reused = False
         self.nickserv_password = ensure_nickserv_password(nickserv_path, mint=True)
         self.password = self.nickserv_password  # SASL / identify use NickServ secret
         self.server_password = resolve_server_password(
@@ -479,6 +488,23 @@ class AircConsoleService:
         except OSError:
             return False
 
+    def _should_attempt_sasl(self) -> bool:
+        """FR #3763 + FR #3863: SASL when marker exists, or password was reused (upgrade)."""
+        return bool(
+            self.nickserv_password
+            and getattr(self.args, "sasl", True)
+            and (
+                self._nickserv_account_known()
+                or bool(getattr(self, "_nickserv_password_reused", False))
+            )
+        )
+
+    def _sasl_failure_is_loud(self) -> bool:
+        """Loud ERROR on 904 when account is known or password was reused (upgrade mismatch)."""
+        return self._nickserv_account_known() or bool(
+            getattr(self, "_nickserv_password_reused", False)
+        )
+
     def _mark_nickserv_ok(self, reason: str) -> None:
         """FR #3763: persist that {machine}_console NickServ account matches console.password."""
         try:
@@ -494,14 +520,25 @@ class AircConsoleService:
 
     def request_caps(self) -> None:
         # account-tag powers operator account allowlists (FR #230). SASL is best-effort.
-        # FR #3763: do not attempt SASL until console.nickserv-ok exists (fresh client
+        # FR #3763: skip SASL for a GUID minted this run with no nickserv-ok (fresh client
         # would 904 "not registered yet" and look like a password error).
+        # FR #3863: if console.password was reused, attempt SASL even without the marker
+        # (upgrade from builds that never wrote nickserv-ok; else 433 reserved-nick loop).
         caps = "account-notify extended-join account-tag"
-        want = bool(self.nickserv_password and self.args.sasl and self._nickserv_account_known())
-        if self.nickserv_password and self.args.sasl and not self._nickserv_account_known():
+        want = self._should_attempt_sasl()
+        if (
+            self.nickserv_password
+            and getattr(self.args, "sasl", True)
+            and not want
+        ):
             info(
                 "INFO FR #3763 skip SASL until NickServ account exists "
                 f"(no {self._nickserv_ok_path.name}); will REGISTER via NickServ"
+            )
+        elif want and bool(getattr(self, "_nickserv_password_reused", False)) and not self._nickserv_account_known():
+            info(
+                "INFO FR #3863 attempt SASL (console.password reused, no "
+                f"{self._nickserv_ok_path.name}); upgrade path"
             )
         if want:
             caps = "sasl " + caps
@@ -511,7 +548,7 @@ class AircConsoleService:
         self.send(f"CAP REQ :{caps}")
 
     def sasl_plain(self) -> None:
-        if not self.nickserv_password or not self.args.sasl or not self._nickserv_account_known():
+        if not self._should_attempt_sasl():
             return
         # Minimal PLAIN; failures must CAP END so registration can proceed.
         self._want_sasl = True
@@ -724,7 +761,7 @@ class AircConsoleService:
             self.send("CAP END")
             return
         if cmd in {"904", "905", "906", "907"}:
-            if self._nickserv_account_known():
+            if self._sasl_failure_is_loud():
                 self._sasl_failed = True
                 info(
                     f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
