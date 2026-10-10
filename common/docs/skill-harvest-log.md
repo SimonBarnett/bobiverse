@@ -733,3 +733,8 @@ Books: harvest, skill-harvest-log. Product PR #3881; hostile docs this entry. Re
 Hostile pin: contiguous harvest lesson for product docs UTF-8 / repo_layout.REPO / lone cp1252 0x97. Twin tip #3884 closed as duplicate.
 
 Books: harvest. Tip PR #3882; hostile docs this entry. Refs: SimonBarnett/bobiverse#3880 SimonBarnett/bobiverse#3882
+## 2026-10-10 - docs/mrb-3886 (harvest tip #3886)
+
+Hostile pin: contiguous harvest lesson for real trailing newline byte on skill-harvest-log appends (literal backslash-n fails endswith gates). Tip #3886 merged first.
+
+Books: harvest. Tip PR #3886; hostile docs this entry. Refs: SimonBarnett/bobiverse#3886
