@@ -216,6 +216,7 @@ routes to bobiverse via the split rule.
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
 - FR #3824: one harvest per seat+lesson — skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
+- airc client: registered #<machine> else #wonderland; exclude wonderland from ChanServ machine roster; Bob ears +o via chan_privs
 
 ## Harvest digest (lessons audit 2026-10-06)
 
