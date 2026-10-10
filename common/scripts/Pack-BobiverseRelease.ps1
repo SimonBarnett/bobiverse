@@ -390,11 +390,16 @@ function Build-Msi([string]$Name, [string]$Stage) {
     & $heat dir $Stage -cg $cg -gg -sfrag -srd -sreg -scom -dr INSTALLDIR -var var.StageDir -out $harvested
     if ($LASTEXITCODE -ne 0) { throw "heat failed $LASTEXITCODE" }
 
-    # #70 (v0.1.19): the pack's nssm.exe is the service binary of running Windows services (ircJeeves/ircBob, and on
-    # older boxes also BobIrcd/Ergo). heat gives every build fresh component GUIDs, so a MajorUpgrade used to REMOVE
-    # and re-lay nssm.exe -> the services holding it were stopped (Ergo bounced, all clients reconnected).
-    # Permanent = the old product never removes it; NeverOverwrite = the new product never rewrites an existing copy.
-    # The file is byte-identical across releases (nssm 2.24), so keeping the installed one is always correct.
+    # #70 (v0.1.19) / FR #3899: the pack's nssm.exe is the service binary of running Windows services
+    # (ircJeeves/ircBob, and on older boxes also BobIrcd/Ergo). heat used to mint a fresh component GUID every
+    # build, so MajorUpgrade removed and re-laid nssm.exe (services holding it stopped / Ergo bounced).
+    # Permanent + a stable per-product GUID keep the SAME component across releases so later uninstalls /
+    # same-GUID upgrades do not thrash the file.
+    # FR #3899: do NOT set NeverOverwrite on nssm. With MajorUpgrade Schedule=afterInstallInitialize,
+    # CostFinalize marks NeverOverwrite files "skip install" while the old copy still exists; then
+    # RemoveExistingProducts FileRemoves the pre-stable-GUID component; InstallFiles never FileCopys.
+    # Flamingo 0.1.11 -> 0.1.30: nssm.exe gone, Install-AircConsole "nssm missing", msiexec 1603.
+    # Permanent alone + stable GUID is enough once the file is laid; nssm 2.24 bytes are identical.
     [xml]$hx = Get-Content -LiteralPath $harvested -Raw -Encoding UTF8
     $wns = New-Object System.Xml.XmlNamespaceManager($hx.NameTable)
     $wns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
@@ -403,7 +408,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     foreach ($nf in $nssmFiles) {
         $nc = $nf.ParentNode
         $nc.SetAttribute('Permanent', 'yes')
-        $nc.SetAttribute('NeverOverwrite', 'yes')
+        if ($nc.HasAttribute('NeverOverwrite')) { [void]$nc.RemoveAttribute('NeverOverwrite') }
         # Stable component GUID (per product) so every release refers to the SAME component, not a fresh one.
         $nc.SetAttribute('Guid', '{' + ([guid]::new([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("bobiverse-$Name-nssm-component"))).ToString().ToUpper()) + '}')
     }
@@ -456,7 +461,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
                 -MainGroupId $cg -AgentGroupId $agentCg -FailIfNone)
     }
     $hx.Save($harvested)
-    Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+NeverOverwrite" -f $nssmFiles.Count)
+    Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+stable GUID (no NeverOverwrite; FR #3899)" -f $nssmFiles.Count)
 
     # airc UpgradeCode must NOT match agentic_irc airc-console
     # (B7E3C9A1-4F2D-4E8B-9C11-A1BC00501E01) or 0.1.x packs look like

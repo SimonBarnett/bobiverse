@@ -19,12 +19,19 @@ def _all_ps1_scripts():
     return out
 
 
-def test_pack_marks_nssm_component_permanent_neveroverwrite_with_stable_guid():
+def test_pack_marks_nssm_component_permanent_with_stable_guid():
+    """#70 Permanent+stable GUID; FR #3899 drops NeverOverwrite on nssm (upgrade FileCopy gap)."""
     p = _t("Pack-BobiverseRelease.ps1")
-    assert "SetAttribute('Permanent', 'yes')" in p and "SetAttribute('NeverOverwrite', 'yes')" in p
+    assert "SetAttribute('Permanent', 'yes')" in p
     assert "bobiverse-$Name-nssm-component" in p            # stable per-product GUID, not heat's fresh one
     assert "throw 'nssm.exe component not found" in p       # packaging fails loudly rather than silently regress
     assert p.index("heat dir") < p.index("Permanent") < p.index("& $candle")
+    nssm_idx = p.index("nssm.exe component not found")
+    nssm_block = p[nssm_idx : nssm_idx + 900]
+    assert "RemoveAttribute('NeverOverwrite')" in nssm_block
+    assert "SetAttribute('NeverOverwrite', 'yes')" not in nssm_block
+    # ergo still uses NeverOverwrite (hardlink / Ergo bounce).
+    assert "SetAttribute('NeverOverwrite', 'yes')" in p
 
 
 def test_watch_bobircd_param_typo_fixed_and_file_has_bom_for_ps51():

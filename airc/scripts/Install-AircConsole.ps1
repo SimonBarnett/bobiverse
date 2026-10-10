@@ -191,6 +191,27 @@ else {
 }
 $resolvedNssm = Resolve-AircConsoleNssmPath -Preferred $Nssm -ScriptDir $scriptDir
 if (-not $resolvedNssm) {
+    # FR #3899: MajorUpgrade can leave third_party\nssm\win64\nssm.exe missing (NeverOverwrite
+    # costing skip + old component FileRemove). Re-fetch into the install tree before failing.
+    $fetchNssm = Join-Path $scriptDir 'Fetch-Nssm.ps1'
+    if (-not (Test-Path -LiteralPath $fetchNssm)) {
+        $commonFetch = Join-Path (Split-Path -Parent $scriptDir) 'common\scripts\Fetch-Nssm.ps1'
+        if (Test-Path -LiteralPath $commonFetch) { $fetchNssm = $commonFetch }
+    }
+    if ($scriptDir -and (Test-Path -LiteralPath $fetchNssm)) {
+        $installRoot = Split-Path -Parent $scriptDir
+        $nssmOut = Join-Path $installRoot 'third_party\nssm\win64'
+        $nssmCache = Join-Path $installRoot 'third_party\nssm'
+        try {
+            Write-Host "INFO FR #3899 nssm missing; Fetch-Nssm into $nssmOut"
+            & $fetchNssm -OutDir $nssmOut -CacheDir $nssmCache
+        } catch {
+            Write-Host ("WARN FR #3899 Fetch-Nssm failed: {0}" -f $_.Exception.Message)
+        }
+        $resolvedNssm = Resolve-AircConsoleNssmPath -Preferred $Nssm -ScriptDir $scriptDir
+    }
+}
+if (-not $resolvedNssm) {
     throw 'nssm missing: unpack third_party\nssm\win64\nssm.exe from the release zip (issue #266), or pass -Nssm, or install to <ai root>\ergo\nssm.exe'
 }
 $Nssm = $resolvedNssm

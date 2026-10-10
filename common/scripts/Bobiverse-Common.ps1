@@ -2474,6 +2474,8 @@ function Get-BobiverseAircClientAllowedScriptNames {
         'Recover-BobiverseService.cmd',
         'Resolve-AircConsoleNssm.ps1',
         'Resolve-AircConsolePython.ps1',
+        # FR #3899: self-heal bundled nssm after MajorUpgrade FileRemove gap
+        'Fetch-Nssm.ps1',
         'Start-AircConsole.ps1',
         'Start-AircConsole.cmd',
         'Start-AircConsole-Fleet.ps1',
