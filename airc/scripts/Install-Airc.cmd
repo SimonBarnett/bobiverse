@@ -21,6 +21,12 @@ if exist "%FAILFLAG%" (
 )
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath '%HERE%' -Filter *.ps1 | Unblock-File -ErrorAction SilentlyContinue"
+REM FR #4012: clear stuck MSI InProgress / Rollback before install so a prior crash does not cause Error 1705.
+if exist "%HERE%..\..\common\scripts\Bobiverse-Common.ps1" (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . '%HERE%..\..\common\scripts\Bobiverse-Common.ps1'; if (Get-Command Clear-BobiverseMsiPendingTransaction -ErrorAction SilentlyContinue) { Clear-BobiverseMsiPendingTransaction -Why 'Install-Airc.cmd' | Out-Null } }" >>"%LOG%" 2>&1
+) else if exist "%HERE%Bobiverse-Common.ps1" (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . '%HERE%Bobiverse-Common.ps1'; if (Get-Command Clear-BobiverseMsiPendingTransaction -ErrorAction SilentlyContinue) { Clear-BobiverseMsiPendingTransaction -Why 'Install-Airc.cmd' | Out-Null } }" >>"%LOG%" 2>&1
+)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HERE%Install-Airc.ps1" %*
 set "EC=%ERRORLEVEL%"
 

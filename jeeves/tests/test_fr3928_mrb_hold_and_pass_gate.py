@@ -111,6 +111,29 @@ def test_merge_gate_detects_owner_hold_comment():
     assert "must not merge" in hold.lower() or "on hold" in hold.lower()
 
 
+def test_fr4041_mrb_board_discussing_hold_is_not_owner_hold():
+    """OWNER-posted ## MRB board that mentions hold labels must not refuse merge."""
+    board = (
+        "## MRB board\n\n"
+        "**Verdict:** PASS\n\n"
+        "**Drift:** ACCEPTABLE — hold labels / on-hold / do-not-merge discussed; "
+        "product FR hold skip lands. Must not merge wording only in findings prose.\n"
+        "Hostile: hold label gate covered.\n"
+    )
+    comments = [
+        {
+            "user": {"login": "SimonBarnett"},
+            "author_association": "OWNER",
+            "body": board,
+            "created_at": "2026-10-11T14:40:00Z",
+        }
+    ]
+    assert mrb_merge_gate.find_active_owner_hold(comments) is None
+    ok, reason = mrb_merge_gate.evaluate_merge_gate(comments)
+    assert ok is True
+    assert reason == ""
+
+
 def test_merge_gate_hold_cleared_by_later_owner_comment():
     comments = [
         {

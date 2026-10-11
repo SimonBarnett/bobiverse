@@ -194,10 +194,127 @@ function Set-BobiverseNssmApplicationSafe {
     return [pscustomobject]@{ Ok = $true; KeptPrevious = $false; Application = $new; Refused = '' }
 }
 
+
+function Test-BobiverseMsiPendingTransaction {
+    <#
+      FR #4012: True when Windows Installer left an InProgress / Rollback stamp after a crash
+      (class of Error 1705 on the next msiexec). Does not mean a live install is healthy.
+    #>
+    $inProg = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\InProgress'
+    if (Test-Path -LiteralPath $inProg) { return $true }
+    $rb = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\Rollback'
+    if (Test-Path -LiteralPath $rb) {
+        try {
+            $kids = @(Get-ChildItem -LiteralPath $rb -ErrorAction SilentlyContinue)
+            if ($kids.Count -gt 0) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+function Clear-BobiverseMsiPendingTransaction {
+    <#
+      FR #4012: clear a stuck Windows Installer transaction so the next msiexec does not hit
+      Error 1705 ("A previous installation for this product is in progress").
+
+      Safe when no live msiexec /i|/x|/a is running: stop msiserver, remove InProgress,
+      empty Rollback children, start msiserver. Logs a clear INFO line always when work is done.
+    #>
+    param(
+        [string]$Why = 'pre-msiexec',
+        [int]$WaitLiveSec = 20
+    )
+    $pending = Test-BobiverseMsiPendingTransaction
+    $live = @()
+    try {
+        $live = @(Get-CimInstance Win32_Process -Filter "name = 'msiexec.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                $cl = [string]$_.CommandLine
+                $cl -match '(?i)\s/(i|x|a|f)\b' -or $cl -match '(?i)\.msi\b'
+            })
+    } catch {
+        $live = @(Get-Process -Name msiexec -ErrorAction SilentlyContinue)
+    }
+    if ($live.Count -gt 0) {
+        Write-Host ("WARN FR#4012 live msiexec still running (count={0}); wait {1}s why={2}" -f $live.Count, $WaitLiveSec, $Why)
+        Start-Sleep -Seconds ([Math]::Max(1, $WaitLiveSec))
+        try {
+            $live = @(Get-CimInstance Win32_Process -Filter "name = 'msiexec.exe'" -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $cl = [string]$_.CommandLine
+                    $cl -match '(?i)\s/(i|x|a|f)\b' -or $cl -match '(?i)\.msi\b'
+                })
+        } catch { $live = @() }
+        if ($live.Count -gt 0) {
+            Write-Host ("WARN FR#4012 still live msiexec after wait; not clearing InProgress why={0}" -f $Why)
+            return [pscustomobject]@{ Cleared = $false; Pending = $pending; LiveMsiexec = $live.Count; Why = $Why }
+        }
+    }
+    if (-not $pending) {
+        # Still bounce msiserver when caller asks after 1705 — service may be wedged with no key.
+        if ($Why -match '(?i)1705') {
+            try {
+                $svc = Get-Service -Name msiserver -ErrorAction SilentlyContinue
+                if ($svc -and $svc.Status -eq 'Running') {
+                    Stop-Service -Name msiserver -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 2
+                }
+                Start-Service -Name msiserver -ErrorAction SilentlyContinue
+                Write-Host ("INFO FR#4012 restarted msiserver after 1705 (no InProgress key) why={0}" -f $Why)
+                return [pscustomobject]@{ Cleared = $true; Pending = $false; LiveMsiexec = 0; Why = $Why }
+            } catch {
+                Write-Host ("WARN FR#4012 msiserver bounce failed: {0}" -f $_.Exception.Message)
+            }
+        }
+        return [pscustomobject]@{ Cleared = $false; Pending = $false; LiveMsiexec = 0; Why = $Why }
+    }
+    $inProg = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\InProgress'
+    $rb = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\Rollback'
+    try {
+        $svc = Get-Service -Name msiserver -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq 'Running') {
+            Stop-Service -Name msiserver -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+        }
+    } catch { }
+    $removedInProgress = $false
+    if (Test-Path -LiteralPath $inProg) {
+        try {
+            Remove-Item -LiteralPath $inProg -Recurse -Force -ErrorAction Stop
+            $removedInProgress = $true
+        } catch {
+            Write-Host ("WARN FR#4012 remove InProgress failed: {0}" -f $_.Exception.Message)
+        }
+    }
+    $rollbackCleared = 0
+    if (Test-Path -LiteralPath $rb) {
+        try {
+            foreach ($k in @(Get-ChildItem -LiteralPath $rb -ErrorAction SilentlyContinue)) {
+                try {
+                    Remove-Item -LiteralPath $k.PSPath -Recurse -Force -ErrorAction Stop
+                    $rollbackCleared++
+                } catch { }
+            }
+        } catch { }
+    }
+    try { Start-Service -Name msiserver -ErrorAction SilentlyContinue } catch { }
+    Write-Host ("INFO FR#4012 cleared pending MSI transaction InProgress={0} rollbackKids={1} why={2}" -f $removedInProgress, $rollbackCleared, $Why)
+    return [pscustomobject]@{
+        Cleared         = $true
+        Pending         = $true
+        RemovedInProgress = $removedInProgress
+        RollbackCleared = $rollbackCleared
+        LiveMsiexec     = 0
+        Why             = $Why
+    }
+}
+
 function Invoke-BobiverseMsiexecSerialized {
     <#
       FR #2475: serialise msiexec via Global\bobiverse-msiexec mutex; retry exit 1618
       (ERROR_INSTALL_ALREADY_RUNNING) a few times instead of leaving services half-upgraded.
+      FR #4012: clear stuck InProgress / Rollback before run; retry exit 1705
+      (previous installation in progress) after Clear-BobiverseMsiPendingTransaction.
     #>
     param(
         [Parameter(Mandatory)][string[]]$ArgumentList,
@@ -212,6 +329,7 @@ function Invoke-BobiverseMsiexecSerialized {
     try {
         try { $held = $mutex.WaitOne(1800000) } catch [System.Threading.AbandonedMutexException] { $held = $true }
         if (-not $held) { throw 'FR#2475: timed out waiting for Global\bobiverse-msiexec mutex' }
+        [void](Clear-BobiverseMsiPendingTransaction -Why 'pre-msiexec')
         $code = -1
         for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
             $others = @(Get-Process -Name msiexec -ErrorAction SilentlyContinue)
@@ -226,9 +344,18 @@ function Invoke-BobiverseMsiexecSerialized {
                 throw ("FR#2475: msiexec timed out after {0} ms (attempt {1})" -f $TimeoutMs, $attempt)
             }
             $code = [int]$p.ExitCode
-            if ($code -ne 1618) { break }
-            Write-Host "WARN FR#2475 msiexec exit 1618 (already running); retry in $RetryDelaySec s attempt=$attempt"
-            Start-Sleep -Seconds $RetryDelaySec
+            if ($code -eq 1618) {
+                Write-Host "WARN FR#2475 msiexec exit 1618 (already running); retry in $RetryDelaySec s attempt=$attempt"
+                Start-Sleep -Seconds $RetryDelaySec
+                continue
+            }
+            if ($code -eq 1705) {
+                Write-Host "WARN FR#4012 msiexec exit 1705 (pending transaction); clear and retry attempt=$attempt"
+                [void](Clear-BobiverseMsiPendingTransaction -Why 'after-1705')
+                Start-Sleep -Seconds $RetryDelaySec
+                continue
+            }
+            break
         }
         return [pscustomobject]@{ ExitCode = $code; LogPath = $LogPath }
     } finally {
