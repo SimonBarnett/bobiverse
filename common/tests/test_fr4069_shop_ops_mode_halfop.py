@@ -1,4 +1,4 @@
-﻿"""FR #4069: bob ear shop-op MODE verb allows +h (half-op), not only +o/+v."""
+"""FR #4069: bob ear shop-op MODE verb allows +h (half-op), not only +o/+v."""
 from __future__ import annotations
 
 import pytest
