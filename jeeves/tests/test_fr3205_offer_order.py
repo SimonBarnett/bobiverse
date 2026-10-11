@@ -173,12 +173,12 @@ def test_fr3205_skips_seat_relative(home: Path):
     fi.handle_focus_cmd(home, repo)
     st, j1 = gitclaim.offer_focus_top(home, me, "#marchhare")
     assert st == "ok" and j1["id"] == "#12"
-    # Accept #12
+    # #12 done (FR #4089: a seat with an accepted job gets no second offer)
     with gitclaim._lock(home):
         doc = gitclaim._load_queue_unlocked(home)
         doc["unaccepted"] = [r for r in doc["unaccepted"] if r.get("id") != "#12"]
-        doc.setdefault("accepted", []).append(dict(j1))
         gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    gitclaim.clear_seat_hold(home, me, repo=repo, task="MRB", ident="#12")
     st, j2 = gitclaim.offer_focus_top(home, me, "#marchhare")
     assert st == "ok" and j2["id"] == "#9"
     # Other seat still gets MRB #5 first

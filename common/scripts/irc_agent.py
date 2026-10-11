@@ -855,6 +855,9 @@ class Client:
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
         out = bobreport.apply_part(self.home, who, ch, briefer)
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(self._digest_home(), who, clear_pins=True):  # FR #4089
+                info(f"INFO seat-hold cleared nick={who} reason=part")
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, f"{who}:{ch}")
 
@@ -876,6 +879,9 @@ class Client:
                 )
         except Exception as exc:
             info(f"INFO shop-listen quit error {type(exc).__name__}")
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(digest, who, clear_pins=True):  # FR #4089
+                info(f"INFO seat-hold cleared nick={who} reason=quit")
         out = bobreport.apply_quit(digest, who, briefer)
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, who)
@@ -2998,6 +3004,23 @@ class Client:
         verb = result.get("verb") or ""
         status = result.get("status") or ""
         act = result.get("activity")
+        # FR #4089: the seat answered for this job -> drop its remembered offer. NACK/GIVEUP
+        # of a never-accepted offer (status=missing) also unpins the row from this seat.
+        try:
+            _pj = shop_listen.parse_shop_job_line(body)
+            if _pj and verb in ("ACK", "DONE", "NACK", "GIVEUP"):
+                _cleared = gitclaim.clear_seat_hold(
+                    self._digest_home(),
+                    src,
+                    repo=_pj.repo,
+                    task=_pj.task,
+                    ident=_pj.id,
+                    clear_pins=verb in ("NACK", "GIVEUP", "DONE"),
+                )
+                if _cleared:
+                    info(f"INFO seat-hold cleared nick={src} reason={verb} job={_pj.task} {_pj.repo}{_pj.id}")
+        except Exception as hold_exc:  # noqa: BLE001
+            info(f"WARN seat-hold clear {type(hold_exc).__name__}")
         try:
             if verb == "ACK" and status in ("ok", "duplicate", "missing") and act:
                 self._workers().on_ack(src, target, act)
@@ -3053,7 +3076,10 @@ class Client:
                         info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
                 except Exception as offer_exc:  # noqa: BLE001
                     info(f"WARN giveup-offer {type(offer_exc).__name__}")
-        elif verb == "DONE" and status in ("ok", "missing"):
+        elif verb == "DONE" and status != "ok":
+            # FR #4089: repeated / unknown DONE (status=missing) never pushes a job.
+            info(f"INFO git-claim done-offer skipped nick={src} status={status}")
+        elif verb == "DONE" and status == "ok":
             # FR #3893: same push as GIVEUP/NACK — do not wait for the seat's next !bored
             # when the queue still holds eligible work (regression of idle-after-DONE).
             try:

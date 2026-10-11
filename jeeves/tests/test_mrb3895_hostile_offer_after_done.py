@@ -27,7 +27,8 @@ def test_mrb3895_hostile_release_via_includes_done():
 
 def test_mrb3895_hostile_contiguous_irc_agent_done_branch():
     irc = IRC.read_text(encoding="utf-8")
-    done_at = irc.find('verb == "DONE" and status in ("ok", "missing")')
+    # FR #4089: push only on a real DONE (status=ok); repeat/missing DONE never pushes.
+    done_at = irc.find('verb == "DONE" and status == "ok"')
     assert done_at > 0
     window = irc[done_at : done_at + 2200]
     assert "offer_after_done" in window

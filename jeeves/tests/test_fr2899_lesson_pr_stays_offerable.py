@@ -237,6 +237,8 @@ def test_fr2899_idle_offer_logs(tmp_path, monkeypatch, capsys):
     assert sent_lines and "MRB" in sent_lines[0] and "2896" in sent_lines[0]
     assert logs and "git-claim idle offered" in logs[0] and "2896" in logs[0]
 
+    # FR #4089: seat answered the first offer (DONE) before the next push.
+    gitclaim.clear_seat_hold(tmp_path, SIBLING, clear_pins=True)
     # Enqueue/webhook path: omitted log= must still emit INFO (MRB #2900 fix).
     gitclaim.note_idle_after_empty(tmp_path, SIBLING, "#marchhare")
     gitclaim.note_worker_activity(tmp_path, SIBLING, 0.0)

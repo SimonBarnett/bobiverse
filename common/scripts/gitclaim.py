@@ -4653,6 +4653,9 @@ def offer_after_release(
     ``offered_via`` stamps sticky window (``giveup`` / ``done`` / ``nack``).
     """
     via = str(offered_via or "giveup").strip().lower() or "giveup"
+    # FR #4089: never push to a seat that still has an open job (accepted / offered / held).
+    if seat_open_job(home, nick, now):
+        return 0, None
     status, job = offer_focus_top(
         home,
         nick,
@@ -4673,6 +4676,14 @@ def offer_after_release(
     except Exception:
         delivered = False
     if not delivered:
+        # FR #4089: undelivered push must not leave the seat blocked by its own pin/hold.
+        with contextlib.suppress(Exception):
+            clear_seat_offer(home, nick, job)
+        with contextlib.suppress(Exception):
+            clear_seat_hold(
+                home, nick, repo=str(job.get("repo") or ""), task=str(job.get("task") or ""),
+                ident=str(job.get("id") or ""),
+            )
         return 0, None
     with contextlib.suppress(Exception):
         clear_idle_after_empty(home, nick)
@@ -5142,6 +5153,201 @@ def row_gave_up_by(row: dict, nick: str) -> bool:
     return nick_in_giveup_seats(row, nick)
 
 
+# ---------------------------------------------------------------------------
+# FR #4089 (hotpatch): one open job per seat.
+# A seat that holds an accepted (not-yet-DONE) row, an unaccepted row offered to it,
+# or a remembered offer (seat-holds.json, survives the 90/180 s row offer window)
+# is never offered or pushed another job. Rows still time back to the queue for
+# OTHER seats as before; only the seat itself stays blocked.
+# Cleared by: DONE/NACK/GIVEUP for that job, ACK (accepted row takes over),
+# seat QUIT/PART, the seat leaving the live worker list, or SEAT_HOLD_MAX_S.
+# ---------------------------------------------------------------------------
+SEAT_HOLDS_NAME = "seat-holds.json"
+SEAT_HOLD_MAX_S = 3600.0  # same as BUSY_STALE_S (stale-job reaper)
+
+
+def _seat_key(nick: str) -> str:
+    return (canonical_worker_nick(nick or "") or nick or "").strip().lower()
+
+
+def _seat_holds_path(home: Path) -> Path:
+    return _root(home) / SEAT_HOLDS_NAME
+
+
+def _load_seat_holds_unlocked(home: Path, now: float | None = None) -> dict:
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    path = _seat_holds_path(home)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    holds = doc.get("holds") if isinstance(doc, dict) else None
+    if not isinstance(holds, dict):
+        return {}
+    out: dict = {}
+    for k, v in holds.items():
+        if not isinstance(v, dict):
+            continue
+        if _offer_age_s({"offered_ts": v.get("ts")}, now_f) >= SEAT_HOLD_MAX_S:
+            continue  # reaper
+        out[str(k).strip().lower()] = v
+    return out
+
+
+def _save_seat_holds_unlocked(home: Path, holds: dict) -> None:
+    path = _seat_holds_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"v": 1, "holds": holds}, indent=2) + "\n", encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
+def _note_seat_hold_unlocked(home: Path, nick: str, job: dict) -> None:
+    key = _seat_key(nick)
+    if not key or not isinstance(job, dict):
+        return
+    holds = _load_seat_holds_unlocked(home)
+    holds[key] = {
+        "nick": (canonical_worker_nick(nick) or nick or "").strip(),
+        "repo": str(job.get("repo") or ""),
+        "task": str(job.get("task") or ""),
+        "id": str(job.get("id") or ""),
+        "ts": str(job.get("offered_ts") or _utc_now()),
+    }
+    with contextlib.suppress(OSError):
+        _save_seat_holds_unlocked(home, holds)
+
+
+def clear_seat_hold(
+    home: Path,
+    nick: str,
+    *,
+    repo: str | None = None,
+    task: str | None = None,
+    ident: str | None = None,
+    clear_pins: bool = False,
+) -> bool:
+    """FR #4089: drop this seat's remembered offer (and optionally its row pins).
+
+    With repo/task/ident only a matching hold/pin is cleared (task may be omitted to
+    match repo+id). Without them every hold/pin for the nick is cleared (QUIT/PART).
+    """
+    key = _seat_key(nick)
+    if not key:
+        return False
+
+    def _match(row: dict) -> bool:
+        if repo is None and ident is None:
+            return True
+        if _repo_key(row.get("repo")) != _repo_key(repo or ""):
+            return False
+        if _norm_row_id(row.get("id")) != _norm_row_id(ident or ""):
+            return False
+        if task and str(row.get("task") or "").upper() != str(task).upper():
+            return False
+        return True
+
+    changed = False
+    try:
+        with _lock(home):
+            holds = _load_seat_holds_unlocked(home)
+            h = holds.get(key)
+            if isinstance(h, dict) and _match(h):
+                holds.pop(key, None)
+                with contextlib.suppress(OSError):
+                    _save_seat_holds_unlocked(home, holds)
+                changed = True
+            if clear_pins:
+                try:
+                    doc = _load_queue_unlocked(home)
+                except (OSError, json.JSONDecodeError, ValueError):
+                    doc = None
+                if doc is not None:
+                    dirty = False
+                    for cand in doc.get("unaccepted") or []:
+                        if not isinstance(cand, dict):
+                            continue
+                        to = str(cand.get("offered_to") or "").strip()
+                        if not to or _seat_key(to) != key or not _match(cand):
+                            continue
+                        for k in ("offered_to", "offered_ts", "offered_channel", "offered_via"):
+                            cand.pop(k, None)
+                        dirty = True
+                    if dirty:
+                        with contextlib.suppress(OSError):
+                            _write_queue(queue_path(home), doc)
+                        changed = True
+    except (TimeoutError, OSError):
+        return changed
+    return changed
+
+
+def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | None = None) -> str:
+    """Unlocked core of ``seat_open_job`` (caller holds ``_lock`` and loaded ``doc``)."""
+    key = _seat_key(nick)
+    if not key:
+        return ""
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        raw = str(row.get("nick") or row.get("accepted_by") or row.get("offered_to") or "").strip()
+        if raw and _seat_key(raw) == key:
+            return f"accepted {row.get('task')} {row.get('repo')}{_norm_row_id(row.get('id'))}"
+    sticky_maxed: list[dict] = []
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        to = str(row.get("offered_to") or "").strip()
+        if to and _seat_key(to) == key:
+            try:
+                oc = int(row.get("offered_count") or 0)
+            except (TypeError, ValueError):
+                oc = 0
+            if oc >= OFFER_STICKY_MAX:
+                # FR #2309 escape: offered OFFER_STICKY_MAX times without ACK -> the
+                # sticky-clear path frees it (and this seat) instead of blocking forever.
+                sticky_maxed.append(row)
+                continue
+            # No time window: an offer the seat has not answered still counts.
+            return f"offered {row.get('task')} {row.get('repo')}{_norm_row_id(row.get('id'))}"
+    holds = _load_seat_holds_unlocked(home, now)
+    h = holds.get(key)
+    if isinstance(h, dict) and any(
+        _same(r, str(h.get("repo") or ""), str(h.get("task") or ""), str(h.get("id") or ""))
+        for r in sticky_maxed
+    ):
+        h = None
+    if isinstance(h, dict):
+        live_l = {_seat_key(n) for n in (live or set()) if _seat_key(n)}
+        if live_l and key not in live_l:
+            return ""  # seat left the shop: hold is void
+        return f"held {h.get('task')} {h.get('repo')}{_norm_row_id(h.get('id'))}"
+    return ""
+
+
+def seat_open_job(home: Path, nick: str, now: float | None = None) -> str:
+    """FR #4089: describe the seat's open job ('' when free). Accepted row, any-age
+    offered_to pin, or a remembered offer in seat-holds.json all count."""
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    try:
+        live = live_seat_nicks(home)
+    except Exception:  # noqa: BLE001
+        live = set()
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, json.JSONDecodeError, ValueError):
+                return ""
+            return _seat_open_job_in(home, doc, nick, now_f, live)
+    except (TimeoutError, OSError):
+        return ""
+
+
 def offer_focus_top(
     home: Path,
     nick: str,
@@ -5255,39 +5461,11 @@ def offer_focus_top(
                     cand.pop("offered_via", None)
                     purged = True
 
-            # FR #3192: while this seat still holds a live offered_to, do not rebroadcast
-            # and do not burn a second row — unless sticky max is already reached (FR #2309
-            # clears the pin so another seat can take it). bored_gate already returns busy;
-            # this is defense when offer_focus_top is called directly.
-            me_l = me.lower()
-            holding_live = False
-            for cand in doc.get("unaccepted") or []:
-                if not isinstance(cand, dict):
-                    continue
-                to = str(cand.get("offered_to") or "").strip()
-                if not to:
-                    continue
-                them = (canonical_worker_nick(to) or to).strip().lower()
-                if them != me_l:
-                    continue
-                try:
-                    age = now_f - datetime.fromisoformat(
-                        str(cand.get("offered_ts") or "").replace("Z", "+00:00")
-                    ).timestamp()
-                except ValueError:
-                    age = offer_timeout_s(cand) + 1
-                if age >= offer_timeout_s(cand):
-                    continue
-                try:
-                    oc = int(cand.get("offered_count") or 0)
-                except (TypeError, ValueError):
-                    oc = 0
-                if oc >= OFFER_STICKY_MAX:
-                    # Fall through to _eligible sticky-clear path.
-                    continue
-                holding_live = True
-                break
-            if holding_live:
+            # FR #4089 (supersedes the FR #3192 time-boxed holding_live check): a seat with
+            # an accepted job, any offer pinned to it (no age window) or a remembered offer
+            # in seat-holds.json is never offered a second job.
+            open_job = _seat_open_job_in(home, doc, me, now_f, live)
+            if open_job:
                 if purged:
                     try:
                         _write_queue(queue_path(home), doc)
@@ -5529,6 +5707,8 @@ def offer_focus_top(
             # !bored can stay on the zero-GitHub path when the set of rows is unchanged.
             with contextlib.suppress(Exception):
                 rebuild_offer_precompute(home, list(doc.get("unaccepted") or []))
+            with contextlib.suppress(Exception):
+                _note_seat_hold_unlocked(home, me, job)  # FR #4089
             return "ok", job
     except (TimeoutError, OSError):
         return "error", None
@@ -6370,6 +6550,9 @@ def assign_row(
         return "refused", f"{nick}: not a worker seat nick (<machine>-<pid>)"
     if worker_working_on(home, me):
         return "refused", f"{me}: busy ({worker_working_on(home, me)[:60]})"
+    _open = seat_open_job(home, me, now_f)  # FR #4089
+    if _open:
+        return "refused", f"{me}: busy ({_open[:60]})"
     task_u = (task or "").upper()
     num = str(ident or "").strip().lstrip("#")
     live = live_seat_nicks(home)
@@ -6493,6 +6676,8 @@ def assign_row(
                 _write_queue(queue_path(home), doc)
             except OSError:
                 return "refused", "queue write failed"
+            with contextlib.suppress(Exception):
+                _note_seat_hold_unlocked(home, me, job)  # FR #4089
             return "ok", job
     except (TimeoutError, OSError):
         return "refused", "queue busy"
@@ -7207,7 +7392,8 @@ def seat_pending_offer(home: Path, nick: str, now: float | None = None) -> dict 
         them = (canonical_worker_nick(to) or to).strip().lower()
         if them != me:
             continue
-        if _offer_age_s(row, now_f) < OFFER_TIMEOUT_S:
+        # FR #4089: same per-row window as offer_focus_top (done/giveup push = 180 s).
+        if _offer_age_s(row, now_f) < offer_timeout_s(row):
             return row
     return None
 
@@ -7247,6 +7433,27 @@ def should_drop_stale_bored(
         return False
     pending = seat_pending_offer(home, nick, now_f)
     if not pending:
+        # FR #4089: any-age pin / remembered offer for a different job also drops.
+        try:
+            with _lock(home):
+                doc = _load_queue_unlocked(home)
+                holds = _load_seat_holds_unlocked(home, now_f)
+        except Exception:  # noqa: BLE001
+            return False
+        others = [
+            r for r in (doc.get("unaccepted") or [])
+            if isinstance(r, dict) and _seat_key(str(r.get("offered_to") or "")) == me
+        ]
+        h = holds.get(me)
+        if isinstance(h, dict):
+            others.append(h)
+        for r in others:
+            if except_job is not None and _same(
+                r, str(except_job.get("repo") or ""), str(except_job.get("task") or ""),
+                str(except_job.get("id") or ""),
+            ):
+                continue
+            return True
         return False
     if except_job is not None and _same(
         pending,
@@ -7474,6 +7681,11 @@ def bored_gate(
     # never re-offer the same row and never treat it as stale digest doing.
     if seat_pending_offer(home, nick, now):
         return "busy"
+    # FR #4089: an offer pinned to this seat (any age) or remembered in seat-holds.json
+    # keeps it busy; accepted rows still go through release_stale_busy below.
+    _open = seat_open_job(home, nick, now)
+    if _open and not _open.startswith("accepted "):
+        return "busy"
     # FR #3192: accepted row is busy even before digest on_ack paints working_on
     # (stale !bored after slow GH work must NAK-busy, not stamp a second offer).
     if _seat_has_accepted(home, nick):
@@ -7569,7 +7781,7 @@ def release_stale_busy(
                 if not to:
                     continue
                 them = (canonical_worker_nick(to) or to).strip().lower()
-                if them == me and _offer_age_s(cand, float(now)) < OFFER_TIMEOUT_S:
+                if them == me and _offer_age_s(cand, float(now)) < offer_timeout_s(cand):
                     return False
             acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
             mine = [r for r in acc if _owner(r) == me]
