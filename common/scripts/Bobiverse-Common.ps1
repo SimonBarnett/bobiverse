@@ -1896,7 +1896,8 @@ function Get-BobiverseErgoPasswordPath {
             }
         } catch { }
     }
-    $candidates = [System.Collections.Generic.List[string]]::new()
+    # FR #3967 / MRB #3688: New-Object (PS 5 type ctor is forbidden on airc PS 4.0 client path).
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
     if ($HomeDir) { [void]$candidates.Add((Join-Path $HomeDir 'ergo.password')) }
     if ($InstallRoot) { [void]$candidates.Add((Join-Path $InstallRoot 'config\ergo.password')) }
     foreach ($s in $siblings) { if ($s) { [void]$candidates.Add($s) } }
@@ -1961,7 +1962,8 @@ function Ensure-BobiverseBobNickServPassword {
     if ($existing) {
         return [pscustomobject]@{ Ok = $true; Migrated = $false; Path = $dest; Reason = 'present' }
     }
-    $cands = [System.Collections.Generic.List[string]]::new()
+    # FR #3967 / MRB #3688: New-Object (PS 5 type ctor is forbidden on airc PS 4.0 client path).
+    $cands = New-Object 'System.Collections.Generic.List[string]'
     foreach ($h in @($LegacyHomes)) {
         if ($h) { [void]$cands.Add((Join-Path $h 'nickserv.password')) }
     }
