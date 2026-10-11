@@ -2,6 +2,8 @@
 
 Deterministic, **zero AI tokens**. Jeeves ops run `!build`; each repo ships `.bobiverse/build.yml`.
 
+Agent playbook: `jeeves/.grok/skills/bobiverse-build/SKILL.md` (FR #4038) --- how to read BUILD announce lines and when to `!build` again. Chair stub: `!help build` / `bobiverse-jeeves-commands`.
+
 ## Recipe (`.bobiverse/build.yml`)
 
 | Field | Meaning |
