@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves-commands
 description: >
-  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle, ping, or Jeeves permissions.
+  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006), ping, or Jeeves permissions.
 ---
 
 # bobiverse-jeeves-commands
@@ -64,3 +64,8 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 - Before copying live scripts, ensure the install worktree is on `main` and clean; never let a leftover feature branch or failed fetch silently drift the live chair behind `origin/main`.
 - After a merged PR, fast-forward main, sync the installed tree, and restart only `ircJeeves`/the affected scheduled task. Verify the live endpoint and the relevant queue/monitor smoke before declaring success.
 - Frozen chair `!status`: VERSION must resolve install-root / `JEEVES_INSTALL_ROOT` / `sys.executable` before `Path(__file__)` under `_MEIPASS`; uptime must use `Client` construct time (`_process_started`), not lazy first-command `_cc()` (FR #2728 / MRB #2733 / harvest-lesson #2734).
+
+
+## !build (FR #4006)
+
+Ops-only. `!build <owner/repo>[,...] <version> [ref]`, `!build status|cancel|dry-run`. Requires in-repo `.bobiverse/build.yml`. Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2).
