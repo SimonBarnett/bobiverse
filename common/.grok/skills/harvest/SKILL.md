@@ -216,6 +216,7 @@ routes to bobiverse via the split rule.
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
 - FR #3824: one harvest per seat+lesson — skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
+- FR #3959 / #3957: FAIL-supersede skip also matches durable home is bobiverse-bob-job-mrb and do not park … under harvest/SKILL.md (words between); CAST IRON already on main is a thin-twin cue (tip #3958 class)
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
 - When appending skill-harvest-log entries, write a real trailing newline byte; a literal backslash-n fails endswith(b'\n') harvest-log gates on CI
