@@ -169,6 +169,8 @@ def _default_git_pull(repo: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
 
@@ -185,6 +187,7 @@ def _win_process_commandlines(match_substr: str) -> list[tuple[int, str]]:
                 "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
             ],
             text=True,
+            encoding="utf-8",
             errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
@@ -222,6 +225,7 @@ def _win_kill_matching_ps1(script_name: str) -> list[int]:
                 "Select-Object ProcessId | ConvertTo-Json -Compress",
             ],
             text=True,
+            encoding="utf-8",
             errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
@@ -263,6 +267,8 @@ def _stop_bobiverse_moot(build_root: Path, machine_id: str) -> None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     _win_kill_matching_ps1("Watch-Bobiverse.ps1")
     _win_kill_matching_ps1("_Watch-Bobiverse")
@@ -290,6 +296,8 @@ def _start_bobiverse_moot_wrapper(build_root: Path, machine_id: str) -> None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if started.returncode == 0:
         return
@@ -451,13 +459,13 @@ def _restart_bobcallback_task() -> bool:
     if os.name != "nt":
         return False
     try:
-        q = subprocess.run(["schtasks", "/Query", "/TN", "BobCallback"], capture_output=True, text=True)
+        q = subprocess.run(["schtasks", "/Query", "/TN", "BobCallback"], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if q.returncode != 0:
             return False
-        subprocess.run(["schtasks", "/End", "/TN", "BobCallback"], capture_output=True, text=True)
+        subprocess.run(["schtasks", "/End", "/TN", "BobCallback"], capture_output=True, text=True, encoding="utf-8", errors="replace")
         for pid, _cmd in _win_process_commandlines("bobcallback.py"):
             subprocess.run(["taskkill", "/F", "/PID", str(pid)], check=False, capture_output=True)
-        r = subprocess.run(["schtasks", "/Run", "/TN", "BobCallback"], capture_output=True, text=True)
+        r = subprocess.run(["schtasks", "/Run", "/TN", "BobCallback"], capture_output=True, text=True, encoding="utf-8", errors="replace")
         return r.returncode == 0
     except OSError:
         return False

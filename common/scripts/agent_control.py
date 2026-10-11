@@ -66,7 +66,7 @@ def _find_irc_agent_pid_posix(home_p: Path) -> int | None:
     import subprocess
 
     try:
-        out = subprocess.check_output(["ps", "-eo", "pid,args"], text=True, errors="replace")
+        out = subprocess.check_output(["ps", "-eo", "pid,args"], text=True, encoding="utf-8", errors="replace",)
     except (OSError, subprocess.CalledProcessError):
         return None
     for line in out.splitlines():
@@ -92,6 +92,7 @@ def _find_irc_agent_pid_win(home_p: Path) -> int | None:
                 "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
             ],
             text=True,
+            encoding="utf-8",
             errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
