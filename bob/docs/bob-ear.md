@@ -50,6 +50,8 @@ PRIVMSG {machine}_console :<short-cmd>
 
 Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai root>\bob\home` is LocalSystem-ACL only, interactive users cannot write the outbox — use a talk-seat / worker run home for agent replies.
 
+Raw shop-op verbs (bob-* ear, own `#{machine}` only; `shop_ops.raw_op_line`): `KICK`, `NAMES`, and `MODE +/-o|v|h <nick>` (FR #4069 adds half-op `+h`/`-h` alongside op/voice).
+
 ## Absent / stale ear recovery
 
 | State | Action |
