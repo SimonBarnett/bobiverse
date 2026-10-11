@@ -159,23 +159,45 @@ class Rig:
                                  inject=inject, **kw)
 
 
-# ----------------------------------------------------------------------------------------------- selection (cursor -> grok -> dialog)
+# ----------------------------------------------------------------------------------------------- selection (grok -> cursor -> dialog) FR #3997
 CUR, GRK = r"C:\c\agent.cmd", r"C:\g\agent.exe"
 
 
 @pytest.mark.parametrize("fuel,cur,grk,want", [
-    (bw.Fuel(40, 10, 50, "available"), CUR, GRK, "cursor"),
-    (bw.Fuel(0, 7, 50, "available"), CUR, GRK, "cursor"),          # low pool alone is enough
-    (bw.Fuel(9, 0, 0, "exhausted"), CUR, GRK, "cursor"),           # high pool alone is enough
+    (bw.Fuel(40, 10, 50, "available"), CUR, GRK, "grok"),           # Grok first even when Cursor > 0
+    (bw.Fuel(0, 7, 50, "available"), CUR, GRK, "grok"),
+    (bw.Fuel(9, 0, 0, "exhausted"), CUR, GRK, "cursor"),          # Grok exhausted + Cursor high
+    (bw.Fuel(0, 7, 0, "exhausted"), CUR, GRK, "cursor"),          # Grok exhausted + Cursor low
     (bw.Fuel(0, 0, 50, "available"), CUR, GRK, "grok"),
-    (bw.Fuel(None, None, None, "available"), CUR, GRK, "grok"),    # Grok 1.0.41: no %, verified auth
-    (bw.Fuel(40, 10, 50, "available"), None, GRK, "grok"),         # cursor tokens but agent.cmd missing
+    (bw.Fuel(None, None, None, "available"), CUR, GRK, "grok"),   # Grok 1.0.41: no %, verified auth
+    (bw.Fuel(40, 10, 50, "available"), None, GRK, "grok"),        # cursor tokens but agent.cmd missing
     (bw.Fuel(0, 0, 0, "exhausted"), CUR, GRK, "dialog"),
-    (bw.Fuel(None, None, None, "unknown"), CUR, GRK, "dialog"),    # unknown is NOT 'remains'
-    (bw.Fuel(0, 0, 0, "exhausted"), CUR, None, "none"),            # nothing to ask a key for
+    (bw.Fuel(None, None, None, "unknown"), CUR, GRK, "grok"),     # FR #3997: unknown Grok = available
+    (bw.Fuel(0, 0, 0, "exhausted"), CUR, None, "none"),           # no grok exe, cursor empty
 ])
-def test_selection_cursor_then_grok_then_dialog(fuel, cur, grk, want):
+def test_selection_grok_then_cursor_then_dialog(fuel, cur, grk, want):
     assert bw.select_agent(fuel, cur, grk).kind == want
+
+
+def test_selection_reason_names_pool_and_why():
+    d = bw.select_agent(bw.Fuel(40, 10, 50, "available"), CUR, GRK)
+    assert d.kind == "grok" and "grok" in d.reason and "weekly" in d.reason
+    d2 = bw.select_agent(bw.Fuel(9, 0, 0, "exhausted"), CUR, GRK)
+    assert d2.kind == "cursor" and "exhausted" in d2.reason and "cursor" in d2.reason
+
+
+def test_selection_weekly_reset_returns_to_grok():
+    exhausted = bw.Fuel(40, 10, 0, "exhausted")
+    refreshed = bw.Fuel(40, 10, 80, "available")
+    assert bw.select_agent(exhausted, CUR, GRK).kind == "cursor"
+    assert bw.select_agent(refreshed, CUR, GRK).kind == "grok"
+
+
+def test_grok_has_tokens_unknown_is_available():
+    assert bw.grok_has_tokens(bw.Fuel(None, None, None, "unknown")) is True
+    assert bw.grok_has_tokens(bw.Fuel()) is True
+    assert bw.grok_has_tokens(bw.Fuel(0, 0, 0, "exhausted")) is False
+    assert bw.grok_has_tokens(bw.Fuel(0, 0, 0, "available")) is False
 
 
 def test_parse_fuel_is_tolerant():

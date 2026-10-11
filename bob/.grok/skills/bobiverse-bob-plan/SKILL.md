@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob-plan
 description: >
-  How to start a bob PLAN agent: tray Plan click, bob-worker.exe --mode plan, CWD <ai root>\bob\plan, always-new agent rule, automatic cursor->grok->key-prompt selection, plan skills, logs, troubleshooting.
+  How to start a bob PLAN agent: tray Plan click, bob-worker.exe --mode plan, CWD <ai root>\bob\plan, always-new agent rule, automatic grok->cursor->key-prompt selection, plan skills, logs, troubleshooting.
 ---
 
 # bobiverse bob - plan agent

@@ -1,7 +1,7 @@
 ---
 name: bobiverse-bob-worker
 description: >
-  How to start and operate a bob WORKER agent: tray Agent click, bob-worker.exe command line, automatic cursor->grok->key-prompt selection, CWD <ai root>\bob\worker, always-new agent rule, IRC relay, ping/pong, IRC-loss exit, hang restart, logs, troubleshooting. Use when starting, debugging or changing the worker.
+  How to start and operate a bob WORKER agent: tray Agent click, bob-worker.exe command line, automatic grok->cursor->key-prompt selection, CWD <ai root>\bob\worker, always-new agent rule, IRC relay, ping/pong, IRC-loss exit, hang restart, logs, troubleshooting. Use when starting, debugging or changing the worker.
 ---
 
 # bobiverse bob - worker agent (bob-worker.exe)

@@ -8,8 +8,8 @@ Modes
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
 
 Rules (CAST IRON, Simon t762u-t765u)
-  * Agent choice is ALWAYS automatic by token availability: Cursor (high or low pool > 0) -> Grok (local weekly > 0)
-    -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
+  * Agent choice is ALWAYS automatic by token availability (FR #3997): Grok (local weekly > 0 or unknown read)
+    -> Cursor (high or low pool > 0) -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
   * EVERY launch is a NEW agent: new session id, new console window, new run dir. Never --resume/--continue/-r, never
     reuse or attach to an existing window/process (assert_fresh() enforces it; a restart after a hang is a NEW agent too).
     ONE exception (FR #2522): --mode maintenance SHOULD resume its own last maintenance session (recorded by this exe)
@@ -205,7 +205,7 @@ class Fuel:
 
 
 def parse_fuel(text: str) -> Fuel:
-    """Parse Get-BobAgentFuel.ps1 JSON (last JSON line wins). Anything unreadable = unknown (= not available)."""
+    """Parse Get-BobAgentFuel.ps1 JSON (last JSON line wins). Anything unreadable = unknown. Seat selection (FR #3997) treats unknown Grok as available; mid-job still uses fuel_explicitly_exhausted."""
     doc = None
     for ln in reversed((text or "").splitlines()):
         ln = ln.strip().lstrip("\ufeff")
@@ -246,9 +246,18 @@ def cursor_has_tokens(f: Fuel) -> bool:
 
 
 def grok_has_tokens(f: Fuel) -> bool:
+    """True when seat start may pick Grok (FR #3997).
+
+    Exhausted only on explicit signals: pct <= 0 or state exhausted/empty/none/unavailable.
+    Unknown / failed reads count as available so a flaky helper does not skip weekly Grok.
+    """
     if f.grok_pct is not None:
-        return f.grok_pct > 0
-    return f.grok_state == "available"  # Grok 1.0.41: no % but verified local auth + current weekly period
+        return int(f.grok_pct) > 0
+    st = (f.grok_state or "unknown").strip().lower()
+    if st in ("exhausted", "empty", "none", "unavailable"):
+        return False
+    # available, unknown, or other non-exhausted -> try Grok first
+    return True
 
 
 def fuel_reading_known(f: Fuel, kind: str) -> bool:
@@ -303,15 +312,29 @@ class Decision:
 
 
 def select_agent(fuel: Fuel, cursor_cmd: Optional[str], grok_exe: Optional[str]) -> Decision:
-    """cursor (high/low pool > 0) -> grok (local weekly > 0) -> dialog (session key). Pure; no I/O."""
-    if cursor_cmd and cursor_has_tokens(fuel):
-        return Decision("cursor", f"cursor tokens remain (high={fuel.cursor_high} low={fuel.cursor_low})")
-    why = "cursor: " + ("agent.cmd missing" if not cursor_cmd else f"no tokens (high={fuel.cursor_high} low={fuel.cursor_low})")
+    """grok (local weekly > 0 or unknown) -> cursor (high/low pool > 0) -> dialog (session key). Pure; no I/O. FR #3997."""
     if grok_exe and grok_has_tokens(fuel):
-        return Decision("grok", f"{why}; grok tokens remain (pct={fuel.grok_pct} state={fuel.grok_state})")
+        return Decision(
+            "grok",
+            f"grok (weekly pct={fuel.grok_pct} state={fuel.grok_state})",
+        )
+    why_grok = "grok: " + (
+        "agent.exe missing" if not grok_exe else f"exhausted (pct={fuel.grok_pct} state={fuel.grok_state})"
+    )
+    if cursor_cmd and cursor_has_tokens(fuel):
+        return Decision(
+            "cursor",
+            f"{why_grok}; cursor tokens remain (high={fuel.cursor_high} low={fuel.cursor_low})",
+        )
+    why_cur = "cursor: " + (
+        "agent.cmd missing" if not cursor_cmd else f"no tokens (high={fuel.cursor_high} low={fuel.cursor_low})"
+    )
     if not grok_exe:
-        return Decision("none", f"{why}; grok: agent.exe missing")
-    return Decision("dialog", f"{why}; grok: no tokens (pct={fuel.grok_pct} state={fuel.grok_state}) -> ask for a session key")
+        return Decision("none", f"{why_grok}; {why_cur}")
+    return Decision(
+        "dialog",
+        f"{why_grok}; {why_cur} -> ask for a session key",
+    )
 
 
 def resolve_cursor_cmd(env: Optional[dict] = None, which: Callable = shutil.which) -> Optional[str]:

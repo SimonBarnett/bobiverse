@@ -1761,7 +1761,7 @@ function Start-BobTrayWorkerExe {
             }
         # t787u: CREATE_NEW_CONSOLE — each click needs its own visible console.
         $childPid = @(Start-BobTrayVisibleProcessWithSessionEnv -FilePath $run -ArgumentList $argv -WorkingDirectory $wd -Title $title)[-1]
-        Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} own visible console (NEW agent every click; selection cursor>grok>key dialog)' -f $Mode, $childPid, $Mode)
+        Write-TrayLog ('{0}: started bob-worker.exe pid={1} mode={2} own visible console (NEW agent every click; selection grok>cursor>key dialog FR#3997)' -f $Mode, $childPid, $Mode)
         return [int]$childPid   # t810u: the remote !startworker path reports it
     }
     catch {
@@ -2981,7 +2981,7 @@ $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miStatus = $menu.Items.Add('Status')
 $miStatus.Font = New-Object System.Drawing.Font($miStatus.Font, [System.Drawing.FontStyle]::Bold)   # t795u: bold = the default item
 # t762u: ONE plain click each (NO submenus). Every click starts a NEW agent via bob-worker.exe
-# (cursor pool > 0 -> agent.cmd; else Grok weekly tokens -> agent.exe; else key dialog). Never resumes/attaches (t765u).
+# (Grok weekly > 0 (or unknown) -> agent.exe; else cursor pool > 0 -> agent.cmd; else key dialog (FR #3997)). Never resumes/attaches (t765u).
 $miAgents = $menu.Items.Add('Agent')
 $miAgents.Add_Click({ Start-BobTrayWorkerExe -Mode 'agent' })
 $miPlan = $menu.Items.Add('Plan')
