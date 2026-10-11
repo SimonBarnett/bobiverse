@@ -125,7 +125,7 @@ python tools/bob_git_hook.py SimonBarnett/<name>
 # 3 auto-merge (bobiverse#3948); required-ci-3948 ruleset once CI runs on PRs (see plan-enable-prs)
 gh api -X PATCH repos/SimonBarnett/<name> -F allow_auto_merge=true
 
-# 3 Cursor app pages (Simon clicks All repositories if needed)
+# 4 Cursor app pages (Simon clicks All repositories if needed)
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\Grant-CursorGitHubApp.ps1
 ```
 
