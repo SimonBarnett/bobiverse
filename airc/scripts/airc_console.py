@@ -599,6 +599,15 @@ class ChannelMemberMap:
         p = self._members.get((nick or "").strip().lower(), "")
         return any(c in _CHAN_PRIV_PREFIXES for c in p)
 
+    def chan_priv_mode(self, nick: str) -> str | None:
+        """Highest control-channel priv as ``+q``/``+a``/``+o``/``+h``, or None (FR #4067)."""
+        p = self._members.get((nick or "").strip().lower(), "")
+        # Owner > admin > op > half-op (voice never grants control).
+        for pref, mode in (("~", "+q"), ("&", "+a"), ("@", "+o"), ("%", "+h")):
+            if pref in p:
+                return mode
+        return None
+
     def on_join(self, nick: str, prefixes: str = "") -> None:
         n = (nick or "").strip()
         if not n:
@@ -768,6 +777,32 @@ class AuthPolicy:
             return False
         return self.members.has_chan_priv(n)
 
+    def allow_detail(self, nick: str, account: str | None = None) -> dict:
+        """FR #4067: ``{ok, mode, channel}`` for auth-allow audit (no command body)."""
+        channel = None
+        if self.members is not None:
+            channel = (self.members.channel or "").strip() or None
+        ok = self.allow(nick, account)
+        mode = None
+        if ok and self.members is not None:
+            mode = self.members.chan_priv_mode(nick)
+        return {"ok": ok, "mode": mode, "channel": channel}
+
+
+def format_auth_allow_log(
+    *,
+    nick: str,
+    account: str | None,
+    channel: str | None,
+    mode: str | None,
+    action: str,
+) -> str:
+    """FR #4067: ``auth-allow nick=… account=… channel=… mode=… action=shell|job|pipe|update``."""
+    return (
+        f"auth-allow nick={nick or '-'} account={account or '-'} "
+        f"channel={channel or '-'} mode={mode or '-'} action={action}"
+    )
+
 
 def resolve_channel_commands(cfg: dict | None) -> bool:
     """FR #3401 / #3639: read commands from the control channel only on the client profile.
@@ -917,17 +952,77 @@ def _norm_on_off(value: str | None, *, default: str) -> str:
     return default
 
 
+def detect_bob_machine(
+    *,
+    install_root: Path | str | None = None,
+    bob_root: Path | str | None = None,
+    service_present: bool | None = None,
+) -> bool:
+    """True when this box has a Bob install beside airc (or ircBob service).
+
+    FR #4030: fleet Bob machines default remote shell ON (``operators``).
+    ``install_root`` is typically ``<ai root>\\airc``; sibling ``bob\\VERSION`` counts.
+    """
+    if service_present is True:
+        return True
+    roots: list[Path] = []
+    if bob_root:
+        roots.append(Path(bob_root))
+    if install_root:
+        ir = Path(install_root)
+        roots.append(ir.parent / "bob")
+    elif not bob_root:
+        # Live default fleet layout only when caller did not pin roots.
+        roots.append(Path(r"C:\\ai\\bob"))
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if (root / "VERSION").is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def warn_shell_off_on_bob_line(
+    *,
+    shell_mode: str,
+    is_bob_machine: bool,
+    shell_source: str | None = None,
+    profile: str | None = None,
+) -> str | None:
+    """FR #4030: visible WARN when shell=off on a Bob machine (do not hide)."""
+    mode = (shell_mode or "").strip().lower()
+    if mode != "off" or not is_bob_machine:
+        return None
+    src = (shell_source or "unknown").strip() or "unknown"
+    return (
+        f"WARN FR #4030 capabilities shell=off on Bob machine "
+        f"source={src} (explicit AIRC_SHELL/ShellMode=off only; else expect operators)"
+    )
+
+
 def resolve_shell_mode_for_install(
     *,
     prior_shell: str | None,
     explicit: str | None,
     had_prior_service: bool,
     profile: str | None = None,
+    is_bob_machine: bool = False,
+    prior_shell_source: str | None = None,
+    prior_shell_explicit: bool | None = None,
 ) -> str:
-    """Fresh MSI default ``off``; upgrade of an existing fleet box defaults ``operators``.
+    """Resolve install-time shell mode.
 
+    FR #3287: non-Bob fresh fleet default ``off``; upgrade with prior service ``operators``.
     FR #3393: ``AIRC_PROFILE=workstation`` defaults ``off`` unless explicit.
-    FR #3401: ``AIRC_PROFILE=client`` defaults ``operators`` (full remote, IRC-ops auth).
+    FR #3401: ``AIRC_PROFILE=client`` defaults ``operators``.
+    FR #4030: Bob machines default ``operators``; migrate legacy fresh-default ``off``
+    unless ``shell_source=explicit`` / ``shell_explicit`` / MSI ``AIRC_SHELL=off``.
     """
     exp = (explicit or "").strip().lower()
     if exp in SHELL_MODE_TOKENS:
@@ -938,6 +1033,13 @@ def resolve_shell_mode_for_install(
     if prof == "client":
         return "operators"
     prior = (prior_shell or "").strip().lower()
+    src = (prior_shell_source or "").strip().lower()
+    if is_bob_machine:
+        if prior == "off":
+            if prior_shell_explicit is True or src == "explicit":
+                return "off"
+            return "operators"
+        return "operators"
     if prior in SHELL_MODE_TOKENS:
         return prior
     return "operators" if had_prior_service else "off"
@@ -1334,6 +1436,10 @@ class HandleResult:
     text: str | None = None
     reply: str | None = None
     deny_reason: str | None = None  # FR #3401: not-op / self-nick / channel-state-unknown
+    # FR #4067: populated on authorised shell/job/pipe for auth-allow audit.
+    allow_mode: str | None = None
+    allow_account: str | None = None
+    allow_channel: str | None = None
 
 
 class ShellRequestError(ValueError):
@@ -2076,8 +2182,10 @@ class HandleResult:
     text: str | None = None
     reply: str | None = None
     deny_reason: str | None = None  # FR #3401
-
-
+    # FR #4067: populated on authorised shell/job/pipe for auth-allow audit.
+    allow_mode: str | None = None
+    allow_account: str | None = None
+    allow_channel: str | None = None
 
 
 class AircConsoleCore:
@@ -2163,6 +2271,21 @@ class AircConsoleCore:
             reply="DONE exit=126 not-op",
             deny_reason=reason,
         )
+
+    def _allow_meta(self, nick: str, account: str | None) -> dict[str, str | None]:
+        """FR #4067: mode/account/channel for auth-allow on shell/job/pipe/update."""
+        detail = self.auth.allow_detail(nick, account)
+        acct = (account or "").strip() or None
+        if acct is None:
+            amap = getattr(self.auth, "account_map", None)
+            if amap is not None:
+                got = amap.get(nick)
+                acct = (got or "").strip() or None
+        return {
+            "allow_mode": detail.get("mode"),
+            "allow_account": acct,
+            "allow_channel": detail.get("channel"),
+        }
 
     def handle_raw(self, line: str) -> HandleResult | None:
         tags, rest = parse_message_tags(line.rstrip("\r\n"))
@@ -2281,12 +2404,14 @@ class AircConsoleCore:
                 result = UpdateScheduleResult(
                     False, "bad-scheduler", product=product, version=ver
                 )
+            meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="update",
                 nick=nick,
                 target=target,
                 text=text,
                 reply=result.reply_line(),
+                **meta,
             )
 
         # FR #78: PUT/RUN/JOB/STATUS protocol (before plain shell).
@@ -2311,7 +2436,10 @@ class AircConsoleCore:
                     reply="DONE exit=126 jobs-disabled",
                 )
             self.job_protocol.handle_async(nick, verb, kv)
-            return HandleResult(action="job", nick=nick, target=target, text=text)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="job", nick=nick, target=target, text=text, **meta
+            )
 
         # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.
         if self.shell_runner is not None:
@@ -2324,7 +2452,10 @@ class AircConsoleCore:
                     reply="DONE exit=126 shell-disabled",
                 )
             self.shell_runner.start(nick, cmd)
-            return HandleResult(action="shell", nick=nick, target=target, text=text)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="shell", nick=nick, target=target, text=text, **meta
+            )
 
         # Legacy interactive pipe (tests / AIRC without runner).
         if caps.shell_mode == "off":
@@ -2336,7 +2467,10 @@ class AircConsoleCore:
                 reply="DONE exit=126 shell-disabled",
             )
         self.sessions.pipe(nick, cmd)
-        return HandleResult(action="pipe", nick=nick, target=target, text=text)
+        meta = self._allow_meta(nick, account)
+        return HandleResult(
+            action="pipe", nick=nick, target=target, text=text, **meta
+        )
 
 
 def home_dir(explicit: str | None = None) -> Path:

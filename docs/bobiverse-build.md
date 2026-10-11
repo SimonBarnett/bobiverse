@@ -2,6 +2,8 @@
 
 Deterministic, **zero AI tokens**. Jeeves ops run `!build`; each repo ships `.bobiverse/build.yml`.
 
+Agent playbook: `jeeves/.grok/skills/bobiverse-build/SKILL.md` (FR #4038) --- how to read BUILD announce lines and when to `!build` again. Chair stub: `!help build` / `bobiverse-jeeves-commands`.
+
 ## Recipe (`.bobiverse/build.yml`)
 
 | Field | Meaning |
@@ -104,4 +106,14 @@ Runs on `install_test.machine` (bobiverse: `ionos` / DIGEST_ID_FOLD).
 
 Reuse WP2 `FakeGitHubFiler` / `file_blocker_or_dedupe` / `is_recipe_build_machine` / `classify_step_failure`.
 Inject `msiexec_fn`, `postcheck_fn`, `asset_resolver`, `filer` on `InstallTestRunner`.
+
+## WP stacking (implementer)
+
+Later BUILD work packages reuse earlier WP helpers on tip --- do not reimplement shared pieces.
+
+- After WP2 (`FakeGitHubFiler`, `file_blocker_or_dedupe`, machine fold) is on `main`, rebase WP3 (INSTALL-TEST / `!installtest`) onto that tip and call the tip APIs instead of restoring old helper signatures.
+- Collapse UTF-16 double-spaced saved sources before merge when a WP tip was saved that way.
+
+(MRB #4086 moved out of `harvest` wrong-book; product home is this doc / skill `bobiverse-build` when present.)
+
 

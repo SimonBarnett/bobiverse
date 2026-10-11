@@ -1389,8 +1389,15 @@ class Client:
             self.whisper(who, f"ERR !unregister denied (+o/+h required) machine={mid}")
             info(f"INFO unregister denied nick={who} machine={mid}")
             return True
+        members = None
+        try:
+            members = getattr(self._privs(), "members", None) or getattr(
+                getattr(self._privs(), "state", None), "members", None
+            )
+        except Exception:
+            members = None
         plan = unregister_cmd.build_unregister_plan(
-            self._digest_home(), parsed, asker=who
+            self._digest_home(), parsed, asker=who, members=members
         )
         if plan is None:
             return True

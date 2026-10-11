@@ -29,7 +29,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `!installtest <owner/repo> <version> [tag]` / `!installtest dry-run ...` | PM: queued / dry-run plan / refused (no install_test, wrong machine, denied) | **Ops only (simon / bob-*).** FR #4026 WP3 INSTALL-TEST: msiexec pre-release MSIs + post-checks; release-blocker on fail; recipe `install_test` on ionos/fold. |
 | `ping` / `ping <glob>` (no `!`) | `pong` | in a channel or by PM |
 | `!register <#channel|machine>` | `ACK registered #<mid>` or `ERR !register denied (operators only) machine=<mid>` | +o/+h in #bobiverse (FR #4008); ChanServ REGISTER + roster add; operators.txt ignored |
-| `!unregister <#channel|machine> [confirm]` / `!unregister dry-run <..>` | plan PM then `ACK unregistered #<mid>`; dry-run sends nothing; core refuse; idempotent not-registered | +o/+h gate; confirm or repeat within 60s; ChanServ UNREGISTER (+ code NOTICE); remove_registered; PART; `UNREGISTERED v1 <mid>` in #bobiverse; airc falls back to #wonderland (FR #3834/#4008) |
+| `!unregister <#channel|machine> [confirm]` / `!unregister dry-run <..>` | plan PM then `ACK unregistered #<mid>`; dry-run sends nothing; core refuse; idempotent not-registered | +o/+h gate; confirm or repeat within 60s; ChanServ UNREGISTER (+ code NOTICE); remove_registered; PART; `UNREGISTERED v1 <mid>` in #bobiverse; airc falls back to #wonderland (FR #3834/#4008); dry-run/confirm plan lists `*_console` nicks in `#<mid>` or `none seen` (FR #4040) |
 | shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`) |
 
 ## Queue hygiene (FR #180 / #258 / #595)
@@ -151,7 +151,7 @@ Skill-intake consolidation: when a worker takes an FR from skill intake (label:s
 | Command | Gate | Notes |
 |---------|------|-------|
 | `!register <#channel|machine>` | live +o/+h in #bobiverse | ChanServ REGISTER + roster; operators.txt ignored |
-| `!unregister dry-run <..>` | same | prints plan, sends nothing |
+| `!unregister dry-run <..>` | same | prints plan (includes `*_console` list / none seen, FR #4040), sends nothing |
 | `!unregister <..> [confirm]` | same | plan then confirm/repeat within 60s; ChanServ UNREGISTER (+ code round-trip); PART; `UNREGISTERED v1 <mid>` on #bobiverse |
 | core refuse | - | `#bobiverse` / `#wonderland` refused |
 | airc | - | unregistered shop clients fall back to #wonderland (FR #3834) |

@@ -90,6 +90,22 @@ def info(msg: str) -> None:
     print(f"{ts} {msg}", flush=True)
 
 
+def log_auth_allow(hr) -> None:  # noqa: ANN001
+    """FR #4067: audit allow for shell/job/pipe (symmetric with auth-deny)."""
+    from airc_console import format_auth_allow_log
+
+    acct = getattr(hr, "allow_account", None)
+    info(
+        format_auth_allow_log(
+            nick=hr.nick or "-",
+            account=acct,
+            channel=getattr(hr, "allow_channel", None),
+            mode=getattr(hr, "allow_mode", None),
+            action=hr.action,
+        )
+    )
+
+
 def info_keepalive(msg: str) -> None:
     """Rate-limit keepalive noise to about one line per hour (FR #1546)."""
     global _last_keepalive_log_mono
@@ -208,6 +224,24 @@ class AircConsoleService:
         )
         self.capabilities = caps
         info(caps.log_line())
+        # FR #4030: do not hide shell=off on Bob machines
+        try:
+            from airc_console import detect_bob_machine, warn_shell_off_on_bob_line, _read_airc_json_dict
+
+            _cfg4030 = _read_airc_json_dict(install_root) or {}
+            _src4030 = str(_cfg4030.get("shell_source") or "")
+            if _cfg4030.get("shell_explicit") is True and not _src4030:
+                _src4030 = "explicit"
+            _warn4030 = warn_shell_off_on_bob_line(
+                shell_mode=caps.shell_mode,
+                is_bob_machine=detect_bob_machine(install_root=install_root),
+                shell_source=_src4030 or None,
+                profile=str(_cfg4030.get("profile") or ""),
+            )
+            if _warn4030:
+                info(_warn4030)
+        except Exception:
+            pass
         # FR #3401 / #3639: every profile authorises by live channel +o/+h only.
         # No operators.txt / fleet-operators roster / nick allow-list is read anywhere.
         try:
@@ -1109,13 +1143,22 @@ class AircConsoleService:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
             if hr.action == "update":
+                # FR #4067: auth-allow before update-reply (issue covers UPDATE).
+                if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
+                    try:
+                        hr.allow_account = self.account_map.get(hr.nick) if hr.nick else None
+                    except Exception:
+                        pass
+                log_auth_allow(hr)
                 info(f"INFO update-reply to={hr.nick} {hr.reply}")
-        elif hr.action == "shell":
-            info(f"INFO shell from={hr.nick}")
-        elif hr.action == "job":
-            info(f"INFO job from={hr.nick}")
-        elif hr.action == "pipe":
-            info(f"INFO pipe from={hr.nick}")
+        elif hr.action in {"shell", "job", "pipe"}:
+            # FR #4067: auth-allow (mode/account/channel) replaces bare INFO shell/job/pipe.
+            if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
+                try:
+                    hr.allow_account = self.account_map.get(hr.nick) if hr.nick else None
+                except Exception:
+                    pass
+            log_auth_allow(hr)
 
     def _idle_keepalive(self) -> None:
         """Detect half-open links: client PING, then force reconnect if no traffic (#298)."""

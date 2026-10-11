@@ -1,7 +1,8 @@
 ---
 name: bobiverse-jeeves-commands
 description: >
-  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), ping, or Jeeves permissions.
+  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, ping, or Jeeves permissions.
+
 ---
 
 # bobiverse-jeeves-commands
@@ -67,12 +68,13 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 - After a merged PR, fast-forward main, sync the installed tree, and restart only `ircJeeves`/the affected scheduled task. Verify the live endpoint and the relevant queue/monitor smoke before declaring success.
 - Frozen chair `!status`: VERSION must resolve install-root / `JEEVES_INSTALL_ROOT` / `sys.executable` before `Path(__file__)` under `_MEIPASS`; uptime must use `Client` construct time (`_process_started`), not lazy first-command `_cc()` (FR #2728 / MRB #2733 / harvest-lesson #2734).
 
-- **!unregister (FR #4008):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland.
+- **!unregister (FR #4008 / #4040):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland; dry-run/confirm plan lists `*_console` nicks seen in `#<mid>` (or `none seen`).
 
-## !build (FR #4006)
+## !build (FR #4006 / skill FR #4038)
 
-Ops-only. !build <owner/repo>[,...] <version> [ref], !build status|cancel|dry-run. Requires in-repo .bobiverse/build.yml. Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2).
+Ops-only. `!build <owner/repo>[,...] <version> [ref]`, `!build status|cancel|dry-run`. Requires in-repo `.bobiverse/build.yml`. Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2). Full playbook (classification, announce lines, when to re-run): skill `bobiverse-build` / `jeeves/.grok/skills/bobiverse-build/SKILL.md` and `docs/bobiverse-build.md`.
 
 ## !installtest (FR #4026 WP3)
 
-Ops-only. !installtest <owner/repo> <version> [tag], !installtest dry-run .... Requires install_test in .bobiverse/build.yml. Chair is token-less decide + announce; msiexec/post-check run on the recipe install_test.machine. Failures become release-blocker issues (WP2 filer).
+Ops-only. `!installtest <owner/repo> <version> [tag]`, `!installtest dry-run ....` Requires `install_test` in `.bobiverse/build.yml`. Chair is token-less decide + announce; msiexec/post-check run on the recipe `install_test.machine`. Failures become release-blocker issues (WP2 filer).
+
