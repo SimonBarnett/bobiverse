@@ -532,18 +532,117 @@ def is_recipe_build_machine(recipe_machine: str, local_machine: str) -> bool:
 
 
 class GitHubFiler:
-    """Minimal GitHub issue API used by the BUILD runner (inject FakeGitHubFiler in tests)."""
+    """Live GitHub issue API via `gh` CLI (inject FakeGitHubFiler in tests).
+
+    FR #4025: WP2 must file release-blocker issues on the recipe machine without agent
+    tokens. Abstract NotImplementedError would leave live `run_bobiverse_build` unable
+    to file blockers (MRB #4072).
+    """
+
+    def __init__(self, *, gh_runner: Callable | None = None) -> None:
+        self._gh = gh_runner
+
+    def _run_gh(self, args: list[str]) -> str:
+        import subprocess as _sp
+
+        runner = self._gh or _sp.run
+        completed = runner(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # support both CompletedProcess and injectable callables returning the same
+        code = int(getattr(completed, "returncode", 0) or 0)
+        out = getattr(completed, "stdout", "") or ""
+        err = getattr(completed, "stderr", "") or ""
+        if code != 0:
+            raise RuntimeError(f"gh {' '.join(args)} failed rc={code}: {err or out}")
+        return out
 
     def list_open_issues(self, repo: str) -> list[dict]:
-        raise NotImplementedError
+        raw = self._run_gh(
+            [
+                "issue",
+                "list",
+                "--repo",
+                normalize_repo(repo),
+                "--state",
+                "open",
+                "--limit",
+                "100",
+                "--json",
+                "number,title,body,labels,state",
+            ]
+        )
+        import json as _json
+
+        items = _json.loads(raw or "[]")
+        out = []
+        for it in items:
+            labels = it.get("labels") or []
+            names = []
+            for lab in labels:
+                if isinstance(lab, dict):
+                    names.append(str(lab.get("name") or ""))
+                else:
+                    names.append(str(lab))
+            out.append(
+                {
+                    "number": int(it.get("number") or 0),
+                    "title": str(it.get("title") or ""),
+                    "body": str(it.get("body") or ""),
+                    "labels": names,
+                    "state": str(it.get("state") or "open"),
+                }
+            )
+        return out
 
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str] | None = None
     ) -> dict:
-        raise NotImplementedError
+        args = [
+            "issue",
+            "create",
+            "--repo",
+            normalize_repo(repo),
+            "--title",
+            title,
+            "--body",
+            body,
+        ]
+        for lab in labels or []:
+            args.extend(["--label", str(lab)])
+        raw = self._run_gh(args)
+        # gh prints the issue URL on success
+        number = 0
+        import re as _re
+
+        m = _re.search(r"/issues/(\d+)", raw or "")
+        if m:
+            number = int(m.group(1))
+        return {
+            "number": number,
+            "title": title,
+            "body": body,
+            "labels": list(labels or []),
+            "state": "open",
+            "url": (raw or "").strip(),
+        }
 
     def comment(self, repo: str, number: int, body: str) -> dict:
-        raise NotImplementedError
+        self._run_gh(
+            [
+                "issue",
+                "comment",
+                str(int(number)),
+                "--repo",
+                normalize_repo(repo),
+                "--body",
+                body,
+            ]
+        )
+        return {"repo": normalize_repo(repo), "number": int(number), "body": body}
 
 
 class FakeGitHubFiler(GitHubFiler):

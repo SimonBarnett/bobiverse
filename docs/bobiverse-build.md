@@ -65,6 +65,7 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 ### Test doubles
 
 - `FakeGitHubFiler` --- in-memory `list_open_issues` / `create_issue` / `comment`.
+- GitHubFiler --- live `gh issue list/create/comment` (injectable `gh_runner` for tests; MRB #4072).
 - Inject `run_command_fn`, `pack_fn`, `release_fn`, `baseline_resolver` on `BuildRunner`.
 
 ### Helpers

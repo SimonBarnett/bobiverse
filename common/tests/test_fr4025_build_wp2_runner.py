@@ -319,3 +319,39 @@ def test_fr4025_cli_drain_script_exists():
     assert "--queue-dir" in text
     assert "FR #4025" in text
 
+
+def test_fr4025_github_filer_uses_gh_runner():
+    """Live GitHubFiler must call gh (not raise NotImplementedError)."""
+    calls = []
+
+    class _CP:
+        def __init__(self, stdout="", returncode=0):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = returncode
+
+    def fake_run(argv, capture_output=True, text=True, check=False):
+        calls.append(list(argv))
+        if argv[1] == "issue" and argv[2] == "list":
+            return _CP('[{"number":9,"title":"t","body":"b","labels":[{"name":"feature-request"}],"state":"open"}]')
+        if argv[1] == "issue" and argv[2] == "create":
+            return _CP("https://github.com/SimonBarnett/bobiverse/issues/42\n")
+        if argv[1] == "issue" and argv[2] == "comment":
+            return _CP("")
+        return _CP("", 1)
+
+    filer = bb.GitHubFiler(gh_runner=fake_run)
+    issues = filer.list_open_issues("SimonBarnett/bobiverse")
+    assert issues[0]["number"] == 9
+    assert "feature-request" in issues[0]["labels"]
+    created = filer.create_issue(
+        "SimonBarnett/bobiverse",
+        "release-blocker: x",
+        "body",
+        labels=["feature-request", "release-blocker"],
+    )
+    assert created["number"] == 42
+    filer.comment("SimonBarnett/bobiverse", 9, "note")
+    assert any(c[2] == "list" for c in calls)
+    assert any(c[2] == "create" for c in calls)
+    assert any(c[2] == "comment" for c in calls)
