@@ -220,6 +220,7 @@ routes to bobiverse via the split rule.
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
 - When appending skill-harvest-log entries, write a real trailing newline byte; a literal backslash-n fails endswith(b'\n') harvest-log gates on CI
+- Pack-BobiverseRelease Fetch-Ergo/Wix/Nssm in hidden WinPS 5.1: use Bobiverse-FetchHelpers (curl --max-time, ProgressPreference SilentlyContinue, tar/ZipFile); never Expand-Archive/bare IWR; Nssm needs archive.org or BOBIVERSE_NSSM_MIRROR when nssm.cc 503s.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
