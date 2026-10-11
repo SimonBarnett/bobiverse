@@ -210,3 +210,130 @@ def test_startup_cap_releases_when_turn_never_ends(tmp_path, monkeypatch):
     FakeTimer.instances[-1].fn()  # cap
     assert any("startup ready cap 600s" in m for m in logs)
     assert "ready" in sup.bored.fires
+
+
+# ---------------------------------------------------------------- 5. Grok prompt-accept timeout
+TOAST = (
+    "  The agent did not accept your prompt within 120s. Your text is back in the input box; "
+    "press Enter to retry\n  > MRB SimonBarnett/bobiverse#4116 ...\n  Prompt not accepted, text restored"
+)
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def _pw(screens, clock, enters, gave, backoffs=(15.0, 30.0, 60.0)):
+    it = iter(screens)
+    box = {"cur": None}
+
+    def read():
+        try:
+            box["cur"] = next(it)
+        except StopIteration:
+            pass
+        return box["cur"]
+
+    logs: list[str] = []
+    w = bw.PromptNotAcceptedWatcher(
+        read_fn=read, enter_fn=lambda: enters.append(clock.t) or True,
+        on_give_up=lambda: gave.append(clock.t), clock=clock, log=logs.append, backoffs=backoffs,
+    )
+    return w, logs
+
+
+def test_prompt_not_accepted_regex_matches_grok_texts():
+    assert bw.PROMPT_NOT_ACCEPTED_RX.search("Prompt not accepted, text restored")
+    assert bw.PROMPT_NOT_ACCEPTED_RX.search("The agent did not accept your prompt within 120s.")
+    assert not bw.PROMPT_NOT_ACCEPTED_RX.search("Waiting for response 0.0s")
+
+
+def test_prompt_not_accepted_enters_with_backoff_then_gives_up_once():
+    clock, enters, gave = _Clock(), [], []
+    w, logs = _pw([TOAST] * 20, clock, enters, gave)
+    assert w.tick() == "enter" and enters == [0.0]
+    clock.t = 10
+    assert w.tick() == "wait"
+    clock.t = 15
+    assert w.tick() == "enter"
+    clock.t = 45
+    assert w.tick() == "enter"
+    assert len(enters) == 3
+    clock.t = 104
+    assert w.tick() == "wait"
+    clock.t = 105
+    assert w.tick() == "gave_up" and gave == [105]
+    clock.t = 500
+    assert w.tick() == "done" and gave == [105]
+    assert len(enters) == 3
+    assert any("Enter retry 1/3" in m for m in logs)
+    assert any("giving up" in m for m in logs)
+
+
+def test_prompt_not_accepted_clears_when_toast_gone():
+    clock, enters, gave = _Clock(), [], []
+    w, logs = _pw([TOAST, "  > working...\n  Waiting for response 1.2s"], clock, enters, gave)
+    assert w.tick() == "enter"
+    clock.t = 20
+    assert w.tick() == "clear"
+    assert gave == [] and w.tries == 0 and not w.active
+    assert any("cleared after 1 Enter" in m for m in logs)
+
+
+def test_prompt_not_accepted_stale_text_ignored_after_turn_activity():
+    clock, enters, gave = _Clock(), [], []
+    w, logs = _pw([TOAST] * 5, clock, enters, gave)
+    assert w.tick() == "enter"
+    w.note_activity()  # turn started: prompt went through; toast is now stale scrollback
+    clock.t = 100
+    assert w.tick() == "stale"
+    assert w.tick() == "stale"
+    assert enters == [0.0] and gave == []
+
+
+def test_prompt_not_accepted_no_screen_is_noop():
+    clock, enters, gave = _Clock(), [], []
+    w, _ = _pw([None], clock, enters, gave)
+    assert w.tick() == "clear" and enters == []
+
+
+def test_prompt_retry_backoffs_env(monkeypatch):
+    monkeypatch.setenv("BOB_WORKER_PROMPT_RETRY_BACKOFFS", "5,10")
+    assert bw._prompt_retry_backoffs() == (5.0, 10.0)
+    monkeypatch.setenv("BOB_WORKER_PROMPT_RETRY_BACKOFFS", "junk")
+    assert bw._prompt_retry_backoffs() == (15.0, 30.0, 60.0)
+
+
+def test_prompt_give_up_nacks_pending_assign(tmp_path, monkeypatch):
+    sup, *_ = _sup(tmp_path, monkeypatch)
+    calls = []
+
+    class _Rec:
+        def on_failed(self, line, attempt=1):
+            calls.append((line, attempt))
+            return "nacked"
+
+    sup._recovery = _Rec()
+    sup.ack_miss.last_line = ASSIGN
+    sup._prompt_give_up()
+    assert calls == [(ASSIGN, 2)]
+
+
+def test_prompt_give_up_without_assign_only_logs(tmp_path, monkeypatch):
+    sup, *_ = _sup(tmp_path, monkeypatch)
+    calls = []
+
+    class _Rec:
+        def on_failed(self, line, attempt=1):
+            calls.append(line)
+
+    sup._recovery = _Rec()
+    sup.ack_miss.last_line = ""
+    with __import__("contextlib").suppress(Exception):
+        sup.relay.last_unacked = ""
+    sup._prompt_give_up()
+    assert calls == []
