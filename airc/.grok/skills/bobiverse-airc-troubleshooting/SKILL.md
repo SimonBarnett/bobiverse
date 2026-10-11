@@ -1,7 +1,7 @@
 ---
 name: bobiverse-airc-troubleshooting
 description: >
-  Debug playbook for the Airc console - NickServ GUID/SASL 904, Default-profile home, lobby vs shop, AircConsole leftover, NSSM re-point. Use when {machine}_console is missing or misbehaving.
+  Debug playbook for the Airc console - NickServ GUID/SASL 904, Default-profile home, lobby vs shop, AircConsole leftover, NSSM re-point, slow remote shell / needs_human latency profiling. Use when {machine}_console is missing or misbehaving.
 ---
 
 # bobiverse-airc-troubleshooting
@@ -48,6 +48,7 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | Upgrade MSI FileRemove `third_party\nssm\win64\nssm.exe` with no FileCopy; Install-AircConsole `nssm missing`; msiexec 1603 (FR #3899) | Pre-stable-GUID install + pack `NeverOverwrite` on nssm: CostFinalize skipped FileCopy, then RemoveExistingProducts deleted the old file. Tip: pack nssm Permanent+stable GUID **without** NeverOverwrite; Install-AircConsole Fetch-Nssm self-heal. Workaround until tip MSI: copy nssm into `<ai root>\ergo\nssm.exe` (or restore win64 path) and re-run `/i`. |
 | PsExec -h -s msiexec upgrade exits **1601**; log RESTART MANAGER error **351**; SCM 7031 Windows Installer terminated (FR #4012: msiexec Error 1705 after crash -> Clear-BobiverseMsiPendingTransaction / serialized 1705 retry. FR #4013: non-elevated msiexec Error 1730/1603 -> Privileged launch condition + Install-Airc exit 740 (airc install needs administrator rights); no fail-reported flag. FR #4011) | MajorUpgrade RemoveExistingProducts under session 0: Restart Manager cannot shut down Airc | Tip MSI: MSIRESTARTMANAGERCONTROL=Disable + StopAircBeforeUpgrade before RemoveExistingProducts. Older MSI: pass MSIRESTARTMANAGERCONTROL=Disable on the msiexec line. |
 | `Ergo server PASS missing` / `config\ergo.password beside the unpack tree` (FR #3756) | Public MSI/zip has no embedded PASS (issue #4). Supply `-ErgoPasswordFile`, set `AGENTIC_IRC_PASSWORD` (or `AIRC_PACK_ERGO_PASSWORD` / `AIRC_CONSOLE_SERVER_PASSWORD` / `BOB_IRC_PASSWORD`), place `config\ergo.password` beside the unpack tree, or re-download a **private** fleet zip packed with `-EmbedErgoPassword`. Never invent the Ergo PASS. |
+| Slow remote shell (`dir` first `out` tens of seconds on one box, ~2 s on another) | Live cross-box latency differences are **needs_human** profiling (PS start, flood pacing, shared send queue, chair+seats load). Do **not** invent a root cause from IRC client timings alone. File evidence on the issue, GIVEUP `reason=needs_human`, leave open for a human (issue #4068 class). |
 
 | Same-version msiexec /i skips RunInstall / no re-run after failed install (FR #3762) | Pack condition is `NOT REMOVE~="ALL"` (not only `NOT Installed OR REINSTALL`). Redeploy tip MSI; or `msiexec /fa` / `REINSTALL=ALL`. Related: #3759 exit code, #3756 Ergo PASS. |
 | Fresh client SASL 904 for `{machine}_console` then continues (FR #3763) | Account not registered yet. Tip skips SASL only when `console.password` was **minted this run**; first connect REGISTERs via NickServ and writes `console.nickserv-ok` on 903 / NickServ success NOTICE. Loud ERROR 904 only after the marker exists (real password mismatch - see #34 / #1552). |
