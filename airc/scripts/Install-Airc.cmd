@@ -30,6 +30,14 @@ if "%EC%"=="0" if exist "%FAILFLAG%" (
   set "EC=1"
 )
 
+REM FR #4013: elevation-required (740) — clear message, no fail-reported flag, no outer intake.
+if "%EC%"=="740" (
+  echo airc install needs administrator rights
+  echo %DATE% %TIME% Install-Airc.cmd FR4013 exit=740 needs administrator rights>>"%LOG%" 2>nul
+  if exist "%FAILFLAG%" del /f /q "%FAILFLAG%" 2>nul
+  exit /b 740
+)
+
 if not "%EC%"=="0" (
   echo %DATE% %TIME% Install-Airc.cmd FAIL exit=%EC% args=%*>>"%LOG%" 2>nul
   if exist "%FAILFLAG%" (
