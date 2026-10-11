@@ -251,7 +251,7 @@ function Clear-BobiverseMsiPendingTransaction {
         }
     }
     if (-not $pending) {
-        # Still bounce msiserver when caller asks after 1705 — service may be wedged with no key.
+        # Still bounce msiserver when caller asks after 1705 --- service may be wedged with no key.
         if ($Why -match '(?i)1705') {
             try {
                 $svc = Get-Service -Name msiserver -ErrorAction SilentlyContinue
@@ -2182,7 +2182,7 @@ function Save-BobiverseServicePassword {
 function Request-BobiverseUacRelaunch {
     <#
       FR #4013: self-elevate via UAC. On cancel/failure exit 740 (ERROR_ELEVATION_REQUIRED)
-      with a clear message — never bare-throw (PS 4.0 -File would exit 0) and never write
+      with a clear message --- never bare-throw (PS 4.0 -File would exit 0) and never write
       install fail-reported flags (caller must exit before fail-flag paths).
     #>
     param([Parameter(Mandatory)]$Bound)

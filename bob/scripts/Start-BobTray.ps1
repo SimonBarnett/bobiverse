@@ -4,7 +4,7 @@
   Public launcher for the TipForm Bob systray shipped in the bob MSI.
 .DESCRIPTION
   Sets BOB_MACHINE_ID / BOB_BRIDGE_HOME / IRC home, then starts tools\Watch-BobTray.ps1
-  under InstallRoot (STA). Companion to the ircBob Windows service — not a BobFleet task.
+  under InstallRoot (STA). Companion to the ircBob Windows service --- not a BobFleet task.
 .NOTES
   t794u: the tray never updates. Product Sync/ff and the release self-update run only on ircBob service start (Start-Bob).
   Starting the tray (this launcher, the 'Start Systray' shortcut, logon autostart) restarts ircBob via
