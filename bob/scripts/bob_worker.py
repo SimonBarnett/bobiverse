@@ -1463,6 +1463,29 @@ def _startup_ready_cap_s() -> float:
     return _env_float("BOB_WORKER_STARTUP_READY_CAP_S", 900.0, 60.0, 7200.0)
 
 
+def _startup_proc_idle(proc, probe=None) -> bool:
+    """FR #4123: True when the agent process is gone or reports 0 CPU/IO activity."""
+    if proc is None:
+        return True
+    try:
+        if proc.poll() is not None:
+            return True
+    except Exception:
+        return True
+    if probe is None:
+        return False
+    try:
+        sample = probe(int(proc.pid))
+    except Exception:
+        return False
+    try:
+        return int(getattr(sample, "activity", 0) or 0) <= 0
+    except Exception:
+        return False
+
+
+
+
 def clipboard_set_verified(
     text: str,
     *,
@@ -4998,8 +5021,23 @@ class Supervisor:
             except Exception:
                 pass
         self.relay.set_target(lambda line, p=proc: self._inject_line(p, line))
+        # FR #4123: if grace released while turn 0 is open, enable inject but defer !bored
+        # until turn_ended so Jeeves does not offer into a still-booting agent.
+        defer_bored = False
+        with self._lock:
+            if reason == "grace" and self._startup_saw_turn_started and self._startup_turn_release_enabled:
+                self._startup_defer_start_bored = True
+                defer_bored = True
+            elif reason == "turn":
+                self._startup_defer_start_bored = False
         if self.bored:
-            self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
+            if defer_bored:
+                self.log(
+                    "agent: ready for inject but deferring !bored until turn_ended "
+                    "(FR #4123; turn 0 still open after grace)"
+                )
+            else:
+                self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
         now = float(self.clock())
         elapsed = now - float(started_at) if started_at is not None else 0.0
         if reason == "turn":
@@ -5007,10 +5045,12 @@ class Supervisor:
                 f"agent: ready (first turn_ended after {elapsed:.0f}s; "
                 f"startup_grace_s={self.startup_grace_s:.0f} fallback not needed)"
             )
+            self._release_deferred_startup_bored()
         elif reason == "cap":
+            # Cap no longer enables inject under wait_ready (FR #4123); keep log for legacy callers.
             self.log(
                 f"agent: ready (startup ready cap {_startup_ready_cap_s():.0f}s reached without "
-                f"turn_ended; FR #4115 safety net); inject + !bored enabled"
+                f"turn_ended); inject + !bored enabled"
             )
         else:
             self.log(
@@ -5025,6 +5065,7 @@ class Supervisor:
             self._startup_ready_proc = None
             self._startup_session_id = self.sessions[-1] if self.sessions else None
             self._startup_saw_turn_started = False
+            self._startup_defer_start_bored = False
             self._startup_turn_release_enabled = should_start_turn_watcher(self.kind)
             if self._min_ready_timer is not None:
                 try:
@@ -5034,10 +5075,9 @@ class Supervisor:
                 self._min_ready_timer = None
 
         def ready():
-            # FR #4115: for grok (turn watcher on) the grace timer no longer releases inject while
-            # the session is still starting ("Starting session..." / boot prompt queued): a paste
-            # there raced the session start and the clipboard. Hold until the first turn_ended,
-            # with a long cap as the safety net.
+            # FR #4115 / #4123: for grok (turn watcher on) the grace timer no longer releases inject
+            # while the session is still starting. Hold until the first turn_ended. At the ready cap
+            # without turn_ended, hang-recycle (do not paste into a still-booting agent).
             with self._lock:
                 wait_ready = (
                     self._startup_hold_armed
@@ -5052,7 +5092,7 @@ class Supervisor:
                     f"agent: startup_grace_s={self.startup_grace_s:.0f} elapsed but session not ready "
                     f"(no first turn_ended) - holding inject/!bored until ready (cap {cap:.0f}s)"
                 )
-                t2 = threading.Timer(remaining, lambda p=proc: self._ready_now(p, reason="cap"))
+                t2 = threading.Timer(remaining, lambda p=proc: self._on_startup_ready_cap(p))
                 t2.daemon = True
                 with self._lock:
                     if not self._startup_hold_armed:
@@ -5070,6 +5110,49 @@ class Supervisor:
         with self._lock:
             self._grace_timer = t
         t.start()
+
+
+    def _release_deferred_startup_bored(self) -> None:
+        """FR #4123: fire the deferred seat-start !bored once turn 0 ends."""
+        with self._lock:
+            if not getattr(self, "_startup_defer_start_bored", False):
+                return
+            self._startup_defer_start_bored = False
+        if self.bored:
+            self.bored.set_ready(True)
+            self.log("agent: deferred !bored released after turn_ended (FR #4123)")
+
+    def _on_startup_ready_cap(self, proc) -> None:
+        """FR #4123: ready-cap without first turn_ended -> hang-recycle, never paste.
+
+        Wait-ready already blocked the 60 s grace release. At the long cap, if the first
+        turn still has not ended, treat it as a hung first turn (process dead or idle, or
+        hard timeout) and restart a NEW agent instead of enabling inject/!bored.
+        """
+        with self._lock:
+            if self._shutting or self.proc is not proc:
+                return
+            if not self._startup_hold_armed:
+                return
+            saw_started = bool(self._startup_saw_turn_started)
+        idle = _startup_proc_idle(proc, probe=getattr(self, "probe", None))
+        why = "startup-no-first-turn"
+        if idle:
+            detail = "process dead or 0 CPU"
+        else:
+            detail = "first turn_ended never arrived (hard cap)"
+        self.log(
+            f"agent: startup ready cap {_startup_ready_cap_s():.0f}s reached without turn_ended "
+            f"({detail}; saw_turn_started={saw_started}) - hang-recycle (FR #4123)"
+        )
+        with self._lock:
+            self._startup_hold_armed = False
+            grace_t = self._grace_timer
+            self._grace_timer = None
+        if grace_t is not None:
+            with contextlib.suppress(Exception):
+                grace_t.cancel()
+        self.restart_agent(why)
 
     def _prompt_give_up(self) -> None:
         """FR #4115: Enter retries exhausted - NACK the pending assign (if any) via the recovery."""

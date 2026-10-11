@@ -11,6 +11,9 @@
 .NOTES
   PowerShell 5.1 only. Does not invent Ergo/NickServ secrets. PUT/RUN/STATUS
   verbs match docs/airc-remote-control.md; server-side PUT/RUN may land in FR #78.
+  FR #4068: console Command batch-captures then floods replies (FLOOD_S 0.35s each).
+  Prefer -Action Cmd for directory listings. Budget -TimeoutSec above
+  shell_seconds + reply_lines*0.35 + margin (default 60 can miss a busy-box DONE).
 #>
 [CmdletBinding(DefaultParameterSetName = 'Remote')]
 param(

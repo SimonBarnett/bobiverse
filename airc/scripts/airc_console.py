@@ -1890,6 +1890,7 @@ class ShellJobRunner:
         wait: bool = False,
         on_inflight: Callable[[str, str], None] | None = None,
         on_idle: Callable[[str], None] | None = None,
+        on_shell_done: Callable[[str, str, float, int, int], None] | None = None,
         pending_max: int = SHELL_PENDING_MAX,
     ) -> None:
         self.on_reply = on_reply
@@ -1898,6 +1899,8 @@ class ShellJobRunner:
         self.wait = wait
         self.on_inflight = on_inflight
         self.on_idle = on_idle
+        # FR #4068: nick, job_id, elapsed_s, reply_lines, exit_code after batch capture.
+        self.on_shell_done = on_shell_done
         self.pending_max = max(0, int(pending_max))
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
@@ -1983,9 +1986,23 @@ class ShellJobRunner:
                     self.on_inflight(key, jid)
                 except Exception:
                     pass
+            # FR #4068: batch capture --- first IRC out only after the process exits.
+            t0 = time.monotonic()
             outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
-            for line in format_shell_replies(outcome):
+            replies = format_shell_replies(outcome)
+            for line in replies:
                 self._emit(key, line)
+            if self.on_shell_done:
+                try:
+                    self.on_shell_done(
+                        key,
+                        jid,
+                        time.monotonic() - t0,
+                        len(replies),
+                        int(outcome.exit_code),
+                    )
+                except Exception:
+                    pass
         except Exception:
             # Keep drain alive for queued peers; always emit DONE when we have an id.
             if jid:
@@ -2216,8 +2233,9 @@ class AircConsoleCore:
                 text=text,
                 reply=(
                     "airc console (FR #75/#3287): default PowerShell -NoProfile; "
-                    "cmd: COMSPEC escape; psb64:<base64> EncodedCommand; "
-                    "replies out/err id= seq= then DONE id= exit=; "
+                    "cmd: COMSPEC escape (prefer cmd: dir for listings; bare dir is PS); "
+                    "psb64:<base64> EncodedCommand; "
+                    "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
                     "STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
