@@ -98,7 +98,7 @@ once the implementer cannot be reached. Never close `needs-human` / `board` issu
 
 Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
 
-`repo_layout` lives in `common/scripts/repo_layout.py`. Prefer `git sparse-checkout disable` in the MRB temp tree. Partial sparse sets must include `common/scripts`; do not rely on `PYTHONPATH=common/tests`. Service `*/tests/conftest.py` puts `common/scripts` on `sys.path`.
+`repo_layout` lives in `common/scripts/repo_layout.py`. Prefer `git sparse-checkout disable` in the MRB temp tree. **CAST IRON (FR #4029 / MRB #4035):** disable sparse **once** after add + `.bobiverse-seat`; never re-run on an already-full tree (can detach `.git` / wipe uncommitted work). Partial sparse sets must include `common/scripts`; do not rely on `PYTHONPATH=common/tests`. Service `*/tests/conftest.py` puts `common/scripts` on `sys.path`.
 
 **bob_worker tip shadow (FR #2782 / MRB #2789):** when pytest-importing `bob_worker` from a job worktree, run pytest with cwd set to that worktree and put `<wt>\bob\scripts` first on `PYTHONPATH`. The install flat copy `<ai root>\bob\worker\bob_worker.py` otherwise shadows the tip module and makes tip tests look like main failures. Seat cwd alone is not enough if the flat install copy is found first.
 
