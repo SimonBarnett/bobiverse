@@ -769,9 +769,13 @@ class AircConsoleService:
                 self.join_shop()
             return
 
-        # wonderland fallback (FR #3834) — keep {machine}_console nick
+        # wonderland fallback (FR #3834 / #4014) — keep {machine}_console nick
         self.channel = self.wonderland_channel
         self.core.channel = self.channel
+        # FR #4014: name the target shop + real fallback (never a hardcoded #ionos).
+        info(
+            f"INFO FR #4014 {self.shop_channel} is not registered; joining {self.wonderland_channel}"
+        )
         if not self._nick_explicit:
             want = machine_console_nick(self.machine)
             if self.nick.lower() != want.lower():
@@ -812,7 +816,7 @@ class AircConsoleService:
             return
         if time.monotonic() < self._probe_deadline:
             return
-        info("INFO chanserv-probe timeout -> wonderland")
+        info(f"INFO FR #4014 chanserv-probe timeout; {self.shop_channel} treated as unregistered; joining {self.wonderland_channel}")
         self._apply_shop_mode("wonderland")
 
     def _handle_sasl_line(self, cmd: str, args: list[str], trailing: str) -> None:

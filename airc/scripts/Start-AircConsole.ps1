@@ -138,7 +138,7 @@ if ($MachineId) {
     $env:AIRC_CONSOLE_MACHINE = $MachineId
     Write-Host "INFO machineId=$MachineId (fleet shop #${MachineId})"
 } else {
-    Write-Warning ("airc-console: no -MachineId / BOB_MACHINE_ID; falling back to COMPUTERNAME={0}. Pass -MachineId ionos (etc.) so the console joins #ionos, not #win-..." -f $env:COMPUTERNAME)
+    Write-Warning ("FR #4014: airc-console: no -MachineId / BOB_MACHINE_ID; falling back to COMPUTERNAME={0}. Pass -MachineId <id> so the console joins #<id> when registered, else #wonderland." -f $env:COMPUTERNAME)
 }
 
 # Seed Ergo server PASS from release zip when ConsoleHome lacks ergo.password.

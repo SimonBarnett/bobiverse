@@ -165,7 +165,7 @@ $script:AircConsoleMachineId = $MachineId
 if ($MachineId) {
     Write-Host "INFO MachineId=$MachineId (console will JOIN #$MachineId)"
 } else {
-    Write-Warning ("Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console may join #win-... instead of #ionos." -f $env:COMPUTERNAME)
+    Write-Warning ("FR #4014: Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console will use #{0} when registered, else #wonderland." -f $env:COMPUTERNAME)
 }
 
 # FR #259: $PSScriptRoot can be empty in param() defaults under [CmdletBinding()];
