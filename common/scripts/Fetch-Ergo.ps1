@@ -4,6 +4,7 @@
   Download Ergo Windows x86_64 release into a cache/out folder for jeeves MSI packs.
 .NOTES
   Default v2.19.1 (matches fleet irc.ntsa.uk). License: MIT (Ergo / Oragono).
+  FR #3965: curl/tar helpers + ProgressPreference; verify windows zip sha256.
 #>
 [CmdletBinding()]
 param(
@@ -11,10 +12,16 @@ param(
     [string]$OutDir,
     [string]$CacheDir = '',
     [string]$Version = '2.19.1',
-    [string]$Url = ''
+    [string]$Url = '',
+    # Empty = pin upstream windows zip sha256 only for default Version 2.19.1.
+    [string]$ExpectedSha256 = '',
+    [int]$TimeoutSec = 300
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+. (Join-Path $PSScriptRoot 'Bobiverse-FetchHelpers.ps1')
+
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $destExe = Join-Path $OutDir 'ergo.exe'
 if ((Test-Path -LiteralPath $destExe) -and (Test-Path -LiteralPath (Join-Path $OutDir 'default.yaml'))) {
@@ -50,8 +57,16 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
     $zip = Join-Path $work 'ergo.zip'
     Write-Host "INFO downloading Ergo from $Url"
-    Invoke-WebRequest -Uri $Url -OutFile $zip -UseBasicParsing -TimeoutSec 300
-    Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+    Invoke-BobiverseDownload -Url $Url -OutFile $zip -TimeoutSec $TimeoutSec -UserAgent 'bobiverse-fetch-ergo'
+    $sha = $ExpectedSha256
+    if (-not $sha -and $Version -eq '2.19.1') {
+        # From https://github.com/ergochat/ergo/releases/download/v2.19.1/ergo-2.19.1-checksums.txt
+        $sha = '5397fac56f7110839aac2d8ab436279eb2a00dddfcc07032605b423e85ea40b6'
+    }
+    if ($sha) {
+        Assert-BobiverseSha256 -Path $zip -Expected $sha
+    }
+    Expand-BobiverseZip -ZipPath $zip -Destination $work
     $found = Get-ChildItem -Path $work -Recurse -Filter 'ergo.exe' | Select-Object -First 1
     if (-not $found) { throw 'ergo.exe not found inside downloaded zip' }
     $srcDir = $found.Directory.FullName
