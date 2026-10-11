@@ -352,13 +352,9 @@ $shellSource = 'fresh-default'
 if ($expShell) {
     $resolvedShell = $expShell
     $shellSource = 'explicit'
-} elseif ($prof -eq 'workstation') {
-    $resolvedShell = 'off'
-    $shellSource = 'workstation-default'
-} elseif ($prof -eq 'client') {
-    $resolvedShell = 'operators'  # FR #3401 full remote
-    $shellSource = 'client-default'
-} elseif ($isBobMachine) {
+} elseif ($prof -eq 'workstation') { $resolvedShell = 'off' }
+elseif ($prof -eq 'client') { $resolvedShell = 'operators' }
+elseif ($isBobMachine) {
     if ($priorShell -eq 'off' -and ($priorShellExplicit -or $priorShellSource -eq 'explicit')) {
         $resolvedShell = 'off'
         $shellSource = 'explicit'
@@ -379,6 +375,11 @@ if ($expShell) {
 } else {
     $resolvedShell = 'off'
     $shellSource = 'fresh-default'
+}
+# FR #4030: profile shell_source labels (resolve pins stay one-liners for mrb3460/fr3393)
+if ($shellSource -eq 'fresh-default') {
+    if ($prof -eq 'workstation') { $shellSource = 'workstation-default' }
+    elseif ($prof -eq 'client') { $shellSource = 'client-default' }
 }
 
 $expJobs = ([string]$Jobs).Trim().ToLowerInvariant()
