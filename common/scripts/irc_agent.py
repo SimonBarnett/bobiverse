@@ -2930,9 +2930,10 @@ class Client:
                         info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
                 except Exception as offer_exc:  # noqa: BLE001
                     info(f"WARN giveup-offer {type(offer_exc).__name__}")
-        elif verb == "DONE" and status in ("ok", "missing"):
+        elif verb == "DONE" and status == "ok":
             # FR #3893: same push as GIVEUP/NACK — do not wait for the seat's next !bored
             # when the queue still holds eligible work (regression of idle-after-DONE).
+            # FR #4089: status=missing (repeat DONE / ACC already gone) must not done-offer.
             try:
                 n, job2 = gitclaim.offer_after_done(
                     self._digest_home(),

@@ -2915,7 +2915,7 @@ _RELEASE_OFFER_VIA = frozenset({"giveup", "done", "nack"})
 
 
 def offer_timeout_s(row: dict | None) -> float:
-    """Sticky offer window; giveup/done-pushed rows get OFFER_TIMEOUT_S + GIVEUP_OFFER_EXTRA_S (FR #2811 / #3893)."""
+    """Sticky offer window; giveup/done-pushed rows get OFFER_TIMEOUT_S + GIVEUP_OFFER_EXTRA_S (FR #2811 / #3893 / #4089)."""
     base = float(OFFER_TIMEOUT_S)
     via = ""
     if isinstance(row, dict):
@@ -4647,10 +4647,12 @@ def offer_after_release(
     issue_open=None,
     offered_via: str = "giveup",
 ) -> tuple[int, dict | None]:
-    """FR #2811 / FR #3893: after GIVEUP/NACK/DONE, push the next eligible job (no empty chatter).
+    """FR #2811 / FR #3893 / FR #4089: after GIVEUP/NACK/DONE, push the next eligible job.
 
-    Uses the same ``offer_focus_top`` gates as ``!bored``. Returns ``(1, job)`` if delivered.
-    ``offered_via`` stamps sticky window (``giveup`` / ``done`` / ``nack``).
+    Uses the same ``offer_focus_top`` gates as ``!bored`` (including one-open-offer/ACK:
+    no push while this nick still holds an accepted row or a live ``offered_to``).
+    Returns ``(1, job)`` if delivered. ``offered_via`` stamps sticky window
+    (``giveup`` / ``done`` / ``nack``).
     """
     via = str(offered_via or "giveup").strip().lower() or "giveup"
     status, job = offer_focus_top(
@@ -5294,6 +5296,23 @@ def offer_focus_top(
                     except OSError:
                         return "error", None
                 return "empty", None
+
+            # FR #4089: one open ACK per seat — never stamp a new offer while accepted
+            # still lists this nick (giveup-offer after NACK of a sibling row, etc.).
+            for acc in doc.get("accepted") or []:
+                if not isinstance(acc, dict):
+                    continue
+                raw_acc = str(
+                    acc.get("nick") or acc.get("accepted_by") or acc.get("offered_to") or ""
+                ).strip()
+                them_acc = (canonical_worker_nick(raw_acc) or raw_acc).strip().lower()
+                if them_acc and them_acc == me_l:
+                    if purged:
+                        try:
+                            _write_queue(queue_path(home), doc)
+                        except OSError:
+                            return "error", None
+                    return "empty", None
 
             def _same_seat(a: str, b: str) -> bool:
                 ca = (canonical_worker_nick(a) or a or "").strip().lower()
@@ -7187,7 +7206,12 @@ def _offer_age_s(row: dict, now: float) -> float:
 
 
 def seat_pending_offer(home: Path, nick: str, now: float | None = None) -> dict | None:
-    """FR #3192: live unaccepted row still offered to this nick within ``OFFER_TIMEOUT_S``."""
+    """FR #3192 / #4089: live unaccepted row still offered to this nick within its sticky window.
+
+    Uses ``offer_timeout_s(row)`` so done/giveup-pushed offers stay pending for the extended
+    window (OFFER_TIMEOUT_S + GIVEUP_OFFER_EXTRA_S); a !bored inside that window must nak-busy
+    rather than stamp a second assign.
+    """
     import time as _time
 
     now_f = _time.time() if now is None else float(now)
@@ -7207,7 +7231,7 @@ def seat_pending_offer(home: Path, nick: str, now: float | None = None) -> dict 
         them = (canonical_worker_nick(to) or to).strip().lower()
         if them != me:
             continue
-        if _offer_age_s(row, now_f) < OFFER_TIMEOUT_S:
+        if _offer_age_s(row, now_f) < offer_timeout_s(row):
             return row
     return None
 
@@ -7569,8 +7593,8 @@ def release_stale_busy(
                 if not to:
                     continue
                 them = (canonical_worker_nick(to) or to).strip().lower()
-                if them == me and _offer_age_s(cand, float(now)) < OFFER_TIMEOUT_S:
-                    return False
+                if them == me and _offer_age_s(cand, float(now)) < offer_timeout_s(cand):
+                    return False  # FR #4089: honour sticky via window
             acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
             mine = [r for r in acc if _owner(r) == me]
             for r in mine:

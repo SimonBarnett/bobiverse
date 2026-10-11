@@ -29,7 +29,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `ping` / `ping <glob>` (no `!`) | `pong` | in a channel or by PM |
 | `!register <#channel|machine>` | `ACK registered #<mid>` or `ERR !register denied (operators only) machine=<mid>` | +o/+h in #bobiverse (FR #4008); ChanServ REGISTER + roster add; operators.txt ignored |
 | `!unregister <#channel|machine> [confirm]` / `!unregister dry-run <..>` | plan PM then `ACK unregistered #<mid>`; dry-run sends nothing; core refuse; idempotent not-registered | +o/+h gate; confirm or repeat within 60s; ChanServ UNREGISTER (+ code NOTICE); remove_registered; PART; `UNREGISTERED v1 <mid>` in #bobiverse; airc falls back to #wonderland (FR #3834/#4008) |
-| shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`) |
+| shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`). **FR #4089:** one open offer/ACK per seat — no done-offer on repeat DONE (`status=missing`), no giveup-offer while another accepted row remains, and done/giveup sticky window keeps `!bored` nak-busy so a pending offer is not doubled. |
 
 ## Queue hygiene (FR #180 / #258 / #595)
 
