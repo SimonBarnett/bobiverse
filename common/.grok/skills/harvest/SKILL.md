@@ -226,6 +226,7 @@ routes to bobiverse via the split rule.
 - When Pack/allow-list adds a script (Fetch-Nssm), update CLIENT_REMAINING_FILES + KEEP_SCRIPTS counts in the same turn as the allow-list change so fr3514 pack-then-client stays green
 - Harvest session summaries / intake PR bodies must never contain the GitHub keyword Closes #N (or Fixes #N) for product FRs --- narrative mentions of stripping accidental Closes still auto-link; write `Closes` as `Close`+`s` split, or say `closing-keyword`, or cite `#N` without Closes/Fixes (MRB #4099)
 
+
 ## Harvest digest (lessons audit 2026-10-06)
 
 Generalised from 81 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.

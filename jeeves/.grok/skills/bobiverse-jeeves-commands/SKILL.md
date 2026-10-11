@@ -43,7 +43,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!installtest <owner/repo> <version> [tag]` / dry-run | owner, ears | FR #4026 WP3 INSTALL-TEST: msiexec + post-checks; release-blocker on fail |
 | `!register / !unregister (FR #4008) <machine>` | +o/+h in #bobiverse | ChanServ REGISTER/UNREGISTER `#<machine>`; dry-run/confirm; core refuse; airc -> #wonderland |
 | `ping` / `ping <glob>` | anyone | bare word (no `!`), channel or PM -> `pong` |
-| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811 / #3893:** after GIVEUP/NACK/DONE ok (DONE also `missing`), chair may push next eligible job via `offer_focus_top` (`offered_via=giveup|done`, longer sticky); log `done-offer` / `giveup-offer` or empty detail; send nothing on the channel when empty (no `nothing queued`) |
+| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811 / #3893 / #4089:** after GIVEUP/NACK/DONE **ok only** (never DONE status=missing), chair may push next eligible job via `offer_focus_top` (`offered_via=giveup|done`, sticky offer_timeout_s); one open job per seat (no push while accepted/pending offer; seat-holds.json); log `done-offer` / `giveup-offer` / `done-offer skipped`; send nothing on the channel when empty (no `nothing queued`) |
 
 ## Who counts as who (authorization)
 
