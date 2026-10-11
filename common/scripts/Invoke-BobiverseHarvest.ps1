@@ -378,6 +378,8 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
 # tips that the next MRB FAIL-supersedes again. Skip client-side (intake also gates).
 # FR #2991: also skip thin already-covered twins (FAIL-supersede + already cover / close thin
 # twins / citing product PRs) that lack job-mrb process cues - same class as tip #2990.
+# FR #4176: also skip CLOSED wrong-book / DONE PASS FR #3317 process-loop closeouts that
+# lack the FAIL-supersede token (class of tip #4175 after #4171/#4173/#4174).
 function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
@@ -414,10 +416,20 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
     if ($isFailSuper -and $isProcess) { return $true }
     if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
     if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827 / #3959
+    # FR #4176: CLOSED wrong-book / light-triage DONE PASS (FR #3317) process-loop
+    # closeouts re-open lesson(harvest) tips without the FAIL-supersede token (class of #4175).
+    $isClosedWrongBook = ($joined -match '(?i)CLOSED\s+wrong[- ]book')
+    $isLightTriagePass = ($joined -match '(?i)DONE\s+PASS[^\n]{0,100}(?:FR\s*#?\s*)?3317|(?:FR\s*#?\s*)?3317[^\n]{0,100}DONE\s+PASS')
+    $isProcessLoopCue = ($joined -match '(?i)process[- ]loop')
+    if ($isClosedWrongBook -and $isProcess) { return $true }
+    if ($isClosedWrongBook -and $isLightTriagePass) { return $true }
+    if ($isProcessLoopCue -and ($isProcess -or $isClosedWrongBook -or $isFailSuper)) { return $true }
+    # Broaden park: under harvest/SKILL.md without the word park (tip #4171/#4175 class)
+    if ($isProcess -and ($joined -match '(?i)under\s+(?:`?harvest|harvest/SKILL)')) { return $true }
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#4176): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 
