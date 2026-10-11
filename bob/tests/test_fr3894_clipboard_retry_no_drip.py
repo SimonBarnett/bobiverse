@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import bob_worker as bw
+from test_fr2504_clipboard_restore import _stateful_clipboard
 import pytest
 
 
@@ -124,6 +125,7 @@ def test_fr3894_busy_clipboard_first_n_then_paste(monkeypatch):
         lambda name, use_last_error=True: _fake_k32() if "kernel32" in name.lower() else SimpleNamespace(),
     )
 
+    _stateful_clipboard(monkeypatch, None)
     assert bw.inject_console(0, ASSIGN, log=logs.append) is True
     assert any("path=paste" in m for m in logs), logs
     assert not any("clipboard_fallback" in m for m in logs), logs

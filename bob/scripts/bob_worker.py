@@ -24,6 +24,7 @@ Rules (CAST IRON, Simon t762u-t765u)
 from __future__ import annotations
 
 import argparse
+import contextlib
 import base64
 import hashlib
 import ctypes
@@ -1445,6 +1446,108 @@ def _clipboard_restore_unicode(
         return False
 
 
+
+def _clipboard_restore_delay_s() -> float:
+    """FR #4115: seconds to keep the injected text on the clipboard before restoring the prior text."""
+    return _env_float("BOB_WORKER_CLIPBOARD_RESTORE_S", 8.0, 0.0, 120.0)
+
+
+def _startup_wait_ready_enabled() -> bool:
+    """FR #4115: BOB_WORKER_STARTUP_WAIT_READY=0 restores the old 60 s grace-paste behaviour."""
+    raw = (os.environ.get("BOB_WORKER_STARTUP_WAIT_READY") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _startup_ready_cap_s() -> float:
+    """FR #4115: longest wait for the first turn_ended before inject is released anyway."""
+    return _env_float("BOB_WORKER_STARTUP_READY_CAP_S", 900.0, 60.0, 7200.0)
+
+
+def clipboard_set_verified(
+    text: str,
+    *,
+    set_fn: Callable[..., bool],
+    read_fn: Callable[..., Optional[str]],
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """FR #4115: set CF_UNICODETEXT then read it back; True only when the readback equals ``text``.
+
+    Logs ``relay: clipboard readback ok|mismatch|fail``. The caller falls back to the batched
+    KEY_EVENT path on False (never the per-char drip).
+    """
+    def _log(msg: str) -> None:
+        if log:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    want = (text or "").replace("\x00", "")
+    try:
+        ok = bool(set_fn(want, log=log))
+    except TypeError:
+        ok = bool(set_fn(want))
+    except Exception as e:  # noqa: BLE001
+        _log(f"relay: clipboard set error {type(e).__name__}")
+        ok = False
+    if not ok:
+        _log(f"relay: clipboard readback fail reason=set chars={len(want)}")
+        return False
+    try:
+        got = read_fn(log=log)
+    except TypeError:
+        got = read_fn()
+    except Exception:  # noqa: BLE001
+        got = None
+    if got is None:
+        _log(f"relay: clipboard readback fail reason=read chars={len(want)}")
+        return False
+    if got != want:
+        _log(f"relay: clipboard readback mismatch want={len(want)} got={len(got)} chars")
+        return False
+    _log(f"relay: clipboard readback ok chars={len(want)}")
+    return True
+
+
+def schedule_clipboard_restore(
+    prior: Optional[str],
+    ours: str,
+    *,
+    delay_s: Optional[float] = None,
+    read_fn: Optional[Callable[..., Optional[str]]] = None,
+    restore_fn: Optional[Callable[..., bool]] = None,
+    timer_cls=None,
+    log: Optional[Callable[[str], None]] = None,
+):
+    """FR #4115: restore the operator clipboard after ``delay_s`` only if it still holds ``ours``."""
+    delay = _clipboard_restore_delay_s() if delay_s is None else max(0.0, float(delay_s))
+    read_fn = read_fn or _clipboard_get_unicode
+    restore_fn = restore_fn or _clipboard_restore_unicode
+    want = (ours or "").replace("\x00", "")
+
+    def _restore() -> None:
+        try:
+            cur = read_fn(log=log)
+        except TypeError:
+            cur = read_fn()
+        except Exception:  # noqa: BLE001
+            return
+        if cur != want:
+            return  # someone else (operator / next inject) owns the clipboard now
+        try:
+            restore_fn(prior, log=log)
+        except TypeError:
+            restore_fn(prior)
+        except Exception:  # noqa: BLE001
+            pass
+
+    tc = timer_cls or threading.Timer
+    t = tc(delay, _restore)
+    t.daemon = True
+    t.start()
+    return t
+
+
 def _build_ctrl_v_records():
     """Ctrl down, V down/up, Ctrl up - one paste chord."""
     wintypes, INPUT_RECORD = _win_structs()
@@ -1551,7 +1654,11 @@ def inject_console(
             prior = None
             if _inject_prefer_paste():
                 prior = _clipboard_get_unicode(log=log)
-                if _clipboard_set_unicode(text, log=log):
+                # FR #4115: set, then read back and compare before Ctrl+V. A failed set or a
+                # readback mismatch (rdpclip / another owner raced us) falls back to keys.
+                if clipboard_set_verified(
+                    text, set_fn=_clipboard_set_unicode, read_fn=_clipboard_get_unicode, log=_log
+                ):
                     clipboard_touched = True
                     pasted = _write_console_all(k32, h, _build_ctrl_v_records(), wintypes)
             if not pasted:
@@ -1575,7 +1682,11 @@ def inject_console(
             # Enter only after paste/keys write finished (never mid-drip).
             time.sleep(gap)
             if clipboard_touched:
-                _clipboard_restore_unicode(prior, log=log)
+                # FR #4115: the Grok TUI reads the clipboard itself on Ctrl+V and can be slow
+                # (busy turn end / session start). Restoring after the 0.2 s gap emptied the
+                # clipboard under it ("Couldn't read clipboard text"). Restore later, and only
+                # if the clipboard still holds our text.
+                schedule_clipboard_restore(prior, text, restore_fn=_clipboard_restore_unicode, log=log)
                 clipboard_touched = False
             if not _write_console_all(k32, h, build_enter_records(), wintypes):
                 return False
@@ -1586,7 +1697,7 @@ def inject_console(
         finally:
             if clipboard_touched:
                 try:
-                    _clipboard_restore_unicode(prior, log=log)
+                    schedule_clipboard_restore(prior, text, restore_fn=_clipboard_restore_unicode, log=log)
                 except Exception:
                     pass
             k32.CloseHandle(h)
@@ -2177,8 +2288,11 @@ def inject_with_submit_verify(
     backoffs: tuple | list | None = None,
     stop_fn: Optional[Callable[[], bool]] = None,
     sync: bool = True,
+    on_failed: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
+
+    FR #4115: ``on_failed`` runs when the verify loop ends ``failed`` (re-paste / NACK recovery).
 
     Returns the inject_fn result. Verify failure is logged but does not flip the
     return to False (ack-miss / remind path still arms on successful paste).
@@ -2211,7 +2325,7 @@ def inject_with_submit_verify(
     t0 = float(clock())
 
     def _run() -> None:
-        run_submit_verify_loop(
+        res = run_submit_verify_loop(
             enter_fn=enter_fn,
             probe_fn=probe_fn,
             clock=clock,
@@ -2223,6 +2337,15 @@ def inject_with_submit_verify(
             stop_fn=stop_fn,
             t0=t0,
         )
+        if res == "failed" and on_failed is not None:
+            try:
+                on_failed()
+            except Exception as e:  # noqa: BLE001
+                if log:
+                    try:
+                        log(f"relay: submit-verify recovery error {type(e).__name__}")
+                    except Exception:
+                        pass
 
     if sync:
         _run()
@@ -3218,6 +3341,90 @@ def looks_like_job_assign(line: str, own_nick: str = "") -> bool:
     return bool(_JOB_ASSIGN_RX.search(body))
 
 
+_ASSIGN_JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
+
+
+def assign_job_key(line: str) -> Optional[str]:
+    """FR #4115: ``MRB owner/repo#N`` (case kept) from a Jeeves assign FROM line, or None."""
+    text = line or ""
+    parts = text.split(None, 3)
+    body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+    m = _ASSIGN_JOB_KEY_RX.search(body)
+    if not m:
+        return None
+    return f"{m.group(1).upper()} {m.group(2)}"
+
+
+def inject_failed_nack_line(line: str) -> Optional[str]:
+    """FR #4115: outbox NACK for an assign the agent never received (Jeeves re-offers it)."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    return f"NACK {key} inject failed"
+
+
+def append_outbox_line(path: Path | str, text: str) -> bool:
+    """Append one line to the run-dir outbox (the drain loop sends it to the shop channel)."""
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(text.rstrip("\r\n") + "\n")
+        return True
+    except OSError:
+        return False
+
+
+class InjectRecovery:
+    """FR #4115: an assign whose submit-verify FAILED is re-pasted once; if that also fails,
+    NACK it via the run-dir outbox (``inject failed``) and clear local state so the seat is free.
+
+    ``reinject(line, on_failed)`` must start one fresh inject+verify that calls ``on_failed`` on
+    a second failure. ``is_acked(line)`` short-circuits when the job got ACKed meanwhile.
+    """
+
+    def __init__(
+        self,
+        *,
+        reinject: Callable[[str, Callable[[], None]], bool],
+        write_outbox: Callable[[str], bool],
+        clear_local: Callable[[str], None],
+        is_acked: Callable[[str], bool] = lambda line: False,
+        log: Callable[[str], None] = lambda m: None,
+    ):
+        self.reinject = reinject
+        self.write_outbox = write_outbox
+        self.clear_local = clear_local
+        self.is_acked = is_acked
+        self.log = log
+
+    def on_failed(self, line: str, attempt: int = 1) -> str:
+        """Returns ``retried``, ``nacked``, ``acked`` or ``ignored``."""
+        if not assign_job_ref(line):
+            return "ignored"
+        if self.is_acked(line):
+            return "acked"
+        if attempt <= 1:
+            self.log(f"relay: submit-verify FAILED - re-pasting assign once (attempt 2) {line[:120]}")
+            ok = False
+            try:
+                ok = bool(self.reinject(line, lambda l=line: self.on_failed(l, attempt=2)))
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: re-paste error {type(e).__name__}")
+            if ok:
+                return "retried"
+            self.log("relay: inject path=fail reason=repaste_failed")
+        nack = inject_failed_nack_line(line)
+        if nack:
+            sent = self.write_outbox(nack)
+            self.log(f"relay: inject failed twice - {'queued' if sent else 'COULD NOT queue'} outbox {nack}")
+        try:
+            self.clear_local(line)
+        except Exception:  # noqa: BLE001
+            pass
+        return "nacked"
+
+
 class AssignAckMiss:
     """FR #2383: assign injected, agent keeps working, but no ACK hits the run-dir outbox.
 
@@ -3285,6 +3492,10 @@ class AssignAckMiss:
         return None
 
     def reminder_line(self, *, shop: str, outbox: str | Path) -> str:
+        # FR #4115: repeat the pending assign itself so a lost paste is recovered; the generic
+        # outbox reminder made the agent answer "waiting for the next Jeeves assign".
+        if self.last_line and assign_job_ref(self.last_line):
+            return self.last_line
         path = str(outbox)
         return format_from(
             "bob-worker",
@@ -4619,6 +4830,11 @@ class Supervisor:
                 f"agent: ready (first turn_ended after {elapsed:.0f}s; "
                 f"startup_grace_s={self.startup_grace_s:.0f} fallback not needed)"
             )
+        elif reason == "cap":
+            self.log(
+                f"agent: ready (startup ready cap {_startup_ready_cap_s():.0f}s reached without "
+                f"turn_ended; FR #4115 safety net); inject + !bored enabled"
+            )
         else:
             self.log(
                 f"agent: ready (startup_grace_s={self.startup_grace_s:.0f} fallback); "
@@ -4641,10 +4857,36 @@ class Supervisor:
                 self._min_ready_timer = None
 
         def ready():
+            # FR #4115: for grok (turn watcher on) the grace timer no longer releases inject while
+            # the session is still starting ("Starting session..." / boot prompt queued): a paste
+            # there raced the session start and the clipboard. Hold until the first turn_ended,
+            # with a long cap as the safety net.
+            with self._lock:
+                wait_ready = (
+                    self._startup_hold_armed
+                    and self._startup_turn_release_enabled
+                    and _startup_wait_ready_enabled()
+                    and self.proc is proc
+                )
+            cap = _startup_ready_cap_s()
+            remaining = max(0.0, cap - float(self.startup_grace_s))
+            if wait_ready and remaining > 0:
+                self.log(
+                    f"agent: startup_grace_s={self.startup_grace_s:.0f} elapsed but session not ready "
+                    f"(no first turn_ended) - holding inject/!bored until ready (cap {cap:.0f}s)"
+                )
+                t2 = threading.Timer(remaining, lambda p=proc: self._ready_now(p, reason="cap"))
+                t2.daemon = True
+                with self._lock:
+                    if not self._startup_hold_armed:
+                        return
+                    self._grace_timer = t2
+                t2.start()
+                return
             self._ready_now(proc, reason="grace")
 
         if self.startup_grace_s <= 0:
-            ready()
+            self._ready_now(proc, reason="grace")
             return
         t = threading.Timer(self.startup_grace_s, ready)
         t.daemon = True
@@ -4652,9 +4894,45 @@ class Supervisor:
             self._grace_timer = t
         t.start()
 
-    def _inject_line(self, proc, line: str) -> bool:
+    def _inject_recovery(self) -> "InjectRecovery":
+        """FR #4115: lazily build the re-paste / NACK recovery for lost assign pastes."""
+        rec = getattr(self, "_recovery", None)
+        if rec is not None:
+            return rec
+
+        def _reinject(line: str, cb) -> bool:
+            proc = self.proc
+            if proc is None:
+                return False
+            return bool(self._inject_line(proc, line, on_failed=cb))
+
+        def _write(text: str) -> bool:
+            return append_outbox_line(outbox_path_for_run(self.run_dir), text)
+
+        def _clear(line: str) -> None:
+            with contextlib.suppress(Exception):
+                if (self.ack_miss.last_line or "") == line or not self.ack_miss.last_line:
+                    self.ack_miss.clear()
+            with contextlib.suppress(Exception):
+                if getattr(self.relay, "last_unacked", "") == line:
+                    self.relay.last_unacked = ""
+
+        def _acked(line: str) -> bool:
+            b = self.bored
+            want = assign_job_ref(line)
+            return bool(b is not None and want and getattr(b, "ack_open", False)
+                        and getattr(b, "ack_job_ref", None) == want)
+
+        rec = InjectRecovery(reinject=_reinject, write_outbox=_write, clear_local=_clear,
+                             is_acked=_acked, log=self.log)
+        self._recovery = rec
+        return rec
+
+    def _inject_line(self, proc, line: str, *, on_failed=None) -> bool:
         if proc.poll() is not None:
             return False
+        if on_failed is None and assign_job_ref(line):
+            on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
         if not _submit_verify_enabled():
             return bool(self.inject(proc.pid, line))
         sid = self.sessions[-1] if self.sessions else None
@@ -4686,6 +4964,7 @@ class Supervisor:
             log=self.log,
             stop_fn=stop,
             sync=False,
+            on_failed=on_failed,
         )
 
     def _wait_exit(self, proc) -> None:
@@ -4826,9 +5105,10 @@ class Supervisor:
         shop = shop_channel(self.machine)
         if action == "remind":
             line = self.ack_miss.reminder_line(shop=shop, outbox=outbox)
+            what = "pending assign" if line == self.ack_miss.last_line else "outbox reminder"
             self.log(
                 f"ack-miss: no ACK after assign for {self.ack_miss.remind_s:.0f}s; "
-                f"re-injecting outbox reminder path={outbox}"
+                f"re-injecting {what} path={outbox}"
             )
             try:
                 self._inject_line(proc, line)
