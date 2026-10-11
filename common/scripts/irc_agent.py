@@ -851,19 +851,25 @@ class Client:
         who = (nick or "").strip()
         ch = bobreport.normalize_channel(channel)
         self._maybe_local_shop_closed(who)
+        # FR #4089: clear the seat's hold/pins on every chair, not only the digest operator
+        # (Jeeves is not the digest operator, so a gated clear never ran).
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(self._digest_home(), who, clear_pins=True):
+                info(f"INFO seat-hold cleared nick={who} reason=part")
         if not self._is_digest_operator():
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
         out = bobreport.apply_part(self.home, who, ch, briefer)
-        with contextlib.suppress(Exception):
-            if gitclaim.clear_seat_hold(self._digest_home(), who, clear_pins=True):  # FR #4089
-                info(f"INFO seat-hold cleared nick={who} reason=part")
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, f"{who}:{ch}")
 
     def handle_quit(self, nick: str) -> None:
         who = (nick or "").strip()
         self._maybe_local_shop_closed(who)
+        # FR #4089: clear the seat's hold/pins on every chair, not only the digest operator.
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(self._digest_home(), who, clear_pins=True):
+                info(f"INFO seat-hold cleared nick={who} reason=quit")
         if not self._is_digest_operator():
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
@@ -879,9 +885,6 @@ class Client:
                 )
         except Exception as exc:
             info(f"INFO shop-listen quit error {type(exc).__name__}")
-        with contextlib.suppress(Exception):
-            if gitclaim.clear_seat_hold(digest, who, clear_pins=True):  # FR #4089
-                info(f"INFO seat-hold cleared nick={who} reason=quit")
         out = bobreport.apply_quit(digest, who, briefer)
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, who)

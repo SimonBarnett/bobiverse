@@ -269,3 +269,13 @@ def test_irc_agent_clears_hold_on_answer_and_quit():
     src = IRC.read_text(encoding="utf-8")
     assert src.count("gitclaim.clear_seat_hold(") >= 3
     assert "reason=quit" in src and "reason=part" in src
+
+
+def test_quit_and_part_clear_hold_before_operator_gate():
+    """Jeeves is not the digest operator: the QUIT/PART hold clear must run before that gate."""
+    src = (Path(__file__).resolve().parents[2] / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
+    for name in ("def handle_part(", "def handle_quit("):
+        body = src[src.index(name):]
+        body = body[: body.index("\n    def ", 10)]
+        assert "clear_seat_hold(" in body, name
+        assert body.index("clear_seat_hold(") < body.index("_is_digest_operator()"), name
