@@ -1,17 +1,22 @@
-"""Repo-generic BUILD job (FR #4006 / #4025) --- recipe, classify, lock, dry-run, live runner.
+"""Repo-generic BUILD job (FR #4006 / #4025) + INSTALL-TEST (FR #4026 WP3).
 
 WP1: load/validate .bobiverse/build.yml, classify failures, single-flight lock,
 ops `!build` parse/decide, dry-run plans (no agent tokens).
 
 WP2 (FR #4025): deterministic live runner (`BuildRunner`), FakeGitHubFiler,
 `BUILD v1` consume/enqueue, pack/release only when no new blockers.
+
+WP3 (FR #4026): optional `!installtest` --- msiexec pre-release MSIs + post-checks + blockers.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
 import time
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -1284,3 +1289,374 @@ def consume_build_v1(
             recipe_machine=recipe_machine,
         )
     return True
+
+# ------------------------------------------------------------------ !installtest (FR #4026 WP3)
+@dataclass
+class InstallTestDecision:
+    ok: bool
+    reason: str = ""
+    pm_lines: list = field(default_factory=list)
+    repo: str = ""
+    version: str = ""
+    tag: str = ""
+    dry_run: bool = False
+    route: str = ""
+    machine: str = ""
+def parse_installtest(body: str) -> tuple[str, str] | None:
+    """Return (subcmd, rest) for ``!installtest``, or None if not that command.
+    subcmd is ``run`` | ``dry-run`` | ``\"\"`` (bare / usage).
+    """
+    text = (body or "").strip()
+    if not text.lower().startswith("!installtest"):
+        return None
+    parts = text.split(None, 2)
+    if len(parts) == 1:
+        return "", ""
+    sub = parts[1].lower()
+    rest = parts[2] if len(parts) > 2 else ""
+    if sub in ("dry-run", "dryrun", "dry"):
+        return "dry-run", rest
+    # !installtest <owner/repo> <version> [tag]
+    return "run", text[len("!installtest") :].strip()
+def decide_installtest(
+    *,
+    who,
+    body: str,
+    may: Callable,
+    denied_line: Callable,
+    recipe_loader: Callable[[str], BuildRecipe | None],
+    local_machine: str = "",
+    ignored: Iterable[str] = (),
+) -> InstallTestDecision | None:
+    parsed = parse_installtest(body)
+    if parsed is None:
+        return None
+    sub, rest = parsed
+    if not may("installtest", who):
+        return InstallTestDecision(False, "denied", [denied_line("installtest")])
+    dry = sub == "dry-run"
+    arg = rest if dry else (rest if sub == "run" else "")
+    if sub == "" or (dry and not arg) or (not dry and not arg):
+        return InstallTestDecision(
+            False,
+            "usage",
+            [
+                "installtest: usage !installtest <owner/repo> <version> [tag]",
+                "installtest: also !installtest dry-run <owner/repo> <version> [tag]",
+            ],
+            dry_run=dry,
+        )
+    tokens = arg.split()
+    if len(tokens) < 2:
+        return InstallTestDecision(
+            False,
+            "usage",
+            ["installtest: usage !installtest <owner/repo> <version> [tag]"],
+            dry_run=dry,
+        )
+    repo = tokens[0].strip()
+    if not REPO_RE.match(repo):
+        return InstallTestDecision(False, "bad_repo", [f"installtest: bad repo id: {repo}"], dry_run=dry)
+    if normalize_repo(repo) in {normalize_repo(x) for x in ignored}:
+        return InstallTestDecision(
+            False, "ignored", [f"installtest: {repo} is ignored; nothing started"], repo=repo, dry_run=dry
+        )
+    version = tokens[1]
+    tag = tokens[2] if len(tokens) > 2 else f"v{version}"
+    try:
+        recipe = recipe_loader(repo)
+    except RecipeError as exc:
+        msg = str(exc) if str(exc).startswith("build:") else f"installtest: {repo} {exc}"
+        # normalise prefix for installtest context
+        if msg.startswith("build:"):
+            msg = "installtest:" + msg[len("build:") :]
+        return InstallTestDecision(False, "no_recipe", [msg], repo=repo, version=version, tag=tag, dry_run=dry)
+    if recipe is None:
+        return InstallTestDecision(
+            False,
+            "no_recipe",
+            [f"installtest: {repo} has no .bobiverse/build.yml; nothing started"],
+            repo=repo,
+            version=version,
+            tag=tag,
+            dry_run=dry,
+        )
+    if not recipe.install_test:
+        return InstallTestDecision(
+            False,
+            "no_install_test",
+            [f"installtest: {repo} recipe has no install_test; nothing started"],
+            repo=repo,
+            version=version,
+            tag=tag,
+            dry_run=dry,
+        )
+    it = recipe.install_test
+    target_machine = str(it.get("machine") or recipe.machine or "").strip()
+    if local_machine and not is_recipe_build_machine(target_machine, local_machine):
+        return InstallTestDecision(
+            False,
+            "wrong_machine",
+            [
+                f"installtest: {repo} requires machine={target_machine} "
+                f"(folded={fold_build_machine(target_machine)}); local={local_machine}"
+            ],
+            repo=repo,
+            version=version,
+            tag=tag,
+            dry_run=dry,
+            machine=target_machine,
+        )
+    products = list(it.get("products") or ["jeeves", "bob", "airc"])
+    if dry:
+        lines = [
+            f"installtest dry-run: {repo} version={version} tag={tag} "
+            f"machine={target_machine} products={','.join(products)}",
+            "installtest dry-run: would msiexec /i /qn /l*v each MSI, post-check "
+            "service/SASL/channels/seat ACK, file release-blocker on fail; nothing installed",
+        ]
+        return InstallTestDecision(
+            True, "dry_run", lines, repo=repo, version=version, tag=tag, dry_run=True, machine=target_machine
+        )
+    route = f"INSTALLTEST v1 repo={repo} version={version} tag={tag}"
+    lines = [
+        f"installtest: queued {repo} version={version} tag={tag} machine={target_machine} "
+        f"products={','.join(products)}"
+    ]
+    return InstallTestDecision(
+        True, "ok", lines, repo=repo, version=version, tag=tag, dry_run=False, route=route, machine=target_machine
+    )
+@dataclass
+class InstallTestReport:
+    ok: bool
+    steps: list = field(default_factory=list)
+    evidence_dir: str = ""
+    blockers_filed: list = field(default_factory=list)
+    errors: list = field(default_factory=list)
+    announce_lines: list = field(default_factory=list)
+    dry_run: bool = False
+def default_msiexec_fn(msi_path: Path, log_path: Path, *, extra: str = "") -> int:
+    """Real msiexec /i /qn /l*v (tests inject a stub)."""
+    cmd = ["msiexec", "/i", str(msi_path), "/qn", "/l*v", str(log_path)]
+    for tok in (extra or "").split():
+        if tok:
+            cmd.append(tok)
+    return int(subprocess.call(cmd))
+def default_asset_resolver(version: str, tag: str, *, products: list[str] | None = None) -> list[Path]:
+    """Look under ProgramData/Bobiverse/build-work and a releases cache for product MSIs."""
+    products = list(products or ["jeeves", "bob", "airc"])
+    roots = [
+        Path(os.environ.get("PROGRAMDATA") or r"C:\ProgramData") / "Bobiverse" / "build-work",
+        Path(os.environ.get("PROGRAMDATA") or r"C:\ProgramData") / "Bobiverse" / "releases",
+        Path(os.environ.get("LOCALAPPDATA") or "") / "Bobiverse" / "build-work",
+    ]
+    found: list[Path] = []
+    for product in products:
+        name = f"{product}-{version}.msi"
+        hit: Path | None = None
+        for root in roots:
+            if not root:
+                continue
+            cand = root / name
+            if cand.is_file():
+                hit = cand
+                break
+            # also search one level of version/tag dirs
+            for sub in (root / tag, root / version, root / f"v{version}"):
+                c2 = sub / name
+                if c2.is_file():
+                    hit = c2
+                    break
+            if hit:
+                break
+        if hit:
+            found.append(hit)
+    return found
+def zip_evidence_dir(evidence_dir: Path, *, version: str) -> Path | None:
+    evidence_dir = Path(evidence_dir)
+    if not evidence_dir.is_dir():
+        return None
+    zip_path = evidence_dir.parent / f"installtest-{version}-evidence.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(evidence_dir.rglob("*")):
+            if p.is_file():
+                zf.write(p, arcname=str(p.relative_to(evidence_dir)))
+    return zip_path
+class InstallTestRunner:
+    """Install pre-release MSIs and post-check (FR #4026). All side effects injectable."""
+    def __init__(
+        self,
+        *,
+        repo: str,
+        version: str,
+        tag: str = "",
+        recipe: BuildRecipe,
+        evidence_dir: Path | str,
+        msiexec_fn: Callable[..., int] | None = None,
+        postcheck_fn: Callable[[str], dict] | None = None,
+        filer: Any = None,
+        asset_resolver: Callable[..., list[Path]] | None = None,
+        open_issues: Iterable[dict] | None = None,
+        dry_run: bool = False,
+    ) -> None:
+        self.repo = repo
+        self.version = version
+        self.tag = tag or f"v{version}"
+        self.recipe = recipe
+        self.evidence_dir = Path(evidence_dir)
+        self.msiexec_fn = msiexec_fn
+        self.postcheck_fn = postcheck_fn
+        self.filer = filer
+        self.asset_resolver = asset_resolver
+        self.open_issues = list(open_issues) if open_issues is not None else None
+        self.dry_run = dry_run
+    def _products(self) -> list[str]:
+        it = self.recipe.install_test or {}
+        return list(it.get("products") or ["jeeves", "bob", "airc"])
+    def _msiexec_extra(self) -> str:
+        it = self.recipe.install_test or {}
+        return str(it.get("msiexec_extra") or "").strip()
+    def _resolve_assets(self) -> list[Path]:
+        products = self._products()
+        if self.asset_resolver is not None:
+            try:
+                return list(self.asset_resolver(self.version, self.tag))
+            except TypeError:
+                return list(self.asset_resolver(self.version, self.tag, products=products))
+        return default_asset_resolver(self.version, self.tag, products=products)
+    def _file_blocker(self, step: str, excerpt: str) -> dict | None:
+        if self.filer is None:
+            return None
+        failure = classify_step_failure(step)
+        # Reuse WP2 file_blocker_or_dedupe (FakeGitHubFiler / GitHubFiler).
+        return file_blocker_or_dedupe(
+            self.filer,
+            repo=self.repo,
+            version=self.version,
+            ref=self.tag,
+            failure=failure,
+            log_excerpt=excerpt,
+            build_url="",
+        )
+    def run(self) -> InstallTestReport:
+        steps: list[str] = []
+        errors: list[str] = []
+        blockers: list[dict] = []
+        announce: list[str] = []
+        self.evidence_dir.mkdir(parents=True, exist_ok=True)
+        products = self._products()
+        if self.dry_run:
+            plan = [
+                f"resolve MSIs for {','.join(products)} version={self.version} tag={self.tag}",
+                "msiexec /i /qn /l*v each product",
+                "post-check service_up sasl_ok channels_ok seat_ack",
+                "file release-blocker (dedupe) on failure; zip evidence",
+            ]
+            return InstallTestReport(
+                True,
+                plan,
+                str(self.evidence_dir),
+                [],
+                [],
+                [f"installtest dry-run {self.repo} {self.version}"],
+                dry_run=True,
+            )
+        assets = self._resolve_assets()
+        if not assets:
+            err = f"installtest: no MSI assets for version={self.version} tag={self.tag}"
+            errors.append(err)
+            steps.append("resolve_assets:fail")
+            b = self._file_blocker("resolve_assets", err)
+            if b:
+                blockers.append(b)
+            zip_evidence_dir(self.evidence_dir, version=self.version)
+            announce.append(f"installtest FAIL {self.repo} {self.version}: no assets")
+            return InstallTestReport(False, steps, str(self.evidence_dir), blockers, errors, announce)
+        # Map product -> path by filename prefix
+        by_product: dict[str, Path] = {}
+        for p in assets:
+            stem = p.name.lower()
+            for prod in products:
+                if stem.startswith(f"{prod.lower()}-") and stem.endswith(".msi"):
+                    by_product[prod] = p
+                    break
+        missing = [prod for prod in products if prod not in by_product]
+        if missing:
+            err = f"installtest: missing MSI for products={','.join(missing)}"
+            errors.append(err)
+            steps.append("resolve_assets:missing")
+            b = self._file_blocker("resolve_assets", err)
+            if b:
+                blockers.append(b)
+        msiexec = self.msiexec_fn or (
+            lambda msi, log: default_msiexec_fn(msi, log, extra=self._msiexec_extra())
+        )
+        postcheck = self.postcheck_fn or (lambda _product: {
+            "service_up": False,
+            "sasl_ok": False,
+            "channels_ok": False,
+            "seat_ack": False,
+        })
+        all_ok = not missing
+        for prod in products:
+            msi = by_product.get(prod)
+            if msi is None:
+                continue
+            log_path = self.evidence_dir / f"{prod}-{self.version}-msiexec.log"
+            try:
+                rc = int(msiexec(msi, log_path))
+            except Exception as exc:
+                rc = -1
+                log_path.write_text(f"msiexec raised {type(exc).__name__}: {exc}\n", encoding="utf-8")
+            step_name = f"msiexec:{prod}"
+            if rc != 0:
+                all_ok = False
+                err = f"{step_name} exit={rc}"
+                errors.append(err)
+                steps.append(f"{step_name}:fail:{rc}")
+                excerpt = ""
+                try:
+                    excerpt = log_path.read_text(encoding="utf-8", errors="replace")[-1500:]
+                except Exception:
+                    excerpt = err
+                b = self._file_blocker(step_name, excerpt or err)
+                if b:
+                    blockers.append(b)
+                continue
+            steps.append(f"{step_name}:ok")
+            try:
+                checks = dict(postcheck(prod) or {})
+            except Exception as exc:
+                all_ok = False
+                err = f"postcheck:{prod} raised {type(exc).__name__}: {exc}"
+                errors.append(err)
+                steps.append(f"postcheck:{prod}:fail")
+                b = self._file_blocker(f"postcheck:{prod}", err)
+                if b:
+                    blockers.append(b)
+                continue
+            required = ("service_up", "sasl_ok", "channels_ok", "seat_ack")
+            failed_keys = [k for k in required if not checks.get(k)]
+            (self.evidence_dir / f"{prod}-postcheck.json").write_text(
+                json.dumps(checks, indent=2) + "\n", encoding="utf-8"
+            )
+            if failed_keys:
+                all_ok = False
+                err = f"postcheck:{prod} failed keys={','.join(failed_keys)}"
+                errors.append(err)
+                steps.append(f"postcheck:{prod}:fail")
+                b = self._file_blocker(f"postcheck:{prod}", err + "\n" + json.dumps(checks))
+                if b:
+                    blockers.append(b)
+            else:
+                steps.append(f"postcheck:{prod}:ok")
+        zip_evidence_dir(self.evidence_dir, version=self.version)
+        if all_ok:
+            announce.append(f"installtest PASS {self.repo} {self.version} products={','.join(products)}")
+        else:
+            announce.append(
+                f"installtest FAIL {self.repo} {self.version} blockers={len(blockers)} errors={len(errors)}"
+            )
+        return InstallTestReport(
+            all_ok, steps, str(self.evidence_dir), blockers, errors, announce, dry_run=False
+        )

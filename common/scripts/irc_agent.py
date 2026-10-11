@@ -1584,6 +1584,75 @@ class Client:
             except Exception as exc:
                 info(f"WARN build enqueue: {type(exc).__name__}: {exc}")
 
+    def _handle_installtest_command(self, asker: str, body: str) -> None:
+        """FR #4026 WP3: ops !installtest — decide + PM; live msiexec is on the recipe machine."""
+        if not getattr(self.args, "chair", False):
+            return
+        if bobiverse_build.parse_installtest(body) is None:
+            return
+        who_nick = (asker or "").strip()
+        if not who_nick or who_nick.lower() in self._mine_nicks():
+            return
+        prin = self._principal(who_nick)
+
+        def recipe_loader(repo: str):
+            root = Path(self._install_root())
+            for cand in (root, root.parent):
+                try:
+                    return bobiverse_build.load_recipe(cand)
+                except bobiverse_build.RecipeError:
+                    continue
+            raise bobiverse_build.RecipeError(
+                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            )
+
+        ignored = ()
+        try:
+            import focus_ignore
+            ignored = tuple(focus_ignore.load_ignored(self.home) or ())
+        except Exception:
+            ignored = ()
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        try:
+            dec = bobiverse_build.decide_installtest(
+                who=prin,
+                body=body,
+                may=chair_commands.may,
+                denied_line=chair_commands.denied_line,
+                recipe_loader=recipe_loader,
+                local_machine=local,
+                ignored=ignored,
+            )
+        except Exception as e:
+            info(f"WARN installtest decide failed: {type(e).__name__}: {e}")
+            self._cmd_reply(who_nick, "installtest", [f"installtest: error {type(e).__name__}"])
+            return
+        if dec is None:
+            return
+        self._cmd_reply(who_nick, "installtest", dec.pm_lines)
+        info(
+            f"INFO installtest nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
+            f"repo={dec.repo or '-'} dry={dec.dry_run}"
+        )
+        if not dec.ok and dec.reason == "denied":
+            self._whois_hint(who_nick)
+            return
+        if dec.route and not dec.dry_run:
+            try:
+                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + dec.route)
+                time.sleep(FLOOD_S)
+            except Exception:
+                info("WARN installtest route announce failed")
 
     def _build_queue_dir(self) -> Path:
         """FR #4025: home/build-queue for accepted BUILD v1 jobs (spawn/pack is out of chair scope)."""
@@ -3009,6 +3078,9 @@ class Client:
             return
         if body.strip().lower().startswith("!build"):
             self._handle_build_command(src, body)
+            return
+        if body.strip().lower().startswith("!installtest"):
+            self._handle_installtest_command(src, body)
             return
         if self._handle_register_command(src, body):
             return
