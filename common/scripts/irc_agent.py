@@ -1389,8 +1389,15 @@ class Client:
             self.whisper(who, f"ERR !unregister denied (+o/+h required) machine={mid}")
             info(f"INFO unregister denied nick={who} machine={mid}")
             return True
+        members = None
+        try:
+            members = getattr(self._privs(), "members", None) or getattr(
+                getattr(self._privs(), "state", None), "members", None
+            )
+        except Exception:
+            members = None
         plan = unregister_cmd.build_unregister_plan(
-            self._digest_home(), parsed, asker=who
+            self._digest_home(), parsed, asker=who, members=members
         )
         if plan is None:
             return True
@@ -1584,6 +1591,79 @@ class Client:
             except Exception as exc:
                 info(f"WARN build enqueue: {type(exc).__name__}: {exc}")
 
+    def _handle_installtest_command(self, asker: str, body: str) -> None:
+        """FR #4026 WP3: ops !installtest — decide + PM; live msiexec is on the recipe machine."""
+        if not getattr(self.args, "chair", False):
+            return
+        if bobiverse_build.parse_installtest(body) is None:
+            return
+        who_nick = (asker or "").strip()
+        if not who_nick or who_nick.lower() in self._mine_nicks():
+            return
+        prin = self._principal(who_nick)
+
+        def recipe_loader(repo: str):
+            root = Path(self._install_root())
+            for cand in (root, root.parent):
+                try:
+                    return bobiverse_build.load_recipe(cand)
+                except bobiverse_build.RecipeError:
+                    continue
+            raise bobiverse_build.RecipeError(
+                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            )
+
+        ignored = ()
+        try:
+            import focus_ignore
+            ignored = tuple(focus_ignore.load_ignored(self.home) or ())
+        except Exception:
+            ignored = ()
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        try:
+            dec = bobiverse_build.decide_installtest(
+                who=prin,
+                body=body,
+                may=chair_commands.may,
+                denied_line=chair_commands.denied_line,
+                recipe_loader=recipe_loader,
+                local_machine=local,
+                ignored=ignored,
+            )
+        except Exception as e:
+            info(f"WARN installtest decide failed: {type(e).__name__}: {e}")
+            self._cmd_reply(who_nick, "installtest", [f"installtest: error {type(e).__name__}"])
+            return
+        if dec is None:
+            return
+        self._cmd_reply(who_nick, "installtest", dec.pm_lines)
+        info(
+            f"INFO installtest nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
+            f"repo={dec.repo or '-'} dry={dec.dry_run}"
+        )
+        if not dec.ok and dec.reason == "denied":
+            self._whois_hint(who_nick)
+            return
+        if dec.route and not dec.dry_run:
+            try:
+                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + dec.route)
+                time.sleep(FLOOD_S)
+            except Exception:
+                info("WARN installtest route announce failed")
+            try:
+                self._maybe_start_installtest_runner(dec.route, src_hint=who_nick)
+            except Exception as exc:
+                info(f"WARN installtest enqueue: {type(exc).__name__}: {exc}")
 
     def _build_queue_dir(self) -> Path:
         """FR #4025: home/build-queue for accepted BUILD v1 jobs (spawn/pack is out of chair scope)."""
@@ -1629,6 +1709,49 @@ class Client:
         if bobiverse_build.parse_build_v1_route(body) is None:
             return False
         return self._maybe_start_build_runner(body, src_hint=src)
+
+    def _maybe_start_installtest_runner(self, route_line: str, *, src_hint: str = "") -> bool:
+        """FR #4026 WP3: accept INSTALLTEST v1 when local matches install_test.machine; enqueue only."""
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        recipe_machine = "ionos"
+        try:
+            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            it = recipe.install_test or {}
+            recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+        except Exception:
+            try:
+                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
+                it = recipe.install_test or {}
+                recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+            except Exception:
+                recipe_machine = "ionos"
+        qdir = self._build_queue_dir()
+        ok = bobiverse_build.consume_installtest_v1(
+            route_line, local, recipe_machine, queue_dir=qdir
+        )
+        if ok:
+            info(
+                f"INFO FR #4026 INSTALLTEST v1 accepted machine={local} "
+                f"recipe={recipe_machine} from={src_hint or '-'} queue={qdir}"
+            )
+        return ok
+
+    def _maybe_consume_installtest_v1_wire(self, src: str, body: str) -> bool:
+        """FR #4026: fleet INSTALLTEST v1 PRIVMSG -> enqueue when this box is the recipe machine."""
+        if bobiverse_build.parse_installtest_v1_route(body) is None:
+            return False
+        return self._maybe_start_installtest_runner(body, src_hint=src)
 
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
@@ -3010,6 +3133,9 @@ class Client:
         if body.strip().lower().startswith("!build"):
             self._handle_build_command(src, body)
             return
+        if body.strip().lower().startswith("!installtest"):
+            self._handle_installtest_command(src, body)
+            return
         if self._handle_register_command(src, body):
             return
         if self._handle_unregister_command(src, body):
@@ -3019,6 +3145,8 @@ class Client:
                 self._handle_recycle_command(src, body)
             else:
                 self._handle_bob_local_recycle_command(src, body)
+            return
+        if self._maybe_consume_installtest_v1_wire(src, body):
             return
         if self._maybe_consume_build_v1_wire(src, body):
             return

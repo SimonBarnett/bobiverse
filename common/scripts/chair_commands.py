@@ -4,7 +4,7 @@ Deterministic, token-less, no secrets. Pure functions (no sockets / no clock unl
 fake-IRC tests drive them exactly like the live chair does. ``irc_agent.Client`` is the thin glue.
 
 gh-Jeeves reference commands restored here: !help !list (+ !filter alias) !status !resync !sweep !ignore
-!ignored !unignore !focus !unfocus !recycle !build (FR #4006) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
+!ignored !unignore !focus !unfocus !recycle !build (FR #4006) !installtest (FR #4026) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
 ``ACK``/``DONE``/``NACK``) lives in gitclaim / shop_listen and is not a PM command.
 
 AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
@@ -127,7 +127,18 @@ COMMANDS: tuple = (
         "!build SimonBarnett/bobiverse 0.1.32",
         "Ops only (simon / bob-* / +o/+h). Runs the in-repo .bobiverse/build.yml on the recipe machine. "
         "Subcommands: status, cancel, dry-run. Per-repo single-flight; no recipe => refuse.",
-        ("status", "list", "focus"),
+        ("status", "list", "focus", "installtest"),
+    ),
+    CommandSpec(
+        "installtest",
+        "!installtest <owner/repo> <version> [tag] | !installtest dry-run <owner/repo> <version> [tag]",
+        "msiexec install-test pre-release MSIs + post-checks; failures become release-blocker issues (FR #4026 WP3)",
+        OPS_ROLES,
+        "!installtest SimonBarnett/bobiverse 0.1.32",
+        "Ops only (simon / bob-* / +o/+h). Optional follow-on after BUILD: msiexec /i /qn /l*v each product MSI "
+        "from recipe install_test, post-check service/SASL/channels/seat ACK, file release-blocker on fail. "
+        "Requires install_test in .bobiverse/build.yml; runs on recipe install_test.machine (fold-aware).",
+        ("build", "status"),
     ),
     CommandSpec("ping", "ping [nick-glob]", "channel or PM: reply pong (bare word, no !)", ALL_ROLES, "ping",
                 "Jeeves answers pong to a bare ping, or to ping <glob> when the glob matches its nick.", ("help",)),
@@ -220,7 +231,8 @@ MATRIX = {
     # command -> who may run it
     "help": "any", "list": "any", "filter": "any", "status": "any", "ignored": "any", "ping": "any",
     "focus-read": "any",
-    "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops", "build": "ops", "assign": "ops",
+    "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops", "build": "ops",
+    "installtest": "ops", "assign": "ops",
     "focus": "ops+allow", "unfocus": "ops+allow",
 }
 
@@ -244,6 +256,7 @@ def denied_line(cmd: str) -> str:
         "resync": "resync: denied (simon or bob-* ops only)",
         "sweep": "sweep: denied (simon or bob-* ops only)",
         "build": "build: denied (simon or bob-* ops only)",
+        "installtest": "installtest: denied (simon or bob-* ops only)",
         "assign": "assign: denied (simon or bob-* ops only)",
     }.get(cmd, f"{cmd}: denied")
 
