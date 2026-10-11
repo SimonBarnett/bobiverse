@@ -65,6 +65,7 @@ PUT/RUN/JOB verbs are constructed by the helper (sandbox under `<ai root>\airc\d
 - Optional clone sync when `Sync-BobiverseFromRepo.ps1` is present and `BOBIVERSE_REPO` is set; that path is secondary to the detached release updater.
 - Do **not** document or call the retired `Check-BobiverseUpdate.ps1` name for fleet ops.
 - **FR #4015 (nssm DisplayName):** never leave unsubstituted `#machine` — resolve `-MachineId` / script id / sanitized `COMPUTERNAME` (fallback `local`) so DisplayName is e.g. `airc console (#walrus IRC shell)`.
+- **FR #4030 (Bob remote shell ON):** fleet installs on Bob machines default `shell=operators`. Upgrade migrates legacy fresh-default `shell=off` unless `shell_source=explicit`. Console `WARN` logs shell=off on Bob with source. Workstation profile still defaults off.
 - **FR #4014 (no hardcoded #ionos in warnings):** installer/start messages use the target machine id and name `#wonderland` when `#<machine>` is unregistered (e.g. `#walrus is not registered; joining #wonderland`). Never `instead of #ionos`.
 - **FR #4013 (non-elevated install / Error 1730):** tip MSI requires `Privileged` (message: `airc install needs administrator rights`) and `InstallPrivileges=elevated` so an unelevated `/i` fails closed before `RemoveExistingProducts` Error **1730** / generic **1603**. `Install-Airc.ps1` self-elevates via UAC; cancel/failure exits **740** with the same plain message and does not write the FR #3759 fail-reported flag / outer intake.
 -

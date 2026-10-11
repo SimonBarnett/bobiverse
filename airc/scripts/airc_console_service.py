@@ -208,6 +208,24 @@ class AircConsoleService:
         )
         self.capabilities = caps
         info(caps.log_line())
+        # FR #4030: do not hide shell=off on Bob machines
+        try:
+            from airc_console import detect_bob_machine, warn_shell_off_on_bob_line, _read_airc_json_dict
+
+            _cfg4030 = _read_airc_json_dict(install_root) or {}
+            _src4030 = str(_cfg4030.get("shell_source") or "")
+            if _cfg4030.get("shell_explicit") is True and not _src4030:
+                _src4030 = "explicit"
+            _warn4030 = warn_shell_off_on_bob_line(
+                shell_mode=caps.shell_mode,
+                is_bob_machine=detect_bob_machine(install_root=install_root),
+                shell_source=_src4030 or None,
+                profile=str(_cfg4030.get("profile") or ""),
+            )
+            if _warn4030:
+                info(_warn4030)
+        except Exception:
+            pass
         # FR #3401 / #3639: every profile authorises by live channel +o/+h only.
         # No operators.txt / fleet-operators roster / nick allow-list is read anywhere.
         try:
