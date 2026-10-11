@@ -33,7 +33,7 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 
 * **ALWAYS a NEW agent** (t765u): never resume, continue or attach to an older plan agent; new session id, its own single window, no `--resume`/`--continue`/`-r`/`-c`, never an existing window or process. A second click is a second, independent plan.
   The folder `<ai root>\bob\plan` is shared, so the agent is told to put each plan's output in its OWN new subfolder `<ai root>\bob\plan\work\plan-<yyyyMMdd-HHmmss>` and never to touch earlier ones.
-* **Agent selection is the same automatic token rule as the worker**: Cursor (high or low pool > 0) -> Grok (local weekly > 0) -> a hidden-input prompt IN THE SAME WINDOW for a session `XAI_API_KEY`
+* **Agent selection is the same automatic token rule as the worker** (FR #3997): Grok (local weekly > 0 or unknown read) -> Cursor (high or low pool > 0) -> a hidden-input prompt IN THE SAME WINDOW for a session `XAI_API_KEY`
   (memory only, never saved/printed). See `bobiverse-bob-worker`.
 * Cursor (`agent.cmd`) runs with `--plan --model auto --workspace <ai root>\bob\plan`; Grok (`agent.exe`) with `--no-auto-update --no-alt-screen --cwd <ai root>\bob\plan --permission-mode plan --session-id <new-uuid>` (FR #2699: same no-auto-update prefix as agent/monitor/maintenance so Plan cannot self-update mid-session).
 * **ONE window** (t771u): the exe's console window hosts the plan agent (the agent inherits it - no second console, no watcher window). The exe stays alive exactly as long as the agent: closing the window or killing the

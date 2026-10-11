@@ -52,13 +52,13 @@ click = one `bob-worker.exe` = one window. `Plan` is the same (`--mode plan`, no
 
 ## Which agent starts - automatic, by token availability (never a menu choice)
 
-1. **Cursor** `agent.cmd` (`%LOCALAPPDATA%\cursor-agent\agent.cmd`) when the **high-cost-models OR the auto (low-cost) pool** has more than 0 % left.
-2. else **Grok** `agent.exe` (`%USERPROFILE%\.grok\bin\agent.exe`) when the local weekly reading (`unified.jsonl`, Grok 1.0.41 may report no % but a verified
-   local login + current weekly period = available) shows tokens.
+1. **Grok** `agent.exe` (`%USERPROFILE%\.grok\bin\agent.exe`) when the local weekly reading (`unified.jsonl`, Grok 1.0.41 may report no % but a verified
+   local login + current weekly period = available) shows tokens, **or when the Grok reading is unknown** (FR #3997: unknown counts as available for seat start; mid-job still uses explicit exhausted only, FR #3923).
+2. else **Cursor** `agent.cmd` (`%LOCALAPPDATA%\cursor-agent\agent.cmd`) when the **high-cost-models OR the auto (low-cost) pool** has more than 0 % left.
 3. else a **prompt in the worker window** asks for an `XAI_API_KEY` for this start only (hidden input): kept in memory, handed to the child's environment, never written to disk, never printed or
    logged. Cancel = nothing starts (exit 4).
 
-An unknown reading is "not available" (falls through), never "available". Readings come from `<ai root>\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
+An unknown **Grok** reading is available for seat start (FR #3997). An unknown **Cursor** pool reading is "not available" (falls through). Readings come from `<ai root>\bob\tools\Get-BobAgentFuel.ps1` (the tray's own local readers:
 `Get-BobCursorAgentWeeklyRemaining` via `Get-CursorAgentUsage.py`, `Get-BobWeeklyRemaining`, `Get-BobGrokAvailability`; no digest GET).
 
 ## What the worker agent gets
