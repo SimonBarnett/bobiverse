@@ -183,8 +183,8 @@ function Get-BobFuelOrder {
         [switch]$AllowOnDemand,
         [switch]$AllowCopilot
     )
-    # Default: Cursor Models then Grok Build. Copilot only when -AllowCopilot (CCA often off).
-    $order = @('cursor-models', 'grok-build')
+    # Default: Grok Build then Cursor Models (FR #3997 weekly Grok first). Copilot only when -AllowCopilot (CCA often off).
+    $order = @('grok-build', 'cursor-models')
     if ($AllowCopilot) { $order += 'copilot' }
     $order += 'grok-bot'
     if ($AllowOnDemand) { $order += 'on-demand' }
@@ -418,7 +418,7 @@ function Get-BobMachineFuels {
     if ($null -eq $Machine) { return @() }
     if ($Machine.fuels) { return @($Machine.fuels | ForEach-Object { [string]$_ }) }
     if (-not (Test-BobGitEligibleMachine $Machine)) { return @() }
-    return @('cursor-models', 'grok-build', 'copilot', 'grok-bot')
+    return @('grok-build', 'cursor-models', 'copilot', 'grok-bot')  # FR #3997
 }
 
 function Test-BobMachineCanStrikeFuel {

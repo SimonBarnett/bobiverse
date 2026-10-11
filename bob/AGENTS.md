@@ -37,7 +37,7 @@ Docs in `docs\`:
 
 - The tray has two plain items, **Agent** and **Plan** (no submenus). Each click runs `bob-worker.exe` (`<ai root>\bob\worker`) which starts a **NEW** agent
   every time - it NEVER resumes, continues or attaches to an existing agent session, window or process (no `--resume`/`--continue`).
-- The agent is chosen automatically by token availability: Cursor pool > 0 -> `agent.cmd`; else local Grok weekly tokens -> `agent.exe`; else a hidden-input prompt in the same window asks for a Grok session key.
+- The agent is chosen automatically by token availability: local Grok weekly tokens > 0 (or unknown read) -> `agent.exe`; else Cursor pool > 0 -> `agent.cmd`; else a hidden-input prompt in the same window asks for a Grok session key (FR #3997).
 - Agent CWD is `<ai root>\bob\worker`; Plan CWD is `<ai root>\bob\plan`. Both folders have their own AGENTS.md + skills with the CAST IRON harvest rule on top.
 - Full start / troubleshooting guide: `bobiverse-bob-worker` and `bobiverse-bob-plan`.
 
