@@ -385,6 +385,8 @@ _MRB_PROCESS_CUE_RE = re.compile(
     r"belong(?:s)? in\s+`?bobiverse-bob-job-mrb`?|"
     # FR #3827: tip #3826 used "stay in" / "durable in" instead of "belong(s) in"
     r"(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb`?|"
+    # FR #3957: tip #3956 used "durable home is bobiverse-bob-job-mrb"
+    r"durable\s+home\s+is\s+`?bobiverse-bob-job-mrb`?|"
     r"docs/mrb-N after skill merge|"
     r"Harvest-lesson MRB:\s*process|"
     r"never merge a second copy(?:\s+that says keep MRB process)?\s+in harvest|"
@@ -393,7 +395,8 @@ _MRB_PROCESS_CUE_RE = re.compile(
     r"second\s+copy\s+under\s+harvest|"
     r"process playbooks?|"
     r"restatement playbooks?|"
-    r"park(?:ed|s)?\s+under\s+harvest"
+    # park under harvest — allow words between park and under (FR #3957)
+    r"park(?:ed|s|ing)?(?:\s+\S+){0,16}\s+under\s+harvest"
     r")"
 )
 _THIN_TWIN_CUE_RE = re.compile(
@@ -443,7 +446,14 @@ def is_mrb_process_routing_lesson(text: str) -> bool:
     # FR #3827: "stay in" / "durable in" synonyms for belong(s) in
     if re.search(r"(?i)(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb", t):
         return True
-    if re.search(r"(?i)park(?:ed|s)?\s+under\s+harvest", t):
+    # FR #3957: "durable home is bobiverse-bob-job-mrb"
+    if re.search(r"(?i)durable\s+home\s+is\s+`?bobiverse-bob-job-mrb", t):
+        return True
+    # park under harvest — allow words between park and under (FR #3957)
+    if re.search(r"(?i)park(?:ed|s|ing)?(?:\s+\S+){0,16}\s+under\s+harvest", t):
+        return True
+    # FR #3957: FAIL-supersede + job-mrb cue (without requiring belong/stay/durable in)
+    if _FAIL_SUPERSEDE_RE.search(t) and re.search(r"(?i)bobiverse-bob-job-mrb", t):
         return True
     if re.search(
         r"(?i)docs/mrb-N after skill merge|Harvest-lesson MRB:\s*process|"

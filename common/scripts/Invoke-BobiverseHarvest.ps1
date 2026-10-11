@@ -378,6 +378,7 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
 # tips that the next MRB FAIL-supersedes again. Skip client-side (intake also gates).
 # FR #2991: also skip thin already-covered twins (FAIL-supersede + already cover / close thin
 # twins / citing product PRs) that lack job-mrb process cues - same class as tip #2990.
+# FR #3957: also "durable home is job-mrb" and "do not park FR #N ... under harvest" (words between park/under).
 function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
@@ -385,6 +386,8 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)belong(?:s)? in\s+`?bobiverse-bob-job-mrb') -or
         # FR #3827: tip #3826 used "stay in" / "durable in" instead of "belong(s) in"
         ($joined -match '(?i)(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb') -or
+        # FR #3957: tip #3956 used "durable home is bobiverse-bob-job-mrb"
+        ($joined -match '(?i)durable\s+home\s+is\s+`?bobiverse-bob-job-mrb') -or
         ($joined -match '(?i)docs/mrb-N after skill merge') -or
         ($joined -match '(?i)Harvest-lesson MRB:\s*process') -or
         ($joined -match '(?i)never merge a second copy') -or
@@ -406,12 +409,16 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)citing\s+(?:the\s+)?product(?:/move)?\s*PRs?')
     )
     if ($isFailSuper -and $isProcess) { return $true }
-    if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
+    # FR #3957: allow words between park and under (do not park FR #N ... under harvest)
+    if ($isProcess -and ($joined -match '(?i)park(?:ed|s|ing)?(?:\s+\S+){0,16}\s+under\s+harvest')) { return $true }
+    if ($isFailSuper -and ($joined -match '(?i)park(?:ed|s|ing)?(?:\s+\S+){0,16}\s+under\s+harvest')) { return $true }
+    # FR #3957: FAIL-supersede + job-mrb cue (covers durable home is / CAST IRON in job-mrb)
+    if ($isFailSuper -and ($joined -match '(?i)bobiverse-bob-job-mrb')) { return $true }
     if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#3957): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 
