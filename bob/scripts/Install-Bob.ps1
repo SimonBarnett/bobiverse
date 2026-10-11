@@ -428,9 +428,36 @@ try {
         }
 } catch { }
 
+# FR #3987: Start ircBob BEFORE live tray launch, and never let the tray Restart-BobTrayService
+# during install (Start-BobFleetTray default restart races Start-Service and hangs msiexec CA).
+if (-not $NoStart) {
+    # Soft-fail start so missing ObjectName password does not 1603 the MSI (issue #6).
+    # Bounded wait: never block the CA indefinitely (FR #3987).
+    try {
+        $svc = Get-Service -Name $ServiceName -ErrorAction Stop
+        if ($svc.Status -ne 'Running') {
+            Start-Service $ServiceName -ErrorAction Stop
+            $svc.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(60))
+        }
+        Start-Sleep -Seconds 1
+    } catch {
+        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
+        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
+        if (Test-Path -LiteralPath $report) {
+            try {
+                & $report -Title "bob install: Start-Service $ServiceName failed" -Body $_.Exception.Message -InstallRoot $InstallRoot
+            } catch {}
+        }
+    }
+}
+
 if ((-not $SkipTray) -and (-not $NoStart)) {
     $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1' -or (Test-BobiverseMsiOrQuiet)
     if ($noTidy) { Write-Host 'INFO tray start with SkipTidy: running seats and Grok Bot are not killed (#32)' }
+    # FR #3987: CA already started ircBob; suppress tray Restart-BobTrayService for this live launch only.
+    $prevNoSvcRestart = $env:BOBIVERSE_NO_SERVICE_RESTART
+    $env:BOBIVERSE_NO_SERVICE_RESTART = '1'
+    try {
     $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
     $watchPs1 = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
     $trayInteractive = Join-Path $InstallRoot 'scripts\Start-BobTrayInteractive.ps1'
@@ -488,6 +515,7 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
         }
     } elseif (Test-Path -LiteralPath $trayPs1) {
         # Interactive install: kill prior tray then start TipForm in this session (SkipTidy keeps seats).
+        # FR #3987: pass -SkipServiceRestart so TipForm does not sc stop ircBob while CA owns start.
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             $_.CommandLine -and (
                 $_.CommandLine -match 'Start-BobTray\.ps1' -or
@@ -503,31 +531,23 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
         Start-Sleep -Milliseconds 500
         $trayLaunch = @(
             '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-            '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew', '-SkipTidy'
+            '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew', '-SkipTidy', '-SkipServiceRestart'
         )
         Start-Process -FilePath 'powershell.exe' -ArgumentList $trayLaunch | Out-Null
-        Write-Host 'INFO started TipForm Start-BobTray (ircBob companion; SkipTidy FR #1636)'
+        Write-Host 'INFO started TipForm Start-BobTray (ircBob companion; SkipTidy FR #1636; SkipServiceRestart FR #3987)'
         if (Test-Path -LiteralPath $trayInteractive) {
             try { & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RegisterOnly } catch { }
         }
     }
-}
-
-if (-not $NoStart) {
-    # Soft-fail start so missing ObjectName password does not 1603 the MSI (issue #6).
-    try {
-        Start-Service $ServiceName -ErrorAction Stop
-        Start-Sleep -Seconds 2
-    } catch {
-        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
-        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
-        if (Test-Path -LiteralPath $report) {
-            try {
-                & $report -Title "bob install: Start-Service $ServiceName failed" -Body $_.Exception.Message -InstallRoot $InstallRoot
-            } catch {}
+    } finally {
+        if ($null -eq $prevNoSvcRestart -or $prevNoSvcRestart -eq '') {
+            Remove-Item Env:\BOBIVERSE_NO_SERVICE_RESTART -ErrorAction SilentlyContinue
+        } else {
+            $env:BOBIVERSE_NO_SERVICE_RESTART = $prevNoSvcRestart
         }
     }
 }
+
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
 Write-Host "INFO Install-Bob done nick=$nick"
 Write-BobiverseMsiInstallLog -Product bob -Message ("install-ok nick=$nick")

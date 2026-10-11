@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Public launcher for the TipForm Bob systray shipped in the bob MSI.
@@ -21,7 +21,10 @@ param(
     [switch]$ForceNew,
     # #32 / FR #1636: do not run Stop-BobSystrayPriorAgents (kills grok.exe seats, Grok Bot, Watch-AgentHealth).
     # Also honoured via env BOBIVERSE_NO_TIDY=1 (set by Install-Bob for quiet/MSI installs).
-    [switch]$SkipTidy
+    [switch]$SkipTidy,
+    # FR #3987: Install-Bob / MSI CA owns Start-Service ircBob; do not Restart-BobTrayService from the tray child.
+    # Also honoured via env BOBIVERSE_NO_SERVICE_RESTART=1.
+    [switch]$SkipServiceRestart
 )
 
 $ErrorActionPreference = 'Continue'
@@ -137,17 +140,20 @@ $fleetStart = Join-Path $InstallRoot 'tools\Start-BobFleetTray.ps1'
 if (Get-Command Clear-BobTrayWatchdogSuppress -ErrorAction SilentlyContinue) { Clear-BobTrayWatchdogSuppress }
 if (Test-Path -LiteralPath $fleetStart) {
     $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1'
+    $noSvcRestart = $SkipServiceRestart.IsPresent -or ([string]$env:BOBIVERSE_NO_SERVICE_RESTART).Trim() -eq '1'
     if ($noTidy) { Write-Host 'INFO tray start: SkipTidy (seats and Grok Bot are left running)' }
+    if ($noSvcRestart) { Write-Host 'INFO tray start: SkipServiceRestart (FR #3987; caller owns ircBob start)' }
     Write-BobTrayLifecycle -Event 'start' -Fields @{
         installRoot = $InstallRoot
         machineId   = $MachineId
         forceNew    = [bool]$ForceNew
         skipTidy    = [bool]$noTidy
+        skipServiceRestart = [bool]$noSvcRestart
         via         = 'Start-BobFleetTray'
     }
-    & $fleetStart -RepoRoot $InstallRoot -ForceNew:$ForceNew -SkipTidy:$noTidy
+    & $fleetStart -RepoRoot $InstallRoot -ForceNew:$ForceNew -SkipTidy:$noTidy -SkipServiceRestart:$noSvcRestart
     $code = $LASTEXITCODE
-    Write-BobTrayLifecycle -Event 'start-exit' -Fields @{ exitCode = $code; skipTidy = [bool]$noTidy }
+    Write-BobTrayLifecycle -Event 'start-exit' -Fields @{ exitCode = $code; skipTidy = [bool]$noTidy; skipServiceRestart = [bool]$noSvcRestart }
     exit $code
 }
 

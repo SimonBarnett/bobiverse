@@ -25,6 +25,11 @@ function Get-SvcState {
 if ($DryRun) { Write-Output ("dry-run {0} {1}" -f $Action, $ServiceName); exit 0 }
 $state = Get-SvcState
 if ($state -eq 'MISSING') { Write-SvcLog "$Action ${ServiceName}: service not installed"; exit 0 }
+# FR #3987: never sc stop while START_PENDING/STOP_PENDING - races Install-Bob Start-Service and hangs msiexec.
+if ($state -eq 'START_PENDING' -or $state -eq 'STOP_PENDING') {
+    Write-SvcLog "$Action ${ServiceName}: skip while $state (FR #3987)"
+    exit 0
+}
 if ($state -ne 'STOPPED') {
     $out = & $sc stop $ServiceName 2>&1 | Out-String
     if ($LASTEXITCODE -eq 5 -or $out -match '(?i)access is denied') {
