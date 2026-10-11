@@ -117,7 +117,7 @@ Or `msiexec /i bob-0.1.1.msi`.
 
 ## Behaviour
 
-- `!register <machine>` (Jeeves, Simon/operators) → ChanServ REGISTER
+- `!register/!unregister <machine>` (Jeeves, Simon/operators) → ChanServ REGISTER
 - Registered `Bob-*` gets +o on shop, +h on `#bobiverse`
 - Systray/shortcut Restart → departure announce → `Restart-Service ircBob`
 - `!assign <worker-nick> <repo> <FR|MRB|UAT> <num>` (Jeeves, verified simon or a Bob-* ear only): Jeeves posts the normal assign line to that idle seat (no self-MRB/UAT, seat not busy, row queued and unaccepted); ACK accepts it. UAT is per repo (`UAT owner/repo#0`): Jeeves queues ONE repo-level UAT only when every issue is closed (excluding needs-human/boards/harvest records) and every PR is merged. See `jeeves/docs/jeeves-commands.md`

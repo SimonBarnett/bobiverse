@@ -27,7 +27,9 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `!recycle dry-run [machine\|all]` | `recycle dry-run: would recycle X (scope) as <owner\|ear>; nothing sent` + the route and steps | authorises and plans, sends nothing, no cooldown. Safe for tests (`dry`, `plan`, `check` also work) |
 | `!build <owner/repo>[,..] <version> [ref]` / `!build status|cancel|dry-run ...` | PM: queued / dry-run plan / refused (no recipe, single-flight, denied) | **Ops only (simon / bob-*).** FR #4006 deterministic BUILD: in-repo `.bobiverse/build.yml`, no agent tokens. Live suite/pack on recipe machine is WP2; chair decides + announces `BUILD v1` on #bobiverse. |
 | `ping` / `ping <glob>` (no `!`) | `pong` | in a channel or by PM |
-| shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP`, `!register <machine>` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`, `registered_machines`); not PM commands |
+| `!register <#channel|machine>` | `ACK registered #<mid>` or `ERR !register denied (operators only) machine=<mid>` | +o/+h in #bobiverse (FR #4008); ChanServ REGISTER + roster add; operators.txt ignored |
+| `!unregister <#channel|machine> [confirm]` / `!unregister dry-run <..>` | plan PM then `ACK unregistered #<mid>`; dry-run sends nothing; core refuse; idempotent not-registered | +o/+h gate; confirm or repeat within 60s; ChanServ UNREGISTER (+ code NOTICE); remove_registered; PART; `UNREGISTERED v1 <mid>` in #bobiverse; airc falls back to #wonderland (FR #3834/#4008) |
+| shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`) |
 
 ## Queue hygiene (FR #180 / #258 / #595)
 
@@ -142,3 +144,13 @@ UAT is per repo only (`UAT owner/repo#0` + `repo_uat`; t853u). Author stamps on 
 Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
 
 - FR #1016 ionos chair/queue verification: [fr-1016-ionos-live-evidence.md](./fr-1016-ionos-live-evidence.md)
+
+## !register / !unregister (FR #4008)
+
+| Command | Gate | Notes |
+|---------|------|-------|
+| `!register <#channel|machine>` | live +o/+h in #bobiverse | ChanServ REGISTER + roster; operators.txt ignored |
+| `!unregister dry-run <..>` | same | prints plan, sends nothing |
+| `!unregister <..> [confirm]` | same | plan then confirm/repeat within 60s; ChanServ UNREGISTER (+ code round-trip); PART; `UNREGISTERED v1 <mid>` on #bobiverse |
+| core refuse | - | `#bobiverse` / `#wonderland` refused |
+| airc | - | unregistered shop clients fall back to #wonderland (FR #3834) |

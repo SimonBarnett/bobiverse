@@ -25,7 +25,8 @@ Home migration (`bob_home.migrate_legacy`) copies legacy `~\.agentic-irc-*` into
 
 ## Operator commands (IRC)
 
-- `!register <machine>` — ChanServ REGISTER `#{machine}` (Simon/operators)
+- `!register <machine>` — ChanServ REGISTER `#{machine}` (+o/+h in #bobiverse; FR #4008)
+- `!unregister <machine>` — inverse: ChanServ UNREGISTER, drop roster, PART shop (+o/+h; confirm/dry-run; FR #4008)
 - `!recycle jeeves` — restart `ircJeeves` only (not BobIrcd)
 - `!recycle <machine>`, `!list`, digest / GIT / chair-outbox — existing chair surface
 

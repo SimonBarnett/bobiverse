@@ -22,6 +22,7 @@ from pathlib import Path
 REGISTRY_NAME = "registered-machines.json"
 SOURCE_CHANSERV = "chanserv-list"
 SOURCE_REGISTER = "register-command"
+SOURCE_UNREGISTER = "unregister-command"
 
 # Registered channels that are NOT machine shops. Anything with a character outside
 # [a-z0-9-] (e.g. #agentic_irc) is excluded by the id check below.
@@ -210,8 +211,42 @@ def add_registered(home: Path, machine: str) -> str | None:
         return None
     cur = load_registered(home)
     cur.add(mid)
-    save_registered(home, cur)
+    save_registered(home, cur, source=SOURCE_REGISTER)
     return mid
+
+
+def remove_registered(home: Path, machine: str) -> str | None:
+    """Drop machine id and its shop channel from the registry (FR #4008)."""
+    mid = normalize_machine_id(machine)
+    if not mid:
+        return None
+    home = Path(home)
+    cur = load_registered(home)
+    cur.discard(mid)
+    prev = _read_doc(home)
+    channels = None
+    if isinstance(prev.get("channels"), list):
+        shop = f"#{mid}"
+        channels = [
+            c for c in prev["channels"]
+            if str(c or "").strip().lower() != shop
+        ]
+        channels = with_chair_required_channels(channels)
+    save_registered(home, cur, source=SOURCE_UNREGISTER, channels=channels)
+    return mid
+
+
+def is_core_unregister_refused(machine: str) -> bool:
+    """True for #bobiverse / #wonderland / NON_MACHINE (FR #4008)."""
+    mid = normalize_machine_id(machine)
+    if not mid:
+        name = (machine or "").strip().lstrip("#").lower()
+        return name in NON_MACHINE_CHANNELS or name in {
+            c.lstrip("#").lower() for c in CHAIR_REQUIRED_CHANNELS
+        }
+    return mid in NON_MACHINE_CHANNELS or mid in {
+        c.lstrip("#").lower() for c in CHAIR_REQUIRED_CHANNELS
+    }
 
 
 def is_registered(home: Path, machine: str) -> bool:
@@ -330,6 +365,27 @@ def parse_register_command(body: str) -> str | None:
     if not m:
         return None
     return normalize_machine_id(m.group(1))
+
+
+def parse_unregister_command(body: str) -> dict | None:
+    """Parse ``!unregister`` variants (FR #4008).
+
+    Returns None if not an unregister command, else
+    ``{mid, dry_run, confirm, raw}`` where mid may be None when syntax is incomplete.
+    """
+    text = (body or "").strip()
+    if not re.match(r"^!unregister\b", text, re.I):
+        return None
+    low = text.lower()
+    dry_run = bool(re.search(r"(?i)\bdry-run\b", text))
+    confirm = bool(re.search(r"(?i)\bconfirm\b", text))
+    # Strip command + optional dry-run/confirm tokens; remaining token is mid.
+    rest = re.sub(r"^!unregister\s*", "", text, count=1, flags=re.I)
+    rest = re.sub(r"(?i)\bdry-run\b", " ", rest)
+    rest = re.sub(r"(?i)\bconfirm\b", " ", rest)
+    parts = [p for p in rest.split() if p.strip()]
+    mid = normalize_machine_id(parts[0]) if parts else None
+    return {"mid": mid, "dry_run": dry_run, "confirm": confirm, "raw": text}
 
 
 def bob_nick_for_machine(machine: str) -> str:
