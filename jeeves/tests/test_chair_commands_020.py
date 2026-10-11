@@ -21,7 +21,7 @@ CHANS = ["#bobiverse", "#marchhare", "#win-mpre8vi4u6u", "#flamingo"]
 
 GH_JEEVES_COMMANDS = {"help", "list", "status", "resync", "sweep", "ignore", "ignored", "unignore",
                       "focus", "unfocus", "recycle"}          # gh-Jeeves/src/jeeves/commands.py @ 8d76d9a
-OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign", "build"}
+OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign", "build", "installtest"}
 
 
 class FakeChair:
@@ -55,6 +55,7 @@ class FakeChair:
     # FR #4008 / MRB #4034: handle_privmsg always dispatches unregister after register.
     def _handle_unregister_command(self, *a): return False
     def _handle_build_command(self, *a): return None
+    def _handle_installtest_command(self, *a): return None
     def _mark_pm_open(self, n): pass
     def _is_briefer(self): return False
     def _refresh_ledger(self): pass          # no GitHub lookups in unit tests

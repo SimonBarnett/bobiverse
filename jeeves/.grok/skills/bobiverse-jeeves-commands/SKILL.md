@@ -1,7 +1,8 @@
 ---
 name: bobiverse-jeeves-commands
 description: >
-  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006), ping, or Jeeves permissions.
+  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, ping, or Jeeves permissions.
+
 ---
 
 # bobiverse-jeeves-commands
@@ -38,9 +39,11 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!focus [strict on\|off]\|[n\|high\|medium\|low] <repo\|owner/repo#N>`, `!unfocus <repo\|owner/repo#N\|all>` | owner, ears, allowlist (`JEEVES_FOCUS_MUTATORS`) | priority-sort `!list` and assign-on-`!bored`. Prefer **repo-level** `!focus high owner/repo` (FR #1520); item `owner/repo#N` is skipped when that repo is already focused, and `!resync` prunes leftover items |
 | `!assign <worker-nick> <repo> <FR\|MRB\|UAT> <num>` | owner, ears | make Jeeves post the normal assign line to one idle seat (seats only obey Jeeves); the seat's ACK accepts it. Rules: seat not busy, no self-MRB/UAT (seat ledger), row queued + unaccepted (or **accepted only under a departed nick** — FR #3400 releases with `prior ACK void` then offers), not needs-human/cooldown/given-up/machine-pinned; refuse a nick **absent** from a non-empty shop `worker_list` (`not in the shop channel`). Never steal from a live accepted holder. UAT is per repo: `UAT 0` = the repo-level UAT, queued only when every issue is closed and every PR merged. Reply by PM |
 | `!recycle [machine\|all\|dry-run [machine\|all]]` | owner, ears | route a seat recycle (bare/all = fleet; 120 s cooldown). `dry-run` only prints the plan. `!recycle jeeves` restarts `ircJeeves` only |
+| `!build <owner/repo>[,...] <version> [ref]` / dry-run/status/cancel | owner, ears | FR #4006/#4025 deterministic BUILD from `.bobiverse/build.yml` (no agent) |
+| `!installtest <owner/repo> <version> [tag]` / dry-run | owner, ears | FR #4026 WP3 INSTALL-TEST: msiexec + post-checks; release-blocker on fail |
 | `!register / !unregister (FR #4008) <machine>` | +o/+h in #bobiverse | ChanServ REGISTER/UNREGISTER `#<machine>`; dry-run/confirm; core refuse; airc -> #wonderland |
 | `ping` / `ping <glob>` | anyone | bare word (no `!`), channel or PM -> `pong` |
-| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811 / #3893:** after GIVEUP/NACK/DONE ok (DONE also `missing`), chair may push next eligible job via `offer_focus_top` (`offered_via=giveup|done`, longer sticky); log `done-offer` / `giveup-offer` or empty detail; send nothing on the channel when empty (no `nothing queued`) |
+| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811 / #3893 / #4089:** after GIVEUP/NACK/DONE **ok only** (never DONE status=missing), chair may push next eligible job via `offer_focus_top` (`offered_via=giveup|done`, sticky offer_timeout_s); one open job per seat (no push while accepted/pending offer; seat-holds.json); log `done-offer` / `giveup-offer` / `done-offer skipped`; send nothing on the channel when empty (no `nothing queued`) |
 
 ## Who counts as who (authorization)
 
@@ -67,6 +70,11 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 
 - **!unregister (FR #4008 / #4040):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland; dry-run/confirm plan lists `*_console` nicks seen in `#<mid>` (or `none seen`).
 
-## !build (FR #4006)
+## !build (FR #4006 / skill FR #4038)
 
-Ops-only. !build <owner/repo>[,...] <version> [ref], !build status|cancel|dry-run. Requires in-repo .bobiverse/build.yml. Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2).
+Ops-only. `!build <owner/repo>[,...] <version> [ref]`, `!build status|cancel|dry-run`. Requires in-repo `.bobiverse/build.yml`. Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2). Full playbook (classification, announce lines, when to re-run): skill `bobiverse-build` / `jeeves/.grok/skills/bobiverse-build/SKILL.md` and `docs/bobiverse-build.md`.
+
+## !installtest (FR #4026 WP3)
+
+Ops-only. `!installtest <owner/repo> <version> [tag]`, `!installtest dry-run ....` Requires `install_test` in `.bobiverse/build.yml`. Chair is token-less decide + announce; msiexec/post-check run on the recipe `install_test.machine`. Failures become release-blocker issues (WP2 filer).
+

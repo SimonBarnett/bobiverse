@@ -40,4 +40,9 @@ release:
   never_latest: true
 install_test:
   machine: ionos
-  note: "WP3 — optional INSTALL-TEST after successful BUILD"
+  note: "WP3 - optional INSTALL-TEST after successful BUILD"
+  products:
+    - jeeves
+    - bob
+    - airc
+  msiexec_extra: ""

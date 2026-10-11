@@ -855,6 +855,9 @@ class Client:
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
         out = bobreport.apply_part(self.home, who, ch, briefer)
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(self._digest_home(), who, clear_pins=True):  # FR #4089
+                info(f"INFO seat-hold cleared nick={who} reason=part")
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, f"{who}:{ch}")
 
@@ -876,6 +879,9 @@ class Client:
                 )
         except Exception as exc:
             info(f"INFO shop-listen quit error {type(exc).__name__}")
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(digest, who, clear_pins=True):  # FR #4089
+                info(f"INFO seat-hold cleared nick={who} reason=quit")
         out = bobreport.apply_quit(digest, who, briefer)
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, who)
@@ -1591,6 +1597,79 @@ class Client:
             except Exception as exc:
                 info(f"WARN build enqueue: {type(exc).__name__}: {exc}")
 
+    def _handle_installtest_command(self, asker: str, body: str) -> None:
+        """FR #4026 WP3: ops !installtest — decide + PM; live msiexec is on the recipe machine."""
+        if not getattr(self.args, "chair", False):
+            return
+        if bobiverse_build.parse_installtest(body) is None:
+            return
+        who_nick = (asker or "").strip()
+        if not who_nick or who_nick.lower() in self._mine_nicks():
+            return
+        prin = self._principal(who_nick)
+
+        def recipe_loader(repo: str):
+            root = Path(self._install_root())
+            for cand in (root, root.parent):
+                try:
+                    return bobiverse_build.load_recipe(cand)
+                except bobiverse_build.RecipeError:
+                    continue
+            raise bobiverse_build.RecipeError(
+                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            )
+
+        ignored = ()
+        try:
+            import focus_ignore
+            ignored = tuple(focus_ignore.load_ignored(self.home) or ())
+        except Exception:
+            ignored = ()
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        try:
+            dec = bobiverse_build.decide_installtest(
+                who=prin,
+                body=body,
+                may=chair_commands.may,
+                denied_line=chair_commands.denied_line,
+                recipe_loader=recipe_loader,
+                local_machine=local,
+                ignored=ignored,
+            )
+        except Exception as e:
+            info(f"WARN installtest decide failed: {type(e).__name__}: {e}")
+            self._cmd_reply(who_nick, "installtest", [f"installtest: error {type(e).__name__}"])
+            return
+        if dec is None:
+            return
+        self._cmd_reply(who_nick, "installtest", dec.pm_lines)
+        info(
+            f"INFO installtest nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
+            f"repo={dec.repo or '-'} dry={dec.dry_run}"
+        )
+        if not dec.ok and dec.reason == "denied":
+            self._whois_hint(who_nick)
+            return
+        if dec.route and not dec.dry_run:
+            try:
+                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + dec.route)
+                time.sleep(FLOOD_S)
+            except Exception:
+                info("WARN installtest route announce failed")
+            try:
+                self._maybe_start_installtest_runner(dec.route, src_hint=who_nick)
+            except Exception as exc:
+                info(f"WARN installtest enqueue: {type(exc).__name__}: {exc}")
 
     def _build_queue_dir(self) -> Path:
         """FR #4025: home/build-queue for accepted BUILD v1 jobs (spawn/pack is out of chair scope)."""
@@ -1636,6 +1715,49 @@ class Client:
         if bobiverse_build.parse_build_v1_route(body) is None:
             return False
         return self._maybe_start_build_runner(body, src_hint=src)
+
+    def _maybe_start_installtest_runner(self, route_line: str, *, src_hint: str = "") -> bool:
+        """FR #4026 WP3: accept INSTALLTEST v1 when local matches install_test.machine; enqueue only."""
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        recipe_machine = "ionos"
+        try:
+            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            it = recipe.install_test or {}
+            recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+        except Exception:
+            try:
+                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
+                it = recipe.install_test or {}
+                recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+            except Exception:
+                recipe_machine = "ionos"
+        qdir = self._build_queue_dir()
+        ok = bobiverse_build.consume_installtest_v1(
+            route_line, local, recipe_machine, queue_dir=qdir
+        )
+        if ok:
+            info(
+                f"INFO FR #4026 INSTALLTEST v1 accepted machine={local} "
+                f"recipe={recipe_machine} from={src_hint or '-'} queue={qdir}"
+            )
+        return ok
+
+    def _maybe_consume_installtest_v1_wire(self, src: str, body: str) -> bool:
+        """FR #4026: fleet INSTALLTEST v1 PRIVMSG -> enqueue when this box is the recipe machine."""
+        if bobiverse_build.parse_installtest_v1_route(body) is None:
+            return False
+        return self._maybe_start_installtest_runner(body, src_hint=src)
 
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
@@ -2882,6 +3004,23 @@ class Client:
         verb = result.get("verb") or ""
         status = result.get("status") or ""
         act = result.get("activity")
+        # FR #4089: the seat answered for this job -> drop its remembered offer. NACK/GIVEUP
+        # of a never-accepted offer (status=missing) also unpins the row from this seat.
+        try:
+            _pj = shop_listen.parse_shop_job_line(body)
+            if _pj and verb in ("ACK", "DONE", "NACK", "GIVEUP"):
+                _cleared = gitclaim.clear_seat_hold(
+                    self._digest_home(),
+                    src,
+                    repo=_pj.repo,
+                    task=_pj.task,
+                    ident=_pj.id,
+                    clear_pins=verb in ("NACK", "GIVEUP", "DONE"),
+                )
+                if _cleared:
+                    info(f"INFO seat-hold cleared nick={src} reason={verb} job={_pj.task} {_pj.repo}{_pj.id}")
+        except Exception as hold_exc:  # noqa: BLE001
+            info(f"WARN seat-hold clear {type(hold_exc).__name__}")
         try:
             if verb == "ACK" and status in ("ok", "duplicate", "missing") and act:
                 self._workers().on_ack(src, target, act)
@@ -2937,7 +3076,10 @@ class Client:
                         info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
                 except Exception as offer_exc:  # noqa: BLE001
                     info(f"WARN giveup-offer {type(offer_exc).__name__}")
-        elif verb == "DONE" and status in ("ok", "missing"):
+        elif verb == "DONE" and status != "ok":
+            # FR #4089: repeated / unknown DONE (status=missing) never pushes a job.
+            info(f"INFO git-claim done-offer skipped nick={src} status={status}")
+        elif verb == "DONE" and status == "ok":
             # FR #3893: same push as GIVEUP/NACK — do not wait for the seat's next !bored
             # when the queue still holds eligible work (regression of idle-after-DONE).
             try:
@@ -3017,6 +3159,9 @@ class Client:
         if body.strip().lower().startswith("!build"):
             self._handle_build_command(src, body)
             return
+        if body.strip().lower().startswith("!installtest"):
+            self._handle_installtest_command(src, body)
+            return
         if self._handle_register_command(src, body):
             return
         if self._handle_unregister_command(src, body):
@@ -3026,6 +3171,8 @@ class Client:
                 self._handle_recycle_command(src, body)
             else:
                 self._handle_bob_local_recycle_command(src, body)
+            return
+        if self._maybe_consume_installtest_v1_wire(src, body):
             return
         if self._maybe_consume_build_v1_wire(src, body):
             return
