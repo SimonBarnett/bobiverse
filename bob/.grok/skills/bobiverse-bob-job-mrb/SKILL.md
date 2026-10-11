@@ -30,14 +30,13 @@ flowchart TD
   D --> E["Add NEW tests for the PR BEFORE the verdict"]
   E --> F["Run existing + new tests; hostile review; drift check; UTF-8/no-BOM check"]
   F -->|"tests or drift FAIL"| G["Exactly ONE separate fix PR"]
-  G --> H["Merge original + fix PR"]
+  G --> L
   F -->|PASS| I["Review README/skills/docs/mermaid for stale text"]
   I -->|stale| J["ONE separate docs/mrb-N PR"]
   I -->|ok| L["Post the MRB board PASS first (FR #3928)"]
   J --> L
-  H --> L
   L --> G2["mrb_merge_gate: no owner hold + PASS board present"]
-  G2 --> K["Merge the PR"]
+  G2 --> K["Merge the PR (original + fix/docs)"]
   K --> M["Verify the originating issue: closed by the merge, or the PR carries Closes owner/repo#N"]
   M -->|"not closed (non-default branch / link missing)"| M2["Worker closes the issue with a comment: PR url + verdict"]
   M -->|"closed, or linked and merge pending"| P["Hand off: repo UAT is queued by Jeeves only when the whole repo is clear (no per-PR UAT)"]
