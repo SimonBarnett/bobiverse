@@ -204,6 +204,15 @@ PR_HOLD_TEXT_RE = re.compile(
     r"\bhold(?:ing)?\s+(?:this\s+)?(?:pr|pull(?:\s+request)?)\b)"
 )
 
+# FR #4009: issue hold labels — never enqueue/offer FR while present.
+# Kept out of SKIP_FR_LABELS so held product FRs still block repo UAT.
+HOLD_FR_LABELS = frozenset({"hold", "on-hold"})
+# Owner HOLD body stamp (class of bobiverse#3991 "**HOLD (date, Simon):** Do not start…").
+# Line-anchored so prose "must hold the previous version" does not false-positive.
+FR_HOLD_BODY_RE = re.compile(
+    r"(?im)^\s*(?:\*\*)?HOLD\b(?:\s*\([^)]*\))?(?:\*\*)?\s*:"
+)
+
 
 def pr_hold_reason(
     *,
@@ -221,6 +230,43 @@ def pr_hold_reason(
     if m:
         return f"hold text: {m.group(0).strip()}"
     return None
+
+
+def fr_hold_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """FR #4009: why an open issue must not be enqueued/offered as FR, else None.
+
+    Label ``hold`` / ``on-hold``, or an owner HOLD body stamp. Does not use
+    SKIP_FR_LABELS (held product work still blocks repo UAT until cleared/closed).
+    """
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    hit = sorted(labs & HOLD_FR_LABELS)
+    if hit:
+        return f"hold label: {hit[0]}"
+    blob = f"{title or ''}\n{body or ''}"
+    m = FR_HOLD_BODY_RE.search(blob)
+    if m:
+        return f"hold text: {m.group(0).strip()}"
+    return None
+
+
+def row_fr_hold_reason(row: dict) -> str | None:
+    """FR #4009: hold gate for a queue FR row; None for non-FR or clear rows."""
+    if _canon_task(row) != "FR":
+        return None
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    return fr_hold_reason(
+        title=title,
+        body=str(row.get("body") or ""),
+        labels=tuple(str(x) for x in labels),
+    )
 
 
 @dataclass(frozen=True)
@@ -1670,6 +1716,18 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
         return "skipped"
     if claim.task == "FR" and fr_is_superseded(doc, claim.repo, claim.id):
         return "skipped"  # FR #254: MRB / open implement PR supersedes FR
+    # FR #4009: never enqueue FR for issues on hold (label or owner HOLD body stamp).
+    # Drop any already-queued twin so webhook edited / resync clears the offer path.
+    if claim.task == "FR" and fr_hold_reason(
+        title=claim.title, body=claim.body, labels=claim.labels
+    ):
+        store_repo = canonical_queue_repo(claim.repo)
+        doc["unaccepted"] = [
+            r
+            for r in (doc.get("unaccepted") or [])
+            if not (isinstance(r, dict) and _same(r, store_repo, claim.task, claim.id))
+        ]
+        return "skipped"
     # FR #3928: never enqueue MRB for PRs on hold (label or body/title hold text).
     if claim.task == "MRB" and pr_hold_reason(
         title=claim.title, body=claim.body, labels=claim.labels
@@ -5250,6 +5308,11 @@ def offer_focus_top(
                     return None  # legacy hook; row_awaits_mrb1 always False (op 2026-10-04)
                 if row_skip_fr_reason(cand):
                     return None
+                # FR #4009: hold-labeled / HOLD-stamped FR — skip offer; purge so it leaves unaccepted.
+                if row_fr_hold_reason(cand):
+                    if _drop_unaccepted_row(doc, cand, kind="fr-hold", reason=row_fr_hold_reason(cand)):
+                        purged = True
+                    return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
@@ -5517,6 +5580,13 @@ def offer_top(
             while i < len(doc.get("unaccepted") or []):
                 row = doc["unaccepted"][i]
                 if row_needs_human(row, nick or "") or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
+                    i += 1
+                    continue
+                # FR #4009: hold-labeled / HOLD-stamped FR — skip and purge from unaccepted.
+                if row_fr_hold_reason(row):
+                    if _drop_unaccepted_row(doc, row, kind="fr-hold", reason=row_fr_hold_reason(row)):
+                        purged = True
+                        continue
                     i += 1
                     continue
                 if row_awaits_mrb1(row):
@@ -6373,6 +6443,9 @@ def assign_row(
                 return "refused", "row is on GIVEUP/NACK cooldown"
             if row_skip_fr_reason(cand):
                 return "refused", f"row skipped: {row_skip_fr_reason(cand)}"
+            hold_why = row_fr_hold_reason(cand)
+            if hold_why:
+                return "refused", f"row on hold: {hold_why}"
             if repo_archived_for_queue(str(cand.get("repo") or "")):
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
@@ -6497,6 +6570,10 @@ def prune_unassignable_queue(home: Path) -> dict:
                 task = str(row.get("task") or "").upper()
                 if task == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
+                    continue
+                # FR #4009: drop hold-labeled / HOLD-stamped FR rows.
+                if task == "FR" and row_fr_hold_reason(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
                     continue
                 # FR #846: drop FR rows whose URL is a pull request.
                 if task == "FR" and not fr_row_offerable(row):
@@ -6805,6 +6882,9 @@ def resync_from_github(
                 if task_u == "FR" and row_skip_fr_reason(row):
                     dropped_detail.append(f"{_row_drop_label(row)} skip_fr")
                     continue  # FR #180 local junk
+                if task_u == "FR" and row_fr_hold_reason(row):
+                    dropped_detail.append(f"{_row_drop_label(row)} fr_hold")
+                    continue  # FR #4009: hold label / HOLD body stamp
                 if task_u == "FR" and not fr_row_offerable(row):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_not_offerable")
                     continue  # FR #846: /pull/ URL is never an FR

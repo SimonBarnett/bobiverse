@@ -4,7 +4,7 @@ Deterministic, token-less, no secrets. Pure functions (no sockets / no clock unl
 fake-IRC tests drive them exactly like the live chair does. ``irc_agent.Client`` is the thin glue.
 
 gh-Jeeves reference commands restored here: !help !list (+ !filter alias) !status !resync !sweep !ignore
-!ignored !unignore !focus !unfocus !recycle and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
+!ignored !unignore !focus !unfocus !recycle !build (FR #4006) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
 ``ACK``/``DONE``/``NACK``) lives in gitclaim / shop_listen and is not a PM command.
 
 AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
@@ -73,6 +73,16 @@ COMMANDS: tuple = (
     CommandSpec("status", "!status", "Jeeves version, uptime, queue counts, roster, last roster/queue refresh",
                 ALL_ROLES, "!status", "Read-only snapshot from the digest home (queue.json / roster).",
                 ("list", "resync", "help")),
+    CommandSpec("register", "!register <#channel|machine>", "ChanServ REGISTER shop channel and add to roster (+o/+h gate)", OPS_ROLES,
+                "!register ionos",
+                "Chair-only. Authorised by live +o/+h in #bobiverse (FR #4008); operators.txt ignored. Bob ears never self-REGISTER.",
+                ("unregister", "status")),
+    CommandSpec("unregister", "!unregister <#channel|machine> [confirm]|dry-run <..>",
+                "inverse of !register: ChanServ UNREGISTER, drop roster, PART shop (+o/+h gate)", OPS_ROLES,
+                "!unregister dry-run ionos",
+                "Chair-only. Dry-run prints the plan; real run needs confirm or a repeat within 60s. "
+                "Core #bobiverse/#wonderland refused. Airc clients fall back to #wonderland (FR #3834).",
+                ("register", "status")),
     CommandSpec("resync", "!resync", "refresh the roster (ChanServ) now and re-sync open FR/MRB from GitHub with the Jeeves token (also automatic hourly / on webhook gap, FR #3212); purges ignored repos", OPS_ROLES, "!resync",
                 "Restricted to simon and bob-* nicks. Webhook model: no GitHub token; the roster mirror is "
                 "re-read from ChanServ and ignored repos are purged from the queue.", ("list", "status")),
@@ -109,6 +119,16 @@ COMMANDS: tuple = (
                 "Jeeves routes only. Bare !recycle or !recycle all = every roster seat. !recycle <machine> = that "
                 "machine only. !recycle dry-run [..] authorises and plans but sends nothing. Local bob-* "
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
+    CommandSpec(
+        "build",
+        "!build <owner/repo>[,owner/repo...] <version> [ref] | !build status|cancel|dry-run ...",
+        "queue a deterministic repo BUILD (no agent); failures become release-blocker issues (FR #4006)",
+        OPS_ROLES,
+        "!build SimonBarnett/bobiverse 0.1.32",
+        "Ops only (simon / bob-* / +o/+h). Runs the in-repo .bobiverse/build.yml on the recipe machine. "
+        "Subcommands: status, cancel, dry-run. Per-repo single-flight; no recipe => refuse.",
+        ("status", "list", "focus"),
+    ),
     CommandSpec("ping", "ping [nick-glob]", "channel or PM: reply pong (bare word, no !)", ALL_ROLES, "ping",
                 "Jeeves answers pong to a bare ping, or to ping <glob> when the glob matches its nick.", ("help",)),
 )
@@ -200,7 +220,7 @@ MATRIX = {
     # command -> who may run it
     "help": "any", "list": "any", "filter": "any", "status": "any", "ignored": "any", "ping": "any",
     "focus-read": "any",
-    "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops",
+    "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops", "build": "ops", "assign": "ops",
     "focus": "ops+allow", "unfocus": "ops+allow",
 }
 
@@ -223,6 +243,8 @@ def denied_line(cmd: str) -> str:
         "recycle": "recycle: denied (authorised operator + services account required)",
         "resync": "resync: denied (simon or bob-* ops only)",
         "sweep": "sweep: denied (simon or bob-* ops only)",
+        "build": "build: denied (simon or bob-* ops only)",
+        "assign": "assign: denied (simon or bob-* ops only)",
     }.get(cmd, f"{cmd}: denied")
 
 

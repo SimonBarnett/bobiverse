@@ -39,6 +39,7 @@ import shop_chanserv  # noqa: E402
 import shop_listen  # noqa: E402
 import agent_control  # noqa: E402
 import registered_machines  # noqa: E402
+import unregister_cmd  # noqa: E402
 import bob_home  # noqa: E402
 import inbound_transcript  # noqa: E402
 import chair_oper  # noqa: E402
@@ -51,6 +52,7 @@ import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
 import channel_only  # noqa: E402
 import startworker  # noqa: E402
+import bobiverse_build  # noqa: E402  # FR #4006
 
 FLOOD_S = 0.8
 
@@ -612,6 +614,8 @@ class Client:
         self._bobiverse_pull_last = 0.0
         # #42: ChanServ roster mirror (chair only). Query state; registry file is the cache.
         self._cs_collector: registered_machines.ChanServListCollector | None = None
+        self._unregister_pending = unregister_cmd.PendingUnregisterStore()
+        self._cs_unregister_wait: dict[str, str] = {}  # shop_l -> asker
         self._cs_sent_at = 0.0
         self._cs_force = False
         self._cs_fail_at = 0.0
@@ -1231,6 +1235,13 @@ class Client:
             self._cs_fail_at = now
 
     def _on_chanserv_notice(self, text: str) -> None:
+        # FR #4008: ChanServ UNREGISTER verification-code round-trip
+        conf = unregister_cmd.parse_chanserv_unregister_confirm(text)
+        if conf:
+            shop, code = conf
+            asker = self._cs_unregister_wait.pop(shop.lower(), None)
+            self.send(f"PRIVMSG ChanServ :UNREGISTER {shop} {code}")
+            info(f"INFO unregister ChanServ confirm shop={shop} asker={asker or '?'}")
         col = self._cs_collector
         if col is None:
             return
@@ -1304,6 +1315,34 @@ class Client:
             except Exception:  # noqa: BLE001 - never kill sync over status logging
                 pass
 
+    def _nick_modes_in_channel(self, nick: str, channel: str = "#bobiverse") -> set[str]:
+        """Modes for nick in channel from the privilege engine (FR #4008 gate)."""
+        eng = getattr(self, "_privs_engine", None) or getattr(self, "_privs", None)
+        try:
+            eng = eng() if callable(eng) and not hasattr(eng, "state") else eng
+        except TypeError:
+            pass
+        if eng is None:
+            try:
+                eng = self._privs()
+            except Exception:
+                return set()
+        st = getattr(eng, "state", None)
+        if st is None:
+            return set()
+        ent = (getattr(st, "members", {}) or {}).get((channel or "#bobiverse").lower(), {}).get(
+            (nick or "").lower(), {}
+        )
+        return set(ent.get("modes") or ())
+
+    def _register_gate_allowed(self, nick: str, channel: str = "#bobiverse") -> bool:
+        """FR #4008: +o/+h (or higher) in channel; operators.txt ignored."""
+        return unregister_cmd.nick_has_op_or_halfop(
+            nick=nick,
+            channel=channel,
+            member_lookup=lambda ch, n: self._nick_modes_in_channel(n, ch),
+        )
+
     def _handle_register_command(self, asker: str, body: str) -> bool:
         """Chair: !register <machine> → ChanServ REGISTER #{machine} + persist."""
         if not getattr(self.args, "chair", False):
@@ -1314,8 +1353,8 @@ class Client:
         who = (asker or "").strip()
         if not who or who.lower() in self._mine_nicks():
             return True
-        if who.lower() not in self._register_operators():
-            self.whisper(who, f"ERR !register denied (operators only) machine={mid}")
+        if not self._register_gate_allowed(who):
+            self.whisper(who, f"ERR !register denied (+o/+h required) machine={mid}")
             info(f"INFO register denied nick={who} machine={mid}")
             return True
         shop = f"#{mid}"
@@ -1330,6 +1369,74 @@ class Client:
         self._cs_force = True  # #42: re-sync the mirror from ChanServ right away
         self.whisper(who, f"ACK registered {shop}")
         info(f"INFO register machine={mid} by={who}")
+        return True
+
+    def _handle_unregister_command(self, asker: str, body: str) -> bool:
+        """Chair: !unregister mirror of !register (FR #4008)."""
+        if not getattr(self.args, "chair", False):
+            return False
+        parsed = registered_machines.parse_unregister_command(body)
+        if not parsed:
+            return False
+        who = (asker or "").strip()
+        if not who or who.lower() in self._mine_nicks():
+            return True
+        mid = parsed.get("mid")
+        if not mid:
+            self.whisper(who, "!unregister: usage !unregister <#channel|machine> [confirm]|dry-run <..>")
+            return True
+        if not self._register_gate_allowed(who):
+            self.whisper(who, f"ERR !unregister denied (+o/+h required) machine={mid}")
+            info(f"INFO unregister denied nick={who} machine={mid}")
+            return True
+        plan = unregister_cmd.build_unregister_plan(
+            self._digest_home(), parsed, asker=who
+        )
+        if plan is None:
+            return True
+        if plan.core_refused:
+            for line in plan.notes:
+                self.whisper(who, line)
+            return True
+        if plan.dry_run:
+            for line in plan.notes:
+                self.whisper(who, line)
+            self.whisper(who, f"DRY-RUN !unregister {plan.shop} (nothing sent)")
+            return True
+        if not plan.in_registry:
+            # Idempotent: heal partial — still force ChanServ sync; no UNREGISTER if nothing to do
+            for line in plan.notes:
+                self.whisper(who, line)
+            self._cs_force = True
+            return True
+        # Confirm: show plan first; execute on !unregister <x> confirm OR repeat within 60s
+        pending = self._unregister_pending.get(mid)
+        if pending is None:
+            self._unregister_pending.put(mid, who)
+            for line in plan.notes:
+                self.whisper(who, line)
+            self.whisper(
+                who,
+                f"!unregister: confirm within 60s with: !unregister {mid} confirm (or repeat)",
+            )
+            return True
+        # Execute (pending window open)
+        self._unregister_pending.pop(mid)
+        self.send(plan.chanserv_line)
+        time.sleep(FLOOD_S)
+        self._cs_unregister_wait[plan.shop.lower()] = who
+        registered_machines.remove_registered(self._digest_home(), mid)
+        # PART shop
+        shop_l = plan.shop.lower()
+        self.channels = [c for c in self.channels if c.lower() != shop_l]
+        self.send(plan.part_line)
+        time.sleep(FLOOD_S)
+        # Wire line for ears
+        self.send(f"PRIVMSG {unregister_cmd.FLEET} :{plan.wire_line}")
+        time.sleep(FLOOD_S)
+        self._cs_force = True
+        self.whisper(who, f"ACK unregistered {plan.shop}")
+        info(f"INFO unregister machine={mid} by={who}")
         return True
 
     def _maybe_grant_bob_modes(self, nick: str) -> None:
@@ -1408,6 +1515,70 @@ class Client:
         if args is not None:
             explicit = getattr(args, "install_root", "") or ""
         return resolve_bob_install_root(explicit=explicit)
+
+
+    def _handle_build_command(self, asker: str, body: str) -> None:
+        """FR #4006: ops !build — decide + PM; live suite/pack is WP2 on the recipe machine."""
+        if not getattr(self.args, "chair", False):
+            return
+        if bobiverse_build.parse_build(body) is None:
+            return
+        who_nick = (asker or "").strip()
+        if not who_nick or who_nick.lower() in self._mine_nicks():
+            return
+        prin = self._principal(who_nick)
+        lock_path = Path(self.home) / "build-locks.json"
+        lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
+
+        def recipe_loader(repo: str):
+            root = Path(self._install_root())
+            # Bobiverse recipe lives at repo root; install tree is bob/jeeves/airc sparse — prefer git root.
+            for cand in (root, root.parent, Path(self.home).resolve().parents[2] if False else root):
+                try:
+                    return bobiverse_build.load_recipe(cand)
+                except bobiverse_build.RecipeError:
+                    continue
+            raise bobiverse_build.RecipeError(
+                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            )
+
+        ignored = ()
+        try:
+            import focus_ignore
+            ignored = tuple(focus_ignore.load_ignored(self.home) or ())
+        except Exception:
+            ignored = ()
+        try:
+            dec = bobiverse_build.decide_build(
+                who=prin,
+                body=body,
+                may=chair_commands.may,
+                denied_line=chair_commands.denied_line,
+                recipe_loader=recipe_loader,
+                lock=lock,
+                ignored=ignored,
+            )
+        except Exception as e:
+            info(f"WARN build decide failed: {type(e).__name__}: {e}")
+            self._cmd_reply(who_nick, "build", [f"build: error {type(e).__name__}"])
+            return
+        if dec is None:
+            return
+        self._cmd_reply(who_nick, "build", dec.pm_lines)
+        info(
+            f"INFO build nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
+            f"repos={','.join(dec.repos) or '-'} dry={dec.dry_run}"
+        )
+        if not dec.ok and dec.reason == "denied":
+            self._whois_hint(who_nick)
+            return
+        if dec.route and not dec.dry_run:
+            try:
+                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + dec.route)
+                time.sleep(FLOOD_S)
+            except Exception:
+                info("WARN build route announce failed")
+
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
         """t810u: ``!startworker [agent|plan] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
@@ -2785,7 +2956,12 @@ class Client:
                     return
         if self._maybe_startworker(src, target, body, to_channel=bool(to_channel), to_me=to_me):
             return
+        if body.strip().lower().startswith("!build"):
+            self._handle_build_command(src, body)
+            return
         if self._handle_register_command(src, body):
+            return
+        if self._handle_unregister_command(src, body):
             return
         if bobtalk.parse_recycle_command(body):
             if getattr(self.args, "chair", False):

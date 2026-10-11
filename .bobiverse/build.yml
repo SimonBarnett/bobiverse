@@ -1,0 +1,43 @@
+﻿# FR #4006 — bobiverse BUILD recipe (deterministic, no agent).
+machine: ionos
+baseline: last_release_tag
+channel: "#bobiverse"
+max_parallel_builds: 1
+cache_dirs:
+  - third_party/nssm
+  - third_party/wix
+  - third_party/ergo
+suites:
+  - name: jeeves
+    cmd: python -m pytest -q -p no:cacheprovider jeeves/tests
+    cwd: .
+    timeout: 7200
+  - name: airc
+    cmd: python -m pytest -q -p no:cacheprovider airc/tests
+    cwd: .
+    timeout: 7200
+  - name: common
+    cmd: python -m pytest -q -p no:cacheprovider common/tests
+    cwd: .
+    timeout: 7200
+  - name: bob
+    cmd: python -m pytest -q -p no:cacheprovider bob/tests
+    cwd: .
+    timeout: 7200
+pack:
+  cmd: powershell -NoProfile -File common/scripts/Pack-BobiverseRelease.ps1 -Product all -Version {{version}} -OutDir {{out_dir}}
+  artifacts:
+    - "jeeves-{{version}}.msi"
+    - "jeeves-{{version}}.msi.sha256"
+    - "bob-{{version}}.msi"
+    - "bob-{{version}}.msi.sha256"
+    - "airc-{{version}}.msi"
+    - "airc-{{version}}.msi.sha256"
+  assert: powershell -NoProfile -File common/scripts/Assert-BobiverseReleaseAssets.ps1 -Tag v{{version}}
+release:
+  target: github-prerelease
+  tag: "v{{version}}"
+  never_latest: true
+install_test:
+  machine: ionos
+  note: "WP3 — optional INSTALL-TEST after successful BUILD"
