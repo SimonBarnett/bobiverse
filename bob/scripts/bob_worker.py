@@ -2504,6 +2504,8 @@ class Relay:
         # FR #2811: while True, park Jeeves assigns in _pending (harvest / turn still running).
         self.hold_assigns_while: Optional[Callable[[], bool]] = None
         self.on_hold_assign: Optional[Callable[[str], None]] = None
+        # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
+        self.write_outbox: Optional[Callable[[str], bool]] = None
 
     def set_target(self, inject: Optional[Callable[[str], bool]]) -> None:
         with self._lock:
@@ -2544,13 +2546,19 @@ class Relay:
         except Exception:
             hold = False
         if hold and assign_job_ref(line):
+            first_held = False
             with self._lock:
                 if line == self._last_line:
                     return "duplicate"
                 self._last_line = line
+                pending_assigns = sum(1 for p in self._pending if assign_job_ref(p))
+                first_held = pending_assigns == 0
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
+            # FR #4115: ACK the first held assign on receipt (before inject / turn end).
+            if first_held:
+                self._ack_on_receipt(line)
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -2559,11 +2567,15 @@ class Relay:
                 except Exception:
                     pass
             return "held_until_turn_end"
+        do_inject = False
+        ack_first = False
         with self._lock:
             if line == self._last_line:
                 return "duplicate"
             self._last_line = line
             if self._inject is None:
+                pending_assigns = sum(1 for p in self._pending if assign_job_ref(p))
+                ack_first = bool(assign_job_ref(line)) and pending_assigns == 0
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
@@ -2571,19 +2583,46 @@ class Relay:
                     # FR #994: operators must see the wire even during startup grace (no inject target yet).
                     self.log("relay: held nothing-queued (agent not ready)")
                     self._persist_last_from(line)
-                return "held"
-            now = self.clock()
-            self._sent = [t for t in self._sent if now - t < self.window_s]
-            if len(self._sent) >= self.max_burst:
-                self._overflow.append(line)
-                if self._timer is None:
-                    wait = max(0.2, self.window_s - (now - self._sent[0]))
-                    self._timer = threading.Timer(wait, self._flush_overflow)
-                    self._timer.daemon = True
-                    self._timer.start()
-                return "coalescing"
-            self._sent.append(now)
-        return self._do_inject(line)
+                    ack_first = False
+            else:
+                now = self.clock()
+                self._sent = [t for t in self._sent if now - t < self.window_s]
+                if len(self._sent) >= self.max_burst:
+                    self._overflow.append(line)
+                    if self._timer is None:
+                        wait = max(0.2, self.window_s - (now - self._sent[0]))
+                        self._timer = threading.Timer(wait, self._flush_overflow)
+                        self._timer.daemon = True
+                        self._timer.start()
+                    return "coalescing"
+                self._sent.append(now)
+                do_inject = True
+                ack_first = bool(assign_job_ref(line))
+        # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
+        if ack_first:
+            self._ack_on_receipt(line)
+        if do_inject:
+            return self._do_inject(line)
+        return "held"
+
+    def _ack_on_receipt(self, line: str) -> None:
+        """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
+        ack = ack_on_receipt_line(line)
+        if not ack:
+            return
+        fn = self.write_outbox
+        if not fn:
+            self.log("relay: ACK on receipt skipped (no write_outbox) " + ack)
+            return
+        try:
+            ok = bool(fn(ack))
+        except Exception as e:  # noqa: BLE001
+            self.log(f"relay: ACK on receipt error {type(e).__name__}")
+            return
+        if ok:
+            self.log("relay: ACK on receipt " + ack)
+        else:
+            self.log("relay: ACK on receipt write failed " + ack)
 
     def _do_inject(self, line: str) -> str:
         fn = self._inject
@@ -2650,7 +2689,11 @@ class Relay:
                 self._pending.insert(0, line)
 
     def release_held_assigns(self) -> int:
-        """FR #2811: flush pending assign lines after turn_ended / harvest hold ends."""
+        """FR #2811 / FR #4115: flush pending assigns after turn_ended / harvest hold ends.
+
+        Inject only the first held assign. Extra assigns are NACKed via the seat outbox
+        (``busy, holding <first>``) without spending an agent turn.
+        """
         with self._lock:
             keep: list = []
             flush: list = []
@@ -2660,10 +2703,29 @@ class Relay:
                 else:
                     keep.append(line)
             self._pending = keep
+        if not flush:
+            return 0
+        first, rest = flush[0], flush[1:]
         n = 0
-        for line in flush:
-            if self._do_inject(line) == "injected":
-                n += 1
+        if self._do_inject(first) == "injected":
+            n = 1
+        holding = assign_job_key(first) or "job"
+        for line in rest:
+            nack = busy_holding_nack_line(line, holding)
+            if nack and self.write_outbox:
+                try:
+                    if self.write_outbox(nack):
+                        self.log(
+                            f"relay: NACK extra held assign ({nack}) without agent turn"
+                        )
+                    else:
+                        self.log("relay: NACK extra held assign write failed " + nack)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"relay: NACK extra held assign error {type(e).__name__}")
+            else:
+                self.log(
+                    "relay: extra held assign dropped (no write_outbox) " + line[:80]
+                )
         return n
 
     def has_pending_work(self) -> bool:
@@ -3384,6 +3446,23 @@ def inject_failed_nack_line(line: str) -> Optional[str]:
     if not key:
         return None
     return f"NACK {key} inject failed"
+
+
+def ack_on_receipt_line(line: str) -> Optional[str]:
+    """FR #4115: outbox ACK written as soon as the seat receives an assign (before inject)."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    return f"ACK {key}"
+
+
+def busy_holding_nack_line(line: str, holding: str) -> Optional[str]:
+    """FR #4115: outbox NACK for an extra held assign; seat keeps ``holding`` without an agent turn."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    hold = (holding or "").strip() or "job"
+    return f"NACK {key} busy, holding {hold}"
 
 
 def append_outbox_line(path: Path | str, text: str) -> bool:
@@ -4627,6 +4706,12 @@ class Supervisor:
         relay.on_hold_assign = lambda _line: (
             self.bored.note_held_assign() if self.bored else None
         )
+        # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
+        if getattr(relay, "write_outbox", None) is None and self.run_dir is not None:
+            _run = self.run_dir
+            relay.write_outbox = lambda text, rd=_run: append_outbox_line(
+                outbox_path_for_run(rd), text
+            )
         # FR #3192: BoredEmitter consults Relay.has_pending_work so !bored stays quiet
         # while an assign is held/inject_failed (not only hold_assigns_while).
         if self.bored is not None:

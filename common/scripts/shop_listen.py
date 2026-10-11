@@ -622,6 +622,12 @@ def handle_shop_worker_line(
             # The seat is working on what it ACKed even when the queue row is gone (re-synced, already
             # accepted, offered twice): the digest must still show it as doing (t816u).
             job = {"task": parsed.task, "repo": parsed.repo, "id": parsed.id}
+            # FR #4115: record a seat hold so !bored / done-offer treat the seat as busy
+            # (no accepted row exists for status=missing after a Jeeves restart).
+            try:
+                gitclaim.note_seat_hold(home, nick, job)
+            except Exception:  # noqa: BLE001
+                pass
         if st in ("ok", "duplicate", "missing") and job is not None:
             desc = activity_description(job, parsed.title)
             payload = format_activity_payload(
