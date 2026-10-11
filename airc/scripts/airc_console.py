@@ -599,6 +599,15 @@ class ChannelMemberMap:
         p = self._members.get((nick or "").strip().lower(), "")
         return any(c in _CHAN_PRIV_PREFIXES for c in p)
 
+    def chan_priv_mode(self, nick: str) -> str | None:
+        """Highest control-channel priv as ``+q``/``+a``/``+o``/``+h``, or None (FR #4067)."""
+        p = self._members.get((nick or "").strip().lower(), "")
+        # Owner > admin > op > half-op (voice never grants control).
+        for pref, mode in (("~", "+q"), ("&", "+a"), ("@", "+o"), ("%", "+h")):
+            if pref in p:
+                return mode
+        return None
+
     def on_join(self, nick: str, prefixes: str = "") -> None:
         n = (nick or "").strip()
         if not n:
@@ -767,6 +776,32 @@ class AuthPolicy:
         if self.members is None or not self.members.synced:
             return False
         return self.members.has_chan_priv(n)
+
+    def allow_detail(self, nick: str, account: str | None = None) -> dict:
+        """FR #4067: ``{ok, mode, channel}`` for auth-allow audit (no command body)."""
+        channel = None
+        if self.members is not None:
+            channel = (self.members.channel or "").strip() or None
+        ok = self.allow(nick, account)
+        mode = None
+        if ok and self.members is not None:
+            mode = self.members.chan_priv_mode(nick)
+        return {"ok": ok, "mode": mode, "channel": channel}
+
+
+def format_auth_allow_log(
+    *,
+    nick: str,
+    account: str | None,
+    channel: str | None,
+    mode: str | None,
+    action: str,
+) -> str:
+    """FR #4067: ``auth-allow nick=… account=… channel=… mode=… action=shell|job|pipe|update``."""
+    return (
+        f"auth-allow nick={nick or '-'} account={account or '-'} "
+        f"channel={channel or '-'} mode={mode or '-'} action={action}"
+    )
 
 
 def resolve_channel_commands(cfg: dict | None) -> bool:
@@ -1401,6 +1436,10 @@ class HandleResult:
     text: str | None = None
     reply: str | None = None
     deny_reason: str | None = None  # FR #3401: not-op / self-nick / channel-state-unknown
+    # FR #4067: populated on authorised shell/job/pipe for auth-allow audit.
+    allow_mode: str | None = None
+    allow_account: str | None = None
+    allow_channel: str | None = None
 
 
 class ShellRequestError(ValueError):
@@ -2143,8 +2182,10 @@ class HandleResult:
     text: str | None = None
     reply: str | None = None
     deny_reason: str | None = None  # FR #3401
-
-
+    # FR #4067: populated on authorised shell/job/pipe for auth-allow audit.
+    allow_mode: str | None = None
+    allow_account: str | None = None
+    allow_channel: str | None = None
 
 
 class AircConsoleCore:
@@ -2230,6 +2271,21 @@ class AircConsoleCore:
             reply="DONE exit=126 not-op",
             deny_reason=reason,
         )
+
+    def _allow_meta(self, nick: str, account: str | None) -> dict[str, str | None]:
+        """FR #4067: mode/account/channel for auth-allow on shell/job/pipe/update."""
+        detail = self.auth.allow_detail(nick, account)
+        acct = (account or "").strip() or None
+        if acct is None:
+            amap = getattr(self.auth, "account_map", None)
+            if amap is not None:
+                got = amap.get(nick)
+                acct = (got or "").strip() or None
+        return {
+            "allow_mode": detail.get("mode"),
+            "allow_account": acct,
+            "allow_channel": detail.get("channel"),
+        }
 
     def handle_raw(self, line: str) -> HandleResult | None:
         tags, rest = parse_message_tags(line.rstrip("\r\n"))
@@ -2348,12 +2404,14 @@ class AircConsoleCore:
                 result = UpdateScheduleResult(
                     False, "bad-scheduler", product=product, version=ver
                 )
+            meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="update",
                 nick=nick,
                 target=target,
                 text=text,
                 reply=result.reply_line(),
+                **meta,
             )
 
         # FR #78: PUT/RUN/JOB/STATUS protocol (before plain shell).
@@ -2378,7 +2436,10 @@ class AircConsoleCore:
                     reply="DONE exit=126 jobs-disabled",
                 )
             self.job_protocol.handle_async(nick, verb, kv)
-            return HandleResult(action="job", nick=nick, target=target, text=text)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="job", nick=nick, target=target, text=text, **meta
+            )
 
         # FR #75: oneshot PowerShell / cmd: / psb64: with DONE framing.
         if self.shell_runner is not None:
@@ -2391,7 +2452,10 @@ class AircConsoleCore:
                     reply="DONE exit=126 shell-disabled",
                 )
             self.shell_runner.start(nick, cmd)
-            return HandleResult(action="shell", nick=nick, target=target, text=text)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="shell", nick=nick, target=target, text=text, **meta
+            )
 
         # Legacy interactive pipe (tests / AIRC without runner).
         if caps.shell_mode == "off":
@@ -2403,7 +2467,10 @@ class AircConsoleCore:
                 reply="DONE exit=126 shell-disabled",
             )
         self.sessions.pipe(nick, cmd)
-        return HandleResult(action="pipe", nick=nick, target=target, text=text)
+        meta = self._allow_meta(nick, account)
+        return HandleResult(
+            action="pipe", nick=nick, target=target, text=text, **meta
+        )
 
 
 def home_dir(explicit: str | None = None) -> Path:

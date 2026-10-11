@@ -78,3 +78,13 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 ## CLI drain (FR #4025)
 
 python common/scripts/run_bobiverse_build.py --queue-dir <home>/build-queue --repo-root <root> [--fake-filer] executes one enqueued BUILD v1 job via BuildRunner.
+
+## WP stacking (implementer)
+
+Later BUILD work packages reuse earlier WP helpers on tip --- do not reimplement shared pieces.
+
+- After WP2 (`FakeGitHubFiler`, `file_blocker_or_dedupe`, machine fold) is on `main`, rebase WP3 (INSTALL-TEST / `!installtest`) onto that tip and call the tip APIs instead of restoring old helper signatures.
+- Collapse UTF-16 double-spaced saved sources before merge when a WP tip was saved that way.
+
+(MRB #4086 moved out of `harvest` wrong-book; product home is this doc / skill `bobiverse-build` when present.)
+
