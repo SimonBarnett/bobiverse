@@ -5220,6 +5220,23 @@ def _note_seat_hold_unlocked(home: Path, nick: str, job: dict) -> None:
         _save_seat_holds_unlocked(home, holds)
 
 
+def note_seat_hold(home: Path, nick: str, job: dict) -> bool:
+    """FR #4089 / FR #4115: remember an open job for this seat (blocks further offers).
+
+    Used when an offer is stamped, and when a seat ACKs a job Jeeves has no queue row
+    for (``ACK status=missing``) so the seat is not treated as free after a chair restart.
+    """
+    key = _seat_key(nick)
+    if not key or not isinstance(job, dict):
+        return False
+    try:
+        with _lock(home):
+            _note_seat_hold_unlocked(home, nick, job)
+        return True
+    except (TimeoutError, OSError):
+        return False
+
+
 def clear_seat_hold(
     home: Path,
     nick: str,
