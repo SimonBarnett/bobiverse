@@ -223,6 +223,7 @@ routes to bobiverse via the split rule.
 - BOM-less Install-*.ps1 / intake.py must stay pure ASCII in comments too (arrow/emdash/ellipsis); v0.1.31 tip went red after #3907/#3914/#3960 landed those chars — replace with -> / - / ... before merge.
 - WinPS 5.1 Fetch/pack downloads: set ProgressPreference SilentlyContinue; prefer curl.exe --max-time over Invoke-WebRequest and tar/ZipFile over Expand-Archive; give nssm a non-nssm.cc mirror (archive.org) when primary 503s
 - MSI Install-Bob must Start-Service ircBob (bounded WaitForStatus) before TipForm launch and pass -SkipServiceRestart / BOBIVERSE_NO_SERVICE_RESTART=1 so Start-BobFleetTray does not Restart-BobTrayService during the CA; Invoke-BobTrayServiceControl skips START_PENDING/STOP_PENDING.
+- MSI Install-Bob RunInstall: Start-Service ircBob (WaitForStatus 60s soft-fail) before live TipForm; set BOBIVERSE_NO_SERVICE_RESTART=1 and pass -SkipServiceRestart so Restart-BobTrayService cannot race the CA; Invoke-BobTrayServiceControl skips START_PENDING/STOP_PENDING
 
 ## Harvest digest (lessons audit 2026-10-06)
 
