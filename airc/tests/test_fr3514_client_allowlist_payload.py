@@ -20,6 +20,7 @@ KEEP_SCRIPTS = (
     "Uninstall-Airc.ps1",
     "Recover-BobiverseService.ps1",
     "Resolve-AircConsoleNssm.ps1",
+    "Fetch-Nssm.ps1",  # FR #3899 / #3988 self-heal
     "Start-AircConsole.ps1",
     "Report-BobiverseIntakeIssue.ps1",
     "Report-AircInstallCmdFailure.ps1",
@@ -41,8 +42,9 @@ GONE_SCRIPTS = (
     "Sync-BobiverseFromRepo.ps1",
 )
 
-# FR #3582 / #3685: exact remaining files after client purge when airc.exe is present (25).
-# SkipAircExe pack stages omit airc\airc.exe → 24; both must exclude fleet-operators.txt.
+# FR #3582 / #3685 / #3988: exact remaining files after client purge when airc.exe is present (26).
+# SkipAircExe pack stages omit airc\airc.exe -> 25; both must exclude fleet-operators.txt.
+# FR #3899 added scripts\Fetch-Nssm.ps1 to the client allow-list for nssm self-heal.
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
@@ -63,6 +65,7 @@ CLIENT_REMAINING_FILES = frozenset(
         r"scripts\Report-AircInstallCmdFailure.ps1",
         r"scripts\Report-BobiverseIntakeIssue.ps1",
         r"scripts\Resolve-AircConsoleNssm.ps1",
+        r"scripts\Fetch-Nssm.ps1",  # FR #3899 / #3988
         r"scripts\Resolve-AircConsolePython.ps1",
         r"scripts\Start-AircConsole.cmd",
         r"scripts\Start-AircConsole.ps1",
@@ -72,7 +75,7 @@ CLIENT_REMAINING_FILES = frozenset(
         r"scripts\Update-BobiverseService.ps1",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 25
+assert len(CLIENT_REMAINING_FILES) == 26
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -240,17 +243,17 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
     assert r"config\fleet-operators.txt" not in rels
     expected = set(CLIENT_REMAINING_FILES)
     if not (stage / "airc" / "airc.exe").is_file():
-        # Pack -SkipAircExe (unit stage) omits airc.exe → 24 files (FR #3685 +1 reporter).
+        # Pack -SkipAircExe (unit stage) omits airc.exe -> 25 files (FR #3685 + FR #3988 Fetch-Nssm).
         expected.discard(r"airc\airc.exe")
     assert rels == expected, (
         f"client remaining files mismatch (got {len(rels)}, want {len(expected)}): "
         + ", ".join(sorted(rels))
     )
-    assert len(expected) in (24, 25)
+    assert len(expected) in (25, 26)
 
     # Allow-list size: only the named install/runtime set (no 45+ py / 69+ ps1).
     script_files = list((stage / "scripts").glob("*"))
-    assert len(script_files) <= 26, (
+    assert len(script_files) <= 27, (
         f"client scripts still too many ({len(script_files)}): "
         + ", ".join(sorted(p.name for p in script_files))
     )
