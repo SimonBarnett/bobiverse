@@ -204,6 +204,8 @@ def test_first_turn_ended_releases_startup_hold_and_fires_start(tmp_path, monkey
 
 
 def test_grace_fallback_when_no_turn_ended(tmp_path, monkeypatch):
+    # FR #4115: legacy grace-paste path (opt-out); default now waits for turn_ended.
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "0")
     sup, logs, clock, injected, relay = _sup(tmp_path, monkeypatch)
     assert sup.start_agent()
     assert FakeTimer.instances[0].delay == 60.0

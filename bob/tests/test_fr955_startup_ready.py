@@ -18,6 +18,8 @@ def test_default_startup_grace_is_at_least_60():
 
 
 def test_grace_holds_inject_until_timer(tmp_path, monkeypatch):
+    # FR #4115: legacy grace-paste path (opt-out); default now waits for turn_ended.
+    monkeypatch.setenv("BOB_WORKER_STARTUP_WAIT_READY", "0")
     logs: list[str] = []
     clock = {"t": 0.0}
 
