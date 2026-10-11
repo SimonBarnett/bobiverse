@@ -1,4 +1,4 @@
-# Bobiverse BUILD job (FR #4006 / #4025)
+# Bobiverse BUILD job (FR #4006 / #4025 / #4026)
 
 Deterministic, **zero AI tokens**. Jeeves ops run `!build`; each repo ships `.bobiverse/build.yml`.
 
@@ -43,7 +43,7 @@ Ops only (simon / bob-* ears). No recipe → refuse. Same repo already building 
 
 - **WP1:** recipe, classify, lock, `!build` CommandSpec/help, dry-run decide, docs
 - **WP2 (FR #4025):** live runner on recipe machine (below)
-- **WP3:** optional INSTALL-TEST job
+- **WP3 (FR #4026):** optional INSTALL-TEST job (`!installtest`) --- see below
 
 ## WP2 runner (FR #4025)
 
@@ -79,6 +79,41 @@ Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse
 
 python common/scripts/run_bobiverse_build.py --queue-dir <home>/build-queue --repo-root <root> [--fake-filer] executes one enqueued BUILD v1 job via BuildRunner.
 
+## WP3 INSTALL-TEST (FR #4026)
+
+Optional follow-on after a successful BUILD. Ops-only, **zero AI tokens**.
+
+### IRC
+
+```
+!installtest <owner/repo> <version> [tag]
+!installtest dry-run <owner/repo> <version> [tag]
+```
+
+Chair decides + PM; announces `INSTALLTEST v1 repo=... version=... tag=...` on `#bobiverse` when accepted.
+Requires `install_test` in `.bobiverse/build.yml` (machine, products, optional `msiexec_extra`).
+Runs on `install_test.machine` (bobiverse: `ionos` / DIGEST_ID_FOLD).
+
+### Runner (`InstallTestRunner`)
+
+1. Resolve product MSIs (`{product}-{version}.msi`) via injectable `asset_resolver` (default: ProgramData build-work/releases).
+2. `msiexec /i /qn /l*v` each MSI (+ recipe `msiexec_extra` tokens).
+3. Post-check keys: `service_up`, `sasl_ok`, `channels_ok`, `seat_ack` (injectable `postcheck_fn`).
+4. On failure: `classify_step_failure` + WP2 `file_blocker_or_dedupe` (`feature-request` + `release-blocker`).
+5. Zip evidence to `installtest-{version}-evidence.zip`; announce PASS/FAIL.
+
+### Test doubles
+
+Reuse WP2 `FakeGitHubFiler` / `file_blocker_or_dedupe` / `is_recipe_build_machine` / `classify_step_failure`.
+Inject `msiexec_fn`, `postcheck_fn`, `asset_resolver`, `filer` on `InstallTestRunner`.
+
+### Queue / drain (MRB #4085)
+
+Chair announces `INSTALLTEST v1` then `consume_installtest_v1` enqueues `home/build-queue/installtest-*.json` when local matches `install_test.machine` (same fold as BUILD). Drain:
+
+`python common/scripts/run_bobiverse_installtest.py --queue-dir <home>/build-queue --repo-root <root> [--fake-filer]`
+
+
 ## WP stacking (implementer)
 
 Later BUILD work packages reuse earlier WP helpers on tip --- do not reimplement shared pieces.
@@ -87,4 +122,5 @@ Later BUILD work packages reuse earlier WP helpers on tip --- do not reimplement
 - Collapse UTF-16 double-spaced saved sources before merge when a WP tip was saved that way.
 
 (MRB #4086 moved out of `harvest` wrong-book; product home is this doc / skill `bobiverse-build` when present.)
+
 
