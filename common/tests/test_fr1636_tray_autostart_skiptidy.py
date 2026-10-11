@@ -17,17 +17,31 @@ def test_interactive_onlogon_and_startup_bake_skiptidy():
     t = _t("Start-BobTrayInteractive.ps1")
     assert "FR #1636" in t
     assert "ForceNew -SkipTidy" in t or "ForceNew+SkipTidy" in t
-    # Persistent scheduled-task action must include SkipTidy
+    # Persistent args still bake SkipTidy; FR #3909 routes them through $trayLaunch.
     assert "trayArgsPersistent" in t
     assert "-SkipTidy" in t
-    persistent = [ln for ln in t.splitlines() if "New-ScheduledTaskAction" in ln]
-    assert persistent, "expected Register-ScheduledTask action line"
-    assert any("SkipTidy" in ln or "trayArgsPersistent" in ln for ln in persistent)
-    # Must not leave a ForceNew-only persistent action without SkipTidy
+    assert "ForceNew -SkipTidy" in t
+    # FR #3989: New-ScheduledTaskAction uses $trayLaunch.Argument (headless FR #3909),
+    # not an inline SkipTidy string. Pin the launch object + source args.
+    assert "Get-BobiverseHeadlessPowerShellLaunch" in t
+    assert (
+        "New-ScheduledTaskAction -Execute $trayLaunch.Execute -Argument $trayLaunch.Argument"
+        in t
+    )
+    assert (
+        "Get-BobiverseHeadlessPowerShellLaunch -PowerShellArguments $trayArgsPersistent"
+        in t
+    )
+    # Must not leave a ForceNew-only persistent action without SkipTidy on the same line
+    # (pre-#3909 shape). Post-#3909 the action line is $trayLaunch.*; SkipTidy lives in trayArgsPersistent.
     bare = [
         ln
         for ln in t.splitlines()
-        if "New-ScheduledTaskAction" in ln and "-ForceNew" in ln and "SkipTidy" not in ln and "trayArgsPersistent" not in ln
+        if "New-ScheduledTaskAction" in ln
+        and "-ForceNew" in ln
+        and "SkipTidy" not in ln
+        and "trayArgsPersistent" not in ln
+        and "trayLaunch" not in ln
     ]
     assert not bare, bare
 
