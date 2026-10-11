@@ -189,6 +189,39 @@ SKIP_FR_LABELS_IN_TEXT = frozenset(
     not in {"mrb", "needs-human", "blocked", "release-gate", "owner-missing"}
 )
 
+# FR #3928: PR hold labels — never offer MRB while present (intake/operator stamp).
+HOLD_MRB_LABELS = frozenset(
+    {
+        "on-hold",
+        "hold",
+        "do-not-merge",
+        "wip",
+    }
+)
+# Owner/body hold text (class of a-search#1334 "On hold … must not merge until …").
+PR_HOLD_TEXT_RE = re.compile(
+    r"(?i)(?:\bon\s+hold\b|\bmust\s+not\s+merge\b|\bdo\s+not\s+merge\b|"
+    r"\bhold(?:ing)?\s+(?:this\s+)?(?:pr|pull(?:\s+request)?)\b)"
+)
+
+
+def pr_hold_reason(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> str | None:
+    """FR #3928: why an open PR must not be offered/merged as MRB, else None."""
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    hit = sorted(labs & HOLD_MRB_LABELS)
+    if hit:
+        return f"hold label: {hit[0]}"
+    blob = f"{title or ''}\n{body or ''}"
+    m = PR_HOLD_TEXT_RE.search(blob)
+    if m:
+        return f"hold text: {m.group(0).strip()}"
+    return None
+
 
 @dataclass(frozen=True)
 class GitClaim:
@@ -1450,6 +1483,9 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
             action=action,
             line=src,
             refs=refs,
+            title=title,
+            body=body,
+            labels=labels,
             harvest_lesson=lesson,
             opened_by=lesson_pr_opener_seat(body) if lesson else "",
         )
@@ -1634,6 +1670,11 @@ def _append_unaccepted(doc: dict, claim: GitClaim, **extra: str) -> str:
         return "skipped"
     if claim.task == "FR" and fr_is_superseded(doc, claim.repo, claim.id):
         return "skipped"  # FR #254: MRB / open implement PR supersedes FR
+    # FR #3928: never enqueue MRB for PRs on hold (label or body/title hold text).
+    if claim.task == "MRB" and pr_hold_reason(
+        title=claim.title, body=claim.body, labels=claim.labels
+    ):
+        return "skipped"
     store_repo = canonical_queue_repo(claim.repo)
     if _already(doc, store_repo, claim.task, claim.id):
         # refresh refs/line on existing unaccepted row (case-insensitive match, FR #3817)
@@ -2987,6 +3028,7 @@ def mrb_row_offerable(
     FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed -> False).
     FR #2375: ``fix(mrb-N)`` / ``mrb-N-fix`` titles are never MRB targets (enqueue already
     skips them; reject at offer too if a row leaked in).
+    FR #3928: hold label / ``on hold`` / ``must not merge`` body text → not offerable.
     """
     if _canon_task(row) != "MRB":
         return True
@@ -2994,6 +3036,15 @@ def mrb_row_offerable(
         return False
     titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
     if is_mrb_fix_pr_title(titleish):
+        return False
+    labs = row.get("labels") or ()
+    if isinstance(labs, str):
+        labs = [labs]
+    if pr_hold_reason(
+        title=str(row.get("title") or ""),
+        body=str(row.get("body") or ""),
+        labels=tuple(str(x) for x in labs),
+    ):
         return False
     raw = str(row.get("url") or "").strip()
     if ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw):
