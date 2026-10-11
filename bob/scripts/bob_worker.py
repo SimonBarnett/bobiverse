@@ -3425,6 +3425,174 @@ class InjectRecovery:
         return "nacked"
 
 
+# FR #4115: Grok's own prompt-accept timeout. Under CPU load the TUI shows
+# "The agent did not accept your prompt within 120s. Your text is back in the input box; press
+# Enter to retry" / "Prompt not accepted, text restored" and the prompt sits unsent.
+PROMPT_NOT_ACCEPTED_RX = re.compile(
+    r"(?i)prompt not accepted|did not accept your prompt within|text is back in the input box"
+)
+
+
+def _prompt_retry_enabled() -> bool:
+    """FR #4115: BOB_WORKER_PROMPT_RETRY=0 disables the prompt-not-accepted Enter retry."""
+    raw = (os.environ.get("BOB_WORKER_PROMPT_RETRY") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _prompt_retry_backoffs() -> tuple:
+    """FR #4115: waits after each Enter retry (BOB_WORKER_PROMPT_RETRY_BACKOFFS, csv seconds)."""
+    raw = (os.environ.get("BOB_WORKER_PROMPT_RETRY_BACKOFFS") or "").strip()
+    if raw:
+        try:
+            vals = tuple(max(1.0, min(600.0, float(x))) for x in raw.split(",") if x.strip())
+            if vals:
+                return vals
+        except ValueError:
+            pass
+    return (15.0, 30.0, 60.0)
+
+
+def read_console_screen_text(max_lines: int = 15) -> Optional[str]:
+    """FR #4115: last ``max_lines`` non-empty lines of THIS process's visible console window."""
+    if os.name != "nt":
+        return None
+    try:
+        from ctypes import wintypes as W
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class _COORD(ctypes.Structure):
+            _fields_ = [("X", W.SHORT), ("Y", W.SHORT)]
+
+        class _SR(ctypes.Structure):
+            _fields_ = [("L", W.SHORT), ("T", W.SHORT), ("R", W.SHORT), ("B", W.SHORT)]
+
+        class _CSBI(ctypes.Structure):
+            _fields_ = [("size", _COORD), ("cur", _COORD), ("attr", W.WORD), ("win", _SR), ("max", _COORD)]
+
+        k32.CreateFileW.restype = W.HANDLE
+        k32.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+        k32.CloseHandle.argtypes = [W.HANDLE]
+        h = k32.CreateFileW("CONOUT$", 0xC0000000, 3, None, 3, 0, None)
+        if not h or h == ctypes.c_void_p(-1).value:
+            return None
+        try:
+            ci = _CSBI()
+            if not k32.GetConsoleScreenBufferInfo(h, ctypes.byref(ci)):
+                return None
+            w = int(ci.size.X)
+            lines = []
+            for y in range(int(ci.win.T), int(ci.win.B) + 1):
+                buf = ctypes.create_unicode_buffer(w + 1)
+                n = W.DWORD()
+                k32.ReadConsoleOutputCharacterW(h, buf, w, _COORD(0, y), ctypes.byref(n))
+                t = buf.value.rstrip()
+                if t:
+                    lines.append(t)
+            return "\n".join(lines[-max(1, int(max_lines)):])
+        finally:
+            k32.CloseHandle(h)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class PromptNotAcceptedWatcher:
+    """FR #4115: detect Grok's "Prompt not accepted, text restored" and press Enter to retry with
+    bounded backoff; after ``max_tries`` Enters still showing it, call ``on_give_up`` once (the
+    caller NACKs a pending assign). ``note_activity`` (turn started/ended) ends the episode and
+    ignores the same stale screen text until it changes.
+    """
+
+    def __init__(
+        self,
+        *,
+        read_fn: Callable[[], Optional[str]],
+        enter_fn: Callable[[], bool],
+        on_give_up: Callable[[], None] = lambda: None,
+        clock: Callable[[], float] = time.monotonic,
+        log: Callable[[str], None] = lambda m: None,
+        max_tries: int = 3,
+        backoffs: tuple | list = (15.0, 30.0, 60.0),
+    ):
+        self.read_fn = read_fn
+        self.enter_fn = enter_fn
+        self.on_give_up = on_give_up
+        self.clock = clock
+        self.log = log
+        self.max_tries = max(1, int(max_tries))
+        self.backoffs = tuple(float(b) for b in backoffs) or (15.0,)
+        self.tries = 0
+        self.next_at = 0.0
+        self.gave_up = False
+        self.active = False
+        self._stale: Optional[str] = None
+        self._last_screen: Optional[str] = None
+
+    @staticmethod
+    def _match(screen: str) -> Optional[str]:
+        hits = [ln.strip() for ln in screen.splitlines() if PROMPT_NOT_ACCEPTED_RX.search(ln)]
+        return "\n".join(hits) if hits else None
+
+    def note_activity(self) -> None:
+        if self.active:
+            self.log(f"relay: prompt-not-accepted resolved (turn activity) after {self.tries} Enter retries")
+        self._stale = self._match(self._last_screen or "") if self._last_screen else None
+        self.active = False
+        self.tries = 0
+        self.gave_up = False
+
+    def tick(self) -> str:
+        """Returns ``clear``, ``stale``, ``wait``, ``enter``, ``gave_up`` or ``done``."""
+        screen = self.read_fn()
+        if screen is None:
+            return "clear"
+        self._last_screen = screen
+        hit = self._match(screen)
+        if not hit:
+            if self.active:
+                self.log(f"relay: prompt-not-accepted cleared after {self.tries} Enter retries")
+            self.active = False
+            self.tries = 0
+            self.gave_up = False
+            self._stale = None
+            return "clear"
+        if self._stale is not None and hit == self._stale:
+            return "stale"
+        self._stale = None
+        now = float(self.clock())
+        if not self.active:
+            self.active = True
+            self.tries = 0
+            self.gave_up = False
+            self.next_at = now
+            self.log("relay: prompt-not-accepted detected (Grok accept timeout; text restored)")
+        if self.gave_up:
+            return "done"
+        if now < self.next_at:
+            return "wait"
+        if self.tries >= self.max_tries:
+            self.gave_up = True
+            self.log(f"relay: prompt-not-accepted still showing after {self.tries} Enter retries - giving up")
+            try:
+                self.on_give_up()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: prompt-not-accepted give-up error {type(e).__name__}")
+            return "gave_up"
+        self.tries += 1
+        ok = False
+        try:
+            ok = bool(self.enter_fn())
+        except Exception:  # noqa: BLE001
+            ok = False
+        wait = self.backoffs[min(self.tries - 1, len(self.backoffs) - 1)]
+        self.next_at = now + wait
+        self.log(
+            f"relay: prompt-not-accepted - Enter retry {self.tries}/{self.max_tries} "
+            f"ok={ok} next check in {wait:.0f}s"
+        )
+        return "enter"
+
+
 class AssignAckMiss:
     """FR #2383: assign injected, agent keeps working, but no ACK hits the run-dir outbox.
 
@@ -4592,11 +4760,19 @@ class Supervisor:
         def _on_started(turn: Optional[int], wall: float) -> None:
             sid = sid_box.get("sid")
             self._note_startup_turn_started(sid)
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
             if self.bored:
                 self.bored.turn_started(turn=turn, sid=sid)
 
         def _on_ended(turn: Optional[int], wall: float) -> None:
             sid = sid_box.get("sid")
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
             if self.bored:
                 # Use emitter clock for hold release; wall is only for logging/stale via hold_started mono.
                 self.bored.turn_ended(turn=turn, sid=sid)
@@ -4746,6 +4922,7 @@ class Supervisor:
             self.relay.set_target(None)
             self._start_turn_watcher(spec.session_id)
             self._start_fuel_watcher(int(proc.pid or 0))
+            self._start_prompt_watcher(proc)
             self._arm_ready(proc)
             threading.Thread(target=self._wait_exit, args=(proc,), name="agent-wait", daemon=True).start()
             return True
@@ -4893,6 +5070,40 @@ class Supervisor:
         with self._lock:
             self._grace_timer = t
         t.start()
+
+    def _prompt_give_up(self) -> None:
+        """FR #4115: Enter retries exhausted - NACK the pending assign (if any) via the recovery."""
+        line = ""
+        with contextlib.suppress(Exception):
+            line = self.ack_miss.last_line or ""
+        if not line:
+            line = getattr(self.relay, "last_unacked", "") or ""
+        if line and assign_job_ref(line):
+            self._inject_recovery().on_failed(line, attempt=2)
+        else:
+            self.log("relay: prompt-not-accepted give-up - no pending assign to NACK")
+
+    def _start_prompt_watcher(self, proc) -> None:
+        """FR #4115: poll the shared console for Grok's prompt-accept timeout (Windows, grok only)."""
+        if os.name != "nt" or (self.kind or "").strip().lower() != "grok" or not _prompt_retry_enabled():
+            return
+        pw = PromptNotAcceptedWatcher(
+            read_fn=read_console_screen_text,
+            enter_fn=send_console_enter,
+            on_give_up=self._prompt_give_up,
+            clock=time.monotonic,
+            log=self.log,
+            backoffs=_prompt_retry_backoffs(),
+        )
+        self._prompt_watch = pw
+
+        def _run() -> None:
+            while not self._shutting and self.proc is proc and proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    pw.tick()
+                time.sleep(5.0)
+
+        threading.Thread(target=_run, name="prompt-retry-watch", daemon=True).start()
 
     def _inject_recovery(self) -> "InjectRecovery":
         """FR #4115: lazily build the re-paste / NACK recovery for lost assign pastes."""
