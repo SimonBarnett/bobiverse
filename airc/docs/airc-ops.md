@@ -65,28 +65,6 @@ PUT/RUN/JOB verbs are constructed by the helper (sandbox under `<ai root>\airc\d
 - Optional clone sync when `Sync-BobiverseFromRepo.ps1` is present and `BOBIVERSE_REPO` is set; that path is secondary to the detached release updater.
 - Do **not** document or call the retired `Check-BobiverseUpdate.ps1` name for fleet ops.
 - **FR #4015 (nssm DisplayName):** never leave unsubstituted `#machine` — resolve `-MachineId` / script id / sanitized `COMPUTERNAME` (fallback `local`) so DisplayName is e.g. `airc console (#walrus IRC shell)`.
-- **FR #4011 (PsExec SYSTEM upgrade 1601 / Restart Manager 351):** Quiet upgrades under `psexec \\host -h -s msiexec ... /qn` run in session 0. Restart Manager cannot shut down the Airc service (error 351) and Windows Installer itself can crash (exit **1601**, SCM 7031). Tip MSI bakes `MSIRESTARTMANAGERCONTROL=Disable` and stops Airc (`sc stop Airc`) before `RemoveExistingProducts`. For an older MSI still on the wire, pass the property explicitly, e.g. `msiexec /i airc-<ver>.msi AIRC_PROFILE=client MSIRESTARTMANAGERCONTROL=Disable /qn /norestart /l*v C:\Temp\msi-install.log`. **Release checklist:** after packing airc, verify `psexec \\walrus -h -s msiexec /i ... MSIRESTARTMANAGERCONTROL=Disable /qn` upgrades 0.1.30→tip exits 0 and keep the verbose log.
-- **FR #4012 (Error 1705 pending transaction):** a crashed msiexec (e.g. companion 1601) can leave `HKLM\...\Installer\InProgress` so the next `/i` hits Error **1705**. `Clear-BobiverseMsiPendingTransaction` (Bobiverse-Common) removes InProgress/Rollback when no live msiexec is running and restarts `msiserver`; `Invoke-BobiverseMsiexecSerialized` calls it before msiexec and retries exit 1705. `Install-Airc.cmd` also clears before Install-Airc.ps1. Manual psexec: run the clear helper (or re-run via Update-BobiverseService) before a second `/i`.
-- **ProductCode / uninstall (FR #1552 notes + FR #1566 / #3292 / #3392):** ProductCode changes per version — look up uninstall via ARP `DisplayName` `bobiverse airc` (`Get-BobiverseArpProduct` in the updater), never hard-code a GUID. Quiet `msiexec /x` runs deferred `RunUninstall` → `scripts\Uninstall-Airc.cmd` **before RemoveFiles** when `REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE`. That stops/removes the `Airc` service via `Remove-BobiverseService`. **Fleet default keeps ConsoleHome secrets** (`console.password`, operators, NickServ GUID home). **Workstation** installs (`AIRC_PROFILE=workstation`) strip MSI-laid agent briefings/skills/scripts at install (FR #3392) and on uninstall / `AIRC_PURGE=1` purge ConsoleHome, config/logs/.git/.grok, `Users\Default\.airc*`, `ProgramData\Bobiverse\update\airc`, `ProgramData\Bobiverse\logs\install-airc.log`, and LocalSystem crash-spool (manifest `%ProgramData%\Bobiverse\airc-install-manifest.json`). FR #3394: install locks `%ProgramData%\Bobiverse` and the install tree fail-closed before `Start-Service`; purge refuses manifest paths outside the allow-list. MSI RemoveFiles owns the remaining heat-laid tree. MajorUpgrade skips this CA so FR #1552 can still read live AppParameters. Manual: `Uninstall-Airc.cmd -Purge 1` for a full wipe. If ARP is removed but the service remains on an older MSI, treat that as a bug and file intake.
-
-## Operator smoke (short)
-
-1. `Get-Service Airc` → Running; log shows `chanserv-info status=registered` and join as `{machine}_console`.
-2. `Invoke-AircRemote.ps1 -MachineId <id> -Action Status -Outbox <ear-outbox>` (or harmless `Command` `Write-Output ping`) → expect Query `DONE id=… exit=0` once FR #75 is deployed.
-3. Sandboxed PUT/RUN (when FR #78 is live): put a tiny file under `<ai root>\airc\drop\…` only.
-4. After UPDATE / MSI: wait for `{machine}_console` to answer again within ~120s (detached updater + reconnect); do not inline-msiexec over the live airc transport.
-
-## Verify
-
-```powershell
-Get-Service Airc,AircConsole
-Get-Content $env:USERPROFILE\.airc\*.log -Tail 40 -ErrorAction SilentlyContinue
-# Expect: chanserv-info status=registered; joined #<machine> as <machine>_console
-```
-
-## Related
-
-- Helper: `scripts/Invoke-AircRemote.ps1`
-- Protocol: `docs/airc-remote-control.md`
-- Skills: `.grok/skills/bobiverse-airc*.md`
-- Updater: `common/scripts/Update-BobiverseService.ps1` (staged beside product scripts on install)
+- **FR #4014 (no hardcoded #ionos in warnings):** installer/start messages use the target machine id and name `#wonderland` when `#<machine>` is unregistered (e.g. `#walrus is not registered; joining #wonderland`). Never `instead of #ionos`.
+- **FR #4013 (non-elevated install / Error 1730):** tip MSI requires `Privileged` (message: `airc install needs administrator rights`) and `InstallPrivileges=elevated` so an unelevated `/i` fails closed before `RemoveExistingProducts` Error **1730** / generic **1603**. `Install-Airc.ps1` self-elevates via UAC; cancel/failure exits **740** with the same plain message and does not write the FR #3759 fail-reported flag / outer intake.
+-
