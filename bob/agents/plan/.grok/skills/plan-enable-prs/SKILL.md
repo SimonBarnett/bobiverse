@@ -36,6 +36,8 @@ After `gh repo create --public`:
 2. Do **not** set an interaction limit.
 3. Do **not** add a ruleset / branch protection that blocks outside
    collaborators from opening PRs on day one.
+   (The `required-ci-3948` ruleset below is fine: it only gates merging
+   on CI, and it does not block anyone opening a PR.)
 4. Do **not** protect `main` so that only collaborators can open PRs.
 
 A GitHub user forks the repo and opens a PR. No collaborator invite.
@@ -115,12 +117,74 @@ Do **not** prefer https://github.com/apps/cursor/installations/new
 when Cursor is already installed (can replace Selected-repos and drop
 existing repos).
 
+## Auto-merge + required CI (bobiverse#3948)
+
+Bob MRB seats post PASS, run `gh pr merge <n> --auto --merge`, and send
+DONE straight away. They never poll CI. GitHub merges the PR once the
+required checks are green. Every new repo gets this in the same turn
+as the steps above.
+
+1. **Allow auto-merge.** This changes nothing else: visibility, forking
+   and the merge buttons stay as they are.
+
+```
+gh api -X PATCH repos/SimonBarnett/<name> -F allow_auto_merge=true
+```
+
+2. **Required-CI ruleset on the default branch**, once the repo has a
+   CI workflow that runs on every PR (`on: pull_request` with no
+   `paths:` filter). Require only those check names, which are the job
+   names GitHub shows on the PR. Do **not** require path-filtered or
+   optional checks, GitGuardian, or reviews, and do not turn on strict
+   (up to date with main). The admin bypass means Simon's pushes are
+   never blocked. This ruleset only gates merging; it does not stop
+   anyone forking or opening a PR.
+
+   Save this as `required-ci.json`, with one entry per required check
+   (`15368` is the GitHub Actions app):
+
+```
+{"name":"required-ci-3948","target":"branch","enforcement":"active",
+ "bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],
+ "conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},
+ "rules":[{"type":"required_status_checks","parameters":{
+   "do_not_enforce_on_create":false,
+   "strict_required_status_checks_policy":false,
+   "required_status_checks":[{"context":"<ci job name>","integration_id":15368}]}}]}
+```
+
+```
+gh api -X POST repos/SimonBarnett/<name>/rulesets --input required-ci.json
+```
+
+   If `required-ci-3948` already exists, update it in place with
+   `gh api -X PUT repos/SimonBarnett/<name>/rulesets/<id> --input required-ci.json`
+   instead of adding a second ruleset.
+
+3. **No CI yet** (a brand-new repo): do step 1 only and say so in the
+   hand-off. Until a required check exists, `--auto` merges straight
+   away. Add the ruleset as soon as the first CI workflow has gone green
+   on a PR.
+
+4. **Verify:**
+
+```
+gh api repos/SimonBarnett/<name> --jq .allow_auto_merge            # true
+gh api repos/SimonBarnett/<name>/rulesets --jq '.[].name'          # required-ci-3948 once CI exists
+```
+
+On GitHub Free, private repos get neither rulesets nor auto-merge.
+Plan products are public, so this does not apply to them.
+
 ## Same-turn order (with plan-git-from-plan)
 
 After `gh repo create` and **after** `python tools/bob_git_hook.py …`
 exits 0 (skill `plan-bob-webhooks`), run this skill before the first
 push and before opening the FR issue. Do not open issues/PRs while the
 repo still blocks forks or while Cursor is on Selected-repos only.
+
+Enable auto-merge (`allow_auto_merge=true`, see **Auto-merge + required
+CI** above) in the same turn.
 
 Create the `feature-request` label before the first issue
 (`gh label create feature-request --force` — a brand-new repo has no
