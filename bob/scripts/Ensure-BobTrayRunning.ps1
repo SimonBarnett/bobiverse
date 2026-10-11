@@ -51,7 +51,7 @@ if (-not (Get-Command Write-BobTrayLifecycleEvent -ErrorAction SilentlyContinue)
 if (-not (Get-Command Test-BobTrayProcessPresent -ErrorAction SilentlyContinue)) {
     function Test-BobTrayProcessPresent {
         param([string]$InstallRoot = '')
-        # FR #3909: fast path — bob-tray.exe is the normal TipForm host.
+        # FR #3909: fast path - bob-tray.exe is the normal TipForm host.
         if (@(Get-Process -Name 'bob-tray' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
         $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                 ($_.CommandLine -and ($_.CommandLine -match 'Watch-BobTray\.ps1' -or $_.CommandLine -match '_Watch-BobTray-[^\s"]+\.ps1')) -or
