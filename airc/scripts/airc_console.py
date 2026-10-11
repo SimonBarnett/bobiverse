@@ -127,7 +127,7 @@ def machine_id(override: str | None = None) -> str:
     Prefer explicit override, then ``AIRC_CONSOLE_MACHINE`` / ``BOB_MACHINE_ID``
     (fleet ids like ``ionos``), then Windows ``COMPUTERNAME``. Using bare
     COMPUTERNAME alone (e.g. ``WIN-MPRE8VI4U6U``) joins the wrong channel and
-    looks like \"does not connect\" on ``#ionos`` / ``#flamingo``.
+    looks like \"does not connect\" on ``#<machine>`` / ``#wonderland``.
     """
     mid, _src = resolve_machine_id(override, allow_hostname_fallback=True)
     return mid
