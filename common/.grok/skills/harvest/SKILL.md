@@ -224,6 +224,7 @@ routes to bobiverse via the split rule.
 - WinPS 5.1 Fetch/pack downloads: set ProgressPreference SilentlyContinue; prefer curl.exe --max-time over Invoke-WebRequest and tar/ZipFile over Expand-Archive; give nssm a non-nssm.cc mirror (archive.org) when primary 503s
 - MSI Install-Bob must Start-Service ircBob (bounded WaitForStatus) before TipForm launch and pass -SkipServiceRestart / BOBIVERSE_NO_SERVICE_RESTART=1 so Start-BobFleetTray does not Restart-BobTrayService during the CA; Invoke-BobTrayServiceControl skips START_PENDING/STOP_PENDING.
 - When Pack/allow-list adds a script (Fetch-Nssm), update CLIENT_REMAINING_FILES + KEEP_SCRIPTS counts in the same turn as the allow-list change so fr3514 pack-then-client stays green
+- Triple shop assign: ACK first MRB only and NACK siblings immediately; mrb_merge_gate.py needs GH_TOKEN/GITHUB_TOKEN even when gh auth works -- still post PASS board then gh pr merge --auto
 
 ## Harvest digest (lessons audit 2026-10-06)
 
