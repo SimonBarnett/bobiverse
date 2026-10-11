@@ -3104,6 +3104,14 @@ $startWorkerTimer.Add_Tick({
             [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
                     -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
                     -Log { param($m) Write-TrayLog $m })
+            # FR #4136: stamp after the queue scan so bob-tray.exe HealEngine can detect a hung-but-alive engine.
+            try {
+                $dir = [string]$script:startWorkerDir
+                if ($dir) {
+                    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+                    Set-Content -LiteralPath (Join-Path $dir 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+                }
+            } catch { }
             if (Test-BobTrayEngineMode) {
                 [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
                         -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `

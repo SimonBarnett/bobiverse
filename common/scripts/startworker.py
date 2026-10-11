@@ -6,9 +6,9 @@ The Bob ear (service, session 0, LocalSystem) can not open a window on the user'
 
   ear   : authenticate (verified services account) -> machine check -> kill-switch -> tray alive? (= somebody is
           logged in with the tray up) -> worker cap -> cooldown -> write ``req-<id>.json`` -> reply ACK / NACK
-  tray  : host/ThreadPool writes ``tray.alive`` every ~2 s (FR #2697: not on the WinForms poll thread);
-          consumes ``req-*.json`` on a UI tick (deleted BEFORE launch: at-most-once, expired after
-          REQUEST_TTL_S) -> Start-BobTrayWorkerExe -> ``res-<id>.json`` (audit only)
+  tray  : host writes ``tray.alive`` every ~2 s (FR #2697); engine writes ``engine.alive`` after each
+          startworker queue tick (FR #4136). Ear NACKs ``engine_stale`` when tray.alive is fresh but
+          engine.alive is not. Consumes ``req-*.json`` on a UI tick -> ``res-<id>.json`` (audit only)
 
 No credentials cross this queue, only {id, mode, by, ts}. Everything here is pure / injectable so it is testable
 without IRC, a desktop or Windows.
@@ -40,6 +40,8 @@ REQUEST_TTL_S = 60.0             # a queued request older than this is dropped b
 TRAY_ALIVE_MAX_AGE_S = 30.0      # tray heartbeat freshness (host/ThreadPool writes every ~2 s; FR #2697: ≥2× worst UI refresh stall)
 QUEUE_SUBDIR = ("run", "startworker")
 ALIVE_FILE = "tray.alive"
+ENGINE_ALIVE_FILE = "engine.alive"  # FR #4136: PS engine queue-tick stamp
+ENGINE_ALIVE_MAX_AGE_S = 120.0     # aligned with bob-tray EngineAliveStamp.MaxAgeSeconds
 DISABLE_FILE = "startworker.disabled"
 WORKER_EXE_RE = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 _MACHINE_RE = re.compile(r"^#?[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
@@ -183,6 +185,15 @@ def tray_alive(qdir, now: float | None = None, max_age: float = TRAY_ALIVE_MAX_A
         return False
 
 
+def engine_alive(qdir, now: float | None = None, max_age: float = ENGINE_ALIVE_MAX_AGE_S) -> bool:
+    """FR #4136: PS engine queue-tick stamp must be fresh (tray.alive alone can lie while the engine is hung)."""
+    now = time.time() if now is None else now
+    try:
+        return 0.0 <= now - (Path(qdir) / ENGINE_ALIVE_FILE).stat().st_mtime <= max_age
+    except OSError:
+        return False
+
+
 def write_request(qdir, mode: str, by: str, kind: str, now: float | None = None) -> str:
     now = time.time() if now is None else now
     rid = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)) + "-" + uuid.uuid4().hex[:6]
@@ -260,6 +271,10 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
     if not tray_alive(qdir, now):
         return nack("no_interactive_session",
                     "nobody is logged in with the Bob tray running (start the tray from the Start menu)", mode=mode, kind=kind)
+    # FR #4136: tray.alive is host-written; a hung PS engine still looks "alive" without engine.alive.
+    if not engine_alive(qdir, now):
+        return nack("engine_stale",
+                    "Bob tray engine is not ticking (engine.alive stale); restart the tray or wait for watchdog", mode=mode, kind=kind)
     # FR #3181: cap counts IRC-joined agent seats only (not Plan/maintenance/key-dialog).
     have = count_irc_agent_seats(machine=local)
     cap = min(gate.max_workers, HARD_MAX_WORKERS)
