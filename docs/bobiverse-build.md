@@ -107,6 +107,13 @@ Runs on `install_test.machine` (bobiverse: `ionos` / DIGEST_ID_FOLD).
 Reuse WP2 `FakeGitHubFiler` / `file_blocker_or_dedupe` / `is_recipe_build_machine` / `classify_step_failure`.
 Inject `msiexec_fn`, `postcheck_fn`, `asset_resolver`, `filer` on `InstallTestRunner`.
 
+### Queue / drain (MRB #4085)
+
+Chair announces `INSTALLTEST v1` then `consume_installtest_v1` enqueues `home/build-queue/installtest-*.json` when local matches `install_test.machine` (same fold as BUILD). Drain:
+
+`python common/scripts/run_bobiverse_installtest.py --queue-dir <home>/build-queue --repo-root <root> [--fake-filer]`
+
+
 ## WP stacking (implementer)
 
 Later BUILD work packages reuse earlier WP helpers on tip --- do not reimplement shared pieces.

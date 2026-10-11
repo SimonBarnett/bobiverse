@@ -1660,6 +1660,10 @@ class Client:
                 time.sleep(FLOOD_S)
             except Exception:
                 info("WARN installtest route announce failed")
+            try:
+                self._maybe_start_installtest_runner(dec.route, src_hint=who_nick)
+            except Exception as exc:
+                info(f"WARN installtest enqueue: {type(exc).__name__}: {exc}")
 
     def _build_queue_dir(self) -> Path:
         """FR #4025: home/build-queue for accepted BUILD v1 jobs (spawn/pack is out of chair scope)."""
@@ -1705,6 +1709,49 @@ class Client:
         if bobiverse_build.parse_build_v1_route(body) is None:
             return False
         return self._maybe_start_build_runner(body, src_hint=src)
+
+    def _maybe_start_installtest_runner(self, route_line: str, *, src_hint: str = "") -> bool:
+        """FR #4026 WP3: accept INSTALLTEST v1 when local matches install_test.machine; enqueue only."""
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        recipe_machine = "ionos"
+        try:
+            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            it = recipe.install_test or {}
+            recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+        except Exception:
+            try:
+                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
+                it = recipe.install_test or {}
+                recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+            except Exception:
+                recipe_machine = "ionos"
+        qdir = self._build_queue_dir()
+        ok = bobiverse_build.consume_installtest_v1(
+            route_line, local, recipe_machine, queue_dir=qdir
+        )
+        if ok:
+            info(
+                f"INFO FR #4026 INSTALLTEST v1 accepted machine={local} "
+                f"recipe={recipe_machine} from={src_hint or '-'} queue={qdir}"
+            )
+        return ok
+
+    def _maybe_consume_installtest_v1_wire(self, src: str, body: str) -> bool:
+        """FR #4026: fleet INSTALLTEST v1 PRIVMSG -> enqueue when this box is the recipe machine."""
+        if bobiverse_build.parse_installtest_v1_route(body) is None:
+            return False
+        return self._maybe_start_installtest_runner(body, src_hint=src)
 
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
@@ -3098,6 +3145,8 @@ class Client:
                 self._handle_recycle_command(src, body)
             else:
                 self._handle_bob_local_recycle_command(src, body)
+            return
+        if self._maybe_consume_installtest_v1_wire(src, body):
             return
         if self._maybe_consume_build_v1_wire(src, body):
             return

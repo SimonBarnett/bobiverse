@@ -240,3 +240,51 @@ def test_fr4026_recipe_install_test_products():
     assert recipe.install_test.get("machine") == "ionos"
     prods = recipe.install_test.get("products") or []
     assert set(prods) >= {"jeeves", "bob", "airc"}
+
+
+def test_fr4026_parse_installtest_v1_route():
+    assert bb.parse_installtest_v1_route("hello") is None
+    assert bb.parse_installtest_v1_route("BUILD v1 repos=a/b version=1 ref=HEAD") is None
+    r = bb.parse_installtest_v1_route(
+        "INSTALLTEST v1 repo=SimonBarnett/bobiverse version=0.1.32 tag=v0.1.32"
+    )
+    assert r and r["repo"] == "SimonBarnett/bobiverse"
+    assert r["version"] == "0.1.32" and r["tag"] == "v0.1.32"
+    r2 = bb.parse_installtest_v1_route(
+        ":INSTALLTEST v1 repo=SimonBarnett/bobiverse version=0.1.99 tag=v0.1.99"
+    )
+    assert r2 and r2["version"] == "0.1.99"
+
+
+def test_fr4026_consume_installtest_enqueues(tmp_path: Path):
+    line = "INSTALLTEST v1 repo=SimonBarnett/bobiverse version=0.1.99 tag=v0.1.99"
+    q = tmp_path / "build-queue"
+    assert bb.consume_installtest_v1(line, "win-mpre8vi4u6u", "ionos", queue_dir=q) is True
+    jobs = list(q.glob("installtest-*.json"))
+    assert len(jobs) == 1
+    data = __import__("json").loads(jobs[0].read_text(encoding="utf-8"))
+    assert data["kind"] == "INSTALLTEST"
+    assert data["repo"] == "SimonBarnett/bobiverse"
+    assert data["version"] == "0.1.99"
+    assert data["status"] == "queued"
+    # wrong machine does not enqueue
+    q2 = tmp_path / "q2"
+    assert bb.consume_installtest_v1(line, "marchhare", "ionos", queue_dir=q2) is False
+    assert list(q2.glob("*.json")) == []
+
+
+def test_fr4026_mrb4085_hostile_queued_means_enqueued(tmp_path: Path):
+    """Hostile: decide route INSTALLTEST v1 must be consumable into a real queue file (MRB #4085)."""
+    who = cc.Principal("owner", "simon", "simon")
+    dec = bb.decide_installtest(
+        who=who,
+        body="!installtest SimonBarnett/bobiverse 0.1.99",
+        may=cc.may,
+        denied_line=cc.denied_line,
+        recipe_loader=lambda r: bb.load_recipe(ROOT),
+        local_machine="win-mpre8vi4u6u",
+    )
+    assert dec and dec.ok and dec.route.startswith("INSTALLTEST v1")
+    q = tmp_path / "build-queue"
+    assert bb.consume_installtest_v1(dec.route, "win-mpre8vi4u6u", "ionos", queue_dir=q) is True
+    assert list(q.glob("installtest-*.json")), "PM queued claim requires enqueue"

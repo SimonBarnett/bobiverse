@@ -89,7 +89,7 @@ Re-run **after** the open `release-blocker` issues from the failed build are **c
 4. Do **not** re-`!build` in a loop while blockers are still open --- that only re-hits and comments on the same issues.
 5. `pre_existing` / `flaky` alone do not block pack; still investigate, but they are not the release-blocker gate.
 
-WP3 INSTALL-TEST (FR #4026), when present in the recipe, is a separate follow-on after a successful BUILD --- see that FR / `install_test` field; do not confuse it with re-running BUILD.
+WP3 INSTALL-TEST (FR #4026), when present in the recipe, is a separate follow-on after a successful BUILD --- `!installtest` announces `INSTALLTEST v1`, enqueues `installtest-*.json`, drain via `run_bobiverse_installtest.py`; do not confuse it with re-running BUILD.
 
 ## Cross-links
 

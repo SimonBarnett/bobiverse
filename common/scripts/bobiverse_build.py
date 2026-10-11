@@ -476,6 +476,11 @@ BUILD_V1_RE = re.compile(
     re.IGNORECASE,
 )
 
+INSTALLTEST_V1_RE = re.compile(
+    r"^INSTALLTEST\s+v1\s+repo=(?P<repo>\S+)\s+version=(?P<version>\S+)\s+tag=(?P<tag>\S+)\s*$",
+    re.IGNORECASE,
+)
+
 # Fallback DIGEST_ID_FOLD when bobreport is not importable (tests / slim envs).
 _BUILD_ID_FOLD = {
     "ionos": "win-mpre8vi4u6u",
@@ -1291,6 +1296,78 @@ def consume_build_v1(
     return True
 
 # ------------------------------------------------------------------ !installtest (FR #4026 WP3)
+
+
+def parse_installtest_v1_route(text: str) -> dict | None:
+    """Parse ``INSTALLTEST v1 repo=owner/name version=X tag=Y`` -> dict or None."""
+    raw = (text or "").strip()
+    if raw.startswith(":"):
+        raw = raw[1:].strip()
+    m = INSTALLTEST_V1_RE.match(raw)
+    if not m:
+        return None
+    return {
+        "repo": m.group("repo"),
+        "version": m.group("version"),
+        "tag": m.group("tag"),
+        "raw": raw,
+    }
+
+
+def enqueue_installtest_job(
+    route: dict,
+    *,
+    queue_dir: Path | str,
+    local_machine: str,
+    recipe_machine: str = "",
+) -> Path:
+    """Write an INSTALLTEST v1 job JSON under ``queue_dir`` (home/build-queue)."""
+    q = Path(queue_dir)
+    q.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    ver = str(route.get("version") or "unknown")
+    path = q / f"installtest-{ver}-{ts}.json"
+    payload = {
+        "v": 1,
+        "kind": "INSTALLTEST",
+        "repo": route.get("repo") or "",
+        "version": ver,
+        "tag": route.get("tag") or f"v{ver}",
+        "local_machine": local_machine,
+        "recipe_machine": recipe_machine,
+        "queued_at": ts,
+        "status": "queued",
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def consume_installtest_v1(
+    line: str,
+    local_machine: str,
+    recipe_machine: str,
+    *,
+    queue_dir: Path | str | None = None,
+) -> bool:
+    """Return True when this host should accept the INSTALLTEST v1 route (optionally enqueue).
+
+    Does not msiexec in-process; writes a job JSON when ``queue_dir`` is set.
+    """
+    route = parse_installtest_v1_route(line)
+    if not route:
+        return False
+    if not is_recipe_build_machine(recipe_machine, local_machine):
+        return False
+    if queue_dir is not None:
+        enqueue_installtest_job(
+            route,
+            queue_dir=queue_dir,
+            local_machine=local_machine,
+            recipe_machine=recipe_machine,
+        )
+    return True
+
+
 @dataclass
 class InstallTestDecision:
     ok: bool
