@@ -326,6 +326,29 @@ $script:trayServiceName = 'ircBob'
 $script:trayExitReason = ''
 $script:aboutForm = $null
 
+
+function Invoke-BobTrayTimedTick {
+    <#
+      FR #4142: wrap a timer body; log when a tick exceeds WarnSec (default 2s).
+      Used by the engine poll / startworker timers so a spinning UI thread is visible in watch_bob_tray.log.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][scriptblock]$Body,
+        [double]$WarnSec = 2.0
+    )
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        & $Body
+    }
+    finally {
+        $sw.Stop()
+        if ($sw.Elapsed.TotalSeconds -ge [double]$WarnSec) {
+            Write-TrayLog ('tick slow name={0} sec={1:n2}' -f $Name, $sw.Elapsed.TotalSeconds)
+        }
+    }
+}
+
 function Test-BobTrayTipAlive {
     try {
         return ($null -ne $script:tip -and -not $script:tip.IsDisposed)
@@ -2162,6 +2185,7 @@ function Set-Attention([string[]]$alerts) {
 }
 
 function Update-Hover {
+    param([switch]$SkipUi)
     try {
         $h = Get-BobTrayHover
         $script:hoverBody = [string]$h.body
@@ -2209,6 +2233,8 @@ function Update-Hover {
             }
         }
         catch { Write-TrayLog ('status snapshot error: ' + $_.Exception.Message) }
+        # FR #4142: headless engine (bob-tray.exe owns icon) — skip TipForm / NotifyIcon paint.
+        if ($SkipUi) { return }
         Clear-BobNativeTip
         if ($script:titleLabel) {
             $script:titleLabel.Text = $script:hoverTitle
@@ -3029,31 +3055,52 @@ $flash.Add_Tick({
 $poll = New-Object System.Windows.Forms.Timer
 $poll.Interval = [Math]::Max(5000, $PollSec * 1000)
 $poll.Add_Tick({
+        # FR #4142: re-entrancy + timing; headless engine skips TipForm UI and duplicate digest work.
+        if ($script:pollBusy) { return }
+        $script:pollBusy = $true
+        try { $poll.Stop() } catch { }
         try {
-            try { Clear-BobTrayGrokSessionDirs } catch { }
-            Start-JobsWatcher
-            $alerts = @(Get-BobStallAlerts -Seen $seen -StallSec $StallSec -HeartbeatStaleSec $HeartbeatStaleSec)
-            if ($alerts.Count -gt 0) { Set-Attention $alerts }
-            # FR #1553: refresh TipForm workers from digest BEFORE Get-BobTrayHover (8s bound).
-            # Hover can hang on peer DNS/UNC; this keeps tray-status.json worker lines moving.
-            try {
-                if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
-                    [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
+            Invoke-BobTrayTimedTick -Name 'poll' -Body {
+                $engine = [bool](Test-BobTrayEngineMode)
+                if (-not $engine) {
+                    try { Clear-BobTrayGrokSessionDirs } catch { }
                 }
-            }
-            catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
-            Update-Hover
-            # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook every tick.
-            if (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) {
-                try { Write-BobIrcStatus | Out-Null } catch {
-                    if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { return }
-                    Write-TrayLog ('digest Write-BobIrcStatus: ' + $_.Exception.Message)
+                Start-JobsWatcher
+                $alerts = @(Get-BobStallAlerts -Seen $seen -StallSec $StallSec -HeartbeatStaleSec $HeartbeatStaleSec)
+                if ($alerts.Count -gt 0 -and -not $engine) { Set-Attention $alerts }
+                elseif ($alerts.Count -gt 0 -and $engine) {
+                    # Exe owns the icon; still record alerts in log / lastAlerts without NotifyIcon flash.
+                    $script:lastAlerts = $alerts
+                    Write-TrayLog ('engine stall alerts: ' + ($alerts -join ' | '))
+                }
+                # FR #1553: ThreadPool already syncs workers. On the UI poll, only do Sync when
+                # not in engine mode (engine relies on the non-UI timer to avoid double HTTP).
+                if (-not $engine) {
                     try {
-                        if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
-                            Report-BobDeterministicException -Site 'Watch-BobTray.Write-BobIrcStatus' -Exception $_.Exception -ScriptPath $PSCommandPath | Out-Null
+                        if (Get-Command Sync-BobTrayStatusWorkersFromDigest -ErrorAction SilentlyContinue) {
+                            [void](Sync-BobTrayStatusWorkersFromDigest -Root $RepoRoot -TimeoutSec 8)
                         }
                     }
-                    catch { }
+                    catch { Write-TrayLog ('tray worker sync: ' + $_.Exception.Message) }
+                    Update-Hover
+                }
+                else {
+                    # FR #4142: data-only hover/snapshot for bob-tray.exe; no TipForm paint.
+                    Update-Hover -SkipUi
+                }
+                # CAST IRON: local Cursor (pcent + overspend) + xAI weekly -> digest webhook.
+                # FR #4142: in engine mode Write-BobIrcStatus runs on trayDigestTimer (non-UI).
+                if (-not $engine -and (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
+                    try { Write-BobIrcStatus | Out-Null } catch {
+                        if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) { return }
+                        Write-TrayLog ('digest Write-BobIrcStatus: ' + $_.Exception.Message)
+                        try {
+                            if (Get-Command Report-BobDeterministicException -ErrorAction SilentlyContinue) {
+                                Report-BobDeterministicException -Site 'Watch-BobTray.Write-BobIrcStatus' -Exception $_.Exception -ScriptPath $PSCommandPath | Out-Null
+                            }
+                        }
+                        catch { }
+                    }
                 }
             }
         }
@@ -3067,7 +3114,12 @@ $poll.Add_Tick({
             }
             catch { }
         }
+        finally {
+            $script:pollBusy = $false
+            try { $poll.Start() } catch { }
+        }
     })
+
 
 # FR #1553: ThreadPool (non-UI) 10s timer — TipForm workers keep updating even when the
 # WinForms poll is stuck inside Get-BobTrayHover peer DNS/UNC.
@@ -3093,6 +3145,35 @@ $script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorker
 } -MessageData $script:trayWorkerSyncMsg
 $script:trayWorkerSyncTimer.Start()
 
+# FR #4142: ThreadPool digest heartbeat — Write-BobIrcStatus off the WinForms UI thread in engine mode
+# (and as a backup when the UI poll skips it). Interval matches $poll (PollSec).
+$script:trayDigestTimer = New-Object System.Timers.Timer
+$script:trayDigestTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
+$script:trayDigestTimer.AutoReset = $true
+$script:trayDigestTimer.SynchronizingObject = $null
+$script:trayDigestMsg = [pscustomobject]@{
+    Root     = $RepoRoot
+    Common   = (Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1')
+    StatusPs = (Join-Path $RepoRoot 'scripts\Write-BobIrcStatus.ps1')
+}
+$script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTimer -EventName Elapsed -Action {
+    try {
+        if (-not (Test-BobTrayEngineMode)) { return }
+        $msg = $Event.MessageData
+        if (-not $msg) { return }
+        # Best-effort: command may already be in session from tray startup.
+        if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
+            if ($msg.StatusPs -and (Test-Path -LiteralPath $msg.StatusPs)) { . $msg.StatusPs }
+            elseif ($msg.Common -and (Test-Path -LiteralPath $msg.Common)) { . $msg.Common }
+        }
+        if (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) {
+            try { Write-BobIrcStatus | Out-Null } catch { }
+        }
+    }
+    catch { }
+} -MessageData $script:trayDigestMsg
+$script:trayDigestTimer.Start()
+
 # t810u: remote "!startworker" - consume the ear's queued requests (the ear runs in session 0 and cannot open a window).
 # FR #2697: heartbeat is NOT on this WinForms timer — the 30s $poll tick blocks the UI thread for 7-11s and
 # starved tray.alive past the ear's staleness limit. Queue/cmd stay here; alive moves to System.Timers.Timer below.
@@ -3100,26 +3181,38 @@ $script:startWorkerDir = Get-BobTrayStartWorkerDir -Root $RepoRoot
 $startWorkerTimer = New-Object System.Windows.Forms.Timer
 $startWorkerTimer.Interval = 2000
 $startWorkerTimer.Add_Tick({
+        # FR #4142: re-entrancy + per-tick timing (queue + engine.alive stamp).
+        if ($script:startWorkerBusy) { return }
+        $script:startWorkerBusy = $true
+        try { $startWorkerTimer.Stop() } catch { }
         try {
-            [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
-                    -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
-                    -Log { param($m) Write-TrayLog $m })
-            # FR #4136: stamp after the queue scan so bob-tray.exe HealEngine can detect a hung-but-alive engine.
-            try {
-                $dir = [string]$script:startWorkerDir
-                if ($dir) {
-                    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-                    Set-Content -LiteralPath (Join-Path $dir 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+            Invoke-BobTrayTimedTick -Name 'startworker' -Body {
+                try {
+                    [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
+                            -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
+                            -Log { param($m) Write-TrayLog $m })
+                    # FR #4136: stamp after the queue scan so bob-tray.exe HealEngine can detect a hung-but-alive engine.
+                    try {
+                        $dir = [string]$script:startWorkerDir
+                        if ($dir) {
+                            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+                            Set-Content -LiteralPath (Join-Path $dir 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+                        }
+                    } catch { }
+                    if (Test-BobTrayEngineMode) {
+                        [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
+                                -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
+                                -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'; [Environment]::Exit(0) })
+                    }
                 }
-            } catch { }
-            if (Test-BobTrayEngineMode) {
-                [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
-                        -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
-                        -ParentGone { Write-TrayLog 'engine: bob-tray.exe is gone - leaving without IRC logout (the next tray start reuses the watchers)'; [Environment]::Exit(0) })
+                catch [System.Management.Automation.PipelineStoppedException] { return }
+                catch { Write-TrayLog ('startworker queue: ' + $_.Exception.Message) }
             }
         }
-        catch [System.Management.Automation.PipelineStoppedException] { return }
-        catch { Write-TrayLog ('startworker queue: ' + $_.Exception.Message) }
+        finally {
+            $script:startWorkerBusy = $false
+            try { $startWorkerTimer.Start() } catch { }
+        }
     })
 
 # FR #2697: ThreadPool (non-UI) 2s heartbeat — tray.alive keeps ticking while WinForms $poll is stuck in digest/hover.
@@ -3177,9 +3270,12 @@ catch { Write-TrayLog ('digest startup: ' + $_.Exception.Message) }
 # TipForm handle only on click - startup CreateHandle caused hover stub.
 if (Test-BobTrayEngineMode) { Write-TrayLog 'engine mode: bob-tray.exe owns the icon and the menu (this process is headless)'; [void](Write-BobTrayEngineEnv -Root $RepoRoot) }
 else { $notify.Visible = $true }
-$flash.Start()
+# FR #4142: headless engine — do not thrash NotifyIcon flash/pulse on a hidden icon.
+if (-not (Test-BobTrayEngineMode)) {
+    $flash.Start()
+    $pulse.Start()
+}
 $poll.Start()
-$pulse.Start()
 [void](Write-BobTrayAlive -Dir $script:startWorkerDir)   # seed immediately; trayAliveTimer keeps it fresh (FR #2697)
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
@@ -3198,6 +3294,11 @@ catch { }
 try {
     if ($script:trayWorkerSyncTimer) { $script:trayWorkerSyncTimer.Stop(); $script:trayWorkerSyncTimer.Dispose() }
     if ($script:trayWorkerSyncSub) { Unregister-Event -SourceIdentifier $script:trayWorkerSyncSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayWorkerSyncSub -Force -ErrorAction SilentlyContinue }
+}
+catch { }
+try {
+    if ($script:trayDigestTimer) { $script:trayDigestTimer.Stop(); $script:trayDigestTimer.Dispose() }
+    if ($script:trayDigestSub) { Unregister-Event -SourceIdentifier $script:trayDigestSub.Name -ErrorAction SilentlyContinue; Remove-Job $script:trayDigestSub -Force -ErrorAction SilentlyContinue }
 }
 catch { }
 try { Remove-Item -LiteralPath (Join-Path $script:startWorkerDir 'tray.alive') -Force -ErrorAction SilentlyContinue } catch { }

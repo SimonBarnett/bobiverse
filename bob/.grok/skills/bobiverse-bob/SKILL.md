@@ -71,7 +71,7 @@ Common failure chain:
 3. Digest `worker_list` lags ACC (orphan doing/offered).
 
 Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
-FR #4136: `Watch-BobTray` writes `engine.alive` after each startworker queue tick; `HealEngine` restarts when that stamp is stale (>120s) even if the process is still alive; ear NACKs `engine_stale` when `tray.alive` is fresh but `engine.alive` is not. Needs rebuilt `bob-tray.exe` + tip ear.
+FR #4136 / #4142: `Watch-BobTray` writes `engine.alive` after each startworker queue tick; `HealEngine` restarts when that stamp is stale (>120s) even if the process is still alive; ear NACKs `engine_stale` when `tray.alive` is fresh but `engine.alive` is not. Needs rebuilt `bob-tray.exe` + tip ear.
 
 
 - Never let `Get-BobTrayHover` block TipForm worker refresh.
@@ -88,3 +88,5 @@ Troubleshoot: compare TipForm vs `Invoke-JeevesMonitorCheck -Check stuck_accepte
 
 - Self-REGISTER the shop with ChanServ (Jeeves `!register` only); mint a fresh NickServ GUID for a registered `bob-*` account.
 - Double-start the ear when `ircBob` is Running; kill broad `powershell.exe`/`python.exe`; stamp UAT; invent an Ergo PASS.
+
+- tray: FR #4142 headless engine UI-thread spin --- skip TipForm/Update-Hover UI and NotifyIcon flash/pulse when BOB_TRAY_ENGINE=1; poll re-entrancy Stop/Start + tick-slow logs (>2s); Write-BobIrcStatus on ThreadPool digest timer; engine.alive watchdog (#4136) remains the band-aid for hung ticks
