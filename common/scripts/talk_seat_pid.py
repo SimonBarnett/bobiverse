@@ -399,6 +399,8 @@ def _command_line_for_pid(pid: int) -> str | None:
                 f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\").CommandLine",
             ],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         return (out or "").strip() or None

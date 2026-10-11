@@ -245,6 +245,8 @@ def _spawn_bob_worker(exe: Path, bob_install: Path, work_root: Path, digest_home
                 str(work_root),
             ],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             stderr=subprocess.DEVNULL,
         )

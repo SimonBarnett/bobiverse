@@ -292,6 +292,7 @@ def _list_posix() -> list[tuple[int, str]]:
     out = subprocess.check_output(
         ["ps", "-eo", "pid=,args="],
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=30,
     )
@@ -328,6 +329,7 @@ def _list_windows() -> list[tuple[int, str]]:
     out = subprocess.check_output(
         ["powershell", "-NoProfile", "-Command", script],
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=30,
     )

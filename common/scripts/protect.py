@@ -45,7 +45,7 @@ def protect_path(path: Path) -> None:
         cmd = ["icacls", str(path), "/inheritance:r"]
         for g in grants:
             cmd.extend(["/grant:r", g])
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             err = (r.stderr or r.stdout or f"icacls exit {r.returncode}").strip()
             # Soft-fail under LocalSystem when profile ACL mapping fails; home under C:\ai\*\home is OK.
