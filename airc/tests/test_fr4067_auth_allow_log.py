@@ -169,3 +169,25 @@ def test_service_dispatch_logs_auth_allow(capsys, monkeypatch):
     text = Path(svc.__file__).read_text(encoding="utf-8")
     assert "auth-deny nick={hr.nick} account={acct or '-'} reason={reason}" in text
     assert "log_auth_allow(hr)" in text
+
+def test_update_allow_meta_and_log(monkeypatch):
+    """FR #4067 issue: UPDATE must emit auth-allow (not only update-reply)."""
+    m = member_map("simon", channel="#tm")
+    core = _core(members=m)
+
+    def _sched(product, version=None, install_root=None):
+        return ac.UpdateScheduleResult(True, "queued", product=product, version=version)
+
+    core.update_scheduler = _sched
+    # enable update cap
+    core.capabilities = ac.ConsoleCapabilities(shell_mode="operators", jobs="on", update="on")
+    hr = core.handle_raw(":simon!u@h PRIVMSG tm_console :UPDATE airc")
+    assert hr is not None and hr.action == "update"
+    assert hr.allow_mode == "+o"
+    assert hr.allow_channel == "#tm"
+
+    logs: list[str] = []
+    monkeypatch.setattr(svc, "info", lambda msg: logs.append(msg))
+    svc.log_auth_allow(hr)
+    assert any(x.startswith("auth-allow ") and "action=update" in x for x in logs)
+

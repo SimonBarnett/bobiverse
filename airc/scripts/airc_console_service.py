@@ -1143,6 +1143,13 @@ class AircConsoleService:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
             if hr.action == "update":
+                # FR #4067: auth-allow before update-reply (issue covers UPDATE).
+                if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
+                    try:
+                        hr.allow_account = self.account_map.get(hr.nick) if hr.nick else None
+                    except Exception:
+                        pass
+                log_auth_allow(hr)
                 info(f"INFO update-reply to={hr.nick} {hr.reply}")
         elif hr.action in {"shell", "job", "pipe"}:
             # FR #4067: auth-allow (mode/account/channel) replaces bare INFO shell/job/pipe.

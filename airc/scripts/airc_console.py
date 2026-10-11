@@ -797,7 +797,7 @@ def format_auth_allow_log(
     mode: str | None,
     action: str,
 ) -> str:
-    """FR #4067: ``auth-allow nick=… account=… channel=… mode=… action=shell|job|pipe``."""
+    """FR #4067: ``auth-allow nick=… account=… channel=… mode=… action=shell|job|pipe|update``."""
     return (
         f"auth-allow nick={nick or '-'} account={account or '-'} "
         f"channel={channel or '-'} mode={mode or '-'} action={action}"
@@ -2273,7 +2273,7 @@ class AircConsoleCore:
         )
 
     def _allow_meta(self, nick: str, account: str | None) -> dict[str, str | None]:
-        """FR #4067: mode/account/channel for auth-allow on shell/job/pipe."""
+        """FR #4067: mode/account/channel for auth-allow on shell/job/pipe/update."""
         detail = self.auth.allow_detail(nick, account)
         acct = (account or "").strip() or None
         if acct is None:
@@ -2404,12 +2404,14 @@ class AircConsoleCore:
                 result = UpdateScheduleResult(
                     False, "bad-scheduler", product=product, version=ver
                 )
+            meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="update",
                 nick=nick,
                 target=target,
                 text=text,
                 reply=result.reply_line(),
+                **meta,
             )
 
         # FR #78: PUT/RUN/JOB/STATUS protocol (before plain shell).
