@@ -97,8 +97,14 @@ def test_offer_skips_mrb_already_in_done_even_without_pr_exists(tmp_path, monkey
 
 
 def test_offer_skips_closed_fail_mrb_via_pr_exists(tmp_path, monkeypatch):
-    """FR #738: CLOSED non-merged PR must not be re-offered as MRB."""
+    """FR #738: CLOSED non-merged PR must not be re-offered as MRB.
+
+    FR #3929: production ``BORED_GITHUB_CALL_BUDGET`` is 0 (FR #3188 / #3205), so a
+    live ``pr_exists`` is never consulted on the !bored path unless the test raises
+    the budget. Raise it here so the injected checker is honored; keep production at 0.
+    """
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 2)
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
     digest["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
@@ -114,6 +120,35 @@ def test_offer_skips_closed_fail_mrb_via_pr_exists(tmp_path, monkeypatch):
     )
     assert st == "empty"
     assert gitclaim.load_unaccepted(tmp_path) == []
+
+
+def test_offer_focus_top_budget0_fail_opens_when_pr_exists_exhausted(tmp_path, monkeypatch):
+    """FR #3929: with budget 0, injected pr_exists is not called; unknown → still offer.
+
+    Documents FR #3188 / MRB #3207 fail-open on the !bored path. Closed-PR skip still
+    holds when budget > 0 (see test_offer_skips_closed_fail_mrb_via_pr_exists).
+    """
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 0)
+    registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
+    digest = bobreport.empty_digest()
+    digest["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
+    digest["machines"]["flamingo"]["workers"] = {"9": {"state": "idle"}}
+    bobreport.save_digest(tmp_path, digest)
+    _queue(tmp_path, unaccepted=[_mrb_row(637)])
+
+    calls = {"n": 0}
+
+    def pr_exists(repo: str, num: str) -> bool:
+        calls["n"] += 1
+        return False
+
+    st, job = gitclaim.offer_focus_top(
+        tmp_path, "flamingo-9", "#flamingo", pr_exists=pr_exists
+    )
+    assert st == "ok"
+    assert job and str(job.get("id") or "").lstrip("#") == "637"
+    assert calls["n"] == 0  # budget exhausted before any live call
 
 
 def test_done_mrb_purges_lingering_unaccepted_duplicate(tmp_path, monkeypatch):
