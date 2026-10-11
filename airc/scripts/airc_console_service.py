@@ -119,7 +119,7 @@ def info_keepalive(msg: str) -> None:
 
 
 def read_password(path: Path | None, env_key: str = "AIRC_CONSOLE_PASSWORD") -> str | None:
-    """Legacy helper — prefer resolve_server_password / ensure_nickserv_password (#271)."""
+    """Legacy helper --- prefer resolve_server_password / ensure_nickserv_password (#271)."""
     for key in (env_key, "BOB_IRC_PASSWORD", "AGENTIC_IRC_PASSWORD", "AIRC_CONSOLE_SERVER_PASSWORD"):
         env = os.environ.get(key)
         if env and env.strip():
@@ -454,7 +454,7 @@ class AircConsoleService:
             self._stop_flushed = True
             return
         if not self.sock:
-            # Already closed (e.g. finally after prepare_stop) — do not spam send: no socket.
+            # Already closed (e.g. finally after prepare_stop) --- do not spam send: no socket.
             info("INFO stop-flush-skip no socket (queue kept until process exit)")
             self._stop_flushed = True
             return
@@ -465,7 +465,7 @@ class AircConsoleService:
         self._stop_flushed = True
 
     def prepare_stop(self, *, reason: str = "service-stop") -> None:
-        """FR #2640 / #2649: flush DONEs (no flood gap) then close — never sendall after close."""
+        """FR #2640 / #2649: flush DONEs (no flood gap) then close --- never sendall after close."""
         self._stopping = True
         self._stop.set()
         self.flush_stop_dones(reason=reason)
@@ -522,7 +522,7 @@ class AircConsoleService:
         self.send(f"PRIVMSG {target} :{safe}", flood=flood)
 
     def send_notice(self, target: str, text: str) -> None:
-        """NOTICE — used for ping replies (including channel ping → Query-style NOTICE)."""
+        """NOTICE --- used for ping replies (including channel ping → Query-style NOTICE)."""
         safe = text.replace("\n", " ").replace("\r", " ")
         self.send(f"NOTICE {target} :{safe}")
 
@@ -538,7 +538,7 @@ class AircConsoleService:
         """True when SASL is safe to attempt for this ConsoleHome.
 
         FR #3763: marker after successful SASL/REGISTER.
-        FR #3863: reused console.password (not minted this run) also counts —
+        FR #3863: reused console.password (not minted this run) also counts ---
         upgrades from pre-marker builds must not skip SASL or they 433-loop.
         """
         try:
@@ -760,7 +760,7 @@ class AircConsoleService:
         )
         # FR #3401 / #3511: clear then resync prefixes after JOIN (353/366).
         # set_channel always clears (same-channel reconnect must not keep stale %).
-        # FR #3774: member map is control-channel only — presence NAMES must not sync here.
+        # FR #3774: member map is control-channel only --- presence NAMES must not sync here.
         if getattr(self, "members", None) is not None:
             self.members.clear()
             self.members.set_channel(self.channel)
@@ -769,7 +769,7 @@ class AircConsoleService:
             self.core.channel = self.channel
 
     def _lost_control_channel(self, reason: str) -> None:
-        """FR #3511: console PART/KICK from control channel — refuse until NAMES/366.
+        """FR #3511: console PART/KICK from control channel --- refuse until NAMES/366.
 
         Dropping only the console nick left ``synced=True`` and every other ``@``/``%``
         still authorised while the console was not in the channel. Clear the map and
@@ -820,7 +820,7 @@ class AircConsoleService:
                 self.join_shop()
             return
 
-        # wonderland fallback (FR #3834 / #4014) — keep {machine}_console nick
+        # wonderland fallback (FR #3834 / #4014) --- keep {machine}_console nick
         self.channel = self.wonderland_channel
         self.core.channel = self.channel
         # FR #4014: name the target shop + real fallback (never a hardcoded #ionos).
@@ -843,7 +843,7 @@ class AircConsoleService:
             self.join_shop()
 
     def _finish_lobby_nick(self) -> None:
-        """Legacy helper — wonderland path no longer blocks on NICK ack (#321 / #3834)."""
+        """Legacy helper --- wonderland path no longer blocks on NICK ack (#321 / #3834)."""
         self._awaiting_lobby_nick = False
         info(f"INFO shop-mode=wonderland channel={self.channel} nick={self.nick}")
         self.register_or_identify()
@@ -867,7 +867,7 @@ class AircConsoleService:
             return
         if time.monotonic() < self._probe_deadline:
             return
-        info(f"INFO FR #4014 chanserv-probe timeout; {self.shop_channel} treated as unregistered; joining {self.wonderland_channel}")
+        info(f"INFO FR #4014 chanserv-probe timeout -> wonderland; {self.shop_channel} treated as unregistered; joining {self.wonderland_channel}")
         self._apply_shop_mode("wonderland")
 
     def _handle_sasl_line(self, cmd: str, args: list[str], trailing: str) -> None:
@@ -901,7 +901,7 @@ class AircConsoleService:
                     f"continuing so registration can finish"
                 )
             else:
-                # FR #3763: fresh ConsoleHome — account not registered yet; not a loud error.
+                # FR #3763: fresh ConsoleHome --- account not registered yet; not a loud error.
                 info(
                     f"INFO FR #3763 console account {self.nick} SASL {cmd} "
                     f"(account not registered yet); continuing with NickServ REGISTER"
@@ -946,7 +946,7 @@ class AircConsoleService:
             self._handle_sasl_line(cmd, args, trailing)
 
         if cmd == "001":
-            # Welcome — probe ChanServ (or forced mode) before JOIN.
+            # Welcome --- probe ChanServ (or forced mode) before JOIN.
             self._registered = True
             self._nick_retries = 0
             self.server_nick = args[0] if args else None
@@ -963,7 +963,7 @@ class AircConsoleService:
                 self._start_chanserv_probe()
 
         if cmd == "433":
-            # Nickname already in use — never get 001/JOIN without recovery.
+            # Nickname already in use --- never get 001/JOIN without recovery.
             # FR #3834: wonderland keeps {machine}_console; never invent {machine}_N.
             self._nick_retries += 1
             base = machine_console_nick(self.machine)
@@ -1097,7 +1097,7 @@ class AircConsoleService:
                 if same_irc_channel(str(ch or ""), ctrl):
                     if pnick:
                         self.members.on_part(pnick)
-                    # FR #3511: console left its control channel — refuse until resync.
+                    # FR #3511: console left its control channel --- refuse until resync.
                     if pnick and pnick.lower() == (self.nick or "").lower():
                         self._lost_control_channel("self-part")
             elif cmd == "QUIT":
@@ -1111,7 +1111,7 @@ class AircConsoleService:
                 if same_irc_channel(str(ch or ""), ctrl):
                     if knick:
                         self.members.on_kick(knick)
-                    # FR #3511: console kicked from control channel — clear ops map + rejoin.
+                    # FR #3511: console kicked from control channel --- clear ops map + rejoin.
                     if knick and knick.lower() == (self.nick or "").lower():
                         self._lost_control_channel("self-kick")
             elif cmd == "NICK":
@@ -1205,7 +1205,7 @@ class AircConsoleService:
                 chunk = self.sock.recv(4096)
             except (socket.timeout, TimeoutError):
                 # Python 3.10+ ssl may raise TimeoutError; keep the loop alive (#286).
-                # FR #2541: KeyboardInterrupt is BaseException — must not escape past
+                # FR #2541: KeyboardInterrupt is BaseException --- must not escape past
                 # `except Exception` during service stop mid-recv (crash-sig 6b485fc97e52813b).
                 try:
                     self.drain_out_queue()
@@ -1289,7 +1289,7 @@ class AircConsoleService:
                 self.read_loop()
                 session_ok = self._registered
             except KeyboardInterrupt:
-                # FR #2541 / #2640: NSSM stop — flush DONEs then close sock (no post-close send).
+                # FR #2541 / #2640: NSSM stop --- flush DONEs then close sock (no post-close send).
                 info("INFO session interrupted -> stop")
                 self.prepare_stop(reason="session interrupted")
                 break

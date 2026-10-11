@@ -160,7 +160,7 @@ function Get-Asset {
     $lastErr = $null
     for ($i = 1; $i -le $attempts; $i++) {
         Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
-        # 1) IWR with hard TimeoutSec (no-progress stalls still hang on some WinPS builds — keep short).
+        # 1) IWR with hard TimeoutSec (no-progress stalls still hang on some WinPS builds --- keep short).
         try {
             Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
             Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
@@ -661,7 +661,7 @@ function Invoke-Apply {
         $verPath = Join-Path $InstallRoot 'VERSION'
         $newVer = ConvertTo-Ver (Get-Content -LiteralPath $verPath -Raw -ErrorAction SilentlyContinue)
         # FR #1432: msiexec success-family can still leave VERSION stale (NeverOverwrite on VERSION).
-        # Stamp only when ARP agrees the target product is registered — never paper over a no-op
+        # Stamp only when ARP agrees the target product is registered --- never paper over a no-op
         # maintenance /i that left both bits and ARP on the old build (MRB #1477 hostile).
         if (-not $newVer -or $newVer -ne $target) {
             $arpAfter = Get-BobiverseArpProduct
@@ -700,7 +700,7 @@ function Invoke-Apply {
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { throw "service $ServiceName not running after install" }
 
         # FR #1018: MSI upgrade left BobCallback on old code (digest PermissionError / seats stuck doing).
-        # FR #3190: do NOT restart BobAutoFocus — that ops task spammed per-item !focus every 2 min and is retired.
+        # FR #3190: do NOT restart BobAutoFocus --- that ops task spammed per-item !focus every 2 min and is retired.
         if ($Product -eq 'jeeves') {
             foreach ($tn in @('BobCallback', 'BobAutoFeed')) {
                 try {
