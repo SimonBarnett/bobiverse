@@ -65,7 +65,7 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 - After a merged PR, fast-forward main, sync the installed tree, and restart only `ircJeeves`/the affected scheduled task. Verify the live endpoint and the relevant queue/monitor smoke before declaring success.
 - Frozen chair `!status`: VERSION must resolve install-root / `JEEVES_INSTALL_ROOT` / `sys.executable` before `Path(__file__)` under `_MEIPASS`; uptime must use `Client` construct time (`_process_started`), not lazy first-command `_cc()` (FR #2728 / MRB #2733 / harvest-lesson #2734).
 
-- **!unregister (FR #4008):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland.
+- **!unregister (FR #4008 / #4040):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland; dry-run/confirm plan lists `*_console` nicks seen in `#<mid>` (or `none seen`).
 
 ## !build (FR #4006)
 
