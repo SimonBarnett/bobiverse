@@ -600,8 +600,13 @@ if ($useAircExe) {
     Write-Host 'INFO Airc Application=powershell Start-AircConsole.ps1 (legacy; no airc\airc.exe)'
 }
 
-# FR #1546: expand DisplayName/Description (never leave literal #{machine}); log under install tree.
-$dnMachine = if ($MachineId) { $MachineId } elseif ($script:AircConsoleMachineId) { $script:AircConsoleMachineId } else { 'machine' }
+# FR #1546 / FR #4015: expand DisplayName/Description (never leave literal #machine / #{machine}).
+# Prefer -MachineId / script id; else sanitize COMPUTERNAME. Never fall back to the word 'machine'.
+$dnMachine = if ($MachineId) { $MachineId } elseif ($script:AircConsoleMachineId) { $script:AircConsoleMachineId } else { '' }
+if (-not $dnMachine) {
+    $dnMachine = ([string]$env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+}
+if (-not $dnMachine) { $dnMachine = 'local' }
 $displayName = "airc console (#${dnMachine} IRC shell)"
 $description = "FR #253: nick console on #${dnMachine}; auth PRIVMSG -> shell; silent in channel."
 $setPairs = @(
