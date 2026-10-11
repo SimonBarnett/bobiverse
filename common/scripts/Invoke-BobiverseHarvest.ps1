@@ -385,6 +385,8 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)belong(?:s)? in\s+`?bobiverse-bob-job-mrb') -or
         # FR #3827: tip #3826 used "stay in" / "durable in" instead of "belong(s) in"
         ($joined -match '(?i)(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb') -or
+        # FR #3959 / #3957: tip #3958 used "durable home is bobiverse-bob-job-mrb"
+        ($joined -match '(?i)durable\s+home\s+is\s+`?bobiverse-bob-job-mrb') -or
         ($joined -match '(?i)docs/mrb-N after skill merge') -or
         ($joined -match '(?i)Harvest-lesson MRB:\s*process') -or
         ($joined -match '(?i)never merge a second copy') -or
@@ -392,11 +394,15 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)second\s+copy\s+under\s+harvest') -or
         ($joined -match '(?i)wrong[- ]book') -or
         ($joined -match '(?i)process playbooks?') -or
-        ($joined -match '(?i)restatement playbooks?')
+        ($joined -match '(?i)restatement playbooks?') -or
+        # FR #3959: "do not park FR #3948 ... under harvest/SKILL.md" (words between)
+        ($joined -match '(?i)(?:do not|never)\s+park\b[\s\S]{0,120}?under\s+(?:`?harvest|harvest/SKILL)')
     )
     $isThinTwin = (
         ($joined -match '(?i)already\s+cover(?:s|ed)?') -or
         ($joined -match '(?i)already\s+CAST\s+IRON') -or
+        # FR #3959: "CAST IRON already on main" (flipped order)
+        ($joined -match '(?i)CAST\s+IRON\s+already') -or
         ($joined -match '(?i)close\s+thin\b') -or
         ($joined -match '(?i)thin\s+harvest(?:ed)?[- ]?lessons?\b') -or
         ($joined -match '(?i)thin\s+harvest\s+twin') -or
@@ -407,7 +413,7 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
     )
     if ($isFailSuper -and $isProcess) { return $true }
     if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
-    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827
+    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827 / #3959
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
