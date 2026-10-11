@@ -73,6 +73,16 @@ COMMANDS: tuple = (
     CommandSpec("status", "!status", "Jeeves version, uptime, queue counts, roster, last roster/queue refresh",
                 ALL_ROLES, "!status", "Read-only snapshot from the digest home (queue.json / roster).",
                 ("list", "resync", "help")),
+    CommandSpec("register", "!register <#channel|machine>", "ChanServ REGISTER shop channel and add to roster (+o/+h gate)", OPS_ROLES,
+                "!register ionos",
+                "Chair-only. Authorised by live +o/+h in #bobiverse (FR #4008); operators.txt ignored. Bob ears never self-REGISTER.",
+                ("unregister", "status")),
+    CommandSpec("unregister", "!unregister <#channel|machine> [confirm]|dry-run <..>",
+                "inverse of !register: ChanServ UNREGISTER, drop roster, PART shop (+o/+h gate)", OPS_ROLES,
+                "!unregister dry-run ionos",
+                "Chair-only. Dry-run prints the plan; real run needs confirm or a repeat within 60s. "
+                "Core #bobiverse/#wonderland refused. Airc clients fall back to #wonderland (FR #3834).",
+                ("register", "status")),
     CommandSpec("resync", "!resync", "refresh the roster (ChanServ) now and re-sync open FR/MRB from GitHub with the Jeeves token (also automatic hourly / on webhook gap, FR #3212); purges ignored repos", OPS_ROLES, "!resync",
                 "Restricted to simon and bob-* nicks. Webhook model: no GitHub token; the roster mirror is "
                 "re-read from ChanServ and ignored repos are purged from the queue.", ("list", "status")),
