@@ -28,6 +28,11 @@ HOLD_CLEAR_RE = re.compile(
 MRB_PASS_BOARD_RE = re.compile(
     r"(?i)##\s*MRB\s+board[\s\S]{0,400}?\*\*Verdict:\*\*\s*PASS\b"
 )
+# FR #4041: gh pr comment posts as OWNER; MRB boards that discuss product hold
+# features must not trip owner-hold detection.
+MRB_BOARD_COMMENT_RE = re.compile(
+    r"(?im)^\s*##\s*MRB\s+board\b|\*\*Verdict:\*\*"
+)
 OWNERISH = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
@@ -43,6 +48,11 @@ def _created(c: dict) -> str:
     return str(c.get("created_at") or c.get("createdAt") or "")
 
 
+def _is_mrb_board_comment(text: str) -> bool:
+    """True when comment is an MRB board (FR #4041 — ignore for owner-hold scan)."""
+    return bool(MRB_BOARD_COMMENT_RE.search(text or ""))
+
+
 def find_active_owner_hold(comments: list[dict] | None) -> str | None:
     """Return hold snippet if an ownerish hold is active (not cleared later)."""
     ordered = sorted(list(comments or []), key=_created)
@@ -51,6 +61,9 @@ def find_active_owner_hold(comments: list[dict] | None) -> str | None:
         if _assoc(c) not in OWNERISH:
             continue
         text = _body(c)
+        # FR #4041: seat boards posted via gh appear as OWNER; skip board-shaped comments.
+        if _is_mrb_board_comment(text):
+            continue
         if HOLD_CLEAR_RE.search(text):
             hold_body = None
             continue
