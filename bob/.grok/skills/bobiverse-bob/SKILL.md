@@ -39,6 +39,8 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 | Agent / Plan | Tray items **Agent** and **Plan** (single click, no submenu) run `worker\bob-worker.exe` (via a per-user run-copy) -> a NEW agent each click, never resumed. Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
 | Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
 
+- **MSI Install-Bob tray (FR #3987 / PR #3993):** during RunInstall, Start-Service ircBob (WaitForStatus 60s soft-fail) runs **before** live TipForm launch; Install-Bob sets `BOBIVERSE_NO_SERVICE_RESTART=1` and interactive `Start-BobTray -SkipServiceRestart` so `Restart-BobTrayService` cannot race the CA. `Invoke-BobTrayServiceControl` skips `START_PENDING`/`STOP_PENDING`. Persistent Startup/HKCU shortcuts may still restart ircBob on logon (intentional).
+
 ## Listen and send (FR #2174)
 
 - **Listen:** `Get-Content <bob home>\inbound-transcript.log -Tail 40` — always-on rotating transcript (`UTC channel nick text`, secrets redacted). Independent of `BOB_IRC_DEBUG`.
