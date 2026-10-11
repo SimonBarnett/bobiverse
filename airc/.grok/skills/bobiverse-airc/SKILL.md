@@ -20,6 +20,8 @@ description: >
 
 Foundation: `bobiverse-fleet-ops` (shared ops/hotpatch/health) and `harvest` -> https://github.com/SimonBarnett/bobiverse
 
+**Vision (FR #4158):** irc/VISION.md is the airc-product vision for MRB/UAT vision-first judgement (Success / LOCKED). Fleet umbrella remains common/docs/vision.md.
+
 ## Architecture
 
 Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick **`<MachineId>_console`**.
