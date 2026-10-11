@@ -39,3 +39,7 @@ Admin-sealed `identity.json` under LocalSystem → `CryptUnprotectData failed`. 
 - Skill: `.grok/skills/bobiverse-jeeves/SKILL.md`
 - Webhooks: `docs/webhooks.md`
 - Post-install: `docs/post-install.md`
+
+## !build (FR #4006)
+
+Ops: `!build <owner/repo> <version> [ref]` queues a deterministic BUILD from `.bobiverse/build.yml` (no agent). Use `!build dry-run` to validate. Live pack/suites: WP2 on the recipe `machine`.

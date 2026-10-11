@@ -4,7 +4,7 @@ Deterministic, token-less, no secrets. Pure functions (no sockets / no clock unl
 fake-IRC tests drive them exactly like the live chair does. ``irc_agent.Client`` is the thin glue.
 
 gh-Jeeves reference commands restored here: !help !list (+ !filter alias) !status !resync !sweep !ignore
-!ignored !unignore !focus !unfocus !recycle and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
+!ignored !unignore !focus !unfocus !recycle !build (FR #4006) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
 ``ACK``/``DONE``/``NACK``) lives in gitclaim / shop_listen and is not a PM command.
 
 AUTHORIZATION MATRIX (see docs/jeeves-commands.md)::
@@ -119,6 +119,16 @@ COMMANDS: tuple = (
                 "Jeeves routes only. Bare !recycle or !recycle all = every roster seat. !recycle <machine> = that "
                 "machine only. !recycle dry-run [..] authorises and plans but sends nothing. Local bob-* "
                 "announces restarting then executes. Duplicates are cooldown-blocked.", ("help", "status")),
+    CommandSpec(
+        "build",
+        "!build <owner/repo>[,owner/repo...] <version> [ref] | !build status|cancel|dry-run ...",
+        "queue a deterministic repo BUILD (no agent); failures become release-blocker issues (FR #4006)",
+        OPS_ROLES,
+        "!build SimonBarnett/bobiverse 0.1.32",
+        "Ops only (simon / bob-* / +o/+h). Runs the in-repo .bobiverse/build.yml on the recipe machine. "
+        "Subcommands: status, cancel, dry-run. Per-repo single-flight; no recipe => refuse.",
+        ("status", "list", "focus"),
+    ),
     CommandSpec("ping", "ping [nick-glob]", "channel or PM: reply pong (bare word, no !)", ALL_ROLES, "ping",
                 "Jeeves answers pong to a bare ping, or to ping <glob> when the glob matches its nick.", ("help",)),
 )
@@ -210,7 +220,7 @@ MATRIX = {
     # command -> who may run it
     "help": "any", "list": "any", "filter": "any", "status": "any", "ignored": "any", "ping": "any",
     "focus-read": "any",
-    "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops",
+    "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops", "build": "ops", "assign": "ops",
     "focus": "ops+allow", "unfocus": "ops+allow",
 }
 
@@ -233,6 +243,8 @@ def denied_line(cmd: str) -> str:
         "recycle": "recycle: denied (authorised operator + services account required)",
         "resync": "resync: denied (simon or bob-* ops only)",
         "sweep": "sweep: denied (simon or bob-* ops only)",
+        "build": "build: denied (simon or bob-* ops only)",
+        "assign": "assign: denied (simon or bob-* ops only)",
     }.get(cmd, f"{cmd}: denied")
 
 

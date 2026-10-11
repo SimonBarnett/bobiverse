@@ -52,6 +52,7 @@ import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
 import channel_only  # noqa: E402
 import startworker  # noqa: E402
+import bobiverse_build  # noqa: E402  # FR #4006
 
 FLOOD_S = 0.8
 
@@ -1515,6 +1516,70 @@ class Client:
             explicit = getattr(args, "install_root", "") or ""
         return resolve_bob_install_root(explicit=explicit)
 
+
+    def _handle_build_command(self, asker: str, body: str) -> None:
+        """FR #4006: ops !build — decide + PM; live suite/pack is WP2 on the recipe machine."""
+        if not getattr(self.args, "chair", False):
+            return
+        if bobiverse_build.parse_build(body) is None:
+            return
+        who_nick = (asker or "").strip()
+        if not who_nick or who_nick.lower() in self._mine_nicks():
+            return
+        prin = self._principal(who_nick)
+        lock_path = Path(self.home) / "build-locks.json"
+        lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
+
+        def recipe_loader(repo: str):
+            root = Path(self._install_root())
+            # Bobiverse recipe lives at repo root; install tree is bob/jeeves/airc sparse — prefer git root.
+            for cand in (root, root.parent, Path(self.home).resolve().parents[2] if False else root):
+                try:
+                    return bobiverse_build.load_recipe(cand)
+                except bobiverse_build.RecipeError:
+                    continue
+            raise bobiverse_build.RecipeError(
+                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            )
+
+        ignored = ()
+        try:
+            import focus_ignore
+            ignored = tuple(focus_ignore.load_ignored(self.home) or ())
+        except Exception:
+            ignored = ()
+        try:
+            dec = bobiverse_build.decide_build(
+                who=prin,
+                body=body,
+                may=chair_commands.may,
+                denied_line=chair_commands.denied_line,
+                recipe_loader=recipe_loader,
+                lock=lock,
+                ignored=ignored,
+            )
+        except Exception as e:
+            info(f"WARN build decide failed: {type(e).__name__}: {e}")
+            self._cmd_reply(who_nick, "build", [f"build: error {type(e).__name__}"])
+            return
+        if dec is None:
+            return
+        self._cmd_reply(who_nick, "build", dec.pm_lines)
+        info(
+            f"INFO build nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
+            f"repos={','.join(dec.repos) or '-'} dry={dec.dry_run}"
+        )
+        if not dec.ok and dec.reason == "denied":
+            self._whois_hint(who_nick)
+            return
+        if dec.route and not dec.dry_run:
+            try:
+                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + dec.route)
+                time.sleep(FLOOD_S)
+            except Exception:
+                info("WARN build route announce failed")
+
+
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
         """t810u: ``!startworker [agent|plan] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
 
@@ -2890,6 +2955,9 @@ class Client:
                     self._on_digest_whisper(src, pulled)
                     return
         if self._maybe_startworker(src, target, body, to_channel=bool(to_channel), to_me=to_me):
+            return
+        if body.strip().lower().startswith("!build"):
+            self._handle_build_command(src, body)
             return
         if self._handle_register_command(src, body):
             return
