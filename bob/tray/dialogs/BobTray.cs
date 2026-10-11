@@ -6,6 +6,8 @@
 // (ack | exit | restart), which the engine picks up within 2 s.
 // FR #2697: this host also writes run\startworker\tray.alive every 2 s on a System.Threading.Timer so a blocked PS UI
 // poll cannot starve the ear's !startworker heartbeat check.
+// FR #4136: HealEngine also restarts when engine.alive (written by the PS queue tick) is stale while the process
+// is still alive; tray.alive carries engine_last_tick for the ear's engine_stale NACK.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -388,6 +390,7 @@ namespace BobDialogs
         long ackedSeq = -1;
         Process engine;
         int engineStarts; DateTime engineWindow = DateTime.Now;
+        DateTime engineStartedUtc = DateTime.MinValue;  // FR #4136: grace before engine.alive required
         int lastSeatCount = -1;   // FR #3180: observe drops; never auto-launch
         StatusForm statusForm; AboutForm aboutForm;
         public readonly List<string> MenuItems = new List<string>();
@@ -472,8 +475,9 @@ namespace BobDialogs
                 psi.EnvironmentVariables["BOB_TRAY_EXE_PID"] = Process.GetCurrentProcess().Id.ToString();
                 if (machine.Length > 0) psi.EnvironmentVariables["BOB_MACHINE_ID"] = machine;
                 engine = Process.Start(psi);
+                engineStartedUtc = DateTime.UtcNow;
             }
-            catch { engine = null; }
+            catch { engine = null; engineStartedUtc = DateTime.MinValue; }
         }
 
         // FR #3180: public for headless --watchdog-ticks harness (tests).
@@ -489,10 +493,50 @@ namespace BobDialogs
 
         void HealEngine()
         {
-            if (engine != null && !engine.HasExited) return;
+            // FR #4136: also restart when the process is alive but the engine.alive stamp is stale
+            // (hung UI thread still owns the queue; tray.alive is written by this exe and stays fresh).
+            bool exited = true;
+            try { exited = engine == null || engine.HasExited; } catch { exited = true; }
+            bool stale = false;
+            double ageS = -1;
+            if (!exited)
+            {
+                stale = EngineAliveStamp.IsStale(aliveDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, engineStartedUtc, out ageS);
+                if (!stale) return;
+            }
             if ((DateTime.Now - engineWindow).TotalMinutes > 5) { engineWindow = DateTime.Now; engineStarts = 0; }
             if (++engineStarts > 3) return;       // no restart storm
+            if (stale)
+            {
+                TrayLifecycle.Write("engine-stale", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
+                KillEngineTree();
+            }
             StartEngine();
+        }
+
+        string SafeEnginePid()
+        {
+            try { return engine != null ? engine.Id.ToString() : ""; } catch { return ""; }
+        }
+
+        void KillEngineTree()
+        {
+            int pid = 0;
+            try { if (engine != null && !engine.HasExited) pid = engine.Id; } catch { pid = 0; }
+            if (pid > 0)
+            {
+                try
+                {
+                    ProcessStartInfo tk = new ProcessStartInfo(
+                        Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\taskkill.exe"),
+                        "/PID " + pid + " /T /F");
+                    tk.UseShellExecute = false; tk.CreateNoWindow = true;
+                    Process.Start(tk);
+                }
+                catch { }
+                try { if (engine != null && !engine.HasExited) engine.Kill(); } catch { }
+            }
+            engine = null;
         }
 
         // FR #3180: seats are manual only (Agent/Plan click, !startworker, or human bob-worker).
@@ -689,7 +733,10 @@ namespace BobDialogs
             try
             {
                 Directory.CreateDirectory(aliveDir);
-                File.WriteAllText(aliveFile, DateTime.UtcNow.ToString("o") + " pid=" + Process.GetCurrentProcess().Id, Encoding.ASCII);
+                string tick = EngineAliveStamp.ReadStampIso(aliveDir);
+                string line = DateTime.UtcNow.ToString("o") + " pid=" + Process.GetCurrentProcess().Id;
+                if (tick.Length > 0) line += " engine_last_tick=" + tick;
+                File.WriteAllText(aliveFile, line, Encoding.ASCII);
             }
             catch { }
         }
@@ -705,6 +752,56 @@ namespace BobDialogs
             StopAliveTimer();
             try { notify.Visible = false; notify.Dispose(); } catch { }
             base.ExitThreadCore();
+        }
+    }
+
+
+    // FR #4136: engine.alive written by the PS engine after each startworker queue tick.
+    internal static class EngineAliveStamp
+    {
+        public const double MaxAgeSeconds = 120;   // ~3x 30s refresh; watchdog ticks every 15s
+        public const string FileName = "engine.alive";
+
+        public static string PathFor(string startworkerDir)
+        {
+            return Path.Combine(startworkerDir ?? "", FileName);
+        }
+
+        public static string ReadStampIso(string startworkerDir)
+        {
+            try
+            {
+                string p = PathFor(startworkerDir);
+                if (!File.Exists(p)) return "";
+                string raw = (File.ReadAllText(p, Encoding.ASCII) ?? "").Trim();
+                if (raw.Length == 0) return File.GetLastWriteTimeUtc(p).ToString("o");
+                // first token is ISO timestamp
+                int sp = raw.IndexOf(' ');
+                return sp > 0 ? raw.Substring(0, sp) : raw;
+            }
+            catch { return ""; }
+        }
+
+        /// <summary>True when the engine process should be killed and restarted for a stale/missing stamp.</summary>
+        public static bool IsStale(string startworkerDir, DateTime utcNow, double maxAgeS, DateTime engineStartedUtc, out double ageSeconds)
+        {
+            ageSeconds = -1;
+            if (maxAgeS <= 0) maxAgeS = MaxAgeSeconds;
+            string p = PathFor(startworkerDir);
+            try
+            {
+                if (File.Exists(p))
+                {
+                    DateTime m = File.GetLastWriteTimeUtc(p);
+                    ageSeconds = (utcNow - m).TotalSeconds;
+                    return ageSeconds > maxAgeS;
+                }
+            }
+            catch { }
+            // No stamp yet: grace until the engine has been up longer than maxAge (cold start / first tick).
+            if (engineStartedUtc == DateTime.MinValue) return false;
+            ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
+            return ageSeconds > maxAgeS;
         }
     }
 
@@ -726,7 +823,26 @@ namespace BobDialogs
                 File.WriteAllText(Common.Arg(args, "--text-out"), "tip=" + s.Tip(false) + "\r\ntip_acked=" + s.Tip(true) + "\r\nattention=" + s.Attention + "\r\nseq=" + s.AttentionSeq + "\r\npulse=" + s.Pulse + "\r\nalert=" + s.Alert + "\r\n", new UTF8Encoding(false));
                 return 0;
             }
-            if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
+            // FR #4136: headless stamp eval for tests (no icon / no engine).
+            if (Common.Flag(args, "--watchdog-eval"))
+            {
+                string swDir = Path.Combine(root, "run", "startworker");
+                double age;
+                DateTime started = DateTime.UtcNow.AddSeconds(-EngineAliveStamp.MaxAgeSeconds - 1);
+                string startedArg = Common.Arg(args, "--engine-started-ago-s");
+                if (startedArg.Length > 0)
+                {
+                    double ago;
+                    if (double.TryParse(startedArg, out ago)) started = DateTime.UtcNow.AddSeconds(-ago);
+                }
+                bool stale = EngineAliveStamp.IsStale(swDir, DateTime.UtcNow, EngineAliveStamp.MaxAgeSeconds, started, out age);
+                string tout = Common.Arg(args, "--text-out");
+                string body = "stale=" + (stale ? "1" : "0") + " age=" + age.ToString("0.0") + " max=" + EngineAliveStamp.MaxAgeSeconds.ToString("0") + "\r\n";
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return stale ? 2 : 0;
+            }
+                        if (Common.Flag(args, "--seats")) { File.WriteAllText(Common.Arg(args, "--text-out"), WorkerLauncher.Seats().ToString() + "\r\n" + WorkerLauncher.CapRefusal(), new UTF8Encoding(false)); return 0; }
             // FR #3180: headless watchdog harness — N ticks must launch 0 seats (manual-only).
             string ticksArg = Common.Arg(args, "--watchdog-ticks");
             if (ticksArg.Length > 0)
