@@ -290,6 +290,7 @@ class AircConsoleService:
             wait=False,
             on_inflight=self.note_shell_inflight,
             on_idle=self.clear_shell_inflight,
+            on_shell_done=self._on_shell_done,
         )
         ai_root = Path(os.environ.get("AI_ROOT") or self.home.parent.parent)
         # Verb matrix: empty write/exec sets => any base-authenticated nick (documented).
@@ -385,7 +386,23 @@ class AircConsoleService:
             info(f"INFO console-out-send-err {e}")
             self._force_reconnect = True
 
+    def _on_shell_done(
+        self,
+        nick: str,
+        jid: str,
+        elapsed_s: float,
+        reply_lines: int,
+        exit_code: int,
+    ) -> None:
+        """FR #4068: log batch-capture shell cost (first out waits for process exit)."""
+        flood_est = reply_lines * FLOOD_S
+        info(
+            f"INFO shell-done nick={nick} id={jid} elapsed_ms={int(elapsed_s * 1000)} "
+            f"replies={reply_lines} flood_est_s={flood_est:.1f} exit={exit_code}"
+        )
+
     def drain_out_queue(self, *, max_items: int | None = None, flood: bool = True) -> int:
+
         """Send queued Query replies. Leaves remaining items on ConnectionError.
 
         FR #2649: stop flush passes ``flood=False`` so err+DONE leave back-to-back;

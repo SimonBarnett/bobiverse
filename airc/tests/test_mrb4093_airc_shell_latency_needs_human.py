@@ -18,5 +18,8 @@ def test_mrb4093_airc_shell_latency_needs_human_in_troubleshooting():
     assert "needs_human" in t
     assert "Slow remote shell" in t or "latency" in t.lower()
     assert "IRC" in t and ("timings" in t.lower() or "timing" in t.lower())
+    # FR #4068 measured mitigations stay in this book (not harvest).
+    assert "FR #4068" in t
+    assert "FLOOD_S" in t
     harvest = _utf8(HARVEST)
     assert "Live airc shell latency differences across fleet boxes are needs_human" not in harvest
