@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import re
 import sys
 import urllib.error
@@ -92,15 +93,48 @@ def evaluate_merge_gate(comments: list[dict] | None) -> tuple[bool, str]:
     return True, ""
 
 
+def _gh_auth_token_cli() -> str:
+    """FR #4112: read token from `gh auth token` (keyring) when env unset.
+
+    Returns empty string when gh is missing or not logged in. Never prints the token.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
 def _gh_token() -> str:
-    return (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    """Resolve a GitHub token for the live merge gate (FR #3928 / #4112).
+
+    Order: `GH_TOKEN` / `GITHUB_TOKEN` env, then `gh auth token` CLI fallback
+    so seats with only `gh auth login` (keyring) can run the gate.
+    """
+    env = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if env:
+        return env
+    return _gh_auth_token_cli()
 
 
 def fetch_issue_comments(repo: str, num: str, *, token: str | None = None) -> list[dict]:
     """GET /repos/{repo}/issues/{num}/comments (PRs share the issues comments API)."""
     tok = (token if token is not None else _gh_token()).strip()
     if not tok:
-        raise RuntimeError("GH_TOKEN/GITHUB_TOKEN required for live merge gate")
+        raise RuntimeError(
+            "GH_TOKEN/GITHUB_TOKEN required for live merge gate "
+            "(or run: gh auth login so gh auth token works)"
+        )
     api = f"https://api.github.com/repos/{repo}/issues/{str(num).lstrip('#')}/comments?per_page=100"
     req = urllib.request.Request(
         api,
