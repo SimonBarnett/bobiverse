@@ -221,6 +221,7 @@ routes to bobiverse via the split rule.
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
 - When appending skill-harvest-log entries, write a real trailing newline byte; a literal backslash-n fails endswith(b'\n') harvest-log gates on CI
 - BOM-less Install-*.ps1 / intake.py must stay pure ASCII in comments too (arrow/emdash/ellipsis); v0.1.31 tip went red after #3907/#3914/#3960 landed those chars — replace with -> / - / ... before merge.
+- FR #3967 / airc PS 4.0 client path: Bobiverse-Common must use New-Object List[string], never Type::new(); behind-main MRB folds origin/main once then re-runs mrb3688+fr3967 before PASS/@SHA auto-merge.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
