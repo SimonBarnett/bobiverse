@@ -21,7 +21,7 @@ CHANS = ["#bobiverse", "#marchhare", "#win-mpre8vi4u6u", "#flamingo"]
 
 GH_JEEVES_COMMANDS = {"help", "list", "status", "resync", "sweep", "ignore", "ignored", "unignore",
                       "focus", "unfocus", "recycle"}          # gh-Jeeves/src/jeeves/commands.py @ 8d76d9a
-OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign"}
+OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign", "build"}
 
 
 class FakeChair:
