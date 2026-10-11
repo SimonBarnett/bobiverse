@@ -1,4 +1,4 @@
-﻿#Requires -Version 4.0
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   Service-start self-update for ircBob / ircJeeves / Airc (v0.1.17). Small, deterministic, token-less.
@@ -627,6 +627,7 @@ function Invoke-Apply {
 
         $mlog = Join-Path $StateDir ('msiexec-{0}.log' -f $tag)
         # FR #2475: serialise msiexec + retry 1618 (ERROR_INSTALL_ALREADY_RUNNING)
+        # FR #4012: serialized helper also clears pending InProgress and retries 1705.
         # FR #3639: no AIRC_OPERATORS forwarding - airc auth is live control-channel +o/+h.
         # FR #4011: Disable Restart Manager on the msiexec line so older MSIs (and tip)
         # avoid session-0 RM 351 / Windows Installer crash 1601 under SYSTEM upgrades.
