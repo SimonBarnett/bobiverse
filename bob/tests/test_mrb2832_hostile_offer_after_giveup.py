@@ -68,11 +68,19 @@ def test_mrb2832_nothing_queued_still_skipped_while_holding():
 
 
 def test_mrb2832_gitclaim_offer_after_giveup_source_pins():
+    """FR #3969: after #3895, offer_after_giveup is a thin wrapper; pin the real body."""
     src = Path(__file__).resolve().parents[2] / "common" / "scripts" / "gitclaim.py"
     text = src.read_text(encoding="utf-8")
     assert "def offer_after_giveup" in text
-    i = text.index("def offer_after_giveup")
-    chunk = text[i : i + 900]
-    assert 'offered_via="giveup"' in chunk or "offered_via=\"giveup\"" in chunk
-    assert "offer_focus_top" in chunk
+    assert "def offer_after_release" in text
+    # Wrapper still stamps giveup and delegates (FR #2811 / #3893).
+    i_wrap = text.index("def offer_after_giveup")
+    wrap = text[i_wrap : i_wrap + 700]
+    assert "return offer_after_release(" in wrap
+    assert 'offered_via="giveup"' in wrap or "offered_via=\"giveup\"" in wrap
+    # Shared body owns offer_focus_top + offered_via (stale pin looked only at the wrapper).
+    i_body = text.index("def offer_after_release")
+    body = text[i_body : i_body + 900]
+    assert "offer_focus_top" in body
+    assert "offered_via" in body
     assert "GIVEUP_OFFER_EXTRA_S" in text
