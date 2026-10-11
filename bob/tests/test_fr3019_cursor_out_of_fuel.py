@@ -90,14 +90,15 @@ def test_cursor_log_watcher_giveup_on_needs_auth(tmp_path: Path):
 
 
 def test_mid_job_fuel_lost_poll_giveup_for_cursor_seat():
-    """Cursor has no unified.jsonl — fuel-reading poll while ACK open must GIVEUP."""
+    """Cursor has no unified.jsonl — two consecutive exhausted readings → GIVEUP (FR #3923)."""
     clock = FakeClock(0.0)
     released: list[str] = []
     lost_calls = {"n": 0}
 
     def fuel_lost() -> bool:
         lost_calls["n"] += 1
-        return lost_calls["n"] >= 2  # first poll arm, second reports lost
+        # Always explicit exhausted; emitter needs streak_need (default 2) consecutive Trues.
+        return True
 
     e, sent, logs = _emitter(clock, idle_s=120.0)
     e.fuel_poll_s = 5.0
@@ -105,11 +106,12 @@ def test_mid_job_fuel_lost_poll_giveup_for_cursor_seat():
     e.fuel_lost_check_fn = fuel_lost
     e.on_outbox("ACK MRB o/r#99")
     clock.advance(1.0)
-    # First due wake (~fuel_poll_s): records check time, lost=False.
+    # First due wake: exhausted streak=1 — hold ACK.
     clock.advance(5.5)
     time.sleep(0.05)
     assert released == []
-    # Second wake: fuel_lost True → GIVEUP.
+    assert e.ack_open is True
+    # Second consecutive exhausted → GIVEUP.
     clock.advance(5.5)
     assert _wait(lambda: len(released) == 1, clock, timeout=3.0), (released, logs, lost_calls)
     assert released == ["GIVEUP MRB o/r#99 out-of-fuel"]

@@ -43,9 +43,14 @@ def test_mrb3020_mid_job_poll_contiguous():
     assert "mid-job fuel reading exhausted" in text or "mid-job fuel-lost" in text
     assert "fuel_lost_check_fn" in text
     i = text.index("def _fuel_lost_mid_job")
-    window = text[i : i + 700]
+    window = text[i : i + 1200]
     assert "cursor" in window.lower()
-    assert "cursor_has_tokens" in window or "not cursor_has_tokens" in window
+    # FR #3923: explicit exhaustion gate (unknown Fuel must not GIVEUP).
+    assert (
+        "fuel_explicitly_exhausted" in window
+        or "cursor_has_tokens" in window
+        or "not cursor_has_tokens" in window
+    )
 
 
 def test_mrb3020_skill_fr3019_contiguous():
