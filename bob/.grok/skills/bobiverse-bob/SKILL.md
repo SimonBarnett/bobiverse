@@ -71,6 +71,8 @@ Common failure chain:
 3. Digest `worker_list` lags ACC (orphan doing/offered).
 
 Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
+FR #4136: `Watch-BobTray` writes `engine.alive` after each startworker queue tick; `HealEngine` restarts when that stamp is stale (>120s) even if the process is still alive; ear NACKs `engine_stale` when `tray.alive` is fresh but `engine.alive` is not. Needs rebuilt `bob-tray.exe` + tip ear.
+
 
 - Never let `Get-BobTrayHover` block TipForm worker refresh.
 - Stale `working_on` after DONE with empty queue `accepted` can trip `seats_stuck_doing` (harvest #1712) — false busy; next digest POST clears it.
