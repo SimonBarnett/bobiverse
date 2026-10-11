@@ -51,3 +51,5 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Crash hook: `UnicodeDecodeError: 'charmap' codec can't decode byte 0x9d` in `subprocess._readerthread` | **FR #3943:** Windows `text=True` without `encoding=` uses cp1252 strict; UTF-8 child stdout (byte `0x9d`) kills the reader thread. Ear-path helpers must use `encoding="utf-8", errors="replace"` (see `common/scripts/subprocess_utf8.py`). Needs rebuilt `bob-ear.exe` after the common tip lands. |
 
 Finish every session with the harvest step.
+
+- tray: FR #4142 headless engine UI-thread spin --- skip TipForm/Update-Hover UI and NotifyIcon flash/pulse when BOB_TRAY_ENGINE=1; poll re-entrancy Stop/Start + tick-slow logs (>2s); Write-BobIrcStatus on ThreadPool digest timer; engine.alive watchdog (#4136) remains the band-aid for hung ticks
