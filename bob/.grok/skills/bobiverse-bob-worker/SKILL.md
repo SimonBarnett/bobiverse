@@ -222,3 +222,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - bob-worker: FR #4115 lost-paste recovery — clipboard readback before paste; delayed restore only if still ours; submit-verify FAILED re-pastes assign once then NACK inject failed; ack-miss repeats pending assign; startup wait-ready until turn_ended (cap BOB_WORKER_STARTUP_READY_CAP_S)
 - bob-worker: FR #4115 PromptNotAcceptedWatcher --- Grok 120s accept-timeout toast: Enter backoff then NACK inject failed; BOB_WORKER_PROMPT_RETRY=0 opt-out; note_activity clears stale scrollback (PR #4132)
 - bob-worker: FR #4123 startup ready-cap without first turn_ended hang-recycles (never inject/!bored); grace mid-turn defers !bored until turn_ended
+- bob-worker: ACK assign on receipt via seat outbox before inject; release_held_assigns injects only the first held assign and NACKs the rest busy holding first; Jeeves note_seat_hold on ACK status=missing so seat stays busy after chair restart.
