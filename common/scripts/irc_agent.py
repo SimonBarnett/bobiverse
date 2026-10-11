@@ -3006,19 +3006,40 @@ class Client:
         act = result.get("activity")
         # FR #4089: the seat answered for this job -> drop its remembered offer. NACK/GIVEUP
         # of a never-accepted offer (status=missing) also unpins the row from this seat.
+        # FR #4115: ACK status=missing has no accepted row — keep/record the seat hold so
+        # the seat is not treated as free (offers made before a Jeeves restart).
         try:
             _pj = shop_listen.parse_shop_job_line(body)
             if _pj and verb in ("ACK", "DONE", "NACK", "GIVEUP"):
-                _cleared = gitclaim.clear_seat_hold(
-                    self._digest_home(),
-                    src,
-                    repo=_pj.repo,
-                    task=_pj.task,
-                    ident=_pj.id,
-                    clear_pins=verb in ("NACK", "GIVEUP", "DONE"),
-                )
-                if _cleared:
-                    info(f"INFO seat-hold cleared nick={src} reason={verb} job={_pj.task} {_pj.repo}{_pj.id}")
+                if verb == "ACK" and status == "missing":
+                    _noted = gitclaim.note_seat_hold(
+                        self._digest_home(),
+                        src,
+                        {
+                            "repo": _pj.repo,
+                            "task": _pj.task,
+                            "id": _pj.id,
+                        },
+                    )
+                    if _noted:
+                        info(
+                            f"INFO seat-hold noted nick={src} reason=ack-missing "
+                            f"job={_pj.task} {_pj.repo}{_pj.id}"
+                        )
+                else:
+                    _cleared = gitclaim.clear_seat_hold(
+                        self._digest_home(),
+                        src,
+                        repo=_pj.repo,
+                        task=_pj.task,
+                        ident=_pj.id,
+                        clear_pins=verb in ("NACK", "GIVEUP", "DONE"),
+                    )
+                    if _cleared:
+                        info(
+                            f"INFO seat-hold cleared nick={src} reason={verb} "
+                            f"job={_pj.task} {_pj.repo}{_pj.id}"
+                        )
         except Exception as hold_exc:  # noqa: BLE001
             info(f"WARN seat-hold clear {type(hold_exc).__name__}")
         try:
