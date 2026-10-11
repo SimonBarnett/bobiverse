@@ -670,6 +670,23 @@ def handle_shop_worker_line(
             )
         except Exception:  # noqa: BLE001
             pass
+        
+        # FR #3948: DONE MRB PASS -> merge-on-green ledger (seat never polls CI).
+        if str(parsed.task or "").upper() == "MRB" and str(parsed.result or "").upper() == "PASS":
+            try:
+                import mrb_merge_on_green
+
+                mog = mrb_merge_on_green.enqueue_from_done(
+                    home,
+                    repo=parsed.repo,
+                    pr_url=parsed.url or "",
+                    result=parsed.result or "",
+                    nick=nick,
+                )
+                if mog:
+                    out["merge_on_green"] = mog
+            except Exception:  # noqa: BLE001
+                pass
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )

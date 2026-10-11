@@ -25,6 +25,9 @@ import github_api_budget as gab
 WEBHOOK_PROBE_S = 1800.0
 # FR #3212: hourly (or slower) reconcile — webhooks carry live state; 15-min polling burned the core bucket.
 RESYNC_S = 3600.0
+# FR #3948: drain merge-on-green pending without seat CI polls.
+MERGE_ON_GREEN_S = 60.0
+FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
 WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
 FIRST_RESYNC_DELAY_S = 120.0
 FIRST_PROBE_DELAY_S = 45.0
@@ -347,6 +350,7 @@ class ChairJobs:
         t0 = clock()
         self.next_probe = t0 + FIRST_PROBE_DELAY_S
         self.next_resync = t0 + FIRST_RESYNC_DELAY_S
+        self.next_merge_on_green = t0 + FIRST_MERGE_ON_GREEN_DELAY_S
         self.busy = threading.Lock()
         self.token_source = ""            # set at first resync
         self._token_logged = False
@@ -369,7 +373,7 @@ class ChairJobs:
             self.home, now=now, gap_s=WEBHOOK_GAP_S
         ):
             self.next_resync = now
-        if now < min(self.next_probe, self.next_resync):
+        if now < min(self.next_probe, self.next_resync, self.next_merge_on_green):
             return False
         if not self.busy.acquire(blocking=False):
             return False
@@ -414,6 +418,30 @@ class ChairJobs:
         if now >= self.next_resync:
             self.next_resync = now + RESYNC_S
             self._resync()
+        now = self.clock()
+        if now >= self.next_merge_on_green:
+            self.next_merge_on_green = now + MERGE_ON_GREEN_S
+            try:
+                import mrb_merge_on_green
+
+                token, src = self.token_loader()
+                if token and not self.token_source:
+                    self.token_source = src or ""
+                out = mrb_merge_on_green.process_pending(
+                    self.home,
+                    token=token or None,
+                    log=self.log,
+                )
+                if out.get("merged") or out.get("requeued") or out.get("skipped_hold"):
+                    self.log(
+                        "INFO merge-on-green "
+                        f"merged={out.get('merged', 0)} requeued={out.get('requeued', 0)} "
+                        f"wait={out.get('wait', 0)} hold={out.get('skipped_hold', 0)} "
+                        f"err={out.get('errors', 0)}"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN merge-on-green: {type(exc).__name__}: {exc}")
+
 
     def _log_token_source_once(self, source: str) -> None:
         if self._token_logged:
