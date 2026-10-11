@@ -1234,12 +1234,44 @@ def _submit_gap_s(default: float = 0.20) -> float:
 
 
 # FR #3894: rdpclip / other owners briefly hold the clipboard; one OpenClipboard miss
-# used to fall back to per-char KEY_EVENTs (the #2498 drip). Retry open, then refuse
-# the long-text key fallback unless BOB_WORKER_INJECT_PASTE=0.
+# used to fall back to per-char KEY_EVENTs (the #2498 drip). Retry open.
+# FR #3996: on clipboard *set* failure, use ONE batched WriteConsoleInput KEY_EVENT write
+# (no per-char sleep). Never drip. Tiny-string constant kept for diagnostics / opt paths.
 _CLIPBOARD_OPEN_ATTEMPTS = 20
 _CLIPBOARD_OPEN_DELAY_S = 0.025
-# When paste is preferred, only allow KEY_EVENT batch for tiny strings (never Jeeves assigns).
+# Legacy gate from FR #3894 (tiny strings); FR #3996 always allows batched KEY fallback.
 _KEY_FALLBACK_MAX_CHARS = 8
+
+def _configure_clipboard_winapi(k32, u32) -> None:
+    """FR #3996: declare HGLOBAL/HANDLE restype+argtypes so x64 pointers are not truncated to C int."""
+    HGLOBAL = ctypes.c_void_p
+    UINT = ctypes.c_uint
+    BOOL = ctypes.c_int
+    HWND = ctypes.c_void_p
+    SIZE_T = ctypes.c_size_t
+
+    k32.GlobalAlloc.restype = HGLOBAL
+    k32.GlobalAlloc.argtypes = [UINT, SIZE_T]
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [HGLOBAL]
+    k32.GlobalUnlock.restype = BOOL
+    k32.GlobalUnlock.argtypes = [HGLOBAL]
+    k32.GlobalFree.restype = HGLOBAL
+    k32.GlobalFree.argtypes = [HGLOBAL]
+
+    u32.OpenClipboard.restype = BOOL
+    u32.OpenClipboard.argtypes = [HWND]
+    u32.CloseClipboard.restype = BOOL
+    u32.CloseClipboard.argtypes = []
+    u32.EmptyClipboard.restype = BOOL
+    u32.EmptyClipboard.argtypes = []
+    u32.SetClipboardData.restype = ctypes.c_void_p
+    u32.SetClipboardData.argtypes = [UINT, ctypes.c_void_p]
+    u32.GetClipboardData.restype = ctypes.c_void_p
+    u32.GetClipboardData.argtypes = [UINT]
+    u32.IsClipboardFormatAvailable.restype = BOOL
+    u32.IsClipboardFormatAvailable.argtypes = [UINT]
+
 
 
 def _clipboard_owner_diag(u32=None) -> str:
@@ -1300,6 +1332,7 @@ def _clipboard_get_unicode(log: Optional[Callable[[str], None]] = None) -> str |
     try:
         u32 = ctypes.WinDLL("user32", use_last_error=True)
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        _configure_clipboard_winapi(k32, u32)
         if not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
             return None
         if not _open_clipboard_retry(u32, log=log):
@@ -1322,13 +1355,28 @@ def _clipboard_get_unicode(log: Optional[Callable[[str], None]] = None) -> str |
 
 
 def _clipboard_set_unicode(text: str, log: Optional[Callable[[str], None]] = None) -> bool:
-    """Put Unicode text on the Windows clipboard. Used by inject_console paste path (FR #2498 / #3894)."""
+    """Put Unicode text on the Windows clipboard. Used by inject_console paste path (FR #2498 / #3894 / #3996)."""
     if os.name != "nt":
         return False
     CF_UNICODETEXT = 13
     GMEM_MOVEABLE = 0x0002
+
+    def _fail(step: str) -> bool:
+        err = 0
+        try:
+            err = int(ctypes.get_last_error() or 0)
+        except Exception:
+            err = 0
+        if log:
+            try:
+                log(f"relay: inject path=fail reason=clipboard_set step={step} last_error={err}")
+            except Exception:
+                pass
+        return False
+
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     u32 = ctypes.WinDLL("user32", use_last_error=True)
+    _configure_clipboard_winapi(k32, u32)
     data = (text.replace("\x00", "") + "\x00").encode("utf-16-le")
     if not _open_clipboard_retry(u32, log=log):
         return False
@@ -1336,18 +1384,18 @@ def _clipboard_set_unicode(text: str, log: Optional[Callable[[str], None]] = Non
         u32.EmptyClipboard()
         h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
         if not h:
-            return False
+            return _fail("alloc")
         ptr = k32.GlobalLock(h)
         if not ptr:
             k32.GlobalFree(h)
-            return False
+            return _fail("lock")
         try:
             ctypes.memmove(ptr, data, len(data))
         finally:
             k32.GlobalUnlock(h)
         if not u32.SetClipboardData(CF_UNICODETEXT, h):
             k32.GlobalFree(h)
-            return False
+            return _fail("set")
         return True
     finally:
         u32.CloseClipboard()
@@ -1437,10 +1485,10 @@ def inject_console(
     one glyph at a time and can take minutes per Jeeves line). Prefer clipboard +
     Ctrl+V (one paste), then the FR #1601 submit gap + double Enter.
 
-    FR #3894: retry OpenClipboard (rdpclip races). When paste is preferred and the
-    line is longer than ``_KEY_FALLBACK_MAX_CHARS``, never fall back to per-char
-    KEY_EVENTs — return False so the relay holds/retries. Explicit
-    ``BOB_WORKER_INJECT_PASTE=0`` still uses one batched WriteConsoleInput.
+    FR #3894: retry OpenClipboard (rdpclip races). Never fall back to *per-char*
+    KEY_EVENT drip (FR #2498). FR #3996: if clipboard set fails, use one batched
+    WriteConsoleInput KEY_EVENT write (``path=keys reason=clipboard_fallback``).
+    Explicit ``BOB_WORKER_INJECT_PASTE=0`` skips clipboard and uses the batch path.
 
     FR #2508: opt out with BOB_WORKER_INJECT_PASTE=0 (KEY_EVENT batch only).
     FR #2504: save prior CF_UNICODETEXT before EmptyClipboard; restore after the
@@ -1484,18 +1532,20 @@ def inject_console(
                     clipboard_touched = True
                     pasted = _write_console_all(k32, h, _build_ctrl_v_records(), wintypes)
             if not pasted:
-                # FR #3894: long Jeeves lines must not drip via KEY_EVENT when paste was wanted.
-                if _inject_prefer_paste() and len(text) > int(_KEY_FALLBACK_MAX_CHARS):
-                    _log(
-                        "relay: inject path=fail reason=clipboard "
-                        f"chars={len(text)} (no KEY_EVENT drip; hold/retry)"
-                    )
-                    return False
+                # FR #3996: clipboard paste failed (or paste opt-out). One batched
+                # WriteConsoleInput - never per-char drip (FR #2498 / #3894).
+                prefer_paste = _inject_prefer_paste()
                 recs = build_key_records(text, u32)
                 if not _write_console_all(k32, h, recs, wintypes):
                     _log("relay: inject path=fail reason=keys_write")
                     return False
-                _log(f"relay: inject path=keys chars={len(text)}")
+                if prefer_paste:
+                    _log(
+                        "relay: inject path=keys reason=clipboard_fallback "
+                        f"chars={len(text)} (no KEY_EVENT drip; batched)"
+                    )
+                else:
+                    _log(f"relay: inject path=keys chars={len(text)}")
             else:
                 _log(f"relay: inject path=paste chars={len(text)}")
             # Give the TUI time to drain Ctrl+V and read our clipboard, then restore.
