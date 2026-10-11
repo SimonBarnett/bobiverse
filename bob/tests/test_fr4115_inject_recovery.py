@@ -201,15 +201,29 @@ def test_startup_grace_does_not_release_grok_before_turn_ended(tmp_path, monkeyp
     assert cap_timer.cancelled
 
 
-def test_startup_cap_releases_when_turn_never_ends(tmp_path, monkeypatch):
+def test_startup_cap_hangs_when_turn_never_ends(tmp_path, monkeypatch):
+    """FR #4123: ready-cap without turn_ended hang-recycles (never enables inject/!bored)."""
     monkeypatch.delenv("BOB_WORKER_STARTUP_WAIT_READY", raising=False)
     monkeypatch.setenv("BOB_WORKER_STARTUP_READY_CAP_S", "600")
+    restarts = []
+
+    def _restart(self, reason):
+        restarts.append(reason)
+        with self._lock:
+            self._startup_hold_armed = False
+            self.proc = None
+        self.relay.set_target(None)
+        if self.bored:
+            self.bored.set_ready(False)
+
+    monkeypatch.setattr(bw.Supervisor, "restart_agent", _restart)
     sup, logs, clock, injected, relay = _sup(tmp_path, monkeypatch)
     assert sup.start_agent()
     FakeTimer.instances[0].fn()
     FakeTimer.instances[-1].fn()  # cap
-    assert any("startup ready cap 600s" in m for m in logs)
-    assert "ready" in sup.bored.fires
+    assert any("hang-recycle" in m for m in logs)
+    assert restarts and "startup" in restarts[0]
+    assert "ready" not in sup.bored.fires
 
 
 # ---------------------------------------------------------------- 5. Grok prompt-accept timeout
