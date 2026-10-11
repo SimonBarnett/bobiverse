@@ -2180,11 +2180,19 @@ function Save-BobiverseServicePassword {
 }
 
 function Request-BobiverseUacRelaunch {
+    <#
+      FR #4013: self-elevate via UAC. On cancel/failure exit 740 (ERROR_ELEVATION_REQUIRED)
+      with a clear message — never bare-throw (PS 4.0 -File would exit 0) and never write
+      install fail-reported flags (caller must exit before fail-flag paths).
+    #>
     param([Parameter(Mandatory)]$Bound)
     $self = $PSCommandPath
     if (-not $self) { $self = $MyInvocation.MyCommand.Path }
-    if (-not $self) { throw 'cannot resolve script path for UAC' }
-    Write-Host 'INFO not elevated; requesting UAC'
+    if (-not $self) {
+        Write-Host 'ERROR install needs administrator rights (cannot resolve script path for UAC)'
+        exit 740
+    }
+    Write-Host 'INFO not elevated; requesting UAC (FR #4013)'
     $list = New-Object System.Collections.Generic.List[string]
     [void]$list.Add('-NoProfile'); [void]$list.Add('-ExecutionPolicy'); [void]$list.Add('Bypass')
     [void]$list.Add('-File'); [void]$list.Add($self)
@@ -2203,8 +2211,16 @@ function Request-BobiverseUacRelaunch {
             [void]$list.Add([string]$val)
         }
     }
-    $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $list.ToArray() -Wait -PassThru
-    if ($null -eq $p) { throw 'UAC cancelled' }
+    try {
+        $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $list.ToArray() -Wait -PassThru
+    } catch {
+        Write-Host ("ERROR install needs administrator rights (UAC failed: {0})" -f $_.Exception.Message)
+        exit 740
+    }
+    if ($null -eq $p) {
+        Write-Host 'ERROR install needs administrator rights (UAC cancelled)'
+        exit 740
+    }
     exit [int]$p.ExitCode
 }
 

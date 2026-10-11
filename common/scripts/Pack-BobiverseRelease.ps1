@@ -543,6 +543,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Condition Message="bobiverse airc requires Windows PowerShell 4.0 or newer (this machine: [POWERSHELLVERSION]).">
       <![CDATA[Installed OR (POWERSHELLVERSION >= "4.0")]]>
     </Condition>
+    <!-- FR #4013: fail closed before RemoveExistingProducts Error 1730 when not elevated. -->
+    <Condition Message="airc install needs administrator rights">
+      <![CDATA[Installed OR Privileged]]>
+    </Condition>
 "@
         }
     }
@@ -612,7 +616,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="bobiverse $Name" Language="1033" Version="$msiVersion"
       Manufacturer="SimonBarnett" UpgradeCode="$upgrade">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" InstallPrivileges="elevated" Platform="x64" />
     <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="afterInstallInitialize" />
     <!-- FR #4011: PsExec -h -s (session 0) upgrades: Restart Manager error 351 crashes msiexec (1601). -->
     <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
