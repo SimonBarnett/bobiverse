@@ -23,7 +23,7 @@
 
 2. **Ergo server PASS**  
    Public release MSIs **do not** embed `config\ergo.password` (issue #4).  
-   After install, place one line at `<ai root>\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or set `BOB_IRC_PASSWORD`.  
+   **Before running `msiexec`** (required for airc, including `AIRC_PROFILE=client`, because `Install-Airc` fails without it, #3765), place one line at `<ai root>\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or supply it via `BOB_IRC_PASSWORD` / `-ErgoPasswordFile` (FR #3756). For bob and jeeves, placing it before install is also the safe default.  
    **FR #3904:** bob also resolves a sibling `<ai root>\airc\config\ergo.password` or `<ai root>\jeeves\config\ergo.password` and seeds a local copy under `<ai root>\bob\config\` when found.  
    Private/offline packs may use `Pack-BobiverseRelease.ps1 -EmbedErgoPassword`.
 
