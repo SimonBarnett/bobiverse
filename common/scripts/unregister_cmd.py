@@ -76,11 +76,37 @@ class UnregisterPlan:
     notes: list[str] = field(default_factory=list)
 
 
+def list_shop_console_nicks(mid: str, members: dict | None) -> list[str]:
+    """FR #4040: nicks in #<mid> matching *_console (airc console clients).
+
+    `members` is PrivState.members: chan_l -> nick_l -> {nick, modes}.
+    """
+    mid_l = (mid or "").strip().lower().lstrip("#")
+    if not mid_l or not members:
+        return []
+    chan = members.get(f"#{mid_l}") or members.get(mid_l) or {}
+    out = []
+    for nick_l, ent in chan.items():
+        nick = str((ent or {}).get("nick") or nick_l or "").strip()
+        if nick.lower().endswith("_console"):
+            out.append(nick)
+    return sorted(out, key=lambda s: s.lower())
+
+
+def console_nicks_note(mid: str, members: dict | None) -> str:
+    """Plan/dry-run note listing mid_console nicks (or none seen)."""
+    nicks = list_shop_console_nicks(mid, members)
+    if not nicks:
+        return f"note: #{mid} console clients: none seen"
+    return f"note: #{mid} console clients: {', '.join(nicks)}"
+
+
 def build_unregister_plan(
     home,
     parsed: dict,
     *,
     asker: str = "",
+    members: dict | None = None,
 ) -> UnregisterPlan | None:
     if not parsed:
         return None
@@ -113,12 +139,14 @@ def build_unregister_plan(
     )
     if not in_reg:
         plan.notes.append(f"!unregister: {shop} is not registered (nothing to do)")
+        plan.notes.append(console_nicks_note(mid, members))  # FR #4040
     else:
         plan.notes.append(f"plan: ChanServ UNREGISTER {shop}")
         plan.notes.append(f"plan: remove_registered {mid}")
         plan.notes.append(f"plan: PART {shop}")
         plan.notes.append(f"plan: announce {plan.wire_line} on {FLEET}")
         plan.notes.append("note: airc clients on this shop fall back to #wonderland on next connect (FR #3834)")
+        plan.notes.append(console_nicks_note(mid, members))  # FR #4040
     return plan
 
 
