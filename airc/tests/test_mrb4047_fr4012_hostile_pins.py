@@ -26,12 +26,16 @@ def test_mrb4047_after_1705_bounce_and_retry_order():
     retry = body.find("code -eq 1705")
     after = body.find("Clear-BobiverseMsiPendingTransaction -Why 'after-1705'")
     assert 0 <= pre < retry < after
-    # after-1705 Why also drives msiserver bounce when no InProgress key
     assert "restarted msiserver after 1705" in COMMON or "after 1705 (no InProgress key)" in COMMON
 
 
 def test_mrb4047_install_cmd_clears_before_ps1():
-    assert "FR #4012" in INSTALL_CMD or "4012" in INSTALL_CMD
+    assert "4012" in INSTALL_CMD
     clear_i = INSTALL_CMD.lower().find("clear-bobiversemsipendingtransaction")
-    ps1_i = INSTALL_CMD.lower().find("install-airc.ps1")
-    assert 0 <= clear_i < ps1_i
+    # Real invoke is -File ...Install-Airc.ps1 (REM comments mention the name earlier)
+    file_i = INSTALL_CMD.lower().find('-file "%here%install-airc.ps1"')
+    if file_i < 0:
+        file_i = INSTALL_CMD.lower().find("-file \"%here%install-airc.ps1\"")
+    if file_i < 0:
+        file_i = INSTALL_CMD.lower().rfind("install-airc.ps1")
+    assert 0 <= clear_i < file_i
