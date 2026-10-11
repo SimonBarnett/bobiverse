@@ -310,6 +310,7 @@ $hadPriorService = [bool](Get-Service -Name 'Airc' -ErrorAction SilentlyContinue
     -or [bool]$priorAppParams -or ($priorId -and $priorId.ConsoleHome) `
     -or $priorFromLegacyAircConsole
 $priorShell = ''
+$priorCap = $null
 if ($priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) { $priorShell = [string]$priorId.ShellMode }
 $capPathGuess = Join-Path $InstallRoot 'config\airc.json'
 if (-not $priorShell -and (Test-Path -LiteralPath $capPathGuess)) {
@@ -322,13 +323,63 @@ if (-not $priorShell -and (Test-Path -LiteralPath $capPathGuess)) {
 $expShell = ([string]$ShellMode).Trim().ToLowerInvariant()
 if ($expShell -notin @('off', 'operators')) { $expShell = '' }
 if ($priorShell) { $priorShell = $priorShell.Trim().ToLowerInvariant() }
+# FR #4030: prior shell_source / shell_explicit from airc.json (migrate legacy fresh-default off on Bob).
+$priorShellSource = ''
+$priorShellExplicit = $false
+if (Test-Path -LiteralPath $capPathGuess) {
+    try {
+        if ($null -eq $priorCap) { $priorCap = Get-Content -LiteralPath $capPathGuess -Raw -Encoding utf8 | ConvertFrom-Json }
+        if ($priorCap.PSObject.Properties['shell_source'] -and $priorCap.shell_source) {
+            $priorShellSource = ([string]$priorCap.shell_source).Trim().ToLowerInvariant()
+        }
+        if ($priorCap.PSObject.Properties['shell_explicit'] -and $priorCap.shell_explicit) {
+            $priorShellExplicit = [bool]$priorCap.shell_explicit
+        }
+    } catch {}
+}
+# FR #4030: Bob machine = sibling bob\VERSION or ircBob service.
+$isBobMachine = $false
+try {
+    $aiParent = Split-Path -Parent $InstallRoot
+    $bobSibling = Join-Path $aiParent 'bob'
+    if (Test-Path -LiteralPath (Join-Path $bobSibling 'VERSION')) { $isBobMachine = $true }
+    elseif (Test-Path -LiteralPath 'C:\ai\bob\VERSION') { $isBobMachine = $true }
+    elseif (Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue) { $isBobMachine = $true }
+} catch {}
 # FR #3393: workstation defaults shell=off unless MSI/CLI set explicitly (ignore prior).
-if ($expShell) { $resolvedShell = $expShell }
-elseif ($prof -eq 'workstation') { $resolvedShell = 'off' }
-elseif ($prof -eq 'client') { $resolvedShell = 'operators' }  # FR #3401 full remote
-elseif ($priorShell -in @('off', 'operators')) { $resolvedShell = $priorShell }
-elseif ($hadPriorService) { $resolvedShell = 'operators' }
-else { $resolvedShell = 'off' }
+# FR #4030: Bob machines default operators; migrate legacy fresh-default off unless explicit.
+$shellSource = 'fresh-default'
+if ($expShell) {
+    $resolvedShell = $expShell
+    $shellSource = 'explicit'
+} elseif ($prof -eq 'workstation') {
+    $resolvedShell = 'off'
+    $shellSource = 'workstation-default'
+} elseif ($prof -eq 'client') {
+    $resolvedShell = 'operators'  # FR #3401 full remote
+    $shellSource = 'client-default'
+} elseif ($isBobMachine) {
+    if ($priorShell -eq 'off' -and ($priorShellExplicit -or $priorShellSource -eq 'explicit')) {
+        $resolvedShell = 'off'
+        $shellSource = 'explicit'
+    } elseif ($priorShell -eq 'off') {
+        $resolvedShell = 'operators'
+        $shellSource = 'migrated-from-fresh-off'
+        Write-Host 'INFO FR #4030 migrating shell=off -> operators on Bob machine (legacy fresh default)'
+    } else {
+        $resolvedShell = 'operators'
+        if ($priorShell -eq 'operators') { $shellSource = 'preserved' } else { $shellSource = 'bob-default' }
+    }
+} elseif ($priorShell -in @('off', 'operators')) {
+    $resolvedShell = $priorShell
+    $shellSource = 'preserved'
+} elseif ($hadPriorService) {
+    $resolvedShell = 'operators'
+    $shellSource = 'upgrade-default'
+} else {
+    $resolvedShell = 'off'
+    $shellSource = 'fresh-default'
+}
 
 $expJobs = ([string]$Jobs).Trim().ToLowerInvariant()
 if ($expJobs -in @('off', 'on')) { $resolvedJobs = $expJobs }
@@ -444,6 +495,8 @@ try {
     $authMode = 'irc_ops'
     $capObj = [ordered]@{
         shell = $resolvedShell
+        shell_source = $shellSource
+        shell_explicit = [bool]($shellSource -eq 'explicit')
         jobs = $resolvedJobs
         update = $resolvedUpdate
         require_account = $resolvedRequire
@@ -462,6 +515,7 @@ try {
     }
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
     Write-Host ("INFO FR #3287/#3289/#3393/#3774 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7} presence_channels={8}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf, (($capObj['presence_channels'] -join ',')))
+    Write-Host ("INFO FR #4030 shell resolve shell={0} source={1} bob={2} explicit={3}" -f $resolvedShell, $shellSource, $isBobMachine, ($shellSource -eq 'explicit'))
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
 }

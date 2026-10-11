@@ -917,17 +917,77 @@ def _norm_on_off(value: str | None, *, default: str) -> str:
     return default
 
 
+def detect_bob_machine(
+    *,
+    install_root: Path | str | None = None,
+    bob_root: Path | str | None = None,
+    service_present: bool | None = None,
+) -> bool:
+    """True when this box has a Bob install beside airc (or ircBob service).
+
+    FR #4030: fleet Bob machines default remote shell ON (``operators``).
+    ``install_root`` is typically ``<ai root>\\airc``; sibling ``bob\\VERSION`` counts.
+    """
+    if service_present is True:
+        return True
+    roots: list[Path] = []
+    if bob_root:
+        roots.append(Path(bob_root))
+    if install_root:
+        ir = Path(install_root)
+        roots.append(ir.parent / "bob")
+    elif not bob_root:
+        # Live default fleet layout only when caller did not pin roots.
+        roots.append(Path(r"C:\\ai\\bob"))
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if (root / "VERSION").is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def warn_shell_off_on_bob_line(
+    *,
+    shell_mode: str,
+    is_bob_machine: bool,
+    shell_source: str | None = None,
+    profile: str | None = None,
+) -> str | None:
+    """FR #4030: visible WARN when shell=off on a Bob machine (do not hide)."""
+    mode = (shell_mode or "").strip().lower()
+    if mode != "off" or not is_bob_machine:
+        return None
+    src = (shell_source or "unknown").strip() or "unknown"
+    return (
+        f"WARN FR #4030 capabilities shell=off on Bob machine "
+        f"source={src} (explicit AIRC_SHELL/ShellMode=off only; else expect operators)"
+    )
+
+
 def resolve_shell_mode_for_install(
     *,
     prior_shell: str | None,
     explicit: str | None,
     had_prior_service: bool,
     profile: str | None = None,
+    is_bob_machine: bool = False,
+    prior_shell_source: str | None = None,
+    prior_shell_explicit: bool | None = None,
 ) -> str:
-    """Fresh MSI default ``off``; upgrade of an existing fleet box defaults ``operators``.
+    """Resolve install-time shell mode.
 
+    FR #3287: non-Bob fresh fleet default ``off``; upgrade with prior service ``operators``.
     FR #3393: ``AIRC_PROFILE=workstation`` defaults ``off`` unless explicit.
-    FR #3401: ``AIRC_PROFILE=client`` defaults ``operators`` (full remote, IRC-ops auth).
+    FR #3401: ``AIRC_PROFILE=client`` defaults ``operators``.
+    FR #4030: Bob machines default ``operators``; migrate legacy fresh-default ``off``
+    unless ``shell_source=explicit`` / ``shell_explicit`` / MSI ``AIRC_SHELL=off``.
     """
     exp = (explicit or "").strip().lower()
     if exp in SHELL_MODE_TOKENS:
@@ -938,6 +998,13 @@ def resolve_shell_mode_for_install(
     if prof == "client":
         return "operators"
     prior = (prior_shell or "").strip().lower()
+    src = (prior_shell_source or "").strip().lower()
+    if is_bob_machine:
+        if prior == "off":
+            if prior_shell_explicit is True or src == "explicit":
+                return "off"
+            return "operators"
+        return "operators"
     if prior in SHELL_MODE_TOKENS:
         return prior
     return "operators" if had_prior_service else "off"
