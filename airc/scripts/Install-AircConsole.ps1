@@ -112,7 +112,7 @@ if (Get-Command Get-BobiverseServiceAppParameters -ErrorAction SilentlyContinue)
     $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName $ServiceName
     $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
     # FR #3900: Install-Airc passes ServiceName=Airc while legacy agentic_irc still
-    # runs as AircConsole — read that registry before Remove-BobiverseLegacyService.
+    # runs as AircConsole - read that registry before Remove-BobiverseLegacyService.
     if (-not $priorAppParams -and $ServiceName -ne 'AircConsole') {
         $legacyParams = Get-BobiverseServiceAppParameters -ServiceName 'AircConsole'
         if ($legacyParams) {

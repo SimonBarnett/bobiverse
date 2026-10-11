@@ -198,7 +198,7 @@ if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
 # is already registered - that caused SASL 904 / NickServ 433 after 0.1.20->0.1.21.
 # Prefer live AppParameters; fall back to config\airc-install.json when the service is gone.
 # FR #3900: also read legacy agentic_irc service AircConsole (removed later in this script)
-# so 0.1.11→tip upgrades keep the GUID that NickServ already knows.
+# so 0.1.11->tip upgrades keep the GUID that NickServ already knows.
 $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName 'Airc'
 $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
 $priorFromLegacyAircConsole = $false

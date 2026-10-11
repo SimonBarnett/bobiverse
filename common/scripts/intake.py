@@ -454,7 +454,7 @@ def is_mrb_process_routing_lesson(text: str) -> bool:
         return True
     if re.search(r"(?i)park(?:ed|s)?\s+under\s+harvest", t):
         return True
-    # FR #3959: "do not park … under harvest/SKILL.md"
+    # FR #3959: "do not park ... under harvest/SKILL.md"
     if re.search(
         r"(?i)(?:do not|never)\s+park\b[\s\S]{0,120}?under\s+(?:`?harvest|harvest/SKILL)",
         t,
