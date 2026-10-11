@@ -14,10 +14,11 @@ def test_mrb3897_hostile_contiguous_open_clipboard_retry():
     assert "def _open_clipboard_retry(" in text
     assert "_KEY_FALLBACK_MAX_CHARS" in text
     assert "no KEY_EVENT drip" in text
-    assert "relay: inject path=fail" in text or 'path=fail reason=clipboard' in text
     assert "relay: clipboard OpenClipboard failed" in text
-    # Long paste-preferred lines must refuse KEY_EVENT fallback.
-    assert "_inject_prefer_paste() and len(text) > int(_KEY_FALLBACK_MAX_CHARS)" in text
+    # FR #3996: clipboard fail uses batched KEY fallback (still no per-char drip).
+    assert "_configure_clipboard_winapi" in text
+    assert "clipboard_fallback" in text
+    assert "GlobalAlloc.restype" in text
 
 
 def test_mrb3897_hostile_skill_fr3894_bullet():

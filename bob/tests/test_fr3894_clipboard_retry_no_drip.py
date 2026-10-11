@@ -105,20 +105,15 @@ def test_fr3894_open_clipboard_logs_owner_on_exhaust(monkeypatch):
 
 
 def test_fr3894_busy_clipboard_first_n_then_paste(monkeypatch):
-    """Acceptance: clipboard busy for first N set attempts; inject still pastes and logs path=paste."""
+    """Acceptance: when set eventually succeeds, inject pastes; FR #3996 keys fallback if set always fails."""
     if __import__("os").name != "nt":
         pytest.skip("windows")
 
     logs: list[str] = []
-    sets = {"n": 0}
-
-    def flaky_set(text, log=None):
-        sets["n"] += 1
-        return sets["n"] >= 3
 
     monkeypatch.delenv("BOB_WORKER_INJECT_PASTE", raising=False)
     monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: None)
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", flaky_set)
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda text, log=None: True)
     monkeypatch.setattr(bw, "_clipboard_restore_unicode", lambda prior, log=None: True)
     monkeypatch.setattr(bw, "_write_console_all", lambda *a, **k: True)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
@@ -129,20 +124,13 @@ def test_fr3894_busy_clipboard_first_n_then_paste(monkeypatch):
         lambda name, use_last_error=True: _fake_k32() if "kernel32" in name.lower() else SimpleNamespace(),
     )
 
-    # inject_console only calls set once; retry lives in _open_clipboard_retry (unit-tested).
-    # Here: simulate set succeeding after outer retries by wrapping inject to retry on False.
-    attempts = 0
-    while attempts < 5:
-        attempts += 1
-        if bw.inject_console(0, ASSIGN, log=logs.append):
-            break
-    assert attempts == 3, attempts
-    assert sets["n"] == 3
+    assert bw.inject_console(0, ASSIGN, log=logs.append) is True
     assert any("path=paste" in m for m in logs), logs
-    assert not any("path=keys" in m for m in logs), logs
+    assert not any("clipboard_fallback" in m for m in logs), logs
 
 
 def test_fr3894_no_key_fallback_on_clipboard_fail_long_line(monkeypatch):
+    """FR #3996 supersedes hard-fail: clipboard fail -> batched KEY path (still no drip)."""
     if __import__("os").name != "nt":
         pytest.skip("windows")
 
@@ -152,7 +140,11 @@ def test_fr3894_no_key_fallback_on_clipboard_fail_long_line(monkeypatch):
     monkeypatch.delenv("BOB_WORKER_INJECT_PASTE", raising=False)
     monkeypatch.setattr(bw, "_clipboard_get_unicode", lambda log=None: None)
     monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda text, log=None: False)
-    monkeypatch.setattr(bw, "build_key_records", lambda text, user32=None: key_calls.append(text) or [])
+    monkeypatch.setattr(
+        bw,
+        "build_key_records",
+        lambda text, user32=None: key_calls.append(text) or bw.build_enter_records(),
+    )
     monkeypatch.setattr(bw, "_write_console_all", lambda *a, **k: True)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
     monkeypatch.setattr(
@@ -161,9 +153,10 @@ def test_fr3894_no_key_fallback_on_clipboard_fail_long_line(monkeypatch):
         lambda name, use_last_error=True: _fake_k32() if "kernel32" in name.lower() else SimpleNamespace(),
     )
 
-    assert bw.inject_console(0, ASSIGN, log=logs.append) is False
-    assert key_calls == []
-    assert any("path=fail" in m and "clipboard" in m for m in logs), logs
+    assert bw.inject_console(0, ASSIGN, log=logs.append) is True
+    assert key_calls == [ASSIGN]
+    assert any("path=keys" in m and "clipboard_fallback" in m for m in logs), logs
+    assert not any("no KEY_EVENT drip; hold/retry" in m for m in logs), logs
 
 
 def test_fr3894_opt_out_still_allows_key_batch(monkeypatch):
