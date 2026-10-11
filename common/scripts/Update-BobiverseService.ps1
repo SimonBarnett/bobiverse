@@ -628,12 +628,15 @@ function Invoke-Apply {
         $mlog = Join-Path $StateDir ('msiexec-{0}.log' -f $tag)
         # FR #2475: serialise msiexec + retry 1618 (ERROR_INSTALL_ALREADY_RUNNING)
         # FR #3639: no AIRC_OPERATORS forwarding - airc auth is live control-channel +o/+h.
+        # FR #4011: Disable Restart Manager on the msiexec line so older MSIs (and tip)
+        # avoid session-0 RM 351 / Windows Installer crash 1601 under SYSTEM upgrades.
         $msiArgs = New-Object 'System.Collections.Generic.List[string]'
         [void]$msiArgs.Add('/i')
         [void]$msiArgs.Add(('"{0}"' -f $msi))
         [void]$msiArgs.Add('/qn')
         [void]$msiArgs.Add('/norestart')
         [void]$msiArgs.Add('REBOOT=ReallySuppress')
+        [void]$msiArgs.Add('MSIRESTARTMANAGERCONTROL=Disable')
         [void]$msiArgs.Add('/l*v')
         [void]$msiArgs.Add(('"{0}"' -f $mlog))
         if (Get-Command Invoke-BobiverseMsiexecSerialized -ErrorAction SilentlyContinue) {

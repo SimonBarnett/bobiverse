@@ -550,6 +550,9 @@ function Build-Msi([string]$Name, [string]$Stage) {
     # Skip when UPGRADINGPRODUCTCODE is set (MajorUpgrade of this product) so AppParameters
     # stay readable for the new product's RunInstall / FR #1552 preserve path.
     # Return=ignore so a missing nssm/service never blocks ARP cleanup.
+    # FR #4011: on MajorUpgrade, stop Airc BEFORE RemoveExistingProducts. Under
+    # psexec -h -s (session 0), Restart Manager fails to shut down the service
+    # (error 351) and Windows Installer itself crashes (msiexec 1601).
     $uninstallCaDecls = ''
     $uninstallCaSeq = ''
     if ($Name -eq 'airc') {
@@ -558,10 +561,15 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <!-- FR #3292: AIRC_PURGE=1 or workstation manifest purge_default removes secrets/homes. -->
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
     <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- FR #4011: stop Airc before MajorUpgrade RemoveExistingProducts (PsExec session-0 RM 351 / 1601). -->
+    <CustomAction Id="SetStopAircUpgradeCmd" Property="StopAircBeforeUpgrade" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
+    <CustomAction Id="StopAircBeforeUpgrade" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
 "@
         $uninstallCaSeq = @"
       <Custom Action="SetUninstallCmd" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetStopAircUpgradeCmd" Before="StopAircBeforeUpgrade">WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="StopAircBeforeUpgrade" Before="RemoveExistingProducts">WIX_UPGRADE_DETECTED</Custom>
 "@
     }
     # FR #2564: on RunInstall failure / MSI rollback, best-effort Start-Service so seats are not left dead.
@@ -606,6 +614,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
       Manufacturer="SimonBarnett" UpgradeCode="$upgrade">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
     <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="afterInstallInitialize" />
+    <!-- FR #4011: PsExec -h -s (session 0) upgrades: Restart Manager error 351 crashes msiexec (1601). -->
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 $featureXml
     <Directory Id="TARGETDIR" Name="SourceDir">
