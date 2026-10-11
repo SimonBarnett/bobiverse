@@ -90,6 +90,22 @@ def info(msg: str) -> None:
     print(f"{ts} {msg}", flush=True)
 
 
+def log_auth_allow(hr) -> None:  # noqa: ANN001
+    """FR #4067: audit allow for shell/job/pipe (symmetric with auth-deny)."""
+    from airc_console import format_auth_allow_log
+
+    acct = getattr(hr, "allow_account", None)
+    info(
+        format_auth_allow_log(
+            nick=hr.nick or "-",
+            account=acct,
+            channel=getattr(hr, "allow_channel", None),
+            mode=getattr(hr, "allow_mode", None),
+            action=hr.action,
+        )
+    )
+
+
 def info_keepalive(msg: str) -> None:
     """Rate-limit keepalive noise to about one line per hour (FR #1546)."""
     global _last_keepalive_log_mono
@@ -1128,12 +1144,14 @@ class AircConsoleService:
             self.send_privmsg(hr.nick, hr.reply)
             if hr.action == "update":
                 info(f"INFO update-reply to={hr.nick} {hr.reply}")
-        elif hr.action == "shell":
-            info(f"INFO shell from={hr.nick}")
-        elif hr.action == "job":
-            info(f"INFO job from={hr.nick}")
-        elif hr.action == "pipe":
-            info(f"INFO pipe from={hr.nick}")
+        elif hr.action in {"shell", "job", "pipe"}:
+            # FR #4067: auth-allow (mode/account/channel) replaces bare INFO shell/job/pipe.
+            if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
+                try:
+                    hr.allow_account = self.account_map.get(hr.nick) if hr.nick else None
+                except Exception:
+                    pass
+            log_auth_allow(hr)
 
     def _idle_keepalive(self) -> None:
         """Detect half-open links: client PING, then force reconnect if no traffic (#298)."""

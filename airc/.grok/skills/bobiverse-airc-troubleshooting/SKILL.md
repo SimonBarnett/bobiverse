@@ -72,3 +72,4 @@ Generalised from 18 harvested lessons that never reached this book (audit for FR
 
 - **FR #4015:** nssm DisplayName must not show literal `#machine`; expand from MachineId or COMPUTERNAME.
 - **FR #4014:** no hardcoded `#ionos` in airc installer/console warnings; unregistered shop logs `#<machine> is not registered; joining #wonderland`.
+- **FR #4067:** authorised shell/job/pipe logs `auth-allow nick=… account=… channel=… mode=+q|+a|+o|+h action=…` (symmetric with `auth-deny`); bare `INFO shell from=` is gone.
