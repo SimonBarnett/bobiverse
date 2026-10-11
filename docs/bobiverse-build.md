@@ -1,4 +1,4 @@
-# Bobiverse BUILD job (FR #4006)
+# Bobiverse BUILD job (FR #4006 / #4025)
 
 Deterministic, **zero AI tokens**. Jeeves ops run `!build`; each repo ships `.bobiverse/build.yml`.
 
@@ -39,6 +39,39 @@ Ops only (simon / bob-* ears). No recipe → refuse. Same repo already building 
 
 ## Work packages
 
-- **WP1 (this):** recipe, classify, lock, `!build` CommandSpec/help, dry-run decide, docs
-- **WP2:** ear on recipe machine runs suites/pack/release + auto-issues
+- **WP1:** recipe, classify, lock, `!build` CommandSpec/help, dry-run decide, docs
+- **WP2 (FR #4025):** live runner on recipe machine (below)
 - **WP3:** optional INSTALL-TEST job
+
+## WP2 runner (FR #4025)
+
+Deterministic, injectable, **zero AI tokens**. Module: `common/scripts/bobiverse_build.py`.
+
+### Flow
+
+1. Chair `!build` decides and announces `BUILD v1 repos=... version=... ref=...` on `#bobiverse`.
+2. Recipe machine (bobiverse: `ionos` / DIGEST_ID_FOLD `win-mpre8vi4u6u`) consumes the wire via `consume_build_v1` and enqueues `home/build-queue/*.json` (spawn/pack outside the chair process).
+3. `BuildRunner.run()`:
+   - Ensures `work_dir` / `log_dir` and recipe `cache_dirs` under `work_dir/cache` (override root with env `BOBIVERSE_DOWNLOAD_CACHE`).
+   - Resolves baseline (injectable; default stub tag `baseline`).
+   - Runs each suite at ref and at baseline; one solo rerun on ref failure; classifies.
+   - Hard timeouts (FR #3965 class) via `run_command` --- kill + `timed_out` => `step_failure`.
+   - Files one intake issue per `new_regression` / `step_failure` with labels `feature-request` + `release-blocker` (`file_blocker_or_dedupe`; comment if open duplicate).
+   - **Pack and release only when there are no new_regression/step_failure blockers** (pre_existing / flaky do not block).
+   - Pack renders `{{version}}` / `{{out_dir}}` / `{{ref}}`; verifies artifact names; optional assert cmd.
+   - Release target `github-prerelease` with recipe `never_latest: true` => prerelease, never Latest.
+   - Zips `log_dir` to `build-logs-{version}.zip`; announce summary lines for `#bobiverse`.
+
+### Test doubles
+
+- `FakeGitHubFiler` --- in-memory `list_open_issues` / `create_issue` / `comment`.
+- Inject `run_command_fn`, `pack_fn`, `release_fn`, `baseline_resolver` on `BuildRunner`.
+
+### Helpers
+
+- `render_template`, `parse_build_v1_route`, `fold_build_machine`, `is_recipe_build_machine`
+- `SuiteRunResult`, `BuildReport`, `run_command(..., runner=subprocess)`
+
+## CLI drain (FR #4025)
+
+python common/scripts/run_bobiverse_build.py --queue-dir <home>/build-queue --repo-root <root> [--fake-filer] executes one enqueued BUILD v1 job via BuildRunner.

@@ -1578,6 +1578,57 @@ class Client:
                 time.sleep(FLOOD_S)
             except Exception:
                 info("WARN build route announce failed")
+            # FR #4025: when this box is the recipe machine, enqueue BUILD v1 (no live pack in chair).
+            try:
+                self._maybe_start_build_runner(dec.route, src_hint=who_nick)
+            except Exception as exc:
+                info(f"WARN build enqueue: {type(exc).__name__}: {exc}")
+
+
+    def _build_queue_dir(self) -> Path:
+        """FR #4025: home/build-queue for accepted BUILD v1 jobs (spawn/pack is out of chair scope)."""
+        return Path(self.home) / "build-queue"
+
+    def _maybe_start_build_runner(self, route_line: str, *, src_hint: str = "") -> bool:
+        """FR #4025 WP2: accept BUILD v1 when local machine matches recipe.machine; enqueue only."""
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        recipe_machine = "ionos"
+        try:
+            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            recipe_machine = recipe.machine
+        except Exception:
+            try:
+                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
+                recipe_machine = recipe.machine
+            except Exception:
+                recipe_machine = "ionos"
+        qdir = self._build_queue_dir()
+        ok = bobiverse_build.consume_build_v1(
+            route_line, local, recipe_machine, queue_dir=qdir
+        )
+        if ok:
+            info(
+                f"INFO FR #4025 BUILD v1 accepted machine={local} "
+                f"recipe={recipe_machine} from={src_hint or '-'} queue={qdir}"
+            )
+        return ok
+
+    def _maybe_consume_build_v1_wire(self, src: str, body: str) -> bool:
+        """FR #4025: fleet BUILD v1 PRIVMSG -> enqueue when this box is the recipe machine."""
+        if bobiverse_build.parse_build_v1_route(body) is None:
+            return False
+        return self._maybe_start_build_runner(body, src_hint=src)
 
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
@@ -2968,6 +3019,8 @@ class Client:
                 self._handle_recycle_command(src, body)
             else:
                 self._handle_bob_local_recycle_command(src, body)
+            return
+        if self._maybe_consume_build_v1_wire(src, body):
             return
         if self._maybe_execute_recycle_wire(src, body):
             return
