@@ -29,6 +29,7 @@ description: >
 | `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted) |
 | Incoming channel/PM PRIVMSG | FR #2174: always appended (scrubbed) to `home\inbound-transcript.log` as `UTC channel nick text` — listen without `BOB_IRC_DEBUG` |
 | Incoming `*_console` Query `out`/`err`/`DONE` PMs | FR #1546: ear appends them to `<bob home>\airc-replies.jsonl` so `Invoke-AircRemote -ReplyFile` can poll until DONE (skips digest for those lines) |
+| Raw shop-op outbox `MODE +/-o|v|h <nick>` / `KICK` / `NAMES` (own shop only) | Ear sends raw IRC via `shop_ops` (FR #4069: `+h` half-op allowed with `+o`/`+v`) |
 | `FILE v1 ...` | File transfer handshake via `filexfer.py` (accept/refuse over the outbox) |
 | Depart request file | Tray/shortcut writes it; the ear announces departure then quits so the service can restart |
 
