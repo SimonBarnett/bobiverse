@@ -70,4 +70,5 @@ Generalised from 18 harvested lessons that never reached this book (audit for FR
 
 - **Console job protocol:** background emits must swallow ConnectionError on a dead IRC socket and force a reconnect, and handle KeyboardInterrupt explicitly on service stop. STATUS pins `id=` and frames output as `out id= seq=` followed by `DONE id=`. Sanitize bobtalk/Halloy `Heard:` wrappers, but never strip PowerShell `@(`, `@'` or `@"`. ReplyFile must be the ear's `airc-replies.jsonl`. Queue replies across reconnects and flush DONE on stop. UPDATE replies first, then schedules a detached Apply; never run msiexec in the console process. Frozen airc.exe keeps Start-AircConsole ServiceMode parity (Sync, then Update). (18 lessons: harvest #2167, #1614, #1600, #1599, #1594, #1586 +3 more, 9 held intake rows)
 
+- **FR #4015:** nssm DisplayName must not show literal `#machine`; expand from MachineId or COMPUTERNAME.
 - **FR #4014:** no hardcoded `#ionos` in airc installer/console warnings; unregistered shop logs `#<machine> is not registered; joining #wonderland`.
