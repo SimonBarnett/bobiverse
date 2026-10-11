@@ -161,7 +161,14 @@ def test_handler_gate_denied(tmp_path: Path):
     agent, sent, whispers = _make_agent(tmp_path, members)
     assert agent._handle_unregister_command("nobody", "!unregister ionos") is True
     assert sent == []
-    assert any("denied" in m for _, m in whispers)
+    assert any("denied" in m and "+o/+h" in m for _, m in whispers)
+
+
+def test_fakechair_stubs_unregister_dispatch():
+    """MRB #4034: FakeChair must stub unregister (and build) or chair_commands_020 AttributeErrors."""
+    text = (ROOT / "jeeves" / "tests" / "test_chair_commands_020.py").read_text(encoding="utf-8-sig")
+    assert "def _handle_unregister_command" in text
+    assert "def _handle_build_command" in text
 
 
 def test_handler_op_dry_run_no_send(tmp_path: Path):

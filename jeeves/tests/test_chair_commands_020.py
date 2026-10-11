@@ -52,6 +52,9 @@ class FakeChair:
     def _maybe_shop_listen(self, *a): return False
     def _maybe_git_claim(self, *a): return False
     def _handle_register_command(self, *a): return False
+    # FR #4008 / MRB #4034: handle_privmsg always dispatches unregister after register.
+    def _handle_unregister_command(self, *a): return False
+    def _handle_build_command(self, *a): return None
     def _mark_pm_open(self, n): pass
     def _is_briefer(self): return False
     def _refresh_ledger(self): pass          # no GitHub lookups in unit tests

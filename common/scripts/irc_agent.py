@@ -1354,7 +1354,7 @@ class Client:
         if not who or who.lower() in self._mine_nicks():
             return True
         if not self._register_gate_allowed(who):
-            self.whisper(who, f"ERR !register denied (operators only) machine={mid}")
+            self.whisper(who, f"ERR !register denied (+o/+h required) machine={mid}")
             info(f"INFO register denied nick={who} machine={mid}")
             return True
         shop = f"#{mid}"
@@ -1386,7 +1386,7 @@ class Client:
             self.whisper(who, "!unregister: usage !unregister <#channel|machine> [confirm]|dry-run <..>")
             return True
         if not self._register_gate_allowed(who):
-            self.whisper(who, f"ERR !unregister denied (operators only) machine={mid}")
+            self.whisper(who, f"ERR !unregister denied (+o/+h required) machine={mid}")
             info(f"INFO unregister denied nick={who} machine={mid}")
             return True
         plan = unregister_cmd.build_unregister_plan(
