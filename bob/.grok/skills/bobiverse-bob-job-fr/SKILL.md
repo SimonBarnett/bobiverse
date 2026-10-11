@@ -71,6 +71,7 @@ Skill-intake consolidation: when a worker takes an FR from skill intake (label:s
 Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude` starts with `/*` so composed flat runtime files stay invisible. Linked `git worktree add` FR trees **share that exclude**.
 
 * Prefer: `git -C <install> worktree add -b fr-N <temp> origin/main` then `git sparse-checkout disable` in the temp tree.
+* **CAST IRON (FR #4029 / MRB #4035):** run `git sparse-checkout disable` **once** right after `worktree add` (and after writing `.bobiverse-seat`). Do **not** re-run it on an already-full FR tree --- a second disable can detach `.git` and wipe uncommitted work. If the tree is destroyed mid-job: recreate from `origin/main`, restore from session compaction if needed, and file intake.
 * **FR #3641 — write `.bobiverse-seat` immediately after `worktree add`:** before any edit, write `{"nick":"<seat>","pid":$PID,"issue":N,"repo":"owner/repo"}` (UTF-8) at the job tree root. Soft-cap (`MaxExtraJobTrees=0`) and sibling Clear runs skip a **fresh** marker even when the recorded pid is dead; live pid always protects; `-Force` may reclaim only markers older than `-StaleSeatHours` (default 48h) with a dead pid. Mid-FR trees without a marker can vanish (class of #3639 / #3641).
 * New untracked files under paths still masked by exclude are skipped by plain `git add` - use **`git add -f`** (or `git check-ignore -v` to confirm).
 * Bootstrap exclude un-ignores `/$Product/`, `/common/`, `/airc/`, `/jeeves/`; paths outside those still need `-f`.
