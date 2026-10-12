@@ -1972,13 +1972,55 @@ class LiveStateTouched(RuntimeError):
     pass
 
 
-def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], inner: Callable | None = None) -> Callable:
-    """run_command_fn: isolated env for every step + fail closed if live chair state changes."""
+# #4188: steps that call ``gh`` against GitHub (post-release asset assert). Suites stay
+# token-less (#4183); only these named steps get the runner's GH_TOKEN back.
+GH_AUTH_STEPS = frozenset({"assert"})
+
+
+def gh_auth_env(source_env: dict | None = None) -> dict:
+    """GH_TOKEN for a gh step, taken from the runner env (never logged). Empty dict if none."""
+    src = os.environ if source_env is None else source_env
+    tok = (src.get("GH_TOKEN") or src.get("GITHUB_TOKEN") or "").strip()
+    return {"GH_TOKEN": tok, "GITHUB_TOKEN": tok} if tok else {}
+
+
+GH_AUTH_MISSING = (
+    "gh auth missing: the build runner has no GitHub token for gh (needed for release + "
+    "Assert-BobiverseReleaseAssets). Put a token in <install>\\config\\github.token "
+    "(or set GH_TOKEN for the service) and rerun (#4188)."
+)
+
+
+def gh_auth_preflight(gh_runner: Callable | None = None, env: dict | None = None) -> str | None:
+    """None when ``gh`` is authenticated for this process, else a clear refusal line (#4188)."""
+    import subprocess as _sp
+
+    runner = gh_runner or _sp.run
+    src = dict(os.environ if env is None else env)
+    try:
+        cp = runner(["gh", "auth", "status", "--hostname", "github.com"],
+                    capture_output=True, text=True, check=False, env=src)
+    except (OSError, FileNotFoundError) as exc:
+        return f"{GH_AUTH_MISSING} ({type(exc).__name__})"
+    if int(getattr(cp, "returncode", 1) or 0) != 0:
+        return GH_AUTH_MISSING
+    return None
+
+
+def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], inner: Callable | None = None,
+                        gh_steps: Iterable[str] = GH_AUTH_STEPS) -> Callable:
+    """run_command_fn: isolated env for every step + fail closed if live chair state changes.
+
+    Steps named in ``gh_steps`` get GH_TOKEN from the runner env (#4188); others stay blanked.
+    """
     inner = inner or run_command
     homes = [Path(h) for h in live_homes]
+    gh_steps = frozenset(gh_steps)
 
     def _run(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
         merged = isolated_suite_env(work_dir, f"{name}-{ref_or_baseline}")
+        if name in gh_steps:
+            merged.update(gh_auth_env())
         merged.update(env or {})
         before = live_state_fingerprint(homes)
         res = inner(cmd, cwd=cwd, env=merged, timeout=timeout, name=name, ref_or_baseline=ref_or_baseline)

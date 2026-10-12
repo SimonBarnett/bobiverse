@@ -119,14 +119,37 @@ def main(argv: list[str] | None = None) -> int:
         print("build: need --version or job.version", file=sys.stderr)
         return 2
 
+    gh_src = "none"
     try:
         import gh_filer
 
-        gh_filer.ensure_gh_token_env()  # never prints the value
+        gh_src = gh_filer.ensure_gh_token_env()  # source tag only; never the value
     except Exception:
         pass
 
     result: dict = {"repo": repo, "version": version, "ref": ref, "ok": False}
+    if not args.fake_filer and not args.dry_run:
+        # #4188: fail at preflight, not 2h later at step:release.
+        why = bb.gh_auth_preflight()
+        result["gh_auth"] = "ok" if why is None else "missing"
+        result["gh_auth_source"] = gh_src.split(":", 1)[0]
+        if why:
+            result["errors"] = [why]
+            result["announce"] = [f"BUILD refused {repo} version={version}: {why}"]
+            print(json.dumps(result, indent=2, default=str))
+            if args.result_file:
+                Path(args.result_file).write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+            if args.lock_file:
+                try:
+                    bb.BuildLock(Path(args.lock_file), max_parallel=1).release(repo)
+                except Exception:
+                    pass
+            if job_path is not None:
+                try:
+                    job_path.rename(job_path.with_suffix(".json.failed"))
+                except Exception:
+                    pass
+            return 4
     rc = 1
     try:
         work = Path(args.work_dir) if args.work_dir else Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / version
