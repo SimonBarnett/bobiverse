@@ -166,8 +166,24 @@ def main(argv: list[str] | None = None) -> int:
                     f"- build logs: `build-logs-{version}.zip`\n"
                 ),
             )
+        live_homes = [
+            Path(os.environ.get("BOB_DIGEST_HOME") or (Path.home() / ".bobiverse")),
+            Path(os.environ.get("BOB_HOME") or (Path.home() / ".jeeves")),
+            Path(r"C:\Users\Administrator\.bobiverse"),
+            Path(r"C:\Users\Administrator\.jeeves"),
+        ]
+        # #4183 belt-and-braces: copy live chair state aside before any suite runs.
+        bk = work / "live-state-backup"
+        for h in live_homes:
+            for name in bb.LIVE_STATE_FILES:
+                src_f = h / name
+                if src_f.is_file():
+                    dst = bk / h.name / name
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_f, dst)
         runner = bb.BuildRunner(
             root, repo, version, ref, recipe, filer,
+            run_command_fn=bb.guarded_run_command(work, live_homes),
             work_dir=work, log_dir=log_dir, local_machine=local or recipe.machine,
             release_fn=release_fn, baseline_root=baseline_root,
             baseline_resolver=(lambda *_a: tag or "baseline"),

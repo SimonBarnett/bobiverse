@@ -1853,3 +1853,96 @@ def make_github_prerelease_fn(
         return {"tag": tag, "url": view.get("url", "")}
 
     return release_fn
+
+
+# ------------------------------------------------------------------ suite isolation (#4183)
+
+LIVE_STATE_FILES = (
+    "queue.json", "focus.json", "seat-holds.json", "seat-ledger.json",
+    "offer-precompute.json", "registered-machines.json",
+)
+_DEAD_URL = "http://127.0.0.1:9/isolated-build-suite"
+
+
+def isolated_suite_env(work_dir: Path | str, tag: str) -> dict:
+    """Env that points every home/state/URL a suite could touch at a throwaway dir (#4183).
+
+    Suites run on the recipe machine next to the live chair; without this they fell back to
+    ``%USERPROFILE%\\.bobiverse`` / ``.jeeves`` and the live report/webhook URLs.
+    """
+    import socket as _so
+
+    base = Path(work_dir) / "iso" / re.sub(r"[^A-Za-z0-9_.-]+", "_", tag)
+    prof = base / "profile"
+    dirs = {
+        "USERPROFILE": prof,
+        "HOME": prof,
+        "APPDATA": prof / "AppData" / "Roaming",
+        "LOCALAPPDATA": prof / "AppData" / "Local",
+        "ProgramData": base / "ProgramData",
+        "PROGRAMDATA": base / "ProgramData",
+        "ALLUSERSPROFILE": base / "ProgramData",
+        "BOB_HOME": prof / ".jeeves",
+        "BOB_DIGEST_HOME": prof / ".bobiverse",
+        "BOB_CONFIG_DIR": base / "config",
+        "TEMP": base / "tmp",
+        "TMP": base / "tmp",
+    }
+    for d in dirs.values():
+        Path(d).mkdir(parents=True, exist_ok=True)
+    s = _so.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    env = {k: str(v) for k, v in dirs.items()}
+    drive, _, rest = str(prof).partition(":")
+    if rest:
+        env["HOMEDRIVE"] = drive + ":"
+        env["HOMEPATH"] = rest
+    env.update({
+        "BOB_REPORT_PORT": str(port),
+        "BOB_DIGEST_URL": _DEAD_URL,
+        "BOB_INTAKE_URL": _DEAD_URL,
+        "BOB_HOME_NO_MIGRATE": "1",
+        "BOBIVERSE_BUILD_SUITE": "1",
+        "GH_TOKEN": "",
+        "GITHUB_TOKEN": "",
+        "AGENTIC_IRC_PASSWORD": "",
+        "BOB_IRC_PASSWORD": "",
+    })
+    return env
+
+
+def live_state_fingerprint(homes: Iterable[Path | str]) -> dict:
+    out = {}
+    for h in homes:
+        for name in LIVE_STATE_FILES:
+            p = Path(h) / name
+            try:
+                out[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else ""
+            except OSError:
+                out[str(p)] = "?"
+    return out
+
+
+class LiveStateTouched(RuntimeError):
+    pass
+
+
+def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], inner: Callable | None = None) -> Callable:
+    """run_command_fn: isolated env for every step + fail closed if live chair state changes."""
+    inner = inner or run_command
+    homes = [Path(h) for h in live_homes]
+
+    def _run(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
+        merged = isolated_suite_env(work_dir, f"{name}-{ref_or_baseline}")
+        merged.update(env or {})
+        before = live_state_fingerprint(homes)
+        res = inner(cmd, cwd=cwd, env=merged, timeout=timeout, name=name, ref_or_baseline=ref_or_baseline)
+        after = live_state_fingerprint(homes)
+        changed = sorted(k for k in before if before[k] != after.get(k))
+        if changed:
+            raise LiveStateTouched(f"step {name}@{ref_or_baseline} changed live state: {', '.join(changed)}")
+        return res
+
+    return _run
