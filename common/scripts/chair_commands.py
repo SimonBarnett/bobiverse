@@ -126,6 +126,8 @@ COMMANDS: tuple = (
         OPS_ROLES,
         "!build SimonBarnett/bobiverse 0.1.32",
         "Ops only (simon / bob-* / +o/+h). Runs the in-repo .bobiverse/build.yml on the recipe machine. "
+        "<version> must be numeric x.y.z or x.y.z.w (digits only, e.g. 0.1.32 / 0.1.32.1); "
+        "anything else (v0.1.32, 0.1.32-test2) is refused. "
         "Subcommands: status, cancel, dry-run. Per-repo single-flight; no recipe => refuse.",
         ("status", "list", "focus", "installtest"),
     ),

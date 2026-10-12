@@ -55,7 +55,7 @@ Hard timeouts (FR #3965 class) via `run_command` kill + `timed_out` => `step_fai
 | Mode | Who | What happens |
 |---|---|---|
 | `!build dry-run <repos> <version> [ref]` | Chair (ops) | Decide only: print plan lines (would classify, would file blockers, would announce). **Nothing published**, no queue job. |
-| `!build <repos> <version> [ref]` | Chair then recipe machine | Chair announces wire `BUILD v1 repos=... version=... ref=...` on `#bobiverse` (and PM reply lines). Recipe host `consume_build_v1` enqueues `home/build-queue/*.json`; `BuildRunner.run()` executes suites/pack/release. |
+| `!build <repos> <version> [ref]` | Chair then recipe machine (version must be numeric x.y.z / x.y.z.w, else refused, #4186) | Chair announces wire `BUILD v1 repos=... version=... ref=...` on `#bobiverse` (and PM reply lines). Recipe host `consume_build_v1` enqueues `home/build-queue/*.json`; `BuildRunner.run()` executes suites/pack/release. |
 | `!build status [owner/repo]` | Chair | Running lock id or none. |
 | `!build cancel <owner/repo>` | Chair | Clear lock / cancel path. |
 
