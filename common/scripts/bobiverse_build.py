@@ -1914,15 +1914,40 @@ def isolated_suite_env(work_dir: Path | str, tag: str) -> dict:
 
 
 def live_state_fingerprint(homes: Iterable[Path | str]) -> dict:
-    out = {}
+    """Damage signals only: the live chair rewrites these files all the time, so a hash
+    diff is not damage. Track queue row keys and focus repos (#4183)."""
+    out: dict = {}
     for h in homes:
-        for name in LIVE_STATE_FILES:
-            p = Path(h) / name
-            try:
-                out[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else ""
-            except OSError:
-                out[str(p)] = "?"
+        q = Path(h) / "queue.json"
+        try:
+            data = json.loads(q.read_text(encoding="utf-8")) if q.is_file() else None
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            keys = set()
+            for bucket in ("unaccepted", "accepted", "done"):
+                for row in data.get(bucket) or []:
+                    if isinstance(row, dict):
+                        keys.add(f"{row.get('repo')}|{row.get('task')}|{row.get('id')}")
+            out[str(q)] = keys
+        f = Path(h) / "focus.json"
+        try:
+            fd = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
+        except Exception:
+            fd = None
+        if isinstance(fd, dict):
+            out[str(f)] = set((fd.get("repos") or {}).keys()) | set((fd.get("items") or {}).keys())
     return out
+
+
+def live_state_damage(before: dict, after: dict, *, max_lost: int = 5) -> list[str]:
+    bad = []
+    for k, was in before.items():
+        now = after.get(k, set())
+        lost = was - now
+        if len(lost) > max_lost or (k.endswith("focus.json") and lost):
+            bad.append(f"{k} lost {len(lost)}")
+    return bad
 
 
 class LiveStateTouched(RuntimeError):
@@ -1940,9 +1965,17 @@ def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], 
         before = live_state_fingerprint(homes)
         res = inner(cmd, cwd=cwd, env=merged, timeout=timeout, name=name, ref_or_baseline=ref_or_baseline)
         after = live_state_fingerprint(homes)
-        changed = sorted(k for k in before if before[k] != after.get(k))
-        if changed:
-            raise LiveStateTouched(f"step {name}@{ref_or_baseline} changed live state: {', '.join(changed)}")
+        damage = live_state_damage(before, after)
+        if damage:
+            try:
+                logs = Path(work_dir) / "logs"
+                logs.mkdir(parents=True, exist_ok=True)
+                (logs / f"{name}-{re.sub(r'[^A-Za-z0-9_.-]+', '_', str(ref_or_baseline))}-guard.log").write_text(
+                    str(getattr(res, "stdout", "") or ""), encoding="utf-8"
+                )
+            except Exception:
+                pass
+            raise LiveStateTouched(f"step {name}@{ref_or_baseline} damaged live state: {', '.join(damage)}")
         return res
 
     return _run
