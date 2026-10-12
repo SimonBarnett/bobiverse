@@ -42,7 +42,7 @@ Admin-sealed `identity.json` under LocalSystem → `CryptUnprotectData failed`. 
 
 ## !build (FR #4006)
 
-Ops: `!build <owner/repo> <version> [ref]` queues a deterministic BUILD from `.bobiverse/build.yml` (no agent). Use `!build dry-run` to validate. Live pack/suites: WP2 on the recipe `machine`.
+Ops: `!build <owner/repo> <version> [ref]` queues a deterministic BUILD from `.bobiverse/build.yml` (no agent). `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). Use `!build dry-run` to validate. Live pack/suites: WP2 on the recipe `machine`.
 
 ## !installtest (FR #4026 WP3)
 

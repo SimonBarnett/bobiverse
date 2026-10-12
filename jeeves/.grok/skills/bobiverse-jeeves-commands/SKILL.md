@@ -72,7 +72,7 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 
 ## !build (FR #4006 / skill FR #4038)
 
-Ops-only. `!build <owner/repo>[,...] <version> [ref]`, `!build status|cancel|dry-run`. Requires in-repo `.bobiverse/build.yml`. Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2). Full playbook (classification, announce lines, when to re-run): skill `bobiverse-build` / `jeeves/.grok/skills/bobiverse-build/SKILL.md` and `docs/bobiverse-build.md`.
+Ops-only. `!build <owner/repo>[,...] <version> [ref]`, `!build status|cancel|dry-run`. Requires in-repo `.bobiverse/build.yml`. `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2). Full playbook (classification, announce lines, when to re-run): skill `bobiverse-build` / `jeeves/.grok/skills/bobiverse-build/SKILL.md` and `docs/bobiverse-build.md`.
 
 ## !installtest (FR #4026 WP3)
 

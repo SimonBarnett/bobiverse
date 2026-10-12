@@ -337,6 +337,21 @@ def parse_build(body: str) -> tuple[bool, str, str] | None:
     return True, "run", text[len("!build") :].strip()
 
 
+# #4186: WiX/MSI ProductVersion is numeric only -> refuse anything but x.y.z or x.y.z.w digits.
+NUMERIC_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\.\d+)?$")
+
+
+def version_refusal(version: str) -> str | None:
+    """Return a refusal line when ``version`` is not purely numeric (x.y.z / x.y.z.w), else None."""
+    v = version or ""
+    if NUMERIC_VERSION_RE.match(v):
+        return None
+    return (
+        f"build: refused version '{v}': must be numeric x.y.z or x.y.z.w (digits only, "
+        f"e.g. 0.1.32 or 0.1.32.1; no 'v' prefix or -suffix; MSI/WiX needs a numeric version); nothing started"
+    )
+
+
 def decide_build(
     *,
     who,  # chair_commands.Principal
@@ -402,6 +417,9 @@ def decide_build(
         return BuildDecision(False, "bad_repo", [f"build: {exc}"], dry_run=dry)
     version = tokens[1]
     ref = tokens[2] if len(tokens) > 2 else "HEAD"
+    refusal = version_refusal(version)
+    if refusal:
+        return BuildDecision(False, "bad_version", [refusal], dry_run=dry)
     if not repos:
         return BuildDecision(False, "usage", ["build: need at least one owner/repo"], dry_run=dry)
 
