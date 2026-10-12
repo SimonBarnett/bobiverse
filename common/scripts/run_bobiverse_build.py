@@ -1,17 +1,22 @@
 """FR #4025: drain one BUILD queue job or run BuildRunner from CLI (no agent tokens).
 
-Chair enqueues `home/build-queue/*.json` on BUILD v1; this process executes suites/pack/release
-via `BuildRunner` with a real GitHubFiler (gh) or FakeGitHubFiler when `--fake-filer`.
+Chair enqueues `home/build-queue/*.json` on BUILD v1 and spawns this process for the
+job. With ``--checkout`` the runner clones the repo at the requested ref into a clean
+work dir, checks out the baseline (last ``vX.Y.Z`` tag, pre-release tags excluded) in a
+second worktree, runs suites/pack, and publishes a GitHub pre-release (never Latest).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
+import stat
+import subprocess
 import sys
+import time
 from pathlib import Path
 
-# scripts dir on path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
@@ -21,6 +26,51 @@ import bobiverse_build as bb  # noqa: E402
 
 def _load_job(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _rmtree(path: Path) -> None:
+    def _onerr(func, p, _exc):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except Exception:
+            pass
+
+    if path.exists():
+        shutil.rmtree(path, onerror=_onerr)
+
+
+def _git(args: list[str], cwd: Path | None, log: list[str], timeout: float = 1800) -> str:
+    cp = subprocess.run(
+        ["git", *args], cwd=str(cwd) if cwd else None, capture_output=True, text=True,
+        timeout=timeout, check=False,
+    )
+    log.append(f"$ git {' '.join(args)}\nrc={cp.returncode}\n{cp.stdout}{cp.stderr}")
+    if cp.returncode != 0:
+        raise RuntimeError(f"git {args[0]} failed rc={cp.returncode}")
+    return cp.stdout.strip()
+
+
+def checkout(repo: str, ref: str, work: Path, log: list[str]) -> tuple[Path, Path | None, str, str]:
+    """Clean clone at ref + baseline worktree. Returns (src, baseline_dir, sha, baseline_tag)."""
+    src = work / "src"
+    base = work / "baseline"
+    _rmtree(base)
+    _rmtree(src)
+    work.mkdir(parents=True, exist_ok=True)
+    _git(["clone", "--quiet", "--filter=blob:none", f"https://github.com/{repo}.git", str(src)], None, log)
+    if ref and ref != "HEAD":
+        _git(["checkout", "--quiet", "--detach", ref], src, log)
+    sha = _git(["rev-parse", "HEAD"], src, log)
+    tag = ""
+    try:
+        tag = _git(["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "--exclude", "*-*", "HEAD"], src, log)
+    except RuntimeError:
+        tag = ""
+    if tag:
+        _git(["worktree", "add", "--quiet", "--detach", str(base), tag], src, log)
+        return src, base, sha, tag
+    return src, None, sha, ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--work-dir", default="", help="default: %ProgramData%/Bobiverse/build-work")
     p.add_argument("--fake-filer", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--checkout", action="store_true", help="clean clone at ref + baseline worktree")
+    p.add_argument("--lock-file", default="", help="BuildLock json to release when done")
+    p.add_argument("--result-file", default="", help="write the JSON result here")
     p.add_argument("--local-machine", default=os.environ.get("BOB_MACHINE_ID", ""))
     args = p.parse_args(argv)
 
@@ -52,7 +105,6 @@ def main(argv: list[str] | None = None) -> int:
         job = _load_job(job_path)
 
     repo = (args.repo or job.get("repo") or "SimonBarnett/bobiverse").strip()
-    # BUILD v1 may list repos=a,b — take first for this worker
     if "," in repo:
         repo = repo.split(",")[0].strip()
     if job.get("repos"):
@@ -62,47 +114,128 @@ def main(argv: list[str] | None = None) -> int:
         elif isinstance(repos, list) and repos:
             repo = str(repos[0]).strip()
     version = (args.version or job.get("version") or "").strip()
-    ref = (args.ref or job.get("ref") or "HEAD").strip()
+    ref = ((job.get("ref") if args.ref == "HEAD" else args.ref) or "HEAD").strip()
     if not version:
         print("build: need --version or job.version", file=sys.stderr)
         return 2
 
-    root = Path(args.repo_root).resolve()
-    recipe = bb.load_recipe(root)
-    local = (args.local_machine or "").strip()
-    if local and not bb.is_recipe_build_machine(recipe.machine, local):
-        print(f"build: refused machine local={local} recipe={recipe.machine}")
-        return 3
+    try:
+        import gh_filer
 
-    work = Path(args.work_dir) if args.work_dir else Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / version
-    log_dir = work / "logs"
-    filer = bb.FakeGitHubFiler() if args.fake_filer else bb.GitHubFiler()
-    runner = bb.BuildRunner(
-        root,
-        repo,
-        version,
-        ref,
-        recipe,
-        filer,
-        work_dir=work,
-        log_dir=log_dir,
-        local_machine=local or recipe.machine,
-    )
-    report = runner.run(dry_run=bool(args.dry_run))
-    print(json.dumps({
-        "ok": report.ok,
-        "blockers": getattr(report, "blockers_filed", None) or getattr(report, "blockers", None),
-        "pack_ok": report.pack_ok,
-        "release_ok": report.release_ok,
-        "announce": report.announce_lines,
-        "errors": report.errors,
-    }, indent=2, default=str))
-    if job_path and report.ok:
-        try:
-            job_path.rename(job_path.with_suffix(".json.done"))
-        except Exception:
-            pass
-    return 0 if report.ok else 1
+        gh_filer.ensure_gh_token_env()  # never prints the value
+    except Exception:
+        pass
+
+    result: dict = {"repo": repo, "version": version, "ref": ref, "ok": False}
+    rc = 1
+    try:
+        work = Path(args.work_dir) if args.work_dir else Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / version
+        log_dir = work / "logs"
+        root = Path(args.repo_root).resolve()
+        baseline_root = None
+        sha, tag = "", ""
+        if args.checkout and not args.dry_run:
+            ck_log: list[str] = []
+            try:
+                root, baseline_root, sha, tag = checkout(repo, ref, work, ck_log)
+            finally:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                (log_dir / "checkout.log").write_text("\n".join(ck_log), encoding="utf-8")
+        recipe = bb.load_recipe(root)
+        local = (args.local_machine or "").strip()
+        if local and not bb.is_recipe_build_machine(recipe.machine, local):
+            print(f"build: refused machine local={local} recipe={recipe.machine}")
+            result["errors"] = ["wrong machine"]
+            return 3
+
+        filer = bb.FakeGitHubFiler() if args.fake_filer else bb.GitHubFiler()
+        release_fn = None
+        if not args.fake_filer and not args.dry_run and sha:
+            subprocess.run(
+                ["gh", "label", "create", bb.RELEASE_BLOCKER_LABEL, "--repo", repo,
+                 "--color", "B60205", "--description", "Auto-filed by !build (FR #4006)", "--force"],
+                capture_output=True, text=True, check=False,
+            )
+            release_fn = bb.make_github_prerelease_fn(
+                repo,
+                target_sha=sha,
+                title=f"v{version} (pre-release, deterministic !build)",
+                notes=(
+                    f"Deterministic `!build` pre-release (FR #4006). **Not Latest.**\n\n"
+                    f"- ref: `{ref}` = `{sha}`\n- baseline: `{tag or 'none'}`\n"
+                    f"- build logs: `build-logs-{version}.zip`\n"
+                ),
+            )
+        runner = bb.BuildRunner(
+            root, repo, version, ref, recipe, filer,
+            work_dir=work, log_dir=log_dir, local_machine=local or recipe.machine,
+            release_fn=release_fn, baseline_root=baseline_root,
+            baseline_resolver=(lambda *_a: tag or "baseline"),
+        )
+        t0 = time.time()
+        report = runner.run(dry_run=bool(args.dry_run))
+        result.update({
+            "ok": report.ok,
+            "sha": sha,
+            "baseline": tag,
+            "blockers": getattr(report, "blockers_filed", None) or [],
+            "pack_ok": report.pack_ok,
+            "release_ok": report.release_ok,
+            "announce": report.announce_lines,
+            "errors": report.errors,
+            "log_zip": getattr(report, "log_zip", ""),
+            "suites": [
+                {"name": r.name, "at": r.ref_or_baseline, "rc": r.exit_code,
+                 "timed_out": r.timed_out, "s": round(r.duration_s)}
+                for r in report.suite_results
+            ],
+            "duration_s": round(time.time() - t0),
+        })
+        tag_name = f"v{version}"
+        if report.release_ok and release_fn is not None:
+            lz = getattr(report, "log_zip", "")
+            if lz and Path(lz).is_file():
+                subprocess.run(["gh", "release", "upload", tag_name, lz, "--repo", repo, "--clobber"],
+                               capture_output=True, text=True, check=False)
+            table = "\n".join(
+                f"| {s['name']} | {s['at']} | {s['rc']} | {s['timed_out']} | {s['s']} |"
+                for s in result["suites"]
+            )
+            notes = (
+                f"Deterministic `!build` pre-release (FR #4006). **Not Latest.**\n\n"
+                f"- ref: `{ref}` = `{sha}`\n- baseline: `{tag or 'none'}`\n\n"
+                f"| step | at | rc | timed out | seconds |\n|---|---|---|---|---|\n{table}\n"
+            )
+            subprocess.run(["gh", "release", "edit", tag_name, "--repo", repo, "--notes", notes,
+                            "--prerelease", "--latest=false"],
+                           capture_output=True, text=True, check=False)
+            cp = subprocess.run(["gh", "release", "view", tag_name, "--repo", repo, "--json", "url"],
+                                capture_output=True, text=True, check=False)
+            try:
+                result["release_url"] = json.loads(cp.stdout or "{}").get("url", "")
+            except Exception:
+                pass
+        rc = 0 if report.ok else 1
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"{type(exc).__name__}: {exc}")
+        result["announce"] = [f"BUILD fail {repo} version={version}: {type(exc).__name__}: {str(exc)[:200]}"]
+        rc = 1
+    finally:
+        if args.lock_file:
+            try:
+                bb.BuildLock(Path(args.lock_file), max_parallel=1).release(repo)
+            except Exception:
+                pass
+        if job_path is not None:
+            try:
+                job_path.rename(job_path.with_suffix(".json.done" if rc == 0 else ".json.failed"))
+            except Exception:
+                pass
+        text = json.dumps(result, indent=2, default=str)
+        print(text)
+        if args.result_file:
+            Path(args.result_file).write_text(text, encoding="utf-8")
+    return rc
 
 
 if __name__ == "__main__":

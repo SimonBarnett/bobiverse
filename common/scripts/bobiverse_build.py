@@ -858,8 +858,12 @@ class BuildRunner:
         pack_fn: Callable | None = None,
         release_fn: Callable | None = None,
         baseline_resolver: Callable | None = None,
+        baseline_root: Path | str | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
+        # Baseline suites run in their own checkout of the baseline tag; without one
+        # they would re-run the ref tree and every failure would look pre-existing.
+        self.baseline_root = Path(baseline_root) if baseline_root else None
         self.repo = repo
         self.version = version
         self.ref = ref
@@ -910,10 +914,13 @@ class BuildRunner:
                         zf.write(f, arcname=str(f.relative_to(self.log_dir)))
         return zip_path
 
-    def _suite_cwd(self, suite: SuiteSpec) -> str:
+    def _suite_cwd(self, suite: SuiteSpec, *, baseline: bool = False) -> str:
+        base = self.repo_root
+        if baseline and self.baseline_root is not None:
+            base = self.baseline_root
         if suite.cwd in (".", "", None):
-            return str(self.repo_root)
-        return str(self.repo_root / suite.cwd)
+            return str(base)
+        return str(base / suite.cwd)
 
     def run(self, *, dry_run: bool = False) -> BuildReport:
         report = BuildReport(ok=False)
@@ -982,7 +989,7 @@ class BuildRunner:
             )
             base_res = self.run_command_fn(
                 base_cmd,
-                cwd=self._suite_cwd(suite),
+                cwd=self._suite_cwd(suite, baseline=True),
                 env=dict(suite.env or {}),
                 timeout=float(suite.timeout),
                 name=suite.name,
@@ -1136,7 +1143,11 @@ class BuildRunner:
                     assets = []
 
                 assert_cmd = str((self.recipe.pack or {}).get("assert") or "")
-                if report.pack_ok and assert_cmd and self.pack_fn is None:
+                defer_assert = (
+                    self.release_fn is not None
+                    and str((self.recipe.release or {}).get("target") or "") == "github-prerelease"
+                )
+                if report.pack_ok and assert_cmd and self.pack_fn is None and not defer_assert:
                     assert_rendered = render_template(
                         assert_cmd,
                         version=self.version,
@@ -1191,6 +1202,28 @@ class BuildRunner:
                             latest=(False if never_latest else None),
                         )
                         report.release_ok = True
+                        post_assert = str((self.recipe.pack or {}).get("assert") or "")
+                        if post_assert and self.pack_fn is None:
+                            pa = self.run_command_fn(
+                                render_template(
+                                    post_assert,
+                                    version=self.version,
+                                    out_dir=str(out_dir),
+                                    ref=self.ref,
+                                ),
+                                cwd=str(self.repo_root),
+                                env={},
+                                timeout=1800.0,
+                                name="assert",
+                                ref_or_baseline=self.ref,
+                            )
+                            report.suite_results.append(pa)
+                            self._write_log("assert.log", pa.stdout)
+                            if pa.timed_out or int(pa.exit_code) != 0:
+                                raise RuntimeError(
+                                    "Assert-BobiverseReleaseAssets failed: "
+                                    + (pa.stdout or "")[-800:]
+                                )
                     else:
                         report.release_ok = False
                         report.errors.append("release_fn not provided")
@@ -1737,3 +1770,86 @@ class InstallTestRunner:
         return InstallTestReport(
             all_ok, steps, str(self.evidence_dir), blockers, errors, announce, dry_run=False
         )
+
+
+# ------------------------------------------------------------------ live helpers (hotpatch-build)
+
+
+def fetch_remote_recipe(repo: str, *, gh_runner: Callable | None = None) -> BuildRecipe | None:
+    """Load ``.bobiverse/build.yml`` from GitHub for ``repo``; None when the repo has none."""
+    import subprocess as _sp
+    import tempfile as _tf
+
+    runner = gh_runner or _sp.run
+    cp = runner(
+        [
+            "gh", "api", f"repos/{normalize_repo(repo)}/contents/.bobiverse/build.yml",
+            "-H", "Accept: application/vnd.github.raw",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    code = int(getattr(cp, "returncode", 0) or 0)
+    out = getattr(cp, "stdout", "") or ""
+    err = getattr(cp, "stderr", "") or ""
+    if code != 0:
+        if "404" in (err + out) or "Not Found" in (err + out):
+            return None
+        raise RecipeError(f"build: {repo} recipe lookup failed rc={code}")
+    with _tf.TemporaryDirectory() as td:
+        p = Path(td) / ".bobiverse"
+        p.mkdir()
+        (p / "build.yml").write_text(out, encoding="utf-8")
+        return load_recipe(Path(td))
+
+
+def make_github_prerelease_fn(
+    repo: str,
+    *,
+    target_sha: str,
+    title: str,
+    notes: str,
+    gh_runner: Callable | None = None,
+) -> Callable:
+    """release_fn for BuildRunner: ``gh release create --prerelease --latest=false`` + verify."""
+    import subprocess as _sp
+
+    runner = gh_runner or _sp.run
+
+    def _gh(args: list[str]) -> str:
+        cp = runner(["gh", *args], capture_output=True, text=True, check=False)
+        if int(getattr(cp, "returncode", 0) or 0) != 0:
+            raise RuntimeError(
+                f"gh {args[0]} {args[1] if len(args) > 1 else ''} failed: "
+                f"{(getattr(cp, 'stderr', '') or getattr(cp, 'stdout', '') or '')[-500:]}"
+            )
+        return getattr(cp, "stdout", "") or ""
+
+    def release_fn(*, tag: str, assets, prerelease: bool = True, latest=None) -> dict:
+        if not prerelease:
+            raise RuntimeError("refusing non-prerelease")
+        args = [
+            "release", "create", tag, "--repo", normalize_repo(repo),
+            "--target", target_sha, "--prerelease", "--latest=false",
+            "--title", title, "--notes", notes,
+        ]
+        args.extend(str(a) for a in (assets or []))
+        _gh(args)
+        view = json.loads(
+            _gh(["release", "view", tag, "--repo", normalize_repo(repo), "--json", "isPrerelease,url"])
+            or "{}"
+        )
+        if not view.get("isPrerelease"):
+            raise RuntimeError(f"release {tag} is not a pre-release")
+        try:
+            latest_tag = _gh(
+                ["api", f"repos/{normalize_repo(repo)}/releases/latest", "--jq", ".tag_name"]
+            ).strip()
+        except RuntimeError:
+            latest_tag = ""
+        if latest_tag == tag:
+            raise RuntimeError(f"release {tag} became Latest")
+        return {"tag": tag, "url": view.get("url", "")}
+
+    return release_fn

@@ -1544,6 +1544,16 @@ class Client:
         lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
 
         def recipe_loader(repo: str):
+            # Only bobiverse's own recipe lives in this install; other repos must carry
+            # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            if bobiverse_build.normalize_repo(repo) != "simonbarnett/bobiverse":
+                try:
+                    import gh_filer
+
+                    gh_filer.ensure_gh_token_env()
+                except Exception:
+                    pass
+                return bobiverse_build.fetch_remote_recipe(repo)
             root = Path(self._install_root())
             # Bobiverse recipe lives at repo root; install tree is bob/jeeves/airc sparse — prefer git root.
             for cand in (root, root.parent, Path(self.home).resolve().parents[2] if False else root):
@@ -1609,6 +1619,16 @@ class Client:
         prin = self._principal(who_nick)
 
         def recipe_loader(repo: str):
+            # Only bobiverse's own recipe lives in this install; other repos must carry
+            # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            if bobiverse_build.normalize_repo(repo) != "simonbarnett/bobiverse":
+                try:
+                    import gh_filer
+
+                    gh_filer.ensure_gh_token_env()
+                except Exception:
+                    pass
+                return bobiverse_build.fetch_remote_recipe(repo)
             root = Path(self._install_root())
             for cand in (root, root.parent):
                 try:
@@ -1708,7 +1728,97 @@ class Client:
                 f"INFO FR #4025 BUILD v1 accepted machine={local} "
                 f"recipe={recipe_machine} from={src_hint or '-'} queue={qdir}"
             )
+            try:
+                jobs = sorted((p for p in qdir.glob("build-*.json") if p.name.count(".json") == 1), key=lambda p: p.stat().st_mtime)
+                if jobs:
+                    self._spawn_build_runner(jobs[-1], local or recipe_machine)
+            except Exception as exc:
+                info(f"WARN build runner spawn: {type(exc).__name__}: {exc}")
         return ok
+
+    def _spawn_build_runner(self, job_path: Path, local_machine: str) -> None:
+        """Run run_bobiverse_build.py for one queued job in a child process (no agent).
+
+        A watcher thread announces start/result on the fleet channel and always frees
+        the per-repo single-flight lock when the child exits.
+        """
+        import shutil
+        import subprocess
+
+        job = json.loads(Path(job_path).read_text(encoding="utf-8"))
+        repos = job.get("repos") or []
+        repo = str(repos[0] if isinstance(repos, list) and repos else repos or "")
+        version = str(job.get("version") or "")
+        script = None
+        for cand in (
+            Path(self._install_root()) / "scripts" / "run_bobiverse_build.py",
+            Path(self._install_root()).parent / "scripts" / "run_bobiverse_build.py",
+            Path(__file__).resolve().parent / "run_bobiverse_build.py",
+        ):
+            if cand.is_file():
+                script = cand
+                break
+        if script is None:
+            raise FileNotFoundError("run_bobiverse_build.py")
+        py = (
+            os.environ.get("BOBIVERSE_PYTHON")
+            or shutil.which("python")
+            or r"C:\Python\Python312\python.exe"
+        )
+        lock_path = Path(self.home) / "build-locks.json"
+        result_path = Path(str(job_path) + ".result.json")
+        log_path = Path(str(job_path) + ".runner.log")
+        cmd = [
+            py, "-u", str(script), "--job", str(job_path), "--checkout",
+            "--lock-file", str(lock_path), "--result-file", str(result_path),
+            "--local-machine", local_machine,
+        ]
+        logf = open(log_path, "a", encoding="utf-8")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
+        info(f"INFO build runner pid={proc.pid} repo={repo} version={version} log={log_path}")
+        chan = bobreport.FLEET_CHANNEL
+
+        def _say(line: str) -> None:
+            try:
+                self.send("PRIVMSG " + chan + " :" + line[:400])
+                time.sleep(FLOOD_S)
+            except Exception:
+                pass
+
+        _say(f"BUILD started {repo} version={version} pid={proc.pid} (deterministic runner, no agent)")
+
+        def _watch() -> None:
+            rc = None
+            try:
+                rc = proc.wait()
+            finally:
+                try:
+                    logf.close()
+                except Exception:
+                    pass
+                try:
+                    bobiverse_build.BuildLock(lock_path, max_parallel=1).release(repo)
+                except Exception:
+                    pass
+            lines = []
+            try:
+                res = json.loads(result_path.read_text(encoding="utf-8"))
+                lines = list(res.get("announce") or [])
+                if res.get("release_url"):
+                    lines.append(f"BUILD release {res['release_url']} (pre-release, not Latest)")
+                for b in res.get("blockers") or []:
+                    if isinstance(b, dict) and (b.get("url") or b.get("number")):
+                        lines.append(
+                            f"BUILD blocker {b.get('action') or ''} #{b.get('number')} {b.get('url') or ''}".strip()
+                        )
+            except Exception:
+                lines = [f"BUILD fail {repo} version={version} runner rc={rc} (no result file; see {log_path.name})"]
+            for ln in lines[:8]:
+                _say(ln)
+            info(f"INFO build runner done repo={repo} version={version} rc={rc}")
+
+        threading.Thread(target=_watch, name=f"build-{version}", daemon=True).start()
 
     def _maybe_consume_build_v1_wire(self, src: str, body: str) -> bool:
         """FR #4025: fleet BUILD v1 PRIVMSG -> enqueue when this box is the recipe machine."""
