@@ -23,7 +23,8 @@ def test_isolated_env_redirects_homes_and_urls(tmp_path):
 def test_guard_passes_isolated_env_and_detects_live_write(tmp_path):
     live = tmp_path / "live" / ".bobiverse"
     live.mkdir(parents=True)
-    (live / "queue.json").write_text('{"v":1,"unaccepted":[1]}', encoding="utf-8")
+    rows = ",".join('{"repo":"o/r","task":"FR","id":"#%d"}' % i for i in range(10))
+    (live / "queue.json").write_text('{"v":1,"unaccepted":[%s]}' % rows, encoding="utf-8")
     seen = {}
 
     def ok(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
@@ -50,3 +51,17 @@ def test_guarded_real_subprocess_sees_isolated_profile(tmp_path):
     res = run([sys.executable, "-c", "import os;print(os.environ['BOB_DIGEST_HOME'])"],
               cwd=str(tmp_path), timeout=60, name="probe", ref_or_baseline="HEAD")
     assert str(tmp_path / "work") in res.stdout
+
+
+def test_routine_rewrite_is_not_damage(tmp_path):
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "queue.json").write_text('{"v":1,"unaccepted":[{"repo":"o/r","task":"FR","id":"#1"}]}', encoding="utf-8")
+    (live / "registered-machines.json").write_text("{}", encoding="utf-8")
+
+    def touch(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+        (live / "registered-machines.json").write_text('{"refreshed_ts": 2}', encoding="utf-8")
+        (live / "queue.json").write_text('{"v":1,"unaccepted":[{"repo":"o/r","task":"FR","id":"#1","seq":2}]}', encoding="utf-8")
+        return "ok"
+
+    assert bb.guarded_run_command(tmp_path / "w", [live], inner=touch)("x", name="j", ref_or_baseline="H") == "ok"
