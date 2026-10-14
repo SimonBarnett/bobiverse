@@ -230,7 +230,7 @@ routes to bobiverse via the split rule.
 - MSI Install-Bob must Start-Service ircBob (bounded WaitForStatus) before TipForm launch and pass -SkipServiceRestart / BOBIVERSE_NO_SERVICE_RESTART=1 so Start-BobFleetTray does not Restart-BobTrayService during the CA; Invoke-BobTrayServiceControl skips START_PENDING/STOP_PENDING.
 - When Pack/allow-list adds a script (Fetch-Nssm), update CLIENT_REMAINING_FILES + KEEP_SCRIPTS counts in the same turn as the allow-list change so fr3514 pack-then-client stays green
 - Harvest session summaries / intake PR bodies must never contain the GitHub keyword Closes #N (or Fixes #N) for product FRs --- narrative mentions of stripping accidental Closes still auto-link; write `Closes` as `Close`+`s` split, or say `closing-keyword`, or cite `#N` without Closes/Fixes (MRB #4099)
-
+- Harvest-lesson tip that restates FR #2727 Clear removed=0 / roomy drive / no hand-delete is FAIL-supersede; cite harvest/SKILL.md existing bullet and job-fr/job-mrb CAST IRON (MRB #2732/#2783), close unmerged.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
