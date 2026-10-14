@@ -66,7 +66,13 @@ def test_purge_closed_fr_unaccepted_drops_stamped_and_live():
     assert [r["id"] for r in doc["unaccepted"]] == ["#1", "#4"]
 
 
-def test_offer_focus_top_purges_closed_fr_before_offer(tmp_path: Path):
+def test_offer_focus_top_purges_closed_fr_before_offer(tmp_path: Path, monkeypatch):
+    """FR #2340: injected issue_open must purge a CLOSED FR before offering the next.
+
+    FR #4264 / #3929: production ``BORED_GITHUB_CALL_BUDGET`` is 0, so raise the budget
+    in-test so the injected checker is honored (same pattern as FR #740 / #1313).
+    """
+    monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 2)
     home = _home(tmp_path)
     gitclaim._write_queue(
         gitclaim.queue_path(home),
@@ -107,6 +113,58 @@ def test_offer_focus_top_purges_closed_fr_before_offer(tmp_path: Path):
     left = {r["id"] for r in gitclaim.load_unaccepted(home)}
     assert "#2218" not in left
     assert "#2340" in left
+
+
+def test_offer_focus_top_budget0_keeps_closed_fr_when_issue_open_exhausted(
+    tmp_path: Path, monkeypatch
+):
+    """FR #4264: with budget 0, injected issue_open is not called; unknown → still offer."""
+    monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 0)
+    home = _home(tmp_path)
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#2218",
+                    "url": "https://github.com/SimonBarnett/bobiverse/issues/2218",
+                    "title": "closed harvest twin",
+                    "line": "FR #2218",
+                    "seq": 1,
+                },
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#2340",
+                    "url": "https://github.com/SimonBarnett/bobiverse/issues/2340",
+                    "title": "purge CLOSED FR rows",
+                    "line": "FR #2340",
+                    "seq": 2,
+                    "state": "open",
+                },
+            ],
+            "accepted": [],
+            "done": [],
+            "workers": {},
+        },
+    )
+    calls: list[str] = []
+
+    def issue_open(r, n):
+        calls.append(str(n))
+        return str(n) == "2340"
+
+    st, job = gitclaim.offer_focus_top(
+        home, "marchhare-40208", "#marchhare", issue_open=issue_open
+    )
+    assert st == "ok" and job is not None
+    assert job["id"] == "#2218"
+    assert calls == []
+    left = {r["id"] for r in gitclaim.load_unaccepted(home)}
+    assert "#2218" in left and "#2340" in left
 
 
 def test_claim_from_payload_refuses_opened_when_state_closed():
