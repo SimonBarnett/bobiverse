@@ -36,9 +36,12 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     registered_machines.save_registered(tmp_path, {"marchhare", "ionos", "flamingo"})
     digest = bobreport.empty_digest()
     digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    digest["machines"]["marchhare"]["workers"] = {
-        p: {"state": "idle"} for p in ("35600", "35601")
-    }
+    # FR #4211: live_seat_nicks prefers worker_list; bare legacy workers without a
+    # heartbeat are ghosts (empty live set), which would break hold-void checks.
+    digest["machines"]["marchhare"]["worker_list"] = [
+        {"nick": ME, "state": "idle", "work": "", "updated": "2026-10-14T20:00:00Z"},
+        {"nick": OTHER, "state": "idle", "work": "", "updated": "2026-10-14T20:00:00Z"},
+    ]
     bobreport.save_digest(tmp_path, digest)
     _queue(tmp_path, [])
     fi.handle_focus_cmd(tmp_path, REPO)
@@ -179,9 +182,11 @@ def test_old_offer_still_blocks_seat_but_frees_row_for_others(home: Path):
     # The other seat can take the expired row.
     st2, job2 = gitclaim.offer_focus_top(home, OTHER, SHOP)
     assert st2 == "ok" and job2["id"] == "#10"
-    # Even with the pin moved away, ME is still blocked by its remembered offer.
-    assert gitclaim.seat_open_job(home, ME).startswith("held")
-    assert gitclaim.offer_focus_top(home, ME, SHOP)[0] == "empty"
+    # FR #4260: re-offer to OTHER clears ME's hold for that job so ME is not stuck
+    # busy (held ...) forever; ME can take the next queued row (#11).
+    assert gitclaim.seat_open_job(home, ME) == ""
+    st3, job3 = gitclaim.offer_focus_top(home, ME, SHOP)
+    assert st3 == "ok" and job3["id"] == "#11"
     assert len(sent) == 1
 
 
