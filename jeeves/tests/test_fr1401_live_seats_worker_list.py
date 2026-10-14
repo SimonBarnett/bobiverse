@@ -97,13 +97,22 @@ def test_repo_uat_live_seats_ignore_ghosts_and_self_uat_stays_blocked(tmp_path, 
 
 
 def test_live_seat_nicks_falls_back_to_workers_when_list_empty(tmp_path, monkeypatch):
+    """FR #1401 fallback + FR #4211: empty worker_list uses workers only when live."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setenv("BOB_MACHINE_ID", "flamingo")  # remote relative to marchhare
     _roster(tmp_path)
     doc = bobreport.empty_digest()
     doc["machines"]["marchhare"] = {
         "id": "marchhare",
         "online": True,
-        "workers": {"42": {"pid": "42", "state": "idle"}},
+        # Fresh heartbeat required for non-local legacy workers (FR #4211).
+        "workers": {
+            "42": {
+                "pid": "42",
+                "state": "idle",
+                "updated": "2099-01-01T00:00:00Z",
+            }
+        },
         "worker_list": [],
     }
     bobreport.save_digest(tmp_path, doc)
