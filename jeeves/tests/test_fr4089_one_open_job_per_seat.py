@@ -179,9 +179,11 @@ def test_old_offer_still_blocks_seat_but_frees_row_for_others(home: Path):
     # The other seat can take the expired row.
     st2, job2 = gitclaim.offer_focus_top(home, OTHER, SHOP)
     assert st2 == "ok" and job2["id"] == "#10"
-    # Even with the pin moved away, ME is still blocked by its remembered offer.
-    assert gitclaim.seat_open_job(home, ME).startswith("held")
-    assert gitclaim.offer_focus_top(home, ME, SHOP)[0] == "empty"
+    # FR #4260: re-offer to OTHER clears ME's hold for that job so ME is not stuck
+    # busy (held ...) forever; ME can take the next queued row (#11).
+    assert gitclaim.seat_open_job(home, ME) == ""
+    st3, job3 = gitclaim.offer_focus_top(home, ME, SHOP)
+    assert st3 == "ok" and job3["id"] == "#11"
     assert len(sent) == 1
 
 
