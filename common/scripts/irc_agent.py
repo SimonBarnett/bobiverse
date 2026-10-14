@@ -2952,6 +2952,13 @@ class Client:
                 info(f"INFO git-claim bored cleared orphan digest doing n={n_orphan} nick={src}")
         except Exception as exc:  # noqa: BLE001
             info(f"WARN git-claim bored orphan clear {type(exc).__name__}")
+        # FR #4181: a fresh !bored is the worker's fuel-recovered signal — clear the
+        # out-of-fuel mark before bored_gate so the seat can be offered again.
+        try:
+            if gitclaim.clear_seat_out_of_fuel(self.home, src):
+                info(f"INFO git-claim out-of-fuel cleared nick={src} via=!bored")
+        except Exception as fuel_exc:  # noqa: BLE001
+            info(f"WARN git-claim out-of-fuel clear {type(fuel_exc).__name__}")
         # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).
         session_started = getattr(self, "_irc_session_started", None)
         if session_started is None:
@@ -3182,31 +3189,41 @@ class Client:
             except Exception as trace_exc:  # noqa: BLE001
                 info(f"WARN shop-listen cmd-trace {type(trace_exc).__name__}")
             # FR #2811: deliberate exception to FR #211 — offer next eligible job at once.
+            # FR #4181: GIVEUP reason=out-of-fuel marks the seat and skips giveup-offer
+            # (worker stays quiet until fuel returns; a later !bored clears the mark).
             if status == "ok":
-                try:
-                    n, job2 = gitclaim.offer_after_giveup(
-                        self._digest_home(),
-                        src,
-                        bobreport.normalize_channel(target),
-                        say=lambda ch, t: self._git_say(ch, t),
+                if verb == "GIVEUP" and gitclaim.is_out_of_fuel_reason(reason):
+                    with contextlib.suppress(Exception):
+                        gitclaim.note_seat_out_of_fuel(self._digest_home(), src, reason=reason)
+                    info(
+                        f"INFO git-claim giveup-offer skipped nick={src} "
+                        f"reason=out-of-fuel"
                     )
-                    if n and isinstance(job2, dict):
-                        with contextlib.suppress(Exception):
-                            self._workers().on_offer(
-                                src, target, shop_listen.activity_description(job2)
-                            )
-                        info(f"INFO git-claim giveup-offer nick={src} n={n}")
-                    else:
-                        try:
-                            _stats = gitclaim.clamp_empty_reply_stats(
-                                gitclaim.summarize_empty_offer(self._digest_home(), src)
-                            )
-                            _detail = gitclaim.format_empty_offer_detail(src, _stats)
-                        except Exception:  # noqa: BLE001
-                            _detail = f"{src}: nothing queued"
-                        info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
-                except Exception as offer_exc:  # noqa: BLE001
-                    info(f"WARN giveup-offer {type(offer_exc).__name__}")
+                else:
+                    try:
+                        n, job2 = gitclaim.offer_after_giveup(
+                            self._digest_home(),
+                            src,
+                            bobreport.normalize_channel(target),
+                            say=lambda ch, t: self._git_say(ch, t),
+                        )
+                        if n and isinstance(job2, dict):
+                            with contextlib.suppress(Exception):
+                                self._workers().on_offer(
+                                    src, target, shop_listen.activity_description(job2)
+                                )
+                            info(f"INFO git-claim giveup-offer nick={src} n={n}")
+                        else:
+                            try:
+                                _stats = gitclaim.clamp_empty_reply_stats(
+                                    gitclaim.summarize_empty_offer(self._digest_home(), src)
+                                )
+                                _detail = gitclaim.format_empty_offer_detail(src, _stats)
+                            except Exception:  # noqa: BLE001
+                                _detail = f"{src}: nothing queued"
+                            info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
+                    except Exception as offer_exc:  # noqa: BLE001
+                        info(f"WARN giveup-offer {type(offer_exc).__name__}")
         elif verb == "DONE" and status != "ok":
             # FR #4089: repeated / unknown DONE (status=missing) never pushes a job.
             info(f"INFO git-claim done-offer skipped nick={src} status={status}")
