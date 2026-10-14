@@ -378,6 +378,10 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
 # tips that the next MRB FAIL-supersedes again. Skip client-side (intake also gates).
 # FR #2991: also skip thin already-covered twins (FAIL-supersede + already cover / close thin
 # twins / citing product PRs) that lack job-mrb process cues - same class as tip #2990.
+# FR #4176: also skip CLOSED wrong-book / DONE PASS FR #3317 process-loop closeouts that
+# lack the FAIL-supersede token (class of tip #4175 after #4171/#4173/#4174).
+# FR #4207: also match 'already in (bobiverse-)?job-mrb' and bare 'FR #2970' with FAIL-supersede
+# (class of tip #4206; flat/outdated compose missed FR #4176 process-loop cue).
 function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
@@ -385,6 +389,12 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)belong(?:s)? in\s+`?bobiverse-bob-job-mrb') -or
         # FR #3827: tip #3826 used "stay in" / "durable in" instead of "belong(s) in"
         ($joined -match '(?i)(?:stay|durable)\s+in\s+`?bobiverse-bob-job-mrb') -or
+        # FR #3959 / #3957: tip #3958 used "durable home is bobiverse-bob-job-mrb"
+        ($joined -match '(?i)durable\s+home\s+is\s+`?bobiverse-bob-job-mrb') -or
+        # FR #4207: tip #4206 used "already in job-mrb" (short form, no belong/stay/durable)
+        ($joined -match '(?i)already\s+in\s+(?:bobiverse-)?job-mrb') -or
+        # FR #4207: citing FR #2970 with FAIL-supersede is itself a process-loop closeout
+        ($joined -match '(?i)(?:FR\s*#?\s*)?2970') -or
         ($joined -match '(?i)docs/mrb-N after skill merge') -or
         ($joined -match '(?i)Harvest-lesson MRB:\s*process') -or
         ($joined -match '(?i)never merge a second copy') -or
@@ -392,11 +402,15 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)second\s+copy\s+under\s+harvest') -or
         ($joined -match '(?i)wrong[- ]book') -or
         ($joined -match '(?i)process playbooks?') -or
-        ($joined -match '(?i)restatement playbooks?')
+        ($joined -match '(?i)restatement playbooks?') -or
+        # FR #3959: "do not park FR #3948 ... under harvest/SKILL.md" (words between)
+        ($joined -match '(?i)(?:do not|never)\s+park\b[\s\S]{0,120}?under\s+(?:`?harvest|harvest/SKILL)')
     )
     $isThinTwin = (
         ($joined -match '(?i)already\s+cover(?:s|ed)?') -or
         ($joined -match '(?i)already\s+CAST\s+IRON') -or
+        # FR #3959: "CAST IRON already on main" (flipped order)
+        ($joined -match '(?i)CAST\s+IRON\s+already') -or
         ($joined -match '(?i)close\s+thin\b') -or
         ($joined -match '(?i)thin\s+harvest(?:ed)?[- ]?lessons?\b') -or
         ($joined -match '(?i)thin\s+harvest\s+twin') -or
@@ -407,11 +421,21 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
     )
     if ($isFailSuper -and $isProcess) { return $true }
     if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
-    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827
+    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827 / #3959
+    # FR #4176: CLOSED wrong-book / light-triage DONE PASS (FR #3317) process-loop
+    # closeouts re-open lesson(harvest) tips without the FAIL-supersede token (class of #4175).
+    $isClosedWrongBook = ($joined -match '(?i)CLOSED\s+wrong[- ]book')
+    $isLightTriagePass = ($joined -match '(?i)DONE\s+PASS[^\n]{0,100}(?:FR\s*#?\s*)?3317|(?:FR\s*#?\s*)?3317[^\n]{0,100}DONE\s+PASS')
+    $isProcessLoopCue = ($joined -match '(?i)process[- ]loops?')
+    if ($isClosedWrongBook -and $isProcess) { return $true }
+    if ($isClosedWrongBook -and $isLightTriagePass) { return $true }
+    if ($isProcessLoopCue -and ($isProcess -or $isClosedWrongBook -or $isFailSuper)) { return $true }
+    # Broaden park: under harvest/SKILL.md without the word park (tip #4171/#4175 class)
+    if ($isProcess -and ($joined -match '(?i)under\s+(?:`?harvest|harvest/SKILL)')) { return $true }
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#4176/#4207): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 

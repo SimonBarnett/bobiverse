@@ -20,6 +20,24 @@ description: >
 
 **Job type `MRB`** (Material Review Board) - hostile, tests-first review of a pull request against the FR and the repo vision. Wire format and timing: `bobiverse-bob-job-irc`. The MRB is done by a **different seat or a fresh session** than the one that wrote the PR; the originating agent owns the review. An assigned MRB job authorises you to merge **that PR** (and its one docs/fix PR) - nothing else.
 
+
+## FR #3948 - hand off after push; never poll CI (durable)
+
+> **CAST IRON - overrides any merge / behind-main / "never merge red" wording elsewhere in this skill that tells a seat to wait on CI or loop merging main in.**
+>
+> 1. Do the hostile review, local tests, docs review and **your own pushes** exactly as before.
+> 2. **Never poll or watch CI to completion** (no `gh pr checks --watch`, no `gh run watch`, no sleep/re-check loops on checks or mergeability). **Never loop merging `origin/main` in.** DONE goes out within about 1 minute of your last push.
+> 3. **Behind main:** at most **ONE** update before handing off - `gh pr update-branch <n> --repo <owner/repo>` (or one local fold of `origin/main` + `check_conflict_markers.py` + local tests + push). If it goes behind again, leave it.
+> 4. **PASS:** post the MRB board (`## MRB board` + `**Verdict:** PASS`) and include the **head SHA** (`gh pr view <n> --repo <owner/repo> --json headRefOid -q .headRefOid`), e.g. `MRB PASS @ <sha>`.
+> 5. **Hold check (FR #3928):** if the PR has a hold label (`on-hold` / `hold` / `do-not-merge` / `wip`) or an owner/maintainer hold comment, do **NOT** merge and do **NOT** enable auto-merge. Post PASS, comment `MRB PASS - held, not merged (hold: ...)`, then DONE.
+> 6. **Not held:** run `python common/scripts/mrb_merge_gate.py <owner/repo> <pr>` (exit 0; FR #4112: uses `GH_TOKEN`/`GITHUB_TOKEN` or falls back to `gh auth token`). Check `gh api repos/<owner/repo> --jq .allow_auto_merge`.
+>    - `true`: `gh pr merge <n> --repo <owner/repo> --auto --merge` for the PR (and the one docs/fix PR if you opened one), then DONE **immediately**. Do not wait for the merge.
+>    - `false`, or `--auto` errors: do **not** run a plain `gh pr merge` and do not wait. Comment `merge-on-green pending` (with the head SHA). Jeeves `mrb_merge_on_green` merges when checks are green on that SHA, or re-queues on CI red / SHA change. Then DONE.
+> 7. **Issue closure:** with a pending (auto-)merge the originating issue stays open until merge; DONE after verifying it is linked via `closingIssuesReferences` (`Closes owner/repo#N`). Do not close it by hand before the merge.
+> 8. **FAIL:** existing flow - exactly ONE separate fix PR, leave the originating issue open, board, DONE FAIL. The no-poll rule still applies (hand the fix PR off the same way).
+> 9. DONE wire unchanged: `DONE MRB owner/repo#N PASS|FAIL <assigned-pr-url>` as its own short command, nothing after the URL.
+
+
 ## Process
 
 ```mermaid
@@ -30,16 +48,20 @@ flowchart TD
   D --> E["Add NEW tests for the PR BEFORE the verdict"]
   E --> F["Run existing + new tests; hostile review; drift check; UTF-8/no-BOM check"]
   F -->|"tests or drift FAIL"| G["Exactly ONE separate fix PR"]
-  G --> H["Merge original + fix PR"]
+  G --> L
   F -->|PASS| I["Review README/skills/docs/mermaid for stale text"]
   I -->|stale| J["ONE separate docs/mrb-N PR"]
-  I -->|ok| K["Merge the PR"]
-  J --> K
-  H --> L["Post the MRB board: verdict, drift line, evidence, links"]
-  K --> L
-  L --> M["Verify the originating issue: closed by the merge, or the PR carries Closes owner/repo#N"]
-  M -->|"not closed (non-default branch / link missing)"| M2["Worker closes the issue with a comment: PR url + verdict"]
-  M -->|"closed, or linked and merge pending"| P["Hand off: repo UAT is queued by Jeeves only when the whole repo is clear (no per-PR UAT)"]
+  I -->|ok| L["Post the MRB board PASS first (FR #3928)"]
+  J --> L
+  L --> G2["mrb_merge_gate: no owner hold + PASS board present"]
+  G2 --> H["PASS @ head SHA; at most one update-branch; never poll CI (FR #3948)"]
+  H --> H2{"held?"}
+  H2 -->|yes| H3["Comment held, not merged"]
+  H2 -->|no| H4["gh pr merge --auto OR merge-on-green pending"]
+  H3 --> M["Verify Closes link / issue state (pending merge OK)"]
+  H4 --> M
+  M -->|"not linked"| M2["Fix Closes link on the PR body"]
+  M -->|"linked or closed"| P["DONE at once; Jeeves/GitHub merges on green"]
   M2 --> P
   P --> N["DONE MRB owner/repo#N PASS-or-FAIL pr-url  (nothing after the url)"]
   N --> O["Program posts !bored - next job"]
@@ -48,10 +70,12 @@ flowchart TD
 
 ## Steps
 
-1. **ACK.** 2. Check out the PR in a temp worktree; read the intent, the FR and every changed file. Before `git worktree add`, if `Get-PSDrive C` FreeGB is under 2, run `..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob` (FR #877). **Immediately after** `worktree add`, write `.bobiverse-seat` (`{"nick":"<seat>","pid":$PID}`) at the tree root (FR #3641) so soft-cap / sibling Clear cannot wipe a mid-MRB tree. **CAST IRON (FR #2727 / FR #3641):** never hand-delete / `Remove-Item` paths Clear did not select; if FreeGB stays under 2 after Clear, file an intake disk issue and put the MRB tree on a roomy drive (or GIVEUP) — do not invent a `C:\ai\*` delete list. After DONE, prune again with `-KeepPath` omitted so the MRB tree can go. 3. **Vision first**: read `VISION.md`/brief/README/AGENTS and quote 1-2 lines the PR is judged against. For **bob** ear/worker/tray changes prefer **`bob/VISION.md`** (FR #1615 / harvest #1632); the fleet umbrella stays `common/docs/vision.md` — do not treat the umbrella as the bob product vision.
+> **FR #3948 applies to steps 6-10:** no CI polling, at most one update-branch, PASS with head SHA, then auto-merge (or `merge-on-green pending`) and DONE at once - see the FR #3948 section above.
+
+1. **ACK.** 2. Check out the PR in a temp worktree; read the intent, the FR and every changed file. Before `git worktree add`, if `Get-PSDrive C` FreeGB is under 2, run `..\scripts\Clear-BobiverseJobWorktrees.ps1 -RepoRoot <ai root>\bob` (FR #877). **Immediately after** `worktree add`, write `.bobiverse-seat` (`{"nick":"<seat>","pid":$PID}`) at the tree root (FR #3641) so soft-cap / sibling Clear cannot wipe a mid-MRB tree. **CAST IRON (FR #2727 / FR #3641):** never hand-delete / `Remove-Item` paths Clear did not select; if FreeGB stays under 2 after Clear, file an intake disk issue and put the MRB tree on a roomy drive (or GIVEUP) — do not invent a `C:\ai\*` delete list. After DONE, prune again with `-KeepPath` omitted so the MRB tree can go. 3. **Vision first**: read `VISION.md`/brief/README/AGENTS and quote 1-2 lines the PR is judged against. For **bob** ear/worker/tray changes prefer **`bob/VISION.md`** (FR #1615 / harvest #1632); for **airc** console changes prefer **`airc/VISION.md`** (FR #4158); the fleet umbrella stays `common/docs/vision.md` --- do not treat the umbrella as the bob or airc product vision.
 No vision found: record "no vision source found", review against README + FR, and file ONE FR asking for a `VISION.md`. If the PR shows the vision itself should change, do not edit it - file an FR tagged `vision` for the owner.
 4. **Tests before verdict**: add the new tests the PR needs, then run existing + new. **FR #2655 (airc PRs):** before PASS, run the full `airc/tests` suite (not only the new FR file) — signature changes like `send_privmsg(..., flood=)` break 2-arg monkeypatch stubs elsewhere. 5. Hostile review + **drift check** (separate verdict line): serves the stated vision? contradicts CAST IRON / earlier decisions? scope creep? under-delivery (letter, not intent; code never wired)? Drift is a FAIL like a red test. **ACCEPTABLE drift (harvest #1663):** a partial FR that lands the core acceptance and files explicit follow-up issues for the remainder (e.g. SkipTidy autostart PASS while TipForm Restart still tidies; leftover #1642/#1643) may PASS — say so on the drift line; do not FAIL solely for intentional scoped follow-ups.
-6. Encoding: changed *.md are UTF-8 without BOM (no mojibake). **CAST IRON (FR #1634):** before every gh pr merge, run python common/scripts/check_conflict_markers.py --root <worktree> (or rely on the check-conflict-markers CI workflow) and **refuse merge** if any <<<<<<< / ======= / >>>>>>> conflict markers remain in the tip. **Behind-main (harvest #1647 / #1657):** if the PR head is behind origin/main, merge (or rebase) origin/main into the FR branch and re-run conflict-marker + tests **before** gh pr merge. 7. **PASS** -> review docs/skills/usage text for staleness; if stale open exactly ONE **separate** docs/mrb-<N>-... PR (never push onto the PR under review) and merge both; if not, merge the PR. Additive hostile tests that are not product fixes belong on that docs/mrb-N PR. **Body/docs-only nits** (e.g. missing Duplicates closed: line) while tests are green: PASS and merge without a separate **fix** PR — put wording nits on the docs PR or edit the PR body; close harvest twins as not planned (Duplicate of #N / fixed by PR #M).
+6. Encoding: changed *.md are UTF-8 without BOM (no mojibake). **CAST IRON (FR #3935):** WinPS 5.1: never Get-Content -Raw (or Set-Content -Encoding utf8) round-trip of UTF-8 SKILL.md / docs; em-dashes (U+2014) mojibake. Edit with Python open(..., encoding="utf-8") / Path.write_text(..., encoding="utf-8"); prefer ASCII --- in new prose when possible (FR #3935). **CAST IRON (FR #1634):** before every gh pr merge, run python common/scripts/check_conflict_markers.py --root <worktree> (or rely on the check-conflict-markers CI workflow) and **refuse merge** if any <<<<<<< / ======= / >>>>>>> conflict markers remain in the tip. **Behind-main (harvest #1647 / #1657):** if the PR head is behind origin/main, merge (or rebase) origin/main into the FR branch and re-run conflict-marker + tests **before** gh pr merge. **CAST IRON (FR #3928):** never merge a PR that is on hold, and never merge without a posted MRB PASS board. After ACK, if labels `on-hold` / `hold` / `do-not-merge` / `wip` or an OWNER/MEMBER/COLLABORATOR comment matches `on hold` / `must not merge` / `do not merge` (and is not later cleared with `hold lifted` / `ok to merge`), **NACK or GIVEUP** with reason `on-hold` — do not review-to-merge. Before every `gh pr merge`, post the MRB board with `**Verdict:** PASS` first, then run `python common/scripts/mrb_merge_gate.py <owner/repo> <pr>` (exit 0 required; exit 2 = refuse; FR #4112: env `GH_TOKEN`/`GITHUB_TOKEN` or `gh auth token` fallback). Chair also skips enqueue/offer when hold text/labels are stamped on the row. **FR #4041:** `mrb_merge_gate` skips `## MRB board` / `**Verdict:**` comments when scanning owner hold text (boards posted via `gh` look OWNER and often discuss hold labels). 7. **PASS** -> review docs/skills/usage text for staleness; if stale open exactly ONE **separate** docs/mrb-<N>-... PR (never push onto the PR under review). Then hand off per **FR #3948** (PASS @ head SHA, at most one update-branch, `gh pr merge --auto` or `merge-on-green pending`, DONE within ~1 minute - never poll CI). Additive hostile tests that are not product fixes belong on that docs/mrb-N PR. **Body/docs-only nits** (e.g. missing Duplicates closed: line) while tests are green: PASS and merge without a separate **fix** PR — put wording nits on the docs PR or edit the PR body; close harvest twins as not planned (Duplicate of #N / fixed by PR #M).
 **Harvest promote order (harvest #2296 / MRB #2289):** merge the **skill/promote PR first**, then open the one `docs/mrb-N` hostile-test PR **from the new `origin/main` tip** (not from the pre-merge promote tip). Before **DONE PASS**, verify `gh issue view` that `Closes` actually closed the skill issue (or close it with a comment). Example: #2289 then docs #2295.
 **FAIL** -> exactly ONE separate fix PR, then merge original + fix (not several fix PRs). Never merge UNSTABLE/red. 8. Post the MRB board. **Issue closure (t826u):** the assigned MRB authorises you to merge that PR (and its one docs/fix PR). On merge, the PR's **`Closes <owner>/<repo>#N`** line closes the originating issue - confirm that line is in the PR body (add it by editing the body if the FR author missed it; a fix/docs PR gets `Refs`, never a second `Closes`). If you are **not authorised to merge**, still confirm the `Closes` link so the issue closes when the owner merges, and say so on the board.
 After the merge check `gh issue view N --repo <owner>/<repo> --json state`: if it is still open (PR merged into a non-default branch, or the link was missing) **close it yourself with a comment** (`gh issue close N --comment "Closed by <PR url> (merged into <branch>). MRB: <verdict>"`). **FR #791:** `gh issue close` does not accept `--body-file` (unknown flag) — use `-c` / `--comment` only. A FAIL that ends without a merge leaves the issue open.
@@ -74,7 +98,7 @@ once the implementer cannot be reached. Never close `needs-human` / `board` issu
 
 Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE.
 
-`repo_layout` lives in `common/scripts/repo_layout.py`. Prefer `git sparse-checkout disable` in the MRB temp tree. Partial sparse sets must include `common/scripts`; do not rely on `PYTHONPATH=common/tests`. Service `*/tests/conftest.py` puts `common/scripts` on `sys.path`.
+`repo_layout` lives in `common/scripts/repo_layout.py`. Prefer `git sparse-checkout disable` in the MRB temp tree. **CAST IRON (FR #4029 / MRB #4035):** disable sparse **once** after add + `.bobiverse-seat`; never re-run on an already-full tree (can detach `.git` / wipe uncommitted work). Partial sparse sets must include `common/scripts`; do not rely on `PYTHONPATH=common/tests`. Service `*/tests/conftest.py` puts `common/scripts` on `sys.path`.
 
 **bob_worker tip shadow (FR #2782 / MRB #2789):** when pytest-importing `bob_worker` from a job worktree, run pytest with cwd set to that worktree and put `<wt>\bob\scripts` first on `PYTHONPATH`. The install flat copy `<ai root>\bob\worker\bob_worker.py` otherwise shadows the tip module and makes tip tests look like main failures. Seat cwd alone is not enough if the flat install copy is found first.
 
@@ -95,7 +119,7 @@ Skill-intake consolidation: when a worker takes an FR from skill intake (label:s
 ## Rules
 
 * **A successful MRB closes the originating issue**: merge -> `Closes` auto-closes it; otherwise you close it with a comment (never leave a merged PR's issue open, never close it for a FAIL that did not merge). * Different seat/session than the author. One docs PR at most; one fix PR at most. No release, no version bump, no Ergo changes, no secrets, PowerShell only.
-* **Never merge conflict markers (FR #1634):** tip must be clean of `<<<<<<<` / `=======` / `>>>>>>>`; use `common/scripts/check_conflict_markers.py`. Merge/rebase `origin/main` into behind branches before merge; harvest twins close as not planned. * Report which agent and model did the review. * CAST IRON harvest rule at the top: file every issue/FR/bug you find in the same turn - findings that are not part of this PR become new intake items.
+* **Never merge conflict markers (FR #1634):** tip must be clean of `<<<<<<<` / `=======` / `>>>>>>>`; use `common/scripts/check_conflict_markers.py`. Merge/rebase `origin/main` into behind branches before merge; harvest twins close as not planned. * **Never merge on hold / without PASS board (FR #3928):** owner hold label or comment blocks offer and merge; post `## MRB board` with `**Verdict:** PASS` before any merge path; run `common/scripts/mrb_merge_gate.py`. * **Never poll CI after push (FR #3948):** PASS with head SHA, at most one update-branch, then `gh pr merge --auto` or comment `merge-on-green pending`; Jeeves `mrb_merge_on_green` merges on green / re-queues on red or SHA change; held PRs are never auto-merged. DONE within about 1 minute of the last push. * Report which agent and model did the review. * CAST IRON harvest rule at the top: file every issue/FR/bug you find in the same turn - findings that are not part of this PR become new intake items.
 
 
 ## CONFLICTING / superseded MRB (harvest #1609)
@@ -189,6 +213,7 @@ Checks:
 2. Inserted bullets did not splice into the middle of an existing bullet.
 3. No orphan lines that only make sense as the tail of a removed/split bullet.
 4. Prefer a regression test that asserts a distinctive phrase from the restored bullet remains contiguous.
+5. BEL / C0 control characters can corrupt product names in skill bullets (for example BEL + `"irc.exe"` makes `airc.exe` read as `irc.exe`). Hostile-pin the correct spelling (`airc.exe`) and reject the corrupted form (`irc.exe`) in the same AV / install window (FR #4215 / MRB #4220). Prefer ASCII wording; do not park this playbook under `harvest/SKILL.md` --- fold it here.
 
 ## Harvested MRB discipline (skill records #1223-#1457)
 

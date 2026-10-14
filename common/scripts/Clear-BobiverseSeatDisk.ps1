@@ -12,9 +12,20 @@
     grok downloads, pr-merge-clones, aged grok sessions (keeps -KeepSessionId
     and sessions newer than -KeepSessionHours), pip/npm caches, aged files in
     Windows\Temp, optional aged C:\ai\backup-* (-IncludeAiBackups).
+  - FR #4192: also reclaims aged user-%TEMP% dirs matching bobiverse-*/fr-*/mrb-*/
+    pytest-of-*/gh-pr* older than -KeepTempHours (default 24). Never deletes
+    arbitrary C:\ai\* worktrees (FR #2727).
+  - FR #4212: also reclaims aged ~/.cursor/chats children older than
+    -KeepCursorHours (default 24). When FreeGB stays below MinFreeGB after
+    reclaim, print a CRITICAL ranked size report of known consumers.
+  - FR #4226: reclaim aged session UUID dirs nested under cwd-encoded buckets
+    (sessions/<cwd-encoded>/<guid>/). Top-level-only reclaim skipped those
+    UUIDs when the cwd bucket stayed fresh from the live seat.
 
   Never touches Ergo, ircd.yaml, secrets, the current seat session id, or
   running services. Pair with Clear-BobiverseJobWorktrees.ps1 for linked trees.
+  When JobWorktrees prints FreeGB still low / removed=0, run this with -Reclaim
+  before filing a disk-capacity intake (FR #4192 / FR #4212).
 
 .EXAMPLE
   ..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId 0ee19a2a-...
@@ -24,8 +35,12 @@ param(
     [double]$MinFreeGB = 2,
     [string]$KeepSessionId = '',
     [int]$KeepSessionHours = 6,
+    [int]$KeepTempHours = 24,
+    [int]$KeepCursorHours = 24,
     [string]$GrokHome = '',
     [string]$AiRoot = 'C:\ai',
+    [string]$TempRoot = '',
+    [string]$CursorChatsRoot = '',
     [switch]$IncludeAiBackups,
     [switch]$Reclaim,
     [switch]$Force
@@ -67,6 +82,14 @@ function Remove-TreeSafe([string]$Path, [string]$Why) {
 if (-not $GrokHome) {
     $GrokHome = Join-Path $env:USERPROFILE '.grok'
 }
+if (-not $TempRoot) {
+    if ($env:TEMP) { $TempRoot = $env:TEMP }
+    elseif ($env:TMP) { $TempRoot = $env:TMP }
+    else { $TempRoot = Join-Path $env:LOCALAPPDATA 'Temp' }
+}
+if (-not $CursorChatsRoot) {
+    $CursorChatsRoot = Join-Path $env:USERPROFILE '.cursor\chats'
+}
 
 $free = Get-FreeGB
 Write-Host ("FreeGB={0} MinFreeGB={1} Reclaim={2} Force={3}" -f $free, $MinFreeGB, [bool]$Reclaim, [bool]$Force)
@@ -78,8 +101,9 @@ $report = @(
     (Join-Path $GrokHome 'bin'),
     (Join-Path $env:LOCALAPPDATA 'pip\Cache'),
     (Join-Path $env:LOCALAPPDATA 'npm-cache'),
-    (Join-Path $env:USERPROFILE '.cursor\chats'),
-    'C:\Windows\Temp'
+    $CursorChatsRoot,
+    'C:\Windows\Temp',
+    $TempRoot
 )
 if ($AiRoot) {
     $report += $AiRoot
@@ -136,10 +160,28 @@ if (Test-Path -LiteralPath $npm) {
 $cut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepSessionHours))
 $sessRoot = Join-Path $GrokHome 'sessions'
 if (Test-Path -LiteralPath $sessRoot) {
+    # FR #4226: Grok nests UUID sessions under cwd-encoded buckets
+    # (sessions/<cwd-encoded>/<guid>/). Walk one nested level so a fresh
+    # cwd bucket does not shield aged UUID children. Legacy flat
+    # sessions/<guid> layout still reclaims at the top level.
     Get-ChildItem -LiteralPath $sessRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($KeepSessionId -and ($_.Name -like ("*{0}*" -f $KeepSessionId))) { return }
-        if ($_.LastWriteTime -gt $cut) { return }
-        $removed += Remove-TreeSafe $_.FullName 'aged grok session'
+        $top = $_
+        if ($KeepSessionId -and ($top.Name -like ("*{0}*" -f $KeepSessionId))) { return }
+        $nested = @(Get-ChildItem -LiteralPath $top.FullName -Directory -Force -ErrorAction SilentlyContinue)
+        if ($nested.Count -gt 0) {
+            foreach ($ch in $nested) {
+                if ($KeepSessionId -and ($ch.Name -like ("*{0}*" -f $KeepSessionId))) { continue }
+                if ($ch.LastWriteTime -gt $cut) { continue }
+                $removed += Remove-TreeSafe $ch.FullName 'aged nested grok session'
+            }
+            $left = @(Get-ChildItem -LiteralPath $top.FullName -Force -ErrorAction SilentlyContinue)
+            if ($left.Count -eq 0) {
+                $removed += Remove-TreeSafe $top.FullName 'empty grok session cwd bucket'
+            }
+        } else {
+            if ($top.LastWriteTime -gt $cut) { return }
+            $removed += Remove-TreeSafe $top.FullName 'aged grok session'
+        }
     }
 }
 
@@ -149,6 +191,20 @@ Get-ChildItem -LiteralPath 'C:\Windows\Temp' -File -Force -ErrorAction SilentlyC
         $removed += Remove-TreeSafe $_.FullName 'aged Windows\\Temp file'
     }
 
+# FR #4192: aged user-%TEMP% seat leftovers (pytest / bobiverse / fr / mrb / gh-pr).
+# Never wipe arbitrary TEMP trees (vscode, Diagnostics, Outlook, NVIDIA, ...).
+$tempCut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepTempHours))
+$tempPatterns = @('bobiverse-*', 'fr-*', 'mrb-*', 'pytest-of-*', 'gh-pr*', 'pr-*')
+if ($TempRoot -and (Test-Path -LiteralPath $TempRoot)) {
+    foreach ($pat in $tempPatterns) {
+        Get-ChildItem -LiteralPath $TempRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like $pat -and $_.LastWriteTime -lt $tempCut } |
+            ForEach-Object {
+                $removed += Remove-TreeSafe $_.FullName ('aged user-TEMP ' + $pat)
+            }
+    }
+}
+
 if ($IncludeAiBackups -and $AiRoot -and (Test-Path -LiteralPath $AiRoot)) {
     Get-ChildItem -LiteralPath $AiRoot -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-2) } |
@@ -157,5 +213,30 @@ if ($IncludeAiBackups -and $AiRoot -and (Test-Path -LiteralPath $AiRoot)) {
         }
 }
 
+# FR #4212: aged Cursor chat trees (often hundreds of MB on marchhare).
+$cursorCut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepCursorHours))
+if ($CursorChatsRoot -and (Test-Path -LiteralPath $CursorChatsRoot)) {
+    Get-ChildItem -LiteralPath $CursorChatsRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $cursorCut } |
+        ForEach-Object {
+            $removed += Remove-TreeSafe $_.FullName 'aged .cursor/chats'
+        }
+}
+
 $freeNow = Get-FreeGB
 Write-Host ("Done removed_ops={0} FreeGB_now={1}" -f $removed, $freeNow)
+if ($freeNow -lt $MinFreeGB) {
+    Write-Warning ("FR #4192 / FR #4212 / FR #4226: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
+    # Ranked consumers so the next seat knows what still fills C: (live session / bin may remain).
+    Write-Host '--- CRITICAL remaining consumers (GB) ---'
+    $ranked = @()
+    foreach ($p in $report) {
+        $gb = Get-FolderGB $p
+        if ($null -ne $gb -and $gb -gt 0) {
+            $ranked += [pscustomobject]@{ GB = $gb; Path = $p }
+        }
+    }
+    $ranked | Sort-Object GB -Descending | Select-Object -First 8 | ForEach-Object {
+        Write-Host ("  {0,7:N2}  {1}" -f $_.GB, $_.Path)
+    }
+}

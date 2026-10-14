@@ -51,3 +51,5 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 ## The repo is the parent folder
 
 Your CWD is `<ai root>\bob\worker`; its parent `<ai root>\bob` is a sparse git work tree (`bob/` + `common/`) fast-forwarded on every ircBob start. Do repo work with `git -C ..` (branch, commit, push, PR) on the tracked `bob\` / `common\` folders; file intake issues with `..\scripts\Report-BobiverseIntakeIssue.ps1`. Do not edit the flat copies (`..\scripts\`); they are rebuilt from the tracked folders.
+
+- **FR #3948 (merge-on-green):** MRB seats never poll/watch CI and never loop merging main in. After review + tests + own pushes: post MRB PASS with the head SHA; if not held, `gh pr merge <n> --auto --merge` when the repo has `allow_auto_merge`, else comment `merge-on-green pending`; at most one update-branch when behind; then DONE at once. Full rules: `.grok/skills/bobiverse-bob-job-mrb/SKILL.md` section "FR #3948".

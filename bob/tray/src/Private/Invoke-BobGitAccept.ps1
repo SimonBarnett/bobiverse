@@ -421,7 +421,7 @@ function Write-BobGitAcceptBusy {
 function Start-BobGitAcceptWork {
     <#
       Enqueue on this machine via Start-BobBuild. Copilot stays off.
-      Cursor Models then grok-build (Get-BobFuelOrder inside the picker).
+      Grok Build then Cursor Models (Get-BobFuelOrder inside the picker; FR #3997).
       The inbox job is the activity row; Write-BobIrcStatus drops it when the job leaves inbox/running.
     #>
     param(

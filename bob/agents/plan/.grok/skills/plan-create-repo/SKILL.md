@@ -79,7 +79,9 @@ are never delivered, so Jeeves stays silent about the new repo and its FR issue.
 After create, in the **same turn**:
 
 1. `plan-bob-webhooks` — git hook to Bob.
-2. `plan-enable-prs` — Cursor app / no ruleset that blocks PRs.
+2. `plan-enable-prs` — Cursor app / no ruleset that blocks PRs /
+   `allow_auto_merge=true`, plus the `required-ci-3948` ruleset once CI
+   runs on PRs (bobiverse#3948: MRB PASS = `gh pr merge --auto`).
 
 Do not invent instance URLs or secrets. Do not stamp UAT.
 

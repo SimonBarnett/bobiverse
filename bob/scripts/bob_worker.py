@@ -8,8 +8,8 @@ Modes
   --mode maintenance Jeeves maintenance after --heal still failing (FR #2412): cwd --work-root, diagnose/fix, file intake
 
 Rules (CAST IRON, Simon t762u-t765u)
-  * Agent choice is ALWAYS automatic by token availability: Cursor (high or low pool > 0) -> Grok (local weekly > 0)
-    -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
+  * Agent choice is ALWAYS automatic by token availability (FR #3997): Grok (local weekly > 0 or unknown read)
+    -> Cursor (high or low pool > 0) -> dialog asking for a Grok session key (kept in memory only, handed to the child env, never written/printed).
   * EVERY launch is a NEW agent: new session id, new console window, new run dir. Never --resume/--continue/-r, never
     reuse or attach to an existing window/process (assert_fresh() enforces it; a restart after a hang is a NEW agent too).
     ONE exception (FR #2522): --mode maintenance SHOULD resume its own last maintenance session (recorded by this exe)
@@ -24,6 +24,7 @@ Rules (CAST IRON, Simon t762u-t765u)
 from __future__ import annotations
 
 import argparse
+import contextlib
 import base64
 import hashlib
 import ctypes
@@ -205,7 +206,7 @@ class Fuel:
 
 
 def parse_fuel(text: str) -> Fuel:
-    """Parse Get-BobAgentFuel.ps1 JSON (last JSON line wins). Anything unreadable = unknown (= not available)."""
+    """Parse Get-BobAgentFuel.ps1 JSON (last JSON line wins). Anything unreadable = unknown. Seat selection (FR #3997) treats unknown Grok as available; mid-job still uses fuel_explicitly_exhausted."""
     doc = None
     for ln in reversed((text or "").splitlines()):
         ln = ln.strip().lstrip("\ufeff")
@@ -246,9 +247,63 @@ def cursor_has_tokens(f: Fuel) -> bool:
 
 
 def grok_has_tokens(f: Fuel) -> bool:
+    """True when seat start may pick Grok (FR #3997).
+
+    Exhausted only on explicit signals: pct <= 0 or state exhausted/empty/none/unavailable.
+    Unknown / failed reads count as available so a flaky helper does not skip weekly Grok.
+    """
     if f.grok_pct is not None:
-        return f.grok_pct > 0
-    return f.grok_state == "available"  # Grok 1.0.41: no % but verified local auth + current weekly period
+        return int(f.grok_pct) > 0
+    st = (f.grok_state or "unknown").strip().lower()
+    if st in ("exhausted", "empty", "none", "unavailable"):
+        return False
+    # available, unknown, or other non-exhausted -> try Grok first
+    return True
+
+
+def fuel_reading_known(f: Fuel, kind: str) -> bool:
+    """True when the helper returned a parseable reading for this seat kind (FR #3923).
+
+    Empty ``Fuel()`` (helper missing / timeout / unreadable) is **unknown**, not exhausted.
+    """
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        if f.grok_pct is not None:
+            return True
+        st = (f.grok_state or "unknown").strip().lower()
+        return st != "unknown"
+    if k == "cursor":
+        return f.cursor_high is not None or f.cursor_low is not None
+    return False
+
+
+def fuel_explicitly_exhausted(f: Fuel, kind: str) -> bool:
+    """True only for an explicit zero/exhausted reading (FR #3923 mid-job gate).
+
+    Unknown / unreadable readings must **not** trip mid-job GIVEUP. Seat *selection*
+    still uses ``grok_has_tokens`` / ``cursor_has_tokens`` (unknown = not available).
+    """
+    k = (kind or "").strip().lower()
+    if not fuel_reading_known(f, k):
+        return False
+    if k == "grok":
+        if f.grok_pct is not None:
+            return int(f.grok_pct) <= 0
+        st = (f.grok_state or "").strip().lower()
+        return st in ("exhausted", "empty", "none", "unavailable")
+    if k == "cursor":
+        return not cursor_has_tokens(f)
+    return False
+
+
+def format_fuel_reading(f: Fuel, kind: str = "") -> str:
+    """One-line fuel snapshot for mid-job logs (no secrets)."""
+    k = (kind or "").strip().lower()
+    return (
+        f"kind={k or '-'} pct={f.grok_pct!s} state={f.grok_state!s} "
+        f"cursor_high={f.cursor_high!s} cursor_low={f.cursor_low!s} "
+        f"known={fuel_reading_known(f, k)} exhausted={fuel_explicitly_exhausted(f, k)}"
+    )
 
 
 @dataclass(frozen=True)
@@ -258,15 +313,29 @@ class Decision:
 
 
 def select_agent(fuel: Fuel, cursor_cmd: Optional[str], grok_exe: Optional[str]) -> Decision:
-    """cursor (high/low pool > 0) -> grok (local weekly > 0) -> dialog (session key). Pure; no I/O."""
-    if cursor_cmd and cursor_has_tokens(fuel):
-        return Decision("cursor", f"cursor tokens remain (high={fuel.cursor_high} low={fuel.cursor_low})")
-    why = "cursor: " + ("agent.cmd missing" if not cursor_cmd else f"no tokens (high={fuel.cursor_high} low={fuel.cursor_low})")
+    """grok (local weekly > 0 or unknown) -> cursor (high/low pool > 0) -> dialog (session key). Pure; no I/O. FR #3997."""
     if grok_exe and grok_has_tokens(fuel):
-        return Decision("grok", f"{why}; grok tokens remain (pct={fuel.grok_pct} state={fuel.grok_state})")
+        return Decision(
+            "grok",
+            f"grok (weekly pct={fuel.grok_pct} state={fuel.grok_state})",
+        )
+    why_grok = "grok: " + (
+        "agent.exe missing" if not grok_exe else f"exhausted (pct={fuel.grok_pct} state={fuel.grok_state})"
+    )
+    if cursor_cmd and cursor_has_tokens(fuel):
+        return Decision(
+            "cursor",
+            f"{why_grok}; cursor tokens remain (high={fuel.cursor_high} low={fuel.cursor_low})",
+        )
+    why_cur = "cursor: " + (
+        "agent.cmd missing" if not cursor_cmd else f"no tokens (high={fuel.cursor_high} low={fuel.cursor_low})"
+    )
     if not grok_exe:
-        return Decision("none", f"{why}; grok: agent.exe missing")
-    return Decision("dialog", f"{why}; grok: no tokens (pct={fuel.grok_pct} state={fuel.grok_state}) -> ask for a session key")
+        return Decision("none", f"{why_grok}; {why_cur}")
+    return Decision(
+        "dialog",
+        f"{why_grok}; {why_cur} -> ask for a session key",
+    )
 
 
 def resolve_cursor_cmd(env: Optional[dict] = None, which: Callable = shutil.which) -> Optional[str]:
@@ -1188,7 +1257,98 @@ def _submit_gap_s(default: float = 0.20) -> float:
     return max(0.05, min(2.0, v))
 
 
-def _clipboard_get_unicode() -> str | None:
+# FR #3894: rdpclip / other owners briefly hold the clipboard; one OpenClipboard miss
+# used to fall back to per-char KEY_EVENTs (the #2498 drip). Retry open.
+# FR #3996: on clipboard *set* failure, use ONE batched WriteConsoleInput KEY_EVENT write
+# (no per-char sleep). Never drip. Tiny-string constant kept for diagnostics / opt paths.
+_CLIPBOARD_OPEN_ATTEMPTS = 20
+_CLIPBOARD_OPEN_DELAY_S = 0.025
+# Legacy gate from FR #3894 (tiny strings); FR #3996 always allows batched KEY fallback.
+_KEY_FALLBACK_MAX_CHARS = 8
+
+def _configure_clipboard_winapi(k32, u32) -> None:
+    """FR #3996: declare HGLOBAL/HANDLE restype+argtypes so x64 pointers are not truncated to C int."""
+    HGLOBAL = ctypes.c_void_p
+    UINT = ctypes.c_uint
+    BOOL = ctypes.c_int
+    HWND = ctypes.c_void_p
+    SIZE_T = ctypes.c_size_t
+
+    k32.GlobalAlloc.restype = HGLOBAL
+    k32.GlobalAlloc.argtypes = [UINT, SIZE_T]
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [HGLOBAL]
+    k32.GlobalUnlock.restype = BOOL
+    k32.GlobalUnlock.argtypes = [HGLOBAL]
+    k32.GlobalFree.restype = HGLOBAL
+    k32.GlobalFree.argtypes = [HGLOBAL]
+
+    u32.OpenClipboard.restype = BOOL
+    u32.OpenClipboard.argtypes = [HWND]
+    u32.CloseClipboard.restype = BOOL
+    u32.CloseClipboard.argtypes = []
+    u32.EmptyClipboard.restype = BOOL
+    u32.EmptyClipboard.argtypes = []
+    u32.SetClipboardData.restype = ctypes.c_void_p
+    u32.SetClipboardData.argtypes = [UINT, ctypes.c_void_p]
+    u32.GetClipboardData.restype = ctypes.c_void_p
+    u32.GetClipboardData.argtypes = [UINT]
+    u32.IsClipboardFormatAvailable.restype = BOOL
+    u32.IsClipboardFormatAvailable.argtypes = [UINT]
+
+
+
+def _clipboard_owner_diag(u32=None) -> str:
+    """Best-effort clipboard owner hwnd/pid for WARN logs (FR #3894)."""
+    if os.name != "nt":
+        return ""
+    try:
+        u32 = u32 or ctypes.WinDLL("user32", use_last_error=True)
+        hwnd = int(u32.GetOpenClipboardWindow() or 0)
+        if not hwnd:
+            err = int(ctypes.get_last_error() or 0)
+            return f"owner=none last_error={err}"
+        pid = ctypes.c_ulong(0)
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return f"owner_hwnd={hwnd} owner_pid={int(pid.value or 0)}"
+    except Exception as exc:  # noqa: BLE001
+        return f"owner_diag={type(exc).__name__}"
+
+
+def _open_clipboard_retry(
+    u32,
+    *,
+    attempts: int | None = None,
+    delay_s: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """OpenClipboard with short retries (FR #3894). Logs last_error + owner on final fail."""
+    n = int(_CLIPBOARD_OPEN_ATTEMPTS if attempts is None else attempts)
+    delay = float(_CLIPBOARD_OPEN_DELAY_S if delay_s is None else delay_s)
+    last_err = 0
+    for i in range(max(1, n)):
+        if u32.OpenClipboard(None):
+            return True
+        try:
+            last_err = int(ctypes.get_last_error() or 0)
+        except Exception:
+            last_err = 0
+        if i + 1 < n:
+            try:
+                sleep(delay)
+            except Exception:
+                pass
+    diag = _clipboard_owner_diag(u32)
+    if log:
+        try:
+            log(f"relay: clipboard OpenClipboard failed attempts={n} last_error={last_err} {diag}")
+        except Exception:
+            pass
+    return False
+
+
+def _clipboard_get_unicode(log: Optional[Callable[[str], None]] = None) -> str | None:
     """Best-effort read of current CF_UNICODETEXT (FR #2504). None if empty/unavailable."""
     if os.name != "nt":
         return None
@@ -1196,9 +1356,10 @@ def _clipboard_get_unicode() -> str | None:
     try:
         u32 = ctypes.WinDLL("user32", use_last_error=True)
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        _configure_clipboard_winapi(k32, u32)
         if not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
             return None
-        if not u32.OpenClipboard(None):
+        if not _open_clipboard_retry(u32, log=log):
             return None
         try:
             h = u32.GetClipboardData(CF_UNICODETEXT)
@@ -1217,55 +1378,197 @@ def _clipboard_get_unicode() -> str | None:
         return None
 
 
-def _clipboard_set_unicode(text: str) -> bool:
-    """Put Unicode text on the Windows clipboard. Used by inject_console paste path (FR #2498)."""
+def _clipboard_set_unicode(text: str, log: Optional[Callable[[str], None]] = None) -> bool:
+    """Put Unicode text on the Windows clipboard. Used by inject_console paste path (FR #2498 / #3894 / #3996)."""
     if os.name != "nt":
         return False
     CF_UNICODETEXT = 13
     GMEM_MOVEABLE = 0x0002
+
+    def _fail(step: str) -> bool:
+        err = 0
+        try:
+            err = int(ctypes.get_last_error() or 0)
+        except Exception:
+            err = 0
+        if log:
+            try:
+                log(f"relay: inject path=fail reason=clipboard_set step={step} last_error={err}")
+            except Exception:
+                pass
+        return False
+
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     u32 = ctypes.WinDLL("user32", use_last_error=True)
+    _configure_clipboard_winapi(k32, u32)
     data = (text.replace("\x00", "") + "\x00").encode("utf-16-le")
-    if not u32.OpenClipboard(None):
+    if not _open_clipboard_retry(u32, log=log):
         return False
     try:
         u32.EmptyClipboard()
         h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
         if not h:
-            return False
+            return _fail("alloc")
         ptr = k32.GlobalLock(h)
         if not ptr:
             k32.GlobalFree(h)
-            return False
+            return _fail("lock")
         try:
             ctypes.memmove(ptr, data, len(data))
         finally:
             k32.GlobalUnlock(h)
         if not u32.SetClipboardData(CF_UNICODETEXT, h):
             k32.GlobalFree(h)
-            return False
+            return _fail("set")
         return True
     finally:
         u32.CloseClipboard()
 
 
-def _clipboard_restore_unicode(prior: str | None) -> bool:
+def _clipboard_restore_unicode(
+    prior: str | None, log: Optional[Callable[[str], None]] = None
+) -> bool:
     """Restore prior CF_UNICODETEXT after inject paste, or leave empty if prior was None (FR #2504)."""
     if os.name != "nt":
         return False
     try:
         if prior is None:
             u32 = ctypes.WinDLL("user32", use_last_error=True)
-            if not u32.OpenClipboard(None):
+            if not _open_clipboard_retry(u32, log=log):
                 return False
             try:
                 u32.EmptyClipboard()
                 return True
             finally:
                 u32.CloseClipboard()
-        return _clipboard_set_unicode(prior)
+        return _clipboard_set_unicode(prior, log=log)
     except Exception:
         return False
+
+
+
+def _clipboard_restore_delay_s() -> float:
+    """FR #4115: seconds to keep the injected text on the clipboard before restoring the prior text."""
+    return _env_float("BOB_WORKER_CLIPBOARD_RESTORE_S", 8.0, 0.0, 120.0)
+
+
+def _startup_wait_ready_enabled() -> bool:
+    """FR #4115: BOB_WORKER_STARTUP_WAIT_READY=0 restores the old 60 s grace-paste behaviour."""
+    raw = (os.environ.get("BOB_WORKER_STARTUP_WAIT_READY") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _startup_ready_cap_s() -> float:
+    """FR #4115: longest wait for the first turn_ended before inject is released anyway."""
+    return _env_float("BOB_WORKER_STARTUP_READY_CAP_S", 900.0, 60.0, 7200.0)
+
+
+def _startup_proc_idle(proc, probe=None) -> bool:
+    """FR #4123: True when the agent process is gone or reports 0 CPU/IO activity."""
+    if proc is None:
+        return True
+    try:
+        if proc.poll() is not None:
+            return True
+    except Exception:
+        return True
+    if probe is None:
+        return False
+    try:
+        sample = probe(int(proc.pid))
+    except Exception:
+        return False
+    try:
+        return int(getattr(sample, "activity", 0) or 0) <= 0
+    except Exception:
+        return False
+
+
+
+
+def clipboard_set_verified(
+    text: str,
+    *,
+    set_fn: Callable[..., bool],
+    read_fn: Callable[..., Optional[str]],
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """FR #4115: set CF_UNICODETEXT then read it back; True only when the readback equals ``text``.
+
+    Logs ``relay: clipboard readback ok|mismatch|fail``. The caller falls back to the batched
+    KEY_EVENT path on False (never the per-char drip).
+    """
+    def _log(msg: str) -> None:
+        if log:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    want = (text or "").replace("\x00", "")
+    try:
+        ok = bool(set_fn(want, log=log))
+    except TypeError:
+        ok = bool(set_fn(want))
+    except Exception as e:  # noqa: BLE001
+        _log(f"relay: clipboard set error {type(e).__name__}")
+        ok = False
+    if not ok:
+        _log(f"relay: clipboard readback fail reason=set chars={len(want)}")
+        return False
+    try:
+        got = read_fn(log=log)
+    except TypeError:
+        got = read_fn()
+    except Exception:  # noqa: BLE001
+        got = None
+    if got is None:
+        _log(f"relay: clipboard readback fail reason=read chars={len(want)}")
+        return False
+    if got != want:
+        _log(f"relay: clipboard readback mismatch want={len(want)} got={len(got)} chars")
+        return False
+    _log(f"relay: clipboard readback ok chars={len(want)}")
+    return True
+
+
+def schedule_clipboard_restore(
+    prior: Optional[str],
+    ours: str,
+    *,
+    delay_s: Optional[float] = None,
+    read_fn: Optional[Callable[..., Optional[str]]] = None,
+    restore_fn: Optional[Callable[..., bool]] = None,
+    timer_cls=None,
+    log: Optional[Callable[[str], None]] = None,
+):
+    """FR #4115: restore the operator clipboard after ``delay_s`` only if it still holds ``ours``."""
+    delay = _clipboard_restore_delay_s() if delay_s is None else max(0.0, float(delay_s))
+    read_fn = read_fn or _clipboard_get_unicode
+    restore_fn = restore_fn or _clipboard_restore_unicode
+    want = (ours or "").replace("\x00", "")
+
+    def _restore() -> None:
+        try:
+            cur = read_fn(log=log)
+        except TypeError:
+            cur = read_fn()
+        except Exception:  # noqa: BLE001
+            return
+        if cur != want:
+            return  # someone else (operator / next inject) owns the clipboard now
+        try:
+            restore_fn(prior, log=log)
+        except TypeError:
+            restore_fn(prior)
+        except Exception:  # noqa: BLE001
+            pass
+
+    tc = timer_cls or threading.Timer
+    t = tc(delay, _restore)
+    t.daemon = True
+    t.start()
+    return t
 
 
 def _build_ctrl_v_records():
@@ -1319,13 +1622,22 @@ def _inject_prefer_paste() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bool:
+def inject_console(
+    pid: int,
+    text: str,
+    submit_gap_s: float | None = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
     """Paste text into THIS process's console input and submit with Enter.
 
     FR #2498: do not drip KEY_EVENT per character into the Grok TUI (that paints
     one glyph at a time and can take minutes per Jeeves line). Prefer clipboard +
-    Ctrl+V (one paste), then the FR #1601 submit gap + double Enter. Fallback: one
-    batched WriteConsoleInput of all KEY_EVENTs (still no per-char sleep).
+    Ctrl+V (one paste), then the FR #1601 submit gap + double Enter.
+
+    FR #3894: retry OpenClipboard (rdpclip races). Never fall back to *per-char*
+    KEY_EVENT drip (FR #2498). FR #3996: if clipboard set fails, use one batched
+    WriteConsoleInput KEY_EVENT write (``path=keys reason=clipboard_fallback``).
+    Explicit ``BOB_WORKER_INJECT_PASTE=0`` skips clipboard and uses the batch path.
 
     FR #2508: opt out with BOB_WORKER_INJECT_PASTE=0 (KEY_EVENT batch only).
     FR #2504: save prior CF_UNICODETEXT before EmptyClipboard; restore after the
@@ -1345,6 +1657,15 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
     k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     k32.WriteConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
     k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    def _log(msg: str) -> None:
+        if not log:
+            return
+        try:
+            log(msg)
+        except Exception:
+            pass
+
     with _CONSOLE_LOCK:
         h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
         if not h or h == ctypes.c_void_p(-1).value:
@@ -1355,18 +1676,40 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
             pasted = False
             prior = None
             if _inject_prefer_paste():
-                prior = _clipboard_get_unicode()
-                if _clipboard_set_unicode(text):
+                prior = _clipboard_get_unicode(log=log)
+                # FR #4115: set, then read back and compare before Ctrl+V. A failed set or a
+                # readback mismatch (rdpclip / another owner raced us) falls back to keys.
+                if clipboard_set_verified(
+                    text, set_fn=_clipboard_set_unicode, read_fn=_clipboard_get_unicode, log=_log
+                ):
                     clipboard_touched = True
                     pasted = _write_console_all(k32, h, _build_ctrl_v_records(), wintypes)
             if not pasted:
+                # FR #3996: clipboard paste failed (or paste opt-out). One batched
+                # WriteConsoleInput - never per-char drip (FR #2498 / #3894).
+                prefer_paste = _inject_prefer_paste()
                 recs = build_key_records(text, u32)
                 if not _write_console_all(k32, h, recs, wintypes):
+                    _log("relay: inject path=fail reason=keys_write")
                     return False
+                if prefer_paste:
+                    _log(
+                        "relay: inject path=keys reason=clipboard_fallback "
+                        f"chars={len(text)} (no KEY_EVENT drip; batched)"
+                    )
+                else:
+                    _log(f"relay: inject path=keys chars={len(text)}")
+            else:
+                _log(f"relay: inject path=paste chars={len(text)}")
             # Give the TUI time to drain Ctrl+V and read our clipboard, then restore.
+            # Enter only after paste/keys write finished (never mid-drip).
             time.sleep(gap)
             if clipboard_touched:
-                _clipboard_restore_unicode(prior)
+                # FR #4115: the Grok TUI reads the clipboard itself on Ctrl+V and can be slow
+                # (busy turn end / session start). Restoring after the 0.2 s gap emptied the
+                # clipboard under it ("Couldn't read clipboard text"). Restore later, and only
+                # if the clipboard still holds our text.
+                schedule_clipboard_restore(prior, text, restore_fn=_clipboard_restore_unicode, log=log)
                 clipboard_touched = False
             if not _write_console_all(k32, h, build_enter_records(), wintypes):
                 return False
@@ -1377,7 +1720,7 @@ def inject_console(pid: int, text: str, submit_gap_s: float | None = None) -> bo
         finally:
             if clipboard_touched:
                 try:
-                    _clipboard_restore_unicode(prior)
+                    schedule_clipboard_restore(prior, text, restore_fn=_clipboard_restore_unicode, log=log)
                 except Exception:
                     pass
             k32.CloseHandle(h)
@@ -1976,8 +2319,11 @@ def inject_with_submit_verify(
     backoffs: tuple | list | None = None,
     stop_fn: Optional[Callable[[], bool]] = None,
     sync: bool = True,
+    on_failed: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
+
+    FR #4115: ``on_failed`` runs when the verify loop ends ``failed`` (re-paste / NACK recovery).
 
     Returns the inject_fn result. Verify failure is logged but does not flip the
     return to False (ack-miss / remind path still arms on successful paste).
@@ -1985,9 +2331,13 @@ def inject_with_submit_verify(
     relay thread is not blocked for the full backoff budget.
     """
     try:
-        ok = bool(inject_fn(pid, text))
+        # FR #3894: pass log so inject_console can record path=paste|keys|fail.
+        ok = bool(inject_fn(pid, text, log=log))
     except TypeError:
-        ok = bool(inject_fn(text))
+        try:
+            ok = bool(inject_fn(pid, text))
+        except TypeError:
+            ok = bool(inject_fn(text))
     if not ok:
         return False
     if not _submit_verify_enabled():
@@ -2006,7 +2356,7 @@ def inject_with_submit_verify(
     t0 = float(clock())
 
     def _run() -> None:
-        run_submit_verify_loop(
+        res = run_submit_verify_loop(
             enter_fn=enter_fn,
             probe_fn=probe_fn,
             clock=clock,
@@ -2018,6 +2368,15 @@ def inject_with_submit_verify(
             stop_fn=stop_fn,
             t0=t0,
         )
+        if res == "failed" and on_failed is not None:
+            try:
+                on_failed()
+            except Exception as e:  # noqa: BLE001
+                if log:
+                    try:
+                        log(f"relay: submit-verify recovery error {type(e).__name__}")
+                    except Exception:
+                        pass
 
     if sync:
         _run()
@@ -2156,6 +2515,8 @@ class Relay:
         # FR #4180: while True (out-of-fuel hold), refuse assigns without inject; callback NACKs.
         self.refuse_assign_while: Optional[Callable[[], bool]] = None
         self.on_refuse_assign: Optional[Callable[[str], None]] = None
+        # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
+        self.write_outbox: Optional[Callable[[str], bool]] = None
 
     def set_target(self, inject: Optional[Callable[[str], bool]]) -> None:
         with self._lock:
@@ -2216,13 +2577,19 @@ class Relay:
         except Exception:
             hold = False
         if hold and assign_job_ref(line):
+            first_held = False
             with self._lock:
                 if line == self._last_line:
                     return "duplicate"
                 self._last_line = line
+                pending_assigns = sum(1 for p in self._pending if assign_job_ref(p))
+                first_held = pending_assigns == 0
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
+            # FR #4115: ACK the first held assign on receipt (before inject / turn end).
+            if first_held:
+                self._ack_on_receipt(line)
             self.log("relay: held assign until turn end " + line[:120])
             self._persist_last_from(line)
             if self.on_hold_assign:
@@ -2231,11 +2598,15 @@ class Relay:
                 except Exception:
                     pass
             return "held_until_turn_end"
+        do_inject = False
+        ack_first = False
         with self._lock:
             if line == self._last_line:
                 return "duplicate"
             self._last_line = line
             if self._inject is None:
+                pending_assigns = sum(1 for p in self._pending if assign_job_ref(p))
+                ack_first = bool(assign_job_ref(line)) and pending_assigns == 0
                 self._pending.append(line)
                 if len(self._pending) > self.max_pending:
                     del self._pending[0]
@@ -2243,19 +2614,46 @@ class Relay:
                     # FR #994: operators must see the wire even during startup grace (no inject target yet).
                     self.log("relay: held nothing-queued (agent not ready)")
                     self._persist_last_from(line)
-                return "held"
-            now = self.clock()
-            self._sent = [t for t in self._sent if now - t < self.window_s]
-            if len(self._sent) >= self.max_burst:
-                self._overflow.append(line)
-                if self._timer is None:
-                    wait = max(0.2, self.window_s - (now - self._sent[0]))
-                    self._timer = threading.Timer(wait, self._flush_overflow)
-                    self._timer.daemon = True
-                    self._timer.start()
-                return "coalescing"
-            self._sent.append(now)
-        return self._do_inject(line)
+                    ack_first = False
+            else:
+                now = self.clock()
+                self._sent = [t for t in self._sent if now - t < self.window_s]
+                if len(self._sent) >= self.max_burst:
+                    self._overflow.append(line)
+                    if self._timer is None:
+                        wait = max(0.2, self.window_s - (now - self._sent[0]))
+                        self._timer = threading.Timer(wait, self._flush_overflow)
+                        self._timer.daemon = True
+                        self._timer.start()
+                    return "coalescing"
+                self._sent.append(now)
+                do_inject = True
+                ack_first = bool(assign_job_ref(line))
+        # FR #4115: ACK on receipt before inject (or while agent-not-ready held).
+        if ack_first:
+            self._ack_on_receipt(line)
+        if do_inject:
+            return self._do_inject(line)
+        return "held"
+
+    def _ack_on_receipt(self, line: str) -> None:
+        """FR #4115: write ACK to the seat outbox as soon as an assign is received."""
+        ack = ack_on_receipt_line(line)
+        if not ack:
+            return
+        fn = self.write_outbox
+        if not fn:
+            self.log("relay: ACK on receipt skipped (no write_outbox) " + ack)
+            return
+        try:
+            ok = bool(fn(ack))
+        except Exception as e:  # noqa: BLE001
+            self.log(f"relay: ACK on receipt error {type(e).__name__}")
+            return
+        if ok:
+            self.log("relay: ACK on receipt " + ack)
+        else:
+            self.log("relay: ACK on receipt write failed " + ack)
 
     def _do_inject(self, line: str) -> str:
         fn = self._inject
@@ -2322,9 +2720,11 @@ class Relay:
                 self._pending.insert(0, line)
 
     def release_held_assigns(self) -> int:
-        """FR #2811: flush pending assign lines after turn_ended / harvest hold ends.
+        """FR #2811 / FR #4115 / FR #4180: flush pending assigns after turn_ended / harvest hold ends.
 
         FR #4180: while out-of-fuel refuse is active, NACK parked assigns instead of injecting.
+        Otherwise (FR #4115): inject only the first held assign; extra assigns are NACKed via
+        the seat outbox (``busy, holding <first>``) without spending an agent turn.
         """
         with self._lock:
             keep: list = []
@@ -2349,10 +2749,29 @@ class Relay:
                     except Exception:
                         pass
             return 0
+        if not flush:
+            return 0
+        first, rest = flush[0], flush[1:]
         n = 0
-        for line in flush:
-            if self._do_inject(line) == "injected":
-                n += 1
+        if self._do_inject(first) == "injected":
+            n = 1
+        holding = assign_job_key(first) or "job"
+        for line in rest:
+            nack = busy_holding_nack_line(line, holding)
+            if nack and self.write_outbox:
+                try:
+                    if self.write_outbox(nack):
+                        self.log(
+                            f"relay: NACK extra held assign ({nack}) without agent turn"
+                        )
+                    else:
+                        self.log("relay: NACK extra held assign write failed " + nack)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"relay: NACK extra held assign error {type(e).__name__}")
+            else:
+                self.log(
+                    "relay: extra held assign dropped (no write_outbox) " + line[:80]
+                )
         return n
 
     def has_pending_work(self) -> bool:
@@ -3066,6 +3485,275 @@ def looks_like_job_assign(line: str, own_nick: str = "") -> bool:
     return bool(_JOB_ASSIGN_RX.search(body))
 
 
+_ASSIGN_JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
+
+
+def assign_job_key(line: str) -> Optional[str]:
+    """FR #4115: ``MRB owner/repo#N`` (case kept) from a Jeeves assign FROM line, or None."""
+    text = line or ""
+    parts = text.split(None, 3)
+    body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+    m = _ASSIGN_JOB_KEY_RX.search(body)
+    if not m:
+        return None
+    return f"{m.group(1).upper()} {m.group(2)}"
+
+
+def inject_failed_nack_line(line: str) -> Optional[str]:
+    """FR #4115: outbox NACK for an assign the agent never received (Jeeves re-offers it)."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    return f"NACK {key} inject failed"
+
+
+def ack_on_receipt_line(line: str) -> Optional[str]:
+    """FR #4115: outbox ACK written as soon as the seat receives an assign (before inject)."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    return f"ACK {key}"
+
+
+def busy_holding_nack_line(line: str, holding: str) -> Optional[str]:
+    """FR #4115: outbox NACK for an extra held assign; seat keeps ``holding`` without an agent turn."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    hold = (holding or "").strip() or "job"
+    return f"NACK {key} busy, holding {hold}"
+
+
+def append_outbox_line(path: Path | str, text: str) -> bool:
+    """Append one line to the run-dir outbox (the drain loop sends it to the shop channel)."""
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(text.rstrip("\r\n") + "\n")
+        return True
+    except OSError:
+        return False
+
+
+class InjectRecovery:
+    """FR #4115: an assign whose submit-verify FAILED is re-pasted once; if that also fails,
+    NACK it via the run-dir outbox (``inject failed``) and clear local state so the seat is free.
+
+    ``reinject(line, on_failed)`` must start one fresh inject+verify that calls ``on_failed`` on
+    a second failure. ``is_acked(line)`` short-circuits when the job got ACKed meanwhile.
+    """
+
+    def __init__(
+        self,
+        *,
+        reinject: Callable[[str, Callable[[], None]], bool],
+        write_outbox: Callable[[str], bool],
+        clear_local: Callable[[str], None],
+        is_acked: Callable[[str], bool] = lambda line: False,
+        log: Callable[[str], None] = lambda m: None,
+    ):
+        self.reinject = reinject
+        self.write_outbox = write_outbox
+        self.clear_local = clear_local
+        self.is_acked = is_acked
+        self.log = log
+
+    def on_failed(self, line: str, attempt: int = 1) -> str:
+        """Returns ``retried``, ``nacked``, ``acked`` or ``ignored``."""
+        if not assign_job_ref(line):
+            return "ignored"
+        if self.is_acked(line):
+            return "acked"
+        if attempt <= 1:
+            self.log(f"relay: submit-verify FAILED - re-pasting assign once (attempt 2) {line[:120]}")
+            ok = False
+            try:
+                ok = bool(self.reinject(line, lambda l=line: self.on_failed(l, attempt=2)))
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: re-paste error {type(e).__name__}")
+            if ok:
+                return "retried"
+            self.log("relay: inject path=fail reason=repaste_failed")
+        nack = inject_failed_nack_line(line)
+        if nack:
+            sent = self.write_outbox(nack)
+            self.log(f"relay: inject failed twice - {'queued' if sent else 'COULD NOT queue'} outbox {nack}")
+        try:
+            self.clear_local(line)
+        except Exception:  # noqa: BLE001
+            pass
+        return "nacked"
+
+
+# FR #4115: Grok's own prompt-accept timeout. Under CPU load the TUI shows
+# "The agent did not accept your prompt within 120s. Your text is back in the input box; press
+# Enter to retry" / "Prompt not accepted, text restored" and the prompt sits unsent.
+PROMPT_NOT_ACCEPTED_RX = re.compile(
+    r"(?i)prompt not accepted|did not accept your prompt within|text is back in the input box"
+)
+
+
+def _prompt_retry_enabled() -> bool:
+    """FR #4115: BOB_WORKER_PROMPT_RETRY=0 disables the prompt-not-accepted Enter retry."""
+    raw = (os.environ.get("BOB_WORKER_PROMPT_RETRY") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _prompt_retry_backoffs() -> tuple:
+    """FR #4115: waits after each Enter retry (BOB_WORKER_PROMPT_RETRY_BACKOFFS, csv seconds)."""
+    raw = (os.environ.get("BOB_WORKER_PROMPT_RETRY_BACKOFFS") or "").strip()
+    if raw:
+        try:
+            vals = tuple(max(1.0, min(600.0, float(x))) for x in raw.split(",") if x.strip())
+            if vals:
+                return vals
+        except ValueError:
+            pass
+    return (15.0, 30.0, 60.0)
+
+
+def read_console_screen_text(max_lines: int = 15) -> Optional[str]:
+    """FR #4115: last ``max_lines`` non-empty lines of THIS process's visible console window."""
+    if os.name != "nt":
+        return None
+    try:
+        from ctypes import wintypes as W
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class _COORD(ctypes.Structure):
+            _fields_ = [("X", W.SHORT), ("Y", W.SHORT)]
+
+        class _SR(ctypes.Structure):
+            _fields_ = [("L", W.SHORT), ("T", W.SHORT), ("R", W.SHORT), ("B", W.SHORT)]
+
+        class _CSBI(ctypes.Structure):
+            _fields_ = [("size", _COORD), ("cur", _COORD), ("attr", W.WORD), ("win", _SR), ("max", _COORD)]
+
+        k32.CreateFileW.restype = W.HANDLE
+        k32.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+        k32.CloseHandle.argtypes = [W.HANDLE]
+        h = k32.CreateFileW("CONOUT$", 0xC0000000, 3, None, 3, 0, None)
+        if not h or h == ctypes.c_void_p(-1).value:
+            return None
+        try:
+            ci = _CSBI()
+            if not k32.GetConsoleScreenBufferInfo(h, ctypes.byref(ci)):
+                return None
+            w = int(ci.size.X)
+            lines = []
+            for y in range(int(ci.win.T), int(ci.win.B) + 1):
+                buf = ctypes.create_unicode_buffer(w + 1)
+                n = W.DWORD()
+                k32.ReadConsoleOutputCharacterW(h, buf, w, _COORD(0, y), ctypes.byref(n))
+                t = buf.value.rstrip()
+                if t:
+                    lines.append(t)
+            return "\n".join(lines[-max(1, int(max_lines)):])
+        finally:
+            k32.CloseHandle(h)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class PromptNotAcceptedWatcher:
+    """FR #4115: detect Grok's "Prompt not accepted, text restored" and press Enter to retry with
+    bounded backoff; after ``max_tries`` Enters still showing it, call ``on_give_up`` once (the
+    caller NACKs a pending assign). ``note_activity`` (turn started/ended) ends the episode and
+    ignores the same stale screen text until it changes.
+    """
+
+    def __init__(
+        self,
+        *,
+        read_fn: Callable[[], Optional[str]],
+        enter_fn: Callable[[], bool],
+        on_give_up: Callable[[], None] = lambda: None,
+        clock: Callable[[], float] = time.monotonic,
+        log: Callable[[str], None] = lambda m: None,
+        max_tries: int = 3,
+        backoffs: tuple | list = (15.0, 30.0, 60.0),
+    ):
+        self.read_fn = read_fn
+        self.enter_fn = enter_fn
+        self.on_give_up = on_give_up
+        self.clock = clock
+        self.log = log
+        self.max_tries = max(1, int(max_tries))
+        self.backoffs = tuple(float(b) for b in backoffs) or (15.0,)
+        self.tries = 0
+        self.next_at = 0.0
+        self.gave_up = False
+        self.active = False
+        self._stale: Optional[str] = None
+        self._last_screen: Optional[str] = None
+
+    @staticmethod
+    def _match(screen: str) -> Optional[str]:
+        hits = [ln.strip() for ln in screen.splitlines() if PROMPT_NOT_ACCEPTED_RX.search(ln)]
+        return "\n".join(hits) if hits else None
+
+    def note_activity(self) -> None:
+        if self.active:
+            self.log(f"relay: prompt-not-accepted resolved (turn activity) after {self.tries} Enter retries")
+        self._stale = self._match(self._last_screen or "") if self._last_screen else None
+        self.active = False
+        self.tries = 0
+        self.gave_up = False
+
+    def tick(self) -> str:
+        """Returns ``clear``, ``stale``, ``wait``, ``enter``, ``gave_up`` or ``done``."""
+        screen = self.read_fn()
+        if screen is None:
+            return "clear"
+        self._last_screen = screen
+        hit = self._match(screen)
+        if not hit:
+            if self.active:
+                self.log(f"relay: prompt-not-accepted cleared after {self.tries} Enter retries")
+            self.active = False
+            self.tries = 0
+            self.gave_up = False
+            self._stale = None
+            return "clear"
+        if self._stale is not None and hit == self._stale:
+            return "stale"
+        self._stale = None
+        now = float(self.clock())
+        if not self.active:
+            self.active = True
+            self.tries = 0
+            self.gave_up = False
+            self.next_at = now
+            self.log("relay: prompt-not-accepted detected (Grok accept timeout; text restored)")
+        if self.gave_up:
+            return "done"
+        if now < self.next_at:
+            return "wait"
+        if self.tries >= self.max_tries:
+            self.gave_up = True
+            self.log(f"relay: prompt-not-accepted still showing after {self.tries} Enter retries - giving up")
+            try:
+                self.on_give_up()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: prompt-not-accepted give-up error {type(e).__name__}")
+            return "gave_up"
+        self.tries += 1
+        ok = False
+        try:
+            ok = bool(self.enter_fn())
+        except Exception:  # noqa: BLE001
+            ok = False
+        wait = self.backoffs[min(self.tries - 1, len(self.backoffs) - 1)]
+        self.next_at = now + wait
+        self.log(
+            f"relay: prompt-not-accepted - Enter retry {self.tries}/{self.max_tries} "
+            f"ok={ok} next check in {wait:.0f}s"
+        )
+        return "enter"
+
+
 class AssignAckMiss:
     """FR #2383: assign injected, agent keeps working, but no ACK hits the run-dir outbox.
 
@@ -3133,6 +3821,10 @@ class AssignAckMiss:
         return None
 
     def reminder_line(self, *, shop: str, outbox: str | Path) -> str:
+        # FR #4115: repeat the pending assign itself so a lost paste is recovered; the generic
+        # outbox reminder made the agent answer "waiting for the next Jeeves assign".
+        if self.last_line and assign_job_ref(self.last_line):
+            return self.last_line
         path = str(outbox)
         return format_from(
             "bob-worker",
@@ -3288,6 +3980,12 @@ class BoredEmitter:
         self.fuel_lost_check_fn: Optional[Callable[[], bool]] = None
         self.fuel_poll_s = _env_float("BOB_WORKER_OUT_OF_FUEL_POLL_S", 30.0, 5.0, 600.0)
         self._fuel_lost_checked_at: Optional[float] = None
+        # FR #3923: require N consecutive explicit exhausted readings before GIVEUP
+        # (unknown/timeout must not kill a live ACK; one transient 0 must not either).
+        self.fuel_lost_streak_need = max(
+            1, int(_env_float("BOB_WORKER_OUT_OF_FUEL_STREAK", 2.0, 1.0, 10.0))
+        )
+        self._fuel_lost_streak = 0
         # FR #3192: optional Relay — when set, undelivered assigns block !bored (has_pending_work).
         self.relay: Optional["Relay"] = None
         self.sent: list = []  # (clock time, reason)
@@ -3640,6 +4338,7 @@ class BoredEmitter:
                 self._inject_at = None
                 self._harvest_until = None
                 self._fuel_lost_checked_at = None  # FR #3019: re-arm mid-job fuel poll
+                self._fuel_lost_streak = 0  # FR #3923: new ACK starts a fresh streak
                 self._clear_done_miss()
             elif _OUT_DONE_RX.match(p):
                 job = outbox_job_key(p)
@@ -3884,7 +4583,9 @@ class BoredEmitter:
                         self._idle_since = now
                         self._release_gen = self._turn_gen
                         self.log("out-of-fuel: cleared - seat may !bored again")
-                # FR #3019: mid-job fuel-lost poll while ACK open (Cursor parity / reading gate).
+                # FR #3019 / #3923: mid-job fuel-lost poll while ACK open.
+                # Unknown readings must return False from fuel_lost_check_fn; require
+                # fuel_lost_streak_need consecutive True polls before GIVEUP.
                 if (
                     self._ack_open
                     and not self._out_of_fuel
@@ -3900,7 +4601,23 @@ class BoredEmitter:
                         except Exception:
                             lost = False
                         if lost:
-                            self.note_out_of_fuel("mid-job fuel reading exhausted")
+                            self._fuel_lost_streak = int(self._fuel_lost_streak) + 1
+                            need = int(self.fuel_lost_streak_need)
+                            self.log(
+                                f"out-of-fuel: mid-job exhausted reading streak="
+                                f"{self._fuel_lost_streak}/{need}"
+                            )
+                            if self._fuel_lost_streak >= need:
+                                self.note_out_of_fuel(
+                                    f"mid-job fuel reading exhausted (streak={self._fuel_lost_streak})"
+                                )
+                        else:
+                            if self._fuel_lost_streak:
+                                self.log(
+                                    f"out-of-fuel: mid-job streak reset "
+                                    f"(was {self._fuel_lost_streak})"
+                                )
+                            self._fuel_lost_streak = 0
                 # FR #2875: grace expiry injects reminder while ACK stays open (still busy).
                 if not self._out_of_fuel:
                     self._fire_done_miss_remind(now)
@@ -4066,6 +4783,12 @@ class Supervisor:
         # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
         relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
         relay.on_refuse_assign = self._nack_assign_out_of_fuel
+        # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
+        if getattr(relay, "write_outbox", None) is None and self.run_dir is not None:
+            _run = self.run_dir
+            relay.write_outbox = lambda text, rd=_run: append_outbox_line(
+                outbox_path_for_run(rd), text
+            )
         # FR #3192: BoredEmitter consults Relay.has_pending_work so !bored stays quiet
         # while an assign is held/inject_failed (not only hold_assigns_while).
         if self.bored is not None:
@@ -4109,19 +4832,30 @@ class Supervisor:
         return self.secret is not None
 
     def _fuel_lost_mid_job(self) -> bool:
-        """FR #3019: True when this seat's kind has no tokens left while a job is ACKed."""
+        """FR #3019 / #3923: True only on an **explicit** exhausted reading while ACKed.
+
+        Unknown / timeout / empty ``Fuel()`` is **not** lost (selection still treats
+        unknown as unavailable). Logs pct/state/helper snapshot every poll.
+        """
         kind = (self.kind or "").strip().lower()
         try:
             fuel = read_fuel(self._install_root_for_fuel())
-        except Exception:
+        except Exception as e:
+            self.log(f"out-of-fuel: mid-job read_fuel failed {type(e).__name__} - treat as unknown")
             return False
+        snap = format_fuel_reading(fuel, kind)
         if kind == "cursor":
-            return not cursor_has_tokens(fuel)
+            lost = fuel_explicitly_exhausted(fuel, "cursor")
+            self.log(f"out-of-fuel: mid-job reading {snap}")
+            return lost
         if kind == "grok":
             # Session key still counts as fuel for a dialog-started grok seat.
             if self.secret is not None:
+                self.log(f"out-of-fuel: mid-job reading {snap} (session key present)")
                 return False
-            return not grok_has_tokens(fuel)
+            lost = fuel_explicitly_exhausted(fuel, "grok")
+            self.log(f"out-of-fuel: mid-job reading {snap}")
+            return lost
         return False
 
     def _clear_watchdogs_for_out_of_fuel(self) -> None:
@@ -4256,11 +4990,19 @@ class Supervisor:
         def _on_started(turn: Optional[int], wall: float) -> None:
             sid = sid_box.get("sid")
             self._note_startup_turn_started(sid)
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
             if self.bored:
                 self.bored.turn_started(turn=turn, sid=sid)
 
         def _on_ended(turn: Optional[int], wall: float) -> None:
             sid = sid_box.get("sid")
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
             if self.bored:
                 # Use emitter clock for hold release; wall is only for logging/stale via hold_started mono.
                 self.bored.turn_ended(turn=turn, sid=sid)
@@ -4410,6 +5152,7 @@ class Supervisor:
             self.relay.set_target(None)
             self._start_turn_watcher(spec.session_id)
             self._start_fuel_watcher(int(proc.pid or 0))
+            self._start_prompt_watcher(proc)
             self._arm_ready(proc)
             threading.Thread(target=self._wait_exit, args=(proc,), name="agent-wait", daemon=True).start()
             return True
@@ -4485,14 +5228,36 @@ class Supervisor:
             except Exception:
                 pass
         self.relay.set_target(lambda line, p=proc: self._inject_line(p, line))
+        # FR #4123: if grace released while turn 0 is open, enable inject but defer !bored
+        # until turn_ended so Jeeves does not offer into a still-booting agent.
+        defer_bored = False
+        with self._lock:
+            if reason == "grace" and self._startup_saw_turn_started and self._startup_turn_release_enabled:
+                self._startup_defer_start_bored = True
+                defer_bored = True
+            elif reason == "turn":
+                self._startup_defer_start_bored = False
         if self.bored:
-            self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
+            if defer_bored:
+                self.log(
+                    "agent: ready for inject but deferring !bored until turn_ended "
+                    "(FR #4123; turn 0 still open after grace)"
+                )
+            else:
+                self.bored.set_ready(True)  # seat start / restart complete -> !bored (watcher: "on start")
         now = float(self.clock())
         elapsed = now - float(started_at) if started_at is not None else 0.0
         if reason == "turn":
             self.log(
                 f"agent: ready (first turn_ended after {elapsed:.0f}s; "
                 f"startup_grace_s={self.startup_grace_s:.0f} fallback not needed)"
+            )
+            self._release_deferred_startup_bored()
+        elif reason == "cap":
+            # Cap no longer enables inject under wait_ready (FR #4123); keep log for legacy callers.
+            self.log(
+                f"agent: ready (startup ready cap {_startup_ready_cap_s():.0f}s reached without "
+                f"turn_ended); inject + !bored enabled"
             )
         else:
             self.log(
@@ -4507,6 +5272,7 @@ class Supervisor:
             self._startup_ready_proc = None
             self._startup_session_id = self.sessions[-1] if self.sessions else None
             self._startup_saw_turn_started = False
+            self._startup_defer_start_bored = False
             self._startup_turn_release_enabled = should_start_turn_watcher(self.kind)
             if self._min_ready_timer is not None:
                 try:
@@ -4516,10 +5282,35 @@ class Supervisor:
                 self._min_ready_timer = None
 
         def ready():
+            # FR #4115 / #4123: for grok (turn watcher on) the grace timer no longer releases inject
+            # while the session is still starting. Hold until the first turn_ended. At the ready cap
+            # without turn_ended, hang-recycle (do not paste into a still-booting agent).
+            with self._lock:
+                wait_ready = (
+                    self._startup_hold_armed
+                    and self._startup_turn_release_enabled
+                    and _startup_wait_ready_enabled()
+                    and self.proc is proc
+                )
+            cap = _startup_ready_cap_s()
+            remaining = max(0.0, cap - float(self.startup_grace_s))
+            if wait_ready and remaining > 0:
+                self.log(
+                    f"agent: startup_grace_s={self.startup_grace_s:.0f} elapsed but session not ready "
+                    f"(no first turn_ended) - holding inject/!bored until ready (cap {cap:.0f}s)"
+                )
+                t2 = threading.Timer(remaining, lambda p=proc: self._on_startup_ready_cap(p))
+                t2.daemon = True
+                with self._lock:
+                    if not self._startup_hold_armed:
+                        return
+                    self._grace_timer = t2
+                t2.start()
+                return
             self._ready_now(proc, reason="grace")
 
         if self.startup_grace_s <= 0:
-            ready()
+            self._ready_now(proc, reason="grace")
             return
         t = threading.Timer(self.startup_grace_s, ready)
         t.daemon = True
@@ -4527,9 +5318,122 @@ class Supervisor:
             self._grace_timer = t
         t.start()
 
-    def _inject_line(self, proc, line: str) -> bool:
+
+    def _release_deferred_startup_bored(self) -> None:
+        """FR #4123: fire the deferred seat-start !bored once turn 0 ends."""
+        with self._lock:
+            if not getattr(self, "_startup_defer_start_bored", False):
+                return
+            self._startup_defer_start_bored = False
+        if self.bored:
+            self.bored.set_ready(True)
+            self.log("agent: deferred !bored released after turn_ended (FR #4123)")
+
+    def _on_startup_ready_cap(self, proc) -> None:
+        """FR #4123: ready-cap without first turn_ended -> hang-recycle, never paste.
+
+        Wait-ready already blocked the 60 s grace release. At the long cap, if the first
+        turn still has not ended, treat it as a hung first turn (process dead or idle, or
+        hard timeout) and restart a NEW agent instead of enabling inject/!bored.
+        """
+        with self._lock:
+            if self._shutting or self.proc is not proc:
+                return
+            if not self._startup_hold_armed:
+                return
+            saw_started = bool(self._startup_saw_turn_started)
+        idle = _startup_proc_idle(proc, probe=getattr(self, "probe", None))
+        why = "startup-no-first-turn"
+        if idle:
+            detail = "process dead or 0 CPU"
+        else:
+            detail = "first turn_ended never arrived (hard cap)"
+        self.log(
+            f"agent: startup ready cap {_startup_ready_cap_s():.0f}s reached without turn_ended "
+            f"({detail}; saw_turn_started={saw_started}) - hang-recycle (FR #4123)"
+        )
+        with self._lock:
+            self._startup_hold_armed = False
+            grace_t = self._grace_timer
+            self._grace_timer = None
+        if grace_t is not None:
+            with contextlib.suppress(Exception):
+                grace_t.cancel()
+        self.restart_agent(why)
+
+    def _prompt_give_up(self) -> None:
+        """FR #4115: Enter retries exhausted - NACK the pending assign (if any) via the recovery."""
+        line = ""
+        with contextlib.suppress(Exception):
+            line = self.ack_miss.last_line or ""
+        if not line:
+            line = getattr(self.relay, "last_unacked", "") or ""
+        if line and assign_job_ref(line):
+            self._inject_recovery().on_failed(line, attempt=2)
+        else:
+            self.log("relay: prompt-not-accepted give-up - no pending assign to NACK")
+
+    def _start_prompt_watcher(self, proc) -> None:
+        """FR #4115: poll the shared console for Grok's prompt-accept timeout (Windows, grok only)."""
+        if os.name != "nt" or (self.kind or "").strip().lower() != "grok" or not _prompt_retry_enabled():
+            return
+        pw = PromptNotAcceptedWatcher(
+            read_fn=read_console_screen_text,
+            enter_fn=send_console_enter,
+            on_give_up=self._prompt_give_up,
+            clock=time.monotonic,
+            log=self.log,
+            backoffs=_prompt_retry_backoffs(),
+        )
+        self._prompt_watch = pw
+
+        def _run() -> None:
+            while not self._shutting and self.proc is proc and proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    pw.tick()
+                time.sleep(5.0)
+
+        threading.Thread(target=_run, name="prompt-retry-watch", daemon=True).start()
+
+    def _inject_recovery(self) -> "InjectRecovery":
+        """FR #4115: lazily build the re-paste / NACK recovery for lost assign pastes."""
+        rec = getattr(self, "_recovery", None)
+        if rec is not None:
+            return rec
+
+        def _reinject(line: str, cb) -> bool:
+            proc = self.proc
+            if proc is None:
+                return False
+            return bool(self._inject_line(proc, line, on_failed=cb))
+
+        def _write(text: str) -> bool:
+            return append_outbox_line(outbox_path_for_run(self.run_dir), text)
+
+        def _clear(line: str) -> None:
+            with contextlib.suppress(Exception):
+                if (self.ack_miss.last_line or "") == line or not self.ack_miss.last_line:
+                    self.ack_miss.clear()
+            with contextlib.suppress(Exception):
+                if getattr(self.relay, "last_unacked", "") == line:
+                    self.relay.last_unacked = ""
+
+        def _acked(line: str) -> bool:
+            b = self.bored
+            want = assign_job_ref(line)
+            return bool(b is not None and want and getattr(b, "ack_open", False)
+                        and getattr(b, "ack_job_ref", None) == want)
+
+        rec = InjectRecovery(reinject=_reinject, write_outbox=_write, clear_local=_clear,
+                             is_acked=_acked, log=self.log)
+        self._recovery = rec
+        return rec
+
+    def _inject_line(self, proc, line: str, *, on_failed=None) -> bool:
         if proc.poll() is not None:
             return False
+        if on_failed is None and assign_job_ref(line):
+            on_failed = lambda l=line: self._inject_recovery().on_failed(l, attempt=1)
         if not _submit_verify_enabled():
             return bool(self.inject(proc.pid, line))
         sid = self.sessions[-1] if self.sessions else None
@@ -4561,6 +5465,7 @@ class Supervisor:
             log=self.log,
             stop_fn=stop,
             sync=False,
+            on_failed=on_failed,
         )
 
     def _wait_exit(self, proc) -> None:
@@ -4710,9 +5615,10 @@ class Supervisor:
         shop = shop_channel(self.machine)
         if action == "remind":
             line = self.ack_miss.reminder_line(shop=shop, outbox=outbox)
+            what = "pending assign" if line == self.ack_miss.last_line else "outbox reminder"
             self.log(
                 f"ack-miss: no ACK after assign for {self.ack_miss.remind_s:.0f}s; "
-                f"re-injecting outbox reminder path={outbox}"
+                f"re-injecting {what} path={outbox}"
             )
             try:
                 self._inject_line(proc, line)

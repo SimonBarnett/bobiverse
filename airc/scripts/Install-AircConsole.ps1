@@ -98,6 +98,18 @@ if (-not $scriptDirEarly) {
     if ($PSCommandPath) { $scriptDirEarly = Split-Path -Parent $PSCommandPath }
     elseif ($MyInvocation.MyCommand.Path) { $scriptDirEarly = Split-Path -Parent $MyInvocation.MyCommand.Path }
 }
+# FR #4215: when invoked standalone (not via Install-Airc), still register AV exclusions
+# before NSSM points at airc.exe.
+if ($scriptDirEarly) {
+    $avExEarly = Join-Path $scriptDirEarly 'Register-BobiverseAvExclusions.ps1'
+    if (-not (Test-Path -LiteralPath $avExEarly)) {
+        $avExEarly = Join-Path $scriptDirEarly '..\..\common\scripts\Register-BobiverseAvExclusions.ps1'
+    }
+    if (Test-Path -LiteralPath $avExEarly) {
+        $packGuess = Split-Path -Parent $scriptDirEarly
+        & $avExEarly -Paths @($packGuess, (Join-Path $packGuess 'airc')) -Processes @('airc.exe') -Product airc
+    }
+}
 $commonPs1 = if ($scriptDirEarly) { Join-Path $scriptDirEarly 'Bobiverse-Common.ps1' } else { '' }
 if ($commonPs1 -and (Test-Path -LiteralPath $commonPs1) -and -not (Get-Command Get-BobiverseServiceAppParameters -ErrorAction SilentlyContinue)) {
     . $commonPs1
@@ -111,6 +123,16 @@ $priorId = $null
 if (Get-Command Get-BobiverseServiceAppParameters -ErrorAction SilentlyContinue) {
     $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName $ServiceName
     $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
+    # FR #3900: Install-Airc passes ServiceName=Airc while legacy agentic_irc still
+    # runs as AircConsole - read that registry before Remove-BobiverseLegacyService.
+    if (-not $priorAppParams -and $ServiceName -ne 'AircConsole') {
+        $legacyParams = Get-BobiverseServiceAppParameters -ServiceName 'AircConsole'
+        if ($legacyParams) {
+            $priorAppParams = $legacyParams
+            $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
+            Write-Host 'INFO FR #3900: preserving identity from legacy AircConsole'
+        }
+    }
 }
 if ((-not $priorAppParams) -and $scriptDirEarly) {
     $installRootGuess = Split-Path -Parent $scriptDirEarly
@@ -155,7 +177,7 @@ $script:AircConsoleMachineId = $MachineId
 if ($MachineId) {
     Write-Host "INFO MachineId=$MachineId (console will JOIN #$MachineId)"
 } else {
-    Write-Warning ("Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console may join #win-... instead of #ionos." -f $env:COMPUTERNAME)
+    Write-Warning ("FR #4014: Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console will use #{0} when registered, else #wonderland." -f $env:COMPUTERNAME)
 }
 
 # FR #259: $PSScriptRoot can be empty in param() defaults under [CmdletBinding()];
@@ -180,6 +202,27 @@ else {
     }
 }
 $resolvedNssm = Resolve-AircConsoleNssmPath -Preferred $Nssm -ScriptDir $scriptDir
+if (-not $resolvedNssm) {
+    # FR #3899: MajorUpgrade can leave third_party\nssm\win64\nssm.exe missing (NeverOverwrite
+    # costing skip + old component FileRemove). Re-fetch into the install tree before failing.
+    $fetchNssm = Join-Path $scriptDir 'Fetch-Nssm.ps1'
+    if (-not (Test-Path -LiteralPath $fetchNssm)) {
+        $commonFetch = Join-Path (Split-Path -Parent $scriptDir) 'common\scripts\Fetch-Nssm.ps1'
+        if (Test-Path -LiteralPath $commonFetch) { $fetchNssm = $commonFetch }
+    }
+    if ($scriptDir -and (Test-Path -LiteralPath $fetchNssm)) {
+        $installRoot = Split-Path -Parent $scriptDir
+        $nssmOut = Join-Path $installRoot 'third_party\nssm\win64'
+        $nssmCache = Join-Path $installRoot 'third_party\nssm'
+        try {
+            Write-Host "INFO FR #3899 nssm missing; Fetch-Nssm into $nssmOut"
+            & $fetchNssm -OutDir $nssmOut -CacheDir $nssmCache
+        } catch {
+            Write-Host ("WARN FR #3899 Fetch-Nssm failed: {0}" -f $_.Exception.Message)
+        }
+        $resolvedNssm = Resolve-AircConsoleNssmPath -Preferred $Nssm -ScriptDir $scriptDir
+    }
+}
 if (-not $resolvedNssm) {
     throw 'nssm missing: unpack third_party\nssm\win64\nssm.exe from the release zip (issue #266), or pass -Nssm, or install to <ai root>\ergo\nssm.exe'
 }
@@ -344,10 +387,11 @@ function Initialize-AircConsoleHomeSecrets {
         Write-Host "INFO keep $NickServPasswordFile"
     }
 
-    # #294 / FR #3756: Ergo server PASS comes from the *release zip*
-    # (config\ergo.password), -ErgoPasswordFile, env, or an existing home file -
-    # not from the target machine's ~/.grok (most clients have none). Public MSIs
-    # do not embed the PASS (issue #4); private fleet zips may.
+    # #294 / FR #3756 / FR #4216: Ergo server PASS comes from the *release*
+    # (config\ergo.password embedded in airc MSI / private zip), -ErgoPasswordFile,
+    # env, or an existing home file - not from the target machine's ~/.grok
+    # (most clients have none). FR #4216: airc MSIs MUST embed the PASS so first
+    # start connects; bob/jeeves public MSIs still follow issue #4 (no embed).
     $ergoDest = Join-Path $ConsoleHomeDir 'ergo.password'
     $secret = $null
     $source = $null
@@ -381,12 +425,12 @@ function Initialize-AircConsoleHomeSecrets {
     }
     if (-not $secret) {
         throw @"
-Ergo server PASS missing (FR #3756 / issue #294). Provide one of:
-  1) release unpack config\ergo.password (private zip packed with fleet secret),
+Ergo server PASS missing (FR #4216 / FR #3756 / issue #294). Provide one of:
+  1) release config\ergo.password (airc MSI embeds it per FR #4216; re-pack if missing),
   2) -ErgoPasswordFile <path>,
   3) env AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD / BOB_IRC_PASSWORD,
   4) pre-seed ConsoleHome\ergo.password.
-Public MSIs never embed the PASS (issue #4). Never invent the secret.
+Never invent the secret. bob/jeeves public MSIs still omit embed (issue #4).
 "@
     }
     Write-AircSecretFile -Path $ergoDest -Secret $secret
@@ -569,8 +613,13 @@ if ($useAircExe) {
     Write-Host 'INFO Airc Application=powershell Start-AircConsole.ps1 (legacy; no airc\airc.exe)'
 }
 
-# FR #1546: expand DisplayName/Description (never leave literal #{machine}); log under install tree.
-$dnMachine = if ($MachineId) { $MachineId } elseif ($script:AircConsoleMachineId) { $script:AircConsoleMachineId } else { 'machine' }
+# FR #1546 / FR #4015: expand DisplayName/Description (never leave literal #machine / #{machine}).
+# Prefer -MachineId / script id; else sanitize COMPUTERNAME. Never fall back to the word 'machine'.
+$dnMachine = if ($MachineId) { $MachineId } elseif ($script:AircConsoleMachineId) { $script:AircConsoleMachineId } else { '' }
+if (-not $dnMachine) {
+    $dnMachine = ([string]$env:COMPUTERNAME -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
+}
+if (-not $dnMachine) { $dnMachine = 'local' }
 $displayName = "airc console (#${dnMachine} IRC shell)"
 $description = "FR #253: nick console on #${dnMachine}; auth PRIVMSG -> shell; silent in channel."
 $setPairs = @(

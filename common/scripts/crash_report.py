@@ -472,6 +472,8 @@ def _gh_search_open_sig(repo: str, sig: str) -> int | None:
             ["gh", "issue", "list", "--repo", repo, "--state", "open", "--search", f"crash-sig:{sig}", "--json", "number,body,title", "--limit", "20"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=12,
             check=False,
         )
@@ -502,6 +504,8 @@ def _gh_comment(repo: str, number: int, body: str) -> bool:
             ["gh", "issue", "comment", str(number), "--repo", repo, "--body", body[:6000]],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=20,
             check=False,
         )

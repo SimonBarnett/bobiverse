@@ -2,6 +2,7 @@
 """Queue-flow check: gated vs ungated offer queue (FR #1518 / #1508 / #2448 / #2446)."""
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -86,6 +87,12 @@ def _gate_bucket(row: dict) -> str:
             if "skill" in s or "harvest" in s:
                 return "skill"
             return "skip_fr"
+        # FR #4009: hold label / owner HOLD body stamp (not SKIP_FR; still blocks UAT).
+        hold = None
+        with contextlib.suppress(Exception):
+            hold = gc.row_fr_hold_reason(row)
+        if hold:
+            return "hold"
         # Global human gate (empty nick): per-seat giveup still counts as needs-human for breakdown.
         if gc.row_needs_human(row, ""):
             return "needs-human"

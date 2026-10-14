@@ -22,6 +22,7 @@ from pathlib import Path
 REGISTRY_NAME = "registered-machines.json"
 SOURCE_CHANSERV = "chanserv-list"
 SOURCE_REGISTER = "register-command"
+SOURCE_UNREGISTER = "unregister-command"
 
 # Registered channels that are NOT machine shops. Anything with a character outside
 # [a-z0-9-] (e.g. #agentic_irc) is excluded by the id check below.
@@ -30,6 +31,10 @@ SOURCE_REGISTER = "register-command"
 NON_MACHINE_CHANNELS = frozenset({"bobiverse", "wonderland"})
 EXCLUDE_ENV = "BOB_CHANSERV_EXCLUDE"  # extra comma-separated channel names to ignore
 WONDERLAND_CHANNEL = "#wonderland"
+# FR #3868: always keep #bobiverse even when ChanServ LIST omits it (PART of the
+# fleet channel dropped ear !assign). Do NOT invent #wonderland here — MRB #3851
+# requires LIST-exact channels when channels[] is persisted from ChanServ.
+CHAIR_REQUIRED_CHANNELS = ("#bobiverse",)
 
 _SAFE_MID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$", re.I)
 _IRC_FMT = re.compile(r"[\x00-\x1f\x7f]|\x03\d{0,2}(,\d{1,2})?")
@@ -149,12 +154,18 @@ def registered_channels_from_list(channels) -> list[str]:
     return out
 
 
+def with_chair_required_channels(channels) -> list[str]:
+    """FR #3868: always keep #bobiverse in the chair channel set (never invent #wonderland — MRB #3851)."""
+    return registered_channels_from_list(list(CHAIR_REQUIRED_CHANNELS) + list(channels or []))
+
+
 def load_registered_channels(home: Path) -> list[str]:
     """Persisted full registered channel list (FR #3836), or synthesize from machines."""
     doc = _read_doc(home)
     raw = doc.get("channels")
     if isinstance(raw, list) and raw:
-        return registered_channels_from_list(raw)
+        # FR #3868: backfill #bobiverse if a partial LIST persisted without it (wonderland stays LIST-exact).
+        return with_chair_required_channels(raw)
     # Legacy / !register-only: synthesize fleet + wonderland + shops (FR #3834 fallback
     # until a ChanServ LIST has written the full ``channels`` field).
     mids = load_registered(home)
@@ -178,9 +189,9 @@ def save_registered(
     clean_mids = {m for m in machines if m and m not in skip}
     payload: dict = {"v": 3, "machines": sorted(clean_mids)}
     if channels is not None:
-        payload["channels"] = registered_channels_from_list(channels)
+        payload["channels"] = with_chair_required_channels(channels)
     elif isinstance(prev.get("channels"), list) and prev.get("channels"):
-        payload["channels"] = registered_channels_from_list(prev["channels"])
+        payload["channels"] = with_chair_required_channels(prev["channels"])
     payload["source"] = source or prev.get("source") or SOURCE_REGISTER
     if refreshed_at is not None:
         payload["refreshed_ts"] = float(refreshed_at)
@@ -200,8 +211,42 @@ def add_registered(home: Path, machine: str) -> str | None:
         return None
     cur = load_registered(home)
     cur.add(mid)
-    save_registered(home, cur)
+    save_registered(home, cur, source=SOURCE_REGISTER)
     return mid
+
+
+def remove_registered(home: Path, machine: str) -> str | None:
+    """Drop machine id and its shop channel from the registry (FR #4008)."""
+    mid = normalize_machine_id(machine)
+    if not mid:
+        return None
+    home = Path(home)
+    cur = load_registered(home)
+    cur.discard(mid)
+    prev = _read_doc(home)
+    channels = None
+    if isinstance(prev.get("channels"), list):
+        shop = f"#{mid}"
+        channels = [
+            c for c in prev["channels"]
+            if str(c or "").strip().lower() != shop
+        ]
+        channels = with_chair_required_channels(channels)
+    save_registered(home, cur, source=SOURCE_UNREGISTER, channels=channels)
+    return mid
+
+
+def is_core_unregister_refused(machine: str) -> bool:
+    """True for #bobiverse / #wonderland / NON_MACHINE (FR #4008)."""
+    mid = normalize_machine_id(machine)
+    if not mid:
+        name = (machine or "").strip().lstrip("#").lower()
+        return name in NON_MACHINE_CHANNELS or name in {
+            c.lstrip("#").lower() for c in CHAIR_REQUIRED_CHANNELS
+        }
+    return mid in NON_MACHINE_CHANNELS or mid in {
+        c.lstrip("#").lower() for c in CHAIR_REQUIRED_CHANNELS
+    }
 
 
 def is_registered(home: Path, machine: str) -> bool:
@@ -300,7 +345,9 @@ def sync_from_chanserv(
         return None
     cur = load_registered(home)
     added, removed = ids - cur, cur - ids
-    full = registered_channels_from_list(channels)
+    # FR #3868: union required chair channels so a LIST that omitted #bobiverse
+    # cannot persist a roster that makes the chair PART the fleet channel.
+    full = with_chair_required_channels(channels)
     save_registered(
         Path(home),
         ids,
@@ -318,6 +365,27 @@ def parse_register_command(body: str) -> str | None:
     if not m:
         return None
     return normalize_machine_id(m.group(1))
+
+
+def parse_unregister_command(body: str) -> dict | None:
+    """Parse ``!unregister`` variants (FR #4008).
+
+    Returns None if not an unregister command, else
+    ``{mid, dry_run, confirm, raw}`` where mid may be None when syntax is incomplete.
+    """
+    text = (body or "").strip()
+    if not re.match(r"^!unregister\b", text, re.I):
+        return None
+    low = text.lower()
+    dry_run = bool(re.search(r"(?i)\bdry-run\b", text))
+    confirm = bool(re.search(r"(?i)\bconfirm\b", text))
+    # Strip command + optional dry-run/confirm tokens; remaining token is mid.
+    rest = re.sub(r"^!unregister\s*", "", text, count=1, flags=re.I)
+    rest = re.sub(r"(?i)\bdry-run\b", " ", rest)
+    rest = re.sub(r"(?i)\bconfirm\b", " ", rest)
+    parts = [p for p in rest.split() if p.strip()]
+    mid = normalize_machine_id(parts[0]) if parts else None
+    return {"mid": mid, "dry_run": dry_run, "confirm": confirm, "raw": text}
 
 
 def bob_nick_for_machine(machine: str) -> str:

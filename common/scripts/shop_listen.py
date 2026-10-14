@@ -622,6 +622,12 @@ def handle_shop_worker_line(
             # The seat is working on what it ACKed even when the queue row is gone (re-synced, already
             # accepted, offered twice): the digest must still show it as doing (t816u).
             job = {"task": parsed.task, "repo": parsed.repo, "id": parsed.id}
+            # FR #4115: record a seat hold so !bored / done-offer treat the seat as busy
+            # (no accepted row exists for status=missing after a Jeeves restart).
+            try:
+                gitclaim.note_seat_hold(home, nick, job)
+            except Exception:  # noqa: BLE001
+                pass
         if st in ("ok", "duplicate", "missing") and job is not None:
             desc = activity_description(job, parsed.title)
             payload = format_activity_payload(
@@ -670,6 +676,23 @@ def handle_shop_worker_line(
             )
         except Exception:  # noqa: BLE001
             pass
+        
+        # FR #3948: DONE MRB PASS -> merge-on-green ledger (seat never polls CI).
+        if str(parsed.task or "").upper() == "MRB" and str(parsed.result or "").upper() == "PASS":
+            try:
+                import mrb_merge_on_green
+
+                mog = mrb_merge_on_green.enqueue_from_done(
+                    home,
+                    repo=parsed.repo,
+                    pr_url=parsed.url or "",
+                    result=parsed.result or "",
+                    nick=nick,
+                )
+                if mog:
+                    out["merge_on_green"] = mog
+            except Exception:  # noqa: BLE001
+                pass
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )

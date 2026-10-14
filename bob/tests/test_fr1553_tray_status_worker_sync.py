@@ -33,8 +33,22 @@ def test_sync_function_and_watch_wiring_static():
     assert "Sync-BobTrayStatusWorkersFromDigest" in w
     assert "System.Timers.Timer" in w
     assert "SynchronizingObject = $null" in w
-    poll = w[w.index("$poll.Add_Tick") : w.index("$poll.Add_Tick") + 1200]
-    assert poll.index("Sync-BobTrayStatusWorkersFromDigest") < poll.index("Update-Hover")
+    poll = w[w.index("$poll.Add_Tick") : w.index("$poll.Add_Tick") + 4500]
+    # Non-engine poll path still Sync-before-Update-Hover (FR #1553). Engine mode
+    # (FR #4142) skips Sync on the UI poll and uses Update-Hover -SkipUi instead.
+    assert "Sync-BobTrayStatusWorkersFromDigest" in poll
+    assert "Update-Hover" in poll
+    i_sync = poll.index("Sync-BobTrayStatusWorkersFromDigest")
+    i_hover = poll.index("Update-Hover")
+    # Prefer Sync before the first full Update-Hover (not -SkipUi-only) when both present.
+    if "Update-Hover -SkipUi" in poll:
+        i_full = poll.find("\n                    Update-Hover\n")
+        if i_full > 0:
+            assert i_sync < i_full
+        else:
+            assert i_sync < i_hover or "SkipUi" in poll
+    else:
+        assert i_sync < i_hover
 
 
 @needs_ps

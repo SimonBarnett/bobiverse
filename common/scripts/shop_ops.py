@@ -1,10 +1,12 @@
-"""bob-* shop-channel ops: KICK invalid workers, MODE +o, NAMES (raw outbox verbs).
+"""bob-* shop-channel ops: KICK invalid workers, MODE +/-o|v|h, NAMES (raw outbox verbs).
 
 Spec: agentic_build FR two-persistent-workers LOCKED 27 / A23 "bob-{machine} is ops in
 their own shop channel" and LOCKED 15 / A10 "Bob monitors worker processes and restarts
 deaf ones". A bob-* ear may therefore remove nicks from #{machine} that have no live
 process behind them (leaked test nicks, dead seats). This module is pure logic plus a
 small CLI; irc_agent sends the lines raw only for a bob-* nick on its OWN shop channel.
+FR #4069: MODE also allows +h/-h (half-op) so airc +o/+h auth (FR #3639) can be granted
+through the ear without a temporary +o hop.
 
 Ergo channel op: with ChanServ disabled, only the creator of an empty channel gets
 op. FR #313: bob-* REGISTER #{machine} via ChanServ after JOIN (see shop_chanserv)
@@ -31,7 +33,7 @@ import bobreport  # noqa: E402
 import talk_seat_pid  # noqa: E402
 
 KICK_RE = re.compile(r"^KICK (?P<chan>#\S+) (?P<nick>[^\s:]+)(?: :(?P<reason>.*))?$")
-MODE_RE = re.compile(r"^MODE (?P<chan>#\S+) (?P<mode>[+-][ov]) (?P<nick>[^\s:]+)$")
+MODE_RE = re.compile(r"^MODE (?P<chan>#\S+) (?P<mode>[+-][ovh]) (?P<nick>[^\s:]+)$")
 NAMES_RE = re.compile(r"^NAMES (?P<chan>#\S+)$")
 MAX_REASON = 120
 DEFAULT_REASON = "invalid worker: no live process behind nick (bob shop ops)"
@@ -56,7 +58,7 @@ def own_shop(own_nick: str) -> str | None:
 def raw_op_line(line: str, own_nick: str) -> str | None:
     """Return the raw IRC line to send, or None if this outbox line is not an allowed op.
 
-    Allowed only for bob-* nicks and only on their own #{machine}: KICK, MODE +/-o|v, NAMES.
+    Allowed only for bob-* nicks and only on their own #{machine}: KICK, MODE +/-o|v|h, NAMES.
     Never #bobiverse (Jeeves' channel) and never kicking ourselves / Jeeves.
     """
     shop = own_shop(own_nick)

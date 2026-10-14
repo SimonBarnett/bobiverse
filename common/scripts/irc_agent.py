@@ -39,6 +39,7 @@ import shop_chanserv  # noqa: E402
 import shop_listen  # noqa: E402
 import agent_control  # noqa: E402
 import registered_machines  # noqa: E402
+import unregister_cmd  # noqa: E402
 import bob_home  # noqa: E402
 import inbound_transcript  # noqa: E402
 import chair_oper  # noqa: E402
@@ -51,6 +52,7 @@ import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
 import channel_only  # noqa: E402
 import startworker  # noqa: E402
+import bobiverse_build  # noqa: E402  # FR #4006
 
 FLOOD_S = 0.8
 
@@ -612,6 +614,8 @@ class Client:
         self._bobiverse_pull_last = 0.0
         # #42: ChanServ roster mirror (chair only). Query state; registry file is the cache.
         self._cs_collector: registered_machines.ChanServListCollector | None = None
+        self._unregister_pending = unregister_cmd.PendingUnregisterStore()
+        self._cs_unregister_wait: dict[str, str] = {}  # shop_l -> asker
         self._cs_sent_at = 0.0
         self._cs_force = False
         self._cs_fail_at = 0.0
@@ -851,6 +855,9 @@ class Client:
             return
         briefer = bobtalk.briefer_nick(self._fleet_moot_state()) or self.live_nick
         out = bobreport.apply_part(self.home, who, ch, briefer)
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(self._digest_home(), who, clear_pins=True):  # FR #4089
+                info(f"INFO seat-hold cleared nick={who} reason=part")
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, f"{who}:{ch}")
 
@@ -872,6 +879,9 @@ class Client:
                 )
         except Exception as exc:
             info(f"INFO shop-listen quit error {type(exc).__name__}")
+        with contextlib.suppress(Exception):
+            if gitclaim.clear_seat_hold(digest, who, clear_pins=True):  # FR #4089
+                info(f"INFO seat-hold cleared nick={who} reason=quit")
         out = bobreport.apply_quit(digest, who, briefer)
         klass = "shop-down" if out.shop_closed else "drop"
         self._emit_presence(out, klass, who)
@@ -1167,18 +1177,32 @@ class Client:
         self._chair_log_status()
 
     def _chair_status_line(self) -> str:
-        ops = sorted(c for c in (x.lower() for x in self.channels) if self._chan_op.get(c))
-        missing = sorted(c.lower() for c in self.channels if not self._chan_op.get(c.lower()))
+        # FR #3868: always surface #bobiverse — if ChanServ sync PARTed it, op-in alone
+        # used to hide the gap (channel gone from self.channels → not in NOT-op-in either).
+        fleet = bobreport.FLEET_CHANNEL.lower()
+        joined_l = {c.lower() for c in self.channels}
+        ops = sorted(c for c in joined_l if self._chan_op.get(c))
+        missing = sorted(c for c in joined_l if not self._chan_op.get(c))
+        extra = ""
+        if fleet not in joined_l:
+            extra = f" missing-fleet={bobreport.FLEET_CHANNEL}"
+        elif fleet not in ops and fleet not in missing:
+            missing = sorted(set(missing) | {fleet})
         return (
             f"oper={self._oper_state} chanserv-list={self._cs_list_status} "
-            f"op-in={','.join(ops) or '-'} NOT-op-in={','.join(missing) or '-'}"
+            f"op-in={','.join(ops) or '-'} NOT-op-in={','.join(missing) or '-'}{extra}"
         )
 
     def _chair_log_status(self, force: bool = False) -> None:
         line = self._chair_status_line()
         now = time.time()
         if force or line != self._chair_status_last or now - self._chair_status_at > 300.0:
-            level = "INFO" if (self._oper_state == "ok" and "NOT-op-in=-" in line) else "WARN"
+            ok = (
+                self._oper_state == "ok"
+                and "NOT-op-in=-" in line
+                and "missing-fleet=" not in line
+            )
+            level = "INFO" if ok else "WARN"
             info(f"{level} chair-status {line}")
             self._chair_status_last = line
             self._chair_status_at = now
@@ -1217,6 +1241,13 @@ class Client:
             self._cs_fail_at = now
 
     def _on_chanserv_notice(self, text: str) -> None:
+        # FR #4008: ChanServ UNREGISTER verification-code round-trip
+        conf = unregister_cmd.parse_chanserv_unregister_confirm(text)
+        if conf:
+            shop, code = conf
+            asker = self._cs_unregister_wait.pop(shop.lower(), None)
+            self.send(f"PRIVMSG ChanServ :UNREGISTER {shop} {code}")
+            info(f"INFO unregister ChanServ confirm shop={shop} asker={asker or '?'}")
         col = self._cs_collector
         if col is None:
             return
@@ -1244,6 +1275,8 @@ class Client:
         Joins are paced with ``FLOOD_S`` so reconnect / resync never floods Ergo. Unregistered
         channels are never joined. GIT announces and shop assignment behaviour are unchanged
         (those paths still target #bobiverse / the shop only).
+
+        FR #3868: never PART #bobiverse even if a LIST omitted it (wonderland stays LIST-exact).
         """
         digest = self._digest_home()
         res = registered_machines.sync_from_chanserv(digest, channels)
@@ -1256,6 +1289,7 @@ class Client:
              f"+{sorted(added)} -{sorted(removed)}")
         desired = registered_machines.load_registered_channels(digest)
         desired_l = {c.lower() for c in desired}
+        keep_l = {c.lower() for c in registered_machines.CHAIR_REQUIRED_CHANNELS}
         have = {c.lower(): c for c in self.channels}
         for ch in desired:
             if ch.lower() in have:
@@ -1268,7 +1302,7 @@ class Client:
                 pass
             time.sleep(FLOOD_S)
         for cl, ch in list(have.items()):
-            if cl in desired_l:
+            if cl in desired_l or cl in keep_l:
                 continue
             self.channels = [c for c in self.channels if c.lower() != cl]
             try:
@@ -1278,6 +1312,41 @@ class Client:
             time.sleep(FLOOD_S)
         info(
             f"INFO channel-sync registered={len(desired)} joined={','.join(desired)}"
+        )
+        # FR #3868: refresh status so missing-fleet shows right after a sync.
+        log_status = getattr(self, "_chair_log_status", None)
+        if callable(log_status):
+            try:
+                log_status()
+            except Exception:  # noqa: BLE001 - never kill sync over status logging
+                pass
+
+    def _nick_modes_in_channel(self, nick: str, channel: str = "#bobiverse") -> set[str]:
+        """Modes for nick in channel from the privilege engine (FR #4008 gate)."""
+        eng = getattr(self, "_privs_engine", None) or getattr(self, "_privs", None)
+        try:
+            eng = eng() if callable(eng) and not hasattr(eng, "state") else eng
+        except TypeError:
+            pass
+        if eng is None:
+            try:
+                eng = self._privs()
+            except Exception:
+                return set()
+        st = getattr(eng, "state", None)
+        if st is None:
+            return set()
+        ent = (getattr(st, "members", {}) or {}).get((channel or "#bobiverse").lower(), {}).get(
+            (nick or "").lower(), {}
+        )
+        return set(ent.get("modes") or ())
+
+    def _register_gate_allowed(self, nick: str, channel: str = "#bobiverse") -> bool:
+        """FR #4008: +o/+h (or higher) in channel; operators.txt ignored."""
+        return unregister_cmd.nick_has_op_or_halfop(
+            nick=nick,
+            channel=channel,
+            member_lookup=lambda ch, n: self._nick_modes_in_channel(n, ch),
         )
 
     def _handle_register_command(self, asker: str, body: str) -> bool:
@@ -1290,8 +1359,8 @@ class Client:
         who = (asker or "").strip()
         if not who or who.lower() in self._mine_nicks():
             return True
-        if who.lower() not in self._register_operators():
-            self.whisper(who, f"ERR !register denied (operators only) machine={mid}")
+        if not self._register_gate_allowed(who):
+            self.whisper(who, f"ERR !register denied (+o/+h required) machine={mid}")
             info(f"INFO register denied nick={who} machine={mid}")
             return True
         shop = f"#{mid}"
@@ -1306,6 +1375,81 @@ class Client:
         self._cs_force = True  # #42: re-sync the mirror from ChanServ right away
         self.whisper(who, f"ACK registered {shop}")
         info(f"INFO register machine={mid} by={who}")
+        return True
+
+    def _handle_unregister_command(self, asker: str, body: str) -> bool:
+        """Chair: !unregister mirror of !register (FR #4008)."""
+        if not getattr(self.args, "chair", False):
+            return False
+        parsed = registered_machines.parse_unregister_command(body)
+        if not parsed:
+            return False
+        who = (asker or "").strip()
+        if not who or who.lower() in self._mine_nicks():
+            return True
+        mid = parsed.get("mid")
+        if not mid:
+            self.whisper(who, "!unregister: usage !unregister <#channel|machine> [confirm]|dry-run <..>")
+            return True
+        if not self._register_gate_allowed(who):
+            self.whisper(who, f"ERR !unregister denied (+o/+h required) machine={mid}")
+            info(f"INFO unregister denied nick={who} machine={mid}")
+            return True
+        members = None
+        try:
+            members = getattr(self._privs(), "members", None) or getattr(
+                getattr(self._privs(), "state", None), "members", None
+            )
+        except Exception:
+            members = None
+        plan = unregister_cmd.build_unregister_plan(
+            self._digest_home(), parsed, asker=who, members=members
+        )
+        if plan is None:
+            return True
+        if plan.core_refused:
+            for line in plan.notes:
+                self.whisper(who, line)
+            return True
+        if plan.dry_run:
+            for line in plan.notes:
+                self.whisper(who, line)
+            self.whisper(who, f"DRY-RUN !unregister {plan.shop} (nothing sent)")
+            return True
+        if not plan.in_registry:
+            # Idempotent: heal partial — still force ChanServ sync; no UNREGISTER if nothing to do
+            for line in plan.notes:
+                self.whisper(who, line)
+            self._cs_force = True
+            return True
+        # Confirm: show plan first; execute on !unregister <x> confirm OR repeat within 60s
+        pending = self._unregister_pending.get(mid)
+        if pending is None:
+            self._unregister_pending.put(mid, who)
+            for line in plan.notes:
+                self.whisper(who, line)
+            self.whisper(
+                who,
+                f"!unregister: confirm within 60s with: !unregister {mid} confirm (or repeat)",
+            )
+            return True
+        # Execute (pending window open)
+        self._unregister_pending.pop(mid)
+        self.send(plan.chanserv_line)
+        time.sleep(FLOOD_S)
+        self._cs_unregister_wait[plan.shop.lower()] = who
+        registered_machines.remove_registered(self._digest_home(), mid)
+        # PART shop
+        shop_l = plan.shop.lower()
+        self.channels = [c for c in self.channels if c.lower() != shop_l]
+        self.send(plan.part_line)
+        time.sleep(FLOOD_S)
+        # Wire line for ears
+        self.send(f"PRIVMSG {unregister_cmd.FLEET} :{plan.wire_line}")
+        time.sleep(FLOOD_S)
+        self._cs_force = True
+        self.whisper(who, f"ACK unregistered {plan.shop}")
+        info(f"INFO unregister machine={mid} by={who}")
         return True
 
     def _maybe_grant_bob_modes(self, nick: str) -> None:
@@ -1384,6 +1528,347 @@ class Client:
         if args is not None:
             explicit = getattr(args, "install_root", "") or ""
         return resolve_bob_install_root(explicit=explicit)
+
+
+    def _handle_build_command(self, asker: str, body: str) -> None:
+        """FR #4006: ops !build — decide + PM; live suite/pack is WP2 on the recipe machine."""
+        if not getattr(self.args, "chair", False):
+            return
+        if bobiverse_build.parse_build(body) is None:
+            return
+        who_nick = (asker or "").strip()
+        if not who_nick or who_nick.lower() in self._mine_nicks():
+            return
+        prin = self._principal(who_nick)
+        lock_path = Path(self.home) / "build-locks.json"
+        lock = bobiverse_build.BuildLock(lock_path, max_parallel=1)
+
+        def recipe_loader(repo: str):
+            # Only bobiverse's own recipe lives in this install; other repos must carry
+            # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            if bobiverse_build.normalize_repo(repo) != "simonbarnett/bobiverse":
+                try:
+                    import gh_filer
+
+                    gh_filer.ensure_gh_token_env()
+                except Exception:
+                    pass
+                return bobiverse_build.fetch_remote_recipe(repo)
+            root = Path(self._install_root())
+            # Bobiverse recipe lives at repo root; install tree is bob/jeeves/airc sparse — prefer git root.
+            for cand in (root, root.parent, Path(self.home).resolve().parents[2] if False else root):
+                try:
+                    return bobiverse_build.load_recipe(cand)
+                except bobiverse_build.RecipeError:
+                    continue
+            raise bobiverse_build.RecipeError(
+                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            )
+
+        ignored = ()
+        try:
+            import focus_ignore
+            ignored = tuple(focus_ignore.load_ignored(self.home) or ())
+        except Exception:
+            ignored = ()
+        try:
+            dec = bobiverse_build.decide_build(
+                who=prin,
+                body=body,
+                may=chair_commands.may,
+                denied_line=chair_commands.denied_line,
+                recipe_loader=recipe_loader,
+                lock=lock,
+                ignored=ignored,
+            )
+        except Exception as e:
+            info(f"WARN build decide failed: {type(e).__name__}: {e}")
+            self._cmd_reply(who_nick, "build", [f"build: error {type(e).__name__}"])
+            return
+        if dec is None:
+            return
+        self._cmd_reply(who_nick, "build", dec.pm_lines)
+        info(
+            f"INFO build nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
+            f"repos={','.join(dec.repos) or '-'} dry={dec.dry_run}"
+        )
+        if not dec.ok and dec.reason == "denied":
+            self._whois_hint(who_nick)
+            return
+        if dec.route and not dec.dry_run:
+            try:
+                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + dec.route)
+                time.sleep(FLOOD_S)
+            except Exception:
+                info("WARN build route announce failed")
+            # FR #4025: when this box is the recipe machine, enqueue BUILD v1 (no live pack in chair).
+            try:
+                self._maybe_start_build_runner(dec.route, src_hint=who_nick)
+            except Exception as exc:
+                info(f"WARN build enqueue: {type(exc).__name__}: {exc}")
+
+    def _handle_installtest_command(self, asker: str, body: str) -> None:
+        """FR #4026 WP3: ops !installtest — decide + PM; live msiexec is on the recipe machine."""
+        if not getattr(self.args, "chair", False):
+            return
+        if bobiverse_build.parse_installtest(body) is None:
+            return
+        who_nick = (asker or "").strip()
+        if not who_nick or who_nick.lower() in self._mine_nicks():
+            return
+        prin = self._principal(who_nick)
+
+        def recipe_loader(repo: str):
+            # Only bobiverse's own recipe lives in this install; other repos must carry
+            # their own .bobiverse/build.yml on GitHub (no recipe -> refusal).
+            if bobiverse_build.normalize_repo(repo) != "simonbarnett/bobiverse":
+                try:
+                    import gh_filer
+
+                    gh_filer.ensure_gh_token_env()
+                except Exception:
+                    pass
+                return bobiverse_build.fetch_remote_recipe(repo)
+            root = Path(self._install_root())
+            for cand in (root, root.parent):
+                try:
+                    return bobiverse_build.load_recipe(cand)
+                except bobiverse_build.RecipeError:
+                    continue
+            raise bobiverse_build.RecipeError(
+                f"build: {repo} has no .bobiverse/build.yml; nothing started"
+            )
+
+        ignored = ()
+        try:
+            import focus_ignore
+            ignored = tuple(focus_ignore.load_ignored(self.home) or ())
+        except Exception:
+            ignored = ()
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        try:
+            dec = bobiverse_build.decide_installtest(
+                who=prin,
+                body=body,
+                may=chair_commands.may,
+                denied_line=chair_commands.denied_line,
+                recipe_loader=recipe_loader,
+                local_machine=local,
+                ignored=ignored,
+            )
+        except Exception as e:
+            info(f"WARN installtest decide failed: {type(e).__name__}: {e}")
+            self._cmd_reply(who_nick, "installtest", [f"installtest: error {type(e).__name__}"])
+            return
+        if dec is None:
+            return
+        self._cmd_reply(who_nick, "installtest", dec.pm_lines)
+        info(
+            f"INFO installtest nick={who_nick} kind={prin.kind} ok={dec.ok} reason={dec.reason} "
+            f"repo={dec.repo or '-'} dry={dec.dry_run}"
+        )
+        if not dec.ok and dec.reason == "denied":
+            self._whois_hint(who_nick)
+            return
+        if dec.route and not dec.dry_run:
+            try:
+                self.send("PRIVMSG " + bobreport.FLEET_CHANNEL + " :" + dec.route)
+                time.sleep(FLOOD_S)
+            except Exception:
+                info("WARN installtest route announce failed")
+            try:
+                self._maybe_start_installtest_runner(dec.route, src_hint=who_nick)
+            except Exception as exc:
+                info(f"WARN installtest enqueue: {type(exc).__name__}: {exc}")
+
+    def _build_queue_dir(self) -> Path:
+        """FR #4025: home/build-queue for accepted BUILD v1 jobs (spawn/pack is out of chair scope)."""
+        return Path(self.home) / "build-queue"
+
+    def _maybe_start_build_runner(self, route_line: str, *, src_hint: str = "") -> bool:
+        """FR #4025 WP2: accept BUILD v1 when local machine matches recipe.machine; enqueue only."""
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        recipe_machine = "ionos"
+        try:
+            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            recipe_machine = recipe.machine
+        except Exception:
+            try:
+                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
+                recipe_machine = recipe.machine
+            except Exception:
+                recipe_machine = "ionos"
+        qdir = self._build_queue_dir()
+        ok = bobiverse_build.consume_build_v1(
+            route_line, local, recipe_machine, queue_dir=qdir
+        )
+        if ok:
+            info(
+                f"INFO FR #4025 BUILD v1 accepted machine={local} "
+                f"recipe={recipe_machine} from={src_hint or '-'} queue={qdir}"
+            )
+            try:
+                jobs = sorted((p for p in qdir.glob("build-*.json") if p.name.count(".json") == 1), key=lambda p: p.stat().st_mtime)
+                if jobs:
+                    self._spawn_build_runner(jobs[-1], local or recipe_machine)
+            except Exception as exc:
+                info(f"WARN build runner spawn: {type(exc).__name__}: {exc}")
+        return ok
+
+    def _spawn_build_runner(self, job_path: Path, local_machine: str) -> None:
+        """Run run_bobiverse_build.py for one queued job in a child process (no agent).
+
+        A watcher thread announces start/result on the fleet channel and always frees
+        the per-repo single-flight lock when the child exits.
+        """
+        import shutil
+        import subprocess
+
+        job = json.loads(Path(job_path).read_text(encoding="utf-8"))
+        repos = job.get("repos") or []
+        repo = str(repos[0] if isinstance(repos, list) and repos else repos or "")
+        version = str(job.get("version") or "")
+        script = None
+        for cand in (
+            Path(self._install_root()) / "scripts" / "run_bobiverse_build.py",
+            Path(self._install_root()).parent / "scripts" / "run_bobiverse_build.py",
+            Path(__file__).resolve().parent / "run_bobiverse_build.py",
+        ):
+            if cand.is_file():
+                script = cand
+                break
+        if script is None:
+            raise FileNotFoundError("run_bobiverse_build.py")
+        py = (
+            os.environ.get("BOBIVERSE_PYTHON")
+            or shutil.which("python")
+            or r"C:\Python\Python312\python.exe"
+        )
+        lock_path = Path(self.home) / "build-locks.json"
+        result_path = Path(str(job_path) + ".result.json")
+        log_path = Path(str(job_path) + ".runner.log")
+        cmd = [
+            py, "-u", str(script), "--job", str(job_path), "--checkout",
+            "--lock-file", str(lock_path), "--result-file", str(result_path),
+            "--local-machine", local_machine,
+        ]
+        logf = open(log_path, "a", encoding="utf-8")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, creationflags=flags)
+        info(f"INFO build runner pid={proc.pid} repo={repo} version={version} log={log_path}")
+        chan = bobreport.FLEET_CHANNEL
+
+        def _say(line: str) -> None:
+            try:
+                self.send("PRIVMSG " + chan + " :" + line[:400])
+                time.sleep(FLOOD_S)
+            except Exception:
+                pass
+
+        _say(f"BUILD started {repo} version={version} pid={proc.pid} (deterministic runner, no agent)")
+
+        def _watch() -> None:
+            rc = None
+            try:
+                rc = proc.wait()
+            finally:
+                try:
+                    logf.close()
+                except Exception:
+                    pass
+                try:
+                    bobiverse_build.BuildLock(lock_path, max_parallel=1).release(repo)
+                except Exception:
+                    pass
+            lines = []
+            try:
+                res = json.loads(result_path.read_text(encoding="utf-8"))
+                lines = list(res.get("announce") or [])
+                if res.get("release_url"):
+                    lines.append(f"BUILD release {res['release_url']} (pre-release, not Latest)")
+                for b in res.get("blockers") or []:
+                    if isinstance(b, dict) and (b.get("url") or b.get("number")):
+                        lines.append(
+                            f"BUILD blocker {b.get('action') or ''} #{b.get('number')} {b.get('url') or ''}".strip()
+                        )
+            except Exception:
+                lines = [f"BUILD fail {repo} version={version} runner rc={rc} (no result file; see {log_path.name})"]
+            for ln in lines[:8]:
+                _say(ln)
+            info(f"INFO build runner done repo={repo} version={version} rc={rc}")
+
+        threading.Thread(target=_watch, name=f"build-{version}", daemon=True).start()
+
+    def _maybe_consume_build_v1_wire(self, src: str, body: str) -> bool:
+        """FR #4025: fleet BUILD v1 PRIVMSG -> enqueue when this box is the recipe machine."""
+        if bobiverse_build.parse_build_v1_route(body) is None:
+            return False
+        return self._maybe_start_build_runner(body, src_hint=src)
+
+    def _maybe_start_installtest_runner(self, route_line: str, *, src_hint: str = "") -> bool:
+        """FR #4026 WP3: accept INSTALLTEST v1 when local matches install_test.machine; enqueue only."""
+        local = ""
+        try:
+            local = self._local_machine_id() or ""
+        except Exception:
+            local = ""
+        if not local:
+            try:
+                import socket
+
+                local = bobiverse_build.fold_build_machine(socket.gethostname())
+            except Exception:
+                local = ""
+        recipe_machine = "ionos"
+        try:
+            recipe = bobiverse_build.load_recipe(Path(self._install_root()))
+            it = recipe.install_test or {}
+            recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+        except Exception:
+            try:
+                recipe = bobiverse_build.load_recipe(Path(self._install_root()).parent)
+                it = recipe.install_test or {}
+                recipe_machine = str(it.get("machine") or recipe.machine or "ionos")
+            except Exception:
+                recipe_machine = "ionos"
+        qdir = self._build_queue_dir()
+        ok = bobiverse_build.consume_installtest_v1(
+            route_line, local, recipe_machine, queue_dir=qdir
+        )
+        if ok:
+            info(
+                f"INFO FR #4026 INSTALLTEST v1 accepted machine={local} "
+                f"recipe={recipe_machine} from={src_hint or '-'} queue={qdir}"
+            )
+        return ok
+
+    def _maybe_consume_installtest_v1_wire(self, src: str, body: str) -> bool:
+        """FR #4026: fleet INSTALLTEST v1 PRIVMSG -> enqueue when this box is the recipe machine."""
+        if bobiverse_build.parse_installtest_v1_route(body) is None:
+            return False
+        return self._maybe_start_installtest_runner(body, src_hint=src)
+
 
     def _maybe_startworker(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
         """t810u: ``!startworker [agent|plan] [machine]`` (Bob ear). Authorise + cap + queue; the tray launches.
@@ -2629,6 +3114,44 @@ class Client:
         verb = result.get("verb") or ""
         status = result.get("status") or ""
         act = result.get("activity")
+        # FR #4089: the seat answered for this job -> drop its remembered offer. NACK/GIVEUP
+        # of a never-accepted offer (status=missing) also unpins the row from this seat.
+        # FR #4115: ACK status=missing has no accepted row — keep/record the seat hold so
+        # the seat is not treated as free (offers made before a Jeeves restart).
+        try:
+            _pj = shop_listen.parse_shop_job_line(body)
+            if _pj and verb in ("ACK", "DONE", "NACK", "GIVEUP"):
+                if verb == "ACK" and status == "missing":
+                    _noted = gitclaim.note_seat_hold(
+                        self._digest_home(),
+                        src,
+                        {
+                            "repo": _pj.repo,
+                            "task": _pj.task,
+                            "id": _pj.id,
+                        },
+                    )
+                    if _noted:
+                        info(
+                            f"INFO seat-hold noted nick={src} reason=ack-missing "
+                            f"job={_pj.task} {_pj.repo}{_pj.id}"
+                        )
+                else:
+                    _cleared = gitclaim.clear_seat_hold(
+                        self._digest_home(),
+                        src,
+                        repo=_pj.repo,
+                        task=_pj.task,
+                        ident=_pj.id,
+                        clear_pins=verb in ("NACK", "GIVEUP", "DONE"),
+                    )
+                    if _cleared:
+                        info(
+                            f"INFO seat-hold cleared nick={src} reason={verb} "
+                            f"job={_pj.task} {_pj.repo}{_pj.id}"
+                        )
+        except Exception as hold_exc:  # noqa: BLE001
+            info(f"WARN seat-hold clear {type(hold_exc).__name__}")
         try:
             if verb == "ACK" and status in ("ok", "duplicate", "missing") and act:
                 self._workers().on_ack(src, target, act)
@@ -2673,9 +3196,48 @@ class Client:
                                 src, target, shop_listen.activity_description(job2)
                             )
                         info(f"INFO git-claim giveup-offer nick={src} n={n}")
+                    else:
+                        try:
+                            _stats = gitclaim.clamp_empty_reply_stats(
+                                gitclaim.summarize_empty_offer(self._digest_home(), src)
+                            )
+                            _detail = gitclaim.format_empty_offer_detail(src, _stats)
+                        except Exception:  # noqa: BLE001
+                            _detail = f"{src}: nothing queued"
+                        info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
                 except Exception as offer_exc:  # noqa: BLE001
                     info(f"WARN giveup-offer {type(offer_exc).__name__}")
-        # Never PRIVMSG the shop channel for ACK/DONE (FR #211). GIVEUP/NACK may push one assign (FR #2811).
+        elif verb == "DONE" and status != "ok":
+            # FR #4089: repeated / unknown DONE (status=missing) never pushes a job.
+            info(f"INFO git-claim done-offer skipped nick={src} status={status}")
+        elif verb == "DONE" and status == "ok":
+            # FR #3893: same push as GIVEUP/NACK — do not wait for the seat's next !bored
+            # when the queue still holds eligible work (regression of idle-after-DONE).
+            try:
+                n, job2 = gitclaim.offer_after_done(
+                    self._digest_home(),
+                    src,
+                    bobreport.normalize_channel(target),
+                    say=lambda ch, t: self._git_say(ch, t),
+                )
+                if n and isinstance(job2, dict):
+                    with contextlib.suppress(Exception):
+                        self._workers().on_offer(
+                            src, target, shop_listen.activity_description(job2)
+                        )
+                    info(f"INFO git-claim done-offer nick={src} n={n}")
+                else:
+                    try:
+                        _stats = gitclaim.clamp_empty_reply_stats(
+                            gitclaim.summarize_empty_offer(self._digest_home(), src)
+                        )
+                        _detail = gitclaim.format_empty_offer_detail(src, _stats)
+                    except Exception:  # noqa: BLE001
+                        _detail = f"{src}: nothing queued"
+                    info(f"INFO git-claim done-offer empty nick={src} {_detail}")
+            except Exception as offer_exc:  # noqa: BLE001
+                info(f"WARN done-offer {type(offer_exc).__name__}")
+        # Never PRIVMSG the shop channel for ACK (FR #211). DONE/GIVEUP/NACK may push one assign (FR #2811 / #3893).
         return True
 
     def handle_privmsg(self, prefix: str, target: str, body: str) -> None:
@@ -2725,13 +3287,25 @@ class Client:
                     return
         if self._maybe_startworker(src, target, body, to_channel=bool(to_channel), to_me=to_me):
             return
+        if body.strip().lower().startswith("!build"):
+            self._handle_build_command(src, body)
+            return
+        if body.strip().lower().startswith("!installtest"):
+            self._handle_installtest_command(src, body)
+            return
         if self._handle_register_command(src, body):
+            return
+        if self._handle_unregister_command(src, body):
             return
         if bobtalk.parse_recycle_command(body):
             if getattr(self.args, "chair", False):
                 self._handle_recycle_command(src, body)
             else:
                 self._handle_bob_local_recycle_command(src, body)
+            return
+        if self._maybe_consume_installtest_v1_wire(src, body):
+            return
+        if self._maybe_consume_build_v1_wire(src, body):
             return
         if self._maybe_execute_recycle_wire(src, body):
             return
@@ -2981,6 +3555,10 @@ class Client:
                         # ERR_CHANOPRIVSNEEDED: shop KICK/MODE without op (Ergo: creator-only op).
                         info(f"INFO shop-op 482 not channel operator: {' '.join(parts[2:4])}"[:200])
 
+                    if cmd == "404":
+                        # FR #3868: ERR_CANNOTSENDTOCHAN — outbox !assign to a channel we left.
+                        self._on_cannot_send_numeric(cmd, parts, trailing)
+
                     if cmd == "JOIN":
                         ch = parts[1].lstrip(":") if len(parts) > 1 else ""
                         if not ch and trailing:
@@ -3041,6 +3619,13 @@ class Client:
         finally:
             self.dead.set()
 
+    def _on_cannot_send_numeric(self, cmd: str, parts: list[str], trailing: str) -> None:
+        """FR #3868: log ERR_CANNOTSENDTOCHAN (404) so a silent outbox drop is visible."""
+        # Wire: 404 <me> <channel> :Cannot send to channel
+        ch = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 else "?")
+        why = (trailing or "").strip().replace("\n", " ")[:80] or "Cannot send to channel"
+        info(f"WARN outbox/send ERR_CANNOTSENDTOCHAN {cmd} {ch}: {why}")
+
     def _drain_outbox_path(self, path: Path) -> list[str]:
         if self.sock is None or not path.exists():
             return []
@@ -3064,7 +3649,19 @@ class Client:
                 continue
             op = shop_ops.raw_op_line(line, self.original_nick)
             if kind == "privmsg" or line.upper().startswith("PRIVMSG "):
-                wire = self.send_privmsg_lines(line)
+                # FR #3868: log every outbox send (and failures) so a lost !assign is visible.
+                try:
+                    wire = self.send_privmsg_lines(line)
+                except OSError as exc:
+                    preview = line if len(line) <= 160 else (line[:157] + "...")
+                    info(
+                        f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
+                    )
+                    continue
+                for w in wire:
+                    head = w.split(" :", 1)[0]
+                    prev = w if len(w) <= 160 else (w[:157] + "...")
+                    info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                 sent.extend(wire)
                 time.sleep(FLOOD_S)
             elif op:
@@ -3133,6 +3730,16 @@ class Client:
         self._irc_session_started = time.time()
         if getattr(self.args, "chair", False):
             self._privs().announce()      # created here, before the reader/outbox threads exist
+            # FR #3867: digest working_on may still name a job whose ACK was lost in the
+            # restart window — promote matching unaccepted rows to accepted before !bored.
+            try:
+                import gitclaim as _gc_reconcile
+
+                n = _gc_reconcile.reconcile_lost_ack_from_digest(self.home)
+                if n:
+                    info(f"INFO seat-reconcile lost-ack promoted={n} (FR #3867)")
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN seat-reconcile lost-ack error {type(exc).__name__}")
         self._outbox_gen += 1
         gen = self._outbox_gen
         info(
@@ -3206,6 +3813,27 @@ class Client:
             if self._consume_control_quit():
                 break
 
+    def _surface_nickname_reserved(self, gate: str) -> None:
+        """FR #3904: NICKNAME_RESERVED must not loop silently — crash-report once per process."""
+        if getattr(self, "_nickname_reserved_reported", False):
+            return
+        self._nickname_reserved_reported = True
+        info(
+            "INFO FR #3904 surface NICKNAME_RESERVED - fix home\\nickserv.password "
+            "or oper SAREGISTER; filing crash report"
+        )
+        try:
+            import crash_report
+
+            crash_report.report_exception(
+                "bob-ear",
+                TimeoutError,
+                TimeoutError(gate or "NICKNAME_RESERVED"),
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            info(f"WARN FR #3904 crash-report skipped {type(exc).__name__}")
+
     def run_forever(self) -> None:
         backoff = 1.0
         attempt = 0
@@ -3215,8 +3843,11 @@ class Client:
                 self.session()
                 backoff = 1.0
                 attempt = 0
-            except TimeoutError:
-                pass
+            except TimeoutError as te:
+                # FR #3904: reserved-nick credential failure was invisible without AppStdout.
+                gate = str(te) if te else ""
+                if "NICKNAME_RESERVED" in gate or getattr(self, "_nickname_reserved", False):
+                    self._surface_nickname_reserved(gate or "NICKNAME_RESERVED")
             except Exception as e:
                 info(f"INFO session end {type(e).__name__}")
             try:

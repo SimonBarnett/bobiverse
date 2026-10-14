@@ -71,6 +71,7 @@ Skill-intake consolidation: when a worker takes an FR from skill intake (label:s
 Fleet installs (`C:\ai\bob`, etc.) are sparse git work trees. `.git/info/exclude` starts with `/*` so composed flat runtime files stay invisible. Linked `git worktree add` FR trees **share that exclude**.
 
 * Prefer: `git -C <install> worktree add -b fr-N <temp> origin/main` then `git sparse-checkout disable` in the temp tree.
+* **CAST IRON (FR #4029 / MRB #4035):** run `git sparse-checkout disable` **once** right after `worktree add` (and after writing `.bobiverse-seat`). Do **not** re-run it on an already-full FR tree --- a second disable can detach `.git` and wipe uncommitted work. If the tree is destroyed mid-job: recreate from `origin/main`, restore from session compaction if needed, and file intake.
 * **FR #3641 — write `.bobiverse-seat` immediately after `worktree add`:** before any edit, write `{"nick":"<seat>","pid":$PID,"issue":N,"repo":"owner/repo"}` (UTF-8) at the job tree root. Soft-cap (`MaxExtraJobTrees=0`) and sibling Clear runs skip a **fresh** marker even when the recorded pid is dead; live pid always protects; `-Force` may reclaim only markers older than `-StaleSeatHours` (default 48h) with a dead pid. Mid-FR trees without a marker can vanish (class of #3639 / #3641).
 * New untracked files under paths still masked by exclude are skipped by plain `git add` - use **`git add -f`** (or `git check-ignore -v` to confirm).
 * Bootstrap exclude un-ignores `/$Product/`, `/common/`, `/airc/`, `/jeeves/`; paths outside those still need `-f`.
@@ -89,9 +90,15 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
   * **Low disk:** prune when **FreeGB < 2** (`-MinFreeGB 2`) - removes all job trees + orphan `%TEMP%\bobiverse-*`.
   * **Earlier prune / soft cap:** even when FreeGB ≥ MinFreeGB, remove extras beyond `-MaxExtraJobTrees` (default **0** = keep only `-KeepPath` + install root). Do not wait until FreeGB is critical.
 * **CAST IRON (FR #2727 / FR #3641):** `Clear-BobiverseJobWorktrees.ps1` is the **only** sanctioned reclaim path. Never `Remove-Item` or `git worktree remove` a path that Clear did not select. Never hand-delete arbitrary `C:\ai\*` / `wt-*` / operator build trees (`wt-bob-main-*`, `wt-airc-*`, `wt-main`) when Clear prints `removed=0`. Prefer durable job trees on a roomy drive (e.g. `D:\…\job-fr-N`) and write `.bobiverse-seat` **immediately after** `git worktree add` so Clear skips the tree under soft-cap (fresh marker) and under `-Force` while the pid is live.
-* **FR #3698:** Clear measures FreeGB on the **RepoRoot drive**; D: job trees do not raise C: free space. Live seat pids protect only when process CommandLine cites that worktree; heed `WARN FR #3698` and free TEMP/agent caches on the install drive.
-* If FreeGB is still under 2 after Clear: **file an intake issue** for disk capacity and continue with a tree on a roomy drive, or **GIVEUP** — do not invent a delete list.
+* **FR #3698:** Clear measures FreeGB on the **RepoRoot drive**; D: job trees do not raise C: free space. Live seat pids protect only when process CommandLine cites that worktree; heed `WARN FR #3698` / `FR #4192`.
+* **FR #4192 (after JobWorktrees still low):** when Clear prints `removed=0` (or FreeGB still under MinFreeGB), run non-worktree reclaim **before** filing intake:
+  `..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId <this-session-guid> -IncludeAiBackups`
+  (aged `~/.grok` sessions/downloads, pip/npm, aged user-`%TEMP%` `bobiverse-*`/`fr-*`/`mrb-*`/`pytest-of-*`). Pair with JobWorktrees; never invent a `C:\ai\*` delete list (FR #2727).
+* **FR #4212 (SeatDisk still low / cursor chats):** SeatDisk also reclaims aged .cursor/chats (-KeepCursorHours, default 24). After reclaim, if FreeGB is still under MinFreeGB it prints a CRITICAL ranked size report (live ~/.grok/sessions and ~/.grok/bin often dominate). Prefer D:\...\job-fr-N; never hand-delete C:\ai\* wt trees (FR #2727).
+* **FR #4226 (nested grok sessions):** Grok nests UUID session dirs under cwd-encoded buckets (`~/.grok/sessions/<cwd-encoded>/<guid>/`). SeatDisk must reclaim **aged nested** UUID dirs (keep `-KeepSessionId`, keep fresh), not only top-level session folders --- a fresh cwd bucket must not shield days-old UUID children that fill C:.
+* If FreeGB is still under 2 **after** JobWorktrees **and** SeatDisk: **file an intake issue** for disk capacity and continue with a tree on a roomy drive, or **GIVEUP** — do not invent a delete list.
 * Manual remove **only on your own job tree** (the `-KeepPath` / current FR tree you created this seat): `git -C <install> worktree remove --force <your-own-job-wt>; git -C <install> worktree prune`. Never a guessed list of sibling `C:\ai\*` dirs.
+* **FR #4197:** Clear must not abort when one registered worktree path or .git is missing (git worktree remove NativeCommandError under StrictMode). Warn, rmdir leftovers, git worktree prune, and continue reclaiming the rest.
 * **a-search CDK trees (FR #3717):** before your own `git worktree remove`, `cmd /c rmdir /s /q <wt>\cdk.out*` (and prefer Clear). Deep `cdk.out` / Lambda asset hashes hit Windows **Filename too long**; git deregisters then leaves the directory; `Remove-Item -Recurse` fails the same way — `cmd rmdir /s /q` clears leftovers. Clear does this pre-rmdir automatically.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
 
@@ -134,7 +141,9 @@ On Windows PowerShell 5.1, keep the PR body in `--body-file` (multiline `--body`
 
 * **Never stamp `needs-mrb1`/`mrb1` (harvest #1717 / FR #1526):** CAST IRON. Do not open that label, do not apply it, do not wait on it. `needs-human` is the only human gate. Operator deleted the label; leftover references in old docs are stale.
 * **Every FR PR body contains `Closes <owner>/<repo>#N`** and you verified it (step 8) before DONE. * One FR = one PR. A fix that needs more work goes to a new FR through intake, not into this PR. * Never touch Ergo config, never restart `BobIrcd`, never disturb other seats, PowerShell only.
-* Do not rebuild/release/bump the version unless the FR says so. * CAST IRON harvest rule at the top: file every issue, FR, bug and learned playbook in the same turn.
+* Do not rebuild/release/bump the version unless the FR says so.
+* **WinPS UTF-8 skill edits (FR #3935):** WinPS 5.1: never Get-Content -Raw (or Set-Content -Encoding utf8) round-trip of UTF-8 SKILL.md / docs; em-dashes (U+2014) mojibake. Edit with Python open(..., encoding="utf-8") / Path.write_text(..., encoding="utf-8"); prefer ASCII --- in new prose when possible (FR #3935).
+* CAST IRON harvest rule at the top: file every issue, FR, bug and learned playbook in the same turn.
 
 ## Machine pin / ionos-only FRs (FR #587 / #852 / #1550)
 
@@ -150,6 +159,7 @@ Chair lives on ionos (folds to win-mpre*). Non-matching seats must **GIVEUP** (o
 * **Honor `require_machine=<mid>` literally** (harvest #1688): if the assign body, title, labels, or queue stamp pins a machine you are not on, **ACK then GIVEUP** with `require_machine=<mid>` (or `needs-ionos`) in the reason line. Do not attempt the work.
 * If the chair **offered a pinned FR to a non-matching seat** (stamp present, wrong shop): GIVEUP as above **and file intake** for the offer gap (class of #1687). File intake also when the stamp was missing but cues clearly demand ionos.
 * Skill-promote jobs (FR #1682 / #1684) are **not** a reason to ignore a real `require_machine` pin — if the skill/harvest issue itself is pinned ionos and you are not on ionos, still GIVEUP.
+* **CAST IRON (live multi-machine privilege / ops matrices):** when acceptance needs live IRC privilege proof across several machines (ops/+h/not-op command matrix, class of #4016), do **not** invent remote results. Stamp/confirm `needs-human`, comment a per-machine checklist on the issue, then **ACK then GIVEUP** with `reason=needs_human` (or `needs-human live privilege matrix`). Never DONE PASS with fabricated evidence. Durable home is this skill + job-irc — not `harvest/SKILL.md`.
 * **Skill-promote / harvest-backlog assigns (FR #1682 / FR #1684)** - chair **offers** `label:skill` / `harvest:` / `skill:` intakes as FR promote jobs (not product code FRs). Do **not** GIVEUP. Consolidate open skill receipts **by owner skill book**, close duplicate skill-book requests, open **one** `harvest/…` promote PR (`Closes` / `Duplicates closed:`), then DONE with the PR URL for hostile MRB. Full steps: `harvest-agent-skills` -> **Worker: consolidate open skill receipts -> promote PR**. Never one PR per receipt; never merge yourself. Skill/harvest still do **not** block repo UAT.
 
 ## Product repo not created yet (plan STATUS gate)

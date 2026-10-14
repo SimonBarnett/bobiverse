@@ -22,17 +22,18 @@
    - Password is saved as DPAPI `config\service.cred` for reinstalls.
 
 2. **Ergo server PASS**  
-   Public release MSIs **do not** embed `config\ergo.password` (issue #4).  
-   After install, place one line at `<ai root>\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or set `BOB_IRC_PASSWORD`.  
-   Private/offline packs may use `Pack-BobiverseRelease.ps1 -EmbedErgoPassword`.
+   **FR #4216 (airc):** airc release MSIs **embed** `config\ergo.password` (pack requires `AIRC_PACK_ERGO_PASSWORD` / packer `~\.grok\ergo\connect.password` / repo `config\ergo.password`). `Install-Airc` fails closed if the file is still missing after layout.  
+   **Issue #4 (bob / jeeves):** public bob and jeeves MSIs **do not** embed the Ergo PASS. Before `msiexec`, place one line at `<ai root>\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or use `BOB_IRC_PASSWORD` / `-ErgoPasswordFile` (FR #3756). Private/offline packs may use `Pack-BobiverseRelease.ps1 -EmbedErgoPassword`.  
+   **FR #3904:** bob also resolves a sibling `<ai root>\airc\config\ergo.password` or `<ai root>\jeeves\config\ergo.password` and seeds a local copy under `<ai root>\bob\config\` when found.
 
 3. **NickServ / SASL (Bob ear)**  
    Reserved `Bob-*` / `bob-*` nicks need SASL (issue #8 / #11).  
    `Start-Bob.ps1` loads `home\nickserv.password` into `BOB_IRC_SASL_USER=bob-{machine}` + `BOB_IRC_SASL_PASSWORD`.  
    When those env vars are set, `irc_agent` authenticates **before** NICK so Ergo accepts the reserved nick.  
-   Do **not** mint a fresh GUID for an account that already exists on the network â€” restore the real password or oper-`SAREGISTER` / `RESETPASS`.  
-   If stdout shows `INFO no-sasl reason=â€¦`, `INFO NICKNAME_RESERVED`, or abort `NICKNAME_RESERVED`, fix NickServ credentials â€” not `!register` (that is ChanServ shops).  
-   Fleet `Bob-*` ears no longer silently fall back to `Bob-â€¦_l`.
+   Do **not** mint a fresh GUID for an account that already exists on the network — restore the real password or oper-`SAREGISTER` / `RESETPASS`.  
+   **FR #3904:** an upgrade migrates `nickserv.password` from the prior BobHome / `%USERPROFILE%\.bobiverse` / `Administrator\.bobiverse` into `<ai root>\bob\home` and **fails the MSI (1603)** if it cannot.  
+   If stdout shows `INFO no-sasl reason=…`, `INFO NICKNAME_RESERVED`, or abort `NICKNAME_RESERVED`, fix NickServ credentials — not `!register` (that is ChanServ shops).  
+   Fleet `Bob-*` ears no longer silently fall back to `Bob-…_l`. A `NICKNAME_RESERVED` loop files a crash report (FR #3904) and is visible in `<ai root>\bob\logs\stdout.log` (NSSM AppStdout is set by Install-Bob).
 
 4. **LocalSystem fallback**  
    If ObjectName stays LocalSystem, NSSM **omits** `-BobHome` so `Start-Bob` uses `<ai root>\bob\home` (issue #7). Prefer completing service logon.
@@ -79,11 +80,12 @@ Get-Content $env:USERPROFILE\.bobiverse\irc.log -Tail 40 -ErrorAction SilentlyCo
 
 Expect:
 
-- `INFO SASL user=bob-<machine> from â€¦\nickserv.password` (when file present)
+- `INFO SASL user=bob-<machine> from …\nickserv.password` (when file present)
 - `INFO connecting irc.ntsa.uk:6697`
 - `INFO joined #bobiverse,#wonderland,#<machine> as Bob-<machine>` (FR #3834)
+- NSSM AppStdout/AppStderr under `<ai root>\bob\logs\` (FR #3904; default since Install-Bob)
 
-If you see `INFO no-sasl` then `INFO NICKNAME_RESERVED` / `NO 001`, fix NickServ SASL credentials before retrying.
+If you see `INFO no-sasl` then `INFO NICKNAME_RESERVED` / `NO 001`, fix NickServ SASL credentials before retrying. Check `logs\stdout.log` first — the failure used to be invisible when AppStdout was unset (FR #3904).
 
 ## Verify Airc
 
@@ -214,9 +216,9 @@ Crash-report opt-out on install failures (FR #3395): when `config\crash-report.j
 
 Empty properties expand to empty strings and are ignored by `Install-*.ps1`.
 
-## Upgrade and Ergo / BobIrcd (#70)
+## Upgrade and Ergo / BobIrcd (#70 / FR #3899)
 
-Jeeves MSI packs mark `third_party\nssm\win64\nssm.exe` and `ergo\ergo.exe` as **Permanent + NeverOverwrite** so an upgrade does not rewrite the service binary or a hard-linked Ergo image. `Install-Jeeves` also runs `Repair-BobiverseErgoHardlink` when `<ai root>\ergo\ergo.exe` still shares a hard link with the pack copy (no service stop).
+MSI packs mark `third_party\nssm\win64\nssm.exe` as **Permanent** with a **stable per-product component GUID** (no `NeverOverwrite` — FR #3899: `NeverOverwrite` + `MajorUpgrade` afterInstallInitialize skipped FileCopy after the old component FileRemove, so airc upgrades from pre-stable-GUID builds left `nssm missing` / msiexec 1603). Jeeves still marks `ergo\ergo.exe` **Permanent + NeverOverwrite**. `Install-Jeeves` also runs `Repair-BobiverseErgoHardlink` when `<ai root>\ergo\ergo.exe` still shares a hard link with the pack copy (no service stop). `Install-AircConsole` re-runs `Fetch-Nssm` into the install tree when the bundled path is missing.
 
 Complete service logon after quiet MSI: Desktop / Start Menu **Complete bobiverse service logon**, or set `BOBIVERSE_SERVICE_PASSWORD` / `config\service.password` before install (see ObjectName above).
 

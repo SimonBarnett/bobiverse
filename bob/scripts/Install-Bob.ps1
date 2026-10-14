@@ -100,9 +100,25 @@ $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing' }
 if (-not $Python) { $Python = Resolve-BobiversePython }
 $user = Resolve-BobiverseServiceUser
+
+# FR #3904: read prior identity BEFORE Remove-BobiverseService (airc FR #1552 pattern).
+# 0.1.22 may have baked -BobHome to %USERPROFILE%\.bobiverse; MSI LocalSystem defaults
+# to InstallRoot\home and must migrate nickserv.password into that home.
+$priorAppParams = Get-BobiverseServiceAppParameters -ServiceName $ServiceName
+$priorBobHome = Get-BobiverseAppParam -AppParameters $priorAppParams -Name 'BobHome'
+$hadPriorService = [bool](Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -or [bool]$priorAppParams
+$hadPriorInstall = $hadPriorService -or (Test-Path -LiteralPath (Join-Path $InstallRoot 'VERSION'))
 if (-not $BobHome) {
     if (-not $user -or (Test-BobiverseIsLocalSystem)) {
+        # Canonical service home under LocalSystem / MSI (issue #7 / FR #3904).
+        # Prior -BobHome (often %USERPROFILE%\.bobiverse) is a migrate source only.
         $BobHome = Join-Path $InstallRoot 'home'
+        if ($priorBobHome) {
+            Write-Host "INFO FR #3904 LocalSystem BobHome=$BobHome (prior AppParameters BobHome kept as migrate source)"
+        }
+    } elseif ($priorBobHome -and (Test-Path -LiteralPath $priorBobHome)) {
+        $BobHome = $priorBobHome
+        Write-Host "INFO FR #3904 preserving prior BobHome from AppParameters"
     } else {
         # Profile of service user when known; else current profile
         $BobHome = Join-Path $env:USERPROFILE '.bobiverse'
@@ -246,7 +262,22 @@ if (Test-Path $skillsSrc) {
 }
 
 Install-BobiversePythonDeps -Python $Python
+# FR #3904: resolve Ergo PASS from sibling airc/jeeves when bob config is empty; seed local copy.
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
+if (-not $env:BOB_IRC_PASSWORD) {
+    Write-Host 'WARN BOB_IRC_PASSWORD unset - place config\ergo.password (or sibling airc/jeeves) before start (FR #3904 / issue #4)'
+}
+
+# FR #3904: migrate nickserv.password from prior/legacy homes into BobHome; fail closed on upgrade.
+$legacyNs = @()
+if ($priorBobHome) { $legacyNs += $priorBobHome }
+$adminBob = Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse'
+if ($adminBob -notin $legacyNs) { $legacyNs += $adminBob }
+$profileBob = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bobiverse' } else { '' }
+if ($profileBob -and $profileBob -notin $legacyNs) { $legacyNs += $profileBob }
+$nsResult = Ensure-BobiverseBobNickServPassword -BobHome $BobHome -InstallRoot $InstallRoot `
+    -LegacyHomes $legacyNs -FailIfMissing:$hadPriorInstall
+Write-Host ("INFO FR #3904 nickserv ok={0} migrated={1} reason={2}" -f $nsResult.Ok, $nsResult.Migrated, $nsResult.Reason)
 
 # Quote-safe NSSM: no -Python path in AppParameters (issue #3); Start-Bob resolves python.
 $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
@@ -258,6 +289,13 @@ $launcher = Join-Path $InstallRoot 'scripts\Start-Bob.ps1'
 [void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START'))
 # FR #1055: Restart on Default and on exit 0 (graceful quit) - same pin as ircJeeves.
 Set-BobiverseNssmAppExitRestart -Nssm $Nssm -ServiceName $ServiceName -RestartDelayMs 2000
+# FR #3904: default stdout/stderr under install logs (flamingo NICKNAME_RESERVED was invisible).
+$logsDir = Join-Path $InstallRoot 'logs'
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdout', (Join-Path $logsDir 'stdout.log')))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderr', (Join-Path $logsDir 'stderr.log')))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStdoutCreationDisposition', '4'))
+[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('set', $ServiceName, 'AppStderrCreationDisposition', '4'))
 
 # Issue #6: msiexec /qn is UserInteractive=$true but has no console - never Get-Credential unless -PromptServicePassword
 # and not under MSI/quiet.
@@ -390,9 +428,36 @@ try {
         }
 } catch { }
 
+# FR #3987: Start ircBob BEFORE live tray launch, and never let the tray Restart-BobTrayService
+# during install (Start-BobFleetTray default restart races Start-Service and hangs msiexec CA).
+if (-not $NoStart) {
+    # Soft-fail start so missing ObjectName password does not 1603 the MSI (issue #6).
+    # Bounded wait: never block the CA indefinitely (FR #3987).
+    try {
+        $svc = Get-Service -Name $ServiceName -ErrorAction Stop
+        if ($svc.Status -ne 'Running') {
+            Start-Service $ServiceName -ErrorAction Stop
+            $svc.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(60))
+        }
+        Start-Sleep -Seconds 1
+    } catch {
+        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
+        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
+        if (Test-Path -LiteralPath $report) {
+            try {
+                & $report -Title "bob install: Start-Service $ServiceName failed" -Body $_.Exception.Message -InstallRoot $InstallRoot
+            } catch {}
+        }
+    }
+}
+
 if ((-not $SkipTray) -and (-not $NoStart)) {
     $noTidy = $SkipTidy.IsPresent -or ([string]$env:BOBIVERSE_NO_TIDY).Trim() -eq '1' -or (Test-BobiverseMsiOrQuiet)
     if ($noTidy) { Write-Host 'INFO tray start with SkipTidy: running seats and Grok Bot are not killed (#32)' }
+    # FR #3987: CA already started ircBob; suppress tray Restart-BobTrayService for this live launch only.
+    $prevNoSvcRestart = $env:BOBIVERSE_NO_SERVICE_RESTART
+    $env:BOBIVERSE_NO_SERVICE_RESTART = '1'
+    try {
     $trayPs1 = Join-Path $InstallRoot 'scripts\Start-BobTray.ps1'
     $watchPs1 = Join-Path $InstallRoot 'tools\Watch-BobTray.ps1'
     $trayInteractive = Join-Path $InstallRoot 'scripts\Start-BobTrayInteractive.ps1'
@@ -450,6 +515,7 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
         }
     } elseif (Test-Path -LiteralPath $trayPs1) {
         # Interactive install: kill prior tray then start TipForm in this session (SkipTidy keeps seats).
+        # FR #3987: pass -SkipServiceRestart so TipForm does not sc stop ircBob while CA owns start.
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             $_.CommandLine -and (
                 $_.CommandLine -match 'Start-BobTray\.ps1' -or
@@ -465,31 +531,23 @@ if ((-not $SkipTray) -and (-not $NoStart)) {
         Start-Sleep -Milliseconds 500
         $trayLaunch = @(
             '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-            '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew', '-SkipTidy'
+            '-File', $trayPs1, '-InstallRoot', $InstallRoot, '-MachineId', $MachineId, '-ForceNew', '-SkipTidy', '-SkipServiceRestart'
         )
         Start-Process -FilePath 'powershell.exe' -ArgumentList $trayLaunch | Out-Null
-        Write-Host 'INFO started TipForm Start-BobTray (ircBob companion; SkipTidy FR #1636)'
+        Write-Host 'INFO started TipForm Start-BobTray (ircBob companion; SkipTidy FR #1636; SkipServiceRestart FR #3987)'
         if (Test-Path -LiteralPath $trayInteractive) {
             try { & $trayInteractive -InstallRoot $InstallRoot -MachineId $MachineId -RegisterOnly } catch { }
         }
     }
-}
-
-if (-not $NoStart) {
-    # Soft-fail start so missing ObjectName password does not 1603 the MSI (issue #6).
-    try {
-        Start-Service $ServiceName -ErrorAction Stop
-        Start-Sleep -Seconds 2
-    } catch {
-        Write-Host "WARN Start-Service $ServiceName failed: $($_.Exception.Message) - complete service logon then start"
-        $report = Join-Path $here 'Report-BobiverseIntakeIssue.ps1'
-        if (Test-Path -LiteralPath $report) {
-            try {
-                & $report -Title "bob install: Start-Service $ServiceName failed" -Body $_.Exception.Message -InstallRoot $InstallRoot
-            } catch {}
+    } finally {
+        if ($null -eq $prevNoSvcRestart -or $prevNoSvcRestart -eq '') {
+            Remove-Item Env:\BOBIVERSE_NO_SERVICE_RESTART -ErrorAction SilentlyContinue
+        } else {
+            $env:BOBIVERSE_NO_SERVICE_RESTART = $prevNoSvcRestart
         }
     }
 }
+
 Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
 Write-Host "INFO Install-Bob done nick=$nick"
 Write-BobiverseMsiInstallLog -Product bob -Message ("install-ok nick=$nick")

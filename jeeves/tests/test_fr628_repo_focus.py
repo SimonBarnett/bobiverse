@@ -279,6 +279,7 @@ def test_offer_and_assign_honour_ledger_even_without_row_stamps(_home):
     fi.handle_focus_cmd(_home, "1 o/a")
     st, job = gitclaim.offer_focus_top(_home, "ionos-11", "#ionos")
     assert (job["task"], job["id"]) == ("FR", "#8")
+    gitclaim.clear_seat_hold(_home, "ionos-11", clear_pins=True)  # FR #4089: free the seat first
     st, why = gitclaim.assign_row(_home, "ionos-11", "o/a", "UAT", "#0")
     assert st == "refused" and ("no self-UAT" in why or "implemented" in why.lower() or "self" in why.lower())
     assert gitclaim.assign_row(_home, "ionos-12", "o/a", "UAT", "#0")[0] == "ok"

@@ -2,6 +2,9 @@
 REM FR #3685: propagate powershell.exe exit to CAQuietExec (Return=check => msiexec 1603).
 REM Also log + outer intake report when Install-Airc.ps1 never runs (#Requires / parse refuse).
 REM FR #3759: PS 4.0 -File can exit 0 after a script throw; treat fail-reported.flag as FAIL too.
+REM FR #3887: clear any leftover fail-reported.flag from a PRIOR run before invoking ps1,
+REM so a stale flag cannot turn a successful install into msiexec 1603. Same-run FR #3759
+REM belt still works: ps1 writes the flag during THIS run, then .cmd sees it with EC=0.
 setlocal EnableExtensions
 set "HERE=%~dp0"
 set "LOGDIR=%ProgramData%\Bobiverse\logs"
@@ -11,7 +14,19 @@ if not exist "%LOGDIR%" mkdir "%LOGDIR%" 2>nul
 
 echo %DATE% %TIME% Install-Airc.cmd start args=%*>>"%LOG%" 2>nul
 
+REM FR #3887: drop stale flag before Install-Airc.ps1 so only this run's flag can trip FR #3759.
+if exist "%FAILFLAG%" (
+  echo %DATE% %TIME% Install-Airc.cmd FR3887 clearing stale fail-flag before install>>"%LOG%" 2>nul
+  del /f /q "%FAILFLAG%" 2>nul
+)
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath '%HERE%' -Filter *.ps1 | Unblock-File -ErrorAction SilentlyContinue"
+REM FR #4012: clear stuck MSI InProgress / Rollback before install so a prior crash does not cause Error 1705.
+if exist "%HERE%..\..\common\scripts\Bobiverse-Common.ps1" (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . '%HERE%..\..\common\scripts\Bobiverse-Common.ps1'; if (Get-Command Clear-BobiverseMsiPendingTransaction -ErrorAction SilentlyContinue) { Clear-BobiverseMsiPendingTransaction -Why 'Install-Airc.cmd' | Out-Null } }" >>"%LOG%" 2>&1
+) else if exist "%HERE%Bobiverse-Common.ps1" (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . '%HERE%Bobiverse-Common.ps1'; if (Get-Command Clear-BobiverseMsiPendingTransaction -ErrorAction SilentlyContinue) { Clear-BobiverseMsiPendingTransaction -Why 'Install-Airc.cmd' | Out-Null } }" >>"%LOG%" 2>&1
+)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HERE%Install-Airc.ps1" %*
 set "EC=%ERRORLEVEL%"
 
@@ -19,6 +34,14 @@ REM FR #3759: if ps1 reported failure but -File still returned 0 (PS 4.0 throw),
 if "%EC%"=="0" if exist "%FAILFLAG%" (
   echo %DATE% %TIME% Install-Airc.cmd FR3759 fail-flag present with EC=0 - treating as FAIL>>"%LOG%" 2>nul
   set "EC=1"
+)
+
+REM FR #4013: elevation-required (740) --- clear message, no fail-reported flag, no outer intake.
+if "%EC%"=="740" (
+  echo airc install needs administrator rights
+  echo %DATE% %TIME% Install-Airc.cmd FR4013 exit=740 needs administrator rights>>"%LOG%" 2>nul
+  if exist "%FAILFLAG%" del /f /q "%FAILFLAG%" 2>nul
+  exit /b 740
 )
 
 if not "%EC%"=="0" (

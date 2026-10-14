@@ -1,4 +1,4 @@
-﻿#Requires -Version 4.0
+#Requires -Version 4.0
 <#
 .SYNOPSIS
   Service-start self-update for ircBob / ircJeeves / Airc (v0.1.17). Small, deterministic, token-less.
@@ -160,7 +160,7 @@ function Get-Asset {
     $lastErr = $null
     for ($i = 1; $i -le $attempts; $i++) {
         Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
-        # 1) IWR with hard TimeoutSec (no-progress stalls still hang on some WinPS builds — keep short).
+        # 1) IWR with hard TimeoutSec (no-progress stalls still hang on some WinPS builds --- keep short).
         try {
             Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
             Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
@@ -627,13 +627,17 @@ function Invoke-Apply {
 
         $mlog = Join-Path $StateDir ('msiexec-{0}.log' -f $tag)
         # FR #2475: serialise msiexec + retry 1618 (ERROR_INSTALL_ALREADY_RUNNING)
+        # FR #4012: serialized helper also clears pending InProgress and retries 1705.
         # FR #3639: no AIRC_OPERATORS forwarding - airc auth is live control-channel +o/+h.
+        # FR #4011: Disable Restart Manager on the msiexec line so older MSIs (and tip)
+        # avoid session-0 RM 351 / Windows Installer crash 1601 under SYSTEM upgrades.
         $msiArgs = New-Object 'System.Collections.Generic.List[string]'
         [void]$msiArgs.Add('/i')
         [void]$msiArgs.Add(('"{0}"' -f $msi))
         [void]$msiArgs.Add('/qn')
         [void]$msiArgs.Add('/norestart')
         [void]$msiArgs.Add('REBOOT=ReallySuppress')
+        [void]$msiArgs.Add('MSIRESTARTMANAGERCONTROL=Disable')
         [void]$msiArgs.Add('/l*v')
         [void]$msiArgs.Add(('"{0}"' -f $mlog))
         if (Get-Command Invoke-BobiverseMsiexecSerialized -ErrorAction SilentlyContinue) {
@@ -657,7 +661,7 @@ function Invoke-Apply {
         $verPath = Join-Path $InstallRoot 'VERSION'
         $newVer = ConvertTo-Ver (Get-Content -LiteralPath $verPath -Raw -ErrorAction SilentlyContinue)
         # FR #1432: msiexec success-family can still leave VERSION stale (NeverOverwrite on VERSION).
-        # Stamp only when ARP agrees the target product is registered — never paper over a no-op
+        # Stamp only when ARP agrees the target product is registered --- never paper over a no-op
         # maintenance /i that left both bits and ARP on the old build (MRB #1477 hostile).
         if (-not $newVer -or $newVer -ne $target) {
             $arpAfter = Get-BobiverseArpProduct
@@ -696,7 +700,7 @@ function Invoke-Apply {
         if ((Get-Service -Name $ServiceName).Status -ne 'Running') { throw "service $ServiceName not running after install" }
 
         # FR #1018: MSI upgrade left BobCallback on old code (digest PermissionError / seats stuck doing).
-        # FR #3190: do NOT restart BobAutoFocus — that ops task spammed per-item !focus every 2 min and is retired.
+        # FR #3190: do NOT restart BobAutoFocus --- that ops task spammed per-item !focus every 2 min and is retired.
         if ($Product -eq 'jeeves') {
             foreach ($tn in @('BobCallback', 'BobAutoFeed')) {
                 try {

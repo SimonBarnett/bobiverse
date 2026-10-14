@@ -38,6 +38,9 @@ def q(tmp_path):
     d.mkdir(parents=True)
     (d / sw.ALIVE_FILE).write_text("alive")
     os.utime(d / sw.ALIVE_FILE, (NOW, NOW))
+    # FR #4136: engine.alive required alongside tray.alive for ACK
+    (d / sw.ENGINE_ALIVE_FILE).write_text("engine")
+    os.utime(d / sw.ENGINE_ALIVE_FILE, (NOW, NOW))
     return d
 
 
@@ -170,6 +173,7 @@ def test_cooldown_blocks_a_second_start_until_it_passes(q):
     d = ask(q, gate=g, now=NOW + 10)
     assert not d.ok and d.reason == "cooldown" and "20s" in d.line
     os.utime(q / sw.ALIVE_FILE, (NOW + 30, NOW + 30))                # tray heartbeat keeps ticking
+    os.utime(q / sw.ENGINE_ALIVE_FILE, (NOW + 30, NOW + 30))
     assert ask(q, gate=g, now=NOW + 31).ok
     assert len(list(q.glob("req-*.json"))) == 2
 
@@ -238,6 +242,7 @@ def bob(tmp_path, monkeypatch):
     d = sw.queue_dir(b.root)
     d.mkdir(parents=True)
     (d / sw.ALIVE_FILE).write_text("alive")
+    (d / sw.ENGINE_ALIVE_FILE).write_text("engine")
     monkeypatch.setattr(irc_agent.time, "sleep", lambda s: None)
     monkeypatch.setattr(irc_agent, "info", lambda m: None)
     monkeypatch.setattr(sw, "snapshot_procs", lambda: [])

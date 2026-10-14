@@ -25,7 +25,8 @@ Home migration (`bob_home.migrate_legacy`) copies legacy `~\.agentic-irc-*` into
 
 ## Operator commands (IRC)
 
-- `!register <machine>` — ChanServ REGISTER `#{machine}` (Simon/operators)
+- `!register <machine>` — ChanServ REGISTER `#{machine}` (+o/+h in #bobiverse; FR #4008)
+- `!unregister <machine>` — inverse: ChanServ UNREGISTER, drop roster, PART shop (+o/+h; confirm/dry-run; FR #4008)
 - `!recycle jeeves` — restart `ircJeeves` only (not BobIrcd)
 - `!recycle <machine>`, `!list`, digest / GIT / chair-outbox — existing chair surface
 
@@ -38,3 +39,11 @@ Admin-sealed `identity.json` under LocalSystem → `CryptUnprotectData failed`. 
 - Skill: `.grok/skills/bobiverse-jeeves/SKILL.md`
 - Webhooks: `docs/webhooks.md`
 - Post-install: `docs/post-install.md`
+
+## !build (FR #4006)
+
+Ops: `!build <owner/repo> <version> [ref]` queues a deterministic BUILD from `.bobiverse/build.yml` (no agent). `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). Use `!build dry-run` to validate. Live pack/suites: WP2 on the recipe `machine`.
+
+## !installtest (FR #4026 WP3)
+
+Ops: `!installtest <owner/repo> <version> [tag]` runs optional INSTALL-TEST from recipe `install_test` (msiexec + post-checks). Use `!installtest dry-run` to validate. Live msiexec on the recipe `install_test.machine` (fold-aware). Failures file `release-blocker` issues via the WP2 filer path.

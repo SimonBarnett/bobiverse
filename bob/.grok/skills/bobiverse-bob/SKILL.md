@@ -33,11 +33,13 @@ for its own machine, drains `home\outbox.txt`, and hosts the talk seats. The **T
 | Ear home | `<ai root>\bob\home` (LocalSystem) else `~\.bobiverse`; `outbox.txt` (+`.pos`), **`inbound-transcript.log`** (always-on scrubbed PRIVMSG: channel/nick/text, FR #2174), `irc.log` (raw wire only with `BOB_IRC_DEBUG=1`), `nickserv.password`, `accounts.json`, `digest.json` |
 | Logs | `<ai root>\bob\logs\stdout.log` / `stderr.log` (rotated `ircBob-*` files) |
 | IRC | channels `#bobiverse` + `#wonderland` + `#<machine>` (identical on every box; FR #3834); nick `Bob-<machine>`; SASL user `bob-<machine>`; host passed explicitly with `--host` (Start-Bob `-IrcHost`, default `irc.ntsa.uk`). Workers/seats JOIN the shop only (never `#wonderland`). **DIGEST_ID_FOLD:** `ionos`->`win-mpre8vi4u6u`, `dev1`->`ce-priority-dev1` — never JOIN/`--channel` `#ionos` (harvest #2280 / PR #2279) |
-| Config | `config\ergo.password` (server PASS), `home\nickserv.password` (SASL), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon) |
+| Config | `config\ergo.password` (server PASS; FR #3904 also resolves sibling `airc`/`jeeves` config and seeds a local copy), `home\nickserv.password` (SASL; upgrade migrates from prior BobHome / `.bobiverse` and fails MSI 1603 if missing), `service.password`/`BOBIVERSE_SERVICE_PASSWORD` (DPAPI logon). NSSM AppStdout/AppStderr -> `logs\stdout.log` / `stderr.log` (FR #3904). |
 | Tray | `scripts\Start-BobTray.ps1 -> tools\Start-BobFleetTray.ps1`; HKCU `Run\BobiverseTray`; per-user Startup shortcut; quiet MSI uses the ONLOGON `/IT` task `BobiverseTray`. Autostart/shortcuts/ONLOGON default **`-ForceNew -SkipTidy`** (FR #1636 / harvest #1663): replace the prior tray only; leave seats/Grok Bot running. |
 | TipForm **Restart** | Menu label **Restart** -> `Restart-BobTrayWatcher` -> `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches tray; **this** path still tidies seats). Ear-only: Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` |
 | Agent / Plan | Tray items **Agent** and **Plan** (single click, no submenu) run `worker\bob-worker.exe` (via a per-user run-copy) -> a NEW agent each click, never resumed. Guides: `bobiverse-bob-worker`, `bobiverse-bob-plan` |
 | Start Menu | ONE all-users folder `Bobiverse`: Bobiverse Tray, Restart ircBob (ear-only via `Restart-BobEar.ps1`), Bob Services, Logs, Skill books, Agent guide (all systray icon) |
+
+- **MSI Install-Bob tray (FR #3987 / PR #3993):** during RunInstall, Start-Service ircBob (WaitForStatus 60s soft-fail) runs **before** live TipForm launch; Install-Bob sets `BOBIVERSE_NO_SERVICE_RESTART=1` and interactive `Start-BobTray -SkipServiceRestart` so `Restart-BobTrayService` cannot race the CA. `Invoke-BobTrayServiceControl` skips `START_PENDING`/`STOP_PENDING`. Persistent Startup/HKCU shortcuts may still restart ircBob on logon (intentional).
 
 ## Listen and send (FR #2174)
 
@@ -69,6 +71,8 @@ Common failure chain:
 3. Digest `worker_list` lags ACC (orphan doing/offered).
 
 Durable rules (code in `BobTrayDialogs.ps1` / `Watch-BobTray.ps1`, PR #1576):
+FR #4136 / #4142: `Watch-BobTray` writes `engine.alive` after each startworker queue tick; `HealEngine` restarts when that stamp is stale (>120s) even if the process is still alive; ear NACKs `engine_stale` when `tray.alive` is fresh but `engine.alive` is not. Needs rebuilt `bob-tray.exe` + tip ear.
+
 
 - Never let `Get-BobTrayHover` block TipForm worker refresh.
 - Stale `working_on` after DONE with empty queue `accepted` can trip `seats_stuck_doing` (harvest #1712) — false busy; next digest POST clears it.
@@ -84,3 +88,5 @@ Troubleshoot: compare TipForm vs `Invoke-JeevesMonitorCheck -Check stuck_accepte
 
 - Self-REGISTER the shop with ChanServ (Jeeves `!register` only); mint a fresh NickServ GUID for a registered `bob-*` account.
 - Double-start the ear when `ircBob` is Running; kill broad `powershell.exe`/`python.exe`; stamp UAT; invent an Ergo PASS.
+
+- tray: FR #4142 headless engine UI-thread spin --- skip TipForm/Update-Hover UI and NotifyIcon flash/pulse when BOB_TRAY_ENGINE=1; poll re-entrancy Stop/Start + tick-slow logs (>2s); Write-BobIrcStatus on ThreadPool digest timer; engine.alive watchdog (#4136) remains the band-aid for hung ticks

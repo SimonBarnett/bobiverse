@@ -90,6 +90,22 @@ def info(msg: str) -> None:
     print(f"{ts} {msg}", flush=True)
 
 
+def log_auth_allow(hr) -> None:  # noqa: ANN001
+    """FR #4067: audit allow for shell/job/pipe (symmetric with auth-deny)."""
+    from airc_console import format_auth_allow_log
+
+    acct = getattr(hr, "allow_account", None)
+    info(
+        format_auth_allow_log(
+            nick=hr.nick or "-",
+            account=acct,
+            channel=getattr(hr, "allow_channel", None),
+            mode=getattr(hr, "allow_mode", None),
+            action=hr.action,
+        )
+    )
+
+
 def info_keepalive(msg: str) -> None:
     """Rate-limit keepalive noise to about one line per hour (FR #1546)."""
     global _last_keepalive_log_mono
@@ -103,7 +119,7 @@ def info_keepalive(msg: str) -> None:
 
 
 def read_password(path: Path | None, env_key: str = "AIRC_CONSOLE_PASSWORD") -> str | None:
-    """Legacy helper — prefer resolve_server_password / ensure_nickserv_password (#271)."""
+    """Legacy helper --- prefer resolve_server_password / ensure_nickserv_password (#271)."""
     for key in (env_key, "BOB_IRC_PASSWORD", "AGENTIC_IRC_PASSWORD", "AIRC_CONSOLE_SERVER_PASSWORD"):
         env = os.environ.get(key)
         if env and env.strip():
@@ -156,7 +172,18 @@ class AircConsoleService:
         )
         # FR #3763: marker that NickServ account exists for this home (after 903 / REGISTER).
         self._nickserv_ok_path = self.home / "console.nickserv-ok"
+        # FR #3863: only a GUID minted *this* process skips SASL. A reused
+        # console.password (upgrade from builds that never wrote nickserv-ok)
+        # must try SASL or the reserved nick 433-loops forever.
+        pw_existed = False
+        try:
+            pw_existed = nickserv_path.is_file() and bool(
+                nickserv_path.read_text(encoding="utf-8").strip()
+            )
+        except OSError:
+            pw_existed = False
         self.nickserv_password = ensure_nickserv_password(nickserv_path, mint=True)
+        self._nickserv_pw_minted = bool(self.nickserv_password) and not pw_existed
         self.password = self.nickserv_password  # SASL / identify use NickServ secret
         self.server_password = resolve_server_password(
             home=self.home,
@@ -197,6 +224,24 @@ class AircConsoleService:
         )
         self.capabilities = caps
         info(caps.log_line())
+        # FR #4030: do not hide shell=off on Bob machines
+        try:
+            from airc_console import detect_bob_machine, warn_shell_off_on_bob_line, _read_airc_json_dict
+
+            _cfg4030 = _read_airc_json_dict(install_root) or {}
+            _src4030 = str(_cfg4030.get("shell_source") or "")
+            if _cfg4030.get("shell_explicit") is True and not _src4030:
+                _src4030 = "explicit"
+            _warn4030 = warn_shell_off_on_bob_line(
+                shell_mode=caps.shell_mode,
+                is_bob_machine=detect_bob_machine(install_root=install_root),
+                shell_source=_src4030 or None,
+                profile=str(_cfg4030.get("profile") or ""),
+            )
+            if _warn4030:
+                info(_warn4030)
+        except Exception:
+            pass
         # FR #3401 / #3639: every profile authorises by live channel +o/+h only.
         # No operators.txt / fleet-operators roster / nick allow-list is read anywhere.
         try:
@@ -245,6 +290,7 @@ class AircConsoleService:
             wait=False,
             on_inflight=self.note_shell_inflight,
             on_idle=self.clear_shell_inflight,
+            on_shell_done=self._on_shell_done,
         )
         ai_root = Path(os.environ.get("AI_ROOT") or self.home.parent.parent)
         # Verb matrix: empty write/exec sets => any base-authenticated nick (documented).
@@ -340,7 +386,23 @@ class AircConsoleService:
             info(f"INFO console-out-send-err {e}")
             self._force_reconnect = True
 
+    def _on_shell_done(
+        self,
+        nick: str,
+        jid: str,
+        elapsed_s: float,
+        reply_lines: int,
+        exit_code: int,
+    ) -> None:
+        """FR #4068: log batch-capture shell cost (first out waits for process exit)."""
+        flood_est = reply_lines * FLOOD_S
+        info(
+            f"INFO shell-done nick={nick} id={jid} elapsed_ms={int(elapsed_s * 1000)} "
+            f"replies={reply_lines} flood_est_s={flood_est:.1f} exit={exit_code}"
+        )
+
     def drain_out_queue(self, *, max_items: int | None = None, flood: bool = True) -> int:
+
         """Send queued Query replies. Leaves remaining items on ConnectionError.
 
         FR #2649: stop flush passes ``flood=False`` so err+DONE leave back-to-back;
@@ -392,7 +454,7 @@ class AircConsoleService:
             self._stop_flushed = True
             return
         if not self.sock:
-            # Already closed (e.g. finally after prepare_stop) — do not spam send: no socket.
+            # Already closed (e.g. finally after prepare_stop) --- do not spam send: no socket.
             info("INFO stop-flush-skip no socket (queue kept until process exit)")
             self._stop_flushed = True
             return
@@ -403,7 +465,7 @@ class AircConsoleService:
         self._stop_flushed = True
 
     def prepare_stop(self, *, reason: str = "service-stop") -> None:
-        """FR #2640 / #2649: flush DONEs (no flood gap) then close — never sendall after close."""
+        """FR #2640 / #2649: flush DONEs (no flood gap) then close --- never sendall after close."""
         self._stopping = True
         self._stop.set()
         self.flush_stop_dones(reason=reason)
@@ -460,7 +522,7 @@ class AircConsoleService:
         self.send(f"PRIVMSG {target} :{safe}", flood=flood)
 
     def send_notice(self, target: str, text: str) -> None:
-        """NOTICE — used for ping replies (including channel ping → Query-style NOTICE)."""
+        """NOTICE --- used for ping replies (including channel ping → Query-style NOTICE)."""
         safe = text.replace("\n", " ").replace("\r", " ")
         self.send(f"NOTICE {target} :{safe}")
 
@@ -473,11 +535,21 @@ class AircConsoleService:
         info("INFO sent server PASS")
 
     def _nickserv_account_known(self) -> bool:
-        """FR #3763: True once this ConsoleHome has successfully SASL'd or registered."""
+        """True when SASL is safe to attempt for this ConsoleHome.
+
+        FR #3763: marker after successful SASL/REGISTER.
+        FR #3863: reused console.password (not minted this run) also counts ---
+        upgrades from pre-marker builds must not skip SASL or they 433-loop.
+        """
         try:
-            return self._nickserv_ok_path.is_file()
+            if self._nickserv_ok_path.is_file():
+                return True
         except OSError:
-            return False
+            pass
+        # Upgrade / GUID reuse: password already on disk → account almost certainly exists.
+        if self.nickserv_password and not getattr(self, "_nickserv_pw_minted", True):
+            return True
+        return False
 
     def _mark_nickserv_ok(self, reason: str) -> None:
         """FR #3763: persist that {machine}_console NickServ account matches console.password."""
@@ -492,10 +564,88 @@ class AircConsoleService:
         except OSError as e:
             info(f"INFO FR #3763 nickserv-ok write failed: {e}")
 
+    def _legacy_console_password_paths(self) -> list[Path]:
+        """FR #3900: candidate console.password files from pre-Airc / profile homes."""
+        home = Path(self.home)
+        drive = Path(home.anchor) if home.anchor else Path("C:/")
+        userprofile = Path(os.environ.get("USERPROFILE") or "")
+        out: list[Path] = []
+        for base in (
+            userprofile / ".airc",
+            userprofile / ".airc-console",
+            drive / "Users" / "Administrator" / ".airc",
+            drive / "Users" / "Administrator" / ".airc-console",
+            drive / "Users" / "Default" / ".airc",
+            drive / "Users" / "Default" / ".airc-console",
+        ):
+            if not base or str(base) in (".", ""):
+                continue
+            out.append(base / "console.password")
+        # Dedupe while preserving order; skip the live home file.
+        seen: set[str] = set()
+        live = str((home / "console.password").resolve()) if (home / "console.password").exists() else ""
+        uniq: list[Path] = []
+        for p in out:
+            try:
+                key = str(p.resolve()) if p.exists() else str(p)
+            except OSError:
+                key = str(p)
+            if live and key.lower() == live.lower():
+                continue
+            if key.lower() in seen:
+                continue
+            seen.add(key.lower())
+            uniq.append(p)
+        return uniq
+
+    def _try_heal_console_password_from_legacy(self) -> bool:
+        """FR #3900: on SASL 904, adopt a different legacy console.password if present.
+
+        Installs that moved ConsoleHome to ``<ai root>\\airc\\home`` while minting a
+        fresh GUID leave NickServ holding the old AircConsole password. Prefer the
+        older file over an indefinite unauthenticated console.
+        """
+        if getattr(self, "_fr3900_heal_attempted", False):
+            return False
+        self._fr3900_heal_attempted = True
+        current = (self.nickserv_password or "").strip()
+        nickserv_path = (
+            Path(self.args.password_file)
+            if getattr(self.args, "password_file", None)
+            else (Path(self.home) / "console.password")
+        )
+        for cand in self._legacy_console_password_paths():
+            try:
+                if not cand.is_file():
+                    continue
+                other = cand.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if not other or other == current:
+                continue
+            try:
+                nickserv_path.parent.mkdir(parents=True, exist_ok=True)
+                nickserv_path.write_text(other + "\n", encoding="utf-8")
+            except OSError as e:
+                info(f"INFO FR #3900 legacy password write failed: {e}")
+                continue
+            self.nickserv_password = other
+            self.password = other
+            # Force a fresh SASL attempt on reconnect; marker may be stale/wrong.
+            try:
+                if self._nickserv_ok_path.is_file():
+                    self._nickserv_ok_path.unlink()
+            except OSError:
+                pass
+            info(f"INFO FR #3900 healed console.password from legacy {cand}; reconnecting")
+            return True
+        return False
+
     def request_caps(self) -> None:
         # account-tag powers operator account allowlists (FR #230). SASL is best-effort.
-        # FR #3763: do not attempt SASL until console.nickserv-ok exists (fresh client
-        # would 904 "not registered yet" and look like a password error).
+        # FR #3763: skip SASL only when console.password was minted this run (fresh
+        # client would 904 "not registered yet"). FR #3863: reused password → try SASL
+        # even without console.nickserv-ok (upgrade path).
         caps = "account-notify extended-join account-tag"
         want = bool(self.nickserv_password and self.args.sasl and self._nickserv_account_known())
         if self.nickserv_password and self.args.sasl and not self._nickserv_account_known():
@@ -503,6 +653,16 @@ class AircConsoleService:
                 "INFO FR #3763 skip SASL until NickServ account exists "
                 f"(no {self._nickserv_ok_path.name}); will REGISTER via NickServ"
             )
+        elif want and self.nickserv_password and not getattr(self, "_nickserv_pw_minted", True):
+            try:
+                has_marker = self._nickserv_ok_path.is_file()
+            except OSError:
+                has_marker = False
+            if not has_marker:
+                info(
+                    "INFO FR #3863 try SASL: console.password reused "
+                    f"(no {self._nickserv_ok_path.name} yet; upgrade path)"
+                )
         if want:
             caps = "sasl " + caps
             self._want_sasl = True
@@ -600,7 +760,7 @@ class AircConsoleService:
         )
         # FR #3401 / #3511: clear then resync prefixes after JOIN (353/366).
         # set_channel always clears (same-channel reconnect must not keep stale %).
-        # FR #3774: member map is control-channel only — presence NAMES must not sync here.
+        # FR #3774: member map is control-channel only --- presence NAMES must not sync here.
         if getattr(self, "members", None) is not None:
             self.members.clear()
             self.members.set_channel(self.channel)
@@ -609,7 +769,7 @@ class AircConsoleService:
             self.core.channel = self.channel
 
     def _lost_control_channel(self, reason: str) -> None:
-        """FR #3511: console PART/KICK from control channel — refuse until NAMES/366.
+        """FR #3511: console PART/KICK from control channel --- refuse until NAMES/366.
 
         Dropping only the console nick left ``synced=True`` and every other ``@``/``%``
         still authorised while the console was not in the channel. Clear the map and
@@ -660,9 +820,13 @@ class AircConsoleService:
                 self.join_shop()
             return
 
-        # wonderland fallback (FR #3834) — keep {machine}_console nick
+        # wonderland fallback (FR #3834 / #4014) --- keep {machine}_console nick
         self.channel = self.wonderland_channel
         self.core.channel = self.channel
+        # FR #4014: name the target shop + real fallback (never a hardcoded #ionos).
+        info(
+            f"INFO FR #4014 {self.shop_channel} is not registered; joining {self.wonderland_channel}"
+        )
         if not self._nick_explicit:
             want = machine_console_nick(self.machine)
             if self.nick.lower() != want.lower():
@@ -679,7 +843,7 @@ class AircConsoleService:
             self.join_shop()
 
     def _finish_lobby_nick(self) -> None:
-        """Legacy helper — wonderland path no longer blocks on NICK ack (#321 / #3834)."""
+        """Legacy helper --- wonderland path no longer blocks on NICK ack (#321 / #3834)."""
         self._awaiting_lobby_nick = False
         info(f"INFO shop-mode=wonderland channel={self.channel} nick={self.nick}")
         self.register_or_identify()
@@ -703,7 +867,7 @@ class AircConsoleService:
             return
         if time.monotonic() < self._probe_deadline:
             return
-        info("INFO chanserv-probe timeout -> wonderland")
+        info(f"INFO FR #4014 chanserv-probe timeout -> wonderland; {self.shop_channel} treated as unregistered; joining {self.wonderland_channel}")
         self._apply_shop_mode("wonderland")
 
     def _handle_sasl_line(self, cmd: str, args: list[str], trailing: str) -> None:
@@ -726,13 +890,18 @@ class AircConsoleService:
         if cmd in {"904", "905", "906", "907"}:
             if self._nickserv_account_known():
                 self._sasl_failed = True
+                # FR #3900: try one legacy-home password heal before staying unauthenticated.
+                if cmd == "904" and self._try_heal_console_password_from_legacy():
+                    self.send("CAP END")
+                    self._force_reconnect = True
+                    return
                 info(
                     f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
                     f"with console.password. Reset it (NickServ SAPASSWD) or fix console.password; "
                     f"continuing so registration can finish"
                 )
             else:
-                # FR #3763: fresh ConsoleHome — account not registered yet; not a loud error.
+                # FR #3763: fresh ConsoleHome --- account not registered yet; not a loud error.
                 info(
                     f"INFO FR #3763 console account {self.nick} SASL {cmd} "
                     f"(account not registered yet); continuing with NickServ REGISTER"
@@ -777,7 +946,7 @@ class AircConsoleService:
             self._handle_sasl_line(cmd, args, trailing)
 
         if cmd == "001":
-            # Welcome — probe ChanServ (or forced mode) before JOIN.
+            # Welcome --- probe ChanServ (or forced mode) before JOIN.
             self._registered = True
             self._nick_retries = 0
             self.server_nick = args[0] if args else None
@@ -794,7 +963,7 @@ class AircConsoleService:
                 self._start_chanserv_probe()
 
         if cmd == "433":
-            # Nickname already in use — never get 001/JOIN without recovery.
+            # Nickname already in use --- never get 001/JOIN without recovery.
             # FR #3834: wonderland keeps {machine}_console; never invent {machine}_N.
             self._nick_retries += 1
             base = machine_console_nick(self.machine)
@@ -928,7 +1097,7 @@ class AircConsoleService:
                 if same_irc_channel(str(ch or ""), ctrl):
                     if pnick:
                         self.members.on_part(pnick)
-                    # FR #3511: console left its control channel — refuse until resync.
+                    # FR #3511: console left its control channel --- refuse until resync.
                     if pnick and pnick.lower() == (self.nick or "").lower():
                         self._lost_control_channel("self-part")
             elif cmd == "QUIT":
@@ -942,7 +1111,7 @@ class AircConsoleService:
                 if same_irc_channel(str(ch or ""), ctrl):
                     if knick:
                         self.members.on_kick(knick)
-                    # FR #3511: console kicked from control channel — clear ops map + rejoin.
+                    # FR #3511: console kicked from control channel --- clear ops map + rejoin.
                     if knick and knick.lower() == (self.nick or "").lower():
                         self._lost_control_channel("self-kick")
             elif cmd == "NICK":
@@ -991,13 +1160,22 @@ class AircConsoleService:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             self.send_privmsg(hr.nick, hr.reply)
             if hr.action == "update":
+                # FR #4067: auth-allow before update-reply (issue covers UPDATE).
+                if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
+                    try:
+                        hr.allow_account = self.account_map.get(hr.nick) if hr.nick else None
+                    except Exception:
+                        pass
+                log_auth_allow(hr)
                 info(f"INFO update-reply to={hr.nick} {hr.reply}")
-        elif hr.action == "shell":
-            info(f"INFO shell from={hr.nick}")
-        elif hr.action == "job":
-            info(f"INFO job from={hr.nick}")
-        elif hr.action == "pipe":
-            info(f"INFO pipe from={hr.nick}")
+        elif hr.action in {"shell", "job", "pipe"}:
+            # FR #4067: auth-allow (mode/account/channel) replaces bare INFO shell/job/pipe.
+            if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
+                try:
+                    hr.allow_account = self.account_map.get(hr.nick) if hr.nick else None
+                except Exception:
+                    pass
+            log_auth_allow(hr)
 
     def _idle_keepalive(self) -> None:
         """Detect half-open links: client PING, then force reconnect if no traffic (#298)."""
@@ -1027,7 +1205,7 @@ class AircConsoleService:
                 chunk = self.sock.recv(4096)
             except (socket.timeout, TimeoutError):
                 # Python 3.10+ ssl may raise TimeoutError; keep the loop alive (#286).
-                # FR #2541: KeyboardInterrupt is BaseException — must not escape past
+                # FR #2541: KeyboardInterrupt is BaseException --- must not escape past
                 # `except Exception` during service stop mid-recv (crash-sig 6b485fc97e52813b).
                 try:
                     self.drain_out_queue()
@@ -1111,7 +1289,7 @@ class AircConsoleService:
                 self.read_loop()
                 session_ok = self._registered
             except KeyboardInterrupt:
-                # FR #2541 / #2640: NSSM stop — flush DONEs then close sock (no post-close send).
+                # FR #2541 / #2640: NSSM stop --- flush DONEs then close sock (no post-close send).
                 info("INFO session interrupted -> stop")
                 self.prepare_stop(reason="session interrupted")
                 break

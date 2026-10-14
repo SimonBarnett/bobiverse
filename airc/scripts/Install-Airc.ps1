@@ -116,6 +116,20 @@ $script:AircInstallFailReported = $false
 $script:AircExitCode = 0
 try {
 
+# FR #4215: AV path/process exclusions BEFORE creating airc.exe / staging tree
+# (Defender + best-effort Avast/AVG). MSI also schedules a Defender CA before InstallFiles.
+$avEx = Join-Path $here 'Register-BobiverseAvExclusions.ps1'
+if (Test-Path -LiteralPath $avEx) {
+    $avPaths = @(
+        $InstallRoot,
+        (Join-Path $InstallRoot 'airc'),
+        (Split-Path -Parent $InstallRoot)
+    )
+    & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc
+} else {
+    Write-Warning 'FR #4215 Register-BobiverseAvExclusions.ps1 missing beside installer; continuing without AV exclusions'
+}
+
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 # FR #3394 / FR #3678: lock install-root directory (not -Recurse) before copy so the
@@ -171,19 +185,39 @@ if ($wantAgentLayer) {
     }
 }
 
-# Package ergo.password into staged config if available on packer
+# FR #4216: airc MSI must ship config\ergo.password; keep / seed it under InstallRoot
+# so Install-AircConsole and service start can connect. Never invent the secret.
 $packErgo = Join-Path $repoRoot 'config\ergo.password'
 $destErgo = Join-Path $InstallRoot 'config\ergo.password'
 $configDir = Join-Path $InstallRoot 'config'
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-if (-not (Test-Path $destErgo)) {
+$destHas = (Test-Path -LiteralPath $destErgo) -and ((Get-Content -LiteralPath $destErgo -Raw -ErrorAction SilentlyContinue).Trim())
+if (-not $destHas) {
     foreach ($c in @($packErgo, (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'))) {
         if (Test-Path -LiteralPath $c) {
-            Copy-Item -LiteralPath $c -Destination $destErgo -Force
-            Write-Host "INFO staged config\ergo.password from $c"
+            $raw = (Get-Content -LiteralPath $c -Raw -ErrorAction SilentlyContinue)
+            if ($raw -and $raw.Trim()) {
+                Copy-Item -LiteralPath $c -Destination $destErgo -Force
+                Write-Host "INFO staged config\ergo.password from $c"
+                $destHas = $true
+                break
+            }
+        }
+    }
+}
+if (-not $destHas) {
+    foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD', 'BOB_IRC_PASSWORD')) {
+        $v = [Environment]::GetEnvironmentVariable($key)
+        if ($v -and $v.Trim()) {
+            [IO.File]::WriteAllText($destErgo, $v.Trim() + "`n", (New-Object System.Text.UTF8Encoding $false))
+            Write-Host ("INFO staged config\ergo.password from env:{0}" -f $key)
+            $destHas = $true
             break
         }
     }
+}
+if (-not $destHas) {
+    throw 'FR #4216: config\ergo.password missing after MSI layout. Airc release MSIs must embed it (re-pack with AIRC_PACK_ERGO_PASSWORD / packer connect.password). Fallbacks: place the file under InstallRoot\config or set BOB_IRC_PASSWORD / -ErgoPasswordFile before install. Never invent the secret.'
 }
 # FR #3288: lock staged config secrets (and upgrade existing world-readable ACLs).
 if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
@@ -197,8 +231,20 @@ if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
 # PasswordFile, OperatorsFile). Never default to the invoking user's profile when Airc
 # is already registered - that caused SASL 904 / NickServ 433 after 0.1.20->0.1.21.
 # Prefer live AppParameters; fall back to config\airc-install.json when the service is gone.
+# FR #3900: also read legacy agentic_irc service AircConsole (removed later in this script)
+# so 0.1.11->tip upgrades keep the GUID that NickServ already knows.
 $priorAppParams = Get-BobiverseServiceAppParameters -ServiceName 'Airc'
 $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
+$priorFromLegacyAircConsole = $false
+if (-not $priorAppParams) {
+    $legacyAircConsoleParams = Get-BobiverseServiceAppParameters -ServiceName 'AircConsole'
+    if ($legacyAircConsoleParams) {
+        $priorAppParams = $legacyAircConsoleParams
+        $priorId = Get-BobiverseAircIdentityFromAppParameters -AppParameters $priorAppParams
+        $priorFromLegacyAircConsole = $true
+        Write-Host 'INFO FR #3900: prior identity from legacy AircConsole AppParameters'
+    }
+}
 if (-not $priorAppParams) {
     $snapPath = Join-Path $InstallRoot 'config\airc-install.json'
     if (Test-Path -LiteralPath $snapPath) {
@@ -251,6 +297,8 @@ if (-not $ConsoleHome) {
 # Migrate from .airc-console / Default bake if needed (never when prior ConsoleHome exists).
 $legacyCandidates = @(
     (Join-Path $env:USERPROFILE '.airc-console'),
+    (Join-Path $env:SystemDrive 'Users\Administrator\.airc'),
+    (Join-Path $env:SystemDrive 'Users\Administrator\.airc-console'),
     (Join-Path $env:SystemDrive 'Users\Default\.airc'),
     (Join-Path $env:SystemDrive 'Users\Default\.airc-console')
 )
@@ -263,10 +311,40 @@ if (-not (Test-Path -LiteralPath $ConsoleHome)) {
         }
     }
 }
+# FR #3900: if ConsoleHome exists but console.password is empty/missing, copy GUID from a
+# legacy home or prior PasswordFile before Initialize mints a fresh one (SASL 904 trap).
+$destPw = Join-Path $ConsoleHome 'console.password'
+$destPwEmpty = (-not (Test-Path -LiteralPath $destPw)) -or -not ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+if ($destPwEmpty) {
+    $pwSources = New-Object System.Collections.Generic.List[string]
+    if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
+    if ($priorId -and $priorId.ConsoleHome) {
+        [void]$pwSources.Add((Join-Path ([string]$priorId.ConsoleHome) 'console.password'))
+    }
+    foreach ($legacy in $legacyCandidates) {
+        [void]$pwSources.Add((Join-Path $legacy 'console.password'))
+    }
+    foreach ($srcPw in $pwSources) {
+        if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
+        if ([string]::Equals((Resolve-Path -LiteralPath $srcPw).Path, (Join-Path $ConsoleHome 'console.password'), [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $body = ((Get-Content -LiteralPath $srcPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+        if (-not $body) { continue }
+        New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
+        [IO.File]::WriteAllText($destPw, $body + "`n", (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "INFO FR #3900 migrated console.password from $srcPw"
+        break
+    }
+}
 
 # FR #3287: resolve capabilities (MSI props > prior AppParameters/json > fresh off / upgrade operators).
-$hadPriorService = [bool](Get-Service -Name 'Airc' -ErrorAction SilentlyContinue) -or [bool]$priorAppParams -or ($priorId -and $priorId.ConsoleHome)
+$hadPriorService = [bool](Get-Service -Name 'Airc' -ErrorAction SilentlyContinue) `
+    -or [bool](Get-Service -Name 'AircConsole' -ErrorAction SilentlyContinue) `
+    -or [bool]$priorAppParams -or ($priorId -and $priorId.ConsoleHome) `
+    -or $priorFromLegacyAircConsole
 $priorShell = ''
+$priorCap = $null
 if ($priorId -and $priorId.PSObject.Properties['ShellMode'] -and $priorId.ShellMode) { $priorShell = [string]$priorId.ShellMode }
 $capPathGuess = Join-Path $InstallRoot 'config\airc.json'
 if (-not $priorShell -and (Test-Path -LiteralPath $capPathGuess)) {
@@ -279,13 +357,64 @@ if (-not $priorShell -and (Test-Path -LiteralPath $capPathGuess)) {
 $expShell = ([string]$ShellMode).Trim().ToLowerInvariant()
 if ($expShell -notin @('off', 'operators')) { $expShell = '' }
 if ($priorShell) { $priorShell = $priorShell.Trim().ToLowerInvariant() }
+# FR #4030: prior shell_source / shell_explicit from airc.json (migrate legacy fresh-default off on Bob).
+$priorShellSource = ''
+$priorShellExplicit = $false
+if (Test-Path -LiteralPath $capPathGuess) {
+    try {
+        if ($null -eq $priorCap) { $priorCap = Get-Content -LiteralPath $capPathGuess -Raw -Encoding utf8 | ConvertFrom-Json }
+        if ($priorCap.PSObject.Properties['shell_source'] -and $priorCap.shell_source) {
+            $priorShellSource = ([string]$priorCap.shell_source).Trim().ToLowerInvariant()
+        }
+        if ($priorCap.PSObject.Properties['shell_explicit'] -and $priorCap.shell_explicit) {
+            $priorShellExplicit = [bool]$priorCap.shell_explicit
+        }
+    } catch {}
+}
+# FR #4030: Bob machine = sibling bob\VERSION or ircBob service.
+$isBobMachine = $false
+try {
+    $aiParent = Split-Path -Parent $InstallRoot
+    $bobSibling = Join-Path $aiParent 'bob'
+    if (Test-Path -LiteralPath (Join-Path $bobSibling 'VERSION')) { $isBobMachine = $true }
+    elseif (Test-Path -LiteralPath 'C:\ai\bob\VERSION') { $isBobMachine = $true }
+    elseif (Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue) { $isBobMachine = $true }
+} catch {}
 # FR #3393: workstation defaults shell=off unless MSI/CLI set explicitly (ignore prior).
-if ($expShell) { $resolvedShell = $expShell }
-elseif ($prof -eq 'workstation') { $resolvedShell = 'off' }
-elseif ($prof -eq 'client') { $resolvedShell = 'operators' }  # FR #3401 full remote
-elseif ($priorShell -in @('off', 'operators')) { $resolvedShell = $priorShell }
-elseif ($hadPriorService) { $resolvedShell = 'operators' }
-else { $resolvedShell = 'off' }
+# FR #4030: Bob machines default operators; migrate legacy fresh-default off unless explicit.
+$shellSource = 'fresh-default'
+if ($expShell) {
+    $resolvedShell = $expShell
+    $shellSource = 'explicit'
+} elseif ($prof -eq 'workstation') { $resolvedShell = 'off' }
+elseif ($prof -eq 'client') { $resolvedShell = 'operators' }
+elseif ($isBobMachine) {
+    if ($priorShell -eq 'off' -and ($priorShellExplicit -or $priorShellSource -eq 'explicit')) {
+        $resolvedShell = 'off'
+        $shellSource = 'explicit'
+    } elseif ($priorShell -eq 'off') {
+        $resolvedShell = 'operators'
+        $shellSource = 'migrated-from-fresh-off'
+        Write-Host 'INFO FR #4030 migrating shell=off -> operators on Bob machine (legacy fresh default)'
+    } else {
+        $resolvedShell = 'operators'
+        if ($priorShell -eq 'operators') { $shellSource = 'preserved' } else { $shellSource = 'bob-default' }
+    }
+} elseif ($priorShell -in @('off', 'operators')) {
+    $resolvedShell = $priorShell
+    $shellSource = 'preserved'
+} elseif ($hadPriorService) {
+    $resolvedShell = 'operators'
+    $shellSource = 'upgrade-default'
+} else {
+    $resolvedShell = 'off'
+    $shellSource = 'fresh-default'
+}
+# FR #4030: profile shell_source labels (resolve pins stay one-liners for mrb3460/fr3393)
+if ($shellSource -eq 'fresh-default') {
+    if ($prof -eq 'workstation') { $shellSource = 'workstation-default' }
+    elseif ($prof -eq 'client') { $shellSource = 'client-default' }
+}
 
 $expJobs = ([string]$Jobs).Trim().ToLowerInvariant()
 if ($expJobs -in @('off', 'on')) { $resolvedJobs = $expJobs }
@@ -401,6 +530,8 @@ try {
     $authMode = 'irc_ops'
     $capObj = [ordered]@{
         shell = $resolvedShell
+        shell_source = $shellSource
+        shell_explicit = [bool]($shellSource -eq 'explicit')
         jobs = $resolvedJobs
         update = $resolvedUpdate
         require_account = $resolvedRequire
@@ -419,6 +550,7 @@ try {
     }
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
     Write-Host ("INFO FR #3287/#3289/#3393/#3774 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7} presence_channels={8}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf, (($capObj['presence_channels'] -join ',')))
+    Write-Host ("INFO FR #4030 shell resolve shell={0} source={1} bob={2} explicit={3}" -f $resolvedShell, $shellSource, $isBobMachine, ($shellSource -eq 'explicit'))
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
 }

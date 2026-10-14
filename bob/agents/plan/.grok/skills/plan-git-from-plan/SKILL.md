@@ -71,6 +71,9 @@ python tools/validate-vision-pack.py docs/vision.md --mocks-dir docs/mocks
 3. **Permit PRs** — skill `plan-enable-prs`.
    Forking on; no blocking ruleset; Cursor GitHub App All repositories
    (Contents + Pull requests Read and write).
+   Auto-merge on (`gh api -X PATCH repos/SimonBarnett/<name> -F allow_auto_merge=true`),
+   and the `required-ci-3948` ruleset (CI checks only, not strict,
+   admin bypass) once a CI workflow runs on every PR (bobiverse#3948).
 
 4. **First commit** (still this seat / orchestrator):
 
@@ -119,7 +122,10 @@ gh repo create SimonBarnett/<name> --public --description "<objective>"
 # 2 webhook + verify (gate: before ANY push/issue)
 python tools/bob_git_hook.py SimonBarnett/<name>
 
-# 3 Cursor app pages (Simon clicks All repositories if needed)
+# 3 auto-merge (bobiverse#3948); required-ci-3948 ruleset once CI runs on PRs (see plan-enable-prs)
+gh api -X PATCH repos/SimonBarnett/<name> -F allow_auto_merge=true
+
+# 4 Cursor app pages (Simon clicks All repositories if needed)
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\Grant-CursorGitHubApp.ps1
 ```
 

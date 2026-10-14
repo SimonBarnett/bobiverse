@@ -12,8 +12,10 @@ param(
     [string]$Version = '',
     [switch]$KeepStage,
     [switch]$SkipMsi,
-    # Issue #4: public GitHub Release MSIs must NOT embed the live Ergo PASS.
-    # Pass -EmbedErgoPassword only for private/offline packs.
+    # Issue #4: bob/jeeves public GitHub Release MSIs must NOT embed the live Ergo PASS
+    # unless -EmbedErgoPassword (private/offline). FR #4216: airc MSI ALWAYS embeds
+    # config\ergo.password (required for first-start connect); -EmbedErgoPassword is
+    # redundant for airc but still accepted.
     [switch]$EmbedErgoPassword,
     # Tests only (needs -SkipMsi): stage the worker/plan folders without compiling bob-worker.exe (PyInstaller, ~40 s).
     [switch]$SkipWorkerExe,
@@ -204,22 +206,53 @@ function Stage-Product([string]$Name) {
     }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
-    # Issue #4: do not embed live Ergo PASS into public release assets by default.
+    # Issue #4: bob/jeeves public packs skip Ergo PASS unless -EmbedErgoPassword.
+    # FR #4216: airc MSI MUST ship config\ergo.password so install connects on first start.
     $stageErgo = Join-Path $stage 'config\ergo.password'
-    if ($EmbedErgoPassword) {
-        foreach ($c in @(
-                (Join-Path $RepoRoot 'config\ergo.password'),
-                (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
-            )) {
-            if (Test-Path -LiteralPath $c) {
-                Copy-Item $c $stageErgo -Force
-                Write-Host "INFO $Name embedded config/ergo.password from $c (-EmbedErgoPassword)"
-                break
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage 'config') | Out-Null
+    $wantEmbedErgo = $EmbedErgoPassword -or ($Name -eq 'airc')
+    if ($wantEmbedErgo) {
+        $ergoSecret = $null
+        $ergoSource = $null
+        if ($Name -eq 'airc') {
+            foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD')) {
+                $v = [Environment]::GetEnvironmentVariable($key)
+                if ($v -and $v.Trim()) {
+                    $ergoSecret = $v.Trim()
+                    $ergoSource = "env:$key"
+                    break
+                }
             }
         }
-        if (-not (Test-Path -LiteralPath $stageErgo)) {
-            throw "-EmbedErgoPassword set but no config/ergo.password or ~/.grok/ergo/connect.password found"
+        if (-not $ergoSecret) {
+            foreach ($c in @(
+                    (Join-Path $RepoRoot 'config\ergo.password'),
+                    (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
+                )) {
+                if (Test-Path -LiteralPath $c) {
+                    $raw = (Get-Content -LiteralPath $c -Raw -ErrorAction SilentlyContinue)
+                    if ($raw -and $raw.Trim()) {
+                        $ergoSecret = $raw.Trim()
+                        $ergoSource = $c
+                        break
+                    }
+                }
+            }
         }
+        # -SkipMsi stage tests must not require a live fleet secret (never used for real MSI).
+        if (-not $ergoSecret -and $SkipMsi -and ($Name -eq 'airc')) {
+            $ergoSecret = 'FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE'
+            $ergoSource = 'test-placeholder'
+            Write-Host 'WARN airc -SkipMsi: embedding FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE (not a release artifact)'
+        }
+        if (-not $ergoSecret) {
+            if ($Name -eq 'airc') {
+                throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password / repo config\ergo.password'
+            }
+            throw '-EmbedErgoPassword set but no config/ergo.password or ~/.grok/ergo/connect.password found'
+        }
+        [IO.File]::WriteAllText($stageErgo, $ergoSecret + "`n", [Text.UTF8Encoding]::new($false))
+        Write-Host ("INFO {0} embedded config/ergo.password from {1} (len={2}; value not printed){3}" -f $Name, $ergoSource, $ergoSecret.Length, $(if ($Name -eq 'airc') { ' FR #4216' } else { ' (-EmbedErgoPassword)' }))
     } else {
         if (Test-Path -LiteralPath $stageErgo) {
             Remove-Item -LiteralPath $stageErgo -Force
@@ -390,11 +423,16 @@ function Build-Msi([string]$Name, [string]$Stage) {
     & $heat dir $Stage -cg $cg -gg -sfrag -srd -sreg -scom -dr INSTALLDIR -var var.StageDir -out $harvested
     if ($LASTEXITCODE -ne 0) { throw "heat failed $LASTEXITCODE" }
 
-    # #70 (v0.1.19): the pack's nssm.exe is the service binary of running Windows services (ircJeeves/ircBob, and on
-    # older boxes also BobIrcd/Ergo). heat gives every build fresh component GUIDs, so a MajorUpgrade used to REMOVE
-    # and re-lay nssm.exe -> the services holding it were stopped (Ergo bounced, all clients reconnected).
-    # Permanent = the old product never removes it; NeverOverwrite = the new product never rewrites an existing copy.
-    # The file is byte-identical across releases (nssm 2.24), so keeping the installed one is always correct.
+    # #70 (v0.1.19) / FR #3899: the pack's nssm.exe is the service binary of running Windows services
+    # (ircJeeves/ircBob, and on older boxes also BobIrcd/Ergo). heat used to mint a fresh component GUID every
+    # build, so MajorUpgrade removed and re-laid nssm.exe (services holding it stopped / Ergo bounced).
+    # Permanent + a stable per-product GUID keep the SAME component across releases so later uninstalls /
+    # same-GUID upgrades do not thrash the file.
+    # FR #3899: do NOT set NeverOverwrite on nssm. With MajorUpgrade Schedule=afterInstallInitialize,
+    # CostFinalize marks NeverOverwrite files "skip install" while the old copy still exists; then
+    # RemoveExistingProducts FileRemoves the pre-stable-GUID component; InstallFiles never FileCopys.
+    # Flamingo 0.1.11 -> 0.1.30: nssm.exe gone, Install-AircConsole "nssm missing", msiexec 1603.
+    # Permanent alone + stable GUID is enough once the file is laid; nssm 2.24 bytes are identical.
     [xml]$hx = Get-Content -LiteralPath $harvested -Raw -Encoding UTF8
     $wns = New-Object System.Xml.XmlNamespaceManager($hx.NameTable)
     $wns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
@@ -403,7 +441,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     foreach ($nf in $nssmFiles) {
         $nc = $nf.ParentNode
         $nc.SetAttribute('Permanent', 'yes')
-        $nc.SetAttribute('NeverOverwrite', 'yes')
+        if ($nc.HasAttribute('NeverOverwrite')) { [void]$nc.RemoveAttribute('NeverOverwrite') }
         # Stable component GUID (per product) so every release refers to the SAME component, not a fresh one.
         $nc.SetAttribute('Guid', '{' + ([guid]::new([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("bobiverse-$Name-nssm-component"))).ToString().ToUpper()) + '}')
     }
@@ -456,7 +494,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
                 -MainGroupId $cg -AgentGroupId $agentCg -FailIfNone)
     }
     $hx.Save($harvested)
-    Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+NeverOverwrite" -f $nssmFiles.Count)
+    Write-Host ("INFO marked {0} nssm.exe component(s) Permanent+stable GUID (no NeverOverwrite; FR #3899)" -f $nssmFiles.Count)
 
     # airc UpgradeCode must NOT match agentic_irc airc-console
     # (B7E3C9A1-4F2D-4E8B-9C11-A1BC00501E01) or 0.1.x packs look like
@@ -538,6 +576,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Condition Message="bobiverse airc requires Windows PowerShell 4.0 or newer (this machine: [POWERSHELLVERSION]).">
       <![CDATA[Installed OR (POWERSHELLVERSION >= "4.0")]]>
     </Condition>
+    <!-- FR #4013: fail closed before RemoveExistingProducts Error 1730 when not elevated. -->
+    <Condition Message="airc install needs administrator rights">
+      <![CDATA[Installed OR Privileged]]>
+    </Condition>
 "@
         }
     }
@@ -545,18 +587,34 @@ function Build-Msi([string]$Name, [string]$Stage) {
     # Skip when UPGRADINGPRODUCTCODE is set (MajorUpgrade of this product) so AppParameters
     # stay readable for the new product's RunInstall / FR #1552 preserve path.
     # Return=ignore so a missing nssm/service never blocks ARP cleanup.
+    # FR #4011: on MajorUpgrade, stop Airc BEFORE RemoveExistingProducts. Under
+    # psexec -h -s (session 0), Restart Manager fails to shut down the service
+    # (error 351) and Windows Installer itself crashes (msiexec 1601).
     $uninstallCaDecls = ''
     $uninstallCaSeq = ''
     if ($Name -eq 'airc') {
+        # FR #4215: Defender exclusions BEFORE InstallFiles so Avast/Defender cannot block laying airc.exe.
+        # Inline powershell (script not on disk yet). Return=ignore: AV CA must not fail the MSI.
+        # Full Avast/AVG registry pass still runs from Install-Airc.ps1 after files land.
         $uninstallCaDecls = @"
+    <!-- FR #4215: AV exclusions before InstallFiles (Defender path/process for airc.exe). -->
+    <CustomAction Id="SetAvExcludeCmd" Property="RunAvExclude" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;try { Add-MpPreference -ExclusionPath '[INSTALLDIR]' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionPath '[INSTALLDIR]airc' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'airc.exe' -ErrorAction SilentlyContinue } catch { }; Write-Host 'FR4215 MSI AvExclude done'" Execute="immediate" />
+    <CustomAction Id="RunAvExclude" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
     <!-- FR #1566: quiet uninstall stops/removes Airc; ConsoleHome secrets stay (fleet). -->
     <!-- FR #3292: AIRC_PURGE=1 or workstation manifest purge_default removes secrets/homes. -->
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
     <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- FR #4011: stop Airc before MajorUpgrade RemoveExistingProducts (PsExec session-0 RM 351 / 1601). -->
+    <CustomAction Id="SetStopAircUpgradeCmd" Property="StopAircBeforeUpgrade" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
+    <CustomAction Id="StopAircBeforeUpgrade" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
 "@
         $uninstallCaSeq = @"
+      <Custom Action="SetAvExcludeCmd" Before="RunAvExclude">NOT REMOVE~="ALL"</Custom>
+      <Custom Action="RunAvExclude" Before="InstallFiles">NOT REMOVE~="ALL"</Custom>
       <Custom Action="SetUninstallCmd" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetStopAircUpgradeCmd" Before="StopAircBeforeUpgrade">WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="StopAircBeforeUpgrade" Before="RemoveExistingProducts">WIX_UPGRADE_DETECTED</Custom>
 "@
     }
     # FR #2564: on RunInstall failure / MSI rollback, best-effort Start-Service so seats are not left dead.
@@ -599,8 +657,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="bobiverse $Name" Language="1033" Version="$msiVersion"
       Manufacturer="SimonBarnett" UpgradeCode="$upgrade">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" InstallPrivileges="elevated" Platform="x64" />
     <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="afterInstallInitialize" />
+    <!-- FR #4011: PsExec -h -s (session 0) upgrades: Restart Manager error 351 crashes msiexec (1601). -->
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 $featureXml
     <Directory Id="TARGETDIR" Name="SourceDir">

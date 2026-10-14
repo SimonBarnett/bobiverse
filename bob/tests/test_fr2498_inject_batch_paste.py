@@ -75,7 +75,7 @@ def test_write_console_all_bounded_calls_on_partial_writes():
 
 def test_inject_console_clipboard_path_few_writes(monkeypatch):
     writes = []
-    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda text: True)
+    monkeypatch.setattr(bw, "_clipboard_set_unicode", lambda text, log=None: True)
     monkeypatch.setattr(bw, "_build_ctrl_v_records", lambda: bw.build_enter_records())
     monkeypatch.setattr(bw, "_submit_gap_s", lambda default=0.20: 0.05)
     monkeypatch.setattr(bw.time, "sleep", lambda s: None)
