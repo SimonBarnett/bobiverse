@@ -387,10 +387,11 @@ function Initialize-AircConsoleHomeSecrets {
         Write-Host "INFO keep $NickServPasswordFile"
     }
 
-    # #294 / FR #3756: Ergo server PASS comes from the *release zip*
-    # (config\ergo.password), -ErgoPasswordFile, env, or an existing home file -
-    # not from the target machine's ~/.grok (most clients have none). Public MSIs
-    # do not embed the PASS (issue #4); private fleet zips may.
+    # #294 / FR #3756 / FR #4216: Ergo server PASS comes from the *release*
+    # (config\ergo.password embedded in airc MSI / private zip), -ErgoPasswordFile,
+    # env, or an existing home file - not from the target machine's ~/.grok
+    # (most clients have none). FR #4216: airc MSIs MUST embed the PASS so first
+    # start connects; bob/jeeves public MSIs still follow issue #4 (no embed).
     $ergoDest = Join-Path $ConsoleHomeDir 'ergo.password'
     $secret = $null
     $source = $null
@@ -424,12 +425,12 @@ function Initialize-AircConsoleHomeSecrets {
     }
     if (-not $secret) {
         throw @"
-Ergo server PASS missing (FR #3756 / issue #294). Provide one of:
-  1) release unpack config\ergo.password (private zip packed with fleet secret),
+Ergo server PASS missing (FR #4216 / FR #3756 / issue #294). Provide one of:
+  1) release config\ergo.password (airc MSI embeds it per FR #4216; re-pack if missing),
   2) -ErgoPasswordFile <path>,
   3) env AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD / BOB_IRC_PASSWORD,
   4) pre-seed ConsoleHome\ergo.password.
-Public MSIs never embed the PASS (issue #4). Never invent the secret.
+Never invent the secret. bob/jeeves public MSIs still omit embed (issue #4).
 "@
     }
     Write-AircSecretFile -Path $ergoDest -Secret $secret

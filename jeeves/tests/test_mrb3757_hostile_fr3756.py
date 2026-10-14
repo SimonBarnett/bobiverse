@@ -29,7 +29,8 @@ def test_mrb3757_hostile_env_keys_and_clear_error():
     assert "GetEnvironmentVariable" in text
     assert "-ErgoPasswordFile" in text
     assert "Never invent" in text
-    assert "Public MSIs never embed" in text or "issue #4" in text
+    # FR #4216 embeds airc MSI PASS; error still mentions issue #4 for bob/jeeves
+    assert "FR #4216" in text or "issue #4" in text
 
 
 def test_mrb3757_hostile_ascii_and_skill_row():

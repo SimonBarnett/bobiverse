@@ -124,7 +124,7 @@ Or `msiexec /i bob-0.1.1.msi`.
 - `!recycle` / `!recycle {mid}` on Bob; `!recycle jeeves` on chair (ircJeeves only)
 - Service start self-updates to the latest GitHub release (`Update-BobiverseService.ps1`, v0.1.17): token-less check, detached helper downloads + sha256-verifies the MSI, backs up, installs, rolls back on failure, logs to `%ProgramData%\bobiverse\update\<product>\update.log`. Opt out with `BOB_AUTOUPDATE=0` (or `BOBIVERSE_NO_UPDATE=1`, or a `config\autoupdate.disabled` file). Never touches Ergo or seats; always starts the installed version if the check fails.
 - ObjectName = fleet user (DPAPI): interactive prompt, `BOBIVERSE_SERVICE_PASSWORD`, `config\service.password`, or **Complete bobiverse service logon**
-- Ergo server PASS is **not** in public MSIs (issue #4); place `config\ergo.password` **before** `msiexec` (airc's installer requires it, #3765; or set `BOB_IRC_PASSWORD` / `-ErgoPasswordFile`) (or pack with `-EmbedErgoPassword` for private builds)
+- Ergo server PASS: **airc** release MSIs **embed** `config\ergo.password` (FR #4216; pack needs `AIRC_PACK_ERGO_PASSWORD` / packer connect.password). **bob/jeeves** public MSIs do **not** embed it (issue #4) — place the file before `msiexec` or use `BOB_IRC_PASSWORD` / `-ErgoPasswordFile` / `-EmbedErgoPassword` for private packs
 - Bob ear loads `home\nickserv.password` for SASL (`bob-{machine}`) so reserved nicks get `001`
 - Quiet MSI `/qn` never prompts for ObjectName password (issue #6); LocalSystem omits `-BobHome` (issue #7)
 - First Ergo install seeds `<ai root>\ergo\ircd.yaml` from `default.yaml` until operator TLS/PASS/ChanServ are set
