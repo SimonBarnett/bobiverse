@@ -4278,8 +4278,22 @@ class BoredEmitter:
                     self._ack_open = False
                     self._ack_job_key = None
                     self._clear_done_miss()
-                    self._done_key = p
-                    self._begin_harvest_hold(now)
+                    # FR #4259: repeat DONE after turn_ended must not re-arm harvest.
+                    # Already fired !bored for this payload, or same DONE with turn closed
+                    # and harvest already cleared (turn_ended release path) → ignore.
+                    if self._last_done_key == p:
+                        self.log("bored: ignore repeat DONE (already fired !bored)")
+                    elif (
+                        self._done_key == p
+                        and not self._turn_open
+                        and self._harvest_until is None
+                    ):
+                        self.log(
+                            "bored: ignore repeat DONE after turn_ended (harvest already released)"
+                        )
+                    else:
+                        self._done_key = p
+                        self._begin_harvest_hold(now)
             elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP: free, then harvest hold before !bored (FR #161 / #1611)
                 verb = (p.split(None, 1)[0] if p else "FREE").upper()
                 job = outbox_job_key(p)
@@ -4353,16 +4367,47 @@ class BoredEmitter:
                 self._idle_since = now
         return False
 
+    def _flush_held_on_harvest_expiry(self, now: float) -> None:
+        """FR #4259: harvest wait ended with no open turn — deliver parked assigns.
+
+        Without this, a held assign (``_held_assign`` / ``relay.has_pending_work``) keeps
+        ``_busy`` true forever after a repeat-DONE re-arm, so ``!bored`` never fires again.
+        Called under ``self._cv``. Skip when a done/free !bored is still pending — that
+        path flushes via ``post_bored`` (FR #2811).
+        """
+        if self._turn_open or self._pending_harvest_fire():
+            return
+        had_held = bool(self._held_assign)
+        released = 0
+        try:
+            if self.relay is not None:
+                released = int(self.relay.release_held_assigns() or 0)
+        except Exception:
+            released = 0
+        if self._held_assign:
+            self._held_assign = False
+        if released:
+            self._inject_pending = True
+            self._inject_at = now
+            self._idle_since = None
+            self.log(f"bored: harvest expired - released {released} held assign(s)")
+        elif had_held:
+            self.log("bored: harvest expired - cleared held-assign flag")
+
     def _reason(self, now: float) -> Optional[str]:
         if self._stopped or not self._ready or now < self._retry_at:
             return None
+        # FR #4259: when harvest wait expires with no open turn and no pending done/free
+        # fire, flush held assigns *before* the busy check so a parked job cannot block
+        # !bored forever. Pending done/free still flush via post_bored (FR #2811).
+        if self._harvest_until is not None and now >= self._harvest_until:
+            self._harvest_until = None
+            self._flush_held_on_harvest_expiry(now)
         if self._busy(now):
             self._idle_since = None
             if self._nak_due is not None and now >= self._nak_due:
                 self._nak_due = None  # busy at due time: never send; post-harvest !bored covers it
             return None
-        if self._harvest_until is not None and now >= self._harvest_until:
-            self._harvest_until = None
         if self._idle_since is None:
             self._idle_since = now
         if not self._start_sent:
