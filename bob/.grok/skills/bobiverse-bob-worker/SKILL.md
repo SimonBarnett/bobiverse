@@ -224,3 +224,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - bob-worker: FR #4115 ACK on receipt before inject; release_held_assigns injects first held assign and NACKs extras (`busy, holding <first>`); Jeeves ACK status=missing notes seat-holds.json (PR for #4115 remainder)
 - bob-worker: FR #4115 PromptNotAcceptedWatcher --- Grok 120s accept-timeout toast: Enter backoff then NACK inject failed; BOB_WORKER_PROMPT_RETRY=0 opt-out; note_activity clears stale scrollback (PR #4132)
 - bob-worker: FR #4123 startup ready-cap without first turn_ended hang-recycles (never inject/!bored); grace mid-turn defers !bored until turn_ended
+- bob-worker FR #4180: while out-of-fuel hold is active, ack-miss/HangDetector must not remind or respawn; Relay NACKs assigns with out-of-fuel
