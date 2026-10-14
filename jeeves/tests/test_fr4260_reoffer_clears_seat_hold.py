@@ -31,10 +31,12 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     registered_machines.save_registered(tmp_path, {"marchhare", "ionos", "flamingo"})
     digest = bobreport.empty_digest()
     digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
-    digest["machines"]["marchhare"]["workers"] = {
-        "8824": {"state": "idle"},
-        "11780": {"state": "idle"},
-    }
+    # FR #4211: prefer worker_list so live_seat_nicks is non-empty (legacy workers
+    # without heartbeat are ghosts and leave live empty).
+    digest["machines"]["marchhare"]["worker_list"] = [
+        {"nick": A, "state": "idle", "work": "", "updated": "2026-10-14T20:00:00Z"},
+        {"nick": B, "state": "idle", "work": "", "updated": "2026-10-14T20:00:00Z"},
+    ]
     bobreport.save_digest(tmp_path, digest)
     _queue(tmp_path, [])
     fi.handle_focus_cmd(tmp_path, REPO)
