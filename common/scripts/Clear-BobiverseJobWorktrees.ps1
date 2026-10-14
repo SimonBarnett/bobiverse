@@ -34,6 +34,9 @@
     tree with `cmd rmdir /s /q` (a-search CDK asset hashes hit Windows
     Filename too long / MAX_PATH). Leftover paths after git deregister also
     use cmd rmdir (Remove-Item fails the same way).
+  - FR #4197: when a registered tree is missing or its `.git` is gone, warn,
+    rmdir leftovers, prune, and continue --- do not let one NativeCommandError
+    abort the whole Clear run (exit 1) before later trees are reclaimed.
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
 
@@ -325,16 +328,36 @@ foreach ($p in $toRemove) {
     }
     if ($PSCmdlet.ShouldProcess($p, 'git worktree remove --force')) {
         Write-Host "Removing worktree $p"
+        # FR #4197: path gone or .git missing — skip git remove, rmdir leftovers, continue.
+        # One broken registration must not abort the rest of the Clear run (exit 1).
+        $gitMarker = Join-Path $p '.git'
+        if (-not (Test-Path -LiteralPath $p) -or -not (Test-Path -LiteralPath $gitMarker)) {
+            Write-Warning ("FR #4197: worktree path or .git missing for {0}; rmdir/prune and continue" -f $p)
+            if (Test-Path -LiteralPath $p) {
+                Remove-BobiversePathForce -Path $p
+            }
+            $removed++
+            continue
+        }
         # FR #3717: drop cdk.out* asset trees before git so remove is not Filename too long.
         Remove-BobiverseDeepWorktreeDirs -WorktreePath $p
-        # FR #2460: under StrictMode + ErrorActionPreference Stop, git stderr piped as
-        # ErrorRecords (e.g. Permission denied) can terminate before LASTEXITCODE fallback.
-        # Stringify every record so native stderr stays non-terminating.
-        $gitOut = @(
-            & git -C $rootFull worktree remove --force $p 2>&1 |
-                ForEach-Object { "$_" }
-        )
-        $gitExit = $LASTEXITCODE
+        # FR #2460 + FR #4197: stringify stderr ErrorRecords; also try/catch terminating
+        # NativeCommandError under StrictMode + ErrorActionPreference Stop.
+        $gitExit = 0
+        $gitOut = @()
+        try {
+            $gitOut = @(
+                & git -C $rootFull worktree remove --force $p 2>&1 |
+                    ForEach-Object {
+                        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() }
+                        else { "$_" }
+                    }
+            )
+            $gitExit = $LASTEXITCODE
+        } catch {
+            $gitExit = 1
+            $gitOut = @("$_")
+        }
         foreach ($line in $gitOut) {
             if ($line) { Write-Host $line }
         }
@@ -381,11 +404,20 @@ if ($removed -gt 0 -or $Force) {
         Write-Host "WhatIf: git worktree prune"
     } else {
         Write-Host "Pruning worktree metadata"
-        # FR #2460: same stderr ErrorRecord hardening as worktree remove.
-        $pruneOut = @(
-            & git -C $rootFull worktree prune 2>&1 |
-                ForEach-Object { "$_" }
-        )
+        # FR #2460 + FR #4197: stringify stderr; catch terminating NativeCommandError.
+        $pruneOut = @()
+        try {
+            $pruneOut = @(
+                & git -C $rootFull worktree prune 2>&1 |
+                    ForEach-Object {
+                        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() }
+                        else { "$_" }
+                    }
+            )
+        } catch {
+            $pruneOut = @("$_")
+            Write-Warning ("FR #4197: git worktree prune failed (continuing): {0}" -f $_)
+        }
         foreach ($line in $pruneOut) {
             if ($line) { Write-Host $line }
         }
