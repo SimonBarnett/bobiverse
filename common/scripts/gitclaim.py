@@ -3131,23 +3131,27 @@ def mrb_row_offerable(
         return False
 
 
-# FR #846 / #838: conventional-commit Fixes PR titles are never FR issues.
+# FR #846 / #838: conventional-commit Fixes PR titles are never FR issues
+# when the row type is otherwise unclear. FR #4257: skip this heuristic when
+# the row URL is /issues/N or the event is ``issues``.
 _PR_SHAPED_FR_TITLE_RE = re.compile(
     r"(?i)^(fix|docs|chore|feat|refactor|test|build|ci|perf|style)(?:\([^)]*\))?:",
 )
 
 
 def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None) -> bool:
-    """True when an FR row may be offered (FR #846 / #1313 / #2340).
+    """True when an FR row may be offered (FR #846 / #1313 / #2340 / #4257).
 
     Rejects FR rows that are actually pull requests:
     * URL is ``/pull/N``
     * event is ``pull_request``
-    * title looks like a conventional Fixes/docs PR
     * optional ``is_pull(repo, num)`` is true for **any** PR state (open/merged/closed)
       - covers ``/issues/N`` URLs that still resolve to a PR page (#833 / #1313)
     * ``pr_exists`` kept as a deprecated alias for ``is_pull`` (do **not** pass the
       open-only ``github_pr_exists_checker`` here - MERGED PRs would stay offerable)
+    * title looks like a conventional Fixes/docs PR **only when** the row is not
+      already identified as a real issue (``/issues/N`` URL or ``issues`` event)
+      — FR #4257: genuine issues titled ``CI:`` / ``fix:`` / ``docs:`` must stay offerable
 
     FR #2340: also rejects when the issue is CLOSED:
     * row ``state`` is ``closed`` (stamped on enqueue)
@@ -3157,13 +3161,18 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None
     """
     if _canon_task(row) != "FR":
         return True
-    if str(row.get("event") or "").strip().lower() == "pull_request":
+    event = str(row.get("event") or "").strip().lower()
+    if event == "pull_request":
         return False
     raw = str(row.get("url") or "").strip()
     if PULL_URL_RE.search(raw):
         return False
+    # FR #4257: skip title heuristic when the row is clearly an issues row.
+    clearly_issue = bool(ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw)) or (
+        event == "issues"
+    )
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
-    if _PR_SHAPED_FR_TITLE_RE.match(title):
+    if not clearly_issue and _PR_SHAPED_FR_TITLE_RE.match(title):
         return False
     if str(row.get("state") or "").strip().lower() == "closed":
         return False
@@ -4653,6 +4662,9 @@ def offer_after_release(
     ``offered_via`` stamps sticky window (``giveup`` / ``done`` / ``nack``).
     """
     via = str(offered_via or "giveup").strip().lower() or "giveup"
+    # FR #4181: out-of-fuel seats stay quiet (no giveup/done push) until !bored clears.
+    if seat_is_out_of_fuel(home, nick, now):
+        return 0, None
     # FR #4089: never push to a seat that still has an open job (accepted / offered / held).
     if seat_open_job(home, nick, now):
         return 0, None
@@ -5165,9 +5177,113 @@ def row_gave_up_by(row: dict, nick: str) -> bool:
 SEAT_HOLDS_NAME = "seat-holds.json"
 SEAT_HOLD_MAX_S = 3600.0  # same as BUSY_STALE_S (stale-job reaper)
 
+# FR #4181: after GIVEUP reason=out-of-fuel, do not giveup-offer / !bored-offer that
+# nick until the seat signals fuel is back (fresh !bored clears the mark).
+SEAT_OUT_OF_FUEL_NAME = "seat-out-of-fuel.json"
+SEAT_OUT_OF_FUEL_MAX_S = 7 * 24 * 3600.0  # weekly Grok period ceiling
+
 
 def _seat_key(nick: str) -> str:
     return (canonical_worker_nick(nick or "") or nick or "").strip().lower()
+
+
+def is_out_of_fuel_reason(reason: str) -> bool:
+    """True when a GIVEUP/NACK trailing reason is the worker out-of-fuel wire (FR #4181)."""
+    text = (reason or "").strip().lower()
+    if not text:
+        return False
+    norm = text.replace("_", "-").replace(" ", "-")
+    token = norm.split(",", 1)[0].strip()
+    return token == "out-of-fuel" or token.startswith("out-of-fuel-")
+
+
+def _seat_out_of_fuel_path(home: Path) -> Path:
+    return _root(home) / SEAT_OUT_OF_FUEL_NAME
+
+
+def _load_seat_out_of_fuel_unlocked(home: Path, now: float | None = None) -> dict:
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    path = _seat_out_of_fuel_path(home)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    seats = doc.get("seats") if isinstance(doc, dict) else None
+    if not isinstance(seats, dict):
+        return {}
+    out: dict = {}
+    for k, v in seats.items():
+        if not isinstance(v, dict):
+            continue
+        if _offer_age_s({"offered_ts": v.get("ts")}, now_f) >= SEAT_OUT_OF_FUEL_MAX_S:
+            continue
+        out[str(k).strip().lower()] = v
+    return out
+
+
+def _save_seat_out_of_fuel_unlocked(home: Path, seats: dict) -> None:
+    path = _seat_out_of_fuel_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"v": 1, "seats": seats}, indent=2) + "\n", encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
+def seat_is_out_of_fuel(home: Path, nick: str, now: float | None = None) -> bool:
+    """FR #4181: seat marked after GIVEUP out-of-fuel (blocks offers until cleared)."""
+    key = _seat_key(nick)
+    if not key:
+        return False
+    try:
+        with _lock(home):
+            return key in _load_seat_out_of_fuel_unlocked(home, now)
+    except (TimeoutError, OSError):
+        return False
+
+
+def note_seat_out_of_fuel(home: Path, nick: str, *, reason: str = "out-of-fuel") -> bool:
+    """FR #4181: remember this nick is out of fuel (no giveup-offer / !bored offer)."""
+    key = _seat_key(nick)
+    if not key:
+        return False
+    reason_s = str(reason or "out-of-fuel").strip() or "out-of-fuel"
+    try:
+        import shop_listen as _sl
+
+        reason_s = _sl.truncate_giveup_reason(reason_s) or "out-of-fuel"
+    except Exception:  # noqa: BLE001
+        reason_s = reason_s[:120]
+    try:
+        with _lock(home):
+            seats = _load_seat_out_of_fuel_unlocked(home)
+            seats[key] = {
+                "nick": (canonical_worker_nick(nick) or nick or "").strip(),
+                "reason": reason_s,
+                "ts": _utc_now(),
+            }
+            _save_seat_out_of_fuel_unlocked(home, seats)
+        return True
+    except (TimeoutError, OSError):
+        return False
+
+
+def clear_seat_out_of_fuel(home: Path, nick: str) -> bool:
+    """FR #4181: drop the out-of-fuel mark (fresh !bored after fuel returns)."""
+    key = _seat_key(nick)
+    if not key:
+        return False
+    try:
+        with _lock(home):
+            seats = _load_seat_out_of_fuel_unlocked(home)
+            if key not in seats:
+                return False
+            del seats[key]
+            _save_seat_out_of_fuel_unlocked(home, seats)
+        return True
+    except (TimeoutError, OSError):
+        return False
 
 
 def _seat_holds_path(home: Path) -> Path:
@@ -5393,6 +5509,9 @@ def offer_focus_top(
     import time as _time
 
     now_f = _time.time() if now is None else float(now)
+    # FR #4181: never stamp an offer onto a seat still marked out-of-fuel.
+    if seat_is_out_of_fuel(home, nick, now_f):
+        return "empty", None
     live = live_seat_nicks(home)
     free = free_seat_nicks(home, live)
     me_raw = (nick or "").strip()
@@ -7694,6 +7813,9 @@ def bored_gate(
     last = last_worker_activity(home, nick)
     if last is not None and (float(now) - last) < IDLE_S:
         return "wait"
+    # FR #4181: out-of-fuel mark blocks !bored offers until clear_seat_out_of_fuel.
+    if seat_is_out_of_fuel(home, nick, now):
+        return "busy"
     # FR #3192: outstanding offered_to (pending ACK / undelivered assign) is busy —
     # never re-offer the same row and never treat it as stale digest doing.
     if seat_pending_offer(home, nick, now):
