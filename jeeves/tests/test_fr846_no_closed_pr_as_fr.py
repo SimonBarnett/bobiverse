@@ -51,8 +51,11 @@ def test_fr_row_offerable_rejects_issues_url_when_pr_exists():
         "url": "https://github.com/SimonBarnett/bobiverse/issues/833",
         "title": "fix(fr-818): refuse per-PR UAT; only UAT #0 + repo_uat",
     }
-    # Structural title alone rejects.
-    assert not gitclaim.fr_row_offerable(row)
+    # FR #4257: /issues/N URL skips title heuristic; is_pull still rejects PR numbers.
+    assert gitclaim.fr_row_offerable(row) is True
+    assert not gitclaim.fr_row_offerable(
+        row, is_pull=lambda r, n: str(n) == "833"
+    )
     # Ambiguous title + live pr_exists also rejects.
     ambiguous = {
         "task": "FR",
