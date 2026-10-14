@@ -413,7 +413,14 @@ _THIN_TWIN_CUE_RE = re.compile(
     r"thin\s+harvest\s+(?:tip|restatement)s?\b|"
     r"thin\s+harvest\s+restatement|"
     r"Harvested-lessons\s+intake\s+twins?|"
-    r"citing\s+(?:the\s+)?product(?:/move)?\s*PRs?"
+    r"citing\s+(?:the\s+)?product(?:/move)?\s*PRs?|"
+    # FR #4231: tip-loop meta / only-restate Thin FAIL-supersede already on main
+    # (class of a-search#1839 under Book=harvest-agent-skills)
+    r"tip[- ]?loop\s+meta|"
+    r"only\s+restate(?:s|ing)?\s+(?:Thin\s+)?FAIL|"
+    r"restate(?:s|ing)?\s+Thin\s+FAIL[- ]supersede|"
+    r"Thin\s+FAIL[- ]supersede[\s\S]{0,80}?already\s+on\s+main|"
+    r"already\s+on\s+main[\s\S]{0,80}?Thin\s+FAIL[- ]supersede"
     r")"
 )
 
@@ -423,6 +430,8 @@ def is_fail_supersede_thin_twin_lesson(text: str) -> bool:
 
     FR #2991: requires FAIL-supersede AND a thin-twin cue. Bare FAIL-supersede plus a
     real product playbook (no thin-twin wording) returns False (MRB #2973 spirit).
+    FR #4231: tip-loop meta / only-restate Thin FAIL-supersede already-on-main cues
+    also count (any skill book, including harvest-agent-skills).
     """
     t = str(text or "")
     if not t.strip():
