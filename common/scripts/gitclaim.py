@@ -4791,19 +4791,102 @@ def format_empty_offer_detail(nick: str, stats: dict | None = None) -> str:
     return base + ")"
 
 
-def live_seat_nicks(home: Path) -> set[str]:
-    """Seat nicks present in the digest for MRB/UAT author rules (FR #1401).
+# FR #4211: legacy pid-keyed ``workers`` without a fresh heartbeat are ghosts.
+LIVE_LEGACY_WORKER_STALE_S = 900.0
+
+
+def _local_digest_machine_ids() -> set[str]:
+    """Folded machine ids for this host (BOB_MACHINE_ID / COMPUTERNAME)."""
+    raw = (
+        os.environ.get("BOB_MACHINE_ID")
+        or os.environ.get("COMPUTERNAME")
+        or os.environ.get("HOSTNAME")
+        or ""
+    ).strip()
+    if not raw:
+        return set()
+    mid = bobreport.fold_machine_id(bobreport.normalize_machine_id(raw) or raw)
+    if not mid:
+        return set()
+    out = {mid}
+    # Alias fold: win-mpre8vi4u6u <-> ionos style.
+    for alias, canon in getattr(bobreport, "DIGEST_ID_FOLD", {}).items():
+        if bobreport.fold_machine_id(canon) == mid or bobreport.fold_machine_id(alias) == mid:
+            out.add(bobreport.fold_machine_id(alias))
+            out.add(bobreport.fold_machine_id(canon))
+    return {x for x in out if x}
+
+
+def _legacy_worker_live_nick(
+    mid: str,
+    pid_s: str,
+    w: dict,
+    *,
+    now: float,
+    local_ids: set[str],
+) -> str | None:
+    """Return canonical seat nick when a legacy ``workers`` entry counts as live (FR #4211).
+
+    Local machine: require the OS pid to be alive.
+    Remote / unknown: require a heartbeat ``updated`` within ``LIVE_LEGACY_WORKER_STALE_S``.
+    Missing heartbeat on a non-local machine is treated as a ghost.
+    """
+    mid_f = bobreport.fold_machine_id(mid)
+    nick_raw = str(w.get("nick") or "").strip()
+    nick = canonical_worker_nick(nick_raw) if nick_raw else None
+    if not nick:
+        try:
+            nick = f"{mid_f}-{int(pid_s)}"
+        except ValueError:
+            return None
+    nick = canonical_worker_nick(nick) or nick
+
+    is_local = bool(local_ids) and mid_f in local_ids
+    if is_local:
+        try:
+            pid_i = int(pid_s)
+        except ValueError:
+            return None
+        try:
+            if not bobreport._pid_alive(pid_i):
+                return None
+        except Exception:
+            return None
+        return nick
+
+    updated = (
+        w.get("updated")
+        or w.get("last_seen")
+        or w.get("lastSeen")
+        or w.get("seen_at")
+        or ""
+    )
+    ts = bobreport._parse_worker_updated_ts(updated)
+    if ts is None:
+        return None
+    if (float(now) - float(ts)) > float(LIVE_LEGACY_WORKER_STALE_S):
+        return None
+    return nick
+
+
+def live_seat_nicks(home: Path, *, now: float | None = None) -> set[str]:
+    """Seat nicks present in the digest for MRB/UAT author rules (FR #1401 / #4211).
 
     Prefer canonical ``worker_list`` (tray / shop feed). Legacy pid-keyed
     ``workers`` often keeps ghost seats that never ``!bored``; counting them as
-    live used to strand repo-UAT eligibility math (FR #1401). Fall back to
-    ``workers`` only when ``worker_list`` is empty.
+    live used to strand repo-UAT eligibility math (FR #1401) and UAT sibling
+    gates (FR #4211). Fall back to ``workers`` only when ``worker_list`` is empty,
+    and then only for entries that are locally alive or freshly heartbeated.
     """
+    import time as _time
+
     out: set[str] = set()
     try:
         doc = bobreport.load_digest(_root(home))
     except Exception:
         return out
+    now_f = float(_time.time() if now is None else now)
+    local_ids = _local_digest_machine_ids()
     for mid, ent in (doc.get("machines") or {}).items():
         if not isinstance(ent, dict):
             continue
@@ -4815,9 +4898,17 @@ def live_seat_nicks(home: Path) -> set[str]:
                     continue
                 out.add(canonical_worker_nick(nick) or nick)
             continue
-        for pid in (ent.get("workers") or {}):
-            if str(pid).isdigit():
-                out.add(f"{mid}-{int(pid)}")
+        workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+        for pid, w in workers.items():
+            if not str(pid).isdigit():
+                continue
+            if not isinstance(w, dict):
+                w = {}
+            nick = _legacy_worker_live_nick(
+                str(mid), str(pid), w, now=now_f, local_ids=local_ids
+            )
+            if nick:
+                out.add(nick)
     return out
 
 

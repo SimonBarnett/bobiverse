@@ -743,6 +743,10 @@ def _coerce_worker(mid: str, pid: str, raw: object) -> dict:
         out["agent"] = agent
     if model:
         out["model"] = model
+    # FR #4211: keep heartbeat so live_seat_nicks can skip stale legacy workers.
+    updated = str(ent.get("updated") or ent.get("last_seen") or ent.get("lastSeen") or "").strip()
+    if updated:
+        out["updated"] = updated
     return out
 
 
