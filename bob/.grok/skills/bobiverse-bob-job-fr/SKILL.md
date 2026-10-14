@@ -94,6 +94,7 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 * **FR #4192 (after JobWorktrees still low):** when Clear prints `removed=0` (or FreeGB still under MinFreeGB), run non-worktree reclaim **before** filing intake:
   `..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId <this-session-guid> -IncludeAiBackups`
   (aged `~/.grok` sessions/downloads, pip/npm, aged user-`%TEMP%` `bobiverse-*`/`fr-*`/`mrb-*`/`pytest-of-*`). Pair with JobWorktrees; never invent a `C:\ai\*` delete list (FR #2727).
+* **FR #4212 (SeatDisk still low / cursor chats):** SeatDisk also reclaims aged .cursor/chats (-KeepCursorHours, default 24). After reclaim, if FreeGB is still under MinFreeGB it prints a CRITICAL ranked size report (live ~/.grok/sessions and ~/.grok/bin often dominate). Prefer D:\...\job-fr-N; never hand-delete C:\ai\* wt trees (FR #2727).
 * If FreeGB is still under 2 **after** JobWorktrees **and** SeatDisk: **file an intake issue** for disk capacity and continue with a tree on a roomy drive, or **GIVEUP** — do not invent a delete list.
 * Manual remove **only on your own job tree** (the `-KeepPath` / current FR tree you created this seat): `git -C <install> worktree remove --force <your-own-job-wt>; git -C <install> worktree prune`. Never a guessed list of sibling `C:\ai\*` dirs.
 * **FR #4197:** Clear must not abort when one registered worktree path or .git is missing (git worktree remove NativeCommandError under StrictMode). Warn, rmdir leftovers, git worktree prune, and continue reclaiming the rest.

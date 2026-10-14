@@ -436,5 +436,5 @@ if ($freeAfter -lt $MinFreeGB) {
             if ($pd -and ($pd -ine $rootDrive)) { $otherVol++ }
         } catch { }
     }
-    Write-Warning ("FR #3698 / FR #4192: RepoRoot drive FreeGB={0} still below MinFreeGB={1} after reclaim (removed={2}, skipped_protected={3}, skipped_other_volume={4}). Job trees on another volume do not free this drive. Next: run Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId <this-session> (optional -IncludeAiBackups) for ~/.grok / pip/npm / aged user-%TEMP% caches; only then file a disk-capacity intake or put the job tree on a roomy drive. Never hand-delete C:\ai\* wt trees (FR #2727)." -f $freeAfter, $MinFreeGB, $removed, $skippedProtected, $otherVol)
+    Write-Warning ("FR #3698 / FR #4192 / FR #4212: RepoRoot drive FreeGB={0} still below MinFreeGB={1} after reclaim (removed={2}, skipped_protected={3}, skipped_other_volume={4}). Job trees on another volume do not free this drive. Next: run Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId <this-session> (optional -IncludeAiBackups) for ~/.grok / pip/npm / aged user-%TEMP% / aged .cursor/chats caches; only then file a disk-capacity intake or put the job tree on a roomy drive. Never hand-delete C:\ai\* wt trees (FR #2727)." -f $freeAfter, $MinFreeGB, $removed, $skippedProtected, $otherVol)
 }
