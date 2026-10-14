@@ -61,7 +61,7 @@ Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick
 
 ## Install, upgrade, rollback, hotpatch
 
-**Antivirus exclusions (FR #4215):** before laying irc.exe, MSI schedules Defender RunAvExclude **Before=InstallFiles**; Install-Airc.ps1 / standalone Install-AircConsole.ps1 call Register-BobiverseAvExclusions.ps1 (Defender path/process + best-effort Avast/AVG FileShield registry). WARN-only on failure; manual Avast File/Folder exception for <ai root>\airc if still blocked. Ops: docs/airc-ops.md.
+**Antivirus exclusions (FR #4215):** before laying airc.exe, MSI schedules Defender RunAvExclude **Before=InstallFiles**; Install-Airc.ps1 / standalone Install-AircConsole.ps1 call Register-BobiverseAvExclusions.ps1 (Defender path/process + best-effort Avast/AVG FileShield registry). WARN-only on failure; manual Avast File/Folder exception for <ai root>\airc if still blocked. Ops: docs/airc-ops.md.
 
 See `bobiverse-fleet-ops`. Airc specifics: after MSI ensure `config\ergo.password`; re-run `Install-Airc.cmd -MachineId <id>` if NSSM is stale.
 **Start-update policy (FR #3289 / #3393):** frozen `airc.exe` and `Start-AircConsole -ServiceMode` read `config\airc.json` `sync_from_repo` / `self_update`. **Fleet** fresh MSI default is **sync off** (unsigned `main` must not run as SYSTEM) and **self_update on** (sha256-checked release MSI). Log lines: `INFO sync-from-repo=off (config)` / `INFO self-update=on (config)`. MSI props `AIRC_SYNC_FROM_REPO=0|1` and `AIRC_SELF_UPDATE=0|1`; env `BOBIVERSE_SYNC_FROM_REPO` / `BOBIVERSE_SELF_UPDATE` / `BOBIVERSE_NO_UPDATE=1`. `Sync-BobiverseFromRepo -Product airc` also refuses when sync is off. Install locks the tree with `Protect-BobiverseInstallTree` (Users RX only).
