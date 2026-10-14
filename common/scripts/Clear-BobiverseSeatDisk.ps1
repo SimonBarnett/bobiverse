@@ -12,9 +12,14 @@
     grok downloads, pr-merge-clones, aged grok sessions (keeps -KeepSessionId
     and sessions newer than -KeepSessionHours), pip/npm caches, aged files in
     Windows\Temp, optional aged C:\ai\backup-* (-IncludeAiBackups).
+  - FR #4192: also reclaims aged user-%TEMP% dirs matching bobiverse-*/fr-*/mrb-*/
+    pytest-of-*/gh-pr* older than -KeepTempHours (default 24). Never deletes
+    arbitrary C:\ai\* worktrees (FR #2727).
 
   Never touches Ergo, ircd.yaml, secrets, the current seat session id, or
   running services. Pair with Clear-BobiverseJobWorktrees.ps1 for linked trees.
+  When JobWorktrees prints FreeGB still low / removed=0, run this with -Reclaim
+  before filing a disk-capacity intake (FR #4192).
 
 .EXAMPLE
   ..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId 0ee19a2a-...
@@ -24,8 +29,10 @@ param(
     [double]$MinFreeGB = 2,
     [string]$KeepSessionId = '',
     [int]$KeepSessionHours = 6,
+    [int]$KeepTempHours = 24,
     [string]$GrokHome = '',
     [string]$AiRoot = 'C:\ai',
+    [string]$TempRoot = '',
     [switch]$IncludeAiBackups,
     [switch]$Reclaim,
     [switch]$Force
@@ -67,6 +74,11 @@ function Remove-TreeSafe([string]$Path, [string]$Why) {
 if (-not $GrokHome) {
     $GrokHome = Join-Path $env:USERPROFILE '.grok'
 }
+if (-not $TempRoot) {
+    if ($env:TEMP) { $TempRoot = $env:TEMP }
+    elseif ($env:TMP) { $TempRoot = $env:TMP }
+    else { $TempRoot = Join-Path $env:LOCALAPPDATA 'Temp' }
+}
 
 $free = Get-FreeGB
 Write-Host ("FreeGB={0} MinFreeGB={1} Reclaim={2} Force={3}" -f $free, $MinFreeGB, [bool]$Reclaim, [bool]$Force)
@@ -79,7 +91,8 @@ $report = @(
     (Join-Path $env:LOCALAPPDATA 'pip\Cache'),
     (Join-Path $env:LOCALAPPDATA 'npm-cache'),
     (Join-Path $env:USERPROFILE '.cursor\chats'),
-    'C:\Windows\Temp'
+    'C:\Windows\Temp',
+    $TempRoot
 )
 if ($AiRoot) {
     $report += $AiRoot
@@ -149,6 +162,20 @@ Get-ChildItem -LiteralPath 'C:\Windows\Temp' -File -Force -ErrorAction SilentlyC
         $removed += Remove-TreeSafe $_.FullName 'aged Windows\\Temp file'
     }
 
+# FR #4192: aged user-%TEMP% seat leftovers (pytest / bobiverse / fr / mrb / gh-pr).
+# Never wipe arbitrary TEMP trees (vscode, Diagnostics, Outlook, NVIDIA, ...).
+$tempCut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepTempHours))
+$tempPatterns = @('bobiverse-*', 'fr-*', 'mrb-*', 'pytest-of-*', 'gh-pr*', 'pr-*')
+if ($TempRoot -and (Test-Path -LiteralPath $TempRoot)) {
+    foreach ($pat in $tempPatterns) {
+        Get-ChildItem -LiteralPath $TempRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like $pat -and $_.LastWriteTime -lt $tempCut } |
+            ForEach-Object {
+                $removed += Remove-TreeSafe $_.FullName ('aged user-TEMP ' + $pat)
+            }
+    }
+}
+
 if ($IncludeAiBackups -and $AiRoot -and (Test-Path -LiteralPath $AiRoot)) {
     Get-ChildItem -LiteralPath $AiRoot -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-2) } |
@@ -159,3 +186,6 @@ if ($IncludeAiBackups -and $AiRoot -and (Test-Path -LiteralPath $AiRoot)) {
 
 $freeNow = Get-FreeGB
 Write-Host ("Done removed_ops={0} FreeGB_now={1}" -f $removed, $freeNow)
+if ($freeNow -lt $MinFreeGB) {
+    Write-Warning ("FR #4192: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
+}

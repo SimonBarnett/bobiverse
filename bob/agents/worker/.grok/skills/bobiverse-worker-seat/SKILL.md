@@ -63,6 +63,8 @@ Keep replies short (one line, under 400 characters). Anything addressed to anoth
 
 # Non-worktree seat caches: ~/.grok/sessions|downloads, pip/npm, aged Temp (FR #890)
 ..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId <this-session-guid> -IncludeAiBackups
+
+When JobWorktrees leaves FreeGB under MinFreeGB / removed=0, run SeatDisk -Reclaim **before** filing a disk-capacity intake (FR #4192).
 ```
 
 Prunes job trees when FreeGB < 2 (or `-Force`). Cap concurrent extras with `-MaxExtraJobTrees 0`. Seat-disk `-WhatIf` reports without deleting. Never delete Ergo, secrets, the install root, or the live session id. Details: `bobiverse-bob-job-fr`.
