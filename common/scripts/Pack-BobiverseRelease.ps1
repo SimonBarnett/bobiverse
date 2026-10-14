@@ -12,8 +12,10 @@ param(
     [string]$Version = '',
     [switch]$KeepStage,
     [switch]$SkipMsi,
-    # Issue #4: public GitHub Release MSIs must NOT embed the live Ergo PASS.
-    # Pass -EmbedErgoPassword only for private/offline packs.
+    # Issue #4: bob/jeeves public GitHub Release MSIs must NOT embed the live Ergo PASS
+    # unless -EmbedErgoPassword (private/offline). FR #4216: airc MSI ALWAYS embeds
+    # config\ergo.password (required for first-start connect); -EmbedErgoPassword is
+    # redundant for airc but still accepted.
     [switch]$EmbedErgoPassword,
     # Tests only (needs -SkipMsi): stage the worker/plan folders without compiling bob-worker.exe (PyInstaller, ~40 s).
     [switch]$SkipWorkerExe,
@@ -204,22 +206,53 @@ function Stage-Product([string]$Name) {
     }
 
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
-    # Issue #4: do not embed live Ergo PASS into public release assets by default.
+    # Issue #4: bob/jeeves public packs skip Ergo PASS unless -EmbedErgoPassword.
+    # FR #4216: airc MSI MUST ship config\ergo.password so install connects on first start.
     $stageErgo = Join-Path $stage 'config\ergo.password'
-    if ($EmbedErgoPassword) {
-        foreach ($c in @(
-                (Join-Path $RepoRoot 'config\ergo.password'),
-                (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
-            )) {
-            if (Test-Path -LiteralPath $c) {
-                Copy-Item $c $stageErgo -Force
-                Write-Host "INFO $Name embedded config/ergo.password from $c (-EmbedErgoPassword)"
-                break
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage 'config') | Out-Null
+    $wantEmbedErgo = $EmbedErgoPassword -or ($Name -eq 'airc')
+    if ($wantEmbedErgo) {
+        $ergoSecret = $null
+        $ergoSource = $null
+        if ($Name -eq 'airc') {
+            foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD')) {
+                $v = [Environment]::GetEnvironmentVariable($key)
+                if ($v -and $v.Trim()) {
+                    $ergoSecret = $v.Trim()
+                    $ergoSource = "env:$key"
+                    break
+                }
             }
         }
-        if (-not (Test-Path -LiteralPath $stageErgo)) {
-            throw "-EmbedErgoPassword set but no config/ergo.password or ~/.grok/ergo/connect.password found"
+        if (-not $ergoSecret) {
+            foreach ($c in @(
+                    (Join-Path $RepoRoot 'config\ergo.password'),
+                    (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
+                )) {
+                if (Test-Path -LiteralPath $c) {
+                    $raw = (Get-Content -LiteralPath $c -Raw -ErrorAction SilentlyContinue)
+                    if ($raw -and $raw.Trim()) {
+                        $ergoSecret = $raw.Trim()
+                        $ergoSource = $c
+                        break
+                    }
+                }
+            }
         }
+        # -SkipMsi stage tests must not require a live fleet secret (never used for real MSI).
+        if (-not $ergoSecret -and $SkipMsi -and ($Name -eq 'airc')) {
+            $ergoSecret = 'FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE'
+            $ergoSource = 'test-placeholder'
+            Write-Host 'WARN airc -SkipMsi: embedding FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE (not a release artifact)'
+        }
+        if (-not $ergoSecret) {
+            if ($Name -eq 'airc') {
+                throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password / repo config\ergo.password'
+            }
+            throw '-EmbedErgoPassword set but no config/ergo.password or ~/.grok/ergo/connect.password found'
+        }
+        [IO.File]::WriteAllText($stageErgo, $ergoSecret + "`n", [Text.UTF8Encoding]::new($false))
+        Write-Host ("INFO {0} embedded config/ergo.password from {1} (len={2}; value not printed){3}" -f $Name, $ergoSource, $ergoSecret.Length, $(if ($Name -eq 'airc') { ' FR #4216' } else { ' (-EmbedErgoPassword)' }))
     } else {
         if (Test-Path -LiteralPath $stageErgo) {
             Remove-Item -LiteralPath $stageErgo -Force

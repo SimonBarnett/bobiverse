@@ -171,19 +171,39 @@ if ($wantAgentLayer) {
     }
 }
 
-# Package ergo.password into staged config if available on packer
+# FR #4216: airc MSI must ship config\ergo.password; keep / seed it under InstallRoot
+# so Install-AircConsole and service start can connect. Never invent the secret.
 $packErgo = Join-Path $repoRoot 'config\ergo.password'
 $destErgo = Join-Path $InstallRoot 'config\ergo.password'
 $configDir = Join-Path $InstallRoot 'config'
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-if (-not (Test-Path $destErgo)) {
+$destHas = (Test-Path -LiteralPath $destErgo) -and ((Get-Content -LiteralPath $destErgo -Raw -ErrorAction SilentlyContinue).Trim())
+if (-not $destHas) {
     foreach ($c in @($packErgo, (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'))) {
         if (Test-Path -LiteralPath $c) {
-            Copy-Item -LiteralPath $c -Destination $destErgo -Force
-            Write-Host "INFO staged config\ergo.password from $c"
+            $raw = (Get-Content -LiteralPath $c -Raw -ErrorAction SilentlyContinue)
+            if ($raw -and $raw.Trim()) {
+                Copy-Item -LiteralPath $c -Destination $destErgo -Force
+                Write-Host "INFO staged config\ergo.password from $c"
+                $destHas = $true
+                break
+            }
+        }
+    }
+}
+if (-not $destHas) {
+    foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD', 'BOB_IRC_PASSWORD')) {
+        $v = [Environment]::GetEnvironmentVariable($key)
+        if ($v -and $v.Trim()) {
+            [IO.File]::WriteAllText($destErgo, $v.Trim() + "`n", (New-Object System.Text.UTF8Encoding $false))
+            Write-Host ("INFO staged config\ergo.password from env:{0}" -f $key)
+            $destHas = $true
             break
         }
     }
+}
+if (-not $destHas) {
+    throw 'FR #4216: config\ergo.password missing after MSI layout. Airc release MSIs must embed it (re-pack with AIRC_PACK_ERGO_PASSWORD / packer connect.password). Fallbacks: place the file under InstallRoot\config or set BOB_IRC_PASSWORD / -ErgoPasswordFile before install. Never invent the secret.'
 }
 # FR #3288: lock staged config secrets (and upgrade existing world-readable ACLs).
 if (Get-Command Protect-BobiverseSecretPath -ErrorAction SilentlyContinue) {
