@@ -2055,6 +2055,14 @@ def out_of_fuel_giveup_line(job_key: str) -> str:
     return f"GIVEUP {key} out-of-fuel"
 
 
+def out_of_fuel_nack_line(job_key: str) -> str:
+    """Shop wire: ``NACK <TYPE> owner/repo#N out-of-fuel`` for assigns refused during hold (FR #4180)."""
+    key = (job_key or "").strip() or "job"
+    if key.lower() == "job":
+        return "NACK job out-of-fuel"
+    return f"NACK {key} out-of-fuel"
+
+
 def default_unified_log_path() -> Path:
     return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")) / "logs" / "unified.jsonl"
 
@@ -2504,6 +2512,9 @@ class Relay:
         # FR #2811: while True, park Jeeves assigns in _pending (harvest / turn still running).
         self.hold_assigns_while: Optional[Callable[[], bool]] = None
         self.on_hold_assign: Optional[Callable[[str], None]] = None
+        # FR #4180: while True (out-of-fuel hold), refuse assigns without inject; callback NACKs.
+        self.refuse_assign_while: Optional[Callable[[], bool]] = None
+        self.on_refuse_assign: Optional[Callable[[str], None]] = None
         # FR #4115: write ACK/NACK to the seat outbox (program, no agent turn).
         self.write_outbox: Optional[Callable[[str], bool]] = None
 
@@ -2539,6 +2550,26 @@ class Relay:
             self._persist_last_from(line)
             return "skipped"
         line = format_from(nick, target, text, outbox=self.outbox_path)
+        # FR #4180: out-of-fuel hold — never inject; NACK via callback; stay quiet.
+        if assign_job_ref(line):
+            refuse = False
+            try:
+                refuse = bool(self.refuse_assign_while and self.refuse_assign_while())
+            except Exception:
+                refuse = False
+            if refuse:
+                with self._lock:
+                    if line == self._last_line:
+                        return "duplicate"
+                    self._last_line = line
+                self.log("relay: refused assign (out-of-fuel) " + line[:120])
+                self._persist_last_from(line)
+                if self.on_refuse_assign:
+                    try:
+                        self.on_refuse_assign(line)
+                    except Exception:
+                        pass
+                return "out_of_fuel"
         # FR #2811: hold assigns during post-DONE/NACK/GIVEUP harvest / turn; deliver on turn_ended.
         hold = False
         try:
@@ -2689,10 +2720,11 @@ class Relay:
                 self._pending.insert(0, line)
 
     def release_held_assigns(self) -> int:
-        """FR #2811 / FR #4115: flush pending assigns after turn_ended / harvest hold ends.
+        """FR #2811 / FR #4115 / FR #4180: flush pending assigns after turn_ended / harvest hold ends.
 
-        Inject only the first held assign. Extra assigns are NACKed via the seat outbox
-        (``busy, holding <first>``) without spending an agent turn.
+        FR #4180: while out-of-fuel refuse is active, NACK parked assigns instead of injecting.
+        Otherwise (FR #4115): inject only the first held assign; extra assigns are NACKed via
+        the seat outbox (``busy, holding <first>``) without spending an agent turn.
         """
         with self._lock:
             keep: list = []
@@ -2703,6 +2735,20 @@ class Relay:
                 else:
                     keep.append(line)
             self._pending = keep
+        refuse = False
+        try:
+            refuse = bool(self.refuse_assign_while and self.refuse_assign_while())
+        except Exception:
+            refuse = False
+        if refuse:
+            for line in flush:
+                self.log("relay: refused held assign (out-of-fuel) " + (line or "")[:120])
+                if self.on_refuse_assign:
+                    try:
+                        self.on_refuse_assign(line)
+                    except Exception:
+                        pass
+            return 0
         if not flush:
             return 0
         first, rest = flush[0], flush[1:]
@@ -3402,6 +3448,8 @@ _OUT_JOB_KEY_RX = re.compile(
 _JOB_ASSIGN_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+\S+#\d+\b")
 # FR #2791: capture owner/repo#N from an assign (or outbox ACK key) for submit-verify stop match.
 _ASSIGN_JOB_REF_RX = re.compile(r"(?i)\b(?:FR|MRB|UAT)\s+(\S+#\d+)\b")
+# FR #4180: capture TYPE + owner/repo#N for NACK out-of-fuel lines.
+_ASSIGN_TYPE_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
 
 
 def assign_job_ref(line: str) -> Optional[str]:
@@ -3413,6 +3461,17 @@ def assign_job_ref(line: str) -> Optional[str]:
     if not m:
         return None
     return m.group(1).lower()
+
+
+def assign_job_type_key(line: str) -> Optional[str]:
+    """``FR|MRB|UAT owner/repo#N`` from an assign / FROM line, or None (FR #4180)."""
+    text = line or ""
+    parts = text.split(None, 3)
+    body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+    m = _ASSIGN_TYPE_KEY_RX.search(body)
+    if not m:
+        return None
+    return f"{m.group(1).upper()} {m.group(2)}"
 
 
 def looks_like_job_assign(line: str, own_nick: str = "") -> bool:
@@ -3832,6 +3891,9 @@ class BoredEmitter:
         ``nak``/``idle`` are not gated forever; ``_run`` clamps past-due waits to 0.5s (no ``wait(0)`` spin);
       * FR #3012: agent 402 / usage-exhausted is **out-of-fuel** — immediate ``GIVEUP … out-of-fuel``,
         cancel done-miss, suppress ``!bored`` until ``clear_out_of_fuel`` (fuel returns / key);
+      * FR #4180: while out-of-fuel, ack-miss / HangDetector must not recycle or respawn; Relay
+        refuses new assigns (``NACK … out-of-fuel``) with no inject; restart counter is monotonic
+        per incident so 3/3 is reachable; unknown fuel readings still do not count as exhausted (#3923);
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
@@ -3911,6 +3973,8 @@ class BoredEmitter:
         self._out_of_fuel = False
         self._out_of_fuel_at: Optional[float] = None
         self.out_of_fuel_release_fn: Optional[Callable[[str], None]] = None
+        # FR #4180: always run once when entering the hold (clear ack-miss / HangDetector).
+        self.out_of_fuel_enter_fn: Optional[Callable[[], None]] = None
         self.fuel_check_fn: Optional[Callable[[], bool]] = None
         # FR #3019: while ACK open, True => mid-job fuel lost (Cursor/Grok reading exhausted).
         self.fuel_lost_check_fn: Optional[Callable[[], bool]] = None
@@ -4015,9 +4079,12 @@ class BoredEmitter:
         """FR #3012: mark out-of-fuel, clear ACK/done-miss, invoke release_fn once with the job key.
 
         Returns the job key that was open (for shop GIVEUP / digest), or None.
+        FR #4180: also invoke ``out_of_fuel_enter_fn`` once so Supervisors can disarm
+        ack-miss / HangDetector even when no ACK was open.
         """
         release_key: Optional[str] = None
         fn: Optional[Callable[[str], None]] = None
+        enter_fn: Optional[Callable[[], None]] = None
         with self._cv:
             if self._out_of_fuel:
                 return None  # already held; no second GIVEUP
@@ -4042,6 +4109,7 @@ class BoredEmitter:
             self._done_key = ""
             self._harvest_until = None
             fn = self.out_of_fuel_release_fn
+            enter_fn = self.out_of_fuel_enter_fn
             preview = one_line(evidence or "out-of-fuel", 100)
             self.log(
                 f"out-of-fuel: holding seat"
@@ -4049,6 +4117,11 @@ class BoredEmitter:
                 + f" - {preview}"
             )
             self._cv.notify_all()
+        if enter_fn is not None:
+            try:
+                enter_fn()
+            except Exception as e:
+                self.log(f"out-of-fuel: enter_fn failed {type(e).__name__}")
         if release_key and fn is not None:
             try:
                 fn(release_key)
@@ -4743,6 +4816,7 @@ class Supervisor:
         self._out_of_fuel_log_path_fn: Optional[Callable[[], Path | str | None]] = None
         if self.bored is not None:
             self.bored.out_of_fuel_release_fn = self._release_out_of_fuel_job
+            self.bored.out_of_fuel_enter_fn = self._on_out_of_fuel_enter
             self.bored.fuel_check_fn = self._fuel_available_again
             self.bored.fuel_lost_check_fn = self._fuel_lost_mid_job
         relay.on_inject = self._on_inject
@@ -4751,6 +4825,9 @@ class Supervisor:
         relay.on_hold_assign = lambda _line: (
             self.bored.note_held_assign() if self.bored else None
         )
+        # FR #4180: refuse (NACK out-of-fuel) assigns while the seat is in out-of-fuel hold.
+        relay.refuse_assign_while = lambda: bool(self.bored and self.bored.out_of_fuel)
+        relay.on_refuse_assign = self._nack_assign_out_of_fuel
         # FR #4115: program ACK/NACK via seat outbox (ACK on receipt; NACK extra held assigns).
         if getattr(relay, "write_outbox", None) is None and self.run_dir is not None:
             _run = self.run_dir
@@ -4826,6 +4903,48 @@ class Supervisor:
             return lost
         return False
 
+    def _clear_watchdogs_for_out_of_fuel(self) -> None:
+        """FR #4180: disarm ack-miss + HangDetector so the hold cannot look like a hang."""
+        try:
+            self.ack_miss.clear()
+        except Exception:
+            pass
+        try:
+            self.detector.reset(self.clock())
+        except Exception:
+            pass
+        try:
+            self.relay.last_unacked = ""
+        except Exception:
+            pass
+
+    def _on_out_of_fuel_enter(self) -> None:
+        """FR #4180: enter hold — clear hang/ack-miss and NACK any parked assigns."""
+        self._clear_watchdogs_for_out_of_fuel()
+        try:
+            self.relay.release_held_assigns()
+        except Exception:
+            pass
+
+    def _nack_assign_out_of_fuel(self, line: str) -> None:
+        """FR #4180: shop NACK for an assign that arrived during the out-of-fuel hold."""
+        key = assign_job_type_key(line) or "job"
+        nack = out_of_fuel_nack_line(key)
+        shop = self.irc.shop if self.irc else shop_channel(self.machine)
+        if self.irc and self.irc.alive:
+            try:
+                self.irc.say(shop, nack)
+            except Exception as e:
+                self.log(f"out-of-fuel: NACK say failed {type(e).__name__}")
+        if self.bored:
+            try:
+                # Bookkeeping only — BoredEmitter keeps !_bored while _out_of_fuel.
+                self.bored.on_outbox(nack)
+            except Exception:
+                pass
+        self._clear_watchdogs_for_out_of_fuel()
+        self.log(f"out-of-fuel: posted {nack}")
+
     def _release_out_of_fuel_job(self, job_key: str) -> None:
         """FR #3012: shop GIVEUP + digest so Jeeves / tray see out-of-fuel immediately."""
         line = out_of_fuel_giveup_line(job_key)
@@ -4848,6 +4967,8 @@ class Supervisor:
                 self.bored.on_outbox(line)
             except Exception:
                 pass
+        # FR #4180: disarm hang/ack-miss so a post-GIVEUP offer cannot recycle the seat.
+        self._clear_watchdogs_for_out_of_fuel()
         try:
             post_digest_out_of_fuel(
                 machine=self.machine,
@@ -4876,6 +4997,7 @@ class Supervisor:
         )
 
         def _on_hit(text: str) -> None:
+            # note_out_of_fuel → out_of_fuel_enter_fn clears watchdogs + NACKs parked assigns (FR #4180).
             if self.bored:
                 self.bored.note_out_of_fuel(text)
 
@@ -5491,6 +5613,10 @@ class Supervisor:
                 proc = self.proc
             if proc is None or proc.poll() is not None:
                 continue
+            # FR #4180: out-of-fuel is not a hang — skip HangDetector + ack-miss entirely.
+            if self.bored and self.bored.out_of_fuel:
+                self._clear_watchdogs_for_out_of_fuel()
+                continue
             try:
                 s = self.probe(proc.pid)
             except Exception:
@@ -5521,6 +5647,11 @@ class Supervisor:
             self.log(f"done-miss: remind inject failed {type(e).__name__}")
 
     def _check_ack_miss(self, proc) -> None:
+        # FR #4180: out-of-fuel is not an ACK miss — never remind or recycle.
+        if self.bored and self.bored.out_of_fuel:
+            self.ack_miss.clear()
+            self.log("ack-miss: suppressed (out-of-fuel hold; no remind/recycle)")
+            return
         ack_open = bool(self.bored.ack_open) if self.bored else False
         action = self.ack_miss.tick(self.clock(), ack_open=ack_open)
         if not action:
@@ -5548,11 +5679,24 @@ class Supervisor:
             self.restart_agent("no-ack-after-assign")
 
     def restart_agent(self, reason: str) -> None:
+        # FR #4180: never respawn while out-of-fuel (402 / exhausted is not a hang).
+        if self.bored and self.bored.out_of_fuel:
+            self.log(
+                f"agent: HUNG ({reason}) ignored - out-of-fuel hold (no respawn; FR #4180)"
+            )
+            self._clear_watchdogs_for_out_of_fuel()
+            return
         with self._lock:
             if self._shutting or self.proc is None:
                 return
             now = self.clock()
-            self.restarts = [(t, r) for t, r in self.restarts if now - t < self.restart_window_s]
+            # FR #4180: restart counter is monotonic per incident. Only clear the list when the
+            # last restart is older than the window (incident ended); never drop mid-incident
+            # entries just because individually they aged past the window.
+            if self.restarts:
+                last_t = float(self.restarts[-1][0])
+                if (now - last_t) >= float(self.restart_window_s):
+                    self.restarts = []
             if len(self.restarts) >= self.restart_max:
                 self.log(f"agent: HUNG ({reason}) and restart limit {self.restart_max}/{int(self.restart_window_s)}s reached - giving up")
                 give_up = True
@@ -5574,7 +5718,13 @@ class Supervisor:
         self.kill(old.pid)
         if delay > 0 and self.stop.wait(delay):
             return
-        pending = self.relay.last_unacked
+        # FR #4180: never re-deliver an assign into a seat that went out-of-fuel mid-restart.
+        if self.bored and self.bored.out_of_fuel:
+            self._clear_watchdogs_for_out_of_fuel()
+            self.log("agent: skip re-hold of pending assign (out-of-fuel during restart)")
+            pending = None
+        else:
+            pending = self.relay.last_unacked
         if pending:
             self.relay.hold(pending)  # the message in flight when the old agent hung is re-delivered to the NEW one once it is ready
         if not self.start_agent(note="(restarted after a hang; the previous session was discarded)"):
