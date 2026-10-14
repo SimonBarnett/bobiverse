@@ -35,7 +35,14 @@ def test_fr_row_offerable_rejects_merged_pr_via_is_pull():
     assert gitclaim.fr_row_offerable(row, is_pull=is_pull) is False
 
 
-def test_offer_focus_top_skips_merged_pr_number_as_fr(tmp_path: Path):
+def test_offer_focus_top_skips_merged_pr_number_as_fr(tmp_path: Path, monkeypatch):
+    """FR #1313: injected is_pull must purge a MERGED pull number before offering.
+
+    FR #4264 / #3929: production ``BORED_GITHUB_CALL_BUDGET`` is 0 (FR #3188 / #3212),
+    so a live ``is_pull`` is never consulted on the !bored path unless the test raises
+    the budget. Raise it here so the injected checker is honored; keep production at 0.
+    """
+    monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 2)
     home = _home(tmp_path)
     gitclaim._write_queue(
         gitclaim.queue_path(home),
@@ -76,6 +83,61 @@ def test_offer_focus_top_skips_merged_pr_number_as_fr(tmp_path: Path):
     left = {r["id"] for r in gitclaim.load_unaccepted(home)}
     assert "#1278" not in left
     assert "#1313" in left
+
+
+def test_offer_focus_top_budget0_keeps_ambiguous_fr_when_is_pull_exhausted(
+    tmp_path: Path, monkeypatch
+):
+    """FR #4264: with budget 0, injected is_pull is not called; unknown → still offer.
+
+    Documents fail-open on the !bored path. Merged-PR skip still holds when budget > 0
+    (see test_offer_focus_top_skips_merged_pr_number_as_fr).
+    """
+    monkeypatch.setattr(gitclaim, "BORED_GITHUB_CALL_BUDGET", 0)
+    home = _home(tmp_path)
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#1278",
+                    "url": "https://github.com/SimonBarnett/bobiverse/issues/1278",
+                    "title": "canonical seat nick",
+                    "line": "FR #1278",
+                    "seq": 1,
+                },
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#1313",
+                    "url": "https://github.com/SimonBarnett/bobiverse/issues/1313",
+                    "title": "chair offered MERGED PR as FR",
+                    "line": "FR #1313",
+                    "seq": 2,
+                },
+            ],
+            "accepted": [],
+            "done": [],
+            "workers": {},
+        },
+    )
+    calls: list[str] = []
+
+    def is_pull(r, n):
+        calls.append(str(n))
+        return str(n) == "1278"
+
+    st, job = gitclaim.offer_focus_top(
+        home, "marchhare-35600", "#marchhare", is_pull=is_pull
+    )
+    assert st == "ok" and job is not None
+    assert job["id"] == "#1278"
+    assert calls == []
+    left = {r["id"] for r in gitclaim.load_unaccepted(home)}
+    assert "#1278" in left and "#1313" in left
 
 
 def test_purge_fr_that_are_pulls_drops_row():
