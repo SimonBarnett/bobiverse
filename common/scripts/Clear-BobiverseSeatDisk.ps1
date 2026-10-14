@@ -18,6 +18,9 @@
   - FR #4212: also reclaims aged ~/.cursor/chats children older than
     -KeepCursorHours (default 24). When FreeGB stays below MinFreeGB after
     reclaim, print a CRITICAL ranked size report of known consumers.
+  - FR #4226: reclaim aged session UUID dirs nested under cwd-encoded buckets
+    (sessions/<cwd-encoded>/<guid>/). Top-level-only reclaim skipped those
+    UUIDs when the cwd bucket stayed fresh from the live seat.
 
   Never touches Ergo, ircd.yaml, secrets, the current seat session id, or
   running services. Pair with Clear-BobiverseJobWorktrees.ps1 for linked trees.
@@ -157,10 +160,28 @@ if (Test-Path -LiteralPath $npm) {
 $cut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepSessionHours))
 $sessRoot = Join-Path $GrokHome 'sessions'
 if (Test-Path -LiteralPath $sessRoot) {
+    # FR #4226: Grok nests UUID sessions under cwd-encoded buckets
+    # (sessions/<cwd-encoded>/<guid>/). Walk one nested level so a fresh
+    # cwd bucket does not shield aged UUID children. Legacy flat
+    # sessions/<guid> layout still reclaims at the top level.
     Get-ChildItem -LiteralPath $sessRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($KeepSessionId -and ($_.Name -like ("*{0}*" -f $KeepSessionId))) { return }
-        if ($_.LastWriteTime -gt $cut) { return }
-        $removed += Remove-TreeSafe $_.FullName 'aged grok session'
+        $top = $_
+        if ($KeepSessionId -and ($top.Name -like ("*{0}*" -f $KeepSessionId))) { return }
+        $nested = @(Get-ChildItem -LiteralPath $top.FullName -Directory -Force -ErrorAction SilentlyContinue)
+        if ($nested.Count -gt 0) {
+            foreach ($ch in $nested) {
+                if ($KeepSessionId -and ($ch.Name -like ("*{0}*" -f $KeepSessionId))) { continue }
+                if ($ch.LastWriteTime -gt $cut) { continue }
+                $removed += Remove-TreeSafe $ch.FullName 'aged nested grok session'
+            }
+            $left = @(Get-ChildItem -LiteralPath $top.FullName -Force -ErrorAction SilentlyContinue)
+            if ($left.Count -eq 0) {
+                $removed += Remove-TreeSafe $top.FullName 'empty grok session cwd bucket'
+            }
+        } else {
+            if ($top.LastWriteTime -gt $cut) { return }
+            $removed += Remove-TreeSafe $top.FullName 'aged grok session'
+        }
     }
 }
 
@@ -205,7 +226,7 @@ if ($CursorChatsRoot -and (Test-Path -LiteralPath $CursorChatsRoot)) {
 $freeNow = Get-FreeGB
 Write-Host ("Done removed_ops={0} FreeGB_now={1}" -f $removed, $freeNow)
 if ($freeNow -lt $MinFreeGB) {
-    Write-Warning ("FR #4192 / FR #4212: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
+    Write-Warning ("FR #4192 / FR #4212 / FR #4226: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
     # Ranked consumers so the next seat knows what still fills C: (live session / bin may remain).
     Write-Host '--- CRITICAL remaining consumers (GB) ---'
     $ranked = @()
