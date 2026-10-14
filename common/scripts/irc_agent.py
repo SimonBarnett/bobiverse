@@ -3152,7 +3152,20 @@ class Client:
                         ident=_pj.id,
                         clear_pins=verb in ("NACK", "GIVEUP", "DONE"),
                     )
-                    if _cleared:
+                    # FR #4260: completing seat also frees any other nick still holding
+                    # the same job key (re-offer leftover after offer timeout).
+                    _job_cleared = False
+                    if verb in ("DONE", "NACK", "GIVEUP") or (
+                        verb == "ACK" and status in ("ok", "duplicate")
+                    ):
+                        with contextlib.suppress(Exception):
+                            _job_cleared = gitclaim.clear_job_seat_holds(
+                                self._digest_home(),
+                                _pj.repo,
+                                _pj.task,
+                                _pj.id,
+                            )
+                    if _cleared or _job_cleared:
                         info(
                             f"INFO seat-hold cleared nick={src} reason={verb} "
                             f"job={_pj.task} {_pj.repo}{_pj.id}"

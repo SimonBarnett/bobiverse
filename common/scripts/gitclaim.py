@@ -5259,10 +5259,11 @@ def row_gave_up_by(row: dict, nick: str) -> bool:
 # ---------------------------------------------------------------------------
 # FR #4089 (hotpatch): one open job per seat.
 # A seat that holds an accepted (not-yet-DONE) row, an unaccepted row offered to it,
-# or a remembered offer (seat-holds.json, survives the 90/180 s row offer window)
-# is never offered or pushed another job. Rows still time back to the queue for
-# OTHER seats as before; only the seat itself stays blocked.
-# Cleared by: DONE/NACK/GIVEUP for that job, ACK (accepted row takes over),
+# or a remembered offer (seat-holds.json, survives the 90/180 s row offer window
+# until the row is re-offered elsewhere — FR #4260) is never offered or pushed
+# another job. Rows still time back to the queue for OTHER seats as before.
+# Cleared by: DONE/NACK/GIVEUP for that job (all seats holding the job key —
+# FR #4260), ACK (accepted row takes over), re-offer to another nick (FR #4260),
 # seat QUIT/PART, the seat leaving the live worker list, or SEAT_HOLD_MAX_S.
 # ---------------------------------------------------------------------------
 SEAT_HOLDS_NAME = "seat-holds.json"
@@ -5508,6 +5509,66 @@ def clear_seat_hold(
     return changed
 
 
+def _hold_matches_job(h: dict, repo: str, task: str, ident: str) -> bool:
+    if _repo_key(h.get("repo")) != _repo_key(repo or ""):
+        return False
+    if _norm_row_id(h.get("id")) != _norm_row_id(ident or ""):
+        return False
+    if task and str(h.get("task") or "").upper() != str(task or "").upper():
+        return False
+    return True
+
+
+def _clear_job_seat_holds_unlocked(
+    home: Path,
+    repo: str,
+    task: str,
+    ident: str,
+    *,
+    except_nick: str | None = None,
+) -> bool:
+    """FR #4260: drop every seat-holds.json entry for this job key (unlocked)."""
+    except_key = _seat_key(except_nick) if except_nick else ""
+    holds = _load_seat_holds_unlocked(home)
+    changed = False
+    for nick_key in list(holds.keys()):
+        if except_key and nick_key == except_key:
+            continue
+        h = holds.get(nick_key)
+        if isinstance(h, dict) and _hold_matches_job(h, repo, task, ident):
+            holds.pop(nick_key, None)
+            changed = True
+    if changed:
+        with contextlib.suppress(OSError):
+            _save_seat_holds_unlocked(home, holds)
+    return changed
+
+
+def clear_job_seat_holds(
+    home: Path,
+    repo: str,
+    task: str,
+    ident: str,
+    *,
+    except_nick: str | None = None,
+) -> bool:
+    """FR #4260: clear all seats' holds for ``repo``+``task``+``id``.
+
+    Used when a row is re-offered to another nick, or when any seat completes
+    (DONE/NACK/GIVEUP/ACK) that job so the original no-ACK seat is not stuck
+    ``busy (held ...)`` forever.
+    """
+    if not repo or not ident:
+        return False
+    try:
+        with _lock(home):
+            return _clear_job_seat_holds_unlocked(
+                home, repo, task or "", ident, except_nick=except_nick
+            )
+    except (TimeoutError, OSError):
+        return False
+
+
 def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | None = None) -> str:
     """Unlocked core of ``seat_open_job`` (caller holds ``_lock`` and loaded ``doc``)."""
     key = _seat_key(nick)
@@ -5543,6 +5604,38 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
         for r in sticky_maxed
     ):
         h = None
+    if isinstance(h, dict):
+        # FR #4260: hold is void when the same job is now offered/accepted by another seat.
+        h_repo = str(h.get("repo") or "")
+        h_task = str(h.get("task") or "")
+        h_id = str(h.get("id") or "")
+        for row in doc.get("unaccepted") or []:
+            if not isinstance(row, dict):
+                continue
+            if not _same(row, h_repo, h_task, h_id):
+                continue
+            to = str(row.get("offered_to") or "").strip()
+            if to and _seat_key(to) != key:
+                holds.pop(key, None)
+                with contextlib.suppress(OSError):
+                    _save_seat_holds_unlocked(home, holds)
+                h = None
+                break
+        if isinstance(h, dict):
+            for row in doc.get("accepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                if not _same(row, h_repo, h_task, h_id):
+                    continue
+                raw = str(
+                    row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+                ).strip()
+                if raw and _seat_key(raw) != key:
+                    holds.pop(key, None)
+                    with contextlib.suppress(OSError):
+                        _save_seat_holds_unlocked(home, holds)
+                    h = None
+                    break
     if isinstance(h, dict):
         live_l = {_seat_key(n) for n in (live or set()) if _seat_key(n)}
         if live_l and key not in live_l:
@@ -5687,6 +5780,9 @@ def offer_focus_top(
                     cand.pop("offered_channel", None)
                     cand.pop("offered_via", None)
                     purged = True
+                    # FR #4089: seat-holds.json intentionally survives the row offer
+                    # window so this seat stays blocked until DONE/NACK/GIVEUP/QUIT,
+                    # re-offer to another nick (FR #4260), or SEAT_HOLD_MAX_S.
 
             # FR #4089 (supersedes the FR #3192 time-boxed holding_live check): a seat with
             # an accepted job, any offer pinned to it (no age window) or a remembered offer
@@ -5894,6 +5990,9 @@ def offer_focus_top(
                     except OSError:
                         return "error", None
                 return "empty", None
+            prev_to = ""
+            same = False
+            job: dict | None = None
             for i, row in enumerate(doc["unaccepted"]):
                 if row is pick or _same(row, str(pick.get("repo") or ""), str(pick.get("task") or ""), str(pick.get("id") or "")):
                     # FR #618: persist enriched author stamps (pick may be enrich_uat_author_fields copy).
@@ -5926,6 +6025,8 @@ def offer_focus_top(
                     break
             else:
                 return "error", None
+            if job is None:
+                return "error", None
             try:
                 _write_queue(queue_path(home), doc)
             except OSError:
@@ -5934,6 +6035,16 @@ def offer_focus_top(
             # !bored can stay on the zero-GitHub path when the set of rows is unchanged.
             with contextlib.suppress(Exception):
                 rebuild_offer_precompute(home, list(doc.get("unaccepted") or []))
+            # FR #4260: re-offer to a different nick frees the previous seat's hold.
+            if prev_to and not same:
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home,
+                        str(job.get("repo") or ""),
+                        str(job.get("task") or ""),
+                        str(job.get("id") or ""),
+                        except_nick=me,
+                    )
             with contextlib.suppress(Exception):
                 _note_seat_hold_unlocked(home, me, job)  # FR #4089
             return "ok", job
@@ -6891,6 +7002,7 @@ def assign_row(
                     age = OFFER_TIMEOUT_S + 1
                 if age < OFFER_TIMEOUT_S:
                     return "refused", f"already offered to {to}"
+            prev_to = to
             job = dict(cand)
             job["offered_to"] = me
             job["offered_ts"] = _utc_now()
@@ -6903,6 +7015,16 @@ def assign_row(
                 _write_queue(queue_path(home), doc)
             except OSError:
                 return "refused", "queue write failed"
+            # FR #4260: !assign to a new nick frees the previous seat's hold for this job.
+            if prev_to and _seat_key(prev_to) != _seat_key(me):
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home,
+                        str(job.get("repo") or ""),
+                        str(job.get("task") or ""),
+                        str(job.get("id") or ""),
+                        except_nick=me,
+                    )
             with contextlib.suppress(Exception):
                 _note_seat_hold_unlocked(home, me, job)  # FR #4089
             return "ok", job
