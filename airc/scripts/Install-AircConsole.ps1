@@ -98,6 +98,18 @@ if (-not $scriptDirEarly) {
     if ($PSCommandPath) { $scriptDirEarly = Split-Path -Parent $PSCommandPath }
     elseif ($MyInvocation.MyCommand.Path) { $scriptDirEarly = Split-Path -Parent $MyInvocation.MyCommand.Path }
 }
+# FR #4215: when invoked standalone (not via Install-Airc), still register AV exclusions
+# before NSSM points at airc.exe.
+if ($scriptDirEarly) {
+    $avExEarly = Join-Path $scriptDirEarly 'Register-BobiverseAvExclusions.ps1'
+    if (-not (Test-Path -LiteralPath $avExEarly)) {
+        $avExEarly = Join-Path $scriptDirEarly '..\..\common\scripts\Register-BobiverseAvExclusions.ps1'
+    }
+    if (Test-Path -LiteralPath $avExEarly) {
+        $packGuess = Split-Path -Parent $scriptDirEarly
+        & $avExEarly -Paths @($packGuess, (Join-Path $packGuess 'airc')) -Processes @('airc.exe') -Product airc
+    }
+}
 $commonPs1 = if ($scriptDirEarly) { Join-Path $scriptDirEarly 'Bobiverse-Common.ps1' } else { '' }
 if ($commonPs1 -and (Test-Path -LiteralPath $commonPs1) -and -not (Get-Command Get-BobiverseServiceAppParameters -ErrorAction SilentlyContinue)) {
     . $commonPs1
