@@ -3131,23 +3131,27 @@ def mrb_row_offerable(
         return False
 
 
-# FR #846 / #838: conventional-commit Fixes PR titles are never FR issues.
+# FR #846 / #838: conventional-commit Fixes PR titles are never FR issues
+# when the row type is otherwise unclear. FR #4257: skip this heuristic when
+# the row URL is /issues/N or the event is ``issues``.
 _PR_SHAPED_FR_TITLE_RE = re.compile(
     r"(?i)^(fix|docs|chore|feat|refactor|test|build|ci|perf|style)(?:\([^)]*\))?:",
 )
 
 
 def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None) -> bool:
-    """True when an FR row may be offered (FR #846 / #1313 / #2340).
+    """True when an FR row may be offered (FR #846 / #1313 / #2340 / #4257).
 
     Rejects FR rows that are actually pull requests:
     * URL is ``/pull/N``
     * event is ``pull_request``
-    * title looks like a conventional Fixes/docs PR
     * optional ``is_pull(repo, num)`` is true for **any** PR state (open/merged/closed)
       - covers ``/issues/N`` URLs that still resolve to a PR page (#833 / #1313)
     * ``pr_exists`` kept as a deprecated alias for ``is_pull`` (do **not** pass the
       open-only ``github_pr_exists_checker`` here - MERGED PRs would stay offerable)
+    * title looks like a conventional Fixes/docs PR **only when** the row is not
+      already identified as a real issue (``/issues/N`` URL or ``issues`` event)
+      — FR #4257: genuine issues titled ``CI:`` / ``fix:`` / ``docs:`` must stay offerable
 
     FR #2340: also rejects when the issue is CLOSED:
     * row ``state`` is ``closed`` (stamped on enqueue)
@@ -3157,13 +3161,18 @@ def fr_row_offerable(row: dict, *, pr_exists=None, is_pull=None, issue_open=None
     """
     if _canon_task(row) != "FR":
         return True
-    if str(row.get("event") or "").strip().lower() == "pull_request":
+    event = str(row.get("event") or "").strip().lower()
+    if event == "pull_request":
         return False
     raw = str(row.get("url") or "").strip()
     if PULL_URL_RE.search(raw):
         return False
+    # FR #4257: skip title heuristic when the row is clearly an issues row.
+    clearly_issue = bool(ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw)) or (
+        event == "issues"
+    )
     title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
-    if _PR_SHAPED_FR_TITLE_RE.match(title):
+    if not clearly_issue and _PR_SHAPED_FR_TITLE_RE.match(title):
         return False
     if str(row.get("state") or "").strip().lower() == "closed":
         return False
