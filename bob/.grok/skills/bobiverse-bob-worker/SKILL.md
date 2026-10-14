@@ -225,4 +225,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - bob-worker: FR #4115 PromptNotAcceptedWatcher --- Grok 120s accept-timeout toast: Enter backoff then NACK inject failed; BOB_WORKER_PROMPT_RETRY=0 opt-out; note_activity clears stale scrollback (PR #4132)
 - bob-worker: FR #4123 startup ready-cap without first turn_ended hang-recycles (never inject/!bored); grace mid-turn defers !bored until turn_ended
 - bob-worker: FR #4259 — ignore repeat DONE after turn_ended / already-fired !bored (do not re-arm harvest); on harvest expiry with no open turn flush held assigns before busy so `_held_assign` / `has_pending_work` cannot silence `!bored` forever (PR #4269)
-
+- MRB bob-worker: after merge-main, scrub C:\ai\bob\worker from sys.path before pytest or flat bob_worker.py shadows the FR tip; FR #4259 ignore repeat DONE and flush held assigns on harvest expiry before busy
