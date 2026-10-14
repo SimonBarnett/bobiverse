@@ -28,8 +28,9 @@ def test_fr3756_install_env_fallback_and_error_lists_options():
     assert 'env:$key' in text or "env:" in text
     # Old single-line re-download-only throw must not be the only guidance
     assert "-ErgoPasswordFile" in text
-    assert "Public MSIs never embed" in text or "issue #4" in text
     assert "Never invent" in text
+    # FR #4216: airc MSIs embed; bob/jeeves still cite issue #4 in the error text
+    assert "FR #4216" in text or "issue #4" in text
     # Still prefer packaged release path (issue #294)
     assert r"config\ergo.password" in text or "config/ergo.password" in text
 

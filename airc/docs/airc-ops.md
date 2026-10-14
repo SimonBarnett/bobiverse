@@ -15,6 +15,15 @@ Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / 
 
 `Pack-BobiverseRelease -Product airc` runs `airc/scripts/Build-Airc.ps1` (PyInstaller one-file) and stages `airc\airc.exe` in the MSI. `Install-AircConsole` prefers that exe as NSSM `Application` with argparse AppParameters; when the exe is missing it keeps the legacy `powershell.exe` + `Start-AircConsole.ps1` path. Smoke: `airc.exe --selftest` and `airc.exe --help`. Target boxes do not need system Python for the console service once the exe is installed.
 
+## Antivirus exclusions before install (FR #4215)
+
+Consumer AV (Windows Defender, Avast, AVG, ...) can refuse creating unsigned `airc.exe` on disk. Install registers exclusions **before** the exe is laid:
+
+1. **MSI:** deferred `RunAvExclude` CA (Defender `ExclusionPath` / `ExclusionProcess`) scheduled **Before=`InstallFiles`**.
+2. **`Install-Airc.ps1` / standalone `Install-AircConsole.ps1`:** `common/scripts/Register-BobiverseAvExclusions.ps1` — Defender path/process (+ Controlled Folder Access allow) and best-effort Avast/AVG FileShield registry lists. Failures are WARN-only; install continues.
+
+If Avast still blocks, add a manual File/Folder exception for `<ai root>\airc` (and `airc.exe`) in the Avast UI.
+
 **Never** default to the invoking user's profile when the `Airc` service is already registered --- that resets identity and causes SASL 904 / NickServ 433.
 **Never** invent a fresh ConsoleHome on MSI upgrade when AppParameters already name one (including a deliberate `Default\.airc` fleet bake).
 `Install-Airc.ps1` / `Install-AircConsole.ps1` read `HKLM\...\Services\Airc\Parameters\AppParameters` first; they also write `<ai root>\airc\config\airc-install.json` (paths only, no secrets) and **read that json as fallback** when AppParameters are missing (service already removed).
@@ -58,7 +67,7 @@ PUT/RUN/JOB verbs are constructed by the helper (sandbox under `<ai root>\airc\d
 
 ## Install / secrets / update
 
-- After public MSI: place `<ai root>\airc\config\ergo.password` (or rely on Install copy). **Never invent** the Ergo PASS; NickServ GUID is minted into ConsoleHome `console.password`.
+- **FR #4216:** airc MSI embeds `<ai root>\airc\config\ergo.password`; Install seeds ConsoleHome from it. Pack fails closed without `AIRC_PACK_ERGO_PASSWORD` / packer connect.password. **Never invent** the Ergo PASS; NickServ GUID is minted into ConsoleHome `console.password`.
 - **FR #3900 (AircConsole -> Airc):** Install reads legacy `AircConsole` AppParameters before removing that service, migrates `console.password` into the new home when empty, and on SASL 904 tries one legacy-home password heal. If heal cannot find the old GUID, oper `NickServ SAPASSWD {machine}_console <console.password>` then Restart-Service Airc.
 - Re-run `Install-Airc.cmd -MachineId <id>` if NSSM still points at an old tree. On upgrade, omit `-ConsoleHome` so FR #1552 preserve-from-AppParameters runs.
 - Service-start self-update is **`Update-BobiverseService.ps1`** (Check mode from `Start-AircConsole.ps1` **-ServiceMode**, or from frozen **`airc.exe`** via `kick_frozen_service_start_hooks` --- FR #2401): compares GitHub Releases to `VERSION`, then starts a **detached** Apply helper (scheduled task / WMI). It never runs `msiexec` inline inside the live service process. The frozen host also runs `Sync-BobiverseFromRepo.ps1` when present (same order as Start-AircConsole). Opt out: `BOBIVERSE_NO_UPDATE=1`, `BOB_AUTOUPDATE=0`, or `config\autoupdate.disabled`. Unfrozen Python under Start-AircConsole does **not** re-run the hooks (avoids double Check).

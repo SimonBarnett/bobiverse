@@ -22,10 +22,9 @@
    - Password is saved as DPAPI `config\service.cred` for reinstalls.
 
 2. **Ergo server PASS**  
-   Public release MSIs **do not** embed `config\ergo.password` (issue #4).  
-   **Before running `msiexec`** (required for airc, including `AIRC_PROFILE=client`, because `Install-Airc` fails without it, #3765), place one line at `<ai root>\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or supply it via `BOB_IRC_PASSWORD` / `-ErgoPasswordFile` (FR #3756). For bob and jeeves, placing it before install is also the safe default.  
-   **FR #3904:** bob also resolves a sibling `<ai root>\airc\config\ergo.password` or `<ai root>\jeeves\config\ergo.password` and seeds a local copy under `<ai root>\bob\config\` when found.  
-   Private/offline packs may use `Pack-BobiverseRelease.ps1 -EmbedErgoPassword`.
+   **FR #4216 (airc):** airc release MSIs **embed** `config\ergo.password` (pack requires `AIRC_PACK_ERGO_PASSWORD` / packer `~\.grok\ergo\connect.password` / repo `config\ergo.password`). `Install-Airc` fails closed if the file is still missing after layout.  
+   **Issue #4 (bob / jeeves):** public bob and jeeves MSIs **do not** embed the Ergo PASS. Before `msiexec`, place one line at `<ai root>\<product>\config\ergo.password` or `~\.grok\ergo\connect.password`, or use `BOB_IRC_PASSWORD` / `-ErgoPasswordFile` (FR #3756). Private/offline packs may use `Pack-BobiverseRelease.ps1 -EmbedErgoPassword`.  
+   **FR #3904:** bob also resolves a sibling `<ai root>\airc\config\ergo.password` or `<ai root>\jeeves\config\ergo.password` and seeds a local copy under `<ai root>\bob\config\` when found.
 
 3. **NickServ / SASL (Bob ear)**  
    Reserved `Bob-*` / `bob-*` nicks need SASL (issue #8 / #11).  

@@ -132,6 +132,9 @@ PowerShell:
 # DONE playbook (Duplicate of #N + DONE citing covering PR). Filing those creates nested
 # skill twins that the chair re-offers as FR. Real new playbooks still harvest normally.
 # FR #2970: also skip FAIL-supersede / wrong-book Harvest-lesson *process* playbooks
+# FR #4207: also match 'already in (bobiverse-)?job-mrb' and bare 'FR #2970' with FAIL-supersede
+# (class of tip #4206 after MRB #4204; pluralise process[- ]loops?).
+
 # (belong in bobiverse-bob-job-mrb). Intake returns lesson_already_covered when harvest +
 # job-mrb already carry that CAST IRON routing — never open another lesson(harvest) twin.
 # FR #2991: FAIL-supersede + thin already-covered / close-thin-twin restatements (no job-mrb
