@@ -43,7 +43,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!installtest <owner/repo> <version> [tag]` / dry-run | owner, ears | FR #4026 WP3 INSTALL-TEST: msiexec + post-checks; release-blocker on fail |
 | `!register / !unregister (FR #4008) <machine>` | +o/+h in #bobiverse | ChanServ REGISTER/UNREGISTER `#<machine>`; dry-run/confirm; core refuse; airc -> #wonderland |
 | `ping` / `ping <glob>` | anyone | bare word (no `!`), channel or PM -> `pong` |
-| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811 / #3893 / #4089:** after GIVEUP/NACK/DONE **ok only** (never DONE status=missing), chair may push next eligible job via `offer_focus_top` (`offered_via=giveup|done`, sticky offer_timeout_s); one open job per seat (no push while accepted/pending offer; seat-holds.json); log `done-offer` / `giveup-offer` / `done-offer skipped`; send nothing on the channel when empty (no `nothing queued`) |
+| `!bored`, `ACK`/`DONE`/`NACK`/`GIVEUP` | workers in `#<machine>` | shop wire, not PM commands: assign / claim / finish jobs. **FR #2811 / #3893 / #4089:** after GIVEUP/NACK/DONE **ok only** (never DONE status=missing), chair may push next eligible job via `offer_focus_top` (`offered_via=giveup|done`, sticky offer_timeout_s); one open job per seat (no push while accepted/pending offer; seat-holds.json; **FR #4260:** re-offer to another nick or DONE/NACK/GIVEUP by any seat clears all holds for that job key); log `done-offer` / `giveup-offer` / `done-offer skipped`; send nothing on the channel when empty (no `nothing queued`). **FR #4181:** after `GIVEUP … out-of-fuel`, mark `seat-out-of-fuel.json` and **skip** giveup-offer / refuse offers until a fresh `!bored` clears the mark; other GIVEUP reasons keep the FR #2811 giveup-offer path (product PR #4190) |
 
 ## Who counts as who (authorization)
 
@@ -69,6 +69,7 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 - Frozen chair `!status`: VERSION must resolve install-root / `JEEVES_INSTALL_ROOT` / `sys.executable` before `Path(__file__)` under `_MEIPASS`; uptime must use `Client` construct time (`_process_started`), not lazy first-command `_cc()` (FR #2728 / MRB #2733 / harvest-lesson #2734).
 
 - **!unregister (FR #4008 / #4040):** mirror of !register; gate is live +o/+h (operators.txt removed); dry-run/confirm; core channels refused; airc falls back to #wonderland; dry-run/confirm plan lists `*_console` nicks seen in `#<mid>` (or `none seen`).
+- **FR #4181 out-of-fuel giveup-offer:** after `GIVEUP … out-of-fuel`, chair marks `seat-out-of-fuel.json`, skips giveup-offer, and refuses offers until a fresh `!bored` clears the mark; other GIVEUP reasons keep FR #2811 giveup-offer (do not park this under `harvest/SKILL.md`).
 
 ## !build (FR #4006 / skill FR #4038)
 
