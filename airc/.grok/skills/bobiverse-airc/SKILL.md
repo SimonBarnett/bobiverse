@@ -61,6 +61,7 @@ Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick
 
 ## Install, upgrade, rollback, hotpatch
 
+**Antivirus exclusions (FR #4215):** before laying airc.exe, MSI schedules Defender RunAvExclude **Before=InstallFiles**; Install-Airc.ps1 / standalone Install-AircConsole.ps1 call Register-BobiverseAvExclusions.ps1 (Defender path/process + best-effort Avast/AVG FileShield registry). WARN-only on failure; manual Avast File/Folder exception for <ai root>\airc if still blocked. Ops: docs/airc-ops.md.
 **Ergo PASS in MSI (FR #4216):** airc release MSIs embed config\ergo.password (pack requires AIRC_PACK_ERGO_PASSWORD / packer connect.password). Install-Airc fails closed if missing after layout; ConsoleHome is seeded from the packaged file. bob/jeeves public MSIs still omit embed (issue #4).
 
 See `bobiverse-fleet-ops`. Airc specifics: after MSI ensure `config\ergo.password`; re-run `Install-Airc.cmd -MachineId <id>` if NSSM is stale.

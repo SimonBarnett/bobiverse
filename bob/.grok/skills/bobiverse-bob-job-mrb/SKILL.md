@@ -213,6 +213,7 @@ Checks:
 2. Inserted bullets did not splice into the middle of an existing bullet.
 3. No orphan lines that only make sense as the tail of a removed/split bullet.
 4. Prefer a regression test that asserts a distinctive phrase from the restored bullet remains contiguous.
+5. BEL / C0 control characters can corrupt product names in skill bullets (for example BEL + `"irc.exe"` makes `airc.exe` read as `irc.exe`). Hostile-pin the correct spelling (`airc.exe`) and reject the corrupted form (`irc.exe`) in the same AV / install window (FR #4215 / MRB #4220). Prefer ASCII wording; do not park this playbook under `harvest/SKILL.md` --- fold it here.
 
 ## Harvested MRB discipline (skill records #1223-#1457)
 

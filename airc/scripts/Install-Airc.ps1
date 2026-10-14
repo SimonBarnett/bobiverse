@@ -116,6 +116,20 @@ $script:AircInstallFailReported = $false
 $script:AircExitCode = 0
 try {
 
+# FR #4215: AV path/process exclusions BEFORE creating airc.exe / staging tree
+# (Defender + best-effort Avast/AVG). MSI also schedules a Defender CA before InstallFiles.
+$avEx = Join-Path $here 'Register-BobiverseAvExclusions.ps1'
+if (Test-Path -LiteralPath $avEx) {
+    $avPaths = @(
+        $InstallRoot,
+        (Join-Path $InstallRoot 'airc'),
+        (Split-Path -Parent $InstallRoot)
+    )
+    & $avEx -Paths $avPaths -Processes @('airc.exe') -Product airc
+} else {
+    Write-Warning 'FR #4215 Register-BobiverseAvExclusions.ps1 missing beside installer; continuing without AV exclusions'
+}
+
 # Stage into <ai root>\airc then call legacy Install-AircConsole with new names
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot 'scripts'), (Join-Path $InstallRoot 'config') | Out-Null
 # FR #3394 / FR #3678: lock install-root directory (not -Recurse) before copy so the

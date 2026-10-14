@@ -593,7 +593,13 @@ function Build-Msi([string]$Name, [string]$Stage) {
     $uninstallCaDecls = ''
     $uninstallCaSeq = ''
     if ($Name -eq 'airc') {
+        # FR #4215: Defender exclusions BEFORE InstallFiles so Avast/Defender cannot block laying airc.exe.
+        # Inline powershell (script not on disk yet). Return=ignore: AV CA must not fail the MSI.
+        # Full Avast/AVG registry pass still runs from Install-Airc.ps1 after files land.
         $uninstallCaDecls = @"
+    <!-- FR #4215: AV exclusions before InstallFiles (Defender path/process for airc.exe). -->
+    <CustomAction Id="SetAvExcludeCmd" Property="RunAvExclude" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;try { Add-MpPreference -ExclusionPath '[INSTALLDIR]' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionPath '[INSTALLDIR]airc' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'airc.exe' -ErrorAction SilentlyContinue } catch { }; Write-Host 'FR4215 MSI AvExclude done'" Execute="immediate" />
+    <CustomAction Id="RunAvExclude" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
     <!-- FR #1566: quiet uninstall stops/removes Airc; ConsoleHome secrets stay (fleet). -->
     <!-- FR #3292: AIRC_PURGE=1 or workstation manifest purge_default removes secrets/homes. -->
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
@@ -603,6 +609,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <CustomAction Id="StopAircBeforeUpgrade" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
 "@
         $uninstallCaSeq = @"
+      <Custom Action="SetAvExcludeCmd" Before="RunAvExclude">NOT REMOVE~="ALL"</Custom>
+      <Custom Action="RunAvExclude" Before="InstallFiles">NOT REMOVE~="ALL"</Custom>
       <Custom Action="SetUninstallCmd" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="SetStopAircUpgradeCmd" Before="StopAircBeforeUpgrade">WIX_UPGRADE_DETECTED</Custom>
