@@ -56,8 +56,8 @@ def test_fr1812_harvest_with_pr_url_links_no_issue():
     assert filer.prs == []
 
 
-def test_fr1812_harvest_pr_url_with_lessons_opens_lesson_pr():
-    """FR #2705: existing PR URL must not drop Lessons — open non-draft skill-book PR."""
+def test_fr1812_harvest_pr_url_with_lessons_links_existing_pr():
+    """FR #4288 / #1812: ExistingPrUrl wins — linked_existing_pr, no tip-loop lesson PR."""
     filer = intake.FakeGitHubFiler()
     filer.repo_files["common/.grok/skills/harvest/SKILL.md"] = "# Harvest\n"
     home = _home("_tmp_intake_fr1812_lesson")
@@ -76,11 +76,11 @@ def test_fr1812_harvest_pr_url_with_lessons_opens_lesson_pr():
         "contact_public": False,
     }
     rec = intake.file_submission(home, norm, filer, intake_id="in_fr1812lesson")
-    assert rec["state"] == "filed"
+    assert rec["state"] == "linked_existing_pr"
+    assert rec["number"] == 1794
+    assert "pull/1794" in rec["url"]
     assert filer.issues == []
-    assert filer.prs
-    assert filer.prs[-1].get("draft") is False
-    assert "harvest-lesson" in filer.prs[-1]["labels"]
+    assert filer.prs == []
 
 
 def test_fr1812_harvest_without_pr_queues_not_issue_fallback():
