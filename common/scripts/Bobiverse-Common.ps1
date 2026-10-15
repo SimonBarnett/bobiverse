@@ -1557,15 +1557,17 @@ function Get-BobiverseWorkTreeBehindCount {
     return -1
 }
 
-function Sync-BobiverseUpdaterFromOrigin {
-    # FR #2581: dirty install trees block ff-only, so robocopy composes a stale
-    # Update-BobiverseService.ps1 (pre-#2563 soft-fail). After fetch, overlay the
-    # origin/<Branch> tip blob into flat scripts\ and common\scripts\ so Apply
-    # soft-fail lands without waiting for a clean worktree.
+function Sync-BobiverseScriptTipFromOrigin {
+    # FR #2581 / FR #4297: dirty install trees block ff-only, so robocopy can
+    # compose a stale common/scripts blob. After fetch, overlay origin/<Branch>
+    # tip into flat scripts\ and common\scripts\ without waiting for a clean ff.
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$RelPath,
         [string]$Branch = 'main',
-        [string]$GitExe = ''
+        [string]$GitExe = '',
+        [string]$ContentMustMatch = '',
+        [int]$MinBytes = 40
     )
     $git = if ($GitExe) { $GitExe } else {
         $cmd = Get-Command git -ErrorAction SilentlyContinue
@@ -1575,8 +1577,13 @@ function Sync-BobiverseUpdaterFromOrigin {
     if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
         return [pscustomobject]@{ Ok = $false; Reason = 'install is not a git work tree' }
     }
-    $spec = "origin/${Branch}:common/scripts/Update-BobiverseService.ps1"
-    $tmp = Join-Path $env:TEMP ("bobiverse-upd-tip-" + [guid]::NewGuid().ToString('n') + '.ps1')
+    $rel = ($RelPath -replace '\\', '/').TrimStart('/')
+    if ($rel -notmatch '^common/scripts/[^/]+\.ps1$') {
+        return [pscustomobject]@{ Ok = $false; Reason = "RelPath must be common/scripts/*.ps1 (got $rel)" }
+    }
+    $leaf = Split-Path -Leaf $rel
+    $spec = "origin/${Branch}:${rel}"
+    $tmp = Join-Path $env:TEMP ("bobiverse-tip-" + [guid]::NewGuid().ToString('n') + '.ps1')
     try {
         $p = Start-Process -FilePath $git -ArgumentList @('-C', $InstallRoot, 'show', $spec) `
             -RedirectStandardOutput $tmp -RedirectStandardError ($tmp + '.err') `
@@ -1589,17 +1596,17 @@ function Sync-BobiverseUpdaterFromOrigin {
             return [pscustomobject]@{ Ok = $false; Reason = "git show $spec failed: $err" }
         }
         $bytes = [IO.File]::ReadAllBytes($tmp)
-        if ($bytes.Length -lt 40) {
+        if ($bytes.Length -lt $MinBytes) {
             return [pscustomobject]@{ Ok = $false; Reason = "tip blob too small ($($bytes.Length))" }
         }
         $text = [Text.Encoding]::UTF8.GetString($bytes)
-        if ($text -notmatch 'MaxAttempts|FR #2563|Update-Bobiverse|NoCount') {
+        if ($ContentMustMatch -and ($text -notmatch $ContentMustMatch)) {
             return [pscustomobject]@{ Ok = $false; Reason = 'tip blob unexpected content' }
         }
         $utf8 = New-Object Text.UTF8Encoding $false
         $targets = @(
-            (Join-Path $InstallRoot 'scripts\Update-BobiverseService.ps1'),
-            (Join-Path $InstallRoot 'common\scripts\Update-BobiverseService.ps1')
+            (Join-Path $InstallRoot ("scripts\$leaf")),
+            (Join-Path $InstallRoot ("common\scripts\$leaf"))
         )
         foreach ($t in $targets) {
             $dir = Split-Path -Parent $t
@@ -1616,6 +1623,58 @@ function Sync-BobiverseUpdaterFromOrigin {
     } finally {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath ($tmp + '.err') -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Sync-BobiverseUpdaterFromOrigin {
+    # FR #2581: dirty install trees block ff-only, so robocopy composes a stale
+    # Update-BobiverseService.ps1 (pre-#2563 soft-fail / MaxAttempts / NoCount).
+    # Overlay origin/<Branch>:common/scripts/Update-BobiverseService.ps1 tip into
+    # flat scripts\Update-BobiverseService.ps1 and common\scripts\Update-BobiverseService.ps1
+    # so Apply soft-fail lands without waiting for a clean worktree.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Branch = 'main',
+        [string]$GitExe = ''
+    )
+    return Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
+        -RelPath 'common/scripts/Update-BobiverseService.ps1' `
+        -ContentMustMatch 'MaxAttempts|FR #2563|Update-Bobiverse|NoCount'
+}
+
+function Sync-BobiverseHarvestScriptsFromOrigin {
+    # FR #4297: same dirty-ff class as FR #2581. Flat scripts\Invoke-BobiverseHarvest.ps1
+    # (and Report-BobiverseIntakeIssue.ps1) lag tip after merges like FR #4288 ExistingPrUrl
+    # when the install worktree cannot ff. Overlay origin tip into flat + common.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Branch = 'main',
+        [string]$GitExe = ''
+    )
+    $results = @()
+    $ok = $true
+    $reasons = @()
+    $bytes = 0
+    foreach ($pair in @(
+            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'ExistingPrUrl|FR #4288|Invoke-BobiverseHarvest' },
+            @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake' }
+        )) {
+        $r = Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
+            -RelPath $pair.Rel -ContentMustMatch $pair.Match
+        $results += $r
+        if (-not $r.Ok) {
+            $ok = $false
+            $reasons += $r.Reason
+        } else {
+            $bytes += [int]$r.Bytes
+            $reasons += $r.Reason
+        }
+    }
+    return [pscustomobject]@{
+        Ok      = $ok
+        Reason  = ($reasons -join '; ')
+        Bytes   = $bytes
+        Results = $results
     }
 }
 function Get-BobiverseInstallGitExcludeText {
