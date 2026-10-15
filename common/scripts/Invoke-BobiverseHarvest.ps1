@@ -384,6 +384,7 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
 # (class of tip #4206; flat/outdated compose missed FR #4176 process-loop cue).
 # FR #4231: also skip tip-loop meta / only-restate Thin FAIL-supersede already-on-main
 # closeouts for any -Book (class of a-search#1839 under Book=harvest-agent-skills).
+# FR #4308: also skip thinner tip + durable lesson already on main (a-search#1980/#2283).
 function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
@@ -425,11 +426,17 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)only\s+restate(?:s|ing)?\s+(?:Thin\s+)?FAIL') -or
         ($joined -match '(?i)restate(?:s|ing)?\s+Thin\s+FAIL[- ]supersede') -or
         ($joined -match '(?i)Thin\s+FAIL[- ]supersede[\s\S]{0,80}?already\s+on\s+main') -or
-        ($joined -match '(?i)already\s+on\s+main[\s\S]{0,80}?Thin\s+FAIL[- ]supersede')
+        ($joined -match '(?i)already\s+on\s+main[\s\S]{0,80}?Thin\s+FAIL[- ]supersede') -or
+        # FR #4308: a-search#1980/#2283 — "thinner ... tip" + durable lesson already on main
+        # (not contiguous "thin harvest tip"; no tip-loop meta / Thin FAIL order)
+        ($joined -match '(?i)thinner?\b[\s\S]{0,120}?(?:harvest\s+)?tip') -or
+        ($joined -match '(?i)FAIL[- ]supersede[d]?\b[\s\S]{0,220}?already\s+on\s+main') -or
+        ($joined -match '(?i)durable\s+lesson\s+already') -or
+        ($joined -match '(?i)closed\s+unmerged[\s\S]{0,100}?already\s+on\s+main')
     )
     if ($isFailSuper -and $isProcess) { return $true }
     if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
-    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827 / #3959 / #4231
+    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827 / #3959 / #4231 / #4308
     # FR #4176: CLOSED wrong-book / light-triage DONE PASS (FR #3317) process-loop
     # closeouts re-open lesson(harvest) tips without the FAIL-supersede token (class of #4175).
     $isClosedWrongBook = ($joined -match '(?i)CLOSED\s+wrong[- ]book')
@@ -443,7 +450,7 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#4176/#4207/#4231): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#4176/#4207/#4231/#4308): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 
