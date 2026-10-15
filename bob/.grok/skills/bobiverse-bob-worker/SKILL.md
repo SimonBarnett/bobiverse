@@ -227,3 +227,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - bob-worker: FR #4123 startup ready-cap without first turn_ended hang-recycles (never inject/!bored); grace mid-turn defers !bored until turn_ended
 - bob-worker: while out-of-fuel hold is active, ack-miss / HangDetector must not remind or respawn; Relay refuses assigns with `NACK … out-of-fuel` (no inject); hang-restart counter is monotonic per incident (FR #4180).
 - bob-worker: FR #4259 — ignore repeat DONE after turn_ended / already-fired !bored (do not re-arm harvest); on harvest expiry with no open turn flush held assigns before busy so `_held_assign` / `has_pending_work` cannot silence `!bored` forever (PR #4269)
+- bobiverse worker cap FR #4307: after FR #3181 IRC-marker-only counting, reconcile with live agent process roots (max/union); stale markers still drop; plan stays uncapped; tolerate tray.alive/engine.alive mtime clock skew
