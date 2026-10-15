@@ -2050,12 +2050,57 @@ class LiveStateTouched(RuntimeError):
 # token-less (#4183); only these named steps get the runner's GH_TOKEN back.
 GH_AUTH_STEPS = frozenset({"assert"})
 
+# FR #4349: airc pack (FR #4216) must embed Ergo PASS. Isolation blanks AGENTIC/BOB_IRC and
+# remaps USERPROFILE, so inject AIRC_PACK_ERGO_PASSWORD for pack only (never for suites).
+PACK_SECRET_STEPS = frozenset({"pack"})
+
 
 def gh_auth_env(source_env: dict | None = None) -> dict:
     """GH_TOKEN for a gh step, taken from the runner env (never logged). Empty dict if none."""
     src = os.environ if source_env is None else source_env
     tok = (src.get("GH_TOKEN") or src.get("GITHUB_TOKEN") or "").strip()
     return {"GH_TOKEN": tok, "GITHUB_TOKEN": tok} if tok else {}
+
+
+def pack_ergo_env(source_env: dict | None = None) -> dict:
+    """AIRC_PACK_ERGO_PASSWORD for the pack step from the live runner (never logged).
+
+    Reads real runner env / fleet install paths — not the isolated suite USERPROFILE (#4349).
+    """
+    src = os.environ if source_env is None else source_env
+    for key in (
+        "AIRC_PACK_ERGO_PASSWORD",
+        "AGENTIC_IRC_PASSWORD",
+        "AIRC_CONSOLE_SERVER_PASSWORD",
+        "BOB_IRC_PASSWORD",
+    ):
+        val = (src.get(key) or "").strip()
+        if val:
+            return {"AIRC_PACK_ERGO_PASSWORD": val}
+    cands: list[Path] = []
+    up = (src.get("USERPROFILE") or src.get("HOME") or "").strip()
+    if up:
+        cands.append(Path(up) / ".grok" / "ergo" / "connect.password")
+        cands.append(Path(up) / ".grok" / "ergo" / "ergo.password")
+    ai_roots: list[str] = []
+    bob_ai = (src.get("BOB_AI_ROOT") or os.environ.get("BOB_AI_ROOT") or "").strip()
+    if bob_ai:
+        ai_roots.append(bob_ai)
+    for root in (r"C:\ai", r"D:\ai"):
+        if root not in ai_roots:
+            ai_roots.append(root)
+    for root in ai_roots:
+        for prod in ("bob", "airc", "jeeves"):
+            cands.append(Path(root) / prod / "config" / "ergo.password")
+    for path in cands:
+        try:
+            if path.is_file():
+                body = path.read_text(encoding="utf-8").strip()
+                if body:
+                    return {"AIRC_PACK_ERGO_PASSWORD": body}
+        except OSError:
+            continue
+    return {}
 
 
 GH_AUTH_MISSING = (
@@ -2082,23 +2127,29 @@ def gh_auth_preflight(gh_runner: Callable | None = None, env: dict | None = None
 
 
 def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], inner: Callable | None = None,
-                        gh_steps: Iterable[str] = GH_AUTH_STEPS) -> Callable:
+                        gh_steps: Iterable[str] = GH_AUTH_STEPS,
+                        pack_secret_steps: Iterable[str] = PACK_SECRET_STEPS) -> Callable:
     """run_command_fn: isolated env for every step + fail closed if live chair state changes.
 
     Steps named in ``gh_steps`` get GH_TOKEN from the runner env (#4188); others stay blanked.
     Isolation home/URL keys always win over ``suite.env`` (FR #4315).
+    Pack steps then get AIRC_PACK_ERGO_PASSWORD from the live runner (FR #4349 / #4216).
     """
     inner = inner or run_command
     homes = [Path(h) for h in live_homes]
     gh_steps = frozenset(gh_steps)
+    pack_secret_steps = frozenset(pack_secret_steps)
 
     def _run(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
         iso = isolated_suite_env(work_dir, f"{name}-{ref_or_baseline}")
         merged = dict(env or {})
+        # Isolation wins over suite.env for homes/URLs (FR #4315); blanks GH/IRC secrets.
+        merged.update(iso)
+        # Re-inject after iso: assert needs GH (#4188); pack needs Ergo PASS for airc (#4349/#4216).
         if name in gh_steps:
             merged.update(gh_auth_env())
-        # Isolation last so suite.env cannot point BOB_DIGEST_HOME at the live chair.
-        merged.update(iso)
+        if name in pack_secret_steps:
+            merged.update(pack_ergo_env())
         before = live_state_fingerprint(homes)
         res = inner(cmd, cwd=cwd, env=merged, timeout=timeout, name=name, ref_or_baseline=ref_or_baseline)
         after = live_state_fingerprint(homes)
