@@ -454,6 +454,40 @@ if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Les
     return
 }
 
+
+# FR #4357: PASS of a harvest-lesson / docs/mrb tip already lands (or arms) the durable
+# lesson. Harvesting the MRB *process* playbook (merge origin/main, re-arm, DONE PASS)
+# opens another harvest-lesson tip and floods the a-search MRB queue. Skip client-side.
+# Distinct from FR #2970/#4231 (FAIL-supersede) and FR #4288 (ExistingPrUrl).
+function Test-HarvestLessonMrbPassLoop([string]$SummaryText, [string[]]$LessonLines) {
+    $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
+    $isLessonTip = (
+        ($joined -match '(?i)harvest[- ]lesson') -or
+        ($joined -match '(?i)docs/mrb') -or
+        ($joined -match '(?i)lesson\(harvest')
+    )
+    $isPass = (
+        ($joined -match '(?i)\bDONE\s+PASS\b') -or
+        ($joined -match '(?i)MRB\s+re-offer') -or
+        ($joined -match '(?i)\bre-offer\b.*\bPASS\b') -or
+        ($joined -match '(?i)\bPASS\b.*\bre-offer\b') -or
+        ($joined -match '(?i)light\s+triage[^\n]{0,80}\bPASS\b')
+    )
+    $isProcess = (
+        ($joined -match '(?i)merge\s+origin/main') -or
+        ($joined -match '(?i)re-arm') -or
+        ($joined -match '(?i)--auto\s+--squash') -or
+        ($joined -match '(?i)fr106/?108[^\n]{0,40}--ours') -or
+        ($joined -match '(?i)checkout\s+--ours') -or
+        ($joined -match '(?i)keep-both')
+    )
+    if ($isLessonTip -and $isPass -and $isProcess) { return $true }
+    return $false
+}
+if (Test-HarvestLessonMrbPassLoop -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest lesson-MRB PASS loop (FR #4357): not filing another harvest-lesson tip for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
 # FR #4288: when -ExistingPrUrl is set (or Summary/Lesson already cites a github.com/.../pull/N),
 # fail-closed - do not open a second lesson tip on the product (or fleet) repo. Durable work
 # lives on that PR (FR #1812 linked_existing_pr). Product -Repo -> harvest-agent-skills without
