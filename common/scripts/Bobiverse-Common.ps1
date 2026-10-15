@@ -2157,9 +2157,18 @@ function Ensure-BobiverseBobNickServPassword {
         $ih = Join-Path $InstallRoot 'home\nickserv.password'
         if ($ih -notin $cands) { [void]$cands.Add($ih) }
     }
+    # FR #4315: under !build suite isolation never fall back to the live
+    # C:\Users\Administrator\.bobiverse (would read/write the chair digest home).
+    $adminBobiverse = $null
+    $buildSuite = ($env:BOBIVERSE_BUILD_SUITE -as [string])
+    if (-not ($buildSuite -match '^(1|true|yes|on)$')) {
+        if ($env:SystemDrive) {
+            $adminBobiverse = Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse'
+        }
+    }
     foreach ($base in @(
             $(if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.bobiverse' } else { $null }),
-            $(if ($env:SystemDrive) { Join-Path $env:SystemDrive 'Users\Administrator\.bobiverse' } else { $null })
+            $adminBobiverse
         )) {
         if ($base) {
             $p = Join-Path $base 'nickserv.password'

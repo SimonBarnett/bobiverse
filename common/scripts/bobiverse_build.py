@@ -2012,16 +2012,19 @@ def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], 
     """run_command_fn: isolated env for every step + fail closed if live chair state changes.
 
     Steps named in ``gh_steps`` get GH_TOKEN from the runner env (#4188); others stay blanked.
+    Isolation home/URL keys always win over ``suite.env`` (FR #4315).
     """
     inner = inner or run_command
     homes = [Path(h) for h in live_homes]
     gh_steps = frozenset(gh_steps)
 
     def _run(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
-        merged = isolated_suite_env(work_dir, f"{name}-{ref_or_baseline}")
+        iso = isolated_suite_env(work_dir, f"{name}-{ref_or_baseline}")
+        merged = dict(env or {})
         if name in gh_steps:
             merged.update(gh_auth_env())
-        merged.update(env or {})
+        # Isolation last so suite.env cannot point BOB_DIGEST_HOME at the live chair.
+        merged.update(iso)
         before = live_state_fingerprint(homes)
         res = inner(cmd, cwd=cwd, env=merged, timeout=timeout, name=name, ref_or_baseline=ref_or_baseline)
         after = live_state_fingerprint(homes)

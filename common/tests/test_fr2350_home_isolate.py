@@ -50,6 +50,9 @@ def test_ensure_homes_scratch_digest_isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(bob_home, "_profile", lambda: profile)
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: profile)
     monkeypatch.delenv("BOB_MIGRATE_LEGACY", raising=False)
+    # FR #4315: !build isolation sets BOB_HOME_NO_MIGRATE=1; clear so we assert
+    # skipped-noncanonical (basename gate) rather than skipped-opt-out.
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
 
     scratch = tmp_path / "run" / "ear-home"
     logs: list[str] = []
@@ -81,6 +84,8 @@ def test_install_basename_home_still_migrates(tmp_path, monkeypatch):
     _seed_legacy(profile)
     monkeypatch.setattr(bob_home, "_profile", lambda: profile)
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: profile)
+    # FR #4315: clear !build BOB_HOME_NO_MIGRATE so canonical basename migrate runs.
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
 
     new = tmp_path / "ai" / "bob" / "home"
     res = bob_home.migrate_legacy(new, role="digest")
@@ -95,6 +100,8 @@ def test_opt_in_migrate_legacy_env_allows_scratch(tmp_path, monkeypatch):
     monkeypatch.setattr(bob_home, "_profile", lambda: profile)
     monkeypatch.setattr(bob_home, "_admin_profile", lambda: profile)
     monkeypatch.setenv("BOB_MIGRATE_LEGACY", "1")
+    # FR #4315: NO_MIGRATE wins over MIGRATE_LEGACY; clear the !build isolation flag.
+    monkeypatch.delenv("BOB_HOME_NO_MIGRATE", raising=False)
 
     scratch = tmp_path / "custom-scratch-home"
     res = bob_home.migrate_legacy(scratch, role="digest")
