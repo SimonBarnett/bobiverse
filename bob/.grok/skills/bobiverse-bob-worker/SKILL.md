@@ -140,7 +140,7 @@ per-user run copy, so replacing the installed exe never kills or locks a seat; a
 
 ## Hard cap: IRC-joined agent seats only (FR #3181 / #2522 / #2667)
 
-The hard max of **2** applies only to **agent** seats that have joined `#<machine>` on IRC. Plan, maintenance, monitor, and seats still at the key dialog (or still connecting) never count and are never refused. Shared registry: `%LOCALAPPDATA%\Bobiverse\worker\run\seats\<nick>.irc.json` (written after JOIN, cleared on PART/QUIT/irc-lost/exit). Readers: `common/scripts/worker_irc_seats.py`, tray `Measure-BobTrayIrcAgentSeats` / `CountIrcAgentSeats`, `startworker.decide`, `bob_worker.worker_cap_refusal`. Missing/unreadable `--mode` is **unknown**, never agent. Enforcement needs rebuilt `bob-worker.exe` + `bob-tray.exe` (not a safe live hotpatch).
+The hard max of **2** applies only to **agent** seats. Cap count is the **union** of (a) IRC-joined agent markers in `%LOCALAPPDATA%\Bobiverse\worker\run\seats\<nick>.irc.json` whose pid is still alive and (b) live agent `bob-worker` process roots (FR #3181 / FR #4307 / MRB #4311). Plan, maintenance, monitor, and seats still at the key dialog (or still connecting) never count and are never refused. Markers alone undercount after tray restart when `run\seats` is empty; process roots alone miss an IRC-marked seat whose cmdline is unknown — use pid **union**, never `Math.Max` of the two counts. Readers: `worker_irc_seats.count_cap_agent_seats`, tray `Get-BobTrayWorkerCapRefusal` / `BobTray.Seats`, `startworker.decide`, `bob_worker.worker_cap_refusal`. Missing/unreadable `--mode` is **unknown**, never agent. Enforcement needs rebuilt `bob-worker.exe` + `bob-tray.exe` (not a safe live hotpatch).
 
 ## Hard cap recycle / seat roots (FR #2556 / t815u)
 

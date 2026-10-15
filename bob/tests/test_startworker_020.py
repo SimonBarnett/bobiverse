@@ -421,8 +421,10 @@ Remove-Job $sub -Force -ErrorAction SilentlyContinue
 
 
 @WIN
-def test_tray_cap_refuses_a_third_irc_joined_agent_and_ignores_process_only_roots(tmp_path):
-    # FR #3181: CapRefusal counts IRC seat markers; process roots without cmdline are unknown (0).
+def test_tray_cap_refuses_when_irc_or_live_agent_roots_hit_two(tmp_path):
+    # FR #3181 / FR #4307 / MRB #4311: CapRefusal = union of IRC marker pids and live agent roots
+    # (not Math.Max). Unknown cmdline still not agent; two agent procs refuse even with empty seats.
+    # Disjoint: one IRC-marked live pid with unknown cmdline + one --mode agent root => refuse.
     import os as _os
     seats = tmp_path / "Bobiverse" / "worker" / "run" / "seats"
     seats.mkdir(parents=True)
@@ -435,6 +437,7 @@ def test_tray_cap_refuses_a_third_irc_joined_agent_and_ignores_process_only_root
     out = _ps(tmp_path, r'''
 . "%s"
 $env:LOCALAPPDATA = "%s"
+$livePid = %d
 function P($id, $pp, $n, $cl) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $pp; Name = $n; CommandLine = $cl } }
 $one = @((P 10 1 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'), (P 11 10 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'), (P 50 1 'grok.exe' ''))
 $two = $one + @((P 20 1 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'), (P 21 20 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'))
@@ -443,13 +446,22 @@ $bare = @((P 10 1 'bob-worker.exe' ''), (P 20 1 'bob-worker.exe' ''))
 "SEATS=" + (Measure-BobTrayWorkerSeats -Procs @()) + "," + (Measure-BobTrayWorkerSeats -Procs $one) + "," + (Measure-BobTrayWorkerSeats -Procs $two) + "," + (Measure-BobTrayWorkerSeats -Procs $three)
 "BARE=" + (Measure-BobTrayWorkerSeats -Procs $bare)
 "IRC=" + (Measure-BobTrayIrcAgentSeats)
-"CAP=[" + (Get-BobTrayWorkerCapRefusal) + "]"
-"EMPTY_SEATS=[" + (Get-BobTrayWorkerCapRefusal) + "]"
-''' % (TRAY_TOOLS / "BobTrayStartWorker.ps1", tmp_path))
+# Two marker files share one live pid => unique union count is 1; bare procs add no agent roots.
+"CAP_IRC_DUP_PID=[" + (Get-BobTrayWorkerCapRefusal -Procs $bare) + "]"
+# Disjoint: marker for $livePid (unknown cmdline) + distinct --mode agent root 202.
+$disjoint = @((P $livePid 1 'bob-worker.exe' ''), (P 202 1 'bob-worker-bbb.exe' 'bob-worker.exe --mode agent'), (P 203 202 'bob-worker-bbb.exe' 'bob-worker.exe --mode agent'))
+"CAP_DISJOINT=[" + (Get-BobTrayWorkerCapRefusal -Procs $disjoint) + "]"
+$la2 = Join-Path $env:TEMP ('bob-cap-' + [guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Force -Path (Join-Path $la2 'Bobiverse\worker\run\seats') | Out-Null
+$env:LOCALAPPDATA = $la2
+"CAP_PROCS=[" + (Get-BobTrayWorkerCapRefusal -Procs $two) + "]"
+''' % (TRAY_TOOLS / "BobTrayStartWorker.ps1", tmp_path, pid))
     assert "SEATS=0,1,2,3" in out, out
     assert "BARE=0" in out, out  # no CommandLine => unknown, not agent
     assert "IRC=2" in out, out
-    assert "CAP=[Max 2 workers (2 IRC-joined agent seats). Close a worker window first.]" in out, out
+    assert "CAP_IRC_DUP_PID=[]" in out, out  # unique pid union, not file-count Max
+    assert "CAP_DISJOINT=[Max 2 workers (2 agent seats). Close a worker window first.]" in out, out
+    assert "CAP_PROCS=[Max 2 workers (2 agent seats). Close a worker window first.]" in out, out
 
 
 def test_tray_launch_checks_the_cap_first_with_a_short_message_and_the_remote_path_stays_quiet():

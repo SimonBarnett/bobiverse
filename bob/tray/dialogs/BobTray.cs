@@ -83,21 +83,24 @@ namespace BobDialogs
             return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "unknown";
         }
 
-        // FR #3181: hard cap counts IRC-joined agent seats only.
+        // FR #3181 / FR #4307: hard cap = IRC agent markers ∪ live agent bob-worker roots.
         public static int Seats()
         {
-            return CountIrcAgentSeats();
+            HashSet<int> pids = new HashSet<int>();
+            foreach (int pid in IrcAgentSeatPids()) pids.Add(pid);
+            foreach (int pid in LiveAgentRootPids()) pids.Add(pid);
+            return pids.Count;
         }
 
-        static int CountIrcAgentSeats()
+        static IEnumerable<int> IrcAgentSeatPids()
         {
+            List<int> list = new List<int>();
             try
             {
                 string dir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "Bobiverse", "worker", "run", "seats");
-                if (!Directory.Exists(dir)) return 0;
-                int n = 0;
+                if (!Directory.Exists(dir)) return list;
                 foreach (string f in Directory.GetFiles(dir, "*.irc.json"))
                 {
                     try
@@ -110,14 +113,48 @@ namespace BobDialogs
                         Match m = Regex.Match(text, "\"pid\"\\s*:\\s*(\\d+)");
                         if (m.Success) int.TryParse(m.Groups[1].Value, out pid);
                         if (pid <= 0) { try { File.Delete(f); } catch { } continue; }
-                        try { Process.GetProcessById(pid); n++; }
+                        try { Process.GetProcessById(pid); list.Add(pid); }
                         catch { try { File.Delete(f); } catch { } }
                     }
                     catch { }
                 }
-                return n;
             }
-            catch { return 0; }
+            catch { }
+            return list;
+        }
+
+        static IEnumerable<int> LiveAgentRootPids()
+        {
+            List<int> ids = new List<int>();
+            List<int> parents = new List<int>();
+            List<string> seatModes = new List<string>();
+            try
+            {
+                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
+                    "SELECT ProcessId, ParentProcessId, Name, CommandLine FROM Win32_Process WHERE Name LIKE 'bob-worker%'"))
+                {
+                    foreach (ManagementObject mo in q.Get())
+                    {
+                        try
+                        {
+                            string name = Convert.ToString(mo["Name"] ?? "");
+                            string baseName = Path.GetFileNameWithoutExtension(name);
+                            if (!SeatName.IsMatch(baseName)) continue;
+                            ids.Add(Convert.ToInt32(mo["ProcessId"]));
+                            parents.Add(Convert.ToInt32(mo["ParentProcessId"]));
+                            seatModes.Add(ModeFromCommandLine(Convert.ToString(mo["CommandLine"] ?? "")));
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { yield break; }
+            for (int i = 0; i < ids.Count; i++)
+            {
+                if (ids.Contains(parents[i])) continue;
+                if (string.Equals(seatModes[i], "agent", StringComparison.OrdinalIgnoreCase))
+                    yield return ids[i];
+            }
         }
 
         public static int SeatsForModes(params string[] modes)
@@ -181,7 +218,7 @@ namespace BobDialogs
             if (!string.Equals(mode ?? "agent", "agent", StringComparison.OrdinalIgnoreCase))
                 return "";
             int n = Seats();
-            return n >= MaxWorkers ? "Max " + MaxWorkers + " workers (" + n + " IRC-joined agent seats). Close a worker window first." : "";
+            return n >= MaxWorkers ? "Max " + MaxWorkers + " workers (" + n + " agent seats). Close a worker window first." : "";
         }
 
         // FR #1643: true when another process still has the hashed bob-worker-*.exe open (seat holds the run copy).

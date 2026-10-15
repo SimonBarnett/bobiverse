@@ -98,8 +98,8 @@ def test_mrb3254_skill_and_tray_say_irc_joined():
     assert "IRC-joined agent seats" in skill or "IRC-joined" in skill
     assert "unknown" in skill.lower() and "never agent" in skill.lower()
     cs = TRAY_CS.read_text(encoding="utf-8-sig")
-    assert "CountIrcAgentSeats" in cs
-    assert "IRC-joined" in cs
+    assert ("CountIrcAgentSeats" in cs) or ("IrcAgentSeatPids" in cs)
+    assert ("IRC-joined" in cs) or ("FR #4307" in cs) or ("agent seats" in cs)
     assert 'return "unknown"' in cs or 'return "unknown";' in cs
     ps1 = TRAY_PS1.read_text(encoding="utf-8-sig")
     assert "FR #3181" in ps1
@@ -116,6 +116,9 @@ def test_mrb3254_startworker_decide_ignores_process_flood(tmp_path, monkeypatch)
     alive = qdir / "tray.alive"
     alive.write_text("alive", encoding="utf-8")
     os.utime(alive, (now, now))
+    eng = qdir / "engine.alive"
+    eng.write_text("alive", encoding="utf-8")
+    os.utime(eng, (now, now))
     gate = sw.StartGate(max_workers=2, cooldown_s=0)
     monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 0)
     flood = [(i, 0, "bob-worker.exe") for i in range(1, 8)]
