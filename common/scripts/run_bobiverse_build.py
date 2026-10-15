@@ -151,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
                     pass
             return 4
     rc = 1
+    filer = None
     try:
         work = Path(args.work_dir) if args.work_dir else Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-work" / version
         log_dir = work / "logs"
@@ -177,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
             subprocess.run(
                 ["gh", "label", "create", bb.RELEASE_BLOCKER_LABEL, "--repo", repo,
                  "--color", "B60205", "--description", "Auto-filed by !build (FR #4006)", "--force"],
+                capture_output=True, text=True, check=False,
+            )
+            # FR #4316: guard/runner abort blockers carry machine:any.
+            subprocess.run(
+                ["gh", "label", "create", bb.MACHINE_ANY_LABEL, "--repo", repo,
+                 "--color", "cccccc", "--description", "Jeeves: no machine pin (require_machine=any)", "--force"],
                 capture_output=True, text=True, check=False,
             )
             release_fn = bb.make_github_prerelease_fn(
@@ -256,8 +263,30 @@ def main(argv: list[str] | None = None) -> int:
                 pass
         rc = 0 if report.ok else 1
     except Exception as exc:
+        # FR #4316: outer abort (e.g. LiveStateTouched escaping BuildRunner) must still
+        # auto-file a release-blocker; suite-regression path alone left these untracked.
         result.setdefault("errors", []).append(f"{type(exc).__name__}: {exc}")
-        result["announce"] = [f"BUILD fail {repo} version={version}: {type(exc).__name__}: {str(exc)[:200]}"]
+        announce = f"BUILD fail {repo} version={version}: {type(exc).__name__}: {str(exc)[:200]}"
+        if filer is not None:
+            try:
+                filed = bb.file_runner_abort_blocker(
+                    filer,
+                    repo=repo,
+                    version=version,
+                    ref=ref,
+                    exc=exc,
+                    suite_name="",
+                )
+                result.setdefault("blockers", []).append(filed)
+                url = str(filed.get("url") or "").strip()
+                if url:
+                    announce = f"{announce} blocker={url}"
+                    print(f"build: filed release-blocker {url}", flush=True)
+            except Exception as file_exc:
+                result.setdefault("errors", []).append(
+                    f"blocker_file_failed: {type(file_exc).__name__}: {file_exc}"
+                )
+        result["announce"] = [announce]
         rc = 1
     finally:
         if args.lock_file:
