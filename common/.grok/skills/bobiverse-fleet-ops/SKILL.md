@@ -145,6 +145,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | Quiet MSI **1603** / CAQuietExec64 `0x80070057` invalid command line (FR #3741) | FR #3685 `SetInstallCmd` started with unquoted `cmd.exe /d /c call`; WiX QuietExec requires a quoted first executable token | Pack `Value="&quot;[System64Folder]cmd.exe&quot; /d /c call &quot;[INSTALLDIR]scripts\...&quot;..."`; keep `/d /c call` exit propagation. Re-Pack before shipping. |
 | UI MSI **1603** / ircBob left **Stopped** / seats gone after failed upgrade (FR #2564) | UI msiexec without `/l*v`; RunInstall removed the service then failed; no rollback start | Always `msiexec /i ... /l*v "%ProgramData%\Bobiverse\logs\msi-<product>-....log"`; read `install-*.log` / `recover-*.log` under the same folder; prefer self-update (`Restart-Service`) over parallel UI msiexec while Apply holds the mutex. Pack schedules RollbackRecover -> `Recover-BobiverseService`; Install scripts assert MSI ProductVersion vs VERSION and best-effort Start-Service on catch |
 | Self-update Apply aborts at **robocopy >=8** / tag **blocked-loop-guard** / service left Stopped (FR #2563) | Backup threw on locked `.pytest_cache` / `peers.json`; MaxAttempts burned; no operator escape | Backup excludes volatile paths, retries once, logs failing paths; backup-only fails -> `backup-failed` **without** MaxAttempts burn + `Ensure-ServiceRunning`; `-ForceCheck` clears the tag (PR #2565). Prefer Restart-Service Apply over parallel UI msiexec |
+| `gh` / git / harvest: **remote name could not be resolved** for `github.com` / `api.github.com` / `irc.ntsa.uk` (FR #4345) | Default NIC DNS (e.g. LAN-only `192.168.x.x`) fails while public resolvers still answer; temporary `hosts` pins paper over it | `common\scripts\Assert-BobiverseDns.ps1` (probe + JSON). Elevated Admin shell: `-RepairDnsServers` appends `8.8.8.8`/`1.1.1.1` after the existing first hop (`needsElevation=true` at Medium IL); then `-ClearStaleHostsPins`. Prefer reliable resolvers fleet-wide; avoid permanent hosts pins |
 
 ## Harvested fleet-operation rules (skill records #1215-#1460)
 
@@ -159,6 +160,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 - Quiet MSI bootstrap under SYSTEM: do not rely on per-user WindowsApps winget; prefer pinned nodejs.org MSI for Node and soft-fail git/python/node so install does not 1603 (FR #1825 / harvest #2020 / PR #2019).
 - UI MSI upgrades (FR #2564): require `/l*v` under `%ProgramData%\Bobiverse\logs`; never leave ircBob/Airc Stopped after a failed RunInstall — rollback recover + Install catch Start-Service; assert InstallRoot VERSION matches MSI ProductVersion.
 - Self-update backup (FR #2563): robocopy >=8 soft-fails without MaxAttempts burn; Ensure-ServiceRunning; -ForceCheck clears blocked-loop-guard (PR #2565).
+- DNS (FR #4345): when default resolve fails for github.com / irc.ntsa.uk but 8.8.8.8 answers, run `Assert-BobiverseDns.ps1 -RepairDnsServers` then `-ClearStaleHostsPins`; do not leave permanent hosts pins.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
