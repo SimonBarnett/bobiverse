@@ -175,7 +175,8 @@ if ($MachineId) {
 }
 $script:AircConsoleMachineId = $MachineId
 if ($MachineId) {
-    Write-Host "INFO MachineId=$MachineId (console will JOIN #$MachineId)"
+    # FR #3834 / 1.0.0: never claim unconditional JOIN #<machine> (msi-install.log on walrus).
+    Write-Host ("INFO MachineId={0} (console joins #{0} when ChanServ-registered, else #wonderland)" -f $MachineId)
 } else {
     Write-Warning ("FR #4014: Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console will use #{0} when registered, else #wonderland." -f $env:COMPUTERNAME)
 }
@@ -527,7 +528,8 @@ if ($useAircExe) {
     if ($inst.ExitCode -ne 0) {
         throw ("nssm install failed: {0} ({1})" -f $inst.ExitCode, ($inst.Output -join ' '))
     }
-    $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl"
+    # FR #3834: bake shop-mode=auto so upgrades never inherit a forced registered JOIN.
+    $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl --shop-mode auto"
     if ($MachineId) { $appParams += " --machine `"$MachineId`"" }
     # FR #3639: always irc_ops; never --operators-file.
     $appParams += " --auth-mode $AuthMode"
@@ -581,6 +583,7 @@ if ($useAircExe) {
     $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" -ServiceMode -ConsoleHome `"$ConsoleHome`""
     $appParams += " -Python `"$Python`""
     $appParams += " -PasswordFile `"$PasswordFile`""
+    $appParams += " -ShopMode auto"
     if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
     # FR #3639: always irc_ops; never -OperatorsFile.
     $appParams += " -AuthMode $AuthMode"
