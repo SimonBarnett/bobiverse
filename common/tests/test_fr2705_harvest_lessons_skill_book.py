@@ -137,8 +137,8 @@ def test_fr2705_pure_receipt_without_lessons_stays_receipt_recorded(tmp_path: Pa
     assert filer.issues == []
 
 
-def test_fr2705_existing_pr_url_with_lessons_still_opens_lesson_pr(tmp_path: Path):
-    """linked_existing_pr must not drop Lessons (FR #1812 + #2705)."""
+def test_fr2705_existing_pr_url_with_lessons_links_existing_pr(tmp_path: Path):
+    """FR #4288: ExistingPrUrl + Lessons links the product/covering PR (no tip-loop)."""
     filer = intake.FakeGitHubFiler()
     filer.repo_files[HARVEST_SKILL] = "# Harvest\n"
     err, norm = intake.validate_payload(
@@ -155,12 +155,11 @@ def test_fr2705_existing_pr_url_with_lessons_still_opens_lesson_pr(tmp_path: Pat
     )
     assert err is None
     rec = intake.file_submission(tmp_path, norm, filer, intake_id="in_link2705")
-    assert rec["state"] == "filed"
-    assert filer.prs
-    pr = filer.prs[-1]
-    assert pr.get("draft") is False
-    assert "harvest-lesson" in pr["labels"]
-    assert HARVEST_SKILL in [f.get("path") for f in pr["files"]]
+    assert rec["state"] == "linked_existing_pr"
+    assert rec["number"] == 2708
+    assert "pull/2708" in rec["url"]
+    assert filer.prs == []
+    assert filer.issues == []
 
 
 def test_fr2705_gitclaim_offers_harvest_lesson_not_receipt():

@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
-  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. No password or token is needed.
+  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
 
@@ -444,6 +444,31 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
     Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#4176/#4207/#4231): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
+
+# FR #4288: when -ExistingPrUrl is set (or Summary/Lesson already cites a github.com/.../pull/N),
+# fail-closed - do not open a second lesson tip on the product (or fleet) repo. Durable work
+# lives on that PR (FR #1812 linked_existing_pr). Product -Repo -> harvest-agent-skills without
+# an ExistingPrUrl remains intentional (FR #3189); do not redirect those lessons to bobiverse.
+function Test-HarvestExistingPrUrlSkip([string]$ExistingUrl, [string]$SummaryText, [string[]]$LessonLines) {
+    $eu = ([string]$ExistingUrl).Trim()
+    if ($eu -and ($eu -match '(?i)https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+')) {
+        return $true
+    }
+    $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
+    if ($joined -match '(?i)https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+') {
+        return $true
+    }
+    return $false
+}
+if (Test-HarvestExistingPrUrlSkip -ExistingUrl $ExistingPrUrl -SummaryText $Summary -LessonLines $Lesson) {
+    $cite = ([string]$ExistingPrUrl).Trim()
+    if (-not $cite) {
+        $m = [regex]::Match((@($Summary) + @($Lesson)) -join "`n", '(?i)https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+')
+        if ($m.Success) { $cite = $m.Value }
+    }
+    Write-Host ("SKIPPED harvest ExistingPrUrl tip-loop (FR #4288 / #1812): linked {0}; not filing a second lesson tip for: {1}" -f $cite, $Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))
     return
 }
 
