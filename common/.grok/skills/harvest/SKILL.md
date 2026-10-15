@@ -241,6 +241,7 @@ routes to bobiverse via the split rule.
 - Harvest session summaries / intake PR bodies must never contain the GitHub keyword Closes #N (or Fixes #N) for product FRs --- narrative mentions of stripping accidental Closes still auto-link; write `Closes` as `Close`+`s` split, or say `closing-keyword`, or cite `#N` without Closes/Fixes (MRB #4099)
 - Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
 - needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
+- FR #4357: PASS of harvest-lesson/docs/mrb with process cues (merge origin/main, re-arm, keep-both) skips new tip; three-gate AND; arm product + docs/mrb --auto --squash; use -ExistingPrUrl on harvest after MRB
 
 ## Harvest digest (lessons audit 2026-10-06)
 
