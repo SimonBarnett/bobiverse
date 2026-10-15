@@ -172,18 +172,31 @@ class AircConsoleService:
         )
         # FR #3763: marker that NickServ account exists for this home (after 903 / REGISTER).
         self._nickserv_ok_path = self.home / "console.nickserv-ok"
-        # FR #3863: only a GUID minted *this* process skips SASL. A reused
-        # console.password (upgrade from builds that never wrote nickserv-ok)
-        # must try SASL or the reserved nick 433-loops forever.
+        # FR #3900 / 1.0.0: Install-AircConsole writes console.password-minted when it
+        # mints a GUID. That file must count as minted (skip SASL) even though the
+        # password file already existed when this process started — otherwise FR #3863
+        # treats the install mint as reuse, SASL 904s against the old NickServ GUID,
+        # and the reserved nick 433-loops (walrus 1.0.0 release-blocker).
+        self._nickserv_mint_marker = self.home / "console.password-minted"
+        # FR #3863: only a GUID minted *this* process (or install-mint marker) skips
+        # SASL. A reused console.password (upgrade from builds that never wrote
+        # nickserv-ok) must try SASL or the reserved nick 433-loops forever.
         pw_existed = False
+        install_minted = False
         try:
             pw_existed = nickserv_path.is_file() and bool(
                 nickserv_path.read_text(encoding="utf-8").strip()
             )
         except OSError:
             pw_existed = False
+        try:
+            install_minted = self._nickserv_mint_marker.is_file()
+        except OSError:
+            install_minted = False
         self.nickserv_password = ensure_nickserv_password(nickserv_path, mint=True)
-        self._nickserv_pw_minted = bool(self.nickserv_password) and not pw_existed
+        self._nickserv_pw_minted = bool(self.nickserv_password) and (
+            (not pw_existed) or install_minted
+        )
         self.password = self.nickserv_password  # SASL / identify use NickServ secret
         self.server_password = resolve_server_password(
             home=self.home,
@@ -563,13 +576,38 @@ class AircConsoleService:
                 self._nickserv_ok_path.write_text(f"{reason}\n", encoding="ascii")
         except OSError as e:
             info(f"INFO FR #3763 nickserv-ok write failed: {e}")
+        # FR #3900 / 1.0.0: account now matches console.password — drop install mint marker.
+        try:
+            marker = getattr(self, "_nickserv_mint_marker", None) or (
+                Path(self.home) / "console.password-minted"
+            )
+            if marker.is_file():
+                marker.unlink()
+        except OSError:
+            pass
 
     def _legacy_console_password_paths(self) -> list[Path]:
-        """FR #3900: candidate console.password files from pre-Airc / profile homes."""
+        """FR #3900: candidate console.password files from prior identity / profile homes."""
         home = Path(self.home)
         drive = Path(home.anchor) if home.anchor else Path("C:/")
         userprofile = Path(os.environ.get("USERPROFILE") or "")
         out: list[Path] = []
+        # Authoritative: airc-install.json beside <install>/home → <install>/config.
+        if home.name.lower() == "home":
+            snap = home.parent / "config" / "airc-install.json"
+            try:
+                if snap.is_file():
+                    import json
+
+                    data = json.loads(snap.read_text(encoding="utf-8"))
+                    pf = (data.get("PasswordFile") or "").strip()
+                    ch = (data.get("ConsoleHome") or "").strip()
+                    if pf:
+                        out.append(Path(pf))
+                    if ch:
+                        out.append(Path(ch) / "console.password")
+            except (OSError, ValueError, TypeError):
+                pass
         for base in (
             userprofile / ".airc",
             userprofile / ".airc-console",
