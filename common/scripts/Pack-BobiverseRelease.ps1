@@ -208,6 +208,8 @@ function Stage-Product([string]$Name) {
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
     # Issue #4: bob/jeeves public packs skip Ergo PASS unless -EmbedErgoPassword.
     # FR #4216: airc MSI MUST ship config\ergo.password so install connects on first start.
+    # FR #4349: !build pack uses isolated USERPROFILE and blanks AGENTIC/BOB_IRC; also search
+    # live fleet installs via Get-BobiverseAiRoot and BOB_IRC_PASSWORD / AIRC_PACK inject.
     $stageErgo = Join-Path $stage 'config\ergo.password'
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'config') | Out-Null
     $wantEmbedErgo = $EmbedErgoPassword -or ($Name -eq 'airc')
@@ -215,7 +217,7 @@ function Stage-Product([string]$Name) {
         $ergoSecret = $null
         $ergoSource = $null
         if ($Name -eq 'airc') {
-            foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD')) {
+            foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD', 'BOB_IRC_PASSWORD')) {
                 $v = [Environment]::GetEnvironmentVariable($key)
                 if ($v -and $v.Trim()) {
                     $ergoSecret = $v.Trim()
@@ -225,11 +227,20 @@ function Stage-Product([string]$Name) {
             }
         }
         if (-not $ergoSecret) {
-            foreach ($c in @(
-                    (Join-Path $RepoRoot 'config\ergo.password'),
-                    (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
-                )) {
-                if (Test-Path -LiteralPath $c) {
+            $aiRoot = $null
+            try { $aiRoot = Get-BobiverseAiRoot } catch { $aiRoot = $null }
+            $cand = @(
+                (Join-Path $RepoRoot 'config\ergo.password'),
+                (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'),
+                (Join-Path $env:USERPROFILE '.grok\ergo\ergo.password')
+            )
+            if ($aiRoot) {
+                foreach ($prod in @('bob', 'airc', 'jeeves')) {
+                    $cand += (Join-Path $aiRoot "$prod\config\ergo.password")
+                }
+            }
+            foreach ($c in $cand) {
+                if ($c -and (Test-Path -LiteralPath $c)) {
                     $raw = (Get-Content -LiteralPath $c -Raw -ErrorAction SilentlyContinue)
                     if ($raw -and $raw.Trim()) {
                         $ergoSecret = $raw.Trim()
@@ -247,7 +258,7 @@ function Stage-Product([string]$Name) {
         }
         if (-not $ergoSecret) {
             if ($Name -eq 'airc') {
-                throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password / repo config\ergo.password'
+                throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216/#4349): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD / BOB_IRC_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password, repo config\ergo.password, or <ai root>\bob|airc|jeeves\config\ergo.password'
             }
             throw '-EmbedErgoPassword set but no config/ergo.password or ~/.grok/ergo/connect.password found'
         }
