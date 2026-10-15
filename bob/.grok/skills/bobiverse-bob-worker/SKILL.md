@@ -228,3 +228,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - bob-worker: while out-of-fuel hold is active, ack-miss / HangDetector must not remind or respawn; Relay refuses assigns with `NACK … out-of-fuel` (no inject); hang-restart counter is monotonic per incident (FR #4180).
 - bob-worker: FR #4259 — ignore repeat DONE after turn_ended / already-fired !bored (do not re-arm harvest); on harvest expiry with no open turn flush held assigns before busy so `_held_assign` / `has_pending_work` cannot silence `!bored` forever (PR #4269)
 - Outbox append under bob-worker drain: use Add-BobiverseOutboxLine.ps1 (FileShare.ReadWrite + retry) or FileStream fallback; bare Add-Content hits Stream was not readable when drain os.replace races (FR #4363).
+- Harvest-lesson twin: when a later CONFLICTING tip restates a bobiverse-bob-worker lesson already merged (e.g. #4365 outbox helper), CLOSE unmerged citing the durable PR; DONE PASS.
