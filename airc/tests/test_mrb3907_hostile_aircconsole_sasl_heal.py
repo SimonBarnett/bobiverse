@@ -31,11 +31,14 @@ def test_mrb3907_install_legacy_aircconsole_before_mint_contiguous():
     assert "prior identity from legacy AircConsole" in text
     assert text.index("ServiceName 'Airc'") < text.index("ServiceName 'AircConsole'")
     assert "migrated console.password from" in text
+    assert "prefer prior console.password" in text
     assert "Get-Service -Name 'AircConsole'" in text or "ServiceName 'AircConsole'" in text
 
     console = INSTALL_CONSOLE.read_text(encoding="utf-8-sig")
     assert "FR #3900" in console
     assert "preserving identity from legacy AircConsole" in console
+    assert "password-minted" in console
+    assert "migrated console.password" in console or "prefer prior console.password" in console
 
 
 def test_mrb3907_service_904_heal_reconnect_contiguous():
