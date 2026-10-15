@@ -158,6 +158,28 @@ function Measure-BobTrayIrcAgentSeats {
     return [int]$count
 }
 
+function Get-BobTrayIrcAgentSeatPids {
+    <# FR #4307: live IRC agent marker pids (stale files removed). #>
+    param([string]$SeatsDir = '')
+    if (-not $SeatsDir) { $SeatsDir = Get-BobTrayIrcSeatsDir }
+    $pids = New-Object 'System.Collections.Generic.HashSet[int]'
+    if (-not (Test-Path -LiteralPath $SeatsDir)) { return $pids }
+    Get-ChildItem -LiteralPath $SeatsDir -Filter '*.irc.json' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $j = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.mode -and ([string]$j.mode).ToLowerInvariant() -ne 'agent') { return }
+            $seatPid = [int]$j.pid
+            if ($seatPid -le 0) { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue; return }
+            if (Get-Process -Id $seatPid -ErrorAction SilentlyContinue) { [void]$pids.Add($seatPid) }
+            else { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+        } catch {
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+    # Unary comma: PS must not unroll a 1-element HashSet into a bare [int] (MRB #4311).
+    return ,$pids
+}
+
 function Measure-BobTrayWorkerSeats {
     <#
     Root bob-worker*.exe seats (never Watch-AgentHealth) - FR #2523 / t815u.
@@ -189,9 +211,33 @@ function Get-BobTrayWorkerCapRefusal {
     if (-not $modeL) { $modeL = 'agent' }
     if ($modeL -ne 'agent') { return '' }
     $cap = $script:BobTrayHardMaxWorkers
-    # FR #3181: IRC-joined agent seats only (Plan/key-dialog never count).
-    $n = Measure-BobTrayIrcAgentSeats
-    if ($n -ge $cap) { return ('Max {0} workers ({1} IRC-joined agent seats). Close a worker window first.' -f $cap, $n) }
+    # FR #3181 / FR #4307 / MRB #4311: union of IRC marker pids and live agent bob-worker roots
+    # (same as worker_irc_seats.count_cap_agent_seats / BobTray.Seats). Math.Max undercounts when
+    # the sets are disjoint (IRC-marked seat with unknown cmdline + another live --mode agent).
+    if ($null -eq $Procs) {
+        $Procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
+                Select-Object ProcessId, ParentProcessId, Name, CommandLine)
+    }
+    $pids = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($p in @(Get-BobTrayIrcAgentSeatPids)) {
+        if ($null -eq $p -or $p -eq '') { continue }
+        # If PS unrolled a HashSet, $p is [int]; if not, $p may still be HashSet (nested).
+        if ($p -is [System.Collections.Generic.HashSet[int]]) {
+            foreach ($x in $p) { [void]$pids.Add([int]$x) }
+        } else {
+            [void]$pids.Add([int]$p)
+        }
+    }
+    $w = @($Procs | Where-Object { $_.Name -match '^bob-worker(-[0-9a-f]+)?\.exe$' })
+    $ids = @($w | ForEach-Object { [int]$_.ProcessId })
+    $roots = @($w | Where-Object { $ids -notcontains [int]$_.ParentProcessId })
+    foreach ($r in $roots) {
+        if ((Get-BobTrayWorkerSeatMode $r) -eq 'agent') {
+            [void]$pids.Add([int]$r.ProcessId)
+        }
+    }
+    $n = [int]$pids.Count
+    if ($n -ge $cap) { return ('Max {0} workers ({1} agent seats). Close a worker window first.' -f $cap, $n) }
     return ''
 }
 

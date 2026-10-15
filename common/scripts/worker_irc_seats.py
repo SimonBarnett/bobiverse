@@ -1,19 +1,25 @@
 # -*- coding: utf-8 -*-
-"""FR #3181: 2-worker cap counts only IRC-joined bob-worker *agent* seats.
+"""FR #3181 / FR #4307: 2-worker cap for bob-worker *agent* seats.
 
 Plan / maintenance / monitor never register. Agent seats write a marker after
-JOIN #<machine> and remove it on PART/QUIT/irc-lost/exit. Cap readers count
-only markers whose pid is still alive.
+JOIN #<machine> and remove it on PART/QUIT/irc-lost/exit.
+
+FR #4307: markers alone undercount when an older build or tray restart leaves
+``run\\seats`` empty while agent processes are still live. Cap readers count the
+union of (a) markers whose pid is still alive and (b) live agent bob-worker
+seat roots from the process snapshot. Stale markers (dead pid) never count.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 SEATS_SUBDIR = ("Bobiverse", "worker", "run", "seats")
+_WORKER_EXE_RX = re.compile(r"^bob-worker(?:-[0-9a-f]+)?\.exe$", re.I)
 
 
 def localappdata() -> Path:
@@ -195,18 +201,71 @@ def list_live_irc_agent_seats(
     return out
 
 
+def _entry_mode(entry) -> str:
+    """Optional 4th tuple field: mode name or full cmdline. Missing => unknown (not agent)."""
+    if not isinstance(entry, (tuple, list)) or len(entry) < 4:
+        return "unknown"
+    raw = str(entry[3] or "").strip().lower()
+    if raw in ("agent", "plan", "monitor", "maintenance"):
+        return raw
+    m = re.search(r"--mode[=\s]+(agent|plan|monitor|maintenance)", raw)
+    return m.group(1) if m else "unknown"
+
+
+def live_agent_root_pids(procs: Optional[Iterable] = None) -> set[int]:
+    """Root bob-worker*.exe PIDs whose mode is explicitly agent (FR #3181 / #4307)."""
+    rows: dict[int, tuple[int, str, str]] = {}
+    for entry in procs or []:
+        try:
+            p, pp, n = int(entry[0]), int(entry[1]), str(entry[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        rows[p] = (pp, n, _entry_mode(entry))
+    workers = {p for p, (_pp, n, _m) in rows.items() if _WORKER_EXE_RX.match(n)}
+    roots = {p for p in workers if rows[p][0] not in workers}
+    return {p for p in roots if rows[p][2] == "agent"}
+
+
+def count_cap_agent_seats(
+    root: Optional[Path | str] = None,
+    *,
+    machine: Optional[str] = None,
+    exclude_pid: Optional[int] = None,
+    pid_alive_fn=None,
+    procs: Optional[Iterable] = None,
+) -> int:
+    """FR #4307: union of live IRC markers and live agent process roots."""
+    pids: set[int] = set()
+    for s in list_live_irc_agent_seats(root, machine=machine, pid_alive_fn=pid_alive_fn):
+        try:
+            pid = int(s.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            pids.add(pid)
+    if procs is not None:
+        pids |= live_agent_root_pids(procs)
+    if exclude_pid is not None:
+        pids.discard(int(exclude_pid))
+    return len(pids)
+
+
 def count_irc_agent_seats(
     root: Optional[Path | str] = None,
     *,
     machine: Optional[str] = None,
     exclude_pid: Optional[int] = None,
     pid_alive_fn=None,
+    procs: Optional[Iterable] = None,
 ) -> int:
-    seats = list_live_irc_agent_seats(root, machine=machine, pid_alive_fn=pid_alive_fn)
-    if exclude_pid is None:
-        return len(seats)
-    ex = int(exclude_pid)
-    return sum(1 for s in seats if int(s.get("pid") or 0) != ex)
+    """Back-compat name for the FR #4307 cap count (markers ∪ live agent roots)."""
+    return count_cap_agent_seats(
+        root,
+        machine=machine,
+        exclude_pid=exclude_pid,
+        pid_alive_fn=pid_alive_fn,
+        procs=procs,
+    )
 
 
 HARD_MAX_WORKERS = 2
@@ -220,20 +279,25 @@ def worker_cap_refusal_irc(
     my_pid: Optional[int] = None,
     max_workers: int = HARD_MAX_WORKERS,
     pid_alive_fn=None,
+    procs: Optional[Iterable] = None,
 ) -> str:
-    """'' = free to start. Plan/monitor/maintenance never refused. Cap = IRC-joined agents only."""
+    """'' = free to start. Plan/monitor/maintenance never refused.
+
+    Cap = live IRC agent markers union live agent bob-worker roots (FR #4307).
+    """
     if str(for_mode).lower() != "agent":
         return ""
-    n = count_irc_agent_seats(
+    n = count_cap_agent_seats(
         root,
         machine=machine,
         exclude_pid=my_pid,
         pid_alive_fn=pid_alive_fn,
+        procs=procs,
     )
     cap = max(0, int(max_workers))
     if n >= cap:
         return (
-            "max %d workers (%d IRC-joined agent seats on this machine) - not starting another"
+            "max %d workers (%d agent seats on this machine) - not starting another"
             % (HARD_MAX_WORKERS, n)
         )
     return ""

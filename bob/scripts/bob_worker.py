@@ -6596,7 +6596,7 @@ def recycle_to_cap(procs: list, keep: int, *, modes: tuple = ("agent",)) -> list
 def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> str:
     """'' = free to start. Plan/monitor/maintenance are never refused by the worker cap.
 
-    FR #3181: IRC-joined agent seats only. ``procs`` kept for callers; not the cap source of truth.
+    FR #3181 / FR #4307: IRC agent markers union live agent process roots.
     """
     if str(for_mode).lower() not in CAPPED_MODES:
         return ""
@@ -6605,10 +6605,10 @@ def worker_cap_refusal(procs: list, my_pid: int, *, for_mode: str = "agent") -> 
         if n >= cap:
             return "max %d workers (%d already running on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
         return ""
-    n = count_irc_agent_seats(exclude_pid=my_pid)
+    n = count_irc_agent_seats(exclude_pid=my_pid, procs=procs)
     cap = max_workers()
     if n >= cap:
-        return "max %d workers (%d IRC-joined agent seats on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
+        return "max %d workers (%d agent seats on this machine) - not starting another" % (HARD_MAX_WORKERS, n)
     return ""
 
 

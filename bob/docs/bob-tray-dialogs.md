@@ -41,7 +41,7 @@ It runs the Status and About windows in-process (no second process to start).
 
 * **Menu**: **Status** (bold, the default), Agent, Plan, Acknowledge, Open log, separator, Restart, Exit. Left click = acknowledge + Status;
   double click = Status.
-* **Agent / Plan** are native: the 2-worker cap is read from the live `bob-worker` processes (parent pids), the worker exe is run from the sha256
+* **Agent / Plan** are native: the 2-worker cap is the **union** of IRC agent seat marker pids (live) and live agent `bob-worker` roots (FR #3181 / FR #4307 / MRB #4311), the worker exe is run from the sha256
   run-copy under `%LOCALAPPDATA%\Bobiverse\worker\bin`, and it opens its own console window (same rules as the PowerShell launcher).
 * **The engine** - the data collection (digest, Grok / Cursor pools, alerts, BobBridge) is still PowerShell. `bob-tray.exe` starts
   `tools\_Watch-BobTray-<machine>.ps1` hidden with `BOB_TRAY_ENGINE=1` and `BOB_TRAY_EXE_PID`; in that mode the script never shows an icon.
