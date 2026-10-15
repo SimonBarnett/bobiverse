@@ -86,16 +86,16 @@ def test_done_append_snippets_are_standalone():
     for path in (SEAT, JOB_IRC, JOB_FR, JOB_MRB):
         text = _read(path)
         for block in fence_re.findall(text):
-            if "Add-Content" not in block:
+            if "Add-Content" not in block and "Add-BobiverseOutboxLine" not in block:
                 continue
             if not re.search(r":DONE |NACK |GIVEUP ", block):
                 continue
             nonblank = [ln for ln in block.splitlines() if ln.strip()]
             if len(nonblank) > 3:
-                offenders.append(f"{path.name}: >3 non-blank lines in DONE Add-Content fence")
+                offenders.append(f"{path.name}: >3 non-blank lines in DONE outbox-append fence")
             for tok in bad_tokens:
                 if tok in block:
-                    offenders.append(f"{path.name}: DONE Add-Content fence contains {tok}")
+                    offenders.append(f"{path.name}: DONE outbox-append fence contains {tok}")
     assert offenders == [], "\n".join(offenders)
 
 
