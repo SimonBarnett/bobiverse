@@ -513,6 +513,46 @@ if (Test-HarvestExistingPrUrlSkip -ExistingUrl $ExistingPrUrl -SummaryText $Summ
     return
 }
 
+
+# FR #4371: CLOSED-duplicate / CAST IRON already-covers harvest-lesson MRBs that only
+# restate job-mrb "Re-offered or already-merged MRB" must not open lesson(harvest) tips
+# (class of #4366/#4368/#4370 tip-loop; tip bodies also auto-linked Closes #productFR).
+function Test-HarvestClosedDuplicateLessonLoop([string]$SummaryText, [string[]]$LessonLines) {
+    $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
+    $isHarvestLesson = (
+        ($joined -match '(?i)harvest[- ]lesson') -or
+        ($joined -match '(?i)lesson\(harvest') -or
+        ($joined -match '(?i)Harvest-lesson\s+MRB')
+    )
+    $isClosedDup = (
+        ($joined -match '(?i)CLOSED\s+duplicate') -or
+        ($joined -match '(?i)CLOSED[- ]duplicate') -or
+        ($joined -match '(?i)CLOSE(?:D)?\s+as\s+duplicate') -or
+        ($joined -match '(?i)CAST\s+IRON\s+already\s+covers') -or
+        ($joined -match '(?i)already\s+covers?\b[\s\S]{0,80}?CAST\s+IRON')
+    )
+    $isAlreadyMergedPlaybook = (
+        ($joined -match '(?i)already[- ]merged\s+(?:bobiverse\s+)?MRB') -or
+        ($joined -match '(?i)Re-offered\s+or\s+already[- ]merged\s+MRB') -or
+        ($joined -match '(?i)already[- ]merged/re-offer') -or
+        ($joined -match '(?i)job-mrb\s+(?:Harvest\s+)?digest') -or
+        ($joined -match '(?i)already\s+in\s+(?:bobiverse-)?job-mrb') -or
+        ($joined -match '(?i)weaker\s+harvest/SKILL') -or
+        ($joined -match '(?i)never\s+Closes\s+a\s+product\s+FR')
+    )
+    if ($isHarvestLesson -and $isClosedDup -and $isAlreadyMergedPlaybook) { return $true }
+    if ($isHarvestLesson -and $isClosedDup -and ($joined -match '(?i)job-mrb')) { return $true }
+    # CAST IRON already covers + CLOSED + job-mrb/already-merged (tip #4370 class without harvest-lesson token)
+    if (($joined -match '(?i)CAST\s+IRON\s+already\s+covers') -and ($joined -match '(?i)\bCLOSED\b') -and $isAlreadyMergedPlaybook) {
+        return $true
+    }
+    return $false
+}
+if (Test-HarvestClosedDuplicateLessonLoop -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest CLOSED-duplicate lesson loop (FR #4371): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
+
 # FR #3824: if an open harvest-lesson PR from this seat already carries the same
 # lesson text, skip filing (intake also links open twins; this avoids a second POST).
 function Test-HarvestOpenLessonTwin {
@@ -552,6 +592,18 @@ function Test-HarvestOpenLessonTwin {
     return $false
 }
 
+
+# FR #4371 / #4099: GitHub auto-links Closes #N / Fixes #N in PR bodies. Harvest tip
+# narratives that mention "Closes #4363" close product FRs. Replace the keyword with
+# "closing-keyword" so the issue number remains but GitHub does not auto-close.
+function Protect-HarvestBodyClosesKeywords([string]$Text) {
+    if (-not $Text) { return $Text }
+    $t = [string]$Text
+    $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+)', 'closing-keyword $1')
+    $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+(#\d+)', 'closing-keyword $1')
+    return $t
+}
+
 $files = @()
 foreach ($sf in $SkillFile) {
     if (-not (Test-Path -LiteralPath $sf)) { throw "skill file not found: $sf" }
@@ -561,6 +613,7 @@ foreach ($sf in $SkillFile) {
 }
 $lessonText = if ($Lesson.Count) { ($Lesson | ForEach-Object { '- ' + $_ }) -join "`n" } else { '- (no new playbook line)' }
 $body = "Session summary:`n$Summary`n`nLessons:`n$lessonText`n"
+$body = Protect-HarvestBodyClosesKeywords $body
 $scan = $body + (($files | ForEach-Object { $_.content }) -join "`n")
 if ($scan -match $secretRx) { throw 'refusing to send: text looks like it contains a secret/token/password. Remove it and retry.' }
 
