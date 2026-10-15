@@ -44,6 +44,8 @@ def _run_harvest(*extra: str) -> subprocess.CompletedProcess[str]:
             "Bypass",
             "-File",
             str(HARVEST_PS1),
+            "-Repo",
+            REPO,
             *extra,
             "-IntakeUrl",
             "http://127.0.0.1:9/bob/v1/intake",
