@@ -66,6 +66,8 @@ def test_fr3763_fresh_904_is_info_not_error(tmp_path, monkeypatch):
 def test_fr3763_known_account_904_stays_loud_error(tmp_path, monkeypatch):
     (tmp_path / "console.nickserv-ok").write_text("sasl-903\n", encoding="ascii")
     s = make(tmp_path, monkeypatch)
+    # Host Admin\\.airc may hold a real GUID; this case needs no legacy heal.
+    monkeypatch.setattr(s, "_legacy_console_password_paths", lambda: [])
     s.on_line(":srv 904 * :SASL authentication failed")
     assert any(m.startswith("ERROR console account walrus_console SASL failed") for m in s.logs)
     assert s._sasl_failed

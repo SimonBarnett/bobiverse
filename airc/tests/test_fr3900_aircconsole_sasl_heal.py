@@ -89,6 +89,8 @@ def test_fr3900_sasl_904_without_legacy_keeps_error(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "empty_profile"))
     Path(os.environ["USERPROFILE"]).mkdir(parents=True)
     s = make(tmp_path, monkeypatch)
+    # Isolate from the host Admin\\.airc GUID (fleet boxes often have one).
+    monkeypatch.setattr(s, "_legacy_console_password_paths", lambda: [])
     s.on_line(":srv 904 * :SASL authentication failed")
     assert any("SASL failed (904)" in m and "SAPASSWD" in m for m in s.logs), s.logs
     assert s._force_reconnect is False
@@ -102,3 +104,78 @@ def test_fr3900_skill_documents_aircconsole_upgrade():
     text = SERVICE.read_text(encoding="utf-8")
     assert "_try_heal_console_password_from_legacy" in text
     assert "FR #3900" in text
+
+
+def test_fr3900_v1_install_prefers_prior_password_over_wrong_mint():
+    """1.0.0 release-blocker: wrong mint in install\\home must lose to prior PasswordFile.
+
+    Migrate-when-empty alone is not enough — MSI/LocalSystem can mint into
+    InstallRoot\\home while the live GUID still lives under Admin\\.airc or the
+    path recorded in airc-install.json. Prefer that prior file (overwrite dest)
+    before Initialize mints again; mark genuine mints so the service does not
+    treat them as FR #3863 reuse.
+    """
+    text = INSTALL.read_text(encoding="utf-8-sig")
+    assert "FR #3900" in text
+    assert "prefer prior console.password" in text or "prefer-prior" in text
+    assert "console.password-minted" in text or "password-minted" in text
+    console = INSTALL_CONSOLE.read_text(encoding="utf-8-sig")
+    assert "FR #3900" in console
+    assert "migrated console.password" in console or "prefer prior console.password" in console
+    assert "password-minted" in console
+    assert "minted NickServ GUID" in console
+    # Marker Write-Host sits on the mint branch before the keep branch.
+    mint_idx = console.index("minted NickServ GUID")
+    marker_idx = console.index("password-minted marker")
+    keep_idx = console.index("INFO keep $NickServPasswordFile")
+    assert mint_idx < marker_idx < keep_idx
+
+
+def test_fr3900_v1_service_honours_install_mint_marker(tmp_path, monkeypatch):
+    """Install-minted GUID must skip SASL (FR #3763), not FR #3863 reuse."""
+    guid = "33333333-3333-3333-3333-333333333333"
+    (tmp_path / "console.password").write_text(guid + "\n", encoding="utf-8")
+    (tmp_path / "console.password-minted").write_text("install\n", encoding="ascii")
+    s = make(tmp_path, monkeypatch)
+    assert s._nickserv_pw_minted is True
+    assert s.nickserv_password == guid
+    s.handshake()
+    assert not any(l.startswith("AUTHENTICATE") for l in s.sent), s.sent
+    assert any("FR #3763" in m and "skip SASL" in m for m in s.logs), s.logs
+
+
+def test_fr3900_v1_sasl_904_heals_from_airc_install_json_password(tmp_path, monkeypatch):
+    """Heal must read PasswordFile from sibling install config\\airc-install.json."""
+    wrong = "44444444-4444-4444-4444-444444444444"
+    right = "55555555-5555-5555-5555-555555555555"
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "console.password").write_text(wrong + "\n", encoding="utf-8")
+    prior = tmp_path / "prior_admin"
+    prior.mkdir()
+    (prior / "console.password").write_text(right + "\n", encoding="utf-8")
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    # Service home is <install>/home; json beside install root.
+    install_root = tmp_path
+    # Point service home at install_root/home — json at install_root/config.
+    import json
+
+    (cfg / "airc-install.json").write_text(
+        json.dumps(
+            {
+                "ConsoleHome": str(prior),
+                "PasswordFile": str(prior / "console.password"),
+                "MachineId": "walrus",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "empty_profile"))
+    Path(os.environ["USERPROFILE"]).mkdir(parents=True)
+    s = make(home, monkeypatch)
+    assert s.nickserv_password == wrong
+    s.on_line(":srv 904 * :SASL authentication failed")
+    assert s.nickserv_password == right
+    assert (home / "console.password").read_text(encoding="utf-8").strip() == right
+    assert any("FR #3900 healed" in m for m in s.logs), s.logs

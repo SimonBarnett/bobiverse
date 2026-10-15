@@ -311,31 +311,74 @@ if (-not (Test-Path -LiteralPath $ConsoleHome)) {
         }
     }
 }
-# FR #3900: if ConsoleHome exists but console.password is empty/missing, copy GUID from a
-# legacy home or prior PasswordFile before Initialize mints a fresh one (SASL 904 trap).
+# FR #3900 / 1.0.0: prefer prior console.password over an empty or install-minted dest.
+# Empty dest alone was not enough: LocalSystem / MSI can mint into InstallRoot\home while
+# the live NickServ GUID still lives at prior PasswordFile / Admin\.airc / airc-install.json.
+# Authoritative prior (AppParameters / airc-install.json PasswordFile) may overwrite dest.
+# Broad legacy scan only when dest is empty or console.password-minted is present (never
+# clobber a reused FR #3863 GUID that simply lacks nickserv-ok yet).
 $destPw = Join-Path $ConsoleHome 'console.password'
-$destPwEmpty = (-not (Test-Path -LiteralPath $destPw)) -or -not ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
-if ($destPwEmpty) {
-    $pwSources = New-Object System.Collections.Generic.List[string]
-    if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
-    if ($priorId -and $priorId.ConsoleHome) {
-        [void]$pwSources.Add((Join-Path ([string]$priorId.ConsoleHome) 'console.password'))
-    }
+$destBody = ''
+if (Test-Path -LiteralPath $destPw) {
+    $destBody = ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+}
+$mintMarker = Join-Path $ConsoleHome 'console.password-minted'
+$destPwEmpty = -not $destBody
+$pwSources = New-Object System.Collections.Generic.List[string]
+# Authoritative first — these overwrite a wrong mint in dest.
+if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
+if ($priorId -and $priorId.ConsoleHome) {
+    [void]$pwSources.Add((Join-Path ([string]$priorId.ConsoleHome) 'console.password'))
+}
+$snapPwPath = Join-Path $InstallRoot 'config\airc-install.json'
+if (Test-Path -LiteralPath $snapPwPath) {
+    try {
+        $snapPw = Get-Content -LiteralPath $snapPwPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($snapPw.PasswordFile) { [void]$pwSources.Add([string]$snapPw.PasswordFile) }
+        if ($snapPw.ConsoleHome) {
+            [void]$pwSources.Add((Join-Path ([string]$snapPw.ConsoleHome) 'console.password'))
+        }
+    } catch {}
+}
+$authCount = $pwSources.Count
+# Legacy fill-ins only for empty / mint-marker dest.
+if ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker)) {
     foreach ($legacy in $legacyCandidates) {
         [void]$pwSources.Add((Join-Path $legacy 'console.password'))
     }
-    foreach ($srcPw in $pwSources) {
-        if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
-        if ([string]::Equals((Resolve-Path -LiteralPath $srcPw).Path, (Join-Path $ConsoleHome 'console.password'), [StringComparison]::OrdinalIgnoreCase)) {
+    [void]$pwSources.Add((Join-Path $InstallRoot 'home\console.password'))
+}
+$srcIndex = 0
+foreach ($srcPw in $pwSources) {
+    $isAuth = ($srcIndex -lt $authCount)
+    $srcIndex++
+    if (-not $isAuth -and -not ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker))) { continue }
+    if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
+    try {
+        $srcResolved = (Resolve-Path -LiteralPath $srcPw).Path
+        $destResolved = $destPw
+        if (Test-Path -LiteralPath $destPw) { $destResolved = (Resolve-Path -LiteralPath $destPw).Path }
+        if ([string]::Equals($srcResolved, $destResolved, [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }
-        $body = ((Get-Content -LiteralPath $srcPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
-        if (-not $body) { continue }
-        New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
-        [IO.File]::WriteAllText($destPw, $body + "`n", (New-Object System.Text.UTF8Encoding $false))
-        Write-Host "INFO FR #3900 migrated console.password from $srcPw"
+    } catch { continue }
+    $body = ((Get-Content -LiteralPath $srcPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+    if (-not $body) { continue }
+    if ($destBody -and [string]::Equals($body, $destBody, [StringComparison]::Ordinal)) {
+        if (Test-Path -LiteralPath $mintMarker) {
+            Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+        }
         break
     }
+    # Auth prior overwrites dest always; legacy only when empty/minted.
+    if (-not $isAuth -and $destBody -and -not (Test-Path -LiteralPath $mintMarker)) { continue }
+    New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
+    [IO.File]::WriteAllText($destPw, $body + "`n", (New-Object System.Text.UTF8Encoding $false))
+    if (Test-Path -LiteralPath $mintMarker) {
+        Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "INFO FR #3900 prefer prior console.password / migrated console.password from $srcPw"
+    break
 }
 
 # FR #3287: resolve capabilities (MSI props > prior AppParameters/json > fresh off / upgrade operators).
