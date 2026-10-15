@@ -95,3 +95,10 @@ def test_fr4349_suite_steps_do_not_get_pack_secret(tmp_path, monkeypatch):
     run = bb.guarded_run_command(tmp_path, [tmp_path / "live"], inner=inner)
     run("pytest", env={}, name="airc", ref_or_baseline="HEAD")
     assert "AIRC_PACK_ERGO_PASSWORD" not in seen[0][1]
+def test_fr4349_airc_skill_documents_isolation_pack():
+    skill = ROOT / "airc" / ".grok" / "skills" / "bobiverse-airc" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    assert "FR #4349" in text
+    assert "Get-BobiverseAiRoot" in text
+    assert "AIRC_PACK_ERGO_PASSWORD" in text
+    assert "guarded_run_command" in text or "after-iso" in text or "after isolation" in text
