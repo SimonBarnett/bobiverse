@@ -322,6 +322,8 @@ foreach ($d in @('scripts', 'third_party')) {
 # copies a stale Update-BobiverseService.ps1. Overlay origin/<Branch> tip so
 # #2563 soft-fail / ForceCheck escape reaches flat scripts\ without a clean ff.
 # FR #2982: still run this overlay when skipStaleCompose (MSI flat files kept).
+# FR #4297: same tip overlay for Invoke-BobiverseHarvest.ps1 + Report-BobiverseIntakeIssue.ps1
+# (ExistingPrUrl / intake fixes must reach flat scripts\ without a clean ff).
 if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
     try {
         $upd = Sync-BobiverseUpdaterFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
@@ -332,6 +334,16 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
         }
     } catch {
         Write-Host ("WARN sync-updater-from-tip error: {0}" -f $_.Exception.Message)
+    }
+    try {
+        $hv = Sync-BobiverseHarvestScriptsFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
+        if ($hv.Ok) {
+            Write-Host ("INFO sync-harvest-from-tip ok bytes={0}: {1}" -f $hv.Bytes, $hv.Reason)
+        } else {
+            Write-Host ("WARN sync-harvest-from-tip skipped: {0}" -f $hv.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-harvest-from-tip error: {0}" -f $_.Exception.Message)
     }
 }
 
