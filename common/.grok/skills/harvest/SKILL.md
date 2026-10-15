@@ -236,6 +236,7 @@ routes to bobiverse via the split rule.
 - When Pack/allow-list adds a script (Fetch-Nssm), update CLIENT_REMAINING_FILES + KEEP_SCRIPTS counts in the same turn as the allow-list change so fr3514 pack-then-client stays green
 - Harvest session summaries / intake PR bodies must never contain the GitHub keyword Closes #N (or Fixes #N) for product FRs --- narrative mentions of stripping accidental Closes still auto-link; write `Closes` as `Close`+`s` split, or say `closing-keyword`, or cite `#N` without Closes/Fixes (MRB #4099)
 - Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
+- common/tests under !build: BOB_HOME_NO_MIGRATE=1 breaks fr2350 migrate asserts — delenv in those tests; _admin_profile must follow USERPROFILE when BOBIVERSE_BUILD_SUITE=1 so legacy discovery never hits live Administrator .bobiverse
 
 ## Harvest digest (lessons audit 2026-10-06)
 
