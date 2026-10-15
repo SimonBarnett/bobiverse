@@ -325,7 +325,7 @@ if (Test-Path -LiteralPath $destPw) {
 $mintMarker = Join-Path $ConsoleHome 'console.password-minted'
 $destPwEmpty = -not $destBody
 $pwSources = New-Object System.Collections.Generic.List[string]
-# Authoritative first — these overwrite a wrong mint in dest.
+# Authoritative first - these overwrite a wrong mint in dest.
 if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
 if ($priorId -and $priorId.ConsoleHome) {
     [void]$pwSources.Add((Join-Path ([string]$priorId.ConsoleHome) 'console.password'))
