@@ -955,7 +955,19 @@ function Add-BobIrcOutboxChannelLine {
     $last = $null
     try { $last = Get-Content -LiteralPath $outbox -Tail 1 -ErrorAction SilentlyContinue } catch { }
     if ($last -and ([string]$last).Trim() -eq [string]$Line.Trim()) { return }
-    Add-Content -Path $outbox -Value ([string]$Line).Trim() -Encoding utf8
+    # FR #4363: share-safe append (concurrent drain / reader).
+    $helper = Join-Path $PSScriptRoot '..\..\..\scripts\Add-BobiverseOutboxLine.ps1'
+    if (-not (Test-Path -LiteralPath $helper)) {
+        $helper = Join-Path $PSScriptRoot '..\..\..\..\common\scripts\Add-BobiverseOutboxLine.ps1'
+    }
+    if (Test-Path -LiteralPath $helper) {
+        & $helper -Path $outbox -Line ([string]$Line).Trim()
+    } else {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        $bytes = $utf8.GetBytes(([string]$Line).Trim() + "`n")
+        $fs = [IO.File]::Open($outbox, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+        try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+    }
 }
 
 function Add-BobIrcBobiversePrivmsg {

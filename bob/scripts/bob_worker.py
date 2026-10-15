@@ -3524,17 +3524,27 @@ def busy_holding_nack_line(line: str, holding: str) -> Optional[str]:
     return f"NACK {key} busy, holding {hold}"
 
 
-def append_outbox_line(path: Path | str, text: str) -> bool:
-    """Append one line to the run-dir outbox (the drain loop sends it to the shop channel)."""
-    try:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a", encoding="utf-8") as fh:
-            fh.write(text.rstrip("\r\n") + "\n")
-        return True
-    except OSError:
-        return False
+def append_outbox_line(path: Path | str, text: str, *, retries: int = 8, delay_s: float = 0.05) -> bool:
+    """Append one line to the run-dir outbox (the drain loop sends it to the shop channel).
 
+    FR #4363: drain_outbox uses os.replace while agents append; retry briefly so a
+    concurrent replace / recreate does not drop ACK/DONE. Prefer share-safe writers
+    (Add-BobiverseOutboxLine.ps1) on the PowerShell side.
+    """
+    p = Path(path)
+    line = text.rstrip("\r\n") + "\n"
+    for i in range(max(1, int(retries))):
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as fh:
+                fh.write(line)
+            return True
+        except OSError:
+            ensure_outbox(p)
+            if i + 1 >= retries:
+                break
+            time.sleep(delay_s * (i + 1))
+    return False
 
 class InjectRecovery:
     """FR #4115: an assign whose submit-verify FAILED is re-pasted once; if that also fails,
@@ -5902,9 +5912,16 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
         ensure_outbox(path)
         return 0
     tmp = path.with_suffix(".sending")
-    try:
-        os.replace(path, tmp)
-    except OSError:
+    # FR #4363: brief retry when an agent append still holds the file.
+    replaced = False
+    for _i in range(6):
+        try:
+            os.replace(path, tmp)
+            replaced = True
+            break
+        except OSError:
+            time.sleep(0.02 * (_i + 1))
+    if not replaced:
         return 0
     n = 0
     unsent: list[str] = []

@@ -170,7 +170,19 @@ function Add-BobWorkerShopOutboxLine {
     $outbox = Join-Path $WorkerHome 'outbox.txt'
     # boredSent is the once-per-stretch guard. A later idle stretch must
     # append !BORED again even when the previous line is still the tail.
-    Add-Content -LiteralPath $outbox -Value $text -Encoding utf8
+    # FR #4363: share-safe append under concurrent drain.
+    $helper = Join-Path $PSScriptRoot '..\..\..\scripts\Add-BobiverseOutboxLine.ps1'
+    if (-not (Test-Path -LiteralPath $helper)) {
+        $helper = Join-Path $PSScriptRoot '..\..\..\..\common\scripts\Add-BobiverseOutboxLine.ps1'
+    }
+    if (Test-Path -LiteralPath $helper) {
+        & $helper -Path $outbox -Line $text
+    } else {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        $bytes = $utf8.GetBytes($text + "`n")
+        $fs = [IO.File]::Open($outbox, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+        try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+    }
 }
 
 function Get-BobWorkerBoredStatePath {
