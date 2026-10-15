@@ -1,4 +1,4 @@
-"""Hostile MRB #1236: per-seat needs_human, require_machine=any unpin, fr_done hold."""
+"""Hostile MRB #1236 / FR #4336: needs_human global auto-offer block; unpin; fr_done hold."""
 from __future__ import annotations
 
 import json
@@ -8,11 +8,11 @@ from pathlib import Path
 import gitclaim
 
 
-def test_row_needs_human_only_blocks_giveup_seats():
+def test_row_needs_human_blocks_all_seats_fr4336():
     row = {"needs_human": True, "giveup_seats": "ionos-1,win-mpre8vi4u6u-99"}
     assert gitclaim.row_needs_human(row, "ionos-1") is True
     assert gitclaim.row_needs_human(row, "win-mpre8vi4u6u-99") is True
-    assert gitclaim.row_needs_human(row, "marchhare-41928") is False
+    assert gitclaim.row_needs_human(row, "marchhare-41928") is True  # FR #4336: needs_human is global
     # bare needs_human with no giveup_seats → global
     bare = {"needs_human": True}
     assert gitclaim.row_needs_human(bare, "marchhare-41928") is True
@@ -35,7 +35,7 @@ def test_require_machine_any_none_star_skips_reinfer():
     assert gitclaim.row_require_machine(row2) == "ce-priority-dev1"
 
 
-def test_offer_skips_other_seat_after_per_seat_needs_human(tmp_path, monkeypatch):
+def test_offer_skips_all_seats_when_needs_human(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim._write_queue(
         gitclaim.queue_path(tmp_path),
@@ -61,8 +61,9 @@ def test_offer_skips_other_seat_after_per_seat_needs_human(tmp_path, monkeypatch
         },
     )
     assert gitclaim.offer_focus_top(tmp_path, "win-mpre8vi4u6u-1", "#win-mpre8vi4u6u")[0] == "empty"
+    # FR #4336: needs_human blocks every seat for auto-offer (not only giveup_seats).
     st, job = gitclaim.offer_focus_top(tmp_path, "marchhare-41928", "#marchhare")
-    assert st == "ok" and job["id"] == "#1055"
+    assert st == "empty"
 
 
 def test_fr_done_hold_blocks_offer_via_ledger(tmp_path, monkeypatch):
