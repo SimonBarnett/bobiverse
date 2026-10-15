@@ -532,6 +532,8 @@ namespace BobDialogs
         {
             // FR #4136: also restart when the process is alive but the engine.alive stamp is stale
             // (hung UI thread still owns the queue; tray.alive is written by this exe and stays fresh).
+            // FR #4317: IsStale ignores pre-start leftover stamps so a healthy engine with a frozen
+            // leftover file is not kill-looped every engineStarts window (~5 min).
             bool exited = true;
             try { exited = engine == null || engine.HasExited; } catch { exited = true; }
             bool stale = false;
@@ -542,7 +544,11 @@ namespace BobDialogs
                 if (!stale) return;
             }
             if ((DateTime.Now - engineWindow).TotalMinutes > 5) { engineWindow = DateTime.Now; engineStarts = 0; }
-            if (++engineStarts > 3) return;       // no restart storm
+            if (++engineStarts > 3)
+            {
+                if (stale) TrayLifecycle.Write("engine-restart-storm", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
+                return;       // no restart storm
+            }
             if (stale)
             {
                 TrayLifecycle.Write("engine-stale", "age", ageS.ToString("0.0"), "max", EngineAliveStamp.MaxAgeSeconds.ToString("0"), "pid", SafeEnginePid());
@@ -830,6 +836,14 @@ namespace BobDialogs
                 if (File.Exists(p))
                 {
                     DateTime m = File.GetLastWriteTimeUtc(p);
+                    // FR #4317: a stamp older than this engine start is a leftover (prior instance or
+                    // PS without the writer). Treating it as live age caused HealEngine kill storms
+                    // every storm-window reset (~5 min) while the stamp stayed frozen.
+                    if (engineStartedUtc != DateTime.MinValue && m < engineStartedUtc)
+                    {
+                        ageSeconds = (utcNow - engineStartedUtc).TotalSeconds;
+                        return false;
+                    }
                     ageSeconds = (utcNow - m).TotalSeconds;
                     return ageSeconds > maxAgeS;
                 }

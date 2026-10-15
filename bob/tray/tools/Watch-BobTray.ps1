@@ -3188,10 +3188,11 @@ $startWorkerTimer.Add_Tick({
         try {
             Invoke-BobTrayTimedTick -Name 'startworker' -Body {
                 try {
-                    [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
-                            -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
-                            -Log { param($m) Write-TrayLog $m })
-                    # FR #4136: stamp after the queue scan so bob-tray.exe HealEngine can detect a hung-but-alive engine.
+                    # FR #4136 / #4317: stamp at the START of the tick so a slow queue still advances
+                    # the heartbeat; if the UI thread hangs mid-queue the stamp freezes and HealEngine
+                    # restarts after MaxAge. Writing only after the queue left a hung queue looking dead
+                    # forever when the post-queue line never ran (and leftover pre-start stamps caused
+                    # false kill storms — see EngineAliveStamp.IsStale FR #4317).
                     try {
                         $dir = [string]$script:startWorkerDir
                         if ($dir) {
@@ -3199,6 +3200,9 @@ $startWorkerTimer.Add_Tick({
                             Set-Content -LiteralPath (Join-Path $dir 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
                         }
                     } catch { }
+                    [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
+                            -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
+                            -Log { param($m) Write-TrayLog $m })
                     if (Test-BobTrayEngineMode) {
                         [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
                                 -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `
@@ -3277,6 +3281,15 @@ if (-not (Test-BobTrayEngineMode)) {
 }
 $poll.Start()
 [void](Write-BobTrayAlive -Dir $script:startWorkerDir)   # seed immediately; trayAliveTimer keeps it fresh (FR #2697)
+# FR #4317: seed engine.alive at tray-up so HealEngine sees a post-start stamp before the first tick
+# (covers cold start and deploy skew where an old leftover stamp would otherwise look eternally stale).
+try {
+    $dir = [string]$script:startWorkerDir
+    if ($dir) {
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        Set-Content -LiteralPath (Join-Path $dir 'engine.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+    }
+} catch { }
 $startWorkerTimer.Start()
 Write-TrayLog 'tray up'
 try {
