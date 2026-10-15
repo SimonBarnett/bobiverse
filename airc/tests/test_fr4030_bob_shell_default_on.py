@@ -70,7 +70,11 @@ def test_fr4030_bob_machine_honours_explicit_off():
     )
 
 
-def test_fr4030_non_bob_fresh_still_off():
+def test_fr4030_fleet_fresh_defaults_operators_even_without_bob_detect():
+    """1.0.0 regression: fleet fresh wrote shell=off (fresh-default) when Bob detect missed.
+
+    Fleet fresh default is operators; only workstation / explicit AIRC_SHELL=off stay off.
+    """
     assert (
         ac.resolve_shell_mode_for_install(
             prior_shell=None,
@@ -78,7 +82,30 @@ def test_fr4030_non_bob_fresh_still_off():
             had_prior_service=False,
             is_bob_machine=False,
         )
-        == "off"
+        == "operators"
+    )
+
+
+def test_fr4030_fleet_migrates_legacy_fresh_off_without_bob():
+    assert (
+        ac.resolve_shell_mode_for_install(
+            prior_shell="off",
+            explicit=None,
+            had_prior_service=True,
+            is_bob_machine=False,
+            prior_shell_source="fresh-default",
+        )
+        == "operators"
+    )
+    assert (
+        ac.resolve_shell_mode_for_install(
+            prior_shell="off",
+            explicit=None,
+            had_prior_service=True,
+            is_bob_machine=False,
+            prior_shell_source=None,
+        )
+        == "operators"
     )
 
 
@@ -117,8 +144,10 @@ def test_fr4030_install_ps1_wires_bob_default_and_source():
     assert "FR #4030" in INSTALL
     assert "bob-default" in INSTALL or "shell_source" in INSTALL
     assert "migrated" in INSTALL.lower() or "shell_source" in INSTALL
-    # fresh fleet on Bob must not hard-default off after Bob branch
     assert "isBobMachine" in INSTALL or "BobMachine" in INSTALL or "ircBob" in INSTALL
+    # 1.0.0: fleet fresh else-branch must set operators (not off).
+    assert "$resolvedShell = 'operators'" in INSTALL
+    assert "legacy fleet fresh-default" in INSTALL or "1.0.0: fleet fresh default operators" in INSTALL
 
 
 def test_fr4030_docs_skill():

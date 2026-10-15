@@ -115,9 +115,19 @@ def test_load_capabilities_from_airc_json(tmp_path: Path):
 
 
 def test_resolve_shell_mode_fresh_default_off_upgrade_operators():
-    assert ac.resolve_shell_mode_for_install(prior_shell=None, explicit=None, had_prior_service=False) == "off"
+    # FR #4030 / 1.0.0: fleet fresh default is operators (was off); workstation stays off.
+    assert ac.resolve_shell_mode_for_install(prior_shell=None, explicit=None, had_prior_service=False) == "operators"
     assert ac.resolve_shell_mode_for_install(prior_shell=None, explicit=None, had_prior_service=True) == "operators"
-    assert ac.resolve_shell_mode_for_install(prior_shell="off", explicit=None, had_prior_service=True) == "off"
+    # Legacy fresh-default off migrates; explicit off stays off.
+    assert (
+        ac.resolve_shell_mode_for_install(
+            prior_shell="off",
+            explicit=None,
+            had_prior_service=True,
+            prior_shell_source="fresh-default",
+        )
+        == "operators"
+    )
     assert ac.resolve_shell_mode_for_install(prior_shell="operators", explicit="off", had_prior_service=True) == "off"
 
 
