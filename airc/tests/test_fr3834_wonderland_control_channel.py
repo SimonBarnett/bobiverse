@@ -93,3 +93,38 @@ def test_no_domain_workgroup_join_in_control_path_source():
     # domain_channel may still exist for log/compat helpers, but must not be assigned to self.channel
     assert "self.channel = self.domain_channel" not in t
     assert "self.channel = domain_channel" not in t
+
+
+def test_auto_mode_always_probes_even_with_explicit_nick():
+    """1.0.0 regression (walrus): auto must ChanServ-probe; never force-registered on --nick.
+
+    Explicit nick used to skip the probe and JOIN #<machine> unregistered (ops mess).
+    """
+    t = SERVICE.read_text(encoding="utf-8")
+    block_001 = t.split('if cmd == "001":', 1)[1].split('if cmd == "433":', 1)[0]
+    assert "_start_chanserv_probe" in block_001
+    assert "_nick_explicit" not in block_001
+    assert 'else "registered"' not in block_001
+    assert 'if self.shop_mode == "registered"' in block_001
+    assert 'elif self.shop_mode == "wonderland"' in block_001
+
+
+def test_auto_initial_channel_is_wonderland_until_probe():
+    """Before ChanServ settles, auto must not advertise/join #<machine>."""
+    t = SERVICE.read_text(encoding="utf-8")
+    init = t.split("class AircConsoleService:", 1)[1].split("def _start_chanserv_probe", 1)[0]
+    assert 'if self.shop_mode == "registered":' in init
+    assert "self.channel = self.shop_channel" in init
+    assert "self.channel = self.wonderland_channel" in init
+    # auto / wonderland share wonderland until probe; not else: shop_channel
+    assert "else:\n            self.channel = self.shop_channel" not in init
+
+
+def test_install_start_messages_mention_wonderland_fallback():
+    """Install/Start must not claim unconditional JOIN #<machine> (msi-install.log on walrus)."""
+    inst = (ROOT / "airc/scripts/Install-AircConsole.ps1").read_text(encoding="utf-8-sig")
+    start = START_AIRC.read_text(encoding="utf-8-sig")
+    assert "console will JOIN #" not in inst
+    assert "else #wonderland" in inst
+    assert "fleet shop #" not in start
+    assert "else #wonderland" in start

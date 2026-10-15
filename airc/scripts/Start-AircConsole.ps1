@@ -136,7 +136,8 @@ if ($MachineId) {
     $MachineId = ($MachineId -replace '[^A-Za-z0-9_-]+', '-').Trim('-_').ToLowerInvariant()
     $env:BOB_MACHINE_ID = $MachineId
     $env:AIRC_CONSOLE_MACHINE = $MachineId
-    Write-Host "INFO machineId=$MachineId (fleet shop #${MachineId})"
+    # FR #3834 / 1.0.0: registered #<machine> else #wonderland (never claim fleet shop only).
+    Write-Host ("INFO machineId={0} (joins #{0} when registered, else #wonderland)" -f $MachineId)
 } else {
     Write-Warning ("FR #4014: airc-console: no -MachineId / BOB_MACHINE_ID; falling back to COMPUTERNAME={0}. Pass -MachineId <id> so the console joins #<id> when registered, else #wonderland." -f $env:COMPUTERNAME)
 }

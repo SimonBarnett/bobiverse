@@ -150,10 +150,12 @@ class AircConsoleService:
         else:
             # FR #3834: always {machine}_console (wonderland is shared; keep reserved nick).
             self.nick = machine_console_nick(self.machine)
-        if self.shop_mode == "wonderland":
-            self.channel = self.wonderland_channel
-        else:
+        # FR #3834 / 1.0.0 regression: auto starts on #wonderland until ChanServ
+        # settles (never advertise/join #<machine> before registered probe).
+        if self.shop_mode == "registered":
             self.channel = self.shop_channel
+        else:
+            self.channel = self.wonderland_channel
         self._nick_retries = 0
         # #34: nick the SERVER says we hold (001 / own NICK echo), not local intent.
         self.server_nick: str | None = None
@@ -985,15 +987,12 @@ class AircConsoleService:
 
         if cmd == "001":
             # Welcome --- probe ChanServ (or forced mode) before JOIN.
+            # FR #3834 / 1.0.0: auto ALWAYS probes even with --nick explicit;
+            # never force-JOIN #<machine> unregistered (walrus ops mess).
             self._registered = True
             self._nick_retries = 0
             self.server_nick = args[0] if args else None
-            if self._nick_explicit:
-                # Explicit nick: join current channel (shop unless wonderland forced).
-                self._apply_shop_mode(
-                    "wonderland" if self.shop_mode == "wonderland" else "registered"
-                )
-            elif self.shop_mode == "registered":
+            if self.shop_mode == "registered":
                 self._apply_shop_mode("registered")
             elif self.shop_mode == "wonderland":
                 self._apply_shop_mode("wonderland")
