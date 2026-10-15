@@ -328,7 +328,7 @@ foreach ($p in $toRemove) {
     }
     if ($PSCmdlet.ShouldProcess($p, 'git worktree remove --force')) {
         Write-Host "Removing worktree $p"
-        # FR #4197: path gone or .git missing — skip git remove, rmdir leftovers, continue.
+        # FR #4197: path gone or .git missing - skip git remove, rmdir leftovers, continue.
         # One broken registration must not abort the rest of the Clear run (exit 1).
         $gitMarker = Join-Path $p '.git'
         if (-not (Test-Path -LiteralPath $p) -or -not (Test-Path -LiteralPath $gitMarker)) {

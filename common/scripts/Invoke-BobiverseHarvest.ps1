@@ -427,7 +427,7 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)restate(?:s|ing)?\s+Thin\s+FAIL[- ]supersede') -or
         ($joined -match '(?i)Thin\s+FAIL[- ]supersede[\s\S]{0,80}?already\s+on\s+main') -or
         ($joined -match '(?i)already\s+on\s+main[\s\S]{0,80}?Thin\s+FAIL[- ]supersede') -or
-        # FR #4308: a-search#1980/#2283 — "thinner ... tip" + durable lesson already on main
+        # FR #4308: a-search#1980/#2283 - "thinner ... tip" + durable lesson already on main
         # (not contiguous "thin harvest tip"; no tip-loop meta / Thin FAIL order)
         ($joined -match '(?i)thinner?\b[\s\S]{0,120}?(?:harvest\s+)?tip') -or
         ($joined -match '(?i)FAIL[- ]supersede[d]?\b[\s\S]{0,220}?already\s+on\s+main') -or

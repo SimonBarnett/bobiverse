@@ -63,7 +63,9 @@ def test_mrb3869_hostile_empty_password_file_mints_and_skips(tmp_path, monkeypat
 
 def test_mrb3869_hostile_contiguous_source_and_skill_phrases():
     text = SERVICE.read_text(encoding="utf-8")
-    assert "_nickserv_pw_minted = bool(self.nickserv_password) and not pw_existed" in text
+    # FR #4380 / #3900: install-mint marker also counts as minted.
+    assert "(not pw_existed) or install_minted" in text
+    assert "install_minted" in text
     assert "INFO FR #3863 try SASL: console.password reused" in text
     assert "reused console.password (not minted this run) also counts" in text
     skill = SKILL.read_text(encoding="utf-8")

@@ -44,6 +44,8 @@ def test_sasl_904_is_loud_error(tmp_path, monkeypatch):
     # FR #3763: loud ERROR only once console.nickserv-ok says the account exists.
     (tmp_path / "console.nickserv-ok").write_text("prior\n", encoding="ascii")
     s = make(tmp_path, monkeypatch)
+    # FR #4380: isolate from host Admin\\.airc GUID (FR #3900 heal would otherwise succeed).
+    monkeypatch.setattr(s, "_legacy_console_password_paths", lambda: [])
     s.on_line(":srv 904 * :SASL authentication failed")
     assert any(m.startswith("ERROR console account tm_console SASL failed") for m in s.logs)
     assert s._sasl_failed

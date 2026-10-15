@@ -458,7 +458,7 @@ function Initialize-AircConsoleHomeSecrets {
         Write-Host "INFO minted NickServ GUID -> $NickServPasswordFile (password-minted marker)"
     } else {
         if (Test-Path -LiteralPath $mintMarkerPath) {
-            # Kept an existing GUID — marker from a prior aborted mint must not linger.
+            # Kept an existing GUID - marker from a prior aborted mint must not linger.
             Remove-Item -LiteralPath $mintMarkerPath -Force -ErrorAction SilentlyContinue
         }
         Write-Host "INFO keep $NickServPasswordFile"
