@@ -67,25 +67,30 @@ def test_two_irc_agents_refuse_third(seat_root):
         pid_alive_fn=_alive_set([1, 2]),
     )
     assert msg.startswith("max 2 workers")
-    assert "IRC-joined" in msg
+    assert "agent seats" in msg or "IRC-joined" in msg
 
 
-def test_two_agent_procs_without_irc_markers_allow_third(seat_root):
-    assert (
-        seats.worker_cap_refusal_irc(
-            for_mode="agent",
-            root=seat_root,
-            machine="m",
-            pid_alive_fn=_alive_set([1, 2, 3]),
-        )
-        == ""
+def test_two_agent_procs_without_irc_markers_refuse_third(seat_root):
+    """FR #4307: live agent processes count even when seats dir is empty."""
+    procs = [
+        (1, 0, "bob-worker.exe", "--mode agent"),
+        (2, 0, "bob-worker.exe", "--mode agent"),
+    ]
+    msg = seats.worker_cap_refusal_irc(
+        for_mode="agent",
+        root=seat_root,
+        machine="m",
+        pid_alive_fn=_alive_set([1, 2, 3]),
+        procs=procs,
     )
+    assert msg.startswith("max 2 workers")
 
 
 def test_startworker_decide_irc_cap(tmp_path, monkeypatch):
     qdir = tmp_path / "q"
     qdir.mkdir()
     (qdir / "tray.alive").write_text("1", encoding="utf-8")
+    (qdir / "engine.alive").write_text("1", encoding="utf-8")
     gate = sw.StartGate(max_workers=2, cooldown_s=0)
 
     monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 0)
@@ -151,8 +156,17 @@ def test_bob_worker_cap_refusal_uses_irc(monkeypatch):
     assert bw.worker_cap_refusal(procs, my_pid=99, for_mode="agent")
     assert bw.worker_cap_refusal(procs, my_pid=99, for_mode="plan") == ""
 
-    monkeypatch.setattr(bw, "count_irc_agent_seats", lambda **kw: 0)
-    assert bw.worker_cap_refusal(procs, my_pid=99, for_mode="agent") == ""
+    agent_procs = [
+        (1, 0, "bob-worker.exe", "--mode agent"),
+        (2, 0, "bob-worker.exe", "--mode agent"),
+        (3, 0, "bob-worker.exe", "--mode agent"),
+    ]
+    monkeypatch.setattr(
+        bw,
+        "count_irc_agent_seats",
+        lambda **kw: seats.count_cap_agent_seats(procs=kw.get("procs") or agent_procs),
+    )
+    assert bw.worker_cap_refusal(agent_procs, my_pid=99, for_mode="agent")
 
 
 def test_proc_mode_unknown_when_no_cmdline():

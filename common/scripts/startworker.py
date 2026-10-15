@@ -180,7 +180,10 @@ def queue_dir(install_root) -> Path:
 def tray_alive(qdir, now: float | None = None, max_age: float = TRAY_ALIVE_MAX_AGE_S) -> bool:
     now = time.time() if now is None else now
     try:
-        return 0.0 <= now - (Path(qdir) / ALIVE_FILE).stat().st_mtime <= max_age
+        age = now - (Path(qdir) / ALIVE_FILE).stat().st_mtime
+        if age < 0:
+            age = 0.0  # NTFS/clock skew: mtime slightly in the future
+        return age <= max_age
     except OSError:
         return False
 
@@ -189,7 +192,10 @@ def engine_alive(qdir, now: float | None = None, max_age: float = ENGINE_ALIVE_M
     """FR #4136: PS engine queue-tick stamp must be fresh (tray.alive alone can lie while the engine is hung)."""
     now = time.time() if now is None else now
     try:
-        return 0.0 <= now - (Path(qdir) / ENGINE_ALIVE_FILE).stat().st_mtime <= max_age
+        age = now - (Path(qdir) / ENGINE_ALIVE_FILE).stat().st_mtime
+        if age < 0:
+            age = 0.0  # NTFS/clock skew: mtime slightly in the future
+        return age <= max_age
     except OSError:
         return False
 
@@ -275,8 +281,10 @@ def decide(*, body: str, nick: str, account, channel: str, local_machine: str, g
     if not engine_alive(qdir, now):
         return nack("engine_stale",
                     "Bob tray engine is not ticking (engine.alive stale); restart the tray or wait for watchdog", mode=mode, kind=kind)
-    # FR #3181: cap counts IRC-joined agent seats only (not Plan/maintenance/key-dialog).
-    have = count_irc_agent_seats(machine=local)
+    # FR #3181 / FR #4307: cap = IRC agent markers ∪ live agent bob-worker roots
+    # (not Plan/maintenance/key-dialog). Markers alone undercount after tray restart.
+    snap = (procs or snapshot_procs)()
+    have = count_irc_agent_seats(machine=local, procs=snap)
     cap = min(gate.max_workers, HARD_MAX_WORKERS)
     if mode == "agent" and have >= cap:
         return nack("cap", f"max {cap} workers ({have} IRC-joined on {local})", mode=mode, kind=kind)

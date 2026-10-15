@@ -158,6 +158,27 @@ function Measure-BobTrayIrcAgentSeats {
     return [int]$count
 }
 
+function Get-BobTrayIrcAgentSeatPids {
+    <# FR #4307: live IRC agent marker pids (stale files removed). #>
+    param([string]$SeatsDir = '')
+    if (-not $SeatsDir) { $SeatsDir = Get-BobTrayIrcSeatsDir }
+    $pids = New-Object 'System.Collections.Generic.HashSet[int]'
+    if (-not (Test-Path -LiteralPath $SeatsDir)) { return $pids }
+    Get-ChildItem -LiteralPath $SeatsDir -Filter '*.irc.json' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $j = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.mode -and ([string]$j.mode).ToLowerInvariant() -ne 'agent') { return }
+            $seatPid = [int]$j.pid
+            if ($seatPid -le 0) { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue; return }
+            if (Get-Process -Id $seatPid -ErrorAction SilentlyContinue) { [void]$pids.Add($seatPid) }
+            else { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+        } catch {
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return $pids
+}
+
 function Measure-BobTrayWorkerSeats {
     <#
     Root bob-worker*.exe seats (never Watch-AgentHealth) - FR #2523 / t815u.
@@ -189,9 +210,16 @@ function Get-BobTrayWorkerCapRefusal {
     if (-not $modeL) { $modeL = 'agent' }
     if ($modeL -ne 'agent') { return '' }
     $cap = $script:BobTrayHardMaxWorkers
-    # FR #3181: IRC-joined agent seats only (Plan/key-dialog never count).
-    $n = Measure-BobTrayIrcAgentSeats
-    if ($n -ge $cap) { return ('Max {0} workers ({1} IRC-joined agent seats). Close a worker window first.' -f $cap, $n) }
+    # FR #3181 / FR #4307: max(IRC markers with live pids, live agent bob-worker roots).
+    # Markers alone undercount after tray restart; process roots alone miss nothing when --mode agent.
+    if ($null -eq $Procs) {
+        $Procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
+                Select-Object ProcessId, ParentProcessId, Name, CommandLine)
+    }
+    $ircN = [int](Measure-BobTrayIrcAgentSeats)
+    $liveN = [int](Measure-BobTrayWorkerSeats -Procs $Procs -Modes @('agent'))
+    $n = [Math]::Max($ircN, $liveN)
+    if ($n -ge $cap) { return ('Max {0} workers ({1} agent seats). Close a worker window first.' -f $cap, $n) }
     return ''
 }
 
