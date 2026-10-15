@@ -1260,8 +1260,8 @@ def file_submission(
     _save_record(home, rec)
     # FR #2595: probes never file. Harvest worker receipts record-only (no draft PR)
     # unless FR #1812 already cites an existing PR URL (link, still no second filing).
-    # FR #2705: Lessons always open a non-draft skill-book PR (receipt / existing-PR
-    # markers suppress only the status part; they never drop lessons).
+    # FR #2705: Lessons open a non-draft skill-book PR unless FR #1812/#4288 ExistingPrUrl
+    # is cited (linked_existing_pr; no tip-loop beside the product PR).
     raw_body = str(norm.get("body") or "")
     if is_do_not_file_probe(title=title, body=raw_body):
         rec["state"] = "dropped_probe"
@@ -1279,6 +1279,16 @@ def file_submission(
             files = list(norm.get("files") or [])
             lessons = extract_harvest_lessons(raw_body)
             if kind in ("harvest", "skill") and lessons:
+                # FR #4288 / #1812: ExistingPrUrl in title/body wins over tip filing.
+                existing_early = extract_existing_pr_ref(repo, title, body)
+                if existing_early is not None:
+                    num, url = existing_early
+                    rec["url"] = url
+                    rec["number"] = num
+                    rec["state"] = "linked_existing_pr"
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
                 # FR #3317: planned/missing owner product -> held bobiverse issue (no PR).
                 owner = lesson_owner_repo(
@@ -1428,8 +1438,8 @@ def file_submission(
                     raise GitHubDown(
                         "harvest lesson PR filing failed", reason="github_down"
                     ) from exc
-            # FR #1812: skill/harvest summary that already cites an open PR -> link, no second issue.
-            elif not files and extract_existing_pr_ref(repo, title, body) is not None:
+            # FR #1812 / #4288: cited ExistingPrUrl wins even when files are attached.
+            elif extract_existing_pr_ref(repo, title, body) is not None:
                 num, url = extract_existing_pr_ref(repo, title, body)  # type: ignore[misc]
                 rec["url"] = url
                 rec["number"] = num
