@@ -1373,14 +1373,17 @@ def fr_superseded_by_done_pr(
 
     If the PR repo was not fetched, stay superseded (avoid re-offer when implement PR is cross-repo).
     If the PR repo was fetched and the PR is no longer open, do not block.
+    FR #4373: without live ``open_pulls``, terminal DONE results (PASS/MERGED/CLOSED/FAIL)
+    must not block reopen — only an ambiguous active implement (no terminal result) does.
     """
     ident_s = str(ident or "").strip()
     if ident_s and not ident_s.startswith("#"):
         ident_s = f"#{ident_s}"
+    _terminal = frozenset({"PASS", "MERGED", "CLOSED", "DONE", "FAIL"})
     for row in doc.get("done") or []:
         if str(row.get("task") or "").upper() != "FR":
             continue
-        if str(row.get("repo") or "") != str(repo or "") or str(row.get("id") or "") != ident_s:
+        if not _same(row, repo, "FR", ident_s):
             continue
         parsed = parse_github_pull_url(str(row.get("url") or ""))
         if not parsed:
@@ -1390,8 +1393,127 @@ def fr_superseded_by_done_pr(
             return True
         if open_pulls is not None:
             return pr_id in open_pulls.get(pr_repo, set())
+        result = str(row.get("result") or "").strip().upper()
+        if result in _terminal:
+            continue
         return True
     return False
+
+
+def _append_row_history(row: dict, note: str, *, cap: int = 20) -> None:
+    """Append a short history line onto a queue row (FR #4373 reopen notes)."""
+    text = str(note or "").strip()
+    if not text or not isinstance(row, dict):
+        return
+    hist = row.get("history")
+    if not isinstance(hist, list):
+        hist = []
+    hist.append(text)
+    row["history"] = hist[-cap:]
+
+
+def pop_done_fr_rows(doc: dict, repo: str, ident: str) -> list[dict]:
+    """Remove matching FR rows from ``done`` (FR #4373 reopen / resync)."""
+    done = doc.get("done")
+    if not isinstance(done, list):
+        return []
+    kept: list[dict] = []
+    removed: list[dict] = []
+    for row in done:
+        if isinstance(row, dict) and _same(row, repo, "FR", ident):
+            removed.append(row)
+        elif isinstance(row, dict):
+            kept.append(row)
+    if removed:
+        doc["done"] = kept
+    return removed
+
+
+def prepare_reopened_fr_row(
+    row: dict,
+    claim: GitClaim,
+    *,
+    via: str,
+    actor: str = "",
+    prior_done: dict | None = None,
+) -> None:
+    """Stamp reopen history, labels, and clear machine pins (FR #4373).
+
+    Requeued work is never pinned to a machine (bobiverse must never stick on ionos).
+    """
+    labels = list(claim.labels) if claim.labels else list((prior_done or {}).get("labels") or [])
+    if labels:
+        row["labels"] = labels
+    if claim.title:
+        row["title"] = claim.title
+    if claim.body:
+        row["body"] = _body_for_queue(claim.body)
+    if claim.state:
+        row["state"] = str(claim.state).strip().lower()
+    # Drop seat / machine pins from the finished attempt.
+    for key in (
+        "require_machine",
+        "offered_to",
+        "offered_ts",
+        "offered_via",
+        "nick",
+        "accepted_by",
+        "accepted_ts",
+        "channel",
+        "needs_human",
+    ):
+        row.pop(key, None)
+    who = (actor or claim.opened_by or "").strip() or "unknown"
+    when = _utc_now()
+    via_s = (via or "unknown").strip().lower() or "unknown"
+    _append_row_history(
+        row,
+        f"reopened via={via_s} by={who} at={when}",
+    )
+
+
+def requeue_reopened_issue(
+    doc: dict,
+    claim: GitClaim,
+    *,
+    via: str,
+    actor: str = "",
+) -> str:
+    """Move an open/reopened FR out of ``done`` into ``unaccepted`` (FR #4373).
+
+    Returns added|updated|duplicate|noop|skipped.
+    """
+    if claim.task != "FR":
+        return "noop"
+    removed = pop_done_fr_rows(doc, claim.repo, claim.id)
+    # Accepted FR for a reopened issue must not stay claimed.
+    before_acc = len(doc.get("accepted") or [])
+    doc["accepted"] = [
+        r
+        for r in (doc.get("accepted") or [])
+        if not (isinstance(r, dict) and _same(r, claim.repo, "FR", claim.id))
+    ]
+    _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
+    prior = removed[0] if removed else None
+    changed = _append_unaccepted(doc, claim)
+    if changed == "skipped":
+        return "skipped"
+    # Find the live unaccepted row and stamp reopen metadata.
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict) or not _same(row, claim.repo, "FR", claim.id):
+            continue
+        prepare_reopened_fr_row(
+            row,
+            claim,
+            via=via,
+            actor=actor,
+            prior_done=prior,
+        )
+        break
+    if removed or before_acc != len(doc.get("accepted") or []):
+        if changed in ("noop", "duplicate"):
+            return "updated"
+    return changed
 
 
 def fr_is_superseded(
@@ -1904,6 +2026,16 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
             title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
         ):
             changed = "noop"
+        elif action == "reopened":
+            # FR #4373: leave done, clear pins, stamp history, re-enter unaccepted.
+            changed = requeue_reopened_issue(
+                doc,
+                claim,
+                via="webhook",
+                actor=str(claim.opened_by or ""),
+            )
+            if changed == "skipped":
+                changed = "noop"
         else:
             _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
             changed = _append_unaccepted(doc, claim)
@@ -2020,7 +2152,8 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                     action="reopened",
                     line=claim.line,
                 )
-                _append_unaccepted(doc, fr)
+                # FR #4373: closed-unmerged PR may leave linked FRs in done — requeue them.
+                requeue_reopened_issue(doc, fr, via="webhook", actor="")
             changed = "updated"
     else:
         changed = _append_unaccepted(doc, claim)
@@ -2399,6 +2532,15 @@ def _coerce_row(row: dict) -> dict | None:
             out["labels"] = [str(x) for x in labs]
         else:
             out["labels"] = [str(labs)]
+    # FR #4373: reopen notes (webhook / resync) must survive queue reload.
+    if row.get("history"):
+        hist = row.get("history")
+        if isinstance(hist, list):
+            out["history"] = [str(x) for x in hist if str(x).strip()][-20:]
+        else:
+            text = str(hist).strip()
+            if text:
+                out["history"] = [text]
     try:
         if row.get("giveup_count") is not None:
             out["giveup_count"] = int(row.get("giveup_count") or 0)
@@ -7501,6 +7643,9 @@ def resync_from_github(
             # FR #2617: keep DONE FR rows that carry a /pull/ URL while that implement PR
             # is still open (or its repo was not fetched). Stripping them broke
             # fr_superseded_by_done_pr and let the FR re-enter unaccepted right after DONE.
+            # FR #4373: remember stripped open FRs so re-enqueue stamps reopen history and
+            # clears machine pins (bobiverse must never stick on ionos after reopen).
+            reopened_from_done: dict[tuple[str, str], dict] = {}
             if isinstance(doc.get("done"), list):
                 still_open = {(c.repo, c.task, c.id) for c in desired}
                 kept_done: list = []
@@ -7525,7 +7670,12 @@ def resync_from_github(
                             if pr_id in (open_pulls_map.get(pr_repo) or set()):
                                 kept_done.append(r)
                                 continue
-                    # Drop premature DONE (issue/PR still open, no open implement PR).
+                        # Drop premature DONE (issue still open, no open implement PR).
+                        reopened_from_done[
+                            (_repo_key(str(r.get("repo") or "")), _norm_row_id(r.get("id")))
+                        ] = r
+                        continue
+                    # Drop premature DONE for non-FR (issue/PR still open).
                 doc["done"] = kept_done
             ledger_now = ledger_load(home)
 
@@ -7586,6 +7736,11 @@ def resync_from_github(
                 mrb_url = (
                     f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
                 )
+                prior_done = None
+                if claim.task == "FR":
+                    prior_done = reopened_from_done.get(
+                        (_repo_key(claim.repo), _norm_row_id(claim.id))
+                    )
                 if any(_same(r, claim.repo, claim.task, claim.id) for r in doc["accepted"] + doc["unaccepted"]):
                     # already queued/claimed: keep its line, seq and offer fields; but an MRB row with no real pull
                     # URL is never offerable (FR #595), so heal it (t855u: resync-made MRB rows were all unofferable)
@@ -7612,7 +7767,13 @@ def resync_from_github(
                             for k, v in author_extra.items():
                                 if v:
                                     r[k] = v
-                        _stamp_require_machine(r, claim)
+                        if prior_done is not None:
+                            # FR #4373: reopen via rebuild — clear pins + history note.
+                            prepare_reopened_fr_row(
+                                r, claim, via="resync", prior_done=prior_done
+                            )
+                        else:
+                            _stamp_require_machine(r, claim)
                     # Clear *stale* needs_human (keep-the-flow) but keep the intentional
                     # FR #180 gate after GIVEUP_NEEDS_HUMAN_COUNT giveups.
                     for r in doc["unaccepted"]:
@@ -7631,6 +7792,14 @@ def resync_from_github(
                     extra_add.update(mrb_author_extra_from_doc(doc, claim))
                 if _append_unaccepted(doc, claim, **extra_add) == "added":
                     added += 1
+                    if prior_done is not None:
+                        for r in doc["unaccepted"]:
+                            if not _same(r, claim.repo, "FR", claim.id):
+                                continue
+                            prepare_reopened_fr_row(
+                                r, claim, via="resync", prior_done=prior_done
+                            )
+                            break
             for urepo, (merged, linked) in uat_plan.items():
                 if any(
                     str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
