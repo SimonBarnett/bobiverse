@@ -65,3 +65,25 @@ def test_routine_rewrite_is_not_damage(tmp_path):
         return "ok"
 
     assert bb.guarded_run_command(tmp_path / "w", [live], inner=touch)("x", name="j", ref_or_baseline="H") == "ok"
+
+
+def test_fr4315_suite_env_cannot_clobber_digest_home(tmp_path):
+    """Caller/suite.env pointing at the live chair must lose to isolation (FR #4315)."""
+    live = tmp_path / "live" / ".bobiverse"
+    live.mkdir(parents=True)
+    seen = {}
+
+    def capture(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+        seen.update(env or {})
+        return "ok"
+
+    run = bb.guarded_run_command(tmp_path / "work", [live], inner=capture)
+    run(
+        "x",
+        env={"BOB_DIGEST_HOME": str(live), "USERPROFILE": str(tmp_path / "live")},
+        name="common",
+        ref_or_baseline="HEAD",
+    )
+    assert str(tmp_path / "work") in seen["BOB_DIGEST_HOME"]
+    assert seen["BOB_DIGEST_HOME"] != str(live)
+    assert seen.get("BOBIVERSE_BUILD_SUITE") == "1"

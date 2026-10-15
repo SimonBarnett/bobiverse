@@ -69,6 +69,14 @@ def home_allows_legacy_migrate(new_home: Path) -> bool:
 
 
 def _admin_profile() -> Path:
+    """Administrator profile used as a secondary legacy-home search root.
+
+    FR #4315 / #4183: under ``BOBIVERSE_BUILD_SUITE`` (deterministic !build suites) never
+    resolve the real ``C:\\Users\\Administrator`` — use the redirected ``USERPROFILE`` /
+    ``HOME`` so migrate/legacy discovery cannot read or write the live digest home.
+    """
+    if _env_truthy("BOBIVERSE_BUILD_SUITE"):
+        return _profile()
     drive = (os.environ.get("SystemDrive") or "C:").rstrip("\\/")
     return Path(drive + os.sep) / "Users" / "Administrator"
 
