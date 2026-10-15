@@ -381,7 +381,7 @@ foreach ($srcPw in $pwSources) {
     break
 }
 
-# FR #3287: resolve capabilities (MSI props > prior AppParameters/json > fresh off / upgrade operators).
+# FR #3287 / #4030: resolve capabilities (MSI props > prior AppParameters/json > fleet operators).
 $hadPriorService = [bool](Get-Service -Name 'Airc' -ErrorAction SilentlyContinue) `
     -or [bool](Get-Service -Name 'AircConsole' -ErrorAction SilentlyContinue) `
     -or [bool]$priorAppParams -or ($priorId -and $priorId.ConsoleHome) `
@@ -424,7 +424,8 @@ try {
     elseif (Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue) { $isBobMachine = $true }
 } catch {}
 # FR #3393: workstation defaults shell=off unless MSI/CLI set explicitly (ignore prior).
-# FR #4030: Bob machines default operators; migrate legacy fresh-default off unless explicit.
+# FR #4030 / 1.0.0: fleet fresh default operators (Bob detect is belt-and-braces); migrate
+# legacy fresh-default / unmarked shell=off unless explicit AIRC_SHELL / shell_source=explicit.
 $shellSource = 'fresh-default'
 if ($expShell) {
     $resolvedShell = $expShell
@@ -443,6 +444,13 @@ elseif ($isBobMachine) {
         $resolvedShell = 'operators'
         if ($priorShell -eq 'operators') { $shellSource = 'preserved' } else { $shellSource = 'bob-default' }
     }
+} elseif ($priorShell -eq 'off' -and ($priorShellExplicit -or $priorShellSource -eq 'explicit')) {
+    $resolvedShell = 'off'
+    $shellSource = 'explicit'
+} elseif ($priorShell -eq 'off' -and ($priorShellSource -eq '' -or $priorShellSource -eq 'fresh-default')) {
+    $resolvedShell = 'operators'
+    $shellSource = 'migrated-from-fresh-off'
+    Write-Host 'INFO FR #4030 migrating shell=off -> operators (legacy fleet fresh-default)'
 } elseif ($priorShell -in @('off', 'operators')) {
     $resolvedShell = $priorShell
     $shellSource = 'preserved'
@@ -450,7 +458,8 @@ elseif ($isBobMachine) {
     $resolvedShell = 'operators'
     $shellSource = 'upgrade-default'
 } else {
-    $resolvedShell = 'off'
+    # FR #4030 / 1.0.0: fleet fresh default operators (was off; Bob-detect miss wrote fresh-default off).
+    $resolvedShell = 'operators'
     $shellSource = 'fresh-default'
 }
 # FR #4030: profile shell_source labels (resolve pins stay one-liners for mrb3460/fr3393)
