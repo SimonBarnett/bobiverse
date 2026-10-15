@@ -56,6 +56,8 @@ def test_fr2522_startworker_plan_uncapped_agent_capped(tmp_path, monkeypatch):
     now = _time.time()
     (q / "tray.alive").write_text("1", encoding="utf-8")
     os.utime(q / "tray.alive", (now - 1.0, now - 1.0))
+    (q / "engine.alive").write_text("1", encoding="utf-8")
+    os.utime(q / "engine.alive", (now - 1.0, now - 1.0))
     gate = sw.StartGate(max_workers=2, cooldown_s=0.0)
     procs = lambda: _agent(100, 200) + [(300, 1, "bob-worker.exe", "plan")]
     monkeypatch.setattr(sw, "count_irc_agent_seats", lambda **kw: 2)
