@@ -242,6 +242,7 @@ routes to bobiverse via the split rule.
 - Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
 - needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
 - Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
+- Harvest tip that says fr3514 ergo.password allowlist red is env/intake not product FAIL is FAIL-supersede after #4403/#4400 — that red was a real CLIENT_REMAINING_FILES pin gap; merge-when-1-behind stays in bobiverse-bob-job-mrb only.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
