@@ -1980,6 +1980,25 @@ def should_start_cursor_turn_watcher(kind: str) -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
+    """FR #4464: Cursor seats default to batched KEY_EVENT at seat start.
+
+    cursor-agent treats Ctrl+V as a literal v. Set BOB_WORKER_INJECT_PASTE=0 when
+    it is unset, even if the cursor turn watcher does not start. An explicit value wins.
+    """
+    if (kind or "").strip().lower() != "cursor":
+        return False
+    if (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip():
+        return False
+    os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
+    if log is not None:
+        try:
+            log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
+        except Exception:
+            pass
+    return True
+
+
 def _cursor_turn_quiet_s(default: float = 20.0) -> float:
     raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_QUIET_S") or "").strip()
     try:
@@ -5297,13 +5316,8 @@ class Supervisor:
         self._turn_watch_thread = th
         th.start()
         self.log(f"bored: cursor turn watcher started (quiet_s={watcher.quiet_s:.0f})")
-        # Cursor seats: cursor-agent reads an injected Ctrl+V chord as a literal 'v' (prompt_history
-        # shows ["v"]), so a submit gap cannot help. Write the job text itself as one batched
-        # WriteConsoleInput KEY_EVENT block (FR #2508 keys path), then the separate Enter + submit-verify.
-        # An explicit BOB_WORKER_INJECT_PASTE in the environment still wins.
-        if not (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip():
-            os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
-            self.log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
+        # FR #4462 / #4464: same keys default as start_agent. Explicit BOB_WORKER_INJECT_PASTE wins.
+        apply_cursor_inject_keys_default("cursor", log=self.log)
 
     def _start_turn_watcher(self, session_id: str) -> None:
         """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
@@ -5485,6 +5499,8 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #4464: keys default at seat start, including when the cursor turn watcher stays off.
+            apply_cursor_inject_keys_default(self.kind, log=self.log)
             if self.startup_grace_s > 0:
                 self.log(
                     f"agent: holding inject/!bored for startup_grace_s={self.startup_grace_s:.0f}s "
