@@ -38,8 +38,8 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 if (-not $Version) {
     $Version = (Get-Content (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') -Raw).Trim()
 }
-$msiVersion = $Version
-if ($msiVersion -notmatch '^\d+\.\d+\.\d+') { throw "bad VERSION $Version" }
+# FR #4389: MSI Product/@Version is major.minor.build only; fold x.y.z.w -> x.y.(z+w) (1.0.0.1 -> 1.0.1).
+$msiVersion = ConvertTo-BobiverseMsiProductVersion -Version $Version
 
 $fetchNssm = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Nssm.ps1')
 $fetchWix = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Wix.ps1')
@@ -104,17 +104,17 @@ function Stage-Product([string]$Name) {
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    # FR #3686 / regression of #1552: stage VERSION from the pack $Version (MSI ProductVersion),
+    # FR #3686 / FR #4389: stage VERSION from MSI ProductVersion (3-part fold of pack -Version).
     # never by copying common\VERSION alone. A release pack with -Version 0.1.27 while
     # common\VERSION still said 0.1.25 shipped BUILD.json=0.1.27 + VERSION=0.1.25 (walrus).
     $verUtf8 = New-Object Text.UTF8Encoding $false
-    $verText = $Version.Trim() + [Environment]::NewLine
+    $verText = $msiVersion.Trim() + [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $stage 'VERSION'), $verText, $verUtf8)
     [IO.File]::WriteAllText((Join-Path $stage 'src\VERSION'), $verText, $verUtf8)
     # t797u: BUILD.json = what the tray About dialog shows as version / build date / commit for this install folder.
     $buildCommit = ''
     try { $buildCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
-    ([ordered]@{ product = $Name; version = $Version; built_utc = [datetime]::UtcNow.ToString('o'); commit = $buildCommit.Trim() } |
+    ([ordered]@{ product = $Name; version = $msiVersion; release_version = $Version; built_utc = [datetime]::UtcNow.ToString('o'); commit = $buildCommit.Trim() } |
         ConvertTo-Json -Compress) | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding ascii
     # FR #3686: pack fails closed if VERSION / BUILD.json / ProductVersion disagree.
     Assert-BobiverseStageVersionAligned -Stage $stage -ExpectedVersion $msiVersion -Product $Name
@@ -615,7 +615,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <!-- FR #3292: AIRC_PURGE=1 or workstation manifest purge_default removes secrets/homes. -->
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
     <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
-    <!-- FR #4011: stop Airc before MajorUpgrade RemoveExistingProducts (PsExec session-0 RM 351 / 1601). -->
+    <!-- FR #4011: deferred stop Airc before MajorUpgrade RemoveExistingProducts (PsExec session-0 RM 351 / 1601). -->
+    <!-- FR #4389: immediate stop before InstallValidate (FilesInUse / exit 3010); deferred CAs cannot run before InstallInitialize. -->
+    <CustomAction Id="SetStopAircValidateCmd" Property="StopAircBeforeValidate" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
+    <CustomAction Id="StopAircBeforeValidate" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="immediate" Return="ignore" />
     <CustomAction Id="SetStopAircUpgradeCmd" Property="StopAircBeforeUpgrade" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
     <CustomAction Id="StopAircBeforeUpgrade" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
 "@
@@ -624,6 +627,8 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <Custom Action="RunAvExclude" Before="InstallFiles">NOT REMOVE~="ALL"</Custom>
       <Custom Action="SetUninstallCmd" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetStopAircValidateCmd" Before="StopAircBeforeValidate">WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="StopAircBeforeValidate" Before="InstallValidate">WIX_UPGRADE_DETECTED</Custom>
       <Custom Action="SetStopAircUpgradeCmd" Before="StopAircBeforeUpgrade">WIX_UPGRADE_DETECTED</Custom>
       <Custom Action="StopAircBeforeUpgrade" Before="RemoveExistingProducts">WIX_UPGRADE_DETECTED</Custom>
 "@
