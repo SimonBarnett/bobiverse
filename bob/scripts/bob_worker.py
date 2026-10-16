@@ -272,6 +272,7 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         st = (f.grok_state or "unknown").strip().lower()
         return st != "unknown"
+    # Cursor: relay ACKs on receipt (#4115), so _inject_line uses this probe, not stop_fn.
     if k == "cursor":
         return f.cursor_high is not None or f.cursor_low is not None
     return False
@@ -1894,6 +1895,8 @@ def make_submit_probe(
     agent_pid: int = 0,
     since_wall: float | None = None,
     sessions_root: Optional[Path] = None,
+    text: str = "",
+    cursor_chats_root: Optional[Path] = None,
 ) -> Optional[Callable[[], bool]]:
     """Build a submit probe for the agent kind (FR #2696). None = no probe available."""
     k = (kind or "").strip().lower()
@@ -1911,8 +1914,51 @@ def make_submit_probe(
 
         return _probe
 
-    # Cursor / unknown: no durable enqueue log on this fleet yet.
+    if k == "cursor":
+        # Cursor submit probe: cursor-agent appends each submitted prompt to
+        # ~/.cursor/chats/<ws>/<chat>/prompt_history.json. True once a history file touched
+        # since the inject holds the injected text (prefix match; a lone "v" from Ctrl+V is not it).
+        want = re.sub(r"\s+", " ", (text or "")).strip()[:60]
+        croot = Path(cursor_chats_root) if cursor_chats_root else (Path.home() / ".cursor" / "chats")
+
+        def _cprobe() -> bool:
+            return probe_cursor_prompt_history(croot, want, since_wall=t0)
+
+        return _cprobe if want else None
+
+    # Unknown kinds: no durable enqueue log on this fleet yet.
     return None
+
+
+def probe_cursor_prompt_history(chats_root: Path | str, want: str, *, since_wall: float) -> bool:
+    """True when a prompt_history.json modified at/after ``since_wall`` contains ``want``."""
+    if not want:
+        return False
+    try:
+        root = Path(chats_root)
+        for f in root.glob("*/*/prompt_history.json"):
+            try:
+                if f.stat().st_mtime + 1.0 < float(since_wall):
+                    continue
+                data = json.loads(f.read_text(encoding="utf-8", errors="replace") or "[]")
+            except (OSError, ValueError):
+                continue
+            for entry in data if isinstance(data, list) else []:
+                if want in re.sub(r"\s+", " ", str(entry)):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _cursor_submit_gap_s(default: float = 1.0) -> float:
+    """Pre-Enter gap for cursor-agent: its Ctrl+V clipboard read is async (Enter must wait)."""
+    raw = (os.environ.get("BOB_WORKER_CURSOR_SUBMIT_GAP_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(0.2, min(10.0, v))
 
 
 def bored_on_turn_end_enabled() -> bool:
@@ -5500,11 +5546,18 @@ class Supervisor:
             session_id=sid,
             agent_pid=int(getattr(proc, "pid", 0) or 0),
             since_wall=since_wall,
+            text=line,
         )
         # FR #2791: stop only when the open ACK is for this injected job (not any ACK).
         stop = None
         want = assign_job_ref(line)
-        if want and self.bored is not None:
+        is_cursor = (self.kind or "").strip().lower() == "cursor"
+        inject_fn = self.inject
+        if is_cursor and self.inject is inject_console:
+            inject_fn = lambda pid, text, log=None: inject_console(
+                pid, text, submit_gap_s=_cursor_submit_gap_s(), log=log
+            )
+        if want and self.bored is not None and not (is_cursor and probe is not None):
             stop = lambda b=self.bored, w=want: bool(getattr(b, "ack_open", False)) and (
                 getattr(b, "ack_job_ref", None) == w
             )
@@ -5512,7 +5565,7 @@ class Supervisor:
         return inject_with_submit_verify(
             proc.pid,
             line,
-            inject_fn=self.inject,
+            inject_fn=inject_fn,
             enter_fn=send_console_enter,
             probe_fn=probe,
             clock=time.monotonic,
