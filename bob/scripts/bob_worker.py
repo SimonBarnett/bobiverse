@@ -1972,6 +1972,133 @@ def should_start_turn_watcher(kind: str) -> bool:
     return (kind or "").strip().lower() == "grok" and bored_on_turn_end_enabled()
 
 
+def should_start_cursor_turn_watcher(kind: str) -> bool:
+    """Cursor seats: chat-store quiet-period turn watcher (BOB_WORKER_CURSOR_TURN_WATCH=0 disables)."""
+    if (kind or "").strip().lower() != "cursor" or not bored_on_turn_end_enabled():
+        return False
+    raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_WATCH") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _cursor_turn_quiet_s(default: float = 20.0) -> float:
+    raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_QUIET_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(5.0, min(300.0, v))
+
+
+class CursorTurnWatcher:
+    """cursor-agent writes no turn events; infer them from its chat store.
+
+    The seat's chat is the ``~/.cursor/chats/<ws>/<chat>/`` dir created closest after the agent
+    spawn (``since_wall``). A write to any file in it after a quiet spell = turn_started; no
+    writes for ``quiet_s`` after activity = turn_ended (once per turn). ``clock`` is wall time
+    (file mtimes are wall time).
+    """
+
+    def __init__(
+        self,
+        *,
+        since_wall: float,
+        chats_root: Path | str | None = None,
+        quiet_s: float | None = None,
+        on_turn_started: Optional[Callable[[Optional[int], float], None]] = None,
+        on_turn_ended: Optional[Callable[[Optional[int], float], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+        poll_s: float = 1.0,
+        clock: Callable[[], float] = time.time,
+        log: Optional[Callable[[str], None]] = None,
+        bind_window_s: float = 120.0,
+    ):
+        self.root = Path(chats_root) if chats_root else (Path.home() / ".cursor" / "chats")
+        self.since_wall = float(since_wall)
+        self.quiet_s = float(_cursor_turn_quiet_s() if quiet_s is None else quiet_s)
+        self._on_started = on_turn_started
+        self._on_ended = on_turn_ended
+        self._stop = stop_event or threading.Event()
+        self.poll_s = max(0.05, float(poll_s))
+        self.clock = clock
+        self._log = log
+        self.bind_window_s = float(bind_window_s)
+        self.chat_dir: Optional[Path] = None
+        self._last_mtime = 0.0
+        self._active = False
+        self._turn = 0
+
+    def _bind(self) -> Optional[Path]:
+        if self.chat_dir is not None:
+            return self.chat_dir
+        best = None
+        try:
+            for d in self.root.glob("*/*"):
+                if not d.is_dir():
+                    continue
+                try:
+                    st = d.stat()
+                except OSError:
+                    continue
+                born = min(st.st_mtime, getattr(st, "st_ctime", st.st_mtime))
+                if os.name != "nt":
+                    born = st.st_mtime
+                    with contextlib.suppress(OSError):
+                        born = min(f.stat().st_mtime for f in d.iterdir()) if any(d.iterdir()) else born
+                if born + 2.0 < self.since_wall or born > self.since_wall + self.bind_window_s:
+                    continue
+                if best is None or born < best[0]:
+                    best = (born, d)
+        except OSError:
+            return None
+        if best is not None:
+            self.chat_dir = best[1]
+            if self._log:
+                with contextlib.suppress(Exception):
+                    self._log(f"bored: cursor turn watcher following {self.chat_dir}")
+        return self.chat_dir
+
+    def _newest_mtime(self, d: Path) -> float:
+        m = 0.0
+        try:
+            for f in d.iterdir():
+                with contextlib.suppress(OSError):
+                    if f.is_file():
+                        m = max(m, f.stat().st_mtime)
+        except OSError:
+            pass
+        return m
+
+    def tick(self) -> Optional[str]:
+        """One poll; returns 'started' / 'ended' when it fired a callback (tests)."""
+        d = self._bind()
+        if d is None:
+            return None
+        now = float(self.clock())
+        m = self._newest_mtime(d)
+        fired = None
+        if m > self._last_mtime:
+            self._last_mtime = m
+            if not self._active:
+                self._active = True
+                self._turn += 1
+                fired = "started"
+                if self._on_started:
+                    with contextlib.suppress(Exception):
+                        self._on_started(self._turn, now)
+        elif self._active and now - self._last_mtime >= self.quiet_s:
+            self._active = False
+            fired = "ended"
+            if self._on_ended:
+                with contextlib.suppress(Exception):
+                    self._on_ended(self._turn, now)
+        return fired
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            self.tick()
+            self._stop.wait(self.poll_s)
+
+
 class GrokTurnWatcher:
     """FR #2802: poll grok session events.jsonl for turn_started / turn_ended."""
 
@@ -5070,9 +5197,48 @@ class Supervisor:
         th.start()
         self.log(f"out-of-fuel: watcher started (kind={kind} pid={agent_pid})")
 
+    def _start_cursor_turn_watcher(self) -> None:
+        """Cursor: release held assigns on an inferred turn end (no 600 s fallback wait)."""
+        self._turn_watch_stop = threading.Event()
+
+        def _on_started(turn: Optional[int], wall: float) -> None:
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
+            if self.bored:
+                self.bored.turn_started(turn=turn, sid=None)
+
+        def _on_ended(turn: Optional[int], wall: float) -> None:
+            if self.bored:
+                self.bored.turn_ended(turn=turn, sid=None)
+            try:
+                n = self.relay.release_held_assigns()
+                if n and self.bored:
+                    self.bored.activity(mark_work=True)
+                if self.bored:
+                    self.bored.clear_held_assign()
+            except Exception:
+                pass
+
+        watcher = CursorTurnWatcher(
+            since_wall=time.time() - 5.0,
+            on_turn_started=_on_started,
+            on_turn_ended=_on_ended,
+            stop_event=self._turn_watch_stop,
+            log=self.log,
+        )
+        th = threading.Thread(target=watcher.run, name="cursor-turn-watch", daemon=True)
+        self._turn_watch_thread = th
+        th.start()
+        self.log(f"bored: cursor turn watcher started (quiet_s={watcher.quiet_s:.0f})")
+
     def _start_turn_watcher(self, session_id: str) -> None:
         """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
         self._stop_turn_watcher()
+        if self.bored and should_start_cursor_turn_watcher(self.kind):
+            self._start_cursor_turn_watcher()
+            return
         if not self.bored or not should_start_turn_watcher(self.kind):
             return
         self._turn_watch_stop = threading.Event()
