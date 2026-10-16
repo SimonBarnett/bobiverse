@@ -42,14 +42,17 @@ GONE_SCRIPTS = (
     "Sync-BobiverseFromRepo.ps1",
 )
 
-# FR #3582 / #3685 / #3988: exact remaining files after client purge when airc.exe is present (26).
-# SkipAircExe pack stages omit airc\airc.exe -> 25; both must exclude fleet-operators.txt.
+# FR #3582 / #3685 / #3988 / #4216 / #4400: exact remaining files after client purge when
+# airc.exe + embedded config\ergo.password are present (27).
+# SkipAircExe pack stages omit airc\airc.exe -> 26; both must exclude fleet-operators.txt.
 # FR #3899 added scripts\Fetch-Nssm.ps1 to the client allow-list for nssm self-heal.
+# FR #4216 airc pack embeds config\ergo.password; client purge must keep it (mrb3585).
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
         "VERSION",
         r"airc\airc.exe",
+        r"config\ergo.password",  # FR #4216 / #4400 — keep; never scrub for hermetic gate
         r"third_party\nssm\win64\nssm.exe",
         r"scripts\airc_console.py",
         r"scripts\airc_console_service.py",
@@ -75,7 +78,7 @@ CLIENT_REMAINING_FILES = frozenset(
         r"scripts\Update-BobiverseService.ps1",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 26
+assert len(CLIENT_REMAINING_FILES) == 27
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -119,6 +122,10 @@ def test_fr3582_client_purge_drops_fleet_operators(tmp_path: Path):
     (stage / "BUILD.json").write_text("{}\n", encoding="utf-8")
     (stage / "config" / "fleet-operators.txt").write_text(
         "bob-example\n", encoding="utf-8"
+    )
+    # FR #4400 / #4216: install-generated Ergo PASS survives client purge (sibling of fleet-ops).
+    (stage / "config" / "ergo.password").write_text(
+        "FAKE_ergo_pass_fr4400\n", encoding="utf-8"
     )
     (stage / "airc" / "airc.exe").write_bytes(b"MZ")
     (stage / "third_party" / "nssm" / "win64" / "nssm.exe").write_bytes(b"MZ")
@@ -243,13 +250,20 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
     assert r"config\fleet-operators.txt" not in rels
     expected = set(CLIENT_REMAINING_FILES)
     if not (stage / "airc" / "airc.exe").is_file():
-        # Pack -SkipAircExe (unit stage) omits airc.exe -> 25 files (FR #3685 + FR #3988 Fetch-Nssm).
+        # Pack -SkipAircExe (unit stage) omits airc.exe (FR #3685 + FR #3988 Fetch-Nssm).
         expected.discard(r"airc\airc.exe")
+    if not (stage / "config" / "ergo.password").is_file():
+        # Pack without embed secret is rare; keep gate hermetic (FR #4400).
+        expected.discard(r"config\ergo.password")
     assert rels == expected, (
         f"client remaining files mismatch (got {len(rels)}, want {len(expected)}): "
         + ", ".join(sorted(rels))
     )
-    assert len(expected) in (25, 26)
+    # With airc.exe+ergo=27; SkipAircExe+ergo=26; either missing drops one more (25).
+    assert len(expected) in (25, 26, 27)
+    # FR #4400: when pack embedded Ergo PASS, client remaining set must include it.
+    if (stage / "config" / "ergo.password").is_file():
+        assert r"config\ergo.password" in rels
 
     # Allow-list size: only the named install/runtime set (no 45+ py / 69+ ps1).
     script_files = list((stage / "scripts").glob("*"))
