@@ -1644,7 +1644,7 @@ function Sync-BobiverseUpdaterFromOrigin {
 
 function Sync-BobiverseHarvestScriptsFromOrigin {
     # FR #4297: same dirty-ff class as FR #2581. Flat scripts\Invoke-BobiverseHarvest.ps1
-    # (and Report-BobiverseIntakeIssue.ps1) lag tip after merges like FR #4288 ExistingPrUrl
+    # (and Report-BobiverseIntakeIssue.ps1) lag tip after merges like FR #4288 ExistingPrUrl / FR #4419 Protect-HarvestBodyClosesKeywords
     # when the install worktree cannot ff. Overlay origin tip into flat + common.
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
@@ -1656,7 +1656,7 @@ function Sync-BobiverseHarvestScriptsFromOrigin {
     $reasons = @()
     $bytes = 0
     foreach ($pair in @(
-            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'ExistingPrUrl|FR #4288|Invoke-BobiverseHarvest' },
+            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'Protect-HarvestBodyClosesKeywords|FR #4371|FR #4419|ExistingPrUrl|Invoke-BobiverseHarvest' },
             @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake' }
         )) {
         $r = Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
