@@ -99,6 +99,20 @@ ISSUE_URL_RE = re.compile(
 NAK_BORED_WAIT = "NAK !BORED wait"
 NAK_BORED_BUSY = "NAK !BORED busy"
 NO_JOBS = "no jobs"
+
+
+def format_bored_busy_nak(nick: str, open_job: str = "") -> str:
+    """FR #4415: busy NAK names the seat and held/offered job (operators + seat logs).
+
+    Always keeps the ``NAK !BORED busy`` token so worker NAK parsers still match.
+    """
+    why = str(open_job or "").strip()
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    if not why:
+        return NAK_BORED_BUSY
+    if me:
+        return f"{me}: NAK !BORED busy ({why})"
+    return f"{NAK_BORED_BUSY} ({why})"
 # FR #208 (updated Simon 2026-09-25): one line per job, no flood.
 LIST_RATE_S = 30.0
 LIST_MAX_LINES = 10  # job lines; + optional 1 summary + 1 more-hint <= ~12 total
@@ -2204,6 +2218,20 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
             if claim.event == "pull_request" and claim.action == "closed":
                 with contextlib.suppress(Exception):
                     stamp_mrb_done(home, claim.repo, claim.id)
+                # FR #4415: drop seat holds for the closed PR so idle seats are not
+                # stuck busy (held ...) after the queue row is removed.
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home, claim.repo, "MRB", claim.id
+                    )
+                with contextlib.suppress(Exception):
+                    for _t in ("UAT", "PR", "FR"):
+                        _clear_job_seat_holds_unlocked(home, claim.repo, _t, claim.id)
+            elif claim.event == "issues" and claim.action == "closed":
+                # FR #4415: same for closed issues (FR/PR rows dropped).
+                with contextlib.suppress(Exception):
+                    for _t in ("FR", "PR", "UAT"):
+                        _clear_job_seat_holds_unlocked(home, claim.repo, _t, claim.id)
             return changed
     except TimeoutError:
         _spool_pending(home, claim)
@@ -3233,6 +3261,10 @@ def mrb_row_offerable(
     if _canon_task(row) != "MRB":
         return True
     if row.get("merged") in (True, "true", "1", 1):
+        return False
+    # FR #4415: stamped closed state (webhook / resync) must not be offered even
+    # when the !bored path passes pr_exists=None (no live GitHub check).
+    if str(row.get("state") or "").strip().lower() == "closed":
         return False
     titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
     if is_mrb_fix_pr_title(titleish):
@@ -5554,10 +5586,14 @@ def _save_seat_holds_unlocked(home: Path, holds: dict) -> None:
     os.replace(str(tmp), str(path))
 
 
-def _note_seat_hold_unlocked(home: Path, nick: str, job: dict) -> None:
+def _note_seat_hold_unlocked(
+    home: Path, nick: str, job: dict, *, via: str | None = None
+) -> None:
     key = _seat_key(nick)
     if not key or not isinstance(job, dict):
         return
+    # Keyword wins when set; else job["via"]; else offer (FR #4415 / FR #4115).
+    via_s = str(via if via is not None else (job.get("via") or "offer")).strip().lower() or "offer"
     holds = _load_seat_holds_unlocked(home)
     holds[key] = {
         "nick": (canonical_worker_nick(nick) or nick or "").strip(),
@@ -5565,23 +5601,28 @@ def _note_seat_hold_unlocked(home: Path, nick: str, job: dict) -> None:
         "task": str(job.get("task") or ""),
         "id": str(job.get("id") or ""),
         "ts": str(job.get("offered_ts") or _utc_now()),
+        # FR #4415: ``offer`` holds void when the queue row is gone; ``ack-missing``
+        # (FR #4115) stays busy without a row until DONE/NACK/GIVEUP/QUIT.
+        "via": via_s,
     }
     with contextlib.suppress(OSError):
         _save_seat_holds_unlocked(home, holds)
 
 
-def note_seat_hold(home: Path, nick: str, job: dict) -> bool:
+def note_seat_hold(home: Path, nick: str, job: dict, *, via: str | None = None) -> bool:
     """FR #4089 / FR #4115: remember an open job for this seat (blocks further offers).
 
     Used when an offer is stamped, and when a seat ACKs a job Jeeves has no queue row
     for (``ACK status=missing``) so the seat is not treated as free after a chair restart.
+    ``via``: ``offer`` (default) or ``ack-missing`` (FR #4115 / FR #4415). When omitted,
+    ``job["via"]`` is used if present.
     """
     key = _seat_key(nick)
     if not key or not isinstance(job, dict):
         return False
     try:
         with _lock(home):
-            _note_seat_hold_unlocked(home, nick, job)
+            _note_seat_hold_unlocked(home, nick, job, via=via)
         return True
     except (TimeoutError, OSError):
         return False
@@ -5778,6 +5819,24 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
                         _save_seat_holds_unlocked(home, holds)
                     h = None
                     break
+        # FR #4415: offer-via hold is void when the queue row is gone (closed/merged
+        # drop). ack-missing holds (FR #4115) stay until DONE/NACK/GIVEUP/QUIT.
+        if isinstance(h, dict):
+            via = str(h.get("via") or "offer").strip().lower() or "offer"
+            if via != "ack-missing":
+                present = False
+                for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+                    for row in bucket:
+                        if isinstance(row, dict) and _same(row, h_repo, h_task, h_id):
+                            present = True
+                            break
+                    if present:
+                        break
+                if not present:
+                    holds.pop(key, None)
+                    with contextlib.suppress(OSError):
+                        _save_seat_holds_unlocked(home, holds)
+                    h = None
     if isinstance(h, dict):
         live_l = {_seat_key(n) for n in (live or set()) if _seat_key(n)}
         if live_l and key not in live_l:
