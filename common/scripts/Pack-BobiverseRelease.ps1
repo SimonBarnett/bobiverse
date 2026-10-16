@@ -213,6 +213,10 @@ function Stage-Product([string]$Name) {
     $stageErgo = Join-Path $stage 'config\ergo.password'
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'config') | Out-Null
     $wantEmbedErgo = $EmbedErgoPassword -or ($Name -eq 'airc')
+    # FR #4477: -SkipMsi is a test stage, not a release MSI. Do not copy a live
+    # Ergo PASS or write a placeholder password file into that stage. Real airc
+    # packs (no -SkipMsi) still embed config\ergo.password (FR #4216).
+    if ($SkipMsi) { $wantEmbedErgo = $false }
     if ($wantEmbedErgo) {
         $ergoSecret = $null
         $ergoSource = $null
@@ -250,12 +254,6 @@ function Stage-Product([string]$Name) {
                 }
             }
         }
-        # -SkipMsi stage tests must not require a live fleet secret (never used for real MSI).
-        if (-not $ergoSecret -and $SkipMsi -and ($Name -eq 'airc')) {
-            $ergoSecret = 'FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE'
-            $ergoSource = 'test-placeholder'
-            Write-Host 'WARN airc -SkipMsi: embedding FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE (not a release artifact)'
-        }
         if (-not $ergoSecret) {
             if ($Name -eq 'airc') {
                 throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216/#4349): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD / BOB_IRC_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password, repo config\ergo.password, or <ai root>\bob|airc|jeeves\config\ergo.password'
@@ -269,7 +267,11 @@ function Stage-Product([string]$Name) {
             Remove-Item -LiteralPath $stageErgo -Force
             Write-Host "WARN $Name removed staged config/ergo.password (issue #4 public pack guard)"
         }
-        Write-Host "INFO $Name skipping Ergo PASS embed (issue #4; pass -EmbedErgoPassword for private packs)"
+        if ($SkipMsi) {
+            Write-Host "INFO $Name -SkipMsi: not embedding config/ergo.password (FR #4477; not a release artifact)"
+        } else {
+            Write-Host "INFO $Name skipping Ergo PASS embed (issue #4; pass -EmbedErgoPassword for private packs)"
+        }
     }
     if ($Name -eq 'jeeves') {
         $ergoStage = Join-Path $stage 'ergo'
