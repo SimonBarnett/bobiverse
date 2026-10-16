@@ -5297,6 +5297,13 @@ class Supervisor:
         self._turn_watch_thread = th
         th.start()
         self.log(f"bored: cursor turn watcher started (quiet_s={watcher.quiet_s:.0f})")
+        # Cursor seats: cursor-agent reads an injected Ctrl+V chord as a literal 'v' (prompt_history
+        # shows ["v"]), so a submit gap cannot help. Write the job text itself as one batched
+        # WriteConsoleInput KEY_EVENT block (FR #2508 keys path), then the separate Enter + submit-verify.
+        # An explicit BOB_WORKER_INJECT_PASTE in the environment still wins.
+        if not (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip():
+            os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
+            self.log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
 
     def _start_turn_watcher(self, session_id: str) -> None:
         """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
