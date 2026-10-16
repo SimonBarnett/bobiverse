@@ -244,6 +244,7 @@ routes to bobiverse via the split rule.
 - Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
 - !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe — use same max_lost threshold for focus as queue (#4408)
 - FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
+- MRB: ce-priority omnibus dayworks/ DEV1 sync tips that include WP shells 8341-8358, Build-WP4, FORMCLMNS paint, or WP1-4 UAT packs are FAIL off-vision (docs/vision.md Out of scope + S5); close unmerged; same class as #11/#13/#14/#15/#18.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
