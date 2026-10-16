@@ -425,7 +425,10 @@ _THIN_TWIN_CUE_RE = re.compile(
     r"thinner?\b[\s\S]{0,120}?(?:harvest\s+)?tip|"
     r"FAIL[- ]supersede[d]?\b[\s\S]{0,220}?already\s+on\s+main|"
     r"durable\s+lesson\s+already|"
-    r"closed\s+unmerged[\s\S]{0,100}?already\s+on\s+main"
+    r"closed\s+unmerged[\s\S]{0,100}?already\s+on\s+main|"
+    # FR #4484: "restates main" / "admit main already has" (class of a-search#3470)
+    r"restate(?:s|ing)?\s+main|"
+    r"admit\s+main\s+already\s+has"
     r")"
 )
 
@@ -438,6 +441,7 @@ def is_fail_supersede_thin_twin_lesson(text: str) -> bool:
     FR #4231: tip-loop meta / only-restate Thin FAIL-supersede already-on-main cues
     also count (any skill book, including harvest-agent-skills).
     FR #4308: thinner tip + durable lesson already on main (a-search#1980/#2283) also count.
+    FR #4484: restates main / admit main already has (a-search#3470) also count.
     """
     t = str(text or "")
     if not t.strip():
