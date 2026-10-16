@@ -71,14 +71,14 @@ def test_fr3742_pre_session_accepted_healed_on_bored(tmp_path, monkeypatch):
         tmp_path, NICK, now, session_started=session_started, log=logs.append
     )
     assert gitclaim.load_queue(tmp_path)["accepted"] == []
+    # FR #4422: without /pull/ evidence, requeue — never invent LOST_DONE_RESTART into done[].
     done = gitclaim.load_queue(tmp_path).get("done") or []
+    assert not any(str(r.get("id")) == "#977" for r in done)
+    unacc = gitclaim.load_queue(tmp_path).get("unaccepted") or []
     assert any(
         str(r.get("id")) == "#977"
-        and (
-            str(r.get("result") or "") == "LOST_DONE_RESTART"
-            or str(r.get("reconcile") or "") == "LOST_DONE_RESTART"
-        )
-        for r in done
+        and "requeue:LOST_DONE_RESTART" in str(r.get("reconcile") or "")
+        for r in unacc
     )
     assert any("seat-reconcile" in line and "LOST_DONE_RESTART" in line for line in logs)
     # Gate sees idle after heal (re-seed doing digest; accepted already cleared).
