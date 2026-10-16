@@ -1935,6 +1935,33 @@ function Write-BobiverseMsiInstallLog {
     }
 }
 
+function ConvertTo-BobiverseMsiProductVersion {
+    <#
+      FR #4389: WiX/MSI Product/@Version compares only major.minor.build (3 fields).
+      A four-part marketing version like 1.0.0.1 is equal to 1.0.0 for MajorUpgrade, so
+      msiexec installs side-by-side (two ARP entries). Fold a.b.c.d -> a.b.(c+d) so
+      1.0.0.1 becomes 1.0.1 (greater than 1.0.0). Exact three-part versions pass through.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Version
+    )
+    $v = ([string]$Version).Trim().TrimStart('v', 'V')
+    if ($v -match '^(\d+)\.(\d+)\.(\d+)$') {
+        return $v
+    }
+    if ($v -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
+        $a = [int]$Matches[1]; $b = [int]$Matches[2]; $c = [int]$Matches[3]; $d = [int]$Matches[4]
+        $third = $c + $d
+        if ($third -gt 65535) {
+            throw ("ConvertTo-BobiverseMsiProductVersion: folded third field {0} exceeds MSI max 65535 (from '{1}')" -f $third, $Version)
+        }
+        $out = '{0}.{1}.{2}' -f $a, $b, $third
+        Write-Host ("INFO FR #4389 MSI ProductVersion fold {0} -> {1}" -f $v, $out)
+        return $out
+    }
+    throw ("ConvertTo-BobiverseMsiProductVersion: VERSION '{0}' must be x.y.z or x.y.z.w (digits only)" -f $Version)
+}
+
 function Assert-BobiverseStageVersionAligned {
     <#
       FR #3686: pack-time gate. Stage VERSION, src\VERSION, and BUILD.json.version
@@ -1946,8 +1973,8 @@ function Assert-BobiverseStageVersionAligned {
         [string]$Product = ''
     )
     $want = ([string]$ExpectedVersion).Trim()
-    if ($want -notmatch '^\d+\.\d+\.\d+') {
-        throw "Assert-BobiverseStageVersionAligned: bad ExpectedVersion '$want'"
+    if ($want -notmatch '^\d+\.\d+\.\d+$') {
+        throw "Assert-BobiverseStageVersionAligned: bad ExpectedVersion '$want' (FR #4389: MSI ProductVersion is exactly 3-part)"
     }
     foreach ($rel in @('VERSION', 'src\VERSION')) {
         $p = Join-Path $Stage $rel
@@ -1985,7 +2012,7 @@ function Assert-BobiverseInstallVersion {
     )
     if (-not $ExpectedVersion -or -not $ExpectedVersion.Trim()) { return }
     $want = $ExpectedVersion.Trim()
-    if ($want -notmatch '^\d+\.\d+\.\d+') {
+    if ($want -notmatch '^\d+\.\d+\.\d+$') {
         Write-Host ("WARN Assert-BobiverseInstallVersion skip bad ExpectedVersion '{0}'" -f $want)
         return
     }

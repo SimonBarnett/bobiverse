@@ -23,6 +23,11 @@ if (-not $RepoRoot) {
         $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
     }
 }
+$commonPs1 = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+if (-not (Test-Path -LiteralPath $commonPs1)) {
+    $commonPs1 = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\scripts\Bobiverse-Common.ps1'
+}
+if (Test-Path -LiteralPath $commonPs1) { . $commonPs1 }
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 if (-not $Version) {
@@ -34,11 +39,20 @@ if (-not $Version) {
     }
 }
 
-# MSI Product/@Version is major.minor.build (third segment = patch).
-$msiVersion = $Version
-if ($msiVersion -notmatch '^\d+\.\d+\.\d+') {
+# FR #4389: MSI Product/@Version compares only major.minor.build; fold x.y.z.w -> x.y.(z+w).
+# Unanchored ^\d+\.\d+\.\d+ previously accepted 1.0.0.1 and left side-by-side ARP.
+if (Get-Command ConvertTo-BobiverseMsiProductVersion -ErrorAction SilentlyContinue) {
+    if ($Version -match '^\d+\.\d+$') { $Version = "$Version.0" }
+    $msiVersion = ConvertTo-BobiverseMsiProductVersion -Version $Version
+} else {
+    $msiVersion = $Version.Trim().TrimStart('v', 'V')
     if ($msiVersion -match '^\d+\.\d+$') { $msiVersion = "$msiVersion.0" }
-    else { throw "VERSION '$Version' is not major.minor.patch for MSI" }
+    elseif ($msiVersion -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
+        $msiVersion = '{0}.{1}.{2}' -f [int]$Matches[1], [int]$Matches[2], ([int]$Matches[3] + [int]$Matches[4])
+    }
+    elseif ($msiVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "VERSION '$Version' is not major.minor.patch for MSI (FR #4389)"
+    }
 }
 
 $stage = Join-Path $OutDir ("airc-console-$Version")
