@@ -30,7 +30,8 @@ def test_mrb2723_seat_inject_and_submit():
     text = _utf8_no_bom(WK)
     assert "Seat inject and submit" in text
     idx = text.index("Seat inject and submit")
-    window = text[idx : idx + 800]
+    # FR #4469: re-paste / retry Enter sit just past 800 once the FR #4115 clause grew.
+    window = text[idx : idx + 1000]
     assert "WriteConsoleInput" in window or "submit gap" in window
     assert "clipboard" in window.lower()
     assert "harvest_hold_s" in window or "!bored" in window
