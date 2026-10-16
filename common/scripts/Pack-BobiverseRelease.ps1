@@ -601,6 +601,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     # FR #4011: on MajorUpgrade, stop Airc BEFORE RemoveExistingProducts. Under
     # psexec -h -s (session 0), Restart Manager fails to shut down the service
     # (error 351) and Windows Installer itself crashes (msiexec 1601).
+    # FR #4432: never schedule a deferred CA before RemoveExistingProducts after
+    # InstallInitialize (Error 2613). airc uses MajorUpgrade afterInstallValidate so
+    # REP runs before InstallInitialize; stop is immediate (QtExec64CmdLine) before
+    # InstallValidate. Deferred StopAircBeforeUpgrade Before=REP is illegal and removed.
     $uninstallCaDecls = ''
     $uninstallCaSeq = ''
     if ($Name -eq 'airc') {
@@ -615,12 +619,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <!-- FR #3292: AIRC_PURGE=1 or workstation manifest purge_default removes secrets/homes. -->
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
     <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
-    <!-- FR #4011: deferred stop Airc before MajorUpgrade RemoveExistingProducts (PsExec session-0 RM 351 / 1601). -->
-    <!-- FR #4389: immediate stop before InstallValidate (FilesInUse / exit 3010); deferred CAs cannot run before InstallInitialize. -->
-    <CustomAction Id="SetStopAircValidateCmd" Property="StopAircBeforeValidate" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
+    <!-- FR #4011 / #4389 / #4432: immediate stop before InstallValidate (FilesInUse / RM 351). -->
+    <!-- Immediate CAQuietExec64 reads QtExec64CmdLine (not a property named after the CA). -->
+    <CustomAction Id="SetStopAircValidateCmd" Property="QtExec64CmdLine" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
     <CustomAction Id="StopAircBeforeValidate" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="immediate" Return="ignore" />
-    <CustomAction Id="SetStopAircUpgradeCmd" Property="StopAircBeforeUpgrade" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
-    <CustomAction Id="StopAircBeforeUpgrade" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
 "@
         $uninstallCaSeq = @"
       <Custom Action="SetAvExcludeCmd" Before="RunAvExclude">NOT REMOVE~="ALL"</Custom>
@@ -629,8 +631,6 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="SetStopAircValidateCmd" Before="StopAircBeforeValidate">WIX_UPGRADE_DETECTED</Custom>
       <Custom Action="StopAircBeforeValidate" Before="InstallValidate">WIX_UPGRADE_DETECTED</Custom>
-      <Custom Action="SetStopAircUpgradeCmd" Before="StopAircBeforeUpgrade">WIX_UPGRADE_DETECTED</Custom>
-      <Custom Action="StopAircBeforeUpgrade" Before="RemoveExistingProducts">WIX_UPGRADE_DETECTED</Custom>
 "@
     }
     # FR #2564: on RunInstall failure / MSI rollback, best-effort Start-Service so seats are not left dead.
@@ -668,13 +668,16 @@ function Build-Msi([string]$Name, [string]$Stage) {
     </Feature>
 "@
     }
+    # FR #4432: airc MajorUpgrade afterInstallValidate so RemoveExistingProducts runs
+    # before InstallInitialize (avoids Error 2613 when any deferred CA would precede REP).
+    $majorUpgradeSchedule = if ($Name -eq 'airc') { 'afterInstallValidate' } else { 'afterInstallInitialize' }
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="bobiverse $Name" Language="1033" Version="$msiVersion"
       Manufacturer="SimonBarnett" UpgradeCode="$upgrade">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" InstallPrivileges="elevated" Platform="x64" />
-    <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="afterInstallInitialize" />
+    <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="$majorUpgradeSchedule" />
     <!-- FR #4011: PsExec -h -s (session 0) upgrades: Restart Manager error 351 crashes msiexec (1601). -->
     <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
