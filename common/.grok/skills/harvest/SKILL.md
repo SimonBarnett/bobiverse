@@ -244,6 +244,7 @@ routes to bobiverse via the split rule.
 - Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
 - !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe — use same max_lost threshold for focus as queue (#4408)
 - FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
+- When bob-ear info() gets a cp1252 UnicodeEncodeError guard, mirror the same try/except errors=replace pattern into airc_console_service.info() in the same class of follow-up FR; pin with monkeypatched cp1252 TextIOWrapper tests.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
