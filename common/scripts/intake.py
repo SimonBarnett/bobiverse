@@ -275,6 +275,35 @@ def infer_soft_harvest_override(title: str = "", body: str = "") -> str | None:
     return None
 
 
+_EXPLICIT_SKILL_BOOK_RE = re.compile(
+    r"(?i)\b(?:belongs in|belong in|durable home is|file in)\s+`?"
+    r"(?P<book>[a-z0-9][a-z0-9._-]{2,63})`?"
+)
+
+
+def explicit_named_skill_book(title: str = "", body: str = "") -> str | None:
+    """Skill book named in the lesson (FR #4514). Keyword inference must not override it."""
+    blob = f"{title or ''}\n{body or ''}"
+    for match in _EXPLICIT_SKILL_BOOK_RE.finditer(blob):
+        book = str(match.group("book") or "").strip("`").lower()
+        if book in SKILL_BOOK_PATHS:
+            return book
+    return None
+
+
+def lesson_sentence_already_in_book(existing_md: str, lessons: list[str]) -> bool:
+    """True when a substantial sentence from the lesson is already in the skill book."""
+    base = _normalize_lesson_key(existing_md)
+    if not base:
+        return False
+    for raw in lessons or []:
+        for part in re.split(r"(?<=[.!?])\s+|;\s+", str(raw or "")):
+            key = _normalize_lesson_key(part).strip(" .")
+            if len(key) >= 40 and key in base:
+                return True
+    return False
+
+
 def extract_harvest_lessons(body: str) -> list[str]:
     """Return real Lessons: bullets; drop the '(no new playbook line)' placeholder (FR #2705)."""
     text = str(body or "")
@@ -326,6 +355,11 @@ def resolve_skill_book(
             ):
                 return product[0], product[1]
         return book, path
+
+    # FR #4514: "belongs in bobiverse-bob-job-irc" wins over done-miss -> bob-worker.
+    named = explicit_named_skill_book(title, body)
+    if named:
+        return _product_or_bobiverse(named, SKILL_BOOK_PATHS[named])
 
     raw = str(skill_book or "").strip().replace("\\", "/")
     if raw:
@@ -1392,6 +1426,16 @@ def file_submission(
                     _save_record(home, rec)
                     return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)
+                # FR #4514: named book already has the sentence -> no second tip.
+                if explicit_named_skill_book(title, raw_body) and lesson_sentence_already_in_book(
+                    existing_md, lessons
+                ):
+                    rec["state"] = "lesson_already_covered"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = 0
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 new_lessons = filter_new_lessons(existing_md, lessons)
                 if not new_lessons:
                     rec["state"] = "lesson_already_covered"
