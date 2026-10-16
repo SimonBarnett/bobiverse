@@ -593,16 +593,21 @@ function Test-HarvestOpenLessonTwin {
 }
 
 
-# FR #4371 / #4099: GitHub auto-links Closes #N / Fixes #N in PR bodies. Harvest tip
+# FR #4371 / #4099 / #4419: GitHub auto-links Closes #N / Fixes #N in PR bodies. Harvest tip
 # narratives that mention "Closes #4363" close product FRs. Replace the keyword with
 # "closing-keyword" so the issue number remains but GitHub does not auto-close.
 function Protect-HarvestBodyClosesKeywords([string]$Text) {
+    # FR #4371 / #4099 / #4419: GitHub auto-links Closes #N / Fixes #N (and Closes #N/#M)
+    # in PR bodies. Harvest tip narratives that mention product closes poison
+    # closingIssuesReferences. Replace the keyword with "closing-keyword".
     if (-not $Text) { return $Text }
     $t = [string]$Text
     $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+)', 'closing-keyword $1')
+    $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+(#\d+(?:/#\d+)+)', 'closing-keyword $1')
     $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+(#\d+)', 'closing-keyword $1')
     return $t
 }
+
 
 $files = @()
 foreach ($sf in $SkillFile) {
