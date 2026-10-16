@@ -62,6 +62,7 @@ def test_note_seat_hold_public_api_blocks_bored(tmp_path: Path, monkeypatch):
         tmp_path,
         ME,
         {"repo": REPO, "task": "FR", "id": "#4115", "offered_ts": _ts()},
+        via="ack-missing",
     )
     assert ok is True
     why = gitclaim.seat_open_job(tmp_path, ME)

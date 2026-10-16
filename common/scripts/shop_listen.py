@@ -625,7 +625,9 @@ def handle_shop_worker_line(
             # FR #4115: record a seat hold so !bored / done-offer treat the seat as busy
             # (no accepted row exists for status=missing after a Jeeves restart).
             try:
-                gitclaim.note_seat_hold(home, nick, job)
+                # FR #4415: mark via=ack-missing so seat_open_job does not void
+                # this hold when the queue row is absent (contrast: offer holds).
+                gitclaim.note_seat_hold(home, nick, job, via="ack-missing")
             except Exception:  # noqa: BLE001
                 pass
         if st in ("ok", "duplicate", "missing") and job is not None:
