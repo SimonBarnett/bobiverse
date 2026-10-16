@@ -91,6 +91,8 @@ def test_fr3900_sasl_904_without_legacy_keeps_error(tmp_path, monkeypatch):
     s = make(tmp_path, monkeypatch)
     # Isolate from the host Admin\\.airc GUID (fleet boxes often have one).
     monkeypatch.setattr(s, "_legacy_console_password_paths", lambda: [])
+    # FR #4388: isolate from host oper.cred / ergo-oper discovery (reclaim would OPER).
+    monkeypatch.setattr(s, "_load_oper_credentials_for_reclaim", lambda: None)
     s.on_line(":srv 904 * :SASL authentication failed")
     assert any("SASL failed (904)" in m and "SAPASSWD" in m for m in s.logs), s.logs
     assert s._force_reconnect is False

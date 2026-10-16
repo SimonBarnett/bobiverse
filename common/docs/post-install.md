@@ -61,6 +61,7 @@
    2. As an Ergo oper with `accreg`: `/OPER â€¦` then `/msg NickServ PASSWD {machine}_console <guid>`.
    3. `Restart-Service Airc` and confirm `joined #{machine} as {machine}_console` without a `433` loop.  
    `ERASE` also works (`/msg NickServ ERASE {machine}_console` then confirm with the code) but requires the same oper cap; without `/OPER`, NickServ replies `Command restricted` (easy to miss in Halloy Notices).
+   **FR #4388:** tip airc does this reclaim automatically once when SASL 904 heal finds no alternate GUID, using `<ai root>\airc\config\oper.cred`, sibling `jeeves\config\oper.cred`, `BOB_OPER_FILE` / `BOB_OPER_PASSWORD`, or a discovered `ergo-oper*.txt`. Provision oper credentials on fleet boxes that need unattended reclaim; otherwise the manual steps above still apply.
 
 9. **Bootstrap tools (issue #10 / FR #1825)**  
    Quiet MSI runs install as LocalSystem. `Install-BootstrapTools.ps1` resolves well-known per-user paths for `gh` / Python / Node before winget. Node prefers a pinned **nodejs.org** x64 MSI (`ALLUSERS=1`) because per-user WindowsApps `winget` is unusable under SYSTEM. Missing `gh` / `git` / `python` / `node` soft-fail with `WARN tool-missing …` so the product MSI does not 1603; install machine-wide prerequisites afterward if a tool is required at runtime.

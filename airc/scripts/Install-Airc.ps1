@@ -295,12 +295,15 @@ if (-not $ConsoleHome) {
     }
 }
 # Migrate from .airc-console / Default bake if needed (never when prior ConsoleHome exists).
+# FR #4388: include LocalSystem SystemProfile homes (DC / quiet MSI often parks GUID there).
 $legacyCandidates = @(
     (Join-Path $env:USERPROFILE '.airc-console'),
     (Join-Path $env:SystemDrive 'Users\Administrator\.airc'),
     (Join-Path $env:SystemDrive 'Users\Administrator\.airc-console'),
     (Join-Path $env:SystemDrive 'Users\Default\.airc'),
-    (Join-Path $env:SystemDrive 'Users\Default\.airc-console')
+    (Join-Path $env:SystemDrive 'Users\Default\.airc-console'),
+    (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc'),
+    (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc-console')
 )
 if (-not (Test-Path -LiteralPath $ConsoleHome)) {
     foreach ($legacy in $legacyCandidates) {
