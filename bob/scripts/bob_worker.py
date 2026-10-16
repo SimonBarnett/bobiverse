@@ -2674,6 +2674,8 @@ class Relay:
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
+        # Job refs this seat already closed (DONE / GIVEUP / NACK sent): never replay or hold them.
+        self._finished_refs: set = set()
         self._overflow: list = []
         self._sent: list = []
         self._last_line = ""
@@ -2892,6 +2894,28 @@ class Relay:
             if line and line not in self._pending:
                 self._pending.insert(0, line)
 
+    def note_outbound(self, payload: str) -> int:
+        """Seat sent DONE / GIVEUP / NACK for a job: drop held copies of it. Returns n dropped."""
+        m = _OUT_JOB_KEY_RX.match((payload or "").strip())
+        if not m or m.group(1).upper() not in ("DONE", "GIVEUP", "NACK"):
+            return 0
+        ref = m.group(3).lower()
+        with self._lock:
+            self._finished_refs.add(ref)
+            if len(self._finished_refs) > 256:
+                self._finished_refs.pop()
+            before = len(self._pending)
+            self._pending = [p for p in self._pending if assign_job_ref(p) != ref]
+            dropped = before - len(self._pending)
+        if dropped:
+            self.log(f"relay: dropped {dropped} held assign(s) for {ref} ({m.group(1).upper()} sent)")
+        return dropped
+
+    def is_finished_ref(self, line: str) -> bool:
+        ref = assign_job_ref(line)
+        with self._lock:
+            return bool(ref) and ref in self._finished_refs
+
     def release_held_assigns(self) -> int:
         """FR #2811 / FR #4115 / FR #4180: flush pending assigns after turn_ended / harvest hold ends.
 
@@ -2902,12 +2926,18 @@ class Relay:
         with self._lock:
             keep: list = []
             flush: list = []
+            stale: list = []
             for line in self._pending:
-                if assign_job_ref(line):
+                ref = assign_job_ref(line)
+                if ref and ref in self._finished_refs:
+                    stale.append(line)
+                elif ref:
                     flush.append(line)
                 else:
                     keep.append(line)
             self._pending = keep
+        for line in stale:
+            self.log("relay: dropped finished held assign (DONE/GIVEUP/NACK already sent) " + line[:120])
         refuse = False
         try:
             refuse = bool(self.refuse_assign_while and self.refuse_assign_while())
@@ -5323,6 +5353,9 @@ class Supervisor:
         p = (payload or "").strip()
         if _OUT_ACK_RX.match(p) or _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
             self.ack_miss.note_ack()
+        if _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
+            with contextlib.suppress(Exception):
+                self.relay.note_outbound(p)
         if self.bored:
             self.bored.on_outbox(payload)
 
