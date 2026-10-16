@@ -319,7 +319,13 @@ def save_outbox_pos(outbox: Path, pos: int) -> None:
 
 
 def info(msg: str) -> None:
-    print(msg, flush=True)
+    """Stdout log line; never raise UnicodeEncodeError on cp1252 consoles (FR #4396)."""
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        safe = str(msg).encode(enc, errors="replace").decode(enc, errors="replace")
+        print(safe, flush=True)
 
 
 def resolve_bob_install_root(
