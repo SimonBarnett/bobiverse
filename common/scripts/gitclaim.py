@@ -7557,6 +7557,47 @@ def prune_unassignable_queue(home: Path) -> dict:
         return {"ok": False, "error": "lock"}
 
 
+def open_pr_mrb_waiting_on_ci(pr: dict, pass_sha: str) -> bool:
+    """FR #4466: auto-merge on and head still the PASSed SHA is a CI wait, not a new MRB.
+
+    auto-merge off, a missing pass SHA, or a different head SHA returns False so
+    resync re-queues the review.
+    """
+    if not isinstance(pr, dict):
+        return False
+    am = pr.get("auto_merge")
+    if not isinstance(am, dict) or not am:
+        return False
+    head = pr.get("head")
+    sha = str(head.get("sha") or "") if isinstance(head, dict) else ""
+    if not pass_sha or not sha:
+        return False
+    import mrb_merge_on_green
+
+    return mrb_merge_on_green.shas_match(pass_sha, sha)
+
+
+def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
+    """PASSed head SHA recorded when the seat DONE MRB PASS (merge-on-green ledger)."""
+    try:
+        import mrb_merge_on_green
+
+        doc = mrb_merge_on_green.load_ledger(home)
+    except Exception:  # noqa: BLE001
+        return ""
+    want = str(num)
+    repo_l = canonical_queue_repo(repo).lower()
+    for row in doc.get("pending") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("pr") or "").lstrip("#") != want:
+            continue
+        if str(row.get("repo") or "").strip().lower() != repo_l:
+            continue
+        return str(row.get("pass_sha") or "")
+    return ""
+
+
 def resync_from_github(
     home: Path,
     repos: list[str],
@@ -7610,6 +7651,7 @@ def resync_from_github(
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
     skipped_draft = 0
+    skipped_ci = 0
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
@@ -7721,6 +7763,19 @@ def resync_from_github(
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync skip harvest-receipt PR {repo}#{num}",
+                    flush=True,
+                )
+                continue
+            # FR #4466: open PR with auto-merge on the PASSed SHA is waiting for CI.
+            # Do not re-queue it. A later synchronize (SHA change) or auto-merge off
+            # falls through and becomes an MRB again. Mark skipped so the keep loop
+            # prunes a row that resync already queued.
+            pass_sha = _merge_on_green_pass_sha(home, repo, num)
+            if open_pr_mrb_waiting_on_ci(pr, pass_sha):
+                skipped_ci += 1
+                skipped_open_pulls.add((repo, f"#{num}"))
+                print(
+                    f"resync skip ci-wait PR {repo}#{num}",
                     flush=True,
                 )
                 continue
@@ -8141,6 +8196,7 @@ def resync_from_github(
                 "dropped": dropped,
                 "dropped_detail": list(dropped_detail),
                 "skipped_draft": int(skipped_draft),
+                "skipped_ci": int(skipped_ci),
                 "focus_pruned": int(focus_pruned),
                 "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),
