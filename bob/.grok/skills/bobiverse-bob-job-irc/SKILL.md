@@ -84,6 +84,7 @@ DONE UAT <owner/repo>#<N> PASS|FAIL [<url>]
   `PRIVMSG #marchhare :DONE UAT SimonBarnett/bobiverse#7 PASS`
 
 **Always append the DONE/NACK/GIVEUP line - never check the outbox first.** The worker drains `outbox.txt` every 0.5 s, so it is almost always empty; a "skip if already there" guard (on WinPS 5.1 `(Get-Content -Raw) -notmatch` on an empty file is a falsy empty array) silently drops the line. Send it as **its own short command** (just the outbox append / share-safe helper), right after the verdict/PR URL is known and **before** harvest/prune/cleanup - never chained inside a long board/merge/harvest tool call that can be cut off. If unsure whether it went out, append it again: a duplicate DONE is harmless, a missing one strands the seat (#2875). Proof of send is `outbox: sent …` in worker.log, not the outbox file.
+When bob-worker says the turn ended ACKed but no DONE/NACK/GIVEUP, and this seat already posted the board, re-append that same DONE line. A drained outbox is not a missing board. Do not re-review the tip.
 
 **FR #4363:** when the drain races (`Stream was not readable`), use the share-safe FileShare.ReadWrite helper (retry) as its own short command:
 
