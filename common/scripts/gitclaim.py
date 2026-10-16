@@ -1063,7 +1063,8 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\brequire_machine\s*=\s*ce-priority-dev1\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
-    (re.compile(r"(?i)\bneeds-ionos\b"), "ionos"),
+    # FR #4422: "missing needs-ionos stamp" meta-FRs must not self-pin to ionos.
+    (re.compile(r"(?i)(?<!missing\s)\bneeds-ionos\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
     # FR #1550: monitor idle+ungated / ircJeeves StartPending filings are chair-host ops
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\bstartpending\b"), "ionos"),
@@ -1165,6 +1166,12 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     ("simonbarnett/bobiverse", "#3122"): "ionos",
 }
 
+# FR #4422: hard unpins — survive title/body cues that wrongly re-pin (bobiverse must
+# not be stranded on ionos for meta "missing needs-ionos" filings).
+_REQUIRE_MACHINE_ISSUE_UNPINS: set[tuple[str, str]] = {
+    ("simonbarnett/bobiverse", "#4343"),
+}
+
 # FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
 # Labels mrb-home/umbrella/parent-fr should SKIP_FR (#271), but stale queue rows
 # enqueued before labels (or when API label payloads were empty) kept being offered.
@@ -1246,6 +1253,8 @@ def infer_require_machine(
     id_l = str(ident or "").strip()
     if id_l and not id_l.startswith("#"):
         id_l = f"#{id_l}"
+    if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
+        return ""
     pin = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l))
     if pin:
         return pin
@@ -1278,6 +1287,11 @@ def infer_require_machine(
 
 def row_require_machine(row: dict) -> str:
     """Machine id required for this queue row, if any (FR #587 / #1093)."""
+    repo_l = str(row.get("repo") or "").strip().lower()
+    id_l = f"#{str(row.get('id') or '').strip().lstrip('#')}"
+    # FR #4422 hard unpin before hard pins / stamped machine.
+    if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
+        return ""
     # Hard issue pins win over unpin tokens (any/none) — FR #1093 WP0 must not leak
     # back to win-mpre after a monitor ``require_machine=any`` clear.
     hard = infer_require_machine(
@@ -1958,6 +1972,10 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     repo_l = repo.strip().lower()
     id_l = f"#{str(ident or '').strip().lstrip('#')}"
     hard = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l), "")
+    # FR #4422: hard unpin wins over stamped ionos and title/body re-infer.
+    if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
+        row["require_machine"] = "any"
+        return
     stamped = str(row.get("require_machine") or "").strip().lower()
     if stamped in {"*", "any", "none", "-"}:
         if hard:
@@ -7057,6 +7075,144 @@ def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
         return []
 
 
+def fetch_github_issue_dict(repo: str, num: str, *, token: str = "") -> dict | None:
+    """GET ``/repos/{repo}/issues/{num}`` -> issue dict, or None on miss/error (FR #4422)."""
+    repo_s = str(repo or "").strip()
+    num_s = str(num or "").strip().lstrip("#")
+    if not repo_s or not num_s.isdigit():
+        return None
+    tok = (token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not tok:
+        try:
+            import gh_filer
+
+            gh_filer.ensure_gh_token_env()
+            tok = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+        except Exception:
+            tok = ""
+    if not tok:
+        return None
+    api = f"https://api.github.com/repos/{repo_s}/issues/{num_s}"
+    req = urllib.request.Request(
+        api,
+        headers={
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-gitclaim",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if not (200 <= int(getattr(resp, "status", 200) or 200) < 300):
+                return None
+            raw = resp.read()
+            body = json.loads(
+                raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+            )
+            return body if isinstance(body, dict) else None
+    except Exception:
+        return None
+
+
+def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
+    """Build an FR (or MRB) GitClaim from a GitHub issue/PR payload (FR #4422)."""
+    if not isinstance(issue, dict):
+        return None
+    num = issue.get("number")
+    if not isinstance(num, int):
+        return None
+    title = str(issue.get("title") or "")
+    body = str(issue.get("body") or "")
+    labels = _label_names(issue.get("labels"))
+    state = str(issue.get("state") or "open").strip().lower()
+    if state and state != "open":
+        return None
+    if issue.get("pull_request") is not None or str(issue.get("html_url") or "").find("/pull/") >= 0:
+        # Open PR -> MRB row.
+        if issue.get("draft") is True:
+            return None
+        if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
+            return None
+        if is_mrb_fix_pr_title(title):
+            return None
+        lesson = is_harvest_lesson_pr(title=title, labels=labels)
+        refs = extract_closes_issue_ids(title, body, repo=repo) if not lesson else ()
+        return GitClaim(
+            repo=canonical_queue_repo(repo),
+            task="MRB",
+            id=f"#{num}",
+            event="pull_request",
+            action="opened",
+            line="",
+            title=title,
+            body=body,
+            labels=labels,
+            state=state or "open",
+            refs=tuple(refs) if refs else (),
+            harvest_lesson=lesson,
+            opened_by=lesson_pr_opener_seat(body) if lesson else "",
+        )
+    if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open"):
+        return None
+    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
+        return None
+    return GitClaim(
+        repo=canonical_queue_repo(repo),
+        task="FR",
+        id=f"#{num}",
+        event="issues",
+        action="opened",
+        line="",
+        title=title,
+        body=body,
+        labels=labels,
+        state=state or "open",
+    )
+
+
+def enqueue_open_github_item(
+    doc: dict,
+    repo: str,
+    task: str,
+    ident: str,
+    *,
+    fetch_issue=None,
+) -> tuple[str, str]:
+    """Enqueue an open GitHub issue/PR into ``doc['unaccepted']`` when missing (FR #4422).
+
+    Returns ``("added"|"duplicate"|"refused", detail)``. ``fetch_issue(repo, num)`` is the
+    test seam; default hits the GitHub Issues API.
+    """
+    task_u = (task or "").upper()
+    if task_u not in ("FR", "MRB"):
+        return "refused", f"{task_u}: only FR/MRB can be enqueued from GitHub"
+    num = str(ident or "").strip().lstrip("#")
+    getter = fetch_issue or (lambda r, n: fetch_github_issue_dict(r, n))
+    try:
+        issue = getter(repo, num)
+    except Exception as exc:  # noqa: BLE001
+        return "refused", f"github fetch failed: {type(exc).__name__}"
+    if not isinstance(issue, dict):
+        return "refused", f"{repo}#{num}: not found on GitHub or no token"
+    claim = claim_from_github_issue(repo, issue)
+    if claim is None:
+        return "refused", f"{repo}#{num}: not an open offerable {task_u}"
+    if claim.task != task_u:
+        return "refused", f"{repo}#{num}: GitHub item is {claim.task}, not {task_u}"
+    extra: dict = {}
+    if claim.task == "MRB":
+        extra["url"] = f"https://github.com/{claim.repo}/pull/{num}"
+        if claim.refs:
+            extra["refs"] = ",".join(claim.refs)
+    changed = _append_unaccepted(doc, claim, **extra)
+    if changed == "added":
+        return "added", f"enqueued {claim.task} {claim.repo}{claim.id}"
+    if changed in ("duplicate", "skipped", "noop"):
+        return "duplicate", f"already queued {claim.task} {claim.repo}{claim.id}"
+    return "refused", f"enqueue {changed}"
+
+
 def assign_row(
     home: Path,
     nick: str,
@@ -7066,6 +7222,7 @@ def assign_row(
     *,
     now: float | None = None,
     pr_exists=None, is_pull=None, issue_open=None,
+    fetch_issue=None,
 ) -> tuple[str, dict | str]:
     """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
 
@@ -7077,6 +7234,9 @@ def assign_row(
 
     FR #3400: refuse assign to a nick not in the shop (not a live seat). If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
+
+    FR #4422: when the named open FR/MRB is missing from the unaccepted queue, fetch it from
+    GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
     """
     import time as _time
 
@@ -7137,24 +7297,46 @@ def assign_row(
                         acc_idx = i
                         break
                 if acc_idx is None:
-                    return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
-                holder = _accepted_holder_nick(doc["accepted"][acc_idx])
-                if holder.lower() in live_l:
-                    return (
-                        "refused",
-                        f"{repo}#{num} {task_u}: accepted by live seat {holder}",
-                    )
-                _release_accepted_for_nick_unlocked(doc, holder)
-                for i, row in enumerate(doc["unaccepted"]):
-                    if (
-                        str(row.get("task") or "").upper() == task_u
-                        and str(row.get("id") or "").strip().lstrip("#") == num
-                        and repo_match(repo, str(row.get("repo") or ""))
-                    ):
-                        idx = i
-                        break
-                if idx is None:
-                    return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
+                    # FR #4422: open issue/PR missing from queue -> enqueue from GitHub, then offer.
+                    if task_u in ("FR", "MRB"):
+                        enq_st, enq_detail = enqueue_open_github_item(
+                            doc, repo, task_u, num, fetch_issue=fetch_issue
+                        )
+                        if enq_st in ("added", "duplicate"):
+                            for i, row in enumerate(doc["unaccepted"]):
+                                if (
+                                    str(row.get("task") or "").upper() == task_u
+                                    and str(row.get("id") or "").strip().lstrip("#") == num
+                                    and repo_match(repo, str(row.get("repo") or ""))
+                                ):
+                                    idx = i
+                                    break
+                        if idx is None:
+                            return (
+                                "refused",
+                                f"{repo}#{num} {task_u}: not in the unaccepted queue "
+                                f"({enq_detail})",
+                            )
+                    else:
+                        return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
+                if idx is None and acc_idx is not None:
+                    holder = _accepted_holder_nick(doc["accepted"][acc_idx])
+                    if holder.lower() in live_l:
+                        return (
+                            "refused",
+                            f"{repo}#{num} {task_u}: accepted by live seat {holder}",
+                        )
+                    _release_accepted_for_nick_unlocked(doc, holder)
+                    for i, row in enumerate(doc["unaccepted"]):
+                        if (
+                            str(row.get("task") or "").upper() == task_u
+                            and str(row.get("id") or "").strip().lstrip("#") == num
+                            and repo_match(repo, str(row.get("repo") or ""))
+                        ):
+                            idx = i
+                            break
+                    if idx is None:
+                        return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
             if row_needs_human(cand, me):
                 return "refused", "row is needs-human"
@@ -8176,6 +8358,11 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
         if not matched_nick:
             keep.append(row)
             continue
+        # FR #4422: release_stale_busy requeued without closed/merged evidence —
+        # do not bounce the same row straight back to accepted from stale digest work.
+        if str(row.get("reconcile") or "").startswith("requeue:"):
+            keep.append(row)
+            continue
         # Already accepted for this repo/task/id: drop the unaccepted twin so
         # offer_focus_top cannot double-offer (MRB #3871 hostile).
         if _already_accepted(row):
@@ -8376,11 +8563,13 @@ def release_stale_busy(
                         continue  # stale by FR #3742 session boundary
                 return False  # genuinely recent job in this session: honour busy
             if mine:
-                # Drop (not requeue): github-resync re-adds the row if the item is still open,
-                # so a closed/merged job is never handed out again.
-                # Audit stamp (MRB #2373 / FR #2369 / FR #3742).
+                # FR #4422: never mark done without a merged PR or a closed issue.
+                # Inventing STALE_BUSY / LOST_DONE_RESTART into done[] while resync is
+                # lagging stranded open FRs off the offer queue. Requeue unless the
+                # digest already carries a /pull/ URL (lost DONE FR with implement PR).
                 pull_hint = _digest_work_pull_url(home, nick)
                 done = doc.setdefault("done", [])
+                unacc = doc.setdefault("unaccepted", [])
                 for r in mine:
                     fin = dict(r)
                     age = _accepted_row_age_s(r, float(now))
@@ -8388,12 +8577,29 @@ def release_stale_busy(
                         reason = "STALE_BUSY"
                     else:
                         reason = "LOST_DONE_RESTART"
-                    # FR #3742: when digest already carries a pull URL, prefer that as result.
-                    fin["result"] = pull_hint or reason
-                    fin["done_ts"] = _utc_now()
-                    fin["reconcile"] = reason
-                    done.append(fin)
-                    healed_rows.append((fin, reason))
+                    if pull_hint:
+                        # Evidence of DONE FR with an implement PR URL — keep done path.
+                        fin["result"] = pull_hint
+                        fin["done_ts"] = _utc_now()
+                        fin["reconcile"] = reason
+                        done.append(fin)
+                        healed_rows.append((fin, reason))
+                        continue
+                    # No closed/merged evidence: return to unaccepted so !assign / !bored
+                    # can offer again even when github-resync is skipped.
+                    for k in (
+                        "nick",
+                        "accepted_ts",
+                        "accepted_by",
+                        "offered_to",
+                        "offered_ts",
+                        "offered_channel",
+                        "channel",
+                    ):
+                        fin.pop(k, None)
+                    fin["reconcile"] = f"requeue:{reason}"
+                    unacc.append(fin)
+                    healed_rows.append((fin, f"requeue:{reason}"))
                 if len(done) > DONE_CAP:
                     doc["done"] = done[-DONE_CAP:]
                 doc["accepted"] = [r for r in acc if _owner(r) != me]

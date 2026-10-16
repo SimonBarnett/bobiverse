@@ -388,7 +388,14 @@ def complete_job_by_ref(
     result: str = "",
     url: str = "",
 ) -> tuple[str, dict | None]:
-    """Mark accepted (or unaccepted) job done; apply light supersede hooks."""
+    """Mark accepted (or unaccepted) job done; apply light supersede hooks.
+
+    FR #4422: never mark an FR done without a /pull/ URL (implement PR evidence).
+    """
+    task_u = str(task or "").upper()
+    pull_src = (url or result or "").strip()
+    if task_u == "FR" and "/pull/" not in pull_src:
+        return "refused", None
     try:
         with gitclaim._lock(home):
             try:
