@@ -589,10 +589,12 @@ class AircConsoleService:
             pass
 
     def _legacy_console_password_paths(self) -> list[Path]:
-        """FR #3900: candidate console.password files from prior identity / profile homes."""
+        """FR #3900 / #4388: candidate console.password files from prior identity / profile homes."""
         home = Path(self.home)
         drive = Path(home.anchor) if home.anchor else Path("C:/")
         userprofile = Path(os.environ.get("USERPROFILE") or "")
+        system_root = Path(os.environ.get("SystemRoot") or (str(drive / "Windows")))
+        program_data = Path(os.environ.get("ProgramData") or (str(drive / "ProgramData")))
         out: list[Path] = []
         # Authoritative: airc-install.json beside <install>/home → <install>/config.
         if home.name.lower() == "home":
@@ -617,6 +619,11 @@ class AircConsoleService:
             drive / "Users" / "Administrator" / ".airc-console",
             drive / "Users" / "Default" / ".airc",
             drive / "Users" / "Default" / ".airc-console",
+            # FR #4388: quiet MSI as LocalSystem often parks GUID under SystemProfile.
+            system_root / "System32" / "config" / "systemprofile" / ".airc",
+            system_root / "System32" / "config" / "systemprofile" / ".airc-console",
+            program_data / "Bobiverse" / "airc" / "home",
+            program_data / "Airc" / "home",
         ):
             if not base or str(base) in (".", ""):
                 continue
@@ -678,6 +685,111 @@ class AircConsoleService:
             except OSError:
                 pass
             info(f"INFO FR #3900 healed console.password from legacy {cand}; reconnecting")
+            return True
+        info("INFO FR #4388 legacy heal found no alternate console.password")
+        return False
+
+    def _load_oper_credentials_for_reclaim(self) -> tuple[str, str] | None:
+        """FR #4388: load Ergo oper creds for one-shot NickServ PASSWD reclaim (never log secrets)."""
+        try:
+            import chair_oper
+        except ImportError:
+            return None
+        home = Path(self.home)
+        candidates: list[Path] = []
+        env_file = (os.environ.get("BOB_OPER_FILE") or "").strip()
+        if env_file:
+            candidates.append(Path(env_file))
+        # <install>/config/oper.cred when ConsoleHome is <install>/home
+        if home.name.lower() == "home":
+            candidates.append(home.parent / "config" / "oper.cred")
+            # Sibling jeeves on the same <ai root> (fleet chair box).
+            candidates.append(home.parent.parent / "jeeves" / "config" / "oper.cred")
+        else:
+            candidates.append(home / "oper.cred")
+            candidates.append(home.parent / "config" / "oper.cred")
+        env_pw = (os.environ.get("BOB_OPER_PASSWORD") or "").strip()
+        env_name = (os.environ.get("BOB_OPER_NAME") or chair_oper.DEFAULT_OPER_NAME).strip()
+        if env_pw:
+            return env_name or chair_oper.DEFAULT_OPER_NAME, env_pw
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
+                continue
+            loaded = chair_oper.load_credentials(path)
+            if loaded:
+                return loaded
+            # Plain ergo-oper*.txt style (not DPAPI) — parse without logging body.
+            try:
+                parsed = chair_oper.parse_oper_file(
+                    path.read_text(encoding="utf-8-sig", errors="replace")
+                )
+            except OSError:
+                parsed = None
+            if parsed:
+                return parsed
+        try:
+            for cand in chair_oper.discover_oper_files():
+                try:
+                    parsed = chair_oper.parse_oper_file(
+                        cand.read_text(encoding="utf-8-sig", errors="replace")
+                    )
+                except OSError:
+                    continue
+                if parsed:
+                    return parsed
+        except OSError:
+            pass
+        return None
+
+    def _try_reclaim_console_password_via_oper(self) -> bool:
+        """FR #4388: after heal fails, OPER + NickServ PASSWD to match local console.password.
+
+        One-shot per process. Returns True when OPER was sent (await 381/491).
+        """
+        if getattr(self, "_fr4388_reclaim_attempted", False):
+            return False
+        self._fr4388_reclaim_attempted = True
+        creds = self._load_oper_credentials_for_reclaim()
+        if not creds:
+            info("INFO FR #4388 no oper credentials for PASSWD reclaim; manual SAPASSWD required")
+            return False
+        name, _password = creds
+        # Keep password only in memory for the OPER line; never log it.
+        self._fr4388_oper_creds = creds
+        self._fr4388_reclaim_state = "oper_sent"
+        self.send(f"OPER {name} {_password}")
+        info(f"INFO FR #4388 reclaim: sent OPER {name} (await 381 then NickServ PASSWD)")
+        return True
+
+    def _handle_oper_reclaim_numeric(self, cmd: str) -> bool:
+        """FR #4388: handle 381/491 while a reclaim OPER is in flight. Returns True if consumed."""
+        state = getattr(self, "_fr4388_reclaim_state", None)
+        if state != "oper_sent":
+            return False
+        if cmd == "381":
+            guid = (self.nickserv_password or "").strip()
+            if not guid:
+                info("ERROR FR #4388 reclaim: empty console.password; cannot PASSWD")
+                self._fr4388_reclaim_state = "failed"
+                self._fr4388_oper_creds = None
+                return True
+            # Prefer PASSWD (post-install §8c); SAPASSWD is the documented alias.
+            self.send(f"PRIVMSG NickServ :PASSWD {self.nick} {guid}")
+            self._fr4388_reclaim_state = "passwd_sent"
+            self._fr4388_oper_creds = None
+            info(
+                f"INFO FR #4388 reclaim: NickServ PASSWD {self.nick} "
+                f"(set to local console.password); reconnecting for SASL"
+            )
+            self._force_reconnect = True
+            return True
+        if cmd in {"491", "464", "481"}:
+            info(f"ERROR FR #4388 reclaim: OPER failed ({cmd}); manual SAPASSWD still required")
+            self._fr4388_reclaim_state = "failed"
+            self._fr4388_oper_creds = None
             return True
         return False
 
@@ -935,6 +1047,10 @@ class AircConsoleService:
                     self.send("CAP END")
                     self._force_reconnect = True
                     return
+                # FR #4388: no alternate GUID — one-shot OPER + NickServ PASSWD reclaim.
+                if cmd == "904" and self._try_reclaim_console_password_via_oper():
+                    self.send("CAP END")
+                    return
                 info(
                     f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
                     f"with console.password. Reset it (NickServ SAPASSWD) or fix console.password; "
@@ -984,6 +1100,10 @@ class AircConsoleService:
             cmd == "CAP"
         ):
             self._handle_sasl_line(cmd, args, trailing)
+
+        # FR #4388: oper reclaim numerics (381 success / 491+ failure).
+        if cmd in {"381", "491", "464", "481"} and self._handle_oper_reclaim_numeric(cmd):
+            return
 
         if cmd == "001":
             # Welcome --- probe ChanServ (or forced mode) before JOIN.

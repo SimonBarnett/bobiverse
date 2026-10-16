@@ -46,6 +46,8 @@ def test_sasl_904_is_loud_error(tmp_path, monkeypatch):
     s = make(tmp_path, monkeypatch)
     # FR #4380: isolate from host Admin\\.airc GUID (FR #3900 heal would otherwise succeed).
     monkeypatch.setattr(s, "_legacy_console_password_paths", lambda: [])
+    # FR #4388: isolate from host oper discovery (reclaim would OPER before ERROR).
+    monkeypatch.setattr(s, "_load_oper_credentials_for_reclaim", lambda: None)
     s.on_line(":srv 904 * :SASL authentication failed")
     assert any(m.startswith("ERROR console account tm_console SASL failed") for m in s.logs)
     assert s._sasl_failed
