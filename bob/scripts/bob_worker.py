@@ -1727,6 +1727,56 @@ def inject_console(
             k32.CloseHandle(h)
 
 
+def build_clear_input_records():
+    """FR #4510: Ctrl+A then Backspace, so a failed paste is not concatenated into the next offer."""
+    wintypes, INPUT_RECORD = _win_structs()
+    arr = (INPUT_RECORD * 6)()
+    seq = [
+        (0x11, 1, "\x00", 0x0008),
+        (0x41, 1, "\x01", 0x0008),
+        (0x41, 0, "\x01", 0x0008),
+        (0x11, 0, "\x00", 0),
+        (0x08, 1, "\x08", 0),
+        (0x08, 0, "\x08", 0),
+    ]
+    for i, (vk, down, ch, ctrl) in enumerate(seq):
+        rec = arr[i]
+        rec.EventType = 1
+        k = rec.Event.KeyEvent
+        k.bKeyDown = down
+        k.wRepeatCount = 1
+        k.wVirtualKeyCode = vk
+        k.wVirtualScanCode = 0
+        k.uChar = ch
+        k.dwControlKeyState = ctrl
+    return arr
+
+
+def clear_console_input(pid: int = 0) -> bool:
+    """FR #4510: clear THIS process input box. Never paste."""
+    if os.name != "nt":
+        return False
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    wintypes, _ = _win_structs()
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    k32.WriteConsoleInputW.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    with _CONSOLE_LOCK:
+        h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
+        if not h or h == ctypes.c_void_p(-1).value:
+            return False
+        try:
+            return _write_console_all(k32, h, build_clear_input_records(), wintypes)
+        finally:
+            k32.CloseHandle(h)
+
+
 def send_console_enter(pid: int = 0) -> bool:
     """Write one Enter to THIS process CONIN$ (FR #2696 submit-verify retry). Never paste."""
     if os.name != "nt":
@@ -3748,6 +3798,14 @@ def inject_failed_nack_line(line: str) -> Optional[str]:
     return f"NACK {key} inject failed"
 
 
+def submit_verify_giveup_line(line: str) -> Optional[str]:
+    """FR #4510: Cursor seat returns the job after a second submit-verify failure."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    return f"GIVEUP {key} submit-verify failed"
+
+
 def ack_on_receipt_line(line: str) -> Optional[str]:
     """FR #4115: outbox ACK written as soon as the seat receives an assign (before inject)."""
     key = assign_job_key(line)
@@ -3791,8 +3849,12 @@ class InjectRecovery:
     """FR #4115: an assign whose submit-verify FAILED is re-pasted once; if that also fails,
     NACK it via the run-dir outbox (``inject failed``) and clear local state so the seat is free.
 
+    FR #4510 (Cursor): a receipt ACK is not a running turn. Re-paste once (fresh clipboard,
+    delayed Enter via the cursor inject gap). If that also fails and no turn is open, send
+    ``GIVEUP <TYPE> owner/repo#N submit-verify failed`` and clear the input box.
+
     ``reinject(line, on_failed)`` must start one fresh inject+verify that calls ``on_failed`` on
-    a second failure. ``is_acked(line)`` short-circuits when the job got ACKed meanwhile.
+    a second failure. ``is_acked(line)`` short-circuits Grok when the job got ACKed meanwhile.
     """
 
     def __init__(
@@ -3803,19 +3865,37 @@ class InjectRecovery:
         clear_local: Callable[[str], None],
         is_acked: Callable[[str], bool] = lambda line: False,
         log: Callable[[str], None] = lambda m: None,
+        giveup_on_fail: bool = False,
+        block_on_receipt_ack: bool = True,
+        turn_running: Callable[[], bool] = lambda: False,
+        clear_input: Callable[[], None] = lambda: None,
     ):
         self.reinject = reinject
         self.write_outbox = write_outbox
         self.clear_local = clear_local
         self.is_acked = is_acked
         self.log = log
+        self.giveup_on_fail = bool(giveup_on_fail)
+        self.block_on_receipt_ack = bool(block_on_receipt_ack)
+        self.turn_running = turn_running
+        self.clear_input = clear_input
+        self._closed: set[str] = set()
 
     def on_failed(self, line: str, attempt: int = 1) -> str:
-        """Returns ``retried``, ``nacked``, ``acked`` or ``ignored``."""
+        """Returns ``retried``, ``nacked``, ``giveup``, ``running``, ``acked`` or ``ignored``."""
         if not assign_job_ref(line):
             return "ignored"
-        if self.is_acked(line):
+        try:
+            if self.turn_running():
+                self.log("relay: submit-verify FAILED - agent turn running; no GIVEUP")
+                return "running"
+        except Exception:  # noqa: BLE001
+            pass
+        if self.block_on_receipt_ack and self.is_acked(line):
             return "acked"
+        key = assign_job_key(line) or ""
+        if key and key in self._closed:
+            return "giveup" if self.giveup_on_fail else "nacked"
         if attempt <= 1:
             self.log(f"relay: submit-verify FAILED - re-pasting assign once (attempt 2) {line[:120]}")
             ok = False
@@ -3826,15 +3906,34 @@ class InjectRecovery:
             if ok:
                 return "retried"
             self.log("relay: inject path=fail reason=repaste_failed")
-        nack = inject_failed_nack_line(line)
-        if nack:
-            sent = self.write_outbox(nack)
-            self.log(f"relay: inject failed twice - {'queued' if sent else 'COULD NOT queue'} outbox {nack}")
+        if self.giveup_on_fail:
+            wire = submit_verify_giveup_line(line)
+            try:
+                self.clear_input()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: clear input failed {type(e).__name__}")
+            result = "giveup"
+        else:
+            wire = inject_failed_nack_line(line)
+            result = "nacked"
+        if wire:
+            sent = self.write_outbox(wire)
+            if self.giveup_on_fail:
+                self.log(
+                    f"relay: submit-verify failed twice - {'queued' if sent else 'COULD NOT queue'} "
+                    f"outbox {wire}"
+                )
+            else:
+                self.log(
+                    f"relay: inject failed twice - {'queued' if sent else 'COULD NOT queue'} outbox {wire}"
+                )
+        if key:
+            self._closed.add(key)
         try:
             self.clear_local(line)
         except Exception:  # noqa: BLE001
             pass
-        return "nacked"
+        return result
 
 
 # FR #4115: Grok's own prompt-accept timeout. Under CPU load the TUI shows
@@ -4327,6 +4426,12 @@ class BoredEmitter:
                 fn(key)
             except Exception as e:
                 self.log(f"done-miss: remind inject failed {type(e).__name__}")
+
+    @property
+    def turn_open(self) -> bool:
+        """True while the turn watcher has seen turn_started and not turn_ended."""
+        with self._cv:
+            return bool(self._turn_open)
 
     @property
     def ack_open(self) -> bool:
@@ -5782,8 +5887,23 @@ class Supervisor:
             return bool(b is not None and want and getattr(b, "ack_open", False)
                         and getattr(b, "ack_job_ref", None) == want)
 
-        rec = InjectRecovery(reinject=_reinject, write_outbox=_write, clear_local=_clear,
-                             is_acked=_acked, log=self.log)
+        is_cursor = (self.kind or "").strip().lower() == "cursor"
+
+        def _turn_running() -> bool:
+            b = self.bored
+            return bool(b is not None and getattr(b, "turn_open", False))
+
+        rec = InjectRecovery(
+            reinject=_reinject,
+            write_outbox=_write,
+            clear_local=_clear,
+            is_acked=_acked,
+            log=self.log,
+            giveup_on_fail=is_cursor,
+            block_on_receipt_ack=not is_cursor,
+            turn_running=_turn_running if is_cursor else (lambda: False),
+            clear_input=clear_console_input if is_cursor else (lambda: None),
+        )
         self._recovery = rec
         return rec
 
