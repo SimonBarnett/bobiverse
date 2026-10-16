@@ -83,11 +83,20 @@ _last_keepalive_log_mono = 0.0
 
 
 def info(msg: str) -> None:
-    """ISO-UTC timestamped stdout line; always flush (FR #1546)."""
+    """ISO-UTC timestamped stdout line; always flush (FR #1546).
+
+    Never raise UnicodeEncodeError on cp1252 consoles (FR #4397; mirror bob-ear #4396).
+    """
     from datetime import datetime, timezone
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"{ts} {msg}", flush=True)
+    line = f"{ts} {msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        safe = str(line).encode(enc, errors="replace").decode(enc, errors="replace")
+        print(safe, flush=True)
 
 
 def log_auth_allow(hr) -> None:  # noqa: ANN001
