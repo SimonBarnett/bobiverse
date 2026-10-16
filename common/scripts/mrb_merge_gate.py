@@ -37,6 +37,14 @@ MRB_PASS_BOARD_RE = re.compile(
 MRB_BOARD_COMMENT_RE = re.compile(
     r"(?im)^\s*##\s*MRB\s+board\b|\*\*Verdict:\*\*|^\s*##\s*MRB\s+hand-back\b"
 )
+# FR #4500: a later comment that only restates the gate refusal is not a new
+# owner hold. It quotes the tripped phrase ("must not merge") inside
+# "held, not merged" plus "mrb_merge_gate.py exit 2". A real hold that does
+# not restate the gate still refuses. An echo does not clear an earlier hold.
+GATE_REFUSAL_ECHO_RE = re.compile(
+    r"(?is)held,\s*not\s+merged[\s\S]{0,800}?mrb_merge_gate\.py\s+exit\s+2"
+    r"|mrb_merge_gate\.py\s+exit\s+2[\s\S]{0,800}?held,\s*not\s+merged"
+)
 OWNERISH = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 # FR #4467: GitHub comment-list 403/429 (rate limit) is not an owner hold.
@@ -87,6 +95,14 @@ def _is_mrb_board_comment(text: str) -> bool:
     return bool(MRB_BOARD_COMMENT_RE.search(text or ""))
 
 
+def _is_gate_refusal_echo(text: str) -> bool:
+    """True when the comment only restates a gate refusal (FR #4500).
+
+    Ignored for the owner-hold scan. An echo does not clear an earlier real hold.
+    """
+    return bool(GATE_REFUSAL_ECHO_RE.search(text or ""))
+
+
 def find_active_owner_hold(comments: list[dict] | None) -> str | None:
     """Return hold snippet if an ownerish hold is active (not cleared later)."""
     ordered = sorted(list(comments or []), key=_created)
@@ -96,7 +112,7 @@ def find_active_owner_hold(comments: list[dict] | None) -> str | None:
             continue
         text = _body(c)
         # FR #4041: seat boards posted via gh appear as OWNER; skip board-shaped comments.
-        if _is_mrb_board_comment(text):
+        if _is_mrb_board_comment(text) or _is_gate_refusal_echo(text):
             continue
         if HOLD_CLEAR_RE.search(text):
             hold_body = None
