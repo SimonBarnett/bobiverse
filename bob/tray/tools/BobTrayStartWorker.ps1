@@ -211,30 +211,45 @@ function Get-BobTrayWorkerCapRefusal {
     if (-not $modeL) { $modeL = 'agent' }
     if ($modeL -ne 'agent') { return '' }
     $cap = $script:BobTrayHardMaxWorkers
-    # FR #3181 / FR #4307 / MRB #4311: union of IRC marker pids and live agent bob-worker roots
-    # (same as worker_irc_seats.count_cap_agent_seats / BobTray.Seats). Math.Max undercounts when
-    # the sets are disjoint (IRC-marked seat with unknown cmdline + another live --mode agent).
+    # FR #3181 / FR #4307 / MRB #4311 / FR #4458: agent roots, plus IRC marker pids that
+    # are not the onefile child of one of those roots. Math.Max undercounts when the sets
+    # are disjoint (IRC-marked seat with unknown cmdline + another live --mode agent).
     if ($null -eq $Procs) {
         $Procs = @(Get-CimInstance Win32_Process -Filter "Name like 'bob-worker%'" -ErrorAction SilentlyContinue |
                 Select-Object ProcessId, ParentProcessId, Name, CommandLine)
     }
-    $pids = New-Object 'System.Collections.Generic.HashSet[int]'
+    $markers = New-Object 'System.Collections.Generic.HashSet[int]'
     foreach ($p in @(Get-BobTrayIrcAgentSeatPids)) {
         if ($null -eq $p -or $p -eq '') { continue }
         # If PS unrolled a HashSet, $p is [int]; if not, $p may still be HashSet (nested).
         if ($p -is [System.Collections.Generic.HashSet[int]]) {
-            foreach ($x in $p) { [void]$pids.Add([int]$x) }
+            foreach ($x in $p) { [void]$markers.Add([int]$x) }
         } else {
-            [void]$pids.Add([int]$p)
+            [void]$markers.Add([int]$p)
         }
     }
     $w = @($Procs | Where-Object { $_.Name -match '^bob-worker(-[0-9a-f]+)?\.exe$' })
+    $parentOf = @{}
+    foreach ($proc in $w) { $parentOf[[int]$proc.ProcessId] = [int]$proc.ParentProcessId }
     $ids = @($w | ForEach-Object { [int]$_.ProcessId })
     $roots = @($w | Where-Object { $ids -notcontains [int]$_.ParentProcessId })
+    $pids = New-Object 'System.Collections.Generic.HashSet[int]'
     foreach ($r in $roots) {
         if ((Get-BobTrayWorkerSeatMode $r) -eq 'agent') {
             [void]$pids.Add([int]$r.ProcessId)
         }
+    }
+    foreach ($m in $markers) {
+        $cur = [int]$m
+        $seen = @{}
+        $covered = $false
+        while ($cur -gt 0 -and -not $seen.ContainsKey([string]$cur)) {
+            $seen[[string]$cur] = $true
+            if ($pids.Contains($cur)) { $covered = $true; break }
+            if (-not $parentOf.ContainsKey($cur)) { break }
+            $cur = [int]$parentOf[$cur]
+        }
+        if (-not $covered) { [void]$pids.Add([int]$m) }
     }
     $n = [int]$pids.Count
     if ($n -ge $cap) { return ('Max {0} workers ({1} agent seats). Close a worker window first.' -f $cap, $n) }
