@@ -620,8 +620,9 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
     <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
     <!-- FR #4011 / #4389 / #4432: immediate stop before InstallValidate (FilesInUse / RM 351). -->
+    <!-- FR #4441: net.exe stop (waits) not sc.exe (async); matches airc-1.0.1-hotfix1.msi. -->
     <!-- Immediate CAQuietExec64 reads QtExec64CmdLine (not a property named after the CA). -->
-    <CustomAction Id="SetStopAircValidateCmd" Property="QtExec64CmdLine" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
+    <CustomAction Id="SetStopAircValidateCmd" Property="QtExec64CmdLine" Value="&quot;[System64Folder]net.exe&quot; stop Airc" Execute="immediate" />
     <CustomAction Id="StopAircBeforeValidate" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="immediate" Return="ignore" />
 "@
         $uninstallCaSeq = @"
