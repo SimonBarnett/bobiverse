@@ -248,6 +248,7 @@ routes to bobiverse via the split rule.
 - A fixed character window on a harvest digest bullet fails when an earlier clause grows. Measure the needle offset and widen the pin; do not rewrite the skill bullet when the phrases are still in the same sentence.
 - When resync builds MRB rows from open pulls, skip a pull whose auto_merge object is set and whose head.sha matches the merge-on-green ledger pass_sha. Add that pull to the skipped-open set so the keep loop prunes a row already queued. A different head SHA or auto_merge null must still become an MRB.
 - Every bobiverse skill CAST IRON block must name Report-BobiverseIntakeIssue.ps1, the intake webhook, and -Repo SimonBarnett/bobiverse. A shortened harvest paragraph fails test_cast_iron_rule_is_in_every_skill_and_every_agents_file.
+- When a FAIL-supersede harvest tip says restates main or admit main already has, Test-HarvestFailSupersedeProcessLoop and intake.is_fail_supersede_thin_twin_lesson must skip it; bare restates main without FAIL-supersede still posts.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
