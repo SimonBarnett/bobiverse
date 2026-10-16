@@ -243,6 +243,7 @@ routes to bobiverse via the split rule.
 - needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
 - Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
 - !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe — use same max_lost threshold for focus as queue (#4408)
+- FR #4408 harvest tips after product MERGED: FAIL-supersede citing PR #4409 live_state_damage max_lost; do not land session receipt in harvest/SKILL.md
 
 ## Harvest digest (lessons audit 2026-10-06)
 
