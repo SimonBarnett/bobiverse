@@ -162,6 +162,8 @@ Never hostile-review or merge a PR **this seat opened** (same nick/session/workt
 
 **FR #2604 / MRB #2607 (exact-seat):** chair `review_blocked_for_author` blocks **MRB** only for the exact author/implementer seat. A sibling seat on the same machine may take the MRB even when another machine looks live (UAT keeps the sibling-when-other-machine-free block). DONE FR must stamp the `/pull/` URL on the superseding MRB so `mrb_row_offerable` is true; resync skips draft open PRs (`skipped_draft`) and must not enqueue them as MRB jobs.
 
+**FR #4496:** A fold or tip-fix commit on an open product tip keeps the existing tip author name and email for that commit only via `git -c user.name` and `git -c user.email` (copy `git log -1 --format`). Never commit as the reviewing seat nick. Do not change git config.
+
 Wire (preferred after you already ACK'd):
 
 1. Confirm authorship: branch you pushed, PR head from this seat's FR promote, or a `lesson(<book>):` / harvest-lesson tip from this seat's `Invoke-BobiverseHarvest`.
