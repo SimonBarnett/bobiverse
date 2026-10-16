@@ -32,8 +32,10 @@ MRB_PASS_BOARD_RE = re.compile(
 )
 # FR #4041: gh pr comment posts as OWNER; MRB boards that discuss product hold
 # features must not trip owner-hold detection.
+# FR #4487: a ## MRB hand-back (self-MRB GIVEUP) is seat process too. It often
+# says "this seat must not merge" and must not become a permanent owner hold.
 MRB_BOARD_COMMENT_RE = re.compile(
-    r"(?im)^\s*##\s*MRB\s+board\b|\*\*Verdict:\*\*"
+    r"(?im)^\s*##\s*MRB\s+board\b|\*\*Verdict:\*\*|^\s*##\s*MRB\s+hand-back\b"
 )
 OWNERISH = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
@@ -78,7 +80,10 @@ def _created(c: dict) -> str:
 
 
 def _is_mrb_board_comment(text: str) -> bool:
-    """True when comment is an MRB board (FR #4041 — ignore for owner-hold scan)."""
+    """True when comment is an MRB board or hand-back (FR #4041 / #4487).
+
+    Ignored for the owner-hold scan. A hand-back does not clear an earlier real hold.
+    """
     return bool(MRB_BOARD_COMMENT_RE.search(text or ""))
 
 
