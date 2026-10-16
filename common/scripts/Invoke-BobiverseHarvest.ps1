@@ -641,10 +641,32 @@ $bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { 'harvest' }
 $bookName = $bookName.Substring(0, [Math]::Min(64, $bookName.Length))
 $inferBlob = (($Summary + "`n" + (($Lesson | ForEach-Object { $_ }) -join "`n"))).ToLowerInvariant()
 $script:ExplicitBook = $PSBoundParameters.ContainsKey('Book')
+# FR #4514: a lesson that names a skill book ("belongs in bobiverse-bob-job-irc")
+# wins over FR #3004 keyword inference (done-miss must not retarget that lesson).
+$namedBook = $null
+foreach ($candidate in @(
+        'bobiverse-bob-job-irc', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-fr',
+        'bobiverse-bob-job-uat', 'bobiverse-bob-worker', 'bobiverse-bob-commands',
+        'bobiverse-bob-troubleshooting', 'bobiverse-bob-plan', 'bobiverse-worker-seat',
+        'bobiverse-fleet-ops', 'bobiverse-bob', 'bobiverse-jeeves-commands',
+        'bobiverse-jeeves-monitor', 'bobiverse-jeeves-troubleshooting', 'bobiverse-jeeves',
+        'bobiverse-airc-commands', 'bobiverse-airc-troubleshooting', 'bobiverse-airc',
+        'harvest-agent-skills', 'harvest-skills-visionary', 'harvest'
+    )) {
+    $escaped = [regex]::Escape($candidate)
+    if ($inferBlob -match "(?:belongs in|belong in|durable home is|file in)\s+``?$escaped``?") {
+        $namedBook = $candidate
+        break
+    }
+}
+if ($namedBook) {
+    $bookName = $namedBook
+    Write-Host "INFO FR #4514 explicit skill_book=$namedBook (keyword inference does not override)"
+}
 # FR #3004: default harvest yields to an inferred product book from Summary+Lesson cues
 # (mirrors intake resolve_skill_book soft override) so bob-worker playbooks are not
 # re-opened as lesson(harvest) when the owning skill already has the bullet.
-if ($bookName -eq 'harvest') {
+if (-not $namedBook -and $bookName -eq 'harvest') {
     # Strong product cues only - bare "MRB"/"UAT" in session summaries must not re-route.
     if ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter') {
         $bookName = 'bobiverse-bob-worker'
