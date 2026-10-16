@@ -2351,7 +2351,10 @@ def _worker_list_busy_work(ent: dict, nick: str) -> str:
             continue
         state = str(row.get("state") or "").strip().lower()
         work = str(row.get("work") or "").strip()
-        if state in ("doing", "offered", "busy", "accepted") or work:
+        # FR #4454: state=offered is Jeeves's own pending offer, not seat work.
+        if state == "offered":
+            continue
+        if state in ("doing", "busy", "accepted") or work:
             return work or state
     return ""
 
@@ -5794,6 +5797,12 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
             continue
         raw = str(row.get("nick") or row.get("accepted_by") or row.get("offered_to") or "").strip()
         if raw and _seat_key(raw) == key:
+            # FR #4454: a false LOST_ACK_RESTART with no seat-reported work is not busy.
+            if (
+                str(row.get("reconcile") or "") == "LOST_ACK_RESTART"
+                and not _seat_reports_row(home, nick, row)
+            ):
+                continue
             return f"accepted {row.get('task')} {row.get('repo')}{_norm_row_id(row.get('id'))}"
     sticky_maxed: list[dict] = []
     for row in doc.get("unaccepted") or []:
@@ -7335,7 +7344,14 @@ def assign_row(
                         return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
                 if idx is None and acc_idx is not None:
                     holder = _accepted_holder_nick(doc["accepted"][acc_idx])
-                    if holder.lower() in live_l:
+                    acc_row = doc["accepted"][acc_idx]
+                    same_seat = _seat_key(holder) == _seat_key(me)
+                    false_lost = (
+                        same_seat
+                        and str(acc_row.get("reconcile") or "") == "LOST_ACK_RESTART"
+                        and not _seat_reports_row(home, me, acc_row)
+                    )
+                    if holder.lower() in live_l and not false_lost:
                         return (
                             "refused",
                             f"{repo}#{num} {task_u}: accepted by live seat {holder}",
@@ -8295,6 +8311,98 @@ def _seat_has_accepted(home: Path, nick: str) -> bool:
     return False
 
 
+def _digest_seat_work(home: Path, nick: str) -> str:
+    """Seat-reported work. worker_list state=offered is not seat work (FR #4454)."""
+    parsed = bobreport.parse_seat_nick(nick)
+    if not parsed:
+        return ""
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:  # noqa: BLE001
+        return ""
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+    if not isinstance(ent, dict):
+        return ""
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    wrow = workers.get(str(pid))
+    if isinstance(wrow, dict):
+        wo = str(wrow.get("working_on") or "").strip()
+        if wo and parse_digest_work(wo):
+            return wo
+    want = (nick or "").strip().lower()
+    for row in ent.get("worker_list") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != want:
+            continue
+        state = str(row.get("state") or "").strip().lower()
+        if state not in ("doing", "running", "busy"):
+            continue
+        wo = str(row.get("work") or row.get("working_on") or "").strip()
+        if wo and parse_digest_work(wo):
+            return wo
+    return ""
+
+
+def _seat_reports_row(home: Path, nick: str, row: dict) -> bool:
+    wo = _digest_seat_work(home, nick)
+    return bool(wo and row_matches_digest_work(row, wo))
+
+
+def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
+    """FR #4454: !bored demotes a LOST_ACK_RESTART row the seat never reported working.
+
+    Returns True when the row was put back on unaccepted. A real ACK (any other
+    reconcile) or seat-reported ``working_on`` stays accepted (FR #3867).
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+
+    def _owner(r: dict) -> str:
+        raw = str(r.get("nick") or r.get("accepted_by") or r.get("offered_to") or "").strip()
+        return (canonical_worker_nick(raw) or raw).strip().lower()
+
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
+            mine = [r for r in acc if _owner(r) == me]
+            if not mine:
+                return False
+            if any(str(r.get("reconcile") or "") != "LOST_ACK_RESTART" for r in mine):
+                return False
+            if any(_seat_reports_row(home, nick, r) for r in mine):
+                return False
+            unacc = doc.setdefault("unaccepted", [])
+            for r in mine:
+                fin = dict(r)
+                for k in (
+                    "nick",
+                    "accepted_ts",
+                    "accepted_by",
+                    "offered_to",
+                    "offered_ts",
+                    "offered_channel",
+                    "offered_via",
+                    "channel",
+                ):
+                    fin.pop(k, None)
+                fin["reconcile"] = "requeue:LOST_ACK_NO_ACK"
+                unacc.append(fin)
+            doc["accepted"] = [r for r in acc if _owner(r) != me]
+            _write_queue(queue_path(home), doc)
+    except Exception:  # noqa: BLE001
+        return False
+    _log_queue_purge(
+        f"INFO seat-reconcile nick={nick} result=requeue:LOST_ACK_NO_ACK reason=LOST_ACK_NO_ACK",
+        log=log,
+    )
+    return True
+
+
 def _iter_digest_work_claims(home: Path) -> list[tuple[str, str]]:
     """Collect (nick, working_on) claims from digest workers map + doing list (FR #3867)."""
     import bobreport as _br
@@ -8325,7 +8433,8 @@ def _iter_digest_work_claims(home: Path) -> list[tuple[str, str]]:
         for row in list(ent.get("worker_list") or []):
             if not isinstance(row, dict):
                 continue
-            if str(row.get("state") or "").strip().lower() not in ("doing", "running", "busy", "offered"):
+            # FR #4454: do not treat Jeeves's own worker_list state=offered as a claim.
+            if str(row.get("state") or "").strip().lower() not in ("doing", "running", "busy"):
                 continue
             wo = str(row.get("work") or row.get("working_on") or "").strip()
             if not wo or not parse_digest_work(wo):
@@ -8470,6 +8579,9 @@ def bored_gate(
     # FR #3192: accepted row is busy even before digest on_ack paints working_on
     # (stale !bored after slow GH work must NAK-busy, not stamp a second offer).
     if _seat_has_accepted(home, nick):
+        # FR #4454: !bored after a false LOST_ACK_RESTART (no seat work) re-offers.
+        if release_unacked_lost_ack(home, nick):
+            return "ok"
         if release_stale_busy(home, nick, now, session_started=session_started):
             return "ok"
         return "busy"
