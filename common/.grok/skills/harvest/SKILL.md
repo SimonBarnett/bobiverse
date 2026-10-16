@@ -245,6 +245,7 @@ routes to bobiverse via the split rule.
 - !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe — use same max_lost threshold for focus as queue (#4408)
 - FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
 - BOM-less ASCII gates for Install-Airc*.ps1 / Ensure-BobTrayRunning.ps1 / intake.py must run in CI on every PR (pytest-ascii-bom.yml); comment-only Unicode merges red main when only pytest-gitclaim runs
+- Cursor seats default to batched KEY_EVENT inject only when _start_cursor_turn_watcher runs. An explicit BOB_WORKER_INJECT_PASTE still wins. Pin that with a call of the watcher (env unset -> 0, env 1 stays 1) on a docs/mrb PR after the product merge, and do not treat a disabled cursor turn watcher as covered.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
