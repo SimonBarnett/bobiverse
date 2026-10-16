@@ -189,7 +189,7 @@ Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=
 
 airc status-only workstation (no remote shell):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_SHELL=off AIRC_REQUIRE_ACCOUNT=1 AIRC_ACCOUNTS=simon`  
-Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
+Fleet fresh default is `operators` (FR #4030 / 1.0.0; was `off`). Omit `AIRC_SHELL` on upgrade to keep/migrate to `operators` unless `shell_source=explicit`. **FR #4390:** `airc.json` key `shell` takes values `off`|`operators` only — install/UAT expect `"shell": "operators"` after migrate-from-fresh-off, never `"shell": "shell"`. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
 
 
 Fleet airc authorisation (FR #3401 / #3639): live IRC channel status only. A sender holding ops (+o) or half-ops (+h) (or higher) in the one control channel the console joined is authorised; everyone else gets `DONE exit=126 not-op`. There is no `operators.txt`, no `config\fleet-operators.txt` roster and no nick allow-list on any profile (fleet, workstation or client), and the retired `AIRC_OPERATORS` MSI property is ignored. Fleet and workstation consoles take commands by DM only and stay silent in their control channel; `AIRC_PROFILE=client` also accepts commands in the control channel. Auth refuses until NAMES/366 has synced the channel, and the console never authorises its own nick.
