@@ -2320,6 +2320,8 @@ def inject_with_submit_verify(
     stop_fn: Optional[Callable[[], bool]] = None,
     sync: bool = True,
     on_failed: Optional[Callable[[], None]] = None,
+    force_verify: bool = False,
+    on_unverified: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
 
@@ -2343,13 +2345,30 @@ def inject_with_submit_verify(
     if not _submit_verify_enabled():
         return True
     # Without a submit probe, never fire Enter-only retries (could interrupt a warm TUI).
-    if probe_fn is None:
+    # FR #4456: the ack-miss reminder may force the verify loop anyway (no probe is not success).
+    if probe_fn is None and not force_verify:
         if log:
             try:
                 log("relay: submit-verify skipped (no probe)")
             except Exception:
                 pass
+        if on_unverified is not None:
+            try:
+                on_unverified()
+            except Exception:
+                pass
         return True
+    if probe_fn is None and force_verify:
+        if log:
+            try:
+                log("relay: submit-verify forced (no probe)")
+            except Exception:
+                pass
+
+        def _never_submitted() -> bool:
+            return False
+
+        probe_fn = _never_submitted
     vs = float(_submit_verify_s() if verify_s is None else verify_s)
     mr = int(_submit_verify_retries() if max_retries is None else max_retries)
     bos = _submit_verify_backoffs() if backoffs is None else backoffs
@@ -3791,17 +3810,30 @@ class AssignAckMiss:
             self.recycle_s = self.remind_s
         self._since: Optional[float] = None
         self._reminded = False
+        self._unverified = False
         self.last_line = ""
 
     def clear(self) -> None:
         self._since = None
         self._reminded = False
+        self._unverified = False
         self.last_line = ""
+
+    @property
+    def unverified(self) -> bool:
+        """FR #4456: last job inject had no submit probe (verification skipped)."""
+        return bool(self._unverified)
+
+    def note_unverified(self) -> None:
+        """FR #4456: mark the armed assign so the first reminder forces verify, then recycle."""
+        if self._since is not None:
+            self._unverified = True
 
     def note_inject(self, line: str, now: float, *, own_nick: str = "") -> None:
         if looks_like_job_assign(line, own_nick):
             self._since = float(now)
             self._reminded = False
+            self._unverified = False
             self.last_line = line or ""
             return
         # Mirror BoredEmitter._on_inject: strip FROM nick target before idle match.
@@ -3828,6 +3860,9 @@ class AssignAckMiss:
         if age >= self.remind_s and not self._reminded:
             self._reminded = True
             return "remind"
+        # FR #4456: an unverified inject is not left until recycle_s after that reminder.
+        if self._reminded and self._unverified:
+            return "recycle"
         return None
 
     def reminder_line(self, *, shop: str, outbox: str | Path) -> str:
@@ -5484,7 +5519,7 @@ class Supervisor:
         self._recovery = rec
         return rec
 
-    def _inject_line(self, proc, line: str, *, on_failed=None) -> bool:
+    def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
             return False
         if on_failed is None and assign_job_ref(line):
@@ -5509,6 +5544,11 @@ class Supervisor:
                 getattr(b, "ack_job_ref", None) == w
             )
         # sync=False: do not block the IRC relay thread for the verify backoff budget.
+        # FR #4456: the unverified ack-miss reminder runs the loop on this thread.
+        def _mark_unverified() -> None:
+            with contextlib.suppress(Exception):
+                self.ack_miss.note_unverified()
+
         return inject_with_submit_verify(
             proc.pid,
             line,
@@ -5519,8 +5559,10 @@ class Supervisor:
             sleep=time.sleep,
             log=self.log,
             stop_fn=stop,
-            sync=False,
+            sync=False if sync is None else bool(sync),
             on_failed=on_failed,
+            force_verify=bool(force_verify),
+            on_unverified=None if force_verify else _mark_unverified,
         )
 
     def _wait_exit(self, proc) -> None:
@@ -5671,12 +5713,23 @@ class Supervisor:
         if action == "remind":
             line = self.ack_miss.reminder_line(shop=shop, outbox=outbox)
             what = "pending assign" if line == self.ack_miss.last_line else "outbox reminder"
+            unverified = bool(getattr(self.ack_miss, "unverified", False))
+            extra = " forced submit-verify (FR #4456)" if unverified else ""
             self.log(
                 f"ack-miss: no ACK after assign for {self.ack_miss.remind_s:.0f}s; "
-                f"re-injecting {what} path={outbox}"
+                f"re-injecting {what}{extra} path={outbox}"
             )
             try:
-                self._inject_line(proc, line)
+                # Unverified (no probe) reminder blocks until the Enter loop finishes, then
+                # the next health tick recycles instead of waiting recycle_s.
+                self._inject_line(
+                    proc,
+                    line,
+                    force_verify=unverified,
+                    sync=True if unverified else None,
+                    # Do not NACK via InjectRecovery: the next tick recycles (FR #4456).
+                    on_failed=(lambda: None) if unverified else None,
+                )
             except Exception as e:
                 self.log(f"ack-miss: remind inject failed {type(e).__name__}")
             return
