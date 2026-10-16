@@ -242,6 +242,7 @@ routes to bobiverse via the split rule.
 - Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
 - needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
 - Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
+- When airc pack embeds config\ergo.password (FR #4216), CLIENT_REMAINING_FILES for fr3514 must include it (27 with airc.exe); discard hermetically only if absent; do not scrub the secret from the pack fixture.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
