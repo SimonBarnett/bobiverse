@@ -146,6 +146,8 @@ PowerShell:
 # any -Book (including harvest-agent-skills; class of a-search#1839).
 # FR #4308: also skip thinner tip + durable lesson already on main (a-search#1980/#2283;
 # not contiguous "thin harvest tip"; no tip-loop meta / Thin FAIL order required).
+# FR #4484: also skip FAIL-supersede next to "restates main" / "admit main already has"
+# (class of a-search#3470; not already-on-main / second-copy / job-mrb wording).
 # FR #3827: also catch "stay in"/"durable in bobiverse-bob-job-mrb", "thin harvest tip",
 # "do not append a second copy under harvest" (tip #3826 after #3825 missed belong(s) in).
 # FR #3004: default -Book harvest yields to keyword-inferred product books (bob-worker /
@@ -230,6 +232,7 @@ routes to bobiverse via the split rule.
 - FR #3824: one harvest per seat+lesson — skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
 - FR #4308: FAIL-supersede skip also matches thinner tip + durable lesson already on main (a-search#1980/#2283 tip-loop class; not contiguous thin harvest tip)
+- FR #4484: FAIL-supersede skip also matches restates main and admit main already has (a-search#3470 class; those phrases are not already-on-main / second-copy / job-mrb)
 - FR #3959 / #3957: FAIL-supersede skip also matches durable home is bobiverse-bob-job-mrb and do not park … under harvest/SKILL.md (words between); CAST IRON already on main is a thin-twin cue (tip #3958 class)
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
