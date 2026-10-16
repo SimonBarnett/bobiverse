@@ -87,3 +87,60 @@ def test_fr4315_suite_env_cannot_clobber_digest_home(tmp_path):
     assert str(tmp_path / "work") in seen["BOB_DIGEST_HOME"]
     assert seen["BOB_DIGEST_HOME"] != str(live)
     assert seen.get("BOBIVERSE_BUILD_SUITE") == "1"
+
+
+def _focus_doc(repos=None, items=None):
+    import json
+
+    return json.dumps(
+        {"v": 1, "repos": repos or {}, "items": items or {}, "item_seq": 0, "strict": False}
+    )
+
+
+def test_fr4408_one_focus_prune_is_not_damage(tmp_path):
+    """Concurrent chair prune of one closed focus item must not abort !build (#4408)."""
+    live = tmp_path / "live" / ".bobiverse"
+    live.mkdir(parents=True)
+    (live / "focus.json").write_text(
+        _focus_doc(
+            items={
+                "o/r#1": {"rank": 1, "repo": "o/r", "id": "#1"},
+                "o/r#2": {"rank": 2, "repo": "o/r", "id": "#2"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def prune_one(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+        (live / "focus.json").write_text(
+            _focus_doc(items={"o/r#2": {"rank": 2, "repo": "o/r", "id": "#2"}}),
+            encoding="utf-8",
+        )
+        return "ok"
+
+    run = bb.guarded_run_command(tmp_path / "work", [live], inner=prune_one)
+    assert run("x", name="bob", ref_or_baseline="HEAD") == "ok"
+
+
+def test_fr4408_mass_focus_loss_is_damage(tmp_path):
+    """Wiping more than max_lost focus keys still fails closed (#4183 / #4408)."""
+    live = tmp_path / "live" / ".bobiverse"
+    live.mkdir(parents=True)
+    items = {f"o/r#{i}": {"rank": i, "repo": "o/r", "id": f"#{i}"} for i in range(8)}
+    (live / "focus.json").write_text(_focus_doc(items=items), encoding="utf-8")
+
+    def wipe(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+        (live / "focus.json").write_text(_focus_doc(), encoding="utf-8")
+        return "ok"
+
+    run = bb.guarded_run_command(tmp_path / "work", [live], inner=wipe)
+    with pytest.raises(bb.LiveStateTouched, match="focus.json lost"):
+        run("x", name="bob", ref_or_baseline="HEAD")
+
+
+def test_fr4408_live_state_damage_focus_threshold():
+    before = {"/x/focus.json": {"a", "b", "c", "d", "e", "f", "g"}}
+    after_ok = {"/x/focus.json": {"a", "b", "c", "d", "e", "f"}}  # lost 1
+    after_bad = {"/x/focus.json": {"a"}}  # lost 6
+    assert bb.live_state_damage(before, after_ok) == []
+    assert bb.live_state_damage(before, after_bad) == ["/x/focus.json lost 6"]

@@ -2007,7 +2007,7 @@ def isolated_suite_env(work_dir: Path | str, tag: str) -> dict:
 
 def live_state_fingerprint(homes: Iterable[Path | str]) -> dict:
     """Damage signals only: the live chair rewrites these files all the time, so a hash
-    diff is not damage. Track queue row keys and focus repos (#4183)."""
+    diff is not damage. Track queue row keys and focus repos/items (#4183 / #4408)."""
     out: dict = {}
     for h in homes:
         q = Path(h) / "queue.json"
@@ -2033,11 +2033,18 @@ def live_state_fingerprint(homes: Iterable[Path | str]) -> dict:
 
 
 def live_state_damage(before: dict, after: dict, *, max_lost: int = 5) -> list[str]:
+    """Flag real wipe / mass loss only.
+
+    Queue and focus use the same ``max_lost`` threshold (#4185 / #4408). A concurrent
+    chair resync may prune a few closed focus items (FR #1508 / #1520) or rotate a
+    handful of queue rows while a long suite step runs; that is not suite damage.
+    Losing more than ``max_lost`` keys still fails closed (the #4183 wipe case).
+    """
     bad = []
     for k, was in before.items():
         now = after.get(k, set())
         lost = was - now
-        if len(lost) > max_lost or (k.endswith("focus.json") and lost):
+        if len(lost) > max_lost:
             bad.append(f"{k} lost {len(lost)}")
     return bad
 
