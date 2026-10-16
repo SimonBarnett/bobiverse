@@ -164,6 +164,8 @@ Never hostile-review or merge a PR **this seat opened** (same nick/session/workt
 
 **FR #4496:** A fold or tip-fix commit on an open product tip keeps the existing tip author name and email for that commit only via `git -c user.name` and `git -c user.email` (copy `git log -1 --format`). Never commit as the reviewing seat nick. Do not change git config.
 
+**FR assign is not self-MRB:** When this seat is later assigned the intake it just filed, implement that issue. Self-MRB applies only when this seat is assigned the MRB of a PR it opened or pushed.
+
 Wire (preferred after you already ACK'd):
 
 1. Confirm authorship: branch you pushed, PR head from this seat's FR promote, or a `lesson(<book>):` / harvest-lesson tip from this seat's `Invoke-BobiverseHarvest`.
