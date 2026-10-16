@@ -8,6 +8,11 @@ FR #4307: markers alone undercount when an older build or tray restart leaves
 ``run\\seats`` empty while agent processes are still live. Cap readers count the
 union of (a) markers whose pid is still alive and (b) live agent bob-worker
 seat roots from the process snapshot. Stale markers (dead pid) never count.
+
+FR #4458: a onefile seat writes the child pid into the marker while the process
+scan counts the bootloader root. Those two pids are one seat. A marker pid that
+walks up to a live agent root is not a second seat. A marker whose pid is not
+in that tree still counts (the FR #4307 disjoint case).
 """
 from __future__ import annotations
 
@@ -226,6 +231,32 @@ def live_agent_root_pids(procs: Optional[Iterable] = None) -> set[int]:
     return {p for p in roots if rows[p][2] == "agent"}
 
 
+def _proc_rows(procs: Optional[Iterable]) -> dict[int, tuple[int, str, str]]:
+    rows: dict[int, tuple[int, str, str]] = {}
+    for entry in procs or []:
+        try:
+            p, pp, n = int(entry[0]), int(entry[1]), str(entry[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        rows[p] = (pp, n, _entry_mode(entry))
+    return rows
+
+
+def marker_pid_under_agent_root(pid: int, rows: dict, roots: set[int]) -> bool:
+    """FR #4458: True when ``pid`` is an agent root or a descendant of one."""
+    seen: set[int] = set()
+    cur = int(pid)
+    while cur and cur not in seen:
+        seen.add(cur)
+        if cur in roots:
+            return True
+        row = rows.get(cur)
+        if row is None:
+            return False
+        cur = int(row[0])
+    return False
+
+
 def count_cap_agent_seats(
     root: Optional[Path | str] = None,
     *,
@@ -234,20 +265,36 @@ def count_cap_agent_seats(
     pid_alive_fn=None,
     procs: Optional[Iterable] = None,
 ) -> int:
-    """FR #4307: union of live IRC markers and live agent process roots."""
-    pids: set[int] = set()
+    """FR #4307 / FR #4458: live agent roots, plus marker pids not already in those trees."""
+    rows = _proc_rows(procs) if procs is not None else {}
+    roots = live_agent_root_pids(procs) if procs is not None else set()
+    identities: set[int] = set(roots)
     for s in list_live_irc_agent_seats(root, machine=machine, pid_alive_fn=pid_alive_fn):
         try:
             pid = int(s.get("pid") or 0)
         except (TypeError, ValueError):
             pid = 0
-        if pid > 0:
-            pids.add(pid)
-    if procs is not None:
-        pids |= live_agent_root_pids(procs)
+        if pid <= 0:
+            continue
+        if procs is not None and marker_pid_under_agent_root(pid, rows, roots):
+            continue
+        identities.add(pid)
     if exclude_pid is not None:
-        pids.discard(int(exclude_pid))
-    return len(pids)
+        ex = int(exclude_pid)
+        identities.discard(ex)
+        if procs is not None and marker_pid_under_agent_root(ex, rows, roots):
+            cur = ex
+            seen: set[int] = set()
+            while cur and cur not in seen:
+                seen.add(cur)
+                if cur in roots:
+                    identities.discard(cur)
+                    break
+                row = rows.get(cur)
+                if row is None:
+                    break
+                cur = int(row[0])
+    return len(identities)
 
 
 def count_irc_agent_seats(
@@ -283,7 +330,7 @@ def worker_cap_refusal_irc(
 ) -> str:
     """'' = free to start. Plan/monitor/maintenance never refused.
 
-    Cap = live IRC agent markers union live agent bob-worker roots (FR #4307).
+    Cap = live agent roots plus IRC markers that are not the child of one of those roots (FR #4307 / FR #4458).
     """
     if str(for_mode).lower() != "agent":
         return ""

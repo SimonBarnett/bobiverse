@@ -451,6 +451,9 @@ $bare = @((P 10 1 'bob-worker.exe' ''), (P 20 1 'bob-worker.exe' ''))
 # Disjoint: marker for $livePid (unknown cmdline) + distinct --mode agent root 202.
 $disjoint = @((P $livePid 1 'bob-worker.exe' ''), (P 202 1 'bob-worker-bbb.exe' 'bob-worker.exe --mode agent'), (P 203 202 'bob-worker-bbb.exe' 'bob-worker.exe --mode agent'))
 "CAP_DISJOINT=[" + (Get-BobTrayWorkerCapRefusal -Procs $disjoint) + "]"
+# FR #4458: marker pid is the onefile child of the agent root => one seat, no refusal.
+$onefile = @((P 100 1 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'), (P $livePid 100 'bob-worker-aaa.exe' 'bob-worker.exe --mode agent'))
+"CAP_ONEFILE=[" + (Get-BobTrayWorkerCapRefusal -Procs $onefile) + "]"
 $la2 = Join-Path $env:TEMP ('bob-cap-' + [guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Force -Path (Join-Path $la2 'Bobiverse\worker\run\seats') | Out-Null
 $env:LOCALAPPDATA = $la2
@@ -461,6 +464,7 @@ $env:LOCALAPPDATA = $la2
     assert "IRC=2" in out, out
     assert "CAP_IRC_DUP_PID=[]" in out, out  # unique pid union, not file-count Max
     assert "CAP_DISJOINT=[Max 2 workers (2 agent seats). Close a worker window first.]" in out, out
+    assert "CAP_ONEFILE=[]" in out, out
     assert "CAP_PROCS=[Max 2 workers (2 agent seats). Close a worker window first.]" in out, out
 
 
