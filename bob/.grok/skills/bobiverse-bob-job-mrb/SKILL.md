@@ -154,6 +154,7 @@ After you **DONE PASS** a FAIL-fixed MRB, the one fix PR can still race **CONFLI
 2. If the fix PR is closed unmerged or main lacks the lesson, immediately open a **land PR** from the known-good tip (or cherry-pick the fix commit tree) onto current `main`, merge it, and verify `origin/main` again.
 3. Post a short follow-up board comment on the assigned PR citing the land PR URL.
 4. Do **not** force-push an empty main tip onto the fix branch; do **not** close originating issues until the lesson is on `main`.
+5. When a harvest tip is CONFLICTING, branch from current `origin/main`, add only the lesson and its hostile pin, then `force-with-lease`. Never `git reset --soft origin/main` on a dirty tip (FR #4494).
 
 ## Self-MRB (harvest #1603 / MRB #1578)
 
