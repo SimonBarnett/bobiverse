@@ -272,6 +272,7 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         st = (f.grok_state or "unknown").strip().lower()
         return st != "unknown"
+    # Cursor: relay ACKs on receipt (#4115), so _inject_line uses this probe, not stop_fn.
     if k == "cursor":
         return f.cursor_high is not None or f.cursor_low is not None
     return False
@@ -1894,6 +1895,8 @@ def make_submit_probe(
     agent_pid: int = 0,
     since_wall: float | None = None,
     sessions_root: Optional[Path] = None,
+    text: str = "",
+    cursor_chats_root: Optional[Path] = None,
 ) -> Optional[Callable[[], bool]]:
     """Build a submit probe for the agent kind (FR #2696). None = no probe available."""
     k = (kind or "").strip().lower()
@@ -1911,8 +1914,51 @@ def make_submit_probe(
 
         return _probe
 
-    # Cursor / unknown: no durable enqueue log on this fleet yet.
+    if k == "cursor":
+        # Cursor submit probe: cursor-agent appends each submitted prompt to
+        # ~/.cursor/chats/<ws>/<chat>/prompt_history.json. True once a history file touched
+        # since the inject holds the injected text (prefix match; a lone "v" from Ctrl+V is not it).
+        want = re.sub(r"\s+", " ", (text or "")).strip()[:60]
+        croot = Path(cursor_chats_root) if cursor_chats_root else (Path.home() / ".cursor" / "chats")
+
+        def _cprobe() -> bool:
+            return probe_cursor_prompt_history(croot, want, since_wall=t0)
+
+        return _cprobe if want else None
+
+    # Unknown kinds: no durable enqueue log on this fleet yet.
     return None
+
+
+def probe_cursor_prompt_history(chats_root: Path | str, want: str, *, since_wall: float) -> bool:
+    """True when a prompt_history.json modified at/after ``since_wall`` contains ``want``."""
+    if not want:
+        return False
+    try:
+        root = Path(chats_root)
+        for f in root.glob("*/*/prompt_history.json"):
+            try:
+                if f.stat().st_mtime + 1.0 < float(since_wall):
+                    continue
+                data = json.loads(f.read_text(encoding="utf-8", errors="replace") or "[]")
+            except (OSError, ValueError):
+                continue
+            for entry in data if isinstance(data, list) else []:
+                if want in re.sub(r"\s+", " ", str(entry)):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _cursor_submit_gap_s(default: float = 1.0) -> float:
+    """Pre-Enter gap for cursor-agent: its Ctrl+V clipboard read is async (Enter must wait)."""
+    raw = (os.environ.get("BOB_WORKER_CURSOR_SUBMIT_GAP_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(0.2, min(10.0, v))
 
 
 def bored_on_turn_end_enabled() -> bool:
@@ -1924,6 +1970,133 @@ def bored_on_turn_end_enabled() -> bool:
 def should_start_turn_watcher(kind: str) -> bool:
     """FR #2802: grok turn watcher only when opt-in is on (default on)."""
     return (kind or "").strip().lower() == "grok" and bored_on_turn_end_enabled()
+
+
+def should_start_cursor_turn_watcher(kind: str) -> bool:
+    """Cursor seats: chat-store quiet-period turn watcher (BOB_WORKER_CURSOR_TURN_WATCH=0 disables)."""
+    if (kind or "").strip().lower() != "cursor" or not bored_on_turn_end_enabled():
+        return False
+    raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_WATCH") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _cursor_turn_quiet_s(default: float = 20.0) -> float:
+    raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_QUIET_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(5.0, min(300.0, v))
+
+
+class CursorTurnWatcher:
+    """cursor-agent writes no turn events; infer them from its chat store.
+
+    The seat's chat is the ``~/.cursor/chats/<ws>/<chat>/`` dir created closest after the agent
+    spawn (``since_wall``). A write to any file in it after a quiet spell = turn_started; no
+    writes for ``quiet_s`` after activity = turn_ended (once per turn). ``clock`` is wall time
+    (file mtimes are wall time).
+    """
+
+    def __init__(
+        self,
+        *,
+        since_wall: float,
+        chats_root: Path | str | None = None,
+        quiet_s: float | None = None,
+        on_turn_started: Optional[Callable[[Optional[int], float], None]] = None,
+        on_turn_ended: Optional[Callable[[Optional[int], float], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+        poll_s: float = 1.0,
+        clock: Callable[[], float] = time.time,
+        log: Optional[Callable[[str], None]] = None,
+        bind_window_s: float = 120.0,
+    ):
+        self.root = Path(chats_root) if chats_root else (Path.home() / ".cursor" / "chats")
+        self.since_wall = float(since_wall)
+        self.quiet_s = float(_cursor_turn_quiet_s() if quiet_s is None else quiet_s)
+        self._on_started = on_turn_started
+        self._on_ended = on_turn_ended
+        self._stop = stop_event or threading.Event()
+        self.poll_s = max(0.05, float(poll_s))
+        self.clock = clock
+        self._log = log
+        self.bind_window_s = float(bind_window_s)
+        self.chat_dir: Optional[Path] = None
+        self._last_mtime = 0.0
+        self._active = False
+        self._turn = 0
+
+    def _bind(self) -> Optional[Path]:
+        if self.chat_dir is not None:
+            return self.chat_dir
+        best = None
+        try:
+            for d in self.root.glob("*/*"):
+                if not d.is_dir():
+                    continue
+                try:
+                    st = d.stat()
+                except OSError:
+                    continue
+                born = min(st.st_mtime, getattr(st, "st_ctime", st.st_mtime))
+                if os.name != "nt":
+                    born = st.st_mtime
+                    with contextlib.suppress(OSError):
+                        born = min(f.stat().st_mtime for f in d.iterdir()) if any(d.iterdir()) else born
+                if born + 2.0 < self.since_wall or born > self.since_wall + self.bind_window_s:
+                    continue
+                if best is None or born < best[0]:
+                    best = (born, d)
+        except OSError:
+            return None
+        if best is not None:
+            self.chat_dir = best[1]
+            if self._log:
+                with contextlib.suppress(Exception):
+                    self._log(f"bored: cursor turn watcher following {self.chat_dir}")
+        return self.chat_dir
+
+    def _newest_mtime(self, d: Path) -> float:
+        m = 0.0
+        try:
+            for f in d.iterdir():
+                with contextlib.suppress(OSError):
+                    if f.is_file():
+                        m = max(m, f.stat().st_mtime)
+        except OSError:
+            pass
+        return m
+
+    def tick(self) -> Optional[str]:
+        """One poll; returns 'started' / 'ended' when it fired a callback (tests)."""
+        d = self._bind()
+        if d is None:
+            return None
+        now = float(self.clock())
+        m = self._newest_mtime(d)
+        fired = None
+        if m > self._last_mtime:
+            self._last_mtime = m
+            if not self._active:
+                self._active = True
+                self._turn += 1
+                fired = "started"
+                if self._on_started:
+                    with contextlib.suppress(Exception):
+                        self._on_started(self._turn, now)
+        elif self._active and now - self._last_mtime >= self.quiet_s:
+            self._active = False
+            fired = "ended"
+            if self._on_ended:
+                with contextlib.suppress(Exception):
+                    self._on_ended(self._turn, now)
+        return fired
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            self.tick()
+            self._stop.wait(self.poll_s)
 
 
 class GrokTurnWatcher:
@@ -2520,6 +2693,8 @@ class Relay:
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
+        # Job refs this seat already closed (DONE / GIVEUP / NACK sent): never replay or hold them.
+        self._finished_refs: set = set()
         self._overflow: list = []
         self._sent: list = []
         self._last_line = ""
@@ -2738,6 +2913,28 @@ class Relay:
             if line and line not in self._pending:
                 self._pending.insert(0, line)
 
+    def note_outbound(self, payload: str) -> int:
+        """Seat sent DONE / GIVEUP / NACK for a job: drop held copies of it. Returns n dropped."""
+        m = _OUT_JOB_KEY_RX.match((payload or "").strip())
+        if not m or m.group(1).upper() not in ("DONE", "GIVEUP", "NACK"):
+            return 0
+        ref = m.group(3).lower()
+        with self._lock:
+            self._finished_refs.add(ref)
+            if len(self._finished_refs) > 256:
+                self._finished_refs.pop()
+            before = len(self._pending)
+            self._pending = [p for p in self._pending if assign_job_ref(p) != ref]
+            dropped = before - len(self._pending)
+        if dropped:
+            self.log(f"relay: dropped {dropped} held assign(s) for {ref} ({m.group(1).upper()} sent)")
+        return dropped
+
+    def is_finished_ref(self, line: str) -> bool:
+        ref = assign_job_ref(line)
+        with self._lock:
+            return bool(ref) and ref in self._finished_refs
+
     def release_held_assigns(self) -> int:
         """FR #2811 / FR #4115 / FR #4180: flush pending assigns after turn_ended / harvest hold ends.
 
@@ -2748,12 +2945,18 @@ class Relay:
         with self._lock:
             keep: list = []
             flush: list = []
+            stale: list = []
             for line in self._pending:
-                if assign_job_ref(line):
+                ref = assign_job_ref(line)
+                if ref and ref in self._finished_refs:
+                    stale.append(line)
+                elif ref:
                     flush.append(line)
                 else:
                     keep.append(line)
             self._pending = keep
+        for line in stale:
+            self.log("relay: dropped finished held assign (DONE/GIVEUP/NACK already sent) " + line[:120])
         refuse = False
         try:
             refuse = bool(self.refuse_assign_while and self.refuse_assign_while())
@@ -5059,9 +5262,48 @@ class Supervisor:
         th.start()
         self.log(f"out-of-fuel: watcher started (kind={kind} pid={agent_pid})")
 
+    def _start_cursor_turn_watcher(self) -> None:
+        """Cursor: release held assigns on an inferred turn end (no 600 s fallback wait)."""
+        self._turn_watch_stop = threading.Event()
+
+        def _on_started(turn: Optional[int], wall: float) -> None:
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
+            if self.bored:
+                self.bored.turn_started(turn=turn, sid=None)
+
+        def _on_ended(turn: Optional[int], wall: float) -> None:
+            if self.bored:
+                self.bored.turn_ended(turn=turn, sid=None)
+            try:
+                n = self.relay.release_held_assigns()
+                if n and self.bored:
+                    self.bored.activity(mark_work=True)
+                if self.bored:
+                    self.bored.clear_held_assign()
+            except Exception:
+                pass
+
+        watcher = CursorTurnWatcher(
+            since_wall=time.time() - 5.0,
+            on_turn_started=_on_started,
+            on_turn_ended=_on_ended,
+            stop_event=self._turn_watch_stop,
+            log=self.log,
+        )
+        th = threading.Thread(target=watcher.run, name="cursor-turn-watch", daemon=True)
+        self._turn_watch_thread = th
+        th.start()
+        self.log(f"bored: cursor turn watcher started (quiet_s={watcher.quiet_s:.0f})")
+
     def _start_turn_watcher(self, session_id: str) -> None:
         """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
         self._stop_turn_watcher()
+        if self.bored and should_start_cursor_turn_watcher(self.kind):
+            self._start_cursor_turn_watcher()
+            return
         if not self.bored or not should_start_turn_watcher(self.kind):
             return
         self._turn_watch_stop = threading.Event()
@@ -5146,6 +5388,9 @@ class Supervisor:
         p = (payload or "").strip()
         if _OUT_ACK_RX.match(p) or _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
             self.ack_miss.note_ack()
+        if _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
+            with contextlib.suppress(Exception):
+                self.relay.note_outbound(p)
         if self.bored:
             self.bored.on_outbox(payload)
 
@@ -5535,11 +5780,18 @@ class Supervisor:
             session_id=sid,
             agent_pid=int(getattr(proc, "pid", 0) or 0),
             since_wall=since_wall,
+            text=line,
         )
         # FR #2791: stop only when the open ACK is for this injected job (not any ACK).
         stop = None
         want = assign_job_ref(line)
-        if want and self.bored is not None:
+        is_cursor = (self.kind or "").strip().lower() == "cursor"
+        inject_fn = self.inject
+        if is_cursor and self.inject is inject_console:
+            inject_fn = lambda pid, text, log=None: inject_console(
+                pid, text, submit_gap_s=_cursor_submit_gap_s(), log=log
+            )
+        if want and self.bored is not None and not (is_cursor and probe is not None):
             stop = lambda b=self.bored, w=want: bool(getattr(b, "ack_open", False)) and (
                 getattr(b, "ack_job_ref", None) == w
             )
@@ -5552,7 +5804,7 @@ class Supervisor:
         return inject_with_submit_verify(
             proc.pid,
             line,
-            inject_fn=self.inject,
+            inject_fn=inject_fn,
             enter_fn=send_console_enter,
             probe_fn=probe,
             clock=time.monotonic,
