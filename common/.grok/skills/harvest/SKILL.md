@@ -245,6 +245,7 @@ routes to bobiverse via the split rule.
 - !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe — use same max_lost threshold for focus as queue (#4408)
 - FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
 - BOM-less ASCII gates for Install-Airc*.ps1 / Ensure-BobTrayRunning.ps1 / intake.py must run in CI on every PR (pytest-ascii-bom.yml); comment-only Unicode merges red main when only pytest-gitclaim runs
+- Get-BobAgentFuel must call only functions listed in BobBridge FunctionsToExport and Export-ModuleMember. A CommandNotFound inside an empty catch leaves cursor.high and cursor.low null, so select_agent skips Cursor when Grok is exhausted.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
