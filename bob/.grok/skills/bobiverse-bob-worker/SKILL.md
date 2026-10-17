@@ -211,6 +211,7 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 ## Harvested lessons (intake)
 
 - When bob-worker nudges stranded ACK, finish FR #3948 handoff (PASS @ SHA + --auto) and DONE immediately; never leave MRB ACC open.
+- bob-worker stranded-ACK nudge on re-offered MRB: re-post PASS @ unchanged SHA, leave --auto, DONE at once --- do not wait on rematch worktree.
 - When intake parks a bob-worker stranded-ACK / FR #3948 handoff lesson under a-search with a stub bob/.grok path that does not exist on main, MOVED to SimonBarnett/bobiverse bobiverse-bob-worker Harvested lessons and close the a-search tip unmerged.
 - bob-worker harvest: Invoke-BobiverseHarvest must prefer BOB_NICK then BOB_AGENT_NICK, and seat_env_extra must export both so lesson PR seat= stamps and self-MRB blocks the opener (FR #2790 / MRB #2795).
 - bob-worker: BoredEmitter.turn_ended releases harvest hold when grok events.jsonl turn_ended arrives at/after DONE; harvest_hold_s is fallback only (FR #2802 / PR #2809).
