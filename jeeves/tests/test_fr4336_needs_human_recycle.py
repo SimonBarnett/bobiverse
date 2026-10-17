@@ -53,6 +53,7 @@ def test_fr4336_nick_in_giveup_seats_inherits_dead_same_machine(tmp_path, monkey
 
 
 def test_fr4336_review_blocked_inherits_dead_author_seat(tmp_path, monkeypatch):
+    """UAT inherits dead author (FR #4336); MRB does not (FR #4606 / #2604 exact seat)."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
@@ -66,14 +67,24 @@ def test_fr4336_review_blocked_inherits_dead_author_seat(tmp_path, monkeypatch):
     ]
     bobreport.save_digest(tmp_path, digest)
     live = gitclaim.live_seat_nicks(tmp_path)
-    row = {
+    mrb = {
         "task": "MRB",
         "author_seat": "marchhare-12524",
         "implementer_seat": "marchhare-12524",
         "url": "https://github.com/SimonBarnett/a-search/pull/2195",
     }
-    assert gitclaim.review_blocked_for_author(row, "marchhare-8824", live) is True
-    assert gitclaim.review_blocked_for_author(row, "flamingo-9", live) is False
+    # Fresh recycled seat may MRB-review (exact seat only).
+    assert gitclaim.review_blocked_for_author(mrb, "marchhare-8824", live) is False
+    assert gitclaim.review_blocked_for_author(mrb, "flamingo-9", live) is False
+    uat = {
+        "task": "UAT",
+        "author_seat": "marchhare-12524",
+        "implementer_seat": "marchhare-12524",
+        "repo": "SimonBarnett/a-search",
+        "id": "SimonBarnett/a-search",
+    }
+    assert gitclaim.review_blocked_for_author(uat, "marchhare-8824", live) is True
+    assert gitclaim.review_blocked_for_author(uat, "flamingo-9", live) is False
 
 
 def test_fr4336_lost_ack_skips_needs_human_rows(tmp_path, monkeypatch):

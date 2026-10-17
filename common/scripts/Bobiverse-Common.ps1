@@ -1578,8 +1578,9 @@ function Sync-BobiverseScriptTipFromOrigin {
         return [pscustomobject]@{ Ok = $false; Reason = 'install is not a git work tree' }
     }
     $rel = ($RelPath -replace '\\', '/').TrimStart('/')
-    if ($rel -notmatch '^common/scripts/[^/]+\.ps1$') {
-        return [pscustomobject]@{ Ok = $false; Reason = "RelPath must be common/scripts/*.ps1 (got $rel)" }
+    # FR #4606: tip overlay may refresh common/scripts/*.py (gitclaim) as well as *.ps1.
+    if ($rel -notmatch '^common/scripts/[^/]+\.(ps1|py)$') {
+        return [pscustomobject]@{ Ok = $false; Reason = "RelPath must be common/scripts/*.(ps1|py) (got $rel)" }
     }
     $leaf = Split-Path -Leaf $rel
     $spec = "origin/${Branch}:${rel}"
@@ -1677,6 +1678,22 @@ function Sync-BobiverseHarvestScriptsFromOrigin {
         Results = $results
     }
 }
+
+function Sync-BobiverseGitclaimFromOrigin {
+    # FR #4606: dirty-ff leaves compose/dev gitclaim.py stale (MRB exact-seat / no
+    # dead-author inherit). Overlay origin tip into flat scripts\ and common\scripts\.
+    # Frozen jeeves.exe still embeds build-time copy until rebuild.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Branch = 'main',
+        [string]$GitExe = ''
+    )
+    return Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
+        -RelPath 'common/scripts/gitclaim.py' `
+        -ContentMustMatch 'FR #4606|review_blocked_for_author|nick_inherits_dead_seat'
+}
+
+
 function Get-BobiverseInstallGitExcludeText {
     # Shared by install bootstrap and sync refresh (FR #132). Linked FR worktrees use this exclude.
     param([Parameter(Mandatory)][string]$Product)

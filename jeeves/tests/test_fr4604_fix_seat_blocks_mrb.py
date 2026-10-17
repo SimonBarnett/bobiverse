@@ -201,7 +201,12 @@ def test_offer_blocks_implementer_and_fix_seat(tmp_path, monkeypatch):
 
 
 def test_nick_inherits_dead_fix_seat_on_recycle(tmp_path, monkeypatch):
-    """Recycled same-machine nick inherits FIX exclusion when old seat is not live (FR #4336)."""
+    """FR #4606: recycled sole seat does NOT inherit dead FIX author for MRB.
+
+    nick_inherits_dead_seat remains True (UAT / giveup paths), but review_blocked_for_author
+    for MRB is exact-seat only — fresh flamingo-99999 with no PR touch may review.
+    Live FIX nick still blocked (exact stamp, FR #4604).
+    """
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     home = tmp_path
     registered_machines.save_registered(home, {"flamingo", "marchhare"})
@@ -238,14 +243,16 @@ def test_nick_inherits_dead_fix_seat_on_recycle(tmp_path, monkeypatch):
     live = {"flamingo-99999", "marchhare-12524"}
     assert gitclaim.nick_inherits_dead_seat(recycled, FIX_SEAT, live) is True
     enriched = gitclaim.enrich_mrb_author_fields(doc, doc["unaccepted"][0])
-    assert gitclaim.review_blocked_for_author(enriched, recycled, live) is True
+    # MRB: exact seat only — recycled successor is NOT blocked (FR #4606).
+    assert gitclaim.review_blocked_for_author(enriched, recycled, live) is False
+    # Exact FIX nick still blocked when live.
+    assert gitclaim.review_blocked_for_author(enriched, FIX_SEAT, live | {FIX_SEAT}) is True
 
     st, job = gitclaim.offer_focus_top(home, recycled, "#flamingo")
-    assert st == "empty" or job is None or str((job or {}).get("id") or "") != PR
-
-    st2, job2 = gitclaim.offer_focus_top(home, IMPL_SEAT, "#marchhare")
-    assert st2 == "ok"
-    assert job2.get("id") == PR
+    assert st == "ok"
+    assert job is not None and str(job.get("id") or "") == PR
+    assert job.get("offered_to") == recycled
+    # offer_focus_top stamps offered_to — other seats see sticky offer, not a second copy.
 
 
 def test_done_fix_stamps_existing_mrb_author_seats(tmp_path, monkeypatch):
