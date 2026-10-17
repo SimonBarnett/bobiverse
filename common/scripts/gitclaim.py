@@ -8434,6 +8434,7 @@ def resync_from_github(
     skipped_draft = 0
     skipped_ci = 0
     fix_added = 0  # FR #4596: FIX enqueue adds counted into github-resync ok added=
+    fix_dup = 0  # FR #4639: red PASSed PRs deduped as duplicate
     main_red_cache: dict[str, bool] = {}  # FR #4596: one main probe per repo per resync
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
@@ -8605,6 +8606,53 @@ def resync_from_github(
                     try:
                         import mrb_merge_on_green
 
+                        cancel_head = (
+                            str(check_state or "").strip().lower().split(":", 1)[0]
+                        )
+                        if cancel_head.startswith("completed/"):
+                            cancel_head = cancel_head.split("/", 1)[-1]
+                        if cancel_head in ("cancelled", "canceled", "skipped"):
+                            run_id = str(
+                                pr.get("run_id") or pr.get("check_run_id") or ""
+                            )
+                            behind = bool(pr.get("behind_main")) or (
+                                str(pr.get("mergeable_state") or "").lower() == "behind"
+                            )
+                            if not run_id and not behind:
+                                head_obj = (
+                                    pr.get("head")
+                                    if isinstance(pr.get("head"), dict)
+                                    else {}
+                                )
+                                tip_sha = str(head_obj.get("sha") or "")
+                                if tip_sha:
+                                    try:
+                                        payload = fetch_json(
+                                            "https://api.github.com/repos/"
+                                            f"{repo}/commits/{tip_sha}/check-runs"
+                                        )
+                                        run_id = (
+                                            mrb_merge_on_green.cancelled_workflow_run_id(
+                                                payload
+                                            )
+                                        )
+                                    except Exception:  # noqa: BLE001
+                                        run_id = ""
+                            rerun_result = mrb_merge_on_green.rerun_cancelled_passed(
+                                _root(home),
+                                repo=repo,
+                                pr=str(num),
+                                pass_sha=pass_sha,
+                                run_id=run_id,
+                                behind=behind,
+                                token=token,
+                            )
+                            skipped_open_pulls.add((repo, f"#{num}"))
+                            print(
+                                f"resync rerun cancelled CI {repo}#{num} result={rerun_result}",
+                                flush=True,
+                            )
+                            continue
                         repo_c = canonical_queue_repo(repo)
                         if repo_c not in main_red_cache:
                             main_red_cache[repo_c] = (
@@ -8627,6 +8675,8 @@ def resync_from_github(
                     # FR #4596: FIX rows must show in github-resync ok added=.
                     if fix_result == "added":
                         fix_added += 1
+                    elif fix_result == "duplicate":
+                        fix_dup += 1
                     skipped_open_pulls.add((repo, f"#{num}"))
                     print(
                         f"resync offer FIX ci-failed PR {repo}#{num} result={fix_result}",
@@ -8826,6 +8876,7 @@ def resync_from_github(
                 dropped += purged_n
                 dropped_detail.append(f"purge_dead_mrb x{purged_n}")
             added = int(fix_added)  # FR #4596: include FIX adds from the fetch pass
+            # FR #4639: keep the duplicate count for the summary (set in the fetch pass).
             fetched_set2 = set(fetched)
             # Premature DONE while GitHub issue/PR still open: pull those rows out of done
             # so resync can re-queue them (FR #1150 / #1444).
@@ -9061,6 +9112,7 @@ def resync_from_github(
                 "dropped_detail": list(dropped_detail),
                 "skipped_draft": int(skipped_draft),
                 "skipped_ci": int(skipped_ci),
+                "fix_dup": int(fix_dup),
                 "focus_pruned": int(focus_pruned),
                 "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),
