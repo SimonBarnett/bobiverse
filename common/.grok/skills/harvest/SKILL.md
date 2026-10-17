@@ -262,6 +262,7 @@ routes to bobiverse via the split rule.
 - When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
 - FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
 - Hard-unpin bobiverse ionos affinity via _REQUIRE_MACHINE_ISSUE_UNPINS (wins stamp+cues); never re-add #4340 to ISSUE_PINS.
+- Light-triage harvest tips that name a durable _REQUIRE_MACHINE_ISSUE_UNPINS playbook missing from SKILL.md: PASS and merge even when the product FR already landed code (skill bullet is the agent-facing home)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
