@@ -80,9 +80,13 @@ def world(tmp_path):
 
     def sync(product, extra_env=None, remote=None, root_dir=None):
         env = {k: v for k, v in os.environ.items() if k not in (
-            "BOBIVERSE_REPO", "BOBIVERSE_NO_UPDATE", "BOBIVERSE_KEEP_BRANCH", "BOB_AI_ROOT", "BOBIVERSE_REMOTE")}
+            "BOBIVERSE_REPO", "BOBIVERSE_NO_UPDATE", "BOBIVERSE_KEEP_BRANCH", "BOB_AI_ROOT",
+            "BOBIVERSE_REMOTE", "BOBIVERSE_SYNC_FROM_REPO")}
         env["BOB_AI_ROOT"] = str(w.ai)
         env["BOBIVERSE_REMOTE"] = str(remote or bare)
+        # FR #3289 / #4478: airc defaults sync_from_repo=off; harness must opt in or airc
+        # exits 0 with no .git and the sparse-bootstrap pin looks like a false pass.
+        env["BOBIVERSE_SYNC_FROM_REPO"] = "1"
         env.update(extra_env or {})
         t0 = time.time()
         # FR #1565 / #2926: live ARP DisplayVersion on bob/airc would heal VERSION away from the fixture;
@@ -103,6 +107,17 @@ def seed_install(r: Path):
     write(r / "VERSION", "0.0.1\n")
     write(r / "config/secret.txt", "keep me\n")
     write(r / "home/state.json", "{}\n")
+
+
+def test_airc_sync_off_exits_0_without_git(world):
+    """FR #3289 / #4478: airc without sync opt-in soft-skips; must not leave a half-bootstrap."""
+    r = world.root("airc")
+    seed_install(r)
+    out = world.sync("airc", extra_env={"BOBIVERSE_SYNC_FROM_REPO": "0"})
+    assert out.returncode == 0, out.text
+    assert not (r / ".git").exists()
+    assert "sync_from_repo=off" in out.text.lower()
+    assert "fr #3289" in out.text.lower() or "3289" in out.text
 
 
 @pytest.mark.parametrize("product,other", [("bob", ("jeeves", "airc")), ("jeeves", ("bob", "airc")), ("airc", ("bob", "jeeves"))])
