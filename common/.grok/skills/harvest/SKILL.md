@@ -258,6 +258,7 @@ routes to bobiverse via the split rule.
 - a-search Re-offered FR-N harvest meta tips: FAIL-supersede citing bobiverse-bob-job-mrb + merged product/docs PRs; do not fold CONFLICTING anecdote tips
 - FR re-offer when open covering PR Closes the issue: verify closingIssuesReferences + run acceptance pins on tip head, comment on issue, DONE with covering PR URL only
 - Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
+- When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
 
 ## Harvest digest (lessons audit 2026-10-06)
 
