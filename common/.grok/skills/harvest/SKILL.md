@@ -257,6 +257,7 @@ routes to bobiverse via the split rule.
 - Missing-DONE rematch: sibling self-MRB GIVEUP leaves tip for another seat; if ahead_by>0 fold once then PASS leave existing MERGE/SQUASH
 - a-search Re-offered FR-N harvest meta tips: FAIL-supersede citing bobiverse-bob-job-mrb + merged product/docs PRs; do not fold CONFLICTING anecdote tips
 - FR re-offer when open covering PR Closes the issue: verify closingIssuesReferences + run acceptance pins on tip head, comment on issue, DONE with covering PR URL only
+- MRB when enablePullRequestAutoMerge refuses unstable: comment merge-on-green pending with head SHA then DONE immediately (FR 3948); do not poll CI
 
 ## Harvest digest (lessons audit 2026-10-06)
 
