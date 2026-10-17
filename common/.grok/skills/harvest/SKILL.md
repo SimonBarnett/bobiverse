@@ -262,6 +262,7 @@ routes to bobiverse via the split rule.
 - When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
 - FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
 - Hard-unpin bobiverse ionos affinity via _REQUIRE_MACHINE_ISSUE_UNPINS (wins stamp+cues); never re-add #4340 to ISSUE_PINS.
+- After gitclaim tip heals land, add a Build-Jeeves PYZ embed assert (FR #4608 markers) so frozen jeeves.exe cannot ship without MRB exact-seat; rebuild ionos separately
 
 ## Harvest digest (lessons audit 2026-10-06)
 
