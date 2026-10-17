@@ -2821,7 +2821,7 @@ class Client:
         return True
 
     def _maybe_assign(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
-        """Chair only (t849u): ``!assign <worker-nick> <repo> <FR|MRB|UAT> <num>`` from verified simon or a Bob-* ear.
+        """Chair only (t849u): ``!assign <worker-nick> <repo> <FR|MRB|UAT|FIX> <num>`` from verified simon or a Bob-* ear (FR #4652).
 
         Posts the normal assign line to the worker's shop channel as Jeeves (same path and eligibility
         as !bored); the worker's ACK accepts the offered row. Reply by PM, never in channel.
@@ -2842,7 +2842,7 @@ class Client:
             return True
         parsed = gitclaim.parse_assign_cmd(body)
         if parsed is None:
-            self._cmd_reply(src, "assign", ["assign: usage !assign {worker-nick} {repo} {FR|MRB|UAT} {num}"])
+            self._cmd_reply(src, "assign", ["assign: usage !assign {worker-nick} {repo} {FR|MRB|UAT|FIX} {num}"])
             return True
         wnick, repo, task, ident = parsed
         self._refresh_ledger()
