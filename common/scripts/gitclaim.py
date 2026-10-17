@@ -1718,7 +1718,21 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         ident = _payload_number(ev, payload)
         if ident is None:
             return None
-        return GitClaim(repo=repo, task="FR", id=ident, event=ev, action=action, line=src)
+        issue = _issue_blob(payload)
+        # FR #4624: carry state=closed so apply stamps ACC rows (budget-0 offer
+        # cannot live-check; released ACC must not re-enter unaccepted unstamped).
+        return GitClaim(
+            repo=repo,
+            task="FR",
+            id=ident,
+            event=ev,
+            action=action,
+            line=src,
+            title=str(issue.get("title") or ""),
+            body=str(issue.get("body") or ""),
+            labels=_label_names(issue.get("labels")),
+            state="closed",
+        )
 
     # FR #3275: labeled/unlabeled mutate queue labels in place (zero REST).
     if ev in ("issues", "pull_request") and action in ("labeled", "unlabeled"):
@@ -2192,7 +2206,25 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                     and r.get("action") != "uat")
         ]
         n += before - len(doc["unaccepted"])
-        changed = "removed" if n else "noop"
+        # FR #4624: stamp accepted FR/PR rows state=closed (seat keeps ACC until DONE;
+        # if the seat departs, release must not resurrect an unstamped offerable FR).
+        stamped = 0
+        for row in doc.get("accepted") or []:
+            if not isinstance(row, dict):
+                continue
+            task_u = str(row.get("task") or "").upper()
+            if task_u not in ("FR", "PR"):
+                continue
+            if not _same(row, claim.repo, task_u, claim.id):
+                continue
+            row["state"] = "closed"
+            stamped += 1
+        if n:
+            changed = "removed"
+        elif stamped:
+            changed = "updated"
+        else:
+            changed = "noop"
 
     elif ev == "pull_request" and action in (
         "opened",
@@ -2359,6 +2391,15 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                 with contextlib.suppress(Exception):
                     for _t in ("FR", "PR", "UAT"):
                         _clear_job_seat_holds_unlocked(home, claim.repo, _t, claim.id)
+                # FR #4624: ledger fr_done so a leaked unaccepted row cannot survive
+                # resync while the issue stays closed (mirrors stamp_mrb_done on PR close).
+                with contextlib.suppress(Exception):
+                    def _fd(led: dict) -> None:
+                        led.setdefault("fr_done", {})[
+                            _lkey(claim.repo, claim.id)
+                        ] = _utc_now()
+
+                    _ledger_update(home, _fd)
             return changed
     except TimeoutError:
         _spool_pending(home, claim)
@@ -7490,24 +7531,55 @@ def _row_to_unaccepted_retry(row: dict) -> dict:
 
 
 def _release_accepted_for_nick_unlocked(doc: dict, nick: str) -> list[dict]:
-    """Move accepted rows held by ``nick`` back onto ``unaccepted`` (caller holds lock)."""
+    """Move accepted rows held by ``nick`` back onto ``unaccepted`` (caller holds lock).
+
+    FR #4624: accepted FR/PR already stamped ``state=closed`` (issues closed webhook)
+    go to ``done`` as CLOSED instead — never re-enter unaccepted for re-offer.
+    """
     want = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not want:
         return []
     kept: list[dict] = []
     released: list[dict] = []
+    done = doc.setdefault("done", [])
+    moved_closed = False
     for row in list(doc.get("accepted") or []):
         if not isinstance(row, dict):
             continue
         holder = _accepted_holder_nick(row).lower()
-        if holder == want:
-            released.append(_row_to_unaccepted_retry(row))
-        else:
+        if holder != want:
             kept.append(row)
-    if not released:
+            continue
+        task_u = str(row.get("task") or "").upper()
+        if (
+            task_u in ("FR", "PR")
+            and str(row.get("state") or "").strip().lower() == "closed"
+        ):
+            fin = dict(row)
+            for key in (
+                "nick",
+                "channel",
+                "accepted_ts",
+                "accepted_by",
+                "offered_to",
+                "offered_ts",
+                "offered_channel",
+            ):
+                fin.pop(key, None)
+            fin["result"] = "CLOSED"
+            fin["done_ts"] = _utc_now()
+            fin["state"] = "closed"
+            done.append(fin)
+            moved_closed = True
+            continue
+        released.append(_row_to_unaccepted_retry(row))
+    if not released and not moved_closed:
         return []
     doc["accepted"] = kept
-    doc["unaccepted"] = list(doc.get("unaccepted") or []) + released
+    if released:
+        doc["unaccepted"] = list(doc.get("unaccepted") or []) + released
+    if moved_closed and len(done) > DONE_CAP:
+        doc["done"] = done[-DONE_CAP:]
     return released
 
 
@@ -7515,6 +7587,8 @@ def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
     """FR #3400: seat left the shop — return its ACKed rows to unaccepted (prior ACK void).
 
     Local queue only; no GitHub. Live seats are never passed here (worker-remove / reconcile).
+
+    FR #4624: closed-stamped ACC rows move to done (empty released list) — still persist.
     """
     try:
         with _lock(home):
@@ -7522,8 +7596,9 @@ def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
                 doc = _load_queue_unlocked(home)
             except (OSError, json.JSONDecodeError, ValueError):
                 return []
+            acc_before = len(doc.get("accepted") or [])
             released = _release_accepted_for_nick_unlocked(doc, nick)
-            if not released:
+            if not released and len(doc.get("accepted") or []) == acc_before:
                 return []
             try:
                 _write_queue(queue_path(home), doc)
