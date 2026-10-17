@@ -103,6 +103,18 @@ def decide_merge_on_green(
 
 
 def ledger_path(home: Path) -> Path:
+    """Fleet-root ledger (sibling of queue.json).
+
+    FR #4522: Jeeves ``--home`` is the config dir (``~/.jeeves``); the live
+    merge-on-green ledger and queue live under ``fleet_digest_home`` /
+    ``BOB_DIGEST_HOME`` (``~/.bobiverse``). Writing beside config home made
+    resync miss every ``pass_sha`` and re-queue CI-waiting MRBs.
+    """
+    return gitclaim._root(Path(home)) / LEDGER_NAME
+
+
+def _legacy_config_ledger_path(home: Path) -> Path:
+    """Pre-FR #4522 path: ``Path(home)/merge-on-green.json`` when home != fleet root."""
     return Path(home) / LEDGER_NAME
 
 
@@ -113,7 +125,15 @@ def _empty_ledger() -> dict[str, Any]:
 def load_ledger(home: Path) -> dict[str, Any]:
     path = ledger_path(home)
     if not path.is_file():
-        return _empty_ledger()
+        # FR #4522: fall back to a leftover config-home ledger once.
+        legacy = _legacy_config_ledger_path(home)
+        try:
+            if legacy.is_file() and legacy.resolve() != path.resolve():
+                path = legacy
+            else:
+                return _empty_ledger()
+        except OSError:
+            return _empty_ledger()
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
