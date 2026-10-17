@@ -261,6 +261,7 @@ routes to bobiverse via the split rule.
 - Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
 - When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
 - FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
+- github-resync must record open_closes_map from every open PR Closes before draft/ci-wait/receipt skips, then fr_is_superseded uses it so seats do not burn turns re-DONEing an existing implement PR (FR #4589 / #1307 class)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
