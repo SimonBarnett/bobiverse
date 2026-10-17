@@ -270,6 +270,7 @@ routes to bobiverse via the split rule.
 - When intake reports live FR #4458 onefile cap double-count but tip already has #4461: close the lag FR citing PR #4461 and Sync/recompose the install (tray/worker restart only) — never re-open or re-implement the cap dedupe
 - issues closed must stamp ACC state=closed and move closed ACC to done on seat depart; DONE status=missing still calls offer_after_done (one-open-job stays inside the helper)
 - enqueue_fix_ci must refuse cancelled-only rollups and shared-suite (test-and-synth) failures when main is also red — bulk cancel / helper breakage must not flood per-tip FIX.
+- A merge-on-green 405 or DIRTY head must leave the retry list for that SHA and queue one conflict-fix job; do not keep the row pending or the sweep will PUT-merge forever.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
