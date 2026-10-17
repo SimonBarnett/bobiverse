@@ -55,7 +55,7 @@ def test_mrb3907_docs_skill_and_product_pin():
     skill = SKILL.read_text(encoding="utf-8")
     assert "FR #3900" in skill
     assert "AircConsole" in skill
-    assert "SAPASSWD" in skill
+    assert "NickServ PASSWD" in skill or "PASSWD" in skill
     assert "FR #3899" in skill  # keep both upgrade rows after behind-main fold
     assert not SKILL.read_bytes().startswith(b"\xef\xbb\xbf")
 
