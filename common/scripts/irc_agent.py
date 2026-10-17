@@ -3249,12 +3249,18 @@ class Client:
                             info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
                     except Exception as offer_exc:  # noqa: BLE001
                         info(f"WARN giveup-offer {type(offer_exc).__name__}")
-        elif verb == "DONE" and status != "ok":
-            # FR #4089: repeated / unknown DONE (status=missing) never pushes a job.
-            info(f"INFO git-claim done-offer skipped nick={src} status={status}")
-        elif verb == "DONE" and status == "ok":
+        elif verb == "DONE" and status in ("ok", "missing"):
             # FR #3893: same push as GIVEUP/NACK — do not wait for the seat's next !bored
             # when the queue still holds eligible work (regression of idle-after-DONE).
+            # FR #4624: status=missing (ACC already dropped after issues closed / Prefer
+            # ExistingPrUrl) must still push the next offer — offer_after_done itself
+            # enforces FR #4089 one-open-job (busy seats get nothing).
+            # Other non-ok statuses (error/refused) still skip.
+            if status == "missing":
+                info(
+                    f"INFO git-claim done-offer after missing-acc nick={src} "
+                    f"(FR #4624)"
+                )
             try:
                 n, job2 = gitclaim.offer_after_done(
                     self._digest_home(),
@@ -3279,6 +3285,8 @@ class Client:
                     info(f"INFO git-claim done-offer empty nick={src} {_detail}")
             except Exception as offer_exc:  # noqa: BLE001
                 info(f"WARN done-offer {type(offer_exc).__name__}")
+        elif verb == "DONE" and status not in ("ok", "missing"):
+            info(f"INFO git-claim done-offer skipped nick={src} status={status}")
         # Never PRIVMSG the shop channel for ACK (FR #211). DONE/GIVEUP/NACK may push one assign (FR #2811 / #3893).
         return True
 
