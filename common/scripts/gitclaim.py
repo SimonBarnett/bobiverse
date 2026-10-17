@@ -1188,8 +1188,8 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     ("simonbarnett/bobiverse", "#2522"): "ionos",
     # FR #3129 / #3122: ionos Sync/compose ircJeeves for intake allowlist (mis-offered to marchhare).
     ("simonbarnett/bobiverse", "#3122"): "ionos",
-    # FR #4343 / #4340: ionos !build runner install lags main — hard pin survives empty/stale body.
-    ("simonbarnett/bobiverse", "#4340"): "ionos",
+    # FR #4599: do NOT hard-pin bobiverse #4340 to ionos (Simon: bobiverse work never
+    # pinned to ionos). See _REQUIRE_MACHINE_ISSUE_UNPINS.
 }
 
 # FR #4427: ce-priority Day Works living/umbrella FRs and UAT need CE-PRIORITY-DEV1
@@ -1209,8 +1209,11 @@ _CE_PRIORITY_DAYWORKS_TASK_RE = re.compile(
 # FR #4422: hard unpins — survive title/body cues that wrongly re-pin (bobiverse must
 # not be stranded on ionos for meta "missing needs-ionos" filings).
 # FR #4427: chair meta filing title contains require_machine=ce-priority-dev1 as evidence.
+# FR #4599: #4340 descriptive "ionos !build ..." title must stay offerable to any seat
+# (hard unpin wins over sticky stamp + soft cues; same class as #4343 / #4512).
 _REQUIRE_MACHINE_ISSUE_UNPINS: set[tuple[str, str]] = {
     ("simonbarnett/bobiverse", "#4343"),
+    ("simonbarnett/bobiverse", "#4340"),
     ("simonbarnett/bobiverse", "#4427"),
 }
 
