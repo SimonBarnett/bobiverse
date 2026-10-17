@@ -212,11 +212,20 @@ HOLD_MRB_LABELS = frozenset(
         "wip",
     }
 )
-# Owner/body hold text (class of a-search#1334 "On hold … must not merge until …").
-PR_HOLD_TEXT_RE = re.compile(
+# Title-only free hold cues (short titles). Not applied to PR bodies — lesson
+# prose such as "do not merge the thinner duplicate" must not count as a hold
+# (FR #4545; class of a-search#3627). Body uses line-anchored stamps below.
+PR_HOLD_TITLE_RE = re.compile(
     r"(?i)(?:\bon\s+hold\b|\bmust\s+not\s+merge\b|\bdo\s+not\s+merge\b|"
     r"\bhold(?:ing)?\s+(?:this\s+)?(?:pr|pull(?:\s+request)?)\b)"
 )
+# Owner body hold stamp (class of a-search#1334 "On hold (Simon …): must not merge…").
+# Line-anchored like FR_HOLD_BODY_RE so free prose does not false-positive.
+PR_HOLD_BODY_RE = re.compile(
+    r"(?im)^\s*(?:\*\*)?(?:On\s+hold|HOLD)\b(?:\s*\([^)]*\))?(?:\*\*)?\s*:"
+)
+# Back-compat alias for importers/tests that still name PR_HOLD_TEXT_RE.
+PR_HOLD_TEXT_RE = PR_HOLD_TITLE_RE
 
 # FR #4009: issue hold labels — never enqueue/offer FR while present.
 # Kept out of SKIP_FR_LABELS so held product FRs still block repo UAT.
@@ -234,15 +243,22 @@ def pr_hold_reason(
     body: str = "",
     labels: tuple[str, ...] | list[str] = (),
 ) -> str | None:
-    """FR #3928: why an open PR must not be offered/merged as MRB, else None."""
+    """FR #3928 / #4545: why an open PR must not be offered/merged as MRB, else None.
+
+    Hold labels always count. Body hold text only matches an owner stamp line
+    (``On hold:`` / ``HOLD:``), not free prose. Title still scans short hold cues.
+    """
     labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
     hit = sorted(labs & HOLD_MRB_LABELS)
     if hit:
         return f"hold label: {hit[0]}"
-    blob = f"{title or ''}\n{body or ''}"
-    m = PR_HOLD_TEXT_RE.search(blob)
-    if m:
-        return f"hold text: {m.group(0).strip()}"
+    title_s = str(title or "")
+    m_title = PR_HOLD_TITLE_RE.search(title_s)
+    if m_title:
+        return f"hold text: {m_title.group(0).strip()}"
+    m_body = PR_HOLD_BODY_RE.search(str(body or ""))
+    if m_body:
+        return f"hold text: {m_body.group(0).strip()}"
     return None
 
 
@@ -7296,8 +7312,11 @@ def enqueue_open_github_item(
 ) -> tuple[str, str]:
     """Enqueue an open GitHub issue/PR into ``doc['unaccepted']`` when missing (FR #4422).
 
-    Returns ``("added"|"duplicate"|"refused", detail)``. ``fetch_issue(repo, num)`` is the
-    test seam; default hits the GitHub Issues API.
+    Returns ``("added"|"duplicate"|"skipped"|"refused", detail)``.
+    ``fetch_issue(repo, num)`` is the test seam; default hits the GitHub Issues API.
+
+    FR #4545: ``skipped`` (hold / skip-FR / supersede) is distinct from ``duplicate``
+    so !assign does not claim the job is "already queued" when it was never offered.
     """
     task_u = (task or "").upper()
     if task_u not in ("FR", "MRB"):
@@ -7323,7 +7342,32 @@ def enqueue_open_github_item(
     changed = _append_unaccepted(doc, claim, **extra)
     if changed == "added":
         return "added", f"enqueued {claim.task} {claim.repo}{claim.id}"
-    if changed in ("duplicate", "skipped", "noop"):
+    if changed == "duplicate":
+        return "duplicate", f"already queued {claim.task} {claim.repo}{claim.id}"
+    if changed == "skipped":
+        why = ""
+        if claim.task == "MRB":
+            why = pr_hold_reason(
+                title=claim.title, body=claim.body, labels=claim.labels
+            ) or ""
+        elif claim.task == "FR":
+            why = (
+                fr_hold_reason(
+                    title=claim.title, body=claim.body, labels=claim.labels
+                )
+                or issue_skip_fr_reason(
+                    title=claim.title,
+                    body=claim.body,
+                    labels=claim.labels,
+                    state=claim.state,
+                )
+                or ""
+            )
+        detail = f"skipped {claim.task} {claim.repo}{claim.id}"
+        if why:
+            detail += f" ({why})"
+        return "skipped", detail
+    if changed == "noop":
         return "duplicate", f"already queued {claim.task} {claim.repo}{claim.id}"
     return "refused", f"enqueue {changed}"
 
