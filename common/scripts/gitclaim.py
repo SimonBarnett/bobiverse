@@ -8241,6 +8241,7 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
         if (
             not (doc.get("pending") or [])
             and not (doc.get(mrb_merge_on_green.CI_FAILED_KEY) or {})
+            and not (doc.get(mrb_merge_on_green.CONFLICT_KEY) or {})
             and Path(home) != _root(home)
         ):
             doc = mrb_merge_on_green.load_ledger(home)
@@ -8258,7 +8259,12 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
         return str(row.get("pass_sha") or "")
     # FR #4566 follow-up: CI-failed PASS rows leave the poll list but keep their SHA.
     try:
-        return mrb_merge_on_green.ci_failed_pass_sha(doc, canonical_queue_repo(repo), want)
+        sha = mrb_merge_on_green.ci_failed_pass_sha(doc, canonical_queue_repo(repo), want)
+        if sha:
+            return sha
+        return mrb_merge_on_green.conflict_blocked_pass_sha(
+            doc, canonical_queue_repo(repo), want
+        )
     except Exception:  # noqa: BLE001
         return ""
 
@@ -8444,6 +8450,43 @@ def resync_from_github(
             # Already concluded FAILURE -> offer FIX (per-PR when main is green;
             # shared sig only when main itself is red). Count FIX adds in added=.
             # Keep Closes coverage via skipped_open_pulls; never re-queue MRB on same SHA.
+            head_obj = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+            head_sha = str(head_obj.get("sha") or "")
+            try:
+                import mrb_merge_on_green as _mog_conflict
+
+                conflict_rearm = _mog_conflict.rearm_conflict_blocked(
+                    _root(home), repo=repo, pr=str(num), head_sha=head_sha
+                )
+            except Exception:  # noqa: BLE001
+                conflict_rearm = ""
+            if conflict_rearm == "rearmed":
+                skipped_open_pulls.add((repo, f"#{num}"))
+                print(
+                    f"resync rearm merge-on-green after conflict {repo}#{num}",
+                    flush=True,
+                )
+                continue
+            if conflict_rearm == "blocked":
+                try:
+                    import mrb_merge_on_green as _mog_conflict
+
+                    _mog_conflict.enqueue_conflict_fix(
+                        _root(home),
+                        repo=repo,
+                        pr=str(num),
+                        pass_sha=head_sha,
+                        url=str(pr.get("html_url") or ""),
+                        reason="conflicting",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                skipped_open_pulls.add((repo, f"#{num}"))
+                print(
+                    f"resync skip conflict-blocked PR {repo}#{num}",
+                    flush=True,
+                )
+                continue
             pass_sha = _merge_on_green_pass_sha(home, repo, num)
             if open_pr_mrb_ci_wait_candidate(pr, pass_sha):
                 # Candidate (auto-merge + same SHA). Resolve live/injected checks.
