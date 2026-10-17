@@ -87,8 +87,10 @@ def test_fr1518_gated_skill_and_pins_exit0_with_counts(tmp_path):
                 "task": "FR",
                 "id": "#1102",
                 "title": "DEV1 pin",
+                # FR #4610 / #4512: bobiverse ignores raw require_machine stamps;
+                # dedicated body pin line is the durable gate (seat is ionos fold).
+                "body": "require_machine: ce-priority-dev1\n",
                 "labels": ["feature-request"],
-                "require_machine": "ce-priority-dev1",
             },
         ],
     )

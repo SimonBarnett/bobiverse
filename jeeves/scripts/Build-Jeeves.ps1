@@ -98,6 +98,26 @@ if ($code -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
     throw "PyInstaller failed (exit $code)"
 }
 
+# FR #4608: frozen embed must carry MRB exact-seat gitclaim (FR #2604 / #4606).
+$assertEmbed = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\assert_jeeves_gitclaim_embed.py'
+if (-not $assertEmbed -or -not (Test-Path -LiteralPath $assertEmbed)) {
+    $assertEmbed = Join-Path $RepoRoot 'common\scripts\assert_jeeves_gitclaim_embed.py'
+}
+if (-not (Test-Path -LiteralPath $assertEmbed)) {
+    $assertEmbed = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'common\scripts\assert_jeeves_gitclaim_embed.py'
+}
+if (Test-Path -LiteralPath $assertEmbed) {
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & $Python $assertEmbed $work
+    $acode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($acode -ne 0) {
+        throw "FR #4608 assert_jeeves_gitclaim_embed failed (exit $acode)"
+    }
+} else {
+    Write-Host 'WARN FR #4608: assert_jeeves_gitclaim_embed.py missing; skip embed pin'
+}
+
 if (-not $SkipSmoke) {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $probeHome = Join-Path $work 'smoke-home'
