@@ -252,6 +252,7 @@ routes to bobiverse via the split rule.
 - When resync builds MRB rows from open pulls, skip a pull whose auto_merge object is set and whose head.sha matches the merge-on-green ledger pass_sha. Add that pull to the skipped-open set so the keep loop prunes a row already queued. A different head SHA or auto_merge null must still become an MRB.
 - Every bobiverse skill CAST IRON block must name Report-BobiverseIntakeIssue.ps1, the intake webhook, and -Repo SimonBarnett/bobiverse. A shortened harvest paragraph fails test_cast_iron_rule_is_in_every_skill_and_every_agents_file.
 - Jeeves worker_list state=offered is the chair's own pending offer. Lost-ACK reconcile may promote only seat-reported work (workers working_on or worker_list doing/running/busy). A LOST_ACK_RESTART row with no seat-reported work is re-offered on !bored or !assign, not NAK busy.
+- bobiverse gitclaim FR #4427: pin ce-priority/ce-dayworks Day Works living and UAT to ce-priority-dev1 with hard-pin on ce-priority#16, and hard-unpin the bobiverse chair meta issue so its title cannot re-pin itself
 
 ## Harvest digest (lessons audit 2026-10-06)
 
