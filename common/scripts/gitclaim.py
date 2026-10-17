@@ -6055,6 +6055,10 @@ def _note_seat_hold_unlocked(
     }
     with contextlib.suppress(OSError):
         _save_seat_holds_unlocked(home, holds)
+    # FR #4642: an offer after DONE is a real re-offer; ack-missing is not.
+    if via_s != "ack-missing":
+        with contextlib.suppress(Exception):
+            ledger_stamp_seat_job(home, nick, job, "offered")
 
 
 def note_seat_hold(home: Path, nick: str, job: dict, *, via: str | None = None) -> bool:
@@ -6198,6 +6202,105 @@ def clear_job_seat_holds(
             )
     except (TimeoutError, OSError):
         return False
+
+
+def _seat_job_ledger_key(repo: str, task: str, ident: str) -> str:
+    return f"{_lkey(repo, ident)}|{str(task or '').upper()}"
+
+
+def ledger_stamp_seat_job(home: Path, nick: str, job: dict, field: str) -> None:
+    """FR #4642: record ``done`` or ``offered`` epoch for this seat and job."""
+    me = _canon_ledger_nick(nick)
+    if not me or not isinstance(job, dict):
+        return
+    if field not in ("done", "offered"):
+        return
+    key = _seat_job_ledger_key(
+        str(job.get("repo") or ""), str(job.get("task") or ""), str(job.get("id") or "")
+    )
+    if key.startswith("#|") or key.startswith("|"):
+        return
+    stamp = f"{time.time():.6f}"
+
+    def _f(doc: dict) -> None:
+        slot = doc.setdefault("seat_job", {}).setdefault(key, {}).setdefault(me, {})
+        if not isinstance(slot, dict):
+            slot = {}
+            doc["seat_job"][key][me] = slot
+        slot[field] = stamp
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        pass
+
+
+def _seat_job_stamp(ledger: dict, nick: str, repo: str, task: str, ident: str, field: str) -> float | None:
+    me = _canon_ledger_nick(nick)
+    if not me:
+        return None
+    key = _seat_job_ledger_key(repo, task, ident)
+    rec = ((ledger.get("seat_job") or {}).get(key) or {}).get(me) or {}
+    if not isinstance(rec, dict):
+        return None
+    raw = str(rec.get(field) or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return _parse_iso_ts(raw)
+
+
+def seat_done_without_later_offer(
+    home: Path, nick: str, repo: str, task: str, ident: str
+) -> bool:
+    """FR #4642: True when this seat DONE'd the job and it was not re-offered after."""
+    led = ledger_load(home)
+    done = _seat_job_stamp(led, nick, repo, task, ident, "done")
+    if done is None:
+        return False
+    offered = _seat_job_stamp(led, nick, repo, task, ident, "offered")
+    if offered is not None and offered > done:
+        return False
+    return True
+
+
+def release_duplicate_done_hold(home: Path, nick: str) -> str:
+    """FR #4642: drop an ack-missing/offer hold the seat already finished.
+
+    Returns ``TASK repo#id`` when a hold was cleared, else ``''``.
+    A later re-offer (offered stamp after done) keeps the hold.
+    A PASS board already on the held MRB pull also counts as finished.
+    """
+    key = _seat_key(nick)
+    if not key:
+        return ""
+    try:
+        with _lock(home):
+            holds = _load_seat_holds_unlocked(home)
+            h = holds.get(key)
+    except (TimeoutError, OSError):
+        return ""
+    if not isinstance(h, dict):
+        return ""
+    repo = str(h.get("repo") or "")
+    task = str(h.get("task") or "")
+    ident = str(h.get("id") or "")
+    if not repo or not ident:
+        return ""
+    finished = seat_done_without_later_offer(home, nick, repo, task, ident)
+    if not finished:
+        row = {"repo": repo, "task": task, "id": ident, "url": ""}
+        finished = bool(_lost_done_github_result(row))
+    if not finished:
+        return ""
+    clear_seat_hold(home, nick, repo=repo, task=task, ident=ident)
+    with contextlib.suppress(Exception):
+        bobreport.clear_seat_doing(
+            home, nick, only_if_work_contains=str(ident).lstrip("#")
+        )
+    return f"{task} {repo}{_norm_row_id(ident)}".strip()
 
 
 def _is_lost_done_reoffer_to(row: dict, nick: str) -> bool:
@@ -7393,6 +7496,13 @@ def ledger_note_event(home: Path, nick: str, verb: str, task: str, repo: str, id
     if verb_u == "DONE" and task_u == "MRB":
         # FR #1323: survive done[] trim / resync races — do not re-offer this MRB.
         stamp_mrb_done(home, repo, ident)
+    if verb_u == "DONE":
+        # FR #4642: per-seat DONE stamp. A later ACK of the same job is a duplicate
+        # unless an offer was stamped after this DONE.
+        with contextlib.suppress(Exception):
+            ledger_stamp_seat_job(
+                home, nick, {"repo": repo, "task": task_u, "id": ident}, "done"
+            )
     # t860u: working an FR (ACK/DONE, "DONE existing PR, no duplicate", URL of a PR that already existed) is
     # NOT authorship: it is recorded as the informational role "FRW" and never blocks review. Only the PR's
     # real commit authors (``ledger_refresh_authors`` -> role "FR") and the MRB reviewer block review/UAT.
@@ -9385,6 +9495,10 @@ def bored_gate(
     # never re-offer the same row and never treat it as stale digest doing.
     if seat_pending_offer(home, nick, now):
         return "busy"
+    # FR #4642: ack-missing hold for a job this seat already DONE'd (no later
+    # re-offer) must not nak !bored forever when the follow-up DONE was lost.
+    with contextlib.suppress(Exception):
+        release_duplicate_done_hold(home, nick)
     # FR #4089: an offer pinned to this seat (any age) or remembered in seat-holds.json
     # keeps it busy; accepted rows still go through release_stale_busy below.
     _open = seat_open_job(home, nick, now)

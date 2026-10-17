@@ -3535,6 +3535,12 @@ class IrcSeat:
                 else:
                     self.log("irc: NAK from Jeeves -> !bored again in the NAK timer (exe-handled, not relayed)")
                 try:
+                    line_cb = getattr(self, "on_nak_line", None)
+                    if line_cb is not None:
+                        line_cb(text)
+                except Exception as e:
+                    self.log(f"irc: on_nak_line error {type(e).__name__}")
+                try:
                     self.on_nak()
                 except Exception as e:
                     self.log(f"irc: on_nak error {type(e).__name__}")
@@ -4260,12 +4266,39 @@ def done_miss_reminder_line(*, shop: str, outbox: str | Path, job_key: str) -> s
     )
 
 
+_BUSY_HELD_RX = re.compile(
+    r"(?i)\bbusy\s*\(\s*held\s+((?:FR|MRB|UAT|FIX|BUILD|PR)\s+\S+#\d+)\s*\)"
+)
+
+
+def busy_nak_held_job(text: str) -> str:
+    """FR #4642: job key inside ``NAK !BORED busy (held TASK owner/repo#N)``, else ``''``."""
+    m = _BUSY_HELD_RX.search(text or "")
+    if not m:
+        return ""
+    parts = m.group(1).split(None, 1)
+    if len(parts) != 2:
+        return ""
+    return f"{parts[0].upper()} {parts[1]}"
+
+
 def outbox_job_key(payload: str) -> Optional[str]:
     """Normalize `TYPE owner/repo#N` from a shop wire line; None if not a typed job line (FR #4609 includes FIX)."""
     m = _OUT_JOB_KEY_RX.match((payload or "").strip())
     if not m:
         return None
     return f"{m.group(2).upper()} {m.group(3)}"
+
+
+def replay_done_line_for_busy_nak(text: str, last_done_payload: str) -> str:
+    """FR #4642: the DONE line to re-send when NAK busy names that finished job, else ``''``."""
+    held = busy_nak_held_job(text)
+    payload = (last_done_payload or "").strip()
+    if not held or not payload:
+        return ""
+    if outbox_job_key(payload) != held:
+        return ""
+    return payload
 
 
 def outbox_payload(line: str) -> str:
@@ -5255,6 +5288,7 @@ class Supervisor:
             self.bored.relay = relay
         if irc and self.bored:
             irc.on_nak = self.bored.nak  # t817u
+            irc.on_nak_line = self._replay_done_on_busy_hold  # FR #4642
         if irc:
             irc.on_lost = self._on_irc_lost
 
@@ -5562,6 +5596,25 @@ class Supervisor:
                 self.relay.note_outbound(p)
         if self.bored:
             self.bored.on_outbox(payload)
+
+    def _replay_done_on_busy_hold(self, text: str) -> None:
+        """FR #4642: NAK busy (held X) after we already DONE'd X — put that DONE back on the outbox."""
+        if self.bored is None or self.run_dir is None or self.irc is None:
+            return
+        with self.bored._cv:
+            payload = (self.bored._last_done_key or self.bored._done_key or "").strip()
+            ack_open = bool(self.bored._ack_open)
+            ack_key = self.bored._ack_job_key or ""
+        line = replay_done_line_for_busy_nak(text, payload)
+        if not line:
+            return
+        held = outbox_job_key(line) or ""
+        if ack_open and ack_key and held and ack_key != held:
+            return
+        shop = self.irc.shop
+        ok = append_outbox_line(outbox_path_for_run(self.run_dir), f"PRIVMSG {shop} :{line}")
+        if ok:
+            self.log(f"bored: re-send DONE for {held} after nak busy held")
 
     def post_bored(self) -> bool:
         """The ONLY place !bored is sent: the exe, own shop, never during shutdown / after IRC loss."""
@@ -6300,6 +6353,7 @@ class Supervisor:
         self.irc.on_lost = self._on_irc_lost
         if self.bored is not None:
             self.irc.on_nak = self.bored.nak
+            self.irc.on_nak_line = self._replay_done_on_busy_hold  # FR #4642
         ob = self.run_dir / "outbox.txt"
         try:
             drain_outbox(ob, self.irc, self.log, self.on_outbox_wire)
