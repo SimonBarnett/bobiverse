@@ -531,7 +531,8 @@ class ChairJobs:
                         f"failed={len(res.get('failed') or [])} "
                         f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
                         f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
-                        f"unaccepted={res.get('unaccepted', 0)}"
+                        f"unaccepted={res.get('unaccepted', 0)} "
+                        f"fix_dup={res.get('fix_dup', 0)}"
                         + (f" note={note}" if note else "")
                     )
                 # FR #2899: name every dropped row + reason (never only dropped=N).
