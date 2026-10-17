@@ -1513,6 +1513,42 @@ def _append_row_history(row: dict, note: str, *, cap: int = 20) -> None:
     row["history"] = hist[-cap:]
 
 
+def _done_has_fr(doc: dict, repo: str, ident: str) -> bool:
+    """True when ``done`` already holds this FR (FR #4656)."""
+    done = doc.get("done")
+    if not isinstance(done, list):
+        return False
+    return any(isinstance(row, dict) and _same(row, repo, "FR", ident) for row in done)
+
+
+def closed_unmerged_ref_skip_reason(doc: dict, repo: str, ident: str) -> str | None:
+    """FR #4656: why a closed-unmerged PR ref must not be requeued.
+
+    Requeue only when the ref is an open issue (not a pull) that already sits in
+    ``done`` (FR #4373). Otherwise return a one-line skip reason.
+    """
+    num = str(ident or "").strip().lstrip("#")
+    shown = f"#{num}" if num else str(ident or "")
+    if not num.isdigit():
+        return f"requeue skip ref {shown}: not an issue number"
+    if not _done_has_fr(doc, repo, ident):
+        return f"requeue skip ref {shown}: not in done"
+    is_pull = github_is_pull_checker()
+    issue_open = github_issue_open_checker()
+    if is_pull is None or issue_open is None:
+        return f"requeue skip ref {shown}: lookup unavailable"
+    try:
+        if bool(is_pull(repo, num)):
+            return f"requeue skip ref {shown}: pull request"
+        if not bool(issue_open(repo, num)):
+            return f"requeue skip ref {shown}: issue closed"
+    except GitHubLookupUnknown:
+        return f"requeue skip ref {shown}: lookup unknown"
+    except Exception:
+        return f"requeue skip ref {shown}: lookup unknown"
+    return None
+
+
 def pop_done_fr_rows(doc: dict, repo: str, ident: str) -> list[dict]:
     """Remove matching FR rows from ``done`` (FR #4373 reopen / resync)."""
     done = doc.get("done")
@@ -2317,6 +2353,12 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                 if len(done_cu) > DONE_CAP:
                     doc["done"] = done_cu[-DONE_CAP:]
             for ref in claim.refs:
+                # FR #4656: Refs often name another PR or a closed issue. Requeue only
+                # an open issue that was already in done (FR #4373).
+                skip = closed_unmerged_ref_skip_reason(doc, claim.repo, ref)
+                if skip:
+                    print(skip, flush=True)
+                    continue
                 fr = GitClaim(
                     repo=claim.repo,
                     task="FR",
@@ -2325,7 +2367,6 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                     action="reopened",
                     line=claim.line,
                 )
-                # FR #4373: closed-unmerged PR may leave linked FRs in done — requeue them.
                 requeue_reopened_issue(doc, fr, via="webhook", actor="")
             changed = "updated"
     else:
