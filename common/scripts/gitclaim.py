@@ -8139,9 +8139,14 @@ def _normalize_ci_checks(checks: str | None) -> str:
 
 
 def open_pr_mrb_checks_failed(checks: str | None) -> bool:
-    """FR #4594: required check already concluded red (not still queued)."""
+    """FR #4594: required check already concluded red (not still queued).
+
+    FR #4630: annotated rollups like ``failure:test-and-synth`` still count as failed
+    (exit ci-wait); FIX enqueue may then refuse cancelled-only / shared-suite+main-red.
+    """
     state = _normalize_ci_checks(checks)
-    return state in (
+    head = state.split(":", 1)[0] if state else ""
+    return head in (
         "failure",
         "error",
         "action_required",

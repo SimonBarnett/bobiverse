@@ -54,6 +54,10 @@ _FAIL_CONCLUSIONS = frozenset(
         "action_required",
     }
 )
+# FR #4630: bulk cancel waves are not per-PR CI debt.
+_CANCEL_CONCLUSIONS = frozenset({"cancelled", "canceled"})
+# Shared suite name(s) — tip + main both red → skip tip FIX (prefer one main-side fix).
+_SHARED_SUITE_MARKERS = ("test-and-synth", "test_and_synth", "testandsynth")
 
 
 def _utc() -> str:
@@ -75,8 +79,47 @@ def combined_status_is_empty(status: dict | None) -> bool:
     return state in ("", "none")
 
 
+def _normalize_check_detail(detail: str) -> str:
+    raw = str(detail or "").strip().lower().replace(" ", "")
+    if raw.startswith("completed/"):
+        return raw.split("/", 1)[-1]
+    return raw
+
+
+def _detail_names_shared_suite(detail: str) -> bool:
+    """True when detail names the shared suite (e.g. failure:test-and-synth)."""
+    compact = _normalize_check_detail(detail).replace("_", "-").replace("|", ":")
+    return any(m.replace("_", "-") in compact for m in _SHARED_SUITE_MARKERS)
+
+
+def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | None:
+    """FR #4630: why FIX-CI must not be offered (or None to proceed).
+
+    * ``cancelled-only`` — tip reds are only cancelled/canceled (bulk cancel wave).
+    * ``main-also-red-shared-suite`` — shared suite (test-and-synth) failed on tip
+      while main's required checks are also red (prefer one main-side fix).
+    """
+    state = _normalize_check_detail(detail)
+    if not state:
+        return None
+    # Primary: cancelled / canceled (and completed/cancelled) with no hard failure token.
+    head = state.split(":", 1)[0]
+    if head in _CANCEL_CONCLUSIONS:
+        return "cancelled-only"
+    # Secondary: named shared suite + main also red.
+    if main_red and _detail_names_shared_suite(state):
+        return "main-also-red-shared-suite"
+    return None
+
+
 def rollup_check_runs(runs: dict | list | None) -> str:
-    """Roll check-runs into success | failure | pending | none."""
+    """Roll check-runs into success | failure | cancelled | pending | none.
+
+    FR #4630: when every fail-like conclusion is cancelled/canceled, return
+    ``cancelled`` (not ``failure``) so FIX-CI can refuse bulk-cancel waves.
+    When the only hard failure is the shared suite, annotate
+    ``failure:test-and-synth`` so enqueue can skip while main is also red.
+    """
     if isinstance(runs, dict):
         items = runs.get("check_runs")
     elif isinstance(runs, list):
@@ -86,18 +129,30 @@ def rollup_check_runs(runs: dict | list | None) -> str:
     if not isinstance(items, list) or not items:
         return "none"
     statuses: list[str] = []
-    conclusions: list[str] = []
+    hard: list[str] = []  # check names (or bare conclusion) for non-cancel fails
+    saw_cancel = False
     for item in items:
         if not isinstance(item, dict):
             continue
         statuses.append(str(item.get("status") or "").lower())
-        conclusions.append(str(item.get("conclusion") or "").lower())
+        conclusion = str(item.get("conclusion") or "").lower()
+        if conclusion in _CANCEL_CONCLUSIONS:
+            saw_cancel = True
+            continue
+        if conclusion in _FAIL_CONCLUSIONS:
+            name = str(item.get("name") or "").strip()
+            hard.append(name or conclusion)
     if not statuses:
         return "none"
     if any(s != "completed" for s in statuses):
         return "pending"
-    if any(c in _FAIL_CONCLUSIONS for c in conclusions):
+    if hard:
+        names = [n for n in hard if n and n not in _FAIL_CONCLUSIONS]
+        if names and all(_detail_names_shared_suite(n) for n in names):
+            return "failure:test-and-synth"
         return "failure"
+    if saw_cancel:
+        return "cancelled"
     return "success"
 
 
@@ -170,11 +225,14 @@ def decide_merge_on_green(
     if not shas_match(pass_sha, current_sha):
         return "requeue_sha"
     state = (checks or "").strip().lower()
-    if state in ("failure", "error", "action_required", "timed_out", "cancelled", "canceled"):
+    head = state.split(":", 1)[0] if state else ""
+    # FR #4630: annotated rollups (failure:test-and-synth) still requeue_ci;
+    # enqueue_fix_ci may then skip.
+    if head in ("failure", "error", "action_required", "timed_out", "cancelled", "canceled"):
         return "requeue_ci"
-    if state in ("pending", "expected", "queued", "in_progress", "waiting", "requested"):
+    if head in ("pending", "expected", "queued", "in_progress", "waiting", "requested"):
         return "wait"
-    if state in ("success", "neutral", "skipped", "none", ""):
+    if head in ("success", "neutral", "skipped", "none", ""):
         return "merge"
     # Unknown check vocabulary: wait rather than merge.
     return "wait"
@@ -308,7 +366,8 @@ def main_branch_checks_red(
                 status if isinstance(status, dict) else None,
                 runs,
             )
-        return state in (
+        head = state.split(":", 1)[0] if state else ""
+        return head in (
             "failure",
             "error",
             "action_required",
@@ -369,6 +428,9 @@ def enqueue_fix_ci(
     When ``main_red`` (or ``main_red_fn`` / live main check) is True, dedupe by
     shared ``repo|state`` so one FIX covers a main breakage. When main is green
     (or unknown), each PR is its own FIX. Returns ``added`` | ``duplicate`` | ``skipped``.
+
+    FR #4630: returns ``skipped`` when the tip is cancelled-only, or when the
+    shared suite (test-and-synth) failed while main is also red.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
@@ -383,6 +445,9 @@ def enqueue_fix_ci(
                 main_red = False
         else:
             main_red = main_branch_checks_red(repo_c, token=token)
+    skip = fix_ci_skip_reason(detail, main_red=bool(main_red))
+    if skip:
+        return "skipped"
     sig = failure_signature(
         repo_c, detail=detail, pass_sha=sha, pr=num, main_red=bool(main_red)
     )
