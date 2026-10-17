@@ -2965,6 +2965,19 @@ class Client:
                 info(f"INFO git-claim out-of-fuel cleared nick={src} via=!bored")
         except Exception as fuel_exc:  # noqa: BLE001
             info(f"WARN git-claim out-of-fuel clear {type(fuel_exc).__name__}")
+        # FR #4642: a hold for a job this seat already DONE'd is not busy.
+        try:
+            _freed = gitclaim.release_duplicate_done_hold(self.home, src) or ""
+        except Exception as exc:  # noqa: BLE001
+            _freed = ""
+            info(f"WARN git-claim duplicate-done hold {type(exc).__name__}")
+        if _freed:
+            info(
+                f"INFO seat-hold cleared nick={src} reason=duplicate-after-done "
+                f"job={_freed}"
+            )
+            with contextlib.suppress(Exception):
+                self._workers().on_done(src, target)
         # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).
         session_started = getattr(self, "_irc_session_started", None)
         if session_started is None:
@@ -3139,7 +3152,12 @@ class Client:
         try:
             _pj = shop_listen.parse_shop_job_line(body)
             if _pj and verb in ("ACK", "DONE", "NACK", "GIVEUP"):
-                if verb == "ACK" and status == "missing":
+                if verb == "ACK" and status == "duplicate-after-done":
+                    info(
+                        f"INFO seat-hold ignored nick={src} reason=duplicate-after-done "
+                        f"job={_pj.task} {_pj.repo}{_pj.id}"
+                    )
+                elif verb == "ACK" and status == "missing":
                     _noted = gitclaim.note_seat_hold(
                         self._digest_home(),
                         src,

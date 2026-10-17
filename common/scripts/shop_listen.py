@@ -636,6 +636,13 @@ def handle_shop_worker_line(
         except Exception:  # noqa: BLE001
             pass
         if st == "missing":
+            # FR #4642: a re-ACK of a job this seat already DONE'd must not recreate
+            # an ack-missing hold (lost follow-up DONE then nak-busy forever).
+            if gitclaim.seat_done_without_later_offer(
+                home, nick, parsed.repo, parsed.task, parsed.id
+            ):
+                out["status"] = "duplicate-after-done"
+                return out
             # The seat is working on what it ACKed even when the queue row is gone (re-synced, already
             # accepted, offered twice): the digest must still show it as doing (t816u).
             job = {"task": parsed.task, "repo": parsed.repo, "id": parsed.id}
