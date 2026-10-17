@@ -1,13 +1,17 @@
-"""FR #4343: ionos !build / Jeeves install hotpatch|ff-update cues pin require_machine=ionos.
+"""FR #4343 / #4599: bobiverse soft title/body cues do not pin to ionos.
 
-#4340 was offered to marchhare without needs-ionos. Title/body host cues must stamp
-before offer. Meta FR #4343 itself stays unpinned (any fleet seat).
+Simon rule (2026-10-14 / FR #4512): bobiverse work is never pinned by title/body
+text cues. Meta FR #4343 stays hard-unpinned. Product FR #4340 is also hard-
+unpinned (FR #4599) — descriptive ``ionos !build`` titles are not affinity pins.
+
+Non-bobiverse repos may still match the ionos soft cues below.
 """
 from __future__ import annotations
 
 import gitclaim
 
 REPO = "SimonBarnett/bobiverse"
+OTHER = "SimonBarnett/a-search"
 
 _FR4340_TITLE = (
     "ionos !build runner install lags main (missing FR #4316 autofile on LiveStateTouched)"
@@ -21,7 +25,8 @@ includes file_runner_abort_blocker from #4324.
 """
 
 
-def test_fr4343_title_ionos_bang_build_pins_ionos():
+def test_fr4343_bobiverse_title_ionos_bang_build_does_not_pin():
+    """FR #4512: bobiverse soft cues never pin."""
     assert (
         gitclaim.infer_require_machine(
             title=_FR4340_TITLE,
@@ -29,11 +34,11 @@ def test_fr4343_title_ionos_bang_build_pins_ionos():
             repo=REPO,
             ident="#9990",
         )
-        == "ionos"
+        == ""
     )
 
 
-def test_fr4343_body_hotpatch_ionos_jeeves_install_pins_ionos():
+def test_fr4343_bobiverse_body_hotpatch_does_not_pin():
     assert (
         gitclaim.infer_require_machine(
             title="runner lags main",
@@ -41,12 +46,27 @@ def test_fr4343_body_hotpatch_ionos_jeeves_install_pins_ionos():
             repo=REPO,
             ident="#9991",
         )
+        == ""
+    )
+
+
+def test_fr4343_non_bobiverse_title_ionos_bang_build_still_pins():
+    """Soft cues remain for product repos that are not bobiverse."""
+    assert (
+        gitclaim.infer_require_machine(
+            title=_FR4340_TITLE,
+            body="",
+            repo=OTHER,
+            ident="#9990",
+        )
         == "ionos"
     )
 
 
-def test_fr4343_hard_pin_4340():
-    assert ("simonbarnett/bobiverse", "#4340") in gitclaim._REQUIRE_MACHINE_ISSUE_PINS
+def test_fr4343_4340_hard_unpinned():
+    """FR #4599 supersedes the old hard pin of #4340."""
+    assert ("simonbarnett/bobiverse", "#4340") not in gitclaim._REQUIRE_MACHINE_ISSUE_PINS
+    assert ("simonbarnett/bobiverse", "#4340") in gitclaim._REQUIRE_MACHINE_ISSUE_UNPINS
     assert (
         gitclaim.infer_require_machine(
             title="",
@@ -54,10 +74,10 @@ def test_fr4343_hard_pin_4340():
             repo=REPO,
             ident="#4340",
         )
-        == "ionos"
+        == ""
     )
     row = {"repo": REPO, "id": "#4340", "title": "", "body": ""}
-    assert gitclaim.row_require_machine(row) == "ionos"
+    assert gitclaim.row_require_machine(row) == ""
 
 
 def test_fr4343_meta_issue_stays_unpinned():

@@ -287,13 +287,25 @@ def test_fr4422_unpin_4343_hard_and_missing_needs_ionos_title():
     assert str(row.get("require_machine") or "").lower() in {"any", "*", "none", "-"}
 
 
-def test_fr4422_needs_ionos_still_pins_real_ops_title():
+def test_fr4422_needs_ionos_label_still_pins_bobiverse():
+    """FR #4512: bobiverse soft title cues do not pin; needs-ionos label still does."""
     assert (
         gitclaim.infer_require_machine(
-            title="needs-ionos: recycle ircJeeves after allowlist change",
+            title="recycle ircJeeves after allowlist change",
             body="",
+            labels=("needs-ionos",),
             repo=REPO,
             ident="#999",
         )
         == "ionos"
+    )
+    assert (
+        gitclaim.infer_require_machine(
+            title="needs-ionos: recycle ircJeeves after allowlist change",
+            body="",
+            labels=(),
+            repo=REPO,
+            ident="#999",
+        )
+        == ""
     )
