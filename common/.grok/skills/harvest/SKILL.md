@@ -266,6 +266,7 @@ routes to bobiverse via the split rule.
 - When pytest-gitclaim previously-red pins fail on a tip and the same two failures reproduce on origin/main, PASS the tip (tip tests green), file one intake for the main pin debt, and do not FAIL the product FR for unrelated pack/monitor pins
 - fr1518 gated-empty fixtures for bobiverse must use a dedicated require_machine body pin (not a raw stamp); queue_flow._gate_bucket must call row_require_machine so buckets match offer gates after FR #4512
 - harvest-lesson MRB on common/.grok/skills/harvest/SKILL.md: when origin/main also appended a Harvested-lessons bullet, resolve CONFLICTING with keep-both then PASS @ head SHA
+- Re-offered onefile seat-cap double-count after FR #4458 merged: Prefer ExistingPrUrl #4461; close twin issue; file install-behind if live box still shows cap.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
