@@ -3244,23 +3244,26 @@ def _canon_task(row: dict) -> str:
     task = str(row.get("task") or "FR").upper()
     if task == "PR":
         task = "FR"
-    return task if task in ("FR", "MRB", "UAT") else "FR"
+    # FR #4585: FIX (and BUILD) must stay distinct on the assign wire.
+    return task if task in ("FR", "MRB", "UAT", "FIX", "BUILD") else "FR"
 
 
 def resolve_assign_url(row: dict) -> str:
     """URL for an assign line (FR #595 / #247).
 
     FR/UAT may invent ``/issues/{id}`` when url is missing.
-    MRB may only use an existing ``/pull/N`` url, or invent from explicit
-    ``pr_id`` / ``pr`` ΓÇö never from the bare row/issue id alone.
+    MRB/FIX may only use an existing ``/pull/N`` url, or invent from explicit
+    ``pr_id`` / ``pr`` — never from the bare row/issue id alone.
     """
     task = _canon_task(row)
     repo = str(row.get("repo") or "").strip()
     url = str(row.get("url") or "").strip()
-    if task == "MRB":
+    if task in ("MRB", "FIX"):
         if PULL_URL_RE.search(url):
             return url
         pr = str(row.get("pr_id") or row.get("pr") or "").strip().lstrip("#")
+        if not pr and task == "FIX":
+            pr = str(row.get("id") or "").strip().lstrip("#")
         if repo and pr:
             return f"https://github.com/{repo}/pull/{pr}"
         return ""
