@@ -261,6 +261,7 @@ routes to bobiverse via the split rule.
 - Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
 - When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
 - FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
+- Bobiverse #4340 must live in _REQUIRE_MACHINE_ISSUE_UNPINS (not PINS): hard unpin wins over sticky ionos stamps and soft ionos+!build title cues so any seat can take it after clear/resync (FR #4599 / Simon never-pin-ionos)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
