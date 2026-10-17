@@ -28,7 +28,10 @@ PASS_SHA_RE = re.compile(
     r"([0-9a-f]{7,40})"
 )
 
-Decision = str  # merge | wait | requeue_sha | requeue_ci | skip_hold | drop_merged
+Decision = str  # merge | wait | requeue_sha | requeue_ci | skip_hold | drop_merged | drop_closed
+
+# FR #4543: leave headroom for pr_exists / !resync / offers when the sweep is large.
+DEFAULT_MIN_RATE_REMAINING = 100
 
 
 def _utc() -> str:
@@ -77,14 +80,19 @@ def decide_merge_on_green(
     checks: str,
     hold_reason: str | None = None,
     merged: bool = False,
+    closed: bool = False,
 ) -> Decision:
-    """Pure FR #3948 decision.
+    """Pure FR #3948 / FR #4543 decision.
 
     ``checks`` is one of: success | failure | pending | none
-    (``none`` = no required/reported checks — treat like success when SHA matches).
+    (``none`` = no required/reported checks --- treat like success when SHA matches).
+
+    FR #4543: closed (unmerged) PRs leave the ledger so sweeps stop re-fetching them.
     """
     if merged:
         return "drop_merged"
+    if closed:
+        return "drop_closed"
     if hold_reason:
         return "skip_hold"
     if not pass_sha or not current_sha:
@@ -217,6 +225,31 @@ def drop(home: Path, *, repo: str, pr: str) -> bool:
     return True
 
 
+_last_rate_remaining: int | None = None
+
+
+def get_rate_remaining() -> int | None:
+    """Last X-RateLimit-Remaining seen by merge-on-green GitHub calls (FR #4543)."""
+    return _last_rate_remaining
+
+
+def _note_rate_headers(hdrs) -> None:
+    global _last_rate_remaining
+    if hdrs is None:
+        return
+    try:
+        get = hdrs.get
+    except Exception:  # noqa: BLE001
+        return
+    rem = get("X-RateLimit-Remaining") or get("x-ratelimit-remaining")
+    if rem is None:
+        return
+    try:
+        _last_rate_remaining = int(str(rem).strip())
+    except ValueError:
+        pass
+
+
 def _gh_token(token: str | None = None) -> str:
     if token is not None:
         return token.strip()
@@ -238,9 +271,11 @@ def _gh_json(url: str, *, token: str, method: str = "GET", body: dict | None = N
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
+            _note_rate_headers(getattr(resp, "headers", None))
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as e:
+        _note_rate_headers(getattr(e, "headers", None))
         raise RuntimeError(f"GitHub HTTP {e.code} for {url}") from e
 
 
@@ -395,6 +430,7 @@ def evaluate_pending_row(
         checks=str(pr_state.get("checks") or "none"),
         hold_reason=None,
         merged=bool(pr_state.get("merged")),
+        closed=bool(pr_state.get("closed")),
     )
     if decision == "merge" and not ok_gate:
         # Still waiting for PASS board scrape, or other gate refuse that is not hold.
@@ -412,8 +448,15 @@ def process_pending(
     merge_fn: Callable[..., dict[str, Any]] | None = None,
     token: str | None = None,
     log: Callable[[str], None] | None = None,
+    rate_remaining: Callable[[], int | None] | None = None,
+    min_rate_remaining: int = DEFAULT_MIN_RATE_REMAINING,
 ) -> dict[str, Any]:
-    """Advance every merge-on-green pending row once. Pure side effects via injectables."""
+    """Advance every merge-on-green pending row once. Pure side effects via injectables.
+
+    FR #4543: when ``rate_remaining()`` is below ``min_rate_remaining``, back off
+    without fetching so ``pr_exists`` / offers / ``!resync`` keep budget. Closed or
+    merged PRs are dropped after one PR GET and never fetch comments.
+    """
     _log = log or (lambda _m: None)
     fetch_pr = fetch_pr or (lambda repo, pr: fetch_pr_state(repo, pr, token=token))
     fetch_comments = fetch_comments or (
@@ -426,7 +469,7 @@ def process_pending(
     doc = load_ledger(home)
     pending = [p for p in (doc.get("pending") or []) if isinstance(p, dict)]
     keep: list[dict] = []
-    summary = {
+    summary: dict[str, Any] = {
         "seen": len(pending),
         "merged": 0,
         "wait": 0,
@@ -434,8 +477,23 @@ def process_pending(
         "skipped_hold": 0,
         "dropped": 0,
         "errors": 0,
+        "backed_off": False,
         "actions": [],
     }
+
+    if rate_remaining is not None:
+        try:
+            rem = rate_remaining()
+        except Exception:  # noqa: BLE001
+            rem = None
+        if rem is not None and int(rem) < int(min_rate_remaining):
+            summary["backed_off"] = True
+            summary["rate_remaining"] = int(rem)
+            _log(
+                f"INFO merge-on-green back-off rate_remaining={rem} "
+                f"min={min_rate_remaining} pending={len(pending)}"
+            )
+            return summary
 
     for row in pending:
         repo = str(row.get("repo") or "")
@@ -445,6 +503,15 @@ def process_pending(
             continue
         try:
             pr_state = fetch_pr(repo, pr)
+            # FR #4543: closed/merged leave the ledger; do not spend a comments GET.
+            if bool(pr_state.get("merged")) or bool(pr_state.get("closed")):
+                decision = "drop_merged" if pr_state.get("merged") else "drop_closed"
+                detail = "merged" if pr_state.get("merged") else "closed"
+                action = {"repo": repo, "pr": pr, "decision": decision, "detail": detail}
+                summary["actions"].append(action)
+                summary["dropped"] += 1
+                _log(f"INFO merge-on-green drop {repo}#{pr}: {detail}")
+                continue
             comments = fetch_comments(repo, pr)
             decision, detail = evaluate_pending_row(row, pr_state=pr_state, comments=comments)
         except Exception as exc:  # noqa: BLE001
@@ -477,7 +544,7 @@ def process_pending(
                 _log(f"WARN merge-on-green merge failed {repo}#{pr}: {exc}")
                 continue
 
-        if decision == "drop_merged":
+        if decision in ("drop_merged", "drop_closed"):
             summary["dropped"] += 1
             continue
 
