@@ -2679,7 +2679,8 @@ def _coerce_row(row: dict) -> dict | None:
                 "author_seat", "author_nick", "author", "implementer_seat", "mrb_author_seat", "mrb_fix_author_seat",
                 "author_seats", "url", "title", "body", "state",
                 "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by",
-                "reconcile"):  # FR #3742: LOST_DONE_RESTART vs STALE_BUSY audit
+                "reconcile",  # FR #3742: LOST_DONE_RESTART vs STALE_BUSY audit
+                "prior_holder"):  # FR #4564: do not re-offer a lost DONE to the seat that held it
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -5890,6 +5891,43 @@ def clear_job_seat_holds(
         return False
 
 
+def _is_lost_done_reoffer_to(row: dict, nick: str) -> bool:
+    """FR #4564: this seat held the row when a lost DONE was requeued."""
+    if not isinstance(row, dict):
+        return False
+    raw = str(row.get("prior_holder") or "").strip()
+    if not raw:
+        return False
+    holder = (canonical_worker_nick(raw) or raw).strip().lower()
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    return bool(holder) and holder == me
+
+
+def _lost_done_github_result(row: dict) -> str | None:
+    """FR #4564: a PASS board already on the PR means the DONE landed. None if unknown."""
+    try:
+        import mrb_merge_gate
+
+        repo = str(row.get("repo") or "").strip()
+        num = str(row.get("id") or "").lstrip("#").strip()
+        if not repo or not num:
+            return None
+        url = str(row.get("url") or "").strip() or f"https://github.com/{repo}/pull/{num}"
+        task = str(row.get("task") or "").upper()
+        if task != "MRB" and "/pull/" not in url:
+            return None
+        comments = mrb_merge_gate.fetch_issue_comments(repo, num)
+        for c in comments or []:
+            body = mrb_merge_gate._body(c)
+            if mrb_merge_gate.MRB_PASS_BOARD_RE.search(body) or re.search(
+                r"(?i)\bMRB\s+PASS\s*@", body
+            ):
+                return url
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | None = None) -> str:
     """Unlocked core of ``seat_open_job`` (caller holds ``_lock`` and loaded ``doc``)."""
     key = _seat_key(nick)
@@ -5913,6 +5951,10 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
             continue
         to = str(row.get("offered_to") or "").strip()
         if to and _seat_key(to) == key:
+            # FR #4564: an un-ACKed re-offer of the row this seat already finished
+            # must not nak !bored as busy.
+            if _is_lost_done_reoffer_to(row, nick):
+                continue
             try:
                 oc = int(row.get("offered_count") or 0)
             except (TypeError, ValueError):
@@ -5931,6 +5973,20 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
         for r in sticky_maxed
     ):
         h = None
+    if isinstance(h, dict):
+        # FR #4564: a hold for the lost-DONE re-offer is not busy.
+        h_repo = str(h.get("repo") or "")
+        h_task = str(h.get("task") or "")
+        h_id = str(h.get("id") or "")
+        for row in doc.get("unaccepted") or []:
+            if not isinstance(row, dict) or not _same(row, h_repo, h_task, h_id):
+                continue
+            if _is_lost_done_reoffer_to(row, nick):
+                holds.pop(key, None)
+                with contextlib.suppress(OSError):
+                    _save_seat_holds_unlocked(home, holds)
+                h = None
+                break
     if isinstance(h, dict):
         # FR #4260: hold is void when the same job is now offered/accepted by another seat.
         h_repo = str(h.get("repo") or "")
@@ -6241,6 +6297,10 @@ def offer_focus_top(
                     if str(x).strip()
                 }
                 if me.lower() in skips:
+                    return None
+                # FR #4564: a LOST_DONE_RESTART requeue is not offered back to the seat
+                # that held it when the chair restarted.
+                if _is_lost_done_reoffer_to(cand, me):
                     return None
                 # FR #2309: sticky same-nick pin past OFFER_STICKY_MAX -> clear for other seats.
                 if to and _same_seat(to, me):
@@ -8379,6 +8439,9 @@ def seat_pending_offer(home: Path, nick: str, now: float | None = None) -> dict 
         them = (canonical_worker_nick(to) or to).strip().lower()
         if them != me:
             continue
+        # FR #4564: lost-DONE re-offer to the prior holder is not a live pending ACK.
+        if _is_lost_done_reoffer_to(row, nick):
+            continue
         # FR #4089: same per-row window as offer_focus_top (done/giveup push = 180 s).
         if _offer_age_s(row, now_f) < offer_timeout_s(row):
             return row
@@ -8902,9 +8965,12 @@ def release_stale_busy(
                         reason = "STALE_BUSY"
                     else:
                         reason = "LOST_DONE_RESTART"
-                    if pull_hint:
-                        # Evidence of DONE FR with an implement PR URL — keep done path.
-                        fin["result"] = pull_hint
+                    github_done = ""
+                    if reason == "LOST_DONE_RESTART":
+                        github_done = str(_lost_done_github_result(fin) or "")
+                    if pull_hint or github_done:
+                        # Evidence of DONE: digest pull URL, or a PASS board already on GitHub.
+                        fin["result"] = pull_hint or github_done
                         fin["done_ts"] = _utc_now()
                         fin["reconcile"] = reason
                         done.append(fin)
@@ -8912,6 +8978,8 @@ def release_stale_busy(
                         continue
                     # No closed/merged evidence: return to unaccepted so !assign / !bored
                     # can offer again even when github-resync is skipped.
+                    # FR #4564: remember who held it so the requeue is not offered back.
+                    holder = me
                     for k in (
                         "nick",
                         "accepted_ts",
@@ -8923,6 +8991,8 @@ def release_stale_busy(
                     ):
                         fin.pop(k, None)
                     fin["reconcile"] = f"requeue:{reason}"
+                    if reason == "LOST_DONE_RESTART":
+                        fin["prior_holder"] = holder
                     unacc.append(fin)
                     healed_rows.append((fin, f"requeue:{reason}"))
                 if len(done) > DONE_CAP:
