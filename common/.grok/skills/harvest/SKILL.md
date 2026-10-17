@@ -263,6 +263,7 @@ routes to bobiverse via the split rule.
 - FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
 - Hard-unpin bobiverse ionos affinity via _REQUIRE_MACHINE_ISSUE_UNPINS (wins stamp+cues); never re-add #4340 to ISSUE_PINS.
 - After gitclaim tip heals land, add a Build-Jeeves PYZ embed assert (FR #4608 markers) so frozen jeeves.exe cannot ship without MRB exact-seat; rebuild ionos separately
+- When pytest-gitclaim previously-red pins fail on a tip and the same two failures reproduce on origin/main, PASS the tip (tip tests green), file one intake for the main pin debt, and do not FAIL the product FR for unrelated pack/monitor pins
 
 ## Harvest digest (lessons audit 2026-10-06)
 
