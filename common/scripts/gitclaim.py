@@ -7604,12 +7604,12 @@ def ledger_refresh_authors(home: Path, rows, fetch, *, limit: int = 8, ttl_s: fl
 
 
 _ASSIGN_CMD = re.compile(
-    r"(?is)^\s*!assign\s+(\S+)\s+(\S+)\s+(FR|MRB|UAT)\s+#?(\d+)\s*$"
+    r"(?is)^\s*!assign\s+(\S+)\s+(\S+)\s+(FR|MRB|UAT|FIX)\s+#?(\d+)\s*$"
 )
 
 
 def parse_assign_cmd(body: str) -> tuple[str, str, str, str] | None:
-    """``!assign <worker-nick> <repo> <FR|MRB|UAT> <num>`` -> (nick, repo, TASK, '#N') or None (t849u)."""
+    """``!assign <worker-nick> <repo> <FR|MRB|UAT|FIX> <num>`` -> (nick, repo, TASK, '#N') or None (t849u / FR #4652)."""
     m = _ASSIGN_CMD.match(body or "")
     if not m:
         return None
@@ -7815,6 +7815,88 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
     )
 
 
+
+def enqueue_fix_github_item(
+    doc: dict,
+    repo: str,
+    ident: str,
+    *,
+    fetch_issue=None,
+) -> tuple[str, str]:
+    """Enqueue a FIX row for an open red PR when missing (FR #4652 !assign FIX).
+
+    ``fetch_issue(repo, num)`` is the test seam (Issues API shape; may include
+    ``head.sha`` and ``checks``). Returns ``("added"|"duplicate"|"refused", detail)``.
+    """
+    num = str(ident or "").strip().lstrip("#")
+    repo_c = canonical_queue_repo(repo)
+    if not repo_c or not num.isdigit():
+        return "refused", "repo/id required"
+    getter = fetch_issue or (lambda r, n: fetch_github_issue_dict(r, n))
+    try:
+        issue = getter(repo_c, num)
+    except Exception as exc:  # noqa: BLE001
+        return "refused", f"github fetch failed: {type(exc).__name__}"
+    if not isinstance(issue, dict):
+        return "refused", f"{repo_c}#{num}: not found on GitHub or no token"
+    state = str(issue.get("state") or "").strip().lower()
+    if state and state != "open":
+        return "refused", f"{repo_c}#{num}: not open"
+    is_pull = (
+        issue.get("pull_request") is not None
+        or "/pull/" in str(issue.get("html_url") or "")
+    )
+    if not is_pull:
+        return "refused", f"{repo_c}#{num}: not a pull request (FIX needs a PR)"
+    if issue.get("draft") is True:
+        return "refused", f"{repo_c}#{num}: draft PR"
+    head = issue.get("head") if isinstance(issue.get("head"), dict) else {}
+    sha = str(head.get("sha") or issue.get("pass_sha") or "").strip()
+    if not sha:
+        return "refused", f"{repo_c}#{num}: missing head SHA"
+    checks = issue.get("checks")
+    if isinstance(checks, str) and checks.strip():
+        if not open_pr_mrb_checks_failed(checks):
+            return (
+                "refused",
+                f"{repo_c}#{num}: PR checks not failed ({checks.strip()})",
+            )
+    pull_url = str(issue.get("html_url") or "").strip()
+    if not PULL_URL_RE.search(pull_url):
+        pull_url = f"https://github.com/{repo_c}/pull/{num}"
+    detail = str(checks or "failure").strip() or "failure"
+    title = f"FIX CI (!assign; red check; PR #{num})"
+    body = (
+        f"FR #4652 FIX: operator !assign for open PR with failed required checks "
+        f"({detail}). Head SHA {sha}. Fix CI on this PR branch and push."
+    )
+    claim = GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id=f"#{num}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=title,
+        body=body,
+        labels=("via-intake", "fix-ci"),
+    )
+    changed = _append_unaccepted(
+        doc,
+        claim,
+        url=pull_url,
+        body=body,
+        title=title,
+        pass_sha=sha,
+        fail_signature=f"assign-fix:{repo_c}#{num}:{sha[:12]}",
+    )
+    if changed == "added":
+        return "added", f"enqueued FIX {repo_c}#{num}"
+    if changed in ("duplicate", "noop"):
+        return "duplicate", f"already queued FIX {repo_c}#{num}"
+    return "refused", f"enqueue {changed}"
+
+
 def enqueue_open_github_item(
     doc: dict,
     repo: str,
@@ -7832,8 +7914,10 @@ def enqueue_open_github_item(
     so !assign does not claim the job is "already queued" when it was never offered.
     """
     task_u = (task or "").upper()
+    if task_u == "FIX":
+        return enqueue_fix_github_item(doc, repo, ident, fetch_issue=fetch_issue)
     if task_u not in ("FR", "MRB"):
-        return "refused", f"{task_u}: only FR/MRB can be enqueued from GitHub"
+        return "refused", f"{task_u}: only FR/MRB/FIX can be enqueued from GitHub"
     num = str(ident or "").strip().lstrip("#")
     getter = fetch_issue or (lambda r, n: fetch_github_issue_dict(r, n))
     try:
@@ -7907,7 +7991,7 @@ def assign_row(
     FR #3400: refuse assign to a nick not in the shop (not a live seat). If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
 
-    FR #4422: when the named open FR/MRB is missing from the unaccepted queue, fetch it from
+    FR #4422 / #4652: when the named open FR/MRB/FIX is missing from the unaccepted queue, fetch it from
     GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
     """
     import time as _time
@@ -7969,8 +8053,8 @@ def assign_row(
                         acc_idx = i
                         break
                 if acc_idx is None:
-                    # FR #4422: open issue/PR missing from queue -> enqueue from GitHub, then offer.
-                    if task_u in ("FR", "MRB"):
+                    # FR #4422 / #4652: open issue/PR missing from queue -> enqueue from GitHub, then offer.
+                    if task_u in ("FR", "MRB", "FIX"):
                         enq_st, enq_detail = enqueue_open_github_item(
                             doc, repo, task_u, num, fetch_issue=fetch_issue
                         )
@@ -8017,6 +8101,9 @@ def assign_row(
                     if idx is None:
                         return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
+            # FR #4652: !assign FIX refuses needs_human (clear reason). FR/MRB still follow FR #4336.
+            if task_u == "FIX" and row_needs_human(cand):
+                return "refused", "row is needs_human (FIX !assign refused)"
             # FR #4336: auto-offer blocks needs_human globally; explicit !assign may still hand it out.
             # (row_needs_human remains the bored/done-offer/reconcile gate.)
             if row_awaits_mrb1(cand):
