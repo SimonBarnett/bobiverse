@@ -27,3 +27,9 @@ def test_mrb4548_hostile_pr_hold_text_re_is_title_alias():
         body="FAIL-supersede; do not merge the thinner duplicate.",
         labels=("harvest-lesson",),
     ) is None
+
+
+def test_mrb4551_job_mrb_pins_fr4545_body_stamp():
+    skill = (ROOT / "bob" / ".grok" / "skills" / "bobiverse-bob-job-mrb" / "SKILL.md").read_text(encoding="utf-8")
+    assert "PR body text matches only a line-anchored On hold: or HOLD: stamp" in skill
+    assert "must not skip enqueue" in skill
