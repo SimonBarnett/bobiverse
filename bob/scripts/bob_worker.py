@@ -2762,8 +2762,11 @@ class Relay:
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
-        # Job refs this seat already closed (DONE / GIVEUP / NACK sent): never replay or hold them.
+        # FR #4609: typed keys ``mrb owner/repo#n`` (not bare repo#N) this seat already closed.
+        # DONE FIX must not silence a later held MRB for the same number.
         self._finished_refs: set = set()
+        # Typed keys ACKed on receipt while held; if later dropped as finished, emit NACK.
+        self._acked_held_keys: set = set()
         self._overflow: list = []
         self._sent: list = []
         self._last_line = ""
@@ -2915,6 +2918,14 @@ class Relay:
             return
         if ok:
             self.log("relay: ACK on receipt " + ack)
+            # FR #4609: remember ACK so a later finished-drop can NACK (no ghost ACK).
+            key = assign_job_key(line)
+            if key:
+                kl = key.lower()
+                with self._lock:
+                    self._acked_held_keys.add(kl)
+                    if len(self._acked_held_keys) > 256:
+                        self._acked_held_keys.pop()
         else:
             self.log("relay: ACK on receipt write failed " + ack)
 
@@ -2983,26 +2994,37 @@ class Relay:
                 self._pending.insert(0, line)
 
     def note_outbound(self, payload: str) -> int:
-        """Seat sent DONE / GIVEUP / NACK for a job: drop held copies of it. Returns n dropped."""
+        """Seat sent DONE / GIVEUP / NACK for a job: drop held copies of it. Returns n dropped.
+
+        FR #4609: match the full typed key ``TYPE owner/repo#N`` (not bare repo#N), so
+        DONE FIX never drops a held MRB for the same number.
+        """
         m = _OUT_JOB_KEY_RX.match((payload or "").strip())
         if not m or m.group(1).upper() not in ("DONE", "GIVEUP", "NACK"):
             return 0
-        ref = m.group(3).lower()
+        typed = f"{m.group(2).upper()} {m.group(3)}".lower()
         with self._lock:
-            self._finished_refs.add(ref)
+            self._finished_refs.add(typed)
             if len(self._finished_refs) > 256:
                 self._finished_refs.pop()
+            self._acked_held_keys.discard(typed)
             before = len(self._pending)
-            self._pending = [p for p in self._pending if assign_job_ref(p) != ref]
+
+            def _pending_typed(p: str) -> str | None:
+                k = assign_job_key(p)
+                return k.lower() if k else None
+
+            self._pending = [p for p in self._pending if _pending_typed(p) != typed]
             dropped = before - len(self._pending)
         if dropped:
-            self.log(f"relay: dropped {dropped} held assign(s) for {ref} ({m.group(1).upper()} sent)")
+            self.log(f"relay: dropped {dropped} held assign(s) for {typed} ({m.group(1).upper()} sent)")
         return dropped
 
     def is_finished_ref(self, line: str) -> bool:
-        ref = assign_job_ref(line)
+        key = assign_job_key(line)
+        typed = key.lower() if key else None
         with self._lock:
-            return bool(ref) and ref in self._finished_refs
+            return bool(typed) and typed in self._finished_refs
 
     def release_held_assigns(self) -> int:
         """FR #2811 / FR #4115 / FR #4180: flush pending assigns after turn_ended / harvest hold ends.
@@ -3016,16 +3038,36 @@ class Relay:
             flush: list = []
             stale: list = []
             for line in self._pending:
-                ref = assign_job_ref(line)
-                if ref and ref in self._finished_refs:
+                key = assign_job_key(line)
+                typed = key.lower() if key else None
+                if typed and typed in self._finished_refs:
                     stale.append(line)
-                elif ref:
+                elif key or assign_job_ref(line):
                     flush.append(line)
                 else:
                     keep.append(line)
             self._pending = keep
         for line in stale:
             self.log("relay: dropped finished held assign (DONE/GIVEUP/NACK already sent) " + line[:120])
+            # FR #4609: never silently drop an assign this seat already ACKed — release Jeeves.
+            key = assign_job_key(line)
+            if not key:
+                continue
+            typed = key.lower()
+            with self._lock:
+                was_acked = typed in self._acked_held_keys
+                self._acked_held_keys.discard(typed)
+            if not was_acked:
+                continue
+            nack = f"NACK {key} already finished"
+            if self.write_outbox:
+                try:
+                    if self.write_outbox(nack):
+                        self.log("relay: NACK dropped finished held assign " + nack)
+                    else:
+                        self.log("relay: NACK dropped finished held assign write failed " + nack)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"relay: NACK dropped finished held assign error {type(e).__name__}")
         refuse = False
         try:
             refuse = bool(self.refuse_assign_while and self.refuse_assign_while())
@@ -3729,9 +3771,10 @@ _OUT_ACK_RX = re.compile(r"(?i)^ACK\b")
 _OUT_DONE_RX = re.compile(r"(?i)^DONE\b")
 _OUT_FREE_RX = re.compile(r"(?i)^(NACK|GIVEUP)\b")
 _OUT_BORED_RX = re.compile(r"(?i)^!bored\b")
-# FR #1732: job id on ACK/DONE/NACK/GIVEUP — TYPE + owner/repo#N (ignore trailing PASS/url/reason).
+# FR #1732 / #4609: job id on ACK/DONE/NACK/GIVEUP — TYPE + owner/repo#N
+# (FR|MRB|UAT|FIX|BUILD|PR; ignore trailing PASS/url/reason).
 _OUT_JOB_KEY_RX = re.compile(
-    r"(?i)^(ACK|DONE|NACK|GIVEUP)\s+(FR|MRB|UAT)\s+(\S+#\d+)\b"
+    r"(?i)^(ACK|DONE|NACK|GIVEUP)\s+(FR|MRB|UAT|FIX|BUILD|PR)\s+(\S+#\d+)\b"
 )
 
 
@@ -4218,7 +4261,7 @@ def done_miss_reminder_line(*, shop: str, outbox: str | Path, job_key: str) -> s
 
 
 def outbox_job_key(payload: str) -> Optional[str]:
-    """Normalize `FR owner/repo#N` from a shop wire line; None if not a typed job line."""
+    """Normalize `TYPE owner/repo#N` from a shop wire line; None if not a typed job line (FR #4609 includes FIX)."""
     m = _OUT_JOB_KEY_RX.match((payload or "").strip())
     if not m:
         return None
