@@ -234,3 +234,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - A bob-worker fuel playbook that intake files under harvest/SKILL.md is moved into bobiverse-bob-worker Harvested lessons and the harvest tip is closed unmerged once a reviewable worker-skill PR carries the same sentence; pin that harvest does not also contain it.
 - done-miss rematch: re-DONE when MRB PASS board matches current head SHA and tip is 0 behind origin/main; do not fold or re-pin
 - bob-worker finished held-assign must match TYPE owner/repo#N so DONE FIX never drops a later held MRB; NACK already finished when an ACKed finished hold is dropped
+- When intake parks a bob-worker stranded-ACK unchanged-SHA DONE-at-once lesson under a-search with a stub bob/.grok path, MOVED to SimonBarnett/bobiverse bobiverse-bob-worker and close the a-search tip unmerged.
