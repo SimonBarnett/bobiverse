@@ -57,6 +57,25 @@ class CommentsUnavailable(RuntimeError):
     """Comment list could not be read. Not an owner hold and not merge refused."""
 
 
+# FR #4569: REST /issues/N/comments can 403 while GraphQL still returns the board.
+_GRAPHQL_COMMENTS = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(first: 100) {
+        nodes {
+          body
+          createdAt
+          authorAssociation
+          author { login }
+        }
+      }
+    }
+  }
+}
+"""
+
+
 def _retry_wait_s(err: urllib.error.HTTPError, attempt: int) -> float:
     """Seconds to wait before another comments GET. Cap so a seat is not stalled."""
     raw = ""
@@ -176,6 +195,64 @@ def _gh_token() -> str:
     return _gh_auth_token_cli()
 
 
+def comments_from_graphql_payload(payload: dict | None) -> list[dict]:
+    """Map a pullRequest.comments payload onto the REST comment dict shape."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    repo = data.get("repository") if isinstance(data, dict) else None
+    pr = repo.get("pullRequest") if isinstance(repo, dict) else None
+    comments = pr.get("comments") if isinstance(pr, dict) else None
+    nodes = comments.get("nodes") if isinstance(comments, dict) else None
+    if not isinstance(nodes, list):
+        raise RuntimeError("unexpected graphql comments payload")
+    out: list[dict] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        author = node.get("author") if isinstance(node.get("author"), dict) else {}
+        out.append(
+            {
+                "body": str(node.get("body") or ""),
+                "created_at": str(node.get("createdAt") or ""),
+                "author_association": str(node.get("authorAssociation") or ""),
+                "user": {"login": str((author or {}).get("login") or "")},
+            }
+        )
+    return out
+
+
+def fetch_comments_graphql(repo: str, num: str, *, token: str) -> list[dict]:
+    """Read PR conversation comments via GraphQL (FR #4569)."""
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        raise RuntimeError(f"repo must be owner/name, got {repo}")
+    body = json.dumps(
+        {
+            "query": _GRAPHQL_COMMENTS,
+            "variables": {
+                "owner": owner,
+                "name": name,
+                "number": int(str(num).lstrip("#")),
+            },
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.github.com/graphql",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "User-Agent": "bobiverse-mrb-merge-gate",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if isinstance(payload, dict) and payload.get("errors"):
+        raise RuntimeError("graphql comments errors")
+    return comments_from_graphql_payload(payload)
+
+
 def fetch_issue_comments(
     repo: str,
     num: str,
@@ -188,6 +265,8 @@ def fetch_issue_comments(
 
     FR #4467: HTTP 403 and 429 are retried. When they persist, raise
     CommentsUnavailable (not an owner hold, not merge refused).
+    FR #4569: a persisting HTTP 403 tries GraphQL pullRequest.comments and
+    returns those comments for the same evaluate_merge_gate.
     """
     tok = (token if token is not None else _gh_token()).strip()
     if not tok:
@@ -217,6 +296,11 @@ def fetch_issue_comments(
             if last_code in _TRANSIENT_COMMENT_HTTP and attempt + 1 < tries:
                 pause(_retry_wait_s(e, attempt))
                 continue
+            if last_code == 403:
+                try:
+                    return fetch_comments_graphql(repo, num_s, token=tok)
+                except (RuntimeError, urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+                    pass
             if last_code in _TRANSIENT_COMMENT_HTTP:
                 raise CommentsUnavailable(
                     f"comments unknown HTTP {last_code} for {repo}#{num_s}; "
