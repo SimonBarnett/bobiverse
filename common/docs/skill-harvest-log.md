@@ -366,13 +366,13 @@ Books: `bobiverse-bob`, troubleshooting, `bobiverse-bob-job-mrb`. Twin #1681 (wa
 
 | Lesson | Fix |
 |--------|-----|
-| Run check_conflict_markers.py before every gh pr merge; merge origin/main into behind FR branches first; close harvest twins as not planned; Duplicates closed body nit OK without a fix PR when tests green | Documented in `bobiverse-bob-job-mrb` + FR pointer. Product/CI: PR #1640. Overlaps harvest #1647 behind-main/nits notes. |
+| Run check_conflict_markers.py before every gh pr merge; never fold just because the PR is behind (FR #4649: fold only when CONFLICTING/DIRTY or CI failed on a main-fixed issue); close harvest twins as not planned; Duplicates closed body nit OK without a fix PR when tests green | Documented in `bobiverse-bob-job-mrb` + FR pointer. Product/CI: PR #1640. Overlaps harvest #1647 behind-main/nits notes. |
 
 ## 2026-10-04 - MRB behind-main + body/docs nits (harvest #1647)
 
 | Lesson | Fix / book |
 |---|---|
-| PR head behind main | Merge origin/main into FR branch before gh pr merge |
+| PR head behind main | Never fold just because the PR is behind (FR #4649). Fold only when CONFLICTING/DIRTY or CI failed on a main-fixed issue |
 | Additive hostile tests | Land on docs/mrb-N, never push onto PR under review |
 | Body/docs-only nits + green tests | PASS without separate fix PR; close harvest twins as not planned |
 
@@ -738,3 +738,9 @@ Books: harvest. Tip PR #3882; hostile docs this entry. Refs: SimonBarnett/bobive
 Hostile pin: contiguous harvest lesson for real trailing newline byte on skill-harvest-log appends (literal backslash-n fails endswith gates). Tip #3886 merged first.
 
 Books: harvest. Tip PR #3886; hostile docs this entry. Refs: SimonBarnett/bobiverse#3886
+
+## 2026-10-17 - fold only when CONFLICTING or main-fixed CI (FR #4649)
+
+Seat rule: never fold just because the PR is behind. Fold origin/main only when the PR is CONFLICTING / DIRTY, or CI failed on something already fixed on main. Repos with no required up-to-date check PASS at the current head SHA and arm auto-merge. Supersedes the 2026-10-04 behind-main rows above.
+
+Books: bobiverse-bob-job-mrb, bob/agents/worker/AGENTS.md. Refs: SimonBarnett/bobiverse#4649
