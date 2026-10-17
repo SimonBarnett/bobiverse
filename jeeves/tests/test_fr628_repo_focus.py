@@ -35,6 +35,16 @@ def _row(repo, task, num, seq, age_s=60, **kw):
     return r
 
 
+
+def _stamp_live_ionos(home, nicks=("ionos-7", "ionos-8")):
+    digest = bobreport.empty_digest()
+    digest["machines"]["ionos"] = bobreport._empty_machine("ionos")
+    digest["machines"]["ionos"]["worker_list"] = [
+        {"nick": n, "state": "idle"} for n in nicks
+    ]
+    digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    bobreport.save_digest(home, digest)
+
 def _queue(home, rows):
     gitclaim._write_queue(gitclaim.queue_path(home), {"v": 1, "unaccepted": rows, "accepted": []})
 
@@ -152,6 +162,7 @@ def test_parse_assign_cmd():
 
 
 def test_assign_row_ok_then_ack_accepts(_home):
+    _stamp_live_ionos(_home)
     _queue(_home, [_row("o/a", "MRB", 9, 1)])
     st, job = gitclaim.assign_row(_home, "ionos-7", "o/a", "MRB", "#9")
     assert st == "ok"
@@ -168,6 +179,7 @@ def test_assign_row_rejects_non_seat(_home, nick):
 
 
 def test_assign_row_refusals(_home, monkeypatch):
+    _stamp_live_ionos(_home)
     _queue(_home, [
         _row("o/a", "MRB", 1, 1, author_seat="ionos-7"),
         _row("o/a", "UAT", 2, 2, implementer_seat="ionos-7"),
@@ -175,9 +187,23 @@ def test_assign_row_refusals(_home, monkeypatch):
         _row("o/a", "FR", 4, 4, giveup_seats="ionos-7"),
         _row("o/a", "FR", 5, 5),
     ])
-    for task, num in (("MRB", "#1"), ("UAT", "#2"), ("FR", "#3"), ("FR", "#4")):
+    # FR #4336: needs_human no longer refuses !assign (FR #3); self-MRB/UAT/exact giveup still refuse.
+    for task, num in (("MRB", "#1"), ("UAT", "#2"), ("FR", "#4")):
         st, why = gitclaim.assign_row(_home, "ionos-7", "o/a", task, num)
         assert st == "refused", (task, num, why)
+    st3, job3 = gitclaim.assign_row(_home, "ionos-7", "o/a", "FR", "#3")
+    assert st3 == "ok" and job3 and job3["id"] == "#3"
+    # Release the needs_human offer + seat-hold so later asserts on #5 stay clean.
+    doc = gitclaim._load_queue_unlocked(_home)
+    for r in doc.get("unaccepted") or []:
+        if r.get("id") == "#3":
+            r.pop("offered_to", None)
+            r.pop("offered_ts", None)
+            r.pop("offered_channel", None)
+            r.pop("offered_via", None)
+    gitclaim._write_queue(gitclaim.queue_path(_home), doc)
+    with gitclaim._lock(_home):
+        gitclaim._clear_job_seat_holds_unlocked(_home, "o/a", "FR", "#3")
     assert gitclaim.assign_row(_home, "ionos-7", "o/a", "FR", "#99")[0] == "refused"   # not queued
     monkeypatch.setattr(gitclaim, "worker_working_on", lambda h, n: "doing something")
     st, why = gitclaim.assign_row(_home, "ionos-7", "o/a", "FR", "#5")

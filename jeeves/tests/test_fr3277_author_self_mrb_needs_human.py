@@ -3,7 +3,7 @@
 Acceptance:
 1. Stamp author_seat on MRB when FR DONE names the PR URL (webhook-first + non-bobiverse).
 2. Self-MRB GIVEUP must not count toward GIVEUP_NEEDS_HUMAN_COUNT / stamp needs_human.
-3. needs_human with giveup_seats set blocks only those seats on !bored and !assign.
+3. FR #4336: once needs_human is stamped, auto-offer blocks every seat; !assign may still hand it out.
 """
 from __future__ import annotations
 
@@ -36,22 +36,22 @@ def _home(tmp_path, monkeypatch, seats=None):
     return tmp_path
 
 
-def test_row_needs_human_with_giveup_seats_only_blocks_those_seats_even_at_threshold():
-    """FR #3277: giveup_count>=GIVEUP_NEEDS_HUMAN_COUNT must not override giveup_seats."""
+def test_row_needs_human_blocks_every_seat_fr4336():
+    """FR #4336 supersedes FR #3277 seat carve-out: needs_human is global for auto-offer."""
     row = {
         "needs_human": True,
         "giveup_count": gitclaim.GIVEUP_NEEDS_HUMAN_COUNT,
         "giveup_seats": AUTHOR,
     }
     assert gitclaim.row_needs_human(row, AUTHOR) is True
-    assert gitclaim.row_needs_human(row, OTHER) is False
-    assert gitclaim.row_needs_human(row, "ionos-99") is False
-    # Bare needs_human (no giveup_seats) stays a global gate.
+    assert gitclaim.row_needs_human(row, OTHER) is True
+    assert gitclaim.row_needs_human(row, "ionos-99") is True
     bare = {"needs_human": True, "giveup_count": gitclaim.GIVEUP_NEEDS_HUMAN_COUNT}
     assert gitclaim.row_needs_human(bare, OTHER) is True
 
 
-def test_assign_refuses_needs_human_only_for_giveup_seats(tmp_path, monkeypatch):
+def test_assign_allows_needs_human_fr4336(tmp_path, monkeypatch):
+    """Explicit !assign may hand out needs_human (FR #4336 Expected #1)."""
     home = _home(tmp_path, monkeypatch)
     gitclaim._write_queue(
         gitclaim.queue_path(home),
@@ -78,8 +78,10 @@ def test_assign_refuses_needs_human_only_for_giveup_seats(tmp_path, monkeypatch)
             "done": [],
         },
     )
+    # AUTHOR is in giveup_seats (exact) → still refused on that exact nick.
     st_a, why_a = gitclaim.assign_row(home, AUTHOR, ASEARCH, "MRB", "#501")
-    assert st_a == "refused" and "needs-human" in str(why_a).lower()
+    assert st_a == "refused" and "gave" in str(why_a).lower()
+    # OTHER is not in giveup_seats; needs_human does not block !assign.
     st_b, job_b = gitclaim.assign_row(home, OTHER, ASEARCH, "MRB", "#501")
     assert st_b == "ok" and job_b and job_b["id"] == "#501"
 
@@ -158,9 +160,9 @@ def test_non_author_giveup_still_counts_toward_needs_human(tmp_path, monkeypatch
     assert st == "ok"
     assert int(job.get("giveup_count") or 0) == 2
     assert job.get("needs_human") is True
-    # giveup_seats set → only those seats blocked (flamingo-9 + OTHER), not AUTHOR.
+    # FR #4336: needs_human blocks every seat for auto-offer.
     assert gitclaim.row_needs_human(job, OTHER) is True
-    assert gitclaim.row_needs_human(job, AUTHOR) is False
+    assert gitclaim.row_needs_human(job, AUTHOR) is True
 
 
 def test_webhook_first_then_done_fr_stamps_author_on_asearch(tmp_path, monkeypatch):
