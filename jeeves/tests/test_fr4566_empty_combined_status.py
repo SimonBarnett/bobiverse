@@ -101,9 +101,13 @@ def test_failed_check_releases_the_row(tmp_path: Path):
         )
     finally:
         mrb_merge_on_green.requeue_mrb = real
-    assert summary["requeued"] == 1
-    assert requeues == ["requeue_ci"]
-    assert mrb_merge_on_green.load_ledger(home)["pending"] == []
+    # FR #4566 follow-up: failed CI leaves the poll list without an MRB re-queue.
+    assert summary["requeued"] == 0
+    assert summary["ci_failed"] == 1
+    assert requeues == []
+    led = mrb_merge_on_green.load_ledger(home)
+    assert led["pending"] == []
+    assert "SimonBarnett/a-search#1796" in led["ci_failed"]
 
 
 def test_wait_backoff_skips_the_next_fetch(tmp_path: Path):
