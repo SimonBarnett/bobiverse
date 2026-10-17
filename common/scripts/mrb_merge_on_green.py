@@ -42,6 +42,9 @@ MAX_WAIT_S = 3600
 CI_FAILED_KEY = "ci_failed"
 # FR #4585/#4596: FIX ledger keyed by failure_signature (shared when main red; per-PR otherwise).
 CI_FIX_KEY = "ci_fix"
+# FR #4636: DIRTY/CONFLICTING or HTTP 405 stops merge retries for this PR+SHA.
+CONFLICT_KEY = "conflict_blocked"
+CONFLICT_FIX_KEY = "conflict_fix"
 CI_FAILED_TTL_S = 14 * 24 * 3600
 BACKOFF_BASE_S = 60
 BACKOFF_CAP_S = 900
@@ -255,7 +258,7 @@ def _legacy_config_ledger_path(home: Path) -> Path:
 
 
 def _empty_ledger() -> dict[str, Any]:
-    return {"version": 1, "pending": [], CI_FAILED_KEY: {}}
+    return {"version": 1, "pending": [], CI_FAILED_KEY: {}, CONFLICT_KEY: {}, CONFLICT_FIX_KEY: {}}
 
 
 def load_ledger(home: Path) -> dict[str, Any]:
@@ -283,6 +286,10 @@ def load_ledger(home: Path) -> dict[str, Any]:
         doc[CI_FAILED_KEY] = {}
     if not isinstance(doc.get(CI_FIX_KEY), dict):
         doc[CI_FIX_KEY] = {}
+    if not isinstance(doc.get(CONFLICT_KEY), dict):
+        doc[CONFLICT_KEY] = {}
+    if not isinstance(doc.get(CONFLICT_FIX_KEY), dict):
+        doc[CONFLICT_FIX_KEY] = {}
     return doc
 
 
@@ -591,6 +598,181 @@ def ci_failed_pass_sha(doc: dict[str, Any], repo: str, pr: str) -> str:
     return str((rec or {}).get("pass_sha") or "") if isinstance(rec, dict) else ""
 
 
+def merge_attempt_conflict_reason(
+    *,
+    http_error: str = "",
+    mergeable: Any = "",
+    merge_state: str = "",
+) -> str | None:
+    """FR #4636: why this merge attempt must stop for the current head SHA.
+
+    HTTP 405 from ``PUT /merges``, GraphQL ``mergeable: CONFLICTING``, or
+    ``mergeStateStatus`` / REST ``mergeable_state`` of DIRTY.
+    """
+    if re.search(r"\b405\b", str(http_error or "")):
+        return "http-405"
+    if str(mergeable or "").strip().upper() == "CONFLICTING":
+        return "conflicting"
+    if str(merge_state or "").strip().upper() in ("DIRTY", "CONFLICTING"):
+        return "conflicting"
+    return None
+
+
+def park_conflict(
+    doc: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    reason: str,
+    head_sha: str = "",
+) -> dict[str, Any]:
+    """Remember a conflicting PASS row so merge-on-green does not retry that SHA."""
+    repo_c = gitclaim.canonical_queue_repo(str(row.get("repo") or ""))
+    num = str(row.get("pr") or "").lstrip("#")
+    key = _row_key(repo_c, num)
+    sha = _norm_sha(head_sha or str(row.get("pass_sha") or ""))
+    rec = {
+        "key": key,
+        "repo": repo_c,
+        "pr": num,
+        "pass_sha": sha,
+        "url": str(row.get("url") or f"https://github.com/{repo_c}/pull/{num}"),
+        "nick": str(row.get("nick") or ""),
+        "reason": reason or "conflicting",
+        "blocked_ts": _utc(),
+    }
+    parked = doc.get(CONFLICT_KEY)
+    if not isinstance(parked, dict):
+        parked = {}
+        doc[CONFLICT_KEY] = parked
+    parked[key] = rec
+    return rec
+
+
+def conflict_blocked_pass_sha(doc: dict[str, Any], repo: str, pr: str) -> str:
+    parked = doc.get(CONFLICT_KEY)
+    if not isinstance(parked, dict):
+        return ""
+    rec = parked.get(_row_key(repo, pr))
+    return str((rec or {}).get("pass_sha") or "") if isinstance(rec, dict) else ""
+
+
+def enqueue_conflict_fix(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    pass_sha: str,
+    url: str = "",
+    reason: str = "",
+) -> str:
+    """Queue one FIX to merge main and resolve conflicts for this PR+SHA (FR #4636).
+
+    Same SHA returns ``duplicate``. A later SHA is a new job once any earlier FIX
+    row for this PR has left the queue. FIX stays offerable to any seat: the
+    author block applies to MRB/UAT, not to FIX.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    sha = _norm_sha(pass_sha)
+    if not repo_c or not num or not sha:
+        return "skipped"
+    sig = f"conflict|{repo_c}|{num}|{sha}"
+    doc = load_ledger(home)
+    offered = doc.get(CONFLICT_FIX_KEY)
+    if not isinstance(offered, dict):
+        offered = {}
+        doc[CONFLICT_FIX_KEY] = offered
+    prev = offered.get(sig)
+    if isinstance(prev, dict) and shas_match(str(prev.get("pass_sha") or ""), sha):
+        return "duplicate"
+    pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
+    title = f"FIX conflict after MRB PASS ({reason or 'conflicting'}; {num}@{sha[:12]})"
+    body = (
+        f"FR #4636 conflict-fix: merge-on-green stopped on {reason or 'conflicting'} "
+        f"for head SHA {sha}. Merge origin/main into this branch, resolve the "
+        f"conflicts, and push. One job per PR+SHA. Offer to any seat (FIX is not "
+        f"author-blocked). Signature {sig}."
+    )
+    claim = gitclaim.GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id=f"#{num}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=title,
+        body=body,
+        labels=("via-intake", "fix-conflict"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        for row in list(qdoc.get("unaccepted") or []) + list(qdoc.get("accepted") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            blob = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            if sig in blob:
+                offered[sig] = {"repo": repo_c, "pr": num, "pass_sha": sha, "signature": sig, "url": pull_url}
+                save_ledger(home, doc)
+                return "duplicate"
+        changed = gitclaim._append_unaccepted(
+            qdoc,
+            claim,
+            url=pull_url,
+            body=body,
+            title=claim.title,
+            pass_sha=sha,
+            fail_signature=sig,
+        )
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    if changed in ("added", "duplicate"):
+        offered[sig] = {"repo": repo_c, "pr": num, "pass_sha": sha, "signature": sig, "url": pull_url}
+        save_ledger(home, doc)
+        return changed if changed in ("added", "duplicate") else "skipped"
+    return "skipped"
+
+
+def rearm_conflict_blocked(home: Path, *, repo: str, pr: str, head_sha: str) -> str:
+    """Drop a conflict block when the head SHA changes and resume merge-on-green.
+
+    Returns ``blocked`` (same SHA), ``rearmed`` (pending row restored on the new
+    SHA), or ``""`` when this PR is not conflict-blocked.
+    """
+    new = _norm_sha(head_sha)
+    doc = load_ledger(home)
+    parked = doc.get(CONFLICT_KEY)
+    if not isinstance(parked, dict):
+        return ""
+    key = _row_key(repo, pr)
+    rec = parked.get(key)
+    if not isinstance(rec, dict):
+        return ""
+    old = _norm_sha(str(rec.get("pass_sha") or ""))
+    if not new or shas_match(old, new):
+        return "blocked"
+    parked.pop(key, None)
+    doc[CONFLICT_KEY] = parked
+    save_ledger(home, doc)
+    enqueue(
+        home,
+        repo=str(rec.get("repo") or repo),
+        pr=str(rec.get("pr") or pr),
+        pass_sha=new,
+        url=str(rec.get("url") or ""),
+        nick=str(rec.get("nick") or ""),
+    )
+    return "rearmed"
+
+
 def save_ledger(home: Path, doc: dict[str, Any]) -> None:
     path = ledger_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -771,6 +953,10 @@ def fetch_pr_state(repo: str, pr: str, *, token: str | None = None) -> dict[str,
         "body": body,
         "checks": checks,
         "html_url": str(pr_doc.get("html_url") or ""),
+        "mergeable": pr_doc.get("mergeable") if pr_doc.get("mergeable") is not None else "",
+        "merge_state_status": str(
+            pr_doc.get("mergeable_state") or pr_doc.get("mergeStateStatus") or ""
+        ),
     }
 
 
@@ -866,6 +1052,47 @@ def evaluate_pending_row(
     return decision, ""
 
 
+def _stop_conflict_retry(
+    home: Path,
+    doc: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    reason: str,
+    head_sha: str,
+    summary: dict[str, Any],
+    log: Callable[[str], None],
+) -> None:
+    """Park the SHA and queue at most one conflict-fix job (FR #4636)."""
+    park_conflict(doc, row, reason=reason, head_sha=head_sha)
+    save_ledger(home, doc)
+    result = "skipped"
+    try:
+        result = enqueue_conflict_fix(
+            home,
+            repo=str(row.get("repo") or ""),
+            pr=str(row.get("pr") or ""),
+            pass_sha=head_sha or str(row.get("pass_sha") or ""),
+            url=str(row.get("url") or ""),
+            reason=reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        summary["errors"] = int(summary.get("errors") or 0) + 1
+        log(f"WARN merge-on-green conflict-fix enqueue failed: {exc}")
+    fresh = load_ledger(home)
+    if isinstance(fresh.get(CONFLICT_KEY), dict):
+        doc[CONFLICT_KEY] = fresh[CONFLICT_KEY]
+    if isinstance(fresh.get(CONFLICT_FIX_KEY), dict):
+        doc[CONFLICT_FIX_KEY] = fresh[CONFLICT_FIX_KEY]
+    summary["conflict_parked"] = int(summary.get("conflict_parked") or 0) + 1
+    summary["dropped"] = int(summary.get("dropped") or 0) + 1
+    if result == "added":
+        summary["fix_offered"] = int(summary.get("fix_offered") or 0) + 1
+    log(
+        f"INFO merge-on-green stop conflict {row.get('repo')}#{row.get('pr')} "
+        f"@{str(head_sha)[:12]} reason={reason} fix={result}"
+    )
+
+
 def process_pending(
     home: Path,
     *,
@@ -911,6 +1138,7 @@ def process_pending(
         "backed_off": False,
         "deferred": 0,
         "ci_failed": 0,
+        "conflict_parked": 0,
         "actions": [],
     }
     now_fn = now or time.time
@@ -1009,12 +1237,43 @@ def process_pending(
             row["last_detail"] = detail
 
         if decision == "merge":
+            conflict = merge_attempt_conflict_reason(
+                mergeable=pr_state.get("mergeable"),
+                merge_state=str(
+                    pr_state.get("merge_state_status")
+                    or pr_state.get("mergeable_state")
+                    or ""
+                ),
+            )
+            if conflict:
+                _stop_conflict_retry(
+                    home,
+                    doc,
+                    row,
+                    reason=conflict,
+                    head_sha=str(pr_state.get("sha") or row.get("pass_sha") or ""),
+                    summary=summary,
+                    log=_log,
+                )
+                continue
             try:
                 merge_fn(repo, pr, str(row.get("pass_sha") or ""))
                 summary["merged"] += 1
                 _log(f"INFO merge-on-green merged {repo}#{pr} @{row.get('pass_sha')}")
                 continue  # drop from pending
             except Exception as exc:  # noqa: BLE001
+                conflict = merge_attempt_conflict_reason(http_error=str(exc))
+                if conflict:
+                    _stop_conflict_retry(
+                        home,
+                        doc,
+                        row,
+                        reason=conflict,
+                        head_sha=str(pr_state.get("sha") or row.get("pass_sha") or ""),
+                        summary=summary,
+                        log=_log,
+                    )
+                    continue
                 summary["errors"] += 1
                 row["last_error"] = f"{type(exc).__name__}: {exc}"
                 keep.append(row)
