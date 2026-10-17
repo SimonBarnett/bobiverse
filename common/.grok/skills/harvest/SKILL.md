@@ -261,6 +261,7 @@ routes to bobiverse via the split rule.
 - Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
 - When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
 - FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
+- When MRB tip CONFLICTS after FR #4512 bobiverse soft-cue skip landed on main: fold origin/main, keep both #4427 Day Works repo cues and #4512 docstring/early-return, add a composition hostile pin, then PASS @ new head (FR #3948 one fold, no CI poll)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
