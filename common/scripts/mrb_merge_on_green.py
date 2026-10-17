@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,10 +33,72 @@ Decision = str  # merge | wait | requeue_sha | requeue_ci | skip_hold | drop_mer
 
 # FR #4543: leave headroom for pr_exists / !resync / offers when the sweep is large.
 DEFAULT_MIN_RATE_REMAINING = 100
+# FR #4566: stop re-polling Actions-only rows forever. Empty combined status is
+# not a pending check. Long waits back off, then leave the ledger.
+MAX_WAIT_S = 3600
+BACKOFF_BASE_S = 60
+BACKOFF_CAP_S = 900
+_FAIL_CONCLUSIONS = frozenset(
+    {
+        "failure",
+        "timed_out",
+        "cancelled",
+        "canceled",
+        "action_required",
+    }
+)
 
 
 def _utc() -> str:
     return gitclaim._utc_now()
+
+
+def combined_status_is_empty(status: dict | None) -> bool:
+    """True when the commit has no classic statuses.
+
+    GitHub Actions-only repos return ``state: pending`` with ``statuses: []``.
+    That is not an in-progress check (FR #4566).
+    """
+    if not isinstance(status, dict):
+        return True
+    statuses = status.get("statuses")
+    if isinstance(statuses, list) and len(statuses) == 0:
+        return True
+    state = str(status.get("state") or "").strip().lower()
+    return state in ("", "none")
+
+
+def rollup_check_runs(runs: dict | list | None) -> str:
+    """Roll check-runs into success | failure | pending | none."""
+    if isinstance(runs, dict):
+        items = runs.get("check_runs")
+    elif isinstance(runs, list):
+        items = runs
+    else:
+        items = None
+    if not isinstance(items, list) or not items:
+        return "none"
+    statuses: list[str] = []
+    conclusions: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        statuses.append(str(item.get("status") or "").lower())
+        conclusions.append(str(item.get("conclusion") or "").lower())
+    if not statuses:
+        return "none"
+    if any(s != "completed" for s in statuses):
+        return "pending"
+    if any(c in _FAIL_CONCLUSIONS for c in conclusions):
+        return "failure"
+    return "success"
+
+
+def checks_from_status_and_runs(status: dict | None, runs: dict | list | None) -> str:
+    """Classic status when it has entries; otherwise the check-run rollup."""
+    if combined_status_is_empty(status):
+        return rollup_check_runs(runs)
+    return str((status or {}).get("state") or "none").strip().lower()
 
 
 def _norm_sha(sha: str) -> str:
@@ -299,41 +362,27 @@ def fetch_pr_state(repo: str, pr: str, *, token: str | None = None) -> dict[str,
     body = str(pr_doc.get("body") or "")
     checks = "none"
     if sha:
+        status = None
         try:
             status = _gh_json(
                 f"https://api.github.com/repos/{repo_c}/commits/{sha}/status",
                 token=tok,
             )
-            checks = str(status.get("state") or "none").lower()
         except RuntimeError:
             checks = "pending"
-        # Prefer check-runs rollup when classic status is empty/none.
-        if checks in ("none", ""):
-            try:
-                runs = _gh_json(
-                    f"https://api.github.com/repos/{repo_c}/commits/{sha}/check-runs",
-                    token=tok,
-                )
-                items = runs.get("check_runs") if isinstance(runs, dict) else None
-                if isinstance(items, list) and items:
-                    conclusions = [
-                        str(i.get("conclusion") or "").lower()
-                        for i in items
-                        if isinstance(i, dict)
-                    ]
-                    statuses = [
-                        str(i.get("status") or "").lower()
-                        for i in items
-                        if isinstance(i, dict)
-                    ]
-                    if any(s not in ("completed",) for s in statuses):
-                        checks = "pending"
-                    elif any(c in ("failure", "timed_out", "cancelled", "action_required") for c in conclusions):
-                        checks = "failure"
-                    else:
-                        checks = "success"
-            except RuntimeError:
-                pass
+        else:
+            # FR #4566: pending + 0 statuses is Actions-only, not an open check.
+            if combined_status_is_empty(status):
+                try:
+                    runs = _gh_json(
+                        f"https://api.github.com/repos/{repo_c}/commits/{sha}/check-runs",
+                        token=tok,
+                    )
+                    checks = rollup_check_runs(runs)
+                except RuntimeError:
+                    checks = "pending"
+            else:
+                checks = str(status.get("state") or "none").lower()
     return {
         "repo": repo_c,
         "pr": num,
@@ -450,6 +499,10 @@ def process_pending(
     log: Callable[[str], None] | None = None,
     rate_remaining: Callable[[], int | None] | None = None,
     min_rate_remaining: int = DEFAULT_MIN_RATE_REMAINING,
+    now: Callable[[], float] | None = None,
+    max_wait_s: int = MAX_WAIT_S,
+    backoff_base_s: int = BACKOFF_BASE_S,
+    backoff_cap_s: int = BACKOFF_CAP_S,
 ) -> dict[str, Any]:
     """Advance every merge-on-green pending row once. Pure side effects via injectables.
 
@@ -478,8 +531,14 @@ def process_pending(
         "dropped": 0,
         "errors": 0,
         "backed_off": False,
+        "deferred": 0,
         "actions": [],
     }
+    now_fn = now or time.time
+    try:
+        tnow = float(now_fn())
+    except (TypeError, ValueError):
+        tnow = time.time()
 
     if rate_remaining is not None:
         try:
@@ -501,6 +560,43 @@ def process_pending(
         if not repo or not pr:
             summary["dropped"] += 1
             continue
+        first_wait = row.get("first_wait_epoch")
+        if first_wait is not None:
+            try:
+                waited = tnow - float(first_wait)
+            except (TypeError, ValueError):
+                waited = 0.0
+            if waited >= float(max_wait_s):
+                summary["requeued"] += 1
+                try:
+                    requeue_mrb(
+                        home,
+                        repo=repo,
+                        pr=pr,
+                        url=str(row.get("url") or ""),
+                        reason="wait_cap",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    summary["errors"] += 1
+                    row = dict(row)
+                    row["last_error"] = f"requeue {type(exc).__name__}: {exc}"
+                    keep.append(row)
+                    continue
+                summary["actions"].append(
+                    {"repo": repo, "pr": pr, "decision": "requeue_ci", "detail": "wait_cap"}
+                )
+                _log(f"INFO merge-on-green requeue {repo}#{pr} reason=wait_cap")
+                continue
+        nxt = row.get("next_fetch_epoch")
+        if nxt is not None:
+            try:
+                if float(nxt) > tnow:
+                    summary["wait"] += 1
+                    summary["deferred"] += 1
+                    keep.append(dict(row))
+                    continue
+            except (TypeError, ValueError):
+                pass
         try:
             pr_state = fetch_pr(repo, pr)
             # FR #4543: closed/merged leave the ledger; do not spend a comments GET.
@@ -574,9 +670,16 @@ def process_pending(
             _log(f"INFO merge-on-green requeue {repo}#{pr} reason={decision}")
             continue  # drop pending after requeue
 
-        # wait
+        # wait — back off so a still-pending row is not fetched every sweep (FR #4566).
         summary["wait"] += 1
         row["status"] = "pending"
+        polls = int(row.get("wait_polls") or 0) + 1
+        row["wait_polls"] = polls
+        if row.get("first_wait_epoch") is None:
+            row["first_wait_epoch"] = tnow
+        shift = min(polls - 1, 4)
+        delay = min(int(backoff_base_s) * (2**shift), int(backoff_cap_s))
+        row["next_fetch_epoch"] = tnow + delay
         keep.append(row)
 
     doc["pending"] = keep
