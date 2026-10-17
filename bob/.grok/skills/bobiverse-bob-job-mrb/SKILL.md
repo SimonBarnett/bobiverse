@@ -156,10 +156,6 @@ After you **DONE PASS** a FAIL-fixed MRB, the one fix PR can still race **CONFLI
 4. Do **not** force-push an empty main tip onto the fix branch; do **not** close originating issues until the lesson is on `main`.
 5. When a harvest tip is CONFLICTING, branch from current `origin/main`, add only the lesson and its hostile pin, then `force-with-lease`. Never `git reset --soft origin/main` on a dirty tip (FR #4494).
 
-## Stacked fix already on the tip (rematch)
-
-When a prior MRB FAIL was healed by the one stacked fix and that fix is merged into the tip, re-PASS at the combined head SHA, arm auto-merge, and DONE. Do not file another skill tip for the rematch handoff. This playbook lives here, not under harvest/SKILL.md.
-
 ## Self-MRB (harvest #1603 / MRB #1578)
 
 Never hostile-review or merge a PR **this seat opened** (same nick/session/worktree author). A green local pytest run is not a non-author MRB.
