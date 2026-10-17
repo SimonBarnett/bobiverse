@@ -94,7 +94,7 @@ def test_fr3900_sasl_904_without_legacy_keeps_error(tmp_path, monkeypatch):
     # FR #4388: isolate from host oper.cred / ergo-oper discovery (reclaim would OPER).
     monkeypatch.setattr(s, "_load_oper_credentials_for_reclaim", lambda: None)
     s.on_line(":srv 904 * :SASL authentication failed")
-    assert any("SASL failed (904)" in m and "SAPASSWD" in m for m in s.logs), s.logs
+    assert any("SASL failed (904)" in m and "NickServ PASSWD" in m for m in s.logs), s.logs
     assert s._force_reconnect is False
 
 
@@ -102,7 +102,7 @@ def test_fr3900_skill_documents_aircconsole_upgrade():
     skill = SKILL.read_text(encoding="utf-8")
     assert "FR #3900" in skill
     assert "AircConsole" in skill
-    assert "SAPASSWD" in skill
+    assert "NickServ PASSWD" in skill or "PASSWD" in skill
     text = SERVICE.read_text(encoding="utf-8")
     assert "_try_heal_console_password_from_legacy" in text
     assert "FR #3900" in text

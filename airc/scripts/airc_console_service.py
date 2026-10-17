@@ -763,7 +763,10 @@ class AircConsoleService:
         self._fr4388_reclaim_attempted = True
         creds = self._load_oper_credentials_for_reclaim()
         if not creds:
-            info("INFO FR #4388 no oper credentials for PASSWD reclaim; manual SAPASSWD required")
+            info(
+                "INFO FR #4388 no oper credentials for PASSWD reclaim; "
+                "manual oper NickServ PASSWD required"
+            )
             return False
         name, _password = creds
         # Keep password only in memory for the OPER line; never log it.
@@ -785,7 +788,7 @@ class AircConsoleService:
                 self._fr4388_reclaim_state = "failed"
                 self._fr4388_oper_creds = None
                 return True
-            # Prefer PASSWD (post-install §8c); SAPASSWD is the documented alias.
+            # FR #4579: Ergo NickServ has PASSWD only (not SAPASSWD).
             self.send(f"PRIVMSG NickServ :PASSWD {self.nick} {guid}")
             self._fr4388_reclaim_state = "passwd_sent"
             self._fr4388_oper_creds = None
@@ -796,7 +799,10 @@ class AircConsoleService:
             self._force_reconnect = True
             return True
         if cmd in {"491", "464", "481"}:
-            info(f"ERROR FR #4388 reclaim: OPER failed ({cmd}); manual SAPASSWD still required")
+            info(
+                f"ERROR FR #4388 reclaim: OPER failed ({cmd}); "
+                f"manual oper NickServ PASSWD still required"
+            )
             self._fr4388_reclaim_state = "failed"
             self._fr4388_oper_creds = None
             return True
@@ -1062,8 +1068,8 @@ class AircConsoleService:
                     return
                 info(
                     f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
-                    f"with console.password. Reset it (NickServ SAPASSWD) or fix console.password; "
-                    f"continuing so registration can finish"
+                    f"with console.password. Reset it (oper NickServ PASSWD) or fix "
+                    f"console.password; continuing so registration can finish"
                 )
             else:
                 # FR #3763: fresh ConsoleHome --- account not registered yet; not a loud error.
