@@ -252,6 +252,15 @@ routes to bobiverse via the split rule.
 - When resync builds MRB rows from open pulls, skip a pull whose auto_merge object is set and whose head.sha matches the merge-on-green ledger pass_sha. Add that pull to the skipped-open set so the keep loop prunes a row already queued. A different head SHA or auto_merge null must still become an MRB.
 - Every bobiverse skill CAST IRON block must name Report-BobiverseIntakeIssue.ps1, the intake webhook, and -Repo SimonBarnett/bobiverse. A shortened harvest paragraph fails test_cast_iron_rule_is_in_every_skill_and_every_agents_file.
 - Jeeves worker_list state=offered is the chair's own pending offer. Lost-ACK reconcile may promote only seat-reported work (workers working_on or worker_list doing/running/busy). A LOST_ACK_RESTART row with no seat-reported work is re-offered on !bored or !assign, not NAK busy.
+- Harvest-lesson MRB light triage: positive re-offer 0-behind playbook is not a twin of FAIL-supersede bad-re-offer tips; fold once when behind, leave SQUASH
+- Harvest-lesson meta tips that only restate keep-both/arm --auto FAIL-supersede: close citing bobiverse-bob-job-mrb (FR 3317); leave parent product tip open; gh pr close has no --reason flag
+- Missing-DONE rematch: sibling self-MRB GIVEUP leaves tip for another seat; if ahead_by>0 fold once then PASS leave existing MERGE/SQUASH
+- a-search Re-offered FR-N harvest meta tips: FAIL-supersede citing bobiverse-bob-job-mrb + merged product/docs PRs; do not fold CONFLICTING anecdote tips
+- FR re-offer when open covering PR Closes the issue: verify closingIssuesReferences + run acceptance pins on tip head, comment on issue, DONE with covering PR URL only
+- Jeeves pr_hold_reason: match On hold:/HOLD: body stamps and title cues, not free prose do-not-merge in harvest-lesson tips; enqueue_open_github_item must return skipped separately from duplicate.
+- Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
+- When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
+- FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
 
 ## Harvest digest (lessons audit 2026-10-06)
 

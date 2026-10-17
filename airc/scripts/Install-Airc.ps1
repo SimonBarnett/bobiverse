@@ -147,6 +147,31 @@ Assert-BobiverseInstallVersion -InstallRoot $InstallRoot -ExpectedVersion $MsiPr
 # FR #3292: workstation / AgentLayer=0 -> no agent briefings or skills (agent-free box).
 $prof = ([string]$Profile).Trim().ToLowerInvariant()
 if ($prof -notin @('fleet', 'workstation', 'client')) { $prof = '' }
+# FR #4579: empty MSI/CLI AIRC_PROFILE keeps the installed profile across upgrades.
+# Without this, a failed AIRC_PROFILE=client property (or hotfix re-run) defaults to
+# fleet, rewrites airc.json / airc-install.json, and turns self_update back on.
+if (-not $prof) {
+    foreach ($hint in @(
+            (Join-Path $InstallRoot 'config\airc.json'),
+            (Join-Path $InstallRoot 'config\airc-install.json')
+        )) {
+        if (-not (Test-Path -LiteralPath $hint)) { continue }
+        try {
+            $hintObj = Get-Content -LiteralPath $hint -Raw -Encoding utf8 | ConvertFrom-Json
+            $cand = ''
+            if ($hintObj.PSObject.Properties['profile'] -and $hintObj.profile) {
+                $cand = ([string]$hintObj.profile).Trim().ToLowerInvariant()
+            } elseif ($hintObj.PSObject.Properties['Profile'] -and $hintObj.Profile) {
+                $cand = ([string]$hintObj.Profile).Trim().ToLowerInvariant()
+            }
+            if ($cand -in @('fleet', 'workstation', 'client')) {
+                $prof = $cand
+                Write-Host "INFO FR #4579 preserving profile=$prof from $hint"
+                break
+            }
+        } catch {}
+    }
+}
 $agentLayerRaw = ([string]$AgentLayer).Trim().ToLowerInvariant()
 $wantAgentLayer = $true
 if ($prof -in @('workstation', 'client')) { $wantAgentLayer = $false }
@@ -382,6 +407,22 @@ foreach ($srcPw in $pwSources) {
     }
     Write-Host "INFO FR #3900 prefer prior console.password / migrated console.password from $srcPw"
     break
+}
+
+# FR #4579: never mint a new console.password on upgrade when the live file is still
+# empty after prefer-prior. A fresh GUID desyncs NickServ for an existing
+# {machine}_console (walrus SASL 904/433). Fresh installs (no prior) still mint below.
+$destBodyAfterPrefer = ''
+if (Test-Path -LiteralPath $destPw) {
+    $destBodyAfterPrefer = ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+}
+$hadPriorInstallForMint = [bool](Get-Service -Name 'Airc' -ErrorAction SilentlyContinue) `
+    -or [bool](Get-Service -Name 'AircConsole' -ErrorAction SilentlyContinue) `
+    -or [bool]$priorAppParams -or ($priorId -and ($priorId.ConsoleHome -or $priorId.PasswordFile)) `
+    -or $priorFromLegacyAircConsole `
+    -or (Test-Path -LiteralPath (Join-Path $InstallRoot 'config\airc-install.json'))
+if ($hadPriorInstallForMint -and -not $destBodyAfterPrefer) {
+    throw ('FR #4579: upgrade refused to mint a new console.password (would desync NickServ for an existing {0}_console). Restore console.password from prior PasswordFile / backup, or reclaim with oper NickServ PASSWD {0}_console <guid>, then re-run install.' -f $(if ($MachineId) { $MachineId } else { 'machine' }))
 }
 
 # FR #3287 / #4030: resolve capabilities (MSI props > prior AppParameters/json > fleet operators).

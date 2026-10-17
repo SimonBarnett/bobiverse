@@ -88,3 +88,27 @@ def test_hard_pin_ce_priority_16_survives_empty_body():
         )
         == "ce-priority-dev1"
     )
+
+def test_mrb4518_hostile_fr4512_composition_keeps_dayworks_pin():
+    """After FR #4512 bobiverse early-return, ce-priority Day Works still pins DEV1."""
+    assert (
+        gitclaim.infer_require_machine(
+            title="Day Works v1.3: finish WP3-WP4 and Gates C-G",
+            body="Remaining living work on Priority ERP.",
+            labels=["feature-request"],
+            repo="SimonBarnett/ce-priority",
+            ident="#16",
+        )
+        == "ce-priority-dev1"
+    )
+    # Chair meta on bobiverse still empty (4512 soft-cue skip + 4427 hard unpin).
+    assert (
+        gitclaim.infer_require_machine(
+            title="chair offered without require_machine=ce-priority-dev1",
+            body="Stamp require_machine=ce-priority-dev1 for Day Works.",
+            labels=["feature-request", "via-intake"],
+            repo="SimonBarnett/bobiverse",
+            ident="#4427",
+        )
+        == ""
+    )

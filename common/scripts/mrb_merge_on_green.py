@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -28,11 +29,83 @@ PASS_SHA_RE = re.compile(
     r"([0-9a-f]{7,40})"
 )
 
-Decision = str  # merge | wait | requeue_sha | requeue_ci | skip_hold | drop_merged
+Decision = str  # merge | wait | requeue_sha | requeue_ci | skip_hold | drop_merged | drop_closed
+
+# FR #4543: leave headroom for pr_exists / !resync / offers when the sweep is large.
+DEFAULT_MIN_RATE_REMAINING = 100
+# FR #4566: stop re-polling Actions-only rows forever. Empty combined status is
+# not a pending check. Long waits back off, then leave the ledger.
+MAX_WAIT_S = 3600
+# FR #4566 follow-up: a PASSed PR whose required check-run failed leaves the poll
+# list but keeps its PASS SHA here so resync's ci-wait skip still recognises it
+# (no MRB re-queue while the head is unchanged). A new push re-enters via MRB.
+CI_FAILED_KEY = "ci_failed"
+# FR #4585: one FIX job per shared CI-failure signature (deduped to the repo).
+CI_FIX_KEY = "ci_fix"
+CI_FAILED_TTL_S = 14 * 24 * 3600
+BACKOFF_BASE_S = 60
+BACKOFF_CAP_S = 900
+_FAIL_CONCLUSIONS = frozenset(
+    {
+        "failure",
+        "timed_out",
+        "cancelled",
+        "canceled",
+        "action_required",
+    }
+)
 
 
 def _utc() -> str:
     return gitclaim._utc_now()
+
+
+def combined_status_is_empty(status: dict | None) -> bool:
+    """True when the commit has no classic statuses.
+
+    GitHub Actions-only repos return ``state: pending`` with ``statuses: []``.
+    That is not an in-progress check (FR #4566).
+    """
+    if not isinstance(status, dict):
+        return True
+    statuses = status.get("statuses")
+    if isinstance(statuses, list) and len(statuses) == 0:
+        return True
+    state = str(status.get("state") or "").strip().lower()
+    return state in ("", "none")
+
+
+def rollup_check_runs(runs: dict | list | None) -> str:
+    """Roll check-runs into success | failure | pending | none."""
+    if isinstance(runs, dict):
+        items = runs.get("check_runs")
+    elif isinstance(runs, list):
+        items = runs
+    else:
+        items = None
+    if not isinstance(items, list) or not items:
+        return "none"
+    statuses: list[str] = []
+    conclusions: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        statuses.append(str(item.get("status") or "").lower())
+        conclusions.append(str(item.get("conclusion") or "").lower())
+    if not statuses:
+        return "none"
+    if any(s != "completed" for s in statuses):
+        return "pending"
+    if any(c in _FAIL_CONCLUSIONS for c in conclusions):
+        return "failure"
+    return "success"
+
+
+def checks_from_status_and_runs(status: dict | None, runs: dict | list | None) -> str:
+    """Classic status when it has entries; otherwise the check-run rollup."""
+    if combined_status_is_empty(status):
+        return rollup_check_runs(runs)
+    return str((status or {}).get("state") or "none").strip().lower()
 
 
 def _norm_sha(sha: str) -> str:
@@ -77,14 +150,19 @@ def decide_merge_on_green(
     checks: str,
     hold_reason: str | None = None,
     merged: bool = False,
+    closed: bool = False,
 ) -> Decision:
-    """Pure FR #3948 decision.
+    """Pure FR #3948 / FR #4543 decision.
 
     ``checks`` is one of: success | failure | pending | none
-    (``none`` = no required/reported checks — treat like success when SHA matches).
+    (``none`` = no required/reported checks --- treat like success when SHA matches).
+
+    FR #4543: closed (unmerged) PRs leave the ledger so sweeps stop re-fetching them.
     """
     if merged:
         return "drop_merged"
+    if closed:
+        return "drop_closed"
     if hold_reason:
         return "skip_hold"
     if not pass_sha or not current_sha:
@@ -119,7 +197,7 @@ def _legacy_config_ledger_path(home: Path) -> Path:
 
 
 def _empty_ledger() -> dict[str, Any]:
-    return {"version": 1, "pending": []}
+    return {"version": 1, "pending": [], CI_FAILED_KEY: {}}
 
 
 def load_ledger(home: Path) -> dict[str, Any]:
@@ -143,7 +221,208 @@ def load_ledger(home: Path) -> dict[str, Any]:
     pending = doc.get("pending")
     if not isinstance(pending, list):
         doc["pending"] = []
+    if not isinstance(doc.get(CI_FAILED_KEY), dict):
+        doc[CI_FAILED_KEY] = {}
+    if not isinstance(doc.get(CI_FIX_KEY), dict):
+        doc[CI_FIX_KEY] = {}
     return doc
+
+
+def failure_signature(repo: str, *, detail: str = "", pass_sha: str = "") -> str:
+    """Shared-CI fingerprint for FIX dedupe (FR #4585).
+
+    Many PASSed tips often share one red required check (e.g. test-and-synth on
+    main). Collapse those to one FIX. Include the check rollup word when known;
+    omit the PR number so N tips with the same red check share one signature.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    state = (detail or "failure").strip().lower() or "failure"
+    # Keep the word short — "failure" / "test-and-synth failure" / run id if present.
+    state = re.sub(r"\s+", " ", state)[:120]
+    return f"{repo_c}|{state}"
+
+
+def park_ci_failed(
+    doc: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    detail: str = "",
+    now_epoch: float | None = None,
+) -> dict[str, Any]:
+    """Record a CI-failed PASS row outside ``pending`` (FR #4566 follow-up)."""
+    repo_c = gitclaim.canonical_queue_repo(str(row.get("repo") or ""))
+    num = str(row.get("pr") or "").lstrip("#")
+    key = _row_key(repo_c, num)
+    rec = {
+        "key": key,
+        "repo": repo_c,
+        "pr": num,
+        "pass_sha": str(row.get("pass_sha") or ""),
+        "url": str(row.get("url") or f"https://github.com/{repo_c}/pull/{num}"),
+        "nick": str(row.get("nick") or ""),
+        "failed_ts": _utc(),
+        "failed_epoch": float(now_epoch if now_epoch is not None else time.time()),
+        "detail": detail or "required check failed",
+    }
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict):
+        parked = {}
+        doc[CI_FAILED_KEY] = parked
+    parked[key] = rec
+    return rec
+
+
+def enqueue_fix_ci(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    pass_sha: str,
+    url: str = "",
+    detail: str = "",
+    check_run_id: str = "",
+    now_epoch: float | None = None,
+) -> str:
+    """Offer one FIX job for a PASSed+auto-merge PR with a red required check (FR #4585).
+
+    Dedupes by ``failure_signature`` so a shared main/test-and-synth break yields
+    one FIX, not N. Never re-offers the same (signature, pass_sha, check_run_id)
+    while that FIX is still on the queue or recorded in the ledger.
+    Returns ``added`` | ``duplicate`` | ``skipped``.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    sha = _norm_sha(pass_sha)
+    if not repo_c or not num or not sha:
+        return "skipped"
+    sig = failure_signature(repo_c, detail=detail, pass_sha=sha)
+    tnow = float(now_epoch if now_epoch is not None else time.time())
+    doc = load_ledger(home)
+    offered = doc.get(CI_FIX_KEY)
+    if not isinstance(offered, dict):
+        offered = {}
+        doc[CI_FIX_KEY] = offered
+    prev = offered.get(sig)
+    if isinstance(prev, dict):
+        prev_sha = _norm_sha(str(prev.get("pass_sha") or ""))
+        prev_run = str(prev.get("check_run_id") or "")
+        # Same shared failure + same SHA (+ same run when known) -> no second FIX.
+        if prev_sha and shas_match(prev_sha, sha):
+            if not check_run_id or not prev_run or prev_run == str(check_run_id):
+                return "duplicate"
+    pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
+    body = (
+        f"FR #4585 FIX CI: PASSed MRB with auto-merge on but a required check failed "
+        f"({detail or 'failure'}). Head SHA {sha}. "
+        f"Prefer fixing the shared failure on main when many tips share this signature "
+        f"({sig}); otherwise fix CI on this PR branch and push. "
+        f"Do not re-open MRB while the head SHA is unchanged."
+    )
+    if check_run_id:
+        body += f" check_run_id={check_run_id}."
+    claim = gitclaim.GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id=f"#{num}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=f"FIX CI after MRB PASS (red check; shared sig {sig})",
+        body=body,
+        labels=("via-intake", "fix-ci"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        # Dedupe against any FIX already queued for this repo with the same signature
+        # stamped on the row (body/title) or the same PR id.
+        for row in list(qdoc.get("unaccepted") or []) + list(qdoc.get("accepted") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            row_body = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            if sig in row_body or gitclaim._same(row, repo_c, "FIX", f"#{num}"):
+                offered[sig] = {
+                    "repo": repo_c,
+                    "pr": str(row.get("id") or num).lstrip("#"),
+                    "pass_sha": sha,
+                    "check_run_id": str(check_run_id or ""),
+                    "signature": sig,
+                    "offered_epoch": tnow,
+                    "url": str(row.get("url") or pull_url),
+                }
+                save_ledger(home, doc)
+                return "duplicate"
+        changed = gitclaim._append_unaccepted(
+            qdoc,
+            claim,
+            url=pull_url,
+            body=body,
+            title=claim.title,
+            pass_sha=sha,
+            fail_signature=sig,
+            check_run_id=str(check_run_id or ""),
+        )
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    if changed == "added":
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": num,
+            "pass_sha": sha,
+            "check_run_id": str(check_run_id or ""),
+            "signature": sig,
+            "offered_epoch": tnow,
+            "url": pull_url,
+        }
+        save_ledger(home, doc)
+        return "added"
+    if changed == "duplicate":
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": num,
+            "pass_sha": sha,
+            "check_run_id": str(check_run_id or ""),
+            "signature": sig,
+            "offered_epoch": tnow,
+            "url": pull_url,
+        }
+        save_ledger(home, doc)
+        return "duplicate"
+    return "skipped"
+
+
+def prune_ci_failed(doc: dict[str, Any], *, now_epoch: float, ttl_s: float = CI_FAILED_TTL_S) -> int:
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict):
+        doc[CI_FAILED_KEY] = {}
+        return 0
+    stale = []
+    for k, v in parked.items():
+        try:
+            age = now_epoch - float((v or {}).get("failed_epoch") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            age = ttl_s + 1
+        if age > ttl_s:
+            stale.append(k)
+    for k in stale:
+        parked.pop(k, None)
+    return len(stale)
+
+
+def ci_failed_pass_sha(doc: dict[str, Any], repo: str, pr: str) -> str:
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict):
+        return ""
+    rec = parked.get(_row_key(repo, pr))
+    return str((rec or {}).get("pass_sha") or "") if isinstance(rec, dict) else ""
 
 
 def save_ledger(home: Path, doc: dict[str, Any]) -> None:
@@ -201,6 +480,9 @@ def enqueue(
     if not replaced:
         out.append(row)
     doc["pending"] = out
+    parked = doc.get(CI_FAILED_KEY)
+    if isinstance(parked, dict):
+        parked.pop(key, None)
     save_ledger(home, doc)
     return row
 
@@ -215,6 +497,31 @@ def drop(home: Path, *, repo: str, pr: str) -> bool:
     doc["pending"] = after
     save_ledger(home, doc)
     return True
+
+
+_last_rate_remaining: int | None = None
+
+
+def get_rate_remaining() -> int | None:
+    """Last X-RateLimit-Remaining seen by merge-on-green GitHub calls (FR #4543)."""
+    return _last_rate_remaining
+
+
+def _note_rate_headers(hdrs) -> None:
+    global _last_rate_remaining
+    if hdrs is None:
+        return
+    try:
+        get = hdrs.get
+    except Exception:  # noqa: BLE001
+        return
+    rem = get("X-RateLimit-Remaining") or get("x-ratelimit-remaining")
+    if rem is None:
+        return
+    try:
+        _last_rate_remaining = int(str(rem).strip())
+    except ValueError:
+        pass
 
 
 def _gh_token(token: str | None = None) -> str:
@@ -238,9 +545,11 @@ def _gh_json(url: str, *, token: str, method: str = "GET", body: dict | None = N
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
+            _note_rate_headers(getattr(resp, "headers", None))
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as e:
+        _note_rate_headers(getattr(e, "headers", None))
         raise RuntimeError(f"GitHub HTTP {e.code} for {url}") from e
 
 
@@ -264,41 +573,27 @@ def fetch_pr_state(repo: str, pr: str, *, token: str | None = None) -> dict[str,
     body = str(pr_doc.get("body") or "")
     checks = "none"
     if sha:
+        status = None
         try:
             status = _gh_json(
                 f"https://api.github.com/repos/{repo_c}/commits/{sha}/status",
                 token=tok,
             )
-            checks = str(status.get("state") or "none").lower()
         except RuntimeError:
             checks = "pending"
-        # Prefer check-runs rollup when classic status is empty/none.
-        if checks in ("none", ""):
-            try:
-                runs = _gh_json(
-                    f"https://api.github.com/repos/{repo_c}/commits/{sha}/check-runs",
-                    token=tok,
-                )
-                items = runs.get("check_runs") if isinstance(runs, dict) else None
-                if isinstance(items, list) and items:
-                    conclusions = [
-                        str(i.get("conclusion") or "").lower()
-                        for i in items
-                        if isinstance(i, dict)
-                    ]
-                    statuses = [
-                        str(i.get("status") or "").lower()
-                        for i in items
-                        if isinstance(i, dict)
-                    ]
-                    if any(s not in ("completed",) for s in statuses):
-                        checks = "pending"
-                    elif any(c in ("failure", "timed_out", "cancelled", "action_required") for c in conclusions):
-                        checks = "failure"
-                    else:
-                        checks = "success"
-            except RuntimeError:
-                pass
+        else:
+            # FR #4566: pending + 0 statuses is Actions-only, not an open check.
+            if combined_status_is_empty(status):
+                try:
+                    runs = _gh_json(
+                        f"https://api.github.com/repos/{repo_c}/commits/{sha}/check-runs",
+                        token=tok,
+                    )
+                    checks = rollup_check_runs(runs)
+                except RuntimeError:
+                    checks = "pending"
+            else:
+                checks = str(status.get("state") or "none").lower()
     return {
         "repo": repo_c,
         "pr": num,
@@ -395,6 +690,7 @@ def evaluate_pending_row(
         checks=str(pr_state.get("checks") or "none"),
         hold_reason=None,
         merged=bool(pr_state.get("merged")),
+        closed=bool(pr_state.get("closed")),
     )
     if decision == "merge" and not ok_gate:
         # Still waiting for PASS board scrape, or other gate refuse that is not hold.
@@ -412,8 +708,19 @@ def process_pending(
     merge_fn: Callable[..., dict[str, Any]] | None = None,
     token: str | None = None,
     log: Callable[[str], None] | None = None,
+    rate_remaining: Callable[[], int | None] | None = None,
+    min_rate_remaining: int = DEFAULT_MIN_RATE_REMAINING,
+    now: Callable[[], float] | None = None,
+    max_wait_s: int = MAX_WAIT_S,
+    backoff_base_s: int = BACKOFF_BASE_S,
+    backoff_cap_s: int = BACKOFF_CAP_S,
 ) -> dict[str, Any]:
-    """Advance every merge-on-green pending row once. Pure side effects via injectables."""
+    """Advance every merge-on-green pending row once. Pure side effects via injectables.
+
+    FR #4543: when ``rate_remaining()`` is below ``min_rate_remaining``, back off
+    without fetching so ``pr_exists`` / offers / ``!resync`` keep budget. Closed or
+    merged PRs are dropped after one PR GET and never fetch comments.
+    """
     _log = log or (lambda _m: None)
     fetch_pr = fetch_pr or (lambda repo, pr: fetch_pr_state(repo, pr, token=token))
     fetch_comments = fetch_comments or (
@@ -426,16 +733,39 @@ def process_pending(
     doc = load_ledger(home)
     pending = [p for p in (doc.get("pending") or []) if isinstance(p, dict)]
     keep: list[dict] = []
-    summary = {
+    summary: dict[str, Any] = {
         "seen": len(pending),
         "merged": 0,
         "wait": 0,
         "requeued": 0,
+        "fix_offered": 0,
         "skipped_hold": 0,
         "dropped": 0,
         "errors": 0,
+        "backed_off": False,
+        "deferred": 0,
+        "ci_failed": 0,
         "actions": [],
     }
+    now_fn = now or time.time
+    try:
+        tnow = float(now_fn())
+    except (TypeError, ValueError):
+        tnow = time.time()
+
+    if rate_remaining is not None:
+        try:
+            rem = rate_remaining()
+        except Exception:  # noqa: BLE001
+            rem = None
+        if rem is not None and int(rem) < int(min_rate_remaining):
+            summary["backed_off"] = True
+            summary["rate_remaining"] = int(rem)
+            _log(
+                f"INFO merge-on-green back-off rate_remaining={rem} "
+                f"min={min_rate_remaining} pending={len(pending)}"
+            )
+            return summary
 
     for row in pending:
         repo = str(row.get("repo") or "")
@@ -443,8 +773,54 @@ def process_pending(
         if not repo or not pr:
             summary["dropped"] += 1
             continue
+        first_wait = row.get("first_wait_epoch")
+        if first_wait is not None:
+            try:
+                waited = tnow - float(first_wait)
+            except (TypeError, ValueError):
+                waited = 0.0
+            if waited >= float(max_wait_s):
+                summary["requeued"] += 1
+                try:
+                    requeue_mrb(
+                        home,
+                        repo=repo,
+                        pr=pr,
+                        url=str(row.get("url") or ""),
+                        reason="wait_cap",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    summary["errors"] += 1
+                    row = dict(row)
+                    row["last_error"] = f"requeue {type(exc).__name__}: {exc}"
+                    keep.append(row)
+                    continue
+                summary["actions"].append(
+                    {"repo": repo, "pr": pr, "decision": "requeue_ci", "detail": "wait_cap"}
+                )
+                _log(f"INFO merge-on-green requeue {repo}#{pr} reason=wait_cap")
+                continue
+        nxt = row.get("next_fetch_epoch")
+        if nxt is not None:
+            try:
+                if float(nxt) > tnow:
+                    summary["wait"] += 1
+                    summary["deferred"] += 1
+                    keep.append(dict(row))
+                    continue
+            except (TypeError, ValueError):
+                pass
         try:
             pr_state = fetch_pr(repo, pr)
+            # FR #4543: closed/merged leave the ledger; do not spend a comments GET.
+            if bool(pr_state.get("merged")) or bool(pr_state.get("closed")):
+                decision = "drop_merged" if pr_state.get("merged") else "drop_closed"
+                detail = "merged" if pr_state.get("merged") else "closed"
+                action = {"repo": repo, "pr": pr, "decision": decision, "detail": detail}
+                summary["actions"].append(action)
+                summary["dropped"] += 1
+                _log(f"INFO merge-on-green drop {repo}#{pr}: {detail}")
+                continue
             comments = fetch_comments(repo, pr)
             decision, detail = evaluate_pending_row(row, pr_state=pr_state, comments=comments)
         except Exception as exc:  # noqa: BLE001
@@ -477,7 +853,7 @@ def process_pending(
                 _log(f"WARN merge-on-green merge failed {repo}#{pr}: {exc}")
                 continue
 
-        if decision == "drop_merged":
+        if decision in ("drop_merged", "drop_closed"):
             summary["dropped"] += 1
             continue
 
@@ -489,7 +865,38 @@ def process_pending(
             _log(f"INFO merge-on-green skip hold {repo}#{pr}: {row['hold_reason']}")
             continue
 
-        if decision in ("requeue_sha", "requeue_ci"):
+        if decision == "requeue_ci":
+            # FR #4566 follow-up: stop polling; keep the PASS SHA so resync does
+            # not turn it back into an MRB while the head is unchanged.
+            # FR #4585: offer one FIX (deduped by failure signature) instead of
+            # leaving the queue empty while PASSed+auto-merge tips sit red forever.
+            detail = str(pr_state.get("checks") or "failure")
+            park_ci_failed(doc, row, detail=detail, now_epoch=tnow)
+            summary["ci_failed"] += 1
+            summary["dropped"] += 1
+            fix_result = "skipped"
+            try:
+                fix_result = enqueue_fix_ci(
+                    home,
+                    repo=repo,
+                    pr=pr,
+                    pass_sha=str(row.get("pass_sha") or ""),
+                    url=str(row.get("url") or pr_state.get("html_url") or ""),
+                    detail=detail,
+                    now_epoch=tnow,
+                )
+                if fix_result == "added":
+                    summary["fix_offered"] = int(summary.get("fix_offered") or 0) + 1
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"] += 1
+                _log(f"WARN merge-on-green FIX enqueue failed {repo}#{pr}: {exc}")
+            _log(
+                f"INFO merge-on-green drop ci-failed {repo}#{pr} "
+                f"@{str(row.get('pass_sha') or '')[:12]} checks={detail} fix={fix_result}"
+            )
+            continue
+
+        if decision == "requeue_sha":
             summary["requeued"] += 1
             try:
                 requeue_mrb(
@@ -507,12 +914,20 @@ def process_pending(
             _log(f"INFO merge-on-green requeue {repo}#{pr} reason={decision}")
             continue  # drop pending after requeue
 
-        # wait
+        # wait — back off so a still-pending row is not fetched every sweep (FR #4566).
         summary["wait"] += 1
         row["status"] = "pending"
+        polls = int(row.get("wait_polls") or 0) + 1
+        row["wait_polls"] = polls
+        if row.get("first_wait_epoch") is None:
+            row["first_wait_epoch"] = tnow
+        shift = min(polls - 1, 4)
+        delay = min(int(backoff_base_s) * (2**shift), int(backoff_cap_s))
+        row["next_fetch_epoch"] = tnow + delay
         keep.append(row)
 
     doc["pending"] = keep
+    prune_ci_failed(doc, now_epoch=tnow)
     save_ledger(home, doc)
     return summary
 
