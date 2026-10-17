@@ -51,15 +51,19 @@ def _no_merge(*_a, **_k):
 
 
 def test_failure_signature_shared_across_prs():
-    a = mrb_merge_on_green.failure_signature(REPO, detail="failure")
-    b = mrb_merge_on_green.failure_signature(REPO, detail="failure")
+    # FR #4596: shared collapse only when main_red=True.
+    a = mrb_merge_on_green.failure_signature(REPO, detail="failure", pr="1", main_red=True)
+    b = mrb_merge_on_green.failure_signature(REPO, detail="failure", pr="2", main_red=True)
     assert a == b
     assert REPO.split("/")[-1] in a or "a-search" in a.lower() or "SimonBarnett" in a
 
 
-def test_ci_failed_parks_and_offers_one_fix(tmp_path: Path):
+def test_ci_failed_parks_and_offers_one_fix(tmp_path: Path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
+    monkeypatch.setattr(
+        mrb_merge_on_green, "main_branch_checks_red", lambda *_a, **_k: True
+    )
     mrb_merge_on_green.enqueue(
         home, repo=REPO, pr="1796", pass_sha=PASS_SHA, url=f"https://github.com/{REPO}/pull/1796"
     )
@@ -83,7 +87,8 @@ def test_ci_failed_parks_and_offers_one_fix(tmp_path: Path):
     ]
     assert len(fixes) == 1
     assert str(fixes[0].get("id") or "") == "#1796"
-    assert "4585" in str(fixes[0].get("body") or "") or "4585" in str(fixes[0].get("title") or "")
+    body = str(fixes[0].get("body") or "") + " " + str(fixes[0].get("title") or "")
+    assert "4585" in body or "4596" in body
     # No MRB requeue for the same PR.
     assert not any(
         str(r.get("task") or "").upper() == "MRB" and str(r.get("id") or "").lstrip("#") == "1796"
@@ -92,9 +97,13 @@ def test_ci_failed_parks_and_offers_one_fix(tmp_path: Path):
     )
 
 
-def test_second_parked_pr_same_signature_does_not_second_fix(tmp_path: Path):
+def test_second_parked_pr_same_signature_does_not_second_fix(tmp_path: Path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
+    # FR #4596: collapse only when main itself is red.
+    monkeypatch.setattr(
+        mrb_merge_on_green, "main_branch_checks_red", lambda *_a, **_k: True
+    )
     for pr in ("1796", "1800"):
         mrb_merge_on_green.enqueue(
             home,

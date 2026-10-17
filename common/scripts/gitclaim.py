@@ -8090,6 +8090,8 @@ def resync_from_github(
     open_pulls_map: dict[str, set[str]] = {}
     skipped_draft = 0
     skipped_ci = 0
+    fix_added = 0  # FR #4596: FIX enqueue adds counted into github-resync ok added=
+    main_red_cache: dict[str, bool] = {}  # FR #4596: one main probe per repo per resync
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
@@ -8210,10 +8212,11 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
-            # FR #4466 / #4594: open PR with auto-merge on the PASSed SHA.
+            # FR #4466 / #4594 / #4596: open PR with auto-merge on the PASSed SHA.
             # Still queued/in_progress -> skip ci-wait (not a new MRB).
-            # Already concluded FAILURE -> offer one FIX (deduped), keep Closes
-            # coverage via skipped_open_pulls, never re-queue MRB on same SHA.
+            # Already concluded FAILURE -> offer FIX (per-PR when main is green;
+            # shared sig only when main itself is red). Count FIX adds in added=.
+            # Keep Closes coverage via skipped_open_pulls; never re-queue MRB on same SHA.
             pass_sha = _merge_on_green_pass_sha(home, repo, num)
             if open_pr_mrb_ci_wait_candidate(pr, pass_sha):
                 # Candidate (auto-merge + same SHA). Resolve live/injected checks.
@@ -8222,6 +8225,13 @@ def resync_from_github(
                     try:
                         import mrb_merge_on_green
 
+                        repo_c = canonical_queue_repo(repo)
+                        if repo_c not in main_red_cache:
+                            main_red_cache[repo_c] = (
+                                mrb_merge_on_green.main_branch_checks_red(
+                                    repo_c, token=token
+                                )
+                            )
                         fix_result = mrb_merge_on_green.enqueue_fix_ci(
                             _root(home),
                             repo=repo,
@@ -8229,9 +8239,14 @@ def resync_from_github(
                             pass_sha=pass_sha,
                             url=str(pr.get("html_url") or ""),
                             detail=check_state or "failure",
+                            main_red=bool(main_red_cache[repo_c]),
+                            token=token,
                         )
                     except Exception as exc:  # noqa: BLE001
                         fix_result = f"error:{type(exc).__name__}"
+                    # FR #4596: FIX rows must show in github-resync ok added=.
+                    if fix_result == "added":
+                        fix_added += 1
                     skipped_open_pulls.add((repo, f"#{num}"))
                     print(
                         f"resync offer FIX ci-failed PR {repo}#{num} result={fix_result}",
@@ -8430,7 +8445,7 @@ def resync_from_github(
             if purged_n:
                 dropped += purged_n
                 dropped_detail.append(f"purge_dead_mrb x{purged_n}")
-            added = 0
+            added = int(fix_added)  # FR #4596: include FIX adds from the fetch pass
             fetched_set2 = set(fetched)
             # Premature DONE while GitHub issue/PR still open: pull those rows out of done
             # so resync can re-queue them (FR #1150 / #1444).

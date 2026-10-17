@@ -40,7 +40,7 @@ MAX_WAIT_S = 3600
 # list but keeps its PASS SHA here so resync's ci-wait skip still recognises it
 # (no MRB re-queue while the head is unchanged). A new push re-enters via MRB.
 CI_FAILED_KEY = "ci_failed"
-# FR #4585: one FIX job per shared CI-failure signature (deduped to the repo).
+# FR #4585/#4596: FIX ledger keyed by failure_signature (shared when main red; per-PR otherwise).
 CI_FIX_KEY = "ci_fix"
 CI_FAILED_TTL_S = 14 * 24 * 3600
 BACKOFF_BASE_S = 60
@@ -228,18 +228,96 @@ def load_ledger(home: Path) -> dict[str, Any]:
     return doc
 
 
-def failure_signature(repo: str, *, detail: str = "", pass_sha: str = "") -> str:
-    """Shared-CI fingerprint for FIX dedupe (FR #4585).
+def failure_signature(
+    repo: str,
+    *,
+    detail: str = "",
+    pass_sha: str = "",
+    pr: str = "",
+    main_red: bool | None = None,
+) -> str:
+    """FIX-CI fingerprint for dedupe (FR #4585 / FR #4596).
 
-    Many PASSed tips often share one red required check (e.g. test-and-synth on
-    main). Collapse those to one FIX. Include the check rollup word when known;
-    omit the PR number so N tips with the same red check share one signature.
+    Collapse N PASSed tips onto one FIX **only when main itself is red** on the
+    same check (``main_red=True`` -> ``repo|state``). When main is green (or
+    unknown), each PR is its own FIX (``repo|#N|state``) so seats can fold main
+    in parallel instead of draining one tip per hourly resync.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     state = (detail or "failure").strip().lower() or "failure"
-    # Keep the word short — "failure" / "test-and-synth failure" / run id if present.
     state = re.sub(r"\s+", " ", state)[:120]
+    if main_red is True:
+        return f"{repo_c}|{state}"
+    num = str(pr or "").lstrip("#")
+    if num:
+        return f"{repo_c}|#{num}|{state}"
     return f"{repo_c}|{state}"
+
+
+def main_branch_checks_red(
+    repo: str,
+    *,
+    token: str | None = None,
+    fetch_default_sha: Callable[..., str] | None = None,
+    fetch_checks: Callable[..., str] | None = None,
+) -> bool:
+    """True when the repo default branch's required checks roll up to failure (FR #4596).
+
+    Injectable fetchers keep tests offline. Unknown / empty checks are **not** red
+    (prefer per-PR FIX over collapsing the whole fleet onto one job).
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    if not repo_c:
+        return False
+    try:
+        if fetch_default_sha is not None:
+            sha = str(fetch_default_sha(repo_c) or "").strip()
+        else:
+            tok = _gh_token(token)
+            if not tok:
+                return False
+            meta = _gh_json(
+                f"https://api.github.com/repos/{repo_c}",
+                token=tok,
+            )
+            default = str((meta or {}).get("default_branch") or "main").strip() or "main"
+            ref = _gh_json(
+                f"https://api.github.com/repos/{repo_c}/git/ref/heads/{default}",
+                token=tok,
+            )
+            sha = str(((ref or {}).get("object") or {}).get("sha") or "").strip()
+        if not sha:
+            return False
+        if fetch_checks is not None:
+            state = str(fetch_checks(repo_c, sha) or "").strip().lower()
+        else:
+            tok = _gh_token(token)
+            if not tok:
+                return False
+            status = _gh_json(
+                f"https://api.github.com/repos/{repo_c}/commits/{sha}/status",
+                token=tok,
+            )
+            runs = None
+            if combined_status_is_empty(status if isinstance(status, dict) else None):
+                runs = _gh_json(
+                    f"https://api.github.com/repos/{repo_c}/commits/{sha}/check-runs",
+                    token=tok,
+                )
+            state = checks_from_status_and_runs(
+                status if isinstance(status, dict) else None,
+                runs,
+            )
+        return state in (
+            "failure",
+            "error",
+            "action_required",
+            "timed_out",
+            "cancelled",
+            "canceled",
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def park_ci_failed(
@@ -282,20 +360,32 @@ def enqueue_fix_ci(
     detail: str = "",
     check_run_id: str = "",
     now_epoch: float | None = None,
+    main_red: bool | None = None,
+    token: str | None = None,
+    main_red_fn: Callable[..., bool] | None = None,
 ) -> str:
-    """Offer one FIX job for a PASSed+auto-merge PR with a red required check (FR #4585).
+    """Offer a FIX job for a PASSed+auto-merge PR with a red required check (FR #4585/#4596).
 
-    Dedupes by ``failure_signature`` so a shared main/test-and-synth break yields
-    one FIX, not N. Never re-offers the same (signature, pass_sha, check_run_id)
-    while that FIX is still on the queue or recorded in the ledger.
-    Returns ``added`` | ``duplicate`` | ``skipped``.
+    When ``main_red`` (or ``main_red_fn`` / live main check) is True, dedupe by
+    shared ``repo|state`` so one FIX covers a main breakage. When main is green
+    (or unknown), each PR is its own FIX. Returns ``added`` | ``duplicate`` | ``skipped``.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
     sha = _norm_sha(pass_sha)
     if not repo_c or not num or not sha:
         return "skipped"
-    sig = failure_signature(repo_c, detail=detail, pass_sha=sha)
+    if main_red is None:
+        if main_red_fn is not None:
+            try:
+                main_red = bool(main_red_fn(repo_c))
+            except Exception:  # noqa: BLE001
+                main_red = False
+        else:
+            main_red = main_branch_checks_red(repo_c, token=token)
+    sig = failure_signature(
+        repo_c, detail=detail, pass_sha=sha, pr=num, main_red=bool(main_red)
+    )
     tnow = float(now_epoch if now_epoch is not None else time.time())
     doc = load_ledger(home)
     offered = doc.get(CI_FIX_KEY)
@@ -306,16 +396,27 @@ def enqueue_fix_ci(
     if isinstance(prev, dict):
         prev_sha = _norm_sha(str(prev.get("pass_sha") or ""))
         prev_run = str(prev.get("check_run_id") or "")
-        # Same shared failure + same SHA (+ same run when known) -> no second FIX.
+        # Same signature + same SHA (+ same run when known) -> no second FIX.
         if prev_sha and shas_match(prev_sha, sha):
             if not check_run_id or not prev_run or prev_run == str(check_run_id):
                 return "duplicate"
     pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
+    if main_red:
+        guidance = (
+            f"Prefer fixing the shared failure on main when many tips share this "
+            f"signature ({sig}); otherwise fix CI on this PR branch and push."
+        )
+        title = f"FIX CI after MRB PASS (red check; shared sig {sig})"
+    else:
+        guidance = (
+            f"Main required checks are green — fix CI on this PR branch "
+            f"(signature {sig}), fold main if needed, and push; do not wait for "
+            f"a shared main FIX."
+        )
+        title = f"FIX CI after MRB PASS (red check; per-PR sig {sig})"
     body = (
-        f"FR #4585 FIX CI: PASSed MRB with auto-merge on but a required check failed "
-        f"({detail or 'failure'}). Head SHA {sha}. "
-        f"Prefer fixing the shared failure on main when many tips share this signature "
-        f"({sig}); otherwise fix CI on this PR branch and push. "
+        f"FR #4596 FIX CI: PASSed MRB with auto-merge on but a required check failed "
+        f"({detail or 'failure'}). Head SHA {sha}. {guidance} "
         f"Do not re-open MRB while the head SHA is unchanged."
     )
     if check_run_id:
@@ -327,7 +428,7 @@ def enqueue_fix_ci(
         event="pull_request",
         action="synchronize",
         line=pull_url,
-        title=f"FIX CI after MRB PASS (red check; shared sig {sig})",
+        title=title,
         body=body,
         labels=("via-intake", "fix-ci"),
     )
@@ -752,6 +853,8 @@ def process_pending(
         tnow = float(now_fn())
     except (TypeError, ValueError):
         tnow = time.time()
+    # FR #4596: one main-branch check probe per repo per sweep.
+    main_red_cache: dict[str, bool] = {}
 
     if rate_remaining is not None:
         try:
@@ -876,6 +979,11 @@ def process_pending(
             summary["dropped"] += 1
             fix_result = "skipped"
             try:
+                repo_c = gitclaim.canonical_queue_repo(repo)
+                if repo_c not in main_red_cache:
+                    main_red_cache[repo_c] = main_branch_checks_red(
+                        repo_c, token=token
+                    )
                 fix_result = enqueue_fix_ci(
                     home,
                     repo=repo,
@@ -884,6 +992,8 @@ def process_pending(
                     url=str(row.get("url") or pr_state.get("html_url") or ""),
                     detail=detail,
                     now_epoch=tnow,
+                    main_red=main_red_cache[repo_c],
+                    token=token,
                 )
                 if fix_result == "added":
                     summary["fix_offered"] = int(summary.get("fix_offered") or 0) + 1
