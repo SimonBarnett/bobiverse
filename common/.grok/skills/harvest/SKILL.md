@@ -259,6 +259,7 @@ routes to bobiverse via the split rule.
 - FR re-offer when open covering PR Closes the issue: verify closingIssuesReferences + run acceptance pins on tip head, comment on issue, DONE with covering PR URL only
 - Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
 - When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
+- When a harvest-lesson tip CONFLICTS only on the trailing bullet, keep both the new bullet and the main bullet in one fold, then PASS and arm auto-merge.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
