@@ -1176,6 +1176,8 @@ _BOBIVERSE_REPO_L = "simonbarnett/bobiverse"
 # Hard pins for known WP0 / machine-gated issues (FR #1093): survive empty title/body on stale rows.
 _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     ("simonbarnett/agentic_fomprep", "#56"): "ce-priority-dev1",
+    # FR #4427 / ce-priority#16: Day Works living FR mis-offered to marchhare.
+    ("simonbarnett/ce-priority", "#16"): "ce-priority-dev1",
     # FR #2312 / #1714: ionos orphan workers-map / nak-busy — body pin is past the
     # historic body[:500] truncate window; hard pin so marchhare never gets the offer.
     ("simonbarnett/bobiverse", "#1714"): "ionos",
@@ -1190,10 +1192,26 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     ("simonbarnett/bobiverse", "#4340"): "ionos",
 }
 
+# FR #4427: ce-priority Day Works living/umbrella FRs and UAT need CE-PRIORITY-DEV1
+# (CredMan / instances.json). Repo-gated so bobiverse chair filings about the pin
+# do not re-pin themselves.
+_CE_PRIORITY_DAYWORKS_REPOS = frozenset(
+    {
+        "simonbarnett/ce-priority",
+        "simonbarnett/ce-dayworks",
+    }
+)
+_CE_PRIORITY_DAYWORKS_TASK_RE = re.compile(
+    r"(?i)\bday\s*works\b|\bdayworks\b|\bWP\s*[34]\b|\bGates?\s*[C-G]\b"
+    r"|\bliving\s+(?:fr|umbrella)\b|\btracking\s+umbrella\b"
+)
+
 # FR #4422: hard unpins — survive title/body cues that wrongly re-pin (bobiverse must
 # not be stranded on ionos for meta "missing needs-ionos" filings).
+# FR #4427: chair meta filing title contains require_machine=ce-priority-dev1 as evidence.
 _REQUIRE_MACHINE_ISSUE_UNPINS: set[tuple[str, str]] = {
     ("simonbarnett/bobiverse", "#4343"),
+    ("simonbarnett/bobiverse", "#4427"),
 }
 
 # FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
@@ -1268,7 +1286,7 @@ def infer_require_machine(
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
     title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
     recycle|recompose|Sync/compose Jeeves / Sync-BobiverseFromRepo near Jeeves / prune queue.json / install(+smoke) on ionos -> ionos;
-    FR #587 / #852 / #2451 / #3129).
+    FR #587 / #852 / #2451 / #3129 / #4427).
 
     FR #4512: for ``SimonBarnett/bobiverse``, title/body soft text cues never pin.
     Only labels, hard issue pins/unpins, and dedicated ``require_machine:`` body lines.
@@ -1315,6 +1333,14 @@ def infer_require_machine(
     for rx, mid in _REQUIRE_MACHINE_BODY_CUES:
         if rx.search(body_blob) or rx.search(title_blob):
             return mid
+    # FR #4427: ce-priority Day Works living/umbrella FRs and UAT -> DEV1 only.
+    if repo_l in _CE_PRIORITY_DAYWORKS_REPOS:
+        task_blob = f"{title_blob}\n{body_blob}"
+        labs_l = {str(x).strip().lower() for x in labs if str(x or "").strip()}
+        if "uat" in labs_l or re.search(r"(?i)\buat\b", title_blob):
+            return "ce-priority-dev1"
+        if _CE_PRIORITY_DAYWORKS_TASK_RE.search(task_blob):
+            return "ce-priority-dev1"
     return ""
 
 
