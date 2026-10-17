@@ -1614,6 +1614,32 @@ def requeue_reopened_issue(
     return changed
 
 
+def fr_superseded_by_open_closes_pr(
+    repo: str,
+    ident: str,
+    open_closes: dict[str, set[str]] | None,
+) -> bool:
+    """True when an open PR's Closes/Fixes/Resolves covers this issue (FR #4589).
+
+    Includes draft, harvest-receipt, and ci-wait pulls that resync skips as MRB:
+    the issue is waiting on CI/review, not on a new implement turn.
+    """
+    if not open_closes:
+        return False
+    ident_s = _norm_row_id(ident)
+    if not ident_s:
+        return False
+    repo_s = str(repo or "").strip()
+    nums = open_closes.get(repo_s)
+    if nums is None:
+        rk = _repo_key(repo_s)
+        for name, nset in open_closes.items():
+            if _repo_key(name) == rk:
+                nums = nset
+                break
+    return bool(nums) and ident_s in nums
+
+
 def fr_is_superseded(
     doc: dict,
     repo: str,
@@ -1621,9 +1647,12 @@ def fr_is_superseded(
     *,
     open_pulls: dict[str, set[str]] | None = None,
     fetched_repos: set[str] | None = None,
+    open_closes: dict[str, set[str]] | None = None,
 ) -> bool:
     """FR must not be (re)queued/offered while MRB supersedes it or implement PR is open."""
     if fr_superseded_by_mrb(doc, repo, ident):
+        return True
+    if fr_superseded_by_open_closes_pr(repo, ident, open_closes):
         return True
     return fr_superseded_by_done_pr(
         doc, repo, ident, open_pulls=open_pulls, fetched_repos=fetched_repos
@@ -7961,11 +7990,12 @@ def resync_from_github(
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
-    # stay as MRB rows; the open issue stays desired so fr_done can clear and MRB
-    # (or a re-opened FR if MRB is missing) can flow. (Open-PR supersede for offer
-    # still happens via fr_is_superseded once the MRB row is queued.)
+    # stay as MRB rows when offerable; the open issue stays desired so fr_done can
+    # clear. FR #4589: open Closes (including ci-wait / draft / receipt skips) still
+    # supersede FR enqueue via open_closes_map + fr_is_superseded.
     supersede_keys: set[str] = set()  # owner/repo#N closed by merged PR Closes only
     closed_by_merged_pr: set[str] = set()  # #N ids closed by merged PRs (same-repo)
+    open_closes_map: dict[str, set[str]] = {}  # repo -> {#N} covered by any open PR Closes
     repo_clear: dict[str, bool] = {}   # t853u: no open non-excluded issue and no open PR
     uat_plan: dict[str, tuple[list[str], list[str]]] = {}   # repo -> (merged PRs this cycle, issues they closed)
     cycles = ledger_load(home).get("uat_cycle") or {}
@@ -8048,6 +8078,11 @@ def resync_from_github(
             refs = extract_closes_issue_ids(title, body, repo=repo)
             # FR #2389: do NOT add open-PR Closes refs to closed_by_merged_pr / supersede_keys.
             # That left open issues out of desired, so fr_done never cleared (#2380/#2383 class).
+            # FR #4589: still record Closes so FR enqueue/prune can see ci-wait / draft covers.
+            if refs:
+                bucket = open_closes_map.setdefault(repo, set())
+                for r in refs:
+                    bucket.add(_norm_row_id(r))
             open_pulls_map.setdefault(repo, set()).add(f"#{num}")
             # bobiverse#224 / #781: open mrb-*-fix PRs are not MRB queue jobs.
             if is_mrb_fix_pr_title(title):
@@ -8202,9 +8237,10 @@ def resync_from_github(
                     str(row.get("id") or ""),
                     open_pulls=open_pulls_map,
                     fetched_repos=set(fetched),
+                    open_closes=open_closes_map,
                 ):
                     dropped_detail.append(f"{_row_drop_label(row)} fr_superseded")
-                    continue  # FR #254
+                    continue  # FR #254 / #4589
                 # FR #846: drop FR whose id is an open pull number for this repo.
                 if task_u == "FR":
                     if ident_n in _row_open_pulls(repo_s):
@@ -8357,8 +8393,9 @@ def resync_from_github(
                     claim.id,
                     open_pulls=open_pulls_map,
                     fetched_repos=fetched_set2,
+                    open_closes=open_closes_map,
                 ):
-                    continue  # FR #254: MRB / open implement PR supersedes FR enqueue
+                    continue  # FR #254 / #4589: MRB / open Closes (incl. ci-wait) supersedes FR
                 # FR #1585: open PR still on GitHub — clear premature mrb_done so offer
                 # purge cannot wipe the row resync just (re)queued.
                 if claim.task == "MRB":
