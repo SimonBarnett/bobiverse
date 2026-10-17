@@ -3554,6 +3554,62 @@ class TTLCache:
 
 
 PR_EXISTS_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
+# FR #4574: after HTTP 403 or rate_remaining=0, skip pr_exists until reset.
+_PR_EXISTS_BACKOFF_UNTIL = 0.0
+_PR_EXISTS_NETWORK_CALLS = 0
+
+
+def pr_exists_now() -> float:
+    return time.time()
+
+
+def pr_exists_backoff_active() -> bool:
+    return pr_exists_now() < float(_PR_EXISTS_BACKOFF_UNTIL)
+
+
+def clear_pr_exists_backoff() -> None:
+    global _PR_EXISTS_BACKOFF_UNTIL, _PR_EXISTS_NETWORK_CALLS
+    _PR_EXISTS_BACKOFF_UNTIL = 0.0
+    _PR_EXISTS_NETWORK_CALLS = 0
+
+
+def note_pr_exists_rate(hdrs, *, code: int | None = None) -> str | None:
+    """Back off until X-RateLimit-Reset when the core limit is gone (FR #4574)."""
+    global _PR_EXISTS_BACKOFF_UNTIL
+    rem = _rate_remaining_from_headers(hdrs)
+    reset_raw = ""
+    if hdrs is not None:
+        try:
+            get = getattr(hdrs, "get", None)
+            if callable(get):
+                reset_raw = str(get("X-RateLimit-Reset") or get("x-ratelimit-reset") or "").strip()
+        except Exception:
+            reset_raw = ""
+    rem_i = None
+    if rem is not None and str(rem).strip() != "":
+        try:
+            rem_i = int(str(rem).strip())
+        except ValueError:
+            rem_i = None
+    if rem_i == 0 or code == 403:
+        until = pr_exists_now() + 60.0
+        if reset_raw:
+            try:
+                parsed = float(reset_raw)
+                if parsed > pr_exists_now():
+                    until = parsed
+            except ValueError:
+                pass
+        _PR_EXISTS_BACKOFF_UNTIL = max(float(_PR_EXISTS_BACKOFF_UNTIL), until)
+        print(
+            "WARN git-claim pr_exists backoff "
+            f"until={int(_PR_EXISTS_BACKOFF_UNTIL)} "
+            f"rate_remaining={rem if rem is not None else '-'} "
+            f"calls={_PR_EXISTS_NETWORK_CALLS} "
+            f"bored_budget={BORED_GITHUB_CALL_BUDGET}",
+            flush=True,
+        )
+    return rem
 # FR #3188: shared TTL across !bored so two seats do not re-GET the same rows every cycle.
 ISSUE_OPEN_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
 IS_PULL_SHARED_CACHE = TTLCache(PR_EXISTS_CACHE_TTL_S)
@@ -3747,6 +3803,10 @@ def github_pr_exists_checker(
         hit = store.get(key, _CACHE_MISS)  # FR #2729: one lookup (TTL entry may expire between two)
         if hit is not _CACHE_MISS:
             return hit
+        if pr_exists_backoff_active():
+            raise GitHubLookupUnknown(
+                f"pr_exists {repo}#{num} backoff rate_remaining=0"
+            )
         api = f"https://api.github.com/repos/{repo}/pulls/{num}"
         req = urllib.request.Request(
             api,
@@ -3758,7 +3818,10 @@ def github_pr_exists_checker(
             method="GET",
         )
         try:
+            global _PR_EXISTS_NETWORK_CALLS
+            _PR_EXISTS_NETWORK_CALLS += 1
             with urllib.request.urlopen(req, timeout=8) as resp:
+                note_pr_exists_rate(getattr(resp, "headers", None))
                 if 200 <= int(getattr(resp, "status", 200) or 200) < 300:
                     raw = resp.read()
                     try:
@@ -3774,6 +3837,7 @@ def github_pr_exists_checker(
                 )
         except urllib.error.HTTPError as e:
             code = int(getattr(e, "code", 0) or 0)
+            note_pr_exists_rate(getattr(e, "headers", None), code=code)
             if code in (404, 410):
                 store[key] = False
                 return False
@@ -4094,9 +4158,11 @@ def _purge_dead_mrb_unaccepted(
         if not isinstance(row, dict):
             continue
         if _canon_task(row) == "MRB":
-            if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
+            # FR #4574: needs_human rows are not offerable. Do not spend pr_exists on them.
+            row_pr = None if row_needs_human(row, "") else pr_exists
+            if mrb_already_done(doc, row, home=home, pr_exists=row_pr):
                 continue
-            if not mrb_row_offerable(row, pr_exists=pr_exists):
+            if not mrb_row_offerable(row, pr_exists=row_pr):
                 continue
             repo = str(row.get("repo") or "").strip()
             ident = _norm_row_id(str(row.get("id") or ""))
@@ -4108,10 +4174,10 @@ def _purge_dead_mrb_unaccepted(
                 and ident not in (open_pulls.get(repo) or set())
             ):
                 continue
-            if home is not None and pr_exists is not None:
+            if home is not None and row_pr is not None:
                 if repo and ident and mrb_ledger_done_hold(home, repo, ident):
                     with contextlib.suppress(Exception):
-                        if bool(pr_exists(repo, ident.lstrip("#"))):
+                        if bool(row_pr(repo, ident.lstrip("#"))):
                             clear_mrb_done(home, repo, ident)
         kept.append(row)
     doc["unaccepted"] = kept
@@ -4223,9 +4289,10 @@ def _mrb_is_dead(doc: dict, row: dict, *, pr_exists=None, home: Path | None = No
     """True when an MRB row should leave the live queues (merged/closed/already-done)."""
     if _canon_task(row) != "MRB":
         return False
-    if mrb_already_done(doc, row, home=home, pr_exists=pr_exists):
+    row_pr = None if row_needs_human(row, "") else pr_exists
+    if mrb_already_done(doc, row, home=home, pr_exists=row_pr):
         return True
-    return not mrb_row_offerable(row, pr_exists=pr_exists)
+    return not mrb_row_offerable(row, pr_exists=row_pr)
 
 
 
