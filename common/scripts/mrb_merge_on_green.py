@@ -119,6 +119,36 @@ def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | Non
     return None
 
 
+_ACTIONS_RUN_ID_RE = re.compile(r"/actions/runs/(\d+)")
+
+
+def cancelled_workflow_run_id(runs: dict | list | None) -> str:
+    """Workflow run id for a cancelled or skipped check, from its details URL.
+
+    GitHub pull objects do not carry ``run_id``. Check-runs do, in
+    ``details_url`` (``/actions/runs/{id}/job/...``). FR #4639.
+    """
+    if isinstance(runs, dict):
+        items = runs.get("check_runs")
+    elif isinstance(runs, list):
+        items = runs
+    else:
+        return ""
+    if not isinstance(items, list):
+        return ""
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        conclusion = str(item.get("conclusion") or "").lower()
+        if conclusion not in ("cancelled", "canceled", "skipped"):
+            continue
+        for field in ("details_url", "html_url"):
+            match = _ACTIONS_RUN_ID_RE.search(str(item.get(field) or ""))
+            if match:
+                return match.group(1)
+    return ""
+
+
 def rollup_check_runs(runs: dict | list | None) -> str:
     """Roll check-runs into success | failure | cancelled | pending | none.
 

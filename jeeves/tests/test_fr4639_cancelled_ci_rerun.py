@@ -94,6 +94,93 @@ def test_cancelled_resync_reruns_once_and_queues_no_fix(tmp_path, monkeypatch, c
     assert "result=pending" in out
 
 
+def test_cancelled_resync_reads_run_id_from_check_runs(tmp_path, monkeypatch, capsys):
+    """Live pulls have no run_id. The workflow id is on the check-run details_url."""
+    home = _home(tmp_path)
+    monkeypatch.setattr(
+        mrb_merge_on_green, "main_branch_checks_red", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(mrb_merge_on_green, "_gh_token", lambda token=None: "FAKE_TOKEN")
+    calls: list[tuple[str, str]] = []
+
+    def fake_json(url, *, token, method="GET", body=None):
+        calls.append((method, url))
+        return {}
+
+    monkeypatch.setattr(mrb_merge_on_green, "_gh_json", fake_json)
+    mrb_merge_on_green.enqueue(
+        home,
+        repo=REPO,
+        pr="2311",
+        pass_sha=SHA,
+        url=f"https://github.com/{REPO}/pull/2311",
+    )
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {"v": 1, "unaccepted": [], "accepted": [], "done": []},
+    )
+    pr = _pr(2311, checks="cancelled", run_id="")
+
+    def fetch_json(url: str):
+        if url.endswith(f"/commits/{SHA}/check-runs"):
+            return {
+                "check_runs": [
+                    {
+                        "conclusion": "cancelled",
+                        "details_url": (
+                            "https://github.com/SimonBarnett/a-search/actions/runs/9001/job/1"
+                        ),
+                    }
+                ]
+            }
+        if "/pulls" in url and "state=closed" not in url:
+            return [pr]
+        return []
+
+    gitclaim.resync_from_github(home, [REPO], fetch_json=fetch_json)
+    assert len(calls) == 1
+    assert calls[0][0] == "POST"
+    assert calls[0][1].endswith("/actions/runs/9001/rerun")
+
+
+def test_behind_mergeable_state_updates_branch(tmp_path, monkeypatch):
+    home = _home(tmp_path)
+    monkeypatch.setattr(
+        mrb_merge_on_green, "main_branch_checks_red", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(mrb_merge_on_green, "_gh_token", lambda token=None: "FAKE_TOKEN")
+    calls: list[tuple[str, str]] = []
+
+    def fake_json(url, *, token, method="GET", body=None):
+        calls.append((method, url))
+        return {}
+
+    monkeypatch.setattr(mrb_merge_on_green, "_gh_json", fake_json)
+    mrb_merge_on_green.enqueue(
+        home,
+        repo=REPO,
+        pr="2311",
+        pass_sha=SHA,
+        url=f"https://github.com/{REPO}/pull/2311",
+    )
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {"v": 1, "unaccepted": [], "accepted": [], "done": []},
+    )
+    pr = _pr(2311, checks="cancelled", run_id="")
+    pr["mergeable_state"] = "behind"
+
+    def fetch_json(url: str):
+        if "/pulls" in url and "state=closed" not in url:
+            return [pr]
+        return []
+
+    gitclaim.resync_from_github(home, [REPO], fetch_json=fetch_json)
+    assert len(calls) == 1
+    assert calls[0][0] == "PUT"
+    assert calls[0][1].endswith("/pulls/2311/update-branch")
+
+
 def test_pruned_ci_fix_without_done_offers_again(tmp_path: Path):
     home = _home(tmp_path)
     first = mrb_merge_on_green.enqueue_fix_ci(

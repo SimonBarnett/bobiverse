@@ -8502,15 +8502,39 @@ def resync_from_github(
                         if cancel_head.startswith("completed/"):
                             cancel_head = cancel_head.split("/", 1)[-1]
                         if cancel_head in ("cancelled", "canceled", "skipped"):
+                            run_id = str(
+                                pr.get("run_id") or pr.get("check_run_id") or ""
+                            )
+                            behind = bool(pr.get("behind_main")) or (
+                                str(pr.get("mergeable_state") or "").lower() == "behind"
+                            )
+                            if not run_id and not behind:
+                                head_obj = (
+                                    pr.get("head")
+                                    if isinstance(pr.get("head"), dict)
+                                    else {}
+                                )
+                                tip_sha = str(head_obj.get("sha") or "")
+                                if tip_sha:
+                                    try:
+                                        payload = fetch_json(
+                                            "https://api.github.com/repos/"
+                                            f"{repo}/commits/{tip_sha}/check-runs"
+                                        )
+                                        run_id = (
+                                            mrb_merge_on_green.cancelled_workflow_run_id(
+                                                payload
+                                            )
+                                        )
+                                    except Exception:  # noqa: BLE001
+                                        run_id = ""
                             rerun_result = mrb_merge_on_green.rerun_cancelled_passed(
                                 _root(home),
                                 repo=repo,
                                 pr=str(num),
                                 pass_sha=pass_sha,
-                                run_id=str(
-                                    pr.get("run_id") or pr.get("check_run_id") or ""
-                                ),
-                                behind=bool(pr.get("behind_main")),
+                                run_id=run_id,
+                                behind=behind,
                                 token=token,
                             )
                             skipped_open_pulls.add((repo, f"#{num}"))
