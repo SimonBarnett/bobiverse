@@ -295,12 +295,15 @@ if (-not $ConsoleHome) {
     }
 }
 # Migrate from .airc-console / Default bake if needed (never when prior ConsoleHome exists).
+# FR #4388: include LocalSystem SystemProfile homes (DC / quiet MSI often parks GUID there).
 $legacyCandidates = @(
     (Join-Path $env:USERPROFILE '.airc-console'),
     (Join-Path $env:SystemDrive 'Users\Administrator\.airc'),
     (Join-Path $env:SystemDrive 'Users\Administrator\.airc-console'),
     (Join-Path $env:SystemDrive 'Users\Default\.airc'),
-    (Join-Path $env:SystemDrive 'Users\Default\.airc-console')
+    (Join-Path $env:SystemDrive 'Users\Default\.airc-console'),
+    (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc'),
+    (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc-console')
 )
 if (-not (Test-Path -LiteralPath $ConsoleHome)) {
     foreach ($legacy in $legacyCandidates) {
@@ -311,34 +314,77 @@ if (-not (Test-Path -LiteralPath $ConsoleHome)) {
         }
     }
 }
-# FR #3900: if ConsoleHome exists but console.password is empty/missing, copy GUID from a
-# legacy home or prior PasswordFile before Initialize mints a fresh one (SASL 904 trap).
+# FR #3900 / 1.0.0: prefer prior console.password over an empty or install-minted dest.
+# Empty dest alone was not enough: LocalSystem / MSI can mint into InstallRoot\home while
+# the live NickServ GUID still lives at prior PasswordFile / Admin\.airc / airc-install.json.
+# Authoritative prior (AppParameters / airc-install.json PasswordFile) may overwrite dest.
+# Broad legacy scan only when dest is empty or console.password-minted is present (never
+# clobber a reused FR #3863 GUID that simply lacks nickserv-ok yet).
 $destPw = Join-Path $ConsoleHome 'console.password'
-$destPwEmpty = (-not (Test-Path -LiteralPath $destPw)) -or -not ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
-if ($destPwEmpty) {
-    $pwSources = New-Object System.Collections.Generic.List[string]
-    if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
-    if ($priorId -and $priorId.ConsoleHome) {
-        [void]$pwSources.Add((Join-Path ([string]$priorId.ConsoleHome) 'console.password'))
-    }
+$destBody = ''
+if (Test-Path -LiteralPath $destPw) {
+    $destBody = ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+}
+$mintMarker = Join-Path $ConsoleHome 'console.password-minted'
+$destPwEmpty = -not $destBody
+$pwSources = New-Object System.Collections.Generic.List[string]
+# Authoritative first - these overwrite a wrong mint in dest.
+if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
+if ($priorId -and $priorId.ConsoleHome) {
+    [void]$pwSources.Add((Join-Path ([string]$priorId.ConsoleHome) 'console.password'))
+}
+$snapPwPath = Join-Path $InstallRoot 'config\airc-install.json'
+if (Test-Path -LiteralPath $snapPwPath) {
+    try {
+        $snapPw = Get-Content -LiteralPath $snapPwPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($snapPw.PasswordFile) { [void]$pwSources.Add([string]$snapPw.PasswordFile) }
+        if ($snapPw.ConsoleHome) {
+            [void]$pwSources.Add((Join-Path ([string]$snapPw.ConsoleHome) 'console.password'))
+        }
+    } catch {}
+}
+$authCount = $pwSources.Count
+# Legacy fill-ins only for empty / mint-marker dest.
+if ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker)) {
     foreach ($legacy in $legacyCandidates) {
         [void]$pwSources.Add((Join-Path $legacy 'console.password'))
     }
-    foreach ($srcPw in $pwSources) {
-        if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
-        if ([string]::Equals((Resolve-Path -LiteralPath $srcPw).Path, (Join-Path $ConsoleHome 'console.password'), [StringComparison]::OrdinalIgnoreCase)) {
+    [void]$pwSources.Add((Join-Path $InstallRoot 'home\console.password'))
+}
+$srcIndex = 0
+foreach ($srcPw in $pwSources) {
+    $isAuth = ($srcIndex -lt $authCount)
+    $srcIndex++
+    if (-not $isAuth -and -not ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker))) { continue }
+    if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
+    try {
+        $srcResolved = (Resolve-Path -LiteralPath $srcPw).Path
+        $destResolved = $destPw
+        if (Test-Path -LiteralPath $destPw) { $destResolved = (Resolve-Path -LiteralPath $destPw).Path }
+        if ([string]::Equals($srcResolved, $destResolved, [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }
-        $body = ((Get-Content -LiteralPath $srcPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
-        if (-not $body) { continue }
-        New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
-        [IO.File]::WriteAllText($destPw, $body + "`n", (New-Object System.Text.UTF8Encoding $false))
-        Write-Host "INFO FR #3900 migrated console.password from $srcPw"
+    } catch { continue }
+    $body = ((Get-Content -LiteralPath $srcPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+    if (-not $body) { continue }
+    if ($destBody -and [string]::Equals($body, $destBody, [StringComparison]::Ordinal)) {
+        if (Test-Path -LiteralPath $mintMarker) {
+            Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+        }
         break
     }
+    # Auth prior overwrites dest always; legacy only when empty/minted.
+    if (-not $isAuth -and $destBody -and -not (Test-Path -LiteralPath $mintMarker)) { continue }
+    New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
+    [IO.File]::WriteAllText($destPw, $body + "`n", (New-Object System.Text.UTF8Encoding $false))
+    if (Test-Path -LiteralPath $mintMarker) {
+        Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "INFO FR #3900 prefer prior console.password / migrated console.password from $srcPw"
+    break
 }
 
-# FR #3287: resolve capabilities (MSI props > prior AppParameters/json > fresh off / upgrade operators).
+# FR #3287 / #4030: resolve capabilities (MSI props > prior AppParameters/json > fleet operators).
 $hadPriorService = [bool](Get-Service -Name 'Airc' -ErrorAction SilentlyContinue) `
     -or [bool](Get-Service -Name 'AircConsole' -ErrorAction SilentlyContinue) `
     -or [bool]$priorAppParams -or ($priorId -and $priorId.ConsoleHome) `
@@ -381,7 +427,8 @@ try {
     elseif (Get-Service -Name 'ircBob' -ErrorAction SilentlyContinue) { $isBobMachine = $true }
 } catch {}
 # FR #3393: workstation defaults shell=off unless MSI/CLI set explicitly (ignore prior).
-# FR #4030: Bob machines default operators; migrate legacy fresh-default off unless explicit.
+# FR #4030 / 1.0.0: fleet fresh default operators (Bob detect is belt-and-braces); migrate
+# legacy fresh-default / unmarked shell=off unless explicit AIRC_SHELL / shell_source=explicit.
 $shellSource = 'fresh-default'
 if ($expShell) {
     $resolvedShell = $expShell
@@ -400,6 +447,13 @@ elseif ($isBobMachine) {
         $resolvedShell = 'operators'
         if ($priorShell -eq 'operators') { $shellSource = 'preserved' } else { $shellSource = 'bob-default' }
     }
+} elseif ($priorShell -eq 'off' -and ($priorShellExplicit -or $priorShellSource -eq 'explicit')) {
+    $resolvedShell = 'off'
+    $shellSource = 'explicit'
+} elseif ($priorShell -eq 'off' -and ($priorShellSource -eq '' -or $priorShellSource -eq 'fresh-default')) {
+    $resolvedShell = 'operators'
+    $shellSource = 'migrated-from-fresh-off'
+    Write-Host 'INFO FR #4030 migrating shell=off -> operators (legacy fleet fresh-default)'
 } elseif ($priorShell -in @('off', 'operators')) {
     $resolvedShell = $priorShell
     $shellSource = 'preserved'
@@ -407,7 +461,8 @@ elseif ($isBobMachine) {
     $resolvedShell = 'operators'
     $shellSource = 'upgrade-default'
 } else {
-    $resolvedShell = 'off'
+    # FR #4030 / 1.0.0: fleet fresh default operators (was off; Bob-detect miss wrote fresh-default off).
+    $resolvedShell = 'operators'
     $shellSource = 'fresh-default'
 }
 # FR #4030: profile shell_source labels (resolve pins stay one-liners for mrb3460/fr3393)

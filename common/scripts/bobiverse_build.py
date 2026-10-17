@@ -29,6 +29,8 @@ except Exception:  # pragma: no cover - PyYAML may be absent in slim envs
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RELEASE_BLOCKER_LABEL = "release-blocker"
 FEATURE_REQUEST_LABEL = "feature-request"
+# FR #4316: guard/runner aborts are reproducible anywhere the suite runs — not ionos-only.
+MACHINE_ANY_LABEL = "machine:any"
 
 
 # ------------------------------------------------------------------ recipe
@@ -698,6 +700,7 @@ class FakeGitHubFiler(GitHubFiler):
             "labels": list(labels or []),
             "state": "open",
             "repo": key,
+            "url": f"https://github.com/{key}/issues/{num}",
         }
         self.issues.setdefault(key, []).append(issue)
         return issue
@@ -717,6 +720,7 @@ def file_blocker_or_dedupe(
     failure: FailureClass,
     log_excerpt: str = "",
     build_url: str = "",
+    extra_labels: Iterable[str] | None = None,
 ) -> dict:
     """Create release-blocker FR or comment on an open duplicate (one issue per root cause)."""
     open_issues = filer.list_open_issues(repo)
@@ -730,6 +734,11 @@ def file_blocker_or_dedupe(
         build_url=build_url,
     )
     labels = [FEATURE_REQUEST_LABEL, RELEASE_BLOCKER_LABEL]
+    for lab in extra_labels or []:
+        s = str(lab).strip()
+        if s and s not in labels:
+            labels.append(s)
+    repo_n = normalize_repo(repo)
     if hit:
         number = int(hit["number"])
         note = (
@@ -740,18 +749,51 @@ def file_blocker_or_dedupe(
         return {
             "action": "commented",
             "number": number,
-            "repo": repo,
+            "repo": repo_n,
             "kind": failure.kind,
+            "test_id": failure.test_id,
+            "url": f"https://github.com/{repo_n}/issues/{number}",
+            "labels": labels,
         }
     title = f"release-blocker: {failure.test_id} ({version})"
     created = filer.create_issue(repo, title, body, labels=labels)
+    number = int(created["number"])
+    url = str(created.get("url") or "").strip() or f"https://github.com/{repo_n}/issues/{number}"
     return {
         "action": "created",
-        "number": int(created["number"]),
-        "repo": repo,
+        "number": number,
+        "repo": repo_n,
         "kind": failure.kind,
+        "test_id": failure.test_id,
+        "url": url,
         "labels": labels,
     }
+
+
+def file_runner_abort_blocker(
+    filer: GitHubFiler,
+    *,
+    repo: str,
+    version: str,
+    ref: str,
+    exc: BaseException,
+    suite_name: str = "",
+) -> dict:
+    """FR #4316: auto-file for LiveStateTouched / unexpected runner aborts (machine:any)."""
+    if isinstance(exc, LiveStateTouched):
+        step = f"guard:LiveStateTouched:{suite_name or 'build'}"
+    else:
+        step = f"runner:{suite_name or 'build'}:{type(exc).__name__}"
+    failure = classify_step_failure(step)
+    return file_blocker_or_dedupe(
+        filer,
+        repo=repo,
+        version=version,
+        ref=ref,
+        failure=failure,
+        log_excerpt=f"{type(exc).__name__}: {exc}",
+        extra_labels=[MACHINE_ANY_LABEL],
+    )
 
 
 @dataclass
@@ -967,103 +1009,25 @@ class BuildRunner:
         assets: list = []
 
         for suite in self.recipe.suites:
-            rendered_cmd = render_template(
-                suite.cmd,
-                version=self.version,
-                out_dir=str(out_dir),
-                ref=self.ref,
-            )
-            ref_res = self.run_command_fn(
-                rendered_cmd,
-                cwd=self._suite_cwd(suite),
-                env=dict(suite.env or {}),
-                timeout=float(suite.timeout),
-                name=suite.name,
-                ref_or_baseline=self.ref,
-            )
-            report.suite_results.append(ref_res)
-            self._write_log(f"{suite.name}-ref.log", ref_res.stdout)
-            if ref_res.timed_out:
-                failure = classify_step_failure(f"suite:{suite.name}:timeout")
-                filed = file_blocker_or_dedupe(
-                    self.filer,
-                    repo=self.repo,
+            try:
+                rendered_cmd = render_template(
+                    suite.cmd,
                     version=self.version,
+                    out_dir=str(out_dir),
                     ref=self.ref,
-                    failure=failure,
-                    log_excerpt=ref_res.stdout[-1500:],
                 )
-                report.blockers_filed.append(filed)
-                blocking = True
-                continue
-
-            ref_failed = int(ref_res.exit_code) != 0
-
-            base_cmd = render_template(
-                suite.cmd,
-                version=self.version,
-                out_dir=str(out_dir),
-                ref=baseline,
-            )
-            base_res = self.run_command_fn(
-                base_cmd,
-                cwd=self._suite_cwd(suite, baseline=True),
-                env=dict(suite.env or {}),
-                timeout=float(suite.timeout),
-                name=suite.name,
-                ref_or_baseline=baseline,
-            )
-            report.suite_results.append(base_res)
-            self._write_log(f"{suite.name}-baseline.log", base_res.stdout)
-            if base_res.timed_out:
-                failure = classify_step_failure(f"suite:{suite.name}:baseline-timeout")
-                filed = file_blocker_or_dedupe(
-                    self.filer,
-                    repo=self.repo,
-                    version=self.version,
-                    ref=baseline,
-                    failure=failure,
-                    log_excerpt=base_res.stdout[-1500:],
-                )
-                report.blockers_filed.append(filed)
-                blocking = True
-            baseline_failed = int(base_res.exit_code) != 0 or base_res.timed_out
-
-            solo_passed = False
-            if ref_failed and not ref_res.timed_out:
-                solo = self.run_command_fn(
+                ref_res = self.run_command_fn(
                     rendered_cmd,
                     cwd=self._suite_cwd(suite),
                     env=dict(suite.env or {}),
                     timeout=float(suite.timeout),
                     name=suite.name,
-                    ref_or_baseline=f"{self.ref}-solo",
+                    ref_or_baseline=self.ref,
                 )
-                report.suite_results.append(solo)
-                self._write_log(f"{suite.name}-solo.log", solo.stdout)
-                if solo.timed_out:
-                    failure = classify_step_failure(f"suite:{suite.name}:solo-timeout")
-                    filed = file_blocker_or_dedupe(
-                        self.filer,
-                        repo=self.repo,
-                        version=self.version,
-                        ref=self.ref,
-                        failure=failure,
-                        log_excerpt=solo.stdout[-1500:],
-                    )
-                    report.blockers_filed.append(filed)
-                    blocking = True
-                    continue
-                solo_passed = int(solo.exit_code) == 0
-
-            if ref_failed:
-                failure = classify_failure(
-                    suite.name,
-                    ref_failed=True,
-                    baseline_failed=baseline_failed,
-                    solo_passed=solo_passed,
-                )
-                if failure.kind in ("new_regression", "step_failure"):
+                report.suite_results.append(ref_res)
+                self._write_log(f"{suite.name}-ref.log", ref_res.stdout)
+                if ref_res.timed_out:
+                    failure = classify_step_failure(f"suite:{suite.name}:timeout")
                     filed = file_blocker_or_dedupe(
                         self.filer,
                         repo=self.repo,
@@ -1074,6 +1038,100 @@ class BuildRunner:
                     )
                     report.blockers_filed.append(filed)
                     blocking = True
+                    continue
+
+                ref_failed = int(ref_res.exit_code) != 0
+
+                base_cmd = render_template(
+                    suite.cmd,
+                    version=self.version,
+                    out_dir=str(out_dir),
+                    ref=baseline,
+                )
+                base_res = self.run_command_fn(
+                    base_cmd,
+                    cwd=self._suite_cwd(suite, baseline=True),
+                    env=dict(suite.env or {}),
+                    timeout=float(suite.timeout),
+                    name=suite.name,
+                    ref_or_baseline=baseline,
+                )
+                report.suite_results.append(base_res)
+                self._write_log(f"{suite.name}-baseline.log", base_res.stdout)
+                if base_res.timed_out:
+                    failure = classify_step_failure(f"suite:{suite.name}:baseline-timeout")
+                    filed = file_blocker_or_dedupe(
+                        self.filer,
+                        repo=self.repo,
+                        version=self.version,
+                        ref=baseline,
+                        failure=failure,
+                        log_excerpt=base_res.stdout[-1500:],
+                    )
+                    report.blockers_filed.append(filed)
+                    blocking = True
+                baseline_failed = int(base_res.exit_code) != 0 or base_res.timed_out
+
+                solo_passed = False
+                if ref_failed and not ref_res.timed_out:
+                    solo = self.run_command_fn(
+                        rendered_cmd,
+                        cwd=self._suite_cwd(suite),
+                        env=dict(suite.env or {}),
+                        timeout=float(suite.timeout),
+                        name=suite.name,
+                        ref_or_baseline=f"{self.ref}-solo",
+                    )
+                    report.suite_results.append(solo)
+                    self._write_log(f"{suite.name}-solo.log", solo.stdout)
+                    if solo.timed_out:
+                        failure = classify_step_failure(f"suite:{suite.name}:solo-timeout")
+                        filed = file_blocker_or_dedupe(
+                            self.filer,
+                            repo=self.repo,
+                            version=self.version,
+                            ref=self.ref,
+                            failure=failure,
+                            log_excerpt=solo.stdout[-1500:],
+                        )
+                        report.blockers_filed.append(filed)
+                        blocking = True
+                        continue
+                    solo_passed = int(solo.exit_code) == 0
+
+                if ref_failed:
+                    failure = classify_failure(
+                        suite.name,
+                        ref_failed=True,
+                        baseline_failed=baseline_failed,
+                        solo_passed=solo_passed,
+                    )
+                    if failure.kind in ("new_regression", "step_failure"):
+                        filed = file_blocker_or_dedupe(
+                            self.filer,
+                            repo=self.repo,
+                            version=self.version,
+                            ref=self.ref,
+                            failure=failure,
+                            log_excerpt=ref_res.stdout[-1500:],
+                        )
+                        report.blockers_filed.append(filed)
+                        blocking = True
+            except Exception as exc:
+                # FR #4316: LiveStateTouched / unexpected runner aborts must auto-file
+                # (suite regressions already file above; guard raises never reached that path).
+                filed = file_runner_abort_blocker(
+                    self.filer,
+                    repo=self.repo,
+                    version=self.version,
+                    ref=self.ref,
+                    exc=exc,
+                    suite_name=suite.name,
+                )
+                report.blockers_filed.append(filed)
+                report.errors.append(f"{type(exc).__name__}: {exc}")
+                blocking = True
+                break
 
         if blocking:
             report.errors.append("blockers present; skipping pack/release")
@@ -1196,7 +1254,17 @@ class BuildRunner:
                         report.pack_ok = False
                         blocking = True
             except Exception as exc:
+                # FR #4316: pack-step LiveStateTouched / unexpected abort must auto-file.
                 report.errors.append(f"pack: {type(exc).__name__}: {exc}")
+                filed = file_runner_abort_blocker(
+                    self.filer,
+                    repo=self.repo,
+                    version=self.version,
+                    ref=self.ref,
+                    exc=exc,
+                    suite_name="pack",
+                )
+                report.blockers_filed.append(filed)
                 report.pack_ok = False
                 blocking = True
                 assets = []
@@ -1286,9 +1354,15 @@ class BuildRunner:
             )
         else:
             n = len(report.blockers_filed)
+            urls = [
+                str(b.get("url") or "").strip()
+                for b in report.blockers_filed
+                if str(b.get("url") or "").strip()
+            ]
+            url_bit = (" blocker=" + " ".join(urls)) if urls else ""
             report.announce_lines.append(
                 f"BUILD fail {self.repo} version={self.version} ref={self.ref} "
-                f"blockers={n} pack={report.pack_ok} release={report.release_ok}"
+                f"blockers={n} pack={report.pack_ok} release={report.release_ok}{url_bit}"
             )
         return report
 
@@ -1933,7 +2007,7 @@ def isolated_suite_env(work_dir: Path | str, tag: str) -> dict:
 
 def live_state_fingerprint(homes: Iterable[Path | str]) -> dict:
     """Damage signals only: the live chair rewrites these files all the time, so a hash
-    diff is not damage. Track queue row keys and focus repos (#4183)."""
+    diff is not damage. Track queue row keys and focus repos/items (#4183 / #4408)."""
     out: dict = {}
     for h in homes:
         q = Path(h) / "queue.json"
@@ -1959,11 +2033,18 @@ def live_state_fingerprint(homes: Iterable[Path | str]) -> dict:
 
 
 def live_state_damage(before: dict, after: dict, *, max_lost: int = 5) -> list[str]:
+    """Flag real wipe / mass loss only.
+
+    Queue and focus use the same ``max_lost`` threshold (#4185 / #4408). A concurrent
+    chair resync may prune a few closed focus items (FR #1508 / #1520) or rotate a
+    handful of queue rows while a long suite step runs; that is not suite damage.
+    Losing more than ``max_lost`` keys still fails closed (the #4183 wipe case).
+    """
     bad = []
     for k, was in before.items():
         now = after.get(k, set())
         lost = was - now
-        if len(lost) > max_lost or (k.endswith("focus.json") and lost):
+        if len(lost) > max_lost:
             bad.append(f"{k} lost {len(lost)}")
     return bad
 
@@ -1976,12 +2057,57 @@ class LiveStateTouched(RuntimeError):
 # token-less (#4183); only these named steps get the runner's GH_TOKEN back.
 GH_AUTH_STEPS = frozenset({"assert"})
 
+# FR #4349: airc pack (FR #4216) must embed Ergo PASS. Isolation blanks AGENTIC/BOB_IRC and
+# remaps USERPROFILE, so inject AIRC_PACK_ERGO_PASSWORD for pack only (never for suites).
+PACK_SECRET_STEPS = frozenset({"pack"})
+
 
 def gh_auth_env(source_env: dict | None = None) -> dict:
     """GH_TOKEN for a gh step, taken from the runner env (never logged). Empty dict if none."""
     src = os.environ if source_env is None else source_env
     tok = (src.get("GH_TOKEN") or src.get("GITHUB_TOKEN") or "").strip()
     return {"GH_TOKEN": tok, "GITHUB_TOKEN": tok} if tok else {}
+
+
+def pack_ergo_env(source_env: dict | None = None) -> dict:
+    """AIRC_PACK_ERGO_PASSWORD for the pack step from the live runner (never logged).
+
+    Reads real runner env / fleet install paths — not the isolated suite USERPROFILE (#4349).
+    """
+    src = os.environ if source_env is None else source_env
+    for key in (
+        "AIRC_PACK_ERGO_PASSWORD",
+        "AGENTIC_IRC_PASSWORD",
+        "AIRC_CONSOLE_SERVER_PASSWORD",
+        "BOB_IRC_PASSWORD",
+    ):
+        val = (src.get(key) or "").strip()
+        if val:
+            return {"AIRC_PACK_ERGO_PASSWORD": val}
+    cands: list[Path] = []
+    up = (src.get("USERPROFILE") or src.get("HOME") or "").strip()
+    if up:
+        cands.append(Path(up) / ".grok" / "ergo" / "connect.password")
+        cands.append(Path(up) / ".grok" / "ergo" / "ergo.password")
+    ai_roots: list[str] = []
+    bob_ai = (src.get("BOB_AI_ROOT") or os.environ.get("BOB_AI_ROOT") or "").strip()
+    if bob_ai:
+        ai_roots.append(bob_ai)
+    for root in (r"C:\ai", r"D:\ai"):
+        if root not in ai_roots:
+            ai_roots.append(root)
+    for root in ai_roots:
+        for prod in ("bob", "airc", "jeeves"):
+            cands.append(Path(root) / prod / "config" / "ergo.password")
+    for path in cands:
+        try:
+            if path.is_file():
+                body = path.read_text(encoding="utf-8").strip()
+                if body:
+                    return {"AIRC_PACK_ERGO_PASSWORD": body}
+        except OSError:
+            continue
+    return {}
 
 
 GH_AUTH_MISSING = (
@@ -2008,23 +2134,29 @@ def gh_auth_preflight(gh_runner: Callable | None = None, env: dict | None = None
 
 
 def guarded_run_command(work_dir: Path | str, live_homes: Iterable[Path | str], inner: Callable | None = None,
-                        gh_steps: Iterable[str] = GH_AUTH_STEPS) -> Callable:
+                        gh_steps: Iterable[str] = GH_AUTH_STEPS,
+                        pack_secret_steps: Iterable[str] = PACK_SECRET_STEPS) -> Callable:
     """run_command_fn: isolated env for every step + fail closed if live chair state changes.
 
     Steps named in ``gh_steps`` get GH_TOKEN from the runner env (#4188); others stay blanked.
     Isolation home/URL keys always win over ``suite.env`` (FR #4315).
+    Pack steps then get AIRC_PACK_ERGO_PASSWORD from the live runner (FR #4349 / #4216).
     """
     inner = inner or run_command
     homes = [Path(h) for h in live_homes]
     gh_steps = frozenset(gh_steps)
+    pack_secret_steps = frozenset(pack_secret_steps)
 
     def _run(cmd, cwd=None, env=None, timeout=None, *, name="cmd", ref_or_baseline=""):
         iso = isolated_suite_env(work_dir, f"{name}-{ref_or_baseline}")
         merged = dict(env or {})
+        # Isolation wins over suite.env for homes/URLs (FR #4315); blanks GH/IRC secrets.
+        merged.update(iso)
+        # Re-inject after iso: assert needs GH (#4188); pack needs Ergo PASS for airc (#4349/#4216).
         if name in gh_steps:
             merged.update(gh_auth_env())
-        # Isolation last so suite.env cannot point BOB_DIGEST_HOME at the live chair.
-        merged.update(iso)
+        if name in pack_secret_steps:
+            merged.update(pack_ergo_env())
         before = live_state_fingerprint(homes)
         res = inner(cmd, cwd=cwd, env=merged, timeout=timeout, name=name, ref_or_baseline=ref_or_baseline)
         after = live_state_fingerprint(homes)

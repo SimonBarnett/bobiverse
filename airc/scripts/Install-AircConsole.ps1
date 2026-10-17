@@ -175,7 +175,8 @@ if ($MachineId) {
 }
 $script:AircConsoleMachineId = $MachineId
 if ($MachineId) {
-    Write-Host "INFO MachineId=$MachineId (console will JOIN #$MachineId)"
+    # FR #3834 / 1.0.0: never claim unconditional JOIN #<machine> (msi-install.log on walrus).
+    Write-Host ("INFO MachineId={0} (console joins #{0} when ChanServ-registered, else #wonderland)" -f $MachineId)
 } else {
     Write-Warning ("FR #4014: Install without -MachineId / BOB_MACHINE_ID uses COMPUTERNAME={0}; console will use #{0} when registered, else #wonderland." -f $env:COMPUTERNAME)
 }
@@ -337,6 +338,77 @@ if ($homeFix.PasswordFile) { $PasswordFile = $homeFix.PasswordFile }
 Remove-AircDefaultProfileSecrets
 New-Item -ItemType Directory -Force -Path $ConsoleHome | Out-Null
 
+# FR #3900 / 1.0.0: prefer prior console.password before Initialize mints (parity with Install-Airc).
+# Authoritative prior PasswordFile / airc-install.json overwrite a wrong mint; legacy fills empty/minted.
+$destPw = if ($PasswordFile) { $PasswordFile } else { Join-Path $ConsoleHome 'console.password' }
+$destBody = ''
+if (Test-Path -LiteralPath $destPw) {
+    $destBody = ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+}
+$mintMarker = Join-Path $ConsoleHome 'console.password-minted'
+$destPwEmpty = -not $destBody
+$pwSources = New-Object System.Collections.Generic.List[string]
+if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
+if ($priorId -and $priorId.ConsoleHome) {
+    [void]$pwSources.Add((Join-Path ([string]$priorId.ConsoleHome) 'console.password'))
+}
+$snapPwPath = Join-Path $installRootForHome 'config\airc-install.json'
+if (Test-Path -LiteralPath $snapPwPath) {
+    try {
+        $snapPw = Get-Content -LiteralPath $snapPwPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($snapPw.PasswordFile) { [void]$pwSources.Add([string]$snapPw.PasswordFile) }
+        if ($snapPw.ConsoleHome) {
+            [void]$pwSources.Add((Join-Path ([string]$snapPw.ConsoleHome) 'console.password'))
+        }
+    } catch {}
+}
+$authCount = $pwSources.Count
+# FR #4388: include LocalSystem SystemProfile homes (DC / quiet MSI often parks GUID there).
+$legacyCandidates = @(
+    (Join-Path $env:USERPROFILE '.airc'),
+    (Join-Path $env:USERPROFILE '.airc-console'),
+    (Join-Path $env:SystemDrive 'Users\Administrator\.airc'),
+    (Join-Path $env:SystemDrive 'Users\Administrator\.airc-console'),
+    (Join-Path $env:SystemDrive 'Users\Default\.airc'),
+    (Join-Path $env:SystemDrive 'Users\Default\.airc-console'),
+    (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc'),
+    (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc-console')
+)
+if ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker)) {
+    foreach ($legacy in $legacyCandidates) {
+        [void]$pwSources.Add((Join-Path $legacy 'console.password'))
+    }
+    [void]$pwSources.Add((Join-Path $installRootForHome 'home\console.password'))
+}
+$srcIndex = 0
+foreach ($srcPw in $pwSources) {
+    $isAuth = ($srcIndex -lt $authCount)
+    $srcIndex++
+    if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
+    try {
+        $srcResolved = (Resolve-Path -LiteralPath $srcPw).Path
+        $destResolved = $destPw
+        if (Test-Path -LiteralPath $destPw) { $destResolved = (Resolve-Path -LiteralPath $destPw).Path }
+        if ([string]::Equals($srcResolved, $destResolved, [StringComparison]::OrdinalIgnoreCase)) { continue }
+    } catch { continue }
+    $body = ((Get-Content -LiteralPath $srcPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
+    if (-not $body) { continue }
+    if ($destBody -and [string]::Equals($body, $destBody, [StringComparison]::Ordinal)) {
+        if (Test-Path -LiteralPath $mintMarker) {
+            Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+        }
+        break
+    }
+    if (-not $isAuth -and $destBody -and -not (Test-Path -LiteralPath $mintMarker)) { continue }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destPw) | Out-Null
+    [IO.File]::WriteAllText($destPw, $body + "`n", (New-Object System.Text.UTF8Encoding $false))
+    if (Test-Path -LiteralPath $mintMarker) {
+        Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "INFO FR #3900 prefer prior console.password / migrated console.password from $srcPw"
+    break
+}
+
 function Write-AircSecretFile {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -376,14 +448,22 @@ function Initialize-AircConsoleHomeSecrets {
     $opsFile = $null
 
     # #271 NickServ GUID - mint here so first service start is unattended.
+    # FR #3900 / 1.0.0: write a mint-marker file so the service treats an
+    # Install-minted GUID as fresh (FR #3763 skip SASL), not FR #3863 reuse.
     if (-not $NickServPasswordFile) {
         $NickServPasswordFile = Join-Path $ConsoleHomeDir 'console.password'
     }
+    $mintMarkerPath = Join-Path $ConsoleHomeDir 'console.password-minted'
     if (-not (Test-Path -LiteralPath $NickServPasswordFile) -or -not (Get-Content -LiteralPath $NickServPasswordFile -Raw -ErrorAction SilentlyContinue).Trim()) {
         $guid = [guid]::NewGuid().ToString()
         Write-AircSecretFile -Path $NickServPasswordFile -Secret $guid
-        Write-Host "INFO minted NickServ GUID -> $NickServPasswordFile"
+        [IO.File]::WriteAllText($mintMarkerPath, "install`n", (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "INFO minted NickServ GUID -> $NickServPasswordFile (password-minted marker)"
     } else {
+        if (Test-Path -LiteralPath $mintMarkerPath) {
+            # Kept an existing GUID - marker from a prior aborted mint must not linger.
+            Remove-Item -LiteralPath $mintMarkerPath -Force -ErrorAction SilentlyContinue
+        }
         Write-Host "INFO keep $NickServPasswordFile"
     }
 
@@ -527,7 +607,8 @@ if ($useAircExe) {
     if ($inst.ExitCode -ne 0) {
         throw ("nssm install failed: {0} ({1})" -f $inst.ExitCode, ($inst.Output -join ' '))
     }
-    $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl"
+    # FR #3834: bake shop-mode=auto so upgrades never inherit a forced registered JOIN.
+    $appParams = "--home `"$ConsoleHome`" --password-file `"$PasswordFile`" --sasl --shop-mode auto"
     if ($MachineId) { $appParams += " --machine `"$MachineId`"" }
     # FR #3639: always irc_ops; never --operators-file.
     $appParams += " --auth-mode $AuthMode"
@@ -581,6 +662,7 @@ if ($useAircExe) {
     $appParams = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" -ServiceMode -ConsoleHome `"$ConsoleHome`""
     $appParams += " -Python `"$Python`""
     $appParams += " -PasswordFile `"$PasswordFile`""
+    $appParams += " -ShopMode auto"
     if ($MachineId) { $appParams += " -MachineId `"$MachineId`"" }
     # FR #3639: always irc_ops; never -OperatorsFile.
     $appParams += " -AuthMode $AuthMode"

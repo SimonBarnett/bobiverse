@@ -83,11 +83,20 @@ _last_keepalive_log_mono = 0.0
 
 
 def info(msg: str) -> None:
-    """ISO-UTC timestamped stdout line; always flush (FR #1546)."""
+    """ISO-UTC timestamped stdout line; always flush (FR #1546).
+
+    Never raise UnicodeEncodeError on cp1252 consoles (FR #4397; mirror bob-ear #4396).
+    """
     from datetime import datetime, timezone
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"{ts} {msg}", flush=True)
+    line = f"{ts} {msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        safe = str(line).encode(enc, errors="replace").decode(enc, errors="replace")
+        print(safe, flush=True)
 
 
 def log_auth_allow(hr) -> None:  # noqa: ANN001
@@ -150,10 +159,12 @@ class AircConsoleService:
         else:
             # FR #3834: always {machine}_console (wonderland is shared; keep reserved nick).
             self.nick = machine_console_nick(self.machine)
-        if self.shop_mode == "wonderland":
-            self.channel = self.wonderland_channel
-        else:
+        # FR #3834 / 1.0.0 regression: auto starts on #wonderland until ChanServ
+        # settles (never advertise/join #<machine> before registered probe).
+        if self.shop_mode == "registered":
             self.channel = self.shop_channel
+        else:
+            self.channel = self.wonderland_channel
         self._nick_retries = 0
         # #34: nick the SERVER says we hold (001 / own NICK echo), not local intent.
         self.server_nick: str | None = None
@@ -172,18 +183,31 @@ class AircConsoleService:
         )
         # FR #3763: marker that NickServ account exists for this home (after 903 / REGISTER).
         self._nickserv_ok_path = self.home / "console.nickserv-ok"
-        # FR #3863: only a GUID minted *this* process skips SASL. A reused
-        # console.password (upgrade from builds that never wrote nickserv-ok)
-        # must try SASL or the reserved nick 433-loops forever.
+        # FR #3900 / 1.0.0: Install-AircConsole writes console.password-minted when it
+        # mints a GUID. That file must count as minted (skip SASL) even though the
+        # password file already existed when this process started — otherwise FR #3863
+        # treats the install mint as reuse, SASL 904s against the old NickServ GUID,
+        # and the reserved nick 433-loops (walrus 1.0.0 release-blocker).
+        self._nickserv_mint_marker = self.home / "console.password-minted"
+        # FR #3863: only a GUID minted *this* process (or install-mint marker) skips
+        # SASL. A reused console.password (upgrade from builds that never wrote
+        # nickserv-ok) must try SASL or the reserved nick 433-loops forever.
         pw_existed = False
+        install_minted = False
         try:
             pw_existed = nickserv_path.is_file() and bool(
                 nickserv_path.read_text(encoding="utf-8").strip()
             )
         except OSError:
             pw_existed = False
+        try:
+            install_minted = self._nickserv_mint_marker.is_file()
+        except OSError:
+            install_minted = False
         self.nickserv_password = ensure_nickserv_password(nickserv_path, mint=True)
-        self._nickserv_pw_minted = bool(self.nickserv_password) and not pw_existed
+        self._nickserv_pw_minted = bool(self.nickserv_password) and (
+            (not pw_existed) or install_minted
+        )
         self.password = self.nickserv_password  # SASL / identify use NickServ secret
         self.server_password = resolve_server_password(
             home=self.home,
@@ -563,13 +587,40 @@ class AircConsoleService:
                 self._nickserv_ok_path.write_text(f"{reason}\n", encoding="ascii")
         except OSError as e:
             info(f"INFO FR #3763 nickserv-ok write failed: {e}")
+        # FR #3900 / 1.0.0: account now matches console.password — drop install mint marker.
+        try:
+            marker = getattr(self, "_nickserv_mint_marker", None) or (
+                Path(self.home) / "console.password-minted"
+            )
+            if marker.is_file():
+                marker.unlink()
+        except OSError:
+            pass
 
     def _legacy_console_password_paths(self) -> list[Path]:
-        """FR #3900: candidate console.password files from pre-Airc / profile homes."""
+        """FR #3900 / #4388: candidate console.password files from prior identity / profile homes."""
         home = Path(self.home)
         drive = Path(home.anchor) if home.anchor else Path("C:/")
         userprofile = Path(os.environ.get("USERPROFILE") or "")
+        system_root = Path(os.environ.get("SystemRoot") or (str(drive / "Windows")))
+        program_data = Path(os.environ.get("ProgramData") or (str(drive / "ProgramData")))
         out: list[Path] = []
+        # Authoritative: airc-install.json beside <install>/home → <install>/config.
+        if home.name.lower() == "home":
+            snap = home.parent / "config" / "airc-install.json"
+            try:
+                if snap.is_file():
+                    import json
+
+                    data = json.loads(snap.read_text(encoding="utf-8"))
+                    pf = (data.get("PasswordFile") or "").strip()
+                    ch = (data.get("ConsoleHome") or "").strip()
+                    if pf:
+                        out.append(Path(pf))
+                    if ch:
+                        out.append(Path(ch) / "console.password")
+            except (OSError, ValueError, TypeError):
+                pass
         for base in (
             userprofile / ".airc",
             userprofile / ".airc-console",
@@ -577,6 +628,11 @@ class AircConsoleService:
             drive / "Users" / "Administrator" / ".airc-console",
             drive / "Users" / "Default" / ".airc",
             drive / "Users" / "Default" / ".airc-console",
+            # FR #4388: quiet MSI as LocalSystem often parks GUID under SystemProfile.
+            system_root / "System32" / "config" / "systemprofile" / ".airc",
+            system_root / "System32" / "config" / "systemprofile" / ".airc-console",
+            program_data / "Bobiverse" / "airc" / "home",
+            program_data / "Airc" / "home",
         ):
             if not base or str(base) in (".", ""):
                 continue
@@ -638,6 +694,111 @@ class AircConsoleService:
             except OSError:
                 pass
             info(f"INFO FR #3900 healed console.password from legacy {cand}; reconnecting")
+            return True
+        info("INFO FR #4388 legacy heal found no alternate console.password")
+        return False
+
+    def _load_oper_credentials_for_reclaim(self) -> tuple[str, str] | None:
+        """FR #4388: load Ergo oper creds for one-shot NickServ PASSWD reclaim (never log secrets)."""
+        try:
+            import chair_oper
+        except ImportError:
+            return None
+        home = Path(self.home)
+        candidates: list[Path] = []
+        env_file = (os.environ.get("BOB_OPER_FILE") or "").strip()
+        if env_file:
+            candidates.append(Path(env_file))
+        # <install>/config/oper.cred when ConsoleHome is <install>/home
+        if home.name.lower() == "home":
+            candidates.append(home.parent / "config" / "oper.cred")
+            # Sibling jeeves on the same <ai root> (fleet chair box).
+            candidates.append(home.parent.parent / "jeeves" / "config" / "oper.cred")
+        else:
+            candidates.append(home / "oper.cred")
+            candidates.append(home.parent / "config" / "oper.cred")
+        env_pw = (os.environ.get("BOB_OPER_PASSWORD") or "").strip()
+        env_name = (os.environ.get("BOB_OPER_NAME") or chair_oper.DEFAULT_OPER_NAME).strip()
+        if env_pw:
+            return env_name or chair_oper.DEFAULT_OPER_NAME, env_pw
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
+                continue
+            loaded = chair_oper.load_credentials(path)
+            if loaded:
+                return loaded
+            # Plain ergo-oper*.txt style (not DPAPI) — parse without logging body.
+            try:
+                parsed = chair_oper.parse_oper_file(
+                    path.read_text(encoding="utf-8-sig", errors="replace")
+                )
+            except OSError:
+                parsed = None
+            if parsed:
+                return parsed
+        try:
+            for cand in chair_oper.discover_oper_files():
+                try:
+                    parsed = chair_oper.parse_oper_file(
+                        cand.read_text(encoding="utf-8-sig", errors="replace")
+                    )
+                except OSError:
+                    continue
+                if parsed:
+                    return parsed
+        except OSError:
+            pass
+        return None
+
+    def _try_reclaim_console_password_via_oper(self) -> bool:
+        """FR #4388: after heal fails, OPER + NickServ PASSWD to match local console.password.
+
+        One-shot per process. Returns True when OPER was sent (await 381/491).
+        """
+        if getattr(self, "_fr4388_reclaim_attempted", False):
+            return False
+        self._fr4388_reclaim_attempted = True
+        creds = self._load_oper_credentials_for_reclaim()
+        if not creds:
+            info("INFO FR #4388 no oper credentials for PASSWD reclaim; manual SAPASSWD required")
+            return False
+        name, _password = creds
+        # Keep password only in memory for the OPER line; never log it.
+        self._fr4388_oper_creds = creds
+        self._fr4388_reclaim_state = "oper_sent"
+        self.send(f"OPER {name} {_password}")
+        info(f"INFO FR #4388 reclaim: sent OPER {name} (await 381 then NickServ PASSWD)")
+        return True
+
+    def _handle_oper_reclaim_numeric(self, cmd: str) -> bool:
+        """FR #4388: handle 381/491 while a reclaim OPER is in flight. Returns True if consumed."""
+        state = getattr(self, "_fr4388_reclaim_state", None)
+        if state != "oper_sent":
+            return False
+        if cmd == "381":
+            guid = (self.nickserv_password or "").strip()
+            if not guid:
+                info("ERROR FR #4388 reclaim: empty console.password; cannot PASSWD")
+                self._fr4388_reclaim_state = "failed"
+                self._fr4388_oper_creds = None
+                return True
+            # Prefer PASSWD (post-install §8c); SAPASSWD is the documented alias.
+            self.send(f"PRIVMSG NickServ :PASSWD {self.nick} {guid}")
+            self._fr4388_reclaim_state = "passwd_sent"
+            self._fr4388_oper_creds = None
+            info(
+                f"INFO FR #4388 reclaim: NickServ PASSWD {self.nick} "
+                f"(set to local console.password); reconnecting for SASL"
+            )
+            self._force_reconnect = True
+            return True
+        if cmd in {"491", "464", "481"}:
+            info(f"ERROR FR #4388 reclaim: OPER failed ({cmd}); manual SAPASSWD still required")
+            self._fr4388_reclaim_state = "failed"
+            self._fr4388_oper_creds = None
             return True
         return False
 
@@ -895,6 +1056,10 @@ class AircConsoleService:
                     self.send("CAP END")
                     self._force_reconnect = True
                     return
+                # FR #4388: no alternate GUID — one-shot OPER + NickServ PASSWD reclaim.
+                if cmd == "904" and self._try_reclaim_console_password_via_oper():
+                    self.send("CAP END")
+                    return
                 info(
                     f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
                     f"with console.password. Reset it (NickServ SAPASSWD) or fix console.password; "
@@ -945,17 +1110,18 @@ class AircConsoleService:
         ):
             self._handle_sasl_line(cmd, args, trailing)
 
+        # FR #4388: oper reclaim numerics (381 success / 491+ failure).
+        if cmd in {"381", "491", "464", "481"} and self._handle_oper_reclaim_numeric(cmd):
+            return
+
         if cmd == "001":
             # Welcome --- probe ChanServ (or forced mode) before JOIN.
+            # FR #3834 / 1.0.0: auto ALWAYS probes even with --nick explicit;
+            # never force-JOIN #<machine> unregistered (walrus ops mess).
             self._registered = True
             self._nick_retries = 0
             self.server_nick = args[0] if args else None
-            if self._nick_explicit:
-                # Explicit nick: join current channel (shop unless wonderland forced).
-                self._apply_shop_mode(
-                    "wonderland" if self.shop_mode == "wonderland" else "registered"
-                )
-            elif self.shop_mode == "registered":
+            if self.shop_mode == "registered":
                 self._apply_shop_mode("registered")
             elif self.shop_mode == "wonderland":
                 self._apply_shop_mode("wonderland")

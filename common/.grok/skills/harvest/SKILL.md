@@ -144,6 +144,10 @@ PowerShell:
 # process cue) also skip — tip #2990 class after #2988.
 # FR #4231: tip-loop meta / only-restate Thin FAIL-supersede already-on-main also skip for
 # any -Book (including harvest-agent-skills; class of a-search#1839).
+# FR #4308: also skip thinner tip + durable lesson already on main (a-search#1980/#2283;
+# not contiguous "thin harvest tip"; no tip-loop meta / Thin FAIL order required).
+# FR #4484: also skip FAIL-supersede next to "restates main" / "admit main already has"
+# (class of a-search#3470; not already-on-main / second-copy / job-mrb wording).
 # FR #3827: also catch "stay in"/"durable in bobiverse-bob-job-mrb", "thin harvest tip",
 # "do not append a second copy under harvest" (tip #3826 after #3825 missed belong(s) in).
 # FR #3004: default -Book harvest yields to keyword-inferred product books (bob-worker /
@@ -215,6 +219,7 @@ routes to bobiverse via the split rule.
 
 ## Harvested lessons (intake)
 - FR #4297: dirty install ff-block leaves flat Invoke-BobiverseHarvest.ps1 lagging tip; Sync tip-overlays harvest+intake via Sync-BobiverseHarvestScriptsFromOrigin (class of FR #2581); prefer common\scripts when present; ComposeOnly/service restart refreshes flat copies.
+- FR #4357: PASS of a harvest-lesson / docs/mrb MRB (re-offer + merge origin/main / re-arm / DONE PASS process cues) skips filing another tip (SKIPPED harvest lesson-MRB PASS loop) — stops a-search tip flood after light-triage PASS.
 - FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (SKIPPED; linked to that PR). Product -Repo -> harvest-agent-skills without ExistingPrUrl stays intentional (FR #3189); do not redirect product playbooks to bobiverse harvest.
 - Owner-missing harvest holds titled `harvest: hold for …` are SKIP_FR even with empty labels (FR #3658 / #3317 carve-out from #1682); `gh_filer.ensure_labels` creates `owner-missing` before issue create so unlabeled retry cannot re-offer the hold.
 
@@ -226,6 +231,8 @@ routes to bobiverse via the split rule.
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
 - FR #3824: one harvest per seat+lesson — skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
+- FR #4308: FAIL-supersede skip also matches thinner tip + durable lesson already on main (a-search#1980/#2283 tip-loop class; not contiguous thin harvest tip)
+- FR #4484: FAIL-supersede skip also matches restates main and admit main already has (a-search#3470 class; those phrases are not already-on-main / second-copy / job-mrb)
 - FR #3959 / #3957: FAIL-supersede skip also matches durable home is bobiverse-bob-job-mrb and do not park … under harvest/SKILL.md (words between); CAST IRON already on main is a thin-twin cue (tip #3958 class)
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
@@ -236,6 +243,15 @@ routes to bobiverse via the split rule.
 - When Pack/allow-list adds a script (Fetch-Nssm), update CLIENT_REMAINING_FILES + KEEP_SCRIPTS counts in the same turn as the allow-list change so fr3514 pack-then-client stays green
 - Harvest session summaries / intake PR bodies must never contain the GitHub keyword Closes #N (or Fixes #N) for product FRs --- narrative mentions of stripping accidental Closes still auto-link; write `Closes` as `Close`+`s` split, or say `closing-keyword`, or cite `#N` without Closes/Fixes (MRB #4099)
 - Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
+- needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
+- Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
+- !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe — use same max_lost threshold for focus as queue (#4408)
+- FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
+- BOM-less ASCII gates for Install-Airc*.ps1 / Ensure-BobTrayRunning.ps1 / intake.py must run in CI on every PR (pytest-ascii-bom.yml); comment-only Unicode merges red main when only pytest-gitclaim runs
+- A fixed character window on a harvest digest bullet fails when an earlier clause grows. Measure the needle offset and widen the pin; do not rewrite the skill bullet when the phrases are still in the same sentence.
+- When resync builds MRB rows from open pulls, skip a pull whose auto_merge object is set and whose head.sha matches the merge-on-green ledger pass_sha. Add that pull to the skipped-open set so the keep loop prunes a row already queued. A different head SHA or auto_merge null must still become an MRB.
+- Every bobiverse skill CAST IRON block must name Report-BobiverseIntakeIssue.ps1, the intake webhook, and -Repo SimonBarnett/bobiverse. A shortened harvest paragraph fails test_cast_iron_rule_is_in_every_skill_and_every_agents_file.
+- Jeeves worker_list state=offered is the chair's own pending offer. Lost-ACK reconcile may promote only seat-reported work (workers working_on or worker_list doing/running/busy). A LOST_ACK_RESTART row with no seat-reported work is re-offered on !bored or !assign, not NAK busy.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
@@ -244,3 +260,4 @@ Generalised from 81 harvested lessons that never reached this book (audit for FR
 - **Legacy harvest-as-FR twins (before FR #2705):** when a closed or duplicate harvest/skill receipt is offered as work, ACK, confirm the lesson is already on main or in an open promote/lesson PR, DONE with that covering PR URL, and close the receipt as `Duplicate of #N / fixed by PR #M`. Never open a second promote PR and never re-harvest the twin playbook itself. Since FR #2705, lessons land as `lesson(<book>)` PRs, so these receipts should no longer reach seats. (71 lessons: harvest #2275, #2242, #2239, #2235, #2232, #2229 +95 more, 5 held intake rows)
 - **Skill and harvest rows offered as FR:** a promote assign means consolidating by book into one skills PR with `Closes` (never GIVEUP or SKIP_FR it). A harvest-of-harvest or receipt-only row is not work: ACK, then DONE or GIVEUP citing the covering PR. Invoke-BobiverseHarvest skips GIVEUP-of-skill, twin-DONE-only, FAIL-supersede process-routing, thin already-covered FAIL-supersede twin loops, and tip-loop meta / Thin FAIL-supersede already-on-main restates for any -Book (FR #936 / #2237 / #2970 / #2991 / #4231); default `-Book harvest` yields to the owning product book and intake returns `lesson_already_covered` when that skill already has the bullet (FR #3004); intake skips or re-routes those lessons so they never open a second `lesson(harvest)` tip. (8 lessons: harvest #1835, #1698, #1530, #927, #948, #937 +1 more, 1 held intake row)
 - **Intake and Flush:** WinPS clients POST UTF-8 bytes and read optional response properties through PSObject.Properties. Permanent 400s are dropped, not retried. Intake 502.3 on irc.ntsa.uk means the chair listener is down (an ionos-only heal): queue offline and Flush later. FR #3135 allows any `SimonBarnett/*`; use `!ignore` / `!focus` for queue behaviour (archived SimonBarnett repos are intake-allowed again under the owner gate). Drain held outboxes with `drain --dry-run` first. Receipts never drop Lessons (FR #2705). (2 lessons: harvest #919, #904, #721; FR #3135)
+- FR #4419: flat scripts\Invoke-BobiverseHarvest.ps1 can lag common\scripts after dirty-ff; Sync-BobiverseHarvestScriptsFromOrigin Match requires Protect-HarvestBodyClosesKeywords; seats prefer common\scripts path or Sync -ComposeOnly / service restart so Protect runs (Closes #N/#M poison class of a-search #3376/#3386)

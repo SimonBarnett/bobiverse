@@ -99,6 +99,20 @@ ISSUE_URL_RE = re.compile(
 NAK_BORED_WAIT = "NAK !BORED wait"
 NAK_BORED_BUSY = "NAK !BORED busy"
 NO_JOBS = "no jobs"
+
+
+def format_bored_busy_nak(nick: str, open_job: str = "") -> str:
+    """FR #4415: busy NAK names the seat and held/offered job (operators + seat logs).
+
+    Always keeps the ``NAK !BORED busy`` token so worker NAK parsers still match.
+    """
+    why = str(open_job or "").strip()
+    me = (canonical_worker_nick(nick) or nick or "").strip()
+    if not why:
+        return NAK_BORED_BUSY
+    if me:
+        return f"{me}: NAK !BORED busy ({why})"
+    return f"{NAK_BORED_BUSY} ({why})"
 # FR #208 (updated Simon 2026-09-25): one line per job, no flood.
 LIST_RATE_S = 30.0
 LIST_MAX_LINES = 10  # job lines; + optional 1 summary + 1 more-hint <= ~12 total
@@ -1035,7 +1049,8 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\brequire_machine\s*=\s*ce-priority-dev1\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
-    (re.compile(r"(?i)\bneeds-ionos\b"), "ionos"),
+    # FR #4422: "missing needs-ionos stamp" meta-FRs must not self-pin to ionos.
+    (re.compile(r"(?i)(?<!missing\s)\bneeds-ionos\b"), "ionos"),
     (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
     # FR #1550: monitor idle+ungated / ircJeeves StartPending filings are chair-host ops
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\bstartpending\b"), "ionos"),
@@ -1053,6 +1068,13 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(?:sync(?:/compose)?|compose)\b.{0,80}\b(?:irc)?jeeves\b.{0,40}\bionos\b"), "ionos"),
     (re.compile(r"(?i)\bSync-BobiverseFromRepo\b.{0,80}\b(?:irc)?jeeves\b"), "ionos"),
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,80}\bSync-BobiverseFromRepo\b"), "ionos"),
+    # FR #4343: ionos !build / Jeeves install lag / hotpatch|ff-update of chair install tree
+    # Note: !build has no word-boundary before '!' (punctuation); do not use \b!build.
+    (re.compile(r"(?i)\bionos\b.{0,100}!build\b"), "ionos"),
+    (re.compile(r"(?i)!build\b.{0,100}\bionos\b"), "ionos"),
+    (re.compile(r"(?i)\bionos\b.{0,80}\b(?:irc)?jeeves\b.{0,80}\binstall\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\binstall\b.{0,80}\blags?\s+main\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,120}\b(?:ionos\s+)?(?:irc)?jeeves\b.{0,80}\binstall\b"), "ionos"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
@@ -1116,6 +1138,11 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(
         r"(?i)\bPack-BobiverseRelease\b.{0,160}\b-Product\s+airc\b.{0,160}\b(?:Assert-ReleaseAssets|install(?:\s*\+\s*smoke|\+smoke)?\s+on\s+ionos)\b"
     ), "ionos"),
+    # FR #4343: hotpatch / ff-update of the ionos Jeeves install tree (chair host only)
+    (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,160}\bionos\s+(?:irc)?jeeves\s+install\b"), "ionos"),
+    (re.compile(r"(?i)\bionos\s+(?:irc)?jeeves\s+install(?:\s+tree)?\b.{0,120}\b(?:hotpatch|ff-update)\b"), "ionos"),
+    (re.compile(r"(?i)\bC:\\ai\\jeeves\\scripts\\run_bobiverse_build\.py\b"), "ionos"),
+    (re.compile(r"(?i)\b(?:hotpatch|ff-update)\b.{0,120}\bC:\\ai\\jeeves\b"), "ionos"),
 )
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -1135,6 +1162,14 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     ("simonbarnett/bobiverse", "#2522"): "ionos",
     # FR #3129 / #3122: ionos Sync/compose ircJeeves for intake allowlist (mis-offered to marchhare).
     ("simonbarnett/bobiverse", "#3122"): "ionos",
+    # FR #4343 / #4340: ionos !build runner install lags main — hard pin survives empty/stale body.
+    ("simonbarnett/bobiverse", "#4340"): "ionos",
+}
+
+# FR #4422: hard unpins — survive title/body cues that wrongly re-pin (bobiverse must
+# not be stranded on ionos for meta "missing needs-ionos" filings).
+_REQUIRE_MACHINE_ISSUE_UNPINS: set[tuple[str, str]] = {
+    ("simonbarnett/bobiverse", "#4343"),
 }
 
 # FR #2480 / #2471 / #2472: agentic_fomprep evergreen umbrella / MRB-home boards.
@@ -1218,6 +1253,8 @@ def infer_require_machine(
     id_l = str(ident or "").strip()
     if id_l and not id_l.startswith("#"):
         id_l = f"#{id_l}"
+    if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
+        return ""
     pin = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l))
     if pin:
         return pin
@@ -1250,6 +1287,11 @@ def infer_require_machine(
 
 def row_require_machine(row: dict) -> str:
     """Machine id required for this queue row, if any (FR #587 / #1093)."""
+    repo_l = str(row.get("repo") or "").strip().lower()
+    id_l = f"#{str(row.get('id') or '').strip().lstrip('#')}"
+    # FR #4422 hard unpin before hard pins / stamped machine.
+    if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
+        return ""
     # Hard issue pins win over unpin tokens (any/none) — FR #1093 WP0 must not leak
     # back to win-mpre after a monitor ``require_machine=any`` clear.
     hard = infer_require_machine(
@@ -1359,14 +1401,17 @@ def fr_superseded_by_done_pr(
 
     If the PR repo was not fetched, stay superseded (avoid re-offer when implement PR is cross-repo).
     If the PR repo was fetched and the PR is no longer open, do not block.
+    FR #4373: without live ``open_pulls``, terminal DONE results (PASS/MERGED/CLOSED/FAIL)
+    must not block reopen — only an ambiguous active implement (no terminal result) does.
     """
     ident_s = str(ident or "").strip()
     if ident_s and not ident_s.startswith("#"):
         ident_s = f"#{ident_s}"
+    _terminal = frozenset({"PASS", "MERGED", "CLOSED", "DONE", "FAIL"})
     for row in doc.get("done") or []:
         if str(row.get("task") or "").upper() != "FR":
             continue
-        if str(row.get("repo") or "") != str(repo or "") or str(row.get("id") or "") != ident_s:
+        if not _same(row, repo, "FR", ident_s):
             continue
         parsed = parse_github_pull_url(str(row.get("url") or ""))
         if not parsed:
@@ -1376,8 +1421,127 @@ def fr_superseded_by_done_pr(
             return True
         if open_pulls is not None:
             return pr_id in open_pulls.get(pr_repo, set())
+        result = str(row.get("result") or "").strip().upper()
+        if result in _terminal:
+            continue
         return True
     return False
+
+
+def _append_row_history(row: dict, note: str, *, cap: int = 20) -> None:
+    """Append a short history line onto a queue row (FR #4373 reopen notes)."""
+    text = str(note or "").strip()
+    if not text or not isinstance(row, dict):
+        return
+    hist = row.get("history")
+    if not isinstance(hist, list):
+        hist = []
+    hist.append(text)
+    row["history"] = hist[-cap:]
+
+
+def pop_done_fr_rows(doc: dict, repo: str, ident: str) -> list[dict]:
+    """Remove matching FR rows from ``done`` (FR #4373 reopen / resync)."""
+    done = doc.get("done")
+    if not isinstance(done, list):
+        return []
+    kept: list[dict] = []
+    removed: list[dict] = []
+    for row in done:
+        if isinstance(row, dict) and _same(row, repo, "FR", ident):
+            removed.append(row)
+        elif isinstance(row, dict):
+            kept.append(row)
+    if removed:
+        doc["done"] = kept
+    return removed
+
+
+def prepare_reopened_fr_row(
+    row: dict,
+    claim: GitClaim,
+    *,
+    via: str,
+    actor: str = "",
+    prior_done: dict | None = None,
+) -> None:
+    """Stamp reopen history, labels, and clear machine pins (FR #4373).
+
+    Requeued work is never pinned to a machine (bobiverse must never stick on ionos).
+    """
+    labels = list(claim.labels) if claim.labels else list((prior_done or {}).get("labels") or [])
+    if labels:
+        row["labels"] = labels
+    if claim.title:
+        row["title"] = claim.title
+    if claim.body:
+        row["body"] = _body_for_queue(claim.body)
+    if claim.state:
+        row["state"] = str(claim.state).strip().lower()
+    # Drop seat / machine pins from the finished attempt.
+    for key in (
+        "require_machine",
+        "offered_to",
+        "offered_ts",
+        "offered_via",
+        "nick",
+        "accepted_by",
+        "accepted_ts",
+        "channel",
+        "needs_human",
+    ):
+        row.pop(key, None)
+    who = (actor or claim.opened_by or "").strip() or "unknown"
+    when = _utc_now()
+    via_s = (via or "unknown").strip().lower() or "unknown"
+    _append_row_history(
+        row,
+        f"reopened via={via_s} by={who} at={when}",
+    )
+
+
+def requeue_reopened_issue(
+    doc: dict,
+    claim: GitClaim,
+    *,
+    via: str,
+    actor: str = "",
+) -> str:
+    """Move an open/reopened FR out of ``done`` into ``unaccepted`` (FR #4373).
+
+    Returns added|updated|duplicate|noop|skipped.
+    """
+    if claim.task != "FR":
+        return "noop"
+    removed = pop_done_fr_rows(doc, claim.repo, claim.id)
+    # Accepted FR for a reopened issue must not stay claimed.
+    before_acc = len(doc.get("accepted") or [])
+    doc["accepted"] = [
+        r
+        for r in (doc.get("accepted") or [])
+        if not (isinstance(r, dict) and _same(r, claim.repo, "FR", claim.id))
+    ]
+    _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
+    prior = removed[0] if removed else None
+    changed = _append_unaccepted(doc, claim)
+    if changed == "skipped":
+        return "skipped"
+    # Find the live unaccepted row and stamp reopen metadata.
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict) or not _same(row, claim.repo, "FR", claim.id):
+            continue
+        prepare_reopened_fr_row(
+            row,
+            claim,
+            via=via,
+            actor=actor,
+            prior_done=prior,
+        )
+        break
+    if removed or before_acc != len(doc.get("accepted") or []):
+        if changed in ("noop", "duplicate"):
+            return "updated"
+    return changed
 
 
 def fr_is_superseded(
@@ -1808,6 +1972,10 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     repo_l = repo.strip().lower()
     id_l = f"#{str(ident or '').strip().lstrip('#')}"
     hard = _REQUIRE_MACHINE_ISSUE_PINS.get((repo_l, id_l), "")
+    # FR #4422: hard unpin wins over stamped ionos and title/body re-infer.
+    if (repo_l, id_l) in _REQUIRE_MACHINE_ISSUE_UNPINS:
+        row["require_machine"] = "any"
+        return
     stamped = str(row.get("require_machine") or "").strip().lower()
     if stamped in {"*", "any", "none", "-"}:
         if hard:
@@ -1890,6 +2058,16 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
             title=claim.title, body=claim.body, labels=claim.labels, state=claim.state
         ):
             changed = "noop"
+        elif action == "reopened":
+            # FR #4373: leave done, clear pins, stamp history, re-enter unaccepted.
+            changed = requeue_reopened_issue(
+                doc,
+                claim,
+                via="webhook",
+                actor=str(claim.opened_by or ""),
+            )
+            if changed == "skipped":
+                changed = "noop"
         else:
             _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
             changed = _append_unaccepted(doc, claim)
@@ -2006,7 +2184,8 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                     action="reopened",
                     line=claim.line,
                 )
-                _append_unaccepted(doc, fr)
+                # FR #4373: closed-unmerged PR may leave linked FRs in done — requeue them.
+                requeue_reopened_issue(doc, fr, via="webhook", actor="")
             changed = "updated"
     else:
         changed = _append_unaccepted(doc, claim)
@@ -2057,6 +2236,20 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
             if claim.event == "pull_request" and claim.action == "closed":
                 with contextlib.suppress(Exception):
                     stamp_mrb_done(home, claim.repo, claim.id)
+                # FR #4415: drop seat holds for the closed PR so idle seats are not
+                # stuck busy (held ...) after the queue row is removed.
+                with contextlib.suppress(Exception):
+                    _clear_job_seat_holds_unlocked(
+                        home, claim.repo, "MRB", claim.id
+                    )
+                with contextlib.suppress(Exception):
+                    for _t in ("UAT", "PR", "FR"):
+                        _clear_job_seat_holds_unlocked(home, claim.repo, _t, claim.id)
+            elif claim.event == "issues" and claim.action == "closed":
+                # FR #4415: same for closed issues (FR/PR rows dropped).
+                with contextlib.suppress(Exception):
+                    for _t in ("FR", "PR", "UAT"):
+                        _clear_job_seat_holds_unlocked(home, claim.repo, _t, claim.id)
             return changed
     except TimeoutError:
         _spool_pending(home, claim)
@@ -2206,7 +2399,10 @@ def _worker_list_busy_work(ent: dict, nick: str) -> str:
             continue
         state = str(row.get("state") or "").strip().lower()
         work = str(row.get("work") or "").strip()
-        if state in ("doing", "offered", "busy", "accepted") or work:
+        # FR #4454: state=offered is Jeeves's own pending offer, not seat work.
+        if state == "offered":
+            continue
+        if state in ("doing", "busy", "accepted") or work:
             return work or state
     return ""
 
@@ -2447,6 +2643,15 @@ def _coerce_row(row: dict) -> dict | None:
             out["labels"] = [str(x) for x in labs]
         else:
             out["labels"] = [str(labs)]
+    # FR #4373: reopen notes (webhook / resync) must survive queue reload.
+    if row.get("history"):
+        hist = row.get("history")
+        if isinstance(hist, list):
+            out["history"] = [str(x) for x in hist if str(x).strip()][-20:]
+        else:
+            text = str(hist).strip()
+            if text:
+                out["history"] = [text]
     try:
         if row.get("giveup_count") is not None:
             out["giveup_count"] = int(row.get("giveup_count") or 0)
@@ -3139,6 +3344,10 @@ def mrb_row_offerable(
     if _canon_task(row) != "MRB":
         return True
     if row.get("merged") in (True, "true", "1", 1):
+        return False
+    # FR #4415: stamped closed state (webhook / resync) must not be offered even
+    # when the !bored path passes pr_exists=None (no live GitHub check).
+    if str(row.get("state") or "").strip().lower() == "closed":
         return False
     titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
     if is_mrb_fix_pr_title(titleish):
@@ -5464,10 +5673,14 @@ def _save_seat_holds_unlocked(home: Path, holds: dict) -> None:
     os.replace(str(tmp), str(path))
 
 
-def _note_seat_hold_unlocked(home: Path, nick: str, job: dict) -> None:
+def _note_seat_hold_unlocked(
+    home: Path, nick: str, job: dict, *, via: str | None = None
+) -> None:
     key = _seat_key(nick)
     if not key or not isinstance(job, dict):
         return
+    # Keyword wins when set; else job["via"]; else offer (FR #4415 / FR #4115).
+    via_s = str(via if via is not None else (job.get("via") or "offer")).strip().lower() or "offer"
     holds = _load_seat_holds_unlocked(home)
     holds[key] = {
         "nick": (canonical_worker_nick(nick) or nick or "").strip(),
@@ -5475,23 +5688,28 @@ def _note_seat_hold_unlocked(home: Path, nick: str, job: dict) -> None:
         "task": str(job.get("task") or ""),
         "id": str(job.get("id") or ""),
         "ts": str(job.get("offered_ts") or _utc_now()),
+        # FR #4415: ``offer`` holds void when the queue row is gone; ``ack-missing``
+        # (FR #4115) stays busy without a row until DONE/NACK/GIVEUP/QUIT.
+        "via": via_s,
     }
     with contextlib.suppress(OSError):
         _save_seat_holds_unlocked(home, holds)
 
 
-def note_seat_hold(home: Path, nick: str, job: dict) -> bool:
+def note_seat_hold(home: Path, nick: str, job: dict, *, via: str | None = None) -> bool:
     """FR #4089 / FR #4115: remember an open job for this seat (blocks further offers).
 
     Used when an offer is stamped, and when a seat ACKs a job Jeeves has no queue row
     for (``ACK status=missing``) so the seat is not treated as free after a chair restart.
+    ``via``: ``offer`` (default) or ``ack-missing`` (FR #4115 / FR #4415). When omitted,
+    ``job["via"]`` is used if present.
     """
     key = _seat_key(nick)
     if not key or not isinstance(job, dict):
         return False
     try:
         with _lock(home):
-            _note_seat_hold_unlocked(home, nick, job)
+            _note_seat_hold_unlocked(home, nick, job, via=via)
         return True
     except (TimeoutError, OSError):
         return False
@@ -5631,6 +5849,12 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
             continue
         raw = str(row.get("nick") or row.get("accepted_by") or row.get("offered_to") or "").strip()
         if raw and _seat_key(raw) == key:
+            # FR #4454: a false LOST_ACK_RESTART with no seat-reported work is not busy.
+            if (
+                str(row.get("reconcile") or "") == "LOST_ACK_RESTART"
+                and not _seat_reports_row(home, nick, row)
+            ):
+                continue
             return f"accepted {row.get('task')} {row.get('repo')}{_norm_row_id(row.get('id'))}"
     sticky_maxed: list[dict] = []
     for row in doc.get("unaccepted") or []:
@@ -5688,6 +5912,24 @@ def _seat_open_job_in(home: Path, doc: dict, nick: str, now: float, live: set | 
                         _save_seat_holds_unlocked(home, holds)
                     h = None
                     break
+        # FR #4415: offer-via hold is void when the queue row is gone (closed/merged
+        # drop). ack-missing holds (FR #4115) stay until DONE/NACK/GIVEUP/QUIT.
+        if isinstance(h, dict):
+            via = str(h.get("via") or "offer").strip().lower() or "offer"
+            if via != "ack-missing":
+                present = False
+                for bucket in (doc.get("unaccepted") or [], doc.get("accepted") or []):
+                    for row in bucket:
+                        if isinstance(row, dict) and _same(row, h_repo, h_task, h_id):
+                            present = True
+                            break
+                    if present:
+                        break
+                if not present:
+                    holds.pop(key, None)
+                    with contextlib.suppress(OSError):
+                        _save_seat_holds_unlocked(home, holds)
+                    h = None
     if isinstance(h, dict):
         live_l = {_seat_key(n) for n in (live or set()) if _seat_key(n)}
         if live_l and key not in live_l:
@@ -6913,6 +7155,144 @@ def release_accepted_for_departed_nick(home: Path, nick: str) -> list[dict]:
         return []
 
 
+def fetch_github_issue_dict(repo: str, num: str, *, token: str = "") -> dict | None:
+    """GET ``/repos/{repo}/issues/{num}`` -> issue dict, or None on miss/error (FR #4422)."""
+    repo_s = str(repo or "").strip()
+    num_s = str(num or "").strip().lstrip("#")
+    if not repo_s or not num_s.isdigit():
+        return None
+    tok = (token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not tok:
+        try:
+            import gh_filer
+
+            gh_filer.ensure_gh_token_env()
+            tok = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+        except Exception:
+            tok = ""
+    if not tok:
+        return None
+    api = f"https://api.github.com/repos/{repo_s}/issues/{num_s}"
+    req = urllib.request.Request(
+        api,
+        headers={
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-gitclaim",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if not (200 <= int(getattr(resp, "status", 200) or 200) < 300):
+                return None
+            raw = resp.read()
+            body = json.loads(
+                raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+            )
+            return body if isinstance(body, dict) else None
+    except Exception:
+        return None
+
+
+def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
+    """Build an FR (or MRB) GitClaim from a GitHub issue/PR payload (FR #4422)."""
+    if not isinstance(issue, dict):
+        return None
+    num = issue.get("number")
+    if not isinstance(num, int):
+        return None
+    title = str(issue.get("title") or "")
+    body = str(issue.get("body") or "")
+    labels = _label_names(issue.get("labels"))
+    state = str(issue.get("state") or "open").strip().lower()
+    if state and state != "open":
+        return None
+    if issue.get("pull_request") is not None or str(issue.get("html_url") or "").find("/pull/") >= 0:
+        # Open PR -> MRB row.
+        if issue.get("draft") is True:
+            return None
+        if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
+            return None
+        if is_mrb_fix_pr_title(title):
+            return None
+        lesson = is_harvest_lesson_pr(title=title, labels=labels)
+        refs = extract_closes_issue_ids(title, body, repo=repo) if not lesson else ()
+        return GitClaim(
+            repo=canonical_queue_repo(repo),
+            task="MRB",
+            id=f"#{num}",
+            event="pull_request",
+            action="opened",
+            line="",
+            title=title,
+            body=body,
+            labels=labels,
+            state=state or "open",
+            refs=tuple(refs) if refs else (),
+            harvest_lesson=lesson,
+            opened_by=lesson_pr_opener_seat(body) if lesson else "",
+        )
+    if issue_skip_fr_reason(title=title, body=body, labels=labels, state=state or "open"):
+        return None
+    if (str(repo).lower(), _norm_row_id(f"#{num}")) in _SKIP_FR_ISSUE_PINS:
+        return None
+    return GitClaim(
+        repo=canonical_queue_repo(repo),
+        task="FR",
+        id=f"#{num}",
+        event="issues",
+        action="opened",
+        line="",
+        title=title,
+        body=body,
+        labels=labels,
+        state=state or "open",
+    )
+
+
+def enqueue_open_github_item(
+    doc: dict,
+    repo: str,
+    task: str,
+    ident: str,
+    *,
+    fetch_issue=None,
+) -> tuple[str, str]:
+    """Enqueue an open GitHub issue/PR into ``doc['unaccepted']`` when missing (FR #4422).
+
+    Returns ``("added"|"duplicate"|"refused", detail)``. ``fetch_issue(repo, num)`` is the
+    test seam; default hits the GitHub Issues API.
+    """
+    task_u = (task or "").upper()
+    if task_u not in ("FR", "MRB"):
+        return "refused", f"{task_u}: only FR/MRB can be enqueued from GitHub"
+    num = str(ident or "").strip().lstrip("#")
+    getter = fetch_issue or (lambda r, n: fetch_github_issue_dict(r, n))
+    try:
+        issue = getter(repo, num)
+    except Exception as exc:  # noqa: BLE001
+        return "refused", f"github fetch failed: {type(exc).__name__}"
+    if not isinstance(issue, dict):
+        return "refused", f"{repo}#{num}: not found on GitHub or no token"
+    claim = claim_from_github_issue(repo, issue)
+    if claim is None:
+        return "refused", f"{repo}#{num}: not an open offerable {task_u}"
+    if claim.task != task_u:
+        return "refused", f"{repo}#{num}: GitHub item is {claim.task}, not {task_u}"
+    extra: dict = {}
+    if claim.task == "MRB":
+        extra["url"] = f"https://github.com/{claim.repo}/pull/{num}"
+        if claim.refs:
+            extra["refs"] = ",".join(claim.refs)
+    changed = _append_unaccepted(doc, claim, **extra)
+    if changed == "added":
+        return "added", f"enqueued {claim.task} {claim.repo}{claim.id}"
+    if changed in ("duplicate", "skipped", "noop"):
+        return "duplicate", f"already queued {claim.task} {claim.repo}{claim.id}"
+    return "refused", f"enqueue {changed}"
+
+
 def assign_row(
     home: Path,
     nick: str,
@@ -6922,6 +7302,7 @@ def assign_row(
     *,
     now: float | None = None,
     pr_exists=None, is_pull=None, issue_open=None,
+    fetch_issue=None,
 ) -> tuple[str, dict | str]:
     """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
 
@@ -6933,6 +7314,9 @@ def assign_row(
 
     FR #3400: refuse assign to a nick not in the shop (not a live seat). If the named job is only
     on ``accepted`` under a departed nick, release it (prior ACK void) then offer.
+
+    FR #4422: when the named open FR/MRB is missing from the unaccepted queue, fetch it from
+    GitHub and enqueue it, then offer (instead of refusing "not in the unaccepted queue").
     """
     import time as _time
 
@@ -6993,24 +7377,53 @@ def assign_row(
                         acc_idx = i
                         break
                 if acc_idx is None:
-                    return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
-                holder = _accepted_holder_nick(doc["accepted"][acc_idx])
-                if holder.lower() in live_l:
-                    return (
-                        "refused",
-                        f"{repo}#{num} {task_u}: accepted by live seat {holder}",
+                    # FR #4422: open issue/PR missing from queue -> enqueue from GitHub, then offer.
+                    if task_u in ("FR", "MRB"):
+                        enq_st, enq_detail = enqueue_open_github_item(
+                            doc, repo, task_u, num, fetch_issue=fetch_issue
+                        )
+                        if enq_st in ("added", "duplicate"):
+                            for i, row in enumerate(doc["unaccepted"]):
+                                if (
+                                    str(row.get("task") or "").upper() == task_u
+                                    and str(row.get("id") or "").strip().lstrip("#") == num
+                                    and repo_match(repo, str(row.get("repo") or ""))
+                                ):
+                                    idx = i
+                                    break
+                        if idx is None:
+                            return (
+                                "refused",
+                                f"{repo}#{num} {task_u}: not in the unaccepted queue "
+                                f"({enq_detail})",
+                            )
+                    else:
+                        return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
+                if idx is None and acc_idx is not None:
+                    holder = _accepted_holder_nick(doc["accepted"][acc_idx])
+                    acc_row = doc["accepted"][acc_idx]
+                    same_seat = _seat_key(holder) == _seat_key(me)
+                    false_lost = (
+                        same_seat
+                        and str(acc_row.get("reconcile") or "") == "LOST_ACK_RESTART"
+                        and not _seat_reports_row(home, me, acc_row)
                     )
-                _release_accepted_for_nick_unlocked(doc, holder)
-                for i, row in enumerate(doc["unaccepted"]):
-                    if (
-                        str(row.get("task") or "").upper() == task_u
-                        and str(row.get("id") or "").strip().lstrip("#") == num
-                        and repo_match(repo, str(row.get("repo") or ""))
-                    ):
-                        idx = i
-                        break
-                if idx is None:
-                    return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
+                    if holder.lower() in live_l and not false_lost:
+                        return (
+                            "refused",
+                            f"{repo}#{num} {task_u}: accepted by live seat {holder}",
+                        )
+                    _release_accepted_for_nick_unlocked(doc, holder)
+                    for i, row in enumerate(doc["unaccepted"]):
+                        if (
+                            str(row.get("task") or "").upper() == task_u
+                            and str(row.get("id") or "").strip().lstrip("#") == num
+                            and repo_match(repo, str(row.get("repo") or ""))
+                        ):
+                            idx = i
+                            break
+                    if idx is None:
+                        return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
             # FR #4336: auto-offer blocks needs_human globally; explicit !assign may still hand it out.
             # (row_needs_human remains the bored/done-offer/reconcile gate.)
@@ -7203,6 +7616,47 @@ def prune_unassignable_queue(home: Path) -> dict:
         return {"ok": False, "error": "lock"}
 
 
+def open_pr_mrb_waiting_on_ci(pr: dict, pass_sha: str) -> bool:
+    """FR #4466: auto-merge on and head still the PASSed SHA is a CI wait, not a new MRB.
+
+    auto-merge off, a missing pass SHA, or a different head SHA returns False so
+    resync re-queues the review.
+    """
+    if not isinstance(pr, dict):
+        return False
+    am = pr.get("auto_merge")
+    if not isinstance(am, dict) or not am:
+        return False
+    head = pr.get("head")
+    sha = str(head.get("sha") or "") if isinstance(head, dict) else ""
+    if not pass_sha or not sha:
+        return False
+    import mrb_merge_on_green
+
+    return mrb_merge_on_green.shas_match(pass_sha, sha)
+
+
+def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
+    """PASSed head SHA recorded when the seat DONE MRB PASS (merge-on-green ledger)."""
+    try:
+        import mrb_merge_on_green
+
+        doc = mrb_merge_on_green.load_ledger(home)
+    except Exception:  # noqa: BLE001
+        return ""
+    want = str(num)
+    repo_l = canonical_queue_repo(repo).lower()
+    for row in doc.get("pending") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("pr") or "").lstrip("#") != want:
+            continue
+        if str(row.get("repo") or "").strip().lower() != repo_l:
+            continue
+        return str(row.get("pass_sha") or "")
+    return ""
+
+
 def resync_from_github(
     home: Path,
     repos: list[str],
@@ -7256,6 +7710,7 @@ def resync_from_github(
     failed: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
     skipped_draft = 0
+    skipped_ci = 0
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
@@ -7367,6 +7822,19 @@ def resync_from_github(
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync skip harvest-receipt PR {repo}#{num}",
+                    flush=True,
+                )
+                continue
+            # FR #4466: open PR with auto-merge on the PASSed SHA is waiting for CI.
+            # Do not re-queue it. A later synchronize (SHA change) or auto-merge off
+            # falls through and becomes an MRB again. Mark skipped so the keep loop
+            # prunes a row that resync already queued.
+            pass_sha = _merge_on_green_pass_sha(home, repo, num)
+            if open_pr_mrb_waiting_on_ci(pr, pass_sha):
+                skipped_ci += 1
+                skipped_open_pulls.add((repo, f"#{num}"))
+                print(
+                    f"resync skip ci-wait PR {repo}#{num}",
                     flush=True,
                 )
                 continue
@@ -7560,6 +8028,9 @@ def resync_from_github(
             # FR #2617: keep DONE FR rows that carry a /pull/ URL while that implement PR
             # is still open (or its repo was not fetched). Stripping them broke
             # fr_superseded_by_done_pr and let the FR re-enter unaccepted right after DONE.
+            # FR #4373: remember stripped open FRs so re-enqueue stamps reopen history and
+            # clears machine pins (bobiverse must never stick on ionos after reopen).
+            reopened_from_done: dict[tuple[str, str], dict] = {}
             if isinstance(doc.get("done"), list):
                 still_open = {(c.repo, c.task, c.id) for c in desired}
                 kept_done: list = []
@@ -7584,7 +8055,12 @@ def resync_from_github(
                             if pr_id in (open_pulls_map.get(pr_repo) or set()):
                                 kept_done.append(r)
                                 continue
-                    # Drop premature DONE (issue/PR still open, no open implement PR).
+                        # Drop premature DONE (issue still open, no open implement PR).
+                        reopened_from_done[
+                            (_repo_key(str(r.get("repo") or "")), _norm_row_id(r.get("id")))
+                        ] = r
+                        continue
+                    # Drop premature DONE for non-FR (issue/PR still open).
                 doc["done"] = kept_done
             ledger_now = ledger_load(home)
 
@@ -7645,6 +8121,11 @@ def resync_from_github(
                 mrb_url = (
                     f"https://github.com/{claim.repo}/pull/{claim.id.lstrip('#')}" if claim.task == "MRB" else ""
                 )
+                prior_done = None
+                if claim.task == "FR":
+                    prior_done = reopened_from_done.get(
+                        (_repo_key(claim.repo), _norm_row_id(claim.id))
+                    )
                 if any(_same(r, claim.repo, claim.task, claim.id) for r in doc["accepted"] + doc["unaccepted"]):
                     # already queued/claimed: keep its line, seq and offer fields; but an MRB row with no real pull
                     # URL is never offerable (FR #595), so heal it (t855u: resync-made MRB rows were all unofferable)
@@ -7671,7 +8152,13 @@ def resync_from_github(
                             for k, v in author_extra.items():
                                 if v:
                                     r[k] = v
-                        _stamp_require_machine(r, claim)
+                        if prior_done is not None:
+                            # FR #4373: reopen via rebuild — clear pins + history note.
+                            prepare_reopened_fr_row(
+                                r, claim, via="resync", prior_done=prior_done
+                            )
+                        else:
+                            _stamp_require_machine(r, claim)
                     # Clear *stale* needs_human (keep-the-flow) but keep the intentional
                     # FR #180 gate after GIVEUP_NEEDS_HUMAN_COUNT giveups.
                     for r in doc["unaccepted"]:
@@ -7690,6 +8177,14 @@ def resync_from_github(
                     extra_add.update(mrb_author_extra_from_doc(doc, claim))
                 if _append_unaccepted(doc, claim, **extra_add) == "added":
                     added += 1
+                    if prior_done is not None:
+                        for r in doc["unaccepted"]:
+                            if not _same(r, claim.repo, "FR", claim.id):
+                                continue
+                            prepare_reopened_fr_row(
+                                r, claim, via="resync", prior_done=prior_done
+                            )
+                            break
             for urepo, (merged, linked) in uat_plan.items():
                 if any(
                     str(r.get("repo")) == urepo and str(r.get("task") or "").upper() == "UAT" and r.get("repo_uat")
@@ -7760,6 +8255,7 @@ def resync_from_github(
                 "dropped": dropped,
                 "dropped_detail": list(dropped_detail),
                 "skipped_draft": int(skipped_draft),
+                "skipped_ci": int(skipped_ci),
                 "focus_pruned": int(focus_pruned),
                 "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),
@@ -7930,6 +8426,98 @@ def _seat_has_accepted(home: Path, nick: str) -> bool:
     return False
 
 
+def _digest_seat_work(home: Path, nick: str) -> str:
+    """Seat-reported work. worker_list state=offered is not seat work (FR #4454)."""
+    parsed = bobreport.parse_seat_nick(nick)
+    if not parsed:
+        return ""
+    mid, pid = parsed
+    try:
+        doc = bobreport.load_digest(_root(home))
+    except Exception:  # noqa: BLE001
+        return ""
+    machines = doc.get("machines") if isinstance(doc.get("machines"), dict) else {}
+    ent = machines.get(mid) if isinstance(machines.get(mid), dict) else {}
+    if not isinstance(ent, dict):
+        return ""
+    workers = ent.get("workers") if isinstance(ent.get("workers"), dict) else {}
+    wrow = workers.get(str(pid))
+    if isinstance(wrow, dict):
+        wo = str(wrow.get("working_on") or "").strip()
+        if wo and parse_digest_work(wo):
+            return wo
+    want = (nick or "").strip().lower()
+    for row in ent.get("worker_list") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("nick") or "").strip().lower() != want:
+            continue
+        state = str(row.get("state") or "").strip().lower()
+        if state not in ("doing", "running", "busy"):
+            continue
+        wo = str(row.get("work") or row.get("working_on") or "").strip()
+        if wo and parse_digest_work(wo):
+            return wo
+    return ""
+
+
+def _seat_reports_row(home: Path, nick: str, row: dict) -> bool:
+    wo = _digest_seat_work(home, nick)
+    return bool(wo and row_matches_digest_work(row, wo))
+
+
+def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
+    """FR #4454: !bored demotes a LOST_ACK_RESTART row the seat never reported working.
+
+    Returns True when the row was put back on unaccepted. A real ACK (any other
+    reconcile) or seat-reported ``working_on`` stays accepted (FR #3867).
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me:
+        return False
+
+    def _owner(r: dict) -> str:
+        raw = str(r.get("nick") or r.get("accepted_by") or r.get("offered_to") or "").strip()
+        return (canonical_worker_nick(raw) or raw).strip().lower()
+
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
+            mine = [r for r in acc if _owner(r) == me]
+            if not mine:
+                return False
+            if any(str(r.get("reconcile") or "") != "LOST_ACK_RESTART" for r in mine):
+                return False
+            if any(_seat_reports_row(home, nick, r) for r in mine):
+                return False
+            unacc = doc.setdefault("unaccepted", [])
+            for r in mine:
+                fin = dict(r)
+                for k in (
+                    "nick",
+                    "accepted_ts",
+                    "accepted_by",
+                    "offered_to",
+                    "offered_ts",
+                    "offered_channel",
+                    "offered_via",
+                    "channel",
+                ):
+                    fin.pop(k, None)
+                fin["reconcile"] = "requeue:LOST_ACK_NO_ACK"
+                unacc.append(fin)
+            doc["accepted"] = [r for r in acc if _owner(r) != me]
+            _write_queue(queue_path(home), doc)
+    except Exception:  # noqa: BLE001
+        return False
+    _log_queue_purge(
+        f"INFO seat-reconcile nick={nick} result=requeue:LOST_ACK_NO_ACK reason=LOST_ACK_NO_ACK",
+        log=log,
+    )
+    return True
+
+
 def _iter_digest_work_claims(home: Path) -> list[tuple[str, str]]:
     """Collect (nick, working_on) claims from digest workers map + doing list (FR #3867)."""
     import bobreport as _br
@@ -7960,7 +8548,8 @@ def _iter_digest_work_claims(home: Path) -> list[tuple[str, str]]:
         for row in list(ent.get("worker_list") or []):
             if not isinstance(row, dict):
                 continue
-            if str(row.get("state") or "").strip().lower() not in ("doing", "running", "busy", "offered"):
+            # FR #4454: do not treat Jeeves's own worker_list state=offered as a claim.
+            if str(row.get("state") or "").strip().lower() not in ("doing", "running", "busy"):
                 continue
             wo = str(row.get("work") or row.get("working_on") or "").strip()
             if not wo or not parse_digest_work(wo):
@@ -8008,7 +8597,9 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
             keep.append(row)
             continue
         # FR #4336: never revive a needs_human row via LOST_ACK_RESTART.
-        if row_needs_human(row, ""):
+        # FR #4422: release_stale_busy requeued without closed/merged evidence ---
+        # do not bounce the same row straight back to accepted from stale digest work.
+        if row_needs_human(row, "") or str(row.get("reconcile") or "").startswith("requeue:"):
             keep.append(row)
             continue
         # Already accepted for this repo/task/id: drop the unaccepted twin so
@@ -8104,6 +8695,9 @@ def bored_gate(
     # FR #3192: accepted row is busy even before digest on_ack paints working_on
     # (stale !bored after slow GH work must NAK-busy, not stamp a second offer).
     if _seat_has_accepted(home, nick):
+        # FR #4454: !bored after a false LOST_ACK_RESTART (no seat work) re-offers.
+        if release_unacked_lost_ack(home, nick):
+            return "ok"
         if release_stale_busy(home, nick, now, session_started=session_started):
             return "ok"
         return "busy"
@@ -8211,11 +8805,13 @@ def release_stale_busy(
                         continue  # stale by FR #3742 session boundary
                 return False  # genuinely recent job in this session: honour busy
             if mine:
-                # Drop (not requeue): github-resync re-adds the row if the item is still open,
-                # so a closed/merged job is never handed out again.
-                # Audit stamp (MRB #2373 / FR #2369 / FR #3742).
+                # FR #4422: never mark done without a merged PR or a closed issue.
+                # Inventing STALE_BUSY / LOST_DONE_RESTART into done[] while resync is
+                # lagging stranded open FRs off the offer queue. Requeue unless the
+                # digest already carries a /pull/ URL (lost DONE FR with implement PR).
                 pull_hint = _digest_work_pull_url(home, nick)
                 done = doc.setdefault("done", [])
+                unacc = doc.setdefault("unaccepted", [])
                 for r in mine:
                     fin = dict(r)
                     age = _accepted_row_age_s(r, float(now))
@@ -8223,12 +8819,29 @@ def release_stale_busy(
                         reason = "STALE_BUSY"
                     else:
                         reason = "LOST_DONE_RESTART"
-                    # FR #3742: when digest already carries a pull URL, prefer that as result.
-                    fin["result"] = pull_hint or reason
-                    fin["done_ts"] = _utc_now()
-                    fin["reconcile"] = reason
-                    done.append(fin)
-                    healed_rows.append((fin, reason))
+                    if pull_hint:
+                        # Evidence of DONE FR with an implement PR URL — keep done path.
+                        fin["result"] = pull_hint
+                        fin["done_ts"] = _utc_now()
+                        fin["reconcile"] = reason
+                        done.append(fin)
+                        healed_rows.append((fin, reason))
+                        continue
+                    # No closed/merged evidence: return to unaccepted so !assign / !bored
+                    # can offer again even when github-resync is skipped.
+                    for k in (
+                        "nick",
+                        "accepted_ts",
+                        "accepted_by",
+                        "offered_to",
+                        "offered_ts",
+                        "offered_channel",
+                        "channel",
+                    ):
+                        fin.pop(k, None)
+                    fin["reconcile"] = f"requeue:{reason}"
+                    unacc.append(fin)
+                    healed_rows.append((fin, f"requeue:{reason}"))
                 if len(done) > DONE_CAP:
                     doc["done"] = done[-DONE_CAP:]
                 doc["accepted"] = [r for r in acc if _owner(r) != me]

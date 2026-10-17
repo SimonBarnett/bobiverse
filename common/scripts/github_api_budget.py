@@ -172,8 +172,29 @@ class GithubApiBudget:
         self._roll_hour()
         return max(0, self.budget_per_hour - self.used)
 
+    def rate_limit_cleared(self) -> bool:
+        """True when a prior X-RateLimit-Reset unix time is in the past (FR #4422)."""
+        if self.rate_reset is None:
+            return False
+        try:
+            return float(self.clock()) >= float(self.rate_reset)
+        except (TypeError, ValueError):
+            return False
+
+    def clear_rate_limit_if_reset(self) -> bool:
+        """Drop stale rate_remaining after reset so reconcile can retry (FR #4422)."""
+        if not self.rate_limit_cleared():
+            return False
+        self.rate_remaining = None
+        self.rate_reset = None
+        self._backoff_logged = False
+        self._persist_budget()
+        return True
+
     def in_backoff(self) -> bool:
         self._roll_hour()
+        # FR #4422: after GitHub's reset time, forget the stale remaining=0 floor block.
+        self.clear_rate_limit_if_reset()
         if self.remaining_budget() <= 0:
             return True
         if self.rate_remaining is not None and self.rate_remaining < self.floor:
@@ -183,6 +204,7 @@ class GithubApiBudget:
     def allow(self, path: str, *, essential: bool = False) -> bool:
         """Whether a REST call may proceed. Startup reconcile may use ``essential=True``."""
         self._roll_hour()
+        self.clear_rate_limit_if_reset()
         if essential:
             return self.remaining_budget() > 0 or self.used == 0
         if self.in_backoff():
@@ -190,15 +212,34 @@ class GithubApiBudget:
             return False
         return True
 
+    def skip_reason(self, path: str = "reconcile") -> str:
+        """Human-readable why a non-essential call would be skipped (FR #4422)."""
+        self._roll_hour()
+        self.clear_rate_limit_if_reset()
+        rem = self.rate_remaining if self.rate_remaining is not None else "?"
+        reset = _fmt_reset_local(self.rate_reset, now=self.clock())
+        if self.remaining_budget() <= 0:
+            return (
+                f"hourly-budget-exhausted path={path} used={self.used}/{self.budget_per_hour} "
+                f"remaining={rem} reset={reset}"
+            )
+        if self.rate_remaining is not None and self.rate_remaining < self.floor:
+            return (
+                f"rate-limit-floor path={path} used={self.used}/{self.budget_per_hour} "
+                f"remaining={rem} floor={self.floor} reset={reset}"
+            )
+        return ""
+
     def _log_backoff_once(self, path: str) -> None:
         if self._backoff_logged:
             return
         self._backoff_logged = True
-        rem = self.rate_remaining if self.rate_remaining is not None else "?"
-        self.log(
-            f"WARN github-api backoff path={path} used={self.used}/{self.budget_per_hour} "
-            f"remaining={rem} reset={_fmt_reset_local(self.rate_reset, now=self.clock())}"
+        why = self.skip_reason(path) or (
+            f"path={path} used={self.used}/{self.budget_per_hour} "
+            f"remaining={self.rate_remaining if self.rate_remaining is not None else '?'} "
+            f"reset={_fmt_reset_local(self.rate_reset, now=self.clock())}"
         )
+        self.log(f"WARN github-api backoff {why}")
 
     def note_headers(self, hdrs) -> None:
         if hdrs is None:

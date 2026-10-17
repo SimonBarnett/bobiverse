@@ -38,8 +38,8 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 if (-not $Version) {
     $Version = (Get-Content (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'src\VERSION') -Raw).Trim()
 }
-$msiVersion = $Version
-if ($msiVersion -notmatch '^\d+\.\d+\.\d+') { throw "bad VERSION $Version" }
+# FR #4389: MSI Product/@Version is major.minor.build only; fold x.y.z.w -> x.y.(z+w) (1.0.0.1 -> 1.0.1).
+$msiVersion = ConvertTo-BobiverseMsiProductVersion -Version $Version
 
 $fetchNssm = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Nssm.ps1')
 $fetchWix = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Fetch-Wix.ps1')
@@ -104,17 +104,17 @@ function Stage-Product([string]$Name) {
     # Issue #2: do not ship __pycache__ (self-copy / heat noise)
     Get-ChildItem -Path (Join-Path $stage 'scripts') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    # FR #3686 / regression of #1552: stage VERSION from the pack $Version (MSI ProductVersion),
+    # FR #3686 / FR #4389: stage VERSION from MSI ProductVersion (3-part fold of pack -Version).
     # never by copying common\VERSION alone. A release pack with -Version 0.1.27 while
     # common\VERSION still said 0.1.25 shipped BUILD.json=0.1.27 + VERSION=0.1.25 (walrus).
     $verUtf8 = New-Object Text.UTF8Encoding $false
-    $verText = $Version.Trim() + [Environment]::NewLine
+    $verText = $msiVersion.Trim() + [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $stage 'VERSION'), $verText, $verUtf8)
     [IO.File]::WriteAllText((Join-Path $stage 'src\VERSION'), $verText, $verUtf8)
     # t797u: BUILD.json = what the tray About dialog shows as version / build date / commit for this install folder.
     $buildCommit = ''
     try { $buildCommit = [string](& git -C $RepoRoot rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch { }
-    ([ordered]@{ product = $Name; version = $Version; built_utc = [datetime]::UtcNow.ToString('o'); commit = $buildCommit.Trim() } |
+    ([ordered]@{ product = $Name; version = $msiVersion; release_version = $Version; built_utc = [datetime]::UtcNow.ToString('o'); commit = $buildCommit.Trim() } |
         ConvertTo-Json -Compress) | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding ascii
     # FR #3686: pack fails closed if VERSION / BUILD.json / ProductVersion disagree.
     Assert-BobiverseStageVersionAligned -Stage $stage -ExpectedVersion $msiVersion -Product $Name
@@ -208,14 +208,20 @@ function Stage-Product([string]$Name) {
     Copy-Item (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'third_party\nssm\win64\nssm.exe') (Join-Path $stage 'third_party\nssm\win64\nssm.exe') -Force
     # Issue #4: bob/jeeves public packs skip Ergo PASS unless -EmbedErgoPassword.
     # FR #4216: airc MSI MUST ship config\ergo.password so install connects on first start.
+    # FR #4349: !build pack uses isolated USERPROFILE and blanks AGENTIC/BOB_IRC; also search
+    # live fleet installs via Get-BobiverseAiRoot and BOB_IRC_PASSWORD / AIRC_PACK inject.
     $stageErgo = Join-Path $stage 'config\ergo.password'
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'config') | Out-Null
     $wantEmbedErgo = $EmbedErgoPassword -or ($Name -eq 'airc')
+    # FR #4477: -SkipMsi is a test stage, not a release MSI. Do not copy a live
+    # Ergo PASS or write a placeholder password file into that stage. Real airc
+    # packs (no -SkipMsi) still embed config\ergo.password (FR #4216).
+    if ($SkipMsi) { $wantEmbedErgo = $false }
     if ($wantEmbedErgo) {
         $ergoSecret = $null
         $ergoSource = $null
         if ($Name -eq 'airc') {
-            foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD')) {
+            foreach ($key in @('AIRC_PACK_ERGO_PASSWORD', 'AGENTIC_IRC_PASSWORD', 'AIRC_CONSOLE_SERVER_PASSWORD', 'BOB_IRC_PASSWORD')) {
                 $v = [Environment]::GetEnvironmentVariable($key)
                 if ($v -and $v.Trim()) {
                     $ergoSecret = $v.Trim()
@@ -225,11 +231,20 @@ function Stage-Product([string]$Name) {
             }
         }
         if (-not $ergoSecret) {
-            foreach ($c in @(
-                    (Join-Path $RepoRoot 'config\ergo.password'),
-                    (Join-Path $env:USERPROFILE '.grok\ergo\connect.password')
-                )) {
-                if (Test-Path -LiteralPath $c) {
+            $aiRoot = $null
+            try { $aiRoot = Get-BobiverseAiRoot } catch { $aiRoot = $null }
+            $cand = @(
+                (Join-Path $RepoRoot 'config\ergo.password'),
+                (Join-Path $env:USERPROFILE '.grok\ergo\connect.password'),
+                (Join-Path $env:USERPROFILE '.grok\ergo\ergo.password')
+            )
+            if ($aiRoot) {
+                foreach ($prod in @('bob', 'airc', 'jeeves')) {
+                    $cand += (Join-Path $aiRoot "$prod\config\ergo.password")
+                }
+            }
+            foreach ($c in $cand) {
+                if ($c -and (Test-Path -LiteralPath $c)) {
                     $raw = (Get-Content -LiteralPath $c -Raw -ErrorAction SilentlyContinue)
                     if ($raw -and $raw.Trim()) {
                         $ergoSecret = $raw.Trim()
@@ -239,15 +254,9 @@ function Stage-Product([string]$Name) {
                 }
             }
         }
-        # -SkipMsi stage tests must not require a live fleet secret (never used for real MSI).
-        if (-not $ergoSecret -and $SkipMsi -and ($Name -eq 'airc')) {
-            $ergoSecret = 'FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE'
-            $ergoSource = 'test-placeholder'
-            Write-Host 'WARN airc -SkipMsi: embedding FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE (not a release artifact)'
-        }
         if (-not $ergoSecret) {
             if ($Name -eq 'airc') {
-                throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password / repo config\ergo.password'
+                throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216/#4349): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD / BOB_IRC_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password, repo config\ergo.password, or <ai root>\bob|airc|jeeves\config\ergo.password'
             }
             throw '-EmbedErgoPassword set but no config/ergo.password or ~/.grok/ergo/connect.password found'
         }
@@ -258,7 +267,11 @@ function Stage-Product([string]$Name) {
             Remove-Item -LiteralPath $stageErgo -Force
             Write-Host "WARN $Name removed staged config/ergo.password (issue #4 public pack guard)"
         }
-        Write-Host "INFO $Name skipping Ergo PASS embed (issue #4; pass -EmbedErgoPassword for private packs)"
+        if ($SkipMsi) {
+            Write-Host "INFO $Name -SkipMsi: not embedding config/ergo.password (FR #4477; not a release artifact)"
+        } else {
+            Write-Host "INFO $Name skipping Ergo PASS embed (issue #4; pass -EmbedErgoPassword for private packs)"
+        }
     }
     if ($Name -eq 'jeeves') {
         $ergoStage = Join-Path $stage 'ergo'
@@ -590,6 +603,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     # FR #4011: on MajorUpgrade, stop Airc BEFORE RemoveExistingProducts. Under
     # psexec -h -s (session 0), Restart Manager fails to shut down the service
     # (error 351) and Windows Installer itself crashes (msiexec 1601).
+    # FR #4432: never schedule a deferred CA before RemoveExistingProducts after
+    # InstallInitialize (Error 2613). airc uses MajorUpgrade afterInstallValidate so
+    # REP runs before InstallInitialize; stop is immediate (QtExec64CmdLine) before
+    # InstallValidate. Deferred StopAircBeforeUpgrade Before=REP is illegal and removed.
     $uninstallCaDecls = ''
     $uninstallCaSeq = ''
     if ($Name -eq 'airc') {
@@ -604,17 +621,19 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <!-- FR #3292: AIRC_PURGE=1 or workstation manifest purge_default removes secrets/homes. -->
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
     <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
-    <!-- FR #4011: stop Airc before MajorUpgrade RemoveExistingProducts (PsExec session-0 RM 351 / 1601). -->
-    <CustomAction Id="SetStopAircUpgradeCmd" Property="StopAircBeforeUpgrade" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
-    <CustomAction Id="StopAircBeforeUpgrade" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- FR #4011 / #4389 / #4432: immediate stop before InstallValidate (FilesInUse / RM 351). -->
+    <!-- FR #4441: net.exe stop (waits) not sc.exe (async); matches airc-1.0.1-hotfix1.msi. -->
+    <!-- Immediate CAQuietExec64 reads QtExec64CmdLine (not a property named after the CA). -->
+    <CustomAction Id="SetStopAircValidateCmd" Property="QtExec64CmdLine" Value="&quot;[System64Folder]net.exe&quot; stop Airc" Execute="immediate" />
+    <CustomAction Id="StopAircBeforeValidate" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="immediate" Return="ignore" />
 "@
         $uninstallCaSeq = @"
       <Custom Action="SetAvExcludeCmd" Before="RunAvExclude">NOT REMOVE~="ALL"</Custom>
       <Custom Action="RunAvExclude" Before="InstallFiles">NOT REMOVE~="ALL"</Custom>
       <Custom Action="SetUninstallCmd" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="SetStopAircUpgradeCmd" Before="StopAircBeforeUpgrade">WIX_UPGRADE_DETECTED</Custom>
-      <Custom Action="StopAircBeforeUpgrade" Before="RemoveExistingProducts">WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="SetStopAircValidateCmd" Before="StopAircBeforeValidate">WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="StopAircBeforeValidate" Before="InstallValidate">WIX_UPGRADE_DETECTED</Custom>
 "@
     }
     # FR #2564: on RunInstall failure / MSI rollback, best-effort Start-Service so seats are not left dead.
@@ -652,13 +671,16 @@ function Build-Msi([string]$Name, [string]$Stage) {
     </Feature>
 "@
     }
+    # FR #4432: airc MajorUpgrade afterInstallValidate so RemoveExistingProducts runs
+    # before InstallInitialize (avoids Error 2613 when any deferred CA would precede REP).
+    $majorUpgradeSchedule = if ($Name -eq 'airc') { 'afterInstallValidate' } else { 'afterInstallInitialize' }
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="bobiverse $Name" Language="1033" Version="$msiVersion"
       Manufacturer="SimonBarnett" UpgradeCode="$upgrade">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" InstallPrivileges="elevated" Platform="x64" />
-    <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="afterInstallInitialize" />
+    <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="$majorUpgradeSchedule" />
     <!-- FR #4011: PsExec -h -s (session 0) upgrades: Restart Manager error 351 crashes msiexec (1601). -->
     <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />

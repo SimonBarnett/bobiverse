@@ -38,13 +38,16 @@ def test_fr4136_cs_heal_engine_checks_engine_alive_stamp():
 
 
 def test_fr4136_watch_bob_tray_writes_engine_alive_after_queue_tick():
-    w = WATCH.read_text(encoding="utf-8")
+    # FR #4317: stamp moved to the START of the tick (before queue). Prefer bob/tray path;
+    # third_party/bob-tray may be absent in sparse trees.
+    watch = WATCH if WATCH.is_file() else (ROOT / "bob" / "tray" / "tools" / "Watch-BobTray.ps1")
+    w = watch.read_text(encoding="utf-8")
     assert "engine.alive" in w
     assert "Invoke-BobTrayStartWorkerQueue" in w
-    # stamp comes after the queue invoke in the same tick
-    i_q = w.index("Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir")
-    i_e = w.index("engine.alive", i_q)
-    assert i_e > i_q
+    i_tick = w.index("FR #4142: re-entrancy + per-tick timing")
+    i_e = w.index("engine.alive", i_tick)
+    i_q = w.index("Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir", i_tick)
+    assert i_e < i_q
 
 
 def test_fr4136_engine_alive_helper_and_max_age():

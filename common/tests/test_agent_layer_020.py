@@ -97,7 +97,9 @@ def test_agents_files_cover_the_required_topics():
     assert "docs/jeeves-commands.md" in (SKILLS / "bobiverse-jeeves-commands" / "SKILL.md").read_text(encoding="utf-8")
 
 
-ALLOWED_HOSTS = {"irc.ntsa.uk", "github.com", "api.github.com", "raw.githubusercontent.com", "nodejs.org"}
+ALLOWED_HOSTS = {"irc.ntsa.uk", "github.com", "api.github.com", "raw.githubusercontent.com", "nodejs.org", "archive.org"}
+# FR #4476 / FR #4345: fleet-ops documents these public resolvers. Private LAN addresses stay rejected.
+ALLOWED_IPS = {"127.0.0.1", "8.8.8.8", "1.1.1.1"}
 
 
 def test_no_secrets_and_no_private_hostnames_in_the_agent_layer():
@@ -112,7 +114,7 @@ def test_no_secrets_and_no_private_hostnames_in_the_agent_layer():
         for h in host.findall(t):
             assert h.lower() in ALLOWED_HOSTS, f"{f.name}: non-public host {h}"
         for a in ip.findall(t):
-            assert a == "127.0.0.1", f"{f.name}: ip {a}"
+            assert a in ALLOWED_IPS, f"{f.name}: ip {a}"
         assert not re.search(r"C:\\Users\\(?!Administrator|Default)\w+", t), f"{f.name}: personal profile path"
 
 

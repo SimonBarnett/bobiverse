@@ -295,8 +295,12 @@ def resync_cycle(
     if owners is None:
         owners = {"simonbarnett"}
     bud = budget or gab.GithubApiBudget(home, clock=time.time, log=log or (lambda _s: None))
+    _log = log or (lambda _s: None)
     if fetch_json is None:
         if not bud.allow("reconcile", essential=essential):
+            # FR #4422: never skip silently — log why and surface retry/reset fields.
+            why = bud.skip_reason("reconcile") or "budget-backoff"
+            _log(f"WARN github-resync skipped: {why}")
             return {
                 "ok": True,
                 "unaccepted": len(gitclaim.load_unaccepted(home)),
@@ -305,6 +309,8 @@ def resync_cycle(
                 "repos": [],
                 "failed": [],
                 "note": "budget-backoff",
+                "skip_reason": why,
+                "rate_reset": bud.rate_reset,
                 "pruned": 0,
                 "pruned_detail": [],
                 "dropped_detail": [],
@@ -366,6 +372,31 @@ class ChairJobs:
     def request_resync(self) -> None:
         self.next_resync = 0.0
 
+    def _maybe_pull_resync_forward_after_skip(self, now: float) -> None:
+        """FR #4422: after budget-backoff, schedule retry at rate-limit reset (not only +RESYNC_S)."""
+        res = self.last_resync if isinstance(self.last_resync, dict) else {}
+        if str(res.get("note") or "") != "budget-backoff":
+            return
+        reset = res.get("rate_reset")
+        if reset is None:
+            reset = getattr(self.api_budget, "rate_reset", None)
+        try:
+            reset_f = float(reset) if reset is not None else None
+        except (TypeError, ValueError):
+            reset_f = None
+        # Prefer GitHub reset; otherwise retry in 5 min so an exhausted hourly
+        # counter is not left silent until the next full hour.
+        retry_at = (reset_f + 1.0) if reset_f is not None else (float(now) + 300.0)
+        if retry_at < float(now):
+            retry_at = float(now) + 5.0
+        if retry_at < self.next_resync:
+            self.next_resync = retry_at
+            why = res.get("skip_reason") or "budget-backoff"
+            self.log(
+                f"INFO github-resync retry scheduled in "
+                f"{int(max(0, retry_at - float(now)))}s reason={why}"
+            )
+
     def tick(self) -> bool:
         now = self.clock()
         # FR #3212: gap in webhook delivery pulls reconcile forward (still one-at-a-time via busy lock).
@@ -418,6 +449,9 @@ class ChairJobs:
         if now >= self.next_resync:
             self.next_resync = now + RESYNC_S
             self._resync()
+            # FR #4422: when reconcile was skipped for rate-limit/budget, retry at
+            # X-RateLimit-Reset (or sooner than the full hourly cadence).
+            self._maybe_pull_resync_forward_after_skip(now)
         now = self.clock()
         if now >= self.next_merge_on_green:
             self.next_merge_on_green = now + MERGE_ON_GREEN_S
@@ -478,14 +512,19 @@ class ChairJobs:
             self.last_resync, self.last_resync_at = res, self.clock()
             if res.get("ok"):
                 note = res.get("note") or ""
-                self.log(
-                    f"INFO github-resync ok repos={len(res.get('repos') or [])} "
-                    f"failed={len(res.get('failed') or [])} "
-                    f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
-                    f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
-                    f"unaccepted={res.get('unaccepted', 0)}"
-                    + (f" note={note}" if note else "")
-                )
+                # FR #4422: budget-backoff is a skip — keep WARN visible (resync_cycle also logs).
+                if note == "budget-backoff":
+                    why = res.get("skip_reason") or note
+                    self.log(f"WARN github-resync skipped note={note} reason={why}")
+                else:
+                    self.log(
+                        f"INFO github-resync ok repos={len(res.get('repos') or [])} "
+                        f"failed={len(res.get('failed') or [])} "
+                        f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
+                        f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
+                        f"unaccepted={res.get('unaccepted', 0)}"
+                        + (f" note={note}" if note else "")
+                    )
                 # FR #2899: name every dropped row + reason (never only dropped=N).
                 for detail in list(res.get("dropped_detail") or [])[:40]:
                     self.log(f"INFO github-resync dropped {detail}")

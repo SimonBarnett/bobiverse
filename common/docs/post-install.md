@@ -61,6 +61,7 @@
    2. As an Ergo oper with `accreg`: `/OPER â€¦` then `/msg NickServ PASSWD {machine}_console <guid>`.
    3. `Restart-Service Airc` and confirm `joined #{machine} as {machine}_console` without a `433` loop.  
    `ERASE` also works (`/msg NickServ ERASE {machine}_console` then confirm with the code) but requires the same oper cap; without `/OPER`, NickServ replies `Command restricted` (easy to miss in Halloy Notices).
+   **FR #4388:** tip airc does this reclaim automatically once when SASL 904 heal finds no alternate GUID, using `<ai root>\airc\config\oper.cred`, sibling `jeeves\config\oper.cred`, `BOB_OPER_FILE` / `BOB_OPER_PASSWORD`, or a discovered `ergo-oper*.txt`. Provision oper credentials on fleet boxes that need unattended reclaim; otherwise the manual steps above still apply.
 
 9. **Bootstrap tools (issue #10 / FR #1825)**  
    Quiet MSI runs install as LocalSystem. `Install-BootstrapTools.ps1` resolves well-known per-user paths for `gh` / Python / Node before winget. Node prefers a pinned **nodejs.org** x64 MSI (`ALLUSERS=1`) because per-user WindowsApps `winget` is unusable under SYSTEM. Missing `gh` / `git` / `python` / `node` soft-fail with `WARN tool-missing …` so the product MSI does not 1603; install machine-wide prerequisites afterward if a tool is required at runtime.
@@ -188,7 +189,7 @@ Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=
 
 airc status-only workstation (no remote shell):  
 `msiexec /i airc-x.y.z.msi /qn AIRC_SHELL=off AIRC_REQUIRE_ACCOUNT=1 AIRC_ACCOUNTS=simon`  
-Fresh installs default `AIRC_SHELL=off`; upgrades of an existing Airc service default `operators` when the property is omitted so fleet boxes keep the shell. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
+Fleet fresh default is `operators` (FR #4030 / 1.0.0; was `off`). Omit `AIRC_SHELL` on upgrade to keep/migrate to `operators` unless `shell_source=explicit`. **FR #4390:** `airc.json` key `shell` takes values `off`|`operators` only — install/UAT expect `"shell": "operators"` after migrate-from-fresh-off, never `"shell": "shell"`. Settings land in `AppParameters`, `config\airc.json`, and `config\airc-install.json` (FR #1552 preserve).
 
 
 Fleet airc authorisation (FR #3401 / #3639): live IRC channel status only. A sender holding ops (+o) or half-ops (+h) (or higher) in the one control channel the console joined is authorised; everyone else gets `DONE exit=126 not-op`. There is no `operators.txt`, no `config\fleet-operators.txt` roster and no nick allow-list on any profile (fleet, workstation or client), and the retired `AIRC_OPERATORS` MSI property is ignored. Fleet and workstation consoles take commands by DM only and stay silent in their control channel; `AIRC_PROFILE=client` also accepts commands in the control channel. Auth refuses until NAMES/366 has synced the channel, and the console never authorises its own nick.

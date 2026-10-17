@@ -3,9 +3,10 @@
   Print the agent-fuel readings bob-worker.exe uses to pick grok -> cursor -> dialog (FR #3997). JSON on stdout, nothing else.
 .DESCRIPTION
   LOCAL readings only (CAST IRON, same sources as the tray): Cursor pools via Get-BobCursorAgentWeeklyRemaining
-  (tools\Get-CursorAgentUsage.py; high-cost-models + auto/low-cost), Grok via Get-BobWeeklyRemaining (unified.jsonl)
-  + Get-BobGrokAvailability. Never prints a key, token or path to a credential. Exit code is always 0; a failed
-  reader yields null (= unknown), which the exe treats as "not available".
+  (tools\Get-CursorAgentUsage.py or BOB_CURSOR_AGENT_FIXTURE; high-cost-models + auto/low-cost), then
+  Get-BobCursorGroupRemainFromLocalDoc (exported from BobBridge). Grok via Get-BobWeeklyRemaining (unified.jsonl)
+  + Get-BobGrokAvailability. Never prints a key, token or path to a credential. Exit code is always 0.
+  A failed Cursor reader sets cursor.error (stage text, paths stripped) and leaves high/low null (= unknown).
 #>
 [CmdletBinding()]
 param([string]$InstallRoot = '')
@@ -21,6 +22,7 @@ try {
     Import-Module $psd1 -Force -ErrorAction Stop
     $out.ok = $true
     try {
+        if ($env:BOB_AGENT_FUEL_CURSOR_FAULT) { throw [string]$env:BOB_AGENT_FUEL_CURSOR_FAULT }
         $doc = Get-BobCursorAgentWeeklyRemaining
         if ($doc) {
             $hi = Get-BobCursorGroupRemainFromLocalDoc -LocalCursorDoc $doc -GroupId 'high-cost-models'
@@ -30,7 +32,14 @@ try {
             $vals = @($hi, $lo) | Where-Object { $null -ne $_ }
             if ($vals.Count) { $out.cursor.any = [int](($vals | Measure-Object -Maximum).Maximum) }
         }
-    } catch { }
+    } catch {
+        $raw = [string]$_.Exception.Message
+        if (-not $raw) { $raw = [string]$_.FullyQualifiedErrorId }
+        if (-not $raw) { $raw = 'cursor-reader-failed' }
+        $raw = [regex]::Replace($raw, '[A-Za-z]:\\[^\s''"]+', '<path>')
+        if ($raw.Length -gt 180) { $raw = $raw.Substring(0, 180) }
+        $out.cursor.error = $raw
+    }
     try {
         $w = Get-BobWeeklyRemaining
         $auth = $null

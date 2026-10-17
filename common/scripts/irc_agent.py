@@ -319,7 +319,13 @@ def save_outbox_pos(outbox: Path, pos: int) -> None:
 
 
 def info(msg: str) -> None:
-    print(msg, flush=True)
+    """Stdout log line; never raise UnicodeEncodeError on cp1252 consoles (FR #4396)."""
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        safe = str(msg).encode(enc, errors="replace").decode(enc, errors="replace")
+        print(safe, flush=True)
 
 
 def resolve_bob_install_root(
@@ -2975,8 +2981,13 @@ class Client:
             return
         if gate == "busy":
             gitclaim.note_worker_activity(self.home, src, now)
-            self._git_say(target, gitclaim.NAK_BORED_BUSY)
-            info(f"INFO git-claim bored nak busy nick={src}")
+            # FR #4415: name seat + held/offered job so operators see why (not silent busy).
+            _why = ""
+            with contextlib.suppress(Exception):
+                _why = gitclaim.seat_open_job(self.home, src, now) or ""
+            _nak = gitclaim.format_bored_busy_nak(src, _why)
+            self._git_say(target, _nak)
+            info(f"INFO git-claim bored nak busy nick={src} why={_why or '-'}")
             return
         self._refresh_ledger()
         # #39 gap 2: focus-ordered, one wire line "<nick>: FR|MRB|UAT owner/repo#N url".
@@ -3137,6 +3148,7 @@ class Client:
                             "task": _pj.task,
                             "id": _pj.id,
                         },
+                        via="ack-missing",
                     )
                     if _noted:
                         info(

@@ -61,6 +61,7 @@ Export-ModuleMember -Function @(
     'Get-BobTrayCursorGroupHelpTooltip',
     'Get-BobWeeklyRemaining',
     'Get-BobCursorAgentWeeklyRemaining',
+    'Get-BobCursorGroupRemainFromLocalDoc',
     'Get-BobCursorSpendingFromApiFixture',
     'Get-BobTrayTipPlacement',
     'Get-BobFleetRegistry',

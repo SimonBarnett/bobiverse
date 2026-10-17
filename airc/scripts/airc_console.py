@@ -1018,10 +1018,10 @@ def resolve_shell_mode_for_install(
 ) -> str:
     """Resolve install-time shell mode.
 
-    FR #3287: non-Bob fresh fleet default ``off``; upgrade with prior service ``operators``.
     FR #3393: ``AIRC_PROFILE=workstation`` defaults ``off`` unless explicit.
     FR #3401: ``AIRC_PROFILE=client`` defaults ``operators``.
-    FR #4030: Bob machines default ``operators``; migrate legacy fresh-default ``off``
+    FR #4030 / 1.0.0: fleet fresh default is ``operators`` (was ``off``); Bob detect is
+    belt-and-braces. Migrate legacy ``shell_source=fresh-default`` / unmarked ``off``
     unless ``shell_source=explicit`` / ``shell_explicit`` / MSI ``AIRC_SHELL=off``.
     """
     exp = (explicit or "").strip().lower()
@@ -1034,15 +1034,25 @@ def resolve_shell_mode_for_install(
         return "operators"
     prior = (prior_shell or "").strip().lower()
     src = (prior_shell_source or "").strip().lower()
+    explicit_off = prior_shell_explicit is True or src == "explicit"
     if is_bob_machine:
-        if prior == "off":
-            if prior_shell_explicit is True or src == "explicit":
-                return "off"
-            return "operators"
+        if prior == "off" and explicit_off:
+            return "off"
         return "operators"
+    if prior == "off":
+        if explicit_off:
+            return "off"
+        # Legacy fresh-default / unmarked off (flamingo / walrus 1.0.0 class).
+        if src in ("", "fresh-default") or prior_shell_source is None:
+            return "operators"
+        return "off"
     if prior in SHELL_MODE_TOKENS:
         return prior
-    return "operators" if had_prior_service else "off"
+    # Fleet fresh / upgrade default (FR #4030): operators.
+    # had_prior_service kept for call-site compat (both paths now operators).
+    if had_prior_service:
+        return "operators"
+    return "operators"
 
 
 def load_capabilities(

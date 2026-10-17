@@ -12,9 +12,10 @@ import os
 import subprocess
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 # Owner/member hold comments (class of a-search#1334 Simon hold).
 HOLD_TEXT_RE = re.compile(
@@ -31,10 +32,47 @@ MRB_PASS_BOARD_RE = re.compile(
 )
 # FR #4041: gh pr comment posts as OWNER; MRB boards that discuss product hold
 # features must not trip owner-hold detection.
+# FR #4487: a ## MRB hand-back (self-MRB GIVEUP) is seat process too. It often
+# says "this seat must not merge" and must not become a permanent owner hold.
 MRB_BOARD_COMMENT_RE = re.compile(
-    r"(?im)^\s*##\s*MRB\s+board\b|\*\*Verdict:\*\*"
+    r"(?im)^\s*##\s*MRB\s+board\b|\*\*Verdict:\*\*|^\s*##\s*MRB\s+hand-back\b"
+)
+# FR #4500: a later comment that only restates the gate refusal is not a new
+# owner hold. It quotes the tripped phrase ("must not merge") inside
+# "held, not merged" plus "mrb_merge_gate.py exit 2". A real hold that does
+# not restate the gate still refuses. An echo does not clear an earlier hold.
+GATE_REFUSAL_ECHO_RE = re.compile(
+    r"(?is)held,\s*not\s+merged[\s\S]{0,800}?mrb_merge_gate\.py\s+exit\s+2"
+    r"|mrb_merge_gate\.py\s+exit\s+2[\s\S]{0,800}?held,\s*not\s+merged"
 )
 OWNERISH = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+# FR #4467: GitHub comment-list 403/429 (rate limit) is not an owner hold.
+_TRANSIENT_COMMENT_HTTP = frozenset({403, 429})
+_RETRY_WAIT_CAP_S = 2.0
+_DEFAULT_COMMENT_ATTEMPTS = 3
+
+
+class CommentsUnavailable(RuntimeError):
+    """Comment list could not be read. Not an owner hold and not merge refused."""
+
+
+def _retry_wait_s(err: urllib.error.HTTPError, attempt: int) -> float:
+    """Seconds to wait before another comments GET. Cap so a seat is not stalled."""
+    raw = ""
+    if err.headers is not None:
+        raw = str(err.headers.get("Retry-After") or "").strip()
+    wait = 0.0
+    if raw:
+        try:
+            wait = float(raw)
+        except ValueError:
+            wait = 0.0
+    if wait <= 0:
+        wait = 0.4 * (2 ** attempt)
+    if wait > _RETRY_WAIT_CAP_S:
+        return _RETRY_WAIT_CAP_S
+    return wait
 
 
 def _assoc(c: dict) -> str:
@@ -50,8 +88,19 @@ def _created(c: dict) -> str:
 
 
 def _is_mrb_board_comment(text: str) -> bool:
-    """True when comment is an MRB board (FR #4041 — ignore for owner-hold scan)."""
+    """True when comment is an MRB board or hand-back (FR #4041 / #4487).
+
+    Ignored for the owner-hold scan. A hand-back does not clear an earlier real hold.
+    """
     return bool(MRB_BOARD_COMMENT_RE.search(text or ""))
+
+
+def _is_gate_refusal_echo(text: str) -> bool:
+    """True when the comment only restates a gate refusal (FR #4500).
+
+    Ignored for the owner-hold scan. An echo does not clear an earlier real hold.
+    """
+    return bool(GATE_REFUSAL_ECHO_RE.search(text or ""))
 
 
 def find_active_owner_hold(comments: list[dict] | None) -> str | None:
@@ -63,7 +112,7 @@ def find_active_owner_hold(comments: list[dict] | None) -> str | None:
             continue
         text = _body(c)
         # FR #4041: seat boards posted via gh appear as OWNER; skip board-shaped comments.
-        if _is_mrb_board_comment(text):
+        if _is_mrb_board_comment(text) or _is_gate_refusal_echo(text):
             continue
         if HOLD_CLEAR_RE.search(text):
             hold_body = None
@@ -127,31 +176,62 @@ def _gh_token() -> str:
     return _gh_auth_token_cli()
 
 
-def fetch_issue_comments(repo: str, num: str, *, token: str | None = None) -> list[dict]:
-    """GET /repos/{repo}/issues/{num}/comments (PRs share the issues comments API)."""
+def fetch_issue_comments(
+    repo: str,
+    num: str,
+    *,
+    token: str | None = None,
+    attempts: int = _DEFAULT_COMMENT_ATTEMPTS,
+    sleeper: Callable[[float], None] | None = None,
+) -> list[dict]:
+    """GET /repos/{repo}/issues/{num}/comments (PRs share the issues comments API).
+
+    FR #4467: HTTP 403 and 429 are retried. When they persist, raise
+    CommentsUnavailable (not an owner hold, not merge refused).
+    """
     tok = (token if token is not None else _gh_token()).strip()
     if not tok:
         raise RuntimeError(
             "GH_TOKEN/GITHUB_TOKEN required for live merge gate "
             "(or run: gh auth login so gh auth token works)"
         )
-    api = f"https://api.github.com/repos/{repo}/issues/{str(num).lstrip('#')}/comments?per_page=100"
-    req = urllib.request.Request(
-        api,
-        headers={
-            "Authorization": f"Bearer {tok}",
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "bobiverse-mrb-merge-gate",
-        },
+    pause = sleeper or time.sleep
+    tries = max(1, int(attempts))
+    num_s = str(num).lstrip("#")
+    api = f"https://api.github.com/repos/{repo}/issues/{num_s}/comments?per_page=100"
+    last_code = 0
+    for attempt in range(tries):
+        req = urllib.request.Request(
+            api,
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-mrb-merge-gate",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            last_code = int(e.code)
+            if last_code in _TRANSIENT_COMMENT_HTTP and attempt + 1 < tries:
+                pause(_retry_wait_s(e, attempt))
+                continue
+            if last_code in _TRANSIENT_COMMENT_HTTP:
+                raise CommentsUnavailable(
+                    f"comments unknown HTTP {last_code} for {repo}#{num_s}; "
+                    "not an owner hold; not merge refused"
+                ) from e
+            raise RuntimeError(
+                f"GitHub comments HTTP {last_code} for {repo}#{num_s}"
+            ) from e
+        if not isinstance(data, list):
+            raise RuntimeError(f"unexpected comments payload for {repo}#{num_s}")
+        return [c for c in data if isinstance(c, dict)]
+    raise CommentsUnavailable(
+        f"comments unknown HTTP {last_code} for {repo}#{num_s}; "
+        "not an owner hold; not merge refused"
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"GitHub comments HTTP {e.code} for {repo}#{num}") from e
-    if not isinstance(data, list):
-        raise RuntimeError(f"unexpected comments payload for {repo}#{num}")
-    return [c for c in data if isinstance(c, dict)]
 
 
 def assert_mrb_merge_allowed(repo: str, num: str, *, token: str | None = None) -> None:
@@ -167,12 +247,16 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) != 2 or args[0] in {"-h", "--help"}:
         sys.stderr.write(
             "usage: mrb_merge_gate.py <owner/repo> <pr-number>\n"
-            "Exit 0 when merge allowed; 2 when refused; 1 on error.\n"
+            "Exit 0 when merge allowed; 2 when refused; "
+            "3 when comments unknown (HTTP 403/429, not a hold); 1 on error.\n"
         )
         return 1
     repo, num = args[0], args[1]
     try:
         assert_mrb_merge_allowed(repo, num)
+    except CommentsUnavailable as e:
+        sys.stderr.write(str(e) + "\n")
+        return 3
     except RuntimeError as e:
         msg = str(e)
         if msg.startswith("FR #3928 merge refused"):

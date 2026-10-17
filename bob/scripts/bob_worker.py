@@ -272,6 +272,7 @@ def fuel_reading_known(f: Fuel, kind: str) -> bool:
             return True
         st = (f.grok_state or "unknown").strip().lower()
         return st != "unknown"
+    # Cursor: relay ACKs on receipt (#4115), so _inject_line uses this probe, not stop_fn.
     if k == "cursor":
         return f.cursor_high is not None or f.cursor_low is not None
     return False
@@ -1726,6 +1727,56 @@ def inject_console(
             k32.CloseHandle(h)
 
 
+def build_clear_input_records():
+    """FR #4510: Ctrl+A then Backspace, so a failed paste is not concatenated into the next offer."""
+    wintypes, INPUT_RECORD = _win_structs()
+    arr = (INPUT_RECORD * 6)()
+    seq = [
+        (0x11, 1, "\x00", 0x0008),
+        (0x41, 1, "\x01", 0x0008),
+        (0x41, 0, "\x01", 0x0008),
+        (0x11, 0, "\x00", 0),
+        (0x08, 1, "\x08", 0),
+        (0x08, 0, "\x08", 0),
+    ]
+    for i, (vk, down, ch, ctrl) in enumerate(seq):
+        rec = arr[i]
+        rec.EventType = 1
+        k = rec.Event.KeyEvent
+        k.bKeyDown = down
+        k.wRepeatCount = 1
+        k.wVirtualKeyCode = vk
+        k.wVirtualScanCode = 0
+        k.uChar = ch
+        k.dwControlKeyState = ctrl
+    return arr
+
+
+def clear_console_input(pid: int = 0) -> bool:
+    """FR #4510: clear THIS process input box. Never paste."""
+    if os.name != "nt":
+        return False
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    wintypes, _ = _win_structs()
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    k32.WriteConsoleInputW.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    with _CONSOLE_LOCK:
+        h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
+        if not h or h == ctypes.c_void_p(-1).value:
+            return False
+        try:
+            return _write_console_all(k32, h, build_clear_input_records(), wintypes)
+        finally:
+            k32.CloseHandle(h)
+
+
 def send_console_enter(pid: int = 0) -> bool:
     """Write one Enter to THIS process CONIN$ (FR #2696 submit-verify retry). Never paste."""
     if os.name != "nt":
@@ -1894,6 +1945,8 @@ def make_submit_probe(
     agent_pid: int = 0,
     since_wall: float | None = None,
     sessions_root: Optional[Path] = None,
+    text: str = "",
+    cursor_chats_root: Optional[Path] = None,
 ) -> Optional[Callable[[], bool]]:
     """Build a submit probe for the agent kind (FR #2696). None = no probe available."""
     k = (kind or "").strip().lower()
@@ -1911,8 +1964,51 @@ def make_submit_probe(
 
         return _probe
 
-    # Cursor / unknown: no durable enqueue log on this fleet yet.
+    if k == "cursor":
+        # Cursor submit probe: cursor-agent appends each submitted prompt to
+        # ~/.cursor/chats/<ws>/<chat>/prompt_history.json. True once a history file touched
+        # since the inject holds the injected text (prefix match; a lone "v" from Ctrl+V is not it).
+        want = re.sub(r"\s+", " ", (text or "")).strip()[:60]
+        croot = Path(cursor_chats_root) if cursor_chats_root else (Path.home() / ".cursor" / "chats")
+
+        def _cprobe() -> bool:
+            return probe_cursor_prompt_history(croot, want, since_wall=t0)
+
+        return _cprobe if want else None
+
+    # Unknown kinds: no durable enqueue log on this fleet yet.
     return None
+
+
+def probe_cursor_prompt_history(chats_root: Path | str, want: str, *, since_wall: float) -> bool:
+    """True when a prompt_history.json modified at/after ``since_wall`` contains ``want``."""
+    if not want:
+        return False
+    try:
+        root = Path(chats_root)
+        for f in root.glob("*/*/prompt_history.json"):
+            try:
+                if f.stat().st_mtime + 1.0 < float(since_wall):
+                    continue
+                data = json.loads(f.read_text(encoding="utf-8", errors="replace") or "[]")
+            except (OSError, ValueError):
+                continue
+            for entry in data if isinstance(data, list) else []:
+                if want in re.sub(r"\s+", " ", str(entry)):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _cursor_submit_gap_s(default: float = 1.0) -> float:
+    """Pre-Enter gap for cursor-agent: its Ctrl+V clipboard read is async (Enter must wait)."""
+    raw = (os.environ.get("BOB_WORKER_CURSOR_SUBMIT_GAP_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(0.2, min(10.0, v))
 
 
 def bored_on_turn_end_enabled() -> bool:
@@ -1924,6 +2020,152 @@ def bored_on_turn_end_enabled() -> bool:
 def should_start_turn_watcher(kind: str) -> bool:
     """FR #2802: grok turn watcher only when opt-in is on (default on)."""
     return (kind or "").strip().lower() == "grok" and bored_on_turn_end_enabled()
+
+
+def should_start_cursor_turn_watcher(kind: str) -> bool:
+    """Cursor seats: chat-store quiet-period turn watcher (BOB_WORKER_CURSOR_TURN_WATCH=0 disables)."""
+    if (kind or "").strip().lower() != "cursor" or not bored_on_turn_end_enabled():
+        return False
+    raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_WATCH") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], None]] = None) -> bool:
+    """FR #4464: Cursor seats default to batched KEY_EVENT at seat start.
+
+    cursor-agent treats Ctrl+V as a literal v. Set BOB_WORKER_INJECT_PASTE=0 when
+    it is unset, even if the cursor turn watcher does not start. An explicit value wins.
+    """
+    if (kind or "").strip().lower() != "cursor":
+        return False
+    if (os.environ.get("BOB_WORKER_INJECT_PASTE") or "").strip():
+        return False
+    os.environ["BOB_WORKER_INJECT_PASTE"] = "0"
+    if log is not None:
+        try:
+            log("relay: cursor seat - inject via batched keys (Ctrl+V lands as literal 'v')")
+        except Exception:
+            pass
+    return True
+
+
+def _cursor_turn_quiet_s(default: float = 20.0) -> float:
+    raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_QUIET_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(5.0, min(300.0, v))
+
+
+class CursorTurnWatcher:
+    """cursor-agent writes no turn events; infer them from its chat store.
+
+    The seat's chat is the ``~/.cursor/chats/<ws>/<chat>/`` dir created closest after the agent
+    spawn (``since_wall``). A write to any file in it after a quiet spell = turn_started; no
+    writes for ``quiet_s`` after activity = turn_ended (once per turn). ``clock`` is wall time
+    (file mtimes are wall time).
+    """
+
+    def __init__(
+        self,
+        *,
+        since_wall: float,
+        chats_root: Path | str | None = None,
+        quiet_s: float | None = None,
+        on_turn_started: Optional[Callable[[Optional[int], float], None]] = None,
+        on_turn_ended: Optional[Callable[[Optional[int], float], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+        poll_s: float = 1.0,
+        clock: Callable[[], float] = time.time,
+        log: Optional[Callable[[str], None]] = None,
+        bind_window_s: float = 120.0,
+    ):
+        self.root = Path(chats_root) if chats_root else (Path.home() / ".cursor" / "chats")
+        self.since_wall = float(since_wall)
+        self.quiet_s = float(_cursor_turn_quiet_s() if quiet_s is None else quiet_s)
+        self._on_started = on_turn_started
+        self._on_ended = on_turn_ended
+        self._stop = stop_event or threading.Event()
+        self.poll_s = max(0.05, float(poll_s))
+        self.clock = clock
+        self._log = log
+        self.bind_window_s = float(bind_window_s)
+        self.chat_dir: Optional[Path] = None
+        self._last_mtime = 0.0
+        self._active = False
+        self._turn = 0
+
+    def _bind(self) -> Optional[Path]:
+        if self.chat_dir is not None:
+            return self.chat_dir
+        best = None
+        try:
+            for d in self.root.glob("*/*"):
+                if not d.is_dir():
+                    continue
+                try:
+                    st = d.stat()
+                except OSError:
+                    continue
+                born = min(st.st_mtime, getattr(st, "st_ctime", st.st_mtime))
+                if os.name != "nt":
+                    born = st.st_mtime
+                    with contextlib.suppress(OSError):
+                        born = min(f.stat().st_mtime for f in d.iterdir()) if any(d.iterdir()) else born
+                if born + 2.0 < self.since_wall or born > self.since_wall + self.bind_window_s:
+                    continue
+                if best is None or born < best[0]:
+                    best = (born, d)
+        except OSError:
+            return None
+        if best is not None:
+            self.chat_dir = best[1]
+            if self._log:
+                with contextlib.suppress(Exception):
+                    self._log(f"bored: cursor turn watcher following {self.chat_dir}")
+        return self.chat_dir
+
+    def _newest_mtime(self, d: Path) -> float:
+        m = 0.0
+        try:
+            for f in d.iterdir():
+                with contextlib.suppress(OSError):
+                    if f.is_file():
+                        m = max(m, f.stat().st_mtime)
+        except OSError:
+            pass
+        return m
+
+    def tick(self) -> Optional[str]:
+        """One poll; returns 'started' / 'ended' when it fired a callback (tests)."""
+        d = self._bind()
+        if d is None:
+            return None
+        now = float(self.clock())
+        m = self._newest_mtime(d)
+        fired = None
+        if m > self._last_mtime:
+            self._last_mtime = m
+            if not self._active:
+                self._active = True
+                self._turn += 1
+                fired = "started"
+                if self._on_started:
+                    with contextlib.suppress(Exception):
+                        self._on_started(self._turn, now)
+        elif self._active and now - self._last_mtime >= self.quiet_s:
+            self._active = False
+            fired = "ended"
+            if self._on_ended:
+                with contextlib.suppress(Exception):
+                    self._on_ended(self._turn, now)
+        return fired
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            self.tick()
+            self._stop.wait(self.poll_s)
 
 
 class GrokTurnWatcher:
@@ -2320,6 +2562,8 @@ def inject_with_submit_verify(
     stop_fn: Optional[Callable[[], bool]] = None,
     sync: bool = True,
     on_failed: Optional[Callable[[], None]] = None,
+    force_verify: bool = False,
+    on_unverified: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Paste via inject_fn, then verify submit and Enter-only retry (FR #2696).
 
@@ -2343,13 +2587,30 @@ def inject_with_submit_verify(
     if not _submit_verify_enabled():
         return True
     # Without a submit probe, never fire Enter-only retries (could interrupt a warm TUI).
-    if probe_fn is None:
+    # FR #4456: the ack-miss reminder may force the verify loop anyway (no probe is not success).
+    if probe_fn is None and not force_verify:
         if log:
             try:
                 log("relay: submit-verify skipped (no probe)")
             except Exception:
                 pass
+        if on_unverified is not None:
+            try:
+                on_unverified()
+            except Exception:
+                pass
         return True
+    if probe_fn is None and force_verify:
+        if log:
+            try:
+                log("relay: submit-verify forced (no probe)")
+            except Exception:
+                pass
+
+        def _never_submitted() -> bool:
+            return False
+
+        probe_fn = _never_submitted
     vs = float(_submit_verify_s() if verify_s is None else verify_s)
     mr = int(_submit_verify_retries() if max_retries is None else max_retries)
     bos = _submit_verify_backoffs() if backoffs is None else backoffs
@@ -2501,6 +2762,8 @@ class Relay:
         self._lock = threading.Lock()
         self._inject: Optional[Callable[[str], bool]] = None
         self._pending: list = []
+        # Job refs this seat already closed (DONE / GIVEUP / NACK sent): never replay or hold them.
+        self._finished_refs: set = set()
         self._overflow: list = []
         self._sent: list = []
         self._last_line = ""
@@ -2719,6 +2982,28 @@ class Relay:
             if line and line not in self._pending:
                 self._pending.insert(0, line)
 
+    def note_outbound(self, payload: str) -> int:
+        """Seat sent DONE / GIVEUP / NACK for a job: drop held copies of it. Returns n dropped."""
+        m = _OUT_JOB_KEY_RX.match((payload or "").strip())
+        if not m or m.group(1).upper() not in ("DONE", "GIVEUP", "NACK"):
+            return 0
+        ref = m.group(3).lower()
+        with self._lock:
+            self._finished_refs.add(ref)
+            if len(self._finished_refs) > 256:
+                self._finished_refs.pop()
+            before = len(self._pending)
+            self._pending = [p for p in self._pending if assign_job_ref(p) != ref]
+            dropped = before - len(self._pending)
+        if dropped:
+            self.log(f"relay: dropped {dropped} held assign(s) for {ref} ({m.group(1).upper()} sent)")
+        return dropped
+
+    def is_finished_ref(self, line: str) -> bool:
+        ref = assign_job_ref(line)
+        with self._lock:
+            return bool(ref) and ref in self._finished_refs
+
     def release_held_assigns(self) -> int:
         """FR #2811 / FR #4115 / FR #4180: flush pending assigns after turn_ended / harvest hold ends.
 
@@ -2729,12 +3014,18 @@ class Relay:
         with self._lock:
             keep: list = []
             flush: list = []
+            stale: list = []
             for line in self._pending:
-                if assign_job_ref(line):
+                ref = assign_job_ref(line)
+                if ref and ref in self._finished_refs:
+                    stale.append(line)
+                elif ref:
                     flush.append(line)
                 else:
                     keep.append(line)
             self._pending = keep
+        for line in stale:
+            self.log("relay: dropped finished held assign (DONE/GIVEUP/NACK already sent) " + line[:120])
         refuse = False
         try:
             refuse = bool(self.refuse_assign_while and self.refuse_assign_while())
@@ -3507,6 +3798,14 @@ def inject_failed_nack_line(line: str) -> Optional[str]:
     return f"NACK {key} inject failed"
 
 
+def submit_verify_giveup_line(line: str) -> Optional[str]:
+    """FR #4510: Cursor seat returns the job after a second submit-verify failure."""
+    key = assign_job_key(line)
+    if not key:
+        return None
+    return f"GIVEUP {key} submit-verify failed"
+
+
 def ack_on_receipt_line(line: str) -> Optional[str]:
     """FR #4115: outbox ACK written as soon as the seat receives an assign (before inject)."""
     key = assign_job_key(line)
@@ -3524,24 +3823,38 @@ def busy_holding_nack_line(line: str, holding: str) -> Optional[str]:
     return f"NACK {key} busy, holding {hold}"
 
 
-def append_outbox_line(path: Path | str, text: str) -> bool:
-    """Append one line to the run-dir outbox (the drain loop sends it to the shop channel)."""
-    try:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a", encoding="utf-8") as fh:
-            fh.write(text.rstrip("\r\n") + "\n")
-        return True
-    except OSError:
-        return False
+def append_outbox_line(path: Path | str, text: str, *, retries: int = 8, delay_s: float = 0.05) -> bool:
+    """Append one line to the run-dir outbox (the drain loop sends it to the shop channel).
 
+    FR #4363: drain_outbox uses os.replace while agents append; retry briefly so a
+    concurrent replace / recreate does not drop ACK/DONE. Prefer share-safe writers
+    (Add-BobiverseOutboxLine.ps1) on the PowerShell side.
+    """
+    p = Path(path)
+    line = text.rstrip("\r\n") + "\n"
+    for i in range(max(1, int(retries))):
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as fh:
+                fh.write(line)
+            return True
+        except OSError:
+            ensure_outbox(p)
+            if i + 1 >= retries:
+                break
+            time.sleep(delay_s * (i + 1))
+    return False
 
 class InjectRecovery:
     """FR #4115: an assign whose submit-verify FAILED is re-pasted once; if that also fails,
     NACK it via the run-dir outbox (``inject failed``) and clear local state so the seat is free.
 
+    FR #4510 (Cursor): a receipt ACK is not a running turn. Re-paste once (fresh clipboard,
+    delayed Enter via the cursor inject gap). If that also fails and no turn is open, send
+    ``GIVEUP <TYPE> owner/repo#N submit-verify failed`` and clear the input box.
+
     ``reinject(line, on_failed)`` must start one fresh inject+verify that calls ``on_failed`` on
-    a second failure. ``is_acked(line)`` short-circuits when the job got ACKed meanwhile.
+    a second failure. ``is_acked(line)`` short-circuits Grok when the job got ACKed meanwhile.
     """
 
     def __init__(
@@ -3552,19 +3865,37 @@ class InjectRecovery:
         clear_local: Callable[[str], None],
         is_acked: Callable[[str], bool] = lambda line: False,
         log: Callable[[str], None] = lambda m: None,
+        giveup_on_fail: bool = False,
+        block_on_receipt_ack: bool = True,
+        turn_running: Callable[[], bool] = lambda: False,
+        clear_input: Callable[[], None] = lambda: None,
     ):
         self.reinject = reinject
         self.write_outbox = write_outbox
         self.clear_local = clear_local
         self.is_acked = is_acked
         self.log = log
+        self.giveup_on_fail = bool(giveup_on_fail)
+        self.block_on_receipt_ack = bool(block_on_receipt_ack)
+        self.turn_running = turn_running
+        self.clear_input = clear_input
+        self._closed: set[str] = set()
 
     def on_failed(self, line: str, attempt: int = 1) -> str:
-        """Returns ``retried``, ``nacked``, ``acked`` or ``ignored``."""
+        """Returns ``retried``, ``nacked``, ``giveup``, ``running``, ``acked`` or ``ignored``."""
         if not assign_job_ref(line):
             return "ignored"
-        if self.is_acked(line):
+        try:
+            if self.turn_running():
+                self.log("relay: submit-verify FAILED - agent turn running; no GIVEUP")
+                return "running"
+        except Exception:  # noqa: BLE001
+            pass
+        if self.block_on_receipt_ack and self.is_acked(line):
             return "acked"
+        key = assign_job_key(line) or ""
+        if key and key in self._closed:
+            return "giveup" if self.giveup_on_fail else "nacked"
         if attempt <= 1:
             self.log(f"relay: submit-verify FAILED - re-pasting assign once (attempt 2) {line[:120]}")
             ok = False
@@ -3575,15 +3906,34 @@ class InjectRecovery:
             if ok:
                 return "retried"
             self.log("relay: inject path=fail reason=repaste_failed")
-        nack = inject_failed_nack_line(line)
-        if nack:
-            sent = self.write_outbox(nack)
-            self.log(f"relay: inject failed twice - {'queued' if sent else 'COULD NOT queue'} outbox {nack}")
+        if self.giveup_on_fail:
+            wire = submit_verify_giveup_line(line)
+            try:
+                self.clear_input()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: clear input failed {type(e).__name__}")
+            result = "giveup"
+        else:
+            wire = inject_failed_nack_line(line)
+            result = "nacked"
+        if wire:
+            sent = self.write_outbox(wire)
+            if self.giveup_on_fail:
+                self.log(
+                    f"relay: submit-verify failed twice - {'queued' if sent else 'COULD NOT queue'} "
+                    f"outbox {wire}"
+                )
+            else:
+                self.log(
+                    f"relay: inject failed twice - {'queued' if sent else 'COULD NOT queue'} outbox {wire}"
+                )
+        if key:
+            self._closed.add(key)
         try:
             self.clear_local(line)
         except Exception:  # noqa: BLE001
             pass
-        return "nacked"
+        return result
 
 
 # FR #4115: Grok's own prompt-accept timeout. Under CPU load the TUI shows
@@ -3781,17 +4131,30 @@ class AssignAckMiss:
             self.recycle_s = self.remind_s
         self._since: Optional[float] = None
         self._reminded = False
+        self._unverified = False
         self.last_line = ""
 
     def clear(self) -> None:
         self._since = None
         self._reminded = False
+        self._unverified = False
         self.last_line = ""
+
+    @property
+    def unverified(self) -> bool:
+        """FR #4456: last job inject had no submit probe (verification skipped)."""
+        return bool(self._unverified)
+
+    def note_unverified(self) -> None:
+        """FR #4456: mark the armed assign so the first reminder forces verify, then recycle."""
+        if self._since is not None:
+            self._unverified = True
 
     def note_inject(self, line: str, now: float, *, own_nick: str = "") -> None:
         if looks_like_job_assign(line, own_nick):
             self._since = float(now)
             self._reminded = False
+            self._unverified = False
             self.last_line = line or ""
             return
         # Mirror BoredEmitter._on_inject: strip FROM nick target before idle match.
@@ -3818,6 +4181,9 @@ class AssignAckMiss:
         if age >= self.remind_s and not self._reminded:
             self._reminded = True
             return "remind"
+        # FR #4456: an unverified inject is not left until recycle_s after that reminder.
+        if self._reminded and self._unverified:
+            return "recycle"
         return None
 
     def reminder_line(self, *, shop: str, outbox: str | Path) -> str:
@@ -4060,6 +4426,12 @@ class BoredEmitter:
                 fn(key)
             except Exception as e:
                 self.log(f"done-miss: remind inject failed {type(e).__name__}")
+
+    @property
+    def turn_open(self) -> bool:
+        """True while the turn watcher has seen turn_started and not turn_ended."""
+        with self._cv:
+            return bool(self._turn_open)
 
     @property
     def ack_open(self) -> bool:
@@ -5014,9 +5386,50 @@ class Supervisor:
         th.start()
         self.log(f"out-of-fuel: watcher started (kind={kind} pid={agent_pid})")
 
+    def _start_cursor_turn_watcher(self) -> None:
+        """Cursor: release held assigns on an inferred turn end (no 600 s fallback wait)."""
+        self._turn_watch_stop = threading.Event()
+
+        def _on_started(turn: Optional[int], wall: float) -> None:
+            with contextlib.suppress(Exception):
+                pw = getattr(self, "_prompt_watch", None)
+                if pw is not None:
+                    pw.note_activity()
+            if self.bored:
+                self.bored.turn_started(turn=turn, sid=None)
+
+        def _on_ended(turn: Optional[int], wall: float) -> None:
+            if self.bored:
+                self.bored.turn_ended(turn=turn, sid=None)
+            try:
+                n = self.relay.release_held_assigns()
+                if n and self.bored:
+                    self.bored.activity(mark_work=True)
+                if self.bored:
+                    self.bored.clear_held_assign()
+            except Exception:
+                pass
+
+        watcher = CursorTurnWatcher(
+            since_wall=time.time() - 5.0,
+            on_turn_started=_on_started,
+            on_turn_ended=_on_ended,
+            stop_event=self._turn_watch_stop,
+            log=self.log,
+        )
+        th = threading.Thread(target=watcher.run, name="cursor-turn-watch", daemon=True)
+        self._turn_watch_thread = th
+        th.start()
+        self.log(f"bored: cursor turn watcher started (quiet_s={watcher.quiet_s:.0f})")
+        # FR #4462 / #4464: same keys default as start_agent. Explicit BOB_WORKER_INJECT_PASTE wins.
+        apply_cursor_inject_keys_default("cursor", log=self.log)
+
     def _start_turn_watcher(self, session_id: str) -> None:
         """FR #2802: follow current grok session events.jsonl for turn_ended → early !bored."""
         self._stop_turn_watcher()
+        if self.bored and should_start_cursor_turn_watcher(self.kind):
+            self._start_cursor_turn_watcher()
+            return
         if not self.bored or not should_start_turn_watcher(self.kind):
             return
         self._turn_watch_stop = threading.Event()
@@ -5101,6 +5514,9 @@ class Supervisor:
         p = (payload or "").strip()
         if _OUT_ACK_RX.match(p) or _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
             self.ack_miss.note_ack()
+        if _OUT_DONE_RX.match(p) or _OUT_FREE_RX.match(p):
+            with contextlib.suppress(Exception):
+                self.relay.note_outbound(p)
         if self.bored:
             self.bored.on_outbox(payload)
 
@@ -5188,6 +5604,8 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #4464: keys default at seat start, including when the cursor turn watcher stays off.
+            apply_cursor_inject_keys_default(self.kind, log=self.log)
             if self.startup_grace_s > 0:
                 self.log(
                     f"agent: holding inject/!bored for startup_grace_s={self.startup_grace_s:.0f}s "
@@ -5469,12 +5887,27 @@ class Supervisor:
             return bool(b is not None and want and getattr(b, "ack_open", False)
                         and getattr(b, "ack_job_ref", None) == want)
 
-        rec = InjectRecovery(reinject=_reinject, write_outbox=_write, clear_local=_clear,
-                             is_acked=_acked, log=self.log)
+        is_cursor = (self.kind or "").strip().lower() == "cursor"
+
+        def _turn_running() -> bool:
+            b = self.bored
+            return bool(b is not None and getattr(b, "turn_open", False))
+
+        rec = InjectRecovery(
+            reinject=_reinject,
+            write_outbox=_write,
+            clear_local=_clear,
+            is_acked=_acked,
+            log=self.log,
+            giveup_on_fail=is_cursor,
+            block_on_receipt_ack=not is_cursor,
+            turn_running=_turn_running if is_cursor else (lambda: False),
+            clear_input=clear_console_input if is_cursor else (lambda: None),
+        )
         self._recovery = rec
         return rec
 
-    def _inject_line(self, proc, line: str, *, on_failed=None) -> bool:
+    def _inject_line(self, proc, line: str, *, on_failed=None, force_verify: bool = False, sync: bool | None = None) -> bool:
         if proc.poll() is not None:
             return False
         if on_failed is None and assign_job_ref(line):
@@ -5490,27 +5923,41 @@ class Supervisor:
             session_id=sid,
             agent_pid=int(getattr(proc, "pid", 0) or 0),
             since_wall=since_wall,
+            text=line,
         )
         # FR #2791: stop only when the open ACK is for this injected job (not any ACK).
         stop = None
         want = assign_job_ref(line)
-        if want and self.bored is not None:
+        is_cursor = (self.kind or "").strip().lower() == "cursor"
+        inject_fn = self.inject
+        if is_cursor and self.inject is inject_console:
+            inject_fn = lambda pid, text, log=None: inject_console(
+                pid, text, submit_gap_s=_cursor_submit_gap_s(), log=log
+            )
+        if want and self.bored is not None and not (is_cursor and probe is not None):
             stop = lambda b=self.bored, w=want: bool(getattr(b, "ack_open", False)) and (
                 getattr(b, "ack_job_ref", None) == w
             )
         # sync=False: do not block the IRC relay thread for the verify backoff budget.
+        # FR #4456: the unverified ack-miss reminder runs the loop on this thread.
+        def _mark_unverified() -> None:
+            with contextlib.suppress(Exception):
+                self.ack_miss.note_unverified()
+
         return inject_with_submit_verify(
             proc.pid,
             line,
-            inject_fn=self.inject,
+            inject_fn=inject_fn,
             enter_fn=send_console_enter,
             probe_fn=probe,
             clock=time.monotonic,
             sleep=time.sleep,
             log=self.log,
             stop_fn=stop,
-            sync=False,
+            sync=False if sync is None else bool(sync),
             on_failed=on_failed,
+            force_verify=bool(force_verify),
+            on_unverified=None if force_verify else _mark_unverified,
         )
 
     def _wait_exit(self, proc) -> None:
@@ -5661,12 +6108,23 @@ class Supervisor:
         if action == "remind":
             line = self.ack_miss.reminder_line(shop=shop, outbox=outbox)
             what = "pending assign" if line == self.ack_miss.last_line else "outbox reminder"
+            unverified = bool(getattr(self.ack_miss, "unverified", False))
+            extra = " forced submit-verify (FR #4456)" if unverified else ""
             self.log(
                 f"ack-miss: no ACK after assign for {self.ack_miss.remind_s:.0f}s; "
-                f"re-injecting {what} path={outbox}"
+                f"re-injecting {what}{extra} path={outbox}"
             )
             try:
-                self._inject_line(proc, line)
+                # Unverified (no probe) reminder blocks until the Enter loop finishes, then
+                # the next health tick recycles instead of waiting recycle_s.
+                self._inject_line(
+                    proc,
+                    line,
+                    force_verify=unverified,
+                    sync=True if unverified else None,
+                    # Do not NACK via InjectRecovery: the next tick recycles (FR #4456).
+                    on_failed=(lambda: None) if unverified else None,
+                )
             except Exception as e:
                 self.log(f"ack-miss: remind inject failed {type(e).__name__}")
             return
@@ -5902,9 +6360,16 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
         ensure_outbox(path)
         return 0
     tmp = path.with_suffix(".sending")
-    try:
-        os.replace(path, tmp)
-    except OSError:
+    # FR #4363: brief retry when an agent append still holds the file.
+    replaced = False
+    for _i in range(6):
+        try:
+            os.replace(path, tmp)
+            replaced = True
+            break
+        except OSError:
+            time.sleep(0.02 * (_i + 1))
+    if not replaced:
         return 0
     n = 0
     unsent: list[str] = []

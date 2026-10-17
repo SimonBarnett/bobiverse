@@ -335,6 +335,17 @@ def _task_order(row: dict) -> int:
     return _TASK_ORDER.get(str(row.get("task") or "").strip().upper(), 3)
 
 
+def _release_blocker_rank(row: dict) -> int:
+    """0 = release-blocker (offer first); 1 = everything else (FR #4373)."""
+    labels = row.get("labels") or []
+    if isinstance(labels, str):
+        labels = [labels]
+    for lab in labels:
+        if str(lab or "").strip().lower() == "release-blocker":
+            return 0
+    return 1
+
+
 def _repo_entry(doc: dict, repo: str) -> tuple[int, str] | None:
     """(priority, ts) of the best matching repo-level focus entry (lowest priority number, then
     earliest focused), or None."""
@@ -378,34 +389,44 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
     1. Per-item focus rank (if any)
     2. Repo focus priority (lower wins); unfocused last
     3. Task kind: MRB < UAT < FR
-    4. Lowest issue/PR number
-    5. Repo name (final tie-break — not focus timestamp)
+    4. release-blocker before plain work (FR #4373)
+    5. Lowest issue/PR number
+    6. Repo name (final tie-break — not focus timestamp)
     """
     if doc is None:
         doc = load_focus(home)
+    blocker = _release_blocker_rank(row)
     ir = item_rank(doc, row)
     if ir is not None:
-        return (0, ir, 0, 0, "", row_offer_number(row), str(row.get("repo") or "").lower())
+        return (
+            0,
+            ir,
+            0,
+            blocker,
+            "",
+            row_offer_number(row),
+            str(row.get("repo") or "").lower(),
+        )
     ent = _repo_entry(doc, str(row.get("repo") or ""))
     if ent is None:
-        # Unfocused: still kind + number so fallback paths stay consistent.
+        # Unfocused: still kind + blocker + number so fallback paths stay consistent.
         return (
             1,
             UNFOCUSED_RANK,
             _task_order(row),
+            blocker,
             row_offer_number(row),
             str(row.get("repo") or "").lower(),
-            0,
             "",
         )
-    # FR #3205: same priority → kind then number; drop focus timestamp (ent[1]).
+    # FR #3205: same priority → kind then blocker then number; drop focus timestamp (ent[1]).
     return (
         1,
         int(ent[0]),
         _task_order(row),
+        blocker,
         row_offer_number(row),
         str(row.get("repo") or "").lower(),
-        0,
         "",
     )
 
