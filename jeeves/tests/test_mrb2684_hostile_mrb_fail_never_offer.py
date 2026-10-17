@@ -23,9 +23,9 @@ def test_mrb2684_giveup_count_string_coerces():
         "giveup_count": str(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT),
         "giveup_seats": "marchhare-1",
     }
-    # FR #3277: with giveup_seats set, only listed seats are blocked (string coerce still works).
+    # FR #4336: needs_human is global; string giveup_count still coerces for threshold stamp.
     assert gitclaim.row_needs_human(row, "marchhare-1") is True
-    assert gitclaim.row_needs_human(row, "ionos-99") is False
+    assert gitclaim.row_needs_human(row, "ionos-99") is True
     bare = {
         "needs_human": True,
         "giveup_count": str(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT),

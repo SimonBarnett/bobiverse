@@ -924,7 +924,7 @@ def _parse_iso_ts(raw: str) -> float | None:
         return None
 
 
-def row_on_cooldown(row: dict, now: float, nick: str = "") -> bool:
+def row_on_cooldown(row: dict, now: float, nick: str = "", live: set[str] | None = None) -> bool:
     """True when this seat must wait out ``cooldown_until``.
 
     Global row cooldown after GIVEUP used to block *every* seat for
@@ -933,6 +933,7 @@ def row_on_cooldown(row: dict, now: float, nick: str = "") -> bool:
     re-offer to the giver; other seats skip the global wait.
     Compare seats via ``canonical_worker_nick`` so ``w-io-<pid>`` matches
     ``win-mpre8vi4u6u-<pid>`` stored after GIVEUP.
+    FR #4336: pass ``live`` so a recycled successor inherits the giver's cooldown.
     """
     until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
     if until is None or float(now) >= until:
@@ -941,44 +942,29 @@ def row_on_cooldown(row: dict, now: float, nick: str = "") -> bool:
     if not me:
         return True
     seats = giveup_seat_set(row)
-    if seats and not nick_in_giveup_seats(row, me):
+    if seats and not nick_in_giveup_seats(row, me, live=live):
         return False
     return True
 
 
 def row_needs_human(row: dict, nick: str = "") -> bool:
-    """True when this seat must not take a needs_human row.
+    """True when auto-offer paths must not hand out this row (FR #4336).
 
-    After GIVEUP loops the chair stamps ``needs_human`` *and* ``giveup_seats``.
-    Early GIVEUPs stay per-seat (FR #1236 / #1407) so one machine's GIVEUP does not
-    idle the fleet. FR #3277: when ``giveup_seats`` is set, only those seats are
-    blocked — even after ``giveup_count`` reaches ``GIVEUP_NEEDS_HUMAN_COUNT`` —
-    so a self-MRB author's GIVEUPs cannot strand every other seat. A bare
-    ``needs_human`` with no giveup_seats stays a global human/vision gate.
-    Seat match is canonical (``w-io-*`` == ``win-mpre8vi4u6u-*``).
+    Once `needs_human` is stamped, **every** seat is blocked for `!bored`,
+    done-offer, idle feed, and seat-reconcile revive. Only an explicit chair
+    `!assign` may hand the row out (`assign_row` skips this gate).
+
+    Early per-seat GIVEUP still uses `giveup_seats` / `row_gave_up_by` /
+    cooldown before the needs_human stamp (FR #1236). FR #3277's "other seats
+    may still take a needs_human row" behaviour is superseded by FR #4336 after
+    live re-offer loops of recycled nicks past giveup_seats.
     """
     v = row.get("needs_human")
     if isinstance(v, bool):
         flag = v
     else:
         flag = str(v or "").strip().lower() in ("1", "true", "yes")
-    if not flag:
-        return False
-    seats = giveup_seat_set(row)
-    me = (nick or "").strip()
-    # FR #3277 / #1236: giveup_seats is the seat-scoped gate; do not let a high
-    # giveup_count short-circuit into a fleet-wide block when seats are listed.
-    if seats:
-        if me:
-            return nick_in_giveup_seats(row, me)
-        return True
-    try:
-        giveups = int(row.get("giveup_count") or 0)
-    except (TypeError, ValueError):
-        giveups = 0
-    if giveups >= GIVEUP_NEEDS_HUMAN_COUNT:
-        return True
-    return True
+    return bool(flag)
 
 
 def row_awaits_mrb1(row: dict) -> bool:
@@ -2335,8 +2321,64 @@ def giveup_seat_set(row: dict) -> set[str]:
     return out
 
 
-def nick_in_giveup_seats(row: dict, nick: str) -> bool:
-    """True when ``nick`` (any form) is listed in the row's giveup_seats."""
+def _seat_machine_id(nick: str) -> str:
+    """Folded machine id from a seat nick, or empty."""
+    p = bobreport.parse_seat_nick(nick) or bobreport.parse_worker_nick(nick)
+    if not p:
+        c = canonical_worker_nick(nick)
+        p = bobreport.parse_seat_nick(c) if c else None
+    if not p:
+        return ""
+    try:
+        return bobreport.fold_machine_id(p[0])
+    except Exception:
+        return str(p[0] or "").strip().lower()
+
+
+def _live_nick_set(live: set[str] | None) -> set[str]:
+    out: set[str] = set()
+    for n in live or ():
+        c = (canonical_worker_nick(str(n)) or str(n)).strip().lower()
+        if c:
+            out.add(c)
+    return out
+
+
+def nick_inherits_dead_seat(
+    nick: str,
+    stored: str,
+    live: set[str] | None,
+) -> bool:
+    """True when `nick` succeeds a recycled `stored` seat on the same machine (FR #4336).
+
+    When `stored` is not live and `nick` is on the same machine, the new nick
+    inherits giveup / author exclusions. If both nicks are live they are siblings
+    (FR #2604) and do not inherit.
+    """
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    st = (canonical_worker_nick(stored) or stored or "").strip().lower()
+    if not me or not st or me == st:
+        return False
+    live_l = _live_nick_set(live)
+    if not live_l:
+        return False
+    if st in live_l:
+        return False
+    me_mid = _seat_machine_id(me)
+    st_mid = _seat_machine_id(st)
+    return bool(me_mid and st_mid and me_mid == st_mid)
+
+
+def nick_in_giveup_seats(
+    row: dict,
+    nick: str,
+    live: set[str] | None = None,
+) -> bool:
+    """True when `nick` (any form) is listed in the row's giveup_seats.
+
+    FR #4336: when `live` is provided, also match a recycled successor on the
+    same machine as a listed seat that is no longer live.
+    """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
         return False
@@ -2345,10 +2387,16 @@ def nick_in_giveup_seats(row: dict, nick: str) -> bool:
         return False
     if me in seats:
         return True
-    # also match raw nick if a non-canonical token was stored historically
-    return (nick or "").strip().lower() in {
+    if (nick or "").strip().lower() in {
         x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()
-    }
+    }:
+        return True
+    if live is None:
+        return False
+    for st in seats:
+        if nick_inherits_dead_seat(me, st, live):
+            return True
+    return False
 
 
 def _channel(target: str) -> str:
@@ -4526,7 +4574,7 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     else:
                         ledger_n += 1
                     continue
-                if row_gave_up_by(cand, me) or row_needs_human(cand, me):
+                if row_gave_up_by(cand, me, live=live) or row_needs_human(cand, me):
                     ledger_n += 1
                     continue
                 skips = {
@@ -5424,7 +5472,7 @@ def review_blocked_for_author(
     repo_uat = is_repo_uat(row)
 
     def _seat_gave_up_uat(n_c: str) -> bool:
-        if row_gave_up_by(row, n_c):
+        if row_gave_up_by(row, n_c, live=live):
             return True
         if ledger is not None and repo_uat:
             other_why = _ledger_blocks(ledger, row, n_c)
@@ -5439,6 +5487,10 @@ def review_blocked_for_author(
         # disagreed with the worker self-UAT skill and stranded UAT after refuse.
         # Escalate via maybe_escalate_repo_uat_all_self_uat instead.
         if author_l == me_l:
+            return True
+        # FR #4336: recycled successor on same machine inherits author exclusion
+        # when the stamped author nick is no longer live (exact-seat self-MRB).
+        if nick_inherits_dead_seat(me, author, live):
             return True
         # FR #2604: MRB self-exclusion is exact seat only — sibling on same machine OK.
         if task == "MRB":
@@ -5487,8 +5539,8 @@ def row_machine_mismatch(row: dict, nick: str) -> bool:
     return row_blocked_for_machine(row, nick)
 
 
-def row_gave_up_by(row: dict, nick: str) -> bool:
-    return nick_in_giveup_seats(row, nick)
+def row_gave_up_by(row: dict, nick: str, live: set[str] | None = None) -> bool:
+    return nick_in_giveup_seats(row, nick, live=live)
 
 
 # ---------------------------------------------------------------------------
@@ -6071,7 +6123,7 @@ def offer_focus_top(
 
             def _eligible(cand: dict) -> dict | None:
                 nonlocal purged
-                if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me):
+                if row_needs_human(cand, me) or row_on_cooldown(cand, now_f, me, live=live):
                     return None  # FR #180: per-seat GIVEUP cooldown / needs-human
                 if row_awaits_mrb1(cand):
                     return None  # legacy hook; row_awaits_mrb1 always False (op 2026-10-04)
@@ -6084,7 +6136,7 @@ def offer_focus_top(
                     return None
                 if repo_archived_for_queue(str(cand.get("repo") or "")):
                     return None
-                if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me):
+                if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
                     return None
                 if ledger_blocks(ledger, cand, me, live):
                     if is_repo_uat(cand):
@@ -6363,9 +6415,15 @@ def offer_top(
             doc["unaccepted"].sort(key=_sort_key)
             pick_i = None
             i = 0
+            live = live_seat_nicks(home)
             while i < len(doc.get("unaccepted") or []):
                 row = doc["unaccepted"][i]
-                if row_needs_human(row, nick or "") or row_on_cooldown(row, now_f, nick or "") or row_skip_fr_reason(row):
+                if (
+                    row_needs_human(row, nick or "")
+                    or row_on_cooldown(row, now_f, nick or "", live=live)
+                    or row_gave_up_by(row, nick or "", live=live)
+                    or row_skip_fr_reason(row)
+                ):
                     i += 1
                     continue
                 # FR #4009: hold-labeled / HOLD-stamped FR — skip and purge from unaccepted.
@@ -6431,7 +6489,6 @@ def offer_top(
                     i += 1
                     continue
                 row_eff = enrich_uat_author_fields(doc, row)
-                live = live_seat_nicks(home)
                 led = ledger_load(home)
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(
                     row_eff, (nick or "").strip(), live, ledger=led
@@ -6657,7 +6714,7 @@ def require_machine_all_live_gave_up(
         if why and "gave up" in why:
             blocked.append(nick)
             continue
-        if row_gave_up_by(row_eff, nick):
+        if row_gave_up_by(row_eff, nick, live=set(seats or ())):
             blocked.append(nick)
             continue
         return []
@@ -6769,7 +6826,7 @@ def repo_uat_no_eligible_live_seat(
     if not seats:
         return False
     for s in seats:
-        if row_gave_up_by(row, s):
+        if row_gave_up_by(row, s, live=seats):
             continue
         why = _ledger_blocks(ledger, row, s)
         if not why:
@@ -7394,8 +7451,8 @@ def assign_row(
                     if idx is None:
                         return "refused", f"{repo}#{num} {task_u}: not in the unaccepted queue"
             cand = doc["unaccepted"][idx]
-            if row_needs_human(cand, me):
-                return "refused", "row is needs-human"
+            # FR #4336: auto-offer blocks needs_human globally; explicit !assign may still hand it out.
+            # (row_needs_human remains the bored/done-offer/reconcile gate.)
             if row_awaits_mrb1(cand):
                 # Unreachable while row_awaits_mrb1 is always False (op 2026-10-04).
                 return "refused", "row awaits needs-mrb1 clear (legacy)"
@@ -7410,6 +7467,8 @@ def assign_row(
                 return "refused", "repo is archived (FR #785)"
             if row_machine_mismatch(cand, me):
                 return "refused", f"row is pinned to another machine than {me}"
+            # Exact-nick giveup only on !assign (FR #4336): recycle inherit is for
+            # auto-offer. Ops may !assign needs_human to a recycled successor.
             if row_gave_up_by(cand, me):
                 return "refused", f"{me} already gave this row up"
             why = ledger_blocks(ledger_load(home), cand, me, live)
@@ -7608,7 +7667,11 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
     try:
         import mrb_merge_on_green
 
-        doc = mrb_merge_on_green.load_ledger(home)
+        # FR #4466 follow-up: the chair passes its config home (~/.jeeves) but the
+        # merge-on-green ledger lives beside queue.json in the fleet root (~/.bobiverse).
+        doc = mrb_merge_on_green.load_ledger(_root(home))
+        if not (doc.get("pending") or []) and Path(home) != _root(home):
+            doc = mrb_merge_on_green.load_ledger(home)
     except Exception:  # noqa: BLE001
         return ""
     want = str(num)
@@ -8563,9 +8626,10 @@ def _reconcile_lost_ack_unlocked(home: Path, doc: dict, *, log=None) -> int:
         if not matched_nick:
             keep.append(row)
             continue
-        # FR #4422: release_stale_busy requeued without closed/merged evidence —
+        # FR #4336: never revive a needs_human row via LOST_ACK_RESTART.
+        # FR #4422: release_stale_busy requeued without closed/merged evidence ---
         # do not bounce the same row straight back to accepted from stale digest work.
-        if str(row.get("reconcile") or "").startswith("requeue:"):
+        if row_needs_human(row, "") or str(row.get("reconcile") or "").startswith("requeue:"):
             keep.append(row)
             continue
         # Already accepted for this repo/task/id: drop the unaccepted twin so

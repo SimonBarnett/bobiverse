@@ -149,12 +149,10 @@ def test_second_giveup_marks_needs_human(tmp_path, monkeypatch):
     st, job = shop_listen.return_job_to_unaccepted(tmp_path, repo="o/r", task="FR", ident="#1", now=time.time())
     assert st == "ok"
     assert job.get("needs_human") is True
-    # FR #3277: after GIVEUP_NEEDS_HUMAN_COUNT with giveup_seats set, only those
-    # seats are blocked (giveup_count reaches 2 here). Bare needs_human (no seats)
-    # stays global; early GIVEUPs stay per-seat (see test_mrb1236).
+    # FR #4336: needs_human stamp blocks every seat for auto-offer.
     assert int(job.get("giveup_count") or 0) >= gitclaim.GIVEUP_NEEDS_HUMAN_COUNT
     assert gitclaim.offer_focus_top(tmp_path, "a-1", "#a", now=time.time() + 10_000)[0] == "empty"
-    assert gitclaim.offer_focus_top(tmp_path, "b-2", "#b", now=time.time() + 10_000)[0] == "ok"
+    assert gitclaim.offer_focus_top(tmp_path, "b-2", "#b", now=time.time() + 10_000)[0] == "empty"  # FR #4336
 
 
 def test_prune_keeps_skill_drops_safe_to_close_rows(tmp_path, monkeypatch):
