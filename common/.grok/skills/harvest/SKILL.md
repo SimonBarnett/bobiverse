@@ -261,6 +261,7 @@ routes to bobiverse via the split rule.
 - Merge-on-green: drop closed/merged after one PR GET (no comments); back off sweeps when rate_remaining is low so pr_exists and !resync keep quota.
 - When REST core rate-limited, post MRB PASS board via gh api graphql --input JSON file so PowerShell does not expand dollar vars in the query
 - FR re-offer in_ready suffix after FR-3344: DONE with covering PR after pin verify; never second implement PR
+- FAIL-supersede a skill tip that only restates pushed-commit self-MRB; cite bob/.grok/skills/bobiverse-bob-job-mrb/SKILL.md.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
