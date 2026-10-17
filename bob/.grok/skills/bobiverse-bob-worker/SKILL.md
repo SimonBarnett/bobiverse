@@ -230,3 +230,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - Outbox append under bob-worker drain: use Add-BobiverseOutboxLine.ps1 (FileShare.ReadWrite + retry) or FileStream fallback; bare Add-Content hits Stream was not readable when drain os.replace races (FR #4363).
 - bob-worker: Get-BobAgentFuel must call only functions listed in BobBridge FunctionsToExport and Export-ModuleMember. A CommandNotFound inside an empty catch leaves cursor.high and cursor.low null, so select_agent skips Cursor when Grok is exhausted (FR #4445 / PR #4446).
 - A bob-worker fuel playbook that intake files under harvest/SKILL.md is moved into bobiverse-bob-worker Harvested lessons and the harvest tip is closed unmerged once a reviewable worker-skill PR carries the same sentence; pin that harvest does not also contain it.
+- done-miss rematch: re-DONE when MRB PASS board matches current head SHA and tip is 0 behind origin/main; do not fold or re-pin
