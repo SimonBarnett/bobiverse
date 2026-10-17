@@ -255,6 +255,7 @@ routes to bobiverse via the split rule.
 - Harvest-lesson MRB light triage: positive re-offer 0-behind playbook is not a twin of FAIL-supersede bad-re-offer tips; fold once when behind, leave SQUASH
 - Harvest-lesson meta tips that only restate keep-both/arm --auto FAIL-supersede: close citing bobiverse-bob-job-mrb (FR 3317); leave parent product tip open; gh pr close has no --reason flag
 - Missing-DONE rematch: sibling self-MRB GIVEUP leaves tip for another seat; if ahead_by>0 fold once then PASS leave existing MERGE/SQUASH
+- a-search Re-offered FR-N harvest meta tips: FAIL-supersede citing bobiverse-bob-job-mrb + merged product/docs PRs; do not fold CONFLICTING anecdote tips
 
 ## Harvest digest (lessons audit 2026-10-06)
 
