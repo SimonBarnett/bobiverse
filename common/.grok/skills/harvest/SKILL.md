@@ -254,6 +254,7 @@ routes to bobiverse via the split rule.
 - Jeeves worker_list state=offered is the chair's own pending offer. Lost-ACK reconcile may promote only seat-reported work (workers working_on or worker_list doing/running/busy). A LOST_ACK_RESTART row with no seat-reported work is re-offered on !bored or !assign, not NAK busy.
 - Harvest-lesson MRB light triage: positive re-offer 0-behind playbook is not a twin of FAIL-supersede bad-re-offer tips; fold once when behind, leave SQUASH
 - Harvest-lesson meta tips that only restate keep-both/arm --auto FAIL-supersede: close citing bobiverse-bob-job-mrb (FR 3317); leave parent product tip open; gh pr close has no --reason flag
+- Missing-DONE rematch: sibling self-MRB GIVEUP leaves tip for another seat; if ahead_by>0 fold once then PASS leave existing MERGE/SQUASH
 
 ## Harvest digest (lessons audit 2026-10-06)
 
