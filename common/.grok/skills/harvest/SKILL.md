@@ -267,6 +267,7 @@ routes to bobiverse via the split rule.
 - fr1518 gated-empty fixtures for bobiverse must use a dedicated require_machine body pin (not a raw stamp); queue_flow._gate_bucket must call row_require_machine so buckets match offer gates after FR #4512
 - harvest-lesson MRB on common/.grok/skills/harvest/SKILL.md: when origin/main also appended a Harvested-lessons bullet, resolve CONFLICTING with keep-both then PASS @ head SHA
 - Re-offered onefile seat-cap double-count after FR #4458 merged: Prefer ExistingPrUrl #4461; close twin issue; file install-behind if live box still shows cap.
+- When intake reports live FR #4458 onefile cap double-count but tip already has #4461: close the lag FR citing PR #4461 and Sync/recompose the install (tray/worker restart only) — never re-open or re-implement the cap dedupe
 
 ## Harvest digest (lessons audit 2026-10-06)
 
