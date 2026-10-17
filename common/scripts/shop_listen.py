@@ -369,6 +369,11 @@ def accept_job_by_ref(
             doc.setdefault("accepted", []).append(job)
             if len(doc["accepted"]) > gitclaim.ACCEPTED_CAP:
                 doc["accepted"] = doc["accepted"][-gitclaim.ACCEPTED_CAP :]
+            # FR #4604: FIX seat must not self-MRB the same PR after synchronize re-queue.
+            if str(job.get("task") or "").upper() == "FIX":
+                gitclaim.stamp_fix_seats_on_mrb_rows(
+                    doc, repo, str(job.get("id") or ident), nick
+                )
             try:
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except OSError:
@@ -431,6 +436,11 @@ def complete_job_by_ref(
             doc.setdefault("done", []).append(job)
             if len(doc["done"]) > gitclaim.ACCEPTED_CAP:
                 doc["done"] = doc["done"][-gitclaim.ACCEPTED_CAP :]
+            # FR #4604: FIX seat must not self-MRB the same PR after synchronize re-queue.
+            if str(job.get("task") or "").upper() == "FIX":
+                gitclaim.stamp_fix_seats_on_mrb_rows(
+                    doc, repo, str(job.get("id") or ident), nick
+                )
             # FR #740 / #738 / #1323: DONE MRB (PASS or FAIL) purges any lingering unaccepted
             # duplicate and stamps ledger mrb_done so the next !bored cannot re-offer the same PR.
             if str(job.get("task") or "").upper() == "MRB":

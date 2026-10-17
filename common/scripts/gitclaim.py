@@ -2434,9 +2434,10 @@ def nick_inherits_dead_seat(
 ) -> bool:
     """True when `nick` succeeds a recycled `stored` seat on the same machine (FR #4336).
 
-    When `stored` is not live and `nick` is on the same machine, the new nick
-    inherits giveup / author exclusions. If both nicks are live they are siblings
-    (FR #2604) and do not inherit.
+    When `stored` is not live and `nick` is the **sole** live seat on that machine,
+    the new nick inherits giveup / author exclusions (typical seat recycle). If
+    another live seat shares the machine, treat them as siblings (FR #2604) — do
+    not inherit a dead peer's exclusion (FR #4604 FIX/MRB).
     """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     st = (canonical_worker_nick(stored) or stored or "").strip().lower()
@@ -2449,7 +2450,10 @@ def nick_inherits_dead_seat(
         return False
     me_mid = _seat_machine_id(me)
     st_mid = _seat_machine_id(st)
-    return bool(me_mid and st_mid and me_mid == st_mid)
+    if not (me_mid and st_mid and me_mid == st_mid):
+        return False
+    peers = {n for n in live_l if _seat_machine_id(n) == me_mid}
+    return peers == {me}
 
 
 def nick_in_giveup_seats(
@@ -4707,7 +4711,9 @@ def summarize_empty_offer(home: Path, nick: str = "") -> dict:
                     sticky_n += 1
                     sticky_pin = True
             if me:
-                cand = enrich_uat_author_fields(raw if isinstance(raw, dict) else {}, row)
+                cand = enrich_review_author_fields(
+                    raw if isinstance(raw, dict) else {}, row
+                )
                 if is_repo_uat(cand):
                     with contextlib.suppress(Exception):
                         maybe_escalate_repo_uat_all_self_uat(
@@ -5413,12 +5419,136 @@ def row_author_seats(row: dict) -> list[str]:
     return found
 
 
-def nick_is_row_author(row: dict, nick: str) -> bool:
-    """True when ``nick`` matches any of ``row_author_seats`` (canonical seat form)."""
+def fix_ci_seats_from_doc(doc: dict, repo: str, pr_id: str) -> list[str]:
+    """Seats that accepted or DONE a FIX (or FR citing the same pull) for ``repo#pr`` (FR #4604).
+
+    Used so a FIX seat that pushed CI fixes cannot be offered the re-queued MRB.
+    """
+    want = _norm_row_id(pr_id)
+    if not want or not repo:
+        return []
+    pull_num = str(want).lstrip("#")
+    pull_needle = f"/pull/{pull_num}"
+    found: list[str] = []
+    seen: set[str] = set()
+    for bucket in ("accepted", "done"):
+        for row in doc.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            task = str(row.get("task") or "").upper()
+            if task not in ("FIX", "FR"):
+                continue
+            url = str(row.get("url") or row.get("result") or "")
+            same_id = (
+                str(row.get("repo") or "") == repo
+                and _norm_row_id(row.get("id")) == want
+            )
+            same_pull = False
+            if pull_needle in url:
+                parsed = parse_github_pull_url(url)
+                if parsed and parsed[0] == repo and _norm_row_id(parsed[1]) == want:
+                    same_pull = True
+                elif repo.lower() in url.lower():
+                    same_pull = True
+            if task == "FIX" and not (same_id or same_pull):
+                continue
+            if task == "FR" and not same_pull:
+                continue
+            seat = str(
+                row.get("nick") or row.get("done_by") or row.get("author_seat") or ""
+            ).strip()
+            if not seat or not bobreport.parse_seat_nick(seat):
+                continue
+            nick = _canon_seat_nick(seat) or seat
+            key = nick.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(nick)
+    return found
+
+
+def append_author_seat(row: dict, seat: str) -> bool:
+    """Append ``seat`` to ``author_seats`` on ``row``. Returns True when changed."""
+    nick = _canon_seat_nick(seat)
+    if not nick:
+        return False
+    existing = row_author_seats(row)
+    if any(x.lower() == nick.lower() for x in existing):
+        return False
+    multi = row.get("author_seats")
+    parts: list[str] = []
+    if isinstance(multi, (list, tuple)):
+        parts = [str(x).strip() for x in multi if str(x or "").strip()]
+    elif multi:
+        parts = [p.strip() for p in str(multi).replace(";", ",").split(",") if p.strip()]
+    parts.append(nick)
+    row["author_seats"] = ",".join(parts)
+    return True
+
+
+def stamp_fix_seats_on_mrb_rows(doc: dict, repo: str, pr_id: str, seat: str) -> int:
+    """Append FIX seat to ``author_seats`` on every MRB row for ``repo#pr`` (FR #4604)."""
+    nick = _canon_seat_nick(seat)
+    if not nick or not repo:
+        return 0
+    want = _norm_row_id(pr_id)
+    n = 0
+    for bucket in ("unaccepted", "accepted", "done"):
+        for row in doc.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "MRB":
+                continue
+            if str(row.get("repo") or "") != repo:
+                continue
+            if _norm_row_id(row.get("id")) != want:
+                continue
+            if append_author_seat(row, nick):
+                n += 1
+    return n
+
+
+def enrich_mrb_author_fields(doc: dict, row: dict) -> dict:
+    """FR #4604: merge FIX/FR push seats into MRB ``author_seats`` at offer time.
+
+    Survives missing stamps on synchronize-enqueued MRB rows by reading queue truth.
+    """
+    if _canon_task(row) != "MRB":
+        return row
+    out = dict(row)
+    for seat in fix_ci_seats_from_doc(doc, str(out.get("repo") or ""), str(out.get("id") or "")):
+        append_author_seat(out, seat)
+    return out
+
+
+def enrich_review_author_fields(doc: dict, row: dict) -> dict:
+    """Offer-time author enrichment for MRB (FIX seats) and UAT (related MRB)."""
+    task = _canon_task(row)
+    if task == "UAT":
+        return enrich_uat_author_fields(doc, row)
+    if task == "MRB":
+        return enrich_mrb_author_fields(doc, row)
+    return row
+
+
+def nick_is_row_author(row: dict, nick: str, *, live: set[str] | None = None) -> bool:
+    """True when ``nick`` matches any of ``row_author_seats`` (canonical seat form).
+
+    FR #4336 / #4604: when ``live`` is provided, also matches a same-machine recycle
+    of a dead author seat via ``nick_inherits_dead_seat``.
+    """
     authors = row_author_seats(row)
     if not authors or not (nick or "").strip():
         return False
-    return nick_in_giveup_seats({"giveup_seats": ",".join(authors)}, nick)
+    if nick_in_giveup_seats({"giveup_seats": ",".join(authors)}, nick, live=live):
+        return True
+    if live is None:
+        return False
+    for author in authors:
+        if nick_inherits_dead_seat(nick, author, live):
+            return True
+    return False
 
 
 def mrb_author_extra_from_doc(doc: dict, claim: "GitClaim") -> dict[str, str]:
@@ -5457,9 +5587,17 @@ def mrb_author_extra_from_doc(doc: dict, claim: "GitClaim") -> dict[str, str]:
                 if seat and bobreport.parse_seat_nick(seat):
                     implementer = canonical_worker_nick(seat) or seat
                     break
-    if not implementer:
-        return {}
-    return {"author_seat": implementer, "implementer_seat": implementer}
+    out: dict[str, str] = {}
+    if implementer:
+        out["author_seat"] = implementer
+        out["implementer_seat"] = implementer
+    # FR #4604: FIX (CI) seats that pushed to this PR are also self-review blocked.
+    fix_seats = fix_ci_seats_from_doc(doc, claim.repo, str(claim.id or ""))
+    if fix_seats:
+        out["author_seats"] = ",".join(fix_seats)
+        if not out.get("author_seat"):
+            out["author_seat"] = fix_seats[0]
+    return out
 
 
 def _row_author_seat(row: dict) -> str:
@@ -6452,7 +6590,7 @@ def offer_focus_top(
                         cand["sticky_skip_seats"] = skip_list
                         purged = True
                         return None
-                cand_eff = enrich_uat_author_fields(doc, cand)
+                cand_eff = enrich_review_author_fields(doc, cand)
                 if review_blocked_for_author(cand_eff, me, live, ledger=ledger, free=free):
                     if is_repo_uat(cand):
                         with contextlib.suppress(Exception):
@@ -6701,7 +6839,7 @@ def offer_top(
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     i += 1
                     continue
-                row_eff = enrich_uat_author_fields(doc, row)
+                row_eff = enrich_review_author_fields(doc, row)
                 led = ledger_load(home)
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(
                     row_eff, (nick or "").strip(), live, ledger=led
@@ -7729,8 +7867,12 @@ def assign_row(
                 return "refused", "MRB already DONE for this repo+#id (FR #740)"
             if not mrb_row_offerable(cand, pr_exists=pr_exists):
                 return "refused", "MRB has no real open pull URL"
-            if review_blocked_for_author(cand, me, live, ledger=ledger_load(home), free=free):
+            cand_eff = enrich_review_author_fields(doc, cand)
+            if review_blocked_for_author(
+                cand_eff, me, live, ledger=ledger_load(home), free=free
+            ):
                 return "refused", f"{me} authored/implemented this (no self-{task_u})"
+            cand = cand_eff
             to = str(cand.get("offered_to") or "").strip()
             if to and to.lower() != me.lower():
                 try:
