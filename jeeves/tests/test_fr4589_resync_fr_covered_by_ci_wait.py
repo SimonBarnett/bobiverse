@@ -148,3 +148,48 @@ def test_open_closes_helper_matches_norm_id():
     assert not gitclaim.fr_superseded_by_open_closes_pr(
         REPO, "#9999", {REPO: {"#3462"}}
     )
+
+def test_mrb4591_hostile_draft_open_closes_also_blocks_fr(tmp_path, monkeypatch):
+    """Acceptance: draft skips still cover Closes (same open_closes_map path)."""
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    monkeypatch.setattr(gitclaim, "repo_archived_for_queue", lambda *a, **k: False)
+    draft = _pr(99, closes=50)
+    draft["draft"] = True
+    draft["auto_merge"] = None
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {
+            "v": 1,
+            "unaccepted": [
+                {
+                    "repo": REPO,
+                    "task": "FR",
+                    "id": "#50",
+                    "seq": 1,
+                    "ts": "t",
+                    "line": "x",
+                    "url": f"https://github.com/{REPO}/issues/50",
+                }
+            ],
+            "accepted": [],
+            "done": [],
+        },
+    )
+    res = gitclaim.resync_from_github(
+        tmp_path,
+        [REPO],
+        fetch_json=_fetch([_issue(50)], [draft]),
+        token="FAKE_TOKEN",
+    )
+    assert res.get("ok") is True
+    rows = gitclaim.load_unaccepted(tmp_path)
+    assert not any(
+        str(r.get("task") or "").upper() == "FR" and str(r.get("id") or "") in ("#50", "50")
+        for r in rows
+        if isinstance(r, dict)
+    )
+    assert not any(
+        str(r.get("task") or "").upper() == "MRB" and str(r.get("id") or "") == "#99"
+        for r in rows
+        if isinstance(r, dict)
+    )
