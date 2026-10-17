@@ -7880,12 +7880,63 @@ def prune_unassignable_queue(home: Path) -> dict:
         return {"ok": False, "error": "lock"}
 
 
-def open_pr_mrb_waiting_on_ci(pr: dict, pass_sha: str) -> bool:
-    """FR #4466: auto-merge on and head still the PASSed SHA is a CI wait, not a new MRB.
+_CI_WAIT_PENDING = frozenset(
+    {
+        "pending",
+        "expected",
+        "queued",
+        "in_progress",
+        "waiting",
+        "requested",
+        "inprogress",
+    }
+)
+_CI_WAIT_FAILURE = frozenset(
+    {
+        "failure",
+        "error",
+        "action_required",
+        "timed_out",
+        "cancelled",
+        "canceled",
+        "completed/failure",
+        "completed/error",
+        "completed/timed_out",
+        "completed/cancelled",
+        "completed/canceled",
+        "completed/action_required",
+    }
+)
 
-    auto-merge off, a missing pass SHA, or a different head SHA returns False so
-    resync re-queues the review.
-    """
+
+def _normalize_ci_checks(checks: str | None) -> str:
+    raw = str(checks or "").strip().lower().replace(" ", "")
+    if raw.startswith("completed/"):
+        return raw.split("/", 1)[-1]
+    return raw
+
+
+def open_pr_mrb_checks_failed(checks: str | None) -> bool:
+    """FR #4594: required check already concluded red (not still queued)."""
+    state = _normalize_ci_checks(checks)
+    return state in (
+        "failure",
+        "error",
+        "action_required",
+        "timed_out",
+        "cancelled",
+        "canceled",
+    )
+
+
+def open_pr_mrb_checks_pending(checks: str | None) -> bool:
+    """FR #4594: required check still queued / in progress."""
+    state = _normalize_ci_checks(checks)
+    return state in _CI_WAIT_PENDING
+
+
+def open_pr_mrb_ci_wait_candidate(pr: dict, pass_sha: str) -> bool:
+    """FR #4466: auto-merge on and head still the PASSed SHA (ignore check conclusion)."""
     if not isinstance(pr, dict):
         return False
     am = pr.get("auto_merge")
@@ -7898,6 +7949,58 @@ def open_pr_mrb_waiting_on_ci(pr: dict, pass_sha: str) -> bool:
     import mrb_merge_on_green
 
     return mrb_merge_on_green.shas_match(pass_sha, sha)
+
+
+def open_pr_mrb_waiting_on_ci(
+    pr: dict, pass_sha: str, *, checks: str | None = None
+) -> bool:
+    """FR #4466 / #4594: auto-merge on PASSed SHA is a CI wait only while checks pending.
+
+    auto-merge off, a missing pass SHA, or a different head SHA returns False so
+    resync re-queues the review. When ``checks`` is a concluded FAILURE (or error),
+    returns False so the caller can offer FIX instead of skipping forever (FR #4594).
+    When ``checks`` is omitted/unknown, keep the FR #4466 behaviour (wait).
+    """
+    if not open_pr_mrb_ci_wait_candidate(pr, pass_sha):
+        return False
+    tip_checks = checks
+    if tip_checks is None and isinstance(pr.get("checks"), str):
+        tip_checks = pr.get("checks")
+    if tip_checks is None:
+        return True
+    if open_pr_mrb_checks_failed(tip_checks):
+        return False
+    if open_pr_mrb_checks_pending(tip_checks):
+        return True
+    # success / none: still waiting for merge-on-green (not a new MRB).
+    return True
+
+
+def _resync_pr_check_state(
+    pr: dict,
+    repo: str,
+    num: int,
+    *,
+    token: str = "",
+) -> str:
+    """Resolve rollup check state for a ci-wait candidate (FR #4594).
+
+    Test seam: ``pr['checks']``. Live: ``mrb_merge_on_green.fetch_pr_state``.
+    On fetch failure, return ``pending`` so we keep skipping (safe).
+    """
+    if (
+        isinstance(pr, dict)
+        and isinstance(pr.get("checks"), str)
+        and str(pr.get("checks") or "").strip()
+    ):
+        return str(pr.get("checks") or "").strip().lower()
+    try:
+        import mrb_merge_on_green
+
+        st = mrb_merge_on_green.fetch_pr_state(repo, str(num), token=token or None)
+        return str((st or {}).get("checks") or "pending").strip().lower() or "pending"
+    except Exception:  # noqa: BLE001
+        return "pending"
 
 
 def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
@@ -8107,12 +8210,35 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
-            # FR #4466: open PR with auto-merge on the PASSed SHA is waiting for CI.
-            # Do not re-queue it. A later synchronize (SHA change) or auto-merge off
-            # falls through and becomes an MRB again. Mark skipped so the keep loop
-            # prunes a row that resync already queued.
+            # FR #4466 / #4594: open PR with auto-merge on the PASSed SHA.
+            # Still queued/in_progress -> skip ci-wait (not a new MRB).
+            # Already concluded FAILURE -> offer one FIX (deduped), keep Closes
+            # coverage via skipped_open_pulls, never re-queue MRB on same SHA.
             pass_sha = _merge_on_green_pass_sha(home, repo, num)
-            if open_pr_mrb_waiting_on_ci(pr, pass_sha):
+            if open_pr_mrb_ci_wait_candidate(pr, pass_sha):
+                # Candidate (auto-merge + same SHA). Resolve live/injected checks.
+                check_state = _resync_pr_check_state(pr, repo, num, token=token)
+                if open_pr_mrb_checks_failed(check_state):
+                    try:
+                        import mrb_merge_on_green
+
+                        fix_result = mrb_merge_on_green.enqueue_fix_ci(
+                            _root(home),
+                            repo=repo,
+                            pr=str(num),
+                            pass_sha=pass_sha,
+                            url=str(pr.get("html_url") or ""),
+                            detail=check_state or "failure",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        fix_result = f"error:{type(exc).__name__}"
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync offer FIX ci-failed PR {repo}#{num} result={fix_result}",
+                        flush=True,
+                    )
+                    continue
+                # pending / success / unknown: still ci-wait (not a new MRB).
                 skipped_ci += 1
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
