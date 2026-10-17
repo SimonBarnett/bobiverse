@@ -18,7 +18,10 @@ PASS_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
 def test_failure_signature_omits_pr_number():
-    sig = mrb_merge_on_green.failure_signature(REPO, detail="test-and-synth failure")
+    # FR #4596: PR number omitted only when collapsing for main_red.
+    sig = mrb_merge_on_green.failure_signature(
+        REPO, detail="test-and-synth failure", pr="1796", main_red=True
+    )
     assert "1796" not in sig
     assert "|" in sig
     assert "test-and-synth" in sig or "failure" in sig
@@ -38,12 +41,14 @@ def test_resolve_assign_url_fix_uses_pull_url():
 def test_enqueue_fix_ci_ledger_blocks_second_call(tmp_path: Path):
     home = tmp_path / "home"
     home.mkdir()
+    # Shared collapse still applies when main itself is red (FR #4585 / #4596).
     first = mrb_merge_on_green.enqueue_fix_ci(
         home,
         repo=REPO,
         pr="1796",
         pass_sha=PASS_SHA,
         detail="failure",
+        main_red=True,
         now_epoch=1_000.0,
     )
     assert first == "added"
@@ -53,6 +58,7 @@ def test_enqueue_fix_ci_ledger_blocks_second_call(tmp_path: Path):
         pr="1800",
         pass_sha=PASS_SHA,
         detail="failure",
+        main_red=True,
         now_epoch=1_060.0,
     )
     assert second == "duplicate"
