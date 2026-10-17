@@ -148,3 +148,58 @@ def test_assign_fix_refuses_needs_human_row(tmp_path: Path, monkeypatch):
     st, why = gitclaim.assign_row(tmp_path, NICK, REPO, "FIX", "#3582")
     assert st == "refused"
     assert "needs_human" in str(why).lower() or "needs-human" in str(why).lower()
+
+def test_assign_fix_issue_payload_fills_sha_and_checks_from_pulls(tmp_path: Path, monkeypatch):
+    """Issues API omits head.sha and checks. Pulls rollup must supply both."""
+    _register(tmp_path, monkeypatch)
+    _queue(tmp_path, unaccepted=[])
+    monkeypatch.setattr(gitclaim, "worker_working_on", lambda h, n: "")
+    monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {NICK})
+    monkeypatch.setattr(gitclaim, "free_seat_nicks", lambda h, live: {NICK})
+    monkeypatch.setattr(gitclaim, "seat_open_job", lambda *a, **k: "")
+    sha = "c" * 40
+
+    def fake_issue(repo, num):
+        return {
+            "number": 3582,
+            "state": "open",
+            "draft": False,
+            "html_url": f"https://github.com/{REPO}/pull/3582",
+            "pull_request": {"url": "https://api.github.com/repos/x/issues/3582"},
+            "labels": [],
+        }
+
+    def fake_pr(repo, num):
+        assert str(num).lstrip("#") == "3582"
+        return {"sha": sha, "checks": "failure"}
+
+    st, job = gitclaim.assign_row(
+        tmp_path, NICK, REPO, "FIX", "#3582",
+        fetch_issue=fake_issue, fetch_pr=fake_pr,
+    )
+    assert st == "ok", job
+    assert str(job.get("pass_sha")) == sha
+
+
+def test_assign_fix_refuses_when_pulls_checks_are_green(tmp_path: Path, monkeypatch):
+    _register(tmp_path, monkeypatch)
+    _queue(tmp_path, unaccepted=[])
+    monkeypatch.setattr(gitclaim, "worker_working_on", lambda h, n: "")
+    monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {NICK})
+    monkeypatch.setattr(gitclaim, "free_seat_nicks", lambda h, live: {NICK})
+    monkeypatch.setattr(gitclaim, "seat_open_job", lambda *a, **k: "")
+
+    def fake_issue(repo, num):
+        return {
+            "number": 9,
+            "state": "open",
+            "html_url": f"https://github.com/{REPO}/pull/9",
+            "pull_request": {},
+        }
+
+    st, why = gitclaim.assign_row(
+        tmp_path, NICK, REPO, "FIX", "#9",
+        fetch_issue=fake_issue, fetch_pr=lambda r, n: {"sha": "d" * 40, "checks": "success"},
+    )
+    assert st == "refused"
+    assert "not failed" in str(why).lower()

@@ -7816,17 +7816,27 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
 
 
 
+def _fetch_pr_state_for_assign(repo: str, num: str) -> dict:
+    """Pulls API rollup (head SHA + checks). Issues API payloads omit both."""
+    import mrb_merge_on_green
+
+    return mrb_merge_on_green.fetch_pr_state(repo, num)
+
+
 def enqueue_fix_github_item(
     doc: dict,
     repo: str,
     ident: str,
     *,
     fetch_issue=None,
+    fetch_pr=None,
 ) -> tuple[str, str]:
     """Enqueue a FIX row for an open red PR when missing (FR #4652 !assign FIX).
 
     ``fetch_issue(repo, num)`` is the test seam (Issues API shape; may include
-    ``head.sha`` and ``checks``). Returns ``("added"|"duplicate"|"refused", detail)``.
+    ``head.sha`` and ``checks``). The live Issues payload has neither, so a missing
+    SHA or check rollup is filled from ``fetch_pr`` (default: pulls API).
+    Returns ``("added"|"duplicate"|"refused", detail)``.
     """
     num = str(ident or "").strip().lstrip("#")
     repo_c = canonical_queue_repo(repo)
@@ -7852,15 +7862,28 @@ def enqueue_fix_github_item(
         return "refused", f"{repo_c}#{num}: draft PR"
     head = issue.get("head") if isinstance(issue.get("head"), dict) else {}
     sha = str(head.get("sha") or issue.get("pass_sha") or "").strip()
+    checks = issue.get("checks")
+    if (not sha) or not (isinstance(checks, str) and checks.strip()):
+        getter_pr = fetch_pr or _fetch_pr_state_for_assign
+        try:
+            pr_state = getter_pr(repo_c, num)
+        except Exception as exc:  # noqa: BLE001
+            return "refused", f"github pr fetch failed: {type(exc).__name__}"
+        if not isinstance(pr_state, dict):
+            return "refused", f"{repo_c}#{num}: pull state missing"
+        if not sha:
+            sha = str(pr_state.get("sha") or "").strip()
+        if not (isinstance(checks, str) and checks.strip()):
+            checks = pr_state.get("checks")
     if not sha:
         return "refused", f"{repo_c}#{num}: missing head SHA"
-    checks = issue.get("checks")
-    if isinstance(checks, str) and checks.strip():
-        if not open_pr_mrb_checks_failed(checks):
-            return (
-                "refused",
-                f"{repo_c}#{num}: PR checks not failed ({checks.strip()})",
-            )
+    if not (isinstance(checks, str) and checks.strip()):
+        return "refused", f"{repo_c}#{num}: PR checks unknown"
+    if not open_pr_mrb_checks_failed(checks):
+        return (
+            "refused",
+            f"{repo_c}#{num}: PR checks not failed ({checks.strip()})",
+        )
     pull_url = str(issue.get("html_url") or "").strip()
     if not PULL_URL_RE.search(pull_url):
         pull_url = f"https://github.com/{repo_c}/pull/{num}"
@@ -7904,6 +7927,7 @@ def enqueue_open_github_item(
     ident: str,
     *,
     fetch_issue=None,
+    fetch_pr=None,
 ) -> tuple[str, str]:
     """Enqueue an open GitHub issue/PR into ``doc['unaccepted']`` when missing (FR #4422).
 
@@ -7915,7 +7939,9 @@ def enqueue_open_github_item(
     """
     task_u = (task or "").upper()
     if task_u == "FIX":
-        return enqueue_fix_github_item(doc, repo, ident, fetch_issue=fetch_issue)
+        return enqueue_fix_github_item(
+            doc, repo, ident, fetch_issue=fetch_issue, fetch_pr=fetch_pr
+        )
     if task_u not in ("FR", "MRB"):
         return "refused", f"{task_u}: only FR/MRB/FIX can be enqueued from GitHub"
     num = str(ident or "").strip().lstrip("#")
@@ -7979,6 +8005,7 @@ def assign_row(
     now: float | None = None,
     pr_exists=None, is_pull=None, issue_open=None,
     fetch_issue=None,
+    fetch_pr=None,
 ) -> tuple[str, dict | str]:
     """Chair-driven manual assign (t849u): stamp ``offered_to`` on one named unaccepted row.
 
@@ -8056,7 +8083,7 @@ def assign_row(
                     # FR #4422 / #4652: open issue/PR missing from queue -> enqueue from GitHub, then offer.
                     if task_u in ("FR", "MRB", "FIX"):
                         enq_st, enq_detail = enqueue_open_github_item(
-                            doc, repo, task_u, num, fetch_issue=fetch_issue
+                            doc, repo, task_u, num, fetch_issue=fetch_issue, fetch_pr=fetch_pr
                         )
                         if enq_st in ("added", "duplicate"):
                             for i, row in enumerate(doc["unaccepted"]):
