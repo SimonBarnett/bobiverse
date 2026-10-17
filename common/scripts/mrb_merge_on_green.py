@@ -45,6 +45,9 @@ CI_FIX_KEY = "ci_fix"
 # FR #4636: DIRTY/CONFLICTING or HTTP 405 stops merge retries for this PR+SHA.
 CONFLICT_KEY = "conflict_blocked"
 CONFLICT_FIX_KEY = "conflict_fix"
+# FR #4639: in-flight cancelled-CI re-runs. Cap is whiterabbit + madhatter (7).
+CI_RERUN_KEY = "ci_rerun"
+CI_RERUN_CAP = 7
 CI_FAILED_TTL_S = 14 * 24 * 3600
 BACKOFF_BASE_S = 60
 BACKOFF_CAP_S = 900
@@ -107,7 +110,8 @@ def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | Non
         return None
     # Primary: cancelled / canceled (and completed/cancelled) with no hard failure token.
     head = state.split(":", 1)[0]
-    if head in _CANCEL_CONCLUSIONS:
+    # FR #4639: concurrency skip is the same class as a bulk cancel.
+    if head in _CANCEL_CONCLUSIONS or head == "skipped":
         return "cancelled-only"
     # Secondary: named shared suite + main also red.
     if main_red and _detail_names_shared_suite(state):
@@ -258,7 +262,15 @@ def _legacy_config_ledger_path(home: Path) -> Path:
 
 
 def _empty_ledger() -> dict[str, Any]:
-    return {"version": 1, "pending": [], CI_FAILED_KEY: {}, CONFLICT_KEY: {}, CONFLICT_FIX_KEY: {}}
+    return {
+        "version": 1,
+        "pending": [],
+        CI_FAILED_KEY: {},
+        CI_FIX_KEY: {},
+        CI_RERUN_KEY: {},
+        CONFLICT_KEY: {},
+        CONFLICT_FIX_KEY: {},
+    }
 
 
 def load_ledger(home: Path) -> dict[str, Any]:
@@ -286,6 +298,8 @@ def load_ledger(home: Path) -> dict[str, Any]:
         doc[CI_FAILED_KEY] = {}
     if not isinstance(doc.get(CI_FIX_KEY), dict):
         doc[CI_FIX_KEY] = {}
+    if not isinstance(doc.get(CI_RERUN_KEY), dict):
+        doc[CI_RERUN_KEY] = {}
     if not isinstance(doc.get(CONFLICT_KEY), dict):
         doc[CONFLICT_KEY] = {}
     if not isinstance(doc.get(CONFLICT_FIX_KEY), dict):
@@ -471,7 +485,11 @@ def enqueue_fix_ci(
         # Same signature + same SHA (+ same run when known) -> no second FIX.
         if prev_sha and shas_match(prev_sha, sha):
             if not check_run_id or not prev_run or prev_run == str(check_run_id):
-                return "duplicate"
+                # FR #4639: a pruned FIX row with no DONE must not block the next offer.
+                if not ci_fix_signature_orphaned(home, repo_c, sig, num):
+                    return "duplicate"
+                offered.pop(sig, None)
+                save_ledger(home, doc)
     pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
     if main_red:
         guidance = (
@@ -570,6 +588,117 @@ def enqueue_fix_ci(
         save_ledger(home, doc)
         return "duplicate"
     return "skipped"
+
+
+def ci_fix_signature_orphaned(home: Path, repo: str, sig: str, pr: str) -> bool:
+    """FR #4639: ledger ``ci_fix`` row whose FIX queue row was pruned and not DONE."""
+    try:
+        q = gitclaim.load_queue(home)
+    except (OSError, ValueError):
+        return False
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    ident = f"#{num}"
+    for bucket in ("unaccepted", "accepted"):
+        for row in q.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            blob = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            row_id = str(row.get("id") or "").lstrip("#")
+            if sig in blob or row_id == num or gitclaim._same(row, repo_c, "FIX", ident):
+                return False
+    for row in q.get("done") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("task") or "").upper() != "FIX":
+            continue
+        if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+            continue
+        if str(row.get("id") or "").lstrip("#") == num:
+            return False
+    return True
+
+
+def _rerun_pending_count(doc: dict[str, Any]) -> int:
+    rows = doc.get(CI_RERUN_KEY)
+    if not isinstance(rows, dict):
+        return 0
+    return sum(
+        1
+        for v in rows.values()
+        if isinstance(v, dict) and str(v.get("state") or "") == "pending"
+    )
+
+
+def rerun_cancelled_passed(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    pass_sha: str,
+    run_id: str = "",
+    behind: bool = False,
+    token: str | None = None,
+    now_epoch: float | None = None,
+    post_fn: Callable[..., Any] | None = None,
+) -> str:
+    """FR #4639: re-run a cancelled required check, or update-branch when behind.
+
+    Returns ``reran`` | ``updated-branch`` | ``pending`` | ``capped`` | ``skipped``.
+    A second call while the recorded run is still pending does not POST again.
+    At most ``CI_RERUN_CAP`` pending re-runs (runner capacity).
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    sha = _norm_sha(pass_sha)
+    if not repo_c or not num or not sha:
+        return "skipped"
+    doc = load_ledger(home)
+    rows = doc.get(CI_RERUN_KEY)
+    if not isinstance(rows, dict):
+        rows = {}
+        doc[CI_RERUN_KEY] = rows
+    key = _row_key(repo_c, num)
+    prev = rows.get(key)
+    if (
+        isinstance(prev, dict)
+        and shas_match(str(prev.get("pass_sha") or ""), sha)
+        and str(prev.get("state") or "") == "pending"
+    ):
+        return "pending"
+    if _rerun_pending_count(doc) >= CI_RERUN_CAP:
+        return "capped"
+    run = str(run_id or "").strip()
+    if behind:
+        url = f"https://api.github.com/repos/{repo_c}/pulls/{num}/update-branch"
+        method = "PUT"
+        kind = "updated-branch"
+    elif run:
+        url = f"https://api.github.com/repos/{repo_c}/actions/runs/{run}/rerun"
+        method = "POST"
+        kind = "reran"
+    else:
+        return "skipped"
+    if post_fn is not None:
+        post_fn(url, method)
+    else:
+        tok = _gh_token(token)
+        if not tok:
+            return "skipped"
+        _gh_json(url, token=tok, method=method, body={})
+    rows[key] = {
+        "pass_sha": sha,
+        "run_id": run,
+        "state": "pending",
+        "kind": kind,
+        "epoch": float(now_epoch if now_epoch is not None else time.time()),
+    }
+    save_ledger(home, doc)
+    return kind
 
 
 def prune_ci_failed(doc: dict[str, Any], *, now_epoch: float, ttl_s: float = CI_FAILED_TTL_S) -> int:
