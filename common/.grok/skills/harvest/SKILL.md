@@ -271,6 +271,7 @@ routes to bobiverse via the split rule.
 - issues closed must stamp ACC state=closed and move closed ACC to done on seat depart; DONE status=missing still calls offer_after_done (one-open-job stays inside the helper)
 - enqueue_fix_ci must refuse cancelled-only rollups and shared-suite (test-and-synth) failures when main is also red — bulk cancel / helper breakage must not flood per-tip FIX.
 - A merge-on-green 405 or DIRTY head must leave the retry list for that SHA and queue one conflict-fix job; do not keep the row pending or the sweep will PUT-merge forever.
+- MRB process-loop rematch: when prior FAIL on tip was healed by stacked fix merged into tip, re-PASS at combined head SHA, arm --auto, DONE; do not file a new skill tip for the rematch handoff
 
 ## Harvest digest (lessons audit 2026-10-06)
 
