@@ -84,7 +84,12 @@ def test_failed_check_parks_and_logs_without_requeue(tmp_path: Path):
     assert led["ci_failed"][f"{REPO}#1796"]["pass_sha"] == PASS_SHA
     assert any("drop ci-failed" in m and "#1796" in m for m in logs)
     q = gitclaim.load_queue(home)
-    assert not any(str(r.get("id")).lstrip("#") == "1796" for r in q.get("unaccepted") or [])
+    # FR #4566: no MRB requeue. FR #4585 may offer one FIX for the red check.
+    assert not any(
+        str(r.get("task") or "").upper() == "MRB" and str(r.get("id")).lstrip("#") == "1796"
+        for r in (q.get("unaccepted") or [])
+        if isinstance(r, dict)
+    )
 
 
 def test_parked_row_is_not_fetched_again(tmp_path: Path):

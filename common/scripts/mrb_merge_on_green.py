@@ -40,6 +40,8 @@ MAX_WAIT_S = 3600
 # list but keeps its PASS SHA here so resync's ci-wait skip still recognises it
 # (no MRB re-queue while the head is unchanged). A new push re-enters via MRB.
 CI_FAILED_KEY = "ci_failed"
+# FR #4585: one FIX job per shared CI-failure signature (deduped to the repo).
+CI_FIX_KEY = "ci_fix"
 CI_FAILED_TTL_S = 14 * 24 * 3600
 BACKOFF_BASE_S = 60
 BACKOFF_CAP_S = 900
@@ -221,7 +223,23 @@ def load_ledger(home: Path) -> dict[str, Any]:
         doc["pending"] = []
     if not isinstance(doc.get(CI_FAILED_KEY), dict):
         doc[CI_FAILED_KEY] = {}
+    if not isinstance(doc.get(CI_FIX_KEY), dict):
+        doc[CI_FIX_KEY] = {}
     return doc
+
+
+def failure_signature(repo: str, *, detail: str = "", pass_sha: str = "") -> str:
+    """Shared-CI fingerprint for FIX dedupe (FR #4585).
+
+    Many PASSed tips often share one red required check (e.g. test-and-synth on
+    main). Collapse those to one FIX. Include the check rollup word when known;
+    omit the PR number so N tips with the same red check share one signature.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    state = (detail or "failure").strip().lower() or "failure"
+    # Keep the word short — "failure" / "test-and-synth failure" / run id if present.
+    state = re.sub(r"\s+", " ", state)[:120]
+    return f"{repo_c}|{state}"
 
 
 def park_ci_failed(
@@ -252,6 +270,133 @@ def park_ci_failed(
         doc[CI_FAILED_KEY] = parked
     parked[key] = rec
     return rec
+
+
+def enqueue_fix_ci(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    pass_sha: str,
+    url: str = "",
+    detail: str = "",
+    check_run_id: str = "",
+    now_epoch: float | None = None,
+) -> str:
+    """Offer one FIX job for a PASSed+auto-merge PR with a red required check (FR #4585).
+
+    Dedupes by ``failure_signature`` so a shared main/test-and-synth break yields
+    one FIX, not N. Never re-offers the same (signature, pass_sha, check_run_id)
+    while that FIX is still on the queue or recorded in the ledger.
+    Returns ``added`` | ``duplicate`` | ``skipped``.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    sha = _norm_sha(pass_sha)
+    if not repo_c or not num or not sha:
+        return "skipped"
+    sig = failure_signature(repo_c, detail=detail, pass_sha=sha)
+    tnow = float(now_epoch if now_epoch is not None else time.time())
+    doc = load_ledger(home)
+    offered = doc.get(CI_FIX_KEY)
+    if not isinstance(offered, dict):
+        offered = {}
+        doc[CI_FIX_KEY] = offered
+    prev = offered.get(sig)
+    if isinstance(prev, dict):
+        prev_sha = _norm_sha(str(prev.get("pass_sha") or ""))
+        prev_run = str(prev.get("check_run_id") or "")
+        # Same shared failure + same SHA (+ same run when known) -> no second FIX.
+        if prev_sha and shas_match(prev_sha, sha):
+            if not check_run_id or not prev_run or prev_run == str(check_run_id):
+                return "duplicate"
+    pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
+    body = (
+        f"FR #4585 FIX CI: PASSed MRB with auto-merge on but a required check failed "
+        f"({detail or 'failure'}). Head SHA {sha}. "
+        f"Prefer fixing the shared failure on main when many tips share this signature "
+        f"({sig}); otherwise fix CI on this PR branch and push. "
+        f"Do not re-open MRB while the head SHA is unchanged."
+    )
+    if check_run_id:
+        body += f" check_run_id={check_run_id}."
+    claim = gitclaim.GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id=f"#{num}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=f"FIX CI after MRB PASS (red check; shared sig {sig})",
+        body=body,
+        labels=("via-intake", "fix-ci"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        # Dedupe against any FIX already queued for this repo with the same signature
+        # stamped on the row (body/title) or the same PR id.
+        for row in list(qdoc.get("unaccepted") or []) + list(qdoc.get("accepted") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            row_body = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            if sig in row_body or gitclaim._same(row, repo_c, "FIX", f"#{num}"):
+                offered[sig] = {
+                    "repo": repo_c,
+                    "pr": str(row.get("id") or num).lstrip("#"),
+                    "pass_sha": sha,
+                    "check_run_id": str(check_run_id or ""),
+                    "signature": sig,
+                    "offered_epoch": tnow,
+                    "url": str(row.get("url") or pull_url),
+                }
+                save_ledger(home, doc)
+                return "duplicate"
+        changed = gitclaim._append_unaccepted(
+            qdoc,
+            claim,
+            url=pull_url,
+            body=body,
+            title=claim.title,
+            pass_sha=sha,
+            fail_signature=sig,
+            check_run_id=str(check_run_id or ""),
+        )
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    if changed == "added":
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": num,
+            "pass_sha": sha,
+            "check_run_id": str(check_run_id or ""),
+            "signature": sig,
+            "offered_epoch": tnow,
+            "url": pull_url,
+        }
+        save_ledger(home, doc)
+        return "added"
+    if changed == "duplicate":
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": num,
+            "pass_sha": sha,
+            "check_run_id": str(check_run_id or ""),
+            "signature": sig,
+            "offered_epoch": tnow,
+            "url": pull_url,
+        }
+        save_ledger(home, doc)
+        return "duplicate"
+    return "skipped"
 
 
 def prune_ci_failed(doc: dict[str, Any], *, now_epoch: float, ttl_s: float = CI_FAILED_TTL_S) -> int:
@@ -593,6 +738,7 @@ def process_pending(
         "merged": 0,
         "wait": 0,
         "requeued": 0,
+        "fix_offered": 0,
         "skipped_hold": 0,
         "dropped": 0,
         "errors": 0,
@@ -722,12 +868,31 @@ def process_pending(
         if decision == "requeue_ci":
             # FR #4566 follow-up: stop polling; keep the PASS SHA so resync does
             # not turn it back into an MRB while the head is unchanged.
-            park_ci_failed(doc, row, detail=str(pr_state.get("checks") or "failure"), now_epoch=tnow)
+            # FR #4585: offer one FIX (deduped by failure signature) instead of
+            # leaving the queue empty while PASSed+auto-merge tips sit red forever.
+            detail = str(pr_state.get("checks") or "failure")
+            park_ci_failed(doc, row, detail=detail, now_epoch=tnow)
             summary["ci_failed"] += 1
             summary["dropped"] += 1
+            fix_result = "skipped"
+            try:
+                fix_result = enqueue_fix_ci(
+                    home,
+                    repo=repo,
+                    pr=pr,
+                    pass_sha=str(row.get("pass_sha") or ""),
+                    url=str(row.get("url") or pr_state.get("html_url") or ""),
+                    detail=detail,
+                    now_epoch=tnow,
+                )
+                if fix_result == "added":
+                    summary["fix_offered"] = int(summary.get("fix_offered") or 0) + 1
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"] += 1
+                _log(f"WARN merge-on-green FIX enqueue failed {repo}#{pr}: {exc}")
             _log(
                 f"INFO merge-on-green drop ci-failed {repo}#{pr} "
-                f"@{str(row.get('pass_sha') or '')[:12]} checks={pr_state.get('checks')}"
+                f"@{str(row.get('pass_sha') or '')[:12]} checks={detail} fix={fix_result}"
             )
             continue
 
