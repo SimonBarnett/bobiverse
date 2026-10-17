@@ -5717,10 +5717,10 @@ def enrich_uat_author_fields(doc: dict, row: dict) -> dict:
 
 
 def mrb_blocked_for_author(row: dict, nick: str, live: set[str], ledger: dict | None = None, *, free: set[str] | None = None) -> bool:
-    """Do not hand an MRB/UAT to the author seat (or sibling on same machine) while another machine is live.
+    """Alias for `review_blocked_for_author` (MRB exact-seat; UAT sibling rules).
 
-    FR #39 / #227 / #265: MRB and UAT must go to a different machine/seat than the
-    FR implementer and/or MRB author when at least one other machine has a live seat.
+    FR #2604 / #4606: MRB blocks only the exact author/FIX nick. UAT still uses
+    sibling / recycle rules (FR #1407 / #4336).
     """
     return review_blocked_for_author(row, nick, live, ledger=ledger, free=free)
 
@@ -5738,9 +5738,9 @@ def review_blocked_for_author(
     Blocks when ``nick`` matches any of ``row_author_seats`` (exact seat).
 
     For **UAT** only: also blocks a sibling on the same machine while another machine
-    has a *viable* live seat (FR #1407 / #2487). For **MRB**, self-exclusion is
-    exact-seat only (FR #2604) so a same-machine sibling may review even when
-    another machine looks live — two seats on one box must not strand an open PR.
+    has a *viable* live seat (FR #1407 / #2487), and a recycled sole successor of a
+    dead author (FR #4336). For **MRB**, self-exclusion is exact-seat only
+    (FR #2604 / #4606) — same-machine siblings and recycled fresh seats may review.
 
     Viable other-machine seats (FR #1407): not already in ``giveup_seats``, and for
     repo-level UAT when ``ledger`` is provided, not themselves FR-implementer blocked
@@ -5780,13 +5780,15 @@ def review_blocked_for_author(
         # Escalate via maybe_escalate_repo_uat_all_self_uat instead.
         if author_l == me_l:
             return True
-        # FR #4336: recycled successor on same machine inherits author exclusion
-        # when the stamped author nick is no longer live (exact-seat self-MRB).
-        if nick_inherits_dead_seat(me, author, live):
-            return True
-        # FR #2604: MRB self-exclusion is exact seat only — sibling on same machine OK.
+        # FR #2604 / #4606: MRB self-exclusion is exact seat only. Do not inherit a
+        # dead author nick to a recycled same-machine successor — a fresh seat with
+        # no PR touch may review (Simon 2026-10-16). Giveup inheritance stays in
+        # nick_in_giveup_seats; FIX seats are blocked by exact nick stamp (FR #4604).
         if task == "MRB":
             continue
+        # UAT (FR #4336): recycled sole successor inherits dead author exclusion.
+        if nick_inherits_dead_seat(me, author, live):
+            return True
         author_p = bobreport.parse_seat_nick(author)
         # UAT sibling seat on the same machine: block when another machine has a viable live seat.
         if author_p and me_p:
