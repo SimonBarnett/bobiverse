@@ -1076,13 +1076,15 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\binstall\b.{0,80}\blags?\s+main\b"), "ionos"),
     (re.compile(r"(?i)\b(?:hotpatch|ff-update|ff[- ]only)\b.{0,120}\b(?:ionos\s+)?(?:irc)?jeeves\b.{0,80}\binstall\b"), "ionos"),
 )
-_REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
-    # FR #1824: dedicated pin line only (MULTILINE). Do not match inline evidence.
+# FR #1824 / #4512: dedicated pin lines (MULTILINE). Intentional pins, not evidence prose.
+_REQUIRE_MACHINE_DEDICATED_PIN_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ionos\b"), "ionos"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ce-priority-dev1\b"), "ce-priority-dev1"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ce-priority-dev\b"), "ce-priority-dev1"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
+)
+_REQUIRE_MACHINE_BODY_SOFT_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # agentic_fomprep WP0 live proof must run on DEV1
     (re.compile(r"(?i)PRIORITY_WP0_INSTANCE\s*=\s*ce-priority-dev"), "ce-priority-dev1"),
     (re.compile(r"(?i)\bWP0\s+live\b"), "ce-priority-dev1"),
@@ -1144,10 +1146,16 @@ _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bC:\\ai\\jeeves\\scripts\\run_bobiverse_build\.py\b"), "ionos"),
     (re.compile(r"(?i)\b(?:hotpatch|ff-update)\b.{0,120}\bC:\\ai\\jeeves\b"), "ionos"),
 )
+_REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
+    _REQUIRE_MACHINE_DEDICATED_PIN_CUES + _REQUIRE_MACHINE_BODY_SOFT_CUES
+)
 # Back-compat for tests importing the combined name.
 _REQUIRE_MACHINE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     _REQUIRE_MACHINE_TITLE_CUES + _REQUIRE_MACHINE_BODY_CUES
 )
+
+# FR #4512: Simon — bobiverse work is not reliant on ionos; text cues never pin this repo.
+_BOBIVERSE_REPO_L = "simonbarnett/bobiverse"
 
 # Hard pins for known WP0 / machine-gated issues (FR #1093): survive empty title/body on stale rows.
 _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
@@ -1245,6 +1253,9 @@ def infer_require_machine(
     title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
     recycle|recompose|Sync/compose Jeeves / Sync-BobiverseFromRepo near Jeeves / prune queue.json / install(+smoke) on ionos -> ionos;
     FR #587 / #852 / #2451 / #3129).
+
+    FR #4512: for ``SimonBarnett/bobiverse``, title/body soft text cues never pin.
+    Only labels, hard issue pins/unpins, and dedicated ``require_machine:`` body lines.
     """
     labs = labels or ()
     if isinstance(labs, str):
@@ -1266,6 +1277,13 @@ def infer_require_machine(
             if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
                 return mid
         # bare needs-ionos style already covered by cue regex below via label join
+    body_blob = str(body or "")
+    # FR #4512: bobiverse — skip title/soft cues; honor dedicated pin lines only.
+    if repo_l == _BOBIVERSE_REPO_L:
+        for rx, mid in _REQUIRE_MACHINE_DEDICATED_PIN_CUES:
+            if rx.search(body_blob):
+                return mid
+        return ""
     # Title + labels + assign line: bare machine / require_machine= cues (FR #1508).
     title_blob = "\n".join(
         [
@@ -1278,7 +1296,6 @@ def infer_require_machine(
         if rx.search(title_blob):
             return mid
     # Body: only strong WP0 / ionos-ops cues (not bare machine name mentions).
-    body_blob = str(body or "")
     for rx, mid in _REQUIRE_MACHINE_BODY_CUES:
         if rx.search(body_blob) or rx.search(title_blob):
             return mid
@@ -1309,14 +1326,25 @@ def row_require_machine(row: dict) -> str:
     # (titles that mention require_machine=ce-priority-dev1 were re-pinning forever).
     if stamped in {"*", "any", "none", "-"}:
         return ""
+    labels = row.get("labels") or ()
+    if isinstance(labels, str):
+        labels = [labels]
+    # FR #4512: bobiverse never trusts a persisted text-cue stamp — re-infer
+    # (labels / dedicated pin / hard pin only). Stale ionos stamps clear.
+    if repo_l == _BOBIVERSE_REPO_L:
+        return infer_require_machine(
+            title=str(row.get("title") or ""),
+            body=str(row.get("body") or ""),
+            labels=tuple(str(x) for x in labels),
+            line=str(row.get("line") or ""),
+            repo=str(row.get("repo") or ""),
+            ident=str(row.get("id") or ""),
+        )
     if stamped:
         mid = bobreport.normalize_machine_id(stamped) or stamped
         # Ignore corrupt stamps like mrb1 from needs-mrb1 (#1080).
         if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
             return mid
-    labels = row.get("labels") or ()
-    if isinstance(labels, str):
-        labels = [labels]
     return infer_require_machine(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
@@ -1981,13 +2009,20 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
         if hard:
             row["require_machine"] = hard
         return
+    req = infer_require_machine(
+        title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
+    )
+    # FR #4512: bobiverse — clear stale text-cue stamps when inference is empty.
+    if repo_l == _BOBIVERSE_REPO_L:
+        if req:
+            row["require_machine"] = req
+        elif stamped and stamped not in {"*", "any", "none", "-"}:
+            row["require_machine"] = "any"
+        return
     if stamped:
         mid = bobreport.normalize_machine_id(stamped) or stamped
         if mid and mid not in _REQUIRE_MACHINE_NON_MACHINE:
             return
-    req = infer_require_machine(
-        title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
-    )
     if req:
         row["require_machine"] = req
 
