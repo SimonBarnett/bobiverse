@@ -166,6 +166,61 @@ def test_open_pr_is_one_call_per_ttl(monkeypatch):
     gitclaim.clear_pr_exists_backoff()
 
 
+def test_accepted_needs_human_stays_when_pr_would_look_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    gitclaim.clear_pr_exists_backoff()
+    row = _mrb(4565, needs_human=True)
+    row["nick"] = "marchhare-1"
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {"v": 1, "unaccepted": [], "accepted": [row], "done": []},
+    )
+    calls: list[str] = []
+
+    def pr_exists(repo, num):
+        calls.append(f"{repo}#{num}")
+        return False
+
+    gitclaim.purge_dead_mrb_rows(tmp_path, pr_exists=pr_exists)
+    assert calls == []
+    doc = gitclaim._load_queue_unlocked(tmp_path)
+    accepted = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
+    assert [gitclaim._norm_row_id(r.get("id")) for r in accepted] == ["#4565"]
+    assert not doc.get("done")
+
+
+def test_404_does_not_arm_backoff(monkeypatch):
+    gitclaim.clear_pr_exists_backoff()
+    calls = {"n": 0}
+
+    def urlopen(req, timeout=8):
+        calls["n"] += 1
+        hdrs = Message()
+        hdrs["X-RateLimit-Remaining"] = "4000"
+        raise urllib.error.HTTPError(
+            "https://api.github.com/repos/o/r/pulls/9",
+            404,
+            "missing",
+            hdrs,
+            io.BytesIO(b"missing"),
+        )
+
+    monkeypatch.setattr(gitclaim.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("GH_TOKEN", "EXAMPLE_TOKEN")
+    monkeypatch.setenv("GITHUB_TOKEN", "")
+    import sys
+    import types
+
+    fake = types.ModuleType("gh_filer")
+    fake.ensure_gh_token_env = lambda: "env"
+    monkeypatch.setitem(sys.modules, "gh_filer", fake)
+    check = gitclaim.github_pr_exists_checker(cache={})
+    assert check("o/r", "8") is False
+    assert check("o/r", "9") is False
+    assert calls["n"] == 2
+    gitclaim.clear_pr_exists_backoff()
+
+
 def test_offerable_fr_is_not_blocked_by_needs_human(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _queue(
