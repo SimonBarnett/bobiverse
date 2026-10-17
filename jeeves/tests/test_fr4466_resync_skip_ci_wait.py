@@ -123,3 +123,25 @@ def test_resync_requeues_when_auto_merge_off(tmp_path, monkeypatch):
     rows = gitclaim.load_unaccepted(tmp_path)
     mrb = [r for r in rows if r.get("task") == "MRB" and r.get("id") == "#99"]
     assert len(mrb) == 1
+
+
+def test_resync_skips_when_ledger_in_fleet_root_not_config_home(tmp_path, monkeypatch):
+    """Live chair: resync gets ~/.jeeves, ledger + queue live in BOB_DIGEST_HOME (~/.bobiverse)."""
+    cfg = tmp_path / "cfg"
+    fleet = tmp_path / "fleet"
+    cfg.mkdir()
+    fleet.mkdir()
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(fleet))
+    _seed(cfg, queued=True)
+    mrb_merge_on_green.enqueue(
+        fleet, repo="o/a", pr="99", pass_sha=SHA, url="https://github.com/o/a/pull/99"
+    )
+    assert not (cfg / mrb_merge_on_green.LEDGER_NAME).exists()
+    res = gitclaim.resync_from_github(
+        cfg,
+        ["o/a"],
+        fetch_json=_fetch(_pr(99, sha=SHA, auto_merge={"merge_method": "merge"})),
+    )
+    assert res.get("ok") is True
+    rows = gitclaim.load_unaccepted(cfg)
+    assert [r for r in rows if r.get("task") == "MRB" and r.get("id") == "#99"] == []

@@ -7641,7 +7641,11 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
     try:
         import mrb_merge_on_green
 
-        doc = mrb_merge_on_green.load_ledger(home)
+        # FR #4466 follow-up: the chair passes its config home (~/.jeeves) but the
+        # merge-on-green ledger lives beside queue.json in the fleet root (~/.bobiverse).
+        doc = mrb_merge_on_green.load_ledger(_root(home))
+        if not (doc.get("pending") or []) and Path(home) != _root(home):
+            doc = mrb_merge_on_green.load_ledger(home)
     except Exception:  # noqa: BLE001
         return ""
     want = str(num)
