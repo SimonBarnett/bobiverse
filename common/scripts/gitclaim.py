@@ -7850,7 +7850,11 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
         # FR #4466 follow-up: the chair passes its config home (~/.jeeves) but the
         # merge-on-green ledger lives beside queue.json in the fleet root (~/.bobiverse).
         doc = mrb_merge_on_green.load_ledger(_root(home))
-        if not (doc.get("pending") or []) and Path(home) != _root(home):
+        if (
+            not (doc.get("pending") or [])
+            and not (doc.get(mrb_merge_on_green.CI_FAILED_KEY) or {})
+            and Path(home) != _root(home)
+        ):
             doc = mrb_merge_on_green.load_ledger(home)
     except Exception:  # noqa: BLE001
         return ""
@@ -7864,7 +7868,11 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
         if str(row.get("repo") or "").strip().lower() != repo_l:
             continue
         return str(row.get("pass_sha") or "")
-    return ""
+    # FR #4566 follow-up: CI-failed PASS rows leave the poll list but keep their SHA.
+    try:
+        return mrb_merge_on_green.ci_failed_pass_sha(doc, canonical_queue_repo(repo), want)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def resync_from_github(

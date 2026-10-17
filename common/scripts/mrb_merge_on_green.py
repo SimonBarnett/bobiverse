@@ -36,6 +36,11 @@ DEFAULT_MIN_RATE_REMAINING = 100
 # FR #4566: stop re-polling Actions-only rows forever. Empty combined status is
 # not a pending check. Long waits back off, then leave the ledger.
 MAX_WAIT_S = 3600
+# FR #4566 follow-up: a PASSed PR whose required check-run failed leaves the poll
+# list but keeps its PASS SHA here so resync's ci-wait skip still recognises it
+# (no MRB re-queue while the head is unchanged). A new push re-enters via MRB.
+CI_FAILED_KEY = "ci_failed"
+CI_FAILED_TTL_S = 14 * 24 * 3600
 BACKOFF_BASE_S = 60
 BACKOFF_CAP_S = 900
 _FAIL_CONCLUSIONS = frozenset(
@@ -190,7 +195,7 @@ def _legacy_config_ledger_path(home: Path) -> Path:
 
 
 def _empty_ledger() -> dict[str, Any]:
-    return {"version": 1, "pending": []}
+    return {"version": 1, "pending": [], CI_FAILED_KEY: {}}
 
 
 def load_ledger(home: Path) -> dict[str, Any]:
@@ -214,7 +219,65 @@ def load_ledger(home: Path) -> dict[str, Any]:
     pending = doc.get("pending")
     if not isinstance(pending, list):
         doc["pending"] = []
+    if not isinstance(doc.get(CI_FAILED_KEY), dict):
+        doc[CI_FAILED_KEY] = {}
     return doc
+
+
+def park_ci_failed(
+    doc: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    detail: str = "",
+    now_epoch: float | None = None,
+) -> dict[str, Any]:
+    """Record a CI-failed PASS row outside ``pending`` (FR #4566 follow-up)."""
+    repo_c = gitclaim.canonical_queue_repo(str(row.get("repo") or ""))
+    num = str(row.get("pr") or "").lstrip("#")
+    key = _row_key(repo_c, num)
+    rec = {
+        "key": key,
+        "repo": repo_c,
+        "pr": num,
+        "pass_sha": str(row.get("pass_sha") or ""),
+        "url": str(row.get("url") or f"https://github.com/{repo_c}/pull/{num}"),
+        "nick": str(row.get("nick") or ""),
+        "failed_ts": _utc(),
+        "failed_epoch": float(now_epoch if now_epoch is not None else time.time()),
+        "detail": detail or "required check failed",
+    }
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict):
+        parked = {}
+        doc[CI_FAILED_KEY] = parked
+    parked[key] = rec
+    return rec
+
+
+def prune_ci_failed(doc: dict[str, Any], *, now_epoch: float, ttl_s: float = CI_FAILED_TTL_S) -> int:
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict):
+        doc[CI_FAILED_KEY] = {}
+        return 0
+    stale = []
+    for k, v in parked.items():
+        try:
+            age = now_epoch - float((v or {}).get("failed_epoch") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            age = ttl_s + 1
+        if age > ttl_s:
+            stale.append(k)
+    for k in stale:
+        parked.pop(k, None)
+    return len(stale)
+
+
+def ci_failed_pass_sha(doc: dict[str, Any], repo: str, pr: str) -> str:
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict):
+        return ""
+    rec = parked.get(_row_key(repo, pr))
+    return str((rec or {}).get("pass_sha") or "") if isinstance(rec, dict) else ""
 
 
 def save_ledger(home: Path, doc: dict[str, Any]) -> None:
@@ -272,6 +335,9 @@ def enqueue(
     if not replaced:
         out.append(row)
     doc["pending"] = out
+    parked = doc.get(CI_FAILED_KEY)
+    if isinstance(parked, dict):
+        parked.pop(key, None)
     save_ledger(home, doc)
     return row
 
@@ -532,6 +598,7 @@ def process_pending(
         "errors": 0,
         "backed_off": False,
         "deferred": 0,
+        "ci_failed": 0,
         "actions": [],
     }
     now_fn = now or time.time
@@ -652,7 +719,19 @@ def process_pending(
             _log(f"INFO merge-on-green skip hold {repo}#{pr}: {row['hold_reason']}")
             continue
 
-        if decision in ("requeue_sha", "requeue_ci"):
+        if decision == "requeue_ci":
+            # FR #4566 follow-up: stop polling; keep the PASS SHA so resync does
+            # not turn it back into an MRB while the head is unchanged.
+            park_ci_failed(doc, row, detail=str(pr_state.get("checks") or "failure"), now_epoch=tnow)
+            summary["ci_failed"] += 1
+            summary["dropped"] += 1
+            _log(
+                f"INFO merge-on-green drop ci-failed {repo}#{pr} "
+                f"@{str(row.get('pass_sha') or '')[:12]} checks={pr_state.get('checks')}"
+            )
+            continue
+
+        if decision == "requeue_sha":
             summary["requeued"] += 1
             try:
                 requeue_mrb(
@@ -683,6 +762,7 @@ def process_pending(
         keep.append(row)
 
     doc["pending"] = keep
+    prune_ci_failed(doc, now_epoch=tnow)
     save_ledger(home, doc)
     return summary
 

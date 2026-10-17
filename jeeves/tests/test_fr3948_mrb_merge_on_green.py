@@ -173,12 +173,16 @@ def test_process_pass_then_red_requeues(tmp_path: Path):
         fetch_comments=lambda r, p: _pass_board(),
         merge_fn=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not merge")),
     )
-    assert summary["requeued"] == 1
+    # FR #4566 follow-up: failed CI parks the row (no MRB re-queue, mrb_done kept).
+    assert summary["requeued"] == 0
+    assert summary["ci_failed"] == 1
     assert summary["merged"] == 0
-    assert mrb_merge_on_green.load_ledger(home)["pending"] == []
-    assert not gitclaim.mrb_ledger_done_hold(home, "SimonBarnett/a-search", "#1434")
+    led = mrb_merge_on_green.load_ledger(home)
+    assert led["pending"] == []
+    assert led["ci_failed"]["SimonBarnett/a-search#1434"]["pass_sha"] == PASS_SHA
+    assert gitclaim.mrb_ledger_done_hold(home, "SimonBarnett/a-search", "#1434")
     q = gitclaim.load_queue(home)
-    assert any(
+    assert not any(
         str(r.get("task")).upper() == "MRB" and str(r.get("id")).lstrip("#") == "1434"
         for r in (q.get("unaccepted") or [])
     )
