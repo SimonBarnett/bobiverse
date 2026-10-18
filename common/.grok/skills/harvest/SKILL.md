@@ -276,6 +276,7 @@ routes to bobiverse via the split rule.
 - bobiverse resync: an open fix(mrb-N) stays skipped only while parent N is in the open-PR set. When the parent is merged or closed, enqueue the fix as an ordinary MRB so author exclusion still applies. Mark the still-open-parent skip in skipped_open_pulls or a stray MRB row survives.
 - jeeves: when a FIX pull merges or closes, drop unaccepted FIX and finish accepted FIX (idle digest seat) so the seat is not stuck NAK busy; resync/purge_dead also prune FIX absent from open-pull set
 - resync_from_github must not read mergeable/mergeable_state from GET /pulls?state=open (those keys are absent); enrich each list PR missing mergeable* via GET /pulls/N before the DIRTY FIX branch (FR #4683 / #4679)
+- When a PR merges or closes, finish accepted FIX for that pull the same as MRB and idle the seat; do not leave ACC FIX to block !bored or ci-failed duplicate offers.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
