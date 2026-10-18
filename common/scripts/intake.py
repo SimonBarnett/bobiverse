@@ -730,18 +730,34 @@ def build_lesson_pr_title(book: str, lessons: list[str]) -> str:
     return f"lesson({book}): {tip}"
 
 
+# FR a-search #3907: GitHub closes the named issue when a harvest tip body says
+# Closes/Fixes/Resolves #N. Skill-book tips must Refs the product FR. Only the
+# product implement PR may Closes it. Class of #3876 closing #3867 while #3871
+# was still open.
+_HARVEST_CLOSES_RE = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+"
+    r"((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+(?:/#\d+)*)"
+)
+
+
+def neutralize_harvest_closes(text: str) -> str:
+    """Rewrite GitHub closing keywords that name an issue into Refs."""
+    return _HARVEST_CLOSES_RE.sub(r"Refs \1", str(text or ""))
+
+
 def build_lesson_pr_body(*, book: str, path: str, lessons: list[str], original_body: str) -> str:
+    safe_lessons = [neutralize_harvest_closes(x) for x in lessons]
     lines = [
         LESSON_PR_MRB_INSTRUCTION,
         "",
         f"Target skill book: `{book}` (`{path}`).",
         "",
         "Lessons:",
-        *[f"- {x}" for x in lessons],
+        *[f"- {x}" for x in safe_lessons],
         "",
         "---",
         "",
-        str(original_body or "").rstrip(),
+        neutralize_harvest_closes(str(original_body or "").rstrip()),
         "",
     ]
     return "\n".join(lines)
