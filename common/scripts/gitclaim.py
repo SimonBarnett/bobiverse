@@ -8643,6 +8643,59 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
         return ""
 
 
+
+def list_pr_needs_mergeability_enrichment(pr: dict | None) -> bool:
+    """True when an open-PR list item lacks mergeable* (FR #4683).
+
+    `GET /repos/{repo}/pulls?state=open` never returns `mergeable` /
+    `mergeable_state` / `mergeStateStatus`. The dirty-FIX path must not
+    trust those keys until a detail `GET /pulls/N` (or GraphQL) fills them.
+    """
+    if not isinstance(pr, dict):
+        return False
+    return not (
+        "mergeable" in pr
+        or "mergeable_state" in pr
+        or "mergeStateStatus" in pr
+    )
+
+
+def enrich_pr_mergeability(
+    pr: dict,
+    *,
+    repo: str,
+    num: int,
+    fetch_json,
+) -> bool:
+    """FR #4683: copy mergeable* from `GET /repos/{repo}/pulls/{num}` onto `pr`.
+
+    Mutates `pr` in place when enrichment succeeds. Returns True when a detail
+    fetch ran and at least one mergeable* key was written. Failures are soft
+    (return False) so one bad PR does not abort resync.
+    """
+    if not list_pr_needs_mergeability_enrichment(pr):
+        return False
+    if fetch_json is None or not repo or not isinstance(num, int):
+        return False
+    try:
+        detail = fetch_json(f"https://api.github.com/repos/{repo}/pulls/{num}")
+    except Exception:  # noqa: BLE001 - budget/404/rate; try again next resync
+        return False
+    if not isinstance(detail, dict):
+        return False
+    wrote = False
+    if "mergeable" in detail:
+        pr["mergeable"] = detail.get("mergeable")
+        wrote = True
+    if "mergeable_state" in detail:
+        pr["mergeable_state"] = detail.get("mergeable_state")
+        wrote = True
+    if "mergeStateStatus" in detail:
+        pr["mergeStateStatus"] = detail.get("mergeStateStatus")
+        wrote = True
+    return wrote
+
+
 def resync_from_github(
     home: Path,
     repos: list[str],
@@ -8882,6 +8935,16 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
+            # FR #4683: open-PR list omits mergeable*; enrich from GET /pulls/N
+            # before the dirty check (and later mergeable_state readers).
+            if list_pr_needs_mergeability_enrichment(pr):
+                if enrich_pr_mergeability(pr, repo=repo, num=num, fetch_json=getter):
+                    print(
+                        f"resync enrich mergeability PR {repo}#{num} "
+                        f"mergeable={pr.get('mergeable')!r} "
+                        f"state={pr.get('mergeable_state') or pr.get('mergeStateStatus')!r}",
+                        flush=True,
+                    )
             # FR #4679: any open non-draft DIRTY/CONFLICTING PR with no live job
             # gets one FIX (fold origin/main), even with no MRB PASS and even when
             # auto-merge is off / CI is green or cancelled. Do not leave it as a
