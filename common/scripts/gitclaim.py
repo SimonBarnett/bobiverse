@@ -8882,6 +8882,45 @@ def resync_from_github(
                     flush=True,
                 )
                 continue
+            # FR #4679: any open non-draft DIRTY/CONFLICTING PR with no live job
+            # gets one FIX (fold origin/main), even with no MRB PASS and even when
+            # auto-merge is off / CI is green or cancelled. Do not leave it as a
+            # stranded MRB that seats cannot merge.
+            try:
+                import mrb_merge_on_green as _mog_dirty
+
+                dirty_reason = _mog_dirty.merge_attempt_conflict_reason(
+                    mergeable=pr.get("mergeable"),
+                    merge_state=str(
+                        pr.get("mergeable_state") or pr.get("mergeStateStatus") or ""
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                dirty_reason = ""
+            if dirty_reason and head_sha:
+                try:
+                    import mrb_merge_on_green as _mog_dirty
+
+                    fix_result = _mog_dirty.offer_dirty_conflict_fix(
+                        _root(home),
+                        repo=repo,
+                        pr=str(num),
+                        sha=head_sha,
+                        url=str(pr.get("html_url") or ""),
+                        reason=dirty_reason,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    fix_result = f"error:{type(exc).__name__}"
+                if fix_result == "added":
+                    fix_added += 1
+                elif fix_result == "duplicate":
+                    fix_dup += 1
+                skipped_open_pulls.add((repo, f"#{num}"))
+                print(
+                    f"resync offer FIX dirty PR {repo}#{num} result={fix_result}",
+                    flush=True,
+                )
+                continue
             pass_sha = _merge_on_green_pass_sha(home, repo, num)
             # FR #4661: ledger race --- done[] PASS + auto_merge tip still ci-wait.
             if not pass_sha:

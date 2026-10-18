@@ -927,7 +927,7 @@ def offer_dirty_conflict_fix(
     url: str = "",
     reason: str = "conflicting",
 ) -> str:
-    """Offer one conflict FIX for a DIRTY auto-merge PR (FR #4669 / #4636).
+    """Offer one conflict FIX for a DIRTY/CONFLICTING PR (FR #4669 / #4636 / #4679).
 
     A finished FIX on this SHA is re-offered. A still-queued FIX stays ``duplicate``.
     After ``FIX_CI_RECOVER_MAX`` re-offers, stamp ``needs_human``.
@@ -1175,9 +1175,9 @@ def enqueue_conflict_fix(
     if isinstance(prev, dict) and shas_match(str(prev.get("pass_sha") or ""), sha):
         return "duplicate"
     pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
-    title = f"FIX conflict after MRB PASS ({reason or 'conflicting'}; {num}@{sha[:12]})"
+    title = f"FIX conflict ({reason or 'conflicting'}; {num}@{sha[:12]})"
     body = (
-        f"FR #4636 conflict-fix: merge-on-green stopped on {reason or 'conflicting'} "
+        f"FR #4636/#4679 conflict-fix: PR is {reason or 'conflicting'} "
         f"for head SHA {sha}. Merge origin/main into this branch, resolve the "
         f"conflicts, and push. One job per PR+SHA. Offer to any seat (FIX is not "
         f"author-blocked). Signature {sig}."
