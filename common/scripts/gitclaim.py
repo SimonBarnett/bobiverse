@@ -6341,6 +6341,32 @@ def release_duplicate_done_hold(home: Path, nick: str) -> str:
         bobreport.clear_seat_doing(
             home, nick, only_if_work_contains=str(ident).lstrip("#")
         )
+    # FR #4661: drop the phantom unaccepted MRB so LOST_ACK/bored cannot re-offer it.
+    if str(task or "").upper() == "MRB":
+        try:
+            with _lock(home):
+                doc = _load_queue_unlocked(home)
+                if not _nick_done_mrb_pass_in_doc(doc, nick, repo, ident):
+                    pass
+                else:
+                    want = _norm_row_id(ident)
+                    repo_c = canonical_queue_repo(repo)
+                    kept = []
+                    for r in doc.get("unaccepted") or []:
+                        if not isinstance(r, dict):
+                            continue
+                        if (
+                            str(r.get("task") or "").upper() == "MRB"
+                            and canonical_queue_repo(str(r.get("repo") or "")) == repo_c
+                            and _norm_row_id(str(r.get("id") or "")) == want
+                        ):
+                            continue
+                        kept.append(r)
+                    if len(kept) != len(doc.get("unaccepted") or []):
+                        doc["unaccepted"] = kept
+                        _write_queue(queue_path(home), doc)
+        except Exception:
+            pass
     return f"{task} {repo}{_norm_row_id(ident)}".strip()
 
 
@@ -8427,6 +8453,80 @@ def open_pr_mrb_checks_pending(checks: str | None) -> bool:
     return state in _CI_WAIT_PENDING
 
 
+
+def _nick_done_mrb_pass_in_doc(doc: dict, nick: str, repo: str, ident: str) -> bool:
+    """FR #4661 unlocked: True when done[] has MRB PASS for repo#id by this nick."""
+    me = (canonical_worker_nick(nick) or nick or "").strip().lower()
+    if not me or not repo or not ident or not isinstance(doc, dict):
+        return False
+    want = _norm_row_id(ident)
+    repo_c = canonical_queue_repo(repo)
+    for r in doc.get("done") or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("task") or "").upper() != "MRB":
+            continue
+        if canonical_queue_repo(str(r.get("repo") or "")) != repo_c:
+            continue
+        if _norm_row_id(str(r.get("id") or "")) != want:
+            continue
+        if str(r.get("result") or "").strip().upper() != "PASS":
+            continue
+        who = (
+            r.get("done_by")
+            or r.get("nick")
+            or r.get("accepted_by")
+            or r.get("offered_to")
+            or ""
+        )
+        who_c = (canonical_worker_nick(str(who)) or str(who)).strip().lower()
+        if who_c and who_c == me:
+            return True
+    return False
+
+
+def nick_done_mrb_pass(home: Path, nick: str, repo: str, ident: str) -> bool:
+    """FR #4661: True when this seat DONE MRB PASS for repo#id (still in done[])."""
+    try:
+        doc = load_queue(home)
+    except Exception:
+        return False
+    return _nick_done_mrb_pass_in_doc(doc, nick, repo, ident)
+
+
+def done_mrb_pass_sha_for_ci_wait(
+    home: Path, repo: str, num: int | str, head_sha: str
+) -> str:
+    """FR #4661: when merge-on-green ledger missed the PASS SHA, use tip SHA if done[] has PASS.
+
+    Race: DONE stamps done[] then enqueue_from_done fetches GitHub; a concurrent
+    !resync can miss the ledger and re-queue the MRB. done[] PASS + auto_merge tip
+    still means ci-wait (FR #4466), so treat head_sha as the PASSed SHA.
+    """
+    sha = str(head_sha or "").strip()
+    if not sha or not repo:
+        return ""
+    want = _norm_row_id(str(num))
+    repo_c = canonical_queue_repo(repo)
+    try:
+        doc = load_queue(home)
+    except Exception:
+        return ""
+    for r in doc.get("done") or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("task") or "").upper() != "MRB":
+            continue
+        if canonical_queue_repo(str(r.get("repo") or "")) != repo_c:
+            continue
+        if _norm_row_id(str(r.get("id") or "")) != want:
+            continue
+        if str(r.get("result") or "").strip().upper() != "PASS":
+            continue
+        return sha
+    return ""
+
+
 def open_pr_mrb_ci_wait_candidate(pr: dict, pass_sha: str) -> bool:
     """FR #4466: auto-merge on and head still the PASSed SHA (ignore check conclusion)."""
     if not isinstance(pr, dict):
@@ -8754,6 +8854,9 @@ def resync_from_github(
                 )
                 continue
             pass_sha = _merge_on_green_pass_sha(home, repo, num)
+            # FR #4661: ledger race --- done[] PASS + auto_merge tip still ci-wait.
+            if not pass_sha:
+                pass_sha = done_mrb_pass_sha_for_ci_wait(home, repo, num, head_sha)
             if open_pr_mrb_ci_wait_candidate(pr, pass_sha):
                 # Candidate (auto-merge + same SHA). Resolve live/injected checks.
                 check_state = _resync_pr_check_state(pr, repo, num, token=token)
@@ -9507,6 +9610,7 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
             if any(_seat_reports_row(home, nick, r) for r in mine):
                 return False
             unacc = doc.setdefault("unaccepted", [])
+            done = doc.setdefault("done", [])
             for r in mine:
                 fin = dict(r)
                 for k in (
@@ -9520,6 +9624,18 @@ def release_unacked_lost_ack(home: Path, nick: str, *, log=None) -> bool:
                     "channel",
                 ):
                     fin.pop(k, None)
+                # FR #4661: seat already DONE PASS this MRB --- do not requeue phantom.
+                if _nick_done_mrb_pass_in_doc(
+                    doc,
+                    nick,
+                    str(fin.get("repo") or ""),
+                    str(fin.get("id") or ""),
+                ):
+                    fin["reconcile"] = "drop:duplicate-after-done"
+                    fin["result"] = str(fin.get("result") or "PASS")
+                    fin["done_ts"] = _utc_now()
+                    done.append(fin)
+                    continue
                 fin["reconcile"] = "requeue:LOST_ACK_NO_ACK"
                 unacc.append(fin)
             doc["accepted"] = [r for r in acc if _owner(r) != me]
