@@ -157,7 +157,7 @@ HARVEST_OWNER_MISSING_HOLD_TITLE_RE = re.compile(
 )
 # bobiverse#224 / #765 / #781: FAIL-fix PRs (fix(mrb-N) / mrb-N-fix) are not MRB/UAT targets.
 _MRB_FIX_TITLE_RE = re.compile(
-    r"(?i)(?:^|\b)(?:fix\s*\(\s*mrb[-_]?\d+|mrb[-_]?\d+[-_]fix\b)"
+    r"(?i)(?:^|\b)(?:fix\s*\(\s*mrb[-_]?(\d+)|mrb[-_]?(\d+)[-_]fix\b)"
 )
 SKIP_FR_LABELS = frozenset(
     {
@@ -2905,6 +2905,15 @@ def is_repo_uat(row: dict) -> bool:
 def is_mrb_fix_pr_title(title: str) -> bool:
     """True for titles like ``fix(mrb-105):ΓÇª`` or ``mrb-105-fix:ΓÇª`` (bobiverse#224 / #781)."""
     return bool(_MRB_FIX_TITLE_RE.search(str(title or "")))
+
+
+def mrb_fix_parent_pr_id(title: str) -> str:
+    """PR id ``#N`` from ``fix(mrb-N)`` / ``mrb-N-fix``, or empty (FR #4665)."""
+    m = _MRB_FIX_TITLE_RE.search(str(title or ""))
+    if not m:
+        return ""
+    num = next((g for g in m.groups() if g), "")
+    return f"#{num}" if num else ""
 
 
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
@@ -8771,6 +8780,12 @@ def resync_from_github(
                     n = str(iss_id).lstrip("#")
                     if n.isdigit():
                         supersede_keys.add(f"{repo}#{n}")
+        # FR #4665: parent open-ness is the full open-PR set, not PRs seen so far.
+        open_pr_ids = {
+            f"#{p.get('number')}"
+            for p in prs
+            if isinstance(p, dict) and isinstance(p.get("number"), int)
+        }
         for pr in prs:
             if not isinstance(pr, dict):
                 continue
@@ -8788,9 +8803,23 @@ def resync_from_github(
                 for r in refs:
                     bucket.add(_norm_row_id(r))
             open_pulls_map.setdefault(repo, set()).add(f"#{num}")
-            # bobiverse#224 / #781: open mrb-*-fix PRs are not MRB queue jobs.
+            # bobiverse#224 / #781: open mrb-*-fix PRs are not MRB while the parent
+            # PR is still open. FR #4665: once parent N is merged or closed, queue
+            # the orphan as an ordinary MRB (same author exclusion as any other PR).
             if is_mrb_fix_pr_title(title):
-                continue
+                parent = mrb_fix_parent_pr_id(title)
+                if not parent or parent in open_pr_ids:
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    why = "still open" if parent else "no parent number"
+                    print(
+                        f"resync skip mrb-fix PR {repo}#{num} parent {parent or '?'} {why}",
+                        flush=True,
+                    )
+                    continue
+                print(
+                    f"resync queue orphan mrb-fix PR {repo}#{num} parent {parent} not open",
+                    flush=True,
+                )
             # FR #2604: draft open PRs must not become MRB jobs; still count as open
             # for UAT/repo_clear and FR supersede via open_pulls_map above.
             if pr.get("draft") is True:
