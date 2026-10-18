@@ -8887,6 +8887,40 @@ def resync_from_github(
             if not pass_sha:
                 pass_sha = done_mrb_pass_sha_for_ci_wait(home, repo, num, head_sha)
             if open_pr_mrb_ci_wait_candidate(pr, pass_sha):
+                # FR #4669: DIRTY / CONFLICTING auto-merge still needs a fold FIX,
+                # even when the last FIX-CI DONE left the head SHA unchanged.
+                import mrb_merge_on_green
+
+                conflict_reason = mrb_merge_on_green.merge_attempt_conflict_reason(
+                    mergeable=pr.get("mergeable"),
+                    merge_state=str(
+                        pr.get("mergeable_state") or pr.get("mergeStateStatus") or ""
+                    ),
+                )
+                if conflict_reason:
+                    try:
+                        import mrb_merge_on_green
+
+                        fix_result = mrb_merge_on_green.offer_dirty_conflict_fix(
+                            _root(home),
+                            repo=repo,
+                            pr=str(num),
+                            sha=pass_sha,
+                            url=str(pr.get("html_url") or ""),
+                            reason=conflict_reason,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        fix_result = f"error:{type(exc).__name__}"
+                    if fix_result == "added":
+                        fix_added += 1
+                    elif fix_result == "duplicate":
+                        fix_dup += 1
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync offer FIX conflict PR {repo}#{num} result={fix_result}",
+                        flush=True,
+                    )
+                    continue
                 # Candidate (auto-merge + same SHA). Resolve live/injected checks.
                 check_state = _resync_pr_check_state(pr, repo, num, token=token)
                 if open_pr_mrb_checks_failed(check_state):
@@ -8956,6 +8990,12 @@ def resync_from_github(
                             detail=check_state or "failure",
                             main_red=bool(main_red_cache[repo_c]),
                             token=token,
+                            mergeable=pr.get("mergeable"),
+                            merge_state=str(
+                                pr.get("mergeable_state")
+                                or pr.get("mergeStateStatus")
+                                or ""
+                            ),
                         )
                     except Exception as exc:  # noqa: BLE001
                         fix_result = f"error:{type(exc).__name__}"

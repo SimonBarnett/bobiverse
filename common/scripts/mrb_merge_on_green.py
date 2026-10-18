@@ -48,6 +48,9 @@ CONFLICT_FIX_KEY = "conflict_fix"
 # FR #4639: in-flight cancelled-CI re-runs. Cap is whiterabbit + madhatter (7).
 CI_RERUN_KEY = "ci_rerun"
 CI_RERUN_CAP = 7
+# FR #4669: DONE FIX with the same head SHA is not a permanent duplicate.
+# After this many re-offers, stamp needs_human so the row stays visible.
+FIX_CI_RECOVER_MAX = 2
 CI_FAILED_TTL_S = 14 * 24 * 3600
 BACKOFF_BASE_S = 60
 BACKOFF_CAP_S = 900
@@ -473,6 +476,8 @@ def enqueue_fix_ci(
     main_red: bool | None = None,
     token: str | None = None,
     main_red_fn: Callable[..., bool] | None = None,
+    mergeable: Any = "",
+    merge_state: str = "",
 ) -> str:
     """Offer a FIX job for a PASSed+auto-merge PR with a red required check (FR #4585/#4596).
 
@@ -482,6 +487,10 @@ def enqueue_fix_ci(
 
     FR #4630: returns ``skipped`` when the tip is cancelled-only, or when the
     shared suite (test-and-synth) failed while main is also red.
+
+    FR #4669: a FIX that is already DONE on this same head SHA is not a permanent
+    duplicate. Main green -> one update-branch, then a re-offer. DIRTY -> conflict
+    FIX. After ``FIX_CI_RECOVER_MAX`` re-offers, stamp ``needs_human``.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
@@ -503,6 +512,8 @@ def enqueue_fix_ci(
         repo_c, detail=detail, pass_sha=sha, pr=num, main_red=bool(main_red)
     )
     tnow = float(now_epoch if now_epoch is not None else time.time())
+    reoffer_n = 0
+    reoffer_seats = ""
     doc = load_ledger(home)
     offered = doc.get(CI_FIX_KEY)
     if not isinstance(offered, dict):
@@ -516,10 +527,40 @@ def enqueue_fix_ci(
         if prev_sha and shas_match(prev_sha, sha):
             if not check_run_id or not prev_run or prev_run == str(check_run_id):
                 # FR #4639: a pruned FIX row with no DONE must not block the next offer.
+                # FR #4669: a DONE row on this same SHA must re-run or re-offer.
                 if not ci_fix_signature_orphaned(home, repo_c, sig, num):
-                    return "duplicate"
-                offered.pop(sig, None)
-                save_ledger(home, doc)
+                    if fix_signature_is_live(home, repo_c, sig, num):
+                        return "duplicate"
+                    if fix_pr_is_done(home, repo_c, num):
+                        recovered = recover_done_fix_ci(
+                            home,
+                            repo=repo_c,
+                            pr=num,
+                            sha=sha,
+                            sig=sig,
+                            prev=prev,
+                            main_red=bool(main_red),
+                            mergeable=mergeable,
+                            merge_state=merge_state,
+                            token=token,
+                            url=url or f"https://github.com/{repo_c}/pull/{num}",
+                            detail=detail,
+                            now_epoch=tnow,
+                        )
+                        if recovered != "reoffer":
+                            return recovered
+                        reoffer_n = int(prev.get("recover_n") or 0)
+                        reoffer_seats = str(prev.get("giveup_seats") or "")
+                        doc = load_ledger(home)
+                        offered = doc.get(CI_FIX_KEY)
+                        if not isinstance(offered, dict):
+                            offered = {}
+                            doc[CI_FIX_KEY] = offered
+                    else:
+                        return "duplicate"
+                else:
+                    offered.pop(sig, None)
+                    save_ledger(home, doc)
     pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
     if main_red:
         guidance = (
@@ -579,6 +620,9 @@ def enqueue_fix_ci(
                 }
                 save_ledger(home, doc)
                 return "duplicate"
+        extra_giveup = {}
+        if reoffer_seats:
+            extra_giveup["giveup_seats"] = reoffer_seats
         changed = gitclaim._append_unaccepted(
             qdoc,
             claim,
@@ -588,6 +632,7 @@ def enqueue_fix_ci(
             pass_sha=sha,
             fail_signature=sig,
             check_run_id=str(check_run_id or ""),
+            **extra_giveup,
         )
         try:
             gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
@@ -602,6 +647,7 @@ def enqueue_fix_ci(
             "signature": sig,
             "offered_epoch": tnow,
             "url": pull_url,
+            "recover_n": int(reoffer_n or 0),
         }
         save_ledger(home, doc)
         return "added"
@@ -651,6 +697,279 @@ def ci_fix_signature_orphaned(home: Path, repo: str, sig: str, pr: str) -> bool:
         if str(row.get("id") or "").lstrip("#") == num:
             return False
     return True
+
+
+def _fix_rows(home: Path, repo: str, pr: str, *buckets: str) -> list[dict]:
+    """FIX queue rows for this PR in the named buckets."""
+    try:
+        q = gitclaim.load_queue(home)
+    except (OSError, ValueError):
+        return []
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    ident = f"#{num}"
+    found: list[dict] = []
+    for bucket in buckets:
+        for row in q.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            row_id = str(row.get("id") or "").lstrip("#")
+            if row_id == num or gitclaim._same(row, repo_c, "FIX", ident):
+                found.append(row)
+    return found
+
+
+def fix_signature_is_live(home: Path, repo: str, sig: str, pr: str) -> bool:
+    """True when an unaccepted or accepted FIX still carries this signature or PR."""
+    try:
+        q = gitclaim.load_queue(home)
+    except (OSError, ValueError):
+        return False
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    ident = f"#{num}"
+    for bucket in ("unaccepted", "accepted"):
+        for row in q.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            blob = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            row_id = str(row.get("id") or "").lstrip("#")
+            if sig in blob or row_id == num or gitclaim._same(row, repo_c, "FIX", ident):
+                return True
+    return False
+
+
+def fix_pr_is_done(home: Path, repo: str, pr: str) -> bool:
+    """True when a FIX for this PR sits in ``done`` and is not still queued."""
+    if fix_signature_is_live(home, repo, "\0", pr):
+        return False
+    return bool(_fix_rows(home, repo, pr, "done"))
+
+
+def done_fix_giveup_seats(home: Path, repo: str, pr: str) -> str:
+    """Comma list of seats that already DONE this FIX, so the re-offer skips them."""
+    seats: list[str] = []
+    seen: set[str] = set()
+    for row in _fix_rows(home, repo, pr, "done"):
+        for key in ("done_by", "nick", "accepted_by"):
+            nick = gitclaim.canonical_worker_nick(str(row.get(key) or "")) or ""
+            if not nick:
+                continue
+            low = nick.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            seats.append(nick)
+    return ",".join(seats)
+
+
+def _stamp_fix_needs_human(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    sha: str,
+    sig: str,
+    url: str,
+    detail: str,
+    giveup_seats: str,
+) -> str:
+    """Leave one visible needs_human FIX when re-offers are exhausted (FR #4669)."""
+    if fix_signature_is_live(home, repo, sig, pr):
+        return "needs_human"
+    pull_url = url or f"https://github.com/{repo}/pull/{pr}"
+    title = f"FIX CI after MRB PASS needs human ({pr}@{sha[:12]})"
+    body = (
+        f"FR #4669: FIX finished without a new head SHA and CI is still red "
+        f"({detail or 'failure'}). Re-offer budget is spent. Head SHA {sha}."
+    )
+    claim = gitclaim.GitClaim(
+        repo=repo,
+        task="FIX",
+        id=f"#{pr}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=title,
+        body=body,
+        labels=("via-intake", "fix-ci"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        changed = gitclaim._append_unaccepted(
+            qdoc,
+            claim,
+            url=pull_url,
+            body=body,
+            title=title,
+            pass_sha=sha,
+            fail_signature=sig,
+            needs_human="true",
+            giveup_seats=giveup_seats,
+        )
+        if changed == "added":
+            for row in qdoc.get("unaccepted") or []:
+                if isinstance(row, dict) and gitclaim._same(row, repo, "FIX", f"#{pr}"):
+                    row["needs_human"] = True
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    return "needs_human"
+
+
+def recover_done_fix_ci(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    sha: str,
+    sig: str,
+    prev: dict,
+    main_red: bool,
+    mergeable: Any = "",
+    merge_state: str = "",
+    token: str | None = None,
+    url: str = "",
+    detail: str = "",
+    now_epoch: float | None = None,
+) -> str:
+    """FR #4669: DONE FIX, same head, CI still red. Never a permanent duplicate.
+
+    Returns ``updated-branch`` | ``pending`` | ``capped`` | ``needs_human`` |
+    ``added`` | ``duplicate`` | ``reoffer``. ``reoffer`` means the caller should
+    enqueue a fresh FIX (ledger entry already cleared).
+    """
+    dirty = merge_attempt_conflict_reason(mergeable=mergeable, merge_state=merge_state)
+    seats = done_fix_giveup_seats(home, repo, pr)
+    prev["giveup_seats"] = seats
+    if dirty:
+        return offer_dirty_conflict_fix(
+            home,
+            repo=repo,
+            pr=pr,
+            sha=sha,
+            url=url,
+            reason=dirty,
+        )
+    retries = int(prev.get("recover_n") or 0)
+    if not main_red and not str(prev.get("branch_update") or ""):
+        result = rerun_cancelled_passed(
+            home,
+            repo=repo,
+            pr=pr,
+            pass_sha=sha,
+            behind=True,
+            token=token,
+            now_epoch=now_epoch,
+        )
+        doc = load_ledger(home)
+        offered = doc.get(CI_FIX_KEY)
+        if not isinstance(offered, dict):
+            offered = {}
+            doc[CI_FIX_KEY] = offered
+        kept = dict(prev)
+        kept["branch_update"] = result
+        offered[sig] = kept
+        save_ledger(home, doc)
+        prev["branch_update"] = result
+        if result in ("updated-branch", "pending", "capped"):
+            return result
+    if retries >= FIX_CI_RECOVER_MAX:
+        return _stamp_fix_needs_human(
+            home,
+            repo=repo,
+            pr=pr,
+            sha=sha,
+            sig=sig,
+            url=url,
+            detail=detail,
+            giveup_seats=seats,
+        )
+    prev["recover_n"] = retries + 1
+    doc = load_ledger(home)
+    offered = doc.get(CI_FIX_KEY)
+    if isinstance(offered, dict):
+        offered.pop(sig, None)
+        doc[CI_FIX_KEY] = offered
+        save_ledger(home, doc)
+    return "reoffer"
+
+
+def offer_dirty_conflict_fix(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    sha: str,
+    url: str = "",
+    reason: str = "conflicting",
+) -> str:
+    """Offer one conflict FIX for a DIRTY auto-merge PR (FR #4669 / #4636).
+
+    A finished FIX on this SHA is re-offered. A still-queued FIX stays ``duplicate``.
+    After ``FIX_CI_RECOVER_MAX`` re-offers, stamp ``needs_human``.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    sig = f"conflict|{repo_c}|{num}|{_norm_sha(sha)}"
+    result = enqueue_conflict_fix(
+        home,
+        repo=repo_c,
+        pr=num,
+        pass_sha=sha,
+        url=url,
+        reason=reason,
+    )
+    if result != "duplicate":
+        return result
+    if fix_signature_is_live(home, repo_c, sig, num):
+        return "duplicate"
+    doc = load_ledger(home)
+    offered = doc.get(CONFLICT_FIX_KEY)
+    prev = offered.get(sig) if isinstance(offered, dict) else None
+    retries = int((prev or {}).get("recover_n") or 0) if isinstance(prev, dict) else 0
+    if retries >= FIX_CI_RECOVER_MAX:
+        return _stamp_fix_needs_human(
+            home,
+            repo=repo_c,
+            pr=num,
+            sha=sha,
+            sig=sig,
+            url=url,
+            detail=reason or "conflicting",
+            giveup_seats=done_fix_giveup_seats(home, repo_c, num),
+        )
+    if isinstance(offered, dict):
+        offered.pop(sig, None)
+        doc[CONFLICT_FIX_KEY] = offered
+        save_ledger(home, doc)
+    result = enqueue_conflict_fix(
+        home,
+        repo=repo_c,
+        pr=num,
+        pass_sha=sha,
+        url=url,
+        reason=reason,
+    )
+    if result == "added":
+        doc = load_ledger(home)
+        offered = doc.get(CONFLICT_FIX_KEY)
+        if isinstance(offered, dict) and isinstance(offered.get(sig), dict):
+            offered[sig]["recover_n"] = retries + 1
+            save_ledger(home, doc)
+    return result
 
 
 def _rerun_pending_count(doc: dict[str, Any]) -> int:
