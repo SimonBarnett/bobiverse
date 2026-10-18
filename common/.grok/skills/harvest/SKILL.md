@@ -274,6 +274,7 @@ routes to bobiverse via the split rule.
 - A GIVEUP whose reason contains self-mrb does not increment giveup_count or stamp needs_human. The seat is added to author_seats so only that seat is blocked; a fresh seat is still offered the MRB.
 - When enqueue_from_done races !resync, fall back to done[] PASS + auto_merge tip as pass_sha for ci-wait; never re-offer that MRB to the same DONE nick.
 - bobiverse resync: an open fix(mrb-N) stays skipped only while parent N is in the open-PR set. When the parent is merged or closed, enqueue the fix as an ordinary MRB so author exclusion still applies. Mark the still-open-parent skip in skipped_open_pulls or a stray MRB row survives.
+- jeeves resync: open DIRTY/CONFLICTING PRs with no live job get one FIX fold-main job even when there is no MRB PASS and auto-merge is off — do not leave them as stranded MRB-only rows
 
 ## Harvest digest (lessons audit 2026-10-06)
 
