@@ -273,6 +273,7 @@ routes to bobiverse via the split rule.
 - A merge-on-green 405 or DIRTY head must leave the retry list for that SHA and queue one conflict-fix job; do not keep the row pending or the sweep will PUT-merge forever.
 - A GIVEUP whose reason contains self-mrb does not increment giveup_count or stamp needs_human. The seat is added to author_seats so only that seat is blocked; a fresh seat is still offered the MRB.
 - When enqueue_from_done races !resync, fall back to done[] PASS + auto_merge tip as pass_sha for ci-wait; never re-offer that MRB to the same DONE nick.
+- bobiverse resync: an open fix(mrb-N) stays skipped only while parent N is in the open-PR set. When the parent is merged or closed, enqueue the fix as an ordinary MRB so author exclusion still applies. Mark the still-open-parent skip in skipped_open_pulls or a stray MRB row survives.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
