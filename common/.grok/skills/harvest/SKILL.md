@@ -280,6 +280,7 @@ routes to bobiverse via the split rule.
 - After merge-on-green parks ci_failed, tip advance + re-fail needs refresh_ci_failed_tips / handle_check_run_event — do not wait for !resync; keep pass_sha in _coerce_row
 - needs_human after GIVEUP: accept issue_comment webhooks; repo-owner comment after giveup_ts clears stamp (not seat GIVEUP/ACK/DONE/MRB-board bodies).
 - merge-on-green requeue_sha: if the newest MRB PASS board already names the live head, retarget the pending row to that SHA and do not re-queue MRB. A DIRTY head then uses the conflict FIX path; a head with no PASS board still re-queues MRB.
+- When the newest MRB board is FAIL at the live head and no mrb-N-fix PR is open, queue FIX for that pull. Do not re-offer the MRB to the seat that posted the FAIL.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
