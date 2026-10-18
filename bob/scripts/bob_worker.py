@@ -2049,6 +2049,62 @@ def apply_cursor_inject_keys_default(kind: str, log: Optional[Callable[[str], No
     return True
 
 
+def cursor_project_slug(cwd: str) -> str:
+    """``C:\\ai\\bob\\worker`` -> ``C-ai-bob-worker`` (Cursor's ``~/.cursor/projects`` folder)."""
+    s = str(cwd or "").replace("/", "\\").rstrip("\\")
+    if len(s) >= 2 and s[1] == ":":
+        s = s[0] + s[2:]
+    return s.replace("\\", "-").replace(":", "-")
+
+
+def cursor_transcript_still_open(path: Path | str) -> Optional[bool]:
+    """FR #4670: True while the newest transcript record is not a finished assistant reply.
+
+    A trailing ``tool_use`` (or a user line, including a done-miss reminder) means the
+    agent is still in the turn. ``False`` when the newest assistant message is text
+    with no tool call. ``None`` when the file is missing or has no parseable records
+    (caller keeps the legacy quiet-gap end).
+    """
+    p = Path(path)
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return None
+    try:
+        with p.open("rb") as fh:
+            if size > 262144:
+                fh.seek(size - 262144)
+            raw = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    last: Optional[dict] = None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        role = obj.get("role")
+        msg = obj.get("message")
+        if role in ("assistant", "user") and isinstance(msg, dict):
+            last = obj
+    if last is None:
+        return None
+    if last.get("role") != "assistant":
+        return True
+    content = (last.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return True
+    types = [part.get("type") for part in content if isinstance(part, dict)]
+    if any(t in ("tool_use", "tool_call") for t in types):
+        return True
+    if "text" in types:
+        return False
+    return True
+
+
 def _cursor_turn_quiet_s(default: float = 20.0) -> float:
     raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_QUIET_S") or "").strip()
     try:
@@ -2062,9 +2118,13 @@ class CursorTurnWatcher:
     """cursor-agent writes no turn events; infer them from its chat store.
 
     The seat's chat is the ``~/.cursor/chats/<ws>/<chat>/`` dir created closest after the agent
-    spawn (``since_wall``). A write to any file in it after a quiet spell = turn_started; no
-    writes for ``quiet_s`` after activity = turn_ended (once per turn). ``clock`` is wall time
-    (file mtimes are wall time).
+    spawn (``since_wall``). A write to any file in it after a quiet spell = turn_started.
+
+    FR #4670: ``turn_ended`` is not a quiet gap between tool calls. When the chat's
+    ``meta.json`` cwd points at an agent transcript, the turn stays open while the newest
+    record is a ``tool_use`` or a user line (no final assistant text). A quiet store ends
+    the turn only after that transcript shows a finished assistant reply, or when no
+    transcript exists (legacy). ``clock`` is wall time (file mtimes are wall time).
     """
 
     def __init__(
@@ -2072,6 +2132,7 @@ class CursorTurnWatcher:
         *,
         since_wall: float,
         chats_root: Path | str | None = None,
+        projects_root: Path | str | None = None,
         quiet_s: float | None = None,
         on_turn_started: Optional[Callable[[Optional[int], float], None]] = None,
         on_turn_ended: Optional[Callable[[Optional[int], float], None]] = None,
@@ -2082,6 +2143,9 @@ class CursorTurnWatcher:
         bind_window_s: float = 120.0,
     ):
         self.root = Path(chats_root) if chats_root else (Path.home() / ".cursor" / "chats")
+        self.projects_root = (
+            Path(projects_root) if projects_root else (Path.home() / ".cursor" / "projects")
+        )
         self.since_wall = float(since_wall)
         self.quiet_s = float(_cursor_turn_quiet_s() if quiet_s is None else quiet_s)
         self._on_started = on_turn_started
@@ -2092,6 +2156,7 @@ class CursorTurnWatcher:
         self._log = log
         self.bind_window_s = float(bind_window_s)
         self.chat_dir: Optional[Path] = None
+        self._transcript_path: Optional[Path] = None
         self._last_mtime = 0.0
         self._active = False
         self._turn = 0
@@ -2135,7 +2200,57 @@ class CursorTurnWatcher:
                         m = max(m, f.stat().st_mtime)
         except OSError:
             pass
+        tp = self._transcript_file(d)
+        if tp is not None:
+            with contextlib.suppress(OSError):
+                m = max(m, tp.stat().st_mtime)
         return m
+
+    def _transcript_file(self, chat_dir: Path) -> Optional[Path]:
+        """Agent transcript for this chat, from ``meta.json`` cwd. Missing until the file exists."""
+        if self._transcript_path is not None:
+            return self._transcript_path
+        meta_path = chat_dir / "meta.json"
+        if not meta_path.is_file():
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError, TypeError):
+            return None
+        if not isinstance(meta, dict):
+            return None
+        cwd = str(meta.get("cwd") or "")
+        chat_id = chat_dir.name
+        if not cwd or not chat_id:
+            return None
+        cand = (
+            self.projects_root
+            / cursor_project_slug(cwd)
+            / "agent-transcripts"
+            / chat_id
+            / f"{chat_id}.jsonl"
+        )
+        if cand.is_file():
+            self._transcript_path = cand
+            return cand
+        try:
+            found = next(
+                self.projects_root.glob(f"*/agent-transcripts/{chat_id}/{chat_id}.jsonl"),
+                None,
+            )
+        except OSError:
+            found = None
+        if found is not None and found.is_file():
+            self._transcript_path = found
+            return found
+        return None
+
+    def _transcript_blocks_end(self, chat_dir: Path) -> bool:
+        """True when a readable transcript still has a tool call or no final assistant text."""
+        tp = self._transcript_file(chat_dir)
+        if tp is None:
+            return False
+        return cursor_transcript_still_open(tp) is True
 
     def tick(self) -> Optional[str]:
         """One poll; returns 'started' / 'ended' when it fired a callback (tests)."""
@@ -2155,6 +2270,9 @@ class CursorTurnWatcher:
                     with contextlib.suppress(Exception):
                         self._on_started(self._turn, now)
         elif self._active and now - self._last_mtime >= self.quiet_s:
+            # FR #4670: a quiet store.db during a tool call is not the end of the turn.
+            if self._transcript_blocks_end(d):
+                return None
             self._active = False
             fired = "ended"
             if self._on_ended:
