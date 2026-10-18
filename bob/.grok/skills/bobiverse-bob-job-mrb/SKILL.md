@@ -56,6 +56,7 @@ flowchart TD
   J --> L
   L --> G2["mrb_merge_gate: no owner hold + PASS board present"]
   G2 --> H["PASS @ head SHA; never fold just because the PR is behind; never poll CI (FR #3948 / FR #4649)"]
+- When reviewing a docs/mrb hostile companion that supersets an open product tip, PASS the assigned companion, ensure Closes on the tip that lands product acceptance, re-arm --auto, and do not fold merely-behind MERGEABLE tips (FR #4649); product and companion may both carry auto-merge. (context: a-search MRB #3955 companion of #3953)
   H --> H2{"held?"}
   H2 -->|yes| H3["Comment held, not merged"]
   H2 -->|no| H4["gh pr merge --auto OR merge-on-green pending"]
