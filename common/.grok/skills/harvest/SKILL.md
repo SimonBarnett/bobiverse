@@ -279,6 +279,7 @@ routes to bobiverse via the split rule.
 - Harvest-lesson tips that insert prose inside a mermaid flowchart are FAIL: close the tip, land the bullet under Harvested MRB discipline (or the correct section) in one fix PR, then DONE FAIL.
 - After merge-on-green parks ci_failed, tip advance + re-fail needs refresh_ci_failed_tips / handle_check_run_event — do not wait for !resync; keep pass_sha in _coerce_row
 - needs_human after GIVEUP: accept issue_comment webhooks; repo-owner comment after giveup_ts clears stamp (not seat GIVEUP/ACK/DONE/MRB-board bodies).
+- merge-on-green requeue_sha: if the newest MRB PASS board already names the live head, retarget the pending row to that SHA and do not re-queue MRB. A DIRTY head then uses the conflict FIX path; a head with no PASS board still re-queues MRB.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
