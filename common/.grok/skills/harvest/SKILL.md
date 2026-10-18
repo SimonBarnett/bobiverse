@@ -277,6 +277,7 @@ routes to bobiverse via the split rule.
 - jeeves: when a FIX pull merges or closes, drop unaccepted FIX and finish accepted FIX (idle digest seat) so the seat is not stuck NAK busy; resync/purge_dead also prune FIX absent from open-pull set
 - resync_from_github must not read mergeable/mergeable_state from GET /pulls?state=open (those keys are absent); enrich each list PR missing mergeable* via GET /pulls/N before the DIRTY FIX branch (FR #4683 / #4679)
 - Harvest-lesson tips that insert prose inside a mermaid flowchart are FAIL: close the tip, land the bullet under Harvested MRB discipline (or the correct section) in one fix PR, then DONE FAIL.
+- When requeue_reopened_issue puts an FR back in unaccepted, also clear ledger fr_done in the same locked step (pass home); keep the hold when there is no reopen and an open Closes-PR still covers the issue.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
