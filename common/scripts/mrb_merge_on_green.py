@@ -514,6 +514,7 @@ def enqueue_fix_ci(
     tnow = float(now_epoch if now_epoch is not None else time.time())
     reoffer_n = 0
     reoffer_seats = ""
+    reoffer_branch = ""
     doc = load_ledger(home)
     offered = doc.get(CI_FIX_KEY)
     if not isinstance(offered, dict):
@@ -551,6 +552,7 @@ def enqueue_fix_ci(
                             return recovered
                         reoffer_n = int(prev.get("recover_n") or 0)
                         reoffer_seats = str(prev.get("giveup_seats") or "")
+                        reoffer_branch = str(prev.get("branch_update") or "")
                         doc = load_ledger(home)
                         offered = doc.get(CI_FIX_KEY)
                         if not isinstance(offered, dict):
@@ -649,6 +651,8 @@ def enqueue_fix_ci(
             "url": pull_url,
             "recover_n": int(reoffer_n or 0),
         }
+        if reoffer_branch:
+            offered[sig]["branch_update"] = reoffer_branch
         save_ledger(home, doc)
         return "added"
     if changed == "duplicate":
@@ -849,7 +853,9 @@ def recover_done_fix_ci(
 
     Returns ``updated-branch`` | ``pending`` | ``capped`` | ``needs_human`` |
     ``added`` | ``duplicate`` | ``reoffer``. ``reoffer`` means the caller should
-    enqueue a fresh FIX (ledger entry already cleared).
+    enqueue a fresh FIX (ledger entry already cleared). An update-branch HTTP
+    error (FR #4672) is stored as ``branch_update=rejected`` and falls through
+    to re-offer or ``needs_human`` instead of raising.
     """
     dirty = merge_attempt_conflict_reason(mergeable=mergeable, merge_state=merge_state)
     seats = done_fix_giveup_seats(home, repo, pr)
@@ -865,15 +871,20 @@ def recover_done_fix_ci(
         )
     retries = int(prev.get("recover_n") or 0)
     if not main_red and not str(prev.get("branch_update") or ""):
-        result = rerun_cancelled_passed(
-            home,
-            repo=repo,
-            pr=pr,
-            pass_sha=sha,
-            behind=True,
-            token=token,
-            now_epoch=now_epoch,
-        )
+        try:
+            result = rerun_cancelled_passed(
+                home,
+                repo=repo,
+                pr=pr,
+                pass_sha=sha,
+                behind=True,
+                token=token,
+                now_epoch=now_epoch,
+            )
+        except RuntimeError:
+            # FR #4672: update-branch HTTP 422 (already up to date) must be recorded
+            # so the next resync does not PUT again. Fall through to re-offer.
+            result = "rejected"
         doc = load_ledger(home)
         offered = doc.get(CI_FIX_KEY)
         if not isinstance(offered, dict):
