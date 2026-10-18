@@ -92,6 +92,36 @@ def test_done_fix_same_sha_updates_branch_then_reoffers(tmp_path, monkeypatch):
     assert "flamingo-30252" in str(live[0].get("giveup_seats") or "")
 
 
+def test_update_branch_http_422_is_recorded_then_reoffered(tmp_path, monkeypatch):
+    """FR #4672: a rejected update-branch is one attempt, then re-offer, not a loop."""
+    home = _home(tmp_path)
+    calls: list[str] = []
+
+    def fake_json(url, *, token, method="GET", body=None):
+        calls.append(method)
+        raise RuntimeError(f"GitHub HTTP 422 for {url}")
+
+    monkeypatch.setattr(mrb_merge_on_green, "_gh_json", fake_json)
+    kwargs = dict(
+        repo=REPO,
+        pr="3871",
+        pass_sha=SHA,
+        detail="failure:test-and-synth",
+        main_red=False,
+        token="FAKE_TOKEN",
+    )
+    assert mrb_merge_on_green.enqueue_fix_ci(home, **kwargs) == "added"
+    _finish_fix(home)
+    assert mrb_merge_on_green.enqueue_fix_ci(home, **kwargs) == "added"
+    assert calls == ["PUT"]
+    _finish_fix(home)
+    assert mrb_merge_on_green.enqueue_fix_ci(home, **kwargs) == "added"
+    assert calls == ["PUT"]
+    _finish_fix(home)
+    assert mrb_merge_on_green.enqueue_fix_ci(home, **kwargs) == "needs_human"
+    assert calls == ["PUT"]
+
+
 def test_dirty_automerge_pr_is_offered_as_fix(tmp_path, monkeypatch):
     home = _home(tmp_path)
     monkeypatch.setattr(
