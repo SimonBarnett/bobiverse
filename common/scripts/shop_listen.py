@@ -510,8 +510,19 @@ def complete_job_by_ref(
         return "error", None
 
 
+def is_self_mrb_giveup_reason(raw: str) -> bool:
+    """True when a GIVEUP reason is self-MRB (FR #4658), not a review GIVEUP."""
+    return "self-mrb" in str(raw or "").lower()
+
+
 def return_job_to_unaccepted(
-    home: Path, *, repo: str, task: str, ident: str, now: float | None = None
+    home: Path,
+    *,
+    repo: str,
+    task: str,
+    ident: str,
+    now: float | None = None,
+    reason: str = "",
 ) -> tuple[str, dict | None]:
     """Return an accepted job to unaccepted after NACK/GIVEUP (FR #180 cooldown + needs_human)."""
     import time as _time
@@ -534,13 +545,16 @@ def return_job_to_unaccepted(
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
             gave_up_by = str(job.get("nick") or "").strip()
-            # FR #3277: self-MRB GIVEUP (author/implementer) must not burn the
-            # GIVEUP_NEEDS_HUMAN_COUNT budget or stamp needs_human — self_mrb
-            # already blocks re-offer to the author; other seats must stay free.
+            # FR #3277 / #4658: author or pusher self-MRB GIVEUP must not burn the
+            # GIVEUP_NEEDS_HUMAN_COUNT budget or stamp needs_human. The seat is
+            # excluded; a fresh seat must stay offerable.
             self_mrb_giveup = (
                 str(job.get("task") or "").upper() == "MRB"
                 and bool(gave_up_by)
-                and gitclaim.nick_is_row_author(job, gave_up_by)
+                and (
+                    gitclaim.nick_is_row_author(job, gave_up_by)
+                    or is_self_mrb_giveup_reason(reason)
+                )
             )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
@@ -574,6 +588,8 @@ def return_job_to_unaccepted(
                     seats.append(canon_g)
             if seats:
                 job["giveup_seats"] = ",".join(seats)
+            if self_mrb_giveup and gave_up_by:
+                gitclaim.append_author_seat(job, gave_up_by)
             until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                 seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
             )
@@ -665,13 +681,20 @@ def handle_shop_worker_line(
         return out
 
     if parsed.verb in ("NACK", "GIVEUP"):
+        # FR #1701: trailing reason from the GIVEUP/NACK PRIVMSG for chair stdout/cmd-trace.
+        # FR #4658: self-MRB must be known before the row is returned, or pusher
+        # seats burn giveup_count and stamp needs_human.
+        reason = truncate_giveup_reason(parsed.rest or parsed.title or "")
         st, job = return_job_to_unaccepted(
-            home, repo=parsed.repo, task=parsed.task, ident=parsed.id
+            home,
+            repo=parsed.repo,
+            task=parsed.task,
+            ident=parsed.id,
+            reason=reason,
         )
         out["status"] = st
         out["job"] = job
-        # FR #1701: trailing reason from the GIVEUP/NACK PRIVMSG for chair stdout/cmd-trace.
-        out["reason"] = truncate_giveup_reason(parsed.rest or parsed.title or "")
+        out["reason"] = reason
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001
