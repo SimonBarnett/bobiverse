@@ -71,7 +71,7 @@ def test_skipped_non_fr_requeue_does_not_clear(tmp_path, monkeypatch, capsys):
         body="b",
         state="open",
     )
-    assert gitclaim.requeue_reopened_issue(doc, claim, via="test", home=tmp_path) == "skipped"
+    assert gitclaim.requeue_reopened_issue(doc, claim, via="test", home=tmp_path) == "noop"
     out = capsys.readouterr().out
     assert "reopen cleared fr_done" not in out
     led = gitclaim.ledger_load(tmp_path)
