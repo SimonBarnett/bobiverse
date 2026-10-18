@@ -2312,6 +2312,30 @@ def format_github_webhook_announce(event: str, payload: dict) -> str:
             title = str(issue.get("title") or "").strip()
             if title:
                 bits.append(title[:120])
+    elif ev in ("check_run", "check_suite"):
+        # FR #4706: surface completed failures so the chair log shows re-queue drivers.
+        blob = payload.get("check_run") if ev == "check_run" else payload.get("check_suite")
+        if isinstance(blob, dict):
+            action = str(payload.get("action") or "").strip()
+            if action:
+                bits.append(action)
+            conclusion = str(blob.get("conclusion") or "").strip()
+            if conclusion:
+                bits.append(conclusion)
+            name = str(blob.get("name") or "").strip()
+            if name:
+                bits.append(name[:80])
+            prs = blob.get("pull_requests")
+            if isinstance(prs, list) and prs:
+                nums = []
+                for p in prs[:3]:
+                    if isinstance(p, dict) and p.get("number") is not None:
+                        nums.append(f"#{p.get('number')}")
+                if nums:
+                    bits.append(",".join(nums))
+            head = str(blob.get("head_sha") or "").strip()
+            if head:
+                bits.append(head[:12])
     else:
         action = str(payload.get("action") or "").strip()
         if action:
@@ -2341,19 +2365,78 @@ def enqueue_chair_fleet_privmsg(home: Path, body: str, channel: str = FLEET_CHAN
 
 
 def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcome:
-    """Announce path only — never secret-scan the full GitHub JSON body (FR #206)."""
+    """Announce path only — never secret-scan the full GitHub JSON body (FR #206).
+
+    FR #4706: ``check_run`` / ``check_suite`` also drive merge-on-green FIX re-offers
+    for parked CI-failed tips (new head SHA) without waiting for ``!resync``.
+    Successful check noise is stamped but not announced on #bobiverse.
+    """
     if not (event or "").strip():
         return GitWebhookOutcome(ok=False, err="no event")
     if not isinstance(payload, dict):
         return GitWebhookOutcome(ok=False, err="malformed")
+    import gitclaim
+    import github_api_budget as gab
+
+    ev = (event or "").strip().lower()
+    if ev == "check_run":
+        try:
+            import mrb_merge_on_green
+
+            mrb_merge_on_green.handle_check_run_event(home, payload)
+        except Exception:  # noqa: BLE001
+            pass
+        gab.stamp_git_webhook(home)
+        cr = payload.get("check_run") if isinstance(payload.get("check_run"), dict) else {}
+        conclusion = str((cr or {}).get("conclusion") or "").strip().lower()
+        status = str((cr or {}).get("status") or "").strip().lower()
+        fail_like = conclusion in (
+            "failure",
+            "timed_out",
+            "action_required",
+            "cancelled",
+            "canceled",
+        )
+        if status == "completed" and fail_like:
+            line = format_github_webhook_announce(event, payload)
+            if not line.startswith(GIT_ANNOUNCE_PREFIX):
+                return GitWebhookOutcome(ok=False, err="announce")
+            hit = secret_marker_hit(line)
+            if hit:
+                line = redact_git_announce_line(line, hit)
+            if not enqueue_chair_fleet_privmsg(home, line):
+                return GitWebhookOutcome(ok=False, err="outbox")
+            return GitWebhookOutcome(ok=True, announced=True)
+        return GitWebhookOutcome(ok=True, announced=False)
+    if ev == "check_suite":
+        # Accept + stamp; FIX re-offer is driven by per-run check_run events.
+        gab.stamp_git_webhook(home)
+        suite = payload.get("check_suite") if isinstance(payload.get("check_suite"), dict) else {}
+        conclusion = str((suite or {}).get("conclusion") or "").strip().lower()
+        status = str((suite or {}).get("status") or "").strip().lower()
+        fail_like = conclusion in (
+            "failure",
+            "timed_out",
+            "action_required",
+            "cancelled",
+            "canceled",
+        )
+        if status == "completed" and fail_like:
+            line = format_github_webhook_announce(event, payload)
+            if line.startswith(GIT_ANNOUNCE_PREFIX):
+                hit = secret_marker_hit(line)
+                if hit:
+                    line = redact_git_announce_line(line, hit)
+                enqueue_chair_fleet_privmsg(home, line)
+                return GitWebhookOutcome(ok=True, announced=True)
+        return GitWebhookOutcome(ok=True, announced=False)
+
     line = format_github_webhook_announce(event, payload)
     if not line.startswith(GIT_ANNOUNCE_PREFIX):
         return GitWebhookOutcome(ok=False, err="announce")
     hit = secret_marker_hit(line)
     if hit:
         line = redact_git_announce_line(line, hit)
-    import gitclaim
-    import github_api_budget as gab
 
     claim = gitclaim.claim_from_payload(event, payload, line=line)
     if claim is not None:
