@@ -2312,6 +2312,19 @@ def format_github_webhook_announce(event: str, payload: dict) -> str:
             title = str(issue.get("title") or "").strip()
             if title:
                 bits.append(title[:120])
+    elif ev == "issue_comment":
+        # FR #4711: owner comments may clear needs_human; announce lightly.
+        issue = payload.get("issue")
+        if isinstance(issue, dict):
+            action = str(payload.get("action") or "").strip()
+            if action:
+                bits.append(action)
+            num = issue.get("number")
+            if num is not None:
+                bits.append(f"#{num}")
+            title = str(issue.get("title") or "").strip()
+            if title:
+                bits.append(title[:80])
     elif ev in ("check_run", "check_suite"):
         # FR #4706: surface completed failures so the chair log shows re-queue drivers.
         blob = payload.get("check_run") if ev == "check_run" else payload.get("check_suite")
@@ -2430,6 +2443,13 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
                 enqueue_chair_fleet_privmsg(home, line)
                 return GitWebhookOutcome(ok=True, announced=True)
         return GitWebhookOutcome(ok=True, announced=False)
+
+    # FR #4711: owner issue_comment after giveup_ts clears needs_human before announce.
+    if ev == "issue_comment":
+        try:
+            gitclaim.clear_needs_human_from_owner_issue_comment(home, event, payload)
+        except Exception:  # noqa: BLE001
+            pass
 
     line = format_github_webhook_announce(event, payload)
     if not line.startswith(GIT_ANNOUNCE_PREFIX):

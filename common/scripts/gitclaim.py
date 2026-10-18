@@ -974,6 +974,10 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
     cooldown before the needs_human stamp (FR #1236). FR #3277's "other seats
     may still take a needs_human row" behaviour is superseded by FR #4336 after
     live re-offer loops of recycled nicks past giveup_seats.
+
+    FR #4711: an owner ``issue_comment`` after ``giveup_ts`` clears the stamp
+    via ``clear_needs_human_from_owner_issue_comment`` so the next ``!bored``
+    can offer again. Seat GIVEUP-shaped comments do not clear.
     """
     v = row.get("needs_human")
     if isinstance(v, bool):
@@ -981,6 +985,109 @@ def row_needs_human(row: dict, nick: str = "") -> bool:
     else:
         flag = str(v or "").strip().lower() in ("1", "true", "yes")
     return bool(flag)
+
+
+# FR #4711: seat wire / board comments must not clear needs_human (same GitHub
+# login as the repo owner when seats use fleet gh tokens).
+_SEAT_ISSUE_COMMENT_RE = re.compile(
+    r"(?im)^\s*(GIVEUP|NACK|ACK|DONE)\b"
+    r"|^\s*##\s*MRB\s+board\b"
+    r"|\breason\s*=\s*needs_human\b"
+    r"|\bself[-_]?MRB\b",
+)
+
+
+def comment_looks_like_seat_wire(body: str) -> bool:
+    """True when a GitHub issue comment is seat GIVEUP/ACK/DONE/MRB-board shaped."""
+    return bool(_SEAT_ISSUE_COMMENT_RE.search(body or ""))
+
+
+def comment_is_repo_owner(payload: dict, comment: dict) -> bool:
+    """True when the comment author is the repository owner (login or OWNER assoc)."""
+    if not isinstance(payload, dict) or not isinstance(comment, dict):
+        return False
+    assoc = str(comment.get("author_association") or "").strip().upper()
+    user = comment.get("user") if isinstance(comment.get("user"), dict) else {}
+    login = str((user or {}).get("login") or "").strip().lower()
+    repo = payload.get("repository") if isinstance(payload.get("repository"), dict) else {}
+    owner = (repo or {}).get("owner") if isinstance((repo or {}).get("owner"), dict) else {}
+    owner_login = str((owner or {}).get("login") or "").strip().lower()
+    if owner_login and login and login == owner_login:
+        return True
+    return assoc == "OWNER"
+
+
+def clear_needs_human_from_owner_issue_comment(
+    home: Path, event: str, payload: dict
+) -> bool:
+    """FR #4711: clear needs_human when the repo owner comments after giveup_ts.
+
+    Returns True when at least one queue row was cleared. Seat-shaped comments
+    (GIVEUP/ACK/DONE/MRB board) never clear. Only ``issue_comment`` + ``created``.
+    """
+    ev = (event or "").strip().lower()
+    if ev != "issue_comment":
+        return False
+    if not isinstance(payload, dict):
+        return False
+    action = str(payload.get("action") or "").strip().lower()
+    if action != "created":
+        return False
+    comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else None
+    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else None
+    if not comment or not issue:
+        return False
+    if not comment_is_repo_owner(payload, comment):
+        return False
+    body = str(comment.get("body") or "")
+    if comment_looks_like_seat_wire(body):
+        return False
+    repo = _payload_repo(payload)
+    if not repo or not REPO_RE.fullmatch(repo):
+        return False
+    try:
+        num = int(issue.get("number"))
+    except (TypeError, ValueError):
+        return False
+    ident = f"#{num}"
+    comment_ts = _parse_iso_ts(str(comment.get("created_at") or ""))
+    cleared_any = False
+    try:
+        with _lock(home):
+            try:
+                doc = _load_queue_unlocked(home)
+            except (OSError, ValueError):
+                return False
+            for row in list(doc.get("unaccepted") or []):
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("repo") or "") != repo:
+                    continue
+                if _norm_row_id(row.get("id")) != _norm_row_id(ident):
+                    continue
+                if not row_needs_human(row, ""):
+                    continue
+                giveup_ts = _parse_iso_ts(str(row.get("giveup_ts") or ""))
+                if giveup_ts is not None and comment_ts is not None and comment_ts <= giveup_ts:
+                    continue
+                row.pop("needs_human", None)
+                row["giveup_count"] = 0
+                row.pop("giveup_seats", None)
+                row.pop("cooldown_until", None)
+                # Keep giveup_ts as history; offer gates no longer use it once cleared.
+                cleared_any = True
+                print(
+                    f"needs_human cleared {repo}#{num} by=owner-comment",
+                    flush=True,
+                )
+            if cleared_any:
+                try:
+                    _write_queue(queue_path(home), doc)
+                except OSError:
+                    return False
+    except (TimeoutError, OSError):
+        return False
+    return cleared_any
 
 
 def row_awaits_mrb1(row: dict) -> bool:

@@ -38,7 +38,8 @@ from typing import Callable, Iterable
 
 HOOK_URL = "https://irc.ntsa.uk/bob/v1/git"
 DIGEST_URL = "https://irc.ntsa.uk/bob/v1/report"
-EVENTS = ("issues", "pull_request", "push")
+# FR #4711: issue_comment so owner unblock comments clear needs_human.
+EVENTS = ("issues", "pull_request", "push", "issue_comment")
 CONTENT_TYPE = "json"
 INSECURE_SSL = "0"
 
