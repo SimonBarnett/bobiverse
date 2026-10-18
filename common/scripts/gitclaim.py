@@ -1609,14 +1609,44 @@ def prepare_reopened_fr_row(
     )
 
 
+def clear_fr_done_stamp(home: Path, repo: str, ident) -> bool:
+    """Drop the ``fr_done`` hold for ``repo#id`` (FR #4695).
+
+    Called when a real reopen requeues the FR so seats can take it without
+    waiting for ``!resync``. Returns True when a stamp was present and removed.
+    """
+    key = _lkey(repo, ident)
+    cleared = {"v": False}
+
+    def _fn(doc: dict) -> None:
+        fd = doc.setdefault("fr_done", {})
+        if key in fd:
+            fd.pop(key, None)
+            cleared["v"] = True
+
+    try:
+        _ledger_update(home, _fn)
+    except OSError:
+        return False
+    if cleared["v"]:
+        num = str(ident or "").strip().lstrip("#")
+        print(f"INFO reopen cleared fr_done {repo}#{num}", flush=True)
+    return cleared["v"]
+
+
 def requeue_reopened_issue(
     doc: dict,
     claim: GitClaim,
     *,
     via: str,
     actor: str = "",
+    home: Path | None = None,
 ) -> str:
     """Move an open/reopened FR out of ``done`` into ``unaccepted`` (FR #4373).
+
+    FR #4695: when ``home`` is set and the row is requeued, clear ``fr_done`` in
+    the same step so ``_ledger_blocks`` no longer reports
+    ``FR already delivered (PR pending merge)`` until a manual ``!resync``.
 
     Returns added|updated|duplicate|noop|skipped.
     """
@@ -1649,9 +1679,10 @@ def requeue_reopened_issue(
         break
     if removed or before_acc != len(doc.get("accepted") or []):
         if changed in ("noop", "duplicate"):
-            return "updated"
+            changed = "updated"
+    if home is not None and changed in ("added", "updated", "duplicate"):
+        clear_fr_done_stamp(home, claim.repo, claim.id)
     return changed
-
 
 def fr_superseded_by_open_closes_pr(
     repo: str,
@@ -2197,8 +2228,11 @@ def _apply_label_mutation(doc: dict, claim: GitClaim) -> str:
     return "updated" if updated else "noop"
 
 
-def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
-    """Mutate queue doc for one claim. Returns added|removed|updated|duplicate|noop|error."""
+def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) -> str:
+    """Mutate queue doc for one claim. Returns added|removed|updated|duplicate|noop|error.
+
+    ``home`` (FR #4695) lets reopen requeue clear the seat-ledger ``fr_done`` stamp.
+    """
     if claim.task not in TASK_KINDS and claim.action not in (
         "closed",
         "edited",
@@ -2219,11 +2253,13 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
             changed = "noop"
         elif action == "reopened":
             # FR #4373: leave done, clear pins, stamp history, re-enter unaccepted.
+            # FR #4695: also clear fr_done so seats are not held until !resync.
             changed = requeue_reopened_issue(
                 doc,
                 claim,
                 via="webhook",
                 actor=str(claim.opened_by or ""),
+                home=home,
             )
             if changed == "skipped":
                 changed = "noop"
@@ -2232,7 +2268,6 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
             changed = _append_unaccepted(doc, claim)
             if changed == "skipped":
                 changed = "noop"
-
     elif ev == "issues" and action == "closed":
         n = _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"FR", "PR"})
         before = len(doc["unaccepted"])
@@ -2375,7 +2410,8 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
                     action="reopened",
                     line=claim.line,
                 )
-                requeue_reopened_issue(doc, fr, via="webhook", actor="")
+                # FR #4695: clear fr_done when closed-unmerged PR requeues the issue.
+                requeue_reopened_issue(doc, fr, via="webhook", actor="", home=home)
             changed = "updated"
     else:
         changed = _append_unaccepted(doc, claim)
@@ -2401,13 +2437,13 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
 
             dirty = False
             for pending in _pop_all_pending(home):
-                ch = _apply_claim_to_doc(doc, pending)
+                ch = _apply_claim_to_doc(doc, pending, home=home)
                 if ch == "error":
                     _spool_pending(home, pending)
                 elif ch != "noop":
                     dirty = True
 
-            changed = _apply_claim_to_doc(doc, claim)
+            changed = _apply_claim_to_doc(doc, claim, home=home)
             if changed == "error":
                 return "error"
             if changed != "noop":
