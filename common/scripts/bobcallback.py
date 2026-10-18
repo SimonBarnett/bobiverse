@@ -62,7 +62,7 @@ DEFAULT_REPORT_RATE_PER_MIN = 120     # per machine id (tray posts ~2/min, worke
 GIT_OWNERS_ENV = "BOB_GIT_OWNERS"     # comma list of GitHub owners whose hooks we accept
 DEFAULT_GIT_OWNERS = ("SimonBarnett",)
 GIT_RATE_PER_MIN = 120                # per repository
-GIT_EVENTS = frozenset({"ping", "push", "issues", "pull_request"})
+GIT_EVENTS = frozenset({"ping", "push", "issues", "pull_request", "check_run", "check_suite"})
 
 
 def load_allow_ips() -> set[str]:

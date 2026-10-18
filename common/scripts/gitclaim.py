@@ -2888,7 +2888,9 @@ def _coerce_row(row: dict) -> dict | None:
                 "author_seats", "url", "title", "body", "state",
                 "giveup_seats", "require_machine", "cooldown_until", "giveup_ts", "supersedes", "result", "done_ts", "done_by",
                 "reconcile",  # FR #3742: LOST_DONE_RESTART vs STALE_BUSY audit
-                "prior_holder"):  # FR #4564: do not re-offer a lost DONE to the seat that held it
+                "prior_holder",  # FR #4564: do not re-offer a lost DONE to the seat that held it
+                # FR #4706 / #4585: FIX CI head SHA + failure signature must survive reload
+                "pass_sha", "fail_signature", "check_run_id"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):

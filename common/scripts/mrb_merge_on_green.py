@@ -38,7 +38,9 @@ DEFAULT_MIN_RATE_REMAINING = 100
 MAX_WAIT_S = 3600
 # FR #4566 follow-up: a PASSed PR whose required check-run failed leaves the poll
 # list but keeps its PASS SHA here so resync's ci-wait skip still recognises it
-# (no MRB re-queue while the head is unchanged). A new push re-enters via MRB.
+# (no MRB re-queue while the head is unchanged). FR #4706: when the tip advances
+# and fails again, refresh_ci_failed_tips / check_run re-offer FIX for the new SHA
+# without waiting for !resync.
 CI_FAILED_KEY = "ci_failed"
 # FR #4585/#4596: FIX ledger keyed by failure_signature (shared when main red; per-PR otherwise).
 CI_FIX_KEY = "ci_fix"
@@ -52,6 +54,9 @@ CI_RERUN_CAP = 7
 # After this many re-offers, stamp needs_human so the row stays visible.
 FIX_CI_RECOVER_MAX = 2
 CI_FAILED_TTL_S = 14 * 24 * 3600
+# FR #4706: how often process_pending re-GETs a parked CI-failed tip.
+# check_run failures bypass this and re-offer immediately.
+CI_FAILED_REFRESH_S = 300
 BACKOFF_BASE_S = 60
 BACKOFF_CAP_S = 900
 _FAIL_CONCLUSIONS = frozenset(
@@ -444,6 +449,7 @@ def park_ci_failed(
     repo_c = gitclaim.canonical_queue_repo(str(row.get("repo") or ""))
     num = str(row.get("pr") or "").lstrip("#")
     key = _row_key(repo_c, num)
+    failed_epoch = float(now_epoch if now_epoch is not None else time.time())
     rec = {
         "key": key,
         "repo": repo_c,
@@ -452,7 +458,9 @@ def park_ci_failed(
         "url": str(row.get("url") or f"https://github.com/{repo_c}/pull/{num}"),
         "nick": str(row.get("nick") or ""),
         "failed_ts": _utc(),
-        "failed_epoch": float(now_epoch if now_epoch is not None else time.time()),
+        "failed_epoch": failed_epoch,
+        # FR #4706 / #4566: do not re-GET every chair tick; check_run bypasses this.
+        "next_refresh_epoch": failed_epoch + float(CI_FAILED_REFRESH_S),
         "detail": detail or "required check failed",
     }
     parked = doc.get(CI_FAILED_KEY)
@@ -1085,6 +1093,239 @@ def ci_failed_pass_sha(doc: dict[str, Any], repo: str, pr: str) -> str:
         return ""
     rec = parked.get(_row_key(repo, pr))
     return str((rec or {}).get("pass_sha") or "") if isinstance(rec, dict) else ""
+
+
+def pr_is_ci_fail_tracked(home: Path, repo: str, pr: str) -> bool:
+    """True when ``repo#pr`` is parked under the CI-failed ledger (FR #4706)."""
+    doc = load_ledger(home)
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict):
+        return False
+    rec = parked.get(_row_key(gitclaim.canonical_queue_repo(repo), pr))
+    return isinstance(rec, dict)
+
+
+def _checks_are_failed(checks: str) -> bool:
+    state = (checks or "").strip().lower()
+    head = state.split(":", 1)[0] if state else ""
+    return head in (
+        "failure",
+        "failed",
+        "error",
+        "action_required",
+        "timed_out",
+        "cancelled",
+        "canceled",
+    )
+
+
+def refresh_ci_failed_tips(
+    home: Path,
+    *,
+    fetch_pr: Callable[..., dict[str, Any]] | None = None,
+    main_red: bool | None = None,
+    token: str | None = None,
+    now_epoch: float | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """FR #4706: re-offer FIX when a parked CI-failed tip fails again (new head SHA).
+
+    Same-SHA failures stay deduped via ``enqueue_fix_ci``. Closed/merged tips leave
+    the park list. Pending/green tips are left alone until the next sweep.
+    """
+    fetch_pr = fetch_pr or (lambda repo, pr: fetch_pr_state(repo, pr, token=token))
+    tnow = float(now_epoch if now_epoch is not None else time.time())
+    out: dict[str, Any] = {
+        "seen": 0,
+        "offered": 0,
+        "deduped": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
+    doc = load_ledger(home)
+    parked = doc.get(CI_FAILED_KEY)
+    if not isinstance(parked, dict) or not parked:
+        return out
+    main_red_cache: dict[str, bool] = {}
+    items = [(k, dict(v)) for k, v in list(parked.items()) if isinstance(v, dict)]
+    for key, rec in items:
+        out["seen"] += 1
+        repo = str(rec.get("repo") or "")
+        pr = str(rec.get("pr") or "")
+        if not repo or not pr:
+            out["skipped"] += 1
+            continue
+        if not force:
+            nxt = rec.get("next_refresh_epoch")
+            if nxt is not None:
+                try:
+                    if float(nxt) > tnow:
+                        out["skipped"] += 1
+                        continue
+                except (TypeError, ValueError):
+                    pass
+        try:
+            pr_state = fetch_pr(repo, pr)
+        except Exception:  # noqa: BLE001
+            out["errors"] += 1
+            continue
+        # Schedule next poll regardless of outcome (FR #4566 API quiet).
+        live_parked = doc.get(CI_FAILED_KEY)
+        if isinstance(live_parked, dict) and isinstance(live_parked.get(key), dict):
+            live_parked[key]["next_refresh_epoch"] = tnow + float(CI_FAILED_REFRESH_S)
+            live_parked[key]["last_refresh_epoch"] = tnow
+            save_ledger(home, doc)
+        if bool(pr_state.get("merged")) or bool(pr_state.get("closed")):
+            parked.pop(key, None)
+            save_ledger(home, doc)
+            out["skipped"] += 1
+            continue
+        detail = str(pr_state.get("checks") or "failure")
+        if not _checks_are_failed(detail):
+            out["skipped"] += 1
+            continue
+        tip_sha = _norm_sha(str(pr_state.get("sha") or ""))
+        if not tip_sha:
+            out["skipped"] += 1
+            continue
+        repo_c = gitclaim.canonical_queue_repo(repo)
+        if main_red is not None:
+            mr = bool(main_red)
+        else:
+            if repo_c not in main_red_cache:
+                main_red_cache[repo_c] = main_branch_checks_red(repo_c, token=token)
+            mr = main_red_cache[repo_c]
+        try:
+            result = enqueue_fix_ci(
+                home,
+                repo=repo_c,
+                pr=pr,
+                pass_sha=tip_sha,
+                url=str(pr_state.get("html_url") or rec.get("url") or ""),
+                detail=detail,
+                now_epoch=tnow,
+                main_red=mr,
+                token=token,
+                mergeable=pr_state.get("mergeable"),
+                merge_state=str(
+                    pr_state.get("merge_state_status")
+                    or pr_state.get("mergeable_state")
+                    or ""
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            out["errors"] += 1
+            continue
+        if result == "added":
+            out["offered"] += 1
+            doc = load_ledger(home)
+            park_ci_failed(
+                doc,
+                {
+                    "repo": repo_c,
+                    "pr": pr,
+                    "pass_sha": tip_sha,
+                    "url": str(pr_state.get("html_url") or rec.get("url") or ""),
+                    "nick": str(rec.get("nick") or ""),
+                },
+                detail=detail,
+                now_epoch=tnow,
+            )
+            save_ledger(home, doc)
+        elif result == "duplicate":
+            out["deduped"] += 1
+        else:
+            out["skipped"] += 1
+    return out
+
+
+def handle_check_run_event(
+    home: Path,
+    payload: dict[str, Any],
+    *,
+    main_red: bool | None = None,
+    token: str | None = None,
+) -> str:
+    """FR #4706: check_run failure for a parked CI-failed PR -> FIX for that head SHA.
+
+    Returns ``added`` | ``duplicate`` | ``skipped``. Unknown / untracked PRs skip.
+    """
+    if not isinstance(payload, dict):
+        return "skipped"
+    cr = payload.get("check_run")
+    if not isinstance(cr, dict):
+        return "skipped"
+    status = str(cr.get("status") or "").strip().lower()
+    conclusion = str(cr.get("conclusion") or "").strip().lower()
+    action = str(payload.get("action") or "").strip().lower()
+    if status and status != "completed":
+        return "skipped"
+    if action and action not in ("completed", "rerequested", ""):
+        # Still allow completed payloads that omit / use other action strings.
+        if status != "completed":
+            return "skipped"
+    if conclusion not in _FAIL_CONCLUSIONS and conclusion not in (
+        "failure",
+        "timed_out",
+        "action_required",
+    ):
+        return "skipped"
+    repository = payload.get("repository")
+    repo = ""
+    if isinstance(repository, dict):
+        repo = str(repository.get("full_name") or "").strip()
+    if not repo:
+        return "skipped"
+    prs = cr.get("pull_requests")
+    if not isinstance(prs, list) or not prs:
+        return "skipped"
+    head_sha = _norm_sha(str(cr.get("head_sha") or ""))
+    if not head_sha:
+        return "skipped"
+    check_run_id = str(cr.get("id") or "")
+    name = str(cr.get("name") or "").strip()
+    detail = f"{conclusion}:{name}" if name else (conclusion or "failure")
+    last = "skipped"
+    tracked = False
+    for pr_obj in prs:
+        if not isinstance(pr_obj, dict):
+            continue
+        num = pr_obj.get("number")
+        if num is None:
+            continue
+        pr = str(num)
+        if not pr_is_ci_fail_tracked(home, repo, pr):
+            continue
+        tracked = True
+        result = enqueue_fix_ci(
+            home,
+            repo=repo,
+            pr=pr,
+            pass_sha=head_sha,
+            url=f"https://github.com/{repo}/pull/{pr}",
+            detail=detail,
+            check_run_id=check_run_id,
+            main_red=main_red,
+            token=token,
+        )
+        if result == "added":
+            doc = load_ledger(home)
+            park_ci_failed(
+                doc,
+                {
+                    "repo": gitclaim.canonical_queue_repo(repo),
+                    "pr": pr,
+                    "pass_sha": head_sha,
+                    "url": f"https://github.com/{repo}/pull/{pr}",
+                },
+                detail=detail,
+            )
+            save_ledger(home, doc)
+            return "added"
+        last = result
+    if not tracked:
+        return "skipped"
+    return last
 
 
 def merge_attempt_conflict_reason(
@@ -1852,6 +2093,30 @@ def process_pending(
     doc["pending"] = keep
     prune_ci_failed(doc, now_epoch=tnow)
     save_ledger(home, doc)
+    # FR #4706: parked tips leave pending; still refresh when head advances + fails.
+    summary.setdefault("ci_failed_refresh_offered", 0)
+    summary.setdefault("ci_failed_refresh_deduped", 0)
+    try:
+        refresh = refresh_ci_failed_tips(
+            home,
+            fetch_pr=fetch_pr,
+            token=token,
+            now_epoch=tnow,
+        )
+        summary["ci_failed_refresh_offered"] = int(refresh.get("offered") or 0)
+        summary["ci_failed_refresh_deduped"] = int(refresh.get("deduped") or 0)
+        if summary["ci_failed_refresh_offered"]:
+            summary["fix_offered"] = int(summary.get("fix_offered") or 0) + int(
+                summary["ci_failed_refresh_offered"]
+            )
+            _log(
+                f"INFO merge-on-green ci_failed refresh offered="
+                f"{summary['ci_failed_refresh_offered']} "
+                f"deduped={summary['ci_failed_refresh_deduped']}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        summary["errors"] += 1
+        _log(f"WARN merge-on-green ci_failed refresh: {type(exc).__name__}: {exc}")
     return summary
 
 
