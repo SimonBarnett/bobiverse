@@ -28,6 +28,10 @@ PASS_SHA_RE = re.compile(
     r"head(?:Ref)?(?:Oid)?\s*[:=]\s*|pass(?:ed)?\s+sha\s*[:=]\s*)"
     r"([0-9a-f]{7,40})"
 )
+# FR #4718: an MRB FAIL board names the head it refused. Only this form, not a
+# later PASS or a merge-on-green line.
+FAIL_SHA_RE = re.compile(r"(?i)MRB\s+FAIL\s*@\s*([0-9a-f]{7,40})")
+PASS_BOARD_RE = re.compile(r"(?i)MRB\s+PASS\s*@\s*([0-9a-f]{7,40})")
 
 Decision = str  # merge | wait | requeue_sha | requeue_ci | skip_hold | drop_merged | drop_closed
 
@@ -47,6 +51,8 @@ CI_FIX_KEY = "ci_fix"
 # FR #4636: DIRTY/CONFLICTING or HTTP 405 stops merge retries for this PR+SHA.
 CONFLICT_KEY = "conflict_blocked"
 CONFLICT_FIX_KEY = "conflict_fix"
+# FR #4718: FIX for an open PR whose newest MRB board is FAIL at the live head.
+MRB_FAIL_FIX_KEY = "mrb_fail_fix"
 # FR #4639: in-flight cancelled-CI re-runs. Cap is whiterabbit + madhatter (7).
 CI_RERUN_KEY = "ci_rerun"
 CI_RERUN_CAP = 7
@@ -241,6 +247,69 @@ def parse_pass_sha_from_comments(comments: list[dict] | None) -> str | None:
         if sha:
             return sha
     return None
+
+
+def newest_mrb_board(comments: list[dict] | None) -> tuple[str, str] | None:
+    """Newest explicit ``MRB FAIL @ sha`` or ``MRB PASS @ sha`` comment.
+
+    Returns ``("FAIL"|"PASS", sha)`` or None. A merge-on-green line is not a board.
+    """
+    ordered = sorted(list(comments or []), key=mrb_merge_gate._created, reverse=True)
+    for c in ordered:
+        text = mrb_merge_gate._body(c)
+        fail = FAIL_SHA_RE.search(text or "")
+        if fail:
+            return ("FAIL", _norm_sha(fail.group(1)))
+        ok = PASS_BOARD_RE.search(text or "")
+        if ok:
+            return ("PASS", _norm_sha(ok.group(1)))
+    return None
+
+
+def linked_fail_fix_open(prs: list | None, num: str) -> bool:
+    """True when another open PR is an mrb-N-fix / fix(mrb-N) for this pull."""
+    want = f"#{str(num).lstrip('#')}"
+    for pr in prs or []:
+        if not isinstance(pr, dict):
+            continue
+        if str(pr.get("number") or "").lstrip("#") == str(num).lstrip("#"):
+            continue
+        if pr.get("draft") is True:
+            continue
+        state = str(pr.get("state") or "open").strip().lower()
+        if state and state != "open":
+            continue
+        parent = gitclaim.mrb_fix_parent_pr_id(str(pr.get("title") or ""))
+        if parent == want:
+            return True
+    return False
+
+
+def mrb_fail_board_at_head(
+    pr: dict,
+    head_sha: str,
+    ledger_rec: dict | None = None,
+) -> tuple[str, str]:
+    """``(sha, nick)`` when the newest board is FAIL at ``head_sha``.
+
+    Comments on the PR win. With no comment list, a ledger stamp for that SHA
+    is enough (the DONE handler wrote it). A newer PASS board returns empty.
+    """
+    head = _norm_sha(head_sha)
+    if not head:
+        return "", ""
+    comments = pr.get("comments") if isinstance(pr, dict) else None
+    if isinstance(comments, list):
+        verdict = newest_mrb_board(comments)
+        if not verdict or verdict[0] != "FAIL" or not shas_match(verdict[1], head):
+            return "", ""
+        nick = ""
+        if isinstance(ledger_rec, dict):
+            nick = str(ledger_rec.get("nick") or "")
+        return verdict[1], nick
+    if isinstance(ledger_rec, dict) and shas_match(str(ledger_rec.get("sha") or ""), head):
+        return _norm_sha(str(ledger_rec.get("sha") or "")), str(ledger_rec.get("nick") or "")
+    return "", ""
 
 
 def decide_merge_on_green(
@@ -989,6 +1058,152 @@ def offer_dirty_conflict_fix(
             offered[sig]["recover_n"] = retries + 1
             save_ledger(home, doc)
     return result
+
+
+def enqueue_mrb_fail_fix(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    sha: str,
+    url: str = "",
+    nick: str = "",
+) -> str:
+    """Queue one FIX to implement the MRB FAIL board on this PR+SHA (FR #4718).
+
+    Same SHA returns ``duplicate``. FIX is offerable to any seat, including the
+    seat that posted the FAIL. That seat must not be offered the MRB again.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    tip = _norm_sha(sha)
+    if not repo_c or not num or not tip:
+        return "skipped"
+    sig = f"mrb-fail|{repo_c}|{num}|{tip}"
+    doc = load_ledger(home)
+    offered = doc.get(MRB_FAIL_FIX_KEY)
+    if not isinstance(offered, dict):
+        offered = {}
+        doc[MRB_FAIL_FIX_KEY] = offered
+    prev = offered.get(sig)
+    if isinstance(prev, dict) and shas_match(str(prev.get("pass_sha") or ""), tip):
+        return "duplicate"
+    pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
+    who = (gitclaim.canonical_worker_nick(nick) or str(nick or "")).strip()
+    title = f"FIX MRB FAIL board ({num}@{tip[:12]})"
+    body = (
+        f"FR #4718: newest MRB board is FAIL at head SHA {tip}. "
+        f"Implement that board on this branch and push. One job per PR+SHA. "
+        f"Signature {sig}."
+    )
+    claim = gitclaim.GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id=f"#{num}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=title,
+        body=body,
+        labels=("via-intake", "fix-mrb-fail"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        for row in list(qdoc.get("unaccepted") or []) + list(qdoc.get("accepted") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            blob = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            if sig in blob:
+                offered[sig] = {
+                    "repo": repo_c,
+                    "pr": num,
+                    "pass_sha": tip,
+                    "signature": sig,
+                    "url": pull_url,
+                    "nick": who,
+                }
+                save_ledger(home, doc)
+                return "duplicate"
+        changed = gitclaim._append_unaccepted(
+            qdoc,
+            claim,
+            url=pull_url,
+            body=body,
+            title=claim.title,
+            pass_sha=tip,
+            fail_signature=sig,
+            mrb_fail_by=who,
+        )
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    if changed in ("added", "duplicate"):
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": num,
+            "pass_sha": tip,
+            "signature": sig,
+            "url": pull_url,
+            "nick": who,
+        }
+        save_ledger(home, doc)
+        if who:
+            gitclaim.stamp_mrb_fail(home, repo_c, f"#{num}", tip, who)
+        return changed if changed in ("added", "duplicate") else "skipped"
+    return "skipped"
+
+
+def head_sha_for_mrb_fail(repo: str, num: str) -> str:
+    """Live head SHA for a DONE MRB FAIL. Tests replace this."""
+    state = fetch_pr_state(repo, str(num).lstrip("#"))
+    if not isinstance(state, dict):
+        return ""
+    return _norm_sha(str(state.get("sha") or ""))
+
+
+def enqueue_from_mrb_fail_done(
+    home: Path,
+    *,
+    repo: str,
+    pr_url: str,
+    nick: str,
+    sha: str = "",
+) -> str:
+    """DONE MRB FAIL queues a FIX for the current head (FR #4718)."""
+    parsed = gitclaim.parse_github_pull_url(pr_url or "")
+    if parsed:
+        repo_c, ident = parsed
+    else:
+        repo_c = gitclaim.canonical_queue_repo(repo)
+        ident = ""
+    num = str(ident).lstrip("#")
+    if not repo_c or not num.isdigit():
+        return "skipped"
+    tip = _norm_sha(sha)
+    if not tip:
+        try:
+            tip = head_sha_for_mrb_fail(repo_c, num)
+        except Exception:  # noqa: BLE001
+            return "skipped"
+    if not tip:
+        return "skipped"
+    gitclaim.stamp_mrb_fail(home, repo_c, f"#{num}", tip, nick)
+    return enqueue_mrb_fail_fix(
+        home,
+        repo=repo_c,
+        pr=num,
+        sha=tip,
+        url=pr_url or f"https://github.com/{repo_c}/pull/{num}",
+        nick=nick,
+    )
 
 
 def _rerun_pending_count(doc: dict[str, Any]) -> int:

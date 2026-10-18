@@ -2997,7 +2997,8 @@ def _coerce_row(row: dict) -> dict | None:
                 "reconcile",  # FR #3742: LOST_DONE_RESTART vs STALE_BUSY audit
                 "prior_holder",  # FR #4564: do not re-offer a lost DONE to the seat that held it
                 # FR #4706 / #4585: FIX CI head SHA + failure signature must survive reload
-                "pass_sha", "fail_signature", "check_run_id"):
+                # FR #4718: seat that FAILed this MRB head must not be offered it again
+                "pass_sha", "fail_signature", "check_run_id", "mrb_fail_by"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -3626,6 +3627,44 @@ def stamp_mrb_done(home: Path, repo: str, ident: str) -> None:
         _ledger_update(home, _upd)
     except OSError:
         pass
+
+
+def stamp_mrb_fail(home: Path, repo: str, ident: str, sha: str, nick: str) -> None:
+    """Remember which seat FAILed this head so resync does not re-offer MRB (FR #4718)."""
+
+    def _upd(doc: dict) -> None:
+        doc.setdefault("mrb_fail", {})[_lkey(repo, ident)] = {
+            "sha": (sha or "").strip().lower(),
+            "nick": (canonical_worker_nick(nick) or str(nick or "")).strip(),
+            "at": _utc_now(),
+        }
+
+    try:
+        _ledger_update(home, _upd)
+    except OSError:
+        pass
+
+
+def mrb_fail_record(home: Path, repo: str, ident: str) -> dict | None:
+    """Ledger stamp for a FAIL board, or None."""
+    try:
+        led = ledger_load(home)
+    except OSError:
+        return None
+    rec = (led.get("mrb_fail") or {}).get(_lkey(repo, ident))
+    return rec if isinstance(rec, dict) else None
+
+
+def mrb_fail_same_head_for_seat(row: dict, nick: str) -> bool:
+    """True when this seat already FAILed the MRB and must not be offered it again."""
+    if _canon_task(row) != "MRB":
+        return False
+    raw = str(row.get("mrb_fail_by") or "").strip()
+    who = (canonical_worker_nick(raw) or raw).strip()
+    me = (canonical_worker_nick(nick) or str(nick or "")).strip()
+    if not who or not me:
+        return False
+    return who.lower() == me.lower()
 
 
 def clear_mrb_done(home: Path, repo: str, ident: str) -> None:
@@ -7046,6 +7085,9 @@ def offer_focus_top(
                     return None
                 if row_machine_mismatch(cand, me) or row_gave_up_by(cand, me, live=live):
                     return None
+                # FR #4718: do not hand the same MRB head back to the seat that FAILed it.
+                if mrb_fail_same_head_for_seat(cand, me):
+                    return None
                 if ledger_blocks(ledger, cand, me, live):
                     if is_repo_uat(cand):
                         with contextlib.suppress(Exception):
@@ -8300,22 +8342,46 @@ def enqueue_fix_github_item(
             checks = pr_state.get("checks")
     if not sha:
         return "refused", f"{repo_c}#{num}: missing head SHA"
-    if not (isinstance(checks, str) and checks.strip()):
-        return "refused", f"{repo_c}#{num}: PR checks unknown"
-    if not open_pr_mrb_checks_failed(checks):
-        return (
-            "refused",
-            f"{repo_c}#{num}: PR checks not failed ({checks.strip()})",
-        )
+    import mrb_merge_on_green as _mog_fail
+
+    comments = issue.get("comments") if isinstance(issue.get("comments"), list) else []
+    verdict = _mog_fail.newest_mrb_board(comments)
+    fail_board = bool(
+        verdict
+        and verdict[0] == "FAIL"
+        and _mog_fail.shas_match(verdict[1], sha)
+        and not _mog_fail.linked_fail_fix_open(issue.get("open_prs") or [], num)
+    )
+    checks_failed = isinstance(checks, str) and bool(checks.strip()) and open_pr_mrb_checks_failed(checks)
+    if not fail_board:
+        if not (isinstance(checks, str) and checks.strip()):
+            return "refused", f"{repo_c}#{num}: PR checks unknown"
+        if not checks_failed:
+            return (
+                "refused",
+                f"{repo_c}#{num}: PR checks not failed ({checks.strip()})",
+            )
     pull_url = str(issue.get("html_url") or "").strip()
     if not PULL_URL_RE.search(pull_url):
         pull_url = f"https://github.com/{repo_c}/pull/{num}"
-    detail = str(checks or "failure").strip() or "failure"
-    title = f"FIX CI (!assign; red check; PR #{num})"
-    body = (
-        f"FR #4652 FIX: operator !assign for open PR with failed required checks "
-        f"({detail}). Head SHA {sha}. Fix CI on this PR branch and push."
-    )
+    if fail_board and not checks_failed:
+        detail = "mrb-fail"
+        title = f"FIX MRB FAIL board (!assign; PR #{num})"
+        body = (
+            f"FR #4718 FIX: newest MRB board is FAIL at head SHA {sha}. "
+            f"Implement that board on this branch and push."
+        )
+        labels = ("via-intake", "fix-mrb-fail")
+        sig = f"mrb-fail|{repo_c}|{num}|{sha.strip().lower()}"
+    else:
+        detail = str(checks or "failure").strip() or "failure"
+        title = f"FIX CI (!assign; red check; PR #{num})"
+        body = (
+            f"FR #4652 FIX: operator !assign for open PR with failed required checks "
+            f"({detail}). Head SHA {sha}. Fix CI on this PR branch and push."
+        )
+        labels = ("via-intake", "fix-ci")
+        sig = f"assign-fix:{repo_c}#{num}:{sha[:12]}"
     claim = GitClaim(
         repo=repo_c,
         task="FIX",
@@ -8325,7 +8391,7 @@ def enqueue_fix_github_item(
         line=pull_url,
         title=title,
         body=body,
-        labels=("via-intake", "fix-ci"),
+        labels=labels,
     )
     changed = _append_unaccepted(
         doc,
@@ -8334,7 +8400,7 @@ def enqueue_fix_github_item(
         body=body,
         title=title,
         pass_sha=sha,
-        fail_signature=f"assign-fix:{repo_c}#{num}:{sha[:12]}",
+        fail_signature=sig,
     )
     if changed == "added":
         return "added", f"enqueued FIX {repo_c}#{num}"
@@ -8574,6 +8640,8 @@ def assign_row(
             # auto-offer. Ops may !assign needs_human to a recycled successor.
             if row_gave_up_by(cand, me):
                 return "refused", f"{me} already gave this row up"
+            if mrb_fail_same_head_for_seat(cand, me):
+                return "refused", f"{me} already FAILed this MRB head (FR #4718)"
             why = ledger_blocks(ledger_load(home), cand, me, live)
             if why:
                 return "refused", why
@@ -9466,6 +9534,45 @@ def resync_from_github(
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync skip ci-wait PR {repo}#{num}",
+                    flush=True,
+                )
+                continue
+            # FR #4718: newest MRB board is FAIL at this head and no mrb-N-fix
+            # PR is open. Queue FIX (implement the board), never another MRB.
+            try:
+                import mrb_merge_on_green as _mog_fail
+
+                fail_rec = mrb_fail_record(home, repo, f"#{num}")
+                fail_sha, fail_nick = _mog_fail.mrb_fail_board_at_head(
+                    pr, head_sha, fail_rec
+                )
+            except Exception:  # noqa: BLE001
+                fail_sha, fail_nick = "", ""
+            if fail_sha:
+                skipped_open_pulls.add((repo, f"#{num}"))
+                linked = False
+                try:
+                    import mrb_merge_on_green as _mog_fail
+
+                    linked = _mog_fail.linked_fail_fix_open(prs, str(num))
+                    fix_result = "linked"
+                    if not linked:
+                        fix_result = _mog_fail.enqueue_mrb_fail_fix(
+                            _root(home),
+                            repo=repo,
+                            pr=str(num),
+                            sha=fail_sha,
+                            url=str(pr.get("html_url") or ""),
+                            nick=fail_nick,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    fix_result = f"error:{type(exc).__name__}"
+                if fix_result == "added":
+                    fix_added += 1
+                elif fix_result == "duplicate":
+                    fix_dup += 1
+                print(
+                    f"resync offer FIX mrb-fail PR {repo}#{num} result={fix_result}",
                     flush=True,
                 )
                 continue

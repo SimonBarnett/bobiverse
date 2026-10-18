@@ -742,6 +742,22 @@ def handle_shop_worker_line(
                     out["merge_on_green"] = mog
             except Exception:  # noqa: BLE001
                 pass
+        # FR #4718: DONE MRB FAIL with no fix PR queues FIX for that head at once.
+        if str(parsed.task or "").upper() == "MRB" and str(parsed.result or "").upper() == "FAIL":
+            try:
+                import mrb_merge_on_green
+
+                fail_fix = mrb_merge_on_green.enqueue_from_mrb_fail_done(
+                    home,
+                    repo=parsed.repo,
+                    pr_url=parsed.url or str((job or {}).get("url") or ""),
+                    nick=nick,
+                    sha=str((job or {}).get("pass_sha") or ""),
+                )
+                if fail_fix:
+                    out["mrb_fail_fix"] = fail_fix
+            except Exception:  # noqa: BLE001
+                pass
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )
