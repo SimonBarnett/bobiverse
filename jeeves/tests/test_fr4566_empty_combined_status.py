@@ -34,7 +34,7 @@ def test_empty_pending_status_uses_failed_check_run():
         ]
     }
     assert mrb_merge_on_green.combined_status_is_empty(status)
-    assert mrb_merge_on_green.checks_from_status_and_runs(status, runs) == "failure"
+    assert mrb_merge_on_green.checks_from_status_and_runs(status, runs) == "failure:test-and-synth"
 
 
 def test_empty_pending_status_uses_successful_check_runs():
