@@ -36,7 +36,7 @@ description: >
 > 7. **Issue closure:** with a pending (auto-)merge the originating issue stays open until merge; DONE after verifying it is linked via `closingIssuesReferences` (`Closes owner/repo#N`). Do not close it by hand before the merge.
 > 8. **FAIL:** existing flow - exactly ONE separate fix PR, leave the originating issue open, board, DONE FAIL. The no-poll rule still applies (hand the fix PR off the same way).
 > 9. DONE wire unchanged: `DONE MRB owner/repo#N PASS|FAIL <assigned-pr-url>` as its own short command, nothing after the URL.
-> 10. **CI wait (FR #4466):** github-resync must not re-queue an open PR whose auto-merge is on and whose head SHA still matches the PASS sha in the merge-on-green ledger. A head SHA change, or auto-merge turned off, puts the MRB back. Rows already queued for that waiting PR are pruned on the next resync.
+> 10. **CI wait (FR #4466):** github-resync must not re-queue an open PR whose auto-merge is on and whose head SHA still matches the PASS sha in the merge-on-green ledger. A head SHA change, or auto-merge turned off, puts the MRB back. Rows already queued for that waiting PR are pruned on the next resync. FR #4661: when the merge-on-green ledger missed the PASS SHA (DONE/resync race), done[] MRB PASS plus auto-merge on the tip still counts as ci-wait; never re-offer that MRB to the seat that already DONE PASS on it, and duplicate-after-done clears the hold and drops the phantom unaccepted row.
 
 
 ## Process
