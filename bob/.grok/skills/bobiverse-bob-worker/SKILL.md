@@ -236,3 +236,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - done-miss rematch: re-DONE when MRB PASS board matches current head SHA and tip is 0 behind origin/main; do not fold or re-pin
 - bob-worker finished held-assign must match TYPE owner/repo#N so DONE FIX never drops a later held MRB; NACK already finished when an ACKed finished hold is dropped
 - A quiet Cursor store.db gap is not turn_ended while the agent transcript still ends on tool_use or a user line; release the seat only after that turn's final assistant text.
+- CursorTurnWatcher: while ACK open use ack_quiet_s (default 180s) so multi-tool gaps do not false-fire turn_ended; after done-miss reminder require turn_started before turn_ended can release (FR #4670 / PR #4677).
