@@ -9,7 +9,7 @@ Skill: plan-bob-webhooks (orchestrator plan-git-from-plan).
 Steps (exit 0 only when all pass):
 1. Hook matches the fleet config exactly (create if absent, PATCH if it drifts):
    url https://irc.ntsa.uk/bob/v1/git, content_type json, insecure_ssl 0,
-   events issues+pull_request+push, active. Other hooks are left alone.
+   events issues+pull_request+push+issue_comment, active. Other hooks are left alone.
 2. A ``ping`` delivery returned 2xx (sends one if none is recorded).
 3. Issues / PRs opened BEFORE the hook existed never reached Jeeves (GitHub
    does not backfill). They are replayed to the receiver as ``opened``
@@ -38,7 +38,8 @@ from typing import Callable, Iterable
 
 HOOK_URL = "https://irc.ntsa.uk/bob/v1/git"
 DIGEST_URL = "https://irc.ntsa.uk/bob/v1/report"
-EVENTS = ("issues", "pull_request", "push")
+# FR #4711: issue_comment so owner unblock comments clear needs_human.
+EVENTS = ("issues", "pull_request", "push", "issue_comment")
 CONTENT_TYPE = "json"
 INSECURE_SSL = "0"
 

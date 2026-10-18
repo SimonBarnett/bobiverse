@@ -65,7 +65,7 @@ It is the single source of truth for the hook and exits 0 only when:
 1. The hook matches the fleet config **exactly** (creates it if absent, PATCHes
    drift, never adds a second one, leaves unrelated hooks alone):
    url `https://irc.ntsa.uk/bob/v1/git`, `content_type` `json`,
-   `insecure_ssl` `0`, events `issues`,`pull_request`,`push`, active.
+   `insecure_ssl` `0`, events `issues`,`pull_request`,`push`,`issue_comment`, active (FR #4711).
 2. A `ping` delivery returned **2xx** (the receiver answers 204).
 3. Items opened before the hook existed are replayed as `opened` events
    (automatic when this run created the hook; else `--replay-missed`).
@@ -131,14 +131,14 @@ a secret on a command line, in chat, in git, or in an issue.
 Write `hook.json` UTF-8 **without BOM**:
 
 ```
-{"name":"web","active":true,"events":["push","pull_request","issues"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
+{"name":"web","active":true,"events":["push","pull_request","issues","issue_comment"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
 ```
 
 PowerShell `ConvertTo-Json` often adds a BOM and GitHub returns 400
 "Problems parsing JSON". Prefer:
 
 ```powershell
-$json = '{"name":"web","active":true,"events":["push","pull_request","issues"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}'
+$json = '{"name":"web","active":true,"events":["push","pull_request","issues","issue_comment"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}'
 [IO.File]::WriteAllText("$PWD\hook.json", $json, [Text.UTF8Encoding]::new($false))
 gh api repos/SimonBarnett/<name>/hooks -X POST --input hook.json
 ```
