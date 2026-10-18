@@ -2297,24 +2297,29 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
 
     elif ev == "pull_request" and action == "closed":
         _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
+        # FR #4682: FIX rows target the same PR id; drop them with the pull.
+        _remove_unaccepted(doc, claim.repo, "FIX", claim.id)
         _remove_unaccepted_tasks(doc, claim.repo, claim.id, {"UAT", "PR"})
         if claim.merged:
             # FR #2375: move any accepted MRB for this PR into done (lost webhook race /
             # self-authored fix PR must not stay ACC and re-offer after merge).
+            # FR #4682: same for accepted FIX (seat stuck NAK busy after merge).
             kept_acc: list[dict] = []
             done = doc.setdefault("done", [])
             for row in doc.get("accepted") or []:
                 if not isinstance(row, dict):
                     continue
+                task_u = str(row.get("task") or "").upper()
                 if (
                     str(row.get("repo") or "") == claim.repo
-                    and str(row.get("task") or "").upper() == "MRB"
+                    and task_u in ("MRB", "FIX")
                     and str(row.get("id") or "") == claim.id
                 ):
                     fin = dict(row)
                     fin["result"] = "MERGED"
                     fin["merged"] = True
                     fin["done_ts"] = _utc_now()
+                    fin["state"] = "closed"
                     done.append(fin)
                     continue
                 kept_acc.append(row)
@@ -2329,21 +2334,24 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
         else:
             # FR #2650: closed-unmerged must move ACC MRB to done as CLOSED (not leave
             # it for _purge_dead_mrb_accepted to stamp MERGED).
+            # FR #4682: same for accepted FIX.
             kept_acc_cu: list[dict] = []
             done_cu = doc.setdefault("done", [])
             moved_cu = False
             for row in doc.get("accepted") or []:
                 if not isinstance(row, dict):
                     continue
+                task_u = str(row.get("task") or "").upper()
                 if (
                     str(row.get("repo") or "") == claim.repo
-                    and str(row.get("task") or "").upper() == "MRB"
+                    and task_u in ("MRB", "FIX")
                     and str(row.get("id") or "") == claim.id
                 ):
                     fin = dict(row)
                     fin["result"] = "CLOSED"
                     fin["merged"] = False
                     fin["done_ts"] = _utc_now()
+                    fin["state"] = "closed"
                     done_cu.append(fin)
                     moved_cu = True
                     continue
@@ -2420,13 +2428,33 @@ def apply_queue_event(home: Path, claim: GitClaim) -> str:
                     stamp_mrb_done(home, claim.repo, claim.id)
                 # FR #4415: drop seat holds for the closed PR so idle seats are not
                 # stuck busy (held ...) after the queue row is removed.
+                # FR #4682: FIX holds too (same PR id).
                 with contextlib.suppress(Exception):
-                    _clear_job_seat_holds_unlocked(
-                        home, claim.repo, "MRB", claim.id
-                    )
-                with contextlib.suppress(Exception):
-                    for _t in ("UAT", "PR", "FR"):
+                    for _t in ("MRB", "FIX", "UAT", "PR", "FR"):
                         _clear_job_seat_holds_unlocked(home, claim.repo, _t, claim.id)
+                # FR #4682 / #1430: idle digest seats still showing FIX/MRB on this PR.
+                ident = str(claim.id or "").lstrip("#")
+                if ident:
+                    with contextlib.suppress(Exception):
+                        for row in (doc.get("done") or []):
+                            if not isinstance(row, dict):
+                                continue
+                            if str(row.get("repo") or "") != claim.repo:
+                                continue
+                            if str(row.get("id") or "").lstrip("#") != ident:
+                                continue
+                            if str(row.get("task") or "").upper() not in ("MRB", "FIX"):
+                                continue
+                            seat = str(
+                                row.get("nick")
+                                or row.get("accepted_by")
+                                or row.get("offered_to")
+                                or ""
+                            ).strip()
+                            if seat:
+                                bobreport.clear_seat_doing(
+                                    home, seat, only_if_work_contains=ident
+                                )
             elif claim.event == "issues" and claim.action == "closed":
                 # FR #4415: same for closed issues (FR/PR rows dropped).
                 with contextlib.suppress(Exception):
@@ -4382,7 +4410,9 @@ def purge_dead_mrb_rows(
         except (OSError, json.JSONDecodeError, ValueError, TimeoutError):
             return 0
         if not any(
-            _is_mrb_row(r) for b in ("unaccepted", "accepted") for r in (snap.get(b) or [])
+            (_is_mrb_row(r) or _is_fix_row(r))
+            for b in ("unaccepted", "accepted")
+            for r in (snap.get(b) or [])
         ):
             return 0
 
@@ -4403,6 +4433,10 @@ def purge_dead_mrb_rows(
                 _purge_dead_mrb_unaccepted(scratch, pr_exists=_record, home=None)
             with contextlib.suppress(Exception):
                 _purge_dead_mrb_accepted(scratch, pr_exists=_record, home=None)
+            with contextlib.suppress(Exception):
+                _purge_dead_fix_unaccepted(scratch, pr_exists=_record)
+            with contextlib.suppress(Exception):
+                _purge_dead_fix_accepted(scratch, pr_exists=_record, home=None)
 
             def memo(repo, num):  # noqa: F811 - cached verdicts only, never network
                 return verdicts.get(_mrb_verdict_key(repo, num), True)
@@ -4418,10 +4452,15 @@ def purge_dead_mrb_rows(
                         doc[b] = [
                             r
                             for r in rows
-                            if not (_is_mrb_row(r) and _mrb_row_verdict_key(r) not in verdicts)
+                            if not (
+                                (_is_mrb_row(r) or _is_fix_row(r))
+                                and _mrb_row_verdict_key(r) not in verdicts
+                            )
                         ]
                 n = _purge_dead_mrb_unaccepted(doc, pr_exists=memo, home=home)
                 n += _purge_dead_mrb_accepted(doc, pr_exists=memo, home=home)
+                n += _purge_dead_fix_unaccepted(doc, pr_exists=memo)
+                n += _purge_dead_fix_accepted(doc, pr_exists=memo, home=home)
                 if memo is not None:
                     for b in ("unaccepted", "accepted"):
                         kept = {id(r) for r in doc.get(b) or []}
@@ -4429,7 +4468,10 @@ def purge_dead_mrb_rows(
                             r
                             for r in held[b]
                             if id(r) in kept
-                            or (_is_mrb_row(r) and _mrb_row_verdict_key(r) not in verdicts)
+                            or (
+                                (_is_mrb_row(r) or _is_fix_row(r))
+                                and _mrb_row_verdict_key(r) not in verdicts
+                            )
                         ]
                 if n:
                     _write_queue(queue_path(home), doc)
@@ -4708,6 +4750,145 @@ def _purge_dead_mrb_accepted(
             continue
         kept.append(row)
     doc["accepted"] = kept
+    return before - len(kept)
+
+
+def _is_fix_row(row) -> bool:
+    return isinstance(row, dict) and _canon_task(row) == "FIX"
+
+
+def _fix_row_pr_num(row: dict) -> str:
+    return _norm_row_id(str(row.get("id") or ""))
+
+
+def _fix_is_dead(
+    row: dict,
+    *,
+    pr_exists=None,
+    open_pulls: dict | None = None,
+    fetched_repos: set | None = None,
+) -> bool:
+    """True when a FIX row's pull is gone (merged/closed) or stamped closed (FR #4682)."""
+    if not _is_fix_row(row):
+        return False
+    if row.get("merged") in (True, "true", "1", 1):
+        return True
+    if str(row.get("state") or "").strip().lower() == "closed":
+        return True
+    repo = str(row.get("repo") or "").strip()
+    ident = _fix_row_pr_num(row)
+    if not repo or not ident:
+        return False
+    fetched = {str(x) for x in (fetched_repos or ())}
+    if open_pulls is not None and repo in fetched:
+        return ident not in (open_pulls.get(repo) or set())
+    if pr_exists is None:
+        return False
+    try:
+        return not bool(pr_exists(repo, ident.lstrip("#")))
+    except Exception:
+        return False
+
+
+def _finish_dead_fix_row(
+    row: dict,
+    *,
+    pr_merged=None,
+    home: Path | None = None,
+) -> dict:
+    """Stamp a dead FIX into a done row and idle its seat (FR #4682)."""
+    fin = dict(row)
+    repo = str(fin.get("repo") or "").strip()
+    num = str(fin.get("id") or "").strip().lstrip("#")
+    merged_known = None
+    if pr_merged is not None and repo and num:
+        try:
+            merged_known = bool(pr_merged(repo, num))
+        except Exception:
+            merged_known = None
+    if merged_known is False:
+        fin["result"] = "CLOSED"
+        fin["merged"] = False
+    else:
+        fin["result"] = "MERGED"
+        if merged_known is True:
+            fin["merged"] = True
+    fin["done_ts"] = _utc_now()
+    fin["state"] = "closed"
+    if home is not None:
+        seat = str(
+            fin.get("nick")
+            or fin.get("accepted_by")
+            or fin.get("offered_to")
+            or ""
+        ).strip()
+        if seat and num:
+            with contextlib.suppress(Exception):
+                bobreport.clear_seat_doing(
+                    home, seat, only_if_work_contains=num
+                )
+    return fin
+
+
+def _purge_dead_fix_unaccepted(
+    doc: dict,
+    *,
+    pr_exists=None,
+    open_pulls: dict | None = None,
+    fetched_repos: set | None = None,
+) -> int:
+    """Drop unaccepted FIX rows whose pull is no longer open (FR #4682)."""
+    before = len(doc.get("unaccepted") or [])
+    kept: list[dict] = []
+    for row in doc.get("unaccepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if _fix_is_dead(
+            row,
+            pr_exists=pr_exists,
+            open_pulls=open_pulls,
+            fetched_repos=fetched_repos,
+        ):
+            continue
+        kept.append(row)
+    doc["unaccepted"] = kept
+    return before - len(kept)
+
+
+def _purge_dead_fix_accepted(
+    doc: dict,
+    *,
+    pr_exists=None,
+    pr_merged=None,
+    home: Path | None = None,
+    open_pulls: dict | None = None,
+    fetched_repos: set | None = None,
+) -> int:
+    """Move accepted FIX rows whose PR is merged/closed into done (FR #4682).
+
+    Without this, seats stay ``doing`` on a merged FIX tip and every ``!bored``
+    returns ``nak busy`` (class of a-search#3871 / flamingo-33384).
+    """
+    before = len(doc.get("accepted") or [])
+    kept: list[dict] = []
+    done = doc.setdefault("done", [])
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        if _fix_is_dead(
+            row,
+            pr_exists=pr_exists,
+            open_pulls=open_pulls,
+            fetched_repos=fetched_repos,
+        ):
+            done.append(
+                _finish_dead_fix_row(row, pr_merged=pr_merged, home=home)
+            )
+            continue
+        kept.append(row)
+    doc["accepted"] = kept
+    if len(done) > DONE_CAP:
+        doc["done"] = done[-DONE_CAP:]
     return before - len(kept)
 
 
@@ -6622,6 +6803,9 @@ def offer_focus_top(
             # FR #3188: no live pr_exists fan-out here — stamped/ledger only.
             purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=None, home=home)) or purged
+            # FR #4682: stamped-closed FIX only in the zero-budget path; live check below.
+            purged = bool(_purge_dead_fix_unaccepted(doc, pr_exists=None)) or purged
+            purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             # FR #2340 / #3188: stamped CLOSED only at bulk; live check is budgeted in _eligible.
             purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
@@ -6631,6 +6815,16 @@ def offer_focus_top(
                 purged = bool(
                     _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
                 ) or purged
+                # FR #4682: live-check accepted/unaccepted FIX under the same budget.
+                if pr_exists is not None:
+                    purged = bool(
+                        _purge_dead_fix_unaccepted(doc, pr_exists=pr_exists)
+                    ) or purged
+                    purged = bool(
+                        _purge_dead_fix_accepted(
+                            doc, pr_exists=pr_exists, home=home
+                        )
+                    ) or purged
             else:
                 purged = bool(_purge_closed_fr_accepted(doc, issue_open=None, home=home)) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
@@ -6974,12 +7168,20 @@ def offer_top(
             # FR #3188: stamped/structural bulk purge only; live checks are budgeted below.
             purged = bool(_purge_dead_mrb_unaccepted(doc, pr_exists=None, home=home))
             purged = bool(_purge_dead_mrb_accepted(doc, pr_exists=None, home=home)) or purged
+            purged = bool(_purge_dead_fix_unaccepted(doc, pr_exists=None)) or purged
+            purged = bool(_purge_dead_fix_accepted(doc, pr_exists=None, home=home)) or purged
             purged = bool(_purge_fr_that_are_pulls(doc)) or purged
             purged = bool(_purge_closed_fr_unaccepted(doc)) or purged
             # Accepted list is small — live check under the shared budget (FR #2361).
             purged = bool(
                 _purge_closed_fr_accepted(doc, issue_open=issue_open, home=home)
             ) or purged
+            # FR #4682: live-check FIX under the same budget.
+            if pr_exists is not None:
+                purged = bool(_purge_dead_fix_unaccepted(doc, pr_exists=pr_exists)) or purged
+                purged = bool(
+                    _purge_dead_fix_accepted(doc, pr_exists=pr_exists, home=home)
+                ) or purged
             # FR #1508: free seats stuck doing MERGED MRB even when ACC row is gone.
             if pr_exists is not None:
                 with contextlib.suppress(Exception):
@@ -8654,8 +8856,10 @@ def resync_from_github(
     """Rebuild FR/MRB rows from GitHub: open issues without a closing PR -> FR, open PRs -> MRB.
 
     Merge, not wipe (the chair runs this hourly / on webhook gap — FR #3212):
-    * rows of other kinds (UAT/BUILD/FIX/PR), ``accepted`` jobs, and rows of repos whose fetch FAILED are kept;
-    * a stale FR/MRB row of a successfully fetched repo (closed/merged/superseded) is dropped;
+    * rows of other kinds (UAT/BUILD/PR), still-open FIX, ``accepted`` jobs for open work,
+      and rows of repos whose fetch FAILED are kept;
+    * a stale FR/MRB/FIX row of a successfully fetched repo (closed/merged/superseded) is dropped
+      (FR #4682: accepted FIX must leave ``accepted`` so the seat is not NAK busy);
     * safe-to-close/umbrella/board issues are never (re)added and are pruned from unaccepted (FR #180);
     * skill/harvest receipts ARE added as FR promote jobs (FR #1682 / #1684; operator 2026-10-04);
     * existing rows keep their seq/offer fields; new items are appended; repos in ``ignored`` are skipped.
@@ -9241,6 +9445,24 @@ def resync_from_github(
             if purged_n:
                 dropped += purged_n
                 dropped_detail.append(f"purge_dead_mrb x{purged_n}")
+            # FR #4682: drop unaccepted FIX and finish accepted FIX when the PR
+            # is no longer open (merged/closed webhook miss left the seat NAK busy).
+            fix_un_n = _purge_dead_fix_unaccepted(
+                doc,
+                open_pulls=open_pulls_map,
+                fetched_repos=fetched_set,
+            )
+            fix_acc_n = _purge_dead_fix_accepted(
+                doc,
+                open_pulls=open_pulls_map,
+                fetched_repos=fetched_set,
+                home=home,
+            )
+            if fix_un_n or fix_acc_n:
+                dropped += int(fix_un_n) + int(fix_acc_n)
+                dropped_detail.append(
+                    f"purge_dead_fix un={fix_un_n} acc={fix_acc_n}"
+                )
             added = int(fix_added)  # FR #4596: include FIX adds from the fetch pass
             # FR #4639: keep the duplicate count for the summary (set in the fetch pass).
             fetched_set2 = set(fetched)
