@@ -683,9 +683,12 @@ $bobTooling = (
     ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter|fleet-ops|hotpatch') -or
     ($inferBlob -match '(?i)\b(jeeves|ircjeeves|bob-tray|tipform|chair outbox|intake allowlist)\b')
 )
-if ($bobTooling -and -not $script:ExplicitRepo) {
+# FR #3959: always route Bob tooling to bobiverse even when seats pass explicit
+# -Repo <product> (FR #3189 job-repo). Otherwise FR #3004 sets bobiverse-bob-worker
+# and opens ADD stubs under bob/ inside a-search (#3952/#3956).
+if ($bobTooling) {
     if ($Repo -notmatch '(?i)^SimonBarnett/bobiverse$') {
-        Write-Host "INFO FR #3189 split: Bob tooling lesson -> repo=SimonBarnett/bobiverse (was $Repo)"
+        Write-Host "INFO FR #3189/#3959 split: Bob tooling lesson -> repo=SimonBarnett/bobiverse (was $Repo)"
     }
     $Repo = 'SimonBarnett/bobiverse'
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/a-search$')) {

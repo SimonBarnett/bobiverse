@@ -201,6 +201,26 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
 }
+
+def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
+    """FR #3959: bobiverse-* books never tip into product repos (a-search stubs).
+
+    When FR #3004 / client inference sets skill_book=bobiverse-bob-worker but the
+    payload still carries -Repo SimonBarnett/a-search, rewrite the tip home to
+    SimonBarnett/bobiverse so we never ADD bob/.grok/skills/... into the product.
+    Product honesty-box books (harvest-agent-skills, etc.) stay on the product.
+    """
+    repo_l = str(repo or "").strip().lower()
+    book = str(skill_book or "").strip().lower()
+    if not repo_l or not book:
+        return str(repo or "").strip()
+    if repo_l not in PRODUCT_DEFAULT_SKILL_BOOK:
+        return str(repo or "").strip()
+    if book.startswith("bobiverse-"):
+        return "SimonBarnett/bobiverse"
+    return str(repo or "").strip()
+
+
 SKILL_BOOK_PATHS: dict[str, str] = {
     "harvest": "common/.grok/skills/harvest/SKILL.md",
     "harvest-agent-skills": "common/.grok/skills/harvest-agent-skills/SKILL.md",
@@ -1399,6 +1419,10 @@ def file_submission(
                     body=raw_body,
                     repo=str(repo or ""),
                 )
+                # FR #3959: bobiverse-* books tip on bobiverse, never ADD bob/ into product repos.
+                tip_repo = rewrite_harvest_repo_for_skill_book(str(repo or ""), book)
+                if tip_repo != str(repo or "").strip():
+                    repo = tip_repo
                 lesson_blob = "\n".join(lessons) + "\n" + raw_body + "\n" + title
                 # FR #2991: thin FAIL-supersede already-covered twins never open lesson(harvest).
                 # Meta restatements ("already cover / close thin twins") are not product tips.
