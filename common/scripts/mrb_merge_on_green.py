@@ -1966,6 +1966,30 @@ def process_pending(
         if detail:
             row["last_detail"] = detail
 
+        # FR #4714: a keep-both fold moves the head and posts a new PASS before
+        # this sweep. requeue_sha would clear mrb_done and then resync drops the
+        # MRB (already PASSed at head) while also dropping pending, so a later
+        # DIRTY tip never reaches the conflict-FIX path.
+        if decision == "requeue_sha":
+            current = _norm_sha(str(pr_state.get("sha") or ""))
+            board = _norm_sha(parse_pass_sha_from_comments(comments) or "")
+            if current and board and shas_match(board, current):
+                row["pass_sha"] = current
+                decision = decide_merge_on_green(
+                    pass_sha=current,
+                    current_sha=current,
+                    checks=str(pr_state.get("checks") or "none"),
+                    merged=bool(pr_state.get("merged")),
+                    closed=bool(pr_state.get("closed")),
+                )
+                row["last_decision"] = decision
+                action["decision"] = decision
+                action["detail"] = "pass_at_head"
+                _log(
+                    f"INFO merge-on-green retarget {repo}#{pr} "
+                    f"@{current[:12]} follow={decision}"
+                )
+
         if decision == "merge":
             conflict = merge_attempt_conflict_reason(
                 mergeable=pr_state.get("mergeable"),
