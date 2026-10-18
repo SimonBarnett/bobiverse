@@ -2058,6 +2058,19 @@ def _cursor_turn_quiet_s(default: float = 20.0) -> float:
     return max(5.0, min(300.0, v))
 
 
+def _cursor_turn_ack_quiet_s(default: float = 180.0) -> float:
+    """FR #4670: while ACK is open, Cursor chat-store quiet must be long enough that
+    multi-tool gaps (often 30-120 s) do not look like turn_ended.
+    Env ``BOB_WORKER_CURSOR_ACK_QUIET_S`` (clamped 60..900; default 180).
+    """
+    raw = (os.environ.get("BOB_WORKER_CURSOR_ACK_QUIET_S") or "").strip()
+    try:
+        v = float(raw) if raw else float(default)
+    except ValueError:
+        v = float(default)
+    return max(60.0, min(900.0, v))
+
+
 class CursorTurnWatcher:
     """cursor-agent writes no turn events; infer them from its chat store.
 
@@ -2065,6 +2078,9 @@ class CursorTurnWatcher:
     spawn (``since_wall``). A write to any file in it after a quiet spell = turn_started; no
     writes for ``quiet_s`` after activity = turn_ended (once per turn). ``clock`` is wall time
     (file mtimes are wall time).
+
+    FR #4670: while ``ack_open_fn()`` is true, use ``ack_quiet_s`` (default 180 s) so gaps
+    between tool calls during a long Cursor turn do not false-fire ``turn_ended`` / done-miss.
     """
 
     def __init__(
@@ -2073,6 +2089,8 @@ class CursorTurnWatcher:
         since_wall: float,
         chats_root: Path | str | None = None,
         quiet_s: float | None = None,
+        ack_quiet_s: float | None = None,
+        ack_open_fn: Optional[Callable[[], bool]] = None,
         on_turn_started: Optional[Callable[[Optional[int], float], None]] = None,
         on_turn_ended: Optional[Callable[[Optional[int], float], None]] = None,
         stop_event: Optional[threading.Event] = None,
@@ -2084,6 +2102,10 @@ class CursorTurnWatcher:
         self.root = Path(chats_root) if chats_root else (Path.home() / ".cursor" / "chats")
         self.since_wall = float(since_wall)
         self.quiet_s = float(_cursor_turn_quiet_s() if quiet_s is None else quiet_s)
+        self.ack_quiet_s = float(
+            _cursor_turn_ack_quiet_s() if ack_quiet_s is None else ack_quiet_s
+        )
+        self._ack_open_fn = ack_open_fn
         self._on_started = on_turn_started
         self._on_ended = on_turn_ended
         self._stop = stop_event or threading.Event()
@@ -2137,6 +2159,17 @@ class CursorTurnWatcher:
             pass
         return m
 
+    def _end_quiet_s(self) -> float:
+        """FR #4670: longer quiet while ACK is open; short quiet otherwise."""
+        fn = self._ack_open_fn
+        if fn is not None:
+            try:
+                if bool(fn()):
+                    return float(self.ack_quiet_s)
+            except Exception:
+                pass
+        return float(self.quiet_s)
+
     def tick(self) -> Optional[str]:
         """One poll; returns 'started' / 'ended' when it fired a callback (tests)."""
         d = self._bind()
@@ -2154,7 +2187,7 @@ class CursorTurnWatcher:
                 if self._on_started:
                     with contextlib.suppress(Exception):
                         self._on_started(self._turn, now)
-        elif self._active and now - self._last_mtime >= self.quiet_s:
+        elif self._active and now - self._last_mtime >= self._end_quiet_s():
             self._active = False
             fired = "ended"
             if self._on_ended:
@@ -4329,6 +4362,8 @@ class BoredEmitter:
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
         ``done_miss_grace_s``, then ``!bored`` reason ``done-miss`` if still open after the reminder turn);
+      * FR #4670: after the done-miss reminder, require a post-remind ``turn_started`` before
+        ``turn_ended`` can release; Cursor ACK-open quiet uses ``ack_quiet_s`` (default 180 s);
       * FR #2996: done-miss release sets ``_release_gen = _turn_gen`` (same as normal turn-end) so later
         ``nak``/``idle`` are not gated forever; ``_run`` clamps past-due waits to 0.5s (no ``wait(0)`` spin);
       * FR #3012: agent 402 / usage-exhausted is **out-of-fuel** — immediate ``GIVEUP … out-of-fuel``,
@@ -4410,6 +4445,8 @@ class BoredEmitter:
         self._done_miss_key: Optional[str] = None
         self._done_miss_reminded = False
         self._done_miss_release_pending = False
+        # FR #4670: after reminder, require turn_started before turn_ended can release.
+        self._done_miss_saw_post_remind_start = False
         self.done_miss_remind_fn: Optional[Callable[[str], None]] = None
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
@@ -4486,6 +4523,7 @@ class BoredEmitter:
         self._done_miss_key = None
         self._done_miss_reminded = False
         self._done_miss_release_pending = False
+        self._done_miss_saw_post_remind_start = False
 
     def _fire_done_miss_remind(self, now: float) -> None:
         """FR #2875: grace expired — inject one reminder (Supervisor sets done_miss_remind_fn)."""
@@ -4614,6 +4652,9 @@ class BoredEmitter:
         with self._cv:
             self._stopped = True
             self._cv.notify_all()
+        th = self._thread
+        if th is not None and th.is_alive() and th is not threading.current_thread():
+            th.join(timeout=2.0)
 
     def set_ready(self, ready: bool) -> None:
         with self._cv:
@@ -4679,6 +4720,9 @@ class BoredEmitter:
             if self._done_miss_armed_at is not None and not self._done_miss_reminded:
                 self._done_miss_armed_at = None
                 self._done_miss_key = None
+            # FR #4670: reminder inject starts a turn; only then may the next end release.
+            if self._done_miss_reminded and not self._done_miss_release_pending:
+                self._done_miss_saw_post_remind_start = True
             self._cv.notify_all()
 
     def turn_ended(
@@ -4700,11 +4744,20 @@ class BoredEmitter:
             if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
                 key = self._ack_job_key or "job"
                 if self._done_miss_reminded:
+                    # FR #4670: wait for the reminder's own turn_started before releasing on end.
+                    if not self._done_miss_saw_post_remind_start:
+                        self.log(
+                            f"done-miss: turn_ended for {key} after reminder but "
+                            f"awaiting reminder turn_started (post-remind) - stay busy"
+                        )
+                        self._cv.notify_all()
+                        return
                     self._ack_open = False
                     self._ack_job_key = None
                     self._done_miss_armed_at = None
                     self._done_miss_key = None
                     self._done_miss_reminded = False
+                    self._done_miss_saw_post_remind_start = False
                     self._done_miss_release_pending = True
                     self._idle_since = now
                     # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
@@ -5487,17 +5540,25 @@ class Supervisor:
             except Exception:
                 pass
 
+        def _ack_open() -> bool:
+            b = self.bored
+            return bool(b is not None and getattr(b, "ack_open", False))
+
         watcher = CursorTurnWatcher(
             since_wall=time.time() - 5.0,
             on_turn_started=_on_started,
             on_turn_ended=_on_ended,
             stop_event=self._turn_watch_stop,
             log=self.log,
+            ack_open_fn=_ack_open,
         )
         th = threading.Thread(target=watcher.run, name="cursor-turn-watch", daemon=True)
         self._turn_watch_thread = th
         th.start()
-        self.log(f"bored: cursor turn watcher started (quiet_s={watcher.quiet_s:.0f})")
+        self.log(
+            f"bored: cursor turn watcher started "
+            f"(quiet_s={watcher.quiet_s:.0f} ack_quiet_s={watcher.ack_quiet_s:.0f})"
+        )
         # FR #4462 / #4464: same keys default as start_agent. Explicit BOB_WORKER_INJECT_PASTE wins.
         apply_cursor_inject_keys_default("cursor", log=self.log)
 
