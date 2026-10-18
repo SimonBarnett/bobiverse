@@ -278,6 +278,7 @@ routes to bobiverse via the split rule.
 - resync_from_github must not read mergeable/mergeable_state from GET /pulls?state=open (those keys are absent); enrich each list PR missing mergeable* via GET /pulls/N before the DIRTY FIX branch (FR #4683 / #4679)
 - Harvest-lesson tips that insert prose inside a mermaid flowchart are FAIL: close the tip, land the bullet under Harvested MRB discipline (or the correct section) in one fix PR, then DONE FAIL.
 - After merge-on-green parks ci_failed, tip advance + re-fail needs refresh_ci_failed_tips / handle_check_run_event — do not wait for !resync; keep pass_sha in _coerce_row
+- Parked ci_failed tips leave pending: second CI fail needs refresh/check_run keyed by head SHA (same-SHA still dedupe); do not rely on !resync for the fail-again path.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
