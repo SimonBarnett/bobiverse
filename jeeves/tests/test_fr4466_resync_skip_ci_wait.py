@@ -109,7 +109,26 @@ def test_resync_requeues_when_head_sha_changes(tmp_path, monkeypatch):
     assert len(mrb) == 1
 
 
-def test_resync_requeues_when_auto_merge_off(tmp_path, monkeypatch):
+def test_resync_skips_mrb_when_auto_merge_off_same_pass_sha(tmp_path, monkeypatch):
+    """FR #4833 / #4849: was test_resync_requeues_when_auto_merge_off.
+
+    Auto-merge off no longer re-queues MRB while the head is still the PASSed SHA.
+    """
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    _seed(tmp_path, queued=False)
+    mrb_merge_on_green.enqueue(
+        tmp_path, repo="o/a", pr="99", pass_sha=SHA, url="https://github.com/o/a/pull/99"
+    )
+    pr = _pr(99, sha=SHA, auto_merge=None)
+    pr["checks"] = "success"
+    gitclaim.resync_from_github(tmp_path, ["o/a"], fetch_json=_fetch(pr))
+    rows = gitclaim.load_unaccepted(tmp_path)
+    mrb = [r for r in rows if r.get("task") == "MRB" and r.get("id") == "#99"]
+    assert mrb == []
+
+
+def test_resync_requeues_when_auto_merge_off_and_head_sha_changes(tmp_path, monkeypatch):
+    """FR #4849: auto-merge off still re-queues MRB when the head moves after PASS."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     _seed(tmp_path, queued=False)
     mrb_merge_on_green.enqueue(
@@ -118,7 +137,7 @@ def test_resync_requeues_when_auto_merge_off(tmp_path, monkeypatch):
     gitclaim.resync_from_github(
         tmp_path,
         ["o/a"],
-        fetch_json=_fetch(_pr(99, sha=SHA, auto_merge=None)),
+        fetch_json=_fetch(_pr(99, sha=OTHER, auto_merge=None)),
     )
     rows = gitclaim.load_unaccepted(tmp_path)
     mrb = [r for r in rows if r.get("task") == "MRB" and r.get("id") == "#99"]
