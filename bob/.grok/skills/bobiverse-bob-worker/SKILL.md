@@ -247,3 +247,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - Cursor transcript type=turn_ended (any status, incl. error) must end the turn for done-miss; ACK past ack_stale_s must clear, post GIVEUP ... ack-stale (FR #4784), then !bored reason ack-stale even when an open turn bumped release_gen.
 - When gh or the GitHub API fails with a TLS handshake timeout before the PR can be read, GIVEUP the open MRB instead of leaving the ACK for done-miss and instead of inventing a verdict.
 - done-miss with stranded ACK for a different job than this session completed: GIVEUP that ACK immediately (never invent DONE); FR work without a PR is not DONE
+- Release ack-stale only after the turn has ended and agent I/O has been quiet for ack_quiet_s; a live turn or recent process I/O keeps the ACK past 45 minutes, and a PR that closes a stale-requeued FR stands the second seat down.
