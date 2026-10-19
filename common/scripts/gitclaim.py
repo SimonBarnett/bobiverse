@@ -316,6 +316,8 @@ class GitClaim:
     # Lesson PRs: refs are citations, not implementation links; author = opener seat.
     harvest_lesson: bool = False
     opened_by: str = ""
+    # FR #4851: webhook sender (issues closed) for shop CANCEL "closed by <user>".
+    actor: str = ""
 
 
 def _utc_now() -> str:
@@ -1905,8 +1907,11 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         if ident is None:
             return None
         issue = _issue_blob(payload)
+        sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+        actor = str(sender.get("login") or "").strip()
         # FR #4624: carry state=closed so apply stamps ACC rows (budget-0 offer
         # cannot live-check; released ACC must not re-enter unaccepted unstamped).
+        # FR #4851: actor drives shop CANCEL "closed by <user>".
         return GitClaim(
             repo=repo,
             task="FR",
@@ -1918,6 +1923,7 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
             body=str(issue.get("body") or ""),
             labels=_label_names(issue.get("labels")),
             state="closed",
+            actor=actor,
         )
 
     # FR #3275: labeled/unlabeled mutate queue labels in place (zero REST).
@@ -2489,7 +2495,10 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
         n += before - len(doc["unaccepted"])
         # FR #4624: stamp accepted FR/PR rows state=closed (seat keeps ACC until DONE;
         # if the seat departs, release must not resurrect an unstamped offerable FR).
+        # FR #4851: nick-held ACC also gets cancel_pending + one shop CANCEL; digest
+        # stays doing until the seat NACKs (do not clear_seat_doing here).
         stamped = 0
+        actor = str(getattr(claim, "actor", "") or "").strip()
         for row in doc.get("accepted") or []:
             if not isinstance(row, dict):
                 continue
@@ -2499,6 +2508,13 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
             if not _same(row, claim.repo, task_u, claim.id):
                 continue
             row["state"] = "closed"
+            if actor:
+                row["closed_by"] = actor
+            if _seat_holder_nick(row):
+                row["cancel_pending"] = True
+                if home is not None:
+                    with contextlib.suppress(Exception):
+                        enqueue_seat_cancel(home, row, actor=actor)
             stamped += 1
         if n:
             changed = "removed"
@@ -3159,6 +3175,15 @@ def _coerce_row(row: dict) -> dict | None:
         out["retry"] = True
     if row.get("note"):
         out["note"] = str(row.get("note"))
+    # FR #4851: closed-mid-ACK cancel flags must survive reload until seat NACK.
+    if row.get("cancel_pending"):
+        out["cancel_pending"] = True
+    if row.get("cancel_notified"):
+        out["cancel_notified"] = True
+    if row.get("closed_by"):
+        out["closed_by"] = str(row.get("closed_by"))
+    if row.get("cancel_reason"):
+        out["cancel_reason"] = str(row.get("cancel_reason"))[:200]
     return out
 
 
@@ -4575,12 +4600,15 @@ def _purge_closed_fr_unaccepted(doc: dict, *, issue_open=None, log=None) -> int:
 
 
 def _purge_closed_fr_accepted(doc: dict, *, issue_open=None, home: Path | None = None) -> int:
-    """Move accepted FR rows whose GitHub issue is CLOSED into done (FR #2361).
+    """Move orphan accepted FR rows whose GitHub issue is CLOSED into done (FR #2361).
 
     Unaccepted CLOSED purge (#2348 / FR #2340) left ACC rows (e.g. #2340 on
     marchhare) stuck forever. Mirrors ``_purge_dead_mrb_accepted`` for FR.
-    ``clear_seat_doing`` only when ``only_if_work_contains`` matches the id —
-    never blanket-clear working seats (keep seats busy).
+
+    FR #4851: nick-held ACC (nick / accepted_by / offered_to) stays in accepted with
+    ``cancel_pending`` until the seat NACKs. Do **not** ``clear_seat_doing`` for those
+    rows — digest idle while the seat still holds ACK is the #4851 defect class.
+    Orphan ACC (no seat holder) still moves to done CLOSED as before.
     """
     before = len(doc.get("accepted") or [])
     kept: list[dict] = []
@@ -4589,24 +4617,20 @@ def _purge_closed_fr_accepted(doc: dict, *, issue_open=None, home: Path | None =
         if not isinstance(row, dict):
             continue
         if _fr_issue_is_closed(row, issue_open=issue_open):
+            seat = _seat_holder_nick(row)
+            if seat:
+                row["state"] = "closed"
+                row["cancel_pending"] = True
+                if home is not None:
+                    with contextlib.suppress(Exception):
+                        enqueue_seat_cancel(home, row)
+                kept.append(row)
+                continue
             fin = dict(row)
             fin["result"] = "CLOSED"
             fin["done_ts"] = _utc_now()
             fin["state"] = "closed"
             done.append(fin)
-            if home is not None:
-                seat = str(
-                    fin.get("nick")
-                    or fin.get("accepted_by")
-                    or fin.get("offered_to")
-                    or ""
-                ).strip()
-                ident = str(fin.get("id") or "").lstrip("#")
-                if seat and ident:
-                    with contextlib.suppress(Exception):
-                        bobreport.clear_seat_doing(
-                            home, seat, only_if_work_contains=ident
-                        )
             continue
         kept.append(row)
     doc["accepted"] = kept
@@ -5191,6 +5215,55 @@ def format_assign_line(nick: str, row: dict) -> str:
     num = str(row.get("id") or "").strip().lstrip("#")
     line = f"{nick}: {_canon_task(row)} {row.get('repo') or ''}#{num} {resolve_assign_url(row)}"
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", line)).strip()
+
+
+def format_cancel_line(nick: str, row: dict, *, actor: str = "") -> str:
+    """FR #4851 shop stop: ``<nick>: CANCEL FR owner/repo#N (closed by <user>)``."""
+    num = str(row.get("id") or "").strip().lstrip("#")
+    who = (actor or str(row.get("closed_by") or "")).strip()
+    base = f"{nick}: CANCEL {_canon_task(row)} {row.get('repo') or ''}#{num}"
+    if who:
+        base = f"{base} (closed by {who})"
+    else:
+        base = f"{base} (closed)"
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", base)).strip()
+
+
+def _seat_holder_nick(row: dict) -> str:
+    """Nick holding an ACC row (nick, accepted_by, or offered_to)."""
+    return str(
+        row.get("nick") or row.get("accepted_by") or row.get("offered_to") or ""
+    ).strip()
+
+
+def enqueue_seat_cancel(
+    home: Path | None,
+    row: dict,
+    *,
+    actor: str = "",
+) -> bool:
+    """Enqueue one shop CANCEL for a nick-held ACC row (FR #4851). Idempotent via cancel_notified."""
+    if home is None or not isinstance(row, dict):
+        return False
+    if row.get("cancel_notified"):
+        return False
+    seat = _seat_holder_nick(row)
+    if not seat:
+        return False
+    channel = str(row.get("channel") or row.get("offered_channel") or "").strip()
+    if not channel:
+        channel = worker_shop_channel(seat) or ""
+    if not channel:
+        return False
+    if actor:
+        row["closed_by"] = str(actor).strip()
+    line = format_cancel_line(seat, row, actor=actor)
+    ok = bool(bobreport.enqueue_chair_fleet_privmsg(home, line, channel))
+    if ok:
+        row["cancel_notified"] = True
+        row["cancel_pending"] = True
+        row["state"] = "closed"
+    return ok
 
 
 def summarize_empty_offer(home: Path, nick: str = "") -> dict:

@@ -115,6 +115,17 @@ Leftover `%TEMP%\bobiverse-*` / `fr-*` / `mrb-*` linked worktrees fill `C:` unti
 * **a-search CDK trees (FR #3717):** before your own `git worktree remove`, `cmd /c rmdir /s /q <wt>\cdk.out*` (and prefer Clear). Deep `cdk.out` / Lambda asset hashes hit Windows **Filename too long**; git deregisters then leaves the directory; `Remove-Item -Recurse` fails the same way — `cmd rmdir /s /q` clears leftovers. Clear does this pre-rmdir automatically.
 * Never delete the install root (`C:\ai\bob`) or Ergo.
 
+## Issue still open before `gh pr create` (FR #4851)
+
+Before `gh pr create`, confirm the assigned issue is still **open**:
+
+```powershell
+$st = (gh issue view N --repo owner/name --json state -q .state)
+if ($st -ne 'OPEN') { throw 'issue closed; NACK instead of opening a PR' }
+```
+
+If the issue is closed (duplicate, operator close, superseded), **do not** open or push a PR. Send `NACK FR owner/repo#N` (reason on a separate line, e.g. `issue closed upstream`) so the program releases `!bored`. A shop `CANCEL FR ... (closed by ...)` from Jeeves is the same stop: abandon, NACK, stop.
+
 ## DONE URL - capture `gh pr create` output (FR #108)
 
 Never guess the next pull number and never draft `DONE ... pull/N` before `gh pr create` returns. Capture `$url` first; append DONE as **its own short command** afterward (FR #2876 — never check the outbox first).

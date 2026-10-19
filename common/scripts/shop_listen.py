@@ -16,6 +16,7 @@ GIVEUP/NACK optional trailing reason is logged on the shop-listen INFO line (FR 
 """
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -447,58 +448,67 @@ def complete_job_by_ref(
                 gitclaim._remove_unaccepted_tasks(doc, repo, ident, {"MRB"})
                 gitclaim.stamp_mrb_done(home, repo, ident)
             # supersede light: DONE FR with PR url → queue MRB if url has /pull/ (FR #254).
+            # FR #4851: if the issue was already closed (cancel_pending / state=closed)
+            # before this DONE, do not auto-queue MRB — stamp needs_human instead.
             if str(job.get("task") or "").upper() == "FR" and (
                 result.upper().startswith("PR") or "/pull/" in (url or result)
             ):
-                pr_repo = repo
-                pr_id = ""
-                parsed = gitclaim.parse_github_pull_url(url or result or "")
-                if parsed:
-                    pr_repo, pr_id = parsed
-                else:
-                    m = re.search(r"/pull/(\d+)", url or result or "")
-                    if m:
-                        pr_id = f"#{m.group(1)}"
-                # Drop any lingering unaccepted FR for this issue (resync / duplicate).
+                closed_mid = (
+                    str(job.get("state") or "").strip().lower() == "closed"
+                    or bool(job.get("cancel_pending"))
+                )
                 gitclaim._remove_unaccepted_tasks(doc, repo, ident, {"FR"})
-                if pr_id:
-                    claim = gitclaim.GitClaim(
-                        repo=pr_repo,
-                        task="MRB",
-                        id=pr_id,
-                        event="pull_request",
-                        action="opened",
-                        line=str(job.get("line") or ""),
-                        refs=(ident,),
-                    )
-                    # FR implementer becomes MRB author_seat / implementer_seat (FR #265).
-                    # FR #2623: a DONE that only cites another seat's open PR must keep the
-                    # true implementer (existing MRB stamp or earlier DONE FR for this pull).
-                    done_nick = str(job.get("nick") or job.get("done_by") or nick or "").strip()
-                    fr_author = gitclaim.resolve_done_fr_implementer_seat(
-                        doc,
-                        pr_repo=pr_repo,
-                        pr_id=pr_id,
-                        issue_repo=repo,
-                        issue_id=ident,
-                        done_nick=done_nick,
-                    )
-                    extra = {}
-                    if fr_author:
-                        extra["author_seat"] = fr_author
-                        extra["implementer_seat"] = fr_author
-                    extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
-                    # FR #2604: stamp the pull URL so mrb_row_offerable is True. Webhook /
-                    # resync paths already set url; DONE FR used to enqueue without it, so
-                    # the new MRB sat unaccepted but never offered (0 offerable).
-                    pull_src = (url or result or "").strip()
-                    if "/pull/" in pull_src:
-                        extra["url"] = pull_src
-                    elif pr_id:
-                        extra["url"] = (
-                            f"https://github.com/{pr_repo}/pull/{str(pr_id).lstrip('#')}"
+                if closed_mid:
+                    job["needs_human"] = True
+                    job["state"] = "closed"
+                else:
+                    pr_repo = repo
+                    pr_id = ""
+                    parsed = gitclaim.parse_github_pull_url(url or result or "")
+                    if parsed:
+                        pr_repo, pr_id = parsed
+                    else:
+                        m = re.search(r"/pull/(\d+)", url or result or "")
+                        if m:
+                            pr_id = f"#{m.group(1)}"
+                    if pr_id:
+                        claim = gitclaim.GitClaim(
+                            repo=pr_repo,
+                            task="MRB",
+                            id=pr_id,
+                            event="pull_request",
+                            action="opened",
+                            line=str(job.get("line") or ""),
+                            refs=(ident,),
                         )
-                    gitclaim._append_unaccepted(doc, claim, **extra)
+                        # FR implementer becomes MRB author_seat / implementer_seat (FR #265).
+                        # FR #2623: a DONE that only cites another seat's open PR must keep the
+                        # true implementer (existing MRB stamp or earlier DONE FR for this pull).
+                        done_nick = str(job.get("nick") or job.get("done_by") or nick or "").strip()
+                        fr_author = gitclaim.resolve_done_fr_implementer_seat(
+                            doc,
+                            pr_repo=pr_repo,
+                            pr_id=pr_id,
+                            issue_repo=repo,
+                            issue_id=ident,
+                            done_nick=done_nick,
+                        )
+                        extra = {}
+                        if fr_author:
+                            extra["author_seat"] = fr_author
+                            extra["implementer_seat"] = fr_author
+                        extra["supersedes"] = gitclaim.fr_issue_key(repo, ident)
+                        # FR #2604: stamp the pull URL so mrb_row_offerable is True. Webhook /
+                        # resync paths already set url; DONE FR used to enqueue without it, so
+                        # the new MRB sat unaccepted but never offered (0 offerable).
+                        pull_src = (url or result or "").strip()
+                        if "/pull/" in pull_src:
+                            extra["url"] = pull_src
+                        elif pr_id:
+                            extra["url"] = (
+                                f"https://github.com/{pr_repo}/pull/{str(pr_id).lstrip('#')}"
+                            )
+                        gitclaim._append_unaccepted(doc, claim, **extra)
             # t853u: an MRB PASS no longer queues per-PR / per-issue UAT rows; UAT is one row per repo,
             # created by the GitHub resync once every issue is closed and every PR is merged.
             try:
@@ -545,6 +555,47 @@ def return_job_to_unaccepted(
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
             gave_up_by = str(job.get("nick") or "").strip()
+            # FR #4851: NACK/GIVEUP of a closed / cancel_pending FR finalizes to done
+            # CLOSED (never re-enter unaccepted) and clears digest doing.
+            closed_cancel = (
+                str(job.get("task") or "").upper() == "FR"
+                and (
+                    str(job.get("state") or "").strip().lower() == "closed"
+                    or bool(job.get("cancel_pending"))
+                )
+            )
+            if closed_cancel:
+                fin = dict(job)
+                fin["result"] = "CLOSED"
+                fin["done_ts"] = gitclaim._utc_now()
+                fin["state"] = "closed"
+                fin["done_by"] = gave_up_by
+                if reason:
+                    fin["cancel_reason"] = str(reason).strip()[:200]
+                for k in (
+                    "nick",
+                    "accepted_ts",
+                    "offered_to",
+                    "offered_ts",
+                    "offered_channel",
+                    "channel",
+                    "cancel_pending",
+                ):
+                    fin.pop(k, None)
+                doc.setdefault("done", []).append(fin)
+                if len(doc["done"]) > gitclaim.ACCEPTED_CAP:
+                    doc["done"] = doc["done"][-gitclaim.ACCEPTED_CAP :]
+                try:
+                    gitclaim._write_queue(gitclaim.queue_path(home), doc)
+                except OSError:
+                    return "error", None
+                ident_clear = str(fin.get("id") or ident or "").lstrip("#")
+                if gave_up_by and ident_clear:
+                    with contextlib.suppress(Exception):
+                        bobreport.clear_seat_doing(
+                            home, gave_up_by, only_if_work_contains=ident_clear
+                        )
+                return "ok", fin
             # FR #3277 / #4658: author or pusher self-MRB GIVEUP must not burn the
             # GIVEUP_NEEDS_HUMAN_COUNT budget or stamp needs_human. The seat is
             # excluded; a fresh seat must stay offerable.

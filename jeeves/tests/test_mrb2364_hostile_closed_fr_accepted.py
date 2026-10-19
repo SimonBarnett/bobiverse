@@ -32,6 +32,7 @@ def test_fr_issue_is_closed_fail_open_on_checker_exception():
 
 
 def test_purge_closed_fr_accepted_uses_accepted_by_when_nick_missing(tmp_path, monkeypatch):
+    """FR #4851: accepted_by counts as seat holder — keep cancel_pending, no clear."""
     home = _home(tmp_path)
     calls = []
 
@@ -52,14 +53,30 @@ def test_purge_closed_fr_accepted_uses_accepted_by_when_nick_missing(tmp_path, m
         ],
         "done": [],
     }
-    assert gitclaim._purge_closed_fr_accepted(doc, home=home) == 1
-    assert calls == [("flamingo-99", "55")]
+    assert gitclaim._purge_closed_fr_accepted(doc, home=home) == 0
+    assert len(doc["accepted"]) == 1
+    assert doc["accepted"][0].get("cancel_pending") is True
+    assert calls == []
 
 
 def test_purge_closed_fr_accepted_skips_clear_without_home():
+    """FR #4851: nick-held stays in ACC even without home (cannot notify, must not idle)."""
     doc = {
         "accepted": [
             {"task": "FR", "repo": "o/a", "id": "#1", "state": "closed", "nick": "x-1"}
+        ],
+        "done": [],
+    }
+    assert gitclaim._purge_closed_fr_accepted(doc, home=None) == 0
+    assert len(doc["accepted"]) == 1
+    assert doc["accepted"][0].get("cancel_pending") is True
+    assert doc["done"] == []
+
+
+def test_purge_closed_fr_accepted_orphan_still_goes_to_done():
+    doc = {
+        "accepted": [
+            {"task": "FR", "repo": "o/a", "id": "#1", "state": "closed"}
         ],
         "done": [],
     }
@@ -106,6 +123,9 @@ def test_offer_top_purges_closed_accepted(tmp_path: Path, monkeypatch):
                     "id": "#2340",
                     "nick": "marchhare-1",
                     "accepted_ts": "2026-10-04T22:11:00Z",
+                    # FR #4624 / #4851: stamped closed (webhook); live issue_open is
+                    # budget-0 on offer_top so stamp is what drives cancel_pending keep.
+                    "state": "closed",
                 }
             ],
             "done": [],
@@ -120,8 +140,11 @@ def test_offer_top_purges_closed_accepted(tmp_path: Path, monkeypatch):
     )
     assert st == "ok" and job is not None and job["id"] == "#2361"
     q = gitclaim._load_queue_unlocked(home)
-    assert all(r.get("id") != "#2340" for r in (q.get("accepted") or []))
-    assert any(
+    # FR #4851: nick-held closed ACC stays cancel_pending until NACK.
+    held = [r for r in (q.get("accepted") or []) if r.get("id") == "#2340"]
+    assert len(held) == 1
+    assert held[0].get("cancel_pending") is True
+    assert not any(
         r.get("id") == "#2340" and r.get("result") == "CLOSED"
         for r in (q.get("done") or [])
     )
