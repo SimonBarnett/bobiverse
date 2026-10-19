@@ -62,7 +62,36 @@ from airc_console import (
 )
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 
-FLOOD_S = 0.35
+FLOOD_S = 0.35  # legacy fixed gap; FR #4790 prefers token bucket below
+# FR #4790: sustain under Ergo fakelag (~1-2 msg/s). Burst then pace.
+FLOOD_RATE_PER_S = 1.5
+FLOOD_BURST = 3.0
+
+
+class FloodTokenBucket:
+    """Token bucket for PRIVMSG pacing (FR #4790).
+
+    ``take(n)`` returns seconds to sleep before sending (0 if tokens available).
+    """
+
+    def __init__(self, *, rate: float = FLOOD_RATE_PER_S, capacity: float = FLOOD_BURST) -> None:
+        self.rate = max(0.05, float(rate))
+        self.capacity = max(1.0, float(capacity))
+        self.tokens = self.capacity
+        self.updated = time.monotonic()
+
+    def take(self, n: float = 1.0) -> float:
+        now = time.monotonic()
+        self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+        need = float(n)
+        if self.tokens >= need:
+            self.tokens -= need
+            return 0.0
+        wait = (need - self.tokens) / self.rate
+        self.tokens = 0.0
+        return wait
+
 # Issue #298: half-open / silent link detection + reconnect.
 IDLE_PING_S = 60.0
 IDLE_DEAD_S = 120.0
@@ -352,6 +381,8 @@ class AircConsoleService:
         # FR #2612: durable outbound Query queue survives force_reconnect in-process;
         # stop flush emits DONE for tracked shell ids so Wait does not hang.
         self._out_q: queue.Queue[tuple[str, str]] = queue.Queue()
+        # FR #4790: token-bucket PRIVMSG pacing (under Ergo fakelag).
+        self._flood_bucket = FloodTokenBucket()
         self._inflight_lock = threading.Lock()
         self._shell_inflight: dict[str, str] = {}
         # FR #2640: once stop flush starts, enqueue-only (no send) until prepare_stop closes.
@@ -407,7 +438,7 @@ class AircConsoleService:
         try:
             self.drain_out_queue()
         except ConnectionError as e:
-            info(f"INFO console-out-send-err {e}")
+            info(f"INFO console-out-send-err flood-or-link {e}")  # FR #4790
             self._force_reconnect = True
 
     def _on_shell_done(
@@ -533,9 +564,18 @@ class AircConsoleService:
             try:
                 self.sock.sendall(data)
             except OSError as e:
+                # FR #4790: treat send failure as flood/link kill -> reconnect.
+                self._force_reconnect = True
                 raise ConnectionError(f"send failed: {e}") from e
-            if flood and FLOOD_S > 0:
-                time.sleep(FLOOD_S)
+            if flood:
+                wait = 0.0
+                bucket = getattr(self, "_flood_bucket", None)
+                if bucket is not None:
+                    wait = float(bucket.take(1.0))
+                elif FLOOD_S > 0:
+                    wait = float(FLOOD_S)
+                if wait > 0:
+                    time.sleep(wait)
 
     def send_privmsg(self, target: str, text: str, *, flood: bool = True) -> None:
         if self.core.may_speak_on_channel() is False and target.lower() == self.channel.lower():
