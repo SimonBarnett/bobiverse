@@ -505,6 +505,61 @@ def is_fail_supersede_thin_twin_lesson(text: str) -> bool:
     return bool(_THIN_TWIN_CUE_RE.search(t))
 
 
+def is_lesson_review_meta_loop(text: str) -> bool:
+    """FR #4780: True when harvest text is about reviewing/closing harvest-lessons.
+
+    MRB of a harvest-lesson / skills-only tip must not open another lesson tip.
+    Honesty-box for that review is the review itself. Also matches lessons whose
+    subject is reviewing, harvesting, or closing lessons (tip-loop meta).
+
+    Does not steal FR #2970 process-routing lessons that should re-home to
+    bobiverse-bob-job-mrb when coverage is missing. Genuine product playbooks
+    return False.
+    """
+    import re as _re
+
+    t = str(text or "")
+    if not t.strip():
+        return False
+    # FR #2970 / #2991 own these; do not short-circuit their re-route / covered paths.
+    if is_fail_supersede_thin_twin_lesson(t) or is_mrb_process_routing_lesson(t):
+        return False
+    is_meta_subject = bool(
+        _re.search(
+            r"(?i)review(?:ing|ed|s)?\s+(?:harvest[- ]?lesson|lesson\s+tips?|lessons?\b)|"
+            r"(?:about|when)\s+(?:reviewing|harvesting|closing)\s+lessons?|"
+            r"do not (?:harvest|open|land|merge)\s+a\s+(?:new|second)\s+"
+            r"(?:harvest[- ]?lesson|lesson)\s+(?:tip|PR|bullet)|"
+            r"second\s+Harvested[- ]lessons\s+bullet|"
+            r"tip[- ]?loop|process\s+meta|lesson[- ]review|"
+            r"CLOSED\s+not[- ]useful|CLOSED\s+already[- ]covered|"
+            r"CLOSED\s+wrong[- ]path",
+            t,
+        )
+    )
+    if is_meta_subject:
+        return True
+    is_lesson_context = bool(
+        _re.search(
+            r"(?i)harvest[- ]lesson|lesson\(harvest|docs/mrb|skills[- ]only|"
+            r"Harvested[- ]lessons|light\s+triage",
+            t,
+        )
+    )
+    is_mrb_closeout = bool(
+        _re.search(
+            r"(?i)\bMRB\b.{0,120}(?:CLOSED|DONE\s+(?:PASS|FAIL)|FAIL[- ]supersede)|"
+            r"(?:CLOSED|DONE\s+(?:PASS|FAIL)).{0,120}\bMRB\b|"
+            r"light\s+triage.{0,80}(?:PASS|CLOSED|FAIL)",
+            t,
+        )
+    )
+    if is_lesson_context and is_mrb_closeout:
+        return True
+    return False
+
+
+
 def is_mrb_process_routing_lesson(text: str) -> bool:
     """True when the lesson/summary is MRB process-routing (not a product playbook).
 
@@ -1446,6 +1501,15 @@ def file_submission(
                         rec["queued"] = False
                         _save_record(home, rec)
                         return rec
+                # FR #4780: lesson-review / tip-loop meta never opens another lesson tip
+                # (after FR #2970 process re-route so job-mrb homes still file when uncovered).
+                if is_lesson_review_meta_loop(lesson_blob):
+                    rec["state"] = "lesson_review_meta_skipped"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = 0
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 # FR #3824: open harvest-lesson tip with same seat+lesson -> link, no twin.
                 # Check before main-tip filter: open tips are not on main yet.
                 src_seat = ""

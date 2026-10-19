@@ -218,6 +218,7 @@ routes to bobiverse via the split rule.
   appropriate `kind`.
 
 ## Harvested lessons (intake)
+- FR #4780: MRB/review of a harvest-lesson (or skills-only) tip must not open another lesson tip (honesty-box is the review); skip reviewing/harvesting/closing-lessons meta; 24h dedup open+closed harvest-lesson PRs (Test-HarvestLessonReviewLoop / Test-HarvestRecentLessonDedup).
 - FR #4297: dirty install ff-block leaves flat Invoke-BobiverseHarvest.ps1 lagging tip; Sync tip-overlays harvest+intake via Sync-BobiverseHarvestScriptsFromOrigin (class of FR #2581); prefer common\scripts when present; ComposeOnly/service restart refreshes flat copies.
 - FR #4357: PASS of a harvest-lesson / docs/mrb MRB (re-offer + merge origin/main / re-arm / DONE PASS process cues) skips filing another tip (SKIPPED harvest lesson-MRB PASS loop) — stops a-search tip flood after light-triage PASS.
 - FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (SKIPPED; linked to that PR). Product -Repo -> harvest-agent-skills without ExistingPrUrl stays intentional (FR #3189); do not redirect product playbooks to bobiverse harvest.
