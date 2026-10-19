@@ -357,6 +357,20 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
     } catch {
         Write-Host ("WARN sync-gitclaim-from-tip error: {0}" -f $_.Exception.Message)
     }
+    # FR #4783: refuse to leave composed scripts\ with lf=0 .ps1 (collapsed hotpatch).
+    try {
+        $nl = Assert-BobiverseScriptsHaveNewlines -InstallRoot $InstallRoot
+        if (-not $nl.Ok) {
+            Write-Host ("ALERT sync-newline-gate FAIL: {0}" -f $nl.Reason)
+            throw ("FR #4783 newline gate: " + $nl.Reason)
+        } else {
+            Write-Host ("INFO sync-newline-gate ok: {0}" -f $nl.Reason)
+        }
+    } catch {
+        if ("$($_.Exception.Message)" -match 'FR #4783 newline gate') { throw }
+        Write-Host ("WARN sync-newline-gate error: {0}" -f $_.Exception.Message)
+        throw
+    }
 }
 
 if (-not $skipStaleCompose) {

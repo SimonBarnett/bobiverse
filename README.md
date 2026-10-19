@@ -82,23 +82,20 @@ Preferred catch-up (install on `main`, clean tree):
 
 That fetch + ff-only + robocopy recomposes flat `scripts\` from `common\` / `<product>\`. Watch the log for `ALERT sync-behind` / `ALERT sync-ff-failed`.
 
-One-file **hotpatch** when ff is blocked (dirty tree or feature branch) but you need tip harvest immediately (UTF-8 **without BOM**; WinPS `-Encoding utf8` writers add a BOM — use `UTF8Encoding(false)`):
+One-file **hotpatch** when ff is blocked (dirty tree or feature branch) but you need tip harvest immediately:
 
 ```powershell
 git -C <install> fetch origin
- = git -C <install> show origin/main:common/scripts/Invoke-BobiverseHarvest.ps1
-# UTF-8 no BOM (WinPS Set-Content -Encoding utf8 writes a BOM)
-[System.IO.File]::WriteAllText(
-  (Join-Path <install> 'common\scripts\Invoke-BobiverseHarvest.ps1'),
-  (( -join "
-").TrimEnd() + "
-"),
-  [System.Text.UTF8Encoding]::new(False)
-)
+. <install>\common\scripts\Bobiverse-Common.ps1
+# FR #4783: NEVER `$x = git show ...; [IO.File]::WriteAllText($path, $x)` —
+# WinPS joins the String[] with spaces and collapses the script to lf=0.
+Sync-BobiverseHarvestScriptsFromOrigin -InstallRoot <install> -Branch main
 & <install>\scripts\Sync-BobiverseFromRepo.ps1 -Product bob -InstallRoot <install> -ComposeOnly
 ```
 
-Same pattern for `Report-BobiverseIntakeIssue.ps1`. Edit tracked `common\scripts\…`, then `-ComposeOnly`; do not hand-edit only the flat `scripts\` copy (the next sync would overwrite it from a still-stale `common\`).
+`Sync-BobiverseHarvestScriptsFromOrigin` overlays tip `Invoke-BobiverseHarvest.ps1`, `Report-BobiverseIntakeIssue.ps1`, and `intake.py` via `git show` **RedirectStandardOutput** + `WriteAllBytes` (preserves newlines). Compose/Sync then runs `Assert-BobiverseScriptsHaveNewlines` and fails if any `.ps1` under `scripts\` / `common\scripts\` has `lf=0`. Edit tracked `common\scripts\…`, then `-ComposeOnly`; do not hand-edit only the flat `scripts\` copy (the next sync would overwrite it from a still-stale `common\`).
+
+
 ## Pack
 
 ```powershell
