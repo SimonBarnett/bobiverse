@@ -3975,11 +3975,12 @@ def looks_like_job_assign(line: str, own_nick: str = "") -> bool:
     return bool(_JOB_ASSIGN_RX.search(body))
 
 
-_ASSIGN_JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT)\s+(\S+#\d+)\b")
+# FR #4609 / #4730: typed assign keys match outbox ACK/DONE (include FIX/BUILD/PR).
+_ASSIGN_JOB_KEY_RX = re.compile(r"(?i)\b(FR|MRB|UAT|FIX|BUILD|PR)\s+(\S+#\d+)\b")
 
 
 def assign_job_key(line: str) -> Optional[str]:
-    """FR #4115: ``MRB owner/repo#N`` (case kept) from a Jeeves assign FROM line, or None."""
+    """FR #4115 / #4609: ``MRB|FIX|… owner/repo#N`` (case kept) from a Jeeves assign FROM line, or None."""
     text = line or ""
     parts = text.split(None, 3)
     body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
@@ -4541,6 +4542,8 @@ class BoredEmitter:
         self._ack_open = False
         self._ack_at: Optional[float] = None
         self._ack_job_key: Optional[str] = None  # FR #1732: open ACK job id
+        # FR #4730: jobs this seat already closed — replayed ACK must not reopen busy / hit IRC.
+        self._finished_job_keys: set[str] = set()
         self.run_dir: Optional[Path] = None  # FR #3189: write job-repo.txt for harvest routing
         self._idle_since: Optional[float] = None
         self._last_bored: Optional[float] = None
@@ -4643,6 +4646,31 @@ class BoredEmitter:
         with self._cv:
             self._held_assign = False
             self._cv.notify_all()
+
+    def _mark_job_finished(self, job: Optional[str]) -> None:
+        """FR #4730: remember a job closed by DONE/NACK/GIVEUP (caller holds ``_cv``)."""
+        if not job:
+            return
+        self._finished_job_keys.add(job)
+        while len(self._finished_job_keys) > 64:
+            self._finished_job_keys.pop()
+
+    def note_fresh_assign(self, line: str) -> None:
+        """FR #4730: re-offer of a finished job may ACK again; clear its finished mark."""
+        key = assign_job_key(line)
+        if not key:
+            return
+        with self._cv:
+            self._finished_job_keys.discard(key)
+
+    def should_forward_outbox(self, payload: str) -> bool:
+        """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd."""
+        p = (payload or "").strip()
+        if not _OUT_ACK_RX.match(p):
+            return True
+        job = outbox_job_key(p)
+        with self._cv:
+            return not (job and job in self._finished_job_keys)
 
     def _clear_done_miss(self) -> None:
         """FR #2875: drop armed / reminded / release-pending done-miss state."""
@@ -4938,22 +4966,31 @@ class BoredEmitter:
         p = (payload or "").strip()
         with self._cv:
             if _OUT_ACK_RX.match(p):
-                self._ack_open, self._ack_at, self._idle_since = True, now, None
-                self._ack_job_key = outbox_job_key(p)
-                # FR #3189: persist offered repo so Invoke-BobiverseHarvest targets the product.
-                if self.run_dir is not None and self._ack_job_key:
-                    try:
-                        write_job_repo_marker(self.run_dir, self._ack_job_key)
-                    except Exception:
-                        pass
-                self._inject_pending = False
-                self._inject_at = None
-                self._harvest_until = None
-                self._fuel_lost_checked_at = None  # FR #3019: re-arm mid-job fuel poll
-                self._fuel_lost_streak = 0  # FR #3923: new ACK starts a fresh streak
-                self._clear_done_miss()
+                job = outbox_job_key(p)
+                # FR #4730: replayed ACK after DONE/NACK/GIVEUP must not reopen busy
+                # (mirror ignore-repeat DONE). Re-offer clears the mark via note_fresh_assign.
+                if job and job in self._finished_job_keys:
+                    self.log(
+                        f"bored: ignore stale ACK for {job} (already DONE/NACK/GIVEUP)"
+                    )
+                else:
+                    self._ack_open, self._ack_at, self._idle_since = True, now, None
+                    self._ack_job_key = job
+                    # FR #3189: persist offered repo so Invoke-BobiverseHarvest targets the product.
+                    if self.run_dir is not None and self._ack_job_key:
+                        try:
+                            write_job_repo_marker(self.run_dir, self._ack_job_key)
+                        except Exception:
+                            pass
+                    self._inject_pending = False
+                    self._inject_at = None
+                    self._harvest_until = None
+                    self._fuel_lost_checked_at = None  # FR #3019: re-arm mid-job fuel poll
+                    self._fuel_lost_streak = 0  # FR #3923: new ACK starts a fresh streak
+                    self._clear_done_miss()
             elif _OUT_DONE_RX.match(p):
                 job = outbox_job_key(p)
+                self._mark_job_finished(job)
                 # FR #1732: DONE for another id must not clear an open ACK.
                 if self._ack_open and self._ack_job_key and job and job != self._ack_job_key:
                     self.log(
@@ -4982,6 +5019,7 @@ class BoredEmitter:
             elif _OUT_FREE_RX.match(p):  # NACK/GIVEUP: free, then harvest hold before !bored (FR #161 / #1611)
                 verb = (p.split(None, 1)[0] if p else "FREE").upper()
                 job = outbox_job_key(p)
+                self._mark_job_finished(job)
                 # FR #1732: NACK/GIVEUP of a concurrent assign must not free while another ACK is open.
                 if self._ack_open and self._ack_job_key and job and job != self._ack_job_key:
                     self.log(
@@ -5748,7 +5786,22 @@ class Supervisor:
                 mark_work = not is_nothing_queued(parts[3], self.nick)
             elif line:
                 mark_work = not is_nothing_queued(line, self.nick)
+            # FR #4730: re-offer of a finished job may ACK again.
+            if mark_work:
+                try:
+                    self.bored.note_fresh_assign(line)
+                except Exception:
+                    pass
             self.bored.activity(mark_work=mark_work)
+
+    def may_send_outbox(self, payload: str) -> bool:
+        """FR #4730: drop replayed ACK for a finished job before it hits IRC."""
+        if self.bored is None:
+            return True
+        try:
+            return bool(self.bored.should_forward_outbox(payload))
+        except Exception:
+            return True
 
     def on_outbox_wire(self, payload: str) -> None:
         """BoredEmitter + FR #2383 ACK-miss clear; used as the outbox_loop on_payload."""
@@ -6524,7 +6577,7 @@ class Supervisor:
             self.irc.on_nak_line = self._replay_done_on_busy_hold  # FR #4642
         ob = self.run_dir / "outbox.txt"
         try:
-            drain_outbox(ob, self.irc, self.log, self.on_outbox_wire)
+            drain_outbox(ob, self.irc, self.log, self.on_outbox_wire, self.may_send_outbox)
         except Exception as e:
             self.log(f"irc: post-reconnect outbox flush {type(e).__name__}")
         if self.bored is None:
@@ -6618,7 +6671,13 @@ def ensure_outbox(path: Path) -> Path:
     return p
 
 
-def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payload: Optional[Callable[[str], None]] = None) -> int:
+def drain_outbox(
+    path: Path,
+    irc: IrcSeat,
+    log: Callable[[str], None],
+    on_payload: Optional[Callable[[str], None]] = None,
+    may_send: Optional[Callable[[str], bool]] = None,
+) -> int:
     """Move outbox.txt aside atomically, send each line to the shop channel. Plain text or `PRIVMSG #shop :text`."""
     path = Path(path)
     if not path.is_file():
@@ -6649,6 +6708,21 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
             if _OUT_BORED_RX.match(payload):  # t770u: !bored is posted by the exe ONLY, never by the model
                 log("outbox: refused agent-written !bored (the exe posts it)")
                 continue
+            # FR #4730: drop replayed ACK for a finished job before it hits IRC; still bookkeep.
+            if may_send is not None:
+                try:
+                    allow = bool(may_send(payload))
+                except Exception:
+                    allow = True
+                if not allow:
+                    preview = _scrub(one_line(payload, 80))
+                    log(f"outbox: dropped stale replay ({len(payload)} chars): {preview}")
+                    if on_payload:
+                        try:
+                            on_payload(text)
+                        except Exception:
+                            pass
+                    continue
             ok = bool(irc.say(target, text))
             is_job = bool(_OUT_ACK_RX.match(payload) or _OUT_DONE_RX.match(payload) or _OUT_FREE_RX.match(payload))
             if ok:
@@ -6699,12 +6773,18 @@ def drain_outbox(path: Path, irc: IrcSeat, log: Callable[[str], None], on_payloa
     return n
 
 
-def outbox_loop(path: Path, irc: IrcSeat, stop: threading.Event, log: Callable[[str], None],
-                on_payload: Optional[Callable[[str], None]] = None) -> None:
+def outbox_loop(
+    path: Path,
+    irc: IrcSeat,
+    stop: threading.Event,
+    log: Callable[[str], None],
+    on_payload: Optional[Callable[[str], None]] = None,
+    may_send: Optional[Callable[[str], bool]] = None,
+) -> None:
     ensure_outbox(path)
     while not stop.wait(0.5):  # outbound only; inbound relay is NOT polled
         try:
-            drain_outbox(path, irc, log, on_payload)
+            drain_outbox(path, irc, log, on_payload, may_send)
         except Exception as e:  # pragma: no cover
             log(f"outbox: {type(e).__name__}")
 
@@ -7047,8 +7127,12 @@ def run_agent(args, log: Log) -> int:
     if not sup.start_agent():
         irc.close("launch failed")
         return EXIT_LAUNCH_FAIL
-    threading.Thread(target=outbox_loop, args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.on_outbox_wire),
-                     name="outbox", daemon=True).start()
+    threading.Thread(
+        target=outbox_loop,
+        args=(run_dir / "outbox.txt", irc, sup.stop, log, sup.on_outbox_wire, sup.may_send_outbox),
+        name="outbox",
+        daemon=True,
+    ).start()
     install_ctrl_handler(lambda: sup.shutdown("console-closed", EXIT_OK))
     import signal
 
