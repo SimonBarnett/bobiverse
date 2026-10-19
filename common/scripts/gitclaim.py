@@ -9571,6 +9571,21 @@ def resync_from_github(
                 try:
                     import mrb_merge_on_green as _mog_fail
 
+                    # FR #4800: harvest disposition boards never enqueue FIX.
+                    if _mog_fail.skip_mrb_fail_fix_for_harvest(
+                        title=title,
+                        labels=pr_labels,
+                        closed=False,
+                        merged=False,
+                        comments=pr.get("comments")
+                        if isinstance(pr.get("comments"), list)
+                        else None,
+                    ):
+                        print(
+                            f"resync skip FIX harvest-disposition PR {repo}#{num}",
+                            flush=True,
+                        )
+                        continue
                     linked = _mog_fail.linked_fail_fix_open(prs, str(num))
                     fix_result = "linked"
                     if not linked:
@@ -9581,6 +9596,16 @@ def resync_from_github(
                             sha=fail_sha,
                             url=str(pr.get("html_url") or ""),
                             nick=fail_nick,
+                            pr_state={
+                                "title": title,
+                                "labels": list(pr_labels),
+                                "closed": False,
+                                "merged": False,
+                                "comments": pr.get("comments")
+                                if isinstance(pr.get("comments"), list)
+                                else None,
+                                "sha": fail_sha,
+                            },
                         )
                 except Exception as exc:  # noqa: BLE001
                     fix_result = f"error:{type(exc).__name__}"
