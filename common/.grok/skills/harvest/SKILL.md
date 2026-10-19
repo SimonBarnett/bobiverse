@@ -292,6 +292,7 @@ routes to bobiverse via the split rule.
 - GetSandUsageStatus.usagePercent is 0-100 percentage points: never rescale values <=1 as a 0-1 fraction (0.99% used must stay ~1% used); share _parse_pct_points / ConvertTo-BobCursorSpendingPctPoints.
 - Invoke-AircRemote SelfTest happy-path DONE wait must Add-Content the jsonl rows in-process before Wait-AircRemoteReplies. A Start-Job writer under a full pytest run can miss TimeoutSec=10.
 - FR #4830: Invoke-BobiverseHarvest for SimonBarnett/ce-priority maps to dayworks-launcher even with -Book harvest; never invent common/.grok/skills/harvest
+- FR #4827 idle-past-quiet release asserts reason=ack-stale (FR #4753/#4784), not a later idle cycle; FakeClock _wait timeouts are too short for idle_s after ack-stale
 
 ## Harvest digest (lessons audit 2026-10-06)
 
