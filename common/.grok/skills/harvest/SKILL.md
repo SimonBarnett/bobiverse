@@ -289,6 +289,7 @@ routes to bobiverse via the split rule.
 - ce-priority Day Works require_machine auto-pin must not match bare dayworks or WP3 in a title. Harvest-lesson MRB rows re-infer and clear sticky stamps so online seats can !assign them.
 - FR #3991: Build-AircNetworkInstaller --uac-admin; Pack stages INSTALLDIR airc-network-installer.exe and dist airc-network-installer-<ver>.exe+.sha256; Assert requires those assets; MSI prop AIRC_PROFILE; service Airc; never -p on argv (getpass + net use); SkipAircNetworkInstallerExe with SkipMsi for stage tests
 - When Pack -SkipMsi disables Ergo embed (FR #4477), airc FR #4216 tests must assert config/ergo.password is absent on the stage and pin the Pack wantEmbedErgo=false gate; keep real MSI embed asserts separate
+- Airc troubleshooting rows that name airc_console_service.py must be written from a UTF-8 file. A PowerShell double-quoted backtick-a is BEL and the row then says irc_console_service.py. Pin the FR row bytes: require airc_console_service.py and 433, reject 0x07 and U+011B.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
