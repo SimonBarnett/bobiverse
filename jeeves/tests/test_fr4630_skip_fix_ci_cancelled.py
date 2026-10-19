@@ -98,6 +98,7 @@ def test_enqueue_skips_cancelled_only(tmp_path: Path):
 def test_enqueue_skips_test_and_synth_when_main_red(tmp_path: Path):
     home = tmp_path / "home"
     home.mkdir()
+    main_sha = "e" * 40
     result = mrb_merge_on_green.enqueue_fix_ci(
         home,
         repo=REPO,
@@ -105,15 +106,20 @@ def test_enqueue_skips_test_and_synth_when_main_red(tmp_path: Path):
         pass_sha=SHA,
         detail="failure:test-and-synth",
         main_red=True,
+        main_sha=main_sha,
         now_epoch=1_000.0,
     )
-    assert result == "skipped"
+    # FR #4857: tip skipped, one main-side FIX queued.
+    assert result == "skipped_main_added"
     q = gitclaim.load_queue(home)
-    assert not any(
-        str(r.get("task") or "").upper() == "FIX"
+    fixes = [
+        r
         for r in (q.get("unaccepted") or [])
-        if isinstance(r, dict)
-    )
+        if isinstance(r, dict) and str(r.get("task") or "").upper() == "FIX"
+    ]
+    assert len(fixes) == 1
+    assert str(fixes[0].get("id") or "").lstrip("#") == "main"
+    assert "3740" not in {str(r.get("id") or "").lstrip("#") for r in fixes}
 
 
 def test_enqueue_still_offers_real_failure_when_main_green(tmp_path: Path):
