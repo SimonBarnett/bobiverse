@@ -175,14 +175,19 @@ def test_replay_29256_timeline(tmp_path: Path):
 
 
 def test_ack_stale_s_fallback_unchanged():
-    """No turn signal: seat still frees via ack_stale_s (non-grok path)."""
+    """No turn signal: seat still frees via ack_stale_s (non-grok path).
+
+    FR #4753: release reason is ack-stale (local ACK clear + !bored). FR #4784 adds
+    shop GIVEUP before that !bored; this test only asserts the free signal fires.
+    """
     clock = FakeClock(0.0)
     e, sent, logs = _emitter(clock, harvest_hold_s=90.0, done_miss_grace_s=20.0, ack_stale_s=60.0, idle_s=5.0, repeat_s=5.0)
     e.on_outbox("ACK MRB o/r#1")
     n0 = len(sent)
     clock.advance(61.0)
-    assert _wait(lambda: len(sent) > n0 and any(r == "idle" for _, r in e.sent[n0:]), clock, timeout=5.0)
+    assert _wait(lambda: len(sent) > n0 and any(r == "ack-stale" for _, r in e.sent[n0:]), clock, timeout=5.0)
     assert not any("done-miss armed" in m for m in logs)
+    assert e.ack_open is False
     e.stop()
 
 

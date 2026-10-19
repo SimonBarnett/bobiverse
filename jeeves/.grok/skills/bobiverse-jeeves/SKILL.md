@@ -112,3 +112,7 @@ Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Servic
 ## Self-test / heal checks are extensible (FR #2522)
 
 `jeeves.exe --self-test` runs the builtins (`imports`, `locks`, `http`, `queue`, `offer`; `health` on request) **plus** every `check_<name>.py` plugin found in `jeeves/checks` (bundled into the exe by `Build-Jeeves.ps1`; `JEEVES_CHECKS_DIR` overrides for tests). A plugin defines `CHECK_NAME` and `run(home, chair_home) -> (detail, findings, errors)`; `INCLUDE_IN_DEFAULT = False` makes it `--check <name>` only. Add/change checks and their pytest only via PR + MRB - never by editing the running exe.
+
+## Harvested lessons (intake)
+
+- When requeue_reopened_issue puts an FR back in unaccepted, also clear ledger fr_done in the same locked step (pass home); keep the hold when there is no reopen and an open Closes-PR still covers the issue. (context: FR #4695 / tip #4697)

@@ -30,6 +30,7 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/agentic_fomprep",
         "SimonBarnett/a-search",  # FR #3023: Plan product; intake Flush must not drop
         "SimonBarnett/trutex",  # FR #3050: private Plan product; allowlist ignores visibility
+        "SimonBarnett/ce-priority",  # FR #4830: dayworks-launcher park; never invent-harvest
     }
 )
 _ALLOW_OWNER = "simonbarnett"  # FR #3135: case-insensitive owner gate
@@ -200,10 +201,38 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
+    # FR #4830: never invent common/.grok/skills/harvest on ce-priority; park in
+    # unlocked dayworks-launcher (assert-lock / tip-loop class of ce-priority#36/#37/#38).
+    "simonbarnett/ce-priority": (
+        "dayworks-launcher",
+        "dayworks/.grok/skills/dayworks-launcher/SKILL.md",
+    ),
 }
+
+def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
+    """FR #3959: bobiverse-* books never tip into product repos (a-search stubs).
+
+    When FR #3004 / client inference sets skill_book=bobiverse-bob-worker but the
+    payload still carries -Repo SimonBarnett/a-search, rewrite the tip home to
+    SimonBarnett/bobiverse so we never ADD bob/.grok/skills/... into the product.
+    Product honesty-box books (harvest-agent-skills, etc.) stay on the product.
+    """
+    repo_l = str(repo or "").strip().lower()
+    book = str(skill_book or "").strip().lower()
+    if not repo_l or not book:
+        return str(repo or "").strip()
+    if repo_l not in PRODUCT_DEFAULT_SKILL_BOOK:
+        return str(repo or "").strip()
+    if book.startswith("bobiverse-"):
+        return "SimonBarnett/bobiverse"
+    return str(repo or "").strip()
+
+
 SKILL_BOOK_PATHS: dict[str, str] = {
     "harvest": "common/.grok/skills/harvest/SKILL.md",
     "harvest-agent-skills": "common/.grok/skills/harvest-agent-skills/SKILL.md",
+    # FR #4830: ce-priority unlocked park (not common invent-harvest).
+    "dayworks-launcher": "dayworks/.grok/skills/dayworks-launcher/SKILL.md",
     "bobiverse-fleet-ops": "common/.grok/skills/bobiverse-fleet-ops/SKILL.md",
     "bobiverse-bob": "bob/.grok/skills/bobiverse-bob/SKILL.md",
     "bobiverse-bob-worker": "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
@@ -275,6 +304,35 @@ def infer_soft_harvest_override(title: str = "", body: str = "") -> str | None:
     return None
 
 
+_EXPLICIT_SKILL_BOOK_RE = re.compile(
+    r"(?i)\b(?:belongs in|belong in|durable home is|file in)\s+`?"
+    r"(?P<book>[a-z0-9][a-z0-9._-]{2,63})`?"
+)
+
+
+def explicit_named_skill_book(title: str = "", body: str = "") -> str | None:
+    """Skill book named in the lesson (FR #4514). Keyword inference must not override it."""
+    blob = f"{title or ''}\n{body or ''}"
+    for match in _EXPLICIT_SKILL_BOOK_RE.finditer(blob):
+        book = str(match.group("book") or "").strip("`").lower()
+        if book in SKILL_BOOK_PATHS:
+            return book
+    return None
+
+
+def lesson_sentence_already_in_book(existing_md: str, lessons: list[str]) -> bool:
+    """True when a substantial sentence from the lesson is already in the skill book."""
+    base = _normalize_lesson_key(existing_md)
+    if not base:
+        return False
+    for raw in lessons or []:
+        for part in re.split(r"(?<=[.!?])\s+|;\s+", str(raw or "")):
+            key = _normalize_lesson_key(part).strip(" .")
+            if len(key) >= 40 and key in base:
+                return True
+    return False
+
+
 def extract_harvest_lessons(body: str) -> list[str]:
     """Return real Lessons: bullets; drop the '(no new playbook line)' placeholder (FR #2705)."""
     text = str(body or "")
@@ -310,22 +368,35 @@ def resolve_skill_book(
     FR #3189: when ``repo`` is a product (e.g. SimonBarnett/a-search), never return
     bobiverse ``common/.grok/skills/harvest/SKILL.md`` - use that product's default
     honesty-box path (``.grok/skills/harvest-agent-skills/SKILL.md``).
+    FR #4830: SimonBarnett/ce-priority parks at ``dayworks/.grok/skills/dayworks-launcher/SKILL.md``
+    (never invent ``common/.grok/skills/harvest``).
     """
     repo_l = str(repo or "").strip().lower()
     product = PRODUCT_DEFAULT_SKILL_BOOK.get(repo_l)
 
     def _product_or_bobiverse(book: str, path: str) -> tuple[str, str]:
+        path_n = path.replace("\\", "/")
         if product and (
-            path.replace("\\", "/") == SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
+            path_n == SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
             or book == DEFAULT_SKILL_BOOK
             or book == "harvest-agent-skills"
+            # FR #4830: invent-harvest path under product repos (ce-priority).
+            or path_n.endswith("common/.grok/skills/harvest/SKILL.md")
         ):
             # a-search harvest-agent-skills lives at repo-root .grok/skills/, not common/.
-            if book in (DEFAULT_SKILL_BOOK, "harvest-agent-skills") or path.endswith(
-                "harvest/SKILL.md"
+            # ce-priority parks at dayworks-launcher (never invent common harvest).
+            if (
+                book in (DEFAULT_SKILL_BOOK, "harvest-agent-skills")
+                or path_n.endswith("harvest/SKILL.md")
+                or path_n.endswith("common/.grok/skills/harvest/SKILL.md")
             ):
                 return product[0], product[1]
         return book, path
+
+    # FR #4514: "belongs in bobiverse-bob-job-irc" wins over done-miss -> bob-worker.
+    named = explicit_named_skill_book(title, body)
+    if named:
+        return _product_or_bobiverse(named, SKILL_BOOK_PATHS[named])
 
     raw = str(skill_book or "").strip().replace("\\", "/")
     if raw:
@@ -421,11 +492,14 @@ _THIN_TWIN_CUE_RE = re.compile(
     r"restate(?:s|ing)?\s+Thin\s+FAIL[- ]supersede|"
     r"Thin\s+FAIL[- ]supersede[\s\S]{0,80}?already\s+on\s+main|"
     r"already\s+on\s+main[\s\S]{0,80}?Thin\s+FAIL[- ]supersede|"
-    # FR #4308: a-search#1980/#2283 — thinner tip + durable lesson already on main
+    # FR #4308: a-search#1980/#2283 - thinner tip + durable lesson already on main
     r"thinner?\b[\s\S]{0,120}?(?:harvest\s+)?tip|"
     r"FAIL[- ]supersede[d]?\b[\s\S]{0,220}?already\s+on\s+main|"
     r"durable\s+lesson\s+already|"
-    r"closed\s+unmerged[\s\S]{0,100}?already\s+on\s+main"
+    r"closed\s+unmerged[\s\S]{0,100}?already\s+on\s+main|"
+    # FR #4484: "restates main" / "admit main already has" (class of a-search#3470)
+    r"restate(?:s|ing)?\s+main|"
+    r"admit\s+main\s+already\s+has"
     r")"
 )
 
@@ -438,6 +512,7 @@ def is_fail_supersede_thin_twin_lesson(text: str) -> bool:
     FR #4231: tip-loop meta / only-restate Thin FAIL-supersede already-on-main cues
     also count (any skill book, including harvest-agent-skills).
     FR #4308: thinner tip + durable lesson already on main (a-search#1980/#2283) also count.
+    FR #4484: restates main / admit main already has (a-search#3470) also count.
     """
     t = str(text or "")
     if not t.strip():
@@ -445,6 +520,61 @@ def is_fail_supersede_thin_twin_lesson(text: str) -> bool:
     if not _FAIL_SUPERSEDE_RE.search(t):
         return False
     return bool(_THIN_TWIN_CUE_RE.search(t))
+
+
+def is_lesson_review_meta_loop(text: str) -> bool:
+    """FR #4780: True when harvest text is about reviewing/closing harvest-lessons.
+
+    MRB of a harvest-lesson / skills-only tip must not open another lesson tip.
+    Honesty-box for that review is the review itself. Also matches lessons whose
+    subject is reviewing, harvesting, or closing lessons (tip-loop meta).
+
+    Does not steal FR #2970 process-routing lessons that should re-home to
+    bobiverse-bob-job-mrb when coverage is missing. Genuine product playbooks
+    return False.
+    """
+    import re as _re
+
+    t = str(text or "")
+    if not t.strip():
+        return False
+    # FR #2970 / #2991 own these; do not short-circuit their re-route / covered paths.
+    if is_fail_supersede_thin_twin_lesson(t) or is_mrb_process_routing_lesson(t):
+        return False
+    is_meta_subject = bool(
+        _re.search(
+            r"(?i)review(?:ing|ed|s)?\s+(?:harvest[- ]?lesson|lesson\s+tips?|lessons?\b)|"
+            r"(?:about|when)\s+(?:reviewing|harvesting|closing)\s+lessons?|"
+            r"do not (?:harvest|open|land|merge)\s+a\s+(?:new|second)\s+"
+            r"(?:harvest[- ]?lesson|lesson)\s+(?:tip|PR|bullet)|"
+            r"second\s+Harvested[- ]lessons\s+bullet|"
+            r"tip[- ]?loop|process\s+meta|lesson[- ]review|"
+            r"CLOSED\s+not[- ]useful|CLOSED\s+already[- ]covered|"
+            r"CLOSED\s+wrong[- ]path",
+            t,
+        )
+    )
+    if is_meta_subject:
+        return True
+    is_lesson_context = bool(
+        _re.search(
+            r"(?i)harvest[- ]lesson|lesson\(harvest|docs/mrb|skills[- ]only|"
+            r"Harvested[- ]lessons|light\s+triage",
+            t,
+        )
+    )
+    is_mrb_closeout = bool(
+        _re.search(
+            r"(?i)\bMRB\b.{0,120}(?:CLOSED|DONE\s+(?:PASS|FAIL)|FAIL[- ]supersede)|"
+            r"(?:CLOSED|DONE\s+(?:PASS|FAIL)).{0,120}\bMRB\b|"
+            r"light\s+triage.{0,80}(?:PASS|CLOSED|FAIL)",
+            t,
+        )
+    )
+    if is_lesson_context and is_mrb_closeout:
+        return True
+    return False
+
 
 
 def is_mrb_process_routing_lesson(text: str) -> bool:
@@ -692,18 +822,34 @@ def build_lesson_pr_title(book: str, lessons: list[str]) -> str:
     return f"lesson({book}): {tip}"
 
 
+# FR a-search #3907: GitHub closes the named issue when a harvest tip body says
+# Closes/Fixes/Resolves #N. Skill-book tips must Refs the product FR. Only the
+# product implement PR may Closes it. Class of #3876 closing #3867 while #3871
+# was still open.
+_HARVEST_CLOSES_RE = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+"
+    r"((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+(?:/#\d+)*)"
+)
+
+
+def neutralize_harvest_closes(text: str) -> str:
+    """Rewrite GitHub closing keywords that name an issue into Refs."""
+    return _HARVEST_CLOSES_RE.sub(r"Refs \1", str(text or ""))
+
+
 def build_lesson_pr_body(*, book: str, path: str, lessons: list[str], original_body: str) -> str:
+    safe_lessons = [neutralize_harvest_closes(x) for x in lessons]
     lines = [
         LESSON_PR_MRB_INSTRUCTION,
         "",
         f"Target skill book: `{book}` (`{path}`).",
         "",
         "Lessons:",
-        *[f"- {x}" for x in lessons],
+        *[f"- {x}" for x in safe_lessons],
         "",
         "---",
         "",
-        str(original_body or "").rstrip(),
+        neutralize_harvest_closes(str(original_body or "").rstrip()),
         "",
     ]
     return "\n".join(lines)
@@ -1345,6 +1491,10 @@ def file_submission(
                     body=raw_body,
                     repo=str(repo or ""),
                 )
+                # FR #3959: bobiverse-* books tip on bobiverse, never ADD bob/ into product repos.
+                tip_repo = rewrite_harvest_repo_for_skill_book(str(repo or ""), book)
+                if tip_repo != str(repo or "").strip():
+                    repo = tip_repo
                 lesson_blob = "\n".join(lessons) + "\n" + raw_body + "\n" + title
                 # FR #2991: thin FAIL-supersede already-covered twins never open lesson(harvest).
                 # Meta restatements ("already cover / close thin twins") are not product tips.
@@ -1368,6 +1518,15 @@ def file_submission(
                         rec["queued"] = False
                         _save_record(home, rec)
                         return rec
+                # FR #4780: lesson-review / tip-loop meta never opens another lesson tip
+                # (after FR #2970 process re-route so job-mrb homes still file when uncovered).
+                if is_lesson_review_meta_loop(lesson_blob):
+                    rec["state"] = "lesson_review_meta_skipped"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = 0
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 # FR #3824: open harvest-lesson tip with same seat+lesson -> link, no twin.
                 # Check before main-tip filter: open tips are not on main yet.
                 src_seat = ""
@@ -1388,6 +1547,16 @@ def file_submission(
                     _save_record(home, rec)
                     return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)
+                # FR #4514: named book already has the sentence -> no second tip.
+                if explicit_named_skill_book(title, raw_body) and lesson_sentence_already_in_book(
+                    existing_md, lessons
+                ):
+                    rec["state"] = "lesson_already_covered"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = 0
+                    rec["queued"] = False
+                    _save_record(home, rec)
+                    return rec
                 new_lessons = filter_new_lessons(existing_md, lessons)
                 if not new_lessons:
                     rec["state"] = "lesson_already_covered"

@@ -144,6 +144,8 @@ def test_offer_focus_top_purges_closed_accepted_before_pick(tmp_path: Path, monk
                     "title": "already closed",
                     "nick": "marchhare-40208",
                     "accepted_ts": "2026-10-04T22:11:00Z",
+                    # FR #4624 / budget-0: stamped closed is purged offline (no live issue_open).
+                    "state": "closed",
                 }
             ],
             "done": [],

@@ -62,7 +62,36 @@ from airc_console import (
 )
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 
-FLOOD_S = 0.35
+FLOOD_S = 0.35  # legacy fixed gap; FR #4790 prefers token bucket below
+# FR #4790: sustain under Ergo fakelag (~1-2 msg/s). Burst then pace.
+FLOOD_RATE_PER_S = 1.5
+FLOOD_BURST = 3.0
+
+
+class FloodTokenBucket:
+    """Token bucket for PRIVMSG pacing (FR #4790).
+
+    ``take(n)`` returns seconds to sleep before sending (0 if tokens available).
+    """
+
+    def __init__(self, *, rate: float = FLOOD_RATE_PER_S, capacity: float = FLOOD_BURST) -> None:
+        self.rate = max(0.05, float(rate))
+        self.capacity = max(1.0, float(capacity))
+        self.tokens = self.capacity
+        self.updated = time.monotonic()
+
+    def take(self, n: float = 1.0) -> float:
+        now = time.monotonic()
+        self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+        need = float(n)
+        if self.tokens >= need:
+            self.tokens -= need
+            return 0.0
+        wait = (need - self.tokens) / self.rate
+        self.tokens = 0.0
+        return wait
+
 # Issue #298: half-open / silent link detection + reconnect.
 IDLE_PING_S = 60.0
 IDLE_DEAD_S = 120.0
@@ -352,6 +381,8 @@ class AircConsoleService:
         # FR #2612: durable outbound Query queue survives force_reconnect in-process;
         # stop flush emits DONE for tracked shell ids so Wait does not hang.
         self._out_q: queue.Queue[tuple[str, str]] = queue.Queue()
+        # FR #4790: token-bucket PRIVMSG pacing (under Ergo fakelag).
+        self._flood_bucket = FloodTokenBucket()
         self._inflight_lock = threading.Lock()
         self._shell_inflight: dict[str, str] = {}
         # FR #2640: once stop flush starts, enqueue-only (no send) until prepare_stop closes.
@@ -407,7 +438,7 @@ class AircConsoleService:
         try:
             self.drain_out_queue()
         except ConnectionError as e:
-            info(f"INFO console-out-send-err {e}")
+            info(f"INFO console-out-send-err flood-or-link {e}")  # FR #4790
             self._force_reconnect = True
 
     def _on_shell_done(
@@ -533,9 +564,18 @@ class AircConsoleService:
             try:
                 self.sock.sendall(data)
             except OSError as e:
+                # FR #4790: treat send failure as flood/link kill -> reconnect.
+                self._force_reconnect = True
                 raise ConnectionError(f"send failed: {e}") from e
-            if flood and FLOOD_S > 0:
-                time.sleep(FLOOD_S)
+            if flood:
+                wait = 0.0
+                bucket = getattr(self, "_flood_bucket", None)
+                if bucket is not None:
+                    wait = float(bucket.take(1.0))
+                elif FLOOD_S > 0:
+                    wait = float(FLOOD_S)
+                if wait > 0:
+                    time.sleep(wait)
 
     def send_privmsg(self, target: str, text: str, *, flood: bool = True) -> None:
         if self.core.may_speak_on_channel() is False and target.lower() == self.channel.lower():
@@ -576,17 +616,25 @@ class AircConsoleService:
         return False
 
     def _mark_nickserv_ok(self, reason: str) -> None:
-        """FR #3763: persist that {machine}_console NickServ account matches console.password."""
+        """FR #3763 / #4789: persist that {machine}_console NickServ account matches console.password.
+
+        Write atomically (temp + os.replace) so a crash mid-write cannot leave the
+        home without a usable nickserv-ok after a successful REGISTER/IDENTIFY/903.
+        """
         try:
             self.home.mkdir(parents=True, exist_ok=True)
-            if not self._nickserv_ok_path.is_file():
-                self._nickserv_ok_path.write_text(f"{reason}\n", encoding="ascii")
-                info(f"INFO FR #3763 wrote {self._nickserv_ok_path.name} ({reason})")
-            else:
-                # Refresh reason for operators reading the file; keep file present.
-                self._nickserv_ok_path.write_text(f"{reason}\n", encoding="ascii")
+            tmp = self._nickserv_ok_path.with_name(self._nickserv_ok_path.name + ".tmp")
+            tmp.write_text(f"{reason}\n", encoding="ascii")
+            os.replace(tmp, self._nickserv_ok_path)
+            info(f"INFO FR #3763 wrote {self._nickserv_ok_path.name} ({reason})")
         except OSError as e:
             info(f"INFO FR #3763 nickserv-ok write failed: {e}")
+            try:
+                tmp = self._nickserv_ok_path.with_name(self._nickserv_ok_path.name + ".tmp")
+                if tmp.is_file():
+                    tmp.unlink()
+            except OSError:
+                pass
         # FR #3900 / 1.0.0: account now matches console.password — drop install mint marker.
         try:
             marker = getattr(self, "_nickserv_mint_marker", None) or (
@@ -763,7 +811,10 @@ class AircConsoleService:
         self._fr4388_reclaim_attempted = True
         creds = self._load_oper_credentials_for_reclaim()
         if not creds:
-            info("INFO FR #4388 no oper credentials for PASSWD reclaim; manual SAPASSWD required")
+            info(
+                "INFO FR #4388 no oper credentials for PASSWD reclaim; "
+                "manual oper NickServ PASSWD required"
+            )
             return False
         name, _password = creds
         # Keep password only in memory for the OPER line; never log it.
@@ -785,7 +836,7 @@ class AircConsoleService:
                 self._fr4388_reclaim_state = "failed"
                 self._fr4388_oper_creds = None
                 return True
-            # Prefer PASSWD (post-install §8c); SAPASSWD is the documented alias.
+            # FR #4579: Ergo NickServ has PASSWD only (not SAPASSWD).
             self.send(f"PRIVMSG NickServ :PASSWD {self.nick} {guid}")
             self._fr4388_reclaim_state = "passwd_sent"
             self._fr4388_oper_creds = None
@@ -796,11 +847,37 @@ class AircConsoleService:
             self._force_reconnect = True
             return True
         if cmd in {"491", "464", "481"}:
-            info(f"ERROR FR #4388 reclaim: OPER failed ({cmd}); manual SAPASSWD still required")
+            info(
+                f"ERROR FR #4388 reclaim: OPER failed ({cmd}); "
+                f"manual oper NickServ PASSWD still required"
+            )
             self._fr4388_reclaim_state = "failed"
             self._fr4388_oper_creds = None
             return True
         return False
+
+    def _recover_reserved_nick_via_sasl(self, *, reason: str) -> None:
+        """FR #4789: 433 on reserved nick while skip-SASL means mint/marker drift.
+
+        Stale console.password-minted (or any path that left nickserv-ok missing while
+        the GUID already owns {machine}_console) must not reconnect forever without
+        SASL. Clear the mint skip, drop the mint marker, and force a SASL reconnect.
+        Do not write nickserv-ok until 903 / NickServ success NOTICE.
+        """
+        info(
+            f"INFO FR #4789 {reason}: reserved nick with console.password present; "
+            f"clearing mint skip and reconnecting with SASL"
+        )
+        self._nickserv_pw_minted = False
+        try:
+            marker = getattr(self, "_nickserv_mint_marker", None) or (
+                Path(self.home) / "console.password-minted"
+            )
+            if marker.is_file():
+                marker.unlink()
+        except OSError as e:
+            info(f"INFO FR #4789 mint-marker unlink failed: {e}")
+        self._force_reconnect = True
 
     def request_caps(self) -> None:
         # account-tag powers operator account allowlists (FR #230). SASL is best-effort.
@@ -1062,8 +1139,8 @@ class AircConsoleService:
                     return
                 info(
                     f"ERROR console account {self.nick} SASL failed ({cmd}): password mismatch "
-                    f"with console.password. Reset it (NickServ SAPASSWD) or fix console.password; "
-                    f"continuing so registration can finish"
+                    f"with console.password. Reset it (oper NickServ PASSWD) or fix "
+                    f"console.password; continuing so registration can finish"
                 )
             else:
                 # FR #3763: fresh ConsoleHome --- account not registered yet; not a loud error.
@@ -1134,6 +1211,11 @@ class AircConsoleService:
             self._nick_retries += 1
             base = machine_console_nick(self.machine)
             if base.lower() == self.nick.lower() or self._nick_explicit:
+                # FR #4789: password on disk but account not "known" (stale mint /
+                # missing nickserv-ok) => try SASL on reconnect instead of looping.
+                if self.nickserv_password and not self._nickserv_account_known():
+                    self._recover_reserved_nick_via_sasl(reason="433-reserved")
+                    return
                 info(
                     f"ERROR nick {self.nick} refused (433, reserved by NickServ). "
                     f"{'SASL failed for this account; ' if self._sasl_failed else ''}"
@@ -1481,7 +1563,14 @@ class AircConsoleService:
             if session_ok:
                 backoff = RECONNECT_MIN_S
             info(f"INFO reconnect in {backoff:.0f}s (registered={session_ok})")
-            time.sleep(backoff)
+            try:
+                time.sleep(backoff)
+            except KeyboardInterrupt:
+                # FR #4789: NSSM/service stop during backoff must not raise past run()
+                # (PYI unhandled KeyboardInterrupt at reconnect sleep).
+                info("INFO reconnect wait interrupted -> stop")
+                self.prepare_stop(reason="reconnect interrupted")
+                break
             backoff = min(RECONNECT_MAX_S, max(RECONNECT_MIN_S, backoff * 2))
         return 0
 
@@ -1755,7 +1844,12 @@ def main(argv: list[str] | None = None) -> int:
         return selftest()
     # FR #2401: airc.exe NSSM Application skips Start-AircConsole.ps1; restore S4 hooks.
     kick_frozen_service_start_hooks()
-    return AircConsoleService(args).run()
+    try:
+        return AircConsoleService(args).run()
+    except KeyboardInterrupt:
+        # FR #4789: belt-and-braces if interrupt escapes run() (e.g. during connect).
+        info("INFO main interrupted -> exit 0")
+        return 0
 
 
 if __name__ == "__main__":

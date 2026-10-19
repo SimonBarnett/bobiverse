@@ -55,6 +55,9 @@ import startworker  # noqa: E402
 import bobiverse_build  # noqa: E402  # FR #4006
 
 FLOOD_S = 0.8
+# FR #4796: slower ear outbox pace for PRIVMSG to *_console (driver-side under Ergo fakelag).
+# Console reply token-bucket remains FR #4790.
+CONSOLE_OUTBOX_FLOOD_S = float(os.environ.get("BOB_CONSOLE_OUTBOX_FLOOD_S", "1.5") or "1.5")
 
 # FR #1546: Query replies from {machine}_console (out/err/DONE) → home/airc-replies.jsonl
 _AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
@@ -69,6 +72,29 @@ def is_airc_console_reply(src: str, body: str) -> bool:
     if not src or not _AIRC_CONSOLE_NICK_RE.match(src.strip()):
         return False
     return bool(_AIRC_REPLY_BODY_RE.match((body or "").strip()))
+
+
+def privmsg_target(line: str) -> str | None:
+    """Return PRIVMSG target nick/channel, or None when the line is not pre-wrapped."""
+    m = _PREWRAPPED_PRIVMSG.match((line or "").strip())
+    if not m:
+        return None
+    return (m.group(1) or "").strip() or None
+
+
+def flood_s_for_outbox_line(
+    line: str,
+    *,
+    default: float | None = None,
+    console: float | None = None,
+) -> float:
+    """FR #4796: longer flood delay when the outbox PRIVMSG targets ``*_console``."""
+    d = FLOOD_S if default is None else float(default)
+    c = CONSOLE_OUTBOX_FLOOD_S if console is None else float(console)
+    targ = privmsg_target(line)
+    if targ and _AIRC_CONSOLE_NICK_RE.match(targ):
+        return c
+    return d
 
 
 def append_airc_reply_jsonl(
@@ -2821,7 +2847,7 @@ class Client:
         return True
 
     def _maybe_assign(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
-        """Chair only (t849u): ``!assign <worker-nick> <repo> <FR|MRB|UAT> <num>`` from verified simon or a Bob-* ear.
+        """Chair only (t849u): ``!assign <worker-nick> <repo> <FR|MRB|UAT|FIX> <num>`` from verified simon or a Bob-* ear (FR #4652).
 
         Posts the normal assign line to the worker's shop channel as Jeeves (same path and eligibility
         as !bored); the worker's ACK accepts the offered row. Reply by PM, never in channel.
@@ -2842,7 +2868,7 @@ class Client:
             return True
         parsed = gitclaim.parse_assign_cmd(body)
         if parsed is None:
-            self._cmd_reply(src, "assign", ["assign: usage !assign {worker-nick} {repo} {FR|MRB|UAT} {num}"])
+            self._cmd_reply(src, "assign", ["assign: usage !assign {worker-nick} {repo} {FR|MRB|UAT|FIX} {num}"])
             return True
         wnick, repo, task, ident = parsed
         self._refresh_ledger()
@@ -2965,6 +2991,19 @@ class Client:
                 info(f"INFO git-claim out-of-fuel cleared nick={src} via=!bored")
         except Exception as fuel_exc:  # noqa: BLE001
             info(f"WARN git-claim out-of-fuel clear {type(fuel_exc).__name__}")
+        # FR #4642: a hold for a job this seat already DONE'd is not busy.
+        try:
+            _freed = gitclaim.release_duplicate_done_hold(self.home, src) or ""
+        except Exception as exc:  # noqa: BLE001
+            _freed = ""
+            info(f"WARN git-claim duplicate-done hold {type(exc).__name__}")
+        if _freed:
+            info(
+                f"INFO seat-hold cleared nick={src} reason=duplicate-after-done "
+                f"job={_freed}"
+            )
+            with contextlib.suppress(Exception):
+                self._workers().on_done(src, target)
         # FR #3742: heal accepted rows ACKed before this IRC session (lost DONE while down).
         session_started = getattr(self, "_irc_session_started", None)
         if session_started is None:
@@ -3139,7 +3178,12 @@ class Client:
         try:
             _pj = shop_listen.parse_shop_job_line(body)
             if _pj and verb in ("ACK", "DONE", "NACK", "GIVEUP"):
-                if verb == "ACK" and status == "missing":
+                if verb == "ACK" and status == "duplicate-after-done":
+                    info(
+                        f"INFO seat-hold ignored nick={src} reason=duplicate-after-done "
+                        f"job={_pj.task} {_pj.repo}{_pj.id}"
+                    )
+                elif verb == "ACK" and status == "missing":
                     _noted = gitclaim.note_seat_hold(
                         self._digest_home(),
                         src,
@@ -3249,12 +3293,18 @@ class Client:
                             info(f"INFO git-claim giveup-offer empty nick={src} {_detail}")
                     except Exception as offer_exc:  # noqa: BLE001
                         info(f"WARN giveup-offer {type(offer_exc).__name__}")
-        elif verb == "DONE" and status != "ok":
-            # FR #4089: repeated / unknown DONE (status=missing) never pushes a job.
-            info(f"INFO git-claim done-offer skipped nick={src} status={status}")
-        elif verb == "DONE" and status == "ok":
+        elif verb == "DONE" and status in ("ok", "missing"):
             # FR #3893: same push as GIVEUP/NACK — do not wait for the seat's next !bored
             # when the queue still holds eligible work (regression of idle-after-DONE).
+            # FR #4624: status=missing (ACC already dropped after issues closed / Prefer
+            # ExistingPrUrl) must still push the next offer — offer_after_done itself
+            # enforces FR #4089 one-open-job (busy seats get nothing).
+            # Other non-ok statuses (error/refused) still skip.
+            if status == "missing":
+                info(
+                    f"INFO git-claim done-offer after missing-acc nick={src} "
+                    f"(FR #4624)"
+                )
             try:
                 n, job2 = gitclaim.offer_after_done(
                     self._digest_home(),
@@ -3279,6 +3329,8 @@ class Client:
                     info(f"INFO git-claim done-offer empty nick={src} {_detail}")
             except Exception as offer_exc:  # noqa: BLE001
                 info(f"WARN done-offer {type(offer_exc).__name__}")
+        elif verb == "DONE" and status not in ("ok", "missing"):
+            info(f"INFO git-claim done-offer skipped nick={src} status={status}")
         # Never PRIVMSG the shop channel for ACK (FR #211). DONE/GIVEUP/NACK may push one assign (FR #2811 / #3893).
         return True
 
@@ -3705,7 +3757,8 @@ class Client:
                     prev = w if len(w) <= 160 else (w[:157] + "...")
                     info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                 sent.extend(wire)
-                time.sleep(FLOOD_S)
+                # FR #4796: pace *_console Commands slower than shop chat.
+                time.sleep(flood_s_for_outbox_line(line))
             elif op:
                 # bob-* shop ops (A23): KICK / MODE / NAMES on own #{machine}, raw.
                 self.send(op)

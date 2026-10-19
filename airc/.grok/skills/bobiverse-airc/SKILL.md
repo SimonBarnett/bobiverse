@@ -60,6 +60,10 @@ Service **`Airc`** (NSSM, tree `<ai root>\airc`) runs the Airc console: IRC nick
 - Console NSSM logging (FR #1546): AppStdout/AppStderr under `<ai root>\airc\logs\airc-console.log` with rotate; DisplayName/Description expanded with the machine id (no literal `#{machine}`); service `info()` lines are ISO-UTC; keepalive PING logged at most once per hour via `info_keepalive`.
 - Protocol sketch: `docs/airc-remote-control.md`. Ops: `docs/airc-ops.md`.
 
+## Network-wide install (FR #3991)
+
+`airc-network-installer.exe` (UAC admin) installs/upgrades airc across the LAN via PsExec. Pack ships it as a release asset and lays it at `<ai root>\airc\airc-network-installer.exe`. Always downloads Latest airc MSI + sha256. Property `AIRC_PROFILE`; service `Airc`. See `docs/airc-ops.md`.
+
 ## Install, upgrade, rollback, hotpatch
 
 **Antivirus exclusions (FR #4215):** before laying airc.exe, MSI schedules Defender RunAvExclude **Before=InstallFiles**; Install-Airc.ps1 / standalone Install-AircConsole.ps1 call Register-BobiverseAvExclusions.ps1 (Defender path/process + best-effort Avast/AVG FileShield registry). WARN-only on failure; manual Avast File/Folder exception for <ai root>\airc if still blocked. Ops: docs/airc-ops.md.

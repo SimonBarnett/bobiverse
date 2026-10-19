@@ -151,8 +151,12 @@ def test_mrb2373_stale_busy_preserves_other_seat_acc(tmp_path, monkeypatch):
     acc = gitclaim.load_queue(tmp_path)["accepted"]
     assert len(acc) == 1
     assert acc[0]["nick"] == other
+    # FR #4422: without /pull/ evidence, stale ACC is requeued (never invent STALE_BUSY done).
     done = gitclaim.load_queue(tmp_path).get("done") or []
-    assert any(str(r.get("result") or "") == "STALE_BUSY" and str(r.get("id")) == "#2340" for r in done)
+    assert not any(str(r.get("id")) == "#2340" for r in done)
+    unacc = gitclaim.load_queue(tmp_path).get("unaccepted") or []
+    hit = [r for r in unacc if str(r.get("id")) == "#2340"]
+    assert hit and "requeue:STALE_BUSY" in str(hit[0].get("reconcile") or "")
 
 
 def test_mrb2373_missing_accepted_ts_treated_as_stale(tmp_path, monkeypatch):

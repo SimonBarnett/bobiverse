@@ -1557,6 +1557,52 @@ function Get-BobiverseWorkTreeBehindCount {
     return -1
 }
 
+
+function Test-BobiverseScriptNewlines {
+    # FR #4783: True when file has at least one LF (0x0A). Zero-lf scripts are
+    # the collapsed WriteAllText(git-show String[]) footgun.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$MinBytes = 40
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return [pscustomobject]@{ Ok = $false; Path = $Path; Lf = 0; Bytes = 0; Reason = 'missing' }
+    }
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $lf = 0
+    foreach ($b in $bytes) { if ($b -eq 10) { $lf++ } }
+    $ok = ($lf -gt 0) -or ($bytes.Length -lt $MinBytes)
+    $reason = if ($ok) { 'ok' } else { 'lf=0' }
+    return [pscustomobject]@{ Ok = [bool]$ok; Path = $Path; Lf = $lf; Bytes = $bytes.Length; Reason = $reason }
+}
+
+function Assert-BobiverseScriptsHaveNewlines {
+    # FR #4783: compose/Sync gate - fail when any .ps1 under scripts\ or
+    # common\scripts\ is larger than MinBytes and has lf=0.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [int]$MinBytes = 40
+    )
+    $bad = @()
+    foreach ($rel in @('scripts', 'common\scripts')) {
+        $dir = Join-Path $InstallRoot $rel
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
+            $r = Test-BobiverseScriptNewlines -Path $f.FullName -MinBytes $MinBytes
+            if (-not $r.Ok) { $bad += $r }
+        }
+    }
+    if ($bad.Count -gt 0) {
+        $names = ($bad | ForEach-Object { Split-Path -Leaf $_.Path }) -join ', '
+        return [pscustomobject]@{
+            Ok     = $false
+            Reason = ("lf=0 scripts (FR #4783): " + $names)
+            Bad    = $bad
+        }
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = 'all .ps1 have newlines'; Bad = @() }
+}
+
 function Sync-BobiverseScriptTipFromOrigin {
     # FR #2581 / FR #4297: dirty install trees block ff-only, so robocopy can
     # compose a stale common/scripts blob. After fetch, overlay origin/<Branch>
@@ -1578,8 +1624,9 @@ function Sync-BobiverseScriptTipFromOrigin {
         return [pscustomobject]@{ Ok = $false; Reason = 'install is not a git work tree' }
     }
     $rel = ($RelPath -replace '\\', '/').TrimStart('/')
-    if ($rel -notmatch '^common/scripts/[^/]+\.ps1$') {
-        return [pscustomobject]@{ Ok = $false; Reason = "RelPath must be common/scripts/*.ps1 (got $rel)" }
+    # FR #4606: tip overlay may refresh common/scripts/*.py (gitclaim) as well as *.ps1.
+    if ($rel -notmatch '^common/scripts/[^/]+\.(ps1|py)$') {
+        return [pscustomobject]@{ Ok = $false; Reason = "RelPath must be common/scripts/*.(ps1|py) (got $rel)" }
     }
     $leaf = Split-Path -Leaf $rel
     $spec = "origin/${Branch}:${rel}"
@@ -1599,11 +1646,17 @@ function Sync-BobiverseScriptTipFromOrigin {
         if ($bytes.Length -lt $MinBytes) {
             return [pscustomobject]@{ Ok = $false; Reason = "tip blob too small ($($bytes.Length))" }
         }
+        # FR #4783: refuse tip blobs with all newlines stripped (WinPS `$x = git show`
+        # then WriteAllText($x) joins String[] with spaces -> lf=0). Never publish those.
+        $lfCount = 0
+        foreach ($b in $bytes) { if ($b -eq 10) { $lfCount++ } }
+        if ($lfCount -eq 0 -and $bytes.Length -ge $MinBytes) {
+            return [pscustomobject]@{ Ok = $false; Reason = "tip blob has lf=0 (newline stripped); refuse publish (FR #4783)" }
+        }
         $text = [Text.Encoding]::UTF8.GetString($bytes)
         if ($ContentMustMatch -and ($text -notmatch $ContentMustMatch)) {
             return [pscustomobject]@{ Ok = $false; Reason = 'tip blob unexpected content' }
         }
-        $utf8 = New-Object Text.UTF8Encoding $false
         $targets = @(
             (Join-Path $InstallRoot ("scripts\$leaf")),
             (Join-Path $InstallRoot ("common\scripts\$leaf"))
@@ -1613,7 +1666,8 @@ function Sync-BobiverseScriptTipFromOrigin {
             if (-not (Test-Path -LiteralPath $dir)) {
                 New-Item -ItemType Directory -Force -Path $dir | Out-Null
             }
-            [IO.File]::WriteAllText($t, $text.TrimEnd("`r", "`n") + "`n", $utf8)
+            # WriteAllBytes preserves exact tip newlines (no String[] join footgun).
+            [IO.File]::WriteAllBytes($t, $bytes)
         }
         return [pscustomobject]@{
             Ok     = $true
@@ -1643,8 +1697,8 @@ function Sync-BobiverseUpdaterFromOrigin {
 }
 
 function Sync-BobiverseHarvestScriptsFromOrigin {
-    # FR #4297: same dirty-ff class as FR #2581. Flat scripts\Invoke-BobiverseHarvest.ps1
-    # (and Report-BobiverseIntakeIssue.ps1) lag tip after merges like FR #4288 ExistingPrUrl
+    # FR #4297 / FR #4783: same dirty-ff class as FR #2581. Flat scripts\Invoke-BobiverseHarvest.ps1
+    # (and Report-BobiverseIntakeIssue.ps1) lag tip after merges like FR #4288 ExistingPrUrl / FR #4419 Protect-HarvestBodyClosesKeywords
     # when the install worktree cannot ff. Overlay origin tip into flat + common.
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
@@ -1655,9 +1709,12 @@ function Sync-BobiverseHarvestScriptsFromOrigin {
     $ok = $true
     $reasons = @()
     $bytes = 0
+    # FR #4783 / FR #4780: also tip-heal intake.py (is_lesson_review_meta_loop) -
+    # same dirty-ff lag class; never hand WriteAllText of `git show` String[].
     foreach ($pair in @(
-            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'ExistingPrUrl|FR #4288|Invoke-BobiverseHarvest' },
-            @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake' }
+            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'Protect-HarvestBodyClosesKeywords|FR #4371|FR #4419|ExistingPrUrl|Invoke-BobiverseHarvest|FR #4780' },
+            @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake' },
+            @{ Rel = 'common/scripts/intake.py'; Match = 'is_lesson_review_meta_loop|FR #4780|/bob/v1/intake' }
         )) {
         $r = Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
             -RelPath $pair.Rel -ContentMustMatch $pair.Match
@@ -1677,6 +1734,22 @@ function Sync-BobiverseHarvestScriptsFromOrigin {
         Results = $results
     }
 }
+
+function Sync-BobiverseGitclaimFromOrigin {
+    # FR #4606: dirty-ff leaves compose/dev gitclaim.py stale (MRB exact-seat / no
+    # dead-author inherit). Overlay origin tip into flat scripts\ and common\scripts\.
+    # Frozen jeeves.exe still embeds build-time copy until rebuild.
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [string]$Branch = 'main',
+        [string]$GitExe = ''
+    )
+    return Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
+        -RelPath 'common/scripts/gitclaim.py' `
+        -ContentMustMatch 'FR #4606|review_blocked_for_author|nick_inherits_dead_seat'
+}
+
+
 function Get-BobiverseInstallGitExcludeText {
     # Shared by install bootstrap and sync refresh (FR #132). Linked FR worktrees use this exclude.
     param([Parameter(Mandatory)][string]$Product)

@@ -38,6 +38,17 @@ PUBLIC_BASE = "https://irc.ntsa.uk"
 PROBE_ZEN = "jeeves-health-probe"          # bobcallback acks this ping quietly (no queue, no announce)
 PROBE_REPO = "SimonBarnett/bobiverse"
 MAX_REPOS = 60
+# FR #4725: fleet defaults for chair + digest resync-repos.txt (fresh install / wipe).
+# Ops may add more; ensure_resync_repos_file merges these without dropping extras.
+DEFAULT_RESYNC_REPOS = (
+    "SimonBarnett/a-search",
+    "SimonBarnett/agentic_fomprep",
+    "SimonBarnett/bobiverse",
+    "SimonBarnett/xai-cookbook",
+    "SimonBarnett/Club-Madeira",
+    "SimonBarnett/ce-priority",
+)
+RESYNC_REPOS_NAME = "resync-repos.txt"
 
 # (name, method, path, status codes that count as UP)
 CHECKS = (
@@ -163,12 +174,57 @@ def default_token() -> tuple[str, str]:
     return (tok, src) if tok else ("", "none")
 
 
+def ensure_resync_repos_file(home: Path, *, defaults: tuple[str, ...] | None = None) -> Path:
+    """Create or merge fleet defaults into ``<home>/resync-repos.txt`` (FR #4725).
+
+    Missing file: write the default list. Existing file: append any missing defaults
+    (comments and operator extras stay). Never removes a line.
+    """
+    import gitclaim
+
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / RESYNC_REPOS_NAME
+    wanted = list(defaults if defaults is not None else DEFAULT_RESYNC_REPOS)
+    wanted = [
+        gitclaim.canonical_queue_repo(n)
+        for n in wanted
+        if gitclaim.REPO_RE.fullmatch(str(n).strip())
+    ]
+    wanted = list(dict.fromkeys(wanted))
+    if not path.is_file():
+        body = (
+            "# Fleet GitHub resync list (FR #4725). One owner/repo per line.\n"
+            "# Install and chair start merge DEFAULT_RESYNC_REPOS; do not delete ce-priority.\n"
+            + "\n".join(wanted)
+            + "\n"
+        )
+        path.write_text(body, encoding="utf-8")
+        return path
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return path
+    present = {
+        gitclaim.canonical_queue_repo(ln.strip()).lower()
+        for ln in raw.splitlines()
+        if ln.strip() and not ln.strip().startswith("#") and gitclaim.REPO_RE.fullmatch(ln.strip())
+    }
+    missing = [n for n in wanted if n.lower() not in present]
+    if not missing:
+        return path
+    add = ("\n" if raw and not raw.endswith("\n") else "") + "\n".join(missing) + "\n"
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(add)
+    return path
+
+
 def configured_repos(home: Path) -> list[str]:
     import gitclaim
     names: list[str] = []
     env = (os.environ.get("JEEVES_RESYNC_REPOS") or "").replace(";", ",")
     names += [x.strip() for x in env.split(",") if x.strip()]
-    for p in (Path(home) / "resync-repos.txt",):
+    for p in (Path(home) / RESYNC_REPOS_NAME,):
         try:
             names += [ln.strip() for ln in p.read_text(encoding="utf-8-sig").splitlines()
                       if ln.strip() and not ln.strip().startswith("#")]
@@ -295,8 +351,12 @@ def resync_cycle(
     if owners is None:
         owners = {"simonbarnett"}
     bud = budget or gab.GithubApiBudget(home, clock=time.time, log=log or (lambda _s: None))
+    _log = log or (lambda _s: None)
     if fetch_json is None:
         if not bud.allow("reconcile", essential=essential):
+            # FR #4422: never skip silently — log why and surface retry/reset fields.
+            why = bud.skip_reason("reconcile") or "budget-backoff"
+            _log(f"WARN github-resync skipped: {why}")
             return {
                 "ok": True,
                 "unaccepted": len(gitclaim.load_unaccepted(home)),
@@ -305,6 +365,8 @@ def resync_cycle(
                 "repos": [],
                 "failed": [],
                 "note": "budget-backoff",
+                "skip_reason": why,
+                "rate_reset": bud.rate_reset,
                 "pruned": 0,
                 "pruned_detail": [],
                 "dropped_detail": [],
@@ -347,6 +409,12 @@ class ChairJobs:
         self.sleep = sleep
         self.spawn = spawn
         self.owners = owners
+        # FR #4725: seed/merge fleet resync-repos.txt on both homes (includes ce-priority).
+        try:
+            ensure_resync_repos_file(self.home)
+            ensure_resync_repos_file(self.digest_home)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"WARN ensure_resync_repos_file: {type(exc).__name__}: {exc}")
         t0 = clock()
         self.next_probe = t0 + FIRST_PROBE_DELAY_S
         self.next_resync = t0 + FIRST_RESYNC_DELAY_S
@@ -365,6 +433,31 @@ class ChairJobs:
 
     def request_resync(self) -> None:
         self.next_resync = 0.0
+
+    def _maybe_pull_resync_forward_after_skip(self, now: float) -> None:
+        """FR #4422: after budget-backoff, schedule retry at rate-limit reset (not only +RESYNC_S)."""
+        res = self.last_resync if isinstance(self.last_resync, dict) else {}
+        if str(res.get("note") or "") != "budget-backoff":
+            return
+        reset = res.get("rate_reset")
+        if reset is None:
+            reset = getattr(self.api_budget, "rate_reset", None)
+        try:
+            reset_f = float(reset) if reset is not None else None
+        except (TypeError, ValueError):
+            reset_f = None
+        # Prefer GitHub reset; otherwise retry in 5 min so an exhausted hourly
+        # counter is not left silent until the next full hour.
+        retry_at = (reset_f + 1.0) if reset_f is not None else (float(now) + 300.0)
+        if retry_at < float(now):
+            retry_at = float(now) + 5.0
+        if retry_at < self.next_resync:
+            self.next_resync = retry_at
+            why = res.get("skip_reason") or "budget-backoff"
+            self.log(
+                f"INFO github-resync retry scheduled in "
+                f"{int(max(0, retry_at - float(now)))}s reason={why}"
+            )
 
     def tick(self) -> bool:
         now = self.clock()
@@ -418,6 +511,9 @@ class ChairJobs:
         if now >= self.next_resync:
             self.next_resync = now + RESYNC_S
             self._resync()
+            # FR #4422: when reconcile was skipped for rate-limit/budget, retry at
+            # X-RateLimit-Reset (or sooner than the full hourly cadence).
+            self._maybe_pull_resync_forward_after_skip(now)
         now = self.clock()
         if now >= self.next_merge_on_green:
             self.next_merge_on_green = now + MERGE_ON_GREEN_S
@@ -431,13 +527,22 @@ class ChairJobs:
                     self.home,
                     token=token or None,
                     log=self.log,
+                    rate_remaining=mrb_merge_on_green.get_rate_remaining,
                 )
-                if out.get("merged") or out.get("requeued") or out.get("skipped_hold"):
+                # FR #4543: when budget is low, stretch the next sweep so offers/resync keep quota.
+                if out.get("backed_off"):
+                    self.next_merge_on_green = now + max(MERGE_ON_GREEN_S, 300.0)
+                    self.log(
+                        "INFO merge-on-green back-off "
+                        f"rate_remaining={out.get('rate_remaining')} "
+                        f"pending={out.get('seen', 0)}"
+                    )
+                elif out.get("merged") or out.get("requeued") or out.get("skipped_hold") or out.get("dropped"):
                     self.log(
                         "INFO merge-on-green "
                         f"merged={out.get('merged', 0)} requeued={out.get('requeued', 0)} "
                         f"wait={out.get('wait', 0)} hold={out.get('skipped_hold', 0)} "
-                        f"err={out.get('errors', 0)}"
+                        f"dropped={out.get('dropped', 0)} err={out.get('errors', 0)}"
                     )
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN merge-on-green: {type(exc).__name__}: {exc}")
@@ -478,14 +583,20 @@ class ChairJobs:
             self.last_resync, self.last_resync_at = res, self.clock()
             if res.get("ok"):
                 note = res.get("note") or ""
-                self.log(
-                    f"INFO github-resync ok repos={len(res.get('repos') or [])} "
-                    f"failed={len(res.get('failed') or [])} "
-                    f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
-                    f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
-                    f"unaccepted={res.get('unaccepted', 0)}"
-                    + (f" note={note}" if note else "")
-                )
+                # FR #4422: budget-backoff is a skip — keep WARN visible (resync_cycle also logs).
+                if note == "budget-backoff":
+                    why = res.get("skip_reason") or note
+                    self.log(f"WARN github-resync skipped note={note} reason={why}")
+                else:
+                    self.log(
+                        f"INFO github-resync ok repos={len(res.get('repos') or [])} "
+                        f"failed={len(res.get('failed') or [])} "
+                        f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
+                        f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
+                        f"unaccepted={res.get('unaccepted', 0)} "
+                        f"fix_dup={res.get('fix_dup', 0)}"
+                        + (f" note={note}" if note else "")
+                    )
                 # FR #2899: name every dropped row + reason (never only dropped=N).
                 for detail in list(res.get("dropped_detail") or [])[:40]:
                     self.log(f"INFO github-resync dropped {detail}")

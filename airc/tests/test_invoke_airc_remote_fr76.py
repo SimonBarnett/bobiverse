@@ -71,3 +71,15 @@ def test_outbox_write_command(tmp_path):
     # FR #1546: Command/Cmd bodies are prefixed with id=<corr> for reply correlation.
     assert "PRIVMSG tm_console :id=" in text
     assert "cmd: echo ok" in text
+
+
+def test_fr4813_selftest_wait_writes_in_process():
+    """Happy-path DONE wait must not rely on Start-Job (full-suite flake)."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "FR #4813" in text
+    start = text.index("$id = 'aabbccdd'")
+    end = text.index("Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId 'ffffffff'")
+    block = text[start:end]
+    assert "Add-Content -LiteralPath $jsonl" in block
+    assert "Start-Job -ScriptBlock" not in block
+    assert "$job = Start-Job" not in block

@@ -62,6 +62,7 @@ def test_stage_airc_skipmsi_version_matches_pack_param(tmp_path: Path):
         str(out),
         "-SkipMsi",
         "-SkipAircExe",
+        "-SkipAircNetworkInstallerExe",
         "-KeepStage",
     ]
     env = os.environ.copy()

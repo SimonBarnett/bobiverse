@@ -369,6 +369,11 @@ def accept_job_by_ref(
             doc.setdefault("accepted", []).append(job)
             if len(doc["accepted"]) > gitclaim.ACCEPTED_CAP:
                 doc["accepted"] = doc["accepted"][-gitclaim.ACCEPTED_CAP :]
+            # FR #4604: FIX seat must not self-MRB the same PR after synchronize re-queue.
+            if str(job.get("task") or "").upper() == "FIX":
+                gitclaim.stamp_fix_seats_on_mrb_rows(
+                    doc, repo, str(job.get("id") or ident), nick
+                )
             try:
                 gitclaim._write_queue(gitclaim.queue_path(home), doc)
             except OSError:
@@ -388,7 +393,14 @@ def complete_job_by_ref(
     result: str = "",
     url: str = "",
 ) -> tuple[str, dict | None]:
-    """Mark accepted (or unaccepted) job done; apply light supersede hooks."""
+    """Mark accepted (or unaccepted) job done; apply light supersede hooks.
+
+    FR #4422: never mark an FR done without a /pull/ URL (implement PR evidence).
+    """
+    task_u = str(task or "").upper()
+    pull_src = (url or result or "").strip()
+    if task_u == "FR" and "/pull/" not in pull_src:
+        return "refused", None
     try:
         with gitclaim._lock(home):
             try:
@@ -424,6 +436,11 @@ def complete_job_by_ref(
             doc.setdefault("done", []).append(job)
             if len(doc["done"]) > gitclaim.ACCEPTED_CAP:
                 doc["done"] = doc["done"][-gitclaim.ACCEPTED_CAP :]
+            # FR #4604: FIX seat must not self-MRB the same PR after synchronize re-queue.
+            if str(job.get("task") or "").upper() == "FIX":
+                gitclaim.stamp_fix_seats_on_mrb_rows(
+                    doc, repo, str(job.get("id") or ident), nick
+                )
             # FR #740 / #738 / #1323: DONE MRB (PASS or FAIL) purges any lingering unaccepted
             # duplicate and stamps ledger mrb_done so the next !bored cannot re-offer the same PR.
             if str(job.get("task") or "").upper() == "MRB":
@@ -493,8 +510,19 @@ def complete_job_by_ref(
         return "error", None
 
 
+def is_self_mrb_giveup_reason(raw: str) -> bool:
+    """True when a GIVEUP reason is self-MRB (FR #4658), not a review GIVEUP."""
+    return "self-mrb" in str(raw or "").lower()
+
+
 def return_job_to_unaccepted(
-    home: Path, *, repo: str, task: str, ident: str, now: float | None = None
+    home: Path,
+    *,
+    repo: str,
+    task: str,
+    ident: str,
+    now: float | None = None,
+    reason: str = "",
 ) -> tuple[str, dict | None]:
     """Return an accepted job to unaccepted after NACK/GIVEUP (FR #180 cooldown + needs_human)."""
     import time as _time
@@ -517,13 +545,16 @@ def return_job_to_unaccepted(
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
             gave_up_by = str(job.get("nick") or "").strip()
-            # FR #3277: self-MRB GIVEUP (author/implementer) must not burn the
-            # GIVEUP_NEEDS_HUMAN_COUNT budget or stamp needs_human — self_mrb
-            # already blocks re-offer to the author; other seats must stay free.
+            # FR #3277 / #4658: author or pusher self-MRB GIVEUP must not burn the
+            # GIVEUP_NEEDS_HUMAN_COUNT budget or stamp needs_human. The seat is
+            # excluded; a fresh seat must stay offerable.
             self_mrb_giveup = (
                 str(job.get("task") or "").upper() == "MRB"
                 and bool(gave_up_by)
-                and gitclaim.nick_is_row_author(job, gave_up_by)
+                and (
+                    gitclaim.nick_is_row_author(job, gave_up_by)
+                    or is_self_mrb_giveup_reason(reason)
+                )
             )
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
@@ -557,6 +588,8 @@ def return_job_to_unaccepted(
                     seats.append(canon_g)
             if seats:
                 job["giveup_seats"] = ",".join(seats)
+            if self_mrb_giveup and gave_up_by:
+                gitclaim.append_author_seat(job, gave_up_by)
             until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
                 seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
             )
@@ -619,6 +652,13 @@ def handle_shop_worker_line(
         except Exception:  # noqa: BLE001
             pass
         if st == "missing":
+            # FR #4642: a re-ACK of a job this seat already DONE'd must not recreate
+            # an ack-missing hold (lost follow-up DONE then nak-busy forever).
+            if gitclaim.seat_done_without_later_offer(
+                home, nick, parsed.repo, parsed.task, parsed.id
+            ):
+                out["status"] = "duplicate-after-done"
+                return out
             # The seat is working on what it ACKed even when the queue row is gone (re-synced, already
             # accepted, offered twice): the digest must still show it as doing (t816u).
             job = {"task": parsed.task, "repo": parsed.repo, "id": parsed.id}
@@ -641,13 +681,20 @@ def handle_shop_worker_line(
         return out
 
     if parsed.verb in ("NACK", "GIVEUP"):
+        # FR #1701: trailing reason from the GIVEUP/NACK PRIVMSG for chair stdout/cmd-trace.
+        # FR #4658: self-MRB must be known before the row is returned, or pusher
+        # seats burn giveup_count and stamp needs_human.
+        reason = truncate_giveup_reason(parsed.rest or parsed.title or "")
         st, job = return_job_to_unaccepted(
-            home, repo=parsed.repo, task=parsed.task, ident=parsed.id
+            home,
+            repo=parsed.repo,
+            task=parsed.task,
+            ident=parsed.id,
+            reason=reason,
         )
         out["status"] = st
         out["job"] = job
-        # FR #1701: trailing reason from the GIVEUP/NACK PRIVMSG for chair stdout/cmd-trace.
-        out["reason"] = truncate_giveup_reason(parsed.rest or parsed.title or "")
+        out["reason"] = reason
         try:  # t852u: remember who gave this up, forever (resync drops row stamps)
             gitclaim.ledger_note_event(home, nick, parsed.verb, parsed.task, parsed.repo, parsed.id, job if isinstance(job, dict) else None)
         except Exception:  # noqa: BLE001
@@ -693,6 +740,22 @@ def handle_shop_worker_line(
                 )
                 if mog:
                     out["merge_on_green"] = mog
+            except Exception:  # noqa: BLE001
+                pass
+        # FR #4718: DONE MRB FAIL with no fix PR queues FIX for that head at once.
+        if str(parsed.task or "").upper() == "MRB" and str(parsed.result or "").upper() == "FAIL":
+            try:
+                import mrb_merge_on_green
+
+                fail_fix = mrb_merge_on_green.enqueue_from_mrb_fail_done(
+                    home,
+                    repo=parsed.repo,
+                    pr_url=parsed.url or str((job or {}).get("url") or ""),
+                    nick=nick,
+                    sha=str((job or {}).get("pass_sha") or ""),
+                )
+                if fail_fix:
+                    out["mrb_fail_fix"] = fail_fix
             except Exception:  # noqa: BLE001
                 pass
         payload = format_activity_payload(

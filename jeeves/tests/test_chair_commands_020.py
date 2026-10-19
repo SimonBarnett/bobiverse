@@ -351,7 +351,7 @@ def test_help_lists_assign_with_usage_and_rules(chair):
     chair.acct["simon"] = "simon"
     for nick in ("simon", EAR):
         text = "\n".join(pm(chair, nick, "!help"))
-        assert "!assign {worker-nick} {repo} {FR|MRB|UAT} {num}" in text, nick
+        assert "!assign {worker-nick} {repo} {FR|MRB|UAT|FIX} {num}" in text, nick
     detail = pm(chair, MH_EAR, "!help assign")
     blob = "\n".join(detail)
     assert detail[0].startswith("syntax: !assign")

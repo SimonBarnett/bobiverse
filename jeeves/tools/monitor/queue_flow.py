@@ -108,7 +108,13 @@ def _gate_bucket(row: dict) -> str:
             return "skill"
         if "needs-human" in labs_l:
             return "needs-human"
-    rm = str(row.get("require_machine") or "").strip()
+    # FR #4610: bucket must match offer gates. Bobiverse ignores raw stamps
+    # (FR #4512 re-infer); use row_require_machine when gitclaim is available.
+    try:
+        gc = _ensure_gitclaim()
+        rm = str(gc.row_require_machine(row) or "").strip()
+    except Exception:
+        rm = str(row.get("require_machine") or "").strip()
     if rm and rm.lower() not in ("*", "any", "none", "-", ""):
         return "require_machine"
     return "ungated"

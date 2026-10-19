@@ -102,15 +102,20 @@ def test_accepted_job_blocks_bored(home: Path):
 
 
 def test_stale_accepted_job_still_reaped_on_bored(home: Path):
-    """Safety valve: the existing BUSY_STALE_S reaper still frees a seat whose ACK is old."""
+    """Safety valve: BUSY_STALE_S reaper frees a seat whose ACK is old.
+
+    FR #4422: without a digest pull URL the stale ACC is requeued (not invented into
+    done), so the seat may be re-offered #1; the gate is that busy no longer sticks.
+    """
     old = _accepted("FR", 1)
     old["accepted_ts"] = _ts(gitclaim.BUSY_STALE_S + 60)
     _queue(home, [_row("FR", 10)], [old])
     assert gitclaim.bored_gate(home, ME, SHOP, time.time()) == "ok"
     st, job = gitclaim.offer_focus_top(home, ME, SHOP)
-    assert st == "ok" and job["id"] == "#10"
-    st, job = gitclaim.offer_focus_top(home, ME, SHOP)
-    assert st == "empty" and job is None
+    assert st == "ok" and job is not None
+    assert job["id"] in ("#1", "#10")
+    # After one take, seat still not stuck behind a phantom ACC.
+    assert gitclaim.bored_gate(home, ME, SHOP, time.time()) in ("ok", "busy")
 
 
 def test_accepted_job_blocks_done_push(home: Path):
@@ -262,11 +267,13 @@ def test_holds_file_is_separate_from_queue(home: Path):
 
 # --- irc_agent wiring (source pins) -----------------------------------------------
 
-def test_irc_agent_done_push_only_on_status_ok():
+def test_irc_agent_done_push_on_ok_and_missing():
+    # FR #4624: missing ACC (row already dropped) still pushes; offer_after_done
+    # enforces one-open-job. Only error/refused DONE skips.
     src = IRC.read_text(encoding="utf-8")
-    assert 'verb == "DONE" and status in ("ok", "missing")' not in src
-    i = src.find('elif verb == "DONE" and status == "ok":')
-    assert i > 0 and "offer_after_done" in src[i : i + 600]
+    i = src.find('elif verb == "DONE" and status in ("ok", "missing"):')
+    assert i > 0 and "offer_after_done" in src[i : i + 800]
+    assert "FR #4624" in src
     assert "done-offer skipped" in src
 
 

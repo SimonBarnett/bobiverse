@@ -1,4 +1,4 @@
-"""FR #4388: walrus_console SASL 904 after upgrade must auto-recover without manual SAPASSWD.
+"""FR #4388: walrus_console SASL 904 after upgrade must auto-recover without manual NickServ PASSWD.
 
 #3900 heals when a *different* legacy console.password exists. On walrus (DC / LocalSystem)
 the live home already holds the (wrong) GUID and no alternate file is found, so heal returns
@@ -141,7 +141,7 @@ def test_fr4388_sasl_904_without_oper_keeps_loud_error(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "_legacy_console_password_paths", lambda: [])
     monkeypatch.setattr(s, "_load_oper_credentials_for_reclaim", lambda: None)
     s.on_line(":srv 904 * :SASL authentication failed")
-    assert any("SASL failed (904)" in m and "SAPASSWD" in m for m in s.logs), s.logs
+    assert any("SASL failed (904)" in m and "NickServ PASSWD" in m for m in s.logs), s.logs
     assert not any(l.startswith("OPER ") for l in s.sent), s.sent
     assert s._force_reconnect is False
 

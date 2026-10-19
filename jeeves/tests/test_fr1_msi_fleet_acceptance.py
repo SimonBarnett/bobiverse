@@ -58,7 +58,11 @@ def test_s1_pack_builds_all_three_products():
     assert AIRC_CONSOLE_LEGACY not in t or UPGRADE["airc"] != AIRC_CONSOLE_LEGACY
     assert UPGRADE["airc"] != AIRC_CONSOLE_LEGACY
     assert "MajorUpgrade" in t
-    assert 'Schedule="afterInstallInitialize"' in t
+    # FR #4610 / #4432: Schedule uses majorUpgradeSchedule (airc=afterInstallValidate;
+    # other products=afterInstallInitialize). Do not require a literal WiX attribute.
+    assert "majorUpgradeSchedule" in t
+    assert "afterInstallInitialize" in t
+    assert "afterInstallValidate" in t
     assert len(set(UPGRADE.values())) == 3
 
 

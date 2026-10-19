@@ -37,14 +37,20 @@ def test_fr4011_pack_disables_restart_manager():
 
 
 def test_fr4011_airc_stops_service_before_removeexistingproducts():
+    """FR #4011 stop-before-upgrade; FR #4432: immediate QtExec64 + REP afterInstallValidate."""
     text = _pack()
-    assert "StopAircBeforeUpgrade" in text
-    assert "SetStopAircUpgradeCmd" in text
-    assert 'Before="RemoveExistingProducts"' in text
+    assert "StopAircBeforeValidate" in text
+    assert "SetStopAircValidateCmd" in text
+    assert "QtExec64CmdLine" in text
+    assert 'Before="InstallValidate"' in text
     assert "WIX_UPGRADE_DETECTED" in text
     assert "sc.exe" in text and "stop Airc" in text
+    # FR #4432: deferred StopAircBeforeUpgrade Before=REP caused Error 2613 — must stay gone.
+    assert 'CustomAction Id="StopAircBeforeUpgrade"' not in text
+    assert 'Action="StopAircBeforeUpgrade"' not in text
+    assert 'Before="RemoveExistingProducts"' not in text
     # Keep FR #1566 uninstall path (full /x) separate from upgrade stop.
-    assert 'NOT UPGRADINGPRODUCTCODE' in text
+    assert "NOT UPGRADINGPRODUCTCODE" in text
     assert "RunUninstall" in text
 
 

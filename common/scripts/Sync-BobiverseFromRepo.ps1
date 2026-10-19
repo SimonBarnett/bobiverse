@@ -324,6 +324,7 @@ foreach ($d in @('scripts', 'third_party')) {
 # FR #2982: still run this overlay when skipStaleCompose (MSI flat files kept).
 # FR #4297: same tip overlay for Invoke-BobiverseHarvest.ps1 + Report-BobiverseIntakeIssue.ps1
 # (ExistingPrUrl / intake fixes must reach flat scripts\ without a clean ff).
+# FR #4606: also tip-heal gitclaim.py (MRB exact-seat / no dead-author inherit).
 if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
     try {
         $upd = Sync-BobiverseUpdaterFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
@@ -344,6 +345,31 @@ if (-not $DryRun -and $git -and (Test-Path -LiteralPath (Join-Path $InstallRoot 
         }
     } catch {
         Write-Host ("WARN sync-harvest-from-tip error: {0}" -f $_.Exception.Message)
+    }
+    # FR #4606: tip-heal gitclaim.py (MRB exact-seat; no dead-author inherit) for compose path.
+    try {
+        $gc = Sync-BobiverseGitclaimFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $git
+        if ($gc.Ok) {
+            Write-Host ("INFO sync-gitclaim-from-tip ok bytes={0}: {1}" -f $gc.Bytes, $gc.Reason)
+        } else {
+            Write-Host ("WARN sync-gitclaim-from-tip skipped: {0}" -f $gc.Reason)
+        }
+    } catch {
+        Write-Host ("WARN sync-gitclaim-from-tip error: {0}" -f $_.Exception.Message)
+    }
+    # FR #4783: refuse to leave composed scripts\ with lf=0 .ps1 (collapsed hotpatch).
+    try {
+        $nl = Assert-BobiverseScriptsHaveNewlines -InstallRoot $InstallRoot
+        if (-not $nl.Ok) {
+            Write-Host ("ALERT sync-newline-gate FAIL: {0}" -f $nl.Reason)
+            throw ("FR #4783 newline gate: " + $nl.Reason)
+        } else {
+            Write-Host ("INFO sync-newline-gate ok: {0}" -f $nl.Reason)
+        }
+    } catch {
+        if ("$($_.Exception.Message)" -match 'FR #4783 newline gate') { throw }
+        Write-Host ("WARN sync-newline-gate error: {0}" -f $_.Exception.Message)
+        throw
     }
 }
 

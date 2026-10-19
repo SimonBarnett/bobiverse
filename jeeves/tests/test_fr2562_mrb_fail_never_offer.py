@@ -69,15 +69,15 @@ def test_mrb_fail_claim_from_payload_is_none():
 
 
 def test_needs_human_global_after_giveup_threshold():
-    # FR #3277: with giveup_seats set, only those seats stay blocked at threshold.
+    # FR #4336: needs_human blocks every seat for auto-offer (supersedes FR #3277 other-seat carve-out).
     row = {
         "needs_human": True,
         "giveup_count": 2,
         "giveup_seats": "marchhare-111,marchhare-222",
     }
     assert gitclaim.row_needs_human(row, "marchhare-111") is True
-    assert gitclaim.row_needs_human(row, "marchhare-333") is False
-    assert gitclaim.row_needs_human(row, "ionos-1") is False
+    assert gitclaim.row_needs_human(row, "marchhare-333") is True  # FR #4336 global
+    assert gitclaim.row_needs_human(row, "ionos-1") is True  # FR #4336 global
     # Bare needs_human (no giveup_seats) remains global at/above threshold.
     bare = {"needs_human": True, "giveup_count": 2}
     assert gitclaim.row_needs_human(bare, "marchhare-333") is True
@@ -88,7 +88,7 @@ def test_needs_human_global_after_giveup_threshold():
         "giveup_seats": "marchhare-111",
     }
     assert gitclaim.row_needs_human(early, "marchhare-111") is True
-    assert gitclaim.row_needs_human(early, "marchhare-333") is False
+    assert gitclaim.row_needs_human(early, "marchhare-333") is True  # FR #4336 global
 
 
 def test_stale_unaccepted_mrb_fail_pruned_on_resync(tmp_path, monkeypatch):

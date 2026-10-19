@@ -83,13 +83,68 @@ namespace BobDialogs
             return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "unknown";
         }
 
-        // FR #3181 / FR #4307: hard cap = IRC agent markers ∪ live agent bob-worker roots.
+        // FR #3181 / FR #4307 / FR #4458: agent roots, plus IRC markers not under one of those roots.
         public static int Seats()
         {
-            HashSet<int> pids = new HashSet<int>();
-            foreach (int pid in IrcAgentSeatPids()) pids.Add(pid);
-            foreach (int pid in LiveAgentRootPids()) pids.Add(pid);
-            return pids.Count;
+            List<int> ids = new List<int>();
+            List<int> parents = new List<int>();
+            List<string> seatModes = new List<string>();
+            LoadBobWorkerRows(ids, parents, seatModes);
+            HashSet<int> roots = new HashSet<int>();
+            Dictionary<int, int> parentOf = new Dictionary<int, int>();
+            for (int i = 0; i < ids.Count; i++)
+            {
+                parentOf[ids[i]] = parents[i];
+                if (ids.Contains(parents[i])) continue;
+                if (string.Equals(seatModes[i], "agent", StringComparison.OrdinalIgnoreCase))
+                    roots.Add(ids[i]);
+            }
+            HashSet<int> identities = new HashSet<int>(roots);
+            foreach (int pid in IrcAgentSeatPids())
+            {
+                if (PidUnderAgentRoot(pid, parentOf, roots)) continue;
+                identities.Add(pid);
+            }
+            return identities.Count;
+        }
+
+        static bool PidUnderAgentRoot(int pid, Dictionary<int, int> parentOf, HashSet<int> roots)
+        {
+            HashSet<int> seen = new HashSet<int>();
+            int cur = pid;
+            while (cur > 0 && seen.Add(cur))
+            {
+                if (roots.Contains(cur)) return true;
+                int pp;
+                if (!parentOf.TryGetValue(cur, out pp)) return false;
+                cur = pp;
+            }
+            return false;
+        }
+
+        static void LoadBobWorkerRows(List<int> ids, List<int> parents, List<string> seatModes)
+        {
+            try
+            {
+                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
+                    "SELECT ProcessId, ParentProcessId, Name, CommandLine FROM Win32_Process WHERE Name LIKE 'bob-worker%'"))
+                {
+                    foreach (ManagementObject mo in q.Get())
+                    {
+                        try
+                        {
+                            string name = Convert.ToString(mo["Name"] ?? "");
+                            string baseName = Path.GetFileNameWithoutExtension(name);
+                            if (!SeatName.IsMatch(baseName)) continue;
+                            ids.Add(Convert.ToInt32(mo["ProcessId"]));
+                            parents.Add(Convert.ToInt32(mo["ParentProcessId"]));
+                            seatModes.Add(ModeFromCommandLine(Convert.ToString(mo["CommandLine"] ?? "")));
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
         }
 
         static IEnumerable<int> IrcAgentSeatPids()
@@ -128,27 +183,7 @@ namespace BobDialogs
             List<int> ids = new List<int>();
             List<int> parents = new List<int>();
             List<string> seatModes = new List<string>();
-            try
-            {
-                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
-                    "SELECT ProcessId, ParentProcessId, Name, CommandLine FROM Win32_Process WHERE Name LIKE 'bob-worker%'"))
-                {
-                    foreach (ManagementObject mo in q.Get())
-                    {
-                        try
-                        {
-                            string name = Convert.ToString(mo["Name"] ?? "");
-                            string baseName = Path.GetFileNameWithoutExtension(name);
-                            if (!SeatName.IsMatch(baseName)) continue;
-                            ids.Add(Convert.ToInt32(mo["ProcessId"]));
-                            parents.Add(Convert.ToInt32(mo["ParentProcessId"]));
-                            seatModes.Add(ModeFromCommandLine(Convert.ToString(mo["CommandLine"] ?? "")));
-                        }
-                        catch { }
-                    }
-                }
-            }
-            catch { yield break; }
+            LoadBobWorkerRows(ids, parents, seatModes);
             for (int i = 0; i < ids.Count; i++)
             {
                 if (ids.Contains(parents[i])) continue;

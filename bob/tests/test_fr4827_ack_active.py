@@ -64,7 +64,7 @@ def test_idle_past_quiet_window_still_releases():
     e.note_agent_active()
     n0 = len(sent)
     clock.advance(61.0)
-    assert _wait(lambda: any(r == "idle" for _t, r in e.sent[n0:]), clock, timeout=5.0)
+    assert _wait(lambda: any(r == "ack-stale" for _t, r in e.sent[n0:]), clock, timeout=5.0)
     assert not any("done-miss armed" in m for m in logs)
     e.stop()
 

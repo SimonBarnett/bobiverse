@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
-  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
+  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
 
@@ -77,7 +77,8 @@ function Get-IntakeAllowRepos {
         'SimonBarnett/skills-visionary',
         'SimonBarnett/agentic_fomprep',
         'SimonBarnett/a-search',  # FR #3023
-        'SimonBarnett/trutex'  # FR #3050
+        'SimonBarnett/trutex',  # FR #3050
+        'SimonBarnett/ce-priority'  # FR #4830
     )
     $candidates = @(
         (Join-Path $PSScriptRoot 'intake.py'),
@@ -310,6 +311,8 @@ if (-not $Repo -or -not $Repo.Trim()) {
         $Repo = 'SimonBarnett/agentic_fomprep'
     } elseif ($ownerBlob -match '(?i)\bskills-visionary\b') {
         $Repo = 'SimonBarnett/skills-visionary'
+    } elseif ($ownerBlob -match '(?i)\bce-priority\b|\bce-dayworks\b|\bdayworks-launcher\b') {
+        $Repo = 'SimonBarnett/ce-priority'
     } elseif ($bobCue -or -not ($env:BOB_OUTBOX -and ([string]$env:BOB_OUTBOX).Trim())) {
         $Repo = 'SimonBarnett/bobiverse'
     } else {
@@ -385,6 +388,8 @@ if (Test-HarvestTwinDoneLoop -SummaryText $Summary -LessonLines $Lesson) {
 # FR #4231: also skip tip-loop meta / only-restate Thin FAIL-supersede already-on-main
 # closeouts for any -Book (class of a-search#1839 under Book=harvest-agent-skills).
 # FR #4308: also skip thinner tip + durable lesson already on main (a-search#1980/#2283).
+# FR #4484: also skip FAIL-supersede next to "restates main" / "admit main already has"
+# (class of a-search#3470; those phrases are not already-on-main / second-copy / job-mrb).
 function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$LessonLines) {
     $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
     $isFailSuper = ($joined -match '(?i)FAIL[- ]supersede')
@@ -432,11 +437,14 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
         ($joined -match '(?i)thinner?\b[\s\S]{0,120}?(?:harvest\s+)?tip') -or
         ($joined -match '(?i)FAIL[- ]supersede[d]?\b[\s\S]{0,220}?already\s+on\s+main') -or
         ($joined -match '(?i)durable\s+lesson\s+already') -or
-        ($joined -match '(?i)closed\s+unmerged[\s\S]{0,100}?already\s+on\s+main')
+        ($joined -match '(?i)closed\s+unmerged[\s\S]{0,100}?already\s+on\s+main') -or
+        # FR #4484: "restates main" / "admit main already has" (a-search#3470)
+        ($joined -match '(?i)restate(?:s|ing)?\s+main') -or
+        ($joined -match '(?i)admit\s+main\s+already\s+has')
     )
     if ($isFailSuper -and $isProcess) { return $true }
     if ($isProcess -and ($joined -match '(?i)park(?:ed|s)?\s+under\s+harvest')) { return $true }
-    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827 / #3959 / #4231 / #4308
+    if ($isFailSuper -and $isThinTwin) { return $true }  # FR #2991 / #3827 / #3959 / #4231 / #4308 / #4484
     # FR #4176: CLOSED wrong-book / light-triage DONE PASS (FR #3317) process-loop
     # closeouts re-open lesson(harvest) tips without the FAIL-supersede token (class of #4175).
     $isClosedWrongBook = ($joined -match '(?i)CLOSED\s+wrong[- ]book')
@@ -450,7 +458,7 @@ function Test-HarvestFailSupersedeProcessLoop([string]$SummaryText, [string[]]$L
     return $false
 }
 if (Test-HarvestFailSupersedeProcessLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#4176/#4207/#4231/#4308): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest FAIL-supersede process loop (FR #2970/#2991/#3827/#4176/#4207/#4231/#4308/#4484): not filing lesson(harvest) for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 
@@ -486,6 +494,48 @@ function Test-HarvestLessonMrbPassLoop([string]$SummaryText, [string[]]$LessonLi
 }
 if (Test-HarvestLessonMrbPassLoop -SummaryText $Summary -LessonLines $Lesson) {
     Write-Host "SKIPPED harvest lesson-MRB PASS loop (FR #4357): not filing another harvest-lesson tip for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
+
+# FR #4780: MRB/review of a harvest-lesson (or skills-only) PR must not open a new
+# harvest-lesson tip. Honesty-box for reviewing lessons is the review itself.
+# Also skip lessons whose subject is reviewing / harvesting / closing lessons, and
+# dedup against open+closed harvest-lesson PRs from the last 24h (any seat).
+function Test-HarvestLessonReviewLoop([string]$SummaryText, [string[]]$LessonLines) {
+    $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
+    $isLessonContext = (
+        ($joined -match '(?i)harvest[- ]lesson') -or
+        ($joined -match '(?i)lesson\(harvest') -or
+        ($joined -match '(?i)docs/mrb') -or
+        ($joined -match '(?i)skills[- ]only') -or
+        ($joined -match '(?i)Harvested[- ]lessons') -or
+        ($joined -match '(?i)light\s+triage')
+    )
+    $isMrbReview = (
+        ($joined -match '(?i)\bMRB\b') -or
+        ($joined -match '(?i)\bDONE\s+(?:PASS|FAIL)\b') -or
+        ($joined -match '(?i)CLOSED\s+not[- ]useful') -or
+        ($joined -match '(?i)CLOSED\s+already[- ]covered') -or
+        ($joined -match '(?i)CLOSED\s+wrong[- ]path') -or
+        ($joined -match '(?i)FAIL[- ]supersede') -or
+        ($joined -match '(?i)\breview(?:ing|ed|s)?\b')
+    )
+    $isMetaSubject = (
+        ($joined -match '(?i)review(?:ing|ed|s)?\s+(?:harvest[- ]?lesson|lesson\s+tips?|lessons?\b)') -or
+        ($joined -match '(?i)(?:harvest(?:ing)?|clos(?:e|ing)|FAIL[- ]supersede)\s+(?:harvest[- ]?lesson|lesson\s+tips?|lessons?\b)') -or
+        ($joined -match '(?i)(?:about|when)\s+(?:reviewing|harvesting|closing)\s+lessons?') -or
+        ($joined -match '(?i)do not (?:harvest|open|land|merge)\s+a\s+(?:new|second)\s+(?:harvest[- ]?lesson|lesson)\s+(?:tip|PR|bullet)') -or
+        ($joined -match '(?i)second\s+Harvested[- ]lessons\s+bullet') -or
+        ($joined -match '(?i)tip[- ]?loop') -or
+        ($joined -match '(?i)process\s+meta') -or
+        ($joined -match '(?i)lesson[- ]review')
+    )
+    if ($isMetaSubject) { return $true }
+    if ($isLessonContext -and $isMrbReview) { return $true }
+    return $false
+}
+if (Test-HarvestLessonReviewLoop -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest lesson-review loop (FR #4780): not filing lesson tip after reviewing/closing lessons for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 # FR #4288: when -ExistingPrUrl is set (or Summary/Lesson already cites a github.com/.../pull/N),
@@ -555,13 +605,15 @@ if (Test-HarvestClosedDuplicateLessonLoop -SummaryText $Summary -LessonLines $Le
 
 # FR #3824: if an open harvest-lesson PR from this seat already carries the same
 # lesson text, skip filing (intake also links open twins; this avoids a second POST).
+# FR #4780: also dedup against open AND closed harvest-lesson PRs from the last 24h
+# (any seat) so MRB reviews of lessons cannot re-file the same playbook tip.
 function Test-HarvestOpenLessonTwin {
     param(
         [string]$RepoName,
         [string[]]$LessonLines,
         [string]$Seat
     )
-    if (-not $Seat -or -not $RepoName) { return $false }
+    if (-not $RepoName) { return $false }
     $lessons = @(
         $LessonLines |
             ForEach-Object { ([string]$_).Trim() } |
@@ -572,18 +624,60 @@ function Test-HarvestOpenLessonTwin {
     if (-not $ghCmd) { return $false }
     try {
         $raw = & gh pr list --repo $RepoName --state open --label harvest-lesson --limit 40 --json title,body,url 2>$null
+        if ($raw) {
+            $prs = $raw | ConvertFrom-Json
+            if ($prs -and $Seat) {
+                $seatL = $Seat.ToLowerInvariant()
+                foreach ($pr in @($prs)) {
+                    $blob = ((([string]$pr.title) + "`n" + ([string]$pr.body))).ToLowerInvariant()
+                    $blob = ($blob -replace '\s+', ' ')
+                    $seatHit = $blob -match ("seat=`?" + [regex]::Escape($seatL))
+                    if (-not $seatHit) { continue }
+                    foreach ($L in $lessons) {
+                        $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
+                        if ($key -and $blob.Contains($key)) { return $true }
+                    }
+                }
+            }
+        }
+    } catch {
+        # fall through
+    }
+    return $false
+}
+
+function Test-HarvestRecentLessonDedup {
+    param(
+        [string]$RepoName,
+        [string[]]$LessonLines
+    )
+    if (-not $RepoName) { return $false }
+    $lessons = @(
+        $LessonLines |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ -and $_ -ne '(no new playbook line)' }
+    )
+    if (-not $lessons.Count) { return $false }
+    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $ghCmd) { return $false }
+    try {
+        $raw = & gh pr list --repo $RepoName --state all --label harvest-lesson --limit 50 --json title,body,url,createdAt,closedAt 2>$null
         if (-not $raw) { return $false }
         $prs = $raw | ConvertFrom-Json
         if (-not $prs) { return $false }
-        $seatL = $Seat.ToLowerInvariant()
+        $cutoff = (Get-Date).ToUniversalTime().AddHours(-24)
         foreach ($pr in @($prs)) {
+            $created = $null
+            try { $created = [datetime]::Parse([string]$pr.createdAt).ToUniversalTime() } catch { continue }
+            if ($created -lt $cutoff) { continue }
             $blob = ((([string]$pr.title) + "`n" + ([string]$pr.body))).ToLowerInvariant()
             $blob = ($blob -replace '\s+', ' ')
-            $seatHit = $blob -match ("seat=`?" + [regex]::Escape($seatL))
-            if (-not $seatHit) { continue }
             foreach ($L in $lessons) {
                 $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
+                if ($key.Length -lt 40) { continue }
                 if ($key -and $blob.Contains($key)) { return $true }
+                $short = $key.Substring(0, [Math]::Min(80, $key.Length))
+                if ($short.Length -ge 40 -and $blob.Contains($short)) { return $true }
             }
         }
     } catch {
@@ -592,17 +686,21 @@ function Test-HarvestOpenLessonTwin {
     return $false
 }
 
-
-# FR #4371 / #4099: GitHub auto-links Closes #N / Fixes #N in PR bodies. Harvest tip
+# FR #4371 / #4099 / #4419: GitHub auto-links Closes #N / Fixes #N in PR bodies. Harvest tip
 # narratives that mention "Closes #4363" close product FRs. Replace the keyword with
 # "closing-keyword" so the issue number remains but GitHub does not auto-close.
 function Protect-HarvestBodyClosesKeywords([string]$Text) {
+    # FR #4371 / #4099 / #4419: GitHub auto-links Closes #N / Fixes #N (and Closes #N/#M)
+    # in PR bodies. Harvest tip narratives that mention product closes poison
+    # closingIssuesReferences. Replace the keyword with "closing-keyword".
     if (-not $Text) { return $Text }
     $t = [string]$Text
     $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+)', 'closing-keyword $1')
+    $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+(#\d+(?:/#\d+)+)', 'closing-keyword $1')
     $t = [regex]::Replace($t, '(?i)\b(?:Closes|Fixes)\s+(#\d+)', 'closing-keyword $1')
     return $t
 }
+
 
 $files = @()
 foreach ($sf in $SkillFile) {
@@ -631,10 +729,32 @@ $bookName = if ($Book -and $Book.Trim()) { $Book.Trim() } else { 'harvest' }
 $bookName = $bookName.Substring(0, [Math]::Min(64, $bookName.Length))
 $inferBlob = (($Summary + "`n" + (($Lesson | ForEach-Object { $_ }) -join "`n"))).ToLowerInvariant()
 $script:ExplicitBook = $PSBoundParameters.ContainsKey('Book')
+# FR #4514: a lesson that names a skill book ("belongs in bobiverse-bob-job-irc")
+# wins over FR #3004 keyword inference (done-miss must not retarget that lesson).
+$namedBook = $null
+foreach ($candidate in @(
+        'bobiverse-bob-job-irc', 'bobiverse-bob-job-mrb', 'bobiverse-bob-job-fr',
+        'bobiverse-bob-job-uat', 'bobiverse-bob-worker', 'bobiverse-bob-commands',
+        'bobiverse-bob-troubleshooting', 'bobiverse-bob-plan', 'bobiverse-worker-seat',
+        'bobiverse-fleet-ops', 'bobiverse-bob', 'bobiverse-jeeves-commands',
+        'bobiverse-jeeves-monitor', 'bobiverse-jeeves-troubleshooting', 'bobiverse-jeeves',
+        'bobiverse-airc-commands', 'bobiverse-airc-troubleshooting', 'bobiverse-airc',
+        'harvest-agent-skills', 'harvest-skills-visionary', 'harvest'
+    )) {
+    $escaped = [regex]::Escape($candidate)
+    if ($inferBlob -match "(?:belongs in|belong in|durable home is|file in)\s+``?$escaped``?") {
+        $namedBook = $candidate
+        break
+    }
+}
+if ($namedBook) {
+    $bookName = $namedBook
+    Write-Host "INFO FR #4514 explicit skill_book=$namedBook (keyword inference does not override)"
+}
 # FR #3004: default harvest yields to an inferred product book from Summary+Lesson cues
 # (mirrors intake resolve_skill_book soft override) so bob-worker playbooks are not
 # re-opened as lesson(harvest) when the owning skill already has the bullet.
-if ($bookName -eq 'harvest') {
+if (-not $namedBook -and $bookName -eq 'harvest') {
     # Strong product cues only - bare "MRB"/"UAT" in session summaries must not re-route.
     if ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter') {
         $bookName = 'bobiverse-bob-worker'
@@ -651,9 +771,12 @@ $bobTooling = (
     ($inferBlob -match 'bob-worker|_release_gen|release_gen|done-miss|boredemitter|fleet-ops|hotpatch') -or
     ($inferBlob -match '(?i)\b(jeeves|ircjeeves|bob-tray|tipform|chair outbox|intake allowlist)\b')
 )
-if ($bobTooling -and -not $script:ExplicitRepo) {
+# FR #3959: always route Bob tooling to bobiverse even when seats pass explicit
+# -Repo <product> (FR #3189 job-repo). Otherwise FR #3004 sets bobiverse-bob-worker
+# and opens ADD stubs under bob/ inside a-search (#3952/#3956).
+if ($bobTooling) {
     if ($Repo -notmatch '(?i)^SimonBarnett/bobiverse$') {
-        Write-Host "INFO FR #3189 split: Bob tooling lesson -> repo=SimonBarnett/bobiverse (was $Repo)"
+        Write-Host "INFO FR #3189/#3959 split: Bob tooling lesson -> repo=SimonBarnett/bobiverse (was $Repo)"
     }
     $Repo = 'SimonBarnett/bobiverse'
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/a-search$')) {
@@ -665,6 +788,11 @@ if ($bobTooling -and -not $script:ExplicitRepo) {
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$')) {
     $bookName = 'harvest-agent-skills'
     Write-Host "INFO FR #3318 product default skill_book=harvest-agent-skills for SimonBarnett/agentic_fomprep"
+} elseif ($bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/ce-priority$')) {
+    # FR #4830: even with explicit -Book harvest, never invent common/.grok/skills/harvest
+    # on ce-priority (assert-lock / tip-loop class of ce-priority#36/#37/#38).
+    $bookName = 'dayworks-launcher'
+    Write-Host "INFO FR #4830 product default skill_book=dayworks-launcher for SimonBarnett/ce-priority (never invent common/.grok/skills/harvest)"
 }
 
 # FR #3317: DryRun (and payload) emit the owning skill-book path inside that repo.
@@ -678,6 +806,7 @@ switch -Regex ($bookName) {
         }
     }
     '^harvest-skills-visionary$' { $skillBookPath = '.grok/skills/harvest-skills-visionary/SKILL.md' }
+    '^dayworks-launcher$' { $skillBookPath = 'dayworks/.grok/skills/dayworks-launcher/SKILL.md' }
     '^harvest$' { $skillBookPath = 'common/.grok/skills/harvest/SKILL.md' }
     '^bobiverse-bob-worker$' { $skillBookPath = 'bob/.grok/skills/bobiverse-bob-worker/SKILL.md' }
     '^bobiverse-fleet-ops$' { $skillBookPath = 'common/.grok/skills/bobiverse-fleet-ops/SKILL.md' }
@@ -711,6 +840,10 @@ if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
 # FR #3824: client-side skip when an open tip from this seat already has the lesson.
 if (Test-HarvestOpenLessonTwin -RepoName $Repo -LessonLines $Lesson -Seat $seatNick) {
     Write-Host "SKIPPED harvest open lesson twin (FR #3824): open harvest-lesson PR from seat=$seatNick already carries this lesson"
+    return
+}
+if (Test-HarvestRecentLessonDedup -RepoName $Repo -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest recent lesson dedup (FR #4780): open/closed harvest-lesson PR in last 24h already carries this lesson"
     return
 }
 

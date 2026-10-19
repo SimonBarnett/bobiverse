@@ -82,23 +82,20 @@ Preferred catch-up (install on `main`, clean tree):
 
 That fetch + ff-only + robocopy recomposes flat `scripts\` from `common\` / `<product>\`. Watch the log for `ALERT sync-behind` / `ALERT sync-ff-failed`.
 
-One-file **hotpatch** when ff is blocked (dirty tree or feature branch) but you need tip harvest immediately (UTF-8 **without BOM**; WinPS `-Encoding utf8` writers add a BOM — use `UTF8Encoding(false)`):
+One-file **hotpatch** when ff is blocked (dirty tree or feature branch) but you need tip harvest immediately:
 
 ```powershell
 git -C <install> fetch origin
- = git -C <install> show origin/main:common/scripts/Invoke-BobiverseHarvest.ps1
-# UTF-8 no BOM (WinPS Set-Content -Encoding utf8 writes a BOM)
-[System.IO.File]::WriteAllText(
-  (Join-Path <install> 'common\scripts\Invoke-BobiverseHarvest.ps1'),
-  (( -join "
-").TrimEnd() + "
-"),
-  [System.Text.UTF8Encoding]::new(False)
-)
+. <install>\common\scripts\Bobiverse-Common.ps1
+# FR #4783: NEVER `$x = git show ...; [IO.File]::WriteAllText($path, $x)` —
+# WinPS joins the String[] with spaces and collapses the script to lf=0.
+Sync-BobiverseHarvestScriptsFromOrigin -InstallRoot <install> -Branch main
 & <install>\scripts\Sync-BobiverseFromRepo.ps1 -Product bob -InstallRoot <install> -ComposeOnly
 ```
 
-Same pattern for `Report-BobiverseIntakeIssue.ps1`. Edit tracked `common\scripts\…`, then `-ComposeOnly`; do not hand-edit only the flat `scripts\` copy (the next sync would overwrite it from a still-stale `common\`).
+`Sync-BobiverseHarvestScriptsFromOrigin` overlays tip `Invoke-BobiverseHarvest.ps1`, `Report-BobiverseIntakeIssue.ps1`, and `intake.py` via `git show` **RedirectStandardOutput** + `WriteAllBytes` (preserves newlines). Compose/Sync then runs `Assert-BobiverseScriptsHaveNewlines` and fails if any `.ps1` under `scripts\` / `common\scripts\` has `lf=0`. Edit tracked `common\scripts\…`, then `-ComposeOnly`; do not hand-edit only the flat `scripts\` copy (the next sync would overwrite it from a still-stale `common\`).
+
+
 ## Pack
 
 ```powershell
@@ -120,7 +117,7 @@ Or `msiexec /i bob-0.1.1.msi`.
 - `!register/!unregister <machine>` (Jeeves, Simon/operators) → ChanServ REGISTER
 - Registered `Bob-*` gets +o on shop, +h on `#bobiverse`
 - Systray/shortcut Restart → departure announce → `Restart-Service ircBob`
-- `!assign <worker-nick> <repo> <FR|MRB|UAT> <num>` (Jeeves, verified simon or a Bob-* ear only): Jeeves posts the normal assign line to that idle seat (no self-MRB/UAT, seat not busy, row queued and unaccepted); ACK accepts it. UAT is per repo (`UAT owner/repo#0`): Jeeves queues ONE repo-level UAT only when every issue is closed (excluding needs-human/boards/harvest records) and every PR is merged. See `jeeves/docs/jeeves-commands.md`
+- `!assign <worker-nick> <repo> <FR|MRB|UAT|FIX> <num>` (Jeeves, verified simon or a Bob-* ear only): Jeeves posts the normal assign line to that idle seat (no self-MRB/UAT, seat not busy, row queued and unaccepted); ACK accepts it. UAT is per repo (`UAT owner/repo#0`): Jeeves queues ONE repo-level UAT only when every issue is closed (excluding needs-human/boards/harvest records) and every PR is merged. See `jeeves/docs/jeeves-commands.md`
 - `!recycle` / `!recycle {mid}` on Bob; `!recycle jeeves` on chair (ircJeeves only)
 - Service start self-updates to the latest GitHub release (`Update-BobiverseService.ps1`, v0.1.17): token-less check, detached helper downloads + sha256-verifies the MSI, backs up, installs, rolls back on failure, logs to `%ProgramData%\bobiverse\update\<product>\update.log`. Opt out with `BOB_AUTOUPDATE=0` (or `BOBIVERSE_NO_UPDATE=1`, or a `config\autoupdate.disabled` file). Never touches Ergo or seats; always starts the installed version if the check fails.
 - ObjectName = fleet user (DPAPI): interactive prompt, `BOBIVERSE_SERVICE_PASSWORD`, `config\service.password`, or **Complete bobiverse service logon**

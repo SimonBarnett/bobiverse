@@ -420,16 +420,10 @@ function ConvertTo-BobCursorSpendingPctPoints {
 }
 
 function ConvertTo-BobCursorSandPct {
+    # FR #4802: usagePercent is percentage points 0-100 (same as SpendingPctPoints).
+    # Never rescale <=1 as a fraction (0.99% used must not become 99% used).
     param($Raw)
-    if ($null -eq $Raw -or [string]$Raw -eq '') { return $null, $null }
-    try {
-        $usedF = [double]$Raw
-        if ($usedF -ge 0.0 -and $usedF -le 1.0) { $usedF = $usedF * 100.0 }
-        $usedI = [int][math]::Round($usedF)
-        $remain = [int][math]::Round(100.0 - $usedF)
-        return $usedI, $remain
-    }
-    catch { return $null, $null }
+    return ConvertTo-BobCursorSpendingPctPoints $Raw
 }
 
 function Get-BobCursorSpendingFromApiFixture {

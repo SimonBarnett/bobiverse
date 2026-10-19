@@ -243,6 +243,9 @@ Dirty install worktrees (local hotpatches) can block `git merge --ff-only`, so S
 
 The same dirty-ff class leaves flat `scripts\Invoke-BobiverseHarvest.ps1` and `Report-BobiverseIntakeIssue.ps1` behind tip (e.g. pre-#4288 `-ExistingPrUrl` skip). After scripts compose, `Sync-BobiverseFromRepo` also calls `Sync-BobiverseHarvestScriptsFromOrigin` to overlay those tip blobs into flat `scripts\` and `common\scripts\`. Shared helper: `Sync-BobiverseScriptTipFromOrigin`. Seats should prefer `<ai root>\bob\common\scripts\Invoke-BobiverseHarvest.ps1` when present; after a merge that only lands under `common/`, run Sync `-ComposeOnly` or restart the product service so the tip overlay / robocopy refreshes flat copies. Manual one-shot: `Sync-BobiverseHarvestScriptsFromOrigin -InstallRoot <ai root>\bob`.
 
+The same dirty-ff class leaves flat `scripts\gitclaim.py` behind tip (e.g. pre-#4606 MRB exact-seat / no dead-author inherit). After scripts compose, `Sync-BobiverseFromRepo` also calls `Sync-BobiverseGitclaimFromOrigin` to overlay that tip blob into flat `scripts\` and `common\scripts\`. Frozen `jeeves.exe` still embeds its build-time copy until rebuild; this heals the compose/dev path. Manual one-shot: `Sync-BobiverseGitclaimFromOrigin -InstallRoot <ai root>\bob`.
+
+
 ## MSI payload wins over stale install-tree git (FR #2982)
 
 When `<ai root>\<product>` is also a sparse git work tree that is **dirty or behind** `origin/main`, RunInstall must not copy that checkout over the MSI heat payload. `Install-Bob` / `Install-Jeeves` / `Install-Airc` treat a forwarded `-MsiProductVersion` (x.y.z) as **SkipCopy** (scripts, tray `tools\`, skills). `Sync-BobiverseFromRepo` logs `sync-skip-stale-worktree` and keeps installed flat files when ff/fetch did not leave the work tree at tip; the FR #2581 tip updater overlay still runs. FR #2948 covered `VERSION` only; this covers the rest. Operator recompose after a successful manual ff: `-ComposeOnly`.

@@ -63,7 +63,7 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/git" \
   -d "{\"action\":\"opened\",\"repository\":{\"full_name\":\"SimonBarnett/bobiverse\"},\"issue\":{\"number\":1,\"title\":\"example\"}}"
 ```
 
-Repo setup helper: `tools/New-BobGitWebhook.ps1` / `tools/bob_git_hook.py`.
+Fleet hooks subscribe to `issues`, `pull_request`, `push`, and **`issue_comment`** (FR #4711: owner comments clear queue `needs_human` after GIVEUP threshold). Repo setup helper: `tools/New-BobGitWebhook.ps1` / `tools/bob_git_hook.py` (re-run after merge so live hooks pick up `issue_comment`).
 
 ### POST intake (harvest) — no secret
 

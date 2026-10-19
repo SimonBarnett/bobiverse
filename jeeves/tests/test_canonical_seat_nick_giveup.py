@@ -26,14 +26,16 @@ def test_nick_in_giveup_seats_matches_short_and_full():
 
 
 def test_row_needs_human_blocks_short_nick_when_full_in_giveup_seats():
+    # FR #4336: needs_human is global for auto-offer; giveup_seats matching stays
+    # covered by nick_in_giveup_seats / cooldown tests above.
     row = {
         "needs_human": True,
         "giveup_seats": "win-mpre8vi4u6u-15656,win-mpre8vi4u6u-20596",
     }
     assert gitclaim.row_needs_human(row, "w-io-15656") is True
     assert gitclaim.row_needs_human(row, "win-mpre8vi4u6u-15656") is True
-    assert gitclaim.row_needs_human(row, "w-mh-35600") is False
-    assert gitclaim.row_needs_human(row, "marchhare-35600") is False
+    assert gitclaim.row_needs_human(row, "w-mh-35600") is True
+    assert gitclaim.row_needs_human(row, "marchhare-35600") is True
 
 
 def test_row_on_cooldown_blocks_short_nick_when_full_in_giveup_seats():
@@ -150,7 +152,6 @@ def test_offer_blocks_short_nick_after_full_form_giveup(tmp_path, monkeypatch):
     )
     assert gitclaim.offer_focus_top(tmp_path, "w-io-15656", "#win-mpre8vi4u6u")[0] == "empty"
     assert gitclaim.offer_focus_top(tmp_path, "win-mpre8vi4u6u-15656", "#win-mpre8vi4u6u")[0] == "empty"
+    # FR #4336: needs_human blocks other machines too for auto-offer.
     st, job = gitclaim.offer_focus_top(tmp_path, "w-mh-41928", "#marchhare")
-    assert st == "ok" and job["id"] == "#1055"
-    # offered_to stamped as canonical machine-pid
-    assert job["offered_to"] == "marchhare-41928"
+    assert st == "empty"

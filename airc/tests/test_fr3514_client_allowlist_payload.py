@@ -193,7 +193,7 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
     out = tmp_path / "pack-out"
     out.mkdir()
     pack_cmd = (
-        f"& '{PACK}' -Product airc -OutDir '{out}' -SkipMsi -SkipAircExe -SkipWorkerExe "
+        f"& '{PACK}' -Product airc -OutDir '{out}' -SkipMsi -SkipAircExe -SkipAircNetworkInstallerExe -SkipWorkerExe "
         f"-SkipEarExe -SkipJeevesExe"
     )
     proc = _ps(pack_cmd, timeout=300)
@@ -250,7 +250,7 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
     assert r"config\fleet-operators.txt" not in rels
     expected = set(CLIENT_REMAINING_FILES)
     if not (stage / "airc" / "airc.exe").is_file():
-        # Pack -SkipAircExe (unit stage) omits airc.exe (FR #3685 + FR #3988 Fetch-Nssm).
+        # Pack -SkipAircExe -SkipAircNetworkInstallerExe (unit stage) omits airc.exe (FR #3685 + FR #3988 Fetch-Nssm).
         expected.discard(r"airc\airc.exe")
     if not (stage / "config" / "ergo.password").is_file():
         # Pack without embed secret is rare; keep gate hermetic (FR #4400).

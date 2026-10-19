@@ -24,7 +24,9 @@ param(
     # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
     [switch]$SkipJeevesExe,
     # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
-    [switch]$SkipAircExe
+    [switch]$SkipAircExe,
+    # Tests only (needs -SkipMsi): skip airc-network-installer.exe (FR #3991 PyInstaller + UAC).
+    [switch]$SkipAircNetworkInstallerExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +52,7 @@ if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed t
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
 if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
 if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
+if ($SkipAircNetworkInstallerExe -and -not $SkipMsi) { throw '-SkipAircNetworkInstallerExe is only allowed together with -SkipMsi (an MSI without airc-network-installer.exe must never ship; FR #3991)' }
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -213,6 +216,10 @@ function Stage-Product([string]$Name) {
     $stageErgo = Join-Path $stage 'config\ergo.password'
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'config') | Out-Null
     $wantEmbedErgo = $EmbedErgoPassword -or ($Name -eq 'airc')
+    # FR #4477: -SkipMsi is a test stage, not a release MSI. Do not copy a live
+    # Ergo PASS or write a placeholder password file into that stage. Real airc
+    # packs (no -SkipMsi) still embed config\ergo.password (FR #4216).
+    if ($SkipMsi) { $wantEmbedErgo = $false }
     if ($wantEmbedErgo) {
         $ergoSecret = $null
         $ergoSource = $null
@@ -250,12 +257,6 @@ function Stage-Product([string]$Name) {
                 }
             }
         }
-        # -SkipMsi stage tests must not require a live fleet secret (never used for real MSI).
-        if (-not $ergoSecret -and $SkipMsi -and ($Name -eq 'airc')) {
-            $ergoSecret = 'FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE'
-            $ergoSource = 'test-placeholder'
-            Write-Host 'WARN airc -SkipMsi: embedding FAKE_ERGO_PASS_FOR_SKIPMSI_STAGE (not a release artifact)'
-        }
         if (-not $ergoSecret) {
             if ($Name -eq 'airc') {
                 throw 'airc pack requires Ergo server PASS for config/ergo.password (FR #4216/#4349): set AIRC_PACK_ERGO_PASSWORD / AGENTIC_IRC_PASSWORD / AIRC_CONSOLE_SERVER_PASSWORD / BOB_IRC_PASSWORD, or pack on a box with ~/.grok/ergo/connect.password, repo config\ergo.password, or <ai root>\bob|airc|jeeves\config\ergo.password'
@@ -269,7 +270,11 @@ function Stage-Product([string]$Name) {
             Remove-Item -LiteralPath $stageErgo -Force
             Write-Host "WARN $Name removed staged config/ergo.password (issue #4 public pack guard)"
         }
-        Write-Host "INFO $Name skipping Ergo PASS embed (issue #4; pass -EmbedErgoPassword for private packs)"
+        if ($SkipMsi) {
+            Write-Host "INFO $Name -SkipMsi: not embedding config/ergo.password (FR #4477; not a release artifact)"
+        } else {
+            Write-Host "INFO $Name skipping Ergo PASS embed (issue #4; pass -EmbedErgoPassword for private packs)"
+        }
     }
     if ($Name -eq 'jeeves') {
         $ergoStage = Join-Path $stage 'ergo'
@@ -312,6 +317,13 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
         Copy-Item -LiteralPath $butlerSrc -Destination (Join-Path $stage 'assets\jeeves-butler.ico') -Force
         Write-Host "INFO jeeves staged assets\jeeves-butler.ico"
+        # FR #4725: fleet resync-repos.txt defaults (includes ce-priority) for Install fallback
+        $resyncSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\defaults\resync-repos.txt'
+        if (-not (Test-Path -LiteralPath $resyncSrc)) { throw 'jeeves pack requires jeeves\defaults\resync-repos.txt (FR #4725)' }
+        $defaultsDest = Join-Path $stage 'defaults'
+        New-Item -ItemType Directory -Force -Path $defaultsDest | Out-Null
+        Copy-Item -LiteralPath $resyncSrc -Destination (Join-Path $defaultsDest 'resync-repos.txt') -Force
+        Write-Host 'INFO jeeves staged defaults\resync-repos.txt (FR #4725)'
         # FR #2301 / WP3: one-file jeeves.exe (chair + in-proc HTTP)
         $jeevesExeDir = Join-Path $stage 'jeeves'
         New-Item -ItemType Directory -Force -Path $jeevesExeDir | Out-Null
@@ -403,6 +415,25 @@ function Stage-Product([string]$Name) {
             if (-not $aexe -or -not (Test-Path -LiteralPath $aexe)) { throw 'Build-Airc.ps1 did not produce airc.exe' }
             Copy-Item -LiteralPath $aexe -Destination (Join-Path $aircExeDir 'airc.exe') -Force
             Write-Host 'INFO airc staged airc\airc.exe'
+        }
+        # FR #3991: elevated network-wide installer (UAC admin). Laid at INSTALLDIR root so
+        # <ai root>\airc\airc-network-installer.exe can be re-run from any airc box; always
+        # downloads Latest airc MSI (not the version it shipped with). Also emit versioned
+        # release assets airc-network-installer-<ver>.exe + .sha256 next to the MSI.
+        if ($SkipAircNetworkInstallerExe) {
+            Write-Host 'WARN airc pack: -SkipAircNetworkInstallerExe (test stage; no airc-network-installer.exe)'
+        } else {
+            $buildNet = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-AircNetworkInstaller.ps1')
+            if (-not (Test-Path -LiteralPath $buildNet)) { throw "missing Build-AircNetworkInstaller.ps1 (FR #3991): $buildNet" }
+            $nexe = (& $buildNet -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+            if (-not $nexe -or -not (Test-Path -LiteralPath $nexe)) { throw 'Build-AircNetworkInstaller.ps1 did not produce airc-network-installer.exe' }
+            Copy-Item -LiteralPath $nexe -Destination (Join-Path $stage 'airc-network-installer.exe') -Force
+            Write-Host 'INFO airc staged airc-network-installer.exe (FR #3991)'
+            $verExe = Join-Path $OutDir ("airc-network-installer-$Version.exe")
+            Copy-Item -LiteralPath $nexe -Destination $verExe -Force
+            $nhash = (Get-FileHash -LiteralPath $verExe -Algorithm SHA256).Hash.ToLower()
+            Set-Content -LiteralPath ($verExe + '.sha256') -Value ("$nhash  airc-network-installer-$Version.exe") -Encoding ascii
+            Write-Host ("INFO release asset airc-network-installer-{0}.exe sha256={1}" -f $Version, $nhash)
         }
         # FR #3639: no config\fleet-operators.txt roster - airc auth is live control-channel +o/+h.
     }
@@ -601,6 +632,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     # FR #4011: on MajorUpgrade, stop Airc BEFORE RemoveExistingProducts. Under
     # psexec -h -s (session 0), Restart Manager fails to shut down the service
     # (error 351) and Windows Installer itself crashes (msiexec 1601).
+    # FR #4432: never schedule a deferred CA before RemoveExistingProducts after
+    # InstallInitialize (Error 2613). airc uses MajorUpgrade afterInstallValidate so
+    # REP runs before InstallInitialize; stop is immediate (QtExec64CmdLine) before
+    # InstallValidate. Deferred StopAircBeforeUpgrade Before=REP is illegal and removed.
     $uninstallCaDecls = ''
     $uninstallCaSeq = ''
     if ($Name -eq 'airc') {
@@ -615,12 +650,11 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <!-- FR #3292: AIRC_PURGE=1 or workstation manifest purge_default removes secrets/homes. -->
     <CustomAction Id="SetUninstallCmd" Property="RunUninstall" Value="&quot;[INSTALLDIR]scripts\Uninstall-Airc.cmd&quot; -InstallRoot &quot;[INSTALLDIR].&quot; -Purge &quot;[AIRC_PURGE]&quot;" Execute="immediate" />
     <CustomAction Id="RunUninstall" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
-    <!-- FR #4011: deferred stop Airc before MajorUpgrade RemoveExistingProducts (PsExec session-0 RM 351 / 1601). -->
-    <!-- FR #4389: immediate stop before InstallValidate (FilesInUse / exit 3010); deferred CAs cannot run before InstallInitialize. -->
-    <CustomAction Id="SetStopAircValidateCmd" Property="StopAircBeforeValidate" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
+    <!-- FR #4011 / #4389 / #4432: immediate stop before InstallValidate (FilesInUse / RM 351). -->
+    <!-- FR #4441: net.exe stop (waits) not sc.exe (async); matches airc-1.0.1-hotfix1.msi. -->
+    <!-- Immediate CAQuietExec64 reads QtExec64CmdLine (not a property named after the CA). -->
+    <CustomAction Id="SetStopAircValidateCmd" Property="QtExec64CmdLine" Value="&quot;[System64Folder]net.exe&quot; stop Airc" Execute="immediate" />
     <CustomAction Id="StopAircBeforeValidate" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="immediate" Return="ignore" />
-    <CustomAction Id="SetStopAircUpgradeCmd" Property="StopAircBeforeUpgrade" Value="&quot;[System64Folder]sc.exe&quot; stop Airc" Execute="immediate" />
-    <CustomAction Id="StopAircBeforeUpgrade" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Impersonate="no" Return="ignore" />
 "@
         $uninstallCaSeq = @"
       <Custom Action="SetAvExcludeCmd" Before="RunAvExclude">NOT REMOVE~="ALL"</Custom>
@@ -629,8 +663,6 @@ function Build-Msi([string]$Name, [string]$Stage) {
       <Custom Action="RunUninstall" After="SetUninstallCmd">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="SetStopAircValidateCmd" Before="StopAircBeforeValidate">WIX_UPGRADE_DETECTED</Custom>
       <Custom Action="StopAircBeforeValidate" Before="InstallValidate">WIX_UPGRADE_DETECTED</Custom>
-      <Custom Action="SetStopAircUpgradeCmd" Before="StopAircBeforeUpgrade">WIX_UPGRADE_DETECTED</Custom>
-      <Custom Action="StopAircBeforeUpgrade" Before="RemoveExistingProducts">WIX_UPGRADE_DETECTED</Custom>
 "@
     }
     # FR #2564: on RunInstall failure / MSI rollback, best-effort Start-Service so seats are not left dead.
@@ -668,13 +700,16 @@ function Build-Msi([string]$Name, [string]$Stage) {
     </Feature>
 "@
     }
+    # FR #4432: airc MajorUpgrade afterInstallValidate so RemoveExistingProducts runs
+    # before InstallInitialize (avoids Error 2613 when any deferred CA would precede REP).
+    $majorUpgradeSchedule = if ($Name -eq 'airc') { 'afterInstallValidate' } else { 'afterInstallInitialize' }
     $productWxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="bobiverse $Name" Language="1033" Version="$msiVersion"
       Manufacturer="SimonBarnett" UpgradeCode="$upgrade">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" InstallPrivileges="elevated" Platform="x64" />
-    <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="afterInstallInitialize" />
+    <MajorUpgrade DowngradeErrorMessage="A newer bobiverse $Name is installed." Schedule="$majorUpgradeSchedule" />
     <!-- FR #4011: PsExec -h -s (session 0) upgrades: Restart Manager error 351 crashes msiexec (1601). -->
     <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
