@@ -2624,6 +2624,50 @@ def is_out_of_fuel_text(text: str) -> bool:
     return bool(_OUT_OF_FUEL_RX.search(text or ""))
 
 
+# FR #4858: hard API 402 / usage-balance-exhausted (not mid-job reading, not NEEDS_AUTH).
+_HARD_402_OUT_OF_FUEL_RX = re.compile(
+    r"(?i)(?:"
+    r"402\s*Payment\s*Required"
+    r"|Payment\s*Required:[^\n]{0,80}exhausted"
+    r"|Grok\s+Build\s+usage\s+balance\s+exhausted"
+    r"|usage\s+balance\s+exhausted"
+    r")"
+)
+
+
+def is_hard_402_out_of_fuel_text(text: str) -> bool:
+    """True for agent 402 / usage balance exhausted evidence (FR #4858).
+
+    Mid-job fuel-reading GIVEUP text and NEEDS_AUTH are out-of-fuel but not hard 402.
+    """
+    return bool(_HARD_402_OUT_OF_FUEL_RX.search(text or ""))
+
+
+def out_of_fuel_reading_clears_hard_hold(
+    fuel: Fuel,
+    *,
+    kind: str,
+    held_for_s: float,
+    min_hold_s: float = 1800.0,
+    clear_floor_pct: int = 5,
+) -> bool:
+    """FR #4858: after a hard 402, a soft ``available`` reading must not clear early.
+
+    Require the minimum hold **and** an explicit grok pct above ``clear_floor_pct``
+    (default 5). Unknown pct never clears. Cursor hard holds need tokens again.
+    """
+    if float(held_for_s) < float(min_hold_s):
+        return False
+    k = (kind or "").strip().lower()
+    if k == "grok":
+        if fuel.grok_pct is None:
+            return False
+        return int(fuel.grok_pct) > int(clear_floor_pct)
+    if k == "cursor":
+        return cursor_has_tokens(fuel)
+    return False
+
+
 def out_of_fuel_giveup_line(job_key: str) -> str:
     """Shop wire: ``GIVEUP <TYPE> owner/repo#N out-of-fuel`` (FR #3012)."""
     key = (job_key or "").strip() or "job"
@@ -4823,6 +4867,15 @@ class BoredEmitter:
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
         self._out_of_fuel_at: Optional[float] = None
+        # FR #4858: hard 402 hold — optimistic pct=3 available must not clear within min hold.
+        self._out_of_fuel_hard_402 = False
+        self._out_of_fuel_clear_reason: Optional[str] = None
+        self.out_of_fuel_min_hold_s = _env_float(
+            "BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S", 1800.0, 0.0, 86400.0
+        )
+        self.out_of_fuel_clear_floor_pct = max(
+            0, int(_env_float("BOB_WORKER_OUT_OF_FUEL_CLEAR_FLOOR_PCT", 5.0, 0.0, 100.0))
+        )
         self.out_of_fuel_release_fn: Optional[Callable[[str], None]] = None
         # FR #4180: always run once when entering the hold (clear ack-miss / HangDetector).
         self.out_of_fuel_enter_fn: Optional[Callable[[], None]] = None
@@ -5038,6 +5091,8 @@ class BoredEmitter:
             now = self.clock()
             self._out_of_fuel = True
             self._out_of_fuel_at = now
+            self._out_of_fuel_hard_402 = is_hard_402_out_of_fuel_text(evidence or "")
+            self._out_of_fuel_clear_reason = None
             self._clear_done_miss()
             self._inject_pending = False
             self._inject_at = None
@@ -5058,8 +5113,9 @@ class BoredEmitter:
             fn = self.out_of_fuel_release_fn
             enter_fn = self.out_of_fuel_enter_fn
             preview = one_line(evidence or "out-of-fuel", 100)
+            hard = " hard-402" if self._out_of_fuel_hard_402 else ""
             self.log(
-                f"out-of-fuel: holding seat"
+                f"out-of-fuel: holding seat{hard}"
                 + (f" (was ACK {release_key})" if release_key else "")
                 + f" - {preview}"
             )
@@ -5076,17 +5132,20 @@ class BoredEmitter:
                 self.log(f"out-of-fuel: release_fn failed {type(e).__name__}")
         return release_key
 
-    def clear_out_of_fuel(self) -> None:
-        """FR #3012: fuel returned (or key entered) — allow !bored again."""
+    def clear_out_of_fuel(self, reason: str = "reading") -> None:
+        """FR #3012 / #4858: fuel returned (or successful turn) — allow !bored again."""
         with self._cv:
             if not self._out_of_fuel:
                 return
             self._out_of_fuel = False
             self._out_of_fuel_at = None
+            self._out_of_fuel_hard_402 = False
+            why = (reason or self._out_of_fuel_clear_reason or "reading").strip() or "reading"
+            self._out_of_fuel_clear_reason = None
             now = self.clock()
             self._idle_since = now
             self._release_gen = self._turn_gen
-            self.log("out-of-fuel: cleared - seat may !bored again")
+            self.log(f"out-of-fuel: cleared via {why} - seat may !bored again")
             self._cv.notify_all()
 
     @property
@@ -5217,89 +5276,97 @@ class BoredEmitter:
         sid: str | None = None,
     ) -> None:
         """FR #2802: grok turn_ended — release harvest hold when at/after DONE, or idle reason=turn."""
-        with self._cv:
-            now = float(self.clock() if at is None else at)
-            self._turn_open = False
-            # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
-            if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
-                self._cv.notify_all()
-                return
-            # FR #2875: turn ended with ACK open and no DONE/NACK/GIVEUP.
-            # FR #4827: arm even past ack_stale_s — the turn ending is the release signal.
-            if self._ack_open and self._ack_at is not None:
-                key = self._ack_job_key or "job"
-                if self._done_miss_reminded:
-                    self._ack_open = False
-                    self._ack_job_key = None
-                    self._done_miss_armed_at = None
-                    self._done_miss_key = None
-                    self._done_miss_reminded = False
-                    self._done_miss_release_pending = True
-                    # FR #4784: keep key for GIVEUP before !bored (Jeeves accepted-row free).
-                    self._release_giveup_key = key
+        clear_hard_fuel = False
+        try:
+            with self._cv:
+                now = float(self.clock() if at is None else at)
+                self._turn_open = False
+                # FR #4858: successful turn clears hard 402 hold without min hold.
+                if self._out_of_fuel:
+                    clear_hard_fuel = True
+                # FR #2875 / inject-pending: still busy on a fresh assign — do not arm done-miss.
+                if self._inject_pending and self._inject_at is not None and now - self._inject_at < self.assign_grace_s:
+                    self._cv.notify_all()
+                    return
+                # FR #2875: turn ended with ACK open and no DONE/NACK/GIVEUP.
+                # FR #4827: arm even past ack_stale_s — the turn ending is the release signal.
+                if self._ack_open and self._ack_at is not None:
+                    key = self._ack_job_key or "job"
+                    if self._done_miss_reminded:
+                        self._ack_open = False
+                        self._ack_job_key = None
+                        self._done_miss_armed_at = None
+                        self._done_miss_key = None
+                        self._done_miss_reminded = False
+                        self._done_miss_release_pending = True
+                        # FR #4784: keep key for GIVEUP before !bored (Jeeves accepted-row free).
+                        self._release_giveup_key = key
+                        self._idle_since = now
+                        # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
+                        # so post-done-miss nak/idle are not gated forever (stale gen + wait(0) spin).
+                        self._release_gen = self._turn_gen
+                        self._arm_skip = True
+                        self._hold_release_at = now
+                        self.log(
+                            f"done-miss: still no DONE for {key} after reminder - releasing seat"
+                        )
+                    else:
+                        self._done_miss_armed_at = now
+                        self._done_miss_key = key
+                        self._done_miss_reminded = False
+                        self._done_miss_release_pending = False
+                        self.log(
+                            f"bored: turn ended with ACK open on {key} and no DONE/NACK/GIVEUP - done-miss armed"
+                        )
+                    self._cv.notify_all()
+                    return
+
+                if (
+                    (self._harvest_until is not None or self._pending_harvest_fire())
+                    and self._hold_started_at is not None
+                ):
+                    # Stale turn_ended before DONE/free line: ignore.
+                    if now < self._hold_started_at:
+                        self._cv.notify_all()
+                        return
+                    self._harvest_until = None
                     self._idle_since = now
-                    # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
-                    # so post-done-miss nak/idle are not gated forever (stale gen + wait(0) spin).
                     self._release_gen = self._turn_gen
                     self._arm_skip = True
                     self._hold_release_at = now
                     self.log(
-                        f"done-miss: still no DONE for {key} after reminder - releasing seat"
+                        f"bored: turn ended (sid={sid or '-'}, turn={turn if turn is not None else '-'}) - hold released"
                     )
-                else:
-                    self._done_miss_armed_at = now
-                    self._done_miss_key = key
-                    self._done_miss_reminded = False
-                    self._done_miss_release_pending = False
-                    self.log(
-                        f"bored: turn ended with ACK open on {key} and no DONE/NACK/GIVEUP - done-miss armed"
+                elif (
+                    self._release_gen is not None
+                    and self._release_gen != self._turn_gen
+                    and self._hold_started_at is not None
+                    and (
+                        (self._done_key and self._done_key != self._last_done_key)
+                        or (self._free_key and self._free_key != self._last_free_key)
                     )
-                self._cv.notify_all()
-                return
-
-            if (
-                (self._harvest_until is not None or self._pending_harvest_fire())
-                and self._hold_started_at is not None
-            ):
-                # Stale turn_ended before DONE/free line: ignore.
-                if now < self._hold_started_at:
-                    self._cv.notify_all()
-                    return
-                self._harvest_until = None
-                self._idle_since = now
-                self._release_gen = self._turn_gen
-                self._arm_skip = True
-                self._hold_release_at = now
-                self.log(
-                    f"bored: turn ended (sid={sid or '-'}, turn={turn if turn is not None else '-'}) - hold released"
-                )
-            elif (
-                self._release_gen is not None
-                and self._release_gen != self._turn_gen
-                and self._hold_started_at is not None
-                and (
-                    (self._done_key and self._done_key != self._last_done_key)
-                    or (self._free_key and self._free_key != self._last_free_key)
-                )
-            ):
-                # Prior release was cancelled by turn_started; this end re-arms fire.
-                self._release_gen = self._turn_gen
-                self._idle_since = now
-                self._arm_skip = True
-                self._hold_release_at = now
-                self.log(
-                    f"bored: turn ended (sid={sid or '-'}, turn={turn if turn is not None else '-'}) - hold released"
-                )
-            elif self._ready and not self._stopped:
-                # Idle turn end: no open ACK / inject / hold.
-                self._turn_idle_pending = True
-                self._release_gen = self._turn_gen
-                self._arm_skip = True
-                self._hold_release_at = now
-                if self._idle_since is None:
+                ):
+                    # Prior release was cancelled by turn_started; this end re-arms fire.
+                    self._release_gen = self._turn_gen
                     self._idle_since = now
-            self._cv.notify_all()
+                    self._arm_skip = True
+                    self._hold_release_at = now
+                    self.log(
+                        f"bored: turn ended (sid={sid or '-'}, turn={turn if turn is not None else '-'}) - hold released"
+                    )
+                elif self._ready and not self._stopped:
+                    # Idle turn end: no open ACK / inject / hold.
+                    self._turn_idle_pending = True
+                    self._release_gen = self._turn_gen
+                    self._arm_skip = True
+                    self._hold_release_at = now
+                    if self._idle_since is None:
+                        self._idle_since = now
+                self._cv.notify_all()
 
+        finally:
+            if clear_hard_fuel:
+                self.clear_out_of_fuel(reason="successful turn")
     def on_outbox(self, payload: str) -> None:
         now = self.clock()
         p = (payload or "").strip()
@@ -5645,19 +5712,27 @@ class BoredEmitter:
         with self._cv:
             while not self._stopped:
                 now = self.clock()
-                # FR #3012: poll for fuel return while held quiet.
+                # FR #3012 / #4858: poll for fuel return while held quiet.
+                # Hard 402: fuel_check_fn must encode min-hold + clear-floor (Supervisor).
                 if self._out_of_fuel and self.fuel_check_fn is not None:
                     try:
                         ok = bool(self.fuel_check_fn())
                     except Exception:
                         ok = False
                     if ok:
+                        why = (
+                            self._out_of_fuel_clear_reason or "reading"
+                        ).strip() or "reading"
                         # clear without nesting locks: inline the clear path
                         self._out_of_fuel = False
                         self._out_of_fuel_at = None
+                        self._out_of_fuel_hard_402 = False
+                        self._out_of_fuel_clear_reason = None
                         self._idle_since = now
                         self._release_gen = self._turn_gen
-                        self.log("out-of-fuel: cleared - seat may !bored again")
+                        self.log(
+                            f"out-of-fuel: cleared via {why} - seat may !bored again"
+                        )
                 # FR #3019 / #3923: mid-job fuel-lost poll while ACK open.
                 # Unknown readings must return False from fuel_lost_check_fn; require
                 # fuel_lost_streak_need consecutive True polls before GIVEUP.
@@ -5899,15 +5974,47 @@ class Supervisor:
         return root
 
     def _fuel_available_again(self) -> bool:
-        """FR #3012: True when local fuel readings show Cursor or Grok tokens again."""
+        """FR #3012 / #4858: True when fuel readings may clear the out-of-fuel hold.
+
+        Soft holds (mid-job reading, no hard 402): any Cursor/Grok tokens or session key.
+        Hard 402: require min hold **and** grok pct above clear floor (not merely
+        ``state=available`` with pct=3).
+        """
         try:
             fuel = read_fuel(self._install_root_for_fuel())
         except Exception:
-            return bool(self.secret is not None)
+            fuel = Fuel()
+        hard = bool(getattr(self.bored, "_out_of_fuel_hard_402", False))
+        if hard:
+            at = getattr(self.bored, "_out_of_fuel_at", None)
+            now = self.bored.clock() if self.bored is not None else 0.0
+            held = 0.0 if at is None else float(now) - float(at)
+            min_hold = float(getattr(self.bored, "out_of_fuel_min_hold_s", 1800.0))
+            floor = int(getattr(self.bored, "out_of_fuel_clear_floor_pct", 5))
+            kind = (self.kind or "").strip().lower() or "grok"
+            if not out_of_fuel_reading_clears_hard_hold(
+                fuel,
+                kind=kind,
+                held_for_s=held,
+                min_hold_s=min_hold,
+                clear_floor_pct=floor,
+            ):
+                return False
+            if kind == "grok":
+                self.bored._out_of_fuel_clear_reason = f"reading pct={fuel.grok_pct}"
+            else:
+                self.bored._out_of_fuel_clear_reason = "reading"
+            return True
         if cursor_has_tokens(fuel) or grok_has_tokens(fuel):
+            if self.bored is not None:
+                self.bored._out_of_fuel_clear_reason = "reading"
             return True
         # A session key handed to this seat counts as fuel for recovery.
-        return self.secret is not None
+        if self.secret is not None:
+            if self.bored is not None:
+                self.bored._out_of_fuel_clear_reason = "reading"
+            return True
+        return False
 
     def _fuel_lost_mid_job(self) -> bool:
         """FR #3019 / #3923: True only on an **explicit** exhausted reading while ACKed.
