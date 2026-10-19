@@ -21,11 +21,14 @@
   - FR #4226: reclaim aged session UUID dirs nested under cwd-encoded buckets
     (sessions/<cwd-encoded>/<guid>/). Top-level-only reclaim skipped those
     UUIDs when the cwd bucket stayed fresh from the live seat.
+  - FR #4864: same nested walk for ~/.cursor/chats/<project>/<guid>/ — a live
+    seat keeps the project bucket fresh and used to shield aged UUID chats
+    (hundreds of MB). Also removes ~/.grok/bin/*.old backup binaries on reclaim.
 
   Never touches Ergo, ircd.yaml, secrets, the current seat session id, or
   running services. Pair with Clear-BobiverseJobWorktrees.ps1 for linked trees.
   When JobWorktrees prints FreeGB still low / removed=0, run this with -Reclaim
-  before filing a disk-capacity intake (FR #4192 / FR #4212).
+  before filing a disk-capacity intake (FR #4192 / FR #4212 / FR #4864).
 
 .EXAMPLE
   ..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId 0ee19a2a-...
@@ -213,20 +216,48 @@ if ($IncludeAiBackups -and $AiRoot -and (Test-Path -LiteralPath $AiRoot)) {
         }
 }
 
-# FR #4212: aged Cursor chat trees (often hundreds of MB on marchhare).
+# FR #4212 / FR #4864: Cursor chat trees. Walk nested UUID dirs under each
+# project bucket (chats/<project>/<guid>/) so a fresh project LastWriteTime
+# cannot shield aged UUID children. Legacy flat chats/<project> (no nested
+# dirs) still reclaims the whole tree when aged. Keep -KeepSessionId matches.
 $cursorCut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepCursorHours))
 if ($CursorChatsRoot -and (Test-Path -LiteralPath $CursorChatsRoot)) {
-    Get-ChildItem -LiteralPath $CursorChatsRoot -Directory -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -lt $cursorCut } |
+    Get-ChildItem -LiteralPath $CursorChatsRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $top = $_
+        if ($KeepSessionId -and ($top.Name -like ("*{0}*" -f $KeepSessionId))) { return }
+        $nested = @(Get-ChildItem -LiteralPath $top.FullName -Directory -Force -ErrorAction SilentlyContinue)
+        if ($nested.Count -gt 0) {
+            foreach ($ch in $nested) {
+                if ($KeepSessionId -and ($ch.Name -like ("*{0}*" -f $KeepSessionId))) { continue }
+                if ($ch.LastWriteTime -gt $cursorCut) { continue }
+                $removed += Remove-TreeSafe $ch.FullName 'aged nested .cursor/chats'
+            }
+            $left = @(Get-ChildItem -LiteralPath $top.FullName -Force -ErrorAction SilentlyContinue)
+            if ($left.Count -eq 0) {
+                $removed += Remove-TreeSafe $top.FullName 'empty .cursor/chats project bucket'
+            }
+        } else {
+            if ($top.LastWriteTime -gt $cursorCut) { return }
+            $removed += Remove-TreeSafe $top.FullName 'aged .cursor/chats'
+        }
+    }
+}
+
+# FR #4864: ~/.grok/bin/*.old backup binaries (agent.exe.old etc.) — safe once
+# a newer agent.exe is present; often ~150MB left after other reclaim.
+$binRoot = Join-Path $GrokHome 'bin'
+if (Test-Path -LiteralPath $binRoot) {
+    Get-ChildItem -LiteralPath $binRoot -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '*.old' -or $_.Name -like '*.bak' } |
         ForEach-Object {
-            $removed += Remove-TreeSafe $_.FullName 'aged .cursor/chats'
+            $removed += Remove-TreeSafe $_.FullName 'grok bin *.old'
         }
 }
 
 $freeNow = Get-FreeGB
 Write-Host ("Done removed_ops={0} FreeGB_now={1}" -f $removed, $freeNow)
 if ($freeNow -lt $MinFreeGB) {
-    Write-Warning ("FR #4192 / FR #4212 / FR #4226: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
+    Write-Warning ("FR #4192 / FR #4212 / FR #4226 / FR #4864: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
     # Ranked consumers so the next seat knows what still fills C: (live session / bin may remain).
     Write-Host '--- CRITICAL remaining consumers (GB) ---'
     $ranked = @()
