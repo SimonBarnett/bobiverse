@@ -131,7 +131,28 @@ def test_fr4789_keyboardinterrupt_reconnect_sleep_and_main(tmp_path, monkeypatch
     assert "time.sleep(backoff)" in run_src
 
 
+def test_fr4789_reconnect_backoff_keyboardinterrupt_returns_0(tmp_path, monkeypatch):
+    """NSSM stop during reconnect sleep must return 0, not raise."""
+    (tmp_path / "console.password").write_text(
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n", encoding="utf-8"
+    )
+    s = make(tmp_path, monkeypatch)
+    monkeypatch.setattr(s, "connect", lambda: (_ for _ in ()).throw(ConnectionError("offline")))
+    monkeypatch.setattr(svc.time, "sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt()))
+    stopped = []
+    monkeypatch.setattr(s, "prepare_stop", lambda reason="": stopped.append(reason))
+    assert s.run() == 0
+    assert stopped == ["reconnect interrupted"]
+    assert any("reconnect wait interrupted" in m for m in s.logs)
+
+
 def test_fr4789_skill_pin():
-    skill = SKILL.read_text(encoding="utf-8")
-    assert "FR #4789" in skill
-    assert "password-minted" in skill or "nickserv-ok" in skill
+    raw = SKILL.read_bytes()
+    assert b"\xef\xbb\xbf" not in raw[:3]
+    line = next(ln for ln in raw.splitlines() if b"FR #4789" in ln)
+    assert b"airc_console_service.py" in line
+    assert b"then 433 forever" in line
+    assert b"`console.password-minted`" in line
+    assert b"\x07" not in line
+    assert b"\xc4\x9b" not in line
+    assert b"irc_console_service.py" not in line.replace(b"airc_console_service.py", b"")
