@@ -281,6 +281,7 @@ routes to bobiverse via the split rule.
 - needs_human after GIVEUP: accept issue_comment webhooks; repo-owner comment after giveup_ts clears stamp (not seat GIVEUP/ACK/DONE/MRB-board bodies).
 - merge-on-green requeue_sha: if the newest MRB PASS board already names the live head, retarget the pending row to that SHA and do not re-queue MRB. A DIRTY head then uses the conflict FIX path; a head with no PASS board still re-queues MRB.
 - When the newest MRB board is FAIL at the live head and no mrb-N-fix PR is open, queue FIX for that pull. Do not re-offer the MRB to the seat that posted the FAIL.
+- FR #4725: seed SimonBarnett/ce-priority in DEFAULT_RESYNC_REPOS and merge into chair+digest resync-repos.txt on Install and ChairJobs start so wipe does not starve the queue
 
 ## Harvest digest (lessons audit 2026-10-06)
 
