@@ -293,6 +293,7 @@ routes to bobiverse via the split rule.
 - Invoke-AircRemote SelfTest happy-path DONE wait must Add-Content the jsonl rows in-process before Wait-AircRemoteReplies. A Start-Job writer under a full pytest run can miss TimeoutSec=10.
 - FR #4830: Invoke-BobiverseHarvest for SimonBarnett/ce-priority maps to dayworks-launcher even with -Book harvest; never invent common/.grok/skills/harvest
 - Jeeves MRB author_seat: stamp from the DONE FR whose result is this PR URL (fr_implementer_seat_from_doc pr_id=); never from a Refs FR that produced a different PR
+- After agent 402 usage balance exhausted, keep out-of-fuel held until BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S and grok pct above BOB_WORKER_OUT_OF_FUEL_CLEAR_FLOOR_PCT (or turn_ended); never clear on soft available with pct at or below the floor.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
