@@ -272,16 +272,12 @@ def _parse_pct_points(raw) -> tuple[int | None, int | None]:
 
 
 def _parse_used_remain(raw) -> tuple[int | None, int | None]:
-    """Sand usagePercent may be a 0-1 fraction or 0-100 points."""
-    if raw is None or raw == "":
-        return None, None
-    try:
-        used_f = float(raw)
-    except (TypeError, ValueError):
-        return None, None
-    if 0.0 <= used_f <= 1.0:
-        used_f *= 100.0
-    return int(round(used_f)), int(round(100.0 - used_f))
+    """Sand usagePercent is percentage points 0-100 (FR #4802).
+
+    Never rescale values <= 1 as a 0-1 fraction: a real 0.99% used must stay
+    ~1% used / 99% remaining (API GetSandUsageStatus.usagePercent).
+    """
+    return _parse_pct_points(raw)
 
 
 def _group_row(group_id: str, label: str, used, remain, source: str) -> dict:
