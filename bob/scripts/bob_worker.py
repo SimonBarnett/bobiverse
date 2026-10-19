@@ -68,6 +68,51 @@ def _default_install_root() -> str:
 
 
 DEFAULT_INSTALL_ROOT = _default_install_root()
+
+
+def _common_scripts_dir() -> Path:
+    """Resolve common/scripts beside bob/scripts (worktree or install layout)."""
+    here = Path(__file__).resolve().parent
+    for cand in (here.parent.parent / "common" / "scripts", here.parent / "common" / "scripts"):
+        if cand.is_dir():
+            return cand
+    return here.parent.parent / "common" / "scripts"
+
+
+def log_install_root_guard(install_root: str | Path, log: Callable[[str], None] = print, *, run=subprocess.run) -> Optional[str]:
+    """FR #4843: at seat start, surface when the live install checkout is off main."""
+    try:
+        scripts = _common_scripts_dir()
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from bob_install_root_guard import install_root_branch_warning  # type: ignore
+    except Exception as e:  # pragma: no cover - missing helper must not block seats
+        log(f"install-root: guard import failed {type(e).__name__}")
+        return None
+    try:
+        warn = install_root_branch_warning(install_root, run=run)
+    except Exception as e:  # pragma: no cover
+        log(f"install-root: branch check failed {type(e).__name__}")
+        return None
+    if warn:
+        log(warn)
+    return warn
+
+
+# Re-export for tests / playbooks (FR #4843).
+try:
+    if str(_common_scripts_dir()) not in sys.path:
+        sys.path.insert(0, str(_common_scripts_dir()))
+    from bob_install_root_guard import (  # noqa: E402
+        install_root_branch_warning,
+        refuse_job_git,
+        suggest_job_worktree,
+    )
+except Exception:  # pragma: no cover
+    install_root_branch_warning = None  # type: ignore
+    refuse_job_git = None  # type: ignore
+    suggest_job_worktree = None  # type: ignore
+
 DEFAULT_HOST = "irc.ntsa.uk"
 DEFAULT_PORT = 6697
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -727,6 +772,7 @@ def worker_prompt(worker_dir: str, home: str, machine: str, nick: str) -> str:
         f"Never file the worker status receipt itself (DONE/NACK/GIVEUP/SKIP/self-MRB/twin/duplicate/merged or an FR/MRB/UAT #N receipt) as an issue/FR; only a separate genuine defect or gap is filed. See the bobiverse-bob-job-irc, -fr, -mrb and -uat skills. "
         f"One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, close the later one and comment a reference to the first; never leave both open; done issues are closed too. "
         f"Skill-intake consolidation: when a worker takes an FR from skill intake (label:skill / harvest), it must close all open issues for that skill book (every harvest/skill issue targeting the same book), open one consolidated PR for them, and cite every issue it closes (Closes #N for each); no per-issue PRs for the same skill book; the worker closes the issues itself as part of DONE. "
+        f"CAST IRON (FR #4843): never git checkout/switch/commit/merge in the install root ({Path(worker_dir).parent}); always `git -C <install> worktree add -b fr-N <job-wt> origin/main` (e.g. C:\\ai\\bob-wt-fr-<n> or %TEMP%\\bobiverse-fr-<n>). An install root left on fr-* means live seats read unreviewed skills. "
         f"Never print or store secrets."
     )
 
@@ -6255,6 +6301,11 @@ class Supervisor:
                 except Exception:
                     self._agent_parent_image, self._agent_parent_cmd = '', ''
             self.log(f"agent: started NEW {self.kind} agent pid={proc.pid} session={spec.session_id} cwd={self.cwd}")
+            # FR #4843: warn when the live install checkout is not on main.
+            try:
+                log_install_root_guard(self._install_root_for_fuel(), self.log)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"install-root: guard error {type(e).__name__}")
             # FR #4464: keys default at seat start, including when the cursor turn watcher stays off.
             apply_cursor_inject_keys_default(self.kind, log=self.log)
             if self.startup_grace_s > 0:
