@@ -93,6 +93,7 @@ def test_fr4216_skipmsi_stage_writes_ergo(tmp_path: Path):
         ver,
         "-SkipMsi",
         "-SkipAircExe",
+        "-SkipAircNetworkInstallerExe",
         "-KeepStage",
     ]
     r = subprocess.run(

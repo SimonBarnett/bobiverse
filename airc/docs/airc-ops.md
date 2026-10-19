@@ -11,6 +11,20 @@ Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / 
 | LocalSystem / quiet MSI | `C:\Users\Administrator\.airc` if present, else `<ai root>\airc\home` |
 | **Upgrade / reinstall** (FR #1552) | **Existing NSSM `Airc` AppParameters** (PowerShell `-ConsoleHome` / `-MachineId` / ... or airc.exe `--home` / `--machine` / `--password-file` / `--operators-file`) |
 
+## airc-network-installer.exe (FR #3991)
+
+Elevated network-wide airc MSI installer shipped in every airc release:
+
+- **Build:** `airc/scripts/Build-AircNetworkInstaller.ps1` (PyInstaller one-file with `--uac-admin`).
+- **Release assets:** `airc-network-installer-<ver>.exe` + `.sha256` next to the MSI (Pack writes them under `dist/`).
+- **Laid in the airc MSI** at `<ai root>\airc\airc-network-installer.exe` so any installed airc box can re-run it.
+- **MSI source:** always downloads the GitHub **Latest** `airc-*.msi` + `.sha256` (refuses on hash mismatch). `--msi` is testing-only.
+- **Profile:** `--profile fleet|client|workstation` (default `client`) passed as msiexec public property `AIRC_PROFILE=...` (same property WiX / Install-Airc use).
+- **Service name:** Windows service `Airc`. Skip if same/newer; upgrade if older; `--force` reinstalls. Local host is always a target (unless `--no-local`); local install uses msiexec directly; remotes use PsExec (`\\host -accepteula -h -s`) without bundling PsExec (Sysinternals licence). With `-u`, password is prompted via getpass and used for `net use` only --- never on PsExec argv.
+- **Targets:** AD computers when domain-joined; else `--hosts` / `--hosts-file` / `--network CIDR`. Logs under `./airc-install-logs/<host>/` + `summary.csv`. `--dry-run` plans only. Exit non-zero if any host failed (0 and 3010 count as success).
+
+Smoke: `airc-network-installer.exe --selftest` and `--help`. Pack test stages use `-SkipAircNetworkInstallerExe` with `-SkipMsi`.
+
 ## airc.exe (FR #2397)
 
 `Pack-BobiverseRelease -Product airc` runs `airc/scripts/Build-Airc.ps1` (PyInstaller one-file) and stages `airc\airc.exe` in the MSI. `Install-AircConsole` prefers that exe as NSSM `Application` with argparse AppParameters; when the exe is missing it keeps the legacy `powershell.exe` + `Start-AircConsole.ps1` path. Smoke: `airc.exe --selftest` and `airc.exe --help`. Target boxes do not need system Python for the console service once the exe is installed.

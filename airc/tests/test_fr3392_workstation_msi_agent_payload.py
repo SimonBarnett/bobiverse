@@ -88,7 +88,7 @@ def test_fr3392_payload_stage_then_workstation_filter(tmp_path: Path):
     out.mkdir()
     # Pack writes airc-<version> under OutDir.
     pack_cmd = (
-        f"& '{PACK}' -Product airc -OutDir '{out}' -SkipMsi -SkipAircExe -SkipWorkerExe "
+        f"& '{PACK}' -Product airc -OutDir '{out}' -SkipMsi -SkipAircExe -SkipAircNetworkInstallerExe -SkipWorkerExe "
         f"-SkipEarExe -SkipJeevesExe"
     )
     proc = _ps(pack_cmd, timeout=300)

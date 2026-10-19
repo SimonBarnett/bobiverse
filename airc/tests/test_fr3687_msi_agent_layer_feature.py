@@ -321,7 +321,7 @@ def test_fr3687_stage_strip_without_install_airc(tmp_path: Path):
     out = tmp_path / "pack-out"
     out.mkdir()
     pack_cmd = (
-        f"& '{PACK}' -Product airc -OutDir '{out}' -SkipMsi -SkipAircExe -SkipWorkerExe "
+        f"& '{PACK}' -Product airc -OutDir '{out}' -SkipMsi -SkipAircExe -SkipAircNetworkInstallerExe -SkipWorkerExe "
         f"-SkipEarExe -SkipJeevesExe"
     )
     proc = _ps(pack_cmd, timeout=300)

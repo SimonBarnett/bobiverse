@@ -157,6 +157,7 @@ def test_pack_stages_the_agent_layer_for_each_product(tmp_path, prod):
         "-SkipWorkerExe",
         "-SkipEarExe",
         "-SkipAircExe",
+        "-SkipAircNetworkInstallerExe",
         "-OutDir",
         str(out),
     ]
