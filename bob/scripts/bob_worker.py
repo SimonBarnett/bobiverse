@@ -2497,6 +2497,19 @@ def out_of_fuel_giveup_line(job_key: str) -> str:
     return f"GIVEUP {key} out-of-fuel"
 
 
+def seat_release_giveup_line(job_key: str, reason: str) -> str:
+    """Shop wire: ``GIVEUP <TYPE> owner/repo#N <reason>`` before !bored (FR #4784).
+
+    ``reason`` is ``done-miss`` or ``ack-stale``. Without this line Jeeves keeps the
+    accepted row and answers every later ``!bored`` with ``nak busy``.
+    """
+    key = (job_key or "").strip() or "job"
+    why = (reason or "done-miss").strip() or "done-miss"
+    if key.lower() == "job":
+        return f"GIVEUP job {why}"
+    return f"GIVEUP {key} {why}"
+
+
 def out_of_fuel_nack_line(job_key: str) -> str:
     """Shop wire: ``NACK <TYPE> owner/repo#N out-of-fuel`` for assigns refused during hold (FR #4180)."""
     key = (job_key or "").strip() or "job"
@@ -4544,6 +4557,9 @@ class BoredEmitter:
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
         ``done_miss_grace_s``, then ``!bored`` reason ``done-miss`` if still open after the reminder turn);
+      * FR #4784: before ``!bored`` reason ``done-miss`` or ``ack-stale``, post
+        ``GIVEUP <TYPE> owner/repo#N done-miss|ack-stale`` so Jeeves frees the accepted row
+        (local ACK clear alone leaves ``nak busy`` forever while the PR stays open);
       * FR #4753: cursor transcript ``turn_ended`` with ``status=error`` counts as turn end (done-miss);
         an open ACK with no activity past ``ack_stale_s`` clears ACK and ``!bored`` reason ``ack-stale``
         even when ``release_gen`` was bumped by a turn that never closed;
@@ -4631,6 +4647,9 @@ class BoredEmitter:
         self._done_miss_reminded = False
         self._done_miss_release_pending = False
         self.done_miss_remind_fn: Optional[Callable[[str], None]] = None
+        # FR #4784: job key for GIVEUP before !bored on done-miss / ack-stale release.
+        self._release_giveup_key: Optional[str] = None
+        self.seat_release_giveup_fn: Optional[Callable[[str, str], None]] = None
         # FR #3012 / #3019: out-of-fuel hold (suppress !bored; GIVEUP via out_of_fuel_release_fn).
         self._out_of_fuel = False
         self._out_of_fuel_at: Optional[float] = None
@@ -4731,6 +4750,19 @@ class BoredEmitter:
         self._done_miss_key = None
         self._done_miss_reminded = False
         self._done_miss_release_pending = False
+
+    def _fire_seat_release_giveup(self, reason: str) -> None:
+        """FR #4784: shop GIVEUP for the saved release key before !bored (done-miss / ack-stale)."""
+        job_key = self._release_giveup_key or "job"
+        self._release_giveup_key = None
+        fn = self.seat_release_giveup_fn
+        if fn is None:
+            return
+        try:
+            fn(job_key, reason)
+            self.log(f"seat-release: GIVEUP posted for {job_key} reason={reason}")
+        except Exception as e:
+            self.log(f"seat-release: GIVEUP failed {type(e).__name__} for {job_key}")
 
     def _fire_done_miss_remind(self, now: float) -> None:
         """FR #2875: grace expired — inject one reminder (Supervisor sets done_miss_remind_fn)."""
@@ -4951,6 +4983,8 @@ class BoredEmitter:
                     self._done_miss_key = None
                     self._done_miss_reminded = False
                     self._done_miss_release_pending = True
+                    # FR #4784: keep key for GIVEUP before !bored (Jeeves accepted-row free).
+                    self._release_giveup_key = key
                     self._idle_since = now
                     # FR #2996: match normal turn-end release — keep _release_gen == _turn_gen
                     # so post-done-miss nak/idle are not gated forever (stale gen + wait(0) spin).
@@ -5195,6 +5229,8 @@ class BoredEmitter:
             self._ack_open = False
             self._ack_job_key = None
             self._clear_done_miss()
+            # FR #4784: keep key for GIVEUP before !bored (Jeeves accepted-row free).
+            self._release_giveup_key = key
             self._turn_open = False
             self._release_gen = self._turn_gen
             self._idle_since = now
@@ -5305,6 +5341,9 @@ class BoredEmitter:
             self._retry_at = now2 + self.retry_s
             self.log(f"bored: skip {reason} - became busy before send")
             return
+        # FR #4784: GIVEUP open ACK to Jeeves before !bored on done-miss / ack-stale.
+        if reason in ("done-miss", "ack-stale"):
+            self._fire_seat_release_giveup(reason)
         ok = False
         try:
             ok = bool(self.send())
@@ -5529,6 +5568,8 @@ class Supervisor:
         # FR #2875: turn_ended with ACK open and no DONE → remind via run-dir inject, then release.
         if self.bored is not None:
             self.bored.done_miss_remind_fn = self._inject_done_miss_reminder
+            # FR #4784: GIVEUP accepted row to Jeeves before !bored on done-miss / ack-stale.
+            self.bored.seat_release_giveup_fn = self._release_seat_giveup_job
         # FR #2782: idle-only check before !bored; returns a reason when a newer install build exists.
         self.stale_build_check: Optional[Callable[[], Optional[str]]] = None
         # FR #2802: grok events.jsonl turn watcher (opt-out BOB_WORKER_BORED_ON_TURN_END=0).
@@ -5669,6 +5710,44 @@ class Supervisor:
                 pass
         self._clear_watchdogs_for_out_of_fuel()
         self.log(f"out-of-fuel: posted {nack}")
+
+    def _release_seat_giveup_job(self, job_key: str, reason: str) -> None:
+        """FR #4784: shop GIVEUP so Jeeves frees the accepted row before !bored done-miss/ack-stale.
+
+        Do not route through BoredEmitter.on_outbox — that would arm harvest_hold and delay the
+        release !bored. Direct irc.say matches the out-of-fuel path for the wire line only.
+        """
+        line = seat_release_giveup_line(job_key, reason)
+        shop = self.irc.shop if self.irc else shop_channel(self.machine)
+        if self.irc and self.irc.alive:
+            try:
+                self.irc.say(shop, line)
+            except Exception as e:
+                self.log(f"seat-release: GIVEUP say failed {type(e).__name__}")
+                return
+            try:
+                self.irc.say(
+                    shop,
+                    f"seat-release: {self.nick} GIVEUP `{job_key}` reason={reason}",
+                )
+            except Exception:
+                pass
+        else:
+            # No live IRC: still append to seat outbox so a reconnect flush can deliver.
+            outbox = None
+            try:
+                outbox = getattr(self.bored, "run_dir", None) if self.bored else None
+            except Exception:
+                outbox = None
+            if outbox:
+                try:
+                    path = Path(outbox) / "outbox.txt"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("a", encoding="utf-8", newline="\n") as fh:
+                        fh.write(f"PRIVMSG {shop} :{line}\n")
+                except Exception as e:
+                    self.log(f"seat-release: outbox GIVEUP failed {type(e).__name__}")
+        self.log(f"seat-release: posted {line}")
 
     def _release_out_of_fuel_job(self, job_key: str) -> None:
         """FR #3012: shop GIVEUP + digest so Jeeves / tray see out-of-fuel immediately."""
