@@ -298,6 +298,7 @@ routes to bobiverse via the split rule.
 - SeatDisk: walk ~/.cursor/chats/<project>/<guid>/ like FR #4226 sessions, and drop ~/.grok/bin/*.old on reclaim when C: is under MinFreeGB.
 - Intake harvest de-dupe: an abbreviated restatement of an on-main bullet (shared lead-in + env-name stems like MIN_HOLD_S for BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S) is lesson_already_covered --- never open a second tip (FR #4865 / tip #4863).
 - When SeatDisk FreeGB stays under MinFreeGB after FR #4864, hardlink-dedupe identical ~/.grok/bin/agent.exe+grok.exe and reclaim nested .cursor/chats with KeepCursorHoursLow (default 6).
+- Grok and Cursor both ACK on receipt (FR #4115): submit-verify stop must be turn_open|probe for any kind with a probe_fn, never ack_open alone; log (probe) vs (stop/ACK).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
