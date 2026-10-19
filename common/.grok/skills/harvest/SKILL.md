@@ -285,6 +285,7 @@ routes to bobiverse via the split rule.
 - After DONE/NACK/GIVEUP, treat a replayed ACK for that job key as stale: do not reopen _ack_open and do not forward it to IRC; clear the finished mark only on fresh inject of that key.
 - Cursor submit-verify: never stop on receipt ack_open; use turn_open or prompt probe, and poll turn_running for BOB_WORKER_SUBMIT_VERIFY_GIVEUP_GRACE_S before GIVEUP so a landed paste is not reported as failed.
 - A docs/mrb tip that only pins skill text may PASS while the product PR is still open when Refs (not Closes) name that PR and the hostile test does not require the product code on main.
+- ce-priority Day Works require_machine auto-pin must not match bare dayworks or WP3 in a title. Harvest-lesson MRB rows re-infer and clear sticky stamps so online seats can !assign them.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
