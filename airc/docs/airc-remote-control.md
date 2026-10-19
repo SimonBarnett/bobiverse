@@ -61,5 +61,5 @@ PRIVMSG marchhare_console :UPDATE airc 0.1.20
 
 ## Large replies / flood (FR #4790)
 
-Shell replies are capped at `SHELL_REPLY_MAX_IRC_LINES` IRC `out`/`err` lines. Oversized output ends with `err ... output truncated, N lines omitted; use file fetch / PUT (FR #4790)` then `DONE`. Do **not** dump multi-KB base64 over PRIVMSG (Ergo fakelag will kill the console). Use `PUT` chunks / allowlisted HTTPS / a share for large files. The service paces PRIVMSG with a token bucket (`FLOOD_RATE_PER_S` / `FLOOD_BURST`); send failures force reconnect.
+Shell replies are capped at `SHELL_REPLY_MAX_IRC_LINES` IRC `out`/`err` lines. Oversized output ends with `err ... output truncated, N lines omitted; CONT id=<job> (FR #4794); file fetch / PUT (FR #4790)` then `DONE`. Send `CONT id=<job>` or `RESUME id=<job>` (optional `offset=N`) to fetch the next page without re-running the command. Do **not** dump multi-KB base64 over PRIVMSG (Ergo fakelag will kill the console). Use `PUT` chunks / allowlisted HTTPS / a share for large files. The service paces PRIVMSG with a token bucket (`FLOOD_RATE_PER_S` / `FLOOD_BURST`); send failures force reconnect.
 
