@@ -8968,12 +8968,14 @@ def done_mrb_pass_sha_for_ci_wait(
     return ""
 
 
-def open_pr_mrb_ci_wait_candidate(pr: dict, pass_sha: str) -> bool:
-    """FR #4466: auto-merge on and head still the PASSed SHA (ignore check conclusion)."""
+def open_pr_mrb_pass_sha_unchanged(pr: dict, pass_sha: str) -> bool:
+    """FR #4833: head still matches the PASSed SHA (auto_merge optional).
+
+    Unlike ``open_pr_mrb_ci_wait_candidate``, this does not require auto-merge.
+    Repos with ``allow_auto_merge=false`` still record PASS in merge-on-green;
+    resync must not re-queue MRB while that head is unchanged.
+    """
     if not isinstance(pr, dict):
-        return False
-    am = pr.get("auto_merge")
-    if not isinstance(am, dict) or not am:
         return False
     head = pr.get("head")
     sha = str(head.get("sha") or "") if isinstance(head, dict) else ""
@@ -8982,6 +8984,16 @@ def open_pr_mrb_ci_wait_candidate(pr: dict, pass_sha: str) -> bool:
     import mrb_merge_on_green
 
     return mrb_merge_on_green.shas_match(pass_sha, sha)
+
+
+def open_pr_mrb_ci_wait_candidate(pr: dict, pass_sha: str) -> bool:
+    """FR #4466: auto-merge on and head still the PASSed SHA (ignore check conclusion)."""
+    if not isinstance(pr, dict):
+        return False
+    am = pr.get("auto_merge")
+    if not isinstance(am, dict) or not am:
+        return False
+    return open_pr_mrb_pass_sha_unchanged(pr, pass_sha)
 
 
 def open_pr_mrb_waiting_on_ci(
@@ -9551,6 +9563,57 @@ def resync_from_github(
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync skip ci-wait PR {repo}#{num}",
+                    flush=True,
+                )
+                continue
+            # FR #4833: PASS@head without auto_merge (allow_auto_merge=false).
+            # Never re-queue MRB. FIX only when checks failed and not human-gated.
+            if open_pr_mrb_pass_sha_unchanged(pr, pass_sha):
+                check_state = _resync_pr_check_state(pr, repo, num, token=token)
+                if open_pr_mrb_checks_failed(check_state):
+                    try:
+                        import mrb_merge_on_green
+
+                        repo_c = canonical_queue_repo(repo)
+                        if repo_c not in main_red_cache:
+                            main_red_cache[repo_c] = (
+                                mrb_merge_on_green.main_branch_checks_red(
+                                    repo_c, token=token
+                                )
+                            )
+                        fix_result = mrb_merge_on_green.enqueue_fix_ci(
+                            _root(home),
+                            repo=repo,
+                            pr=str(num),
+                            pass_sha=pass_sha,
+                            url=str(pr.get("html_url") or ""),
+                            detail=check_state or "failure",
+                            main_red=bool(main_red_cache[repo_c]),
+                            token=token,
+                            mergeable=pr.get("mergeable"),
+                            merge_state=str(
+                                pr.get("mergeable_state")
+                                or pr.get("mergeStateStatus")
+                                or ""
+                            ),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        fix_result = f"error:{type(exc).__name__}"
+                    if fix_result == "added":
+                        fix_added += 1
+                    elif fix_result == "duplicate":
+                        fix_dup += 1
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync offer FIX pass-sha-unchanged PR {repo}#{num} "
+                        f"result={fix_result}",
+                        flush=True,
+                    )
+                    continue
+                skipped_ci += 1
+                skipped_open_pulls.add((repo, f"#{num}"))
+                print(
+                    f"resync skip pass-sha-unchanged PR {repo}#{num}",
                     flush=True,
                 )
                 continue

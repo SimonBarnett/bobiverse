@@ -85,6 +85,10 @@ _FAIL_CONCLUSIONS = frozenset(
 _CANCEL_CONCLUSIONS = frozenset({"cancelled", "canceled"})
 # Shared suite name(s) — tip + main both red → skip tip FIX (prefer one main-side fix).
 _SHARED_SUITE_MARKERS = ("test-and-synth", "test_and_synth", "testandsynth")
+# FR #4833: assert-lock / lock check needs Simon's simon-approved-rule-change label.
+# Exact name ``lock`` or any assert-lock marker — seats must never forge that label.
+_HUMAN_GATED_LOCK_MARKERS = ("assert-lock", "assert_lock")
+HUMAN_GATED_LOCK_REASON = "needs-human: add simon-approved-rule-change"
 
 
 def _utc() -> str:
@@ -119,12 +123,30 @@ def _detail_names_shared_suite(detail: str) -> bool:
     return any(m.replace("_", "-") in compact for m in _SHARED_SUITE_MARKERS)
 
 
+def _detail_names_human_gated_lock(detail: str) -> bool:
+    """True when detail names the assert-lock / lock human gate (FR #4833)."""
+    compact = _normalize_check_detail(detail).replace("_", "-").replace("|", ":")
+    if not compact:
+        return False
+    # Strip rollup prefixes like failure: / completed/failure:
+    name = compact
+    for prefix in ("completed/", "failure:", "error:"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+    name = name.split(":", 1)[-1] if ":" in name else name
+    if name == "lock":
+        return True
+    return any(m.replace("_", "-") in compact for m in _HUMAN_GATED_LOCK_MARKERS)
+
+
 def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | None:
-    """FR #4630: why FIX-CI must not be offered (or None to proceed).
+    """FR #4630 / #4833: why FIX-CI must not be offered (or None to proceed).
 
     * ``cancelled-only`` — tip reds are only cancelled/canceled (bulk cancel wave).
     * ``main-also-red-shared-suite`` — shared suite (test-and-synth) failed on tip
       while main's required checks are also red (prefer one main-side fix).
+    * ``human-gated-lock`` — only red check is ``lock`` / ``assert-lock``; only
+      SimonBarnett can add ``simon-approved-rule-change`` (seats must not forge it).
     """
     state = _normalize_check_detail(detail)
     if not state:
@@ -134,6 +156,9 @@ def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | Non
     # FR #4639: concurrency skip is the same class as a bulk cancel.
     if head in _CANCEL_CONCLUSIONS or head == "skipped":
         return "cancelled-only"
+    # FR #4833: human-gated assert-lock (before shared-suite — lock is never seat FIX).
+    if _detail_names_human_gated_lock(state):
+        return "human-gated-lock"
     # Secondary: named shared suite + main also red.
     if main_red and _detail_names_shared_suite(state):
         return "main-also-red-shared-suite"
@@ -177,6 +202,8 @@ def rollup_check_runs(runs: dict | list | None) -> str:
     ``cancelled`` (not ``failure``) so FIX-CI can refuse bulk-cancel waves.
     When the only hard failure is the shared suite, annotate
     ``failure:test-and-synth`` so enqueue can skip while main is also red.
+    FR #4833: when the only hard failure is ``lock`` / ``assert-lock``, annotate
+    ``failure:lock`` so enqueue parks needs-human instead of FIX-CI.
     """
     if isinstance(runs, dict):
         items = runs.get("check_runs")
@@ -206,6 +233,8 @@ def rollup_check_runs(runs: dict | list | None) -> str:
         return "pending"
     if hard:
         names = [n for n in hard if n and n not in _FAIL_CONCLUSIONS]
+        if names and all(_detail_names_human_gated_lock(n) for n in names):
+            return "failure:lock"
         if names and all(_detail_names_shared_suite(n) for n in names):
             return "failure:test-and-synth"
         return "failure"
@@ -383,6 +412,10 @@ def decide_merge_on_green(
         return "requeue_sha"
     state = (checks or "").strip().lower()
     head = state.split(":", 1)[0] if state else ""
+    # FR #4833: lock/assert-lock waits for Simon's label — keep pending (skip_hold),
+    # never park→FIX-CI. Seats cannot clear this check.
+    if fix_ci_skip_reason(state) == "human-gated-lock":
+        return "skip_hold"
     # FR #4630: annotated rollups (failure:test-and-synth) still requeue_ci;
     # enqueue_fix_ci may then skip.
     if head in ("failure", "error", "action_required", "timed_out", "cancelled", "canceled"):
@@ -608,6 +641,9 @@ def enqueue_fix_ci(
     FR #4630: returns ``skipped`` when the tip is cancelled-only, or when the
     shared suite (test-and-synth) failed while main is also red.
 
+    FR #4833: returns ``needs_human`` when the only red check is ``lock`` /
+    ``assert-lock`` (Simon must add ``simon-approved-rule-change``).
+
     FR #4669: a FIX that is already DONE on this same head SHA is not a permanent
     duplicate. Main green -> one update-branch, then a re-offer. DIRTY -> conflict
     FIX. After ``FIX_CI_RECOVER_MAX`` re-offers, stamp ``needs_human``.
@@ -626,6 +662,15 @@ def enqueue_fix_ci(
         else:
             main_red = main_branch_checks_red(repo_c, token=token)
     skip = fix_ci_skip_reason(detail, main_red=bool(main_red))
+    if skip == "human-gated-lock":
+        return park_human_gated_lock(
+            home,
+            repo=repo_c,
+            pr=num,
+            sha=sha,
+            url=url or f"https://github.com/{repo_c}/pull/{num}",
+            detail=detail,
+        )
     if skip:
         return "skipped"
     sig = failure_signature(
@@ -893,6 +938,91 @@ def done_fix_giveup_seats(home: Path, repo: str, pr: str) -> str:
             seen.add(low)
             seats.append(nick)
     return ",".join(seats)
+
+
+def park_human_gated_lock(
+    home: Path,
+    *,
+    repo: str,
+    pr: str,
+    sha: str,
+    url: str = "",
+    detail: str = "",
+) -> str:
+    """FR #4833: park lock/assert-lock as needs_human — never offerable FIX-CI.
+
+    Uses a FIX row (resync keeps non-FR/MRB kinds) stamped ``needs_human`` so
+    digest shows the park and auto-offer / !assign FIX refuse it. Returns
+    ``needs_human`` (row present) or ``skipped`` on I/O failure.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    num = str(pr).lstrip("#")
+    pull_url = url or f"https://github.com/{repo_c}/pull/{num}"
+    title = f"needs-human: add simon-approved-rule-change ({num}@{sha[:12]})"
+    body = (
+        f"FR #4833: required check lock/assert-lock failed "
+        f"({detail or 'failure:lock'}). Only SimonBarnett may add label "
+        f"simon-approved-rule-change; seats must never forge it. "
+        f"Head SHA {sha}. Do not offer FIX-CI or re-queue MRB while the head "
+        f"SHA is unchanged."
+    )
+    claim = gitclaim.GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id=f"#{num}",
+        event="pull_request",
+        action="synchronize",
+        line=pull_url,
+        title=title,
+        body=body,
+        labels=("via-intake", "fix-ci"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        stamped = False
+        for row in list(qdoc.get("unaccepted") or []) + list(qdoc.get("accepted") or []):
+            if not isinstance(row, dict):
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            if str(row.get("id") or "").lstrip("#") != num:
+                continue
+            task = str(row.get("task") or "").upper()
+            if task not in ("MRB", "FIX"):
+                continue
+            row["needs_human"] = True
+            if task == "FIX":
+                row["title"] = title
+                row["body"] = body
+            row["note"] = HUMAN_GATED_LOCK_REASON
+            stamped = True
+        if not stamped:
+            changed = gitclaim._append_unaccepted(
+                qdoc,
+                claim,
+                url=pull_url,
+                body=body,
+                title=title,
+                pass_sha=sha,
+                needs_human="true",
+                note=HUMAN_GATED_LOCK_REASON,
+            )
+            if changed in ("added", "duplicate", "noop"):
+                for row in qdoc.get("unaccepted") or []:
+                    if isinstance(row, dict) and gitclaim._same(
+                        row, repo_c, "FIX", f"#{num}"
+                    ):
+                        row["needs_human"] = True
+                        row["note"] = HUMAN_GATED_LOCK_REASON
+                        stamped = True
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    return "needs_human" if stamped else "skipped"
 
 
 def _stamp_fix_needs_human(
@@ -2062,10 +2192,11 @@ def evaluate_pending_row(
         return "skip_hold", hold
     if not ok_gate and "hold" in (gate_reason or "").lower():
         return "skip_hold", gate_reason
+    checks = str(pr_state.get("checks") or "none")
     decision = decide_merge_on_green(
         pass_sha=str(row.get("pass_sha") or ""),
         current_sha=str(pr_state.get("sha") or ""),
-        checks=str(pr_state.get("checks") or "none"),
+        checks=checks,
         hold_reason=None,
         merged=bool(pr_state.get("merged")),
         closed=bool(pr_state.get("closed")),
@@ -2075,6 +2206,9 @@ def evaluate_pending_row(
         if "pass" in (gate_reason or "").lower() or "board" in (gate_reason or "").lower():
             return "wait", gate_reason
         return "wait", gate_reason or "merge gate refused"
+    # FR #4833: surface the human-label reason when lock parked the tip.
+    if decision == "skip_hold" and fix_ci_skip_reason(checks) == "human-gated-lock":
+        return "skip_hold", HUMAN_GATED_LOCK_REASON
     return decision, ""
 
 
@@ -2339,6 +2473,22 @@ def process_pending(
             row["status"] = "skip_hold"
             row["hold_reason"] = detail or row.get("hold_reason") or "hold"
             keep.append(row)
+            # FR #4833: park a visible needs_human FIX so seats do not burn turns.
+            if HUMAN_GATED_LOCK_REASON in str(row.get("hold_reason") or ""):
+                try:
+                    park_human_gated_lock(
+                        home,
+                        repo=repo,
+                        pr=pr,
+                        sha=str(row.get("pass_sha") or pr_state.get("sha") or ""),
+                        url=str(row.get("url") or pr_state.get("html_url") or ""),
+                        detail=str(pr_state.get("checks") or "failure:lock"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log(
+                        f"WARN merge-on-green lock needs_human park failed "
+                        f"{repo}#{pr}: {exc}"
+                    )
             _log(f"INFO merge-on-green skip hold {repo}#{pr}: {row['hold_reason']}")
             continue
 
