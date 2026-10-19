@@ -1737,6 +1737,92 @@ def _remove_unaccepted_tasks(doc: dict, repo: str, ident: str, tasks: set[str]) 
     return before - len(doc["unaccepted"])
 
 
+def _prune_stale_requeue_duplicate(doc: dict, claim: GitClaim) -> None:
+    """FR #4827: drop a second seat's accepted FR when the stale-released seat's PR lands.
+
+    A done row with ``reconcile`` STALE_BUSY / LOST_DONE_RESTART is the original seat.
+    The accepted row for the same FR held by anyone else is the duplicate. That row
+    moves to done and a stand-down note is queued for the chair to say in the shop.
+    """
+    if claim.harvest_lesson or not claim.refs:
+        return
+    notes = doc.get("stand_down")
+    if not isinstance(notes, list):
+        notes = []
+        doc["stand_down"] = notes
+    repo = str(claim.repo or "")
+    pr_n = str(claim.id or "").lstrip("#")
+    pr_url = f"https://github.com/{repo}/pull/{pr_n}" if repo and pr_n else ""
+    acc = [r for r in (doc.get("accepted") or []) if isinstance(r, dict)]
+    drop_ids: set[int] = set()
+    for ref in claim.refs:
+        want = _norm_row_id(ref)
+        original = ""
+        for row in doc.get("done") or []:
+            if not isinstance(row, dict):
+                continue
+            if _repo_key(str(row.get("repo") or "")) != _repo_key(repo):
+                continue
+            if str(row.get("task") or "").upper() != "FR":
+                continue
+            if _norm_row_id(row.get("id")) != want:
+                continue
+            reason = str(row.get("reconcile") or row.get("result") or "").strip()
+            if reason not in ("STALE_BUSY", "LOST_DONE_RESTART"):
+                continue
+            nick = str(row.get("nick") or row.get("accepted_by") or "").strip()
+            if nick:
+                original = nick
+                break
+        if not original:
+            continue
+        for row in acc:
+            if id(row) in drop_ids:
+                continue
+            if _repo_key(str(row.get("repo") or "")) != _repo_key(repo):
+                continue
+            if str(row.get("task") or "").upper() != "FR":
+                continue
+            if _norm_row_id(row.get("id")) != want:
+                continue
+            holder = str(row.get("nick") or row.get("accepted_by") or "").strip()
+            if not holder or holder.lower() == original.lower():
+                continue
+            fin = dict(row)
+            fin["result"] = "DUPLICATE_STALE"
+            fin["reconcile"] = "DUPLICATE_STALE"
+            fin["done_ts"] = _utc_now()
+            doc.setdefault("done", []).append(fin)
+            drop_ids.add(id(row))
+            chan = worker_shop_channel(holder) or ""
+            text = f"stand down FR {repo}{want} original seat {original} opened {pr_url}".strip()
+            notes.append(
+                {"nick": holder, "channel": chan, "text": text, "repo": repo, "id": want}
+            )
+    if drop_ids:
+        doc["accepted"] = [r for r in acc if id(r) not in drop_ids]
+        done = doc.get("done") or []
+        if len(done) > DONE_CAP:
+            doc["done"] = done[-DONE_CAP:]
+    if len(notes) > 20:
+        doc["stand_down"] = notes[-20:]
+
+
+def drain_stand_down(home: Path) -> list[dict]:
+    """Pop FR #4827 stand-down notes written by ``_prune_stale_requeue_duplicate``."""
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            notes = [n for n in (doc.get("stand_down") or []) if isinstance(n, dict)]
+            if not notes:
+                return []
+            doc["stand_down"] = []
+            _write_queue(queue_path(home), doc)
+            return notes
+    except (TimeoutError, OSError, json.JSONDecodeError, ValueError):
+        return []
+
+
 def fr_implementer_seat_from_doc(doc: dict, repo: str, refs) -> str:
     """FR #593 / #227: seat nick that implemented linked FR(s), if known.
 
@@ -2073,6 +2159,8 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim) -> str:
         "edited",
         "synchronize",
     ):
+        # FR #4827: original seat's PR closes the FR the ack-stale requeue handed to someone else.
+        _prune_stale_requeue_duplicate(doc, claim)
         if claim.harvest_lesson:
             implementer = claim.opened_by  # lesson PR author = opener, never a cited FR's implementer
         else:
@@ -2674,13 +2762,18 @@ def _read_queue_file(path: Path) -> dict:
         raise ValueError("queue lists")
     if not isinstance(done, list):
         done = []
-    return {
+    out = {
         "v": 1,
         "unaccepted": [row for row in (_coerce_row(r) for r in unaccepted if isinstance(r, dict)) if row],
         "accepted": [row for row in (_coerce_row(r) for r in accepted if isinstance(r, dict)) if row],
         # FR #254: keep DONE rows (url/result) so FR stays superseded while implement PR is open.
         "done": [row for row in (_coerce_row(r) for r in done if isinstance(r, dict)) if row][-DONE_CAP:],
     }
+    # FR #4827: stand-down notes must survive a queue reload until the chair says them.
+    notes = doc.get("stand_down")
+    if isinstance(notes, list):
+        out["stand_down"] = [n for n in notes if isinstance(n, dict)]
+    return out
 
 
 def _write_queue(path: Path, doc: dict) -> None:
