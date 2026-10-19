@@ -245,3 +245,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - Harvest into a product -Repo must not ADD bob/.grok/skills/bobiverse-* stubs when cues name bobiverse-bob-worker; SKIP or route to SimonBarnett/bobiverse (FR #3299).
 - Done-miss on FIX mid-fold: GIVEUP FIX owner/repo#N immediately (never invent DONE); leave CONFLICTING worktree note so next seat can resume keep-both fold
 - Cursor transcript type=turn_ended (any status, incl. error) must end the turn for done-miss; ACK past ack_stale_s must clear, post GIVEUP ... ack-stale (FR #4784), then !bored reason ack-stale even when an open turn bumped release_gen.
+- When gh or the GitHub API fails with a TLS handshake timeout before the PR can be read, GIVEUP the open MRB instead of leaving the ACK for done-miss and instead of inventing a verdict.
