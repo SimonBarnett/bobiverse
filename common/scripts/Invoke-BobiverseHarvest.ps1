@@ -77,7 +77,8 @@ function Get-IntakeAllowRepos {
         'SimonBarnett/skills-visionary',
         'SimonBarnett/agentic_fomprep',
         'SimonBarnett/a-search',  # FR #3023
-        'SimonBarnett/trutex'  # FR #3050
+        'SimonBarnett/trutex',  # FR #3050
+        'SimonBarnett/ce-priority'  # FR #4830
     )
     $candidates = @(
         (Join-Path $PSScriptRoot 'intake.py'),
@@ -310,6 +311,8 @@ if (-not $Repo -or -not $Repo.Trim()) {
         $Repo = 'SimonBarnett/agentic_fomprep'
     } elseif ($ownerBlob -match '(?i)\bskills-visionary\b') {
         $Repo = 'SimonBarnett/skills-visionary'
+    } elseif ($ownerBlob -match '(?i)\bce-priority\b|\bce-dayworks\b|\bdayworks-launcher\b') {
+        $Repo = 'SimonBarnett/ce-priority'
     } elseif ($bobCue -or -not ($env:BOB_OUTBOX -and ([string]$env:BOB_OUTBOX).Trim())) {
         $Repo = 'SimonBarnett/bobiverse'
     } else {
@@ -785,6 +788,11 @@ if ($bobTooling) {
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$')) {
     $bookName = 'harvest-agent-skills'
     Write-Host "INFO FR #3318 product default skill_book=harvest-agent-skills for SimonBarnett/agentic_fomprep"
+} elseif ($bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/ce-priority$')) {
+    # FR #4830: even with explicit -Book harvest, never invent common/.grok/skills/harvest
+    # on ce-priority (assert-lock / tip-loop class of ce-priority#36/#37/#38).
+    $bookName = 'dayworks-launcher'
+    Write-Host "INFO FR #4830 product default skill_book=dayworks-launcher for SimonBarnett/ce-priority (never invent common/.grok/skills/harvest)"
 }
 
 # FR #3317: DryRun (and payload) emit the owning skill-book path inside that repo.
@@ -798,6 +806,7 @@ switch -Regex ($bookName) {
         }
     }
     '^harvest-skills-visionary$' { $skillBookPath = '.grok/skills/harvest-skills-visionary/SKILL.md' }
+    '^dayworks-launcher$' { $skillBookPath = 'dayworks/.grok/skills/dayworks-launcher/SKILL.md' }
     '^harvest$' { $skillBookPath = 'common/.grok/skills/harvest/SKILL.md' }
     '^bobiverse-bob-worker$' { $skillBookPath = 'bob/.grok/skills/bobiverse-bob-worker/SKILL.md' }
     '^bobiverse-fleet-ops$' { $skillBookPath = 'common/.grok/skills/bobiverse-fleet-ops/SKILL.md' }
