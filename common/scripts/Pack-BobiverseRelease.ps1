@@ -24,7 +24,9 @@ param(
     # Tests only (needs -SkipMsi): skip jeeves.exe (FR #2301 / WP3 PyInstaller).
     [switch]$SkipJeevesExe,
     # Tests only (needs -SkipMsi): skip airc.exe (FR #2397 PyInstaller).
-    [switch]$SkipAircExe
+    [switch]$SkipAircExe,
+    # Tests only (needs -SkipMsi): skip airc-network-installer.exe (FR #3991 PyInstaller + UAC).
+    [switch]$SkipAircNetworkInstallerExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +52,7 @@ if ($SkipWorkerExe -and -not $SkipMsi) { throw '-SkipWorkerExe is only allowed t
 if ($SkipEarExe -and -not $SkipMsi) { throw '-SkipEarExe is only allowed together with -SkipMsi (an MSI without bob-ear.exe must never ship; FR #1481)' }
 if ($SkipJeevesExe -and -not $SkipMsi) { throw '-SkipJeevesExe is only allowed together with -SkipMsi (an MSI without jeeves.exe must never ship; FR #2301)' }
 if ($SkipAircExe -and -not $SkipMsi) { throw '-SkipAircExe is only allowed together with -SkipMsi (an MSI without airc.exe must never ship; FR #2397)' }
+if ($SkipAircNetworkInstallerExe -and -not $SkipMsi) { throw '-SkipAircNetworkInstallerExe is only allowed together with -SkipMsi (an MSI without airc-network-installer.exe must never ship; FR #3991)' }
 
 $products = if ($Product -eq 'all') { @('jeeves', 'bob', 'airc') } else { @($Product) }
 
@@ -412,6 +415,25 @@ function Stage-Product([string]$Name) {
             if (-not $aexe -or -not (Test-Path -LiteralPath $aexe)) { throw 'Build-Airc.ps1 did not produce airc.exe' }
             Copy-Item -LiteralPath $aexe -Destination (Join-Path $aircExeDir 'airc.exe') -Force
             Write-Host 'INFO airc staged airc\airc.exe'
+        }
+        # FR #3991: elevated network-wide installer (UAC admin). Laid at INSTALLDIR root so
+        # <ai root>\airc\airc-network-installer.exe can be re-run from any airc box; always
+        # downloads Latest airc MSI (not the version it shipped with). Also emit versioned
+        # release assets airc-network-installer-<ver>.exe + .sha256 next to the MSI.
+        if ($SkipAircNetworkInstallerExe) {
+            Write-Host 'WARN airc pack: -SkipAircNetworkInstallerExe (test stage; no airc-network-installer.exe)'
+        } else {
+            $buildNet = (Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Build-AircNetworkInstaller.ps1')
+            if (-not (Test-Path -LiteralPath $buildNet)) { throw "missing Build-AircNetworkInstaller.ps1 (FR #3991): $buildNet" }
+            $nexe = (& $buildNet -RepoRoot $RepoRoot -OutDir $OutDir | Select-Object -Last 1)
+            if (-not $nexe -or -not (Test-Path -LiteralPath $nexe)) { throw 'Build-AircNetworkInstaller.ps1 did not produce airc-network-installer.exe' }
+            Copy-Item -LiteralPath $nexe -Destination (Join-Path $stage 'airc-network-installer.exe') -Force
+            Write-Host 'INFO airc staged airc-network-installer.exe (FR #3991)'
+            $verExe = Join-Path $OutDir ("airc-network-installer-$Version.exe")
+            Copy-Item -LiteralPath $nexe -Destination $verExe -Force
+            $nhash = (Get-FileHash -LiteralPath $verExe -Algorithm SHA256).Hash.ToLower()
+            Set-Content -LiteralPath ($verExe + '.sha256') -Value ("$nhash  airc-network-installer-$Version.exe") -Encoding ascii
+            Write-Host ("INFO release asset airc-network-installer-{0}.exe sha256={1}" -f $Version, $nhash)
         }
         # FR #3639: no config\fleet-operators.txt roster - airc auth is live control-channel +o/+h.
     }

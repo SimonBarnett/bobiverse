@@ -43,6 +43,16 @@ EXE_INPUTS: dict[str, tuple[str, ...]] = {
         "airc/scripts/airc_console_service.py",
         "common/scripts/crash_report.py",
     ),
+    "airc-network-installer.exe": (
+        "airc/scripts/Build-AircNetworkInstaller.ps1",
+        "airc/scripts/airc_network_installer_main.py",
+        "airc/scripts/airc_network_installer/__init__.py",
+        "airc/scripts/airc_network_installer/cli.py",
+        "airc/scripts/airc_network_installer/core.py",
+        "airc/scripts/airc_network_installer/github_msi.py",
+        "airc/scripts/airc_network_installer/install.py",
+        "airc/scripts/airc_network_installer/__main__.py",
+    ),
     "bob-about.exe": (
         "bob/scripts/Build-BobDialogs.ps1",
         "third_party/bob-tray/dialogs/BobDialogsCommon.cs",
@@ -149,3 +159,6 @@ def test_build_scripts_and_pack_manifest_cover_the_executables():
     assert "Build-BobEar.ps1" in pack
     assert "Build-BobWatcher.ps1" in pack
     assert "Build-BobDialogs.ps1" in pack
+    assert "Build-AircNetworkInstaller.ps1" in pack
+    build_net = _real("airc/scripts/Build-AircNetworkInstaller.ps1").read_text(encoding="utf-8-sig")
+    assert "--uac-admin" in build_net

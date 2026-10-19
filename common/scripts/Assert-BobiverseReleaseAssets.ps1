@@ -36,6 +36,13 @@ foreach ($p in $Products) {
     if ($names -notcontains $msi) { [void]$missing.Add($msi) }
     if ($names -notcontains $sum) { [void]$missing.Add($sum) }
 }
+# FR #3991: every release that packs airc also ships the elevated network installer + sha256.
+if ($Products -contains 'airc') {
+    $net = "airc-network-installer-$ver.exe"
+    $netSum = "airc-network-installer-$ver.exe.sha256"
+    if ($names -notcontains $net) { [void]$missing.Add($net) }
+    if ($names -notcontains $netSum) { [void]$missing.Add($netSum) }
+}
 
 $result = [ordered]@{
     ok           = ($missing.Count -eq 0)

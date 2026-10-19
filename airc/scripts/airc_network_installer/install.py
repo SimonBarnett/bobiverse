@@ -1,0 +1,339 @@
+"""Per-host install orchestration for FR #3991 (local msiexec + remote PsExec)."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+from typing import Callable, Optional
+
+from .core import (
+    SERVICE_NAME,
+    HostResult,
+    classify_msiexec_exit,
+    msiexec_install_args,
+    planned_action,
+)
+
+RemoteRunner = Callable[..., subprocess.CompletedProcess]
+
+
+def find_psexec(explicit: str = "") -> Optional[str]:
+    if explicit:
+        p = Path(explicit)
+        if p.is_file():
+            return str(p.resolve())
+    found = shutil.which("psexec") or shutil.which("PsExec.exe") or shutil.which("psexec.exe")
+    return found
+
+
+def offer_download_psexec(dest: Path) -> Path:
+    """
+    Download PsExec from the official Microsoft Sysinternals URL.
+    Caller verifies presence; Sysinternals EULA accepted via -accepteula at run.
+    """
+    import urllib.request
+
+    url = "https://download.sysinternals.com/files/PSTools.zip"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    zip_path = dest.parent / "PSTools.zip"
+    urllib.request.urlretrieve(url, zip_path)
+    import zipfile
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for name in zf.namelist():
+            if name.lower().endswith("psexec.exe"):
+                zf.extract(name, dest.parent)
+                src = dest.parent / name
+                shutil.copy2(src, dest)
+                return dest
+    raise RuntimeError("PsExec.exe not found inside PSTools.zip")
+
+
+def read_local_version(install_root: Optional[Path] = None) -> str:
+    roots = []
+    if install_root:
+        roots.append(install_root)
+    roots.append(Path(r"C:\ai\airc"))
+    env_root = os.environ.get("AIRC_INSTALL_ROOT") or os.environ.get("BOBIVERSE_AIRC_ROOT")
+    if env_root:
+        roots.insert(0, Path(env_root))
+    for root in roots:
+        ver = root / "VERSION"
+        if ver.is_file():
+            return ver.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+    return ""
+
+
+def service_running(name: str = SERVICE_NAME) -> bool:
+    try:
+        r = subprocess.run(
+            ["sc", "query", name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        out = ((r.stdout or "") + (r.stderr or "")).upper()
+        return r.returncode == 0 and "RUNNING" in out
+    except Exception:
+        return False
+
+
+def remote_service_running(host: str, name: str = SERVICE_NAME) -> bool:
+    try:
+        r = subprocess.run(
+            ["sc", f"\\\\{host}", "query", name],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        out = ((r.stdout or "") + (r.stderr or "")).upper()
+        if "1060" in out or "DOES NOT EXIST" in out:
+            return False
+        return r.returncode == 0 and ("STATE" in out or "SERVICE_NAME" in out)
+    except Exception:
+        return False
+
+
+def read_remote_version(host: str) -> str:
+    """Best-effort VERSION over admin share."""
+    for rel in (r"ai\airc\VERSION", r"Program Files\Bobiverse\airc\VERSION"):
+        p = Path(rf"\\{host}\c$\{rel}")
+        try:
+            if p.is_file():
+                return p.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+        except OSError:
+            continue
+    return ""
+
+
+def _net_use(unc: str, username: str, password: str) -> None:
+    # Password via stdin to avoid argv leak when possible; net.exe still needs /user.
+    cmd = ["net", "use", unc]
+    if username:
+        cmd.extend([f"/user:{username}", password])
+    subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+
+
+def _net_use_delete(unc: str) -> None:
+    subprocess.run(
+        ["net", "use", unc, "/delete", "/y"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def install_local(
+    *,
+    msi_path: Path,
+    candidate_version: str,
+    profile: str,
+    force: bool,
+    log_dir: Path,
+    dry_run: bool = False,
+) -> HostResult:
+    host = socket_hostname()
+    t0 = time.monotonic()
+    prev = read_local_version()
+    present = service_running()
+    action = planned_action(
+        installed=prev or None,
+        candidate=candidate_version,
+        force=force,
+        present=present,
+    )
+    log_dir.mkdir(parents=True, exist_ok=True)
+    host_log_dir = log_dir / host
+    host_log_dir.mkdir(parents=True, exist_ok=True)
+    local_log = Path(r"C:\Temp") / f"airc-{candidate_version}-install.log"
+    result_log = host_log_dir / local_log.name
+    if action == "skip" and not force:
+        return HostResult(
+            host=host,
+            previous_version=prev,
+            action="skip",
+            status="skipped",
+            duration_s=time.monotonic() - t0,
+            detail="same or newer already installed",
+        )
+    args = msiexec_install_args(
+        msi_local_path=str(msi_path),
+        log_local_path=str(local_log),
+        profile=profile,
+    )
+    if dry_run:
+        return HostResult(
+            host=host,
+            previous_version=prev,
+            action=action,
+            status="dry-run",
+            duration_s=time.monotonic() - t0,
+            detail=" ".join(args),
+        )
+    local_log.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=900, check=False)
+    code = int(proc.returncode)
+    kind = classify_msiexec_exit(code)
+    try:
+        if local_log.is_file():
+            shutil.copy2(local_log, result_log)
+    except OSError:
+        pass
+    ok = kind in ("success", "reboot_required")
+    post_ok = service_running() if ok else False
+    detail = f"msiexec exit {code}"
+    if ok and not post_ok:
+        detail += "; service not RUNNING after install"
+        ok = False
+        kind = "failed"
+    return HostResult(
+        host=host,
+        previous_version=prev,
+        action=action,
+        exit_code=code,
+        status=kind if ok or kind == "reboot_required" else "failed",
+        duration_s=time.monotonic() - t0,
+        log_path=str(result_log),
+        detail=detail,
+        reboot_required=(kind == "reboot_required"),
+    )
+
+
+def socket_hostname() -> str:
+    import socket
+
+    return socket.gethostname()
+
+
+def install_remote(
+    *,
+    host: str,
+    msi_path: Path,
+    candidate_version: str,
+    profile: str,
+    force: bool,
+    psexec: str,
+    username: str,
+    password: str,
+    log_dir: Path,
+    dry_run: bool = False,
+    timeout_s: float = 900.0,
+) -> HostResult:
+    t0 = time.monotonic()
+    prev = read_remote_version(host)
+    present = remote_service_running(host)
+    action = planned_action(
+        installed=prev or None,
+        candidate=candidate_version,
+        force=force,
+        present=present,
+    )
+    host_log_dir = log_dir / host
+    host_log_dir.mkdir(parents=True, exist_ok=True)
+    remote_msi_name = msi_path.name
+    remote_msi = rf"C:\Temp\{remote_msi_name}"
+    remote_log = rf"C:\Temp\airc-{candidate_version}-install.log"
+    result_log = host_log_dir / Path(remote_log).name
+    if action == "skip" and not force:
+        return HostResult(
+            host=host,
+            previous_version=prev,
+            action="skip",
+            status="skipped",
+            duration_s=time.monotonic() - t0,
+            detail="same or newer already installed",
+        )
+    msiexec = msiexec_install_args(
+        msi_local_path=remote_msi,
+        log_local_path=remote_log,
+        profile=profile,
+    )
+    # PsExec without -u/-p: authenticate via net use so password stays out of PsExec argv.
+    psexec_cmd = [
+        psexec,
+        rf"\\{host}",
+        "-accepteula",
+        "-h",
+        "-s",
+        *msiexec,
+    ]
+    if dry_run:
+        return HostResult(
+            host=host,
+            previous_version=prev,
+            action=action,
+            status="dry-run",
+            duration_s=time.monotonic() - t0,
+            detail=" ".join(psexec_cmd),
+        )
+    ipc = rf"\\{host}\IPC$"
+    if username:
+        _net_use(ipc, username, password)
+    try:
+        temp_unc = Path(rf"\\{host}\c$\Temp")
+        try:
+            temp_unc.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        remote_unc = temp_unc / remote_msi_name
+        try:
+            shutil.copy2(msi_path, remote_unc)
+        except Exception as exc:
+            return HostResult(
+                host=host,
+                previous_version=prev,
+                action=action,
+                status="failed",
+                duration_s=time.monotonic() - t0,
+                detail=f"copy failed: {exc}",
+            )
+        proc = subprocess.run(
+            psexec_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        code = int(proc.returncode)
+        kind = classify_msiexec_exit(code)
+        # Pull log back
+        try:
+            src_log = Path(rf"\\{host}\c$\Temp") / Path(remote_log).name
+            if src_log.is_file():
+                shutil.copy2(src_log, result_log)
+        except OSError:
+            pass
+        ok = kind in ("success", "reboot_required")
+        post_ok = remote_service_running(host) if ok else False
+        detail = f"msiexec exit {code}"
+        if ok and not post_ok:
+            detail += "; service not RUNNING after install"
+            ok = False
+            kind = "failed"
+        if not ok and result_log.is_file():
+            try:
+                lines = result_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                tail = "\n".join(lines[-30:])
+                detail += "\n--- log tail ---\n" + tail
+            except OSError:
+                pass
+        return HostResult(
+            host=host,
+            previous_version=prev,
+            action=action,
+            exit_code=code,
+            status=kind if ok or kind == "reboot_required" else "failed",
+            duration_s=time.monotonic() - t0,
+            log_path=str(result_log),
+            detail=detail,
+            reboot_required=(kind == "reboot_required"),
+        )
+    finally:
+        if username:
+            _net_use_delete(ipc)
