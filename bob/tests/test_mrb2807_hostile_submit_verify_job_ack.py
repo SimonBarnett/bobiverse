@@ -111,13 +111,16 @@ def test_mrb2807_stale_ack_does_not_stop():
 def test_mrb2807_vision_s3_cites_2791_job_match():
     vision = Path(__file__).resolve().parents[1] / "VISION.md"
     text = vision.read_text(encoding="utf-8")
-    # Contiguous S3 row must mention job-matched stop + FR #2791.
+    # Contiguous S3 row must mention job-matched stop + FR #2791 / #4889.
     idx = text.index("| S3 |")
-    row = text[idx : idx + 900]
+    end = text.index("| S4 |", idx)
+    row = text[idx:end]
     assert "2791" in row
     assert "assign_job_ref" in row or "ack_job_ref" in row
     assert "test_fr2791_submit_verify_stop_matches_job.py" in row
     assert "unrelated open ACK" in row
+    assert "4889" in row
+    assert "test_fr4889_grok_submit_verify_receipt_ack.py" in row
 
 
 def test_mrb2807_skill_submit_verify_no_orphan_splice():

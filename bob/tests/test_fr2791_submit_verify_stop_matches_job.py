@@ -208,7 +208,10 @@ def test_no_repaste_in_unrelated_ack_case():
 def test_inject_line_source_wires_job_matched_stop():
     src = open(bw.__file__, encoding="utf-8").read()
     i = src.index("def _inject_line")
-    body = src[i : i + 1600]
+    body = src[i : i + 2200]
     assert "assign_job_ref" in body
     assert "ack_job_ref" in body
     assert "ack_open" in body
+    # FR #4889: with a probe, wire turn_open|probe stop (not bare receipt ACK).
+    assert "cursor_submit_verify_stop" in body
+    assert "FR #4889" in body or "4889" in body
