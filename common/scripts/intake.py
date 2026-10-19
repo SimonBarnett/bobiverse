@@ -326,9 +326,13 @@ def lesson_sentence_already_in_book(existing_md: str, lessons: list[str]) -> boo
     if not base:
         return False
     for raw in lessons or []:
+        if lesson_covered_by_existing_md(existing_md, str(raw or "")):
+            return True
         for part in re.split(r"(?<=[.!?])\s+|;\s+", str(raw or "")):
             key = _normalize_lesson_key(part).strip(" .")
-            if len(key) >= 40 and key in base:
+            if len(key) >= 40 and (
+                key in base or lesson_covered_by_existing_md(existing_md, part)
+            ):
                 return True
     return False
 
@@ -653,6 +657,145 @@ def _normalize_lesson_key(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
 
 
+# FR #4865: stopwords for abbreviated-twin coverage (not used for exact substring).
+_LESSON_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "at",
+        "by",
+        "from",
+        "into",
+        "when",
+        "while",
+        "that",
+        "this",
+        "those",
+        "is",
+        "are",
+        "be",
+        "been",
+        "was",
+        "were",
+        "do",
+        "does",
+        "not",
+        "no",
+        "if",
+        "then",
+        "than",
+        "as",
+        "it",
+        "its",
+        "their",
+        "them",
+        "they",
+        "above",
+        "below",
+        "until",
+        "never",
+        "keep",
+        "after",
+        "before",
+        "pct",
+        "per",
+        "via",
+        "also",
+        "only",
+        "same",
+        "just",
+    }
+)
+
+
+def _lesson_sig_tokens(text: str) -> list[str]:
+    key = _normalize_lesson_key(text)
+    parts = re.findall(r"[a-z0-9_]+", key)
+    return [p for p in parts if len(p) >= 4 and p not in _LESSON_STOPWORDS]
+
+
+def _token_in_haystack(token: str, hay: str) -> bool:
+    """True if token appears in hay, or is a trailing abbrev of an underscore name."""
+    if not token or not hay:
+        return False
+    if token in hay:
+        return True
+    # MIN_HOLD_S matches BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S (incident #4863).
+    if len(token) >= 6 and re.search(
+        rf"(?:^|[^a-z0-9])[a-z0-9_]*_{re.escape(token)}(?:[^a-z0-9]|$)",
+        hay,
+    ):
+        return True
+    return False
+
+
+def _shorter_lesson_covered_by_longer(shorter: str, longer: str) -> bool:
+    """FR #4865: abbreviated restatement of a longer bullet already on main."""
+    s = _normalize_lesson_key(shorter)
+    L = _normalize_lesson_key(longer)
+    if not s or not L:
+        return False
+    if s in L:
+        return True
+    tokens = _lesson_sig_tokens(s)
+    if not tokens:
+        return False
+    prefix = 0
+    for ca, cb in zip(s, L):
+        if ca != cb:
+            break
+        prefix += 1
+    # Shared lead-in then abbreviated env names (tip #4863 vs main after #4860).
+    if prefix >= 40:
+        return all(_token_in_haystack(t, L) for t in tokens)
+    # Without a long shared prefix, require a denser token set so unrelated
+    # bullets that share a few fleet words do not collapse.
+    if len(tokens) < 6:
+        return False
+    return all(_token_in_haystack(t, L) for t in tokens)
+
+
+def _iter_skill_bullet_texts(existing_md: str) -> list[str]:
+    out: list[str] = []
+    for raw_line in str(existing_md or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith(("- ", "* ")):
+            text = line[2:].strip()
+            if text:
+                out.append(text)
+    return out
+
+
+def lesson_covered_by_existing_md(existing_md: str, lesson: str) -> bool:
+    """True when lesson is already on main, including abbreviated twins (FR #4865)."""
+    key = _normalize_lesson_key(lesson)
+    base = _normalize_lesson_key(existing_md)
+    if key and key in base:
+        return True
+    for bullet in _iter_skill_bullet_texts(existing_md):
+        bkey = _normalize_lesson_key(bullet)
+        if not bkey:
+            continue
+        if key in bkey or bkey in key:
+            return True
+        # Only treat the shorter text as the candidate abbrev of the longer.
+        if len(key) <= len(bkey):
+            if _shorter_lesson_covered_by_longer(lesson, bullet):
+                return True
+        # Do not drop a more-specific (longer) new lesson when main only has
+        # a short form — that is a real upgrade, not a twin.
+    return False
+
+
 _SEAT_FOOTER_RE = re.compile(
     r"(?i)\bseat=`?(?P<seat>[A-Za-z0-9_.+-]+)`?",
 )
@@ -666,8 +809,7 @@ def extract_seat_from_text(*parts: str) -> str:
 
 
 def filter_new_lessons(existing_md: str, lessons: list[str]) -> list[str]:
-    """Drop lessons already present in existing_md (FR #2970 de-dupe)."""
-    base = _normalize_lesson_key(existing_md)
+    """Drop lessons already present in existing_md (FR #2970 / FR #4865 de-dupe)."""
     out: list[str] = []
     seen: set[str] = set()
     for raw in lessons:
@@ -678,7 +820,7 @@ def filter_new_lessons(existing_md: str, lessons: list[str]) -> list[str]:
         if key in seen:
             continue
         seen.add(key)
-        if key and key in base:
+        if lesson_covered_by_existing_md(existing_md, line):
             continue
         out.append(line)
     return out
@@ -721,7 +863,8 @@ def find_open_harvest_lesson_twin(
     FR #3824: same seat + same lesson text must not open a second tip PR
     (incident #3822/#3823, 26s apart, two intake ids).
     """
-    keys = [_normalize_lesson_key(x) for x in (lessons or []) if str(x or "").strip()]
+    lesson_rows = [str(x or "").strip() for x in (lessons or []) if str(x or "").strip()]
+    keys = [_normalize_lesson_key(x) for x in lesson_rows]
     keys = [k for k in keys if k and k != "(no new playbook line)"]
     if not keys:
         return None
@@ -730,7 +873,12 @@ def find_open_harvest_lesson_twin(
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
         blob = _normalize_lesson_key(f"{title}\n{body}")
-        if not any(k in blob for k in keys):
+        tip_md = f"{title}\n{body}"
+        # FR #4865: abbreviated needle vs full lesson already on an open tip.
+        matched = any(k in blob for k in keys) or any(
+            lesson_covered_by_existing_md(tip_md, row) for row in lesson_rows
+        )
+        if not matched:
             continue
         pr_seat = extract_seat_from_text(body, title).lower()
         if want_seat and pr_seat and want_seat != pr_seat:
