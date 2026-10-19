@@ -1831,6 +1831,38 @@ def _submit_verify_retries(default: int = 3) -> int:
     return max(0, min(10, v))
 
 
+def _submit_verify_giveup_grace_s(default: float = 20.0) -> float:
+    """FR #4732: seconds to poll turn_running before Cursor GIVEUP after verify FAILED."""
+    raw = (os.environ.get("BOB_WORKER_SUBMIT_VERIFY_GIVEUP_GRACE_S") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        v = float(raw)
+    except ValueError:
+        return float(default)
+    return max(0.0, min(120.0, v))
+
+
+def cursor_submit_verify_stop(bored, *, probe: Optional[Callable[[], bool]] = None) -> Callable[[], bool]:
+    """FR #4732: Cursor stop predicate — turn_open or probe; never receipt ack_open alone."""
+
+    def _stop() -> bool:
+        try:
+            if bored is not None and bool(getattr(bored, "turn_open", False)):
+                return True
+        except Exception:
+            pass
+        if probe is not None:
+            try:
+                if probe():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    return _stop
+
+
 def _submit_verify_backoffs() -> tuple:
     """Backoff seconds between Enter-only retries after the first verify window (FR #2696)."""
     raw = (os.environ.get("BOB_WORKER_SUBMIT_VERIFY_BACKOFFS") or "").strip()
@@ -4074,6 +4106,20 @@ class InjectRecovery:
             if ok:
                 return "retried"
             self.log("relay: inject path=fail reason=repaste_failed")
+        # FR #4732: paste may have landed; wait briefly for turn_running before GIVEUP/NACK.
+        grace = _submit_verify_giveup_grace_s()
+        if grace > 0:
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                try:
+                    if self.turn_running():
+                        self.log(
+                            "relay: submit-verify FAILED - agent turn started in grace; no GIVEUP"
+                        )
+                        return "running"
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(min(0.2, max(0.05, deadline - time.monotonic())))
         if self.giveup_on_fail:
             wire = submit_verify_giveup_line(line)
             try:
@@ -6201,10 +6247,14 @@ class Supervisor:
             inject_fn = lambda pid, text, log=None: inject_console(
                 pid, text, submit_gap_s=_cursor_submit_gap_s(), log=log
             )
-        if want and self.bored is not None and not (is_cursor and probe is not None):
-            stop = lambda b=self.bored, w=want: bool(getattr(b, "ack_open", False)) and (
-                getattr(b, "ack_job_ref", None) == w
-            )
+        if want and self.bored is not None:
+            # FR #2791 ack_open+ack_job_ref stop; Cursor uses turn_open|probe (FR #4732).
+            if is_cursor and probe is not None:
+                stop = cursor_submit_verify_stop(self.bored, probe=probe)
+            else:
+                stop = lambda b=self.bored, w=want: bool(getattr(b, "ack_open", False)) and (
+                    getattr(b, "ack_job_ref", None) == w
+                )
         # sync=False: do not block the IRC relay thread for the verify backoff budget.
         # FR #4456: the unverified ack-miss reminder runs the loop on this thread.
         def _mark_unverified() -> None:
