@@ -46,6 +46,20 @@ flowchart TD
 7. Open exactly **one** PR against the repo's default branch, title referencing the FR, body containing the line **`Closes <owner>/<repo>#N`** (the full form, the originating issue - not just `#N`, not only in a comment) plus the evidence block below. A PR that targets a non-default branch does not auto-close the issue: say so in the body so the MRB closes it by hand.
 8. **Verify the link before DONE**: `gh pr view <pr> --repo <owner>/<repo> --json body,baseRefName,closingIssuesReferences` must list issue N in `closingIssuesReferences` (or, for a non-default base, the body must carry the `Closes` line and say it needs a manual close). Fix the body and re-check if not. 9. Send **DONE** (PR url last, nothing after it). 10. Stop.
 
+
+## CAST IRON - never job-git the install root (FR #4843)
+
+The live install (<ai root>\bob, --install-root) must stay on main. FR/FIX/MRB seats **must not** git checkout / switch / commit / merge / 
+ebase in that checkout. Always:
+
+1. git -C <install> worktree add -b fr-N <job-wt> origin/main (sibling C:\ai\bob-wt-fr-<n> or %TEMP%\bobiverse-fr-<n>)
+2. Write .bobiverse-seat immediately, then git sparse-checkout disable **once**
+3. Commit/push from the job worktree only
+
+
+efuse_job_git / install_root_branch_warning in common/scripts/bob_install_root_guard.py are the programmatic guard; bob-worker logs a WARN at seat start when the install root is off main. Related: #4842 (replayed assign), #2727 / #3641 (worktree reclaim).
+
+
 ## Duplicates: find and close them before DONE (t857u)
 
 Harvest receipt rule: any receipt whose title or body says DONE, twin, duplicate, filed, or merged is closed by the worker/MRB as soon as it is filed; a receipt is never left open.

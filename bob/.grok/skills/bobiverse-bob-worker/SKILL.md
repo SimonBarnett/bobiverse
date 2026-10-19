@@ -146,6 +146,11 @@ The hard max of **2** applies only to **agent** seats. Cap count is live agent `
 
 A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **bootloader + same-named child = ONE seat**. Process-root helpers still use `ParentProcessId` filters for heal/reclaim. When reclaiming over the hard max, **never** `Sort-Object ProcessId | Select -Skip N | Stop-Process` on a flat PID list — that destroys whole seats (MarchHare killed seat 38244/40460 after FR #2554 hotpatch). Use `worker_seat_roots` / `worker_seat_tree_pids` / `excess_worker_seat_roots` in `bob_worker.py`, and tray `Stop-BobWorkerSeatTrees` (root + children only). Cap *enforcement* for new agent starts is IRC markers (FR #3181), not process roots alone.
 
+## Install-root job git (FR #4843)
+
+* **Install-root job git (FR #4843):** never git checkout/commit in --install-root. Seats must use git worktree add to ob-wt-fr-<n> (or %TEMP%\bobiverse-fr-<n>). At agent start bob-worker logs install-root: WARN FR #4843 when the install checkout is not on main. Helper: common/scripts/bob_install_root_guard.py (
+efuse_job_git, install_root_branch_warning).
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
