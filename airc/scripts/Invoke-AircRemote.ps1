@@ -578,18 +578,13 @@ function Invoke-AircRemoteSelfTest {
         $off = Get-AircRepliesJsonlLength -Path $jsonl
         $row1 = (@{ ts = '2026-10-04T00:00:00Z'; from = 'tm_console'; body = "out id=$id seq=1 ping" } | ConvertTo-Json -Compress)
         $row2 = (@{ ts = '2026-10-04T00:00:01Z'; from = 'tm_console'; body = "DONE id=$id exit=0" } | ConvertTo-Json -Compress)
-        # Background writer after short delay so Wait polls
-        $job = Start-Job -ScriptBlock {
-            param($p, $a, $b)
-            Start-Sleep -Milliseconds 400
-            Add-Content -LiteralPath $p -Value $a -Encoding utf8
-            Add-Content -LiteralPath $p -Value $b -Encoding utf8
-        } -ArgumentList $jsonl, $row1, $row2
+        # FR #4813: write rows in-process (Start-Job + 400ms under full airc pytest can
+        # starve past TimeoutSec=10 and flake Wait-AircRemoteReplies). Wait still polls.
+        Add-Content -LiteralPath $jsonl -Value $row1 -Encoding utf8
+        Add-Content -LiteralPath $jsonl -Value $row2 -Encoding utf8
         $got = Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 10 -StartOffset $off
         Assert-True ($got.Count -ge 2) 'wait collected out+DONE'
         Assert-True ($got[-1] -match '^DONE id=aabbccdd exit=0') 'wait DONE line'
-        Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
-        Remove-Job $job -Force -ErrorAction SilentlyContinue
         try {
             Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId 'ffffffff' -TimeoutSec 1 -StartOffset ([int64]([System.IO.FileInfo]$jsonl).Length) | Out-Null
             Assert-True $false 'wait timeout should throw'
