@@ -2367,7 +2367,7 @@ class AircConsoleCore:
                     "cmd: COMSPEC escape (prefer cmd: dir for listings; bare dir is PS); "
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
-                    "STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL; "
+                    "STATUS|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
                     f"capabilities shell={self.capabilities.shell_mode} "

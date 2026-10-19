@@ -27,7 +27,8 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `psb64:<b64>` | `powershell -EncodedCommand` (same UTF-8 wrap) |
 | `PUT path` + chunks | Write file (base64 seq) |
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
-| `GET path` | hash/size + head/tail |
+| `GET path` | hash/size + head (80 chars). Does not send the file. |
+| `GET path fetch=chunk` then `GETCHUNK id seq` | FR #4795 outbound fetch. Open returns bytes/sha256/seqs only. Each GETCHUNK returns one <=300-byte raw chunk. The next GETCHUNK is the ack; the console never pushes the following chunk. |
 | `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77) |
 
 ## UPDATE (FR #77) — shipped
