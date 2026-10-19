@@ -2089,27 +2089,21 @@ def cursor_project_slug(cwd: str) -> str:
     return s.replace("\\", "-").replace(":", "-")
 
 
-def cursor_transcript_still_open(path: Path | str) -> Optional[bool]:
-    """FR #4670: True while the newest transcript record is not a finished assistant reply.
-
-    A trailing ``tool_use`` (or a user line, including a done-miss reminder) means the
-    agent is still in the turn. ``False`` when the newest assistant message is text
-    with no tool call. ``None`` when the file is missing or has no parseable records
-    (caller keeps the legacy quiet-gap end).
-    """
+def _cursor_transcript_tail_objs(path: Path | str, *, max_bytes: int = 262144) -> list[dict]:
+    """Parse trailing JSON objects from a cursor agent transcript (best-effort)."""
     p = Path(path)
     try:
         size = p.stat().st_size
     except OSError:
-        return None
+        return []
     try:
         with p.open("rb") as fh:
-            if size > 262144:
-                fh.seek(size - 262144)
+            if size > max_bytes:
+                fh.seek(size - max_bytes)
             raw = fh.read().decode("utf-8", "replace")
     except OSError:
-        return None
-    last: Optional[dict] = None
+        return []
+    out: list[dict] = []
     for line in raw.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -2118,23 +2112,56 @@ def cursor_transcript_still_open(path: Path | str) -> Optional[bool]:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def cursor_transcript_last_turn_ended(path: Path | str) -> Optional[dict]:
+    """FR #4753: newest ``type=turn_ended`` record (any status), or None."""
+    last: Optional[dict] = None
+    for obj in _cursor_transcript_tail_objs(path):
+        if str(obj.get("type") or "") == "turn_ended":
+            last = obj
+    return last
+
+
+def cursor_transcript_still_open(path: Path | str) -> Optional[bool]:
+    """FR #4670: True while the newest transcript record is not a finished assistant reply.
+
+    A trailing ``tool_use`` (or a user line, including a done-miss reminder) means the
+    agent is still in the turn. ``False`` when the newest assistant message is text
+    with no tool call. ``None`` when the file is missing or has no parseable records
+    (caller keeps the legacy quiet-gap end).
+
+    FR #4753: a trailing ``type=turn_ended`` (including ``status=error``) means the
+    turn is closed — Connection stalled / error ends must arm done-miss.
+    """
+    objs = _cursor_transcript_tail_objs(path)
+    if not objs:
+        return None
+    # Prefer explicit turn lifecycle events over chat role/content heuristics.
+    for obj in reversed(objs):
+        typ = str(obj.get("type") or "")
+        if typ == "turn_ended":
+            return False
+        if typ == "turn_started":
+            return True
         role = obj.get("role")
         msg = obj.get("message")
         if role in ("assistant", "user") and isinstance(msg, dict):
-            last = obj
-    if last is None:
-        return None
-    if last.get("role") != "assistant":
-        return True
-    content = (last.get("message") or {}).get("content")
-    if not isinstance(content, list):
-        return True
-    types = [part.get("type") for part in content if isinstance(part, dict)]
-    if any(t in ("tool_use", "tool_call") for t in types):
-        return True
-    if "text" in types:
-        return False
-    return True
+            if role != "assistant":
+                return True
+            content = msg.get("content")
+            if not isinstance(content, list):
+                return True
+            types = [part.get("type") for part in content if isinstance(part, dict)]
+            if any(t in ("tool_use", "tool_call") for t in types):
+                return True
+            if "text" in types:
+                return False
+            return True
+    return None
 
 
 def _cursor_turn_quiet_s(default: float = 20.0) -> float:
@@ -2192,6 +2219,8 @@ class CursorTurnWatcher:
         self._last_mtime = 0.0
         self._active = False
         self._turn = 0
+        # FR #4753: only fire on turn_ended records appended after this turn started.
+        self._te_count_at_start = 0
 
     def _bind(self) -> Optional[Path]:
         if self.chat_dir is not None:
@@ -2284,6 +2313,17 @@ class CursorTurnWatcher:
             return False
         return cursor_transcript_still_open(tp) is True
 
+    def _transcript_turn_ended_count(self, chat_dir: Path) -> int:
+        """FR #4753: count of ``type=turn_ended`` records in the transcript tail."""
+        tp = self._transcript_file(chat_dir)
+        if tp is None:
+            return 0
+        return sum(
+            1
+            for o in _cursor_transcript_tail_objs(tp)
+            if str(o.get("type") or "") == "turn_ended"
+        )
+
     def tick(self) -> Optional[str]:
         """One poll; returns 'started' / 'ended' when it fired a callback (tests)."""
         d = self._bind()
@@ -2297,11 +2337,21 @@ class CursorTurnWatcher:
             if not self._active:
                 self._active = True
                 self._turn += 1
+                self._te_count_at_start = self._transcript_turn_ended_count(d)
                 fired = "started"
                 if self._on_started:
                     with contextlib.suppress(Exception):
                         self._on_started(self._turn, now)
-        elif self._active and now - self._last_mtime >= self.quiet_s:
+        # FR #4753: a new transcript turn_ended (incl. status=error) ends this turn
+        # even when the chat store stays quiet or still looks open via a user line.
+        if self._active and self._transcript_turn_ended_count(d) > self._te_count_at_start:
+            self._active = False
+            fired = "ended"
+            if self._on_ended:
+                with contextlib.suppress(Exception):
+                    self._on_ended(self._turn, now)
+            return fired
+        if self._active and now - self._last_mtime >= self.quiet_s:
             # FR #4670: a quiet store.db during a tool call is not the end of the turn.
             if self._transcript_blocks_end(d):
                 return None
@@ -4494,6 +4544,9 @@ class BoredEmitter:
         past ``harvest_hold_s`` until ``turn_ended`` or ``turn_hold_max_s`` (default 600 s);
       * FR #2875: ``turn_ended`` with ACK open and no DONE/NACK/GIVEUP arms done-miss (remind after
         ``done_miss_grace_s``, then ``!bored`` reason ``done-miss`` if still open after the reminder turn);
+      * FR #4753: cursor transcript ``turn_ended`` with ``status=error`` counts as turn end (done-miss);
+        an open ACK with no activity past ``ack_stale_s`` clears ACK and ``!bored`` reason ``ack-stale``
+        even when ``release_gen`` was bumped by a turn that never closed;
       * FR #2996: done-miss release sets ``_release_gen = _turn_gen`` (same as normal turn-end) so later
         ``nak``/``idle`` are not gated forever; ``_run`` clamps past-due waits to 0.5s (no ``wait(0)`` spin);
       * FR #3012: agent 402 / usage-exhausted is **out-of-fuel** — immediate ``GIVEUP … out-of-fuel``,
@@ -5131,6 +5184,24 @@ class BoredEmitter:
             if self._nak_due is not None and now >= self._nak_due:
                 self._nak_due = None  # busy at due time: never send; post-harvest !bored covers it
             return None
+        # FR #4753: ACK past ack_stale_s must clear and !bored (reason ack-stale), even when
+        # turn_started bumped release_gen and the cursor turn never ended (error stall).
+        if (
+            self._ack_open
+            and self._ack_at is not None
+            and now - float(self._ack_at) >= float(self.ack_stale_s)
+        ):
+            key = self._ack_job_key or "job"
+            self._ack_open = False
+            self._ack_job_key = None
+            self._clear_done_miss()
+            self._turn_open = False
+            self._release_gen = self._turn_gen
+            self._idle_since = now
+            self.log(
+                f"bored: ACK stale after {self.ack_stale_s:.0f}s on {key} - releasing (ack-stale)"
+            )
+            return "ack-stale"
         if self._idle_since is None:
             self._idle_since = now
         if not self._start_sent:
@@ -5258,6 +5329,9 @@ class BoredEmitter:
         if reason == "done-miss":
             self._done_miss_release_pending = False
             self._clear_done_miss()
+        if reason == "ack-stale":
+            # ACK already cleared in _reason; keep idle clock for the next cycle.
+            self._idle_since = now
         self.sent.append((now, reason))
         self.log(f"bored -> shop reason={reason}")
 
