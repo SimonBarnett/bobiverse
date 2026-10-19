@@ -1,0 +1,8 @@
+# Fleet GitHub resync list (FR #4725). One owner/repo per line.
+# Install and chair start merge DEFAULT_RESYNC_REPOS; do not delete ce-priority.
+SimonBarnett/a-search
+SimonBarnett/agentic_fomprep
+SimonBarnett/bobiverse
+SimonBarnett/xai-cookbook
+SimonBarnett/Club-Madeira
+SimonBarnett/ce-priority

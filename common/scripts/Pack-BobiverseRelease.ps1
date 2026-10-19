@@ -314,6 +314,13 @@ function Stage-Product([string]$Name) {
         New-Item -ItemType Directory -Force -Path (Join-Path $stage 'assets') | Out-Null
         Copy-Item -LiteralPath $butlerSrc -Destination (Join-Path $stage 'assets\jeeves-butler.ico') -Force
         Write-Host "INFO jeeves staged assets\jeeves-butler.ico"
+        # FR #4725: fleet resync-repos.txt defaults (includes ce-priority) for Install fallback
+        $resyncSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'jeeves\defaults\resync-repos.txt'
+        if (-not (Test-Path -LiteralPath $resyncSrc)) { throw 'jeeves pack requires jeeves\defaults\resync-repos.txt (FR #4725)' }
+        $defaultsDest = Join-Path $stage 'defaults'
+        New-Item -ItemType Directory -Force -Path $defaultsDest | Out-Null
+        Copy-Item -LiteralPath $resyncSrc -Destination (Join-Path $defaultsDest 'resync-repos.txt') -Force
+        Write-Host 'INFO jeeves staged defaults\resync-repos.txt (FR #4725)'
         # FR #2301 / WP3: one-file jeeves.exe (chair + in-proc HTTP)
         $jeevesExeDir = Join-Path $stage 'jeeves'
         New-Item -ItemType Directory -Force -Path $jeevesExeDir | Out-Null
