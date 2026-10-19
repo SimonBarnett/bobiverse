@@ -175,3 +175,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 
 - bobiverse #4340: even when hard-unpinned from require_machine=ionos, flamingo must GIVEUP needs_human for live C:\ai\jeeves install hotpatch; leave OPEN for ionos ops
 - When SeatDisk FreeGB stays under MinFreeGB after reclaim, check install git branch: ff-only-on-main means a leftover fr-* branch leaves flat scripts pre-#4883; hotpatch from origin/main:common/scripts/Clear-BobiverseSeatDisk.ps1 then -Reclaim before filing capacity.
+- FR #4895 Sync: dirty-but-equals-origin/main hotpatch on leftover fr-* uses switch -f main then ff; unique dirty/untracked still left alone; MRB folds main then pytest test_worktree_sync_020 before --auto --merge
