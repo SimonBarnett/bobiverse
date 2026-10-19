@@ -59,9 +59,25 @@ def test_fr4216_docs_state_airc_embeds():
     assert "FR #4216" in ops
 
 
+def test_fr4477_pack_skipmsi_disables_embed_gate():
+    """FR #4477: -SkipMsi test stages must not embed live/placeholder Ergo PASS."""
+    t = PACK.read_text(encoding="utf-8-sig")
+    assert "FR #4477" in t
+    assert re.search(
+        r"if\s*\(\s*\$SkipMsi\s*\)\s*\{\s*\$wantEmbedErgo\s*=\s*\$false\s*\}",
+        t,
+        re.S,
+    )
+    assert "not embedding config/ergo.password (FR #4477" in t
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows only")
-def test_fr4216_skipmsi_stage_writes_ergo(tmp_path: Path):
-    """-SkipMsi airc stage must produce config\\ergo.password (FAKE_ ok when no secret)."""
+def test_fr4216_skipmsi_stage_does_not_embed_ergo(tmp_path: Path):
+    """FR #4477: -SkipMsi airc stage must NOT write config\\ergo.password.
+
+    Real airc MSI packs (no -SkipMsi) still embed under FR #4216; this gate only
+    covers disposable test stages so they never copy a live PASS or placeholder.
+    """
     out = tmp_path / "dist"
     out.mkdir()
     ver = "0.0.4216"
@@ -70,9 +86,9 @@ def test_fr4216_skipmsi_stage_writes_ergo(tmp_path: Path):
         "AIRC_PACK_ERGO_PASSWORD",
         "AGENTIC_IRC_PASSWORD",
         "AIRC_CONSOLE_SERVER_PASSWORD",
+        "BOB_IRC_PASSWORD",
     ):
         env.pop(k, None)
-    # Empty profile so connect.password is absent; pack embeds FAKE_ under -SkipMsi.
     fake_home = tmp_path / "home"
     (fake_home / ".grok" / "ergo").mkdir(parents=True)
     env["USERPROFILE"] = str(fake_home)
@@ -108,8 +124,8 @@ def test_fr4216_skipmsi_stage_writes_ergo(tmp_path: Path):
     )
     out_text = (r.stdout or "") + (r.stderr or "")
     assert r.returncode == 0, out_text[-4000:]
-    ergo = out / f"airc-{ver}" / "config" / "ergo.password"
-    assert ergo.is_file(), list((out / f"airc-{ver}" / "config").iterdir()) if (out / f"airc-{ver}" / "config").is_dir() else list(out.iterdir())
-    body = ergo.read_text(encoding="utf-8").strip()
-    assert body, "ergo.password must be non-empty"
-    assert "embedded config/ergo.password" in out_text or "FR #4216" in out_text
+    stage = out / f"airc-{ver}"
+    assert stage.is_dir(), list(out.iterdir())
+    ergo = stage / "config" / "ergo.password"
+    assert not ergo.is_file(), "FR #4477: SkipMsi stage must not embed ergo.password"
+    assert "FR #4477" in out_text or "not embedding config/ergo.password" in out_text
