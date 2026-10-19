@@ -1308,7 +1308,8 @@ function Get-BobiverseProductRoot {
 # never blocks or fails the start (timeouts, every error is a WARN and the installed files keep running); the flat runtime files
 # (scripts\ third_party\ docs\ ...) are composed FROM the work tree by Sync-BobiverseFromRepo.ps1 and hidden from git via
 # .git\info\exclude, so `git status` shows only real edits under <product>\ and common\.
-# FR #1157: clean leftover fix/* tips (merged / upstream gone) auto-switch back to main before ff; BOBIVERSE_KEEP_BRANCH=1 opts out.
+# FR #1157 / #4895: leftover fix/* tips (merged / upstream gone) auto-switch back to main before ff;
+# #4895 also when dirty vs HEAD but work tree already equals origin/main (hotpatch). BOBIVERSE_KEEP_BRANCH=1 opts out.
 # ---------------------------------------------------------------------------------------------------------------------------
 $script:BobiverseDefaultRemote = 'https://github.com/SimonBarnett/bobiverse.git'
 
@@ -1489,10 +1490,37 @@ function Sync-BobiverseWorkTree {
             $hadUpstream = ($cfgRemote.Code -eq 0 -and @($cfgRemote.Out | Where-Object { "$_".Trim() }).Count -gt 0)
             $up = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', '--abbrev-ref', '@{u}')) -TimeoutSec 15
             $upstreamGone = ($hadUpstream -and $up.Code -ne 0)
-            if (-not $keepBranch -and -not $dirty -and ($mergedOrBehind -or $upstreamGone)) {
+            # FR #4895: dirty vs HEAD but every dirty tracked path already equals origin/main
+            # (hotpatch onto a stale fr tip while other files lag) is safe to discard with
+            # switch -f; unique dirty or untracked work still left alone.
+            $dirtyMatchesMain = $false
+            if ($dirty -and -not $keepBranch -and ($mergedOrBehind -or $upstreamGone)) {
+                $dirtyMatchesMain = $true
+                foreach ($line in @($st.Out | Where-Object { "$_".Trim() })) {
+                    $raw = "$line"
+                    if ($raw.Length -lt 4) { $dirtyMatchesMain = $false; break }
+                    $xy = $raw.Substring(0, 2)
+                    $path = $raw.Substring(3).Trim()
+                    if ($path.Contains(' -> ')) { $path = ($path -split ' -> ', 2)[1].Trim() }
+                    if ($xy -match '\?' -or $xy -eq 'A ' -or $xy -eq 'A?' ) {
+                        # untracked or index-add: not a main-equal hotpatch
+                        $dirtyMatchesMain = $false
+                        break
+                    }
+                    if (-not $path) { $dirtyMatchesMain = $false; break }
+                    $dp = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('diff', '--quiet', "origin/$Branch", '--', $path)) -TimeoutSec 20
+                    if ($dp.Code -ne 0) { $dirtyMatchesMain = $false; break }
+                }
+            }
+            if (-not $keepBranch -and ($mergedOrBehind -or $upstreamGone) -and ((-not $dirty) -or $dirtyMatchesMain)) {
                 $whyReturn = if ($upstreamGone) { "upstream gone" } else { "HEAD ancestor of origin/$Branch" }
-                $log.Add("INFO worktree-return-$Branch from '$cur' (clean; $whyReturn) FR#1157")
-                $sw = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('switch', '-q', $Branch)) -TimeoutSec 60
+                if ($dirtyMatchesMain) {
+                    $log.Add("INFO worktree-return-$Branch from '$cur' (dirty matches origin/$Branch; $whyReturn) FR#4895")
+                    $sw = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('switch', '-f', '-q', $Branch)) -TimeoutSec 60
+                } else {
+                    $log.Add("INFO worktree-return-$Branch from '$cur' (clean; $whyReturn) FR#1157")
+                    $sw = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('switch', '-q', $Branch)) -TimeoutSec 60
+                }
                 if ($sw.Code -eq 0) {
                     $res.Branch = $Branch
                     $cur = $Branch

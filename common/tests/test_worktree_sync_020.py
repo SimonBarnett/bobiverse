@@ -284,6 +284,33 @@ def test_fr1157_dirty_off_main_left_alone(world):
     assert (r / "scripts/j1.ps1").read_text() == "# MSI flat payload\n"
 
 
+def test_fr4895_dirty_matches_main_returns_to_main(world):
+    """FR #4895: dirty off-main hotpatch that already matches origin/main returns to main.
+
+    Install left on fr-* with a hotpatch equal to main tip: porcelain dirty blocked
+    FR #1157 clean return and stranded ff/compose. Unique dirty work must still be
+    left alone (see test_fr1157_dirty_off_main_left_alone).
+    """
+    r = world.root("jeeves")
+    assert world.sync("jeeves").returncode == 0
+    git(r, "switch", "-q", "-c", "fr-hotpatch-stale")
+    world.upstream("jeeves/scripts/j1.ps1", "# main tip after merge\n", version="9.9.12")
+    git(r, "fetch", "-q", "origin")
+    # Hotpatch only the changed file to match origin/main; other tracked files still lag
+    # (real install: SeatDisk hotpatch while HEAD stays on stale fr tip).
+    write(r / "jeeves/scripts/j1.ps1", "# main tip after merge\n")
+    assert git(r, "status", "--porcelain").stdout.strip()
+    assert git(r, "diff", "--quiet", "origin/main", "--", "jeeves/scripts/j1.ps1", check=False).returncode == 0
+    assert git(r, "diff", "--quiet", "origin/main", check=False).returncode != 0  # whole tree still behind
+    out = world.sync("jeeves")
+    assert out.returncode == 0, out.text
+    assert git(r, "symbolic-ref", "--short", "HEAD").stdout.strip() == "main"
+    assert "worktree-return-main" in out.text
+    assert "4895" in out.text or "matches origin/main" in out.text
+    assert (r / "jeeves/scripts/j1.ps1").read_text() == "# main tip after merge\n"
+    assert (r / "VERSION").read_text().strip() == "9.9.12"
+
+
 def test_fr2944_unborn_empty_master_heals_to_main(world):
     """FR #2944: existing .git with unborn HEAD (empty master / no commits) must checkout origin/main.
 
