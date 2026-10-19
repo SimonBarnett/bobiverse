@@ -84,6 +84,7 @@ Generalised from 18 harvested lessons that never reached this book (audit for FR
 
 ## Large PRIVMSG bursts / flood disconnect (FR #4790)
 | Truncated shell reply needs next page (FR #4794) | Send `CONT id=<job>` / `RESUME id=<job>` (optional `offset=N`) for the next `SHELL_REPLY_MAX_IRC_LINES` page; no re-run. Marker cites CONT. Large binaries: PUT/share (FR #4790). |
+| Large sandbox file must not dump over Query PRIVMSG (FR #4795) | `GET path fetch=chunk` returns size/sha256/seqs only; pull each piece with `GETCHUNK id=<job> seq=N` (next GETCHUNK is the ack; console never pushes the next chunk). Plain GET stays head-only. Secret paths rejected. |
 
 Symptom: console goes silent mid base64 dump; later STATUS gets no reply. Cause: Ergo fakelag / excess flood after hundreds of Query lines. Fix on tip: reply-line cap + truncate marker + token-bucket send pacing; reconnect on send failure. Controllers must not paste multi-KB base64 into shell stdout --- use PUT/file fetch.
 
