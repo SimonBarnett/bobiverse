@@ -2012,10 +2012,23 @@ def make_submit_probe(
     return None
 
 
-def probe_cursor_prompt_history(chats_root: Path | str, want: str, *, since_wall: float) -> bool:
-    """True when a prompt_history.json modified at/after ``since_wall`` contains ``want``."""
+def probe_cursor_prompt_history(
+    chats_root: Path | str,
+    want: str,
+    *,
+    since_wall: float,
+    require_newest_job_key: bool = True,
+) -> bool:
+    """True when a prompt_history.json modified at/after ``since_wall`` contains ``want``.
+
+    FR #4842: when ``want`` is a Jeeves assign, the *newest* assign-like history entry
+    must carry the same ``assign_job_key`` as ``want``. An older matching paste must not
+    pass while a later stale assign (different key) is the tip of history.
+    """
     if not want:
         return False
+    want_norm = re.sub(r"\s+", " ", want)
+    want_key = assign_job_key(want)
     try:
         root = Path(chats_root)
         for f in root.glob("*/*/prompt_history.json"):
@@ -2025,9 +2038,24 @@ def probe_cursor_prompt_history(chats_root: Path | str, want: str, *, since_wall
                 data = json.loads(f.read_text(encoding="utf-8", errors="replace") or "[]")
             except (OSError, ValueError):
                 continue
-            for entry in data if isinstance(data, list) else []:
-                if want in re.sub(r"\s+", " ", str(entry)):
-                    return True
+            if not isinstance(data, list):
+                continue
+            norms = [re.sub(r"\s+", " ", str(entry)) for entry in data]
+            if want_norm not in norms and not any(want_norm in n for n in norms):
+                continue
+            if not (require_newest_job_key and want_key):
+                return True
+            newest_key = None
+            for n in reversed(norms):
+                k = assign_job_key(n)
+                if k:
+                    newest_key = k
+                    break
+            if newest_key is None:
+                return True
+            if newest_key.lower() == want_key.lower():
+                return True
+            continue
     except OSError:
         return False
     return False
@@ -2164,7 +2192,60 @@ def cursor_transcript_still_open(path: Path | str) -> Optional[bool]:
     return None
 
 
+
+def _user_message_text(obj: dict) -> str:
+    """Flatten text parts from a transcript user/assistant message object."""
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return str(obj.get("content") or obj.get("text") or "")
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") in (None, "text"):
+            t = part.get("text")
+            if t:
+                parts.append(str(t))
+    return "\n".join(parts)
+
+
+def cursor_transcript_latest_user_assign_key(path: Path | str) -> Optional[str]:
+    """FR #4842: newest user-turn assign_job_key from a cursor transcript, or None."""
+    for obj in reversed(_cursor_transcript_tail_objs(path)):
+        role = obj.get("role")
+        typ = str(obj.get("type") or "")
+        if role != "user" and typ not in ("user", "user_message"):
+            continue
+        key = assign_job_key(_user_message_text(obj) if isinstance(obj, dict) else "")
+        if key:
+            return key
+    return None
+
+
+def stale_replay_assign_key(
+    *,
+    user_key: Optional[str],
+    finished_keys,
+    open_ack_key: Optional[str],
+) -> Optional[str]:
+    """FR #4842: return finished user_key when it differs from the open ACK (stale replay)."""
+    uk = (user_key or "").strip()
+    if not uk:
+        return None
+    open_k = (open_ack_key or "").strip()
+    if open_k and uk.lower() == open_k.lower():
+        return None
+    finished = {str(x).strip().lower() for x in (finished_keys or []) if x}
+    if uk.lower() not in finished:
+        return None
+    return uk
+
+
 def _cursor_turn_quiet_s(default: float = 20.0) -> float:
+
     raw = (os.environ.get("BOB_WORKER_CURSOR_TURN_QUIET_S") or "").strip()
     try:
         v = float(raw) if raw else float(default)
@@ -4161,6 +4242,12 @@ class InjectRecovery:
             return "giveup" if self.giveup_on_fail else "nacked"
         if attempt <= 1:
             self.log(f"relay: submit-verify FAILED - re-pasting assign once (attempt 2) {line[:120]}")
+            # FR #4842: clear queued/pending TUI input before re-paste so a stale
+            # earlier assign cannot be submitted instead of the reinjected job.
+            try:
+                self.clear_input()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: clear input before re-paste failed {type(e).__name__}")
             ok = False
             try:
                 ok = bool(self.reinject(line, lambda l=line: self.on_failed(l, attempt=2)))
@@ -4744,6 +4831,42 @@ class BoredEmitter:
         with self._cv:
             return not (job and job in self._finished_job_keys)
 
+    def note_stale_replay_user_assign(
+        self,
+        user_key: Optional[str],
+        *,
+        write_giveup: Optional[Callable[[str], bool]] = None,
+        reinject_open: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
+        """FR #4842: GIVEUP a finished assign K replayed while ACK J is open; keep J.
+
+        Returns the stale key when acted on, else None. Does not clear the open ACK.
+        """
+        with self._cv:
+            hit = stale_replay_assign_key(
+                user_key=user_key,
+                finished_keys=self._finished_job_keys,
+                open_ack_key=self._ack_job_key,
+            )
+            open_k = self._ack_job_key
+            if not hit:
+                return None
+            self.log(
+                f"relay: stale-replay assign {hit} while ACK open on {open_k or 'none'}"
+            )
+        wire = f"GIVEUP {hit} stale-replay"
+        if write_giveup is not None:
+            try:
+                write_giveup(wire)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: stale-replay giveup write failed {type(e).__name__}")
+        if reinject_open is not None and open_k:
+            try:
+                reinject_open()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: stale-replay reinject failed {type(e).__name__}")
+        return hit
+
     def _clear_done_miss(self) -> None:
         """FR #2875: drop armed / reminded / release-pending done-miss state."""
         self._done_miss_armed_at = None
@@ -5079,10 +5202,20 @@ class BoredEmitter:
                 job = outbox_job_key(p)
                 self._mark_job_finished(job)
                 # FR #1732: DONE for another id must not clear an open ACK.
+                # FR #4842: cross-job DONE is not a silent drop — log it and arm done-miss
+                # for the open ACK so the seat is reminded about the real job.
                 if self._ack_open and self._ack_job_key and job and job != self._ack_job_key:
                     self.log(
-                        f"bored: ignore DONE for {job} while ACK open on {self._ack_job_key}"
+                        f"bored: cross-job DONE for {job} while ACK open on {self._ack_job_key}"
                     )
+                    if self._done_miss_armed_at is None:
+                        self._done_miss_armed_at = now
+                        self._done_miss_key = self._ack_job_key
+                        self._done_miss_reminded = False
+                        self._done_miss_release_pending = False
+                        self.log(
+                            f"bored: done-miss armed for open ACK {self._ack_job_key} after cross-job DONE"
+                        )
                 else:
                     self._ack_open = False
                     self._ack_job_key = None
@@ -5829,6 +5962,57 @@ class Supervisor:
                     pw.note_activity()
             if self.bored:
                 self.bored.turn_started(turn=turn, sid=None)
+            # FR #4842: if the new user turn is a finished assign K while ACK J is open,
+            # emit GIVEUP K stale-replay and re-inject J (never let the seat work K off-ledger).
+            try:
+                w = getattr(self, "_cursor_turn_watcher", None)
+                tp = w._transcript_file(w._bind()) if w is not None and w._bind() else None
+                uk = cursor_transcript_latest_user_assign_key(tp) if tp else None
+                if uk and self.bored is not None:
+
+                    def _write(s: str) -> bool:
+                        # Prefer shop outbox so drain forwards GIVEUP to Jeeves.
+                        ob = getattr(self, "outbox_path", None) or getattr(
+                            self.bored, "run_dir", None
+                        )
+                        try:
+                            if ob is not None:
+                                p = Path(ob)
+                                if p.is_dir():
+                                    p = p / "outbox.txt"
+                                shop = getattr(getattr(self, "irc", None), "shop", None) or "#shop"
+                                line = f"PRIVMSG {shop} :{s}"
+                                with p.open("a", encoding="utf-8") as fh:
+                                    fh.write(line + "\n")
+                                return True
+                        except Exception:
+                            pass
+                        try:
+                            return bool(self.irc.say(self.irc.shop, s))
+                        except Exception:
+                            return False
+
+                    def _reinject() -> bool:
+                        line = getattr(self.relay, "last_line", None) or getattr(
+                            self.relay, "last_unacked", None
+                        )
+                        if not line or not self.proc:
+                            return False
+                        if (assign_job_key(line) or "").lower() != (
+                            self.bored._ack_job_key or ""
+                        ).lower():
+                            return False
+                        try:
+                            clear_console_input()
+                        except Exception:
+                            pass
+                        return bool(self._inject_line(self.proc, line, sync=False))
+
+                    self.bored.note_stale_replay_user_assign(
+                        uk, write_giveup=_write, reinject_open=_reinject
+                    )
+            except Exception as e:  # noqa: BLE001
+                self.log(f"relay: stale-replay check failed {type(e).__name__}")
 
         def _on_ended(turn: Optional[int], wall: float) -> None:
             if self.bored:
@@ -5849,6 +6033,7 @@ class Supervisor:
             stop_event=self._turn_watch_stop,
             log=self.log,
         )
+        self._cursor_turn_watcher = watcher
         th = threading.Thread(target=watcher.run, name="cursor-turn-watch", daemon=True)
         self._turn_watch_thread = th
         th.start()
