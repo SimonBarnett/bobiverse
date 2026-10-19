@@ -2668,6 +2668,44 @@ def out_of_fuel_reading_clears_hard_hold(
     return False
 
 
+def out_of_fuel_reading_clears_soft_hold(
+    fuel: Fuel,
+    *,
+    kind: str,
+    has_session_key: bool = False,
+    allow_cursor_kind_switch: bool = False,
+) -> tuple:
+    """FR #4899: soft hold clears only on the seat's own pool (or a real kind-switch).
+
+    Returns ``(clears: bool, reason: str)``. A grok seat with ``grok_pct=0`` must not
+    clear because the machine still has Cursor tokens. Cursor may clear a grok soft
+    hold only when ``allow_cursor_kind_switch`` is True (seat will run Cursor, FR #3997).
+    """
+    k = (kind or "").strip().lower() or "grok"
+    if k == "grok":
+        if has_session_key:
+            return True, "reading kind=grok (session key)"
+        if grok_has_tokens(fuel):
+            return True, f"reading kind=grok pct={fuel.grok_pct}"
+        if allow_cursor_kind_switch and cursor_has_tokens(fuel):
+            return (
+                True,
+                "reading kind-switch to cursor "
+                f"(high={fuel.cursor_high} low={fuel.cursor_low})",
+            )
+        return False, ""
+    if k == "cursor":
+        if cursor_has_tokens(fuel):
+            return (
+                True,
+                f"reading kind=cursor high={fuel.cursor_high} low={fuel.cursor_low}",
+            )
+        return False, ""
+    if cursor_has_tokens(fuel) or grok_has_tokens(fuel):
+        return True, "reading"
+    return False, ""
+
+
 def out_of_fuel_giveup_line(job_key: str) -> str:
     """Shop wire: ``GIVEUP <TYPE> owner/repo#N out-of-fuel`` (FR #3012)."""
     key = (job_key or "").strip() or "job"
@@ -5974,24 +6012,24 @@ class Supervisor:
         return root
 
     def _fuel_available_again(self) -> bool:
-        """FR #3012 / #4858: True when fuel readings may clear the out-of-fuel hold.
+        """FR #3012 / #4858 / #4899: True when fuel readings may clear the out-of-fuel hold.
 
-        Soft holds (mid-job reading, no hard 402): any Cursor/Grok tokens or session key.
-        Hard 402: require min hold **and** grok pct above clear floor (not merely
-        ``state=available`` with pct=3).
+        Soft holds (mid-job reading, no hard 402): seat's **own** pool (FR #4899), or
+        a session key, or a real Cursor kind-switch (FR #3997). Hard 402: require min
+        hold **and** grok pct above clear floor (not merely ``state=available`` with pct=3).
         """
         try:
             fuel = read_fuel(self._install_root_for_fuel())
         except Exception:
             fuel = Fuel()
         hard = bool(getattr(self.bored, "_out_of_fuel_hard_402", False))
+        kind = (self.kind or "").strip().lower() or "grok"
         if hard:
             at = getattr(self.bored, "_out_of_fuel_at", None)
             now = self.bored.clock() if self.bored is not None else 0.0
             held = 0.0 if at is None else float(now) - float(at)
             min_hold = float(getattr(self.bored, "out_of_fuel_min_hold_s", 1800.0))
             floor = int(getattr(self.bored, "out_of_fuel_clear_floor_pct", 5))
-            kind = (self.kind or "").strip().lower() or "grok"
             if not out_of_fuel_reading_clears_hard_hold(
                 fuel,
                 kind=kind,
@@ -6005,14 +6043,18 @@ class Supervisor:
             else:
                 self.bored._out_of_fuel_clear_reason = "reading"
             return True
-        if cursor_has_tokens(fuel) or grok_has_tokens(fuel):
+        # FR #4899: soft hold — own pool only. Cursor tokens clear a grok hold only when
+        # this seat is actually switching to Cursor (caller sets kind / restarts agent).
+        allow_switch = bool(getattr(self, "_out_of_fuel_allow_cursor_kind_switch", False))
+        ok, why = out_of_fuel_reading_clears_soft_hold(
+            fuel,
+            kind=kind,
+            has_session_key=self.secret is not None,
+            allow_cursor_kind_switch=allow_switch,
+        )
+        if ok:
             if self.bored is not None:
-                self.bored._out_of_fuel_clear_reason = "reading"
-            return True
-        # A session key handed to this seat counts as fuel for recovery.
-        if self.secret is not None:
-            if self.bored is not None:
-                self.bored._out_of_fuel_clear_reason = "reading"
+                self.bored._out_of_fuel_clear_reason = why or "reading"
             return True
         return False
 
