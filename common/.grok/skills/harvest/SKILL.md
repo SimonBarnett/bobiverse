@@ -282,6 +282,7 @@ routes to bobiverse via the split rule.
 - merge-on-green requeue_sha: if the newest MRB PASS board already names the live head, retarget the pending row to that SHA and do not re-queue MRB. A DIRTY head then uses the conflict FIX path; a head with no PASS board still re-queues MRB.
 - When the newest MRB board is FAIL at the live head and no mrb-N-fix PR is open, queue FIX for that pull. Do not re-offer the MRB to the seat that posted the FAIL.
 - Seed SimonBarnett/ce-priority in DEFAULT_RESYNC_REPOS and merge it into chair and digest resync-repos.txt on Install and ChairJobs start. A hot-add on ionos alone does not survive a wipe.
+- After DONE/NACK/GIVEUP, treat a replayed ACK for that job key as stale: do not reopen _ack_open and do not forward it to IRC; clear the finished mark only on fresh inject of that key.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
