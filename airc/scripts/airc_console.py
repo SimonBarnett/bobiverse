@@ -1845,81 +1845,117 @@ def chunk_irc_text(text: str, *, limit: int = IRC_SAFE_PAYLOAD, prefix: str = ""
     return [prefix + raw[i : i + room] for i in range(0, len(raw), room)]
 
 
-def format_shell_replies(
+@dataclass
+class FormattedShellReplies:
+    """One IRC reply page (FR #4790 truncate + FR #4794 CONT/RESUME)."""
+
+    lines: list[str]
+    next_offset: int | None
+    piece_count: int
+
+
+_CONT_RE = re.compile(
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?(CONT|RESUME)(?:\s+id=([0-9a-f]{8}))?(?:\s+offset=(\d+))?\s*$"
+)
+
+
+def parse_cont_request(text: str) -> tuple[str, int | None] | None:
+    """Parse ``CONT`` / ``RESUME`` (+ optional leading id= / offset=). FR #4794."""
+    raw = sanitize_console_operator_text(text or "")
+    m = _CONT_RE.match(raw.strip())
+    if not m:
+        return None
+    jid = (m.group(1) or m.group(3) or "").lower()
+    if not jid:
+        return None
+    off_s = m.group(4)
+    offset = int(off_s) if off_s is not None else None
+    return jid, offset
+
+
+def _shell_reply_pieces(
     outcome: ShellOutcome,
     *,
     irc_limit: int = IRC_SAFE_PAYLOAD,
-    max_irc_lines: int = SHELL_REPLY_MAX_IRC_LINES,
-) -> list[str]:
-    """Stable output contract: ordered out/err seq lines + terminal DONE (FR #75).
-
-    FR #4790: cap out/err IRC lines so base64 dumps cannot flood Ergo; emit an
-    ``err`` truncate marker (lines omitted) then DONE. Controllers should use
-    file fetch / PUT for large binaries instead of PRIVMSG base64.
-    """
-    lines: list[str] = []
-    seq = 0
-    truncated = False
-    omitted = 0
-    max_body = max(1, int(max_irc_lines))
-
-    def count_pieces(text: str) -> int:
-        total = 0
-        parts = text.splitlines() if text else []
-        if text and not parts:
-            parts = [""]
-        for part in parts:
-            rest = part if part else ""
-            while True:
-                total += 1
-                room = max(8, irc_limit - 20)
-                rest = rest[room:]
-                if not rest:
-                    break
-        return total
+) -> list[tuple[str, str]]:
+    """Flatten stdout then stderr into IRC-safe (label, piece) tuples."""
+    pieces: list[tuple[str, str]] = []
 
     def emit(stream: str, label: str) -> None:
-        nonlocal seq, truncated, omitted
         parts = stream.splitlines() if stream else []
         if stream and not parts:
             parts = [""]
-        for pi, part in enumerate(parts):
+        for part in parts:
             body = part
             first = True
             while first or body:
                 first = False
-                if len(lines) >= max_body:
-                    truncated = True
-                    # current remainder + remaining parts
-                    omitted += count_pieces(body)
-                    for later in parts[pi + 1 :]:
-                        omitted += count_pieces(later)
-                    return
-                seq += 1
-                prefix = f"{label} id={outcome.job_id} seq={seq} "
+                # Conservative seq width so later pages (seq=100+) still fit IRC_SAFE_PAYLOAD.
+                prefix = f"{label} id={outcome.job_id} seq=99999 "
                 room = max(8, irc_limit - len(prefix))
                 piece, body = body[:room], body[room:]
-                lines.append(prefix + piece)
+                pieces.append((label, piece))
                 if not body:
                     break
 
     emit(outcome.stdout, "out")
-    if not truncated:
-        emit(outcome.stderr, "err")
-    elif outcome.stderr:
-        omitted += count_pieces(outcome.stderr)
-    if truncated:
-        seq += 1
+    emit(outcome.stderr, "err")
+    return pieces
+
+
+def format_shell_replies_ex(
+    outcome: ShellOutcome,
+    *,
+    irc_limit: int = IRC_SAFE_PAYLOAD,
+    max_irc_lines: int = SHELL_REPLY_MAX_IRC_LINES,
+    offset: int = 0,
+) -> FormattedShellReplies:
+    """Page shell replies; ``next_offset`` set when more pieces remain (FR #4794)."""
+    pieces = _shell_reply_pieces(outcome, irc_limit=irc_limit)
+    max_body = max(1, int(max_irc_lines))
+    start = max(0, int(offset))
+    page = pieces[start : start + max_body]
+    lines: list[str] = []
+    for i, (label, piece) in enumerate(page):
+        seq = start + i + 1
+        prefix = f"{label} id={outcome.job_id} seq={seq} "
+        room = max(8, irc_limit - len(prefix))
+        lines.append(prefix + piece[:room])
+    next_off: int | None = None
+    if start + len(page) < len(pieces):
+        next_off = start + len(page)
+        omitted = len(pieces) - next_off
+        seq = (start + len(page)) + 1
         marker = (
             f"err id={outcome.job_id} seq={seq} "
             f"output truncated, {omitted} lines omitted; "
-            f"use file fetch / PUT (FR #4790)"
+            f"CONT id={outcome.job_id} (FR #4794); "
+            f"file fetch / PUT (FR #4790)"
         )
         if len(marker) > irc_limit:
             marker = marker[: irc_limit - 3] + "..."
         lines.append(marker)
     lines.append(f"DONE id={outcome.job_id} exit={outcome.exit_code}")
-    return lines
+    return FormattedShellReplies(lines=lines, next_offset=next_off, piece_count=len(pieces))
+
+
+def format_shell_replies(
+    outcome: ShellOutcome,
+    *,
+    irc_limit: int = IRC_SAFE_PAYLOAD,
+    max_irc_lines: int = SHELL_REPLY_MAX_IRC_LINES,
+    offset: int = 0,
+) -> list[str]:
+    """Stable output contract: ordered out/err seq lines + terminal DONE (FR #75).
+
+    FR #4790: cap out/err IRC lines so base64 dumps cannot flood Ergo; emit an
+    ``err`` truncate marker (lines omitted) then DONE. FR #4794: marker cites
+    ``CONT id=`` so controllers can page without re-running the command.
+    Controllers should still prefer file fetch / PUT for large binaries.
+    """
+    return format_shell_replies_ex(
+        outcome, irc_limit=irc_limit, max_irc_lines=max_irc_lines, offset=offset
+    ).lines
 
 
 @dataclass
@@ -1963,6 +1999,8 @@ class ShellJobRunner:
         self._threads: dict[str, threading.Thread] = {}
         self._pending: dict[str, deque[_ShellPending]] = {}
         self._inflight_cmd: dict[str, _ShellPending] = {}
+        # FR #4794: (nick, job_id) -> (outcome, next_offset) for CONT/RESUME pages.
+        self._resume: dict[tuple[str, str], tuple[ShellOutcome, int]] = {}
 
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
@@ -2046,8 +2084,13 @@ class ShellJobRunner:
             # FR #4068: batch capture --- first IRC out only after the process exits.
             t0 = time.monotonic()
             outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
-            replies = format_shell_replies(outcome)
-            for line in replies:
+            page = format_shell_replies_ex(outcome)
+            with self._lock:
+                if page.next_offset is not None:
+                    self._resume[(key, jid)] = (outcome, page.next_offset)
+                else:
+                    self._resume.pop((key, jid), None)
+            for line in page.lines:
                 self._emit(key, line)
             if self.on_shell_done:
                 try:
@@ -2055,7 +2098,7 @@ class ShellJobRunner:
                         key,
                         jid,
                         time.monotonic() - t0,
-                        len(replies),
+                        len(page.lines),
                         int(outcome.exit_code),
                     )
                 except Exception:
@@ -2074,6 +2117,37 @@ class ShellJobRunner:
                 self.on_reply(nick, line)
             except ConnectionError:
                 return
+
+    def continue_replies(self, nick: str, job_id: str, offset: int | None = None) -> bool:
+        """Emit the next FR #4794 page for a truncated shell job (no re-run).
+
+        Returns True when a resume page was emitted; False when fail-closed
+        (unknown / exhausted id) after emitting DONE exit=1.
+        """
+        key = nick.strip().lower()
+        jid = (job_id or "").strip().lower()
+        if not jid:
+            jid = uuid.uuid4().hex[:8]
+            self._emit(key, f"err id={jid} seq=1 CONT missing id=")
+            self._emit(key, f"DONE id={jid} exit=2")
+            return False
+        with self._lock:
+            held = self._resume.get((key, jid))
+        if held is None:
+            self._emit(key, f"err id={jid} seq=1 no resume buffer (unknown or exhausted CONT)")
+            self._emit(key, f"DONE id={jid} exit=1")
+            return False
+        outcome, stored_off = held
+        start = stored_off if offset is None else max(0, int(offset))
+        page = format_shell_replies_ex(outcome, offset=start)
+        with self._lock:
+            if page.next_offset is not None:
+                self._resume[(key, jid)] = (outcome, page.next_offset)
+            else:
+                self._resume.pop((key, jid), None)
+        for line in page.lines:
+            self._emit(key, line)
+        return True
 
     def open_job_ids(self) -> list[tuple[str, str]]:
         """(nick, job_id) for in-flight + pending commands (FR #2640 stop flush)."""
@@ -2346,6 +2420,24 @@ class AircConsoleCore:
                 text=text,
                 reply=result.reply_line(),
                 **meta,
+            )
+
+        # FR #4794: CONT/RESUME pages truncated shell output (no re-run).
+        cont = parse_cont_request(cmd)
+        if cont is not None and self.shell_runner is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            jid, off = cont
+            self.shell_runner.continue_replies(nick, jid, off)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="shell_cont", nick=nick, target=target, text=text, **meta
             )
 
         # FR #78: PUT/RUN/JOB/STATUS protocol (before plain shell).
