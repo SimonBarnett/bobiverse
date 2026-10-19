@@ -53,6 +53,13 @@ CONFLICT_KEY = "conflict_blocked"
 CONFLICT_FIX_KEY = "conflict_fix"
 # FR #4718: FIX for an open PR whose newest MRB board is FAIL at the live head.
 MRB_FAIL_FIX_KEY = "mrb_fail_fix"
+# FR #4800: harvest light-triage dispositions (FAIL-supersede / CLOSED / MOVED).
+# These tips close unmerged and must DONE PASS; chair must not enqueue FIX.
+HARVEST_FAIL_DISPOSITION_RE = re.compile(
+    r"(?i)\bFAIL[- ]superseded?\b|\bMRB\s+CLOSED\b|\bMRB\s+MOVED\b|"
+    r"\bnot-useful\b|\bplan-content\b"
+)
+
 # FR #4639: in-flight cancelled-CI re-runs. Cap is whiterabbit + madhatter (7).
 CI_RERUN_KEY = "ci_rerun"
 CI_RERUN_CAP = 7
@@ -264,6 +271,42 @@ def newest_mrb_board(comments: list[dict] | None) -> tuple[str, str] | None:
         if ok:
             return ("PASS", _norm_sha(ok.group(1)))
     return None
+
+
+
+def harvest_fail_disposition_board(comments: list[dict] | None) -> bool:
+    """True when comments show FAIL-supersede / CLOSED / MOVED light triage."""
+    for c in comments or []:
+        if isinstance(c, dict):
+            body = str(c.get("body") or c.get("bodyText") or "")
+        else:
+            body = str(c or "")
+        if HARVEST_FAIL_DISPOSITION_RE.search(body):
+            return True
+    return False
+
+
+def skip_mrb_fail_fix_for_harvest(
+    *,
+    title: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    closed: bool = False,
+    merged: bool = False,
+    comments: list[dict] | None = None,
+) -> bool:
+    """FR #4800: skip FIX for harvest-lesson tips closed (or disposition-boarded).
+
+    Product MRB FAIL @ sha still queues FIX (FR #4718). Open harvest tips with a
+    real ``MRB FAIL @ sha`` board (no CLOSED/FAIL-supersede disposition) still
+    queue FIX so a fix PR can land.
+    """
+    if merged:
+        return False
+    if not gitclaim.is_harvest_lesson_pr(title=title or "", labels=labels or ()):
+        return False
+    if closed:
+        return True
+    return harvest_fail_disposition_board(comments)
 
 
 def linked_fail_fix_open(prs: list | None, num: str) -> bool:
@@ -1068,16 +1111,34 @@ def enqueue_mrb_fail_fix(
     sha: str,
     url: str = "",
     nick: str = "",
+    pr_state: dict[str, Any] | None = None,
 ) -> str:
     """Queue one FIX to implement the MRB FAIL board on this PR+SHA (FR #4718).
 
     Same SHA returns ``duplicate``. FIX is offerable to any seat, including the
     seat that posted the FAIL. That seat must not be offered the MRB again.
+
+    FR #4800: harvest-lesson tips that are closed unmerged (or carry a
+    FAIL-supersede / CLOSED / MOVED disposition board) return ``skipped``.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
     tip = _norm_sha(sha)
     if not repo_c or not num or not tip:
+        return "skipped"
+    state = pr_state
+    if state is None:
+        try:
+            state = fetch_pr_state(repo_c, num)
+        except Exception:  # noqa: BLE001
+            state = None
+    if isinstance(state, dict) and skip_mrb_fail_fix_for_harvest(
+        title=str(state.get("title") or ""),
+        labels=tuple(state.get("labels") or ()),
+        closed=bool(state.get("closed")),
+        merged=bool(state.get("merged")),
+        comments=state.get("comments") if isinstance(state.get("comments"), list) else None,
+    ):
         return "skipped"
     sig = f"mrb-fail|{repo_c}|{num}|{tip}"
     doc = load_ledger(home)
@@ -1177,7 +1238,11 @@ def enqueue_from_mrb_fail_done(
     nick: str,
     sha: str = "",
 ) -> str:
-    """DONE MRB FAIL queues a FIX for the current head (FR #4718)."""
+    """DONE MRB FAIL queues a FIX for the current head (FR #4718).
+
+    FR #4800: harvest-lesson closed / FAIL-supersede dispositions skip FIX
+    (seats should DONE PASS for those tips; this is the chair backstop).
+    """
     parsed = gitclaim.parse_github_pull_url(pr_url or "")
     if parsed:
         repo_c, ident = parsed
@@ -1187,7 +1252,22 @@ def enqueue_from_mrb_fail_done(
     num = str(ident).lstrip("#")
     if not repo_c or not num.isdigit():
         return "skipped"
+    state: dict[str, Any] | None = None
+    try:
+        state = fetch_pr_state(repo_c, num)
+    except Exception:  # noqa: BLE001
+        state = None
+    if isinstance(state, dict) and skip_mrb_fail_fix_for_harvest(
+        title=str(state.get("title") or ""),
+        labels=tuple(state.get("labels") or ()),
+        closed=bool(state.get("closed")),
+        merged=bool(state.get("merged")),
+        comments=state.get("comments") if isinstance(state.get("comments"), list) else None,
+    ):
+        return "skipped"
     tip = _norm_sha(sha)
+    if not tip and isinstance(state, dict):
+        tip = _norm_sha(str(state.get("sha") or ""))
     if not tip:
         try:
             tip = head_sha_for_mrb_fail(repo_c, num)
@@ -1203,6 +1283,7 @@ def enqueue_from_mrb_fail_done(
         sha=tip,
         url=pr_url or f"https://github.com/{repo_c}/pull/{num}",
         nick=nick,
+        pr_state=state,
     )
 
 
