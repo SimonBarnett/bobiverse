@@ -139,12 +139,47 @@ def _detail_names_human_gated_lock(detail: str) -> bool:
     return any(m.replace("_", "-") in compact for m in _HUMAN_GATED_LOCK_MARKERS)
 
 
+def shared_suite_check_name(detail: str = "") -> str:
+    """Short shared-suite name from a rollup detail (default test-and-synth)."""
+    compact = _normalize_check_detail(detail).replace("_", "-")
+    for marker in _SHARED_SUITE_MARKERS:
+        needle = marker.replace("_", "-")
+        if needle in compact:
+            return "test-and-synth" if "synth" in needle else needle
+    return "test-and-synth"
+
+
+def main_red_fix_signature(repo: str, main_sha: str, check: str = "") -> str:
+    """Ledger / body fingerprint for one main-side FIX (FR #4857)."""
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    sha = _norm_sha(main_sha)
+    name = (check or "test-and-synth").strip().lower() or "test-and-synth"
+    return f"main-red|{repo_c}|{sha}|{name}"
+
+
+def is_main_red_fix_id(ident: str = "") -> bool:
+    """True when a FIX row id is the synthetic main-side id (FR #4857)."""
+    return str(ident or "").strip().lstrip("#").lower() in ("main", "main-red")
+
+
+def is_main_red_fix_row(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("task") or "").upper() != "FIX":
+        return False
+    if is_main_red_fix_id(str(row.get("id") or "")):
+        return True
+    sig = str(row.get("fail_signature") or "")
+    return sig.startswith("main-red|")
+
+
 def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | None:
-    """FR #4630 / #4833: why FIX-CI must not be offered (or None to proceed).
+    """FR #4630 / #4833 / #4857: why tip FIX-CI must not be offered (or None).
 
     * ``cancelled-only`` — tip reds are only cancelled/canceled (bulk cancel wave).
     * ``main-also-red-shared-suite`` — shared suite (test-and-synth) failed on tip
-      while main's required checks are also red (prefer one main-side fix).
+      while main's required checks are also red. Tip FIX is skipped; enqueue one
+      main-side FIX instead (FR #4857).
     * ``human-gated-lock`` — only red check is ``lock`` / ``assert-lock``; only
       SimonBarnett can add ``simon-approved-rule-change`` (seats must not forge it).
     """
@@ -583,6 +618,187 @@ def main_branch_checks_red(
         return False
 
 
+def main_branch_head_sha(
+    repo: str,
+    *,
+    token: str | None = None,
+    fetch_default_sha: Callable[..., str] | None = None,
+) -> str:
+    """Default-branch tip SHA, or empty when unknown (FR #4857)."""
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    if not repo_c:
+        return ""
+    try:
+        if fetch_default_sha is not None:
+            return _norm_sha(str(fetch_default_sha(repo_c) or ""))
+        tok = _gh_token(token)
+        if not tok:
+            return ""
+        meta = _gh_json(
+            f"https://api.github.com/repos/{repo_c}",
+            token=tok,
+        )
+        default = str((meta or {}).get("default_branch") or "main").strip() or "main"
+        ref = _gh_json(
+            f"https://api.github.com/repos/{repo_c}/git/ref/heads/{default}",
+            token=tok,
+        )
+        return _norm_sha(str(((ref or {}).get("object") or {}).get("sha") or ""))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def enqueue_main_red_shared_suite_fix(
+    home: Path,
+    *,
+    repo: str,
+    detail: str = "",
+    main_sha: str = "",
+    check_url: str = "",
+    failed_tail: str = "",
+    tip_pr: str = "",
+    now_epoch: float | None = None,
+    token: str | None = None,
+    fetch_default_sha: Callable[..., str] | None = None,
+) -> str:
+    """Queue one FIX for a red default branch shared suite (FR #4857).
+
+    Deduped per ``main-red|<repo>|<main sha>|<check>``. Returns
+    ``added`` | ``duplicate`` | ``skipped``. Tip PASSed PRs stay skipped.
+    """
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    if not repo_c:
+        return "skipped"
+    sha = _norm_sha(main_sha)
+    if not sha:
+        sha = main_branch_head_sha(
+            repo_c, token=token, fetch_default_sha=fetch_default_sha
+        )
+    if not sha:
+        return "skipped"
+    check = shared_suite_check_name(detail)
+    sig = main_red_fix_signature(repo_c, sha, check)
+    tnow = float(now_epoch if now_epoch is not None else time.time())
+    doc = load_ledger(home)
+    offered = doc.get(CI_FIX_KEY)
+    if not isinstance(offered, dict):
+        offered = {}
+        doc[CI_FIX_KEY] = offered
+    prev = offered.get(sig)
+    if isinstance(prev, dict) and shas_match(str(prev.get("pass_sha") or ""), sha):
+        if fix_signature_is_live(home, repo_c, sig, "main"):
+            return "duplicate"
+        # Orphaned ledger stamp: clear and re-offer.
+        offered.pop(sig, None)
+        save_ledger(home, doc)
+    pull_url = (check_url or "").strip() or f"https://github.com/{repo_c}/commit/{sha}"
+    title = f"FIX main red {check} @ {sha[:12]} (shared suite; FR #4857)"
+    body = (
+        f"FR #4857 main-side FIX: default branch is red on shared suite `{check}` "
+        f"while PASSed tips were skipped (`main-also-red-shared-suite`). "
+        f"Signature `{sig}`. Fix main (open a PR from current main), do not burn "
+        f"N tip FIX jobs for the same suite failure."
+    )
+    if tip_pr:
+        body += f" Trigger tip PR #{str(tip_pr).lstrip('#')}."
+    if check_url:
+        body += f" Failing job: {check_url}."
+    if failed_tail:
+        # Never paste secrets; keep a short ASCII tail for the seat.
+        tail = re.sub(r"\s+", " ", str(failed_tail).strip())[:400]
+        body += f" Failed-test tail: {tail}"
+    claim = gitclaim.GitClaim(
+        repo=repo_c,
+        task="FIX",
+        id="#main",
+        event="check_suite",
+        action="completed",
+        line=pull_url,
+        title=title,
+        body=body,
+        labels=("via-intake", "fix-ci", "main-red"),
+    )
+    with gitclaim._lock(home):
+        try:
+            qdoc = gitclaim._load_queue_unlocked(home)
+        except (OSError, ValueError):
+            qdoc = gitclaim._empty_queue()
+        # Drop stale main-red FIX rows for this repo (older main SHA).
+        kept_ua: list = []
+        for row in list(qdoc.get("unaccepted") or []):
+            if (
+                is_main_red_fix_row(row)
+                and gitclaim.canonical_queue_repo(str(row.get("repo") or "")) == repo_c
+                and not shas_match(str(row.get("pass_sha") or ""), sha)
+            ):
+                continue
+            kept_ua.append(row)
+        qdoc["unaccepted"] = kept_ua
+        for row in list(qdoc.get("unaccepted") or []) + list(qdoc.get("accepted") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task") or "").upper() != "FIX":
+                continue
+            if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+                continue
+            row_body = str(row.get("body") or "") + " " + str(row.get("title") or "")
+            row_sig = str(row.get("fail_signature") or "")
+            if row_sig == sig or sig in row_body or (
+                is_main_red_fix_row(row)
+                and shas_match(str(row.get("pass_sha") or ""), sha)
+            ):
+                offered[sig] = {
+                    "repo": repo_c,
+                    "pr": "main",
+                    "pass_sha": sha,
+                    "signature": sig,
+                    "offered_epoch": tnow,
+                    "url": str(row.get("url") or pull_url),
+                    "main_red": True,
+                }
+                save_ledger(home, doc)
+                return "duplicate"
+        changed = gitclaim._append_unaccepted(
+            qdoc,
+            claim,
+            url=pull_url,
+            body=body,
+            title=claim.title,
+            pass_sha=sha,
+            fail_signature=sig,
+            main_red_fix="1",
+        )
+        try:
+            gitclaim._write_queue(gitclaim.queue_path(home), qdoc)
+        except OSError:
+            return "skipped"
+    if changed == "added":
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": "main",
+            "pass_sha": sha,
+            "signature": sig,
+            "offered_epoch": tnow,
+            "url": pull_url,
+            "main_red": True,
+        }
+        save_ledger(home, doc)
+        return "added"
+    if changed == "duplicate":
+        offered[sig] = {
+            "repo": repo_c,
+            "pr": "main",
+            "pass_sha": sha,
+            "signature": sig,
+            "offered_epoch": tnow,
+            "url": pull_url,
+            "main_red": True,
+        }
+        save_ledger(home, doc)
+        return "duplicate"
+    return "skipped"
+
+
 def park_ci_failed(
     doc: dict[str, Any],
     row: dict[str, Any],
@@ -631,6 +847,10 @@ def enqueue_fix_ci(
     main_red_fn: Callable[..., bool] | None = None,
     mergeable: Any = "",
     merge_state: str = "",
+    main_sha: str = "",
+    check_url: str = "",
+    failed_tail: str = "",
+    fetch_default_sha: Callable[..., str] | None = None,
 ) -> str:
     """Offer a FIX job for a PASSed+auto-merge PR with a red required check (FR #4585/#4596).
 
@@ -638,8 +858,9 @@ def enqueue_fix_ci(
     shared ``repo|state`` so one FIX covers a main breakage. When main is green
     (or unknown), each PR is its own FIX. Returns ``added`` | ``duplicate`` | ``skipped``.
 
-    FR #4630: returns ``skipped`` when the tip is cancelled-only, or when the
-    shared suite (test-and-synth) failed while main is also red.
+    FR #4630 / #4857: tip cancelled-only -> ``skipped``. Shared suite red while
+    main is also red -> tip ``skipped_main_added`` / ``skipped_main_duplicate``
+    (one main-side FIX is queued / already present).
 
     FR #4833: returns ``needs_human`` when the only red check is ``lock`` /
     ``assert-lock`` (Simon must add ``simon-approved-rule-change``).
@@ -671,6 +892,24 @@ def enqueue_fix_ci(
             url=url or f"https://github.com/{repo_c}/pull/{num}",
             detail=detail,
         )
+    if skip == "main-also-red-shared-suite":
+        main_result = enqueue_main_red_shared_suite_fix(
+            home,
+            repo=repo_c,
+            detail=detail,
+            main_sha=main_sha,
+            check_url=check_url,
+            failed_tail=failed_tail,
+            tip_pr=num,
+            now_epoch=now_epoch,
+            token=token,
+            fetch_default_sha=fetch_default_sha,
+        )
+        if main_result == "added":
+            return "skipped_main_added"
+        if main_result == "duplicate":
+            return "skipped_main_duplicate"
+        return "skipped"
     if skip:
         return "skipped"
     sig = failure_signature(
@@ -2292,6 +2531,7 @@ def process_pending(
         "wait": 0,
         "requeued": 0,
         "fix_offered": 0,
+        "fix_skip_main_red": 0,
         "skipped_hold": 0,
         "dropped": 0,
         "errors": 0,
@@ -2521,6 +2761,15 @@ def process_pending(
                 )
                 if fix_result == "added":
                     summary["fix_offered"] = int(summary.get("fix_offered") or 0) + 1
+                elif fix_result == "skipped_main_added":
+                    summary["fix_offered"] = int(summary.get("fix_offered") or 0) + 1
+                    summary["fix_skip_main_red"] = (
+                        int(summary.get("fix_skip_main_red") or 0) + 1
+                    )
+                elif fix_result == "skipped_main_duplicate":
+                    summary["fix_skip_main_red"] = (
+                        int(summary.get("fix_skip_main_red") or 0) + 1
+                    )
             except Exception as exc:  # noqa: BLE001
                 summary["errors"] += 1
                 _log(f"WARN merge-on-green FIX enqueue failed {repo}#{pr}: {exc}")

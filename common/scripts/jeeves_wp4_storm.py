@@ -135,7 +135,7 @@ def run_storm(
     machines = list(machines or DEFAULT_MACHINES)
     nicks = _worker_nicks(machines, workers_per_machine)
     rng = random.Random(seed)
-    # gitclaim.ID_RE requires ``#\d+``
+    # Numeric claim ids (ID_RE also allows synthetic #main / #main-red for FIX).
     ping_ids = [f"#{10_000 + i}" for i in range(pings)]
     schedule = list(ping_ids)
     rng.shuffle(schedule)

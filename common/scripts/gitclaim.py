@@ -74,7 +74,8 @@ CLOSES_RE = re.compile(
 )
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-ID_RE = re.compile(r"^#\d+$")
+# FR #4857: synthetic main-side FIX id `#main` / `#main-red` (shared-suite main red).
+ID_RE = re.compile(r"^#(?:\d+|main(?:-red)?)$", re.IGNORECASE)
 # FR #785: archived / superseded repos must not be offered or enqueued.
 # Keys are lower-case owner/name; values are the live successor for resync discovery.
 # Keep in sync with docs/ARCHIVED_REPOS.md (all five archived 2026-10-03).
@@ -3162,7 +3163,8 @@ def _coerce_row(row: dict) -> dict | None:
                 "prior_holder",  # FR #4564: do not re-offer a lost DONE to the seat that held it
                 # FR #4706 / #4585: FIX CI head SHA + failure signature must survive reload
                 # FR #4718: seat that FAILed this MRB head must not be offered it again
-                "pass_sha", "fail_signature", "check_run_id", "mrb_fail_by"):
+                # FR #4857: main-side FIX stamp survives reload (belt with id/fail_signature)
+                "pass_sha", "fail_signature", "check_run_id", "mrb_fail_by", "main_red_fix"):
         if row.get(key):
             out[key] = str(row.get(key))
     if row.get("refs"):
@@ -3766,10 +3768,18 @@ def resolve_assign_url(row: dict) -> str:
     if task in ("MRB", "FIX"):
         if PULL_URL_RE.search(url):
             return url
+        # FR #4857: main-side FIX carries an actions/commit URL, not /pull/N.
+        if task == "FIX" and (
+            str(row.get("main_red_fix") or "") in ("1", "true", "True")
+            or str(row.get("id") or "").strip().lstrip("#").lower()
+            in ("main", "main-red")
+            or str(row.get("fail_signature") or "").startswith("main-red|")
+        ):
+            return url
         pr = str(row.get("pr_id") or row.get("pr") or "").strip().lstrip("#")
         if not pr and task == "FIX":
             pr = str(row.get("id") or "").strip().lstrip("#")
-        if repo and pr:
+        if repo and pr and pr.lower() not in ("main", "main-red"):
             return f"https://github.com/{repo}/pull/{pr}"
         return ""
     if url:
@@ -5136,6 +5146,14 @@ def _fix_is_dead(
         return True
     if str(row.get("state") or "").strip().lower() == "closed":
         return True
+    # FR #4857: main-side FIX has no open PR number; never purge via open_pulls.
+    if (
+        str(row.get("main_red_fix") or "") in ("1", "true", "True")
+        or str(row.get("id") or "").strip().lstrip("#").lower()
+        in ("main", "main-red")
+        or str(row.get("fail_signature") or "").startswith("main-red|")
+    ):
+        return False
     repo = str(row.get("repo") or "").strip()
     ident = _fix_row_pr_num(row)
     if not repo or not ident:
@@ -9303,6 +9321,21 @@ def _merge_on_green_pass_sha(home: Path, repo: str, num: int) -> str:
         return ""
 
 
+def _tally_fix_ci_result(
+    result: str, *, fix_added: int, fix_dup: int, fix_skip_main_red: int
+) -> tuple[int, int, int]:
+    """Count enqueue_fix_ci outcomes for resync summary (FR #4596 / #4857)."""
+    r = str(result or "")
+    if r == "added":
+        return fix_added + 1, fix_dup, fix_skip_main_red
+    if r == "duplicate":
+        return fix_added, fix_dup + 1, fix_skip_main_red
+    if r == "skipped_main_added":
+        return fix_added + 1, fix_dup, fix_skip_main_red + 1
+    if r == "skipped_main_duplicate":
+        return fix_added, fix_dup, fix_skip_main_red + 1
+    return fix_added, fix_dup, fix_skip_main_red
+
 
 def list_pr_needs_mergeability_enrichment(pr: dict | None) -> bool:
     """True when an open-PR list item lacks mergeable* (FR #4683).
@@ -9414,7 +9447,9 @@ def resync_from_github(
     skipped_ci = 0
     fix_added = 0  # FR #4596: FIX enqueue adds counted into github-resync ok added=
     fix_dup = 0  # FR #4639: red PASSed PRs deduped as duplicate
+    fix_skip_main_red = 0  # FR #4857: tip FIX skipped because main shared suite is red
     main_red_cache: dict[str, bool] = {}  # FR #4596: one main probe per repo per resync
+    main_sha_cache: dict[str, str] = {}  # FR #4857: default-branch SHA for main-side FIX
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
     # FR #2389: only *merged* closers remove an issue from desired. Open Closes-PRs
@@ -9636,10 +9671,12 @@ def resync_from_github(
                     )
                 except Exception as exc:  # noqa: BLE001
                     fix_result = f"error:{type(exc).__name__}"
-                if fix_result == "added":
-                    fix_added += 1
-                elif fix_result == "duplicate":
-                    fix_dup += 1
+                fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                    fix_result,
+                    fix_added=fix_added,
+                    fix_dup=fix_dup,
+                    fix_skip_main_red=fix_skip_main_red,
+                )
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync offer FIX dirty PR {repo}#{num} result={fix_result}",
@@ -9675,10 +9712,12 @@ def resync_from_github(
                         )
                     except Exception as exc:  # noqa: BLE001
                         fix_result = f"error:{type(exc).__name__}"
-                    if fix_result == "added":
-                        fix_added += 1
-                    elif fix_result == "duplicate":
-                        fix_dup += 1
+                    fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                        fix_result,
+                        fix_added=fix_added,
+                        fix_dup=fix_dup,
+                        fix_skip_main_red=fix_skip_main_red,
+                    )
                     skipped_open_pulls.add((repo, f"#{num}"))
                     print(
                         f"resync offer FIX conflict PR {repo}#{num} result={fix_result}",
@@ -9745,6 +9784,12 @@ def resync_from_github(
                                     repo_c, token=token
                                 )
                             )
+                        if repo_c not in main_sha_cache:
+                            main_sha_cache[repo_c] = (
+                                mrb_merge_on_green.main_branch_head_sha(
+                                    repo_c, token=token
+                                )
+                            )
                         fix_result = mrb_merge_on_green.enqueue_fix_ci(
                             _root(home),
                             repo=repo,
@@ -9753,6 +9798,7 @@ def resync_from_github(
                             url=str(pr.get("html_url") or ""),
                             detail=check_state or "failure",
                             main_red=bool(main_red_cache[repo_c]),
+                            main_sha=str(main_sha_cache.get(repo_c) or ""),
                             token=token,
                             mergeable=pr.get("mergeable"),
                             merge_state=str(
@@ -9764,10 +9810,12 @@ def resync_from_github(
                     except Exception as exc:  # noqa: BLE001
                         fix_result = f"error:{type(exc).__name__}"
                     # FR #4596: FIX rows must show in github-resync ok added=.
-                    if fix_result == "added":
-                        fix_added += 1
-                    elif fix_result == "duplicate":
-                        fix_dup += 1
+                    fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                        fix_result,
+                        fix_added=fix_added,
+                        fix_dup=fix_dup,
+                        fix_skip_main_red=fix_skip_main_red,
+                    )
                     skipped_open_pulls.add((repo, f"#{num}"))
                     print(
                         f"resync offer FIX ci-failed PR {repo}#{num} result={fix_result}",
@@ -9797,6 +9845,12 @@ def resync_from_github(
                                     repo_c, token=token
                                 )
                             )
+                        if repo_c not in main_sha_cache:
+                            main_sha_cache[repo_c] = (
+                                mrb_merge_on_green.main_branch_head_sha(
+                                    repo_c, token=token
+                                )
+                            )
                         fix_result = mrb_merge_on_green.enqueue_fix_ci(
                             _root(home),
                             repo=repo,
@@ -9805,6 +9859,7 @@ def resync_from_github(
                             url=str(pr.get("html_url") or ""),
                             detail=check_state or "failure",
                             main_red=bool(main_red_cache[repo_c]),
+                            main_sha=str(main_sha_cache.get(repo_c) or ""),
                             token=token,
                             mergeable=pr.get("mergeable"),
                             merge_state=str(
@@ -9815,10 +9870,12 @@ def resync_from_github(
                         )
                     except Exception as exc:  # noqa: BLE001
                         fix_result = f"error:{type(exc).__name__}"
-                    if fix_result == "added":
-                        fix_added += 1
-                    elif fix_result == "duplicate":
-                        fix_dup += 1
+                    fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                        fix_result,
+                        fix_added=fix_added,
+                        fix_dup=fix_dup,
+                        fix_skip_main_red=fix_skip_main_red,
+                    )
                     skipped_open_pulls.add((repo, f"#{num}"))
                     print(
                         f"resync offer FIX pass-sha-unchanged PR {repo}#{num} "
@@ -9888,10 +9945,12 @@ def resync_from_github(
                         )
                 except Exception as exc:  # noqa: BLE001
                     fix_result = f"error:{type(exc).__name__}"
-                if fix_result == "added":
-                    fix_added += 1
-                elif fix_result == "duplicate":
-                    fix_dup += 1
+                fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                    fix_result,
+                    fix_added=fix_added,
+                    fix_dup=fix_dup,
+                    fix_skip_main_red=fix_skip_main_red,
+                )
                 print(
                     f"resync offer FIX mrb-fail PR {repo}#{num} result={fix_result}",
                     flush=True,
@@ -10337,6 +10396,7 @@ def resync_from_github(
                 "skipped_draft": int(skipped_draft),
                 "skipped_ci": int(skipped_ci),
                 "fix_dup": int(fix_dup),
+                "fix_skip_main_red": int(fix_skip_main_red),
                 "focus_pruned": int(focus_pruned),
                 "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),

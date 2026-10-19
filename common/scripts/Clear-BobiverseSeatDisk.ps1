@@ -21,11 +21,17 @@
   - FR #4226: reclaim aged session UUID dirs nested under cwd-encoded buckets
     (sessions/<cwd-encoded>/<guid>/). Top-level-only reclaim skipped those
     UUIDs when the cwd bucket stayed fresh from the live seat.
+  - FR #4864: same nested walk for ~/.cursor/chats/<project>/<guid>/ --- a live
+    seat keeps the project bucket fresh and used to shield aged UUID chats
+    (hundreds of MB). Also removes ~/.grok/bin/*.old backup binaries on reclaim.
+  - FR #4883: when FreeGB is still under MinFreeGB after that, second pass:
+    hardlink-dedupe identical agent.exe/grok.exe twins (keep both names, one
+    extent), then reclaim nested .cursor/chats with KeepCursorHoursLow (default 6).
 
   Never touches Ergo, ircd.yaml, secrets, the current seat session id, or
   running services. Pair with Clear-BobiverseJobWorktrees.ps1 for linked trees.
   When JobWorktrees prints FreeGB still low / removed=0, run this with -Reclaim
-  before filing a disk-capacity intake (FR #4192 / FR #4212).
+  before filing a disk-capacity intake (FR #4192 / FR #4212 / FR #4864 / FR #4883).
 
 .EXAMPLE
   ..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId 0ee19a2a-...
@@ -37,6 +43,7 @@ param(
     [int]$KeepSessionHours = 6,
     [int]$KeepTempHours = 24,
     [int]$KeepCursorHours = 24,
+    [int]$KeepCursorHoursLow = 6,
     [string]$GrokHome = '',
     [string]$AiRoot = 'C:\ai',
     [string]$TempRoot = '',
@@ -213,20 +220,113 @@ if ($IncludeAiBackups -and $AiRoot -and (Test-Path -LiteralPath $AiRoot)) {
         }
 }
 
-# FR #4212: aged Cursor chat trees (often hundreds of MB on marchhare).
+# FR #4212 / FR #4864: Cursor chat trees. Walk nested UUID dirs under each
+# project bucket (chats/<project>/<guid>/) so a fresh project LastWriteTime
+# cannot shield aged UUID children. Legacy flat chats/<project> (no nested
+# dirs) still reclaims the whole tree when aged. Keep -KeepSessionId matches.
 $cursorCut = (Get-Date).AddHours(-1 * [Math]::Abs($KeepCursorHours))
 if ($CursorChatsRoot -and (Test-Path -LiteralPath $CursorChatsRoot)) {
-    Get-ChildItem -LiteralPath $CursorChatsRoot -Directory -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -lt $cursorCut } |
-        ForEach-Object {
-            $removed += Remove-TreeSafe $_.FullName 'aged .cursor/chats'
+    Get-ChildItem -LiteralPath $CursorChatsRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $top = $_
+        if ($KeepSessionId -and ($top.Name -like ("*{0}*" -f $KeepSessionId))) { return }
+        $nested = @(Get-ChildItem -LiteralPath $top.FullName -Directory -Force -ErrorAction SilentlyContinue)
+        if ($nested.Count -gt 0) {
+            foreach ($ch in $nested) {
+                if ($KeepSessionId -and ($ch.Name -like ("*{0}*" -f $KeepSessionId))) { continue }
+                if ($ch.LastWriteTime -gt $cursorCut) { continue }
+                $removed += Remove-TreeSafe $ch.FullName 'aged nested .cursor/chats'
+            }
+            $left = @(Get-ChildItem -LiteralPath $top.FullName -Force -ErrorAction SilentlyContinue)
+            if ($left.Count -eq 0) {
+                $removed += Remove-TreeSafe $top.FullName 'empty .cursor/chats project bucket'
+            }
+        } else {
+            if ($top.LastWriteTime -gt $cursorCut) { return }
+            $removed += Remove-TreeSafe $top.FullName 'aged .cursor/chats'
         }
+    }
+}
+
+# FR #4864: ~/.grok/bin/*.old backup binaries (agent.exe.old etc.) --- safe once
+# a newer agent.exe is present; often ~150MB left after other reclaim.
+$binRoot = Join-Path $GrokHome 'bin'
+if (Test-Path -LiteralPath $binRoot) {
+    Get-ChildItem -LiteralPath $binRoot -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '*.old' -or $_.Name -like '*.bak' } |
+        ForEach-Object {
+            $removed += Remove-TreeSafe $_.FullName 'grok bin *.old'
+        }
+}
+
+# FR #4883: second pass when FreeGB still under MinFreeGB --- identical
+# agent.exe/grok.exe twins waste ~160MB; nested chats under KeepCursorHours but
+# older than KeepCursorHoursLow are safe to drop while the live project stays.
+$freeNow = Get-FreeGB
+if ($freeNow -lt $MinFreeGB -and (Test-Path -LiteralPath $binRoot)) {
+    $agentPath = Join-Path $binRoot 'agent.exe'
+    $grokPath = Join-Path $binRoot 'grok.exe'
+    if ((Test-Path -LiteralPath $agentPath) -and (Test-Path -LiteralPath $grokPath)) {
+        $agentItem = Get-Item -LiteralPath $agentPath
+        $grokItem = Get-Item -LiteralPath $grokPath
+        if ($agentItem.Length -gt 0 -and $agentItem.Length -eq $grokItem.Length) {
+            $ha = (Get-FileHash -LiteralPath $agentPath -Algorithm SHA256).Hash
+            $hg = (Get-FileHash -LiteralPath $grokPath -Algorithm SHA256).Hash
+            if ($ha -eq $hg) {
+                $alreadyLinked = $false
+                try {
+                    if ($agentItem.LinkType -eq 'HardLink' -or $grokItem.LinkType -eq 'HardLink') {
+                        $alreadyLinked = $true
+                    }
+                } catch { }
+                if (-not $alreadyLinked) {
+                    if ($WhatIfPreference) {
+                        Write-Host "WhatIf: hardlink-dedupe grok.exe -> agent.exe (FR #4883 twin)"
+                        $removed += 1
+                    } elseif ($PSCmdlet.ShouldProcess($grokPath, 'hardlink-dedupe identical grok.exe to agent.exe')) {
+                        Write-Host "Hardlink-dedupe grok.exe -> agent.exe (identical twin; FR #4883)"
+                        Remove-Item -LiteralPath $grokPath -Force -ErrorAction SilentlyContinue
+                        New-Item -ItemType HardLink -Path $grokPath -Target $agentPath -ErrorAction SilentlyContinue | Out-Null
+                        if (Test-Path -LiteralPath $grokPath) { $removed += 1 }
+                    }
+                }
+            }
+        }
+    }
+}
+
+$freeNow = Get-FreeGB
+if ($freeNow -lt $MinFreeGB -and $CursorChatsRoot -and (Test-Path -LiteralPath $CursorChatsRoot)) {
+    $lowHours = [Math]::Abs([int]$KeepCursorHoursLow)
+    if ($lowHours -lt 1) { $lowHours = 1 }
+    $keepHi = [Math]::Abs([int]$KeepCursorHours)
+    if ($lowHours -ge $keepHi) {
+        $lowHours = [Math]::Max(1, $keepHi - 1)
+    }
+    $cursorCutLow = (Get-Date).AddHours(-1 * $lowHours)
+    Write-Host ("FR #4883 second-pass nested .cursor/chats KeepCursorHoursLow={0}" -f $lowHours)
+    Get-ChildItem -LiteralPath $CursorChatsRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $top = $_
+        if ($KeepSessionId -and ($top.Name -like ("*{0}*" -f $KeepSessionId))) { return }
+        $nested = @(Get-ChildItem -LiteralPath $top.FullName -Directory -Force -ErrorAction SilentlyContinue)
+        if ($nested.Count -gt 0) {
+            foreach ($ch in $nested) {
+                if ($KeepSessionId -and ($ch.Name -like ("*{0}*" -f $KeepSessionId))) { continue }
+                if ($ch.LastWriteTime -gt $cursorCutLow) { continue }
+                $removed += Remove-TreeSafe $ch.FullName 'aged nested .cursor/chats (low)'
+            }
+            $left = @(Get-ChildItem -LiteralPath $top.FullName -Force -ErrorAction SilentlyContinue)
+            if ($left.Count -eq 0) {
+                $removed += Remove-TreeSafe $top.FullName 'empty .cursor/chats project bucket'
+            }
+        }
+    }
 }
 
 $freeNow = Get-FreeGB
 Write-Host ("Done removed_ops={0} FreeGB_now={1}" -f $removed, $freeNow)
 if ($freeNow -lt $MinFreeGB) {
-    Write-Warning ("FR #4192 / FR #4212 / FR #4226: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
+    Write-Warning ("FR #4192 / FR #4212 / FR #4226 / FR #4864 / FR #4883: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
+
     # Ranked consumers so the next seat knows what still fills C: (live session / bin may remain).
     Write-Host '--- CRITICAL remaining consumers (GB) ---'
     $ranked = @()
