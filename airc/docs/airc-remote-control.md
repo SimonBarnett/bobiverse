@@ -6,6 +6,8 @@ See **[feature-request-airc-remote-control-2026-10-01.md](./feature-request-airc
 
 Authenticated PRIVMSG to `{machine}_console` runs PowerShell (or `cmd:` / `psb64:`) and returns Query lines `out`/`err`/`DONE id=… exit=…`. The bob ear appends those to `<bob home>\airc-replies.jsonl` (FR #1546). `Invoke-AircRemote.ps1 -Outbox … -ReplyFile …` prefixes `id=<corr>` and waits for matching DONE (non-zero exit on timeout).
 
+**FR #4796 (driver pacing):** multi-line outbox bursts (`-Action Put` chunks) sleep `-OutboxPaceMs` (default 800, matches bob ear `FLOOD_S`) between lines. After a large reply (`>= -BurstReplyThreshold` out/err lines), `Invoke-AircRemote` sleeps `-PostBurstCoolMs` (default 2000) before returning so sequential Commands do not stack under Ergo fakelag. The bob ear also uses `CONSOLE_OUTBOX_FLOOD_S` (default 1.5s, env `BOB_CONSOLE_OUTBOX_FLOOD_S`) when draining `PRIVMSG *_console` from `home\outbox.txt`. Console reply token-bucket / truncate is FR #4790.
+
 Concurrent Commands on the same Query are **queued** (FR #2632): one shell in flight plus a short pending list; each job still emits its own DONE. A full queue fail-closes with `busy: prior shell still emitting` + `DONE exit=1` (FR #2612: no hang). `Invoke-AircRemote` retries that busy reply within `-MaxRetries` / `-TimeoutSec` when `-JobId` was not pinned (compat with older airc).
 
 On service stop / session interrupt, DONE for every in-flight and pending shell id is flushed **before** the IRC socket closes (FR #2640 / #2649) with **no per-line FLOOD_S delay** so SCM cannot kill the socket between err and DONE; `_stop_flushed` skips a second finally drain after sock=None. Late worker emits enqueue-only so stop never `sendall`s after close.

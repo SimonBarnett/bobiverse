@@ -14,6 +14,9 @@
   FR #4068: console Command batch-captures then floods replies (FLOOD_S 0.35s each).
   Prefer -Action Cmd for directory listings. Budget -TimeoutSec above
   shell_seconds + reply_lines*0.35 + margin (default 60 can miss a busy-box DONE).
+  FR #4796: multi-line -Outbox bursts use -OutboxPaceMs (default 800, ear FLOOD_S);
+  after a large reply (>= -BurstReplyThreshold lines) sleep -PostBurstCoolMs before return
+  so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Remote')]
 param(
@@ -53,6 +56,18 @@ param(
 
     [Parameter(ParameterSetName = 'Remote')]
     [string]$SandboxRoot = '',
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [ValidateRange(0, 10000)]
+    [int]$OutboxPaceMs = 800,
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [ValidateRange(0, 60000)]
+    [int]$PostBurstCoolMs = 2000,
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [ValidateRange(1, 100000)]
+    [int]$BurstReplyThreshold = 20,
 
     [Parameter(ParameterSetName = 'Remote')]
     [switch]$WhatIf,
@@ -264,9 +279,13 @@ function Write-AircOutbox {
     param(
         [Parameter(Mandatory)][string]$Outbox,
         [Parameter(Mandatory)][string[]]$Lines,
+        [int]$PaceMs = 0,
         [switch]$WhatIf
     )
+    $i = 0
+    $n = @($Lines).Count
     foreach ($line in $Lines) {
+        $i++
         $redacted = Protect-AircRemoteSecret $line
         if ($WhatIf) {
             Write-Host ("WHATIF {0}" -f $redacted)
@@ -277,6 +296,10 @@ function Write-AircOutbox {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
         Add-Content -LiteralPath $Outbox -Value $line -Encoding utf8
+        # FR #4796: pace multi-line bursts (PUT chunks) so the ear does not see an instant dump.
+        if ($PaceMs -gt 0 -and $i -lt $n) {
+            Start-Sleep -Milliseconds $PaceMs
+        }
     }
 }
 
@@ -581,6 +604,19 @@ function Invoke-AircRemoteSelfTest {
         Write-Host ("SELFTEST FAILED count={0}" -f $script:SelfTestFailed)
         exit 1
     }
+    # FR #4796: paced outbox write helper
+    $paceTmp = Join-Path $env:TEMP ('airc-fr4796-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $paceTmp -Force | Out-Null
+    try {
+        $paceOut = Join-Path $paceTmp 'outbox.txt'
+        Write-AircOutbox -Outbox $paceOut -Lines @('PRIVMSG t_console :a', 'PRIVMSG t_console :b') -PaceMs 0
+        $paceLines = @(Get-Content -LiteralPath $paceOut)
+        Assert-True ($paceLines.Count -eq 2) 'FR #4796 Write-AircOutbox PaceMs=0 writes both lines'
+        Write-Host 'INFO FR #4796 outbox pace selftest ok'
+    } finally {
+        Remove-Item -LiteralPath $paceTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host 'SELFTEST PASSED'
     exit 0
 }
@@ -665,7 +701,7 @@ while ($true) {
     $startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
 
     if ($Outbox) {
-        Write-AircOutbox -Outbox $Outbox -Lines $privmsgs -WhatIf:$WhatIf
+        Write-AircOutbox -Outbox $Outbox -Lines $privmsgs -PaceMs $OutboxPaceMs -WhatIf:$WhatIf
     } elseif ($WhatIf) {
         foreach ($l in $privmsgs) { Write-Host ('WHATIF {0}' -f (Protect-AircRemoteSecret $l)) }
     } else {
@@ -706,6 +742,17 @@ while ($true) {
 }
 
 if ($wantWait) {
+    # FR #4796: cool after large reply bursts before the next driver Command.
+    $replyLines = 0
+    try {
+        $replyLines = @($parsed.Out).Count + @($parsed.Err).Count
+    } catch {
+        $replyLines = 0
+    }
+    if ($PostBurstCoolMs -gt 0 -and $replyLines -ge $BurstReplyThreshold) {
+        Write-Host ("INFO FR #4796 post-burst cool {0}ms after {1} reply lines (threshold={2})" -f $PostBurstCoolMs, $replyLines, $BurstReplyThreshold)
+        Start-Sleep -Milliseconds $PostBurstCoolMs
+    }
     Write-Output $parsed
     if ($parsed.ExitCode -ne 0) { exit $parsed.ExitCode }
 }
