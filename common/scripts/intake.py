@@ -30,6 +30,7 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/agentic_fomprep",
         "SimonBarnett/a-search",  # FR #3023: Plan product; intake Flush must not drop
         "SimonBarnett/trutex",  # FR #3050: private Plan product; allowlist ignores visibility
+        "SimonBarnett/ce-priority",  # FR #4830: dayworks-launcher park; never invent-harvest
     }
 )
 _ALLOW_OWNER = "simonbarnett"  # FR #3135: case-insensitive owner gate
@@ -200,6 +201,12 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
+    # FR #4830: never invent common/.grok/skills/harvest on ce-priority; park in
+    # unlocked dayworks-launcher (assert-lock / tip-loop class of ce-priority#36/#37/#38).
+    "simonbarnett/ce-priority": (
+        "dayworks-launcher",
+        "dayworks/.grok/skills/dayworks-launcher/SKILL.md",
+    ),
 }
 
 def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
@@ -224,6 +231,8 @@ def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
 SKILL_BOOK_PATHS: dict[str, str] = {
     "harvest": "common/.grok/skills/harvest/SKILL.md",
     "harvest-agent-skills": "common/.grok/skills/harvest-agent-skills/SKILL.md",
+    # FR #4830: ce-priority unlocked park (not common invent-harvest).
+    "dayworks-launcher": "dayworks/.grok/skills/dayworks-launcher/SKILL.md",
     "bobiverse-fleet-ops": "common/.grok/skills/bobiverse-fleet-ops/SKILL.md",
     "bobiverse-bob": "bob/.grok/skills/bobiverse-bob/SKILL.md",
     "bobiverse-bob-worker": "bob/.grok/skills/bobiverse-bob-worker/SKILL.md",
@@ -359,19 +368,27 @@ def resolve_skill_book(
     FR #3189: when ``repo`` is a product (e.g. SimonBarnett/a-search), never return
     bobiverse ``common/.grok/skills/harvest/SKILL.md`` - use that product's default
     honesty-box path (``.grok/skills/harvest-agent-skills/SKILL.md``).
+    FR #4830: SimonBarnett/ce-priority parks at ``dayworks/.grok/skills/dayworks-launcher/SKILL.md``
+    (never invent ``common/.grok/skills/harvest``).
     """
     repo_l = str(repo or "").strip().lower()
     product = PRODUCT_DEFAULT_SKILL_BOOK.get(repo_l)
 
     def _product_or_bobiverse(book: str, path: str) -> tuple[str, str]:
+        path_n = path.replace("\\", "/")
         if product and (
-            path.replace("\\", "/") == SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
+            path_n == SKILL_BOOK_PATHS[DEFAULT_SKILL_BOOK]
             or book == DEFAULT_SKILL_BOOK
             or book == "harvest-agent-skills"
+            # FR #4830: invent-harvest path under product repos (ce-priority).
+            or path_n.endswith("common/.grok/skills/harvest/SKILL.md")
         ):
             # a-search harvest-agent-skills lives at repo-root .grok/skills/, not common/.
-            if book in (DEFAULT_SKILL_BOOK, "harvest-agent-skills") or path.endswith(
-                "harvest/SKILL.md"
+            # ce-priority parks at dayworks-launcher (never invent common harvest).
+            if (
+                book in (DEFAULT_SKILL_BOOK, "harvest-agent-skills")
+                or path_n.endswith("harvest/SKILL.md")
+                or path_n.endswith("common/.grok/skills/harvest/SKILL.md")
             ):
                 return product[0], product[1]
         return book, path
