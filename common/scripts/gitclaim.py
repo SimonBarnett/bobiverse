@@ -9094,8 +9094,9 @@ def open_pr_mrb_waiting_on_ci(
 ) -> bool:
     """FR #4466 / #4594: auto-merge on PASSed SHA is a CI wait only while checks pending.
 
-    auto-merge off, a missing pass SHA, or a different head SHA returns False so
-    resync re-queues the review. When ``checks`` is a concluded FAILURE (or error),
+    auto-merge off, a missing pass SHA, or a different head SHA returns False.
+    Resync still skips MRB when the head matches the PASSed SHA (FR #4833) and
+    re-queues when that head has moved. When ``checks`` is a concluded FAILURE (or error),
     returns False so the caller can offer FIX instead of skipping forever (FR #4594).
     When ``checks`` is omitted/unknown, keep the FR #4466 behaviour (wait).
     """
