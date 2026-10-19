@@ -30,6 +30,8 @@ def make(tmp_path, monkeypatch, extra=()):
 
 
 def test_433_on_reserved_nick_does_not_fall_back_or_register(tmp_path, monkeypatch):
+    # Fresh mint + reserved nick: FR #4789 recovers via SASL (mint was wrong).
+    # Still never invents {machine}_N and never REGISTERs under the collision path.
     s = make(tmp_path, monkeypatch)
     s.handshake()
     s.sent.clear()
@@ -37,7 +39,9 @@ def test_433_on_reserved_nick_does_not_fall_back_or_register(tmp_path, monkeypat
     assert not any(l.startswith("NICK tm_") and l != "NICK tm_console" for l in s.sent), s.sent
     assert not any("REGISTER" in l for l in s.sent)
     assert s._force_reconnect is True
-    assert any(m.startswith("ERROR") and "NOT falling back" in m for m in s.logs)
+    assert any("FR #4789" in m for m in s.logs) or any(
+        m.startswith("ERROR") and "NOT falling back" in m for m in s.logs
+    )
 
 
 def test_sasl_904_is_loud_error(tmp_path, monkeypatch):
