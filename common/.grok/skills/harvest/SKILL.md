@@ -287,6 +287,7 @@ routes to bobiverse via the split rule.
 - A docs/mrb tip that only pins skill text may PASS while the product PR is still open when Refs (not Closes) name that PR and the hostile test does not require the product code on main.
 - ce-priority Day Works require_machine auto-pin must not match bare dayworks or WP3 in a title. Harvest-lesson MRB rows re-infer and clear sticky stamps so online seats can !assign them.
 - FR #3991: Build-AircNetworkInstaller --uac-admin; Pack stages INSTALLDIR airc-network-installer.exe and dist airc-network-installer-<ver>.exe+.sha256; Assert requires those assets; MSI prop AIRC_PROFILE; service Airc; never -p on argv (getpass + net use); SkipAircNetworkInstallerExe with SkipMsi for stage tests
+- Re-offered docs/mrb MRB with prior PASS @ same tip SHA: re-verify hostile pytest + conflict markers + mrb_merge_gate, leave tip (no second fold), reaffirm board, keep/enable gh pr merge --auto, DONE PASS without CI poll (FR #3948 / HOT-PATCH)
 
 ## Harvest digest (lessons audit 2026-10-06)
 
