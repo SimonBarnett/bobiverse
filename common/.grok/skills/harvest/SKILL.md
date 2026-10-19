@@ -290,6 +290,7 @@ routes to bobiverse via the split rule.
 - FR #3991: Build-AircNetworkInstaller --uac-admin; Pack stages INSTALLDIR airc-network-installer.exe and dist airc-network-installer-<ver>.exe+.sha256; Assert requires those assets; MSI prop AIRC_PROFILE; service Airc; never -p on argv (getpass + net use); SkipAircNetworkInstallerExe with SkipMsi for stage tests
 - When Pack -SkipMsi disables Ergo embed (FR #4477), airc FR #4216 tests must assert config/ergo.password is absent on the stage and pin the Pack wantEmbedErgo=false gate; keep real MSI embed asserts separate
 - GetSandUsageStatus.usagePercent is 0-100 percentage points: never rescale values <=1 as a 0-1 fraction (0.99% used must stay ~1% used); share _parse_pct_points / ConvertTo-BobCursorSpendingPctPoints.
+- Invoke-AircRemote SelfTest happy-path DONE wait must Add-Content the jsonl rows in-process before Wait-AircRemoteReplies. A Start-Job writer under a full pytest run can miss TimeoutSec=10.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
