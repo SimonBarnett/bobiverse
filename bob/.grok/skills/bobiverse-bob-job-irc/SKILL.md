@@ -93,6 +93,17 @@ When bob-worker says the turn ended ACKed but no DONE/NACK/GIVEUP, re-append the
 & ..\scripts\Add-BobiverseOutboxLine.ps1 -Path $outbox -Line 'PRIVMSG #<machine> :DONE FR owner/repo#N https://github.com/owner/repo/pull/M'
 ```
 
+
+## CANCEL - issue closed while you hold the ACK (FR #4851)
+
+Jeeves may send a shop stop when the assigned issue (or its covering PR) is closed while your ACK is still open:
+
+```text
+<nick>: CANCEL FR owner/repo#N (closed by <user>)
+```
+
+Treat it as a hard stop: abandon the job without opening or pushing a PR, append `NACK FR owner/repo#N` (reason on a separate line), and end the turn. The program then posts `!bored` as usual. Belt-and-braces: `bobiverse-bob-job-fr` also requires checking the issue is still open before `gh pr create`.
+
 ## NACK / GIVEUP - handing a job back
 
 ```text

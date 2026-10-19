@@ -18,6 +18,7 @@ def _home(tmp_path: Path) -> Path:
 
 
 def test_purge_closed_fr_accepted_drops_stamped_and_live():
+    """FR #4851: nick-held closed ACC stays cancel_pending; orphan ACC still goes to done."""
     doc = {
         "accepted": [
             {
@@ -44,6 +45,13 @@ def test_purge_closed_fr_accepted_drops_stamped_and_live():
                 "nick": "flamingo-9",
             },
             {
+                "task": "FR",
+                "repo": "o/a",
+                "id": "#88",
+                "title": "orphan closed",
+                "state": "closed",
+            },
+            {
                 "task": "MRB",
                 "repo": "o/a",
                 "id": "#4",
@@ -56,10 +64,15 @@ def test_purge_closed_fr_accepted_drops_stamped_and_live():
     n = gitclaim._purge_closed_fr_accepted(
         doc, issue_open=lambda r, num: str(num) != "3"
     )
-    assert n == 2
-    assert [r["id"] for r in doc["accepted"]] == ["#1", "#4"]
+    assert n == 1  # orphan #88 only
+    kept_ids = [r["id"] for r in doc["accepted"]]
+    assert kept_ids == ["#1", "#2340", "#3", "#4"]
+    for row in doc["accepted"]:
+        if row["id"] in ("#2340", "#3"):
+            assert row.get("cancel_pending") is True
+            assert row.get("state") == "closed"
     done_ids = {r["id"] for r in doc["done"]}
-    assert done_ids == {"#2340", "#3"}
+    assert done_ids == {"#88"}
     for fin in doc["done"]:
         assert fin["result"] == "CLOSED"
         assert fin.get("done_ts")
@@ -68,17 +81,26 @@ def test_purge_closed_fr_accepted_drops_stamped_and_live():
 def test_purge_closed_fr_accepted_without_checker_only_stamped():
     doc = {
         "accepted": [
-            {"task": "FR", "repo": "o/a", "id": "#1", "state": "closed"},
+            {"task": "FR", "repo": "o/a", "id": "#1", "state": "closed"},  # orphan
             {"task": "FR", "repo": "o/a", "id": "#2"},  # unknown — keep
+            {
+                "task": "FR",
+                "repo": "o/a",
+                "id": "#3",
+                "state": "closed",
+                "nick": "seat-1",
+            },
         ],
         "done": [],
     }
     n = gitclaim._purge_closed_fr_accepted(doc)
     assert n == 1
-    assert [r["id"] for r in doc["accepted"]] == ["#2"]
+    assert [r["id"] for r in doc["accepted"]] == ["#2", "#3"]
+    assert doc["accepted"][1].get("cancel_pending") is True
 
 
 def test_purge_closed_fr_accepted_clears_digest_doing_only_matching(tmp_path, monkeypatch):
+    """FR #4851: nick-held closed ACC must NOT clear digest (seat still holds ACK)."""
     home = _home(tmp_path)
     calls = []
 
@@ -100,8 +122,10 @@ def test_purge_closed_fr_accepted_clears_digest_doing_only_matching(tmp_path, mo
         "done": [],
     }
     n = gitclaim._purge_closed_fr_accepted(doc, home=home)
-    assert n == 1
-    assert calls == [(str(home), "marchhare-40208", "2340")]
+    assert n == 0
+    assert len(doc["accepted"]) == 1
+    assert doc["accepted"][0].get("cancel_pending") is True
+    assert calls == []
 
 
 def test_offer_focus_top_purges_closed_accepted_before_pick(tmp_path: Path, monkeypatch):
@@ -158,5 +182,12 @@ def test_offer_focus_top_purges_closed_accepted_before_pick(tmp_path: Path, monk
     )
     assert st == "ok" and job is not None and job["id"] == "#2361"
     q = gitclaim._load_queue_unlocked(home)
-    assert all(r.get("id") != "#2340" for r in (q.get("accepted") or []))
-    assert any(r.get("id") == "#2340" and r.get("result") == "CLOSED" for r in (q.get("done") or []))
+    # FR #4851: nick-held closed ACC stays until NACK (cancel_pending), not moved to done.
+    held = [r for r in (q.get("accepted") or []) if r.get("id") == "#2340"]
+    assert len(held) == 1
+    assert held[0].get("cancel_pending") is True
+    assert held[0].get("state") == "closed"
+    assert not any(
+        r.get("id") == "#2340" and r.get("result") == "CLOSED"
+        for r in (q.get("done") or [])
+    )
