@@ -607,13 +607,18 @@ def return_job_to_unaccepted(
                     or is_self_mrb_giveup_reason(reason)
                 )
             )
+            # FR #4881: out-of-fuel is about the seat (FR #4181 mark), not the job.
+            # Do not burn giveup_count, giveup_seats, cooldown, or needs_human ---
+            # empty giveup_seats + cooldown_until would block every seat.
+            out_of_fuel_giveup = gitclaim.is_out_of_fuel_reason(reason)
+            seat_not_job_giveup = self_mrb_giveup or out_of_fuel_giveup
             for k in ("nick", "accepted_ts", "offered_to", "offered_ts", "offered_channel", "channel"):
                 job.pop(k, None)
             try:
                 prior = int(job.get("giveup_count") or 0)
             except (TypeError, ValueError):
                 prior = 0
-            if self_mrb_giveup:
+            if seat_not_job_giveup:
                 count = prior
             else:
                 count = prior + 1
@@ -621,6 +626,7 @@ def return_job_to_unaccepted(
             job["giveup_ts"] = gitclaim._utc_now()
             # FR #628: never hand this row back to a seat that already gave it up.
             # Store canonical <machine>-<pid> so w-io-* / w-mh-* match later offers.
+            # FR #4881: out-of-fuel must not append giveup_seats (seat mark is enough).
             seats = []
             seen_seats: set[str] = set()
             for raw in str(job.get("giveup_seats") or "").split(","):
@@ -633,7 +639,7 @@ def return_job_to_unaccepted(
                     continue
                 seen_seats.add(key)
                 seats.append(canon)
-            if gave_up_by:
+            if gave_up_by and not out_of_fuel_giveup:
                 canon_g = (gitclaim.canonical_worker_nick(gave_up_by) or gave_up_by).strip()
                 if canon_g and canon_g.lower() not in seen_seats:
                     seats.append(canon_g)
@@ -641,12 +647,16 @@ def return_job_to_unaccepted(
                 job["giveup_seats"] = ",".join(seats)
             if self_mrb_giveup and gave_up_by:
                 gitclaim.append_author_seat(job, gave_up_by)
-            until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
-                seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
-            )
-            # FR #180 / #1363: always stamp cooldown_until after GIVEUP/NACK.
-            job["cooldown_until"] = until.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            if (not self_mrb_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
+            # FR #180 / #1363: stamp cooldown_until after job-caused GIVEUP/NACK.
+            # FR #4881: skip for out-of-fuel (no giveup_seats => global cooldown).
+            if not out_of_fuel_giveup:
+                until = datetime.fromtimestamp(now_f, tz=timezone.utc) + timedelta(
+                    seconds=float(gitclaim.GIVEUP_COOLDOWN_S)
+                )
+                job["cooldown_until"] = until.replace(microsecond=0).isoformat().replace(
+                    "+00:00", "Z"
+                )
+            if (not seat_not_job_giveup) and count >= int(gitclaim.GIVEUP_NEEDS_HUMAN_COUNT):
                 job["needs_human"] = True
             # needs-mrb1 must not force needs_human (operator 2026-10-04: hallucination).
             doc.setdefault("unaccepted", []).append(job)
