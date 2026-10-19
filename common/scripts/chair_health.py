@@ -38,6 +38,17 @@ PUBLIC_BASE = "https://irc.ntsa.uk"
 PROBE_ZEN = "jeeves-health-probe"          # bobcallback acks this ping quietly (no queue, no announce)
 PROBE_REPO = "SimonBarnett/bobiverse"
 MAX_REPOS = 60
+# FR #4725: fleet defaults for chair + digest resync-repos.txt (fresh install / wipe).
+# Ops may add more; ensure_resync_repos_file merges these without dropping extras.
+DEFAULT_RESYNC_REPOS = (
+    "SimonBarnett/a-search",
+    "SimonBarnett/agentic_fomprep",
+    "SimonBarnett/bobiverse",
+    "SimonBarnett/xai-cookbook",
+    "SimonBarnett/Club-Madeira",
+    "SimonBarnett/ce-priority",
+)
+RESYNC_REPOS_NAME = "resync-repos.txt"
 
 # (name, method, path, status codes that count as UP)
 CHECKS = (
@@ -163,12 +174,57 @@ def default_token() -> tuple[str, str]:
     return (tok, src) if tok else ("", "none")
 
 
+def ensure_resync_repos_file(home: Path, *, defaults: tuple[str, ...] | None = None) -> Path:
+    """Create or merge fleet defaults into ``<home>/resync-repos.txt`` (FR #4725).
+
+    Missing file: write the default list. Existing file: append any missing defaults
+    (comments and operator extras stay). Never removes a line.
+    """
+    import gitclaim
+
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / RESYNC_REPOS_NAME
+    wanted = list(defaults if defaults is not None else DEFAULT_RESYNC_REPOS)
+    wanted = [
+        gitclaim.canonical_queue_repo(n)
+        for n in wanted
+        if gitclaim.REPO_RE.fullmatch(str(n).strip())
+    ]
+    wanted = list(dict.fromkeys(wanted))
+    if not path.is_file():
+        body = (
+            "# Fleet GitHub resync list (FR #4725). One owner/repo per line.\n"
+            "# Install and chair start merge DEFAULT_RESYNC_REPOS; do not delete ce-priority.\n"
+            + "\n".join(wanted)
+            + "\n"
+        )
+        path.write_text(body, encoding="utf-8")
+        return path
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return path
+    present = {
+        gitclaim.canonical_queue_repo(ln.strip()).lower()
+        for ln in raw.splitlines()
+        if ln.strip() and not ln.strip().startswith("#") and gitclaim.REPO_RE.fullmatch(ln.strip())
+    }
+    missing = [n for n in wanted if n.lower() not in present]
+    if not missing:
+        return path
+    add = ("\n" if raw and not raw.endswith("\n") else "") + "\n".join(missing) + "\n"
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(add)
+    return path
+
+
 def configured_repos(home: Path) -> list[str]:
     import gitclaim
     names: list[str] = []
     env = (os.environ.get("JEEVES_RESYNC_REPOS") or "").replace(";", ",")
     names += [x.strip() for x in env.split(",") if x.strip()]
-    for p in (Path(home) / "resync-repos.txt",):
+    for p in (Path(home) / RESYNC_REPOS_NAME,):
         try:
             names += [ln.strip() for ln in p.read_text(encoding="utf-8-sig").splitlines()
                       if ln.strip() and not ln.strip().startswith("#")]
@@ -353,6 +409,12 @@ class ChairJobs:
         self.sleep = sleep
         self.spawn = spawn
         self.owners = owners
+        # FR #4725: seed/merge fleet resync-repos.txt on both homes (includes ce-priority).
+        try:
+            ensure_resync_repos_file(self.home)
+            ensure_resync_repos_file(self.digest_home)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"WARN ensure_resync_repos_file: {type(exc).__name__}: {exc}")
         t0 = clock()
         self.next_probe = t0 + FIRST_PROBE_DELAY_S
         self.next_resync = t0 + FIRST_RESYNC_DELAY_S

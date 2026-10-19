@@ -200,6 +200,48 @@ if (-not (Test-Path -LiteralPath $ops)) {
     [IO.File]::WriteAllText($ops, "Simon`n", [Text.UTF8Encoding]::new($false))
 }
 
+# FR #4725: seed/merge fleet resync-repos.txt on chair + digest (includes ce-priority).
+$chPy = Join-Path $here 'chair_health.py'
+if (-not (Test-Path -LiteralPath $chPy)) {
+    $chPy = Join-Path $InstallRoot 'scripts\chair_health.py'
+}
+if ((Test-Path -LiteralPath $chPy) -and $Python) {
+    try {
+        $scriptsDir = Split-Path -Parent $chPy
+        $seedPy = @"
+from pathlib import Path
+import sys
+sys.path.insert(0, r'$scriptsDir')
+import chair_health as c
+c.ensure_resync_repos_file(Path(r'$ChairHome'))
+c.ensure_resync_repos_file(Path(r'$digestHome'))
+print('ok')
+"@
+        $seedOut = & $Python -c $seedPy 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "INFO FR #4725 seeded resync-repos.txt (chair + digest)"
+        } else {
+            Write-Host "WARN ensure resync-repos: $seedOut"
+        }
+    } catch {
+        Write-Host "WARN ensure resync-repos: $($_.Exception.Message)"
+    }
+} else {
+    $packList = Join-Path $repoRoot 'jeeves\defaults\resync-repos.txt'
+    if (-not (Test-Path -LiteralPath $packList)) {
+        $packList = Join-Path $InstallRoot 'defaults\resync-repos.txt'
+    }
+    if (Test-Path -LiteralPath $packList) {
+        foreach ($h in @($ChairHome, $digestHome)) {
+            $dest = Join-Path $h 'resync-repos.txt'
+            if (-not (Test-Path -LiteralPath $dest)) {
+                Copy-Item -LiteralPath $packList -Destination $dest -Force
+            }
+        }
+        Write-Host "INFO FR #4725 copied pack resync-repos.txt (chair + digest when missing)"
+    }
+}
+
 # Ergo payload: pack lays ergo\ under InstallRoot; BobIrcd AppDirectory is ErgoRoot (<ai root>\ergo)
 if (-not $SkipErgo -and -not $ForceErgo -and
     (Test-Path -LiteralPath (Join-Path $ErgoRoot 'ergo.exe')) -and
