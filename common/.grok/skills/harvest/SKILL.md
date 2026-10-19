@@ -285,6 +285,7 @@ routes to bobiverse via the split rule.
 - After DONE/NACK/GIVEUP, treat a replayed ACK for that job key as stale: do not reopen _ack_open and do not forward it to IRC; clear the finished mark only on fresh inject of that key.
 - Cursor submit-verify: never stop on receipt ack_open; use turn_open or prompt probe, and poll turn_running for BOB_WORKER_SUBMIT_VERIFY_GIVEUP_GRACE_S before GIVEUP so a landed paste is not reported as failed.
 - A docs/mrb tip that only pins skill text may PASS while the product PR is still open when Refs (not Closes) name that PR and the hostile test does not require the product code on main.
+- A docs/mrb PR stacked on this seat harvest intake is self-MRB after the tip merges. ACK then GIVEUP with the intake id.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
