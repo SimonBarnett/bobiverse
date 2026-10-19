@@ -283,6 +283,7 @@ routes to bobiverse via the split rule.
 - When the newest MRB board is FAIL at the live head and no mrb-N-fix PR is open, queue FIX for that pull. Do not re-offer the MRB to the seat that posted the FAIL.
 - Seed SimonBarnett/ce-priority in DEFAULT_RESYNC_REPOS and merge it into chair and digest resync-repos.txt on Install and ChairJobs start. A hot-add on ionos alone does not survive a wipe.
 - After DONE/NACK/GIVEUP, treat a replayed ACK for that job key as stale: do not reopen _ack_open and do not forward it to IRC; clear the finished mark only on fresh inject of that key.
+- Cursor submit-verify: never stop on receipt ack_open; use turn_open or prompt probe, and poll turn_running for BOB_WORKER_SUBMIT_VERIFY_GIVEUP_GRACE_S before GIVEUP so a landed paste is not reported as failed.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
