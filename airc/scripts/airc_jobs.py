@@ -29,6 +29,7 @@ VerbLevel = Literal["read", "write", "exec"]
 VERB_LEVELS: dict[str, VerbLevel] = {
     "STATUS": "read",
     "GET": "read",
+    "GETCHUNK": "read",
     "JOB": "read",
     "PUT": "write",
     "CHUNK": "write",
@@ -49,7 +50,7 @@ _SECRET_SUFFIXES = (".password", ".token")
 
 _KV_RE = re.compile(r"(\w+)=([^\s]+)")
 _VERB_RE = re.compile(
-    r"^(?P<verb>STATUS|PUT|CHUNK|PUTEND|RUN|GET|JOB|CANCEL)(?:\s+(?P<rest>.*))?$",
+    r"^(?P<verb>STATUS|PUT|CHUNK|PUTEND|RUN|GETCHUNK|GET|JOB|CANCEL)(?:\s+(?P<rest>.*))?$",
     re.IGNORECASE,
 )
 # FR #2570: optional leading id=<8 hex> before the verb (same pin as FR #75 shell).
@@ -224,6 +225,7 @@ class JobStore:
         self.drop_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._chunks: dict[str, dict[int, bytes]] = {}
+        self._fetches: dict[str, bytes] = {}
         self._meta: dict[str, JobRecord] = {}
         self._cancel = set()
         self._load_and_recover()
@@ -417,6 +419,8 @@ class JobStore:
         return [f"ok id={jid} putend bytes={len(blob)} sha256={digest}"]
 
     def handle_get(self, kv: dict[str, str]) -> list[str]:
+        if (kv.get("fetch") or "").lower() == "chunk":
+            return self._start_fetch(kv)
         jid = kv.get("id") or ""
         path = kv.get("path") or ""
         with self._lock:
@@ -437,6 +441,50 @@ class JobStore:
             digest = hashlib.sha256(data).hexdigest()
             head = data[:80].decode("utf-8", errors="replace").replace("\n", "\\n")
             return [f"GET path={dest} bytes={len(data)} sha256={digest} head={head}"]
+
+    def _start_fetch(self, kv: dict[str, str]) -> list[str]:
+        """FR #4795: open a pull-mode outbound fetch. No file bytes on this reply."""
+        path = kv.get("path") or ""
+        if not path:
+            raise JobProtocolError("bad_frame", "GET fetch=chunk requires path=")
+        dest = resolve_sandbox_path(self.drop_root, path)
+        if not dest.is_file():
+            raise JobProtocolError("missing", "file not found")
+        data = dest.read_bytes()
+        if len(data) > MAX_PUT_BYTES:
+            raise JobProtocolError("size", f"file larger than {MAX_PUT_BYTES}")
+        jid = (kv.get("id") or "").strip().lower() or new_job_id()
+        digest = hashlib.sha256(data).hexdigest()
+        seqs = (len(data) + MAX_CHUNK_RAW - 1) // MAX_CHUNK_RAW if data else 0
+        with self._lock:
+            self._fetches[jid] = data
+        return [
+            f"ok id={jid} get bytes={len(data)} sha256={digest} seqs={seqs} chunk={MAX_CHUNK_RAW}"
+        ]
+
+    def handle_getchunk(self, kv: dict[str, str]) -> list[str]:
+        """FR #4795: one raw chunk per request. The next GETCHUNK is the ack."""
+        import base64
+
+        jid = (kv.get("id") or "").strip().lower()
+        if not jid:
+            raise JobProtocolError("bad_frame", "GETCHUNK requires id=")
+        try:
+            seq = int(kv.get("seq") or "0")
+        except ValueError as exc:
+            raise JobProtocolError("bad_frame", "seq not int", jid) from exc
+        if seq < 1:
+            raise JobProtocolError("bad_frame", "seq must be >=1", jid)
+        with self._lock:
+            data = self._fetches.get(jid)
+            if data is None:
+                raise JobProtocolError("missing", "unknown fetch id", jid)
+            start = (seq - 1) * MAX_CHUNK_RAW
+            if start >= len(data):
+                raise JobProtocolError("bad_frame", "seq past end", jid)
+            raw = data[start : start + MAX_CHUNK_RAW]
+        b64 = base64.b64encode(raw).decode("ascii")
+        return [f"ok id={jid} chunk seq={seq} data={b64}"]
 
     def handle_job(self, kv: dict[str, str]) -> list[str]:
         jid = kv.get("id") or ""
@@ -579,6 +627,8 @@ class JobProtocol:
                 return self.store.handle_putend(nick, kv)
             if verb == "GET":
                 return self.store.handle_get(kv)
+            if verb == "GETCHUNK":
+                return self.store.handle_getchunk(kv)
             if verb == "JOB":
                 return self.store.handle_job(kv)
             if verb == "CANCEL":
