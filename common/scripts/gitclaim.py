@@ -1302,6 +1302,9 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
 # FR #4427: ce-priority Day Works living/umbrella FRs and UAT need CE-PRIORITY-DEV1
 # (CredMan / instances.json). Repo-gated so bobiverse chair filings about the pin
 # do not re-pin themselves.
+# FR #4745: do NOT match bare ``dayworks`` / ``WP3`` / ``WP4`` alone --- parked
+# spec FRs and harvest-lesson tips that only mention those words were stranded
+# on offline DEV1. Keep living/umbrella + Gates C-G (live gate work).
 _CE_PRIORITY_DAYWORKS_REPOS = frozenset(
     {
         "simonbarnett/ce-priority",
@@ -1309,8 +1312,10 @@ _CE_PRIORITY_DAYWORKS_REPOS = frozenset(
     }
 )
 _CE_PRIORITY_DAYWORKS_TASK_RE = re.compile(
-    r"(?i)\bday\s*works\b|\bdayworks\b|\bWP\s*[34]\b|\bGates?\s*[C-G]\b"
-    r"|\bliving\s+(?:fr|umbrella)\b|\btracking\s+umbrella\b"
+    r"(?i)\bliving\s+(?:fr|umbrella)\b|\btracking\s+umbrella\b"
+    # Live gate range C-G only (not "Gates D-G" listed as out-of-scope on parked specs).
+    r"|\bGates?\s*C\s*-\s*G\b"
+    r"|\bGate\s+[C-G]\b"
 )
 
 # FR #4422: hard unpins — survive title/body cues that wrongly re-pin (bobiverse must
@@ -1443,6 +1448,11 @@ def infer_require_machine(
     for rx, mid in _REQUIRE_MACHINE_BODY_CUES:
         if rx.search(body_blob) or rx.search(title_blob):
             return mid
+    # FR #4745: harvest-lesson / lesson(<book>) tips never inherit Day Works / UAT
+    # auto-pin (docs/skill-only MRB). Explicit needs-<machine> labels and dedicated
+    # require_machine lines already returned above.
+    if is_harvest_lesson_pr(title=str(title or ""), labels=labs):
+        return ""
     # FR #4427: ce-priority Day Works living/umbrella FRs and UAT -> DEV1 only.
     if repo_l in _CE_PRIORITY_DAYWORKS_REPOS:
         task_blob = f"{title_blob}\n{body_blob}"
@@ -1483,9 +1493,11 @@ def row_require_machine(row: dict) -> str:
         labels = [labels]
     # FR #4512: bobiverse never trusts a persisted text-cue stamp — re-infer
     # (labels / dedicated pin / hard pin only). Stale ionos stamps clear.
-    if repo_l == _BOBIVERSE_REPO_L:
+    # FR #4745: harvest-lesson rows re-infer too (sticky Day Works DEV1 must not stick).
+    title_s = str(row.get("title") or "")
+    if repo_l == _BOBIVERSE_REPO_L or is_harvest_lesson_pr(title=title_s, labels=labels):
         return infer_require_machine(
-            title=str(row.get("title") or ""),
+            title=title_s,
             body=str(row.get("body") or ""),
             labels=tuple(str(x) for x in labels),
             line=str(row.get("line") or ""),
@@ -2274,8 +2286,13 @@ def _stamp_require_machine(row: dict, claim: GitClaim | None = None) -> None:
     req = infer_require_machine(
         title=title, body=body, labels=labels, line=line, repo=repo, ident=ident
     )
+    harvest_lesson = bool(
+        (claim and claim.harvest_lesson)
+        or is_harvest_lesson_pr(title=title, labels=labels)
+    )
     # FR #4512: bobiverse — clear stale text-cue stamps when inference is empty.
-    if repo_l == _BOBIVERSE_REPO_L:
+    # FR #4745: harvest-lesson rows clear sticky DEV1 (or other) stamps the same way.
+    if repo_l == _BOBIVERSE_REPO_L or harvest_lesson:
         if req:
             row["require_machine"] = req
         elif stamped and stamped not in {"*", "any", "none", "-"}:
