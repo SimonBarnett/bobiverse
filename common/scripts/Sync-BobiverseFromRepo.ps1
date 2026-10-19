@@ -10,8 +10,11 @@
   2) git fetch + merge --ff-only origin/main, only while on main (best-effort: never destroys local edits/commits/branches,
      never blocks service start, falls back to the installed files). FR #1157: if HEAD is on another branch but the tree is
      clean and either HEAD is already an ancestor of origin/main or that branch's upstream was deleted (gone), auto
-     ``git switch main`` then ff - so a leftover fix/* after hotpatch cannot strand robocopy on a stale tip. Active agent
-     work (dirty tree, never-pushed branch, or unique commits with a live upstream) is left alone. Opt out:
+     ``git switch main`` then ff - so a leftover fix/* after hotpatch cannot strand robocopy on a stale tip. FR #4895:
+     if dirty vs HEAD but every dirty tracked path already equals ``origin/main`` (hotpatch onto a stale fr tip while
+     other files lag), ``git switch -f main`` then ff - never force over unique dirty or untracked agent work. Active
+     agent work (unique dirty tree, never-pushed branch, or unique commits with a live upstream) is left alone. Seats
+     must not leave the install root on a feature branch; FR/MRB work uses linked job worktrees. Opt out:
      BOBIVERSE_KEEP_BRANCH=1 (or BOBIVERSE_NO_UPDATE=1).
   3) Robocopy scripts + third_party + skills + docs into InstallRoot (never deleting); copy VERSION
   Skips when BOBIVERSE_NO_UPDATE=1. For -Product airc, also skips when config\airc.json
