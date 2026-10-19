@@ -296,6 +296,7 @@ routes to bobiverse via the split rule.
 - Synthetic FIX ids (#main/#main-red) must match ID_RE and survive _coerce_row, or enqueue_main_red writes then vanishes on load_queue.
 - After agent 402 usage balance exhausted, keep out-of-fuel held until BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S and grok pct above BOB_WORKER_OUT_OF_FUEL_CLEAR_FLOOR_PCT (or turn_ended); never clear on soft available with pct at or below the floor.
 - Intake harvest de-dupe: an abbreviated restatement of an on-main bullet (shared lead-in + env-name stems like MIN_HOLD_S for BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S) is lesson_already_covered — never open a second tip (FR #4865 / tip #4863).
+- After FR #4865-style intake.py edits, run pytest-ascii-bom / test_fr3975 / test_mrb3569 locally before merge; comments must be ASCII (--- not em-dash). Confirm gh pr merge --auto actually enables autoMergeRequest before DONE when checks may still be pending.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
