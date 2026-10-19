@@ -50,7 +50,7 @@ if (-not $outbox) { $outbox = '<outbox path from first instruction or FROM [outb
 
 Keep replies short (one line, under 400 characters). Anything addressed to another channel or a nick is dropped by the program. Never include a secret.
 
-* **CAST IRON (FR #4843):** never switch branches or commit in the install root (<ai root>\bob). Create a linked job worktree (git worktree add -b fr-N ...) and work there. An install root left on r-* means every new seat reads unreviewed skills.
+* **CAST IRON (FR #4843):** never switch branches or commit in the install root (<ai root>\bob). Create a linked job worktree (git worktree add -b fr-N ...) and work there. An install root left on fr-* means every new seat reads unreviewed skills.
 
 ## What you may touch
 
