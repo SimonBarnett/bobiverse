@@ -295,6 +295,7 @@ routes to bobiverse via the split rule.
 - Jeeves MRB author_seat: stamp from the DONE FR whose result is this PR URL (fr_implementer_seat_from_doc pr_id=); never from a Refs FR that produced a different PR
 - Synthetic FIX ids (#main/#main-red) must match ID_RE and survive _coerce_row, or enqueue_main_red writes then vanishes on load_queue.
 - After agent 402 usage balance exhausted, keep out-of-fuel held until BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S and grok pct above BOB_WORKER_OUT_OF_FUEL_CLEAR_FLOOR_PCT (or turn_ended); never clear on soft available with pct at or below the floor.
+- FR #4857/#4649: behind-but-MERGEABLE product tip PASS at head SHA; post MRB PASS board then mrb_merge_gate and gh pr merge --auto --merge; do not fold when CLEAN
 
 ## Harvest digest (lessons audit 2026-10-06)
 
