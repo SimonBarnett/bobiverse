@@ -36,6 +36,8 @@ DEFAULT_SHELL = os.environ.get("COMSPEC") or "cmd.exe"
 IRC_SAFE_PAYLOAD = 350
 PSB64_MAX_CHARS = 24_000
 SHELL_OUTPUT_MAX_BYTES = 64_000
+# FR #4790: max out/err IRC lines per shell job before truncate marker (DONE still sent).
+SHELL_REPLY_MAX_IRC_LINES = 48
 SHELL_TIMEOUT_S = 120.0
 # FR #2632: per-Query pending shell commands (beyond the one in flight). Overflow
 # still fail-closes with busy DONE so Wait never hangs without a DONE (#2612).
@@ -1847,20 +1849,52 @@ def format_shell_replies(
     outcome: ShellOutcome,
     *,
     irc_limit: int = IRC_SAFE_PAYLOAD,
+    max_irc_lines: int = SHELL_REPLY_MAX_IRC_LINES,
 ) -> list[str]:
-    """Stable output contract: ordered out/err seq lines + terminal DONE (FR #75)."""
+    """Stable output contract: ordered out/err seq lines + terminal DONE (FR #75).
+
+    FR #4790: cap out/err IRC lines so base64 dumps cannot flood Ergo; emit an
+    ``err`` truncate marker (lines omitted) then DONE. Controllers should use
+    file fetch / PUT for large binaries instead of PRIVMSG base64.
+    """
     lines: list[str] = []
     seq = 0
+    truncated = False
+    omitted = 0
+    max_body = max(1, int(max_irc_lines))
+
+    def count_pieces(text: str) -> int:
+        total = 0
+        parts = text.splitlines() if text else []
+        if text and not parts:
+            parts = [""]
+        for part in parts:
+            rest = part if part else ""
+            while True:
+                total += 1
+                room = max(8, irc_limit - 20)
+                rest = rest[room:]
+                if not rest:
+                    break
+        return total
 
     def emit(stream: str, label: str) -> None:
-        nonlocal seq
+        nonlocal seq, truncated, omitted
         parts = stream.splitlines() if stream else []
         if stream and not parts:
             parts = [""]
-        for part in parts:
-            # Reserve prefix room using a provisional seq width, then emit.
+        for pi, part in enumerate(parts):
             body = part
-            while True:
+            first = True
+            while first or body:
+                first = False
+                if len(lines) >= max_body:
+                    truncated = True
+                    # current remainder + remaining parts
+                    omitted += count_pieces(body)
+                    for later in parts[pi + 1 :]:
+                        omitted += count_pieces(later)
+                    return
                 seq += 1
                 prefix = f"{label} id={outcome.job_id} seq={seq} "
                 room = max(8, irc_limit - len(prefix))
@@ -1870,7 +1904,20 @@ def format_shell_replies(
                     break
 
     emit(outcome.stdout, "out")
-    emit(outcome.stderr, "err")
+    if not truncated:
+        emit(outcome.stderr, "err")
+    elif outcome.stderr:
+        omitted += count_pieces(outcome.stderr)
+    if truncated:
+        seq += 1
+        marker = (
+            f"err id={outcome.job_id} seq={seq} "
+            f"output truncated, {omitted} lines omitted; "
+            f"use file fetch / PUT (FR #4790)"
+        )
+        if len(marker) > irc_limit:
+            marker = marker[: irc_limit - 3] + "..."
+        lines.append(marker)
     lines.append(f"DONE id={outcome.job_id} exit={outcome.exit_code}")
     return lines
 

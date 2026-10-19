@@ -56,3 +56,8 @@ PRIVMSG marchhare_console :UPDATE airc 0.1.20
 - Prefer `UPDATE airc` over free-form `msiexec` / `Restart-Service Airc` mid-playbook — the transport dies if you kill airc yourself.
 - LocalSystem ConsoleHome must not be `C:\Users\Default\.airc` (see post-install §8b).
 - Reserved nick + wrong GUID → oper `PASSWD {machine}_console <guid>` then restart Airc.
+
+## Large replies / flood (FR #4790)
+
+Shell replies are capped at `SHELL_REPLY_MAX_IRC_LINES` IRC `out`/`err` lines. Oversized output ends with `err ... output truncated, N lines omitted; use file fetch / PUT (FR #4790)` then `DONE`. Do **not** dump multi-KB base64 over PRIVMSG (Ergo fakelag will kill the console). Use `PUT` chunks / allowlisted HTTPS / a share for large files. The service paces PRIVMSG with a token bucket (`FLOOD_RATE_PER_S` / `FLOOD_BURST`); send failures force reconnect.
+

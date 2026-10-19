@@ -81,3 +81,8 @@ Generalised from 18 harvested lessons that never reached this book (audit for FR
 - **FR #4014:** no hardcoded `#ionos` in airc installer/console warnings; unregistered shop logs `#<machine> is not registered; joining #wonderland`)
 - **FR #4068:** Command first `out` waits for full batch capture; `FLOOD_S` (0.35s) * replies dominates the tail; prefer `cmd: dir`; budget TimeoutSec = shell + replies*0.35; log `shell-done`)
 - **FR #4067:** authorised shell/job/pipe/update logs `auth-allow nick=… account=… channel=… mode=+q|+a|+o|+h action=…` (symmetric with `auth-deny`); bare `INFO shell from=` is gone)
+
+## Large PRIVMSG bursts / flood disconnect (FR #4790)
+
+Symptom: console goes silent mid base64 dump; later STATUS gets no reply. Cause: Ergo fakelag / excess flood after hundreds of Query lines. Fix on tip: reply-line cap + truncate marker + token-bucket send pacing; reconnect on send failure. Controllers must not paste multi-KB base64 into shell stdout --- use PUT/file fetch.
+
