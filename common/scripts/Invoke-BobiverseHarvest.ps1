@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
-  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
+  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
 
@@ -493,6 +493,48 @@ if (Test-HarvestLessonMrbPassLoop -SummaryText $Summary -LessonLines $Lesson) {
     Write-Host "SKIPPED harvest lesson-MRB PASS loop (FR #4357): not filing another harvest-lesson tip for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
+
+# FR #4780: MRB/review of a harvest-lesson (or skills-only) PR must not open a new
+# harvest-lesson tip. Honesty-box for reviewing lessons is the review itself.
+# Also skip lessons whose subject is reviewing / harvesting / closing lessons, and
+# dedup against open+closed harvest-lesson PRs from the last 24h (any seat).
+function Test-HarvestLessonReviewLoop([string]$SummaryText, [string[]]$LessonLines) {
+    $joined = (@([string]$SummaryText) + @($LessonLines)) -join "`n"
+    $isLessonContext = (
+        ($joined -match '(?i)harvest[- ]lesson') -or
+        ($joined -match '(?i)lesson\(harvest') -or
+        ($joined -match '(?i)docs/mrb') -or
+        ($joined -match '(?i)skills[- ]only') -or
+        ($joined -match '(?i)Harvested[- ]lessons') -or
+        ($joined -match '(?i)light\s+triage')
+    )
+    $isMrbReview = (
+        ($joined -match '(?i)\bMRB\b') -or
+        ($joined -match '(?i)\bDONE\s+(?:PASS|FAIL)\b') -or
+        ($joined -match '(?i)CLOSED\s+not[- ]useful') -or
+        ($joined -match '(?i)CLOSED\s+already[- ]covered') -or
+        ($joined -match '(?i)CLOSED\s+wrong[- ]path') -or
+        ($joined -match '(?i)FAIL[- ]supersede') -or
+        ($joined -match '(?i)\breview(?:ing|ed|s)?\b')
+    )
+    $isMetaSubject = (
+        ($joined -match '(?i)review(?:ing|ed|s)?\s+(?:harvest[- ]?lesson|lesson\s+tips?|lessons?\b)') -or
+        ($joined -match '(?i)(?:harvest(?:ing)?|clos(?:e|ing)|FAIL[- ]supersede)\s+(?:harvest[- ]?lesson|lesson\s+tips?|lessons?\b)') -or
+        ($joined -match '(?i)(?:about|when)\s+(?:reviewing|harvesting|closing)\s+lessons?') -or
+        ($joined -match '(?i)do not (?:harvest|open|land|merge)\s+a\s+(?:new|second)\s+(?:harvest[- ]?lesson|lesson)\s+(?:tip|PR|bullet)') -or
+        ($joined -match '(?i)second\s+Harvested[- ]lessons\s+bullet') -or
+        ($joined -match '(?i)tip[- ]?loop') -or
+        ($joined -match '(?i)process\s+meta') -or
+        ($joined -match '(?i)lesson[- ]review')
+    )
+    if ($isMetaSubject) { return $true }
+    if ($isLessonContext -and $isMrbReview) { return $true }
+    return $false
+}
+if (Test-HarvestLessonReviewLoop -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest lesson-review loop (FR #4780): not filing lesson tip after reviewing/closing lessons for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
 # FR #4288: when -ExistingPrUrl is set (or Summary/Lesson already cites a github.com/.../pull/N),
 # fail-closed - do not open a second lesson tip on the product (or fleet) repo. Durable work
 # lives on that PR (FR #1812 linked_existing_pr). Product -Repo -> harvest-agent-skills without
@@ -560,13 +602,15 @@ if (Test-HarvestClosedDuplicateLessonLoop -SummaryText $Summary -LessonLines $Le
 
 # FR #3824: if an open harvest-lesson PR from this seat already carries the same
 # lesson text, skip filing (intake also links open twins; this avoids a second POST).
+# FR #4780: also dedup against open AND closed harvest-lesson PRs from the last 24h
+# (any seat) so MRB reviews of lessons cannot re-file the same playbook tip.
 function Test-HarvestOpenLessonTwin {
     param(
         [string]$RepoName,
         [string[]]$LessonLines,
         [string]$Seat
     )
-    if (-not $Seat -or -not $RepoName) { return $false }
+    if (-not $RepoName) { return $false }
     $lessons = @(
         $LessonLines |
             ForEach-Object { ([string]$_).Trim() } |
@@ -577,18 +621,60 @@ function Test-HarvestOpenLessonTwin {
     if (-not $ghCmd) { return $false }
     try {
         $raw = & gh pr list --repo $RepoName --state open --label harvest-lesson --limit 40 --json title,body,url 2>$null
+        if ($raw) {
+            $prs = $raw | ConvertFrom-Json
+            if ($prs -and $Seat) {
+                $seatL = $Seat.ToLowerInvariant()
+                foreach ($pr in @($prs)) {
+                    $blob = ((([string]$pr.title) + "`n" + ([string]$pr.body))).ToLowerInvariant()
+                    $blob = ($blob -replace '\s+', ' ')
+                    $seatHit = $blob -match ("seat=`?" + [regex]::Escape($seatL))
+                    if (-not $seatHit) { continue }
+                    foreach ($L in $lessons) {
+                        $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
+                        if ($key -and $blob.Contains($key)) { return $true }
+                    }
+                }
+            }
+        }
+    } catch {
+        # fall through
+    }
+    return $false
+}
+
+function Test-HarvestRecentLessonDedup {
+    param(
+        [string]$RepoName,
+        [string[]]$LessonLines
+    )
+    if (-not $RepoName) { return $false }
+    $lessons = @(
+        $LessonLines |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ -and $_ -ne '(no new playbook line)' }
+    )
+    if (-not $lessons.Count) { return $false }
+    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $ghCmd) { return $false }
+    try {
+        $raw = & gh pr list --repo $RepoName --state all --label harvest-lesson --limit 50 --json title,body,url,createdAt,closedAt 2>$null
         if (-not $raw) { return $false }
         $prs = $raw | ConvertFrom-Json
         if (-not $prs) { return $false }
-        $seatL = $Seat.ToLowerInvariant()
+        $cutoff = (Get-Date).ToUniversalTime().AddHours(-24)
         foreach ($pr in @($prs)) {
+            $created = $null
+            try { $created = [datetime]::Parse([string]$pr.createdAt).ToUniversalTime() } catch { continue }
+            if ($created -lt $cutoff) { continue }
             $blob = ((([string]$pr.title) + "`n" + ([string]$pr.body))).ToLowerInvariant()
             $blob = ($blob -replace '\s+', ' ')
-            $seatHit = $blob -match ("seat=`?" + [regex]::Escape($seatL))
-            if (-not $seatHit) { continue }
             foreach ($L in $lessons) {
                 $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
+                if ($key.Length -lt 40) { continue }
                 if ($key -and $blob.Contains($key)) { return $true }
+                $short = $key.Substring(0, [Math]::Min(80, $key.Length))
+                if ($short.Length -ge 40 -and $blob.Contains($short)) { return $true }
             }
         }
     } catch {
@@ -596,7 +682,6 @@ function Test-HarvestOpenLessonTwin {
     }
     return $false
 }
-
 
 # FR #4371 / #4099 / #4419: GitHub auto-links Closes #N / Fixes #N in PR bodies. Harvest tip
 # narratives that mention "Closes #4363" close product FRs. Replace the keyword with
@@ -746,6 +831,10 @@ if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
 # FR #3824: client-side skip when an open tip from this seat already has the lesson.
 if (Test-HarvestOpenLessonTwin -RepoName $Repo -LessonLines $Lesson -Seat $seatNick) {
     Write-Host "SKIPPED harvest open lesson twin (FR #3824): open harvest-lesson PR from seat=$seatNick already carries this lesson"
+    return
+}
+if (Test-HarvestRecentLessonDedup -RepoName $Repo -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest recent lesson dedup (FR #4780): open/closed harvest-lesson PR in last 24h already carries this lesson"
     return
 }
 
