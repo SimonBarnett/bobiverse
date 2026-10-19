@@ -8,7 +8,7 @@ description: >
 github: https://github.com/SimonBarnett/bobiverse
 ---
 
-# Harvest (honesty box) — bobiverse
+# Harvest (honesty box) --- bobiverse
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
@@ -59,7 +59,7 @@ lessons table; **this** `harvest` skill is the honesty-box report route
   `docs/post-install.md`, and `docs/skill-harvest-log.md`.
 
 Do **not** harvest Day Works product, CE Priority DBA, or generic formprep
-lessons here — route those to their owning repos.
+lessons here --- route those to their owning repos.
 
 ## Report route (strict order)
 
@@ -106,12 +106,12 @@ Full steps: skill `harvest-agent-skills` section **Worker: consolidate open skil
 
 ### Intake must link an existing harvest PR (FR #1812 / harvest #2013)
 
-When intake `kind: skill|harvest` (or a harvest summary) already names a GitHub **pull** URL in the title/body, the intake host must **`linked_existing_pr`** — comment on / attach that PR — and must **not** open a second fallback `label:skill` issue. Log `draft_pr_error` when draft-PR creation fails. `Invoke-BobiverseHarvest` / `issue_skip_fr_reason` should treat via-intake+skill "PR opened" receipts as `harvest_pr_summary` (skip re-offer as product FR). Product code: PR #2012.
+When intake `kind: skill|harvest` (or a harvest summary) already names a GitHub **pull** URL in the title/body, the intake host must **`linked_existing_pr`** --- comment on / attach that PR --- and must **not** open a second fallback `label:skill` issue. Log `draft_pr_error` when draft-PR creation fails. `Invoke-BobiverseHarvest` / `issue_skip_fr_reason` should treat via-intake+skill "PR opened" receipts as `harvest_pr_summary` (skip re-offer as product FR). Product code: PR #2012.
 
 Payload fields: `kind` (`issue` | `fr` | `skill` | `harvest`), **`repo`
-(required `owner/name` — never omit; no default)**, `title`, `body`, optional
+(required `owner/name` --- never omit; no default)**, `title`, `body`, optional
 `files[]` (`path` + `content`, small), `source` (machine, agent/tool, skill
-book + version), optional `contact`, `idempotency_key`. **No auth required** —
+book + version), optional `contact`, `idempotency_key`. **No auth required** ---
 any skill user may POST. Optional fleet intake key `X-Bob-Intake-Key` /
 `BOB_INTAKE_KEY` only when the host enables keyed mode; do not invent a secret
 requirement. Never commit secrets.
@@ -139,9 +139,9 @@ PowerShell:
 # (class of tip #4206 after MRB #4204; pluralise process[- ]loops?).
 
 # (belong in bobiverse-bob-job-mrb). Intake returns lesson_already_covered when harvest +
-# job-mrb already carry that CAST IRON routing — never open another lesson(harvest) twin.
+# job-mrb already carry that CAST IRON routing --- never open another lesson(harvest) twin.
 # FR #2991: FAIL-supersede + thin already-covered / close-thin-twin restatements (no job-mrb
-# process cue) also skip — tip #2990 class after #2988.
+# process cue) also skip --- tip #2990 class after #2988.
 # FR #4231: tip-loop meta / only-restate Thin FAIL-supersede already-on-main also skip for
 # any -Book (including harvest-agent-skills; class of a-search#1839).
 # FR #4308: also skip thinner tip + durable lesson already on main (a-search#1980/#2283;
@@ -152,10 +152,10 @@ PowerShell:
 # "do not append a second copy under harvest" (tip #3826 after #3825 missed belong(s) in).
 # FR #3004: default -Book harvest yields to keyword-inferred product books (bob-worker /
 # fleet-ops / job-mrb); if the owning skill already has the lesson, intake returns
-# lesson_already_covered — never open lesson(harvest) twins like #3001-#3003 after #2997.
+# lesson_already_covered --- never open lesson(harvest) twins like #3001-#3003 after #2997.
 # MRB #2973: bare "FAIL-supersede" in a summary alone is not enough to re-route; a process
 # cue is required so real product lessons still open under harvest.
-# FR #3824: one harvest per seat+lesson — client skips when an open harvest-lesson PR from
+# FR #3824: one harvest per seat+lesson --- client skips when an open harvest-lesson PR from
 # this seat already carries the same lesson; idempotency_key prefers seat+normalized lesson
 # (Summary drift / DONE retries must not mint a second tip). Intake claims state=filing early,
 # settles filing/open_lesson_twin, and links open seat+lesson twins instead of opening #3823.
@@ -174,7 +174,7 @@ repo regex is allowed; non-SimonBarnett owners stay denied unless listed in
 HTTP 403 `repo_not_allowed`, payloads are **DROPPED** into
 `report-outbox/dropped/` (or the matching outbox `dropped/`) so Flush stays
 clean. Transient errors stay KEPT for retry. New Plan products under
-`SimonBarnett/*` need **no** per-repo allowlist edit — after an allow-*rule*
+`SimonBarnett/*` need **no** per-repo allowlist edit --- after an allow-*rule*
 change merges, **ionos** must Sync/compose ircJeeves so live intake picks it up
 (FR #3117 / #3122). Queue suppress/prioritise with `!ignore` / `!focus`.
 
@@ -184,7 +184,7 @@ Prefer `gh` and repo scripts over free-form reasoning.
 
 | `kind` | Meaning | Labels from intake |
 |--------|---------|--------------------|
-| `issue` | Bug / gap | `via-intake` (do **not** stamp `needs-mrb1` — offer hallucination) |
+| `issue` | Bug / gap | `via-intake` (do **not** stamp `needs-mrb1` --- offer hallucination) |
 | `fr` | Feature request | `via-intake`, `feature-request` (do **not** stamp `needs-mrb1`) |
 | `skill` / `harvest` | Skill harvest files | `via-intake`, `skill` |
 
@@ -214,13 +214,13 @@ routes to bobiverse via the split rule.
 - Put secrets, tokens, keys, or personal paths in skills; use placeholders.
 - End a turn with a new/fixed skill only in chat or a local folder without a
   PR, issue, intake receipt or `harvest-outbox/` entry.
-- Add a separate `/bob/v1/harvest` endpoint — harvest is intake with the
+- Add a separate `/bob/v1/harvest` endpoint --- harvest is intake with the
   appropriate `kind`.
 
 ## Harvested lessons (intake)
 - FR #4780: MRB/review of a harvest-lesson (or skills-only) tip must not open another lesson tip (honesty-box is the review); skip reviewing/harvesting/closing-lessons meta; 24h dedup open+closed harvest-lesson PRs (Test-HarvestLessonReviewLoop / Test-HarvestRecentLessonDedup).
 - FR #4297: dirty install ff-block leaves flat Invoke-BobiverseHarvest.ps1 lagging tip; Sync tip-overlays harvest+intake via Sync-BobiverseHarvestScriptsFromOrigin (class of FR #2581); prefer common\scripts when present; ComposeOnly/service restart refreshes flat copies.
-- FR #4357: PASS of a harvest-lesson / docs/mrb MRB (re-offer + merge origin/main / re-arm / DONE PASS process cues) skips filing another tip (SKIPPED harvest lesson-MRB PASS loop) — stops a-search tip flood after light-triage PASS.
+- FR #4357: PASS of a harvest-lesson / docs/mrb MRB (re-offer + merge origin/main / re-arm / DONE PASS process cues) skips filing another tip (SKIPPED harvest lesson-MRB PASS loop) --- stops a-search tip flood after light-triage PASS.
 - FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (SKIPPED; linked to that PR). Product -Repo -> harvest-agent-skills without ExistingPrUrl stays intentional (FR #3189); do not redirect product playbooks to bobiverse harvest.
 - Owner-missing harvest holds titled `harvest: hold for …` are SKIP_FR even with empty labels (FR #3658 / #3317 carve-out from #1682); `gh_filer.ensure_labels` creates `owner-missing` before issue create so unlabeled retry cannot re-offer the hold.
 
@@ -230,7 +230,7 @@ routes to bobiverse via the split rule.
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
-- FR #3824: one harvest per seat+lesson — skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
+- FR #3824: one harvest per seat+lesson --- skip/link when an open harvest-lesson PR from the same seat already carries the same lesson text; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
 - FR #4308: FAIL-supersede skip also matches thinner tip + durable lesson already on main (a-search#1980/#2283 tip-loop class; not contiguous thin harvest tip)
 - FR #4484: FAIL-supersede skip also matches restates main and admit main already has (a-search#3470 class; those phrases are not already-on-main / second-copy / job-mrb)
@@ -238,7 +238,7 @@ routes to bobiverse via the split rule.
 - Harvest pytest OutboxDir: always use tmp_path / harvest-outbox; never hardcode D:/bobfleet job paths (hosts without D: fail New-Item).
 - Product docs/**/*.md must decode as UTF-8; use repo_layout.REPO not Legacy ROOT for rglob; lone cp1252 0x97 breaks harvest-log readers
 - When appending skill-harvest-log entries, write a real trailing newline byte; a literal backslash-n fails endswith(b'\n') harvest-log gates on CI
-- BOM-less Install-*.ps1 / intake.py must stay pure ASCII in comments too (arrow/emdash/ellipsis); v0.1.31 tip went red after #3907/#3914/#3960 landed those chars — replace with -> / - / ... before merge.
+- BOM-less Install-*.ps1 / intake.py must stay pure ASCII in comments too (arrow/emdash/ellipsis); v0.1.31 tip went red after #3907/#3914/#3960 landed those chars --- replace with -> / - / ... before merge.
 - WinPS 5.1 Fetch/pack downloads: set ProgressPreference SilentlyContinue; prefer curl.exe --max-time over Invoke-WebRequest and tar/ZipFile over Expand-Archive; give nssm a non-nssm.cc mirror (archive.org) when primary 503s
 - MSI Install-Bob must Start-Service ircBob (bounded WaitForStatus) before TipForm launch and pass -SkipServiceRestart / BOBIVERSE_NO_SERVICE_RESTART=1 so Start-BobFleetTray does not Restart-BobTrayService during the CA; Invoke-BobTrayServiceControl skips START_PENDING/STOP_PENDING.
 - When Pack/allow-list adds a script (Fetch-Nssm), update CLIENT_REMAINING_FILES + KEEP_SCRIPTS counts in the same turn as the allow-list change so fr3514 pack-then-client stays green
@@ -246,7 +246,7 @@ routes to bobiverse via the split rule.
 - Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
 - needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
 - Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
-- !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe — use same max_lost threshold for focus as queue (#4408)
+- !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe --- use same max_lost threshold for focus as queue (#4408)
 - FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
 - BOM-less ASCII gates for Install-Airc*.ps1 / Ensure-BobTrayRunning.ps1 / intake.py must run in CI on every PR (pytest-ascii-bom.yml); comment-only Unicode merges red main when only pytest-gitclaim runs
 - A fixed character window on a harvest digest bullet fails when an earlier clause grows. Measure the needle offset and widen the pin; do not rewrite the skill bullet when the phrases are still in the same sentence.
@@ -268,9 +268,9 @@ routes to bobiverse via the split rule.
 - fr1518 gated-empty fixtures for bobiverse must use a dedicated require_machine body pin (not a raw stamp); queue_flow._gate_bucket must call row_require_machine so buckets match offer gates after FR #4512
 - harvest-lesson MRB on common/.grok/skills/harvest/SKILL.md: when origin/main also appended a Harvested-lessons bullet, resolve CONFLICTING with keep-both then PASS @ head SHA
 - Re-offered onefile seat-cap double-count after FR #4458 merged: Prefer ExistingPrUrl #4461; close twin issue; file install-behind if live box still shows cap.
-- When intake reports live FR #4458 onefile cap double-count but tip already has #4461: close the lag FR citing PR #4461 and Sync/recompose the install (tray/worker restart only) — never re-open or re-implement the cap dedupe
+- When intake reports live FR #4458 onefile cap double-count but tip already has #4461: close the lag FR citing PR #4461 and Sync/recompose the install (tray/worker restart only) --- never re-open or re-implement the cap dedupe
 - issues closed must stamp ACC state=closed and move closed ACC to done on seat depart; DONE status=missing still calls offer_after_done (one-open-job stays inside the helper)
-- enqueue_fix_ci must refuse cancelled-only rollups and shared-suite (test-and-synth) failures when main is also red — bulk cancel / helper breakage must not flood per-tip FIX.
+- enqueue_fix_ci must refuse cancelled-only rollups and shared-suite (test-and-synth) failures when main is also red --- bulk cancel / helper breakage must not flood per-tip FIX.
 - A merge-on-green 405 or DIRTY head must leave the retry list for that SHA and queue one conflict-fix job; do not keep the row pending or the sweep will PUT-merge forever.
 - A GIVEUP whose reason contains self-mrb does not increment giveup_count or stamp needs_human. The seat is added to author_seats so only that seat is blocked; a fresh seat is still offered the MRB.
 - When enqueue_from_done races !resync, fall back to done[] PASS + auto_merge tip as pass_sha for ci-wait; never re-offer that MRB to the same DONE nick.
@@ -278,7 +278,7 @@ routes to bobiverse via the split rule.
 - jeeves: when a FIX pull merges or closes, drop unaccepted FIX and finish accepted FIX (idle digest seat) so the seat is not stuck NAK busy; resync/purge_dead also prune FIX absent from open-pull set
 - resync_from_github must not read mergeable/mergeable_state from GET /pulls?state=open (those keys are absent); enrich each list PR missing mergeable* via GET /pulls/N before the DIRTY FIX branch (FR #4683 / #4679)
 - Harvest-lesson tips that insert prose inside a mermaid flowchart are FAIL: close the tip, land the bullet under Harvested MRB discipline (or the correct section) in one fix PR, then DONE FAIL.
-- After merge-on-green parks ci_failed, tip advance + re-fail needs refresh_ci_failed_tips / handle_check_run_event — do not wait for !resync; keep pass_sha in _coerce_row
+- After merge-on-green parks ci_failed, tip advance + re-fail needs refresh_ci_failed_tips / handle_check_run_event --- do not wait for !resync; keep pass_sha in _coerce_row
 - needs_human after GIVEUP: accept issue_comment webhooks; repo-owner comment after giveup_ts clears stamp (not seat GIVEUP/ACK/DONE/MRB-board bodies).
 - merge-on-green requeue_sha: if the newest MRB PASS board already names the live head, retarget the pending row to that SHA and do not re-queue MRB. A DIRTY head then uses the conflict FIX path; a head with no PASS board still re-queues MRB.
 - When the newest MRB board is FAIL at the live head and no mrb-N-fix PR is open, queue FIX for that pull. Do not re-offer the MRB to the seat that posted the FAIL.
@@ -295,7 +295,7 @@ routes to bobiverse via the split rule.
 - Jeeves MRB author_seat: stamp from the DONE FR whose result is this PR URL (fr_implementer_seat_from_doc pr_id=); never from a Refs FR that produced a different PR
 - Synthetic FIX ids (#main/#main-red) must match ID_RE and survive _coerce_row, or enqueue_main_red writes then vanishes on load_queue.
 - After agent 402 usage balance exhausted, keep out-of-fuel held until BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S and grok pct above BOB_WORKER_OUT_OF_FUEL_CLEAR_FLOOR_PCT (or turn_ended); never clear on soft available with pct at or below the floor.
-- Intake harvest de-dupe: an abbreviated restatement of an on-main bullet (shared lead-in + env-name stems like MIN_HOLD_S for BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S) is lesson_already_covered — never open a second tip (FR #4865 / tip #4863).
+- Intake harvest de-dupe: an abbreviated restatement of an on-main bullet (shared lead-in + env-name stems like MIN_HOLD_S for BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S) is lesson_already_covered --- never open a second tip (FR #4865 / tip #4863).
 
 ## Harvest digest (lessons audit 2026-10-06)
 

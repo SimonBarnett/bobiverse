@@ -792,7 +792,7 @@ def lesson_covered_by_existing_md(existing_md: str, lesson: str) -> bool:
             if _shorter_lesson_covered_by_longer(lesson, bullet):
                 return True
         # Do not drop a more-specific (longer) new lesson when main only has
-        # a short form — that is a real upgrade, not a twin.
+        # a short form --- that is a real upgrade, not a twin.
     return False
 
 
