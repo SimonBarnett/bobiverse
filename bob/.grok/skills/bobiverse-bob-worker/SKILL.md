@@ -240,3 +240,4 @@ Generalised from 21 harvested lessons that never reached this book (audit for FR
 - A quiet Cursor store.db gap is not turn_ended while the agent transcript still ends on tool_use or a user line; release the seat only after that turn's final assistant text.
 - Harvest into a product -Repo must not ADD bob/.grok/skills/bobiverse-* stubs when cues name bobiverse-bob-worker; SKIP or route to SimonBarnett/bobiverse (FR #3299).
 - Done-miss on FIX mid-fold: GIVEUP FIX owner/repo#N immediately (never invent DONE); leave CONFLICTING worktree note so next seat can resume keep-both fold
+- Cursor Connection stalled leaves ACK open forever unless turn_ended status=error closes the turn and ack_stale_s fires !bored reason ack-stale despite release_gen; cover both with FakeClock tests before MRB PASS
