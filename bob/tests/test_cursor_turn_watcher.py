@@ -18,7 +18,10 @@ def _chat(root, name="chat1", born=None):
     f = d / "store.db"
     f.write_bytes(b"x")
     if born is not None:
+        # FR #4754: on Windows CursorTurnWatcher._bind uses directory
+        # st_mtime/st_ctime only; utime store.db alone leaves dir born ≈ now.
         os.utime(f, (born, born))
+        os.utime(d, (born, born))
     return d
 
 
