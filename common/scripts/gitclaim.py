@@ -2145,12 +2145,15 @@ def drain_stand_down(home: Path) -> list[dict]:
         return []
 
 
-def fr_implementer_seat_from_doc(doc: dict, repo: str, refs) -> str:
+def fr_implementer_seat_from_doc(doc: dict, repo: str, refs, pr_id: str = "") -> str:
     """FR #593 / #227: seat nick that implemented linked FR(s), if known.
 
     Looks at accepted/done FR rows matching ``repo`` + ``refs`` (``#N``), then
     unaccepted FR rows (rare). Used when a PR-opened webhook creates an MRB
     without going through DONE FR (which already stamps author_seat).
+
+    FR #4854: when ``pr_id`` is set, prefer an FR whose result/url is that pull,
+    and never return a seat from an FR whose result is a different pull (Refs noise).
     """
     ref_set = set()
     if isinstance(refs, str):
@@ -2164,6 +2167,46 @@ def fr_implementer_seat_from_doc(doc: dict, repo: str, refs) -> str:
         ref_set.add(s)
     if not ref_set or not repo:
         return ""
+    want_pr = _norm_row_id(pr_id) if pr_id else ""
+
+    def _seat_of(row: dict) -> str:
+        nick = str(
+            row.get("nick")
+            or row.get("done_by")
+            or row.get("implementer_seat")
+            or row.get("author_seat")
+            or ""
+        ).strip()
+        if nick and bobreport.parse_seat_nick(nick):
+            return canonical_worker_nick(nick) or nick
+        return ""
+
+    def _result_pr(row: dict) -> str:
+        url = str(row.get("url") or row.get("result") or "")
+        parsed = parse_github_pull_url(url)
+        if not parsed:
+            return ""
+        if _repo_key(parsed[0]) != _repo_key(repo):
+            return ""
+        return _norm_row_id(parsed[1])
+
+    # Pass 1 (FR #4854): FR whose result is this PR.
+    if want_pr:
+        for bucket in ("accepted", "done", "unaccepted"):
+            for row in doc.get(bucket) or []:
+                if str(row.get("repo") or "") != repo:
+                    continue
+                if str(row.get("task") or "").upper() != "FR":
+                    continue
+                if str(row.get("id") or "") not in ref_set:
+                    continue
+                if _result_pr(row) != want_pr:
+                    continue
+                seat = _seat_of(row)
+                if seat:
+                    return seat
+
+    # Pass 2: linked FR without a conflicting different-PR result.
     for bucket in ("accepted", "done", "unaccepted"):
         for row in doc.get(bucket) or []:
             if str(row.get("repo") or "") != repo:
@@ -2172,15 +2215,12 @@ def fr_implementer_seat_from_doc(doc: dict, repo: str, refs) -> str:
                 continue
             if str(row.get("id") or "") not in ref_set:
                 continue
-            nick = str(
-                row.get("nick")
-                or row.get("done_by")
-                or row.get("implementer_seat")
-                or row.get("author_seat")
-                or ""
-            ).strip()
-            if nick and bobreport.parse_seat_nick(nick):
-                return canonical_worker_nick(nick) or nick
+            other = _result_pr(row)
+            if want_pr and other and other != want_pr:
+                continue
+            seat = _seat_of(row)
+            if seat:
+                return seat
     return ""
 
 
@@ -2534,7 +2574,10 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
         if claim.harvest_lesson:
             implementer = claim.opened_by  # lesson PR author = opener, never a cited FR's implementer
         else:
-            implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
+            # FR #4854: pass pr_id so Refs to a different result PR cannot stamp author_seat.
+            implementer = fr_implementer_seat_from_doc(
+                doc, claim.repo, claim.refs, pr_id=claim.id
+            )
         for ref in claim.refs:
             _remove_unaccepted_tasks(doc, claim.repo, ref, {"FR", "PR", "UAT"})
         extra: dict[str, str] = {}
@@ -6195,6 +6238,8 @@ def mrb_author_extra_from_doc(doc: dict, claim: "GitClaim") -> dict[str, str]:
 
     Used by DONE FR enqueue, PR webhook, and resync re-add so a missing
     ``author_seat`` cannot leave the PR offerable to its own implementer.
+    FR #4854: opener is the DONE FR whose result is this PR URL, never a Refs
+    issue that produced a different PR.
     """
     if str(getattr(claim, "task", "") or "").upper() != "MRB":
         return {}
@@ -6204,28 +6249,32 @@ def mrb_author_extra_from_doc(doc: dict, claim: "GitClaim") -> dict[str, str]:
             seat = canonical_worker_nick(opener) or opener
             return {"author_seat": seat, "implementer_seat": seat}
         return {}
-    implementer = fr_implementer_seat_from_doc(doc, claim.repo, claim.refs)
+    # FR #4854: prefer DONE FR whose result is this PR, then refs that do not
+    # point at a different result PR (Refs noise must not stamp author_seat).
+    implementer = ""
+    pull_num = str(claim.id or "").lstrip("#")
+    pull_needle = f"/pull/{pull_num}"
+    for row in doc.get("done") or []:
+        if str(row.get("task") or "").upper() != "FR":
+            continue
+        url = str(row.get("url") or row.get("result") or "")
+        if pull_needle not in url:
+            continue
+        parsed = parse_github_pull_url(url)
+        if parsed and parsed[0] == claim.repo and _norm_row_id(parsed[1]) == _norm_row_id(claim.id):
+            seat = str(row.get("nick") or row.get("done_by") or "").strip()
+            if seat and bobreport.parse_seat_nick(seat):
+                implementer = canonical_worker_nick(seat) or seat
+                break
+        if claim.repo.lower() in url.lower():
+            seat = str(row.get("nick") or row.get("done_by") or "").strip()
+            if seat and bobreport.parse_seat_nick(seat):
+                implementer = canonical_worker_nick(seat) or seat
+                break
     if not implementer:
-        # Fall back: DONE FR that already named this pull URL.
-        pull_num = str(claim.id or "").lstrip("#")
-        pull_needle = f"/pull/{pull_num}"
-        for row in doc.get("done") or []:
-            if str(row.get("task") or "").upper() != "FR":
-                continue
-            url = str(row.get("url") or row.get("result") or "")
-            if pull_needle not in url:
-                continue
-            parsed = parse_github_pull_url(url)
-            if parsed and parsed[0] == claim.repo and _norm_row_id(parsed[1]) == _norm_row_id(claim.id):
-                seat = str(row.get("nick") or row.get("done_by") or "").strip()
-                if seat and bobreport.parse_seat_nick(seat):
-                    implementer = canonical_worker_nick(seat) or seat
-                    break
-            if claim.repo.lower() in url.lower():
-                seat = str(row.get("nick") or row.get("done_by") or "").strip()
-                if seat and bobreport.parse_seat_nick(seat):
-                    implementer = canonical_worker_nick(seat) or seat
-                    break
+        implementer = fr_implementer_seat_from_doc(
+            doc, claim.repo, claim.refs, pr_id=claim.id
+        )
     out: dict[str, str] = {}
     if implementer:
         out["author_seat"] = implementer
