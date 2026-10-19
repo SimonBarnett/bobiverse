@@ -2465,6 +2465,12 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
         if isinstance(queued, str) and queued.startswith("error"):
             err = queued.split(":", 1)[1] if ":" in queued else "queue"
             return GitWebhookOutcome(ok=False, err=err or "queue")
+        # FR #4827: tell the duplicate seat to stand down in its shop.
+        for note in gitclaim.drain_stand_down(home):
+            text = str(note.get("text") or "").strip()
+            chan = str(note.get("channel") or "").strip()
+            if text and chan:
+                enqueue_chair_fleet_privmsg(home, text, channel=chan)
     # FR #3212: stamp delivery time for gap-triggered reconcile (even announce-only events).
     gab.stamp_git_webhook(home)
     if not enqueue_chair_fleet_privmsg(home, line):

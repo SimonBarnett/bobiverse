@@ -58,7 +58,7 @@ def test_cursor_turn_ended_status_error_arms_done_miss(tmp_path: Path):
 
 
 def test_ack_stale_releases_with_one_bored_despite_open_turn_gen():
-    """Fail-when 2: ACK open, no activity for ack_stale_s → exactly one !bored ack-stale."""
+    """Open turn holds past ack_stale_s (FR #4827). With the turn closed, one ack-stale."""
     clock = FakeClock(0.0)
     e, sent, logs = _emitter(
         clock,
@@ -69,23 +69,36 @@ def test_ack_stale_releases_with_one_bored_despite_open_turn_gen():
         done_miss_grace_s=20.0,
     )
     e.on_outbox("ACK MRB o/r#1")
-    # Prior harvest release then a new turn that never ends (release_gen gate).
     e.turn_ended(at=clock())
     clock.advance(1.0)
     e.turn_started(at=clock())
     n0 = len(sent)
-    clock.advance(28.0)
+    clock.advance(35.0)
     time.sleep(0.05)
     assert not any(r == "ack-stale" for _, r in e.sent[n0:]), e.sent[n0:]
-    clock.advance(3.0)
-    assert _wait(lambda: any(r == "ack-stale" for _, r in e.sent[n0:]), clock), (
-        e.sent[n0:],
-        logs,
-    )
-    assert sum(1 for _, r in e.sent[n0:] if r == "ack-stale") == 1
-    assert e.ack_open is False
-    assert any("ACK stale" in m and "ack-stale" in m for m in logs), logs
+    assert e.ack_open is True
     e.stop()
+
+    clock2 = FakeClock(0.0)
+    e2, sent2, logs2 = _emitter(
+        clock2,
+        harvest_hold_s=90.0,
+        idle_s=1.0,
+        repeat_s=9999.0,
+        ack_stale_s=30.0,
+        done_miss_grace_s=20.0,
+    )
+    e2.on_outbox("ACK MRB o/r#1")
+    n1 = len(sent2)
+    clock2.advance(31.0)
+    assert _wait(lambda: any(r == "ack-stale" for _, r in e2.sent[n1:]), clock2), (
+        e2.sent[n1:],
+        logs2,
+    )
+    assert sum(1 for _, r in e2.sent[n1:] if r == "ack-stale") == 1
+    assert e2.ack_open is False
+    assert any("ACK stale" in m and "ack-stale" in m for m in logs2), logs2
+    e2.stop()
 
 
 def test_giveup_then_replayed_ack_does_not_reopen_busy():

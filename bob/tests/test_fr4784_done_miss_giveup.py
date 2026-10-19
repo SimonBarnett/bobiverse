@@ -91,9 +91,6 @@ def test_ack_stale_release_posts_giveup_before_bored():
     e.send = _send  # type: ignore[method-assign]
 
     e.on_outbox("ACK MRB SimonBarnett/ce-priority#32")
-    e.turn_ended(at=clock())
-    clock.advance(1.0)
-    e.turn_started(at=clock())
     n0 = len(sent)
     clock.advance(35.0)
     assert _wait(lambda: any(r == "ack-stale" for _, r in e.sent[n0:]), clock), (

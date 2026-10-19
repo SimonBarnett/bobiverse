@@ -4154,10 +4154,27 @@ def assign_job_type_key(line: str) -> Optional[str]:
     return f"{m.group(1).upper()} {m.group(2)}"
 
 
+# FR #4827: chair tells a duplicate seat to stop after the original seat's PR lands.
+_STAND_DOWN_RX = re.compile(r"(?i)^stand down\s+(?:FR|MRB|UAT)\s+(\S+#\d+)\b")
+
+
+def stand_down_job_ref(line: str) -> Optional[str]:
+    """Lower-cased ``owner/repo#N`` from a stand-down line, or None (FR #4827)."""
+    text = line or ""
+    parts = text.split(None, 3)
+    body = parts[3] if len(parts) >= 4 and parts[0].upper() == "FROM" else text
+    m = _STAND_DOWN_RX.match((body or "").strip())
+    if not m:
+        return None
+    return m.group(1).lower()
+
+
 def looks_like_job_assign(line: str, own_nick: str = "") -> bool:
     """True when an injected FROM looks like a Jeeves FR/MRB/UAT assign (not nothing-queued)."""
     text = line or ""
     if is_nothing_queued(text, own_nick):
+        return False
+    if stand_down_job_ref(text):
         return False
     # Prefer the payload after FROM nick target …
     parts = text.split(None, 3)
@@ -4714,9 +4731,16 @@ class BoredEmitter:
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
                  ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
                  nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None,
-                 turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None):
+                 turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None,
+                 ack_quiet_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
+        # FR #4827: past ack_stale_s, keep the ACK while the turn is open or agent I/O
+        # is newer than this quiet window. Idle (no I/O, turn ended) still frees at ack_stale_s.
+        self.ack_quiet_s = (
+            float(ack_quiet_s) if ack_quiet_s is not None
+            else _env_float("BOB_WORKER_ACK_QUIET_S", 300.0, 5.0, 3600.0)
+        )
         self.nak_s = nak_s  # t817u: fixed timer from a Jeeves NAK to the next !bored (never while busy)
         # FR #1611: hold !bored after DONE/free so the agent can harvest; treat inject as busy until ACK.
         self.harvest_hold_s = (
@@ -4743,6 +4767,7 @@ class BoredEmitter:
         self._stopped = False
         self._ack_open = False
         self._ack_at: Optional[float] = None
+        self._agent_active_at: Optional[float] = None  # FR #4827: last turn/IO, not ACK wall clock
         self._ack_job_key: Optional[str] = None  # FR #1732: open ACK job id
         # FR #4730: jobs this seat already closed — replayed ACK must not reopen busy / hit IRC.
         self._finished_job_keys: set[str] = set()
@@ -4949,6 +4974,24 @@ class BoredEmitter:
             except Exception as e:
                 self.log(f"done-miss: remind inject failed {type(e).__name__}")
 
+    def _ack_held(self, now: float) -> bool:
+        """ACK still owns the seat (FR #4827).
+
+        Wall-clock ``ack_stale_s`` alone does not release a live turn or agent I/O
+        inside ``ack_quiet_s``. No turn and no I/O still releases at ``ack_stale_s``.
+        Caller holds ``_cv``.
+        """
+        if not self._ack_open or self._ack_at is None:
+            return False
+        if (now - self._ack_at) < self.ack_stale_s:
+            return True
+        if self._turn_open:
+            return True
+        active = self._agent_active_at
+        if active is not None and (now - active) < self.ack_quiet_s:
+            return True
+        return False
+
     @property
     def turn_open(self) -> bool:
         """True while the turn watcher has seen turn_started and not turn_ended."""
@@ -4959,9 +5002,7 @@ class BoredEmitter:
     def ack_open(self) -> bool:
         """True while an ACK is open and not stale (FR #2383 / busy bookkeeping)."""
         with self._cv:
-            if not self._ack_open or self._ack_at is None:
-                return False
-            return (self.clock() - self._ack_at) < self.ack_stale_s
+            return self._ack_held(self.clock())
 
     @property
     def out_of_fuel(self) -> bool:
@@ -5040,9 +5081,7 @@ class BoredEmitter:
     def ack_job_ref(self) -> Optional[str]:
         """Lower-cased ``owner/repo#N`` for the open ACK, or None (FR #2791 / #1732)."""
         with self._cv:
-            if not self._ack_open or self._ack_at is None:
-                return None
-            if (self.clock() - self._ack_at) >= self.ack_stale_s:
+            if not self._ack_held(self.clock()):
                 return None
             key = self._ack_job_key or ""
             parts = key.split(None, 1)
@@ -5088,6 +5127,36 @@ class BoredEmitter:
                 self._idle_since = now
             self._cv.notify_all()
 
+    def note_agent_active(self, at: float | None = None) -> None:
+        """FR #4827: turn activity or process I/O. Extends an open ACK past ack_stale_s."""
+        with self._cv:
+            now = float(self.clock() if at is None else at)
+            self._agent_active_at = now
+            self._cv.notify_all()
+
+    def note_stand_down(self, ref: str) -> bool:
+        """FR #4827: drop the open ACK when the chair stands this seat down for that job."""
+        want = (ref or "").strip().lower()
+        if not want:
+            return False
+        with self._cv:
+            key = self._ack_job_key or ""
+            parts = key.split(None, 1)
+            cur = parts[1].lower() if len(parts) >= 2 else ""
+            if not self._ack_open or cur != want:
+                return False
+            self._ack_open = False
+            self._ack_at = None
+            self._ack_job_key = None
+            self._agent_active_at = None
+            self._turn_open = False
+            self._clear_done_miss()
+            now = self.clock()
+            self._idle_since = now
+            self.log(f"bored: stand down {want}")
+            self._cv.notify_all()
+            return True
+
     def nak(self) -> None:
         """t817u: Jeeves answered our !bored with a NAK addressed to us: send !bored again after a FIXED nak_s (120 s). A second NAK
         does not push the timer out; if the seat is busy when it falls due the timer is dropped (DONE brings its own !bored)."""
@@ -5118,6 +5187,7 @@ class BoredEmitter:
             now = float(self.clock() if at is None else at)
             self._turn_started_at = now
             self._turn_open = True
+            self._agent_active_at = now
             self._turn_watcher_armed = True
             self._turn_gen += 1
             self._turn_idle_pending = False
@@ -5143,7 +5213,8 @@ class BoredEmitter:
                 self._cv.notify_all()
                 return
             # FR #2875: turn ended with ACK open and no DONE/NACK/GIVEUP.
-            if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
+            # FR #4827: arm even past ack_stale_s — the turn ending is the release signal.
+            if self._ack_open and self._ack_at is not None:
                 key = self._ack_job_key or "job"
                 if self._done_miss_reminded:
                     self._ack_open = False
@@ -5305,7 +5376,9 @@ class BoredEmitter:
                     self._begin_harvest_hold(now)
                     self.log(f"bored: free-rx matched ({verb}) - harvest hold then !bored")
             elif self._ack_open:
-                self._ack_at = now  # outbox activity keeps an open ACK fresh (the watcher uses the outbox mtime)
+                # Outbox chatter refreshes the wall clock only. FR #4827 agent I/O is
+                # note_agent_active / turn_started / process samples, not this line.
+                self._ack_at = now
             elif self._harvest_until is not None and now < self._harvest_until:
                 # Harvest / follow-up outbox (intake, comments) extends the hold.
                 self._harvest_until = now + self.harvest_hold_s
@@ -5320,7 +5393,7 @@ class BoredEmitter:
         # FR #3012: out-of-fuel holds the seat quiet (no !bored) until clear_out_of_fuel.
         if self._out_of_fuel:
             return True
-        if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
+        if self._ack_held(now):
             return True
         if self._harvest_until is not None and now < self._harvest_until:
             return True
@@ -5460,8 +5533,11 @@ class BoredEmitter:
         if self._ack_open and self.fuel_lost_check_fn is not None:
             base = float(self._fuel_lost_checked_at) if self._fuel_lost_checked_at is not None else now
             wakes.append(base + float(self.fuel_poll_s))
-        if self._ack_open and self._ack_at is not None and now - self._ack_at < self.ack_stale_s:
-            wakes.append(self._ack_at + self.ack_stale_s)
+        if self._ack_held(now) and not self._turn_open and self._ack_at is not None:
+            if (now - self._ack_at) < self.ack_stale_s:
+                wakes.append(self._ack_at + self.ack_stale_s)
+            elif self._agent_active_at is not None:
+                wakes.append(self._agent_active_at + self.ack_quiet_s)
         # FR #2875: wake when done-miss grace expires so the reminder can fire.
         if (
             self._done_miss_armed_at is not None
@@ -6177,6 +6253,9 @@ class Supervisor:
                 except Exception:
                     pass
             self.bored.activity(mark_work=mark_work)
+            ref = stand_down_job_ref(line)
+            if ref:
+                self.bored.note_stand_down(ref)
 
     def may_send_outbox(self, payload: str) -> bool:
         """FR #4730: drop replayed ACK for a finished job before it hits IRC."""
@@ -6774,6 +6853,11 @@ class Supervisor:
                 s = self.probe(proc.pid)
             except Exception:
                 continue
+            prev_io = getattr(self, "_io_activity", None)
+            self._io_activity = s.activity
+            # FR #4827: process I/O while a job is open keeps ack-stale from firing.
+            if prev_io is not None and s.activity != prev_io and self.bored:
+                self.bored.note_agent_active()
             reason = self.detector.check(s, self.clock())
             if reason:
                 self.restart_agent(reason)
