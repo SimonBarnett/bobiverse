@@ -46,7 +46,8 @@ def test_repaste_success_sends_no_giveup_even_when_receipt_acked():
     assert rec.on_failed(ASSIGN, attempt=1) == "retried"
     assert pasted == [ASSIGN]
     assert state["outbox"] == []
-    assert state["input"] == []
+    # FR #4842: clear queued TUI input before re-paste (stale assign must not win).
+    assert state["input"] == ["cleared"]
 
 
 def test_both_attempts_fail_sends_one_giveup_and_clears_input():
@@ -57,7 +58,8 @@ def test_both_attempts_fail_sends_one_giveup_and_clears_input():
     rec, state = _cursor_recovery(reinject=reinject, acked=True)
     rec.on_failed(ASSIGN, attempt=1)
     assert state["outbox"] == [GIVEUP]
-    assert state["input"] == ["cleared"]
+    # clear before re-paste (FR #4842) + clear on giveup (FR #4510)
+    assert state["input"] == ["cleared", "cleared"]
     assert state["local"] == [ASSIGN]
     # A second failure for the same job must not send another GIVEUP.
     assert rec.on_failed(ASSIGN, attempt=2) == "giveup"
