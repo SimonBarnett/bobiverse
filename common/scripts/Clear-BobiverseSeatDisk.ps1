@@ -21,7 +21,7 @@
   - FR #4226: reclaim aged session UUID dirs nested under cwd-encoded buckets
     (sessions/<cwd-encoded>/<guid>/). Top-level-only reclaim skipped those
     UUIDs when the cwd bucket stayed fresh from the live seat.
-  - FR #4864: same nested walk for ~/.cursor/chats/<project>/<guid>/ — a live
+  - FR #4864: same nested walk for ~/.cursor/chats/<project>/<guid>/ - a live
     seat keeps the project bucket fresh and used to shield aged UUID chats
     (hundreds of MB). Also removes ~/.grok/bin/*.old backup binaries on reclaim.
 
@@ -243,7 +243,7 @@ if ($CursorChatsRoot -and (Test-Path -LiteralPath $CursorChatsRoot)) {
     }
 }
 
-# FR #4864: ~/.grok/bin/*.old backup binaries (agent.exe.old etc.) — safe once
+# FR #4864: ~/.grok/bin/*.old backup binaries (agent.exe.old etc.) - safe once
 # a newer agent.exe is present; often ~150MB left after other reclaim.
 $binRoot = Join-Path $GrokHome 'bin'
 if (Test-Path -LiteralPath $binRoot) {
