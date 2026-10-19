@@ -1890,7 +1890,11 @@ def _submit_verify_giveup_grace_s(default: float = 20.0) -> float:
 
 
 def cursor_submit_verify_stop(bored, *, probe: Optional[Callable[[], bool]] = None) -> Callable[[], bool]:
-    """FR #4732: Cursor stop predicate — turn_open or probe; never receipt ack_open alone."""
+    """FR #4732 / FR #4889: stop on turn_open or probe; never receipt ack_open alone.
+
+    Cursor (#4732) and grok (#4889) both ACK on receipt (FR #4115). That ACK must
+    not end submit-verify as ok (stop/ACK) before the paste is submitted.
+    """
 
     def _stop() -> bool:
         try:
@@ -1907,6 +1911,10 @@ def cursor_submit_verify_stop(bored, *, probe: Optional[Callable[[], bool]] = No
         return False
 
     return _stop
+
+
+# FR #4889: grok uses the same predicate (alias for call sites / skills).
+grok_submit_verify_stop = cursor_submit_verify_stop
 
 
 def _submit_verify_backoffs() -> tuple:
@@ -2852,6 +2860,17 @@ def run_submit_verify_loop(
     for i, wait_s in enumerate(waits):
         deadline = clock() + max(0.0, float(wait_s))
         while True:
+            # FR #4889: probe before stop so a shared stop_fn that also wraps
+            # probe logs (probe) not (stop/ACK) when the paste landed.
+            if probe_fn:
+                try:
+                    if probe_fn():
+                        _log(
+                            f"relay: submit-verify ok after {clock() - start:.1f}s (probe)"
+                        )
+                        return "ok"
+                except Exception:
+                    pass
             if stop_fn:
                 try:
                     if stop_fn():
@@ -2859,13 +2878,6 @@ def run_submit_verify_loop(
                             f"relay: submit-verify ok after {clock() - start:.1f}s (stop/ACK)"
                         )
                         return "stop"
-                except Exception:
-                    pass
-            if probe_fn:
-                try:
-                    if probe_fn():
-                        _log(f"relay: submit-verify ok after {clock() - start:.1f}s")
-                        return "ok"
                 except Exception:
                     pass
             rem = deadline - clock()
@@ -6716,8 +6728,10 @@ class Supervisor:
                 pid, text, submit_gap_s=_cursor_submit_gap_s(), log=log
             )
         if want and self.bored is not None:
-            # FR #2791 ack_open+ack_job_ref stop; Cursor uses turn_open|probe (FR #4732).
-            if is_cursor and probe is not None:
+            # FR #2791: job-matched ACK stop when no probe.
+            # FR #4732 Cursor / FR #4889 Grok: with a probe, never stop on receipt
+            # ack_open alone (ACK-on-receipt FR #4115) --- turn_open|probe only.
+            if probe is not None:
                 stop = cursor_submit_verify_stop(self.bored, probe=probe)
             else:
                 stop = lambda b=self.bored, w=want: bool(getattr(b, "ack_open", False)) and (
