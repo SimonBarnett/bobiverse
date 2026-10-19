@@ -297,6 +297,7 @@ routes to bobiverse via the split rule.
 - After agent 402 usage balance exhausted, keep out-of-fuel held until BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S and grok pct above BOB_WORKER_OUT_OF_FUEL_CLEAR_FLOOR_PCT (or turn_ended); never clear on soft available with pct at or below the floor.
 - SeatDisk: walk ~/.cursor/chats/<project>/<guid>/ like FR #4226 sessions, and drop ~/.grok/bin/*.old on reclaim when C: is under MinFreeGB.
 - Intake harvest de-dupe: an abbreviated restatement of an on-main bullet (shared lead-in + env-name stems like MIN_HOLD_S for BOB_WORKER_OUT_OF_FUEL_MIN_HOLD_S) is lesson_already_covered --- never open a second tip (FR #4865 / tip #4863).
+- MRB product land after harvest tip: Closes only the product FR (#4864); tip CONFLICTING receipts (#4874) close citing the tip MERGED URL, not the product PR.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
