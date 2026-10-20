@@ -351,7 +351,15 @@ if (Test-Path -LiteralPath $destPw) {
     $destBody = ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
 }
 $mintMarker = Join-Path $ConsoleHome 'console.password-minted'
+$nickservOk = Join-Path $ConsoleHome 'console.nickserv-ok'
 $destPwEmpty = -not $destBody
+# FR #4934: once NickServ registration is confirmed, never let a stale mint marker
+# trigger the broad legacy overwrite of console.password.
+$hasNickservOk = Test-Path -LiteralPath $nickservOk
+if ($hasNickservOk -and (Test-Path -LiteralPath $mintMarker)) {
+    Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+    Write-Host 'INFO FR #4934 cleared stale console.password-minted (nickserv-ok present)'
+}
 $pwSources = New-Object System.Collections.Generic.List[string]
 # Authoritative first - these overwrite a wrong mint in dest.
 if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
@@ -369,8 +377,8 @@ if (Test-Path -LiteralPath $snapPwPath) {
     } catch {}
 }
 $authCount = $pwSources.Count
-# Legacy fill-ins only for empty / mint-marker dest.
-if ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker)) {
+# Legacy fill-ins only for empty / mint-marker dest (never when nickserv-ok is present).
+if (-not $hasNickservOk -and ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker))) {
     foreach ($legacy in $legacyCandidates) {
         [void]$pwSources.Add((Join-Path $legacy 'console.password'))
     }
@@ -380,6 +388,8 @@ $srcIndex = 0
 foreach ($srcPw in $pwSources) {
     $isAuth = ($srcIndex -lt $authCount)
     $srcIndex++
+    # FR #4934: never replace console.password once nickserv-ok confirms registration.
+    if ($hasNickservOk) { break }
     if (-not $isAuth -and -not ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker))) { continue }
     if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
     try {
@@ -406,6 +416,16 @@ foreach ($srcPw in $pwSources) {
         Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
     }
     Write-Host "INFO FR #3900 prefer prior console.password / migrated console.password from $srcPw"
+    # FR #4934: migrate console.nickserv-ok alongside the password when the prior home has it.
+    try {
+        $srcHome = Split-Path -Parent $srcResolved
+        $srcOk = Join-Path $srcHome 'console.nickserv-ok'
+        $destOk = Join-Path $ConsoleHome 'console.nickserv-ok'
+        if ((Test-Path -LiteralPath $srcOk) -and -not (Test-Path -LiteralPath $destOk)) {
+            Copy-Item -LiteralPath $srcOk -Destination $destOk -Force
+            Write-Host "INFO FR #4934 migrated console.nickserv-ok from $srcHome"
+        }
+    } catch {}
     break
 }
 

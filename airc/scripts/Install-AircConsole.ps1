@@ -346,7 +346,15 @@ if (Test-Path -LiteralPath $destPw) {
     $destBody = ((Get-Content -LiteralPath $destPw -Raw -ErrorAction SilentlyContinue) + '').Trim()
 }
 $mintMarker = Join-Path $ConsoleHome 'console.password-minted'
+$nickservOk = Join-Path $ConsoleHome 'console.nickserv-ok'
 $destPwEmpty = -not $destBody
+# FR #4934: once NickServ registration is confirmed, never let a stale mint marker
+# trigger the broad legacy overwrite of console.password.
+$hasNickservOk = Test-Path -LiteralPath $nickservOk
+if ($hasNickservOk -and (Test-Path -LiteralPath $mintMarker)) {
+    Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
+    Write-Host 'INFO FR #4934 cleared stale console.password-minted (nickserv-ok present)'
+}
 $pwSources = New-Object System.Collections.Generic.List[string]
 if ($priorId -and $priorId.PasswordFile) { [void]$pwSources.Add([string]$priorId.PasswordFile) }
 if ($priorId -and $priorId.ConsoleHome) {
@@ -374,7 +382,7 @@ $legacyCandidates = @(
     (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc'),
     (Join-Path $env:SystemRoot 'System32\config\systemprofile\.airc-console')
 )
-if ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker)) {
+if (-not $hasNickservOk -and ($destPwEmpty -or (Test-Path -LiteralPath $mintMarker))) {
     foreach ($legacy in $legacyCandidates) {
         [void]$pwSources.Add((Join-Path $legacy 'console.password'))
     }
@@ -384,6 +392,8 @@ $srcIndex = 0
 foreach ($srcPw in $pwSources) {
     $isAuth = ($srcIndex -lt $authCount)
     $srcIndex++
+    # FR #4934: never replace console.password once nickserv-ok confirms registration.
+    if ($hasNickservOk) { break }
     if (-not $srcPw -or -not (Test-Path -LiteralPath $srcPw)) { continue }
     try {
         $srcResolved = (Resolve-Path -LiteralPath $srcPw).Path
@@ -406,6 +416,16 @@ foreach ($srcPw in $pwSources) {
         Remove-Item -LiteralPath $mintMarker -Force -ErrorAction SilentlyContinue
     }
     Write-Host "INFO FR #3900 prefer prior console.password / migrated console.password from $srcPw"
+    # FR #4934: migrate console.nickserv-ok alongside the password when the prior home has it.
+    try {
+        $srcHome = Split-Path -Parent $srcResolved
+        $srcOk = Join-Path $srcHome 'console.nickserv-ok'
+        $destOk = Join-Path $ConsoleHome 'console.nickserv-ok'
+        if ((Test-Path -LiteralPath $srcOk) -and -not (Test-Path -LiteralPath $destOk)) {
+            Copy-Item -LiteralPath $srcOk -Destination $destOk -Force
+            Write-Host "INFO FR #4934 migrated console.nickserv-ok from $srcHome"
+        }
+    } catch {}
     break
 }
 
@@ -454,7 +474,22 @@ function Initialize-AircConsoleHomeSecrets {
         $NickServPasswordFile = Join-Path $ConsoleHomeDir 'console.password'
     }
     $mintMarkerPath = Join-Path $ConsoleHomeDir 'console.password-minted'
-    if (-not (Test-Path -LiteralPath $NickServPasswordFile) -or -not (Get-Content -LiteralPath $NickServPasswordFile -Raw -ErrorAction SilentlyContinue).Trim()) {
+    $nickservOkPath = Join-Path $ConsoleHomeDir 'console.nickserv-ok'
+    $pwBody = ''
+    if (Test-Path -LiteralPath $NickServPasswordFile) {
+        $pwBody = ((Get-Content -LiteralPath $NickServPasswordFile -Raw -ErrorAction SilentlyContinue) + '').Trim()
+    }
+    # FR #4934: never mint a new GUID once console.nickserv-ok says the account is registered.
+    if (Test-Path -LiteralPath $nickservOkPath) {
+        if (Test-Path -LiteralPath $mintMarkerPath) {
+            Remove-Item -LiteralPath $mintMarkerPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($pwBody) {
+            Write-Host "INFO FR #4934 keep $NickServPasswordFile (nickserv-ok present; no mint)"
+        } else {
+            Write-Host "WARN FR #4934 nickserv-ok present but password file empty; not minting (restore GUID or reclaim)"
+        }
+    } elseif (-not $pwBody) {
         $guid = [guid]::NewGuid().ToString()
         Write-AircSecretFile -Path $NickServPasswordFile -Secret $guid
         [IO.File]::WriteAllText($mintMarkerPath, "install`n", (New-Object System.Text.UTF8Encoding $false))

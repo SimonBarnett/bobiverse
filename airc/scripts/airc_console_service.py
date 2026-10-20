@@ -862,7 +862,7 @@ class AircConsoleService:
         Stale console.password-minted (or any path that left nickserv-ok missing while
         the GUID already owns {machine}_console) must not reconnect forever without
         SASL. Clear the mint skip, drop the mint marker, and force a SASL reconnect.
-        Do not write nickserv-ok until 903 / NickServ success NOTICE.
+        Do not write nickserv-ok until 900 / 903 / NickServ success NOTICE (FR #4934 Ergo text).
         """
         info(
             f"INFO FR #4789 {reason}: reserved nick with console.password present; "
@@ -1120,6 +1120,10 @@ class AircConsoleService:
         if cmd == "CAP" and "ack" in tokens and not self._want_sasl:
             self.send("CAP END")
             return
+        if cmd == "900":
+            # RPL_LOGGEDIN --- Ergo/IRCv3 account login (prefer numeric over free-text).
+            self._mark_nickserv_ok("rpl-loggedin-900")
+            return
         if cmd == "903":
             self._sasl_done = True
             self._mark_nickserv_ok("sasl-903")
@@ -1182,7 +1186,7 @@ class AircConsoleService:
             self._awaiting_pong = False
             return
 
-        if cmd in {"CAP", "AUTHENTICATE", "903", "904", "905", "906", "907"} or (
+        if cmd in {"CAP", "AUTHENTICATE", "900", "903", "904", "905", "906", "907"} or (
             cmd == "CAP"
         ):
             self._handle_sasl_line(cmd, args, trailing)
@@ -1265,13 +1269,21 @@ class AircConsoleService:
                 elif status == "missing":
                     self._apply_shop_mode("wonderland")
                 # unknown: keep waiting until timeout
-            # FR #3763: NickServ REGISTER / IDENTIFY success -> allow SASL next connect.
+            # FR #3763 / #4934: NickServ REGISTER / IDENTIFY success -> allow SASL next connect.
+            # Ergo (irc.ntsa.uk) sends different text than Atheme; match both. Prefer
+            # numeric 900/903 when present; free-text is the REGISTER path when SASL was skipped.
             if src_l in {"nickserv", "ns"} and trailing:
                 t = trailing.lower()
-                # Avoid bare "successful" (too broad); keep Atheme/Ergo success phrases.
+                # Avoid bare "successful" / bare "account already exists" (REGISTER reject
+                # without login). Ergo login uses "You're" (with apostrophe), not "you are".
                 if any(
                     p in t
                     for p in (
+                        # Ergo (primary fleet server)
+                        "account created",
+                        "you're now logged in",
+                        "youre now logged in",
+                        # Atheme / older phrases (keep for non-Ergo labs)
                         "is now registered",
                         "account registered",
                         "you are now logged in",
