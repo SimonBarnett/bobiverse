@@ -5,11 +5,12 @@ updates queue.json, and POSTs /bob/v1/report (or local apply_callback) so TipFor
 START tiles show busy/idle descriptions.
 
 Grammar (single line, case-insensitive verb):
-  ACK  <TYPE> <owner/repo>#<n> [title...]
-  DONE <TYPE> <owner/repo>#<n> <result> [url|rest...]
-  NACK|GIVEUP <TYPE> <owner/repo>#<n> [reason...]
+  ACK  <TYPE> <owner/repo>#<n|main|main-red> [title...]
+  DONE <TYPE> <owner/repo>#<n|main|main-red> <result> [url|rest...]
+  NACK|GIVEUP <TYPE> <owner/repo>#<n|main|main-red> [reason...]
 
 TYPE is FR|MRB|UAT|PR|FIX|BUILD.
+Id matches gitclaim.ID_RE (FR #4857 / #4911): digits or synthetic #main / #main-red.
 DONE result: FR = PR url only (no PASS/FAIL — FR #2419 strips/ignores them if present).
 MRB/UAT = PASS|FAIL [url]. Legacy ``PR <url>`` still accepted.
 GIVEUP/NACK optional trailing reason is logged on the shop-listen INFO line (FR #1701).
@@ -32,10 +33,12 @@ _SECRETISH = re.compile(
     r"(?i)(password|token|secret|api[_-]?key|authorization)\s*[:=]\s*\S+"
 )
 
+# FR #4911: share gitclaim.ID_RE shape (`#\d+` | `#main` | `#main-red`) so DONE/ACK
+# for main-side FIX rows parse; digits-only left seats stranded for BUSY_STALE_S.
 _VERB_RE = re.compile(
     r"(?is)^\s*(?:@?\S+[:\s]+)?(?P<verb>ACK|DONE|NACK|GIVEUP)\s+"
     r"(?P<task>FR|MRB|UAT|PR|FIX|BUILD)\s+"
-    r"(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<num>\d+)"
+    r"(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<num>\d+|main(?:-red)?)"
     r"(?:\s+(?P<rest>.+))?\s*$"
 )
 
@@ -82,7 +85,14 @@ def parse_shop_job_line(body: str) -> ShopJobLine | None:
     verb = m.group("verb").upper()
     task = m.group("task").upper()
     repo = m.group("repo")
-    ident = f"#{int(m.group('num'))}"
+    raw_num = str(m.group("num") or "").strip()
+    if raw_num.isdigit():
+        ident = f"#{int(raw_num)}"
+    else:
+        # Synthetic FIX ids (FR #4857): normalize to lower #main / #main-red.
+        ident = f"#{raw_num.lower()}"
+    if not gitclaim.ID_RE.fullmatch(ident):
+        return None
     rest = (m.group("rest") or "").strip()
     result = ""
     title = ""

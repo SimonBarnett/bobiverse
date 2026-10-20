@@ -173,6 +173,40 @@ def is_main_red_fix_row(row: dict | None) -> bool:
     return sig.startswith("main-red|")
 
 
+def main_red_fix_signature_sha(row: dict | None) -> str:
+    """SHA from ``main-red|<repo>|<sha>|<check>`` or row ``pass_sha`` (FR #4911)."""
+    if not isinstance(row, dict):
+        return ""
+    sig = str(row.get("fail_signature") or "").strip()
+    if sig.startswith("main-red|"):
+        parts = sig.split("|")
+        if len(parts) >= 3:
+            return _norm_sha(parts[2])
+    return _norm_sha(str(row.get("pass_sha") or ""))
+
+
+def main_red_fix_obsolete(
+    row: dict | None,
+    *,
+    main_red: bool | None = None,
+    main_sha: str = "",
+) -> bool:
+    """True when a main-red FIX should be retired (FR #4911).
+
+    Retire when the default branch shared suite is green again, or when the
+    signature's main SHA is no longer the default-branch head.
+    """
+    if not is_main_red_fix_row(row):
+        return False
+    if main_red is False:
+        return True
+    head = _norm_sha(main_sha)
+    row_sha = main_red_fix_signature_sha(row)
+    if head and row_sha and not shas_match(row_sha, head):
+        return True
+    return False
+
+
 def fix_ci_skip_reason(detail: str = "", *, main_red: bool = False) -> str | None:
     """FR #4630 / #4833 / #4857: why tip FIX-CI must not be offered (or None).
 
