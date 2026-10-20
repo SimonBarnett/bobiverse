@@ -304,6 +304,7 @@ routes to bobiverse via the split rule.
 - After enqueue_fix need_pr includes merge state (#4907), any assign_fix fake_fetch must set mergeable+mergeable_state (or fake_pr) or pytest will call live GitHub and fail offline.
 - FR #4925: never gh pr checkout a foreign --repo from C:\ai\bob; use %TEMP% worktree. Assert-BobiverseForeignPrCheckout.ps1 must be ASCII-only (WinPS 5.1 UTF-8-without-BOM mangled em-dash and broke the refuse path).
 - Jeeves FR: after FIX push, synchronize must pop done[] MRB and clear mrb_done before enqueue; DONE FIX must call the same ensure so re-MRB does not wait for !resync
+- Harvest-lesson for open product FR is still mergeable if useful and non-duplicate on main; light triage only.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
