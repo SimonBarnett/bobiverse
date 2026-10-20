@@ -186,6 +186,8 @@ Non-draft PRs labelled `harvest-lesson` with title `lesson(<book>): …` edit a 
 
 **FR #4800 (CAST IRON):** harvest tip light-triage exits (FAIL-supersede / CLOSED not-useful / Duplicate / MOVED / plan-content) complete as **`DONE MRB … PASS <url>`**. Never `DONE FAIL` on those tips — FR #4718 would enqueue a FIX job for a tip that must stay closed unmerged. Chair also skips FIX when the PR is `harvest-lesson` and closed unmerged (or carries a FAIL-supersede/CLOSED/MOVED board).
 
+**FR #4917 (CAST IRON):** do **not** open a `docs/mrb-N` pin for a lesson-of-lesson tip (CLOSED-duplicate / FAIL-supersede / light-triage meta / FIX of a pin). Do **not** harvest after FIX/MRB/re-DONE on `harvest-lesson` or `docs/mrb-*` PRs (`Invoke-BobiverseHarvest` skips; Jeeves does not offer those tips as MRB). First-level pin of a useful product lesson still OK.
+
 **Short triage checklist (FR #3317):**
 
 1. **Useful?** Adds a durable playbook an agent would re-run.
