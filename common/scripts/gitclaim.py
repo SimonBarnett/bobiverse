@@ -1763,6 +1763,70 @@ def pop_done_fr_rows(doc: dict, repo: str, ident: str) -> list[dict]:
     return removed
 
 
+def pop_done_mrb_rows(doc: dict, repo: str, ident: str) -> list[dict]:
+    """Remove matching MRB rows from ``done`` (FR #4929 head-move requeue).
+
+    A prior PASS/FAIL in ``done[]`` makes ``mrb_already_done`` true when purge
+    runs without ``pr_exists``, which drops a fresh synchronize MRB before
+    DONE FIX can land. Popping the stale done row lets the new head stay queued.
+    """
+    done = doc.get("done")
+    if not isinstance(done, list):
+        return []
+    kept: list[dict] = []
+    removed: list[dict] = []
+    for row in done:
+        if isinstance(row, dict) and _same(row, repo, "MRB", ident):
+            removed.append(row)
+        elif isinstance(row, dict):
+            kept.append(row)
+    if removed:
+        doc["done"] = kept
+    return removed
+
+
+def ensure_mrb_requeued_after_head_move(
+    doc: dict,
+    home: Path | None,
+    *,
+    repo: str,
+    pr: str,
+    url: str = "",
+    reason: str = "",
+) -> str:
+    """FR #4929: clear stale mrb_done / done[] MRB and ensure an unaccepted MRB row.
+
+    Used when a FIX push (synchronize) or DONE FIX lands after a prior MRB PASS
+    so the new head is offerable without waiting for ``!resync``.
+    Returns ``added`` | ``duplicate`` | ``skipped`` | ``noop``.
+    """
+    repo_c = canonical_queue_repo(repo)
+    num = str(pr or "").strip().lstrip("#")
+    if not repo_c or not num.isdigit():
+        return "skipped"
+    ident = f"#{num}"
+    pull = str(url or "").strip()
+    if not PULL_URL_RE.search(pull):
+        pull = f"https://github.com/{repo_c}/pull/{num}"
+    if home is not None:
+        with contextlib.suppress(Exception):
+            clear_mrb_done(home, repo_c, ident)
+    pop_done_mrb_rows(doc, repo_c, ident)
+    why = str(reason or "head-move").strip() or "head-move"
+    claim = GitClaim(
+        repo=repo_c,
+        task="MRB",
+        id=ident,
+        event="pull_request",
+        action="synchronize",
+        line=pull,
+        title=f"requeue after {why} (FR #4929)",
+        body="",
+        labels=(),
+    )
+    return _append_unaccepted(doc, claim, url=pull)
+
+
 def prepare_reopened_fr_row(
     row: dict,
     claim: GitClaim,
@@ -2665,17 +2729,59 @@ def _apply_claim_to_doc(doc: dict, claim: GitClaim, home: Path | None = None) ->
         if implementer:
             extra["author_seat"] = implementer
             extra["implementer_seat"] = implementer
-        changed = _append_unaccepted(doc, claim, **extra)
-        for r in doc["unaccepted"]:
-            if not _same(r, claim.repo, "MRB", claim.id):
-                continue
-            if not PULL_URL_RE.search(str(r.get("url") or "")):
-                r["url"] = extra["url"]
-            if claim.harvest_lesson:
-                _heal_lesson_mrb_row(r, claim.opened_by)
-            elif implementer and not row_author_seats(r):
-                r["author_seat"] = implementer
-                r["implementer_seat"] = implementer
+        # FR #4929: synchronize after a prior MRB PASS must clear done[] / mrb_done
+        # before append; otherwise purge drops the new row while FIX is still ACC.
+        if action == "synchronize":
+            ensure_mrb_requeued_after_head_move(
+                doc,
+                home,
+                repo=claim.repo,
+                pr=claim.id,
+                url=extra["url"],
+                reason="synchronize",
+            )
+            # Refresh stamps on the row ensure just (re)queued.
+            for r in doc["unaccepted"]:
+                if not _same(r, claim.repo, "MRB", claim.id):
+                    continue
+                if claim.title:
+                    r["title"] = claim.title
+                if claim.body:
+                    r["body"] = _body_for_queue(claim.body)
+                if claim.refs:
+                    r["refs"] = list(claim.refs)
+                for k, v in extra.items():
+                    if not v:
+                        continue
+                    if k in _IMPLEMENTER_KEEP_KEYS and str(r.get(k) or "").strip():
+                        continue
+                    r[k] = v
+                if claim.harvest_lesson:
+                    _heal_lesson_mrb_row(r, claim.opened_by)
+            # FR #4604: live FIX nicks become author_seats on the requeued MRB.
+            for row in doc.get("accepted") or []:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("task") or "").upper() != "FIX":
+                    continue
+                if not _same(row, claim.repo, "FIX", claim.id):
+                    continue
+                nick = str(row.get("nick") or row.get("accepted_by") or "").strip()
+                if nick:
+                    stamp_fix_seats_on_mrb_rows(doc, claim.repo, claim.id, nick)
+            changed = "updated"
+        else:
+            changed = _append_unaccepted(doc, claim, **extra)
+            for r in doc["unaccepted"]:
+                if not _same(r, claim.repo, "MRB", claim.id):
+                    continue
+                if not PULL_URL_RE.search(str(r.get("url") or "")):
+                    r["url"] = extra["url"]
+                if claim.harvest_lesson:
+                    _heal_lesson_mrb_row(r, claim.opened_by)
+                elif implementer and not row_author_seats(r):
+                    r["author_seat"] = implementer
+                    r["implementer_seat"] = implementer
 
     elif ev == "pull_request" and action == "closed":
         _remove_unaccepted(doc, claim.repo, "MRB", claim.id)
