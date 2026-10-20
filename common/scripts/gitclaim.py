@@ -5132,27 +5132,55 @@ def _fix_row_pr_num(row: dict) -> str:
     return _norm_row_id(str(row.get("id") or ""))
 
 
+def _is_main_red_fix_row_local(row: dict) -> bool:
+    """Mirror mrb_merge_on_green.is_main_red_fix_row without a hard import cycle."""
+    if str(row.get("task") or "").upper() != "FIX":
+        return False
+    if str(row.get("main_red_fix") or "") in ("1", "true", "True"):
+        return True
+    if str(row.get("id") or "").strip().lstrip("#").lower() in ("main", "main-red"):
+        return True
+    return str(row.get("fail_signature") or "").startswith("main-red|")
+
+
 def _fix_is_dead(
     row: dict,
     *,
     pr_exists=None,
     open_pulls: dict | None = None,
     fetched_repos: set | None = None,
+    main_red_by_repo: dict | None = None,
+    main_sha_by_repo: dict | None = None,
 ) -> bool:
-    """True when a FIX row's pull is gone (merged/closed) or stamped closed (FR #4682)."""
+    """True when a FIX row's pull is gone (merged/closed) or stamped closed (FR #4682).
+
+    FR #4911: main-red FIX rows retire when main is green again or the signature
+    SHA is no longer the default-branch head (never via open_pulls alone).
+    """
     if not _is_fix_row(row):
         return False
     if row.get("merged") in (True, "true", "1", 1):
         return True
     if str(row.get("state") or "").strip().lower() == "closed":
         return True
-    # FR #4857: main-side FIX has no open PR number; never purge via open_pulls.
-    if (
-        str(row.get("main_red_fix") or "") in ("1", "true", "True")
-        or str(row.get("id") or "").strip().lstrip("#").lower()
-        in ("main", "main-red")
-        or str(row.get("fail_signature") or "").startswith("main-red|")
-    ):
+    # FR #4857 / #4911: main-side FIX has no open PR number.
+    if _is_main_red_fix_row_local(row):
+        repo = canonical_queue_repo(str(row.get("repo") or "")) or str(
+            row.get("repo") or ""
+        ).strip()
+        try:
+            import mrb_merge_on_green as _mog
+
+            mr = None
+            if isinstance(main_red_by_repo, dict) and repo in main_red_by_repo:
+                mr = bool(main_red_by_repo[repo])
+            head = ""
+            if isinstance(main_sha_by_repo, dict) and repo in main_sha_by_repo:
+                head = str(main_sha_by_repo.get(repo) or "")
+            if _mog.main_red_fix_obsolete(row, main_red=mr, main_sha=head):
+                return True
+        except Exception:
+            pass
         return False
     repo = str(row.get("repo") or "").strip()
     ident = _fix_row_pr_num(row)
@@ -5175,10 +5203,45 @@ def _finish_dead_fix_row(
     pr_merged=None,
     home: Path | None = None,
 ) -> dict:
-    """Stamp a dead FIX into a done row and idle its seat (FR #4682)."""
+    """Stamp a dead FIX into a done row and idle its seat (FR #4682 / #4911)."""
     fin = dict(row)
     repo = str(fin.get("repo") or "").strip()
     num = str(fin.get("id") or "").strip().lstrip("#")
+    if _is_main_red_fix_row_local(fin):
+        # FR #4911: main-side FIX retired because main is green / SHA moved.
+        fin["result"] = "MAIN_GREEN"
+        fin["reconcile"] = "FR4911_MAIN_GREEN"
+        fin["merged"] = False
+        fin["done_ts"] = _utc_now()
+        fin["state"] = "closed"
+        for k in (
+            "nick",
+            "accepted_ts",
+            "accepted_by",
+            "offered_to",
+            "offered_ts",
+            "offered_channel",
+            "channel",
+        ):
+            fin.pop(k, None)
+        if home is not None:
+            seat = str(
+                row.get("nick")
+                or row.get("accepted_by")
+                or row.get("offered_to")
+                or ""
+            ).strip()
+            if seat:
+                with contextlib.suppress(Exception):
+                    bobreport.clear_seat_doing(
+                        home, seat, only_if_work_contains="main"
+                    )
+                with contextlib.suppress(Exception):
+                    clear_seat_hold(
+                        home, seat, repo=repo, task="FIX", ident=str(fin.get("id") or ""),
+                        clear_pins=True,
+                    )
+        return fin
     merged_known = None
     if pr_merged is not None and repo and num:
         try:
@@ -5215,8 +5278,10 @@ def _purge_dead_fix_unaccepted(
     pr_exists=None,
     open_pulls: dict | None = None,
     fetched_repos: set | None = None,
+    main_red_by_repo: dict | None = None,
+    main_sha_by_repo: dict | None = None,
 ) -> int:
-    """Drop unaccepted FIX rows whose pull is no longer open (FR #4682)."""
+    """Drop unaccepted FIX rows whose pull is no longer open (FR #4682 / #4911)."""
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
     for row in doc.get("unaccepted") or []:
@@ -5227,6 +5292,8 @@ def _purge_dead_fix_unaccepted(
             pr_exists=pr_exists,
             open_pulls=open_pulls,
             fetched_repos=fetched_repos,
+            main_red_by_repo=main_red_by_repo,
+            main_sha_by_repo=main_sha_by_repo,
         ):
             continue
         kept.append(row)
@@ -5242,11 +5309,14 @@ def _purge_dead_fix_accepted(
     home: Path | None = None,
     open_pulls: dict | None = None,
     fetched_repos: set | None = None,
+    main_red_by_repo: dict | None = None,
+    main_sha_by_repo: dict | None = None,
 ) -> int:
     """Move accepted FIX rows whose PR is merged/closed into done (FR #4682).
 
     Without this, seats stay ``doing`` on a merged FIX tip and every ``!bored``
     returns ``nak busy`` (class of a-search#3871 / flamingo-33384).
+    FR #4911: also finish main-red FIX when main is green / signature SHA moved.
     """
     before = len(doc.get("accepted") or [])
     kept: list[dict] = []
@@ -5259,6 +5329,8 @@ def _purge_dead_fix_accepted(
             pr_exists=pr_exists,
             open_pulls=open_pulls,
             fetched_repos=fetched_repos,
+            main_red_by_repo=main_red_by_repo,
+            main_sha_by_repo=main_sha_by_repo,
         ):
             done.append(
                 _finish_dead_fix_row(row, pr_merged=pr_merged, home=home)
@@ -9523,6 +9595,7 @@ def resync_from_github(
     fix_dup = 0  # FR #4639: red PASSed PRs deduped as duplicate
     fix_skip_main_red = 0  # FR #4857: tip FIX skipped because main shared suite is red
     main_red_cache: dict[str, bool] = {}  # FR #4596: one main probe per repo per resync
+    main_sha_cache: dict[str, str] = {}  # FR #4911: default-branch head for main-red retire
     main_sha_cache: dict[str, str] = {}  # FR #4857: default-branch SHA for main-side FIX
     # FR #2899: open pulls skipped from desired (draft/receipt) — do not "survive" keep.
     skipped_open_pulls: set[tuple[str, str]] = set()
@@ -10226,16 +10299,53 @@ def resync_from_github(
                 dropped_detail.append(f"purge_dead_mrb x{purged_n}")
             # FR #4682: drop unaccepted FIX and finish accepted FIX when the PR
             # is no longer open (merged/closed webhook miss left the seat NAK busy).
+            # FR #4911: also retire main-red FIX when main is green / signature SHA moved.
+            # Fill caches for any fetched repo that still has a main-red row.
+            try:
+                import mrb_merge_on_green as _mog_purge
+
+                for bucket in (doc.get("unaccepted") or []), (doc.get("accepted") or []):
+                    for row in bucket:
+                        if not isinstance(row, dict) or not _is_main_red_fix_row_local(
+                            row
+                        ):
+                            continue
+                        repo_c = canonical_queue_repo(
+                            str(row.get("repo") or "")
+                        ) or str(row.get("repo") or "").strip()
+                        if not repo_c or repo_c not in fetched_set:
+                            continue
+                        if repo_c not in main_red_cache:
+                            with contextlib.suppress(Exception):
+                                main_red_cache[repo_c] = bool(
+                                    _mog_purge.main_branch_checks_red(
+                                        repo_c, token=token
+                                    )
+                                )
+                        if repo_c not in main_sha_cache:
+                            with contextlib.suppress(Exception):
+                                main_sha_cache[repo_c] = str(
+                                    _mog_purge.main_branch_head_sha(
+                                        repo_c, token=token
+                                    )
+                                    or ""
+                                )
+            except Exception:
+                pass
             fix_un_n = _purge_dead_fix_unaccepted(
                 doc,
                 open_pulls=open_pulls_map,
                 fetched_repos=fetched_set,
+                main_red_by_repo=main_red_cache,
+                main_sha_by_repo=main_sha_cache,
             )
             fix_acc_n = _purge_dead_fix_accepted(
                 doc,
                 open_pulls=open_pulls_map,
                 fetched_repos=fetched_set,
                 home=home,
+                main_red_by_repo=main_red_cache,
+                main_sha_by_repo=main_sha_cache,
             )
             if fix_un_n or fix_acc_n:
                 dropped += int(fix_un_n) + int(fix_acc_n)
@@ -11075,6 +11185,31 @@ def release_stale_busy(
                         done.append(fin)
                         healed_rows.append((fin, reason))
                         continue
+                    # FR #4911: main-red FIX with no /pull/ must not requeue forever when
+                    # main is already green (or the signature SHA is no longer HEAD).
+                    if _is_main_red_fix_row_local(fin):
+                        retire = False
+                        try:
+                            import mrb_merge_on_green as _mog
+
+                            repo_c = canonical_queue_repo(
+                                str(fin.get("repo") or "")
+                            ) or str(fin.get("repo") or "").strip()
+                            mr = bool(_mog.main_branch_checks_red(repo_c))
+                            head = str(_mog.main_branch_head_sha(repo_c) or "")
+                            retire = bool(
+                                _mog.main_red_fix_obsolete(
+                                    fin, main_red=mr, main_sha=head
+                                )
+                            )
+                        except Exception:
+                            retire = False
+                        if retire:
+                            stamped = _finish_dead_fix_row(fin, home=None)
+                            stamped["reconcile"] = f"{reason}:FR4911_MAIN_GREEN"
+                            done.append(stamped)
+                            healed_rows.append((stamped, stamped["reconcile"]))
+                            continue
                     # No closed/merged evidence: return to unaccepted so !assign / !bored
                     # can offer again even when github-resync is skipped.
                     # FR #4564: remember who held it so the requeue is not offered back.
