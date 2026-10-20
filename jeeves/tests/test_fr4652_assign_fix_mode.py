@@ -54,6 +54,15 @@ def test_assign_fix_enqueues_red_pr_and_offers(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {NICK})
     monkeypatch.setattr(gitclaim, "free_seat_nicks", lambda h, live: {NICK})
     monkeypatch.setattr(gitclaim, "seat_open_job", lambda *a, **k: "")
+    # FR #4918 / #4907: fake PR must carry merge state so enqueue_fix does not
+    # fall back to live _fetch_pr_state_for_assign in the test environment.
+    monkeypatch.setattr(
+        gitclaim,
+        "_fetch_pr_state_for_assign",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("live GitHub call in test")
+        ),
+    )
 
     sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -69,6 +78,8 @@ def test_assign_fix_enqueues_red_pr_and_offers(tmp_path: Path, monkeypatch):
             "pull_request": {"url": "https://api.github.com/..."},
             "head": {"sha": sha},
             "checks": "failure",
+            "mergeable": True,
+            "mergeable_state": "clean",
             "labels": [],
         }
 
@@ -171,7 +182,12 @@ def test_assign_fix_issue_payload_fills_sha_and_checks_from_pulls(tmp_path: Path
 
     def fake_pr(repo, num):
         assert str(num).lstrip("#") == "3582"
-        return {"sha": sha, "checks": "failure"}
+        return {
+            "sha": sha,
+            "checks": "failure",
+            "mergeable": True,
+            "mergeable_state": "clean",
+        }
 
     st, job = gitclaim.assign_row(
         tmp_path, NICK, REPO, "FIX", "#3582",
@@ -198,8 +214,18 @@ def test_assign_fix_refuses_when_pulls_checks_are_green(tmp_path: Path, monkeypa
         }
 
     st, why = gitclaim.assign_row(
-        tmp_path, NICK, REPO, "FIX", "#9",
-        fetch_issue=fake_issue, fetch_pr=lambda r, n: {"sha": "d" * 40, "checks": "success"},
+        tmp_path,
+        NICK,
+        REPO,
+        "FIX",
+        "#9",
+        fetch_issue=fake_issue,
+        fetch_pr=lambda r, n: {
+            "sha": "d" * 40,
+            "checks": "success",
+            "mergeable": True,
+            "mergeable_state": "clean",
+        },
     )
     assert st == "refused"
     assert "not failed" in str(why).lower()

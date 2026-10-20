@@ -210,6 +210,15 @@ def test_assign_fix_accepts_green_pr_with_fail_board(tmp_path, monkeypatch):
     monkeypatch.setattr(gitclaim, "live_seat_nicks", lambda h: {SEAT, OTHER})
     monkeypatch.setattr(gitclaim, "free_seat_nicks", lambda h, live: {SEAT, OTHER})
     monkeypatch.setattr(gitclaim, "seat_open_job", lambda *a, **k: "")
+    # FR #4918 / #4907: include merge state on the fake issue so enqueue_fix
+    # does not call live GitHub for mergeable / mergeable_state.
+    monkeypatch.setattr(
+        gitclaim,
+        "_fetch_pr_state_for_assign",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("live GitHub call in test")
+        ),
+    )
 
     def fake_fetch(repo, num):
         return {
@@ -222,6 +231,8 @@ def test_assign_fix_accepts_green_pr_with_fail_board(tmp_path, monkeypatch):
             "pull_request": {"url": "https://api.github.com/repos/x"},
             "head": {"sha": SHA},
             "checks": "success",
+            "mergeable": True,
+            "mergeable_state": "clean",
             "comments": _fail_comment(),
             "labels": [],
         }
