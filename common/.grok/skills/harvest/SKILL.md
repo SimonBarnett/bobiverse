@@ -300,6 +300,7 @@ routes to bobiverse via the split rule.
 - When SeatDisk FreeGB stays under MinFreeGB after FR #4864, hardlink-dedupe identical ~/.grok/bin/agent.exe+grok.exe and reclaim nested .cursor/chats with KeepCursorHoursLow (default 6).
 - Grok and Cursor both ACK on receipt (FR #4115): submit-verify stop must be turn_open|probe for any kind with a probe_fn, never ack_open alone; log (probe) vs (stop/ACK).
 - FR #4899: soft out-of-fuel hold clear is kind-scoped (grok needs grok tokens/session key; cursor needs Cursor); machine Cursor pool must not clear a grok soft hold unless real kind-switch FR #3997
+- Jeeves FR: when gitclaim.ID_RE widens to synthetic #main/#main-red, widen shop_listen _VERB_RE the same turn or DONE is silent and seats nak-busy until BUSY_STALE_S then requeue green main
 
 ## Harvest digest (lessons audit 2026-10-06)
 
