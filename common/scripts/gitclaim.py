@@ -8545,13 +8545,17 @@ def enqueue_fix_github_item(
     *,
     fetch_issue=None,
     fetch_pr=None,
+    home: Path | None = None,
 ) -> tuple[str, str]:
-    """Enqueue a FIX row for an open red PR when missing (FR #4652 !assign FIX).
+    """Enqueue a FIX row for an open red/DIRTY PR when missing (FR #4652 / #4906 !assign FIX).
 
     ``fetch_issue(repo, num)`` is the test seam (Issues API shape; may include
     ``head.sha`` and ``checks``). The live Issues payload has neither, so a missing
     SHA or check rollup is filled from ``fetch_pr`` (default: pulls API).
     Returns ``("added"|"duplicate"|"refused", detail)``.
+
+    FR #4906: CONFLICTING/DIRTY (or ``conflict_blocked`` ledger for this head SHA)
+    is accepted even when required checks are green.
     """
     num = str(ident or "").strip().lstrip("#")
     repo_c = canonical_queue_repo(repo)
@@ -8578,7 +8582,19 @@ def enqueue_fix_github_item(
     head = issue.get("head") if isinstance(issue.get("head"), dict) else {}
     sha = str(head.get("sha") or issue.get("pass_sha") or "").strip()
     checks = issue.get("checks")
-    if (not sha) or not (isinstance(checks, str) and checks.strip()):
+    mergeable = issue.get("mergeable")
+    merge_state = str(
+        issue.get("mergeable_state")
+        or issue.get("mergeStateStatus")
+        or issue.get("merge_state_status")
+        or ""
+    )
+    need_pr = (
+        (not sha)
+        or not (isinstance(checks, str) and checks.strip())
+        or (mergeable is None and not merge_state.strip())
+    )
+    if need_pr:
         getter_pr = fetch_pr or _fetch_pr_state_for_assign
         try:
             pr_state = getter_pr(repo_c, num)
@@ -8590,6 +8606,14 @@ def enqueue_fix_github_item(
             sha = str(pr_state.get("sha") or "").strip()
         if not (isinstance(checks, str) and checks.strip()):
             checks = pr_state.get("checks")
+        if mergeable is None and not merge_state.strip():
+            mergeable = pr_state.get("mergeable")
+            merge_state = str(
+                pr_state.get("merge_state_status")
+                or pr_state.get("mergeable_state")
+                or pr_state.get("mergeStateStatus")
+                or ""
+            )
     if not sha:
         return "refused", f"{repo_c}#{num}: missing head SHA"
     import mrb_merge_on_green as _mog_fail
@@ -8603,7 +8627,16 @@ def enqueue_fix_github_item(
         and not _mog_fail.linked_fail_fix_open(issue.get("open_prs") or [], num)
     )
     checks_failed = isinstance(checks, str) and bool(checks.strip()) and open_pr_mrb_checks_failed(checks)
-    if not fail_board:
+    dirty_reason = _mog_fail.merge_attempt_conflict_reason(
+        mergeable=mergeable, merge_state=merge_state
+    )
+    if not dirty_reason and home is not None:
+        blocked = _mog_fail.conflict_blocked_pass_sha(
+            _mog_fail.load_ledger(home), repo_c, num
+        )
+        if blocked and _mog_fail.shas_match(blocked, sha):
+            dirty_reason = "conflict-blocked"
+    if not fail_board and not dirty_reason:
         if not (isinstance(checks, str) and checks.strip()):
             return "refused", f"{repo_c}#{num}: PR checks unknown"
         if not checks_failed:
@@ -8614,7 +8647,18 @@ def enqueue_fix_github_item(
     pull_url = str(issue.get("html_url") or "").strip()
     if not PULL_URL_RE.search(pull_url):
         pull_url = f"https://github.com/{repo_c}/pull/{num}"
-    if fail_board and not checks_failed:
+    if dirty_reason and not (fail_board and not checks_failed) and not checks_failed:
+        # FR #4906: green (or unknown) checks but DIRTY/CONFLICTING / conflict_blocked.
+        detail = dirty_reason
+        title = f"FIX conflict (!assign; {detail}; PR #{num})"
+        body = (
+            f"FR #4906/#4636 conflict-fix: operator !assign for open PR that is "
+            f"{detail} at head SHA {sha}. Merge origin/main into this branch, "
+            f"resolve the conflicts, and push."
+        )
+        labels = ("via-intake", "fix-conflict")
+        sig = f"conflict|{repo_c}|{num}|{_mog_fail._norm_sha(sha)}"
+    elif fail_board and not checks_failed:
         detail = "mrb-fail"
         title = f"FIX MRB FAIL board (!assign; PR #{num})"
         body = (
@@ -8653,6 +8697,24 @@ def enqueue_fix_github_item(
         fail_signature=sig,
     )
     if changed == "added":
+        if dirty_reason and home is not None:
+            # Keep conflict_fix ledger in sync so resync does not double-queue.
+            try:
+                ldoc = _mog_fail.load_ledger(home)
+                offered = ldoc.get(_mog_fail.CONFLICT_FIX_KEY)
+                if not isinstance(offered, dict):
+                    offered = {}
+                    ldoc[_mog_fail.CONFLICT_FIX_KEY] = offered
+                offered[sig] = {
+                    "repo": repo_c,
+                    "pr": num,
+                    "pass_sha": _mog_fail._norm_sha(sha),
+                    "signature": sig,
+                    "url": pull_url,
+                }
+                _mog_fail.save_ledger(home, ldoc)
+            except Exception:  # noqa: BLE001
+                pass
         return "added", f"enqueued FIX {repo_c}#{num}"
     if changed in ("duplicate", "noop"):
         return "duplicate", f"already queued FIX {repo_c}#{num}"
@@ -8667,6 +8729,7 @@ def enqueue_open_github_item(
     *,
     fetch_issue=None,
     fetch_pr=None,
+    home: Path | None = None,
 ) -> tuple[str, str]:
     """Enqueue an open GitHub issue/PR into ``doc['unaccepted']`` when missing (FR #4422).
 
@@ -8679,7 +8742,12 @@ def enqueue_open_github_item(
     task_u = (task or "").upper()
     if task_u == "FIX":
         return enqueue_fix_github_item(
-            doc, repo, ident, fetch_issue=fetch_issue, fetch_pr=fetch_pr
+            doc,
+            repo,
+            ident,
+            fetch_issue=fetch_issue,
+            fetch_pr=fetch_pr,
+            home=home,
         )
     if task_u not in ("FR", "MRB"):
         return "refused", f"{task_u}: only FR/MRB/FIX can be enqueued from GitHub"
@@ -8822,7 +8890,13 @@ def assign_row(
                     # FR #4422 / #4652: open issue/PR missing from queue -> enqueue from GitHub, then offer.
                     if task_u in ("FR", "MRB", "FIX"):
                         enq_st, enq_detail = enqueue_open_github_item(
-                            doc, repo, task_u, num, fetch_issue=fetch_issue, fetch_pr=fetch_pr
+                            doc,
+                            repo,
+                            task_u,
+                            num,
+                            fetch_issue=fetch_issue,
+                            fetch_pr=fetch_pr,
+                            home=home,
                         )
                         if enq_st in ("added", "duplicate"):
                             for i, row in enumerate(doc["unaccepted"]):
@@ -9613,22 +9687,32 @@ def resync_from_github(
                 )
                 continue
             if conflict_rearm == "blocked":
+                # FR #4906: same SHA still blocked — re-offer via offer_dirty
+                # (DONE/GIVEUP/NAK with no push clears the dead signature), not bare
+                # enqueue_conflict_fix which permanently duplicate-dedupes.
                 try:
                     import mrb_merge_on_green as _mog_conflict
 
-                    _mog_conflict.enqueue_conflict_fix(
+                    fix_result = _mog_conflict.offer_dirty_conflict_fix(
                         _root(home),
                         repo=repo,
                         pr=str(num),
-                        pass_sha=head_sha,
+                        sha=head_sha,
                         url=str(pr.get("html_url") or ""),
                         reason="conflicting",
                     )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    fix_result = f"error:{type(exc).__name__}"
+                fix_added, fix_dup, fix_skip_main_red = _tally_fix_ci_result(
+                    fix_result,
+                    fix_added=fix_added,
+                    fix_dup=fix_dup,
+                    fix_skip_main_red=fix_skip_main_red,
+                )
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
-                    f"resync skip conflict-blocked PR {repo}#{num}",
+                    f"resync offer FIX conflict-blocked PR {repo}#{num} "
+                    f"result={fix_result}",
                     flush=True,
                 )
                 continue
