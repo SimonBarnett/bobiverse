@@ -2415,30 +2415,25 @@ def merge_pull(
 
 
 def requeue_mrb(home: Path, *, repo: str, pr: str, url: str = "", reason: str = "") -> None:
-    """Clear premature mrb_done and put the PR back on the unaccepted MRB queue."""
+    """Clear premature mrb_done and put the PR back on the unaccepted MRB queue.
+
+    FR #4929: also pop stale MRB PASS/FAIL from ``done[]`` so purge cannot drop
+    the fresh row when ``pr_exists`` is absent.
+    """
     repo_c = gitclaim.canonical_queue_repo(repo)
-    ident = f"#{str(pr).lstrip('#')}"
-    gitclaim.clear_mrb_done(home, repo_c, ident)
-    claim = gitclaim.GitClaim(
-        repo=repo_c,
-        task="MRB",
-        id=ident,
-        event="pull_request",
-        action="synchronize",
-        line=url or f"https://github.com/{repo_c}/pull/{str(pr).lstrip('#')}",
-        title=f"requeue after merge-on-green ({reason or 'retry'})",
-        body="",
-        labels=(),
-    )
+    pull = url or f"https://github.com/{repo_c}/pull/{str(pr).lstrip('#')}"
     with gitclaim._lock(home):
         try:
             doc = gitclaim._load_queue_unlocked(home)
         except (OSError, ValueError):
             doc = gitclaim._empty_queue()
-        gitclaim._append_unaccepted(
+        gitclaim.ensure_mrb_requeued_after_head_move(
             doc,
-            claim,
-            url=url or claim.line,
+            home,
+            repo=repo_c,
+            pr=pr,
+            url=pull,
+            reason=reason or "merge-on-green",
         )
         try:
             gitclaim._write_queue(gitclaim.queue_path(home), doc)

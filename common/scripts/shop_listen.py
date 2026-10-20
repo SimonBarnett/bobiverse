@@ -452,6 +452,26 @@ def complete_job_by_ref(
                 gitclaim.stamp_fix_seats_on_mrb_rows(
                     doc, repo, str(job.get("id") or ident), nick
                 )
+                # FR #4929: DONE FIX must requeue MRB even when synchronize arrived
+                # (and was purged) before this DONE — otherwise the new head sits
+                # with no MRB until a manual !resync.
+                pull = str(url or job.get("url") or "").strip()
+                if not gitclaim.PULL_URL_RE.search(pull):
+                    pull = (
+                        f"https://github.com/{repo}/pull/"
+                        f"{str(job.get('id') or ident).lstrip('#')}"
+                    )
+                gitclaim.ensure_mrb_requeued_after_head_move(
+                    doc,
+                    home,
+                    repo=repo,
+                    pr=str(job.get("id") or ident),
+                    url=pull,
+                    reason="done-fix",
+                )
+                gitclaim.stamp_fix_seats_on_mrb_rows(
+                    doc, repo, str(job.get("id") or ident), nick
+                )
             # FR #740 / #738 / #1323: DONE MRB (PASS or FAIL) purges any lingering unaccepted
             # duplicate and stamps ledger mrb_done so the next !bored cannot re-offer the same PR.
             if str(job.get("task") or "").upper() == "MRB":
