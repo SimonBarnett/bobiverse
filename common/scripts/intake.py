@@ -562,20 +562,25 @@ def is_lesson_review_meta_loop(text: str) -> bool:
         return True
     is_lesson_context = bool(
         _re.search(
-            r"(?i)harvest[- ]lesson|lesson\(harvest|docs/mrb|skills[- ]only|"
-            r"Harvested[- ]lessons|light\s+triage",
+            r"(?i)harvest[- ]lesson|lesson\(harvest|docs/mrb|\bmrb\d{3,}\b|"
+            r"skills[- ]only|Harvested[- ]lessons|light\s+triage",
             t,
         )
     )
-    is_mrb_closeout = bool(
+    # FR #4917: FIX / DONE FIX closeouts on lesson or pin tips (not only \bMRB\b).
+    is_job_closeout = bool(
         _re.search(
             r"(?i)\bMRB\b.{0,120}(?:CLOSED|DONE\s+(?:PASS|FAIL)|FAIL[- ]supersede)|"
             r"(?:CLOSED|DONE\s+(?:PASS|FAIL)).{0,120}\bMRB\b|"
+            r"\bFIX\b.{0,160}(?:docs/mrb|harvest[- ]lesson|\bmrb\d{3,}\b)|"
+            r"(?:docs/mrb|harvest[- ]lesson|\bmrb\d{3,}\b).{0,160}\bFIX\b|"
+            r"\bDONE\s+FIX\b|"
+            r"CLOSED\s+harvest\s+tip|CLOSED[- ]duplicate|"
             r"light\s+triage.{0,80}(?:PASS|CLOSED|FAIL)",
             t,
         )
     )
-    if is_lesson_context and is_mrb_closeout:
+    if is_lesson_context and is_job_closeout:
         return True
     return False
 

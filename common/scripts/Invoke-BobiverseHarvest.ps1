@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
-  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
+  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). FR #4917: FIX/MRB/re-DONE on lesson or docs/mrb pin PRs skip tip filing (PR metadata + job kind); source.version stamps HARVEST_SCRIPT_VERSION. Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
 
@@ -38,6 +38,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# FR #4917: stamp every harvest receipt (source.version); refuse when seat min is newer.
+# HARVEST_SCRIPT_VERSION constant name kept for pin tests / operator greps.
+$HARVEST_SCRIPT_VERSION = '20261020-fr4917'
+$script:HarvestScriptVersion = $HARVEST_SCRIPT_VERSION
 $secretRx = '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:(password|passwd|secret|token|apikey|api_key)\s*[:=]\s*[A-Za-z0-9/+_.-]{8,}))'
 $home1 = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 if (-not $OutboxDir) { $OutboxDir = Join-Path $home1 '.grok\bob\harvest-outbox' }
@@ -275,6 +279,13 @@ if ($Flush) {
 
 if (-not $Summary.Trim()) { throw '-Summary is required (what broke / what you fixed / "nothing new")' }
 
+# FR #4917: refuse stale seat overlays that predate the lesson-loop skip (default min = this tip).
+$minVer = ([string]$env:BOB_HARVEST_MIN_VER).Trim()
+if (-not $minVer) { $minVer = '20261020-fr4780' }
+if ($script:HarvestScriptVersion -lt $minVer) {
+    throw ("harvest script version {0} older than required {1}; refresh install-tree Invoke-BobiverseHarvest.ps1 (FR #4917 / #4780)" -f $script:HarvestScriptVersion, $minVer)
+}
+
 # FR #3189: harvest repo keys on the job's product repo (a-search -> SimonBarnett/a-search).
 # Explicit -Repo wins; else -JobRepo, else BOB_JOB_REPO, else run\job-repo.txt beside BOB_OUTBOX.
 $script:ExplicitRepo = $PSBoundParameters.ContainsKey('Repo')
@@ -499,6 +510,8 @@ if (Test-HarvestLessonMrbPassLoop -SummaryText $Summary -LessonLines $Lesson) {
 
 # FR #4780: MRB/review of a harvest-lesson (or skills-only) PR must not open a new
 # harvest-lesson tip. Honesty-box for reviewing lessons is the review itself.
+# FR #4917: also FIX / re-DONE on lesson or docs/mrb pin jobs (mrbNNNN pin names;
+# CLOSED harvest tip); do not require \bMRB\b alone.
 # Also skip lessons whose subject is reviewing / harvesting / closing lessons, and
 # dedup against open+closed harvest-lesson PRs from the last 24h (any seat).
 function Test-HarvestLessonReviewLoop([string]$SummaryText, [string[]]$LessonLines) {
@@ -507,16 +520,22 @@ function Test-HarvestLessonReviewLoop([string]$SummaryText, [string[]]$LessonLin
         ($joined -match '(?i)harvest[- ]lesson') -or
         ($joined -match '(?i)lesson\(harvest') -or
         ($joined -match '(?i)docs/mrb') -or
+        ($joined -match '(?i)\bmrb\d{3,}\b') -or
         ($joined -match '(?i)skills[- ]only') -or
         ($joined -match '(?i)Harvested[- ]lessons') -or
         ($joined -match '(?i)light\s+triage')
     )
-    $isMrbReview = (
+    # FR #4917: job closeout for MRB *or* FIX (and bare DONE PASS/FAIL) on lesson/pin tips.
+    $isJobCloseout = (
         ($joined -match '(?i)\bMRB\b') -or
+        ($joined -match '(?i)\bFIX\b') -or
         ($joined -match '(?i)\bDONE\s+(?:PASS|FAIL)\b') -or
+        ($joined -match '(?i)\bDONE\s+FIX\b') -or
         ($joined -match '(?i)CLOSED\s+not[- ]useful') -or
         ($joined -match '(?i)CLOSED\s+already[- ]covered') -or
         ($joined -match '(?i)CLOSED\s+wrong[- ]path') -or
+        ($joined -match '(?i)CLOSED\s+harvest\s+tip') -or
+        ($joined -match '(?i)CLOSED[- ]duplicate') -or
         ($joined -match '(?i)FAIL[- ]supersede') -or
         ($joined -match '(?i)\breview(?:ing|ed|s)?\b')
     )
@@ -528,14 +547,83 @@ function Test-HarvestLessonReviewLoop([string]$SummaryText, [string[]]$LessonLin
         ($joined -match '(?i)second\s+Harvested[- ]lessons\s+bullet') -or
         ($joined -match '(?i)tip[- ]?loop') -or
         ($joined -match '(?i)process\s+meta') -or
-        ($joined -match '(?i)lesson[- ]review')
+        ($joined -match '(?i)lesson[- ]review') -or
+        ($joined -match '(?i)do not invent a second tip')
     )
     if ($isMetaSubject) { return $true }
-    if ($isLessonContext -and $isMrbReview) { return $true }
+    if ($isLessonContext -and $isJobCloseout) { return $true }
     return $false
 }
 if (Test-HarvestLessonReviewLoop -SummaryText $Summary -LessonLines $Lesson) {
-    Write-Host "SKIPPED harvest lesson-review loop (FR #4780): not filing lesson tip after reviewing/closing lessons for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    Write-Host "SKIPPED harvest lesson-review loop (FR #4780/#4917): not filing lesson tip after reviewing/closing lessons for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
+}
+
+# FR #4917: when Summary/Lesson/-ExistingPrUrl cites a PR, ask GitHub whether that PR is
+# a harvest-lesson or docs/mrb pin. Skip tip filing for every job kind (metadata, not regex).
+function Test-IsLessonOrPinPrMeta {
+    param(
+        [string]$Title = '',
+        [string[]]$Labels = @(),
+        [string]$HeadRef = ''
+    )
+    $labs = @($Labels | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+    if ($labs -contains 'harvest-lesson') { return $true }
+    if ($Title -match '(?i)^lesson\s*\(') { return $true }
+    if ($Title -match '(?i)^docs/mrb-') { return $true }
+    if ($HeadRef -match '(?i)^docs/mrb-') { return $true }
+    if ($HeadRef -match '(?i)^intake/') { return $true }
+    return $false
+}
+function Test-HarvestLessonOrPinJobSkip {
+    param(
+        [string]$RepoName,
+        [string]$ExistingUrl,
+        [string]$SummaryText,
+        [string[]]$LessonLines
+    )
+    $joined = (@([string]$SummaryText) + @($LessonLines) + @([string]$ExistingUrl)) -join "`n"
+    $refs = New-Object System.Collections.Generic.List[object]
+    foreach ($m in [regex]::Matches($joined, '(?i)https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)')) {
+        $refs.Add([pscustomobject]@{ Repo = $m.Groups[1].Value; Number = [int]$m.Groups[2].Value })
+    }
+    foreach ($m in [regex]::Matches($joined, '(?i)\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b')) {
+        $refs.Add([pscustomobject]@{ Repo = $m.Groups[1].Value; Number = [int]$m.Groups[2].Value })
+    }
+    if ($RepoName -and ($joined -match '(?i)(?:^|[\s:/])#(\d+)\b')) {
+        foreach ($m in [regex]::Matches($joined, '(?i)(?:FIX|MRB|PR|pull)\s+[^\n]{0,40}#(\d+)')) {
+            $refs.Add([pscustomobject]@{ Repo = $RepoName; Number = [int]$m.Groups[1].Value })
+        }
+    }
+    if (-not $refs.Count) { return $false }
+    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $ghCmd) { return $false }
+    $seen = @{}
+    foreach ($ref in $refs) {
+        $key = ("{0}#{1}" -f $ref.Repo, $ref.Number).ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        try {
+            $raw = & gh pr view $ref.Number --repo $ref.Repo --json title,labels,headRefName 2>$null
+            if (-not $raw) { continue }
+            $pr = $raw | ConvertFrom-Json
+            $labs = @()
+            if ($pr.labels) {
+                $labs = @($pr.labels | ForEach-Object {
+                        if ($_.PSObject.Properties['name']) { [string]$_.name } else { [string]$_ }
+                    })
+            }
+            if (Test-IsLessonOrPinPrMeta -Title ([string]$pr.title) -Labels $labs -HeadRef ([string]$pr.headRefName)) {
+                return $true
+            }
+        } catch {
+            # offline / rate-limit: fall through; text skip above still applies
+        }
+    }
+    return $false
+}
+if (Test-HarvestLessonOrPinJobSkip -RepoName $Repo -ExistingUrl $ExistingPrUrl -SummaryText $Summary -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest lesson/pin job (FR #4917): cited PR is harvest-lesson or docs/mrb pin; not filing tip for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
     return
 }
 # FR #4288: when -ExistingPrUrl is set (or Summary/Lesson already cites a github.com/.../pull/N),
@@ -868,7 +956,7 @@ $idem = 'hv-' + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8
 $payload = [ordered]@{
     kind = 'harvest'; repo = $Repo; title = $title; body = $body; idempotency_key = $idem
     skill_book_path = $skillBookPath
-    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; skill_book_path = $skillBookPath; version = ''; seat = $seatNick }
+    source = [ordered]@{ machine = $Machine.Substring(0, [Math]::Min(64, $Machine.Length)); agent = 'Invoke-BobiverseHarvest'; skill_book = $bookName; skill_book_path = $skillBookPath; version = $script:HarvestScriptVersion; seat = $seatNick }
 }
 if ($files.Count) { $payload.files = $files }
 $json = $payload | ConvertTo-Json -Depth 6
