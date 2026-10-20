@@ -224,7 +224,10 @@ Checks:
 4. Prefer a regression test that asserts a distinctive phrase from the restored bullet remains contiguous.
 5. BEL / C0 control characters can corrupt product names in skill bullets (for example BEL + `"irc.exe"` makes `airc.exe` read as `irc.exe`). Hostile-pin the correct spelling (`airc.exe`) and reject the corrupted form (`irc.exe`) in the same AV / install window (FR #4215 / MRB #4220). Prefer ASCII wording; do not park this playbook under `harvest/SKILL.md` --- fold it here.
 
-## Harvested MRB discipline (skill records #1223-#1457)
+## Harvested MRB discipline
+
+- **FR #4906 conflict FIX re-offer:** conflict_blocked resync must call offer_dirty_conflict_fix (not bare enqueue_conflict_fix) so DONE same-SHA conflict FIX re-offers; !assign FIX accepts CONFLICTING/DIRTY even when checks are green.
+ (skill records #1223-#1457)
 
 - After a sibling merge leaves your MRB head CONFLICTING: merge `origin/main`, keep both soft-cap and StrictMode `@()` wraps; `Closes` only remaining open FRs when the twin is already closed (harvest #1694).
 - Never let an unrelated docs/vendor/product PR `Closes` a `label:skill` harvest issue; strip wrong `Closes`, use `Refs`, close the harvest record separately when lessons are already on main (harvest #1674 / MRB #1660).
