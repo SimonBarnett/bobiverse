@@ -91,6 +91,15 @@ def test_fr3763_903_writes_nickserv_ok_marker(tmp_path, monkeypatch):
 
 
 def test_fr3763_nickserv_register_notice_writes_marker(tmp_path, monkeypatch):
+    """FR #4934: use Ergo REGISTER success text (not Atheme 'is now registered')."""
+    s = make(tmp_path, monkeypatch)
+    s.on_line(":NickServ!ns@services NOTICE walrus_console :Account created")
+    marker = tmp_path / "console.nickserv-ok"
+    assert marker.is_file()
+    assert "nickserv-notice" in marker.read_text(encoding="ascii")
+
+
+def test_fr3763_athemestyle_notice_still_writes_marker(tmp_path, monkeypatch):
     s = make(tmp_path, monkeypatch)
     s.on_line(
         ":NickServ!ns@services NOTICE walrus_console :Account walrus_console is now registered"
