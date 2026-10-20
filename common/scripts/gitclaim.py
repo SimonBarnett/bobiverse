@@ -786,6 +786,81 @@ def is_harvest_lesson_pr(
     return bool(re.match(r"(?i)^lesson\s*\(", (title or "").strip()))
 
 
+def is_docs_mrb_pin_pr(
+    *,
+    title: str = "",
+    head_ref: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """True for a ``docs/mrb-*`` hostile pin PR (FR #4917)."""
+    del labels  # reserved; pins are branch/title shaped
+    if re.match(r"(?i)^docs/mrb-", (head_ref or "").strip()):
+        return True
+    return bool(re.match(r"(?i)^docs/mrb-\d+", (title or "").strip()))
+
+
+def is_lesson_or_pin_pr(
+    *,
+    title: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    head_ref: str = "",
+) -> bool:
+    """True for harvest-lesson tips or docs/mrb pin PRs (FR #4917)."""
+    if is_harvest_lesson_pr(title=title, labels=labels):
+        return True
+    if is_docs_mrb_pin_pr(title=title, head_ref=head_ref, labels=labels):
+        return True
+    return bool(re.match(r"(?i)^intake/", (head_ref or "").strip()))
+
+
+def is_lesson_of_lesson_pr(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+    head_ref: str = "",
+) -> bool:
+    """True when a tip is meta about another lesson/pin job (FR #4917).
+
+    Jeeves must not queue MRB for these; seats must not open a further docs/mrb pin.
+    Product playbooks that merely mention fill-madeira / soft-deploy stay False.
+    """
+    if not is_lesson_or_pin_pr(title=title, labels=labels, head_ref=head_ref):
+        return False
+    blob = f"{title or ''}\n{body or ''}"
+    # Pin of a pin / pin whose parent tip is itself a pin or lesson-of-lesson.
+    if is_docs_mrb_pin_pr(title=title, head_ref=head_ref, labels=labels):
+        if re.search(r"(?i)Refs\s+\S+#\d+|Refs\s+https://github\.com/\S+/pull/\d+", blob):
+            if re.search(
+                r"(?i)harvest[- ]lesson|docs/mrb-\d+|lesson\s*\(|CLOSED[- ]duplicate|"
+                r"FAIL[- ]supersede|light[- ]triage|pin harvest",
+                blob,
+            ):
+                # First-level pin of a product lesson still Refs the promote PR;
+                # only treat as chain when the tip text is about reviewing/closing tips.
+                if re.search(
+                    r"(?i)CLOSED[- ]duplicate|FAIL[- ]supersede|process[- ]loop|"
+                    r"light[- ]triage|lesson[- ]of[- ]lesson|reassign|"
+                    r"restating\s+mrb\d+|twin of\s*#\d+",
+                    blob,
+                ):
+                    return True
+        return False
+    # harvest-lesson tip about MRB/FIX/close of another tip or pin.
+    return bool(
+        re.search(
+            r"(?i)CLOSED[- ]duplicate|FAIL[- ]supersede|CLOSED\s+not[- ]useful|"
+            r"CLOSED\s+harvest\s+tip|process[- ]loop|tip[- ]?loop|"
+            r"light[- ]triage.{0,80}(?:PASS|CLOSED|FAIL)|"
+            r"harvest[- ]lesson\s+MRB|docs/mrb-\d+.{0,80}(?:FIX|MRB|CONFLICTING)|"
+            r"\bFIX\b.{0,120}docs/mrb|\bFIX\b.{0,120}\bmrb\d{3,}\b|"
+            r"MRB\s+reassign|do not invent a second tip|"
+            r"restating\s+mrb\d+|needle[- ]drift tip twin",
+            blob,
+        )
+    )
+
+
 _LESSON_OPENER_SEAT_RE = re.compile(r"(?i)\b(?:seat|agent)=`(?P<nick>[A-Za-z0-9_.-]+)`")
 
 
@@ -3948,6 +4023,7 @@ def mrb_row_offerable(
     FR #2375: ``fix(mrb-N)`` / ``mrb-N-fix`` titles are never MRB targets (enqueue already
     skips them; reject at offer too if a row leaked in).
     FR #3928: hold label / ``on hold`` / ``must not merge`` body text → not offerable.
+    FR #4917: lesson-of-lesson / meta tip PRs are never offerable MRB (breaks pin chain).
     """
     if _canon_task(row) != "MRB":
         return True
@@ -3963,10 +4039,25 @@ def mrb_row_offerable(
     labs = row.get("labels") or ()
     if isinstance(labs, str):
         labs = [labs]
+    labs_t = tuple(str(x) for x in labs)
+    head_ref = str(
+        row.get("head")
+        or row.get("head_ref")
+        or row.get("headRefName")
+        or row.get("branch")
+        or ""
+    )
+    if is_lesson_of_lesson_pr(
+        title=str(row.get("title") or ""),
+        body=str(row.get("body") or ""),
+        labels=labs_t,
+        head_ref=head_ref,
+    ):
+        return False
     if pr_hold_reason(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
-        labels=tuple(str(x) for x in labs),
+        labels=labs_t,
     ):
         return False
     raw = str(row.get("url") or "").strip()
