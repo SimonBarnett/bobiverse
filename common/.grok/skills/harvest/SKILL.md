@@ -301,6 +301,7 @@ routes to bobiverse via the split rule.
 - Grok and Cursor both ACK on receipt (FR #4115): submit-verify stop must be turn_open|probe for any kind with a probe_fn, never ack_open alone; log (probe) vs (stop/ACK).
 - FR #4899: soft out-of-fuel hold clear is kind-scoped (grok needs grok tokens/session key; cursor needs Cursor); machine Cursor pool must not clear a grok soft hold unless real kind-switch FR #3997
 - Jeeves FR: when gitclaim.ID_RE widens to synthetic #main/#main-red, widen shop_listen _VERB_RE the same turn or DONE is silent and seats nak-busy until BUSY_STALE_S then requeue green main
+- After enqueue_fix need_pr includes merge state (#4907), any assign_fix fake_fetch must set mergeable+mergeable_state (or fake_pr) or pytest will call live GitHub and fail offline.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
