@@ -2683,23 +2683,20 @@ function Add-BobTrayUsageRow {
 }
 
 function Rebuild-BobTrayTiles {
+    # FR #4938: TipForm shows Grok accounts only (one grok/cursor account per machine).
+    # Cursor spending-group bars (grok chat / high cost / Low cost) are removed from the card.
+    # Fuel still reads local Cursor/Grok elsewhere; this is display-only.
     param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels)
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
     $y = 0
     $jobFont = New-Object System.Drawing.Font 'Segoe UI', 9
-    $cursorAgent = $null
     $grokAgent = $null
     foreach ($a in Get-BobTrayAgentDefs) {
-        if ($a.kind -eq 'cursor') { $cursorAgent = $a }
         if ($a.kind -eq 'grok') { $grokAgent = $a }
     }
-    $cursorIcon = $null
     $grokIcon = $null
-    if ($cursorAgent) {
-        try { $cursorIcon = Get-BobTrayAgentImage -Agent $cursorAgent -Installed (Test-BobTrayAgentInstalled $cursorAgent) } catch { }
-    }
     if ($grokAgent) {
         try { $grokIcon = Get-BobTrayAgentImage -Agent $grokAgent -Installed (Test-BobTrayAgentInstalled $grokAgent) } catch { }
     }
@@ -2716,60 +2713,12 @@ function Rebuild-BobTrayTiles {
     $script:tileHost = $stage
     try {
         # #42: no separate ChanServ section. The ChanServ-registered channels ARE the
-        # 'Grok accounts' rows below: one per digest roster machine, keyed by machine id.
+        # 'Grok accounts' rows: one per digest roster machine, keyed by machine id.
+        # FR #4938: Cursor pool section removed after account unification.
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
-        $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'Cursor' -Icon $cursorIcon -WithHelp -Agent $cursorAgent `
+        $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'Grok accounts' -Icon $grokIcon -Agent $grokAgent `
             -RightText $overLine -RightColor $overColor
-        $pools = @($CursorPools)
-        if ($pools.Count -eq 0) {
-            $acctName = 'cursor'
-            if ($AccountName) { $acctName = [string]$AccountName }
-            $acctLabel = $null
-            if ($AccountLabel) { $acctLabel = [string]$AccountLabel }
-            else {
-                try { $acctLabel = Format-BobCursorAccountLabel -RemainingPct $AccountPct -UsedPct $null }
-                catch { $acctLabel = 'empty' }
-            }
-            $acctColor = $null
-            if ($acctLabel -and ($acctLabel -match '^-' -or $acctLabel.IndexOf([char]0x00A3) -ge 0)) {
-                $acctColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
-            }
-            $acctHeading = ('{0} ({1})' -f $acctName, $acctLabel)
-            if ($AccountReset) { $acctHeading = ('{0} - {1}' -f $acctHeading, [string]$AccountReset) }
-            $y = Add-BobTrayUsageRow -X 0 -Y $y -Heading $acctHeading `
-                -RemainingPct $AccountPct -BarWidth 392 -Icon $null -HeadingColor $acctColor
-            $y += 6
-        }
-        else {
-            # Indent Cursor spending groups like machine tiles under Grok accounts.
-            $indent = 18
-            # Always show every pool (incl. 0%). When low-cost is 0 but another pool still has %,
-            # keep that bar visible so operators see what still allows spend.
-            foreach ($pool in $pools) {
-                if (-not $pool) { continue }
-                $heading = [string]$pool.heading
-                if (-not $heading) { continue }
-                $poolColor = $null
-                $pctLbl = [string]$pool.pct_label
-                if ($pctLbl -and ($pctLbl -match '^-' -or $pctLbl.IndexOf([char]0x00A3) -ge 0)) {
-                    $poolColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
-                }
-                $poolPct = $pool.remaining_pct
-                $help = $null
-                try {
-                    $gid = [string]$pool.group_id
-                    if (-not $gid -and $pool.id) { $gid = [string]$pool.id }
-                    $help = Get-BobTrayCursorGroupHelpTooltip -GroupId $gid
-                } catch { $help = Get-BobTrayCursorHelpTooltip }
-                $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $heading `
-                    -RemainingPct $poolPct -BarWidth 354 -Icon $null -HeadingColor $poolColor -HelpText $help
-                $y += 4
-            }
-            $y += 2
-        }
-        $y += 4
-        $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'Grok accounts' -Icon $grokIcon -Agent $grokAgent
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
@@ -2796,7 +2745,6 @@ function Rebuild-BobTrayTiles {
             $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading `
                 -RemainingPct $pct -BarWidth 354 -Icon $null
             # v0.1.18: ONE line per worker process on this machine, "{irc nick}: {doing|idle}".
-            # Fleet-wide Cursor values are shown ONCE in the Cursor section above, not repeated here.
             $wLines = @($m.worker_lines | Where-Object { $_ })
             $jobTxt = ($wLines -join "`n")
             if (-not $jobTxt) { $y += 4; continue }

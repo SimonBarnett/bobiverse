@@ -154,9 +154,7 @@ def test_status_model_matches_the_old_card_content(tmp_path):
     d = json.loads(_model_json(tmp_path).read_text(encoding="utf-8"))
     assert d["title"] == "bob marchhare" and d["alert"] == "stall" and d["version"] == "bob 1.2.3"
     assert d["overspend"] == "overspend \u00a31.50"
-    assert [c["heading"] for c in d["cursor"]] == ["Low cost models (80%)", "high cost models (-3.2)"]   # Cursor pools on top
-    assert d["cursor"][0]["pct"] == 80 and d["cursor"][0]["help"] == "help for auto" and d["cursor"][0]["red"] is False
-    assert d["cursor"][1]["red"] is True                                                                    # negative / pound label = red
+    assert d["cursor"] == []  # FR #4938: Cursor pool bars removed after account unification
     assert "jobs_text" not in d and "fuels cursor-models" not in json.dumps(d)                              # t832u: no plain-text block, dashboard only
     assert d["short"] == "bob marchhare tip" and d["attention"] is True and d["attention_seq"] == 7 and d["pulse"] is True
     g = d["grok"]
@@ -171,8 +169,8 @@ def test_status_exe_reads_the_snapshot_the_tray_writes(dialogs, tmp_path):
     out = tmp_path / "check.txt"
     _run(dialogs / "bob-status.exe", "--check", str(snap), "--text-out", str(out))
     t = out.read_text(encoding="utf-8")
-    assert "bob marchhare" in t and "cursor=2 grok=2 alert=stall" in t
-    assert t.index("C Low cost models") < t.index("G MARCHHARE")
+    assert "bob marchhare" in t and "cursor=0 grok=2 alert=stall" in t  # FR #4938: no Cursor pool rows
+    assert "C Low cost models" not in t and "G MARCHHARE" in t
     assert "W marchhare-41912: doing FR simonbarnett/bobiverse#9" in t and "W marchhare-5832: idle" in t
 
 
