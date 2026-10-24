@@ -30,6 +30,11 @@
     `job-fr-bobiverse-N` / `fr-bobiverse-N`. When RepoRoot FreeGB stays below
     MinFreeGB after reclaim (candidates on another volume do not free this
     drive), print WARN FR #3698.
+  - FR #4945: product sibling leaves such as `a-search-wt-fr-N`, `a-search-fr-N`,
+    `a-search-mrb-N`, `a-search-fix-N` (and the same shape for bobiverse/airc/...)
+    are job trees when listed by that product's `git worktree list`. Pass
+    `-RepoRoot` of the product install (e.g. C:\ai\a-search). Also reclaim
+    orphan `%TEMP%\a-search-*` on low disk / -Force (same as bobiverse-*).
   - FR #3717: before `git worktree remove`, delete `cdk.out*` under the job
     tree with `cmd rmdir /s /q` (a-search CDK asset hashes hit Windows
     Filename too long / MAX_PATH). Leftover paths after git deregister also
@@ -97,9 +102,19 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
     # Prefix -\d (not end-anchored) keeps job-fr-3641-unmarked reclaimable (FR #3641).
     if ($leaf -match '(?i)^(bob-wt-|job-)?(fr|mrb|uat|docs-mrb)(-[a-z0-9_.]+)?-\d') { return $true }
     if ($leaf -match '(?i)^(bobiverse-|fr-\d|mrb-|uat-|docs-mrb-)') { return $true }
+    # FR #4945: product install siblings --- a-search-wt-fr-N, a-search-fr-N,
+    # a-search-mrb-N, a-search-fix-N, bobiverse-wt-mrb-N, ... Never the bare
+    # product folder (a-search / bob) which is excluded as RootFull above.
+    # Hyphen allowed in the product slug (a-search-...).
+    if ($leaf -match '(?i)^[a-z][a-z0-9_.-]*-(wt-)?(fr|mrb|uat|docs-mrb|fix)-\d') { return $true }
     # Temp-style ...-wt / tmp-*-fr* probe trees.
     if ($leaf -match '(?i)^(bobiverse-|fr-|mrb-|uat-|docs-mrb-).*-wt$') { return $true }
     if ($leaf -match '(?i)^tmp-.*-(fr|mrb|uat)') { return $true }
+    # FR #4945: TEMP a-search-* (and other product-*) registered or orphan leaves.
+    if ($full.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -and
+        ($leaf -match '(?i)^(a-search|bobiverse|airc|jeeves|gh-jeeves)-')) {
+        return $true
+    }
     return $false
 }
 
@@ -373,28 +388,32 @@ foreach ($p in $toRemove) {
     }
 }
 
-# Orphan TEMP bobiverse-* dirs (full reclaim only - FR #1661 soft cap leaves orphans alone)
+# Orphan TEMP bobiverse-* / a-search-* dirs (full reclaim only - FR #1661 soft cap
+# leaves orphans alone). FR #4945 adds a-search-* (and airc/jeeves) beside bobiverse-*.
 $tempRoot = $env:TEMP
 if ($lowDisk -and $tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
-    Get-ChildItem -LiteralPath $tempRoot -Directory -Filter 'bobiverse-*' -ErrorAction SilentlyContinue | ForEach-Object {
-        $full = $_.FullName
-        if ($keepFull -and ($full.TrimEnd('\') -ieq $keepFull.TrimEnd('\'))) { return }
-        $stillListed = $false
-        foreach ($p in $paths) {
-            try {
-                if ([System.IO.Path]::GetFullPath($p).TrimEnd('\') -ieq $full.TrimEnd('\')) { $stillListed = $true; break }
-            } catch { }
-        }
-        if ($stillListed) { return }
-        if ($WhatIfPreference) {
-            Write-Host "WhatIf: Remove-Item orphan $full"
-            $removed++
-            return
-        }
-        if ($PSCmdlet.ShouldProcess($full, 'Remove orphan bobiverse-* directory')) {
-            Write-Host "Removing orphan $full"
-            Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
-            $removed++
+    $orphanFilters = @('bobiverse-*', 'a-search-*', 'airc-*', 'jeeves-*', 'gh-jeeves-*')
+    foreach ($ofilter in $orphanFilters) {
+        Get-ChildItem -LiteralPath $tempRoot -Directory -Filter $ofilter -ErrorAction SilentlyContinue | ForEach-Object {
+            $full = $_.FullName
+            if ($keepFull -and ($full.TrimEnd('\') -ieq $keepFull.TrimEnd('\'))) { return }
+            $stillListed = $false
+            foreach ($p in $paths) {
+                try {
+                    if ([System.IO.Path]::GetFullPath($p).TrimEnd('\') -ieq $full.TrimEnd('\')) { $stillListed = $true; break }
+                } catch { }
+            }
+            if ($stillListed) { return }
+            if ($WhatIfPreference) {
+                Write-Host "WhatIf: Remove-Item orphan $full"
+                $removed++
+                return
+            }
+            if ($PSCmdlet.ShouldProcess($full, "Remove orphan $ofilter directory")) {
+                Write-Host "Removing orphan $full"
+                Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
+                $removed++
+            }
         }
     }
 }
