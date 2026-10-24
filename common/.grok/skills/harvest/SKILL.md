@@ -307,6 +307,7 @@ routes to bobiverse via the split rule.
 - FR #4934: Ergo NickServ success is Account created / You're now logged in (and 900); match those (not only Atheme is now registered) or console.nickserv-ok never lands and the next start/upgrade mints a new GUID.
 - airc console: write console.nickserv-ok on Ergo Account created / You are now logged in (and 900/903), clear password-minted in the same step, keep marker under --home; installers must not overwrite or re-mint while nickserv-ok exists.
 - TipForm/Status: after account unification omit Cursor spending-group section (grok chat / high cost / Low cost); keep Grok accounts only (FR #4938)
+- Clear Test-IsJobWorktreePath must allow hyphens in product slugs (a-search-wt-fr-N); pass -RepoRoot of the product install; TEMP orphan filters need a-search-* too
 
 ## Harvest digest (lessons audit 2026-10-06)
 
