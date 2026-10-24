@@ -309,6 +309,7 @@ routes to bobiverse via the split rule.
 - airc console: write console.nickserv-ok on Ergo Account created / You are now logged in (and 900/903), clear password-minted in the same step, keep marker under --home; installers must not overwrite or re-mint while nickserv-ok exists.
 - TipForm/Status: after account unification omit Cursor spending-group section (grok chat / high cost / Low cost); keep Grok accounts only (FR #4938)
 
+- FR #4955: pull_request labeled on a lesson(book): harvest tip backfills the MRB row when opened missed the queue; lesson( title is enough on opened (no wait for harvest-lesson); product titles do not invent MRB from a stray label.
 ## Harvest digest (lessons audit 2026-10-06)
 
 Generalised from 81 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
