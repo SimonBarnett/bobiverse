@@ -1998,7 +1998,8 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
     pull_request opened/ready_for_review -> MRB (with refs to linked issues)
     pull_request closed -> MRB row used for supersede (merged flag set)
     issues closed -> FR/UAT removal via apply_queue_event (task FR id)
-    issues/pull_request labeled|unlabeled -> update matching row labels; re-eval FR skip (FR #3275)
+    issues/pull_request labeled|unlabeled -> update matching row labels; re-eval FR skip (FR #3275).
+    FR #4955: pull_request labeled on a lesson(book): tip backfills MRB if opened missed.
     """
     if not isinstance(payload, dict):
         return None
@@ -2079,6 +2080,19 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         labels = _label_names(blob.get("labels"))
         state = str(blob.get("state") or "open")
         task = "FR" if ev == "issues" else "MRB"
+        # FR #4955: lesson(book) tips may open before harvest-lesson is applied.
+        # Stamp harvest_lesson so labeled can backfill a missed opened MRB.
+        # Drafts never invent a row. Product titles with a stray label do not.
+        lesson = False
+        opener = ""
+        if ev == "pull_request":
+            lesson = bool(
+                is_harvest_lesson_pr(title=title, labels=labels)
+                and re.match(r"(?i)^lesson\s*\(", title.strip())
+                and blob.get("draft") is not True
+            )
+            if lesson:
+                opener = lesson_pr_opener_seat(body)
         return GitClaim(
             repo=repo,
             task=task,
@@ -2090,6 +2104,8 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
             body=body,
             labels=labels,
             state=state,
+            harvest_lesson=lesson,
+            opened_by=opener,
         )
 
     # FR #924: include synchronize so author_seat backfill runs on push without waiting for edited.
@@ -2620,7 +2636,24 @@ def _apply_label_mutation(doc: dict, claim: GitClaim) -> str:
             return "updated" if updated or ch == "duplicate" else "noop"
         return "updated" if updated else "noop"
 
-    # MRB: mutate existing rows only (do not invent an MRB from a label event).
+    # MRB: mutate existing rows. FR #4955: if opened missed the queue, a later
+    # labeled event on a lesson(book): tip (not draft) backfills the MRB row.
+    # Product PRs and stray harvest-lesson labels still do not invent a row.
+    if (
+        not found_unaccepted
+        and claim.harvest_lesson
+        and str(claim.state or "open").strip().lower() == "open"
+        and not repo_archived_for_queue(claim.repo)
+    ):
+        extra: dict[str, str] = {
+            "url": f"https://github.com/{claim.repo}/pull/{str(claim.id).lstrip('#')}",
+        }
+        ch = _append_unaccepted(doc, claim, **extra)
+        if ch == "skipped":
+            return "noop"
+        if ch == "added":
+            return "added"
+        return "updated" if updated or ch == "duplicate" else "noop"
     return "updated" if updated else "noop"
 
 
