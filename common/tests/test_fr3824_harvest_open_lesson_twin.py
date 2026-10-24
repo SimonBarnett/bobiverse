@@ -74,10 +74,12 @@ def test_find_open_harvest_lesson_twin_matches_seat_and_lesson():
     assert hit is not None
     assert hit["number"] == 3822
 
-    miss_seat = intake.find_open_harvest_lesson_twin(
+    # FR #4953: a covering open tip matches any seat (same lesson text).
+    other_seat = intake.find_open_harvest_lesson_twin(
         filer, REPO, [LESSON], seat="marchhare-960"
     )
-    assert miss_seat is None
+    assert other_seat is not None
+    assert other_seat["number"] == 3822
 
     miss_lesson = intake.find_open_harvest_lesson_twin(
         filer, REPO, ["totally different playbook line"], seat="marchhare-42664"
@@ -192,4 +194,4 @@ def _run_harvest(*extra: str) -> subprocess.CompletedProcess[str]:
 def test_harvest_ps_skip_helper_exists_for_open_twin():
     # Source pin: function or skip string must exist (behaviour covered in intake tests).
     text = HARVEST.read_text(encoding="utf-8-sig")
-    assert "SKIPPED harvest open lesson twin (FR #3824)" in text
+    assert "SKIPPED harvest open lesson twin (FR #3824" in text

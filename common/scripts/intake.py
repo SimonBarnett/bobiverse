@@ -722,10 +722,24 @@ _LESSON_STOPWORDS = frozenset(
 )
 
 
+def _canon_lesson_token(token: str) -> str:
+    t = str(token or "").strip("_")
+    if t.endswith("able") and len(t) > 8:
+        t = t[:-4]
+    elif t.endswith("ed") and len(t) > 6:
+        t = t[:-2]
+    return t
+
+
 def _lesson_sig_tokens(text: str) -> list[str]:
     key = _normalize_lesson_key(text)
     parts = re.findall(r"[a-z0-9_]+", key)
-    return [p for p in parts if len(p) >= 4 and p not in _LESSON_STOPWORDS]
+    out: list[str] = []
+    for raw in parts:
+        p = _canon_lesson_token(raw)
+        if len(p) >= 4 and p not in _LESSON_STOPWORDS:
+            out.append(p)
+    return out
 
 
 def _token_in_haystack(token: str, hay: str) -> bool:
@@ -856,43 +870,247 @@ def _filer_list_open_pulls(filer: Any, repo: str) -> list[dict[str, Any]]:
     return out
 
 
+_LESSON_TITLE_PREFIX_RE = re.compile(r"(?i)^lesson\([^)]+\):\s*")
+_HARVEST_GENERIC_TOKENS = frozenset(
+    {
+        "selftest",
+        "entry",
+        "require",
+        "must",
+        "gate",
+        "fixture",
+        "probes",
+        "probe",
+        "local",
+        "provider",
+        "providers",
+        "checks",
+        "behind",
+        "unless",
+        "absent",
+        "skip",
+        "green",
+        "stay",
+        "without",
+        "deps",
+        "typeof",
+        "function",
+        "config",
+        "box",
+        "secrets",
+        "harvest",
+        "agent",
+        "skills",
+        "skill",
+        "invoke",
+        "bobiverseharvest",
+        "intake",
+        "machine",
+        "source",
+        "book",
+        "seat",
+        "lesson",
+        "lessons",
+        "session",
+        "summary",
+        "via",
+        "search",
+        "asearch",
+        "flamingo",
+        "ionos",
+        "marchhare",
+        "html",
+        "utf8",
+        "from",
+        "with",
+        "that",
+        "this",
+        "when",
+        "into",
+    }
+)
+
+
+def harvest_lesson_title_stem(title: str) -> str:
+    """FR #4953: lesson(<book>): body, truncated ellipsis stripped, first 56 chars."""
+    raw = _normalize_lesson_key(title)
+    raw = _LESSON_TITLE_PREFIX_RE.sub("", raw)
+    raw = re.sub(r"\.{2,}$", "", raw).strip()
+    return raw[:56]
+
+
+def harvest_lesson_title_stems_match(title_a: str, title_b: str) -> bool:
+    """True when two harvest-lesson titles share a long stem (not a short substring)."""
+    sa = harvest_lesson_title_stem(title_a)
+    sb = harvest_lesson_title_stem(title_b)
+    if len(sa) < 28 or len(sb) < 28:
+        return False
+    if sa in sb or sb in sa:
+        return True
+    n = min(len(sa), len(sb), 48)
+    return n >= 32 and sa[:n] == sb[:n]
+
+
+def _lesson_distinctive_tokens(text: str) -> set[str]:
+    return {
+        t
+        for t in _lesson_sig_tokens(text)
+        if t not in _HARVEST_GENERIC_TOKENS
+    }
+
+
+def harvest_pr_covers_new_lesson(
+    existing_title: str,
+    existing_lesson: str,
+    new_lesson: str,
+    *,
+    new_title: str = "",
+) -> bool:
+    """FR #4953: title-stem or distinctive-token twin (any seat).
+
+    Vendor-secrets HTTP tips share a stem. MSSQL /selftest rewords share
+    distinctive tokens (mssql, connect, injectable) without collapsing
+    HTTP vendor-secrets into the MSSQL gate.
+    """
+    exist_l = str(existing_lesson or "").strip()
+    new_l = str(new_lesson or "").strip()
+    if not exist_l or not new_l:
+        return False
+    nt = str(new_title or "").strip()
+    if nt and harvest_lesson_title_stems_match(existing_title, nt):
+        return True
+    if harvest_lesson_title_stems_match(existing_title, new_l):
+        return True
+    tip_md = f"{existing_title}\n{exist_l}"
+    if lesson_covered_by_existing_md(tip_md, new_l):
+        return True
+    if lesson_covered_by_existing_md(new_l, exist_l):
+        return True
+    da = _lesson_distinctive_tokens(exist_l + " " + existing_title)
+    db = _lesson_distinctive_tokens(new_l + " " + nt)
+    shared = da & db
+    # Two distinctive tokens (never a single shared word: provenance
+    # "bobiverse" / "secrets" must not collapse unrelated playbooks).
+    return len(shared) >= 2
+
+
+def _pr_lesson_blob(pr: dict[str, Any]) -> str:
+    title = str(pr.get("title") or "")
+    body = str(pr.get("body") or "")
+    return f"{title}\n{body}"
+
+
+def _harvest_pr_matches_lessons(
+    pr: dict[str, Any],
+    lessons: list[str],
+    *,
+    new_title: str = "",
+) -> bool:
+    title = str(pr.get("title") or "")
+    body = str(pr.get("body") or "")
+    blob = _normalize_lesson_key(f"{title}\n{body}")
+    tip_md = f"{title}\n{body}"
+    rows = [str(x or "").strip() for x in (lessons or []) if str(x or "").strip()]
+    keys = [_normalize_lesson_key(x) for x in rows]
+    keys = [k for k in keys if k and k != "(no new playbook line)"]
+    if not keys:
+        return False
+    if any(k in blob for k in keys):
+        return True
+    if any(lesson_covered_by_existing_md(tip_md, row) for row in rows):
+        return True
+    bullets = _iter_skill_bullet_texts(body) or [body]
+    for row in rows:
+        if any(
+            harvest_pr_covers_new_lesson(title, exist, row, new_title=new_title)
+            for exist in bullets
+        ):
+            return True
+    return False
+
+
 def find_open_harvest_lesson_twin(
     filer: Any,
     repo: str,
     lessons: list[str],
     *,
     seat: str = "",
+    new_title: str = "",
 ) -> dict[str, Any] | None:
-    """Return an open harvest-lesson PR that already carries the same lesson+seat.
+    """Return an open harvest-lesson PR that already covers this lesson.
 
-    FR #3824: same seat + same lesson text must not open a second tip PR
-    (incident #3822/#3823, 26s apart, two intake ids).
+    FR #3824: same seat + same lesson text must not open a second tip PR.
+    FR #4953: any seat; title stem or distinctive-token reword also matches
+    (a-search #4866-#4877 flood). ``seat`` is kept for callers; it no longer
+    excludes a covering tip from another seat.
     """
+    _ = seat
     lesson_rows = [str(x or "").strip() for x in (lessons or []) if str(x or "").strip()]
     keys = [_normalize_lesson_key(x) for x in lesson_rows]
     keys = [k for k in keys if k and k != "(no new playbook line)"]
     if not keys:
         return None
-    want_seat = str(seat or "").strip().lower()
     for pr in _filer_list_open_pulls(filer, repo):
-        title = str(pr.get("title") or "")
-        body = str(pr.get("body") or "")
-        blob = _normalize_lesson_key(f"{title}\n{body}")
-        tip_md = f"{title}\n{body}"
-        # FR #4865: abbreviated needle vs full lesson already on an open tip.
-        matched = any(k in blob for k in keys) or any(
-            lesson_covered_by_existing_md(tip_md, row) for row in lesson_rows
-        )
-        if not matched:
+        if _harvest_pr_matches_lessons(pr, lesson_rows, new_title=new_title):
+            return pr
+    return None
+
+
+def _filer_list_harvest_lesson_pulls(filer: Any, repo: str) -> list[dict[str, Any]]:
+    """Open and closed harvest-lesson PRs (FakeGitHubFiler.prs or Gh list)."""
+    lister = getattr(filer, "list_harvest_lesson_pulls", None)
+    if callable(lister):
+        try:
+            rows = lister(repo)
+        except Exception:
+            rows = []
+        return [r for r in (rows or []) if isinstance(r, dict)]
+    out: list[dict[str, Any]] = []
+    for row in getattr(filer, "prs", []) or []:
+        if not isinstance(row, dict):
             continue
-        pr_seat = extract_seat_from_text(body, title).lower()
-        if want_seat and pr_seat and want_seat != pr_seat:
+        if str(row.get("repo") or "") != str(repo or ""):
             continue
-        if want_seat and not pr_seat:
-            # Require seat match when the new harvest stamped a seat; skip
-            # unlabeled open tips so we do not over-collapse unrelated PRs.
+        labs = {str(x).lower() for x in (row.get("labels") or [])}
+        title = str(row.get("title") or "")
+        if "harvest-lesson" in labs or title.lower().startswith("lesson("):
+            out.append(row)
+    return out
+
+
+def _pr_created_recent(pr: dict[str, Any], *, hours: float = 24.0) -> bool:
+    raw = str(pr.get("createdAt") or pr.get("created_at") or "").strip()
+    if not raw:
+        # In-memory fixtures without a timestamp count as recent.
+        return True
+    try:
+        ts = raw.replace("Z", "+00:00")
+        created = time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
+        age = time.time() - time.mktime(created)
+        return age <= hours * 3600
+    except Exception:
+        return True
+
+
+def find_recent_harvest_lesson_twin(
+    filer: Any,
+    repo: str,
+    lessons: list[str],
+    *,
+    new_title: str = "",
+    hours: float = 24.0,
+) -> dict[str, Any] | None:
+    """FR #4953: open or recently closed harvest-lesson PR covering this lesson."""
+    lesson_rows = [str(x or "").strip() for x in (lessons or []) if str(x or "").strip()]
+    keys = [_normalize_lesson_key(x) for x in lesson_rows]
+    keys = [k for k in keys if k and k != "(no new playbook line)"]
+    if not keys:
+        return None
+    for pr in _filer_list_harvest_lesson_pulls(filer, repo):
+        if not _pr_created_recent(pr, hours=hours):
             continue
-        return pr
+        if _harvest_pr_matches_lessons(pr, lesson_rows, new_title=new_title):
+            return pr
     return None
 
 
@@ -1688,7 +1906,7 @@ def file_submission(
                 if not src_seat:
                     src_seat = extract_seat_from_text(raw_body, title)
                 twin = find_open_harvest_lesson_twin(
-                    filer, repo, lessons, seat=src_seat
+                    filer, repo, lessons, seat=src_seat, new_title=title
                 )
                 if twin and twin.get("url"):
                     rec["url"] = twin.get("url")
@@ -1697,6 +1915,22 @@ def file_submission(
                     rec["skill_book"] = book
                     rec["lesson_count"] = len(lessons)
                     rec["queued"] = False
+                    rec["twin_of"] = twin.get("url")
+                    _save_record(home, rec)
+                    return rec
+                # FR #4953: recently closed harvest-lesson PR (any seat) covering
+                # this title stem / distinctive lesson -> lesson_already_covered.
+                recent = find_recent_harvest_lesson_twin(
+                    filer, repo, lessons, new_title=title
+                )
+                if recent and recent.get("url"):
+                    rec["url"] = recent.get("url")
+                    rec["number"] = recent.get("number")
+                    rec["state"] = "lesson_already_covered"
+                    rec["skill_book"] = book
+                    rec["lesson_count"] = 0
+                    rec["queued"] = False
+                    rec["twin_of"] = recent.get("url")
                     _save_record(home, rec)
                     return rec
                 existing_md = _filer_get_file(filer, repo, skill_path)

@@ -691,10 +691,77 @@ if (Test-HarvestClosedDuplicateLessonLoop -SummaryText $Summary -LessonLines $Le
     return
 }
 
-# FR #3824: if an open harvest-lesson PR from this seat already carries the same
-# lesson text, skip filing (intake also links open twins; this avoids a second POST).
+# FR #3824: if an open harvest-lesson PR already carries the same lesson text,
+# skip filing (intake also links open twins; this avoids a second POST).
+# FR #4953: any seat; also match title stem / distinctive tokens (a-search #4866-#4877).
 # FR #4780: also dedup against open AND closed harvest-lesson PRs from the last 24h
 # (any seat) so MRB reviews of lessons cannot re-file the same playbook tip.
+function Get-HarvestLessonTitleStem([string]$Title) {
+    $t = (([string]$Title).ToLowerInvariant() -replace '\s+', ' ').Trim()
+    $t = [regex]::Replace($t, '^lesson\([^)]+\):\s*', '')
+    $t = [regex]::Replace($t, '\.{2,}$', '').Trim()
+    if ($t.Length -gt 56) { $t = $t.Substring(0, 56) }
+    return $t
+}
+
+function Test-HarvestLessonTitleStemsMatch([string]$A, [string]$B) {
+    $sa = Get-HarvestLessonTitleStem $A
+    $sb = Get-HarvestLessonTitleStem $B
+    if ($sa.Length -lt 28 -or $sb.Length -lt 28) { return $false }
+    if ($sa.Contains($sb) -or $sb.Contains($sa)) { return $true }
+    $n = [Math]::Min([Math]::Min($sa.Length, $sb.Length), 48)
+    return ($n -ge 32 -and $sa.Substring(0, $n) -eq $sb.Substring(0, $n))
+}
+
+function Test-HarvestLessonDistinctiveOverlap([string]$ExistingBlob, [string]$NewLesson) {
+    $generic = [System.Collections.Generic.HashSet[string]]::new([string[]]@(
+        'selftest','entry','require','must','gate','fixture','probes','probe','local',
+        'provider','providers','checks','behind','unless','absent','skip','green','stay',
+        'without','deps','typeof','function','config','box','the','and','for','with',
+        'that','this','from','when','into','secrets','harvest','agent','skills','skill',
+        'invoke','intake','machine','source','book','seat','lesson','lessons','session',
+        'summary','search','html','utf8','flamingo','ionos','marchhare'
+    ))
+    $tok = {
+        param($text)
+        $out = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($m in [regex]::Matches((([string]$text).ToLowerInvariant()), '[a-z0-9_]{4,}')) {
+            $w = $m.Value.Trim('_')
+            if ($w.EndsWith('able') -and $w.Length -gt 8) { $w = $w.Substring(0, $w.Length - 4) }
+            elseif ($w.EndsWith('ed') -and $w.Length -gt 6) { $w = $w.Substring(0, $w.Length - 2) }
+            if ($w.Length -ge 4 -and -not $generic.Contains($w)) { [void]$out.Add($w) }
+        }
+        return $out
+    }
+    $a = & $tok $ExistingBlob
+    $b = & $tok $NewLesson
+    $shared = 0
+    foreach ($w in $a) {
+        if ($b.Contains($w)) { $shared++ }
+    }
+    return ($shared -ge 2)
+}
+
+function Test-HarvestPrCoversLesson {
+    param(
+        [string]$PrTitle,
+        [string]$PrBody,
+        [string[]]$LessonLines
+    )
+    $blob = ((([string]$PrTitle) + "`n" + ([string]$PrBody)).ToLowerInvariant() -replace '\s+', ' ')
+    foreach ($L in @($LessonLines)) {
+        $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
+        if (-not $key -or $key -eq '(no new playbook line)') { continue }
+        if ($blob.Contains($key)) { return $true }
+        $short = $key.Substring(0, [Math]::Min(80, $key.Length))
+        if ($short.Length -ge 40 -and $blob.Contains($short)) { return $true }
+        if (Test-HarvestLessonTitleStemsMatch -A $PrTitle -B $L) { return $true }
+        if (Test-HarvestLessonTitleStemsMatch -A $PrTitle -B $key) { return $true }
+        if (Test-HarvestLessonDistinctiveOverlap -ExistingBlob $blob -NewLesson $key) { return $true }
+    }
+    return $false
+}
+
 function Test-HarvestOpenLessonTwin {
     param(
         [string]$RepoName,
@@ -714,17 +781,10 @@ function Test-HarvestOpenLessonTwin {
         $raw = & gh pr list --repo $RepoName --state open --label harvest-lesson --limit 40 --json title,body,url 2>$null
         if ($raw) {
             $prs = $raw | ConvertFrom-Json
-            if ($prs -and $Seat) {
-                $seatL = $Seat.ToLowerInvariant()
-                foreach ($pr in @($prs)) {
-                    $blob = ((([string]$pr.title) + "`n" + ([string]$pr.body))).ToLowerInvariant()
-                    $blob = ($blob -replace '\s+', ' ')
-                    $seatHit = $blob -match ("seat=`?" + [regex]::Escape($seatL))
-                    if (-not $seatHit) { continue }
-                    foreach ($L in $lessons) {
-                        $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
-                        if ($key -and $blob.Contains($key)) { return $true }
-                    }
+            foreach ($pr in @($prs)) {
+                # FR #4953: any seat (seat arg kept for callers / logs).
+                if (Test-HarvestPrCoversLesson -PrTitle ([string]$pr.title) -PrBody ([string]$pr.body) -LessonLines $lessons) {
+                    return $true
                 }
             }
         }
@@ -758,14 +818,8 @@ function Test-HarvestRecentLessonDedup {
             $created = $null
             try { $created = [datetime]::Parse([string]$pr.createdAt).ToUniversalTime() } catch { continue }
             if ($created -lt $cutoff) { continue }
-            $blob = ((([string]$pr.title) + "`n" + ([string]$pr.body))).ToLowerInvariant()
-            $blob = ($blob -replace '\s+', ' ')
-            foreach ($L in $lessons) {
-                $key = (($L.ToLowerInvariant()) -replace '\s+', ' ').Trim()
-                if ($key.Length -lt 40) { continue }
-                if ($key -and $blob.Contains($key)) { return $true }
-                $short = $key.Substring(0, [Math]::Min(80, $key.Length))
-                if ($short.Length -ge 40 -and $blob.Contains($short)) { return $true }
+            if (Test-HarvestPrCoversLesson -PrTitle ([string]$pr.title) -PrBody ([string]$pr.body) -LessonLines $lessons) {
+                return $true
             }
         }
     } catch {
@@ -927,7 +981,7 @@ if ($seatNick.Length -gt 64) { $seatNick = $seatNick.Substring(0, 64) }
 
 # FR #3824: client-side skip when an open tip from this seat already has the lesson.
 if (Test-HarvestOpenLessonTwin -RepoName $Repo -LessonLines $Lesson -Seat $seatNick) {
-    Write-Host "SKIPPED harvest open lesson twin (FR #3824): open harvest-lesson PR from seat=$seatNick already carries this lesson"
+    Write-Host "SKIPPED harvest open lesson twin (FR #3824/#4953): open harvest-lesson PR already covers this lesson (any seat; cite existing PR; lesson_already_covered)"
     return
 }
 if (Test-HarvestRecentLessonDedup -RepoName $Repo -LessonLines $Lesson) {
