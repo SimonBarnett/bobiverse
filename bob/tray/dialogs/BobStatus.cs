@@ -1,5 +1,6 @@
-﻿// t828u: Status (pools) card as a fast compiled exe. Same content as the old PowerShell TipForm: Cursor pools on top (fleet),
-// Grok account rows, the workers of each machine as "{irc nick}: {doing|idle}" (from the digest), alert, version footer.
+﻿// t828u: Status card as a fast compiled exe. Same content as the TipForm (FR #4938): Grok account rows only
+// (Cursor spending-group bars removed after account unification), workers as "{irc nick}: {doing|idle}" from the digest,
+// alert, version footer.
 // Data is the snapshot the tray writes after every poll (<root>\run\tray-status.json); this exe never touches the network, so it
 // opens instantly and re-reads the file every 2 s while open. Parked until X / Esc, like the old card.
 using System;
@@ -121,14 +122,11 @@ namespace BobDialogs
             Draw(g, m.Title, fTitle, Fg, 14, y);
             Draw(g, "X", fHead, Muted, CloseRect.X + 6, 10);
             y += 26;
-            // t832u: the dashboard only (pools, Grok accounts + workers, alert, version). The old hover/tooltip text block is NOT drawn.
+            // t832u / FR #4938: dashboard = Grok accounts + workers, alert, version (no Cursor pool section).
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
-            if (m.Cursor.Count > 0 || m.Grok.Count > 0)
+            if (m.Grok.Count > 0)
             {
-                y = Section(g, y, "Cursor", m.Overspend);
-                foreach (StatusRow r in m.Cursor) y = UsageRow(g, 32, y, r, 354) + 4;
-                y += 6;
-                y = Section(g, y, "Grok accounts", "");
+                y = Section(g, y, "Grok accounts", m.Overspend);
                 foreach (StatusRow r in m.Grok)
                 {
                     y = UsageRow(g, 32, y, r, 354);

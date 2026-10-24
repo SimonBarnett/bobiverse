@@ -1,6 +1,7 @@
 ﻿#Requires -Version 5.1
-# t828u: the Acknowledge (About) and Status (pools) dialogs are compiled exes (tools\bob-about.exe, tools\bob-status.exe; sources in
-# dialogs\). The tray only (a) writes the status snapshot <root>\run\tray-status.json after every poll and (b) starts the exe.
+# t828u: the Acknowledge (About) and Status dialogs are compiled exes (tools\bob-about.exe, tools\bob-status.exe; sources in
+# dialogs\). FR #4938: Status shows Grok accounts only (no Cursor pool bars). The tray only (a) writes the status snapshot
+# <root>\run\tray-status.json after every poll and (b) starts the exe.
 # Start-Process never waits, so the tray UI thread never blocks on a dialog or on the install scan; each exe is single-instance
 # (a second start just brings the open window forward). If an exe is missing the caller falls back to the old in-process dialog.
 # ASCII-only for Windows PowerShell 5.1.
@@ -45,8 +46,9 @@ function ConvertTo-BobTrayStatusBar {
 
 function New-BobTrayStatusModel {
     <#
-      The pure data behind the Status card, in the exact order the old card drew it: Cursor pools first (fleet), then one Grok row per
-      canonical machine with its workers as "{irc nick}: {doing|idle}", then alert + version footer. $Hover is Get-BobTrayHover's object.
+      The pure data behind the Status card (FR #4938): Grok account rows only (one per canonical machine with workers as
+      "{irc nick}: {doing|idle}"), then alert + version footer. Cursor spending-group bars are omitted after account
+      unification (one grok/cursor account per machine). $Hover is Get-BobTrayHover's object.
     #>
     param($Hover, [string]$AlertKind = 'none', [string[]]$Alerts = @(), [string]$Version = '', [string]$Machine = '', [string]$Title = '',
         [string]$Short = '', [bool]$Attention = $false, [int64]$AttentionSeq = 0, [bool]$Pulse = $false)
@@ -59,37 +61,8 @@ function New-BobTrayStatusModel {
             $over = ('overspend {0}{1}' -f $pound, $v.ToString('N2', [Globalization.CultureInfo]::InvariantCulture))
         }
     }
-    $isRed = { param($label) ($label -and (([string]$label) -match '^-' -or ([string]$label).IndexOf([char]0x00A3) -ge 0)) }
+    # FR #4938: cursor[] stays empty so Status / TipForm never paint obsolete pool bars.
     $cursor = New-Object System.Collections.Generic.List[object]
-    $pools = @(); if ($h) { $pools = @($h.cursor_pools | Where-Object { $_ }) }
-    if ($pools.Count -gt 0) {
-        foreach ($pool in $pools) {
-            $heading = [string]$pool.heading
-            if (-not $heading) { continue }
-            $help = ''
-            try {
-                $gid = [string]$pool.group_id
-                if (-not $gid -and $pool.id) { $gid = [string]$pool.id }
-                if (Get-Command Get-BobTrayCursorGroupHelpTooltip -ErrorAction SilentlyContinue) { $help = [string](Get-BobTrayCursorGroupHelpTooltip -GroupId $gid) }
-            }
-            catch { }
-            $row = ConvertTo-BobTrayStatusBar -RemainingPct $pool.remaining_pct
-            $row.heading = $heading; $row.red = [bool](& $isRed ([string]$pool.pct_label)); $row.help = $help
-            $cursor.Add($row)
-        }
-    }
-    elseif ($h) {
-        $acctName = 'cursor'; if ($h.account_name) { $acctName = [string]$h.account_name }
-        $acctLabel = [string]$h.account_label
-        if (-not $acctLabel) {
-            try { $acctLabel = [string](Format-BobCursorAccountLabel -RemainingPct $h.account_remaining_pct -UsedPct $null) } catch { $acctLabel = 'empty' }
-        }
-        $heading = ('{0} ({1})' -f $acctName, $acctLabel)
-        if ($h.account_reset_label) { $heading = ('{0} - {1}' -f $heading, [string]$h.account_reset_label) }
-        $row = ConvertTo-BobTrayStatusBar -RemainingPct $h.account_remaining_pct
-        $row.heading = $heading; $row.red = [bool](& $isRed $acctLabel); $row.help = ''
-        $cursor.Add($row)
-    }
     $grok = New-Object System.Collections.Generic.List[object]
     $shown = @{}
     if ($h) {
