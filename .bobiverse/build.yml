@@ -33,6 +33,10 @@ pack:
     - "bob-{{version}}.msi.sha256"
     - "airc-{{version}}.msi"
     - "airc-{{version}}.msi.sha256"
+    # FR #4950 / #3991: Assert-BobiverseReleaseAssets requires these; they must
+    # be in artifacts so gh release create uploads them (not only the MSIs).
+    - "airc-network-installer-{{version}}.exe"
+    - "airc-network-installer-{{version}}.exe.sha256"
   assert: powershell -NoProfile -File common/scripts/Assert-BobiverseReleaseAssets.ps1 -Tag v{{version}}
 release:
   target: github-prerelease
