@@ -36,6 +36,8 @@ IGNORE_FILE = "ignored.json"
 NAMED_PRIORITY = {"high": 1, "hi": 1, "medium": 5, "med": 5, "low": 9, "lo": 9}
 DEFAULT_PRIORITY = 1
 UNFOCUSED_RANK = 10_000
+# FR #4969: unfocused priority-customer repos sort after every non-customer row.
+CUSTOMER_UNFOCUSED_RANK = UNFOCUSED_RANK + 10_000
 
 _REPO_TOKEN = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$")
 _ITEM_TOKEN = re.compile(r"^([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)\s*#\s*(\d+)\s*$")
@@ -388,13 +390,19 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
 
     1. Per-item focus rank (if any)
     2. Repo focus priority (lower wins); unfocused last
-    3. Task kind: MRB < UAT < FR
-    4. release-blocker before plain work (FR #4373)
-    5. Lowest issue/PR number
-    6. Repo name (final tie-break — not focus timestamp)
+    3. FR #4969: same-priority customer topic lags non-customer; unfocused customer
+       after all non-customer rows. Explicit item/repo !focus still applies.
+    4. Task kind: MRB < UAT < FR
+    5. release-blocker before plain work (FR #4373)
+    6. Lowest issue/PR number
+    7. Repo name (final tie-break — not focus timestamp)
     """
     if doc is None:
         doc = load_focus(home)
+    import priority_customer as _pc
+
+    repo = str(row.get("repo") or "")
+    customer = _pc.is_priority_customer(home, repo)
     blocker = _release_blocker_rank(row)
     ir = item_rank(doc, row)
     if ir is not None:
@@ -405,29 +413,29 @@ def offer_sort_key(home: Path, row: dict, *, doc: dict | None = None) -> tuple:
             blocker,
             "",
             row_offer_number(row),
-            str(row.get("repo") or "").lower(),
+            repo.lower(),
         )
-    ent = _repo_entry(doc, str(row.get("repo") or ""))
+    ent = _repo_entry(doc, repo)
+    lag = 1 if customer else 0
     if ent is None:
-        # Unfocused: still kind + blocker + number so fallback paths stay consistent.
+        pri = CUSTOMER_UNFOCUSED_RANK if customer else UNFOCUSED_RANK
         return (
             1,
-            UNFOCUSED_RANK,
+            pri,
+            lag,
             _task_order(row),
             blocker,
             row_offer_number(row),
-            str(row.get("repo") or "").lower(),
-            "",
+            repo.lower(),
         )
-    # FR #3205: same priority → kind then blocker then number; drop focus timestamp (ent[1]).
     return (
         1,
         int(ent[0]),
+        lag,
         _task_order(row),
         blocker,
         row_offer_number(row),
-        str(row.get("repo") or "").lower(),
-        "",
+        repo.lower(),
     )
 
 
