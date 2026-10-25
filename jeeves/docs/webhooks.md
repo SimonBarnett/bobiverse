@@ -73,6 +73,19 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
   -d "{\"kind\":\"harvest\",\"title\":\"example lesson\",\"body\":\"…\",\"repo\":\"SimonBarnett/bobiverse\"}"
 ```
 
+Optional **`dedupe_key`** (FR #4963, at most 128 chars; else `400 bad_dedupe_key`): scoped per `repo`. Decision order after allowlist/rate/redaction:
+
+1. **`idempotency_key`** — same POST retry is a no-op (`duplicate: true`, original `action`/`number`/`url`).
+2. **`dedupe_key`** — open match: comment (`action=commented`); closed match: reopen then comment (`action=reopened`); no match: file a new issue (`action=filed`) with hidden `<!-- intake-dedupe:<sha256(repo|dedupe_key)> -->` and a local `intake/records/dedupe-*.json` index (rebuilt from `gh issue list --search` if the index is lost).
+
+Response fields stay backward compatible: `intake_id`, `url`, `queued`, `duplicate`, `state`, plus `action` (`filed`|`commented`|`reopened`) and `number`. Outbox rows carry `dedupe_key`; `drain_intake_outbox` (FR #2595) runs the same comment/reopen/file decision (no duplicate comments on a re-drain).
+
+```bash
+curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
+  -H "Content-Type: application/json" \
+  -d "{\"kind\":\"issue\",\"repo\":\"SimonBarnett/a-search\",\"title\":\"import failure: awin merge\",\"body\":\"merge threw\",\"idempotency_key\":\"run-2026-10-25-1\",\"dedupe_key\":\"awin|feed-1|E_MERGE\"}"
+```
+
 Use a **single** `/bob/v1/intake` for harvest; do not add `/bob/v1/harvest`.
 
 Intake `repo` must match `owner/name` and be under **`SimonBarnett/*`** (FR #3135) or the POST returns **403** `repo_not_allowed`. Non-SimonBarnett owners stay denied unless explicitly listed in `DEFAULT_ALLOW_REPOS` later. Known products (`bobiverse`, `skills-visionary`, `agentic_fomprep`, `a-search`, `trutex`) remain documented examples (FR #94; FR #3023; FR #3050). Private repos are eligible (visibility is not a gate). Queue behaviour uses `!ignore` / `!focus` — not a second hardcoded intake list.

@@ -210,6 +210,131 @@ class GhCliFiler:
             raise GitHubDown(err[:500])
         return self._parse_issue(proc.stdout or "")
 
+    def _run_issue(self, *args: str) -> subprocess.CompletedProcess[str]:
+        cmd = [self.gh_bin, "issue", *args]
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+            env=os.environ.copy(),
+        )
+
+    def comment_issue(self, repo: str, number: int, body: str) -> None:
+        """FR #4963: ``gh issue comment``."""
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        try:
+            proc = self._run_issue(
+                "comment",
+                str(int(number)),
+                "-R",
+                str(repo),
+                "--body",
+                str(body or ""),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubDown(str(exc)) from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "gh issue comment failed").strip()
+            raise GitHubDown(err[:500])
+
+    def reopen_issue(self, repo: str, number: int) -> None:
+        """FR #4963: ``gh issue reopen``."""
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        try:
+            proc = self._run_issue("reopen", str(int(number)), "-R", str(repo))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubDown(str(exc)) from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "gh issue reopen failed").strip()
+            raise GitHubDown(err[:500])
+
+    def get_issue_state(self, repo: str, number: int) -> str:
+        """FR #4963: ``gh issue view --json state``."""
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        try:
+            proc = self._run_issue(
+                "view",
+                str(int(number)),
+                "-R",
+                str(repo),
+                "--json",
+                "state",
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubDown(str(exc)) from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "gh issue view failed").strip()
+            raise GitHubDown(err[:500])
+        try:
+            doc = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise GitHubDown(f"gh issue view non-json: {(proc.stdout or '')[:200]}") from exc
+        return str(doc.get("state") or "open").lower()
+
+    def search_issue_by_marker(self, repo: str, marker: str) -> dict[str, Any] | None:
+        """FR #4963: ``gh issue list --search '<sha> in:body' --state all``."""
+        ensure_gh_token_env()
+        if not shutil.which(self.gh_bin) and self.gh_bin == "gh":
+            raise GitHubDown("gh not found")
+        needle = str(marker or "").strip()
+        if not needle:
+            return None
+        sha = needle
+        if "intake-dedupe:" in needle:
+            sha = needle.split("intake-dedupe:", 1)[-1].replace("-->", "").strip()
+        try:
+            proc = self._run_issue(
+                "list",
+                "-R",
+                str(repo),
+                "--search",
+                f"{sha} in:body",
+                "--state",
+                "all",
+                "--json",
+                "number,url,state,body",
+                "--limit",
+                "5",
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubDown(str(exc)) from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "gh issue list failed").strip()
+            raise GitHubDown(err[:500])
+        try:
+            rows = json.loads(proc.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise GitHubDown(f"gh issue list non-json: {(proc.stdout or '')[:200]}") from exc
+        if not isinstance(rows, list):
+            return None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if needle not in str(row.get("body") or "") and sha not in str(row.get("body") or ""):
+                continue
+            number = int(row.get("number") or 0)
+            url = str(row.get("url") or "")
+            if not number:
+                continue
+            if not url:
+                url = f"https://github.com/{repo}/issues/{number}"
+            return {
+                "number": number,
+                "url": url,
+                "state": str(row.get("state") or "open").lower(),
+            }
+        return None
+
     def _api(
         self,
         method: str,
