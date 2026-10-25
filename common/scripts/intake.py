@@ -195,6 +195,11 @@ def product_default_skill_book(
     short = repo_l.rsplit("/", 1)[-1]
     if repo_l in topics or any(t == short or t.endswith("/" + short) for t in topics):
         return CUSTOMER_DEFAULT_SKILL_BOOK
+    # FR #4976: topic set may be empty on intake (never refreshed). Other
+    # SimonBarnett product/customer repos still must not invent bobiverse
+    # common/.grok/skills/harvest (euroflo#7 class).
+    if repo_l.startswith("simonbarnett/") and repo_l != "simonbarnett/bobiverse":
+        return CUSTOMER_DEFAULT_SKILL_BOOK
     return None
 
 
@@ -446,6 +451,8 @@ def resolve_skill_book(
     (never invent ``common/.grok/skills/harvest``).
     FR #4970: other ``priority-customer`` topic repos park at repo-root harvest-agent-skills
     (topic set, not a hardcoded customer list).
+    FR #4976: when the topic set is empty, any non-bobiverse ``SimonBarnett/*`` repo
+    still parks at repo-root harvest-agent-skills (euroflo#7).
     """
     repo_l = str(repo or "").strip().lower()
     product = product_default_skill_book(repo_l, topic_repos=topic_repos, home=home)
