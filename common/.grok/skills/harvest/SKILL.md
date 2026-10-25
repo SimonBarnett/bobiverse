@@ -61,6 +61,16 @@ lessons table; **this** `harvest` skill is the honesty-box report route
 Do **not** harvest Day Works product, CE Priority DBA, or generic formprep
 lessons here --- route those to their owning repos.
 
+**FR #4970 (customer vs general Priority):** a lesson that is true only for one
+customer or project goes in that customer's `SimonBarnett/*` repo tagged GitHub
+topic `priority-customer` (look the topic up; do not hard-code the names). Test:
+"would this be true for every Priority customer?" Yes -> `SimonBarnett/agentic_fomprep`.
+No -> the customer repo. Example: Rees Machinery Priority instance / forms / data
+-> `SimonBarnett/rees`, **not** `agentic_fomprep` harvest-agent-skills and **not**
+bobiverse `harvest`. Generic Priority form-prep (true for any customer) still goes
+to `SimonBarnett/agentic_fomprep`. Shared lookup: `common/scripts/priority_customer.py`
+(same topic file as FR #4969).
+
 ## Report route (strict order)
 
 Never require anyone to create a GitHub account just to report back.

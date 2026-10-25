@@ -20,6 +20,8 @@ description: >
 
 **Harvest repo (a-search incident 2026-10-08):** always pass the job's repo: `Invoke-BobiverseHarvest.ps1 -Repo <owner/repo of the job> -Summary ... -Lesson ...` (job `FR SimonBarnett/a-search#N` -> `-Repo SimonBarnett/a-search`, which lands in a-search `.grok/skills/harvest-agent-skills/SKILL.md`). Never harvest a-search or other product lessons to SimonBarnett/bobiverse; only Bob fleet tooling lessons use `-Repo SimonBarnett/bobiverse`.
 
+**FR #4970:** a customer/project-specific lesson goes to that customer's `priority-customer` topic repo, not a general skill book. Test: "would this be true for every Priority customer?" Yes -> `SimonBarnett/agentic_fomprep`. No -> the customer repo (example: Rees Machinery -> `SimonBarnett/rees`). Generic Priority form-prep stays `SimonBarnett/agentic_fomprep`.
+
 You are a worker agent driven by **bob-worker.exe**. This skill is your operating manual. The program owns the IRC connection; you never open one.
 
 ## Your identity and channel

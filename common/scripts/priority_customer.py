@@ -1,4 +1,4 @@
-"""FR #4969: persist GitHub topic ``priority-customer`` for Jeeves low-priority sort.
+"""Shared GitHub topic ``priority-customer`` lookup (FR #4969 Jeeves sort, FR #4970 harvest).
 
 One search per resync (not per offer). Lookup failure keeps the last on-disk set.
 """
@@ -95,6 +95,6 @@ def refresh_topic_repos(home: Path, *, fetch_json: Callable[[str], object]) -> s
                     names.append(full)
         save_topic_repos(home, names)
         return load_topic_repos(home)
-    except Exception as exc:  # noqa: BLE001 — keep last set (acceptance 4)
+    except Exception as exc:  # noqa: BLE001 - keep last set (acceptance 4)
         log.warning("priority-customer topic lookup failed; keeping last set: %s", exc)
         return last
