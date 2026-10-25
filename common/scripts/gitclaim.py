@@ -813,6 +813,21 @@ def is_lesson_or_pin_pr(
     return bool(re.match(r"(?i)^intake/", (head_ref or "").strip()))
 
 
+# FR #4968: intake harvest PR bodies (ver=20261020-fr4917) include the light-triage
+# instruction paragraph with "board CLOSED not-useful". That must not mark a normal
+# product lesson as lesson-of-lesson (webhook path stored the full body; resync
+# stored empty body and therefore offered).
+_INTAKE_LIGHT_TRIAGE_BOILERPLATE_RE = re.compile(
+    r"(?is)MRB\s*\(\s*light\s+triage\s*\):.*?"
+    r"(?=\n\s*\n|\nTarget\s+skill\s+book:|\n---|\Z)"
+)
+
+
+def strip_intake_light_triage_boilerplate(body: str = "") -> str:
+    """Remove the standard intake light-triage instruction block (FR #4968)."""
+    return _INTAKE_LIGHT_TRIAGE_BOILERPLATE_RE.sub("\n", body or "")
+
+
 def is_lesson_of_lesson_pr(
     *,
     title: str = "",
@@ -824,10 +839,14 @@ def is_lesson_of_lesson_pr(
 
     Jeeves must not queue MRB for these; seats must not open a further docs/mrb pin.
     Product playbooks that merely mention fill-madeira / soft-deploy stay False.
+
+    FR #4968: strip the intake light-triage boilerplate before matching so the
+    template's ``CLOSED not-useful`` instruction does not false-positive.
     """
     if not is_lesson_or_pin_pr(title=title, labels=labels, head_ref=head_ref):
         return False
-    blob = f"{title or ''}\n{body or ''}"
+    body_n = strip_intake_light_triage_boilerplate(body)
+    blob = f"{title or ''}\n{body_n}"
     # Pin of a pin / pin whose parent tip is itself a pin or lesson-of-lesson.
     if is_docs_mrb_pin_pr(title=title, head_ref=head_ref, labels=labels):
         if re.search(r"(?i)Refs\s+\S+#\d+|Refs\s+https://github\.com/\S+/pull/\d+", blob):
@@ -4150,31 +4169,25 @@ def mrb_row_should_survive_resync(
     return False
 
 
-def mrb_row_offerable(
+def mrb_row_not_offerable_reason(
     row: dict,
     *,
     pr_exists=None,
-) -> bool:
-    """True when an MRB row has a resolvable pull URL (and optional live PR check).
+) -> str | None:
+    """Why an MRB row is not offerable, or None when it is (FR #4968).
 
-    FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
-    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed -> False).
-    FR #2375: ``fix(mrb-N)`` / ``mrb-N-fix`` titles are never MRB targets (enqueue already
-    skips them; reject at offer too if a row leaked in).
-    FR #3928: hold label / ``on hold`` / ``must not merge`` body text → not offerable.
-    FR #4917: lesson-of-lesson / meta tip PRs are never offerable MRB (breaks pin chain).
+    Used by purge logging so ``purge_dead_mrb`` names repo/PR and reason instead of
+    a bare ``dropped purge_dead_mrb xN`` count.
     """
     if _canon_task(row) != "MRB":
-        return True
+        return None
     if row.get("merged") in (True, "true", "1", 1):
-        return False
-    # FR #4415: stamped closed state (webhook / resync) must not be offered even
-    # when the !bored path passes pr_exists=None (no live GitHub check).
+        return "merged"
     if str(row.get("state") or "").strip().lower() == "closed":
-        return False
+        return "state=closed"
     titleish = " ".join([str(row.get("title") or ""), str(row.get("line") or "")])
     if is_mrb_fix_pr_title(titleish):
-        return False
+        return "fix_pr_title"
     labs = row.get("labels") or ()
     if isinstance(labs, str):
         labs = [labs]
@@ -4192,13 +4205,38 @@ def mrb_row_offerable(
         labels=labs_t,
         head_ref=head_ref,
     ):
-        return False
-    if pr_hold_reason(
+        return "lesson_of_lesson"
+    hold = pr_hold_reason(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
         labels=labs_t,
-    ):
+    )
+    if hold:
+        return f"hold:{hold}"
+    # Structural / live URL checks stay in mrb_row_offerable (shared tail).
+    return None
+
+
+def mrb_row_offerable(
+    row: dict,
+    *,
+    pr_exists=None,
+) -> bool:
+    """True when an MRB row has a resolvable pull URL (and optional live PR check).
+
+    FR #595 / #247: never offer MRB without a real ``/pull/N`` (or explicit pr_id).
+    FR #740 / #738: ``pr_exists`` must mean the pull is still **open** (merged/closed -> False).
+    FR #2375: ``fix(mrb-N)`` / ``mrb-N-fix`` titles are never MRB targets (enqueue already
+    skips them; reject at offer too if a row leaked in).
+    FR #3928: hold label / ``on hold`` / ``must not merge`` body text → not offerable.
+    FR #4917: lesson-of-lesson / meta tip PRs are never offerable MRB (breaks pin chain).
+    FR #4968: intake light-triage boilerplate is stripped before lesson-of-lesson match.
+    """
+    early = mrb_row_not_offerable_reason(row, pr_exists=pr_exists)
+    if early is not None:
         return False
+    if _canon_task(row) != "MRB":
+        return True
     raw = str(row.get("url") or "").strip()
     if ISSUE_URL_RE.search(raw) and not PULL_URL_RE.search(raw):
         return False
@@ -4927,6 +4965,7 @@ def _purge_dead_mrb_unaccepted(
     home: Path | None = None,
     open_pulls: dict | None = None,
     fetched_repos: set | None = None,
+    log=None,
 ) -> int:
     """Drop unaccepted MRB rows that are already done or no longer an open pull (FR #740 / #1323 / #2458).
 
@@ -4935,6 +4974,8 @@ def _purge_dead_mrb_unaccepted(
 
     FR #2458: when ``open_pulls`` + ``fetched_repos`` are provided (resync), drop MRB
     rows whose id is absent from that repo's open-pull set (merged/closed webhook miss).
+
+    FR #4968: every drop logs ``repo`` + ``#id`` + reason (not only a bare count).
     """
     before = len(doc.get("unaccepted") or [])
     kept: list[dict] = []
@@ -4945,12 +4986,24 @@ def _purge_dead_mrb_unaccepted(
         if _canon_task(row) == "MRB":
             # FR #4574: needs_human rows are not offerable. Do not spend pr_exists on them.
             row_pr = None if row_needs_human(row, "") else pr_exists
-            if mrb_already_done(doc, row, home=home, pr_exists=row_pr):
-                continue
-            if not mrb_row_offerable(row, pr_exists=row_pr):
-                continue
             repo = str(row.get("repo") or "").strip()
             ident = _norm_row_id(str(row.get("id") or ""))
+            label = f"{repo}{ident}" if repo or ident else "?"
+            if mrb_already_done(doc, row, home=home, pr_exists=row_pr):
+                _log_queue_purge(
+                    f"INFO git-claim purge_dead_mrb {label} reason=already_done",
+                    log=log,
+                )
+                continue
+            why = mrb_row_not_offerable_reason(row, pr_exists=row_pr)
+            if why is not None or not mrb_row_offerable(row, pr_exists=row_pr):
+                if why is None:
+                    why = "not_offerable"
+                _log_queue_purge(
+                    f"INFO git-claim purge_dead_mrb {label} reason={why}",
+                    log=log,
+                )
+                continue
             if (
                 open_pulls is not None
                 and repo
@@ -4958,6 +5011,10 @@ def _purge_dead_mrb_unaccepted(
                 and ident
                 and ident not in (open_pulls.get(repo) or set())
             ):
+                _log_queue_purge(
+                    f"INFO git-claim purge_dead_mrb {label} reason=not_in_open_pulls",
+                    log=log,
+                )
                 continue
             if home is not None and row_pr is not None:
                 if repo and ident and mrb_ledger_done_hold(home, repo, ident):
