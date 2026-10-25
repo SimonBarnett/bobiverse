@@ -1765,7 +1765,7 @@ def _idem_path(home: Path, key: str) -> Path:
 
 
 def intake_dedupe_sha(repo: str, dedupe_key: str) -> str:
-    """sha256(repo|dedupe_key) hex — scoped per repo (FR #4963)."""
+    """sha256(repo|dedupe_key) hex - scoped per repo (FR #4963)."""
     blob = f"{str(repo or '').strip()}|{str(dedupe_key or '').strip()}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
