@@ -31,6 +31,8 @@ DEFAULT_ALLOW_REPOS = frozenset(
         "SimonBarnett/a-search",  # FR #3023: Plan product; intake Flush must not drop
         "SimonBarnett/trutex",  # FR #3050: private Plan product; allowlist ignores visibility
         "SimonBarnett/ce-priority",  # FR #4830: dayworks-launcher park; never invent-harvest
+        "SimonBarnett/rees",  # FR #4970: priority-customer topic (docs; not the lookup list)
+        "SimonBarnett/euroflo",
     }
 )
 _ALLOW_OWNER = "simonbarnett"  # FR #3135: case-insensitive owner gate
@@ -142,8 +144,68 @@ class LessonOwner(NamedTuple):
     missing: bool = False
 
 
-def lesson_owner_repo(title: str = "", body: str = "", source: str = "") -> LessonOwner:
-    """Return the skill-book owning repo for a harvest/skill lesson (FR #3299).
+def _priority_customer_topic_repos(topic_repos=None, home=None) -> set[str]:
+    """FR #4970 / #4969: topic set from caller, else last on-disk lookup (never drop)."""
+    if topic_repos is not None:
+        return {str(x).strip().lower() for x in topic_repos if str(x).strip()}
+    if home is None:
+        return set()
+    try:
+        import priority_customer as _pc
+
+        return set(_pc.load_topic_repos(Path(home)))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _customer_repo_from_topics(low: str, topics: set[str]) -> str | None:
+    """Match a topic-repo slug in lesson text (new tags via fake/live topic set)."""
+    hits: list[str] = []
+    for repo in topics:
+        short = repo.rsplit("/", 1)[-1]
+        if len(short) < 3:
+            continue
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(short)}(?![A-Za-z0-9_])", low):
+            hits.append(repo)
+    if not hits:
+        return None
+    hits.sort()
+    full = hits[0]
+    name = full.split("/", 1)[1] if "/" in full else full
+    return f"SimonBarnett/{name}"
+
+
+CUSTOMER_DEFAULT_SKILL_BOOK = (
+    "harvest-agent-skills",
+    ".grok/skills/harvest-agent-skills/SKILL.md",
+)
+
+
+def product_default_skill_book(
+    repo: str, topic_repos=None, home=None
+) -> tuple[str, str] | None:
+    """Fixed PRODUCT_DEFAULT first (ce-priority dayworks-launcher); else topic customers."""
+    repo_l = str(repo or "").strip().lower()
+    if not repo_l:
+        return None
+    hit = PRODUCT_DEFAULT_SKILL_BOOK.get(repo_l)
+    if hit:
+        return hit
+    topics = _priority_customer_topic_repos(topic_repos, home)
+    short = repo_l.rsplit("/", 1)[-1]
+    if repo_l in topics or any(t == short or t.endswith("/" + short) for t in topics):
+        return CUSTOMER_DEFAULT_SKILL_BOOK
+    return None
+
+
+def lesson_owner_repo(
+    title: str = "",
+    body: str = "",
+    source: str = "",
+    topic_repos=None,
+    home=None,
+) -> LessonOwner:
+    """Return the skill-book owning repo for a harvest/skill lesson (FR #3299 / #4970).
 
     ``missing=True`` means the intended owner is a planned product that does not
     exist yet - MRB must leave the tip OPEN (never FAIL-close).
@@ -151,6 +213,7 @@ def lesson_owner_repo(title: str = "", body: str = "", source: str = "") -> Less
     """
     blob = f"{title or ''}\n{body or ''}\n{source or ''}"
     low = blob.lower()
+    topics = _priority_customer_topic_repos(topic_repos, home)
 
     # Explicit owner/name first.
     m = re.search(r"(?i)\b(SimonBarnett/[A-Za-z0-9_.-]+)\b", blob)
@@ -161,6 +224,11 @@ def lesson_owner_repo(title: str = "", body: str = "", source: str = "") -> Less
         parts = repo.split("/", 1)
         repo = f"SimonBarnett/{parts[1]}" if len(parts) == 2 else repo
         return LessonOwner(repo, missing=(repo_l in MISSING_PRODUCT_REPOS))
+
+    # FR #4970: customer slug from priority-customer topic set before generic Priority.
+    cust = _customer_repo_from_topics(low, topics)
+    if cust:
+        return LessonOwner(cust, missing=False)
 
     # Product / plan cues (fixtures from FR #3299).
     if re.search(r"(?i)iphone[- ]?text[- ]?bridge|shortcuts?\s+all-?sms", low):
@@ -362,6 +430,8 @@ def resolve_skill_book(
     title: str = "",
     body: str = "",
     repo: str = "",
+    topic_repos=None,
+    home=None,
 ) -> tuple[str, str]:
     """Map source.skill_book / path / keywords -> (book_name, repo-relative SKILL.md path).
 
@@ -374,9 +444,11 @@ def resolve_skill_book(
     honesty-box path (``.grok/skills/harvest-agent-skills/SKILL.md``).
     FR #4830: SimonBarnett/ce-priority parks at ``dayworks/.grok/skills/dayworks-launcher/SKILL.md``
     (never invent ``common/.grok/skills/harvest``).
+    FR #4970: other ``priority-customer`` topic repos park at repo-root harvest-agent-skills
+    (topic set, not a hardcoded customer list).
     """
     repo_l = str(repo or "").strip().lower()
-    product = PRODUCT_DEFAULT_SKILL_BOOK.get(repo_l)
+    product = product_default_skill_book(repo_l, topic_repos=topic_repos, home=home)
 
     def _product_or_bobiverse(book: str, path: str) -> tuple[str, str]:
         path_n = path.replace("\\", "/")

@@ -55,7 +55,7 @@ Empty harvest (nothing new, nothing broken): no empty PR. That is the only quiet
 | This harvest index | `common/docs/skill-harvest-log.md` |
 | Pre-bobiverse historical harvest notes | `docs/archive/*/docs/skill-harvest-log.md` (read-only) |
 
-Live siblings that still take product FRs: `SimonBarnett/skills-visionary`, `SimonBarnett/agentic_fomprep`. Archived repos (`agentic_build`, `agentic_irc`, `gh-Jeeves`, `AgentMonitor`, `bob-design-uat`) are **not** intake targets - see `docs/ARCHIVED_REPOS.md`.
+Live siblings that still take product FRs: `SimonBarnett/skills-visionary`, `SimonBarnett/agentic_fomprep`. Customer/project lessons go to the matching `priority-customer` topic repo (FR #4970), not this general book. Test: "would this be true for every Priority customer?" Yes -> `SimonBarnett/agentic_fomprep`. No -> that customer's repo (example: Rees Machinery instance -> `SimonBarnett/rees`). Archived repos (`agentic_build`, `agentic_irc`, `gh-Jeeves`, `AgentMonitor`, `bob-design-uat`) are **not** intake targets - see `docs/ARCHIVED_REPOS.md`.
 
 Branch `harvest/…` or `fix/…` -> PR to `main`. Bump `common/VERSION` only when the change must ship in the next MSI pack.
 
