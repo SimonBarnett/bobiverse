@@ -9772,6 +9772,7 @@ def resync_from_github(
     fetch_json=None,
     token: str = "",
     ignored=(),
+    force_refresh: bool = False,
 ) -> dict:
     """Rebuild FR/MRB rows from GitHub: open issues without a closing PR -> FR, open PRs -> MRB.
 
@@ -9784,6 +9785,10 @@ def resync_from_github(
     * skill/harvest receipts ARE added as FR promote jobs (FR #1682 / #1684; operator 2026-10-04);
     * existing rows keep their seq/offer fields; new items are appended; repos in ``ignored`` are skipped.
     * ``NotModified`` / 304 from a budgeted ETag getter leaves that repo's rows untouched (not failed).
+    * FR #4959: issues and pulls are fetched independently. A 304 on open issues must not
+      skip open pulls (that hid new lesson MRBs behind ``repos=0`` until ``!resync``).
+      When both lists 304, the repo is listed in ``unchanged`` (still not ``failed``).
+    * ``force_refresh`` skips If-None-Match on budgeted getters (startup / ``!resync``).
 
     ``token`` (optional) is sent as ``Authorization: Bearer``; it is never logged or returned.
     ``fetch_json(url) -> dict|list`` is the test seam; default is urllib with the token.
@@ -9791,7 +9796,8 @@ def resync_from_github(
     import urllib.request
     import github_api_budget as gab
 
-    def _default_fetch(url: str):
+    def _default_fetch(url: str, force_refresh: bool = False):
+        del force_refresh
         hdrs = {"Accept": "application/vnd.github+json", "User-Agent": "bobiverse-jeeves"}
         if token:
             hdrs["Authorization"] = "Bearer " + token
@@ -9801,12 +9807,24 @@ def resync_from_github(
 
     getter = fetch_json or _default_fetch
 
-    def _fetch_all_pages(url_base: str, *, per_page: int = 100, max_pages: int = 20) -> list:
+    def _call_getter(url: str, *, force: bool = False):
+        """Call ``getter`` with optional force_refresh; tolerate url-only test doubles."""
+        use_force = bool(force or force_refresh)
+        try:
+            return getter(url, force_refresh=use_force)
+        except TypeError:
+            return getter(url)
+
+    def _fetch_all_pages(
+        url_base: str, *, per_page: int = 100, max_pages: int = 20, force: bool = False
+    ) -> list:
         """Follow GitHub list pagination (FR #1149 / #1444). One page left 100+ open issues off-queue."""
         out: list = []
         for page in range(1, max_pages + 1):
             sep = "&" if "?" in url_base else "?"
-            chunk = getter(f"{url_base}{sep}per_page={per_page}&page={page}")
+            chunk = _call_getter(
+                f"{url_base}{sep}per_page={per_page}&page={page}", force=force
+            )
             if not isinstance(chunk, list):
                 break
             out.extend(chunk)
@@ -9818,6 +9836,7 @@ def resync_from_github(
     desired: list[GitClaim] = []
     fetched: list[str] = []
     failed: list[str] = []
+    unchanged: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
     skipped_draft = 0
     skipped_ci = 0
@@ -9847,17 +9866,46 @@ def resync_from_github(
         # FR #785: never resync an archived/superseded source (use successor via discover rewrite).
         if repo_archived_for_queue(repo):
             continue
+        issues_url = f"https://api.github.com/repos/{repo}/issues?state=open"
+        pulls_url = f"https://api.github.com/repos/{repo}/pulls?state=open"
+        issues_nm = False
+        pulls_nm = False
+        issues: list = []
+        prs: list = []
         try:
-            issues = _fetch_all_pages(
-                f"https://api.github.com/repos/{repo}/issues?state=open"
-            )
-            prs = _fetch_all_pages(
-                f"https://api.github.com/repos/{repo}/pulls?state=open"
-            )
+            issues = _fetch_all_pages(issues_url)
         except gab.NotModified:
-            # FR #3212: ETag/304 — repo unchanged; keep prior rows (do not mark fetched or failed).
-            continue
+            # FR #4959: do not skip pulls — issues 304 alone used to hide new open PRs.
+            issues_nm = True
         except Exception:  # noqa: BLE001 - one bad repo (404/403/rate limit) must not wipe its rows
+            failed.append(repo)
+            continue
+        try:
+            prs = _fetch_all_pages(pulls_url)
+        except gab.NotModified:
+            pulls_nm = True
+        except Exception:  # noqa: BLE001
+            failed.append(repo)
+            continue
+        if issues_nm and pulls_nm:
+            # FR #3212 / #4959: both lists unchanged — keep prior rows; surface as unchanged.
+            unchanged.append(repo)
+            continue
+        # One list changed: force-refresh the 304 side so prune/merge has a full picture
+        # (empty [] from a skipped 304 would wrongly drop FR or MRB rows).
+        try:
+            if issues_nm:
+                try:
+                    issues = _fetch_all_pages(issues_url, force=True)
+                except gab.NotModified:
+                    # Budgeted force_refresh never 304s; url-only test doubles might.
+                    issues = []
+            if pulls_nm:
+                try:
+                    prs = _fetch_all_pages(pulls_url, force=True)
+                except gab.NotModified:
+                    prs = []
+        except Exception:  # noqa: BLE001
             failed.append(repo)
             continue
         fetched.append(repo)
@@ -10825,6 +10873,7 @@ def resync_from_github(
                 "focus_redundant": int(focus_redundant),
                 "repos": list(fetched),
                 "failed": list(failed),
+                "unchanged": list(unchanged),
             }
     except (TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}

@@ -345,6 +345,7 @@ def resync_cycle(
     owners: set[str] | None = None,
     budget: gab.GithubApiBudget | None = None,
     essential: bool = False,
+    force_refresh: bool = False,
     log=None,
 ) -> dict:
     import gitclaim
@@ -352,6 +353,8 @@ def resync_cycle(
         owners = {"simonbarnett"}
     bud = budget or gab.GithubApiBudget(home, clock=time.time, log=log or (lambda _s: None))
     _log = log or (lambda _s: None)
+    # FR #4959: startup + !resync force a full GET (no If-None-Match).
+    force = bool(force_refresh or essential)
     if fetch_json is None:
         if not bud.allow("reconcile", essential=essential):
             # FR #4422: never skip silently — log why and surface retry/reset fields.
@@ -364,6 +367,7 @@ def resync_cycle(
                 "dropped": 0,
                 "repos": [],
                 "failed": [],
+                "unchanged": [],
                 "note": "budget-backoff",
                 "skip_reason": why,
                 "rate_reset": bud.rate_reset,
@@ -372,7 +376,9 @@ def resync_cycle(
                 "dropped_detail": [],
                 "budget": bud.status_line(),
             }
-        getter = gab.make_budgeted_fetch(bud, token, path="reconcile", essential=essential)
+        getter = gab.make_budgeted_fetch(
+            bud, token, path="reconcile", essential=essential, force_refresh=force
+        )
     else:
         getter = fetch_json
     # FR #180: drop skill/harvest/safe-to-close junk before GitHub merge so they cannot be re-offered.
@@ -380,14 +386,23 @@ def resync_cycle(
     repos = discover_repos(home, owners, getter, ignored)
     if not repos:
         return {"ok": True, "unaccepted": len(gitclaim.load_unaccepted(home)), "added": 0, "dropped": 0,
-                "repos": [], "failed": [], "note": "no repos", "pruned": pruned.get("dropped", 0),
+                "repos": [], "failed": [], "unchanged": [], "note": "no repos",
+                "pruned": pruned.get("dropped", 0),
                 "pruned_detail": list(pruned.get("dropped_detail") or []),
                 "dropped_detail": [], "budget": bud.status_line()}
-    out = gitclaim.resync_from_github(home, repos, fetch_json=getter, token=token, ignored=list(ignored))
+    out = gitclaim.resync_from_github(
+        home,
+        repos,
+        fetch_json=getter,
+        token=token,
+        ignored=list(ignored),
+        force_refresh=force,
+    )
     if isinstance(out, dict):
         out["pruned"] = int(pruned.get("dropped") or 0)
         out["pruned_detail"] = list(pruned.get("dropped_detail") or [])
         out["budget"] = bud.status_line()
+        out.setdefault("unchanged", [])
     return out
 
 
@@ -425,6 +440,8 @@ class ChairJobs:
         self.last_resync: dict = {}
         self.last_resync_at = 0.0
         self._startup_resync_done = False
+        # FR #4959: !resync sets this so the next cycle skips If-None-Match.
+        self._force_refresh_resync = False
         self.api_budget = gab.GithubApiBudget(self.home, clock=self.clock, log=self.log)
 
     def _announce(self, text: str) -> None:
@@ -432,6 +449,8 @@ class ChairJobs:
         bobreport.enqueue_chair_fleet_privmsg(self.digest_home, text)
 
     def request_resync(self) -> None:
+        # FR #4959: operator !resync must force-refresh (not ride stale issues ETags).
+        self._force_refresh_resync = True
         self.next_resync = 0.0
 
     def _maybe_pull_resync_forward_after_skip(self, now: float) -> None:
@@ -569,6 +588,8 @@ class ChairJobs:
                 self.last_resync = {"ok": False, "error": "no token"}
                 return
             essential = not self._startup_resync_done
+            force_refresh = bool(self._force_refresh_resync or essential)
+            self._force_refresh_resync = False
             res = resync_cycle(
                 self.home,
                 token=token,
@@ -577,6 +598,7 @@ class ChairJobs:
                 owners=self.owners,
                 budget=self.api_budget,
                 essential=essential,
+                force_refresh=force_refresh,
                 log=self.log,
             )
             self._startup_resync_done = True
@@ -588,9 +610,11 @@ class ChairJobs:
                     why = res.get("skip_reason") or note
                     self.log(f"WARN github-resync skipped note={note} reason={why}")
                 else:
+                    # FR #4959: surface unchanged= so repos=0 is not mistaken for "no repos".
                     self.log(
                         f"INFO github-resync ok repos={len(res.get('repos') or [])} "
                         f"failed={len(res.get('failed') or [])} "
+                        f"unchanged={len(res.get('unchanged') or [])} "
                         f"added={res.get('added', 0)} dropped={res.get('dropped', 0)} "
                         f"pruned={res.get('pruned', 0)} skipped_draft={res.get('skipped_draft', 0)} "
                         f"unaccepted={res.get('unaccepted', 0)} "

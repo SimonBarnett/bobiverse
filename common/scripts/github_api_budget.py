@@ -283,6 +283,15 @@ class GithubApiBudget:
             self.etags.pop(key, None)
         self._persist_etags()
 
+    def clear_etags_matching(self, pred) -> int:
+        """Drop cached ETags whose URL key matches ``pred(url) -> bool``. Returns count removed."""
+        drop = [k for k in list(self.etags.keys()) if pred(str(k))]
+        for k in drop:
+            self.etags.pop(k, None)
+        if drop:
+            self._persist_etags()
+        return len(drop)
+
     def status_line(self) -> str:
         self._roll_hour()
         rem = self.rate_remaining if self.rate_remaining is not None else "?"
@@ -298,12 +307,15 @@ class GithubApiBudget:
         token: str = "",
         path: str = "reconcile",
         essential: bool = False,
+        force_refresh: bool = False,
         timeout: float = 30.0,
         opener: Callable[..., Any] | None = None,
     ) -> Any:
         """GET with If-None-Match. Returns JSON body, or ``NOT_MODIFIED`` on 304.
 
         304 does not charge the hourly budget. Other successes charge one call.
+        ``force_refresh`` (FR #4959) skips If-None-Match so !resync / startup /
+        partial-list recovery always sees the current open issues and pulls.
         """
         if not self.allow(path, essential=essential):
             raise RuntimeError(f"github-api backoff path={path}")
@@ -314,7 +326,7 @@ class GithubApiBudget:
         }
         if token:
             hdrs["Authorization"] = "Bearer " + token
-        etag = self.get_etag(url)
+        etag = None if force_refresh else self.get_etag(url)
         if etag:
             hdrs["If-None-Match"] = etag
 
@@ -364,16 +376,49 @@ def make_budgeted_fetch(
     *,
     path: str = "reconcile",
     essential: bool = False,
+    force_refresh: bool = False,
     opener: Callable[..., Any] | None = None,
-) -> Callable[[str], Any]:
-    """``fetch_json(url)`` seam for resync: raises ``NotModified`` on 304."""
+) -> Callable[..., Any]:
+    """``fetch_json(url)`` seam for resync: raises ``NotModified`` on 304.
 
-    def fetch(url: str):
+    FR #4959: ``force_refresh=True`` (or per-call ``force_refresh=True``) skips
+    If-None-Match. Startup / ``!resync`` use this so a stale issues ETag cannot
+    hide new open pulls.
+    """
+    default_force = bool(force_refresh)
+
+    def fetch(url: str, force_refresh: bool = False):
         out = budget.conditional_get(
-            url, token=token, path=path, essential=essential, opener=opener
+            url,
+            token=token,
+            path=path,
+            essential=essential,
+            force_refresh=bool(force_refresh or default_force),
+            opener=opener,
         )
         if out is NOT_MODIFIED:
             raise NotModified(url)
         return out
 
     return fetch
+
+
+def invalidate_repo_list_etags(home: Path, repo: str) -> int:
+    """Drop cached ETags for open issues/pulls list URLs of ``owner/name`` (FR #4959).
+
+    Webhook ``pull_request`` / ``issues`` deliveries call this so the next reconcile
+    re-GETs lists even when the webhook enqueue path missed a row.
+    """
+    repo_s = str(repo or "").strip()
+    if not repo_s or "/" not in repo_s:
+        return 0
+    needle = f"/repos/{repo_s.lower()}/"
+    bud = GithubApiBudget(Path(home), log=lambda _s: None)
+
+    def _pred(url: str) -> bool:
+        u = (url or "").lower()
+        if needle not in u:
+            return False
+        return ("/issues" in u) or ("/pulls" in u)
+
+    return bud.clear_etags_matching(_pred)
