@@ -2471,6 +2471,26 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
             chan = str(note.get("channel") or "").strip()
             if text and chan:
                 enqueue_chair_fleet_privmsg(home, text, channel=chan)
+    # FR #4959: drop list ETags for this repo so the next reconcile re-GETs issues/pulls
+    # even when webhook enqueue missed a lesson (or other) MRB row.
+    if ev in ("pull_request", "issues"):
+        repo_name = ""
+        try:
+            repo_name = _github_repo_name(payload)
+        except Exception:  # noqa: BLE001
+            repo_name = ""
+        if repo_name:
+            homes = {Path(home), fleet_digest_home(Path(home))}
+            try:
+                import bob_home
+
+                homes.add(Path(bob_home.chair_home()))
+                homes.add(Path(bob_home.digest_home()))
+            except Exception:  # noqa: BLE001
+                pass
+            for h in homes:
+                with contextlib.suppress(Exception):
+                    gab.invalidate_repo_list_etags(h, repo_name)
     # FR #3212: stamp delivery time for gap-triggered reconcile (even announce-only events).
     gab.stamp_git_webhook(home)
     if not enqueue_chair_fleet_privmsg(home, line):

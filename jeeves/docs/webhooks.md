@@ -63,7 +63,7 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/git" \
   -d "{\"action\":\"opened\",\"repository\":{\"full_name\":\"SimonBarnett/bobiverse\"},\"issue\":{\"number\":1,\"title\":\"example\"}}"
 ```
 
-Fleet hooks subscribe to `issues`, `pull_request`, `push`, and **`issue_comment`** (FR #4711: owner comments clear queue `needs_human` after GIVEUP threshold). A `lesson(<book>):` harvest tip enqueues MRB on `opened` from the title (no wait for `harvest-lesson`). If that webhook is missed, `pull_request` `labeled` backfills the same row (FR #4955). Product titles do not invent an MRB from a stray label. Repo setup helper: `tools/New-BobGitWebhook.ps1` / `tools/bob_git_hook.py` (re-run after merge so live hooks pick up `issue_comment`). a-search hook events must include `pull_request`.
+Fleet hooks subscribe to `issues`, `pull_request`, `push`, and **`issue_comment`** (FR #4711: owner comments clear queue `needs_human` after GIVEUP threshold). A `lesson(<book>):` harvest tip enqueues MRB on `opened` from the title (no wait for `harvest-lesson`). If that webhook is missed, `pull_request` `labeled` backfills the same row (FR #4955). `pull_request`/`issues` deliveries also invalidate that repo's open issues/pulls list ETags so the next reconcile re-GETs even when enqueue missed (FR #4959). Product titles do not invent an MRB from a stray label. Repo setup helper: `tools/New-BobGitWebhook.ps1` / `tools/bob_git_hook.py` (re-run after merge so live hooks pick up `issue_comment`). a-search hook events must include `pull_request`.
 
 ### POST intake (harvest) — no secret
 
