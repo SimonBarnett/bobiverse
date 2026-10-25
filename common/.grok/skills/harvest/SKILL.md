@@ -321,6 +321,7 @@ routes to bobiverse via the split rule.
 
 - FR #4955: pull_request labeled on a lesson(book): harvest tip backfills the MRB row when opened missed the queue; lesson( title is enough on opened (no wait for harvest-lesson); product titles do not invent MRB from a stray label.
 - When GitHub list ETags 304 on open issues, still fetch open pulls (or force-refresh the other list); log unchanged= so repos=0 is not mistaken for discover empty; !resync must skip If-None-Match
+- When the priority-customer topic file is empty, intake still must not invent common/.grok/skills/harvest on SimonBarnett/<product>; use .grok/skills/harvest-agent-skills (bobiverse and ce-priority stay their fixed books).
 
 ## Harvest digest (lessons audit 2026-10-06)
 
