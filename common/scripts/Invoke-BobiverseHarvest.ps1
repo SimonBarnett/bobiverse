@@ -935,6 +935,10 @@ if ($bobTooling) {
     # on ce-priority (assert-lock / tip-loop class of ce-priority#36/#37/#38).
     $bookName = 'dayworks-launcher'
     Write-Host "INFO FR #4830 product default skill_book=dayworks-launcher for SimonBarnett/ce-priority (never invent common/.grok/skills/harvest)"
+} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/' ) -and ($Repo -notmatch '(?i)^SimonBarnett/bobiverse$')) {
+    # FR #4976: euroflo / other customer product repos (topic set may be empty).
+    $bookName = 'harvest-agent-skills'
+    Write-Host "INFO FR #4976 product default skill_book=harvest-agent-skills for $Repo (not common/.grok/skills/harvest)"
 }
 
 # FR #3317: DryRun (and payload) emit the owning skill-book path inside that repo.
