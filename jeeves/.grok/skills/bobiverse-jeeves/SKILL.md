@@ -98,6 +98,7 @@ See `bobiverse-fleet-ops`. Jeeves specifics: the installer also registers task `
 `Bobiverse` (Restart ircJeeves, Services, Logs, Skill books, Agent guide, Jeeves command reference - all with the systray icon).
 Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Service ircJeeves` ONLY.
 **FR #3190:** do not re-enable retired task `BobAutoFocus` (ops `auto-focus.py` per-item `!focus` spam). Post-upgrade restarts `BobCallback` / `BobAutoFeed` only and runs `Unregister-BobAutoFocus.ps1`. Use repo-level `!focus <Owner/repo>`.
+**FR #4969:** repos with GitHub topic `priority-customer` sort after non-customer work (`!list` / `!bored`). Tag with `gh repo edit SimonBarnett/<repo> --add-topic priority-customer`. Jeeves refreshes the topic set once per resync (persisted beside the queue). Explicit `!focus` still wins.
 
 ## Cutover checklist (Ergo host)
 

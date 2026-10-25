@@ -102,7 +102,10 @@ COMMANDS: tuple = (
                 "priority-sort !list and assign-on-!bored (simon/ops)", OPS_ROLES, "!focus strict on",
                 "focus.json beside the queue. Items (owner/repo#N) rank ahead of repo focus. Lower number first. "
                 "Bare !focus lists strict flag, items, repos (read is open). !focus strict on|off: when on, "
-                "!list and !bored only use focused work.", ("unfocus", "list")),
+                "!list and !bored only use focused work. Repos with GitHub topic priority-customer sort "
+                "after non-customer work (refreshed on resync). Tag: "
+                "gh repo edit SimonBarnett/<repo> --add-topic priority-customer. "
+                "Explicit !focus / item focus on a customer repo still wins.", ("unfocus", "list")),
     CommandSpec("unfocus", "!unfocus {repo|owner/repo#N}|all", "remove repo/item focus or clear all (simon/ops)",
                 OPS_ROLES, "!unfocus SimonBarnett/bobiverse#110", "Drops focus entries; !unfocus all clears all.",
                 ("focus", "list")),

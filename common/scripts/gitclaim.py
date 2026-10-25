@@ -9872,6 +9872,14 @@ def resync_from_github(
         except TypeError:
             return getter(url)
 
+    # FR #4969: one topic search per resync; persist beside the queue.
+    try:
+        import priority_customer as _pc
+
+        _pc.refresh_topic_repos(home, fetch_json=_call_getter)
+    except Exception:  # noqa: BLE001 — never block the queue
+        pass
+
     def _fetch_all_pages(
         url_base: str, *, per_page: int = 100, max_pages: int = 20, force: bool = False
     ) -> list:
