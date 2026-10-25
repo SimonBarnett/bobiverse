@@ -95,6 +95,6 @@ def refresh_topic_repos(home: Path, *, fetch_json: Callable[[str], object]) -> s
                     names.append(full)
         save_topic_repos(home, names)
         return load_topic_repos(home)
-    except Exception as exc:  # noqa: BLE001 - keep last set
+    except Exception as exc:  # noqa: BLE001 - keep last set (acceptance 4)
         log.warning("priority-customer topic lookup failed; keeping last set: %s", exc)
         return last
