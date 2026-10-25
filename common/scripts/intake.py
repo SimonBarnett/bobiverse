@@ -1294,6 +1294,18 @@ class GitHubFiler(Protocol):
         """Optional: return {url, number, branch} for an existing head branch, else None."""
         return None
 
+    def comment_issue(self, repo: str, number: int, body: str) -> None:
+        """Add a comment. May raise GitHubDown."""
+
+    def reopen_issue(self, repo: str, number: int) -> None:
+        """Reopen a closed issue. May raise GitHubDown."""
+
+    def get_issue_state(self, repo: str, number: int) -> str:
+        """Return 'open' or 'closed'. May raise GitHubDown."""
+
+    def search_issue_by_marker(self, repo: str, marker: str) -> dict[str, Any] | None:
+        """Find issue by hidden body marker. Return {number, url, state} or None."""
+
 
 class GitHubDown(RuntimeError):
     """GitHub filing failed. ``reason`` selects the intake log tag (FR #2579)."""
@@ -1309,6 +1321,7 @@ class FakeGitHubFiler:
 
     issues: list[dict[str, Any]] = field(default_factory=list)
     prs: list[dict[str, Any]] = field(default_factory=list)
+    comments: list[dict[str, Any]] = field(default_factory=list)
     repo_files: dict[str, str] = field(default_factory=dict)
     down: bool = False
     _n: int = 1000
@@ -1323,10 +1336,49 @@ class FakeGitHubFiler:
             "title": title,
             "body": body,
             "labels": list(labels),
+            "state": "open",
             "url": f"https://github.com/{repo}/issues/{self._n}",
         }
         self.issues.append(row)
         return {"url": row["url"], "number": self._n}
+
+    def comment_issue(self, repo: str, number: int, body: str) -> None:
+        if self.down:
+            raise GitHubDown("github unreachable")
+        self.comments.append({"repo": repo, "number": int(number), "body": body})
+
+    def reopen_issue(self, repo: str, number: int) -> None:
+        if self.down:
+            raise GitHubDown("github unreachable")
+        for row in self.issues:
+            if str(row.get("repo") or "") == repo and int(row.get("number") or 0) == int(number):
+                row["state"] = "open"
+                return
+
+    def get_issue_state(self, repo: str, number: int) -> str:
+        if self.down:
+            raise GitHubDown("github unreachable")
+        for row in self.issues:
+            if str(row.get("repo") or "") == repo and int(row.get("number") or 0) == int(number):
+                return str(row.get("state") or "open")
+        return "open"
+
+    def search_issue_by_marker(self, repo: str, marker: str) -> dict[str, Any] | None:
+        if self.down:
+            raise GitHubDown("github unreachable")
+        needle = str(marker or "")
+        if not needle:
+            return None
+        for row in self.issues:
+            if str(row.get("repo") or "") != repo:
+                continue
+            if needle in str(row.get("body") or ""):
+                return {
+                    "number": row.get("number"),
+                    "url": row.get("url"),
+                    "state": str(row.get("state") or "open"),
+                }
+        return None
 
     def get_file_content(self, repo: str, path: str) -> str:
         _ = repo
@@ -1543,6 +1595,9 @@ def validate_payload(
     idem = str(payload.get("idempotency_key") or "").strip()
     if len(idem) > 128:
         return "bad_idempotency_key", {}
+    dedupe = str(payload.get("dedupe_key") or "").strip()
+    if len(dedupe) > 128:
+        return "bad_dedupe_key", {}
     norm = {
         "kind": kind,
         "repo": repo,
@@ -1559,6 +1614,7 @@ def validate_payload(
         "contact": contact[:200] if contact else "",
         "contact_public": contact_public,
         "idempotency_key": idem,
+        "dedupe_key": dedupe,
         "keyed": keyed,
     }
     return None, norm
@@ -1580,6 +1636,7 @@ PERMANENT_INTAKE_ERRORS = frozenset(
         "payload_too_large",
         "empty_harvest",
         "bad_idempotency_key",
+        "bad_dedupe_key",
         "unauthorized",
         "worker_receipt_not_issue",
     }
@@ -1707,6 +1764,160 @@ def _idem_path(home: Path, key: str) -> Path:
     return intake_root(home) / "records" / f"idem-{h}.json"
 
 
+def intake_dedupe_sha(repo: str, dedupe_key: str) -> str:
+    """sha256(repo|dedupe_key) hex - scoped per repo (FR #4963)."""
+    blob = f"{str(repo or '').strip()}|{str(dedupe_key or '').strip()}"
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def intake_dedupe_marker(repo: str, dedupe_key: str) -> str:
+    return f"<!-- intake-dedupe:{intake_dedupe_sha(repo, dedupe_key)} -->"
+
+
+def _dedupe_path(home: Path, repo: str, dedupe_key: str) -> Path:
+    return intake_root(home) / "records" / f"dedupe-{intake_dedupe_sha(repo, dedupe_key)[:32]}.json"
+
+
+def _save_dedupe(
+    home: Path,
+    repo: str,
+    dedupe_key: str,
+    *,
+    number: int,
+    url: str,
+    intake_id: str,
+) -> None:
+    if not str(dedupe_key or "").strip():
+        return
+    path = _dedupe_path(home, repo, dedupe_key)
+    path.write_text(
+        json.dumps(
+            {
+                "repo": repo,
+                "number": int(number),
+                "url": url,
+                "intake_id": intake_id,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _find_dedupe(home: Path, repo: str, dedupe_key: str) -> dict | None:
+    if not str(dedupe_key or "").strip():
+        return None
+    path = _dedupe_path(home, repo, dedupe_key)
+    if not path.is_file():
+        return None
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if str(meta.get("repo") or "") != str(repo or ""):
+        return None
+    if not meta.get("number"):
+        return None
+    return meta
+
+
+def _lookup_dedupe_hit(
+    home: Path,
+    filer: GitHubFiler,
+    repo: str,
+    dedupe_key: str,
+) -> dict | None:
+    hit = _find_dedupe(home, repo, dedupe_key)
+    if hit:
+        return hit
+    search = getattr(filer, "search_issue_by_marker", None)
+    if not callable(search):
+        return None
+    marker = intake_dedupe_marker(repo, dedupe_key)
+    found = search(repo, marker)
+    if not found or not found.get("number"):
+        return None
+    url = str(found.get("url") or f"https://github.com/{repo}/issues/{found['number']}")
+    return {
+        "repo": repo,
+        "number": int(found["number"]),
+        "url": url,
+        "state": found.get("state"),
+        "intake_id": "",
+    }
+
+
+def _issue_already_commented(filer: GitHubFiler, repo: str, number: int, intake_id: str) -> bool:
+    needle = str(intake_id or "")
+    if not needle:
+        return False
+    for row in getattr(filer, "comments", None) or []:
+        if (
+            str(row.get("repo") or "") == repo
+            and int(row.get("number") or 0) == int(number)
+            and needle in str(row.get("body") or "")
+        ):
+            return True
+    return False
+
+
+def _comment_payload(norm: dict, intake_id: str, *, quarantine: bool) -> str:
+    title = _redact(str(norm.get("title") or ""))
+    body = _redact(str(norm.get("body") or ""))
+    return f"{title}\n\n{body}{_provenance_footer(norm, intake_id, quarantine=quarantine)}"
+
+
+def _apply_dedupe_match(
+    home: Path,
+    norm: dict,
+    filer: GitHubFiler,
+    rec: dict[str, Any],
+    hit: dict,
+    *,
+    quarantine: bool,
+) -> dict[str, Any]:
+    repo = str(norm["repo"])
+    key = str(norm.get("dedupe_key") or "")
+    number = int(hit["number"])
+    url = str(hit.get("url") or f"https://github.com/{repo}/issues/{number}")
+    iid = str(rec["intake_id"])
+    getter = getattr(filer, "get_issue_state", None)
+    state = str(hit.get("state") or "")
+    if callable(getter):
+        state = str(getter(repo, number) or state or "open")
+    state = (state or "open").lower()
+    action = "commented"
+    if state == "closed":
+        filer.reopen_issue(repo, number)
+        action = "reopened"
+    if not _issue_already_commented(filer, repo, number, iid):
+        filer.comment_issue(repo, number, _comment_payload(norm, iid, quarantine=quarantine))
+    rec["url"] = url
+    rec["number"] = number
+    rec["state"] = "filed"
+    rec["action"] = action
+    rec["queued"] = False
+    _save_dedupe(home, repo, key, number=number, url=url, intake_id=iid)
+    _save_record(home, rec)
+    return rec
+
+
+def _intake_public_fields(rec: dict) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "intake_id": rec.get("intake_id"),
+        "url": rec.get("url"),
+        "queued": bool(rec.get("queued")),
+    }
+    if rec.get("action"):
+        out["action"] = rec.get("action")
+    if rec.get("number") is not None:
+        out["number"] = rec.get("number")
+    if rec.get("state"):
+        out["state"] = rec.get("state")
+    return out
+
+
 def load_record(home: Path, intake_id: str) -> dict | None:
     p = _record_path(home, intake_id)
     if not p.is_file():
@@ -1772,6 +1983,7 @@ def file_submission(
         "repo": repo,
         "title": title,
         "idempotency_key": norm.get("idempotency_key") or "",
+        "dedupe_key": norm.get("dedupe_key") or "",
         "quarantine": quarantine,
         "ts": _utc(),
         "state": "filing",
@@ -1793,10 +2005,30 @@ def file_submission(
         return rec
     try:
         if kind in ("issue", "fr"):
+            dkey = str(norm.get("dedupe_key") or "").strip()
+            if dkey:
+                marker = intake_dedupe_marker(repo, dkey)
+                if marker not in body:
+                    body = body.rstrip() + "\n\n" + marker + "\n"
+                hit = _lookup_dedupe_hit(home, filer, repo, dkey)
+                if hit:
+                    return _apply_dedupe_match(
+                        home, norm, filer, rec, hit, quarantine=quarantine
+                    )
             out = filer.create_issue(repo, title, body, labels)
             rec["url"] = out["url"]
             rec["number"] = out["number"]
             rec["state"] = "filed"
+            rec["action"] = "filed"
+            if dkey:
+                _save_dedupe(
+                    home,
+                    repo,
+                    dkey,
+                    number=int(out["number"]),
+                    url=str(out["url"]),
+                    intake_id=iid,
+                )
         else:
             branch = f"intake/{iid}"
             files = list(norm.get("files") or [])
@@ -2119,14 +2351,12 @@ def process_intake(
     # idempotency
     existing = _find_idempotent(home, str(norm.get("idempotency_key") or ""))
     if existing and existing.get("url"):
+        body = _intake_public_fields(existing)
+        body["queued"] = False
+        body["duplicate"] = True
         return IntakeResult(
             202,
-            {
-                "intake_id": existing["intake_id"],
-                "url": existing["url"],
-                "queued": False,
-                "duplicate": True,
-            },
+            body,
             log_safe=_safe_log(norm, existing["intake_id"], "duplicate"),
         )
     # FR #2595: receipt_recorded / dropped_probe also settle the idempotency key.
@@ -2143,15 +2373,12 @@ def process_intake(
         "open_lesson_twin",
         "held_owner_missing",
     ):
+        body = _intake_public_fields(existing)
+        body["queued"] = False
+        body["duplicate"] = True
         return IntakeResult(
             202,
-            {
-                "intake_id": existing["intake_id"],
-                "url": existing.get("url"),
-                "queued": False,
-                "duplicate": True,
-                "state": existing.get("state"),
-            },
+            body,
             log_safe=_safe_log(norm, existing["intake_id"], "duplicate"),
         )
     if existing and existing.get("queued"):
@@ -2187,9 +2414,11 @@ def process_intake(
             log_safe=_safe_log(norm, iid, tag),
         )
 
+    pub = _intake_public_fields(rec)
+    pub["queued"] = False
     return IntakeResult(
         202,
-        {"intake_id": rec["intake_id"], "url": rec.get("url"), "queued": False},
+        pub,
         log_safe=_safe_log(norm, rec["intake_id"], f"filed state={rec.get('state')}"),
     )
 
