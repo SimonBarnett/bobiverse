@@ -324,6 +324,7 @@ routes to bobiverse via the split rule.
 - Customer/product harvest (euroflo class) defaults to .grok/skills/harvest-agent-skills even when the priority-customer topic cache is empty; never invent common/.grok/skills/harvest on a non-bobiverse repo.
 - bob-ear: BOB_IRC_RECV_TIMEOUT_S + IDLE_PING_S + IDLE_DEAD_S client PING keepalive; half-open ESTABLISHED sockets must idle-dead reconnect (FR #4980), not stay deaf while ircBob Running
 - Jeeves resync: fix(mrb-N) targeting main/master while parent is open must queue as MRB (else FIX-linked parent + skip-fix deadlock); stacked non-default base still skips; among main-base twins keep lowest PR number only
+- BOM-less *.ps1 under airc|common|bob|jeeves/scripts must be pure ASCII (WinPS 5.1); never land U+2014/U+2026 in comments --- pytest-ascii-bom / test_fr3391 fails the whole main tree
 
 ## Harvest digest (lessons audit 2026-10-06)
 
