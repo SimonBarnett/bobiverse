@@ -286,9 +286,21 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
-    # euroflo#15: never invent common/.grok/skills/harvest on euroflo; park in
-    # repo-root harvest-agent-skills (class of tip #14 wrong-book path).
+    # euroflo#15 / FR #4990: priority-customer honesty box (never invent
+    # common/.grok/skills/harvest). Topic peers: euroflo / lynton / trutex / rees.
     "simonbarnett/euroflo": (
+        "harvest-agent-skills",
+        ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
+    "simonbarnett/lynton": (
+        "harvest-agent-skills",
+        ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
+    "simonbarnett/trutex": (
+        "harvest-agent-skills",
+        ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
+    "simonbarnett/rees": (
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
@@ -299,6 +311,16 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "dayworks/.grok/skills/dayworks-launcher/SKILL.md",
     ),
 }
+
+# FR #4990: explicit priority-customer set (PRODUCT_DEFAULT above + PS1 branch).
+PRIORITY_CUSTOMER_HARVEST_REPOS = frozenset(
+    {
+        "simonbarnett/euroflo",
+        "simonbarnett/lynton",
+        "simonbarnett/trutex",
+        "simonbarnett/rees",
+    }
+)
 
 def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
     """FR #3959: bobiverse-* books never tip into product repos (a-search stubs).
@@ -469,6 +491,8 @@ def resolve_skill_book(
     (never invent ``common/.grok/skills/harvest``).
     FR #4970: other ``priority-customer`` topic repos park at repo-root harvest-agent-skills
     (topic set, not a hardcoded customer list).
+    FR #4990: euroflo/lynton/trutex/rees are also in PRODUCT_DEFAULT_SKILL_BOOK so
+    DryRun cannot invent common/.grok/skills/harvest when the topic set is empty.
     FR #4976: when the topic set is empty, any non-bobiverse ``SimonBarnett/*`` repo
     still parks at repo-root harvest-agent-skills (euroflo#7).
     """
