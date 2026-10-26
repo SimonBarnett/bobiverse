@@ -1300,6 +1300,157 @@ function Get-BobiverseProductRoot {
     return [IO.Path]::Combine((Get-BobiverseAiRoot), $Product)   # not Join-Path: it throws for a drive that does not exist (yet)
 }
 
+# FR #4988: job FR/MRB/UAT worktrees under <data drive>\ai\worktrees\<repo>\<job>, never at a drive root.
+function Test-BobiverseIsDriveRoot {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not $Path) { return $false }
+    try {
+        $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    } catch {
+        return $false
+    }
+    # "D:" or "D:\" (GetFullPath of "D:\" stays "D:\")
+    if ($full -match '^[A-Za-z]:$') { return $true }
+    $root = [IO.Path]::GetPathRoot($full)
+    if (-not $root) { return $false }
+    return ($full.TrimEnd('\') -ieq $root.TrimEnd('\'))
+}
+
+function Get-BobiverseDataDriveRoot {
+    <#
+      Prefer a non-system fixed disk (D: when present), else the system drive.
+      Returns e.g. "D:\" — callers append ai\worktrees (FR #4988).
+    #>
+    param(
+        [object[]]$Disks = $null,
+        [string]$SystemDrive = ''
+    )
+    if (-not $SystemDrive) { $SystemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' } }
+    $sys = ($SystemDrive.TrimEnd('\') + '\')
+    if ($null -eq $Disks) { $Disks = @(Get-BobiverseFixedDisks) }
+    $fixed = @($Disks | Where-Object { [int]($_.DriveType) -eq 3 -or [string]$_.DriveType -eq '3' })
+    # Prefer literal D: among non-system fixed disks.
+    foreach ($d in $fixed) {
+        $r = [string]$d.Root
+        if (-not $r) { continue }
+        if (-not $r.EndsWith('\')) { $r = $r + '\' }
+        if ($r -ieq $sys) { continue }
+        if ($r -match '^[Dd]:\\$') { return $r }
+    }
+    foreach ($d in $fixed) {
+        $r = [string]$d.Root
+        if (-not $r) { continue }
+        if (-not $r.EndsWith('\')) { $r = $r + '\' }
+        if ($r -ieq $sys) { continue }
+        return $r
+    }
+    return $sys
+}
+
+function Get-BobiverseJobWorktreeBase {
+    <#
+      FR #4988: base directory for job worktrees / scratch.
+      Override order:
+        1. -Override
+        2. env BOB_JOB_WORKTREE_BASE (dedicated)
+        3. -BridgeHome / env BOB_BRIDGE_HOME -> <bridge>\worktrees (never the bare bridge root alone if it is a drive root)
+        4. default <data drive>\ai\worktrees
+      Never returns a drive root.
+    #>
+    param(
+        [string]$Override = $null,
+        [string]$BridgeHome = $null,
+        [object[]]$Disks = $null,
+        [string]$SystemDrive = '',
+        [switch]$Create
+    )
+    $chosen = $null
+    if ($PSBoundParameters.ContainsKey('Override') -and $Override) {
+        $chosen = [string]$Override
+    } elseif ($env:BOB_JOB_WORKTREE_BASE -and $env:BOB_JOB_WORKTREE_BASE.Trim()) {
+        $chosen = $env:BOB_JOB_WORKTREE_BASE.Trim()
+    } else {
+        if (-not $PSBoundParameters.ContainsKey('BridgeHome')) {
+            $BridgeHome = [string]$env:BOB_BRIDGE_HOME
+        }
+        if ($BridgeHome -and $BridgeHome.Trim()) {
+            $bh = $BridgeHome.Trim()
+            if (Test-BobiverseIsDriveRoot $bh) {
+                throw "FR #4988: BOB_BRIDGE_HOME / -BridgeHome must not be a drive root ($bh); set BOB_JOB_WORKTREE_BASE to <drive>\\ai\\worktrees"
+            }
+            $chosen = [IO.Path]::Combine(([IO.Path]::GetFullPath($bh)).TrimEnd('\'), 'worktrees')
+        }
+    }
+    if (-not $chosen) {
+        $dataRoot = Get-BobiverseDataDriveRoot -Disks $Disks -SystemDrive $SystemDrive
+        $chosen = [IO.Path]::Combine($dataRoot.TrimEnd('\'), 'ai', 'worktrees')
+    }
+    $full = [IO.Path]::GetFullPath($chosen)
+    if (Test-BobiverseIsDriveRoot $full) {
+        throw "FR #4988: job worktree base must not be a drive root ($full); use <drive>\\ai\\worktrees or set BOB_JOB_WORKTREE_BASE"
+    }
+    if ($Create -and -not (Test-Path -LiteralPath $full)) {
+        New-Item -ItemType Directory -Force -Path $full | Out-Null
+    }
+    return $full.TrimEnd('\')
+}
+
+function Get-BobiverseJobWorktreePath {
+    <#
+      FR #4988: <base>\<repo-leaf>\<job> e.g. D:\ai\worktrees\bobiverse\fr-4988.
+      -Repo may be owner/name or a leaf; -Job is the leaf folder (fr-N / mrb-N / ...).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$Job,
+        [string]$Base = '',
+        [switch]$Create
+    )
+    if (-not $Base) { $Base = Get-BobiverseJobWorktreeBase }
+    if (Test-BobiverseIsDriveRoot $Base) {
+        throw "FR #4988: -Base must not be a drive root ($Base)"
+    }
+    $repoLeaf = ($Repo -replace '\\', '/').Trim().TrimEnd('/')
+    if ($repoLeaf -match '/') { $repoLeaf = ($repoLeaf -split '/')[-1] }
+    $repoLeaf = ($repoLeaf -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+    if (-not $repoLeaf) { $repoLeaf = 'job' }
+    $jobLeaf = ($Job.Trim() -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+    if (-not $jobLeaf) { throw 'FR #4988: -Job is required' }
+    $path = [IO.Path]::Combine($Base.TrimEnd('\'), $repoLeaf, $jobLeaf)
+    $full = [IO.Path]::GetFullPath($path)
+    if (Test-BobiverseIsDriveRoot $full) {
+        throw "FR #4988: resolved job worktree path must not be a drive root ($full)"
+    }
+    if ($Create -and -not (Test-Path -LiteralPath $full)) {
+        New-Item -ItemType Directory -Force -Path $full | Out-Null
+    }
+    return $full.TrimEnd('\')
+}
+
+function Get-BobiverseJobScratchPath {
+    # FR #4988: scratch / temp job folders share the same base: <base>\scratch\<name>
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$Base = '',
+        [switch]$Create
+    )
+    if (-not $Base) { $Base = Get-BobiverseJobWorktreeBase }
+    if (Test-BobiverseIsDriveRoot $Base) {
+        throw "FR #4988: -Base must not be a drive root ($Base)"
+    }
+    $leaf = ($Name.Trim() -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+    if (-not $leaf) { throw 'FR #4988: -Name is required' }
+    $path = [IO.Path]::Combine($Base.TrimEnd('\'), 'scratch', $leaf)
+    $full = [IO.Path]::GetFullPath($path)
+    if (Test-BobiverseIsDriveRoot $full) {
+        throw "FR #4988: scratch path must not be a drive root ($full)"
+    }
+    if ($Create -and -not (Test-Path -LiteralPath $full)) {
+        New-Item -ItemType Directory -Force -Path $full | Out-Null
+    }
+    return $full.TrimEnd('\')
+}
+
 # ---------------------------------------------------------------------------------------------------------------------------
 # The install dir as a git work tree (t781u/t782u). On every service start (Start-Bob / Start-Jeeves / Start-AircConsole ->
 # Sync-BobiverseFromRepo.ps1 -> Sync-BobiverseWorkTree) <ai root>\<product> is made a SPARSE checkout of the bobiverse repo that holds

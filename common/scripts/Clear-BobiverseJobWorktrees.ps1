@@ -42,6 +42,11 @@
   - FR #4197: when a registered tree is missing or its `.git` is gone, warn,
     rmdir leftovers, prune, and continue --- do not let one NativeCommandError
     abort the whole Clear run (exit 1) before later trees are reclaimed.
+  - FR #4988: job trees also live under Get-BobiverseJobWorktreeBase
+    (`<data drive>\ai\worktrees\<repo>\<job>` or BOB_JOB_WORKTREE_BASE /
+    BOB_BRIDGE_HOME\worktrees). Clear classifies paths under that base as job
+    trees and reclaims orphans there on low disk / -Force. Never removes a
+    tree with uncommitted or unpushed work (Test-WorktreeHasLocalWork).
 
   Never touches Ergo, never kills seats, never deletes the -RepoRoot install tree.
 
@@ -65,6 +70,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# FR #4988: job-worktree base helpers (Get-BobiverseJobWorktreeBase).
+$script:BobiverseCommonPs1 = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+if (Test-Path -LiteralPath $script:BobiverseCommonPs1) {
+    . $script:BobiverseCommonPs1
+}
 
 function Get-FreeGB([string]$Path) {
     $root = [System.IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $Path).Path)
@@ -115,6 +126,35 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
         ($leaf -match '(?i)^(a-search|bobiverse|airc|jeeves|gh-jeeves)-')) {
         return $true
     }
+    # FR #4988: anything under the configured job worktree base (…\ai\worktrees\…).
+    try {
+        if (Get-Command Get-BobiverseJobWorktreeBase -ErrorAction SilentlyContinue) {
+            $base = [IO.Path]::GetFullPath((Get-BobiverseJobWorktreeBase)).TrimEnd('\')
+            if ($base -and $full.StartsWith($base + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+    } catch { }
+    return $false
+}
+
+function Test-WorktreeHasLocalWork {
+    <#
+      FR #4988: true when the worktree has uncommitted changes or unpushed commits.
+      Clear must keep those trees even under low-disk / -Force reclaim.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    $gitDir = Join-Path $Path '.git'
+    if (-not (Test-Path -LiteralPath $gitDir)) { return $false }
+    try {
+        $porcelain = & git -C $Path status --porcelain 2>$null
+        if ($LASTEXITCODE -eq 0 -and $porcelain) { return $true }
+    } catch { }
+    try {
+        $unpushed = & git -C $Path rev-list --count '@{u}..HEAD' 2>$null
+        if ($LASTEXITCODE -eq 0 -and [int]$unpushed -gt 0) { return $true }
+    } catch { }
     return $false
 }
 
@@ -296,10 +336,15 @@ $jobTrees = @($paths.ToArray() | Where-Object { Test-IsJobWorktreePath $_ $rootF
 $jobTrees = @($jobTrees)
 # FR #2727 / #3698: drop live-seat / busy-tool trees before cap math (even with -Force).
 # Pass FullReclaim so soft-cap freshness rules stay distinct from Force/low-disk.
-$protectedTrees = @($jobTrees | Where-Object { Test-WorktreeProtected -Path $_ -FullReclaim:$lowDisk })
-$jobTrees = @($jobTrees | Where-Object { -not (Test-WorktreeProtected -Path $_ -FullReclaim:$lowDisk) })
+# FR #4988: also keep trees with uncommitted or unpushed work.
+$protectedTrees = @($jobTrees | Where-Object {
+        (Test-WorktreeProtected -Path $_ -FullReclaim:$lowDisk) -or (Test-WorktreeHasLocalWork -Path $_)
+    })
+$jobTrees = @($jobTrees | Where-Object {
+        -not (Test-WorktreeProtected -Path $_ -FullReclaim:$lowDisk) -and -not (Test-WorktreeHasLocalWork -Path $_)
+    })
 foreach ($pt in $protectedTrees) {
-    Write-Host "FR #2727 skip protected worktree $pt"
+    Write-Host "FR #2727/#4988 skip protected worktree $pt"
     $skippedProtected++
 }
 
@@ -397,6 +442,10 @@ if ($lowDisk -and $tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
         Get-ChildItem -LiteralPath $tempRoot -Directory -Filter $ofilter -ErrorAction SilentlyContinue | ForEach-Object {
             $full = $_.FullName
             if ($keepFull -and ($full.TrimEnd('\') -ieq $keepFull.TrimEnd('\'))) { return }
+            if (Test-WorktreeHasLocalWork -Path $full) {
+                Write-Host "FR #4988 skip orphan with local work $full"
+                return
+            }
             $stillListed = $false
             foreach ($p in $paths) {
                 try {
@@ -413,6 +462,44 @@ if ($lowDisk -and $tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
                 Write-Host "Removing orphan $full"
                 Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
                 $removed++
+            }
+        }
+    }
+}
+
+# FR #4988: orphan dirs under Get-BobiverseJobWorktreeBase\<repo>\<job> (and scratch\*).
+if ($lowDisk -and (Get-Command Get-BobiverseJobWorktreeBase -ErrorAction SilentlyContinue)) {
+    try {
+        $wtBase = [IO.Path]::GetFullPath((Get-BobiverseJobWorktreeBase)).TrimEnd('\')
+    } catch { $wtBase = '' }
+    if ($wtBase -and (Test-Path -LiteralPath $wtBase)) {
+        Get-ChildItem -LiteralPath $wtBase -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $repoDir = $_.FullName
+            Get-ChildItem -LiteralPath $repoDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $full = $_.FullName
+                if ($keepFull -and ($full.TrimEnd('\') -ieq $keepFull.TrimEnd('\'))) { return }
+                if (Test-WorktreeProtected -Path $full -FullReclaim:$lowDisk) { return }
+                if (Test-WorktreeHasLocalWork -Path $full) {
+                    Write-Host "FR #4988 skip base orphan with local work $full"
+                    return
+                }
+                $stillListed = $false
+                foreach ($p in $paths) {
+                    try {
+                        if ([IO.Path]::GetFullPath($p).TrimEnd('\') -ieq $full.TrimEnd('\')) { $stillListed = $true; break }
+                    } catch { }
+                }
+                if ($stillListed) { return }
+                if ($WhatIfPreference) {
+                    Write-Host "WhatIf: Remove-Item FR #4988 base orphan $full"
+                    $removed++
+                    return
+                }
+                if ($PSCmdlet.ShouldProcess($full, 'Remove FR #4988 job-worktree-base orphan')) {
+                    Write-Host "Removing FR #4988 base orphan $full"
+                    Remove-BobiversePathForce -Path $full
+                    $removed++
+                }
             }
         }
     }
