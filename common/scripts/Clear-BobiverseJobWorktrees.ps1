@@ -126,7 +126,7 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
         ($leaf -match '(?i)^(a-search|bobiverse|airc|jeeves|gh-jeeves)-')) {
         return $true
     }
-    # FR #4988: anything under the configured job worktree base (…\ai\worktrees\…).
+    # FR #4988: anything under the configured job worktree base (...\ai\worktrees\...).
     try {
         if (Get-Command Get-BobiverseJobWorktreeBase -ErrorAction SilentlyContinue) {
             $base = [IO.Path]::GetFullPath((Get-BobiverseJobWorktreeBase)).TrimEnd('\')

@@ -1319,7 +1319,7 @@ function Test-BobiverseIsDriveRoot {
 function Get-BobiverseDataDriveRoot {
     <#
       Prefer a non-system fixed disk (D: when present), else the system drive.
-      Returns e.g. "D:\" — callers append ai\worktrees (FR #4988).
+      Returns e.g. "D:\" --- callers append ai\worktrees (FR #4988).
     #>
     param(
         [object[]]$Disks = $null,
