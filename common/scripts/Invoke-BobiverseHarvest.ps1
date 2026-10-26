@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
-  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). FR #4917: FIX/MRB/re-DONE on lesson or docs/mrb pin PRs skip tip filing (PR metadata + job kind); source.version stamps HARVEST_SCRIPT_VERSION. Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
+  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4986: skip/empty/(no new playbook) Lesson never opens a tip. FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). FR #4917: FIX/MRB/re-DONE on lesson or docs/mrb pin PRs skip tip filing (PR metadata + job kind); source.version stamps HARVEST_SCRIPT_VERSION. Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
 
@@ -40,7 +40,7 @@ $ErrorActionPreference = 'Stop'
 
 # FR #4917: stamp every harvest receipt (source.version); refuse when seat min is newer.
 # HARVEST_SCRIPT_VERSION constant name kept for pin tests / operator greps.
-$HARVEST_SCRIPT_VERSION = '20261020-fr4917'
+$HARVEST_SCRIPT_VERSION = '20261026-fr4986'
 $script:HarvestScriptVersion = $HARVEST_SCRIPT_VERSION
 $secretRx = '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:(password|passwd|secret|token|apikey|api_key)\s*[:=]\s*[A-Za-z0-9/+_.-]{8,}))'
 $home1 = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
@@ -376,6 +376,23 @@ function Test-HarvestTwinDoneLoop([string]$SummaryText, [string[]]$LessonLines) 
         return $true
     }
     return $false
+}
+
+# FR #4986: bare skip / empty / (no new playbook line) is not a playbook tip
+# (class of euroflo#24 lesson(harvest): skip after MRB Duplicate disposition).
+function Test-HarvestNoopOrEmptyLesson([string[]]$LessonLines) {
+    $lines = @($LessonLines | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    if (-not $lines.Count) { return $true }
+    foreach ($L in $lines) {
+        if ($L -notmatch '(?i)^\(?\s*(?:no new playbook line|skip|none|n/?a|noop|nothing|no lessons?)\s*\)?$') {
+            return $false
+        }
+    }
+    return $true
+}
+if (Test-HarvestNoopOrEmptyLesson -LessonLines $Lesson) {
+    Write-Host "SKIPPED harvest noop/empty lesson (FR #4986): not filing lesson tip when Lesson is skip/empty/placeholder for: $($Summary.Trim().Substring(0, [Math]::Min(80, $Summary.Trim().Length)))"
+    return
 }
 
 if (Test-HarvestSkillGiveupLoop -SummaryText $Summary -LessonLines $Lesson) {

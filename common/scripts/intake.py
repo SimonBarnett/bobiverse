@@ -112,7 +112,19 @@ _LESSONS_SECTION_RE = re.compile(
     r"(?is)(?:^|\n)\s*Lessons:\s*\n(?P<body>.*?)(?=\n\s*_[a-z]|\n\s*Existing PR:|\Z)"
 )
 _LESSON_BULLET_RE = re.compile(r"(?m)^\s*[-*]\s+(?P<text>.+?)\s*$")
-_LESSON_PLACEHOLDER_RE = re.compile(r"(?i)^\(?\s*no new playbook line\s*\)?$")
+# FR #2705: classic placeholder. FR #4986: bare skip/none/n/a (euroflo#24 tip class).
+_LESSON_PLACEHOLDER_RE = re.compile(
+    r"(?i)^\(?\s*(?:no new playbook line|skip|none|n/?a|noop|nothing|no lessons?)\s*\)?$"
+)
+
+
+def is_noop_harvest_lesson(line: str) -> bool:
+    """True when a Lessons: bullet is empty or a noop token (FR #4986)."""
+    text = str(line or "").strip()
+    if not text:
+        return True
+    return bool(_LESSON_PLACEHOLDER_RE.match(text))
+
 HARVESTED_LESSONS_HEADING = "## Harvested lessons (intake)"
 # FR #3299 / #3317: light triage in the owning repo (useful / generalised / vision);
 # re-file / hold-open only when ownership is wrong or the owner repo is missing.
@@ -417,7 +429,7 @@ def lesson_sentence_already_in_book(existing_md: str, lessons: list[str]) -> boo
 
 
 def extract_harvest_lessons(body: str) -> list[str]:
-    """Return real Lessons: bullets; drop the '(no new playbook line)' placeholder (FR #2705)."""
+    """Return real Lessons: bullets; drop placeholders / noop tokens (FR #2705 / #4986)."""
     text = str(body or "")
     m = _LESSONS_SECTION_RE.search(text)
     if not m:
@@ -426,7 +438,7 @@ def extract_harvest_lessons(body: str) -> list[str]:
     seen: set[str] = set()
     for bm in _LESSON_BULLET_RE.finditer(m.group("body")):
         line = (bm.group("text") or "").strip()
-        if not line or _LESSON_PLACEHOLDER_RE.match(line):
+        if is_noop_harvest_lesson(line):
             continue
         if line in seen:
             continue
