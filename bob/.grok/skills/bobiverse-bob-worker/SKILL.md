@@ -148,7 +148,7 @@ A PyInstaller onefile `bob-worker.exe` (or hashed `bob-worker-<hash>.exe`) is **
 
 ## Install-root job git (FR #4843)
 
-* **Install-root job git (FR #4843):** never git checkout/commit in --install-root. Seats must use git worktree add to bob-wt-fr-<n> (or %TEMP%\bobiverse-fr-<n>). At agent start bob-worker logs install-root: WARN FR #4843 when the install checkout is not on main. Helper: common/scripts/bob_install_root_guard.py (refuse_job_git, install_root_branch_warning).
+* **Install-root job git (FR #4843 / FR #4988):** never git checkout/commit in --install-root. Seats must `git worktree add` to `Get-BobiverseJobWorktreePath` (`<data drive>\ai\worktrees\<repo>\<job>`; never a drive root). At agent start bob-worker logs install-root: WARN FR #4843 when the install checkout is not on main. Helper: common/scripts/bob_install_root_guard.py (refuse_job_git, install_root_branch_warning).
 
 ## Troubleshooting
 

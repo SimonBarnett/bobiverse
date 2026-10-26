@@ -51,7 +51,7 @@ flowchart TD
 
 The live install (<ai root>\bob, --install-root) must stay on main. FR/FIX/MRB seats **must not** git checkout / switch / commit / merge / rebase in that checkout. Always:
 
-1. git -C <install> worktree add -b fr-N <job-wt> origin/main (sibling C:\ai\bob-wt-fr-<n> or %TEMP%\bobiverse-fr-<n>)
+1. git -C <install> worktree add -b fr-N <job-wt> origin/main — **FR #4988:** `<job-wt>` = `Get-BobiverseJobWorktreePath -Repo owner/name -Job fr-N` (default `<data drive>\ai\worktrees\<repo>\fr-N`; override `BOB_JOB_WORKTREE_BASE` / `BOB_BRIDGE_HOME\worktrees`; never a drive root)
 2. Write .bobiverse-seat immediately, then git sparse-checkout disable **once**
 3. Commit/push from the job worktree only
 
