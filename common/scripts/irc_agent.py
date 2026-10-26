@@ -541,6 +541,36 @@ def reconnect_cap() -> int | None:
     return n if n >= 0 else None
 
 
+# FR #4980: half-open / silent link detection (mirror airc IDLE_PING / IDLE_DEAD).
+def idle_ping_s() -> float:
+    raw = (os.environ.get("BOB_IRC_IDLE_PING_S") or "60").strip()
+    try:
+        n = float(raw)
+    except ValueError:
+        n = 60.0
+    return max(15.0, min(300.0, n))
+
+
+def idle_dead_s() -> float:
+    raw = (os.environ.get("BOB_IRC_IDLE_DEAD_S") or "120").strip()
+    try:
+        n = float(raw)
+    except ValueError:
+        n = 120.0
+    return max(30.0, min(600.0, n))
+
+
+def recv_timeout_s() -> float:
+    """Socket read timeout so the ear wakes to send client PINGs (FR #4980)."""
+    raw = (os.environ.get("BOB_IRC_RECV_TIMEOUT_S") or "30").strip()
+    try:
+        n = float(raw)
+    except ValueError:
+        n = 30.0
+    # Keep shorter than idle_ping_s so keepalive can fire on schedule.
+    return max(5.0, min(idle_ping_s(), n))
+
+
 def debug_log(path: Path | None, line: str) -> None:
     if path is None:
         return
@@ -669,6 +699,10 @@ class Client:
         self._no_reconnect = False
         self._last_server_rx = 0.0
         self._pong_due_at = 0.0
+        # FR #4980: client PING keepalive (airc-style) for half-open TLS links.
+        self._awaiting_client_pong = False
+        self._last_client_ping = 0.0
+        self._last_keepalive_log = 0.0
         self._ghost_prune_last = 0.0
 
     def send(self, line: str) -> None:
@@ -2261,6 +2295,7 @@ class Client:
         relaunch us and hammer Ergo's connect throttle.
         """
         self._last_server_rx = time.time()
+        self._awaiting_client_pong = False
         self.dead.set()
         sock = self.sock
         self.sock = None
@@ -2269,6 +2304,41 @@ class Client:
                 sock.close()
         except Exception:
             pass
+
+    def _note_server_rx(self) -> None:
+        """Any inbound IRC traffic proves the link is alive (FR #4980)."""
+        self._last_server_rx = time.time()
+        self._awaiting_client_pong = False
+
+    def _idle_keepalive(self) -> None:
+        """Detect half-open links: client PING, then reconnect if no traffic (FR #4980)."""
+        if self.stop.is_set() or self.dead.is_set():
+            return
+        if not self.joined.is_set() or self.sock is None:
+            return
+        now = time.time()
+        last = self._last_server_rx
+        if last <= 0:
+            last = now
+            self._last_server_rx = now
+        idle = now - last
+        if self._awaiting_client_pong and (now - self._last_client_ping) >= idle_dead_s():
+            info("INFO idle-dead (no PONG/traffic); reconnecting")
+            self.recv_idle_reconnect()
+            return
+        if idle >= idle_ping_s() and not self._awaiting_client_pong:
+            token = "be-%d" % int(now)
+            try:
+                self.send("PING :" + token)
+            except OSError as e:
+                info(f"INFO keepalive-send-err {e}")
+                self.recv_idle_reconnect()
+                return
+            self._last_client_ping = now
+            self._awaiting_client_pong = True
+            if (now - self._last_keepalive_log) >= 3600.0:
+                self._last_keepalive_log = now
+                info("INFO keepalive PING sent")
 
     def _seat_liveness_enabled(self) -> bool:
         if talk_seat_pid.parse_talk_seat_nick(self.original_nick) is None:
@@ -2345,7 +2415,8 @@ class Client:
             except OSError:
                 pass
             raise
-        sock.settimeout(None)
+        # FR #4980: bounded recv so half-open links wake the reader for client PING.
+        sock.settimeout(recv_timeout_s())
         debug_log(self.debug, f"tls-ok {host}:{port}")
         info(f"INFO tls-ok {host}:{port}")
         return sock
@@ -3518,15 +3589,27 @@ class Client:
         assert self.sock is not None
         buf = b""
         try:
-            while not self.stop.is_set():
-                data = self.sock.recv(4096)
+            while not self.stop.is_set() and not self.dead.is_set():
+                try:
+                    data = self.sock.recv(4096)
+                except (socket.timeout, TimeoutError):
+                    # FR #4980: wake on timeout -> client PING / idle-dead reconnect.
+                    try:
+                        self._idle_keepalive()
+                    except Exception as ke:  # noqa: BLE001
+                        info(f"INFO keepalive-err {ke}")
+                        self.recv_idle_reconnect()
+                    continue
+                except OSError as e:
+                    info(f"INFO recv-err {e}")
+                    return
                 if not data:
                     return
                 buf += data
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     t = line.decode("utf-8", "replace").rstrip("\r")
-                    self._last_server_rx = time.time()
+                    self._note_server_rx()
                     debug_log(self.debug, t)
                     if t.startswith("PING "):
                         self._pong_due_at = time.time() + talk_seat_ghost.pong_grace_s()
@@ -3535,6 +3618,9 @@ class Client:
                             self._pong_due_at = 0.0
                         except OSError:
                             pass
+                        continue
+                    # Client PING reply (our keepalive) --- already cleared via _note_server_rx.
+                    if t.startswith("PONG ") or " PONG " in t:
                         continue
                     # FR #230: strip IRCv3 tags; keep raw line in irc.log (debug_log above).
                     tags: dict[str, str] = {}
