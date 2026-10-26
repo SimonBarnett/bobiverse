@@ -274,6 +274,12 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
+    # euroflo#15: never invent common/.grok/skills/harvest on euroflo; park in
+    # repo-root harvest-agent-skills (class of tip #14 wrong-book path).
+    "simonbarnett/euroflo": (
+        "harvest-agent-skills",
+        ".grok/skills/harvest-agent-skills/SKILL.md",
+    ),
     # FR #4830: never invent common/.grok/skills/harvest on ce-priority; park in
     # unlocked dayworks-launcher (assert-lock / tip-loop class of ce-priority#36/#37/#38).
     "simonbarnett/ce-priority": (

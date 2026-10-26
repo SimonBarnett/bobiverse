@@ -930,6 +930,9 @@ if ($bobTooling) {
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$')) {
     $bookName = 'harvest-agent-skills'
     Write-Host "INFO FR #3318 product default skill_book=harvest-agent-skills for SimonBarnett/agentic_fomprep"
+} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/euroflo$')) {
+    $bookName = 'harvest-agent-skills'
+    Write-Host "INFO euroflo#15 product default skill_book=harvest-agent-skills for SimonBarnett/euroflo"
 } elseif ($bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/ce-priority$')) {
     # FR #4830: even with explicit -Book harvest, never invent common/.grok/skills/harvest
     # on ce-priority (assert-lock / tip-loop class of ce-priority#36/#37/#38).
