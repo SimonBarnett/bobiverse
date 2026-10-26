@@ -52,6 +52,20 @@ Offset is tracked in `outbox.txt.pos`; up to 8 lines drain per tick. If `<ai roo
 
 Raw shop-op verbs (bob-* ear, own `#{machine}` only; `shop_ops.raw_op_line`): `KICK`, `NAMES`, and `MODE +/-o|v|h <nick>` (FR #4069 adds half-op `+h`/`-h` alongside op/voice).
 
+## Keepalive / half-open links (FR #4980)
+
+After Ergo or a middlebox drops the session, TCP can stay `ESTABLISHED` while the
+ear receives nothing. Talk-seat liveness does not cover `Bob-*` ears. The ear:
+
+1. Sets a recv timeout (`BOB_IRC_RECV_TIMEOUT_S`, default 30s).
+2. After `BOB_IRC_IDLE_PING_S` (default 60s) with no server traffic, sends a
+   client `PING`.
+3. If still no traffic for `BOB_IRC_IDLE_DEAD_S` (default 120s) after that PING,
+   logs `INFO idle-dead (no PONG/traffic); reconnecting` and reconnects
+   in-process (same as airc keepalive).
+
+Workaround until this tip is deployed: `Restart-Service ircBob`.
+
 ## Absent / stale ear recovery
 
 | State | Action |
@@ -59,6 +73,7 @@ Raw shop-op verbs (bob-* ear, own `#{machine}` only; `shop_ops.raw_op_line`): `K
 | No `ircBob` / service Stopped | `Install-Bob.ps1` (or MSI) then `Start-Service ircBob` |
 | Leftover `irc_listen.py` only (Flamingo-style) | Retire it; install/start `ircBob` ear above |
 | Running but no `inbound-transcript.log` | `Restart-BobEar.ps1` after this FR is deployed |
+| Running, socket ESTABLISHED, no transcript / deaf shop | FR #4980 keepalive; else `Restart-BobEar.ps1` |
 | Missing `outbox.txt` | Ear recreates home on start; ensure service ObjectName/home path |
 
 ## Tray / recycle
