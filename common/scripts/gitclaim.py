@@ -3498,6 +3498,26 @@ def mrb_fix_parent_pr_id(title: str) -> str:
     return f"#{num}" if num else ""
 
 
+def pr_base_ref(pr: dict | None) -> str:
+    """Lowercased base branch name from a GitHub pull payload, or empty."""
+    if not isinstance(pr, dict):
+        return ""
+    base = pr.get("base")
+    if not isinstance(base, dict):
+        return ""
+    return str(base.get("ref") or "").strip().lower()
+
+
+def mrb_fix_targets_default_branch(pr: dict | None) -> bool:
+    """True when the fix PR targets ``main`` / ``master`` (FR #4994).
+
+    Missing base is treated as non-default so stacked FR #4665 skips stay safe
+    when fixtures omit ``base``.
+    """
+    ref = pr_base_ref(pr)
+    return ref in ("main", "master")
+
+
 def _read_legacy_unaccepted(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -10026,6 +10046,26 @@ def resync_from_github(
             for p in prs
             if isinstance(p, dict) and isinstance(p.get("number"), int)
         }
+        # FR #4994: among open main/master-base mrb-fix PRs for the same parent,
+        # only the lowest number is offerable (one-fix-per-failure twin rule).
+        main_base_fix_keeper: dict[str, int] = {}
+        for p in prs:
+            if not isinstance(p, dict) or not isinstance(p.get("number"), int):
+                continue
+            if p.get("draft") is True:
+                continue
+            title_p = str(p.get("title") or "")
+            if not is_mrb_fix_pr_title(title_p):
+                continue
+            if not mrb_fix_targets_default_branch(p):
+                continue
+            parent_p = mrb_fix_parent_pr_id(title_p)
+            if not parent_p or parent_p not in open_pr_ids:
+                continue
+            n_p = int(p["number"])
+            prev = main_base_fix_keeper.get(parent_p)
+            if prev is None or n_p < prev:
+                main_base_fix_keeper[parent_p] = n_p
         for pr in prs:
             if not isinstance(pr, dict):
                 continue
@@ -10044,22 +10084,47 @@ def resync_from_github(
                     bucket.add(_norm_row_id(r))
             open_pulls_map.setdefault(repo, set()).add(f"#{num}")
             # bobiverse#224 / #781: open mrb-*-fix PRs are not MRB while the parent
-            # PR is still open. FR #4665: once parent N is merged or closed, queue
-            # the orphan as an ordinary MRB (same author exclusion as any other PR).
+            # PR is still open (stacked on the parent branch). FR #4665: once parent N
+            # is merged or closed, queue the orphan as an ordinary MRB.
+            # FR #4994: when the fix targets main/master while the parent is still
+            # open, queue the fix (else FIX-linked parent + skipped fix deadlock).
+            # Twin main-base fixes for one parent: only the lowest number queues.
             if is_mrb_fix_pr_title(title):
                 parent = mrb_fix_parent_pr_id(title)
-                if not parent or parent in open_pr_ids:
+                if not parent:
                     skipped_open_pulls.add((repo, f"#{num}"))
-                    why = "still open" if parent else "no parent number"
                     print(
-                        f"resync skip mrb-fix PR {repo}#{num} parent {parent or '?'} {why}",
+                        f"resync skip mrb-fix PR {repo}#{num} parent ? no parent number",
                         flush=True,
                     )
                     continue
-                print(
-                    f"resync queue orphan mrb-fix PR {repo}#{num} parent {parent} not open",
-                    flush=True,
-                )
+                if parent in open_pr_ids:
+                    if mrb_fix_targets_default_branch(pr):
+                        keeper = main_base_fix_keeper.get(parent)
+                        if keeper is not None and num != keeper:
+                            skipped_open_pulls.add((repo, f"#{num}"))
+                            print(
+                                f"resync skip twin mrb-fix PR {repo}#{num} keeper #{keeper}",
+                                flush=True,
+                            )
+                            continue
+                        print(
+                            f"resync queue main-base mrb-fix PR {repo}#{num} "
+                            f"parent {parent} still open",
+                            flush=True,
+                        )
+                    else:
+                        skipped_open_pulls.add((repo, f"#{num}"))
+                        print(
+                            f"resync skip mrb-fix PR {repo}#{num} parent {parent} still open",
+                            flush=True,
+                        )
+                        continue
+                else:
+                    print(
+                        f"resync queue orphan mrb-fix PR {repo}#{num} parent {parent} not open",
+                        flush=True,
+                    )
             # FR #2604: draft open PRs must not become MRB jobs; still count as open
             # for UAT/repo_clear and FR supersede via open_pulls_map above.
             if pr.get("draft") is True:

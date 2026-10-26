@@ -1,4 +1,4 @@
-"""FR #4665: an open fix(mrb-N) PR is an MRB only after parent N is not open."""
+"""FR #4665: stacked fix(mrb-N) is MRB only after parent N is not open (see FR #4994 for main-base)."""
 from __future__ import annotations
 
 from pathlib import Path
