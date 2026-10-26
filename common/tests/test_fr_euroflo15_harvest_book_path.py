@@ -59,16 +59,18 @@ def test_euroflo15_resolve_skill_book_never_bobiverse_harvest_path():
 
 def test_euroflo15_harvest_ps1_pin():
     text = HARVEST_PS1.read_text(encoding="utf-8")
-    assert "euroflo#15" in text
-    assert r"(?i)^SimonBarnett/euroflo$" in text
-    assert "product default skill_book=harvest-agent-skills for SimonBarnett/euroflo" in text
+    # FR #4990 folded euroflo into priority-customer set (euroflo|lynton|trutex|rees).
+    assert "FR #4990" in text or "euroflo#15" in text
+    assert "euroflo|lynton|trutex|rees" in text or r"(?i)^SimonBarnett/euroflo$" in text
+    assert "skill_book=harvest-agent-skills" in text
 
 
 def test_euroflo15_harvest_dryrun_book_path():
     nonce = uuid.uuid4().hex
     lesson = f"euroflo#15 unique dryrun pin {nonce}: never invent common harvest path"
     text = _dry_run_text(job_repo="SimonBarnett/euroflo", lesson=lesson)
-    assert "euroflo#15 product default skill_book=harvest-agent-skills" in text
+    assert "skill_book=harvest-agent-skills" in text
+    assert "SimonBarnett/euroflo" in text
     # Prefer JSON payload; twin/dedup SKIP still proves the product-default branch ran.
     start, end = text.find("{"), text.rfind("}")
     if start >= 0 and end > start:

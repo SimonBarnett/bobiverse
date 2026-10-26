@@ -947,16 +947,17 @@ if ($bobTooling) {
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/agentic_fomprep$')) {
     $bookName = 'harvest-agent-skills'
     Write-Host "INFO FR #3318 product default skill_book=harvest-agent-skills for SimonBarnett/agentic_fomprep"
-} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/euroflo$')) {
+} elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/(euroflo|lynton|trutex|rees)$')) {
+    # FR #4990 / euroflo#15: priority-customer topic peers share repo-root honesty box.
     $bookName = 'harvest-agent-skills'
-    Write-Host "INFO euroflo#15 product default skill_book=harvest-agent-skills for SimonBarnett/euroflo"
+    Write-Host "INFO FR #4990 priority-customer default skill_book=harvest-agent-skills for $Repo"
 } elseif ($bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/ce-priority$')) {
     # FR #4830: even with explicit -Book harvest, never invent common/.grok/skills/harvest
     # on ce-priority (assert-lock / tip-loop class of ce-priority#36/#37/#38).
     $bookName = 'dayworks-launcher'
     Write-Host "INFO FR #4830 product default skill_book=dayworks-launcher for SimonBarnett/ce-priority (never invent common/.grok/skills/harvest)"
 } elseif (-not $script:ExplicitBook -and $bookName -eq 'harvest' -and ($Repo -match '(?i)^SimonBarnett/' ) -and ($Repo -notmatch '(?i)^SimonBarnett/bobiverse$')) {
-    # FR #4976: euroflo / other customer product repos (topic set may be empty).
+    # FR #4976: other SimonBarnett product/customer repos (topic set may be empty).
     $bookName = 'harvest-agent-skills'
     Write-Host "INFO FR #4976 product default skill_book=harvest-agent-skills for $Repo (not common/.grok/skills/harvest)"
 }
