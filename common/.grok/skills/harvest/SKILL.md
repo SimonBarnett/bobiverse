@@ -323,6 +323,7 @@ routes to bobiverse via the split rule.
 - When GitHub list ETags 304 on open issues, still fetch open pulls (or force-refresh the other list); log unchanged= so repos=0 is not mistaken for discover empty; !resync must skip If-None-Match
 - Customer/product harvest (euroflo class) defaults to .grok/skills/harvest-agent-skills even when the priority-customer topic cache is empty; never invent common/.grok/skills/harvest on a non-bobiverse repo.
 - bob-ear: BOB_IRC_RECV_TIMEOUT_S + IDLE_PING_S + IDLE_DEAD_S client PING keepalive; half-open ESTABLISHED sockets must idle-dead reconnect (FR #4980), not stay deaf while ircBob Running
+- Priority-customer harvest (euroflo/lynton/trutex/rees): PRODUCT_DEFAULT + Invoke-BobiverseHarvest FR #4990 branch to harvest-agent-skills; never invent common/.grok/skills/harvest on customer repos.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
