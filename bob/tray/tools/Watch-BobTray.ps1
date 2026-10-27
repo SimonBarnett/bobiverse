@@ -3164,13 +3164,28 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         try {
             Write-BobIrcStatus | Out-Null
         } catch {
+            # FR #5050: log + intake (deduped) — never swallow digest webhook errors.
             try {
                 $logDir = Join-Path $msg.Root 'logs'
                 if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
                 Add-Content -LiteralPath (Join-Path $logDir 'tray-lifecycle.log') `
                     -Value ('{0} WARN trayDigestTimer Write-BobIrcStatus: {1}' -f [datetime]::UtcNow.ToString('o'), $_.Exception.Message) `
                     -Encoding utf8
-            } catch { }
+            } catch {
+                Write-TrayLog ('FR #5050 digest log: ' + $_.Exception.Message)
+            }
+            try {
+                $rf = Join-Path ([string]$msg.Root) 'scripts\Report-BobRuntimeFailure.ps1'
+                if (-not (Test-Path -LiteralPath $rf)) {
+                    $rf = Join-Path ([string]$msg.Root) 'common\scripts\Report-BobRuntimeFailure.ps1'
+                }
+                if (Test-Path -LiteralPath $rf) { . $rf }
+                if (Get-Command Report-BobRuntimeFailure -ErrorAction SilentlyContinue) {
+                    Report-BobRuntimeFailure -Component 'tray' -Site 'trayDigestTimer.Write-BobIrcStatus' -Exception $_.Exception | Out-Null
+                }
+            } catch {
+                Write-TrayLog ('FR #5050 digest report: ' + $_.Exception.Message)
+            }
         }
     }
     catch {

@@ -4089,8 +4089,13 @@ def main() -> None:
         import crash_report
 
         crash_report.install("bob-ear")
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            import runtime_failure
+
+            runtime_failure.report("bob-ear", exc, site="crash_report.install")
+        except Exception as inner:
+            sys.stderr.write(f"WARN FR #5050 ear install report: {type(inner).__name__}\n")
 
     p = argparse.ArgumentParser(description="agentic TLS IRC")
     p.add_argument("--host", default="irc.ntsa.uk")
