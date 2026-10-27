@@ -102,3 +102,6 @@ Generalised from 18 harvested lessons that never reached this book (audit for FR
 
 Symptom: console goes silent mid base64 dump; later STATUS gets no reply. Cause: Ergo fakelag / excess flood after hundreds of Query lines. Fix on tip: reply-line cap + truncate marker + token-bucket send pacing; reconnect on send failure. Controllers must not paste multi-KB base64 into shell stdout --- use PUT/file fetch.
 
+## Harvested lessons (intake)
+
+- Harvest tip for DCC ephemeral TLS / no embedded RSA PEM belongs in bobiverse-airc-troubleshooting next to FR #5008; MOVED land from wrong-book harvest tip then DONE PASS.
