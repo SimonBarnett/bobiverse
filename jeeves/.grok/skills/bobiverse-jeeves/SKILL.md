@@ -116,4 +116,5 @@ Hotpatch = back up `<ai root>\jeeves`, copy changed `scripts\*`, `Restart-Servic
 
 ## Harvested lessons (intake)
 
+- Jeeves complete_job_by_ref: match DONE on repo+id+task only; never fall back to repo+id alone or a drain-retry DONE FIX will mark the FR #4929 requeued MRB done
 - When requeue_reopened_issue puts an FR back in unaccepted, also clear ledger fr_done in the same locked step (pass home); keep the hold when there is no reopen and an open Closes-PR still covers the issue. (context: FR #4695 / tip #4697)
