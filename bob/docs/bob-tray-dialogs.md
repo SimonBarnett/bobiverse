@@ -39,7 +39,7 @@ now owns everything the user touches: the notify icon and its robot images (idle
 pre-created, so the first right-click is as fast as the tenth), click / double-click handling, the flashing, and the hover text.
 It runs the Status and About windows in-process (no second process to start).
 
-* **Menu**: **Status** (bold, the default), Agent, Plan, Acknowledge, Open log, separator, Restart, Exit. Left click = acknowledge + Status;
+* **Menu**: **Status** (bold, the default), Agent, Plan, Acknowledge, Open log, separator, Restart, Reload engine (FR #5111), Exit. Left click = acknowledge + Status;
   double click = Status.
 * **Agent / Plan** are native: the 2-worker cap is the **union** of IRC agent seat marker pids (live) and live agent `bob-worker` roots (FR #3181 / FR #4307 / MRB #4311), the worker exe is run from the sha256
   run-copy under `%LOCALAPPDATA%\Bobiverse\worker\bin`, and it opens its own console window (same rules as the PowerShell launcher).
