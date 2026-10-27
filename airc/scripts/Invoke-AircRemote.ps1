@@ -17,6 +17,8 @@
   FR #4796: multi-line -Outbox bursts use -OutboxPaceMs (default 800, ear FLOOD_S);
   after a large reply (>= -BurstReplyThreshold lines) sleep -PostBurstCoolMs before return
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
+  FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
+  and verify DONE sha256; reverse stream uses airc_dcc_bulk.py (TLS default on).
 #>
 [CmdletBinding(DefaultParameterSetName = 'Remote')]
 param(
@@ -211,6 +213,60 @@ function New-AircPutChunks {
     }
 }
 
+function New-AircDccListenOffer {
+    <#
+      FR #5008: build a DCCLISTEN control line for the caller/ear.
+      tls=1 by default; set -Tls:$false for plain (lab only). Optional -Relay host:port.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][string]$ListenHost,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$Token,
+        [bool]$Tls = $true,
+        [string]$Relay = ''
+    )
+    if ($JobId -notmatch '^[0-9a-f]{8}$') { throw 'JobId must be 8 hex chars' }
+    if ($Token -notmatch '^[0-9a-f]{16,64}$') { throw 'Token must be 16..64 hex chars' }
+    if ($Port -lt 1 -or $Port -gt 65535) { throw 'Port out of range' }
+    $tlsBit = $(if ($Tls) { '1' } else { '0' })
+    $line = 'DCCLISTEN id={0} host={1} port={2} token={3} tls={4}' -f $JobId, $ListenHost, $Port, $Token.ToLower(), $tlsBit
+    if ($Relay) {
+        if ($Relay -notmatch '^\S+:\d+$') { throw 'Relay must be host:port' }
+        $line = '{0} relay={1}' -f $line, $Relay
+    }
+    return $line
+}
+
+function New-AircDccToken {
+    # 16-byte hex token for DCCLISTEN (FR #5003 / #5008).
+    $bytes = New-Object byte[] 16
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+}
+
+function Test-AircDccDoneSha256 {
+    <#
+      FR #5008 helper: True when DONE via=dcc sha256 matches the received bulk bytes.
+    #>
+    param(
+        [Parameter(Mandatory)]$ParsedDone,
+        [Parameter(Mandatory)][byte[]]$Body
+    )
+    if (-not $ParsedDone) { return $false }
+    $via = [string]$ParsedDone.Via
+    $sha = [string]$ParsedDone.Sha256
+    if ($via -ne 'dcc') { return $false }
+    if (-not $sha) { return $false }
+    $shaAlg = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = ($shaAlg.ComputeHash($Body) | ForEach-Object { $_.ToString('x2') }) -join ''
+    } finally {
+        $shaAlg.Dispose()
+    }
+    return ($hash -eq $sha.ToLowerInvariant())
+}
+
 function ConvertFrom-AircRemoteReply {
     param([Parameter(Mandatory)][string[]]$Lines, [string]$ExpectJobId = '')
     $outs = New-Object System.Collections.Generic.List[object]
@@ -230,6 +286,7 @@ function ConvertFrom-AircRemoteReply {
             continue
         }
         # FR #5003 + #5002: DONE id= with trailing via/bytes/sha256/reason; id-less exit=126 fail-fast.
+        # Capture id/exit before the foreach -match loop (StrictMode: $Matches is overwritten).
         if ($line -match '^DONE\s+id=([0-9a-f]+)\s+exit=(-?\d+)(.*)$') {
             $doneId = $Matches[1]
             $doneExit = [int]$Matches[2]
@@ -638,6 +695,25 @@ function Invoke-AircRemoteSelfTest {
         ) -ExpectJobId $id
         Assert-True ($dccDone.Via -eq 'dcc') 'DONE via=dcc'
         Assert-True ($dccDone.Bytes -eq 12) 'DONE bytes='
+        # FR #5008: DCCLISTEN helper + sha256 verify against DONE.
+        $tok = New-AircDccToken
+        Assert-True ($tok.Length -eq 32) 'New-AircDccToken length'
+        $dccLine = New-AircDccListenOffer -JobId $id -ListenHost '127.0.0.1' -Port 4400 -Token $tok -Tls $true -Relay '10.0.0.1:9'
+        Assert-True ($dccLine -match 'tls=1') 'DCCLISTEN tls=1'
+        Assert-True ($dccLine -match 'relay=10\.0\.0\.1:9') 'DCCLISTEN relay='
+        $plainDcc = New-AircDccListenOffer -JobId $id -ListenHost '127.0.0.1' -Port 9 -Token $tok -Tls:$false
+        Assert-True ($plainDcc -match 'tls=0') 'DCCLISTEN tls=0'
+        $bulkBytes = [Text.Encoding]::UTF8.GetBytes('hello-dcc')
+        $shaAlg = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $expectSha = (($shaAlg.ComputeHash($bulkBytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+        } finally { $shaAlg.Dispose() }
+        $dccVerify = ConvertFrom-AircRemoteReply -Lines @(
+            "out id=$id seq=1 bulk bytes=9 sha256=$expectSha",
+            "DONE id=$id exit=0 bytes=9 sha256=$expectSha via=dcc"
+        ) -ExpectJobId $id
+        Assert-True (Test-AircDccDoneSha256 -ParsedDone $dccVerify -Body $bulkBytes) 'Test-AircDccDoneSha256 match'
+        Assert-True (-not (Test-AircDccDoneSha256 -ParsedDone $dccVerify -Body ([Text.Encoding]::UTF8.GetBytes('nope')))) 'Test-AircDccDoneSha256 mismatch'
         try {
             Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId 'ffffffff' -TimeoutSec 1 -StartOffset ([int64]([System.IO.FileInfo]$jsonl).Length) | Out-Null
             Assert-True $false 'wait timeout should throw'
