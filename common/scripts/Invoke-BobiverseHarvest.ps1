@@ -33,6 +33,7 @@ param(
     [switch]$Flush,
     [switch]$NoDefaultOutboxes,  # FR #139 tests: only flush -OutboxDir
     [switch]$DryRun,
+    [switch]$NoCitedPrLookup,  # FR #5109: tests / offline --- skip live gh pr view
     [int]$TimeoutSec = 30
 )
 Set-StrictMode -Version Latest
@@ -599,6 +600,10 @@ function Test-HarvestLessonOrPinJobSkip {
         [string]$SummaryText,
         [string[]]$LessonLines
     )
+    # FR #5109: pytest / seats without a stable gh view must not depend on live GitHub.
+    if ($NoCitedPrLookup -or $env:BOBIVERSE_HARVEST_NO_GH_PR_LOOKUP -eq '1') {
+        return $false
+    }
     $joined = (@([string]$SummaryText) + @($LessonLines) + @([string]$ExistingUrl)) -join "`n"
     $refs = New-Object System.Collections.Generic.List[object]
     foreach ($m in [regex]::Matches($joined, '(?i)https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)')) {
