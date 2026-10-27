@@ -41,11 +41,16 @@ def _log_tail(home, n: int = 20) -> str:
         import crash_report
 
         home_p = Path(home)
+        env_log = (os.environ.get("AIRC_LOG_FILE") or "").strip()
         candidates = [
             home_p / "airc-console.log",
             home_p / "console.log",
             home_p / "logs" / "airc-console.log",
+            # FR #5105: NSSM --log-file is usually <install>/logs/, not ConsoleHome.
+            home_p.parent / "logs" / "airc-console.log",
         ]
+        if env_log:
+            candidates.insert(0, Path(env_log))
         path = next((c for c in candidates if c.is_file()), None)
         if path is None:
             logs = sorted(home_p.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
