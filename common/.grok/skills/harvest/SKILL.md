@@ -324,6 +324,7 @@ routes to bobiverse via the split rule.
 - Customer/product harvest (euroflo class) defaults to .grok/skills/harvest-agent-skills even when the priority-customer topic cache is empty; never invent common/.grok/skills/harvest on a non-bobiverse repo.
 - bob-ear: BOB_IRC_RECV_TIMEOUT_S + IDLE_PING_S + IDLE_DEAD_S client PING keepalive; half-open ESTABLISHED sockets must idle-dead reconnect (FR #4980), not stay deaf while ircBob Running
 - Jeeves resync: fix(mrb-N) targeting main/master while parent is open must queue as MRB (else FIX-linked parent + skip-fix deadlock); stacked non-default base still skips; among main-base twins keep lowest PR number only
+- DCC TLS defaults: generate ephemeral self-signed via cryptography at runtime; never commit BEGIN RSA PRIVATE KEY PEM (GitGuardian). MRB FAIL land as one clean commit from main so the key never appears in the PR diff; close the tainted tip unmerged; FIX after DONE FAIL is DONE with the land PR URL when acceptance is already on main.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
