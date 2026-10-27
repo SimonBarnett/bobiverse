@@ -324,6 +324,7 @@ routes to bobiverse via the split rule.
 - Customer/product harvest (euroflo class) defaults to .grok/skills/harvest-agent-skills even when the priority-customer topic cache is empty; never invent common/.grok/skills/harvest on a non-bobiverse repo.
 - bob-ear: BOB_IRC_RECV_TIMEOUT_S + IDLE_PING_S + IDLE_DEAD_S client PING keepalive; half-open ESTABLISHED sockets must idle-dead reconnect (FR #4980), not stay deaf while ircBob Running
 - Jeeves resync: fix(mrb-N) targeting main/master while parent is open must queue as MRB (else FIX-linked parent + skip-fix deadlock); stacked non-default base still skips; among main-base twins keep lowest PR number only
+- Engine-mode trayDigestTimer Action must re-dot BobTrayDialogs each tick (like trayWorkerSyncTimer) or Write-BobIrcStatus never runs and peer weekly freezes; post_digest_out_of_fuel must include weekly=0 and log failures so 402 paints 0% on peers.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
