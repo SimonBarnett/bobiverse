@@ -1,4 +1,4 @@
-"""FR #211: Jeeves shop listener â€” ACK/DONE â†’ queue + digest activity webhook.
+"""FR #211: Jeeves shop listener --- ACK/DONE -> queue + digest activity webhook.
 
 Script-only, no tokens, no channel PRIVMSG. Parses worker lines in #{machine},
 updates queue.json, and POSTs /bob/v1/report (or local apply_callback) so TipForm
@@ -11,7 +11,7 @@ Grammar (single line, case-insensitive verb):
 
 TYPE is FR|MRB|UAT|PR|FIX|BUILD.
 Id matches gitclaim.ID_RE (FR #4857 / #4911): digits or synthetic #main / #main-red.
-DONE result: FR = PR url only (no PASS/FAIL â€” FR #2419 strips/ignores them if present).
+DONE result: FR = PR url only (no PASS/FAIL --- FR #2419 strips/ignores them if present).
 MRB/UAT = PASS|FAIL [url]. Legacy ``PR <url>`` still accepted.
 GIVEUP/NACK optional trailing reason is logged on the shop-listen INFO line (FR #1701).
 """
@@ -465,7 +465,7 @@ def complete_job_by_ref(
                     doc, repo, str(job.get("id") or ident), nick
                 )
                 # FR #4929: DONE FIX must requeue MRB even when synchronize arrived
-                # (and was purged) before this DONE â€” otherwise the new head sits
+                # (and was purged) before this DONE --- otherwise the new head sits
                 # with no MRB until a manual !resync.
                 pull = str(url or job.get("url") or "").strip()
                 if not gitclaim.PULL_URL_RE.search(pull):
@@ -489,9 +489,9 @@ def complete_job_by_ref(
             if str(job.get("task") or "").upper() == "MRB":
                 gitclaim._remove_unaccepted_tasks(doc, repo, ident, {"MRB"})
                 gitclaim.stamp_mrb_done(home, repo, ident)
-            # supersede light: DONE FR with PR url â†’ queue MRB if url has /pull/ (FR #254).
+            # supersede light: DONE FR with PR url -> queue MRB if url has /pull/ (FR #254).
             # FR #4851: if the issue was already closed (cancel_pending / state=closed)
-            # before this DONE, do not auto-queue MRB â€” stamp needs_human instead.
+            # before this DONE, do not auto-queue MRB --- stamp needs_human instead.
             if str(job.get("task") or "").upper() == "FR" and (
                 result.upper().startswith("PR") or "/pull/" in (url or result)
             ):
