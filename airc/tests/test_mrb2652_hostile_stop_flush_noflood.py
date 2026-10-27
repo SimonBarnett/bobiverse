@@ -32,15 +32,26 @@ class _RecordingSock:
 
 
 def test_mrb2652_normal_send_still_floods(tmp_path, monkeypatch):
-    """flood=False is stop-only; normal PRIVMSG path must keep FLOOD_S."""
+    """flood=False is stop-only; normal PRIVMSG path must pace (FR #4790 bucket).
+
+    FR #5070: a full token bucket returns wait=0 on the first take, so asserting
+    sleep>=FLOOD_S on a single send flakes. Empty the bucket first.
+    """
     s = _svc(tmp_path, monkeypatch)
     monkeypatch.setattr(svc, "FLOOD_S", 0.35)
     sleeps: list[float] = []
     monkeypatch.setattr(svc.time, "sleep", lambda sec: sleeps.append(float(sec)))
     sock = _RecordingSock()
     s.sock = sock
+    bucket = s._flood_bucket
+    bucket.tokens = 0.0
+    bucket.updated = svc.time.monotonic()
     s.send_privmsg("bob-tm", "out id=aabbccdd seq=1 hello")
     assert any(x >= 0.3 for x in sleeps), f"normal path must flood: {sleeps}"
+    src = Path(svc.__file__).read_text(encoding="utf-8")
+    send = src[src.index("def send(self, line: str") : src.index("def send_privmsg(")]
+    assert "if flood:" in send
+    assert "bucket.take" in send or "_flood_bucket" in send
 
 
 def test_mrb2652_prepare_stop_drains_pending_without_flood(tmp_path, monkeypatch):
