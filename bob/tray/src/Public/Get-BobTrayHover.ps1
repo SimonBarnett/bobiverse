@@ -2066,6 +2066,8 @@ function Get-BobTrayHover {
             # FR AgentMonitor#150 / CAST IRON: this host's Grok weekly is LOCAL unified.jsonl.
             # Digest may fill peer tiles only; never clobber a known local weekly (incl. n/a).
             if ($mac -eq $machineId -and $localWeeklyLocked) { continue }
+            # FR #5047: digespcent rows have no lastSeen --- never paint peer weekly from them.
+            if ($mac -ne $machineId) { continue }
             $weeklyBy[$mac] = $pct
         }
     }
@@ -2308,13 +2310,25 @@ function Get-BobTrayHover {
             if ($weeklyBy.ContainsKey($mid2) -and $null -ne $weeklyBy[$mid2]) { continue }
             if ($peCache.weekly_by_machine.ContainsKey($mid2) -and $null -ne $peCache.weekly_by_machine[$mid2]) {
                 # FR #5032: durable cache must not resurrect a stale peer % as live.
+                # FR #5047: peer peCache without a known fresh lastSeen is fuel_stale (no confident live %).
+                $isPeerCache = ($mid2 -ne $machineId)
                 $cacheAge = $null
                 if ($seenBy.ContainsKey($mid2)) {
                     $cacheAge = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $seenBy[$mid2] })
                 }
-                if ($null -ne $cacheAge -and $cacheAge -gt $fuelStaleAfter) {
+                if ($isPeerCache -and -not $seenBy.ContainsKey($mid2)) {
+                    # Peer peCache fill with no lastSeen must not paint a confident live %.
+                    $fuelStaleBy[$mid2] = $true
+                    continue
+                }
+                if ($isPeerCache -and ($null -eq $cacheAge -or $cacheAge -gt $fuelStaleAfter)) {
                     $fuelStaleBy[$mid2] = $true
                     if ($null -ne $cacheAge) { $fuelAgeBy[$mid2] = [int]$cacheAge }
+                    continue
+                }
+                if (-not $isPeerCache -and $null -ne $cacheAge -and $cacheAge -gt $fuelStaleAfter) {
+                    $fuelStaleBy[$mid2] = $true
+                    $fuelAgeBy[$mid2] = [int]$cacheAge
                     continue
                 }
                 $weeklyBy[$mid2] = [int]$peCache.weekly_by_machine[$mid2]
@@ -2342,6 +2356,17 @@ function Get-BobTrayHover {
                 }
                 elseif ($null -ne $seatWeek) {
                     if ($smid -eq $machineId -and $localWeeklyLocked) { continue }
+                    # FR #5047: seat peCache weekly must not paint peers without fresh lastSeen.
+                    if ($smid -ne $machineId) {
+                        if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
+                        if (-not $seenBy.ContainsKey($smid)) { $fuelStaleBy[$smid] = $true; continue }
+                        $seatAge = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $seenBy[$smid] })
+                        if ($null -eq $seatAge -or $seatAge -gt $fuelStaleAfter) {
+                            $fuelStaleBy[$smid] = $true
+                            if ($null -ne $seatAge) { $fuelAgeBy[$smid] = [int]$seatAge }
+                            continue
+                        }
+                    }
                     $weeklyBy[$smid] = [int]$seatWeek
                 }
             }
@@ -2358,6 +2383,17 @@ function Get-BobTrayHover {
                     $smid = [string]$sm
                     if ($smid -eq $machineId -and $localWeeklyLocked) { continue }
                     if ($smid -and (-not $weeklyBy.ContainsKey($smid) -or $null -eq $weeklyBy[$smid])) {
+                        # FR #5047: seat peCache weekly must not paint peers without fresh lastSeen.
+                        if ($smid -ne $machineId) {
+                            if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
+                            if (-not $seenBy.ContainsKey($smid)) { $fuelStaleBy[$smid] = $true; continue }
+                            $seatAge2 = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $seenBy[$smid] })
+                            if ($null -eq $seatAge2 -or $seatAge2 -gt $fuelStaleAfter) {
+                                $fuelStaleBy[$smid] = $true
+                                if ($null -ne $seatAge2) { $fuelAgeBy[$smid] = [int]$seatAge2 }
+                                continue
+                            }
+                        }
                         $weeklyBy[$smid] = [int]$seatWeek
                     }
                 }
