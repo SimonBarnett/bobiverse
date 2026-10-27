@@ -8,7 +8,8 @@ import bob_worker as bw
 
 def _hashed_pair(root: int, child: int, digest: str = "5f576af4ad5e"):
     name = f"bob-worker-{digest}.exe"
-    return [(root, 1, name), (child, root, name)]
+    # FR #3181: missing mode is unknown; pin agent so seat-root recycle still sees the onefile pair.
+    return [(root, 1, name, "agent"), (child, root, name, "agent")]
 
 
 def test_mrb2557_hashed_onefile_pair_is_one_seat():
@@ -19,7 +20,7 @@ def test_mrb2557_hashed_onefile_pair_is_one_seat():
     for root in bw.excess_worker_seat_roots(procs, keep=1):
         kill.extend(bw.worker_seat_tree_pids(procs, root))
     assert sorted(kill) == [21524, 32104]
-    flat = sorted(p for p, _pp, n in procs if bw._WORKER_EXE_RX.match(n))
+    flat = sorted(p for p, _pp, n, *_rest in procs if bw._WORKER_EXE_RX.match(n))
     naive = flat[2:]
     assert sorted(kill) != sorted(naive)
 

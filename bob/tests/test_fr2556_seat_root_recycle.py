@@ -6,7 +6,8 @@ import bob_worker as bw
 
 def _pair(root: int, child: int, name: str = "bob-worker.exe"):
     # bootloader root (parent not a worker), child parent=root
-    return [(root, 1, name), (child, root, name)]
+    # FR #3181: 4th field required — missing mode is unknown (not agent), so recycle helpers would skip the seat.
+    return [(root, 1, name, "agent"), (child, root, name, "agent")]
 
 
 def test_worker_seat_roots_onefile_pair_is_one_seat():
@@ -33,7 +34,7 @@ def test_excess_worker_seat_roots_keeps_newest_pair():
         kill.extend(bw.worker_seat_tree_pids(procs, root))
     assert sorted(kill) == [100, 101]
     # Flat Skip-2 on all worker pids is the bug that killed MarchHare's second seat.
-    flat = sorted(p for p, _pp, n in procs if bw._WORKER_EXE_RX.match(n))
+    flat = sorted(p for p, _pp, n, *_rest in procs if bw._WORKER_EXE_RX.match(n))
     naive = flat[2:]  # Skip-2 keep first two PIDs
     assert naive == [200, 201]  # would kill the NEW seat's tree — wrong
     assert sorted(kill) != sorted(naive)

@@ -26,13 +26,14 @@ PS = shutil.which("powershell") or shutil.which("pwsh")
 needs_ps = pytest.mark.skipif(not PS or os.name != "nt", reason="needs Windows PowerShell")
 
 # ionos: GetCurrentPeriodUsage + GetSandUsageStatus bodies (values scrubbed to the same magnitudes).
+# FR #4802: usagePercent is percentage points 0-100 (6% used => 94% remaining), never a 0-1 fraction.
 IONOS_FIXTURE = {
     "period": {
         "billingCycleEnd": "1792171381000",  # 2026-10-16T17:23:01Z
         "planUsage": {"autoPercentUsed": 100, "apiPercentUsed": 100, "bonusSpend": 285224, "remainingBonus": False},
         "spendLimitUsage": {"individualUsed": 20011, "individualLimit": 20000},
     },
-    "sand": {"usagePercent": 0.06, "nextResetTimestampUtc": "2026-10-07T17:23:58.025Z",
+    "sand": {"usagePercent": 6, "nextResetTimestampUtc": "2026-10-07T17:23:58.025Z",
              "onDemandSettings": {"enabled": True}},
 }
 # MarchHare: cursor-account.json has ONLY label + period end, nothing about groups.
