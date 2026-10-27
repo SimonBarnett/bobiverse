@@ -101,8 +101,9 @@ CHANSERV_PROBE_S = 8.0
 NICK_RETRIES_SHOP = 5
 NICK_RETRIES_LOBBY = 20
 # FR #2612: match out/err/DONE id= for in-flight shell tracking + stop flush.
+# FR #5003: DONE may carry trailing bytes=/sha256=/via= fields.
 _SHELL_ID_RE = re.compile(
-    r"^(?:(?:out|err)\s+id=([0-9a-f]+)\s+seq=\d+|DONE\s+id=([0-9a-f]+)\s+exit=-?\d+\s*$)",
+    r"^(?:(?:out|err)\s+id=([0-9a-f]+)\s+seq=\d+|DONE\s+id=([0-9a-f]+)\s+exit=-?\d+(?:\s+\S+)*)\s*$",
     re.IGNORECASE,
 )
 

@@ -229,8 +229,28 @@ function ConvertFrom-AircRemoteReply {
             if ($obj.Stream -eq 'out') { [void]$outs.Add($obj) } else { [void]$errs.Add($obj) }
             continue
         }
-        if ($line -match '^DONE\s+id=(?<id>[0-9a-f]+)\s+exit=(?<exit>-?\d+)\s*$') {
-            $done = [pscustomobject]@{ Id = $Matches.id; ExitCode = [int]$Matches.exit }
+        # FR #5003: optional trailing bytes=/sha256=/via= on DONE (DCC bulk).
+        if ($line -match '^DONE\s+id=([0-9a-f]+)\s+exit=(-?\d+)(.*)$') {
+            $doneId = $Matches[1]
+            $doneExit = [int]$Matches[2]
+            $rest = ([string]$Matches[3]).Trim()
+            $via = ''
+            $bytes = $null
+            $sha = ''
+            if ($rest) {
+                foreach ($tok in ($rest -split '\s+')) {
+                    if ($tok -match '^via=(.+)$') { $via = $Matches[1] }
+                    elseif ($tok -match '^bytes=(\d+)$') { $bytes = [int]$Matches[1] }
+                    elseif ($tok -match '^sha256=([0-9a-f]+)$') { $sha = $Matches[1] }
+                }
+            }
+            $done = [pscustomobject]@{
+                Id       = $doneId
+                ExitCode = $doneExit
+                Via      = $via
+                Bytes    = $bytes
+                Sha256   = $sha
+            }
         }
     }
     if (-not $done) {
@@ -253,6 +273,9 @@ function ConvertFrom-AircRemoteReply {
     return [pscustomobject]@{
         JobId    = $done.Id
         ExitCode = $done.ExitCode
+        Via      = $(if ($done.PSObject.Properties['Via']) { $done.Via } else { '' })
+        Bytes    = $(if ($done.PSObject.Properties['Bytes']) { $done.Bytes } else { $null })
+        Sha256   = $(if ($done.PSObject.Properties['Sha256']) { $done.Sha256 } else { '' })
         Out      = $outSorted
         Err      = $errSorted
         StdOut   = (($outSorted | ForEach-Object { $_.Body }) -join "`n")
@@ -585,6 +608,13 @@ function Invoke-AircRemoteSelfTest {
         $got = Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId $id -TimeoutSec 10 -StartOffset $off
         Assert-True ($got.Count -ge 2) 'wait collected out+DONE'
         Assert-True ($got[-1] -match '^DONE id=aabbccdd exit=0') 'wait DONE line'
+        # FR #5003: trailing via=/bytes=/sha256= still parse as DONE.
+        $dccDone = ConvertFrom-AircRemoteReply -Lines @(
+            "out id=$id seq=1 bulk bytes=12 sha256=deadbeef",
+            "DONE id=$id exit=0 bytes=12 sha256=deadbeef via=dcc"
+        ) -ExpectJobId $id
+        Assert-True ($dccDone.Via -eq 'dcc') 'DONE via=dcc'
+        Assert-True ($dccDone.Bytes -eq 12) 'DONE bytes='
         try {
             Wait-AircRemoteReplies -RepliesJsonl $jsonl -ExpectJobId 'ffffffff' -TimeoutSec 1 -StartOffset ([int64]([System.IO.FileInfo]$jsonl).Length) | Out-Null
             Assert-True $false 'wait timeout should throw'
