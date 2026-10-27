@@ -1504,6 +1504,16 @@ class AircConsoleService:
             self._names_watch_deadline = now + max(1.0, NAMES_SYNC_WATCH_S)
             return
         info(f"INFO FR #5002 names-watch stage=reconnect channel={ch}")
+        try:
+            import airc_intake_event as _iev
+
+            _iev.report_airc_event(
+                "names-reconnect",
+                f"FR #5002 names-watch stage=reconnect channel={ch}",
+                home=self.home,
+            )
+        except Exception:
+            pass
         self._force_reconnect = True
 
     def _auth_wedge_watchdog(self) -> None:
@@ -1520,10 +1530,22 @@ class AircConsoleService:
             return
         if (now - float(self._auth_wedge_since)) < max(1.0, AUTH_WEDGE_EXIT_S):
             return
+        held = int(now - float(self._auth_wedge_since))
         info(
             f"ERROR FR #5002 auth-wedge channel-state-unknown for "
-            f"{int(now - float(self._auth_wedge_since))}s -> exit for NSSM restart"
+            f"{held}s -> exit for NSSM restart"
         )
+        try:
+            import airc_intake_event as _iev
+
+            _iev.report_airc_event(
+                "auth-wedge",
+                f"channel-state-unknown for {held}s",
+                home=self.home,
+            )
+            _iev.mark_restarting(self.home)
+        except Exception:
+            pass
         self._exit_for_nssm_restart = True
         self._force_reconnect = True
         self._stop.set()
@@ -1621,6 +1643,12 @@ class AircConsoleService:
                 break
 
     def run(self) -> int:
+        try:
+            import airc_intake_event as _iev
+
+            _iev.note_previous_abnormal_exit(self.home)
+        except Exception:
+            pass
         info(f"INFO airc-console machine={self.machine} channel={self.channel} nick={self.nick}")
         if not self.server_password:
             info(
@@ -1683,6 +1711,12 @@ class AircConsoleService:
         # FR #5002: non-zero so NSSM AppExit Restart recovers a wedged auth map.
         if getattr(self, "_exit_for_nssm_restart", False):
             return 1
+        try:
+            import airc_intake_event as _iev
+
+            _iev.mark_clean_exit(self.home)
+        except Exception:
+            pass
         return 0
 
 
@@ -1948,6 +1982,10 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
         crash_report.install("airc")
+        try:
+            crash_report.flush_spool()
+        except Exception:
+            pass
     except Exception:
         pass
     args = build_arg_parser().parse_args(argv)

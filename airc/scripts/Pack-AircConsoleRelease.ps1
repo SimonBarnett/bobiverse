@@ -62,6 +62,7 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 $files = @(
     'scripts\airc_console.py',
     'scripts\airc_console_service.py',
+    'scripts\airc_intake_event.py',
     'scripts\account_map.py',
     'scripts\Start-AircConsole.ps1',
     'scripts\Start-AircConsole.cmd',
