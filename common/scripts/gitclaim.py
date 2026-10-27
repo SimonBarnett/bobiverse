@@ -1269,8 +1269,17 @@ _REQUIRE_MACHINE_TITLE_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bce-priority-dev\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\brequire_machine\s*=\s*ce-priority-dev1\b"), "ce-priority-dev1"),
     (re.compile(r"(?i)\brequire_machine\s*=\s*ionos\b"), "ionos"),
+    # FR #5030 / #4422-class: "without/missing require_machine=redqueen" offer-gap
+    # meta titles must not self-pin the filing to redqueen.
+    (re.compile(
+        r"(?i)(?<!without\s)(?<!missing\s)\brequire_machine\s*=\s*redqueen\b"
+    ), "redqueen"),
     # FR #4422: "missing needs-ionos stamp" meta-FRs must not self-pin to ionos.
     (re.compile(r"(?i)(?<!missing\s)\bneeds-ionos\b"), "ionos"),
+    (re.compile(r"(?i)(?<!missing\s)(?<!without\s)\bneeds-redqueen\b"), "redqueen"),
+    # FR #5030: a-search hasresults monitor / redeploy titles (not bare "redqueen")
+    (re.compile(r"(?i)\ba-hasresults-monitor\b"), "redqueen"),
+    (re.compile(r"(?i)\bRegister-HasresultsMonitorService\b"), "redqueen"),
     (re.compile(r"(?i)\bchair[- ]outbox\b"), "ionos"),
     # FR #1550: monitor idle+ungated / ircJeeves StartPending filings are chair-host ops
     (re.compile(r"(?i)\b(?:irc)?jeeves\b.{0,60}\bstartpending\b"), "ionos"),
@@ -1303,6 +1312,8 @@ _REQUIRE_MACHINE_DEDICATED_PIN_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*ce-priority-dev\b"), "ce-priority-dev1"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*flamingo\b"), "flamingo"),
     (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*marchhare\b"), "marchhare"),
+    # FR #5030: dedicated body pin (was missing; body line alone did not stamp)
+    (re.compile(r"(?im)^\s*[`*]*require_machine\s*[:=]\s*redqueen\b"), "redqueen"),
 )
 _REQUIRE_MACHINE_BODY_SOFT_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     # agentic_fomprep WP0 live proof must run on DEV1
@@ -1365,6 +1376,25 @@ _REQUIRE_MACHINE_BODY_SOFT_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bionos\s+(?:irc)?jeeves\s+install(?:\s+tree)?\b.{0,120}\b(?:hotpatch|ff-update)\b"), "ionos"),
     (re.compile(r"(?i)\bC:\\ai\\jeeves\\scripts\\run_bobiverse_build\.py\b"), "ionos"),
     (re.compile(r"(?i)\b(?:hotpatch|ff-update)\b.{0,120}\bC:\\ai\\jeeves\b"), "ionos"),
+    # FR #5030: a-search redeploy / monitor / CloudWatch / SQL-log ops on redqueen
+    # (do not bare-match "redqueen" alone --- host layout docs must stay unpinned).
+    (re.compile(r"(?i)\ba-hasresults-monitor\b"), "redqueen"),
+    (re.compile(r"(?i)\bRegister-HasresultsMonitorService\b"), "redqueen"),
+    (re.compile(
+        r"(?i)\bredeploy\b.{0,160}\b(?:live\s+workers?|walrus)\b.{0,160}\ba-search\b"
+    ), "redqueen"),
+    (re.compile(
+        r"(?i)\ba-search\b.{0,160}\bredeploy\b.{0,160}\b(?:live\s+workers?|walrus)\b"
+    ), "redqueen"),
+    (re.compile(
+        r"(?i)\bFilterLogEvents\b.{0,160}\b(?:a-search|provider-\w+-live|a-sqlsearch|walrus)\b"
+    ), "redqueen"),
+    (re.compile(
+        r"(?i)\b(?:a-search|provider-\w+-live|a-sqlsearch|walrus)\b.{0,160}\bFilterLogEvents\b"
+    ), "redqueen"),
+    (re.compile(
+        r"(?i)\b(?:a-sqlsearch|walrus)\b.{0,80}\b(?:drain\s+)?logs?\b"
+    ), "redqueen"),
 )
 _REQUIRE_MACHINE_BODY_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
     _REQUIRE_MACHINE_DEDICATED_PIN_CUES + _REQUIRE_MACHINE_BODY_SOFT_CUES
@@ -1392,6 +1422,9 @@ _REQUIRE_MACHINE_ISSUE_PINS: dict[tuple[str, str], str] = {
     ("simonbarnett/bobiverse", "#2522"): "ionos",
     # FR #3129 / #3122: ionos Sync/compose ircJeeves for intake allowlist (mis-offered to marchhare).
     ("simonbarnett/bobiverse", "#3122"): "ionos",
+    # FR #5030 / a-search#5221: hasresults redeploy + monitor + CloudWatch + SQL logs
+    # (mis-offered to flamingo; soft cues + dedicated redqueen pin land in same FR).
+    ("simonbarnett/a-search", "#5221"): "redqueen",
     # FR #4599: do NOT hard-pin bobiverse #4340 to ionos (Simon: bobiverse work never
     # pinned to ionos). See _REQUIRE_MACHINE_ISSUE_UNPINS.
 }
@@ -1498,7 +1531,8 @@ def infer_require_machine(
     Labels ``needs-<machine>`` / ``require_machine:<machine>`` win first, then
     title/body/line cues (dedicated body ``require_machine:``/``=`` pin lines; WP0 live -> ce-priority-dev1; needs-ionos / chair-outbox /
     recycle|recompose|Sync/compose Jeeves / Sync-BobiverseFromRepo near Jeeves / prune queue.json / install(+smoke) on ionos -> ionos;
-    FR #587 / #852 / #2451 / #3129 / #4427).
+    FR #5030 a-hasresults-monitor / redeploy live workers|walrus / FilterLogEvents near a-search -> redqueen;
+    FR #587 / #852 / #2451 / #3129 / #4427 / #5030).
 
     FR #4512: for ``SimonBarnett/bobiverse``, title/body soft text cues never pin.
     Only labels, hard issue pins/unpins, and dedicated ``require_machine:`` body lines.
