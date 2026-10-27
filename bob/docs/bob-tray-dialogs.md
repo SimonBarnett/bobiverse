@@ -47,10 +47,18 @@ It runs the Status and About windows in-process (no second process to start).
   `tools\_Watch-BobTray-<machine>.ps1` hidden with `BOB_TRAY_ENGINE=1` and `BOB_TRAY_EXE_PID`; in that mode the script never shows an icon.
   Exe and engine talk only through files in `<root>\run`: `tray-status.json` (engine -> exe: `short` hover text, `alert`, `attention`,
   `attention_seq`, `pulse`, plus the dashboard model), `tray-env.json` (engine -> exe: the `BOB_*`/`AGENTIC_*`/`BOBIVERSE_*` environment for workers),
-  `tray-cmd.txt` (exe -> engine: `ack`, `exit`, `restart`). The engine leaves when the exe is gone; the exe restarts a dead engine (max 3 per 5 min).
+  `tray-cmd.txt` (exe -> engine: `ack`, `exit`, `restart`; operator/ear -> host: `reload` FR #5111). The engine leaves when the exe is gone; the exe restarts a dead engine (max 3 per 5 min).
 * **Exit** closes the windows, hides the icon, stops the ircBob service (detached) and ends the engine; **Restart** hides the icon and has the engine
-  re-launch the tray. `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ircBob restart-on-start, ForceNew, tidy unchanged) and
+  re-launch the tray **without** restarting ircBob (FR #5111 `-SkipServiceRestart`). `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ForceNew, tidy unchanged; ircBob restart-on-start only when not skipped) and
   kills the old PowerShell tray; without the exe it starts the PowerShell tray as before, which stays a complete fallback.
+* **Reload engine** (FR #5111): host-only recycle. Write `reload` to `<root>\run\tray-cmd.txt` (or menu **Reload engine**). The elevated `bob-tray.exe` runs `KillEngineTree` + `StartEngine` only --- no `taskkill` from Medium integrity, no host exit, no seat kill, no `sc stop ircBob`. Engine must leave `reload` lines for the host.
+
+## Hot-patch the tray (FR #5111)
+
+1. Stage patched files into the live install (`bob\tray\tools\Watch-BobTray.ps1`, helpers; rebuild `bob-tray.exe` only if the C# host changed: `scripts\Build-BobDialogs.ps1`).
+2. Write `reload` (one line) to `<install>\run\tray-cmd.txt`, or use TipForm **Reload engine**.
+3. Verify one `powershell.exe` engine under one `bob-tray.exe` host (`BOB_TRAY_ENGINE=1`). ircBob / seat pids stay put.
+4. Confirm digest / `engine.alive` ticks after the new engine start.
 * **Single instance**: a named mutex per normalized install root (FR #2585: trim quotes/trailing slash + `GetFullPath` so argv variants share one mutex). A second `bob-tray.exe` logs `process-exit reason=already-running` (never `unexpected`) and does not write `tray-up`.
 * **Switches** (tests): `--root`, `--machine`, `--no-engine`, `--dump-menu f`, `--dump-state f --text-out f`, `--seats --text-out f`, `--timing-out f`
   (ms to icon visible, ms to the menu's Opened event).

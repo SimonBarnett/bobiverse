@@ -288,6 +288,7 @@ function Write-BobTrayEngineEnv {
 function Invoke-BobTrayExeCommands {
     <#
       Called every 2 s by the engine. Consumes <root>\run\tray-cmd.txt written by bob-tray.exe: ack | exit | restart.
+      FR #5111: leave `reload` lines for the elevated host (KillEngineTree + StartEngine only).
       Also: the engine leaves when its exe parent is gone (BOB_TRAY_EXE_PID) so a crashed/killed tray never leaves an orphan engine.
       -OnAck/-OnExit/-OnRestart/-ParentGone are script blocks (the tray passes its functions; tests pass stubs).
     #>
@@ -297,13 +298,20 @@ function Invoke-BobTrayExeCommands {
     if (Test-Path -LiteralPath $f) {
         $lines = @()
         try { $lines = @(Get-Content -LiteralPath $f -ErrorAction Stop) } catch { }
-        try { Remove-Item -LiteralPath $f -Force -ErrorAction Stop } catch { }
+        $keep = New-Object System.Collections.Generic.List[string]
         foreach ($l in $lines) {
             $cmd = ([string]$l).Trim().ToLowerInvariant()
+            if ($cmd -eq 'reload') { $keep.Add($l); continue }
             if ($cmd -eq 'ack' -and $OnAck) { & $OnAck; $done.Add('ack') }
             elseif ($cmd -eq 'exit' -and $OnExit) { & $OnExit; $done.Add('exit'); break }
             elseif ($cmd -eq 'restart' -and $OnRestart) { & $OnRestart; $done.Add('restart'); break }
         }
+        try {
+            if ($keep.Count -gt 0) {
+                Set-Content -LiteralPath $f -Value @($keep) -Encoding ascii
+            }
+            else { Remove-Item -LiteralPath $f -Force -ErrorAction Stop }
+        } catch { }
     }
     $pidText = [string]$env:BOB_TRAY_EXE_PID
     if ($done.Count -eq 0 -and $pidText -match '^\d+$' -and $ParentGone) {
