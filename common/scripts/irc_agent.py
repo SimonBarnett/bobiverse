@@ -61,8 +61,10 @@ CONSOLE_OUTBOX_FLOOD_S = float(os.environ.get("BOB_CONSOLE_OUTBOX_FLOOD_S", "1.5
 
 # FR #1546: Query replies from {machine}_console (out/err/DONE) → home/airc-replies.jsonl
 _AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
+# FR #1546 / #5002: accept id-less DONE exit= (auth refusals) as well as DONE id=...
 _AIRC_REPLY_BODY_RE = re.compile(
-    r"^(?:(?:out|err)\s+id=[0-9a-f]+\s+seq=\d+\s|DONE\s+id=[0-9a-f]+\s+exit=-?\d+\s*$)",
+    r"^(?:(?:out|err)\s+id=[0-9a-f]+\s+seq=\d+\s|"
+    r"DONE\s+(?:id=[0-9a-f]+\s+)?exit=-?\d+\b)",
     re.IGNORECASE,
 )
 
