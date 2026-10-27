@@ -327,6 +327,7 @@ routes to bobiverse via the split rule.
 - !build LiveStateTouched: busy chair may purge >5 closed/done queue rows during a long suite; default max_lost=15 (FR #5042) while empty/majority wipe still aborts.
 - FR #5052: classify catch { } — timer/webhook/heartbeat must Invoke-BobMustReportFailure; Dispose/Parse/ToInt/Hide stay BEST_EFFORT
 - From-source airc beside NSSM must use child-owned --log-file; Start-Process RedirectStandard pipes die when the parent shell exits and kill info() after NAMES.
+- When asserting IRC flood sleep, drain FloodTokenBucket first; a full bucket returns wait=0 on the first take.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
