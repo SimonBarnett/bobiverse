@@ -1,0 +1,11 @@
+job_id=b6782a52
+line_count=51
+seq_count=50
+seq_unique=50
+fallback=err id=b6782a52 seq=50 dcc failed: [WinError 10061] No connection could be made because the target machine actively refused it; falling back to IRC
+done=
+exit=0
+parse=PASS
+tip_sha=91648f9bf6dce48037a7f65edf1bba208fb60328
+nick=marchhare_t5069_console
+when=2026-10-27T14:31:49Z
