@@ -312,6 +312,9 @@ def should_answer_asker(nick: str) -> bool:
     n = str(nick or "").strip().lower()
     if not n or is_fleet_bob_nick(n):
         return False
+    # FR #5101: never mention-ack *_console (Heard: unwrap re-runs reply text).
+    if n.endswith("_console"):
+        return False
     return True
 
 

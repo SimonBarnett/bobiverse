@@ -1678,6 +1678,18 @@ _BOBTALK_PREFIX_RE = re.compile(
 )
 
 
+_SELF_REPLY_RE = re.compile(
+    r"(?is)^(?:(?:out|err)\s+id=[0-9a-f]+\s+seq=\d+\b|"
+    r"DONE\s+(?:id=[0-9a-f]+\s+)?exit=-?\d+\b|"
+    r"UPDATE\s+accepted\b)"
+)
+
+
+def is_console_self_reply(text: str) -> bool:
+    """True when the payload is an airc reply line, not an operator command (FR #5101)."""
+    return bool(_SELF_REPLY_RE.match((text or "").strip()))
+
+
 def sanitize_console_operator_text(text: str) -> str:
     """Strip Halloy/bobtalk nick-prefix and ``Heard:`` wrappers (FR #2570).
 
@@ -2482,6 +2494,9 @@ class AircConsoleCore:
         cmd = sanitize_console_operator_text(text or "")
         if not cmd:
             return HandleResult(action="empty", nick=nick, target=target, text=text)
+        # FR #5101: Heard: unwrap of mention-ACK must not re-run out/err/DONE/UPDATE accepted.
+        if is_console_self_reply(cmd):
+            return HandleResult(action="ignore_reply", nick=nick, target=target, text=text)
         if cmd.lower() in {".quit", "!quit", "exit"}:
             self.sessions.close_nick(nick)
             return HandleResult(action="close", nick=nick, target=target, text=text, reply="console closed")
