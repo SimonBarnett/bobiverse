@@ -66,6 +66,7 @@ $files = @(
     'scripts\account_map.py',
     'scripts\Start-AircConsole.ps1',
     'scripts\Start-AircConsole.cmd',
+    'scripts\Start-AircConsoleSideBySide.ps1',  # FR #5079 detached tip console
     'scripts\Install-AircConsole.ps1',
     'scripts\Install-AircConsole.cmd',
     'scripts\Resolve-AircConsoleNssm.ps1',
