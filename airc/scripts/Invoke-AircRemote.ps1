@@ -621,6 +621,28 @@ function Invoke-AircRemoteSelfTest {
     Assert-True ($parsed.StdOut -eq "hello`nworld") 'correlated stdout'
     Assert-True ($parsed.StdErr -eq 'boom') 'correlated stderr'
 
+    # FR #5065: DCC->IRC fallback notice after the page (not err seq=1 + out seq=1).
+    $fbId = '006dfca0'
+    $fallback = @(
+        "out id=$fbId seq=1 L0001 xxxx",
+        "out id=$fbId seq=2 L0002 xxxx",
+        "err id=$fbId seq=3 dcc failed: [WinError 10061] refused; falling back to IRC",
+        "DONE id=$fbId exit=0"
+    )
+    $fbParsed = ConvertFrom-AircRemoteReply -Lines $fallback -ExpectJobId $fbId
+    Assert-True ($fbParsed.ExitCode -eq 0) 'FR5065 fallback DONE parse'
+    Assert-True ($fbParsed.StdErr -match 'falling back to IRC') 'FR5065 fallback note visible'
+    try {
+        ConvertFrom-AircRemoteReply -Lines @(
+            "err id=$fbId seq=1 dcc failed: refused; falling back to IRC",
+            "out id=$fbId seq=1 L0001 xxxx",
+            "DONE id=$fbId exit=0"
+        ) -ExpectJobId $fbId | Out-Null
+        Assert-True $false 'FR5065 duplicate seq=1 should throw'
+    } catch {
+        Assert-True ([string]$_ -match 'duplicate seq=1') 'FR5065 fail-closed on pre-fix shape'
+    }
+
     try {
         ConvertFrom-AircRemoteReply -Lines @('out id=x seq=1 a') | Out-Null
         Assert-True $false 'missing DONE should throw'

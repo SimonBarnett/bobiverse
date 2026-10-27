@@ -2010,6 +2010,36 @@ def format_shell_replies(
     ).lines
 
 
+_DCC_FALLBACK_SEQ_RE = re.compile(
+    r"^(?:out|err) id=([0-9a-f]{8}) seq=(\d+) ", re.IGNORECASE
+)
+
+
+def insert_dcc_fallback_notice(lines: list[str], job_id: str, notice: str) -> list[str]:
+    """FR #5065: attach DCC-fail note before DONE with the next unused seq.
+
+    Emitting ``err seq=1`` *before* ``format_shell_replies_ex`` reuses seq=1
+    (FR #75 seq is global across out/err) and ConvertFrom-AircRemoteReply
+    fail-closes with ``duplicate seq=1``.
+    """
+    jid = (job_id or "").strip().lower()
+    max_seq = 0
+    done_i: int | None = None
+    out = list(lines)
+    for i, ln in enumerate(out):
+        m = _DCC_FALLBACK_SEQ_RE.match(ln)
+        if m:
+            max_seq = max(max_seq, int(m.group(2)))
+        if ln.startswith(f"DONE id={jid}"):
+            done_i = i
+    err = f"err id={jid} seq={max_seq + 1} {notice}"
+    if done_i is None:
+        out.append(err)
+    else:
+        out.insert(done_i, err)
+    return out
+
+
 @dataclass
 class _ShellPending:
     """One queued shell command (FR #2632); ``done`` signals completion for wait=True."""
@@ -2164,11 +2194,13 @@ class ShellJobRunner:
                     _dcc.send_offer_payload(page.bulk_payload, peer)
                 except Exception as exc:
                     # Fall back to IRC CONT path when reverse DCC fails (FR #5003).
-                    self._emit(
-                        key,
-                        f"err id={jid} seq=1 dcc failed: {exc}; falling back to IRC",
-                    )
+                    # FR #5065: notice uses the next seq *after* the IRC page.
                     page = format_shell_replies_ex(outcome)
+                    page.lines = insert_dcc_fallback_notice(
+                        page.lines,
+                        jid,
+                        f"dcc failed: {exc}; falling back to IRC",
+                    )
             with self._lock:
                 if page.next_offset is not None:
                     self._resume[(key, jid)] = (outcome, page.next_offset)
