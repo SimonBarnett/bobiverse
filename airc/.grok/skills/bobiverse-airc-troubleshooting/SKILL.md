@@ -76,6 +76,10 @@ Finish every session with the harvest step.
 
 | Every sender gets `DONE exit=126 not-op` / `channel-state-unknown` after reconnect; process still connected; refusal drops `id=` | Ergo multiclient replays JOIN+NAMES before `join_shop`. Tip (PR #5004): **do not clear** `ChannelMemberMap` on `join_shop` (handshake / lost-control / fresh 353 still clear); always `NAMES` after JOIN; `AIRC_NAMES_SYNC_WATCH_S` escalate NAMES -> PART/JOIN -> reconnect; `AIRC_AUTH_WEDGE_EXIT_S` exit non-zero for NSSM `AppExit Restart`; deny replies keep `DONE id=<id> exit=126 <reason>`; `irc_agent` + `Invoke-AircRemote` fail-fast on id-less / exit=126. Hotpatch `airc_console_service.py` + related + Restart-Service Airc (frozen `airc.exe` needs rebuild/redeploy). Ergo multiclient policy off for `*_console` is separate ops. |
 
+## FR #5003 (reverse DCC bulk for oversized shell replies)
+
+| Large shell output floods IRC (minutes / reconnect wedge, see #5002) | Keep IRC as control plane. Caller may send `DCCLISTEN id=<job> host=<ip> port=<n> token=<hex>`; when output exceeds the bulk threshold and a matching offer exists, console **dials out** (NAT-friendly), streams body, replies `DONE id=... exit=... bytes=N sha256=H via=dcc`. Handshake failure within a few seconds falls back to existing IRC CONT paging (FR #4794). Without `DCCLISTEN`, behaviour unchanged. Tip PR #5009 (`airc_dcc_bulk.py`). WP2 (#5008): TLS, ionos relay, bob-ear helper, live fleet timings. |
+
 ## Harvest digest (lessons audit 2026-10-06)
 
 Generalised from 18 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
