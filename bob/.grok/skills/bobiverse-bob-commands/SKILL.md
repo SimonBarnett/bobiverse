@@ -24,6 +24,7 @@ description: >
 |---|---|
 | `!recycle` / `!recycle <this machine>` typed in a channel | Jeeves (the chair) authorizes and routes it (`RECYCLE v1 <machine>` wire / fleet route); the ear announces the departure, restarts the tray and `ircBob`. Bare `!recycle` and `!recycle all` are fleet-wide: chair-routed only (the ear no longer acts on bare `!recycle` itself) |
 | `!recycle dry-run [machine\|all]` | Chair prints the plan; nothing is sent to seats |
+| FR #5059 `!recycleseat <nick> [machine]` | Shop or `#bobiverse`: ops (+o/+h), bob-* ear, Jeeves or owner. Ear queues `run\\recycleseat\\req-*.json`; elevated tray stop+verify then start. Stop fail / PID still alive => no new seat + intake report |
 | Shop wire in `#<machine>`: `!bored`, `ACK`, `DONE`, `NACK`, `GIVEUP` | Worker <-> Jeeves job assignment (workers JOIN the shop only) |
 | `home\outbox.txt` lines `PRIVMSG <target> :<text>` | Sent verbatim (UTF-8, NO BOM, newline-terminated; only complete lines are consumed, offset in `outbox.txt.pos`). Identical send interface on every machine (FR #2174). This is how you "type as the ear" |
 | `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted) |

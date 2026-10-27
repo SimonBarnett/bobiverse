@@ -40,8 +40,23 @@ function Invoke-BobTrayRecycleSeatReportFailure {
         $Exception
     )
     try {
-        $hf = Join-Path $Root 'src\Private\Invoke-BobMustReportFailure.ps1'
-        if (Test-Path -LiteralPath $hf) { . $hf }
+        # Live tray -RepoRoot is the install root (C:\ai\bob), not bob\tray.
+        foreach ($rel in @(
+                'tray\src\Private\Invoke-BobMustReportFailure.ps1',
+                'src\Private\Invoke-BobMustReportFailure.ps1'
+            )) {
+            $hf = Join-Path $Root $rel
+            if (Test-Path -LiteralPath $hf) { . $hf; break }
+        }
+        if (-not (Get-Command Report-BobRuntimeFailure -ErrorAction SilentlyContinue)) {
+            foreach ($rel in @(
+                    'common\scripts\Report-BobRuntimeFailure.ps1',
+                    'scripts\Report-BobRuntimeFailure.ps1'
+                )) {
+                $rf = Join-Path $Root $rel
+                if (Test-Path -LiteralPath $rf) { . $rf; break }
+            }
+        }
         if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
             Invoke-BobMustReportFailure -Component 'tray' -Site $Site -Exception $Exception | Out-Null
             return
