@@ -744,3 +744,9 @@ Books: harvest. Tip PR #3886; hostile docs this entry. Refs: SimonBarnett/bobive
 Seat rule: never fold just because the PR is behind. Fold origin/main only when the PR is CONFLICTING / DIRTY, or CI failed on something already fixed on main. Repos with no required up-to-date check PASS at the current head SHA and arm auto-merge. Supersedes the 2026-10-04 behind-main rows above.
 
 Books: bobiverse-bob-job-mrb, bob/agents/worker/AGENTS.md. Refs: SimonBarnett/bobiverse#4649
+
+## 2026-10-27 - MOVED harvest #5096 to bobiverse-jeeves
+
+Jeeves complete_job_by_ref matches DONE on repo+id+task only (never repo+id fallback). Intake parked this under harvest/SKILL.md; home is jeeves bobiverse-jeeves harvested lessons.
+
+Books: bobiverse-jeeves. Refs: SimonBarnett/bobiverse#5096 SimonBarnett/bobiverse#5095
