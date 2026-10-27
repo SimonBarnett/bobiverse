@@ -65,7 +65,8 @@ _AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
 # FR #1546 / #5002: accept id-less DONE exit= (auth refusals) as well as DONE id=...
 _AIRC_REPLY_BODY_RE = re.compile(
     r"^(?:(?:out|err)\s+id=[0-9a-f]+\s+seq=\d+\s|"
-    r"DONE\s+(?:id=[0-9a-f]+\s+)?exit=-?\d+\b)",
+    r"DONE\s+(?:id=[0-9a-f]+\s+)?exit=-?\d+\b|"
+    r"UPDATE\s+accepted\b)",
     re.IGNORECASE,
 )
 
@@ -1029,6 +1030,9 @@ class Client:
         if not n or n.lower() in self._mine_nicks():
             return
         if n.lower().startswith("bob-") or bobreport.parse_worker_nick(n):
+            return
+        # FR #5101: console Query must not join CC_QUERY fan-out.
+        if n.lower().endswith("_console"):
             return
         self._pm_open[n.lower()] = time.time()
 
