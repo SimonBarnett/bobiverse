@@ -139,6 +139,61 @@ def test_names_watchdog_escalates_then_self_restart_flag():
     assert s._force_reconnect is True
 
 
+def test_fr5066_watchdog_part_join_reaches_reconnect():
+    """FR #5066: self-PART -> join_shop must not reset stage; reconnect within ~3 windows."""
+    s = svc.AircConsoleService.__new__(svc.AircConsoleService)
+    s.channel = "#marchhare"
+    s.nick = "marchhare_test_console"
+    s.server_nick = "marchhare_test_console"
+    s._active_mode = "registered"
+    s._pending_join_deadline = 0.0
+    s.presence_channels = []
+    s.members = ac.ChannelMemberMap(channel="#marchhare")
+    # unsynced (no 366)
+    s.core = ac.AircConsoleCore(
+        nick=s.nick,
+        auth=ac.AuthPolicy(
+            auth_mode="irc_ops",
+            members=s.members,
+            self_nicks={s.nick.lower()},
+        ),
+        channel_commands=True,
+    )
+    s.core.channel = s.channel
+    s._joined_shop = True
+    s._names_watch_deadline = 10.0
+    s._names_watch_stage = 0
+    s._auth_wedge_since = None
+    s._force_reconnect = False
+    s._stop = mock.Mock()
+    s._stop.is_set.return_value = False
+    sent: list[str] = []
+    s.send = sent.append  # type: ignore[method-assign]
+
+    watch = max(1.0, float(svc.NAMES_SYNC_WATCH_S))
+    t0 = 1000.0
+
+    with mock.patch.object(svc.time, "monotonic", return_value=t0 + watch):
+        s._names_sync_watchdog()
+    assert s._names_watch_stage == 1
+
+    with mock.patch.object(svc.time, "monotonic", return_value=t0 + 2 * watch):
+        s._names_sync_watchdog()
+    assert s._names_watch_stage == 2
+    assert any(x.upper().startswith("PART ") for x in sent)
+
+    # Live bug: self-PART -> _lost_control_channel -> join_shop reset stage to 0.
+    with mock.patch.object(svc.time, "monotonic", return_value=t0 + 2 * watch + 0.5):
+        s._lost_control_channel("self-part")
+    assert s.members.synced is False
+    assert s._names_watch_stage == 2, "join_shop must preserve escalation stage (FR #5066)"
+
+    # join_shop refreshed the deadline by one more watch window after the rejoin.
+    with mock.patch.object(svc.time, "monotonic", return_value=t0 + 3 * watch + 1.0):
+        s._names_sync_watchdog()
+    assert s._force_reconnect is True
+
+
 def test_auth_wedge_requests_process_exit():
     s = svc.AircConsoleService.__new__(svc.AircConsoleService)
     s.members = ac.ChannelMemberMap(channel="#wonderland")
