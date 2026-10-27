@@ -122,11 +122,13 @@ namespace BobDialogs
             Draw(g, m.Title, fTitle, Fg, 14, y);
             Draw(g, "X", fHead, Muted, CloseRect.X + 6, 10);
             y += 26;
-            // t832u / FR #4938: dashboard = Grok accounts + workers, alert, version (no Cursor pool section).
+            // t832u / FR #4938: dashboard = per-machine Grok pools + workers (no Cursor section).
+            // FR #5032: no "Grok accounts" heading --- every row is a Grok pool.
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
             if (m.Grok.Count > 0)
             {
-                y = Section(g, y, "Grok accounts", m.Overspend);
+                if (m.Overspend != null && m.Overspend.Length > 0)
+                    y = Section(g, y, "", m.Overspend);
                 foreach (StatusRow r in m.Grok)
                 {
                     y = UsageRow(g, 32, y, r, 354);

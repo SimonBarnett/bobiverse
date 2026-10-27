@@ -145,7 +145,8 @@ def _t(rel):
 def test_tray_has_no_separate_chanserv_section():
     t = _t("tools/Watch-BobTray.ps1")
     assert "-Title 'ChanServ'" not in t
-    assert "-Title 'Grok accounts'" in t
+    # FR #5032: no "Grok accounts" heading --- per-machine rows only.
+    assert "-Title 'Grok accounts'" not in t
 
 
 def test_tray_grok_rows_come_from_digest_roster_not_hardcoded():

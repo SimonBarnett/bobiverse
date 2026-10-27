@@ -17,15 +17,14 @@ def _rebuild_body() -> str:
 
 
 def test_rebuild_first_section_header_is_grok_accounts_not_cursor():
-    """TipForm must open with Grok accounts; Cursor spending-group header must be gone."""
+    """TipForm: Cursor spending-group header gone; FR #5032 also drops 'Grok accounts'."""
     sec = _rebuild_body()
-    # First painted section title after FR #4938.
-    assert "Title 'Grok accounts'" in sec or 'Title "Grok accounts"' in sec
+    assert "Title 'Grok accounts'" not in sec and 'Title "Grok accounts"' not in sec
     assert "Title 'Cursor'" not in sec and 'Title "Cursor"' not in sec
-    # Overspend (if any) rides the Grok accounts header, not a Cursor header.
-    grok_hdr = sec.index("Title 'Grok accounts'") if "Title 'Grok accounts'" in sec else sec.index('Title "Grok accounts"')
+    # Overspend (if any) is an empty-title section, then per-machine Grok rows.
     assert "Format-BobTrayCursorOverspendLine" in sec
-    assert sec.index("Format-BobTrayCursorOverspendLine") < grok_hdr + 200
+    assert "Add-BobTrayUsageRow" in sec
+    assert "FR #5032" in sec
 
 
 def test_status_render_never_sections_cursor_even_if_snapshot_has_rows():
@@ -34,7 +33,8 @@ def test_status_render_never_sections_cursor_even_if_snapshot_has_rows():
     render = src[src.index("public int Render") : src.index("protected override void OnPaint")]
     assert 'Section(g, y, "Cursor"' not in render
     assert "foreach (StatusRow r in m.Cursor)" not in render
-    assert 'Section(g, y, "Grok accounts"' in render
+    assert 'Section(g, y, "Grok accounts"' not in render
+    assert "foreach (StatusRow r in m.Grok)" in render
 
 
 def test_status_model_never_fills_cursor_from_hover_pools():

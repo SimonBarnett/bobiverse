@@ -2712,13 +2712,15 @@ function Rebuild-BobTrayTiles {
     $oldHost = $script:tileHost
     $script:tileHost = $stage
     try {
-        # #42: no separate ChanServ section. The ChanServ-registered channels ARE the
-        # 'Grok accounts' rows: one per digest roster machine, keyed by machine id.
+        # #42: ChanServ-registered channels ARE the machine rows (one per digest roster id).
         # FR #4938: Cursor pool section removed after account unification.
+        # FR #5032: no "Grok accounts" heading --- every row is a Grok pool; optional overspend only.
         $overLine = Format-BobTrayCursorOverspendLine -OverageGbp $AccountOverageGbp
         $overColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
-        $y = Add-BobTraySectionHeader -X 0 -Y $y -Title 'Grok accounts' -Icon $grokIcon -Agent $grokAgent `
-            -RightText $overLine -RightColor $overColor
+        if ($overLine) {
+            $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
+                -RightText $overLine -RightColor $overColor
+        }
         $indent = 18
         $shownMachines = @{}
         foreach ($m in @($Machines)) {
@@ -2732,18 +2734,38 @@ function Rebuild-BobTrayTiles {
             $shownMachines[[string]$resolved] = $true
             $id = ([string]$resolved).ToUpperInvariant()
             $pct = $m.remaining_pct
-            # 0% is real (#179). Unknown/stale (period over) is hidden, never "n/a" or a stale reset.
+            $fuelStale = $false
+            try { if ($m.fuel_stale) { $fuelStale = [bool]$m.fuel_stale } } catch { }
+            # 0% is real (#179). FR #5032: stale peer % is hidden (shown as [stale] + age).
             $pctLabel = $null
-            if ($null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
+            if (-not $fuelStale -and $null -ne $pct -and [string]$pct -ne '') { $pctLabel = ('{0}%' -f [int]$pct) }
             $seat = [string]$m.seat_label
             if (-not $seat) { $seat = [string]$m.seat_email }
             $nameHeading = $id
             if ($seat) { $nameHeading = ('{0}  -  {1}' -f $id, $seat) }
             $machHeading = $nameHeading
             if ($pctLabel) { $machHeading = ('{0} ({1})' -f $nameHeading, $pctLabel) }
-            if ($pctLabel -and $m.reset_label) { $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label) }
+            if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
+            if ($m.reset_label -and ($pctLabel -or $fuelStale)) {
+                $machHeading = ('{0} - {1}' -f $machHeading, [string]$m.reset_label)
+            }
+            $rowPct = if ($fuelStale) { $null } else { $pct }
             $y = Add-BobTrayUsageRow -X $indent -Y $y -Heading $machHeading `
-                -RemainingPct $pct -BarWidth 354 -Icon $null
+                -RemainingPct $rowPct -BarWidth 354 -Icon $null
+            if ($null -ne $pct -and -not $fuelStale -and [int]$pct -le 0) {
+                # FR #5032: exhausted pool -> red alert cue on the TipForm row.
+                try {
+                    $alert = New-Object System.Windows.Forms.Label
+                    $alert.AutoSize = $true
+                    $alert.Font = $jobFont
+                    $alert.ForeColor = [System.Drawing.Color]::FromArgb(248, 81, 73)
+                    $alert.BackColor = [System.Drawing.Color]::Transparent
+                    $alert.Text = 'out of tokens'
+                    $alert.Location = New-Object System.Drawing.Point ($indent + 14), $y
+                    $script:tileHost.Controls.Add($alert)
+                    $y += 16
+                } catch { }
+            }
             # v0.1.18: ONE line per worker process on this machine, "{irc nick}: {doing|idle}".
             $wLines = @($m.worker_lines | Where-Object { $_ })
             $jobTxt = ($wLines -join "`n")
@@ -3093,32 +3115,76 @@ $script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorker
 } -MessageData $script:trayWorkerSyncMsg
 $script:trayWorkerSyncTimer.Start()
 
-# FR #4142: ThreadPool digest heartbeat — Write-BobIrcStatus off the WinForms UI thread in engine mode
-# (and as a backup when the UI poll skips it). Interval matches $poll (PollSec).
+# FR #4142 / FR #5032: ThreadPool digest heartbeat --- Write-BobIrcStatus off the WinForms UI
+# thread in engine mode. Event Action runs in its own runspace: re-dot helpers each tick
+# (same pattern as trayWorkerSyncTimer). Flat scripts\Write-BobIrcStatus.ps1 is NOT shipped;
+# Write-BobIrcStatus lives in tray src (via Bobiverse-Common / Get-BobIrc.ps1).
 $script:trayDigestTimer = New-Object System.Timers.Timer
 $script:trayDigestTimer.Interval = [Math]::Max(5000, $PollSec * 1000)
 $script:trayDigestTimer.AutoReset = $true
 $script:trayDigestTimer.SynchronizingObject = $null
 $script:trayDigestMsg = [pscustomobject]@{
     Root     = $RepoRoot
+    Dialogs  = (Join-Path $RepoRoot 'tools\BobTrayDialogs.ps1')
     Common   = (Join-Path $RepoRoot 'scripts\Bobiverse-Common.ps1')
+    IrcPs    = (Join-Path $RepoRoot 'src\Private\Get-BobIrc.ps1')
     StatusPs = (Join-Path $RepoRoot 'scripts\Write-BobIrcStatus.ps1')
 }
 $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTimer -EventName Elapsed -Action {
     try {
-        if (-not (Test-BobTrayEngineMode)) { return }
         $msg = $Event.MessageData
-        if (-not $msg) { return }
-        # Best-effort: command may already be in session from tray startup.
-        if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
-            if ($msg.StatusPs -and (Test-Path -LiteralPath $msg.StatusPs)) { . $msg.StatusPs }
-            elseif ($msg.Common -and (Test-Path -LiteralPath $msg.Common)) { . $msg.Common }
+        if (-not $msg -or -not $msg.Root) { return }
+        # FR #5032: Action scope has no parent functions --- re-dot every tick.
+        if ($msg.Dialogs -and (Test-Path -LiteralPath $msg.Dialogs)) {
+            try { . $msg.Dialogs } catch { }
         }
-        if (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) {
-            try { Write-BobIrcStatus | Out-Null } catch { }
+        if (-not (Get-Command Test-BobTrayEngineMode -ErrorAction SilentlyContinue)) { return }
+        if (-not (Test-BobTrayEngineMode)) { return }
+        if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
+            if ($msg.StatusPs -and (Test-Path -LiteralPath $msg.StatusPs)) {
+                try { . $msg.StatusPs } catch { }
+            }
+            if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) -and $msg.IrcPs -and (Test-Path -LiteralPath $msg.IrcPs)) {
+                try { . $msg.IrcPs } catch { }
+            }
+            if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue) -and $msg.Common -and (Test-Path -LiteralPath $msg.Common)) {
+                try { . $msg.Common } catch { }
+            }
+        }
+        if (-not (Get-Command Write-BobIrcStatus -ErrorAction SilentlyContinue)) {
+            try {
+                $logDir = Join-Path $msg.Root 'logs'
+                if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+                Add-Content -LiteralPath (Join-Path $logDir 'tray-lifecycle.log') `
+                    -Value ('{0} WARN trayDigestTimer: Write-BobIrcStatus missing in Action scope' -f [datetime]::UtcNow.ToString('o')) `
+                    -Encoding utf8
+            } catch { }
+            return
+        }
+        try {
+            Write-BobIrcStatus | Out-Null
+        } catch {
+            try {
+                $logDir = Join-Path $msg.Root 'logs'
+                if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+                Add-Content -LiteralPath (Join-Path $logDir 'tray-lifecycle.log') `
+                    -Value ('{0} WARN trayDigestTimer Write-BobIrcStatus: {1}' -f [datetime]::UtcNow.ToString('o'), $_.Exception.Message) `
+                    -Encoding utf8
+            } catch { }
         }
     }
-    catch { }
+    catch {
+        try {
+            $root = if ($Event.MessageData -and $Event.MessageData.Root) { [string]$Event.MessageData.Root } else { $null }
+            if ($root) {
+                $logDir = Join-Path $root 'logs'
+                if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+                Add-Content -LiteralPath (Join-Path $logDir 'tray-lifecycle.log') `
+                    -Value ('{0} WARN trayDigestTimer: {1}' -f [datetime]::UtcNow.ToString('o'), $_.Exception.Message) `
+                    -Encoding utf8
+            }
+        } catch { }
+    }
 } -MessageData $script:trayDigestMsg
 $script:trayDigestTimer.Start()
 
