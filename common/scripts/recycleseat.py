@@ -1,0 +1,268 @@
+"""FR #5059: elevated tray recycle of a named worker seat.
+
+``!recycleseat <nick> [machine]`` — ear authorises (+o/+h like !register, or bob-* ear)
+and queues; tray (elevated interactive session) stops the seat tree, verifies gone,
+then starts a fresh agent. If stop fails, no new seat is started.
+
+Queue (mirrors startworker):
+  <install>\\run\\recycleseat\\req-<id>.json  {id, nick, by, kind, ts, expires}
+  <install>\\run\\recycleseat\\res-<id>.json  {id, ok, reason, old_pid, new_pid}
+Tray/engine alive stamps are shared with ``run\\startworker`` (same interactive session).
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Iterable
+
+import startworker as sw
+import unregister_cmd
+
+CMD = "!recycleseat"
+REQUEST_TTL_S = 60.0
+QUEUE_SUBDIR = ("run", "recycleseat")
+DISABLE_FILE = "recycleseat.disabled"
+_NICK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
+_JUNK = {c: None for c in range(0, 32)}
+
+
+def parse(body: str):
+    """``!recycleseat <nick> [machine]`` -> (nick, machine|None) | 'usage' | None."""
+    text = str(body or "").translate(_JUNK).strip().lstrip(":").strip()
+    if not text:
+        return None
+    parts = text.split()
+    if parts[0].lower() != CMD:
+        return None
+    if len(parts) < 2 or len(parts) > 3:
+        return "usage"
+    nick = parts[1]
+    if not _NICK_RE.match(nick):
+        return "usage"
+    machine = None
+    if len(parts) == 3:
+        tok = parts[2]
+        if not sw._MACHINE_RE.match(tok):
+            return "usage"
+        machine = tok.lower().lstrip("#")
+    return (nick, machine)
+
+
+def usage() -> str:
+    return "usage: !recycleseat <nick> [machine]   (machine required in #bobiverse)"
+
+
+def authorize(
+    nick: str,
+    account,
+    *,
+    channel: str,
+    machine_of_nick: Callable[[str], str | None],
+    member_lookup: Callable[[str, str], set[str]] | None = None,
+    members: dict | None = None,
+    chair_nicks: Iterable[str] = ("jeeves",),
+    owners: set | None = None,
+):
+    """-> (ok, kind, reason).
+
+    FR #5059: same live IRC op check as !register (+o/+h), plus verified bob-* ear.
+    Owner/chair with +o/+h pass via op. Unverified nicks never pass.
+    """
+    n = str(nick or "").strip()
+    low = n.lower()
+    acct = str(account or "").strip().lower()
+    if not acct:
+        return False, "", "unverified"
+    # Live channel op/halfop (FR #4008 / !register).
+    if unregister_cmd.nick_has_op_or_halfop(
+        nick=n, channel=channel or "#bobiverse", members=members, member_lookup=member_lookup
+    ):
+        return True, "op", ""
+    same = acct in (low, low.rstrip("_"))
+    if same and low.startswith("bob-") and machine_of_nick(n):
+        return True, "ear", ""
+    # Chair may lack +o in a shop briefly; still allow verified Jeeves (fleet ops).
+    if same and low in {c.lower() for c in chair_nicks}:
+        return True, "chair", ""
+    # Verified owner account (Simon) — fleet operator even if MODE lag.
+    if acct in (owners if owners is not None else sw.owner_accounts()):
+        return True, "owner", ""
+    return False, "", "denied"
+
+
+def queue_dir(install_root) -> Path:
+    return Path(install_root).joinpath(*QUEUE_SUBDIR)
+
+
+def alive_dir(install_root) -> Path:
+    """Share startworker tray/engine heartbeats (same interactive tray process)."""
+    return sw.queue_dir(install_root)
+
+
+def write_request(qdir, seat_nick: str, by: str, kind: str, now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    rid = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)) + "-" + uuid.uuid4().hex[:6]
+    d = Path(qdir)
+    d.mkdir(parents=True, exist_ok=True)
+    body = {
+        "id": rid,
+        "nick": seat_nick,
+        "by": by,
+        "kind": kind,
+        "ts": int(now),
+        "expires": int(now + REQUEST_TTL_S),
+    }
+    tmp = d / f".req-{rid}.tmp"
+    tmp.write_text(json.dumps(body), encoding="utf-8")
+    os.replace(tmp, d / f"req-{rid}.json")
+    return rid
+
+
+@dataclass
+class Decision:
+    ok: bool
+    reason: str
+    line: str
+    kind: str = ""
+    request_id: str = ""
+    seat_nick: str = ""
+
+
+def decide(
+    *,
+    body: str,
+    nick: str,
+    account,
+    channel: str,
+    local_machine: str,
+    qdir,
+    install_root,
+    home=None,
+    machine_of_nick: Callable[[str], str | None],
+    member_lookup: Callable[[str, str], set[str]] | None = None,
+    members: dict | None = None,
+    chair_nicks=("jeeves",),
+    owners: set | None = None,
+    now: float | None = None,
+    write: bool = True,
+) -> Decision | None:
+    """None when body is not !recycleseat; else ACK/NACK (request queued on ok)."""
+    parsed = parse(body)
+    if parsed is None:
+        return None
+    now = time.time() if now is None else now
+    nack = lambda reason, text, **kw: Decision(  # noqa: E731
+        False, reason, f"NACK recycleseat: {text}", **kw
+    )
+    if parsed == "usage":
+        return nack("usage", usage())
+    seat_nick, machine = parsed
+    ok, kind, why = authorize(
+        nick,
+        account,
+        channel=channel or "#bobiverse",
+        machine_of_nick=machine_of_nick,
+        member_lookup=member_lookup,
+        members=members,
+        chair_nicks=chair_nicks,
+        owners=owners,
+    )
+    if not ok:
+        return nack(
+            why,
+            "not verified (log in to your services account)"
+            if why == "unverified"
+            else "denied (+o/+h, bob-* ear, Jeeves or owner only)",
+            seat_nick=seat_nick,
+        )
+    local = (local_machine or "").strip().lower()
+    chan = (channel or "").strip().lower().lstrip("#")
+    if not local:
+        return nack("no_machine", "this ear has no machine id", kind=kind, seat_nick=seat_nick)
+    if machine is None:
+        if chan != local:
+            return nack(
+                "machine_required",
+                "name the machine: !recycleseat <nick> " + local,
+                kind=kind,
+                seat_nick=seat_nick,
+            )
+        machine = local
+    if machine != local:
+        return None  # other ear: silent
+    if chan not in (local, "bobiverse") and channel:
+        return nack(
+            "wrong_channel",
+            f"use #{local} or #bobiverse",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    if home is not None and (
+        (Path(home) / DISABLE_FILE).exists() or os.environ.get("BOB_RECYCLESEAT_DISABLE")
+    ):
+        return nack(
+            "disabled",
+            "remote seat recycle is disabled on this machine",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    adir = alive_dir(install_root)
+    if not sw.tray_alive(adir, now):
+        return nack(
+            "no_interactive_session",
+            "nobody is logged in with the Bob tray running",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    if not sw.engine_alive(adir, now):
+        return nack(
+            "engine_stale",
+            "Bob tray engine is not ticking; restart the tray",
+            kind=kind,
+            seat_nick=seat_nick,
+        )
+    rid = ""
+    if write:
+        try:
+            rid = write_request(qdir, seat_nick, nick, kind, now)
+        except OSError as e:
+            return nack(
+                "queue_error",
+                f"could not queue the request ({type(e).__name__})",
+                kind=kind,
+                seat_nick=seat_nick,
+            )
+    return Decision(
+        True,
+        "ok",
+        f"ACK recycleseat {seat_nick} on {local} (queued {rid or '-'}; by {nick})",
+        kind=kind,
+        request_id=rid,
+        seat_nick=seat_nick,
+    )
+
+
+# --------------------------------------------------------------------------- tray policy (pure; PS mirrors)
+
+def plan_recycle_action(
+    *,
+    stop_ok: bool,
+    target_still_alive: bool,
+    target_found: bool,
+    expired: bool = False,
+) -> tuple[bool, str]:
+    """Return (may_start, reason). CAST IRON: never start if stop failed / still alive."""
+    if expired:
+        return False, "expired"
+    if not target_found:
+        return False, "not-found"
+    if not stop_ok:
+        return False, "stop-failed"
+    if target_still_alive:
+        return False, "still-alive"
+    return True, "ok"

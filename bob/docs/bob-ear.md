@@ -84,6 +84,7 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 - **FR #2943 / VISION S3:** departure PRIVMSG + `depart-request.txt` go to the **service** ear home (`<InstallRoot>\home`, via `Get-BobiverseEarServiceHome`) — the path LocalSystem `Start-Bob` drains — not `%USERPROFILE%\.bobiverse` (orphan undrained outbox).
 - Quiet MSI: `Start-BobTrayInteractive.ps1` registers ONLOGON `/IT` task `BobiverseTray` (no session-0 TipForm).
 - `!recycle` / `!recycle {machine}`: announce -> restart tray + `ircBob`.
+- **FR #5059** `!recycleseat <nick> [machine]`: authorised ops (+o/+h like `!register`), bob-* ear, Jeeves or owner queue a stop+verify+start for a named worker seat. The elevated tray consumes `run\recycleseat\req-*.json`; if stop fails or the PID is still alive, no new seat is started and the failure is reported to intake.
 
 ## Standalone UAT / connect progress (FR #2351)
 
