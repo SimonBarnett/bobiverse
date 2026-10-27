@@ -1,4 +1,7 @@
-"""FR #4336: needs_human blocks all auto-offers; recycle nick inherits giveup/author; LOST_ACK skips needs_human."""
+"""FR #4336: needs_human blocks all auto-offers; UAT recycle author inherit; LOST_ACK skips needs_human.
+
+FR #5088: give-up / cooldown are exact-seat only (no dead-nick inherit on auto-offer).
+"""
 from __future__ import annotations
 
 import gitclaim
@@ -21,7 +24,7 @@ def test_fr4336_needs_human_blocks_every_seat_for_auto_offer():
 
 
 def test_fr4336_nick_in_giveup_seats_inherits_dead_same_machine(tmp_path, monkeypatch):
-    """Recycled seat: old nick in giveup_seats, new nick on same machine inherits (Expected #2)."""
+    """FR #5088 supersedes FR #4336 Expected #2 for give-up: recycled nick does NOT inherit."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
@@ -37,7 +40,7 @@ def test_fr4336_nick_in_giveup_seats_inherits_dead_same_machine(tmp_path, monkey
     live = gitclaim.live_seat_nicks(tmp_path)
     assert "marchhare-8824" in live
     row = {"giveup_seats": "marchhare-12524,marchhare-9068"}
-    assert gitclaim.nick_in_giveup_seats(row, "marchhare-8824", live=live) is True
+    assert gitclaim.nick_in_giveup_seats(row, "marchhare-8824", live=live) is False  # FR #5088
     assert gitclaim.nick_in_giveup_seats(row, "flamingo-9", live=live) is False
     # When old nick still live, sibling on same machine does not inherit (FR #2604).
     row_live_pred = {"giveup_seats": "marchhare-12524"}
@@ -176,7 +179,7 @@ def test_fr4336_assign_row_allows_needs_human(tmp_path, monkeypatch):
 
 
 def test_fr4336_offer_focus_top_inherits_dead_giveup(tmp_path, monkeypatch):
-    """!bored / done-offer must not hand a giveup_seats row to a recycled successor."""
+    """FR #5088: !bored may hand a giveup_seats row to a recycled successor (exact nick only)."""
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     registered_machines.save_registered(tmp_path, {"marchhare", "flamingo"})
     digest = bobreport.empty_digest()
@@ -213,12 +216,8 @@ def test_fr4336_offer_focus_top_inherits_dead_giveup(tmp_path, monkeypatch):
     st, job = gitclaim.offer_focus_top(
         tmp_path, "marchhare-8824", "#marchhare", pr_exists=lambda *a, **k: True
     )
-    assert st == "empty", (st, job)
-    st2, job2 = gitclaim.offer_focus_top(
-        tmp_path, "flamingo-9", "#flamingo", pr_exists=lambda *a, **k: True
-    )
-    assert st2 == "ok", (st2, job2)
-    assert job2.get("offered_to") == "flamingo-9"
+    assert st == "ok", (st, job)  # FR #5088: recycled successor not blocked by dead giveup
+    assert job.get("offered_to") == "marchhare-8824"
 
 
 def test_fr4336_needs_human_blocks_offer_focus_top(tmp_path, monkeypatch):

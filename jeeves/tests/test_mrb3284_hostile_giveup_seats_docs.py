@@ -18,6 +18,7 @@ def test_mrb3284_docs_needs_human_global_fr4336():
     text = CMD.read_text(encoding="utf-8")
     _no_bom(CMD)
     assert "4336" in text
+    assert "5088" in text  # exact-seat give-up (FR #5088)
     assert "every" in text.lower() or "auto-offer" in text.lower()
     # FR #4336 supersedes seat-scoped carve-out wording.
     assert "only those seats" not in text
