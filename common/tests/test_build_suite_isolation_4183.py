@@ -143,4 +143,46 @@ def test_fr4408_live_state_damage_focus_threshold():
     after_ok = {"/x/focus.json": {"a", "b", "c", "d", "e", "f"}}  # lost 1
     after_bad = {"/x/focus.json": {"a"}}  # lost 6
     assert bb.live_state_damage(before, after_ok) == []
-    assert bb.live_state_damage(before, after_bad) == ["/x/focus.json lost 6"]
+    # Explicit tight threshold (legacy #4408 unit); default soft ceiling is higher (FR #5042).
+    assert bb.live_state_damage(before, after_bad, max_lost=5) == ["/x/focus.json lost 6"]
+    assert bb.live_state_damage(before, after_bad) == []  # lost 6 <= default 15
+
+
+def test_fr5042_queue_lost_ten_is_concurrent_not_damage():
+    """Busy chair may purge ~10 closed/done queue rows during a long jeeves suite."""
+    keys = {f"o/r|FR|#{i}" for i in range(40)}
+    before = {"/x/queue.json": set(keys)}
+    after = {"/x/queue.json": set(list(keys)[10:])}  # lost 10
+    assert bb.live_state_damage(before, after) == []
+
+
+def test_fr5042_queue_mass_wipe_still_damage():
+    keys = {f"o/r|FR|#{i}" for i in range(20)}
+    before = {"/x/queue.json": set(keys)}
+    after_empty = {"/x/queue.json": set()}
+    after_half = {"/x/queue.json": set(list(keys)[:5])}  # lost 15 of 20
+    assert bb.live_state_damage(before, after_empty) == ["/x/queue.json lost 20"]
+    assert bb.live_state_damage(before, after_half) == ["/x/queue.json lost 15"]
+
+
+def test_fr5042_guard_tolerates_ten_queue_loss(tmp_path):
+    live = tmp_path / "live" / ".bobiverse"
+    live.mkdir(parents=True)
+    rows = ",".join(
+        '{"repo":"o/r","task":"FR","id":"#%d"}' % i for i in range(30)
+    )
+    (live / "queue.json").write_text(
+        '{"v":1,"unaccepted":[%s]}' % rows, encoding="utf-8"
+    )
+
+    def prune_ten(cmd, cwd=None, env=None, timeout=None, *, name="", ref_or_baseline=""):
+        keep = ",".join(
+            '{"repo":"o/r","task":"FR","id":"#%d"}' % i for i in range(10, 30)
+        )
+        (live / "queue.json").write_text(
+            '{"v":1,"unaccepted":[%s]}' % keep, encoding="utf-8"
+        )
+        return "ok"
+
+    run = bb.guarded_run_command(tmp_path / "work", [live], inner=prune_ten)
+    assert run("x", name="jeeves", ref_or_baseline="HEAD") == "ok"
