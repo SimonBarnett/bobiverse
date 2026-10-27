@@ -80,6 +80,10 @@ Finish every session with the harvest step.
 
 | Large shell output floods IRC (minutes / reconnect wedge, see #5002) | Keep IRC as control plane. Caller may send `DCCLISTEN id=<job> host=<ip> port=<n> token=<hex>`; when output exceeds the bulk threshold and a matching offer exists, console **dials out** (NAT-friendly), streams body, replies `DONE id=... exit=... bytes=N sha256=H via=dcc`. Handshake failure within a few seconds falls back to existing IRC CONT paging (FR #4794). Without `DCCLISTEN`, behaviour unchanged. Tip PR #5009 (`airc_dcc_bulk.py`). WP2 (#5008): TLS, ionos relay, bob-ear helper, live fleet timings. |
 
+## FR #5008 (reverse-DCC TLS + framed leftovers)
+
+| Windows reverse-DCC TLS handshake fails / digest mismatch on framed bulk | Pin TLS **1.2** (`ssl.PROTOCOL_TLSv1_2` / equivalent) --- TLS 1.3 `wrap_socket` can race the client close on Windows. Framed bulk must **slice the body to the declared length** and **keep recv leftovers** for the trailing digest (and relay ROLE leftover handling). Product tip: PR #5013. |
+
 ## Harvest digest (lessons audit 2026-10-06)
 
 Generalised from 18 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
