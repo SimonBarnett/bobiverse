@@ -181,6 +181,8 @@ Chair stamps `require_machine` from labels (`needs-ionos`, `machine:ionos`) and 
 * Title: **ircJeeves↔StartPending**, **idle seats↔ungated offerable**
 * Body (ops context only): `Invoke-JeevesMonitorCheck` near idle_seats/StartPending/offerable/no shop OFFER
 
+* **FR #5030 redqueen (a-search ops):** dedicated body `require_machine: redqueen`; title/soft cues for a-hasresults-monitor / Register-HasresultsMonitorService, redeploy live workers|walrus, FilterLogEvents near a-search/provider-*-live/a-sqlsearch/walrus. Bare host-name "redqueen" alone does not pin. Meta "without/missing require_machine=redqueen" offer-gap titles do not self-pin (FR #4422-class). Hard-pin a-search#5221. Non-redqueen seats ACK then GIVEUP require_machine=redqueen and file offer-gap intake when unpinned.
+
 Chair lives on ionos (folds to win-mpre*). Non-matching seats must **GIVEUP** (or never receive the offer once the live chair has the gates).
 
 * Marchhare / flamingo / other non-ionos seats cannot bounce ionos `ircJeeves`, edit ionos `queue.json`, or diagnose StartPending/idle+ungated on the chair host — those FRs are ionos-only.
