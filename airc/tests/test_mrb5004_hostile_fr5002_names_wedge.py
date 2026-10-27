@@ -21,6 +21,8 @@ def test_service_pins_no_clear_on_join_and_watchdogs():
     assert "def _names_sync_watchdog(" in SERVICE
     assert "def _auth_wedge_watchdog(" in SERVICE
     assert "return 1" in SERVICE
+    assert "report_airc_event" in SERVICE
+    assert "auth-wedge" in SERVICE
 
 
 def test_deny_reply_and_remote_fail_fast_pins():
