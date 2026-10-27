@@ -15,9 +15,12 @@ REMOTE = (ROOT / "airc" / "scripts" / "Invoke-AircRemote.ps1").read_text(encodin
 def test_dcc_module_and_control_plane_pins():
     assert "DCCLISTEN" in DCC
     assert "def reverse_dcc_roundtrip_localhost" in DCC or "reverse_dcc" in DCC
-    assert "via=dcc" in DCC
+    assert 'via="dcc"' in DCC
+    assert "format_done_via_dcc" in DCC
+    assert "sha256" in DCC and "bytes=" in DCC
     assert "prefer_dcc_bulk" in CONSOLE or "dcc_peer_ready" in CONSOLE
     assert "note_dcclisten" in CONSOLE
+    assert "via=dcc" in REMOTE
 
 
 def test_shell_id_re_keeps_5002_and_5003():
