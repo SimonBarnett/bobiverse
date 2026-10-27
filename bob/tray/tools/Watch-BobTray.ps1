@@ -15,6 +15,8 @@
 # Every click = a NEW agent (never resume/continue/attach; previous agents left running). Agent selection is automatic (cursor > grok > key dialog).
 # Replaces the blank Interactive PowerShell window.
 # Not a Windows service. Requires powershell.exe -STA.
+# FR #5052: MUST_REPORT = timer/webhook/heartbeat/IRC-post failures (Invoke-BobMustReportFailure).
+# BEST_EFFORT empty catch { } stays for Dispose/Hide/Parse/ToInt/timer Stop-Start/CIM list.
 [CmdletBinding()]
 param(
     # CAST IRON (Simon 2026-09-27): cursor + xAI usage POST to digest webhook every 30s.
@@ -3111,7 +3113,17 @@ $script:trayWorkerSyncSub = Register-ObjectEvent -InputObject $script:trayWorker
             [void](Sync-BobTrayStatusWorkersFromDigest -Root ([string]$msg.Root) -TimeoutSec 8)
         }
     }
-    catch { }
+    catch {
+        # FR #5052 must-report (worker digest sync timer)
+        try {
+            $hf = Join-Path ([string]$msg.Root) 'src\Private\Invoke-BobMustReportFailure.ps1'
+            if (Test-Path -LiteralPath $hf) { . $hf }
+            if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+                Invoke-BobMustReportFailure -Component 'tray' -Site 'trayWorkerSyncTimer' -Exception $_.Exception
+            }
+        }
+        catch { Write-TrayLog ('FR #5052 worker-sync report: ' + $_.Exception.Message) }
+    }
 } -MessageData $script:trayWorkerSyncMsg
 $script:trayWorkerSyncTimer.Start()
 
@@ -3171,21 +3183,14 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
                 Add-Content -LiteralPath (Join-Path $logDir 'tray-lifecycle.log') `
                     -Value ('{0} WARN trayDigestTimer Write-BobIrcStatus: {1}' -f [datetime]::UtcNow.ToString('o'), $_.Exception.Message) `
                     -Encoding utf8
-            } catch {
-                Write-TrayLog ('FR #5050 digest log: ' + $_.Exception.Message)
-            }
+            } catch { Write-TrayLog ('FR #5052 digest log: ' + $_.Exception.Message) }
             try {
-                $rf = Join-Path ([string]$msg.Root) 'scripts\Report-BobRuntimeFailure.ps1'
-                if (-not (Test-Path -LiteralPath $rf)) {
-                    $rf = Join-Path ([string]$msg.Root) 'common\scripts\Report-BobRuntimeFailure.ps1'
+                $hf = Join-Path ([string]$msg.Root) 'src\Private\Invoke-BobMustReportFailure.ps1'
+                if (Test-Path -LiteralPath $hf) { . $hf }
+                if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+                    Invoke-BobMustReportFailure -Component 'tray' -Site 'trayDigestTimer.Write-BobIrcStatus' -Exception $_.Exception
                 }
-                if (Test-Path -LiteralPath $rf) { . $rf }
-                if (Get-Command Report-BobRuntimeFailure -ErrorAction SilentlyContinue) {
-                    Report-BobRuntimeFailure -Component 'tray' -Site 'trayDigestTimer.Write-BobIrcStatus' -Exception $_.Exception | Out-Null
-                }
-            } catch {
-                Write-TrayLog ('FR #5050 digest report: ' + $_.Exception.Message)
-            }
+            } catch { Write-TrayLog ('FR #5052 digest report: ' + $_.Exception.Message) }
         }
     }
     catch {
@@ -3253,15 +3258,33 @@ $script:trayAliveTimer = New-Object System.Timers.Timer
 $script:trayAliveTimer.Interval = 2000
 $script:trayAliveTimer.AutoReset = $true
 $script:trayAliveTimer.SynchronizingObject = $null
+$script:trayAliveMsg = [pscustomobject]@{
+    Root = $RepoRoot
+    Dir  = $script:startWorkerDir
+}
 $script:trayAliveSub = Register-ObjectEvent -InputObject $script:trayAliveTimer -EventName Elapsed -Action {
     try {
-        $dir = [string]$Event.MessageData
+        $msg = $Event.MessageData
+        $dir = if ($msg -and $msg.Dir) { [string]$msg.Dir } else { [string]$msg }
         if (-not $dir) { return }
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
         Set-Content -LiteralPath (Join-Path $dir 'tray.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
     }
-    catch { }
-} -MessageData $script:startWorkerDir
+    catch {
+        # FR #5052 must-report (heartbeat stamp)
+        try {
+            $root = if ($Event.MessageData.Root) { [string]$Event.MessageData.Root } else { $null }
+            if ($root) {
+                $hf = Join-Path $root 'src\Private\Invoke-BobMustReportFailure.ps1'
+                if (Test-Path -LiteralPath $hf) { . $hf }
+            }
+            if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
+                Invoke-BobMustReportFailure -Component 'tray' -Site 'trayAliveTimer' -Exception $_.Exception
+            }
+        }
+        catch { Write-TrayLog ('FR #5052 alive report: ' + $_.Exception.Message) }
+    }
+} -MessageData $script:trayAliveMsg
 $script:trayAliveTimer.Start()
 
 $pulse = New-Object System.Windows.Forms.Timer

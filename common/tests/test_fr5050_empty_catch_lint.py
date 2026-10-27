@@ -20,8 +20,8 @@ def test_fr5050_digest_timer_window_has_no_empty_catch():
     digest = t[t.index("$script:trayDigestSub = Register-ObjectEvent") :]
     inner = digest[digest.index("Write-BobIrcStatus | Out-Null") :]
     catch = inner[inner.index("} catch {") : inner.index("    }\n    catch {")]
-    assert "FR #5050" in catch
-    assert "Report-BobRuntimeFailure" in catch
+    assert "FR #5050" in catch or "FR #5052" in catch
+    assert "Report-BobRuntimeFailure" in catch or "Invoke-BobMustReportFailure" in catch
     assert not re.search(r"Write-BobIrcStatus \| Out-Null\s*\n\s*\} catch \{ \}", digest)
 
 

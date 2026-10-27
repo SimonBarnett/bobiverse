@@ -12,8 +12,8 @@ def test_fr5050_digest_timer_reports_not_empty_catch():
     t = WATCH.read_text(encoding="utf-8-sig")
     inner = t[t.index("$script:trayDigestSub = Register-ObjectEvent") :]
     call = inner[inner.index("Write-BobIrcStatus | Out-Null") :]
-    assert "FR #5050" in call[:2500]
-    assert "Report-BobRuntimeFailure" in call[:2500]
+    assert "FR #5050" in call[:2500] or "FR #5052" in call[:2500]
+    assert "Report-BobRuntimeFailure" in call[:2500] or "Invoke-BobMustReportFailure" in call[:2500]
 
 
 def test_fr5050_report_helpers_use_intake():
