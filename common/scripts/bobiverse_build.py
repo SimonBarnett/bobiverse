@@ -2032,20 +2032,35 @@ def live_state_fingerprint(homes: Iterable[Path | str]) -> dict:
     return out
 
 
-def live_state_damage(before: dict, after: dict, *, max_lost: int = 5) -> list[str]:
+def live_state_damage(before: dict, after: dict, *, max_lost: int = 15) -> list[str]:
     """Flag real wipe / mass loss only.
 
-    Queue and focus use the same ``max_lost`` threshold (#4185 / #4408). A concurrent
-    chair resync may prune a few closed focus items (FR #1508 / #1520) or rotate a
-    handful of queue rows while a long suite step runs; that is not suite damage.
-    Losing more than ``max_lost`` keys still fails closed (the #4183 wipe case).
+    Queue and focus use the same ``max_lost`` threshold (#4185 / #4408 / FR #5042).
+    A concurrent chair resync may prune closed focus items (FR #1508 / #1520) or purge
+    many closed/done queue rows while a long suite step runs; that is not suite damage.
+    Default ``max_lost`` is 15 so a busy chair (queue.json lost ~10 during jeeves@HEAD)
+    does not abort !build. Mass wipe still fails closed: empty after a non-empty before,
+    or more than half the keys gone when the prior set was sizeable (#4183 wipe case).
     """
     bad = []
     for k, was in before.items():
         now = after.get(k, set())
+        if not isinstance(was, set):
+            was = set(was or ())
+        if not isinstance(now, set):
+            now = set(now or ())
         lost = was - now
-        if len(lost) > max_lost:
-            bad.append(f"{k} lost {len(lost)}")
+        n_lost = len(lost)
+        if n_lost == 0:
+            continue
+        n_was = len(was)
+        # Soft concurrent-prune ceiling; caller may pass a tighter max_lost in tests.
+        soft = max(int(max_lost), 0)
+        mass_wipe = (n_was > 0 and len(now) == 0) or (
+            n_was >= 8 and n_lost > (n_was // 2)
+        )
+        if mass_wipe or n_lost > soft:
+            bad.append(f"{k} lost {n_lost}")
     return bad
 
 
