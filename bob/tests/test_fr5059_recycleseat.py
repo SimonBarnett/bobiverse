@@ -220,3 +220,16 @@ def test_fr5059_irc_agent_wires_command():
     src = (root / "common" / "scripts" / "irc_agent.py").read_text(encoding="utf-8")
     assert "recycleseat" in src
     assert "_maybe_recycleseat" in src
+
+
+def test_fr5084_vendor_sync_owned_tools_keeps_recycleseat():
+    """Vendor re-sync wipes OutDir; RecycleSeat must be in $ownedTools (FR #5084)."""
+    root = Path(__file__).resolve().parents[2]
+    sync = (root / "bob" / "scripts" / "Sync-BobTrayFromAgenticBuild.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+    start = sync.index("$ownedTools = @(")
+    end = sync.index(")", start)
+    block = sync[start : end + 1]
+    assert "BobTrayStartWorker.ps1" in block
+    assert "BobTrayRecycleSeat.ps1" in block
