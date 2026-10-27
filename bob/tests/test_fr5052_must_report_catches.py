@@ -84,6 +84,13 @@ def test_mrb5054_digest_outer_catch_not_silent_empty():
     assert "Invoke-BobMustReportFailure" in inner
 
 
+def test_mrb5051_helper_dotsources_runtime_failure_script():
+    """Hostile fold: helper must load Report-BobRuntimeFailure.ps1, not only Get-Command."""
+    t = HELPER.read_text(encoding="utf-8-sig")
+    assert "Report-BobRuntimeFailure.ps1" in t
+    assert "common\\scripts\\Report-BobRuntimeFailure.ps1" in t or "common/scripts/Report-BobRuntimeFailure.ps1" in t
+
+
 def test_mrb5054_helper_never_throws_and_prefers_runtime_failure():
     t = HELPER.read_text(encoding="utf-8-sig")
     assert "Report-BobRuntimeFailure" in t

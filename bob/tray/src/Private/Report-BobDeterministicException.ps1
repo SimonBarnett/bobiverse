@@ -152,6 +152,21 @@ function Report-BobDeterministicException {
             reason       = 'recent fingerprint'
         }
     }
+    # FR #5050: prefer intake (queued if offline) over gh-only create.
+    if (Get-Command Report-BobRuntimeFailure -ErrorAction SilentlyContinue) {
+        $via = Report-BobRuntimeFailure -Component 'tray' -Site $Site -Exception $Exception
+        if ($via -and $via.ok) {
+            Save-BobDeterministicExceptionFingerprint -Fingerprint $fp -IssueUrl ([string]$via.via) -Repo $Repo
+            return [pscustomobject]@{
+                ok          = $true
+                deduped     = $false
+                fingerprint = $fp
+                repo        = $Repo
+                issueUrl    = $null
+                reason      = 'intake FR #5050'
+            }
+        }
+    }
     $gh = Get-BobGhExe
     if (-not $gh) {
         return [pscustomobject]@{

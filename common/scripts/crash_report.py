@@ -432,12 +432,15 @@ def _post_intake(title: str, body: str, *, repo: str, sig: str, exe: str) -> dic
         raise RuntimeError("crash-report disabled")
     raw_url = (os.environ.get("BOB_INTAKE_URL") or "").strip()
     url = raw_url or DEFAULT_INTAKE
+    # FR #5050 / #4963: dedupe_key comments/reopens; idempotency_key is retry-only.
+    dkey = str(sig or "").strip()[:128]
     payload = {
         "kind": "issue",
         "repo": repo,
         "title": title,
         "body": body,
-        "idempotency_key": f"crash-{sig}",
+        "idempotency_key": f"crash-{sig}"[:128],
+        "dedupe_key": dkey,
         "machine": machine_id(),
         "agent": f"crash_report:{exe}",
     }

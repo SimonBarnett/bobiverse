@@ -10,6 +10,21 @@ function Invoke-BobMustReportFailure {
         $Exception
     )
     try {
+        if (-not (Get-Command Report-BobRuntimeFailure -ErrorAction SilentlyContinue)) {
+            $rfRoots = @()
+            if ($Event -and $Event.MessageData -and $Event.MessageData.Root) {
+                $rfRoots += [string]$Event.MessageData.Root
+            }
+            $rfRoots += (Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -Parent)
+            foreach ($r in $rfRoots) {
+                if (-not $r) { continue }
+                foreach ($rel in @('common\scripts\Report-BobRuntimeFailure.ps1', 'scripts\Report-BobRuntimeFailure.ps1')) {
+                    $rf = Join-Path $r $rel
+                    if (Test-Path -LiteralPath $rf) { . $rf; break }
+                }
+                if (Get-Command Report-BobRuntimeFailure -ErrorAction SilentlyContinue) { break }
+            }
+        }
         if (Get-Command Report-BobRuntimeFailure -ErrorAction SilentlyContinue) {
             Report-BobRuntimeFailure -Component $Component -Site $Site -Exception $Exception | Out-Null
             return

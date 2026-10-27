@@ -3176,6 +3176,7 @@ $script:trayDigestSub = Register-ObjectEvent -InputObject $script:trayDigestTime
         try {
             Write-BobIrcStatus | Out-Null
         } catch {
+            # FR #5050: log + intake (deduped) — never swallow digest webhook errors.
             try {
                 $logDir = Join-Path $msg.Root 'logs'
                 if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
