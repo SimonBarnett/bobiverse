@@ -2,7 +2,7 @@
 #
 # The ear (service, session 0) authorises/caps/queues a request file; the tray - the one process that lives in the
 # interactive session - launches the worker through the SAME function as the Agent / Plan click. Protocol (common\scripts\startworker.py):
-#   <root>\run\startworker\tray.alive     heartbeat (FR #2697: host/Threading.Timer every ~2 s; may include engine_last_tick)
+#   <root>\run\startworker\tray.alive     heartbeat (FR #2697: ThreadPool host timer / System.Timers.Timer every ~2 s; may include engine_last_tick)
 #   <root>\run\startworker\engine.alive   FR #4136/#4317: written by Watch-BobTray at the START of each startworker tick
 #   <root>\run\startworker\req-<id>.json  {id, mode, by, kind, ts, expires}  written atomically by the ear
 #   <root>\run\startworker\res-<id>.json  {id, ok, reason, pid}               audit trail written here

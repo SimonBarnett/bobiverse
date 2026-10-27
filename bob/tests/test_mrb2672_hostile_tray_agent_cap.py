@@ -1,6 +1,6 @@
 """MRB #2672 hostile: tray hard cap is agent-only (FR #2667 / #2522).
 
-Locks monitor uncapped, missing --mode defaults to agent for counting,
+Locks monitor uncapped, missing --mode is unknown (FR #3181, never agent),
 Ensure-BobWorkerSeats agent Modes, C# CapRefusal early-exit, Watch-BobTray -Mode.
 """
 from __future__ import annotations
@@ -69,9 +69,10 @@ def test_mrb2672_monitor_and_missing_mode_defaults():
     out = _ps(script)
     assert "MON_REF=[]" in out, out
     assert "PLAN_ON_FULL=[]" in out, out
-    assert "MODE_DEF=agent" in out, out
-    assert "LEGACY_N=2" in out, out
-    assert "LEGACY_REF=[Max 2 workers (2 already running)" in out, out
+    # FR #3181: missing/unreadable --mode is unknown (never agent); legacy cmdline seats do not count toward the hard cap.
+    assert "MODE_DEF=unknown" in out, out
+    assert "LEGACY_N=0" in out, out
+    assert "LEGACY_REF=[]" in out, out
 
 
 def test_mrb2672_ensure_and_watch_pass_mode():

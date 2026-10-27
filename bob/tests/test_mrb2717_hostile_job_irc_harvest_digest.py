@@ -73,5 +73,6 @@ def test_mrb2717_digest_bullets_complete_lines():
     bullets = [ln for ln in lines if ln.startswith("- **")]
     assert len(bullets) >= 3
     for ln in bullets:
-        assert ln.rstrip().endswith(")") or "lessons:" in ln or "held" in ln
+        # Newer harvest bullets are complete sentences ending in '.' as well as legacy ')'.
+        assert ln.rstrip().endswith((")", ".")) or "lessons:" in ln or "held" in ln
         assert "orphan" not in ln.lower()

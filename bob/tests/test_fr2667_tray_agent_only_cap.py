@@ -83,7 +83,8 @@ def test_fr2667_measure_counts_agent_only_ignores_plan_maintenance(tmp_path):
     assert "PLAN_REF=[]" in out, out
     assert "MAINT_REF=[]" in out, out
     assert "ONE_AGENT_PLAN=[]" in out, out
-    assert "AGENT_REF=[Max 2 workers (2 IRC-joined agent seats)" in out, out
+    # FR #4307/#4458: CapRefusal unions IRC marker pids with live agent roots ("N agent seats").
+    assert "AGENT_REF=[Max 2 workers (3 agent seats). Close a worker window first.]" in out, out
 
 
 def test_fr2667_startworker_queue_writes_reason_cap():
@@ -100,7 +101,8 @@ def test_fr2667_startworker_queue_writes_reason_cap():
 
 def test_fr2667_csharp_cap_refusal_mode_aware():
     cs = TRAY_CS.read_text(encoding="utf-8")
-    assert "CountIrcAgentSeats" in cs
+    # FR #4307: IRC marker helper is IrcAgentSeatPids (CountIrcAgentSeats renamed).
+    assert "IrcAgentSeatPids" in cs
     assert "CapRefusal(string mode" in cs or "CapRefusal(string mode =" in cs
     assert 'mode, "agent"' in cs or 'Equals(mode, "agent"' in cs or 'mode == "agent"' in cs.lower() or 'OrdinalIgnoreCase' in cs
     # Launch must pass mode into CapRefusal

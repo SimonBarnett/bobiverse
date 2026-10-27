@@ -86,8 +86,10 @@ def test_build_digest_object_exports_chanserv_roster_and_chair_channels(tmp_path
     assert "marchhare" not in out["machines"]
     # #33: the ChanServ roster itself is exported, sorted, machine-id keyed.
     assert out["roster_machine_ids"] == ["ce-priority-dev1", "flamingo", "win-mpre8vi4u6u"]
+    # FR #3834: !register-only fallback synthesizes #wonderland between fleet and shops.
     assert out["chair_channels"] == [
         "#bobiverse",
+        "#wonderland",
         "#ce-priority-dev1",
         "#flamingo",
         "#win-mpre8vi4u6u",

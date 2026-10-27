@@ -148,7 +148,8 @@ def test_out_of_fuel_watcher_fake_agent_402_mid_job(tmp_path: Path):
 def test_post_digest_out_of_fuel_posts_json(tmp_path: Path, monkeypatch):
     posted: list[tuple[str, dict]] = []
 
-    def fake_post(url: str, payload: dict, timeout: float = 10.0) -> bool:
+    # Production _http_post_json accepts optional log=; mock must too (FR #5032 regression).
+    def fake_post(url: str, payload: dict, timeout: float = 10.0, log=None) -> bool:
         posted.append((url, dict(payload)))
         return True
 
