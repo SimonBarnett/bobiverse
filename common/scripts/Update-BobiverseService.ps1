@@ -422,6 +422,23 @@ function Get-ServiceAppParameters {
     return ''
 }
 
+function Write-AircPlannedRestartStamp {
+    # FR #5105: planned Airc MSI stop must not look like a crash (airc-run.stamp=running).
+    param([string]$AppParameters)
+    if ($Product -ne 'airc') { return }
+    $ch = Get-AppParam -AppParameters $AppParameters -Name 'ConsoleHome'
+    if (-not $ch) { $ch = Join-Path $InstallRoot 'home' }
+    try {
+        if (-not (Test-Path -LiteralPath $ch)) {
+            New-Item -ItemType Directory -Force -Path $ch | Out-Null
+        }
+        Set-Content -LiteralPath (Join-Path $ch 'airc-run.stamp') -Value "restarting`n" -Encoding utf8
+        Write-UpdLog "airc-run.stamp=restarting home=$ch"
+    } catch {
+        Write-UpdLog "airc-run.stamp-warn $($_.Exception.GetType().Name)"
+    }
+}
+
 function Get-BobiverseArpProduct {
     # FR #1432: Uninstall registry row for bobiverse <$Product> (DisplayVersion / ProductCode).
     $want = "bobiverse $Product"
@@ -595,6 +612,7 @@ function Invoke-Apply {
         }
         $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         $appParams = Get-ServiceAppParameters
+        Write-AircPlannedRestartStamp -AppParameters $appParams
         if ($svc -and $svc.Status -ne 'Stopped') {
             try { Stop-Service -Name $ServiceName -ErrorAction Stop } catch {
                 Write-UpdLog "stop-failed $($_.Exception.GetType().Name) - aborted, nothing changed"
