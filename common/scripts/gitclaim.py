@@ -1046,7 +1046,9 @@ def row_on_cooldown(row: dict, now: float, nick: str = "", live: set[str] | None
     re-offer to the giver; other seats skip the global wait.
     Compare seats via ``canonical_worker_nick`` so ``w-io-<pid>`` matches
     ``win-mpre8vi4u6u-<pid>`` stored after GIVEUP.
-    FR #4336: pass ``live`` so a recycled successor inherits the giver's cooldown.
+    FR #5088: ``live`` is accepted for API stability but give-up/cooldown matching
+    is exact-seat only (recycled successors are not blocked). ``needs_human`` remains
+    the global auto-offer gate (FR #4336).
     """
     until = _parse_iso_ts(str(row.get("cooldown_until") or ""))
     if until is None or float(now) >= until:
@@ -3117,12 +3119,13 @@ def nick_inherits_dead_seat(
     stored: str,
     live: set[str] | None,
 ) -> bool:
-    """True when `nick` succeeds a recycled `stored` seat on the same machine (FR #4336).
+    """True when `nick` succeeds a recycled `stored` seat on the same machine.
 
-    When `stored` is not live and `nick` is the **sole** live seat on that machine,
-    the new nick inherits giveup / author exclusions (typical seat recycle). If
-    another live seat shares the machine, treat them as siblings (FR #2604) — do
-    not inherit a dead peer's exclusion (FR #4604 FIX/MRB).
+    Used for **UAT** dead-author inherit (FR #4336) and related author stamps.
+    Give-up / cooldown matching is exact-seat only (FR #5088) and does not call
+    this helper. When `stored` is not live and `nick` is the **sole** live seat
+    on that machine, treat as recycle successor. Sibling live seats on the same
+    machine do not inherit (FR #2604 / #4604).
     """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     st = (canonical_worker_nick(stored) or stored or "").strip().lower()
@@ -3148,8 +3151,12 @@ def nick_in_giveup_seats(
 ) -> bool:
     """True when `nick` (any form) is listed in the row's giveup_seats.
 
-    FR #4336: when `live` is provided, also match a recycled successor on the
-    same machine as a listed seat that is no longer live.
+    FR #5088: exact-seat match only (canonical nick / short form). ``live`` is
+    accepted for call-site compatibility but does **not** inherit a dead
+    predecessor's give-up to a recycled same-machine nick --- that blocked
+    ``!bored`` after seat recycle while ``!assign`` (no live) still offered.
+    ``needs_human`` stays global for auto-offer (FR #4336). UAT dead-author
+    inherit remains in ``review_blocked_for_author`` via ``nick_inherits_dead_seat``.
     """
     me = (canonical_worker_nick(nick) or nick or "").strip().lower()
     if not me:
@@ -3163,12 +3170,10 @@ def nick_in_giveup_seats(
         x.strip().lower() for x in str(row.get("giveup_seats") or "").split(",") if x.strip()
     }:
         return True
-    if live is None:
-        return False
-    for st in seats:
-        if nick_inherits_dead_seat(me, st, live):
-            return True
+    # FR #5088: do not call nick_inherits_dead_seat here (live ignored for give-up).
+    _ = live
     return False
+
 
 
 def _channel(target: str) -> str:
