@@ -1847,11 +1847,18 @@ def chunk_irc_text(text: str, *, limit: int = IRC_SAFE_PAYLOAD, prefix: str = ""
 
 @dataclass
 class FormattedShellReplies:
-    """One IRC reply page (FR #4790 truncate + FR #4794 CONT/RESUME)."""
+    """One IRC reply page (FR #4790 truncate + FR #4794 CONT/RESUME).
+
+    FR #5003: when ``via_dcc`` is set, ``lines`` are control-plane only (hint + DONE
+    with bytes/sha256/via=dcc) and ``bulk_payload`` holds the bytes for reverse DCC.
+    """
 
     lines: list[str]
     next_offset: int | None
     piece_count: int
+    via_dcc: bool = False
+    bulk_payload: bytes | None = None
+    bulk_sha256: str = ""
 
 
 _CONT_RE = re.compile(
@@ -1903,15 +1910,56 @@ def _shell_reply_pieces(
     return pieces
 
 
+def should_offer_dcc_bulk(*, piece_count: int, byte_count: int) -> bool:
+    """Delegate to airc_dcc_bulk so thresholds stay single-sourced (FR #5003)."""
+    import airc_dcc_bulk as _dcc
+
+    return _dcc.should_use_dcc_bulk(piece_count=piece_count, byte_count=byte_count)
+
+
 def format_shell_replies_ex(
     outcome: ShellOutcome,
     *,
     irc_limit: int = IRC_SAFE_PAYLOAD,
     max_irc_lines: int = SHELL_REPLY_MAX_IRC_LINES,
     offset: int = 0,
+    prefer_dcc_bulk: bool = False,
+    dcc_peer_ready: bool = False,
 ) -> FormattedShellReplies:
-    """Page shell replies; ``next_offset`` set when more pieces remain (FR #4794)."""
+    """Page shell replies; ``next_offset`` set when more pieces remain (FR #4794).
+
+    FR #5003: when ``prefer_dcc_bulk`` and a peer is ready and page-0 payload exceeds
+    the bulk threshold, return control-plane lines + ``bulk_payload`` instead of
+    flooding IRC. Callers without a peer keep the IRC CONT path.
+    """
     pieces = _shell_reply_pieces(outcome, irc_limit=irc_limit)
+    raw_bulk = (outcome.stdout or "").encode("utf-8") + (outcome.stderr or "").encode(
+        "utf-8"
+    )
+    if (
+        prefer_dcc_bulk
+        and dcc_peer_ready
+        and offset == 0
+        and should_offer_dcc_bulk(piece_count=len(pieces), byte_count=len(raw_bulk))
+    ):
+        import airc_dcc_bulk as _dcc
+
+        data = _dcc.build_bulk_bytes(outcome.stdout or "", outcome.stderr or "")
+        digest = _dcc.sha256_hex(data)
+        payload = _dcc.BulkPayload(
+            job_id=outcome.job_id,
+            exit_code=int(outcome.exit_code),
+            data=data,
+            sha256=digest,
+        )
+        return FormattedShellReplies(
+            lines=_dcc.format_bulk_control_lines(payload),
+            next_offset=None,
+            piece_count=len(pieces),
+            via_dcc=True,
+            bulk_payload=data,
+            bulk_sha256=digest,
+        )
     max_body = max(1, int(max_irc_lines))
     start = max(0, int(offset))
     page = pieces[start : start + max_body]
@@ -1930,13 +1978,15 @@ def format_shell_replies_ex(
             f"err id={outcome.job_id} seq={seq} "
             f"output truncated, {omitted} lines omitted; "
             f"CONT id={outcome.job_id} (FR #4794); "
-            f"file fetch / PUT (FR #4790)"
+            f"file fetch / PUT (FR #4790); DCCLISTEN (FR #5003)"
         )
         if len(marker) > irc_limit:
             marker = marker[: irc_limit - 3] + "..."
         lines.append(marker)
     lines.append(f"DONE id={outcome.job_id} exit={outcome.exit_code}")
-    return FormattedShellReplies(lines=lines, next_offset=next_off, piece_count=len(pieces))
+    return FormattedShellReplies(
+        lines=lines, next_offset=next_off, piece_count=len(pieces)
+    )
 
 
 def format_shell_replies(
@@ -1952,6 +2002,8 @@ def format_shell_replies(
     ``err`` truncate marker (lines omitted) then DONE. FR #4794: marker cites
     ``CONT id=`` so controllers can page without re-running the command.
     Controllers should still prefer file fetch / PUT for large binaries.
+    FR #5003: oversized replies may use reverse DCC (``via=dcc``) when the caller
+    advertised ``DCCLISTEN``; otherwise IRC CONT paging remains the fallback.
     """
     return format_shell_replies_ex(
         outcome, irc_limit=irc_limit, max_irc_lines=max_irc_lines, offset=offset
@@ -2001,6 +2053,19 @@ class ShellJobRunner:
         self._inflight_cmd: dict[str, _ShellPending] = {}
         # FR #4794: (nick, job_id) -> (outcome, next_offset) for CONT/RESUME pages.
         self._resume: dict[tuple[str, str], tuple[ShellOutcome, int]] = {}
+        # FR #5003: job_id -> DccListenOffer from caller DCCLISTEN (reverse DCC).
+        self._dcc_listen: dict[str, object] = {}
+
+    def note_dcclisten(self, text: str) -> bool:
+        """Record a caller ``DCCLISTEN`` offer (FR #5003). Returns True when parsed."""
+        import airc_dcc_bulk as _dcc
+
+        offer = _dcc.parse_dcclisten(text)
+        if offer is None:
+            return False
+        with self._lock:
+            self._dcc_listen[offer.job_id] = offer
+        return True
 
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
@@ -2084,7 +2149,30 @@ class ShellJobRunner:
             # FR #4068: batch capture --- first IRC out only after the process exits.
             t0 = time.monotonic()
             outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
-            page = format_shell_replies_ex(outcome)
+            with self._lock:
+                peer = self._dcc_listen.pop(jid, None)
+            page = format_shell_replies_ex(
+                outcome,
+                prefer_dcc_bulk=True,
+                dcc_peer_ready=peer is not None,
+            )
+            if page.via_dcc and page.bulk_payload is not None and peer is not None:
+                import airc_dcc_bulk as _dcc
+
+                try:
+                    _dcc.reverse_dcc_send(
+                        page.bulk_payload,
+                        host=str(getattr(peer, "host")),
+                        port=int(getattr(peer, "port")),
+                        token=str(getattr(peer, "token")),
+                    )
+                except Exception as exc:
+                    # Fall back to IRC CONT path when reverse DCC fails (FR #5003).
+                    self._emit(
+                        key,
+                        f"err id={jid} seq=1 dcc failed: {exc}; falling back to IRC",
+                    )
+                    page = format_shell_replies_ex(outcome)
             with self._lock:
                 if page.next_offset is not None:
                     self._resume[(key, jid)] = (outcome, page.next_offset)
@@ -2434,6 +2522,14 @@ class AircConsoleCore:
                 reply=result.reply_line(),
                 **meta,
             )
+
+        # FR #5003: caller advertises reverse-DCC listen endpoint before/alongside shell.
+        if self.shell_runner is not None and cmd.upper().startswith("DCCLISTEN"):
+            if self.shell_runner.note_dcclisten(cmd):
+                meta = self._allow_meta(nick, account)
+                return HandleResult(
+                    action="dcc_listen", nick=nick, target=target, text=text, **meta
+                )
 
         # FR #4794: CONT/RESUME pages truncated shell output (no re-run).
         cont = parse_cont_request(cmd)

@@ -104,9 +104,9 @@ NICK_RETRIES_LOBBY = 20
 NAMES_SYNC_WATCH_S = float(os.environ.get("AIRC_NAMES_SYNC_WATCH_S", "30") or "30")
 # FR #5002: prolonged channel-state-unknown / all-refused -> exit so NSSM AppExit Restart.
 AUTH_WEDGE_EXIT_S = float(os.environ.get("AIRC_AUTH_WEDGE_EXIT_S", "300") or "300")
-# FR #2612 / #5002: match out/err/DONE (id optional on DONE so denials still track).
+# FR #2612 / #5002 / #5003: DONE id optional; trailing bytes=/sha256=/via=/reason ok.
 _SHELL_ID_RE = re.compile(
-    r"^(?:(?:out|err)\s+id=([0-9a-f]+)\s+seq=\d+|DONE\s+(?:id=([0-9a-f]+)\s+)?exit=-?\d+\b)",
+    r"^(?:(?:out|err)\s+id=([0-9a-f]+)\s+seq=\d+|DONE\s+(?:id=([0-9a-f]+)\s+)?exit=-?\d+(?:\s+\S+)*)\s*$",
     re.IGNORECASE,
 )
 
