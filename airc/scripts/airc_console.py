@@ -2160,12 +2160,8 @@ class ShellJobRunner:
                 import airc_dcc_bulk as _dcc
 
                 try:
-                    _dcc.reverse_dcc_send(
-                        page.bulk_payload,
-                        host=str(getattr(peer, "host")),
-                        port=int(getattr(peer, "port")),
-                        token=str(getattr(peer, "token")),
-                    )
+                    # FR #5008: honor tls= / relay= on the caller's DCCLISTEN offer.
+                    _dcc.send_offer_payload(page.bulk_payload, peer)
                 except Exception as exc:
                     # Fall back to IRC CONT path when reverse DCC fails (FR #5003).
                     self._emit(

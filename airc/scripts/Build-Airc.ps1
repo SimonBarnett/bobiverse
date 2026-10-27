@@ -28,7 +28,7 @@ if (-not (Test-Path -LiteralPath $src)) { throw "missing $src" }
 $pyPaths = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts')
 $pathArgs = @(); foreach ($pp in $pyPaths) { $pathArgs += @('--paths', $pp) }
 
-$hidden = @('account_map', 'airc_console', 'airc_jobs')
+$hidden = @('account_map', 'airc_console', 'airc_jobs', 'airc_dcc_bulk', 'cryptography')
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 
 if (-not $Python) {
@@ -42,6 +42,18 @@ $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $pyiOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = $prevEap
 if (-not $pyiOk) { throw "PyInstaller missing for $Python (pip install pyinstaller)" }
+
+# FR #5008 / MRB #5013: ephemeral DCC TLS needs cryptography in the frozen image.
+$prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+& $Python -c "import cryptography" *> $null
+$cryptoOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEap
+if (-not $cryptoOk) {
+    Write-Host "pip install cryptography for $Python (DCC TLS ephemeral cert)"
+    & $Python -m pip install --disable-pip-version-check cryptography
+    if ($LASTEXITCODE -ne 0) { throw "pip install cryptography failed (exit $LASTEXITCODE)" }
+}
+
 
 $work = Join-Path $OutDir 'airc-build'
 if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
