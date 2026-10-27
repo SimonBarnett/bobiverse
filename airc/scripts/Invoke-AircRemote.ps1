@@ -229,15 +229,39 @@ function ConvertFrom-AircRemoteReply {
             if ($obj.Stream -eq 'out') { [void]$outs.Add($obj) } else { [void]$errs.Add($obj) }
             continue
         }
-        if ($line -match '^DONE\s+id=(?<id>[0-9a-f]+)\s+exit=(?<exit>-?\d+)\s*$') {
-            $done = [pscustomobject]@{ Id = $Matches.id; ExitCode = [int]$Matches.exit }
+        # FR #5002: optional trailing reason; id-less DONE exit=126 refusals fail-fast.
+        if ($line -match '^DONE\s+id=(?<id>[0-9a-f]+)\s+exit=(?<exit>-?\d+)(?:\s+(?<reason>\S+))?\s*$') {
+            $reason = ''
+            if ($Matches.Keys -contains 'reason' -and $Matches['reason']) {
+                $reason = [string]$Matches['reason']
+            }
+            $done = [pscustomobject]@{
+                Id       = $Matches.id
+                ExitCode = [int]$Matches.exit
+                Reason   = $reason
+            }
+        }
+        elseif ($line -match '^DONE\s+exit=(?<exit>-?\d+)(?:\s+(?<reason>\S+))?\s*$') {
+            $exitCode = [int]$Matches.exit
+            $reason = ''
+            if ($Matches.Keys -contains 'reason' -and $Matches['reason']) {
+                $reason = [string]$Matches['reason']
+            }
+            if ($exitCode -eq 126) {
+                throw ("airc refusal fail-fast: DONE exit=126 {0}" -f $reason)
+            }
+            $done = [pscustomobject]@{ Id = ''; ExitCode = $exitCode; Reason = $reason }
         }
     }
     if (-not $done) {
         throw 'malformed replies: missing DONE id=... exit=... (fail closed)'
     }
-    if ($ExpectJobId -and $done.Id -ne $ExpectJobId) {
+    if ($ExpectJobId -and $done.Id -and $done.Id -ne $ExpectJobId) {
         throw ("correlation mismatch: expected id={0} got id={1}" -f $ExpectJobId, $done.Id)
+    }
+    if ([int]$done.ExitCode -eq 126) {
+        $why = $(if ($done.Reason) { $done.Reason } else { 'not-op' })
+        throw ("airc refusal fail-fast: DONE id={0} exit=126 {1}" -f $done.Id, $why)
     }
     $outSorted = @($outs | Sort-Object Seq)
     $errSorted = @($errs | Sort-Object Seq)
@@ -386,12 +410,17 @@ function Wait-AircRemoteReplies {
     $collected = New-Object System.Collections.Generic.List[string]
     $pos = $StartOffset
     $id = $ExpectJobId.ToLowerInvariant()
-    $doneRe = [regex]::new(('(?i)^DONE\s+id={0}\s+exit=-?\d+\s*$' -f [regex]::Escape($id)))
+    # FR #5002: trailing reason allowed; also fail-fast on id-less exit=126 refusals.
+    $doneRe = [regex]::new(('(?i)^DONE\s+id={0}\s+exit=-?\d+\b' -f [regex]::Escape($id)))
+    $refuseIdlessRe = [regex]::new('(?i)^DONE\s+exit=126\b')
     $lineRe = [regex]::new(('(?i)^(?:out|err)\s+id={0}\s+seq=\d+\s' -f [regex]::Escape($id)))
     while ([datetime]::UtcNow -lt $deadline) {
         $chunk = Read-AircRepliesJsonlBodies -Path $RepliesJsonl -StartOffset $pos
         $pos = $chunk.Offset
         foreach ($b in @($chunk.Bodies)) {
+            if ($refuseIdlessRe.IsMatch($b)) {
+                throw ("airc refusal fail-fast: {0}" -f $b)
+            }
             if ($lineRe.IsMatch($b) -or $doneRe.IsMatch($b)) {
                 [void]$collected.Add($b)
             }

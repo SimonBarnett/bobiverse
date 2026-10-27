@@ -2268,14 +2268,27 @@ class AircConsoleCore:
     def _deny_result(
         self, nick: str, target: str, text: str, account: str | None
     ) -> HandleResult:
-        """FR #3401 / #3639: every profile denies with DONE exit=126 not-op."""
+        """FR #3401 / #3639 / #5002: DONE exit=126 with real reason; keep id= when present.
+
+        Parse ``id=<8 hex>`` before the auth decision so Invoke-AircRemote / the ear
+        can correlate a refusal instead of timing out on a bare ``DONE exit=126 not-op``.
+        """
         reason = self.auth.deny_reason(nick, account) or "not-op"
+        job_id = None
+        raw = sanitize_console_operator_text(text or "") or (text or "")
+        m = re.match(r"(?is)^id=([0-9a-f]{8})\b", raw.strip())
+        if m:
+            job_id = m.group(1).lower()
+        if job_id:
+            reply = f"DONE id={job_id} exit=126 {reason}"
+        else:
+            reply = f"DONE exit=126 {reason}"
         return HandleResult(
             action="deny",
             nick=nick,
             target=target,
             text=text,
-            reply="DONE exit=126 not-op",
+            reply=reply,
             deny_reason=reason,
         )
 

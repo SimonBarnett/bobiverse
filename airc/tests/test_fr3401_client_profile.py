@@ -238,7 +238,8 @@ def test_core_irc_ops_unknown_state_and_self_nick_refuse():
     hr = core.handle_raw(":simon!u@h PRIVMSG acme_console :STATUS")
     assert hr is not None
     assert hr.action == "deny"
-    assert hr.reply == "DONE exit=126 not-op"
+    # FR #5002: reply carries the real deny_reason (was hardcoded not-op).
+    assert hr.reply == "DONE exit=126 channel-state-unknown"
     assert hr.deny_reason == "channel-state-unknown"
 
     m.apply_names("@acme_console @simon")
