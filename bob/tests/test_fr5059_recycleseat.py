@@ -197,6 +197,16 @@ def test_fr5059_tray_ps1_stop_before_start_and_intake():
     assert "Write-TrayLog" in t or "recycleseat" in t.lower()
 
 
+def test_mrb5060_recycle_failure_loads_helpers_from_install_root():
+    """Hostile: live Watch -RepoRoot is the install root, not bob\\tray."""
+    root = Path(__file__).resolve().parents[2]
+    t = (root / "bob" / "tray" / "tools" / "BobTrayRecycleSeat.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+    assert "tray\\src\\Private\\Invoke-BobMustReportFailure.ps1" in t
+    assert "common\\scripts\\Report-BobRuntimeFailure.ps1" in t
+
+
 def test_fr5059_watch_consumes_recycleseat_queue():
     root = Path(__file__).resolve().parents[2]
     watch = (root / "bob" / "tray" / "tools" / "Watch-BobTray.ps1").read_text(
