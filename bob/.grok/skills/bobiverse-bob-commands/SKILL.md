@@ -42,8 +42,9 @@ Append `PRIVMSG #bobiverse :!help` (and `PRIVMSG #<machine> :!status`) to `home\
 
 ## Tray commands (TipForm)
 
-TipForm menu **Restart** = `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew` (restarts `ircBob` via
-`Restart-BobTrayService` / `Invoke-BobTrayServiceControl.ps1`, then relaunches the tray so Start-Bob Sync/ff runs).
+TipForm menu **Restart** = `Restart-BobTrayWatcher` → `Start-BobFleetTray -ForceNew -SkipServiceRestart` (FR #5111:
+relaunch tray only; does **not** restart `ircBob`). Ear-only recycle: `Restart-BobEar.ps1`.
+**Reload engine** / `reload` in `<root>\run\tray-cmd.txt`: host `KillEngineTree` + `StartEngine` only (hot-patch).
 Ear-only recycle: Start Menu / Desktop **Restart ircBob** or `scripts\Restart-BobEar.ps1` (announce → `Restart-Service ircBob`).
 Tray starts with WMI `Win32_Process.Create` so it survives the agent shell; never `Start-Process` it from an agent shell.
 Quiet-MSI/SYSTEM installs never start TipForm in session 0 (invisible ghost).

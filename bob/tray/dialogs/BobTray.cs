@@ -3,7 +3,7 @@
 // The slow DATA work (digest webhook, Cursor/Grok usage, stall alerts, IRC watcher, !startworker queue) stays in the existing
 // PowerShell tray script, started HIDDEN by this exe in "engine" mode (BOB_TRAY_ENGINE=1: it owns no icon and no window). It publishes
 // <root>\run\tray-status.json every poll; this exe reads it every 2 s and tells the engine what to do through <root>\run\tray-cmd.txt
-// (ack | exit | restart), which the engine picks up within 2 s.
+// (ack | exit | restart; operator/ear -> host: reload FR #5111), which the engine picks up within 2 s.
 // FR #2697: this host also writes run\startworker\tray.alive every 2 s on a System.Threading.Timer so a blocked PS UI
 // poll cannot starve the ear's !startworker heartbeat check.
 // FR #4136: HealEngine also restarts when engine.alive (written by the PS queue tick) is stale while the process
@@ -485,6 +485,7 @@ namespace BobDialogs
             Item("Open log", delegate { OpenLog(); });
             menu.Items.Add(new ToolStripSeparator()); MenuItems.Add("-");
             Item("Restart", delegate { Restart(); });
+            Item("Reload engine", delegate { ReloadEngine(); });
             Item("Exit", delegate { ExitTray(); });
             notify.ContextMenuStrip = menu;
             notify.Icon = idle; notify.Text = "Bob";
@@ -597,6 +598,15 @@ namespace BobDialogs
             try { return engine != null ? engine.Id.ToString() : ""; } catch { return ""; }
         }
 
+        // FR #5111: operator/ear writes reload to tray-cmd.txt; host (elevated) recycles engine only.
+        public void ReloadEngine()
+        {
+            if (exiting || noEngine) return;
+            TrayLifecycle.Write("engine-reload", "via", "bob-tray-reload", "pid", SafeEnginePid());
+            KillEngineTree();
+            StartEngine();
+        }
+
         void KillEngineTree()
         {
             int pid = 0;
@@ -643,6 +653,11 @@ namespace BobDialogs
         // ---- state from the snapshot ----
         void Reload()
         {
+            try
+            {
+                if (TrayHostCmd.TakeReload(cmdFile)) ReloadEngine();
+            }
+            catch { }
             try
             {
                 if (File.Exists(snapFile))
@@ -891,6 +906,33 @@ namespace BobDialogs
         }
     }
 
+    // FR #5111: host-side verbs in tray-cmd.txt (engine must leave these lines).
+    internal static class TrayHostCmd
+    {
+        public static bool TakeReload(string cmdFile)
+        {
+            if (string.IsNullOrEmpty(cmdFile) || !File.Exists(cmdFile)) return false;
+            string[] lines;
+            try { lines = File.ReadAllLines(cmdFile); }
+            catch { return false; }
+            List<string> keep = new List<string>();
+            bool took = false;
+            foreach (string raw in lines)
+            {
+                string cmd = (raw ?? "").Trim().ToLowerInvariant();
+                if (cmd == "reload") took = true;
+                else if (cmd.Length > 0) keep.Add(raw);
+            }
+            try
+            {
+                if (keep.Count == 0) File.Delete(cmdFile);
+                else File.WriteAllLines(cmdFile, keep.ToArray());
+            }
+            catch { }
+            return took;
+        }
+    }
+
     internal static class TrayProgram
     {
         [STAThread]
@@ -910,6 +952,17 @@ namespace BobDialogs
                 return 0;
             }
             // FR #4136: headless stamp eval for tests (no icon / no engine).
+            // FR #5111: headless consume of reload lines (no icon / no engine / no ircBob).
+            if (Common.Flag(args, "--consume-reload"))
+            {
+                string cmdPath = Path.Combine(root, "run", "tray-cmd.txt");
+                bool took = TrayHostCmd.TakeReload(cmdPath);
+                string tout = Common.Arg(args, "--text-out");
+                string body = "reload=" + (took ? "1" : "0") + " host=" + Process.GetCurrentProcess().Id + " service=0 seats_untouched=1\r\n";
+                if (tout.Length > 0) File.WriteAllText(tout, body, new UTF8Encoding(false));
+                else Console.Write(body);
+                return 0;
+            }
             if (Common.Flag(args, "--watchdog-eval"))
             {
                 string swDir = Path.Combine(root, "run", "startworker");

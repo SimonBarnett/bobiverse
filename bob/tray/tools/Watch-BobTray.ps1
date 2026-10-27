@@ -2142,8 +2142,9 @@ function Restart-BobTrayWatcher {
     $startTray = Join-Path $RepoRoot 'tools\Start-BobFleetTray.ps1'
     $ps = (Get-Command powershell.exe).Source
     if (Test-Path -LiteralPath $startTray) {
+        # FR #5111: TipForm Restart must not restart ircBob; ear-only is Restart-BobEar.
         Start-Process -FilePath $ps `
-            -ArgumentList @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startTray, '-RepoRoot', $RepoRoot, '-ForceNew') `
+            -ArgumentList @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $startTray, '-RepoRoot', $RepoRoot, '-ForceNew', '-SkipServiceRestart') `
             -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
     }
     else {
