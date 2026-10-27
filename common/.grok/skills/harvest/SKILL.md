@@ -329,6 +329,7 @@ routes to bobiverse via the split rule.
 - From-source airc beside NSSM must use child-owned --log-file; Start-Process RedirectStandard pipes die when the parent shell exits and kill info() after NAMES.
 - When asserting IRC flood sleep, drain FloodTokenBucket first; a full bucket returns wait=0 on the first take.
 - Vendor Sync-BobTrayFromAgenticBuild wipes OutDir; every Watch-dotsourced tray helper (StartWorker, RecycleSeat) must be in ownedTools or a re-sync deletes it.
+- Give-up/NACK exclusions are exact-seat only; a recycled nick on the same machine must not inherit a dead predecessor giveup_seats on auto-offer. needs_human stays global.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
