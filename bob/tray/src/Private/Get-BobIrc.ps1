@@ -2206,9 +2206,31 @@ function Invoke-BobDigestWebhookMergePost {
         return [int]$resp.StatusCode
     }
     catch {
+        # FR #5032: never swallow digest POST failures silently (engine heartbeat died for days).
+        $code = $null
         if ($_.Exception.Response) {
-            try { return [int]$_.Exception.Response.StatusCode.value__ } catch { }
+            try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch { }
         }
+        try {
+            $msg = if ($null -ne $code) { "HTTP $code" } else { $_.Exception.Message }
+            Write-Verbose ("Invoke-BobDigestWebhookMergePost failed: {0}" -f $msg)
+            $home = $null
+            try { $home = Get-BobIrcHome } catch { }
+            if (-not $home) {
+                try { $home = Join-Path (Split-Path $PSScriptRoot -Parent) 'logs' } catch { $home = $null }
+            }
+            $log = if ($home) { Join-Path $home 'digest-webhook.log' } else { $null }
+            if ($log) {
+                $dir = Split-Path $log -Parent
+                if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+                    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+                }
+                Add-Content -LiteralPath $log `
+                    -Value ('{0} WARN digest POST failed: {1}' -f [datetime]::UtcNow.ToString('o'), $msg) `
+                    -Encoding utf8
+            }
+        } catch { }
+        if ($null -ne $code) { return $code }
         return $null
     }
 }
@@ -2288,6 +2310,18 @@ function Send-BobDigestWebhookIfChanged {
         try { Write-JsonFile $statePath ([pscustomobject]$posted) } catch { }
         return $code
     }
+    # FR #5032: log non-2xx / null so a dead heartbeat is visible in tray logs.
+    try {
+        $detail = if ($null -eq $code) { 'null/no-response' } else { "HTTP $code" }
+        $home = $null
+        try { $home = Get-BobIrcHome } catch { }
+        $log = if ($home) { Join-Path $home 'digest-webhook.log' } else { $null }
+        if ($log) {
+            Add-Content -LiteralPath $log `
+                -Value ('{0} WARN Send-BobDigestWebhookIfChanged failed mid={1} {2}' -f [datetime]::UtcNow.ToString('o'), $mid, $detail) `
+                -Encoding utf8
+        }
+    } catch { }
     return $null
 }
 

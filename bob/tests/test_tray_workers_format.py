@@ -39,13 +39,18 @@ def _txt(p):
 # ---------------------------------------------------------------------------------- static
 def test_grok_account_rows_show_only_worker_lines_no_cursor_values():
     w = _txt(WATCH)
-    sec = w[w.index("-Title 'Grok accounts'"):w.index("$script:tileHost.Height = [Math]::Max(10, $y)")]
-    for gone in ("grok_pools", "cursor_pools", "overspend", "not in moot", "no jobs", "lastSeen stale", "up since", "$m.jobs"):
+    # FR #5032: no "Grok accounts" title; slice from Rebuild through height set.
+    start = w.index("function Rebuild-BobTrayTiles")
+    end = w.index("$script:tileHost.Height = [Math]::Max(10, $y)", start)
+    sec = w[start:end]
+    assert "Title 'Grok accounts'" not in sec and 'Title "Grok accounts"' not in sec
+    # Per-machine rows must not re-paint fleet Cursor pools / overspend fields.
+    for gone in ("$m.grok_pools", "$m.cursor_pools", "$m.overspend", "not in moot", "no jobs", "lastSeen stale", "up since", "$m.jobs"):
         assert gone not in sec, gone
     assert "$m.worker_lines" in sec
-    # the fleet Cursor section (with the single overspend line) is above, once
-    top = w[:w.index("-Title 'Grok accounts'")]
-    assert top.count("-RightText $overLine") == 1
+    # Overspend (if any) is painted once as an empty-title section before machine rows.
+    assert sec.count("-RightText $overLine") == 1
+    assert "Format-BobTrayCursorOverspendLine" in sec
 
 
 def test_no_raw_non_ascii_literal_left_in_pool_heading_code():

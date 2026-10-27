@@ -18,7 +18,8 @@ def test_rebuild_tiles_has_no_cursor_section_header():
     w = WATCH.read_text(encoding="utf-8-sig")
     sec = w[w.index("function Rebuild-BobTrayTiles") : w.index("Atomic swap on the TipForm")]
     assert "Title 'Cursor'" not in sec and 'Title "Cursor"' not in sec
-    assert "Title 'Grok accounts'" in sec or 'Title "Grok accounts"' in sec
+    # FR #5032: no "Grok accounts" heading either --- every row is a Grok pool.
+    assert "Title 'Grok accounts'" not in sec and 'Title "Grok accounts"' not in sec
     # Must not still paint pool rows from spending-group headings.
     assert "foreach ($pool in $pools)" not in sec
     assert "Get-BobTrayCursorGroupHelpTooltip" not in sec
@@ -37,10 +38,12 @@ def test_status_cs_skips_cursor_section_when_drawing():
     src = STATUS_CS.read_text(encoding="utf-8-sig")
     render = src[src.index("public int Render") : src.index("protected override void OnPaint")]
     assert 'Section(g, y, "Cursor"' not in render
-    assert 'Section(g, y, "Grok accounts"' in render
+    # FR #5032: no "Grok accounts" Section heading.
+    assert 'Section(g, y, "Grok accounts"' not in render
+    assert "foreach (StatusRow r in m.Grok)" in render
 
 
 def test_docs_no_longer_say_cursor_pools_first():
     d = DOCS.read_text(encoding="utf-8-sig")
     assert "Cursor pools first" not in d
-    assert "Grok account" in d
+    assert "FR #4938" in d or "no Cursor" in d

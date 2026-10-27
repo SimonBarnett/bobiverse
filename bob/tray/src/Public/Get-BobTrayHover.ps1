@@ -100,6 +100,22 @@ function Get-BobWeeklyLogPath {
     return (Join-Path $env:USERPROFILE '.grok\logs\unified.jsonl')
 }
 
+function Format-BobTrayFuelStaleAge {
+    <#
+    .SYNOPSIS
+      FR #5032: human age label for a stale peer Grok pool (never a confident current %).
+    #>
+    param([int]$AgeSec)
+    if ($AgeSec -lt 0) { return 'stale' }
+    if ($AgeSec -lt 120) { return ('stale {0}s' -f $AgeSec) }
+    $mins = [int][math]::Floor($AgeSec / 60.0)
+    if ($mins -lt 120) { return ('stale {0}m' -f $mins) }
+    $hours = [int][math]::Floor($AgeSec / 3600.0)
+    if ($hours -lt 48) { return ('stale {0}h' -f $hours) }
+    $days = [int][math]::Floor($AgeSec / 86400.0)
+    return ('stale {0}d' -f $days)
+}
+
 function Resolve-BobSeatMateWeekly {
     <#
     .SYNOPSIS
@@ -107,8 +123,9 @@ function Resolve-BobSeatMateWeekly {
       (seat) whose reading is for the SAME weekly period (identical period_end instant) is the same pool.
     .OUTPUTS
       [int] or $null. Never used when the local reading is current (that stays authoritative, CAST IRON #150).
+      FR #5032: mates marked fuel-stale (FuelStaleBy) are skipped.
     #>
-    param([string]$MachineId, $LocalWeek, $Seats, $WeeklyBy, $PeriodEndBy)
+    param([string]$MachineId, $LocalWeek, $Seats, $WeeklyBy, $PeriodEndBy, $FuelStaleBy = $null)
     if (-not $LocalWeek -or -not $LocalWeek.stale -or -not $LocalWeek.period_end) { return $null }
     $mine = $null
     try { $mine = [datetime]::Parse([string]$LocalWeek.period_end, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } catch { return $null }
@@ -117,6 +134,7 @@ function Resolve-BobSeatMateWeekly {
         if ($mates -notcontains $MachineId) { continue }
         foreach ($sm in $mates) {
             if (-not $sm -or $sm -eq $MachineId) { continue }
+            if ($FuelStaleBy -and $FuelStaleBy.ContainsKey($sm) -and $FuelStaleBy[$sm]) { continue }
             if (-not $WeeklyBy.ContainsKey($sm) -or $null -eq $WeeklyBy[$sm]) { continue }
             if (-not $PeriodEndBy.ContainsKey($sm) -or -not $PeriodEndBy[$sm]) { continue }
             try {
@@ -1379,13 +1397,22 @@ function Expand-BobReportDigestView {
             if ($node.uptime_since) {
                 $uptimeByMachine[$mid] = [string]$node.uptime_since
             }
-            # Digest weekly (xAI) — include 0 (#179).
+            # Digest weekly (xAI) --- include 0 (#179). FR #5032: carry lastSeen + out_of_tokens.
             $weekPct = ConvertTo-BobTrayIntOrNull $node.weekly
-            if ($null -ne $weekPct) {
+            $nodeNamesW = @($node.PSObject.Properties.Name)
+            $outTok = $false
+            if ($nodeNamesW -contains 'out_of_tokens' -and $node.out_of_tokens) { $outTok = [bool]$node.out_of_tokens }
+            $st = [string]$node.status
+            if ($st -match '(?i)out[_-]?of[_-]?fuel|out[_-]?of[_-]?tokens') { $outTok = $true }
+            if ($null -ne $weekPct -or $outTok) {
+                if ($null -eq $weekPct -and $outTok) { $weekPct = 0 }
                 $weeklyRows += ,[pscustomobject]@{
                     machine = $mid
                     weekly  = $weekPct
                     period_end = $(if ($node.period_end) { [string]$node.period_end } elseif ($node.reset) { [string]$node.reset } else { $null })
+                    lastSeen = $(if ($node.lastSeen) { [string]$node.lastSeen } else { $null })
+                    out_of_tokens = $outTok
+                    status = $(if ($st) { $st } else { $null })
                 }
             }
             if ($node.pcent) {
@@ -2042,16 +2069,61 @@ function Get-BobTrayHover {
             $weeklyBy[$mac] = $pct
         }
     }
-    # HTTP digest machine.weekly → Grok tiles (#179). 0% is valid for peers.
+    # HTTP digest machine.weekly -> Grok tiles (#179). 0% is valid for peers.
+    # FR #5032: peer weekly older than the fuel-stale window is NOT painted as live %;
+    # out_of_tokens / status=out_of_fuel forces 0% immediately.
+    $fuelStaleAfter = 90
+    try {
+        $hb = 30
+        if (Get-Command Get-BobDigestWebhookHeartbeatSec -ErrorAction SilentlyContinue) {
+            $hb = [int](Get-BobDigestWebhookHeartbeatSec)
+        }
+        if ($hb -gt 0) { $fuelStaleAfter = [Math]::Max(90, $hb * 3) }
+    } catch { }
+    $fuelStaleBy = @{}
+    $fuelAgeBy = @{}
     foreach ($wr in @($digestWeeklyRows)) {
         if (-not $wr) { continue }
         $mac = [string]$wr.machine
         if ($mac) { $mac = Resolve-BobiverseMachineId $mac }
         if (-not $mac) { continue }
+        if ($wr.lastSeen) { $seenBy[$mac] = [string]$wr.lastSeen }
+        $outTok = $false
+        try { if ($wr.out_of_tokens) { $outTok = [bool]$wr.out_of_tokens } } catch { }
+        $st = [string]$wr.status
+        if ($st -match '(?i)out[_-]?of[_-]?fuel|out[_-]?of[_-]?tokens') { $outTok = $true }
         $pct = ConvertTo-BobTrayIntOrNull $wr.weekly
+        if ($outTok) { $pct = 0 }
         if ($null -eq $pct) { continue }
         # FR AgentMonitor#150: digest must not overwrite this host's local Grok pool (incl. n/a).
-        if ($mac -eq $machineId -and $localWeeklyLocked) { continue }
+        if ($mac -eq $machineId -and $localWeeklyLocked -and -not $outTok) { continue }
+        $age = $null
+        if ($wr.lastSeen) {
+            $age = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $wr.lastSeen })
+        }
+        if ($null -ne $age) { $fuelAgeBy[$mac] = [int]$age }
+        # Local out_of_tokens and fresh peers keep a live %; stale peers are marked.
+        $isPeer = ($mac -ne $machineId)
+        if ($isPeer -and -not $outTok -and $null -ne $age -and $age -gt $fuelStaleAfter) {
+            $fuelStaleBy[$mac] = $true
+            # Do not put a confident current % into weeklyBy.
+            if ($wr.period_end) {
+                if (-not ($mac -eq $machineId -and $periodEndBy.ContainsKey($machineId))) {
+                    $periodEndBy[$mac] = [string]$wr.period_end
+                }
+            }
+            continue
+        }
+        if ($isPeer -and -not $outTok -and $null -eq $age -and $wr.lastSeen) {
+            # Unparseable lastSeen: treat as stale rather than live.
+            $fuelStaleBy[$mac] = $true
+            continue
+        }
+        if ($isPeer -and -not $outTok -and -not $wr.lastSeen) {
+            # FR #5032 / MRB #5037: missing lastSeen must not paint a confident live %.
+            $fuelStaleBy[$mac] = $true
+            continue
+        }
         $weeklyBy[$mac] = $pct
         if ($wr.period_end) {
             if (-not ($mac -eq $machineId -and $periodEndBy.ContainsKey($machineId))) {
@@ -2185,10 +2257,12 @@ function Get-BobTrayHover {
     }
 
     # Same xAI seat => one shared remaining % (account-level).
+    # FR #5032: never copy a fuel-stale peer % onto another machine.
     foreach ($seat in @(Get-BobSeatConfig)) {
         $vals = @()
         foreach ($sm in @($seat.machines)) {
             $smid = [string]$sm
+            if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
             if ($smid -and $weeklyBy.ContainsKey($smid) -and $null -ne $weeklyBy[$smid]) {
                 $vals += ,([int]$weeklyBy[$smid])
             }
@@ -2198,6 +2272,7 @@ function Get-BobTrayHover {
             foreach ($sm in @($seat.machines)) {
                 $smid = [string]$sm
                 if (-not $smid) { continue }
+                if ($fuelStaleBy.ContainsKey($smid) -and $fuelStaleBy[$smid]) { continue }
                 if ($smid -eq $machineId -and $localWeeklyLocked -and -not $weeklyBy.ContainsKey($smid)) { continue }
                 $weeklyBy[$smid] = [int]$shared
             }
@@ -2229,8 +2304,19 @@ function Get-BobTrayHover {
         }
         foreach ($mid2 in @($order)) {
             if ($mid2 -eq $machineId -and $localWeeklyLocked) { continue }
+            if ($fuelStaleBy.ContainsKey($mid2) -and $fuelStaleBy[$mid2]) { continue }
             if ($weeklyBy.ContainsKey($mid2) -and $null -ne $weeklyBy[$mid2]) { continue }
             if ($peCache.weekly_by_machine.ContainsKey($mid2) -and $null -ne $peCache.weekly_by_machine[$mid2]) {
+                # FR #5032: durable cache must not resurrect a stale peer % as live.
+                $cacheAge = $null
+                if ($seenBy.ContainsKey($mid2)) {
+                    $cacheAge = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $seenBy[$mid2] })
+                }
+                if ($null -ne $cacheAge -and $cacheAge -gt $fuelStaleAfter) {
+                    $fuelStaleBy[$mid2] = $true
+                    if ($null -ne $cacheAge) { $fuelAgeBy[$mid2] = [int]$cacheAge }
+                    continue
+                }
                 $weeklyBy[$mid2] = [int]$peCache.weekly_by_machine[$mid2]
             }
         }
@@ -2280,7 +2366,7 @@ function Get-BobTrayHover {
         # t785u: this host's own reading is stale (the Grok CLI has not refetched billing since the period rolled):
         # show the same account's figure from a seat-mate that reported for the same period.
         if ($week -and $week.stale -and ($null -eq $weeklyBy[$machineId])) {
-            $mateWk = Resolve-BobSeatMateWeekly -MachineId $machineId -LocalWeek $week -Seats @(Get-BobSeatConfig) -WeeklyBy $weeklyBy -PeriodEndBy $periodEndBy
+            $mateWk = Resolve-BobSeatMateWeekly -MachineId $machineId -LocalWeek $week -Seats @(Get-BobSeatConfig) -WeeklyBy $weeklyBy -PeriodEndBy $periodEndBy -FuelStaleBy $fuelStaleBy
             if ($null -ne $mateWk) { $weeklyBy[$machineId] = $mateWk }
         }
         foreach ($k in @($periodEndBy.Keys)) {
@@ -2356,33 +2442,55 @@ function Get-BobTrayHover {
         if ($reachBy.ContainsKey($mid)) { $reach = [string]$reachBy[$mid] }
         $wPct = $null
         if ($weeklyBy.ContainsKey($mid)) { $wPct = $weeklyBy[$mid] }
+        $fuelStale = $false
+        if ($fuelStaleBy.ContainsKey($mid) -and $fuelStaleBy[$mid]) { $fuelStale = $true }
         $seatInfo = Get-BobSeatForMachine -MachineId $mid
         $tileEnd = $null
         if ($periodEndBy.ContainsKey($mid)) { $tileEnd = [string]$periodEndBy[$mid] }
         $tileFetched = $null
         if ($weekFetchedBy.ContainsKey($mid)) { $tileFetched = [string]$weekFetchedBy[$mid] }
-        $livePeriod = Resolve-BobTrayLivePeriod -Pct $wPct -PeriodEnd $tileEnd -FetchedAt $tileFetched
-        $wPct = $livePeriod.pct
-        $tileEnd = $livePeriod.period_end
-        $tileReset = $livePeriod.reset_label
+        if (-not $fuelStale) {
+            $livePeriod = Resolve-BobTrayLivePeriod -Pct $wPct -PeriodEnd $tileEnd -FetchedAt $tileFetched
+            $wPct = $livePeriod.pct
+            $tileEnd = $livePeriod.period_end
+            $tileReset = $livePeriod.reset_label
+        } else {
+            # FR #5032: never paint a confident current % from a stale digest reading.
+            $wPct = $null
+            $tileReset = $null
+            $ageSec = $null
+            if ($fuelAgeBy.ContainsKey($mid)) { $ageSec = [int]$fuelAgeBy[$mid] }
+            elseif ($seenBy.ContainsKey($mid)) {
+                $ageSec = Get-BobLastSeenAgeSec -Record ([pscustomobject]@{ lastSeen = $seenBy[$mid] })
+            }
+            if ($null -ne $ageSec -and $ageSec -ge 0) {
+                $tileReset = Format-BobTrayFuelStaleAge -AgeSec $ageSec
+            } else {
+                $tileReset = 'stale'
+            }
+            $tileAvail = 'stale'
+            $tileAvailReason = 'digest-lastSeen-stale'
+        }
         $upSince = $null
         if ($uptimeByMachine.ContainsKey($mid)) { $upSince = [string]$uptimeByMachine[$mid] }
-        $tileAvail = $null
-        $tileAvailReason = $null
-        if ($mid -eq $machineId -and (Get-Command Get-BobGrokAvailability -ErrorAction SilentlyContinue)) {
-            try {
-                $wObj = $null
-                if ($week -and $week.period_end) { $wObj = $week }
-                elseif ($null -ne $wPct -or $tileEnd) {
-                    $wObj = [pscustomobject]@{ remaining_pct = $wPct; period_end = $tileEnd; format = $(if ($week) { $week.format } else { $null }) }
+        if (-not $fuelStale) {
+            $tileAvail = $null
+            $tileAvailReason = $null
+            if ($mid -eq $machineId -and (Get-Command Get-BobGrokAvailability -ErrorAction SilentlyContinue)) {
+                try {
+                    $wObj = $null
+                    if ($week -and $week.period_end) { $wObj = $week }
+                    elseif ($null -ne $wPct -or $tileEnd) {
+                        $wObj = [pscustomobject]@{ remaining_pct = $wPct; period_end = $tileEnd; format = $(if ($week) { $week.format } else { $null }) }
+                    }
+                    $av = Get-BobGrokAvailability -Weekly $wObj
+                    if ($av) {
+                        $tileAvail = [string]$av.state
+                        $tileAvailReason = [string]$av.reason
+                    }
                 }
-                $av = Get-BobGrokAvailability -Weekly $wObj
-                if ($av) {
-                    $tileAvail = [string]$av.state
-                    $tileAvailReason = [string]$av.reason
-                }
+                catch { }
             }
-            catch { }
         }
         # #60: this machine's pools + overspend from the digest machines.<id> (what its Bob POSTed).
         $dm = Get-BobTrayDigestMachineSummary -Digest $reportDigest -MachineId $mid
@@ -2405,6 +2513,7 @@ function Get-BobTrayHover {
             reset_label          = $tileReset
             availability         = $tileAvail
             availability_reason  = $tileAvailReason
+            fuel_stale           = $fuelStale
             up_since             = $upSince
             seat_id              = $(if ($seatInfo) { [string]$seatInfo.id } else { $null })
             seat_label           = $(if ($seatInfo) { [string]$seatInfo.label } else { $null })
@@ -2415,14 +2524,15 @@ function Get-BobTrayHover {
         if ($seatInfo -and $seatInfo.label) { $jlName = ('{0}  -  {1}' -f $mid, $seatInfo.label) }
         $machHeading = ('  {0}' -f $jlName)
         if ($null -ne $wPct) { $machHeading = ('{0} ({1}%)' -f $machHeading, [int]$wPct) }
-        if ($tileAvail -and $null -eq $wPct) { $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail) }
+        if ($fuelStale) { $machHeading = ('{0} [stale]' -f $machHeading) }
+        if ($tileAvail -and $null -eq $wPct -and -not $fuelStale) { $machHeading = ('{0} [{1}]' -f $machHeading, $tileAvail) }
         if ($tileReset) { $machHeading = ('{0} - {1}' -f $machHeading, $tileReset) }
         $jobLines += $machHeading
         $tileFuels = @('cursor-models', 'grok-build', 'copilot', 'grok-bot')
         if ($mid -match '2012') { $tileFuels = @() }
         $tile | Add-Member -NotePropertyName fuels -NotePropertyValue $tileFuels -Force
         if ($tileFuels.Count -gt 0) { $jobLines += ('    fuels: {0}' -f ($tileFuels -join ', ')) }
-        # FR #352: TipForm/tooltip — out of tokens, open with key.
+        # FR #352: TipForm/tooltip --- out of tokens, open with key.
         # Grok Build exhaustion only (explicit remaining_pct=0 or availability=exhausted).
         # Never Cursor Sand / pcent.grok-chat (those are Spending bars, not xAI weekly).
         $outOfTokens = $false

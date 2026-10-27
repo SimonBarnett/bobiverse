@@ -251,11 +251,15 @@ def test_marchhare_shape_without_groups_still_posts_what_it_has(tmp_path):
 
 def test_tray_renders_per_machine_grok_accounts_section():
     w = (TRAY / "tools" / "Watch-BobTray.ps1").read_text(encoding="utf-8-sig")
-    i = w.index("-Title 'Grok accounts'")
-    sec = w[i:i + 4500]
-    # v0.1.18: fleet-wide Cursor pools/overspend are shown ONCE at the top, never per grok account
-    for needle in ("$m.grok_pools", "$m.cursor_pools", "$m.overspend_gbp", "Format-BobTrayCursorOverspendLine"):
+    # FR #5032: heading removed; slice Rebuild body for per-machine rows.
+    start = w.index("function Rebuild-BobTrayTiles")
+    end = w.index("$script:tileHost.Height = [Math]::Max(10, $y)", start)
+    sec = w[start:end]
+    assert "Title 'Grok accounts'" not in sec
+    # Per-machine rows must not re-paint fleet Cursor pools; overspend is once at top.
+    for needle in ("$m.grok_pools", "$m.cursor_pools", "$m.overspend_gbp"):
         assert needle not in sec, needle
+    assert "Format-BobTrayCursorOverspendLine" in sec
     assert "$m.worker_lines" in sec
     h = (TRAY / "src" / "Public" / "Get-BobTrayHover.ps1").read_text(encoding="utf-8-sig")
     assert "Get-BobTrayDigestMachineSummary -Digest $reportDigest -MachineId $mid" in h

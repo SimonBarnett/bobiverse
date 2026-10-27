@@ -2763,7 +2763,13 @@ def should_start_fuel_watcher(kind: str) -> bool:
     return (kind or "").strip().lower() in ("grok", "cursor")
 
 
-def _http_post_json(url: str, payload: dict, timeout: float = 10.0) -> bool:
+def _http_post_json(
+    url: str,
+    payload: dict,
+    timeout: float = 10.0,
+    *,
+    log: Optional[Callable[[str], None]] = None,
+) -> bool:
     """Best-effort JSON POST (digest report). No secrets. Returns True on HTTP success."""
     raw = json.dumps(payload, ensure_ascii=True).encode("utf-8")
     req = urllib.request.Request(
@@ -2775,8 +2781,19 @@ def _http_post_json(url: str, payload: dict, timeout: float = 10.0) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
             code = int(getattr(resp, "status", 0) or 0)
-            return 200 <= code < 300
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
+            ok = 200 <= code < 300
+            if not ok and log:
+                try:
+                    log(f"digest POST HTTP {code} url={url[:80]}")
+                except Exception:
+                    pass
+            return ok
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
+        if log:
+            try:
+                log(f"digest POST failed: {type(exc).__name__}: {exc}")
+            except Exception:
+                pass
         return False
 
 
@@ -2787,8 +2804,12 @@ def post_digest_out_of_fuel(
     evidence: str = "",
     url: str | None = None,
     env: Optional[dict] = None,
+    log: Optional[Callable[[str], None]] = None,
 ) -> bool:
-    """POST digest so tray/TipForm can show the seat out of fuel (FR #3012)."""
+    """POST digest so tray/TipForm can show the seat out of fuel (FR #3012 / #5032).
+
+    FR #5032: include weekly=0 so peers paint exhausted (0%% red) instead of a stale %.
+    """
     env = os.environ if env is None else env
     report = (url or env.get("BOB_REPORT_URL") or env.get("BOB_DIGEST_URL") or DEFAULT_DIGEST_REPORT_URL).strip()
     if not report:
@@ -2803,8 +2824,16 @@ def post_digest_out_of_fuel(
         "status": "out_of_fuel",
         "working_on": working,
         "out_of_tokens": True,
+        # FR #5032: authoritative pool % for tray + dispatch (stale weekly must not win).
+        "weekly": 0,
     }
-    return bool(_http_post_json(report, payload))
+    ok = bool(_http_post_json(report, payload, log=log))
+    if not ok and log:
+        try:
+            log(f"post_digest_out_of_fuel failed mid={mid}")
+        except Exception:
+            pass
+    return ok
 
 
 class GrokOutOfFuelWatcher:
@@ -6190,13 +6219,16 @@ class Supervisor:
         # FR #4180: disarm hang/ack-miss so a post-GIVEUP offer cannot recycle the seat.
         self._clear_watchdogs_for_out_of_fuel()
         try:
-            post_digest_out_of_fuel(
+            ok = post_digest_out_of_fuel(
                 machine=self.machine,
                 nick=self.nick,
                 evidence=line,
+                log=self.log,
             )
+            if not ok:
+                self.log("out-of-fuel: digest post returned False (weekly=0 may not have reached peers)")
         except Exception as e:
-            self.log(f"out-of-fuel: digest post failed {type(e).__name__}")
+            self.log(f"out-of-fuel: digest post failed {type(e).__name__}: {e}")
         self.log(f"out-of-fuel: posted {line}")
 
     def _start_fuel_watcher(self, agent_pid: int = 0) -> None:

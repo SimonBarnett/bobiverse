@@ -57,5 +57,6 @@ It runs the Status and About windows in-process (no second process to start).
 
 ### Status window shows the dashboard only (t832u)
 The plain-text block under the title (the old hover / tooltip `jobs_text`: fuel lines, "GitHub issue post: ready", "out of tokens, open with key")
-was drawn by mistake. It is gone from the exe and from the snapshot (`jobs_text` is no longer written): Grok accounts with workers
-`{irc nick}: {doing|idle}`, alert and version only (FR #4938: no Cursor pool section).
+was drawn by mistake. It is gone from the exe and from the snapshot (`jobs_text` is no longer written): per-machine Grok pool
+rows with workers `{irc nick}: {doing|idle}`, alert and version only (FR #4938: no Cursor pool section; FR #5032: no
+"Grok accounts" heading).
