@@ -72,9 +72,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # FR #4988: job-worktree base helpers (Get-BobiverseJobWorktreeBase).
-$script:BobiverseCommonPs1 = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
-if (Test-Path -LiteralPath $script:BobiverseCommonPs1) {
-    . $script:BobiverseCommonPs1
+# FR #5022: $PSScriptRoot is empty when jeeves tests Invoke-Expression the
+# function prelude (split before `if (-not $RepoRoot)`); Join-Path '' throws.
+if ($PSScriptRoot) {
+    $script:BobiverseCommonPs1 = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+    if (Test-Path -LiteralPath $script:BobiverseCommonPs1) {
+        . $script:BobiverseCommonPs1
+    }
 }
 
 function Get-FreeGB([string]$Path) {
@@ -122,8 +126,10 @@ function Test-IsJobWorktreePath([string]$Path, [string]$RootFull, [string]$KeepF
     if ($leaf -match '(?i)^(bobiverse-|fr-|mrb-|uat-|docs-mrb-).*-wt$') { return $true }
     if ($leaf -match '(?i)^tmp-.*-(fr|mrb|uat)') { return $true }
     # FR #4945: TEMP a-search-* (and other product-*) registered or orphan leaves.
+    # FR #5022: never treat build/recipe *-ref-* trees as job leaves (e.g. a-search-ref-4003).
     if ($full.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -and
-        ($leaf -match '(?i)^(a-search|bobiverse|airc|jeeves|gh-jeeves)-')) {
+        ($leaf -match '(?i)^(a-search|bobiverse|airc|jeeves|gh-jeeves)-') -and
+        ($leaf -notmatch '(?i)-ref-\d')) {
         return $true
     }
     # FR #4988: anything under the configured job worktree base (...\ai\worktrees\...).
