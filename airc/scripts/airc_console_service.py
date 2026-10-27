@@ -1025,11 +1025,21 @@ class AircConsoleService:
                 self.send(f"NAMES {self.channel}")
             except Exception as e:
                 info(f"INFO FR #5002 names-request-err {e}")
+            # FR #5066: watchdog PART/JOIN calls join_shop via _lost_control_channel
+            # (self-PART). Do not reset escalation stage on that rejoin — only arm a
+            # fresh deadline. Reset stage on 366 / synced or when not yet escalating.
             self._names_watch_deadline = time.monotonic() + max(1.0, NAMES_SYNC_WATCH_S)
-            self._names_watch_stage = 0
+            prev_stage = int(getattr(self, "_names_watch_stage", 0) or 0)
             if self.members.synced:
+                self._names_watch_stage = 0
+                self._names_watch_deadline = 0.0
                 self._auth_wedge_since = None
-            elif self._auth_wedge_since is None:
+            elif prev_stage >= 1:
+                # keep stage (NAMES -> PART/JOIN -> reconnect) across watchdog rejoin
+                pass
+            else:
+                self._names_watch_stage = 0
+            if not self.members.synced and self._auth_wedge_since is None:
                 self._auth_wedge_since = time.monotonic()
 
     def _lost_control_channel(self, reason: str) -> None:
