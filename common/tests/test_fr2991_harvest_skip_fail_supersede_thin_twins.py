@@ -144,7 +144,7 @@ def test_fr2991_product_msi_lesson_still_posts_after_fail_supersede_mention(tmp_
     """FAIL-superseded in summary alone + product lesson must still queue (MRB #2973)."""
     r = _run_harvest(
         "-Summary",
-        "Earlier MRB #2988 FAIL-superseded a twin; this tip is product MSI SkipCopy",
+        "Earlier FAIL-supersede mention; this tip is product MSI SkipCopy",
         "-Lesson",
         "MSI RunInstall: when -MsiProductVersion is set, SkipCopy so heat-laid scripts win",
         "-OutboxDir",
