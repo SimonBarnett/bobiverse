@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import os
 import queue
 import re
@@ -114,23 +115,71 @@ _SHELL_ID_RE = re.compile(
 
 _KEEPALIVE_LOG_INTERVAL_S = 3600.0
 _last_keepalive_log_mono = 0.0
+# FR #5079: optional child-owned log file (survives parent Start-Process pipe close).
+_log_fp = None  # type: ignore[var-annotated]
+
+
+def configure_log_file(path: str | os.PathLike | None) -> None:
+    """Open ``--log-file`` in this process (append UTF-8). Never raise.
+
+    Pass ``None`` / empty to close a previous handle (tests).
+    """
+    global _log_fp
+    if _log_fp is not None:
+        try:
+            _log_fp.close()
+        except Exception:
+            pass
+        _log_fp = None
+    if not path:
+        return
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # line_buffering so side-by-side tails see lines promptly
+        _log_fp = p.open("a", encoding="utf-8", errors="replace", buffering=1)
+    except Exception:
+        _log_fp = None
 
 
 def info(msg: str) -> None:
     """ISO-UTC timestamped stdout line; always flush (FR #1546).
 
     Never raise UnicodeEncodeError on cp1252 consoles (FR #4397; mirror bob-ear #4396).
+    FR #5079: also tee to ``--log-file`` when set; ignore BrokenPipeError on stdout
+    so a parent ``Start-Process -RedirectStandardOutput`` exit cannot kill the host.
     """
     from datetime import datetime, timezone
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     line = f"{ts} {msg}"
+    if _log_fp is not None:
+        try:
+            _log_fp.write(line + "\n")
+            _log_fp.flush()
+        except Exception:
+            pass
     try:
         print(line, flush=True)
+    except BrokenPipeError:
+        # Parent redirected stdout and exited (FR #5079). Keep running; log-file holds lines.
+        pass
+    except OSError as exc:
+        # WinError 232 / EINVAL on closed pipe — same class as BrokenPipeError.
+        if getattr(exc, "winerror", None) in (109, 232) or getattr(exc, "errno", None) in (
+            getattr(errno, "EPIPE", 32),
+            getattr(errno, "EINVAL", 22),
+        ):
+            pass
+        else:
+            raise
     except UnicodeEncodeError:
         enc = getattr(sys.stdout, "encoding", None) or "ascii"
         safe = str(line).encode(enc, errors="replace").decode(enc, errors="replace")
-        print(safe, flush=True)
+        try:
+            print(safe, flush=True)
+        except (BrokenPipeError, OSError):
+            pass
 
 
 def log_auth_allow(hr) -> None:  # noqa: ANN001
@@ -1796,6 +1845,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--cwd", default=None)
     p.add_argument("--idle-sec", type=float, default=3600.0)
+    p.add_argument(
+        "--log-file",
+        default=None,
+        help="FR #5079: append ISO-UTC info() lines to this path (child-owned handle; "
+        "use for side-by-side launches instead of Start-Process -RedirectStandardOutput)",
+    )
     p.add_argument("--selftest", action="store_true", help="offline smoke then exit 0")
     return p
 
@@ -1841,6 +1896,16 @@ def selftest() -> int:
     assert r3 and r3.action == "deny"
     assert isinstance(is_frozen_airc_exe(), bool)
     _ = resolve_airc_install_root()  # must not raise
+    # FR #5079: --log-file tees info(); BrokenPipe on stdout must not raise.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        log_path = Path(td) / "side.log"
+        configure_log_file(log_path)
+        info("INFO fr5079-log-tee")
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        assert "fr5079-log-tee" in text, text
+        configure_log_file(None)
     info("INFO selftest ok")
     return 0
 
@@ -1989,6 +2054,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
     args = build_arg_parser().parse_args(argv)
+    # FR #5079: open before selftest/service so info() tees even under broken parent pipes.
+    configure_log_file(getattr(args, "log_file", None))
     if args.selftest:
         return selftest()
     # FR #2401: airc.exe NSSM Application skips Start-AircConsole.ps1; restore S4 hooks.
