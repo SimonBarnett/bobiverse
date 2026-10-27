@@ -72,6 +72,10 @@ Finish every session with the harvest step.
 
 | Stop mid-Command: ear got out/err but **no DONE**; log `session interrupted` + `10038` / `send: no socket` | FR #2640/#2649: prepare_stop drains DONE with **no FLOOD_S gap**, sets `_stop_flushed` so finally does not re-flush after sock=None. Hotpatch `airc_console_service.py` + Restart-Service Airc (frozen `airc.exe` needs rebuild). |
 
+## FR #5002 (Ergo multiclient reattach / auth wedge)
+
+| Every sender gets `DONE exit=126 not-op` / `channel-state-unknown` after reconnect; process still connected; refusal drops `id=` | Ergo multiclient replays JOIN+NAMES before `join_shop`. Tip (PR #5004): **do not clear** `ChannelMemberMap` on `join_shop` (handshake / lost-control / fresh 353 still clear); always `NAMES` after JOIN; `AIRC_NAMES_SYNC_WATCH_S` escalate NAMES -> PART/JOIN -> reconnect; `AIRC_AUTH_WEDGE_EXIT_S` exit non-zero for NSSM `AppExit Restart`; deny replies keep `DONE id=<id> exit=126 <reason>`; `irc_agent` + `Invoke-AircRemote` fail-fast on id-less / exit=126. Hotpatch `airc_console_service.py` + related + Restart-Service Airc (frozen `airc.exe` needs rebuild/redeploy). Ergo multiclient policy off for `*_console` is separate ops. |
+
 ## Harvest digest (lessons audit 2026-10-06)
 
 Generalised from 18 harvested lessons that never reached this book (audit for FR #2705). The per-lesson table is in `common/docs/harvest-lessons-audit-2026-10-06.md`.
