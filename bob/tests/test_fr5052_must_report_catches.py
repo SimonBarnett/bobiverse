@@ -55,3 +55,40 @@ def test_fr5052_best_effort_hover_parse_still_allowed():
     # Classification comment lives in the helper / Watch file.
     w = WATCH.read_text(encoding="utf-8-sig")
     assert "BEST_EFFORT" in w or "best-effort" in w.lower()
+
+
+def test_mrb5054_worker_and_alive_empty_only_after_helper():
+    """Hostile: worker-sync / alive Action empty catch only after must-report helper."""
+    t = WATCH.read_text(encoding="utf-8-sig")
+    for mark in (
+        "$script:trayWorkerSyncSub = Register-ObjectEvent",
+        "$script:trayAliveSub = Register-ObjectEvent",
+    ):
+        win = _window_after(t, mark, 6000)
+        action = win[win.index("-Action") :]
+        m = _EMPTY.search(action)
+        if m:
+            before = action[: m.start()]
+            assert (
+                "Invoke-BobMustReportFailure" in before
+                or "Report-BobRuntimeFailure" in before
+            ), mark
+
+
+def test_mrb5054_digest_outer_catch_not_silent_empty():
+    """Hostile: digest Action outer catch logs (BEST_EFFORT re-dot empties stay OK)."""
+    t = WATCH.read_text(encoding="utf-8-sig")
+    inner = t[t.index("$script:trayDigestSub = Register-ObjectEvent") :]
+    # Outer catch after Write-BobIrcStatus try/catch must not be bare catch { }.
+    assert "WARN trayDigestTimer:" in inner
+    assert "Invoke-BobMustReportFailure" in inner
+
+
+def test_mrb5054_helper_never_throws_and_prefers_runtime_failure():
+    t = HELPER.read_text(encoding="utf-8-sig")
+    assert "Report-BobRuntimeFailure" in t
+    assert "Report-BobDeterministicException" in t
+    assert "BEST_EFFORT" in t
+    assert t.index("Report-BobRuntimeFailure") < t.index(
+        "Report-BobDeterministicException"
+    )
