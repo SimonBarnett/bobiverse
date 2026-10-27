@@ -177,3 +177,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 
 - bobiverse #4340: even when hard-unpinned from require_machine=ionos, flamingo must GIVEUP needs_human for live C:\ai\jeeves install hotpatch; leave OPEN for ionos ops
 - When SeatDisk FreeGB stays under MinFreeGB after reclaim, check install git branch: ff-only-on-main means a leftover fr-* branch leaves flat scripts pre-#4883; hotpatch from origin/main:common/scripts/Clear-BobiverseSeatDisk.ps1 then -Reclaim before filing capacity.
+- Write reload to run/tray-cmd.txt so elevated bob-tray.exe KillEngineTree+StartEngine; never taskkill the High-integrity engine from a Medium shell
