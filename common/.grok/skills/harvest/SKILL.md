@@ -326,6 +326,7 @@ routes to bobiverse via the split rule.
 - Jeeves resync: fix(mrb-N) targeting main/master while parent is open must queue as MRB (else FIX-linked parent + skip-fix deadlock); stacked non-default base still skips; among main-base twins keep lowest PR number only
 - !build LiveStateTouched: busy chair may purge >5 closed/done queue rows during a long suite; default max_lost=15 (FR #5042) while empty/majority wipe still aborts.
 - FR #5052: classify catch { } — timer/webhook/heartbeat must Invoke-BobMustReportFailure; Dispose/Parse/ToInt/Hide stay BEST_EFFORT
+- Watch -RepoRoot is install root: tray helpers must try tray\src\Private and common\scripts (flat src\ / scripts\ fallbacks) before claiming intake report.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
