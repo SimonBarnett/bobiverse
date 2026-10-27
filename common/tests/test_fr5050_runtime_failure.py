@@ -68,3 +68,32 @@ def test_fr5050_intake_down_spools(monkeypatch, tmp_path):
     assert r.get("spooled") or r.get("ok") is False
     spool = tmp_path / "spool"
     assert any(spool.rglob("crash-*.json")) or r.get("spooled")
+
+
+def test_fr5050_mrb5051_post_intake_sends_dedupe_key(monkeypatch, tmp_path):
+    """Hostile: AC requires intake dedupe_key (#4963), not idempotency alone."""
+    import crash_report
+    import json
+    seen = {}
+
+    class FakeResp:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok":true,"intake_id":"in_x"}'
+
+    def fake_urlopen(req, timeout=0):
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResp()
+
+    monkeypatch.setenv("BOB_CRASH_REPORT", "1")
+    monkeypatch.setattr(crash_report.urllib.request, "urlopen", fake_urlopen)
+    crash_report._post_intake("t", "b", repo="SimonBarnett/bobiverse", sig="tray|timer|x", exe="tray")
+    assert seen["body"].get("dedupe_key") == "tray|timer|x"
+    assert seen["body"].get("idempotency_key", "").startswith("crash-")
