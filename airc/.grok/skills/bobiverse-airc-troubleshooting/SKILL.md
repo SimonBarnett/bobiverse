@@ -82,7 +82,8 @@ Finish every session with the harvest step.
 
 ## FR #5008 (reverse-DCC TLS + framed leftovers)
 
-| Windows reverse-DCC TLS handshake fails / digest mismatch on framed bulk | Pin TLS **1.2** (`ssl.PROTOCOL_TLSv1_2` / equivalent) --- TLS 1.3 `wrap_socket` can race the client close on Windows. Framed bulk must **slice the body to the declared length** and **keep recv leftovers** for the trailing digest (and relay ROLE leftover handling). Product tip: PR #5013. |
+| Windows reverse-DCC TLS handshake fails / digest mismatch on framed bulk | Pin TLS **1.2** (`ssl.PROTOCOL_TLSv1_2` / equivalent) --- TLS 1.3 `wrap_socket` can race the client close on Windows. Framed bulk must **slice the body to the declared length** and **keep recv leftovers** for the trailing digest (and relay ROLE leftover handling). Product tip: PR #5013; clean land without embedded key: PR #5017. |
+| DCC TLS defaults / GitGuardian on embedded PEM | Generate an **ephemeral self-signed** cert via `cryptography` at runtime (override `AIRC_DCC_TLS_CERT`/`KEY`); never commit `BEGIN RSA PRIVATE KEY` PEM. On MRB FAIL for a tainted tip: land one clean commit from `main` so the key never appears in the PR diff, close the tainted tip unmerged; a later FIX offer after DONE FAIL is DONE with the land PR URL when acceptance is already on main. |
 
 ## Harvest digest (lessons audit 2026-10-06)
 
