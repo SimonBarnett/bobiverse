@@ -179,3 +179,15 @@ def test_fr5030_stamp_persists_on_row():
     }
     gitclaim._stamp_require_machine(row)
     assert row["require_machine"] == "redqueen"
+
+def test_mrb5033_redeploy_live_workers_without_a_search_does_not_pin_other_repos():
+    """Hostile: bare redeploy+live-workers must not stamp redqueen on non-a-search repos."""
+    assert (
+        gitclaim.infer_require_machine(
+            title="redeploy live workers after patch",
+            body="walrus restart needed on the formprep box",
+            labels=("bug",),
+            repo="SimonBarnett/agentic_fomprep",
+        )
+        == ""
+    )

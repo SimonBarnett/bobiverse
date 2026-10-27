@@ -1387,9 +1387,6 @@ _REQUIRE_MACHINE_BODY_SOFT_CUES: tuple[tuple[re.Pattern[str], str], ...] = (
         r"(?i)\ba-search\b.{0,160}\bredeploy\b.{0,160}\b(?:live\s+workers?|walrus)\b"
     ), "redqueen"),
     (re.compile(
-        r"(?i)\bredeploy\b.{0,80}\b(?:live\s+workers?|walrus)\b"
-    ), "redqueen"),
-    (re.compile(
         r"(?i)\bFilterLogEvents\b.{0,160}\b(?:a-search|provider-\w+-live|a-sqlsearch|walrus)\b"
     ), "redqueen"),
     (re.compile(
