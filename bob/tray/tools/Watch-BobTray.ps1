@@ -320,7 +320,7 @@ function Write-TrayLog([string]$m) {
 }
 
 # t794u/t797u/t798u helpers: Exit ordering + detached service stop/restart, and the install inventory for the About dialog.
-foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1', 'BobTrayDialogs.ps1')) {
+foreach ($helper in @('BobTrayLifecycle.ps1', 'Get-BobInstallInfo.ps1', 'BobTrayStartWorker.ps1', 'BobTrayRecycleSeat.ps1', 'BobTrayDialogs.ps1')) {
     $helperPath = Join-Path $RepoRoot ('tools\' + $helper)
     if (Test-Path -LiteralPath $helperPath) { . $helperPath } else { Write-TrayLog ('missing helper ' + $helperPath) }
 }
@@ -3237,6 +3237,13 @@ $startWorkerTimer.Add_Tick({
                     [void](Invoke-BobTrayStartWorkerQueue -Dir $script:startWorkerDir `
                             -Launch { param($mode) Start-BobTrayWorkerExe -Mode $mode -Quiet } `
                             -Log { param($m) Write-TrayLog $m })
+                    # FR #5059: elevated recycle of a named seat (stop+verify, then start)
+                    if (Get-Command Invoke-BobTrayRecycleSeatQueue -ErrorAction SilentlyContinue) {
+                        $rsDir = Get-BobTrayRecycleSeatDir -Root $RepoRoot
+                        [void](Invoke-BobTrayRecycleSeatQueue -Root $RepoRoot -Dir $rsDir `
+                                -Launch { Start-BobTrayWorkerExe -Mode 'agent' -Quiet } `
+                                -Log { param($m) Write-TrayLog $m })
+                    }
                     if (Test-BobTrayEngineMode) {
                         [void](Invoke-BobTrayExeCommands -Root $RepoRoot `
                                 -OnAck { Clear-Attention } -OnExit { Invoke-BobTrayExit } -OnRestart { Restart-BobTrayWatcher } `

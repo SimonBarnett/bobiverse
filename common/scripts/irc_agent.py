@@ -52,6 +52,7 @@ import talk_seat_pid  # noqa: E402
 import wire  # noqa: E402
 import channel_only  # noqa: E402
 import startworker  # noqa: E402
+import recycleseat  # noqa: E402  # FR #5059
 import bobiverse_build  # noqa: E402  # FR #4006
 
 FLOOD_S = 0.8
@@ -1983,6 +1984,56 @@ class Client:
             self.whisper(who, dec.line)
         return True
 
+    def _maybe_recycleseat(self, src: str, target: str, body: str, *, to_channel: bool, to_me: bool) -> bool:
+        """FR #5059: ``!recycleseat <nick> [machine]`` — ear authorises + queues; tray stops+starts."""
+        if getattr(self.args, "chair", False) or not bobtalk.is_fleet_bob_nick(self.original_nick):
+            return False
+        if recycleseat.parse(body) is None:
+            return False
+        who = (src or "").strip()
+        if not who or who.lower() in self._mine_nicks():
+            return True
+        local = self._local_machine_id() or ""
+        try:
+            chair = {"jeeves", (bobreport.digest_chair_nick(self.home) or "").strip().lower()} - {""}
+        except Exception:
+            chair = {"jeeves"}
+        chan = bobreport.normalize_channel(target) if to_channel else ""
+        try:
+            dec = recycleseat.decide(
+                body=body,
+                nick=who,
+                account=self._account_of(who),
+                channel=chan or "#bobiverse",
+                local_machine=local,
+                qdir=recycleseat.queue_dir(self._install_root()),
+                install_root=self._install_root(),
+                home=self.home,
+                machine_of_nick=bobreport.machine_from_nick,
+                member_lookup=lambda ch, n: self._nick_modes_in_channel(n, ch),
+                chair_nicks=chair,
+            )
+        except Exception as e:
+            info(f"WARN recycleseat decide failed: {type(e).__name__}: {e}")
+            return True
+        if dec is None:
+            return True
+        info(
+            f"INFO recycleseat nick={who} kind={dec.kind or '-'} ok={dec.ok} "
+            f"reason={dec.reason} seat={dec.seat_nick} machine={local} chan={chan or 'pm'}"
+        )
+        if dec.reason == "unverified":
+            try:
+                self._whois_hint(who)
+            except Exception:
+                pass
+        if to_channel and chan:
+            self.send_privmsg_lines("PRIVMSG " + chan + " :" + dec.line)
+            time.sleep(FLOOD_S)
+        else:
+            self.whisper(who, dec.line)
+        return True
+
     def _announce_departure(self, reason: str) -> None:
         """Announce leaving #bobiverse and #{machine} before recycle/restart."""
         mid = self._local_machine_id() or ""
@@ -3453,6 +3504,8 @@ class Client:
                     self._on_digest_whisper(src, pulled)
                     return
         if self._maybe_startworker(src, target, body, to_channel=bool(to_channel), to_me=to_me):
+            return
+        if self._maybe_recycleseat(src, target, body, to_channel=bool(to_channel), to_me=to_me):
             return
         if body.strip().lower().startswith("!build"):
             self._handle_build_command(src, body)
