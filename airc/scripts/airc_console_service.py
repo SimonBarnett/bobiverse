@@ -100,10 +100,13 @@ RECONNECT_MAX_S = 60.0
 CHANSERV_PROBE_S = 8.0
 NICK_RETRIES_SHOP = 5
 NICK_RETRIES_LOBBY = 20
-# FR #2612: match out/err/DONE id= for in-flight shell tracking + stop flush.
-# FR #5003: DONE may carry trailing bytes=/sha256=/via= fields.
+# FR #5002: after JOIN, if NAMES/366 never lands, escalate (NAMES -> PART/JOIN -> reconnect).
+NAMES_SYNC_WATCH_S = float(os.environ.get("AIRC_NAMES_SYNC_WATCH_S", "30") or "30")
+# FR #5002: prolonged channel-state-unknown / all-refused -> exit so NSSM AppExit Restart.
+AUTH_WEDGE_EXIT_S = float(os.environ.get("AIRC_AUTH_WEDGE_EXIT_S", "300") or "300")
+# FR #2612 / #5002 / #5003: DONE id optional; trailing bytes=/sha256=/via=/reason ok.
 _SHELL_ID_RE = re.compile(
-    r"^(?:(?:out|err)\s+id=([0-9a-f]+)\s+seq=\d+|DONE\s+id=([0-9a-f]+)\s+exit=-?\d+(?:\s+\S+)*)\s*$",
+    r"^(?:(?:out|err)\s+id=([0-9a-f]+)\s+seq=\d+|DONE\s+(?:id=([0-9a-f]+)\s+)?exit=-?\d+(?:\s+\S+)*)\s*$",
     re.IGNORECASE,
 )
 
@@ -379,6 +382,11 @@ class AircConsoleService:
         self._last_ping_sent = 0.0
         self._awaiting_pong = False
         self._force_reconnect = False
+        # FR #5002: NAMES sync / auth-wedge watchdogs (multiclient reattach class).
+        self._names_watch_deadline = 0.0
+        self._names_watch_stage = 0
+        self._auth_wedge_since: float | None = None
+        self._exit_for_nssm_restart = False
         # FR #2612: durable outbound Query queue survives force_reconnect in-process;
         # stop flush emits DONE for tracked shell ids so Wait does not hang.
         self._out_q: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -997,15 +1005,31 @@ class AircConsoleService:
             f"INFO joined {self.channel} as {self.nick} (silent)"
             + (f" presence={extra}" if presence else "")
         )
-        # FR #3401 / #3511: clear then resync prefixes after JOIN (353/366).
-        # set_channel always clears (same-channel reconnect must not keep stale %).
+        # FR #5002: do NOT clear the member map here. Ergo multiclient reattach can
+        # replay JOIN+NAMES before join_shop runs; clearing then sending a redundant
+        # JOIN leaves auth stuck as channel-state-unknown (Ergo ignores JOIN when
+        # already in-channel). handshake() / _lost_control_channel still clear;
+        # a fresh 353 while synced still replaces (FR #3511).
         # FR #3774: member map is control-channel only --- presence NAMES must not sync here.
         if getattr(self, "members", None) is not None:
-            self.members.clear()
-            self.members.set_channel(self.channel)
+            if (self.members.channel or "").strip().lower() != (self.channel or "").strip().lower():
+                self.members.set_channel(self.channel)
+            else:
+                self.members.channel = self.channel
             self.core.auth.members = self.members
             self.core.auth.self_nicks = {self.nick.lower()} if self.nick else set()
             self.core.channel = self.channel
+            # Always request NAMES so we sync even when JOIN was ignored.
+            try:
+                self.send(f"NAMES {self.channel}")
+            except Exception as e:
+                info(f"INFO FR #5002 names-request-err {e}")
+            self._names_watch_deadline = time.monotonic() + max(1.0, NAMES_SYNC_WATCH_S)
+            self._names_watch_stage = 0
+            if self.members.synced:
+                self._auth_wedge_since = None
+            elif self._auth_wedge_since is None:
+                self._auth_wedge_since = time.monotonic()
 
     def _lost_control_channel(self, reason: str) -> None:
         """FR #3511: console PART/KICK from control channel --- refuse until NAMES/366.
@@ -1342,6 +1366,9 @@ class AircConsoleService:
                 ch = _names_channel()
                 if same_irc_channel(ch, ctrl):
                     self.members.mark_synced()
+                    self._names_watch_deadline = 0.0
+                    self._names_watch_stage = 0
+                    self._auth_wedge_since = None
                     info(
                         f"INFO FR #3401 names-synced channel={self.channel} "
                         f"n={len(self.members._members)}"
@@ -1438,6 +1465,68 @@ class AircConsoleService:
                     pass
             log_auth_allow(hr)
 
+    def _names_sync_watchdog(self) -> None:
+        """FR #5002: joined but never names-synced --- NAMES, then PART/JOIN, then reconnect."""
+        if not getattr(self, "_joined_shop", False):
+            return
+        members = getattr(self, "members", None)
+        if members is None or members.synced:
+            self._names_watch_deadline = 0.0
+            self._names_watch_stage = 0
+            return
+        deadline = float(getattr(self, "_names_watch_deadline", 0.0) or 0.0)
+        if deadline <= 0.0:
+            return
+        now = time.monotonic()
+        if now < deadline:
+            return
+        stage = int(getattr(self, "_names_watch_stage", 0) or 0)
+        ch = self.channel or ""
+        if stage <= 0:
+            info(f"INFO FR #5002 names-watch stage=NAMES channel={ch}")
+            try:
+                self.send(f"NAMES {ch}")
+            except Exception as e:
+                info(f"INFO FR #5002 names-watch-err {e}")
+            self._names_watch_stage = 1
+            self._names_watch_deadline = now + max(1.0, NAMES_SYNC_WATCH_S)
+            return
+        if stage == 1:
+            info(f"INFO FR #5002 names-watch stage=PART-JOIN channel={ch}")
+            try:
+                self.send(f"PART {ch} :fr5002-names-resync")
+                self.send(f"JOIN {ch}")
+                self.send(f"NAMES {ch}")
+            except Exception as e:
+                info(f"INFO FR #5002 names-watch-partjoin-err {e}")
+            self._names_watch_stage = 2
+            self._names_watch_deadline = now + max(1.0, NAMES_SYNC_WATCH_S)
+            return
+        info(f"INFO FR #5002 names-watch stage=reconnect channel={ch}")
+        self._force_reconnect = True
+
+    def _auth_wedge_watchdog(self) -> None:
+        """FR #5002: prolonged unsynced auth --- exit non-zero for NSSM AppExit Restart."""
+        members = getattr(self, "members", None)
+        if members is not None and members.synced:
+            self._auth_wedge_since = None
+            return
+        if not getattr(self, "_joined_shop", False):
+            return
+        now = time.monotonic()
+        if self._auth_wedge_since is None:
+            self._auth_wedge_since = now
+            return
+        if (now - float(self._auth_wedge_since)) < max(1.0, AUTH_WEDGE_EXIT_S):
+            return
+        info(
+            f"ERROR FR #5002 auth-wedge channel-state-unknown for "
+            f"{int(now - float(self._auth_wedge_since))}s -> exit for NSSM restart"
+        )
+        self._exit_for_nssm_restart = True
+        self._force_reconnect = True
+        self._stop.set()
+
     def _idle_keepalive(self) -> None:
         """Detect half-open links: client PING, then force reconnect if no traffic (#298)."""
         now = time.monotonic()
@@ -1457,6 +1546,11 @@ class AircConsoleService:
             self._last_ping_sent = now
             self._awaiting_pong = True
             info_keepalive("INFO keepalive PING sent")
+        try:
+            self._names_sync_watchdog()
+            self._auth_wedge_watchdog()
+        except Exception as we:
+            info(f"INFO FR #5002 watchdog-err {we}")
 
     def read_loop(self) -> None:
         assert self.sock is not None
@@ -1585,6 +1679,9 @@ class AircConsoleService:
                 self.prepare_stop(reason="reconnect interrupted")
                 break
             backoff = min(RECONNECT_MAX_S, max(RECONNECT_MIN_S, backoff * 2))
+        # FR #5002: non-zero so NSSM AppExit Restart recovers a wedged auth map.
+        if getattr(self, "_exit_for_nssm_restart", False):
+            return 1
         return 0
 
 
