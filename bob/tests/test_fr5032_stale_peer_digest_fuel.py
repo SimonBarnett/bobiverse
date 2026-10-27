@@ -119,3 +119,11 @@ def test_fr5032_post_digest_out_of_fuel_logs_failure():
         )
     assert ok is False
     assert any("digest POST failed" in m or "post_digest_out_of_fuel failed" in m for m in logs)
+
+def test_mrb5037_peer_weekly_without_lastseen_treated_stale():
+    """Hostile: missing lastSeen must not paint a confident live peer %."""
+    h = _txt(HOVER)
+    start = h.index("FR #5032: peer weekly older than the fuel-stale window")
+    block = h[start : start + 3500]
+    assert "missing lastSeen must not paint" in block or "not $wr.lastSeen" in block
+    assert "fuelStaleBy[$mac] = $true" in block

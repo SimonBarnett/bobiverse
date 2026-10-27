@@ -2119,6 +2119,11 @@ function Get-BobTrayHover {
             $fuelStaleBy[$mac] = $true
             continue
         }
+        if ($isPeer -and -not $outTok -and -not $wr.lastSeen) {
+            # FR #5032 / MRB #5037: missing lastSeen must not paint a confident live %.
+            $fuelStaleBy[$mac] = $true
+            continue
+        }
         $weeklyBy[$mac] = $pct
         if ($wr.period_end) {
             if (-not ($mac -eq $machineId -and $periodEndBy.ContainsKey($machineId))) {

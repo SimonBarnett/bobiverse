@@ -2683,7 +2683,7 @@ function Add-BobTrayUsageRow {
 }
 
 function Rebuild-BobTrayTiles {
-    # FR #4938: TipForm shows Grok accounts only (one grok/cursor account per machine).
+    # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Cursor spending-group bars (grok chat / high cost / Low cost) are removed from the card.
     # Fuel still reads local Cursor/Grok elsewhere; this is display-only.
     param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels)
