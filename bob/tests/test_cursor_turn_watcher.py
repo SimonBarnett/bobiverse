@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 
 import bob_worker as bw
 
@@ -19,7 +20,7 @@ def _chat(root, name="chat1", born=None):
     f.write_bytes(b"x")
     if born is not None:
         # FR #4754: on Windows CursorTurnWatcher._bind uses directory
-        # st_mtime/st_ctime only; utime store.db alone leaves dir born ≈ now.
+        # st_mtime/st_ctime only; utime store.db alone leaves dir born â‰ˆ now.
         os.utime(f, (born, born))
         os.utime(d, (born, born))
     return d
@@ -29,6 +30,21 @@ def _touch(d, t):
     f = d / "store.db-wal"
     f.write_bytes(b"y")
     os.utime(f, (t, t))
+
+
+def _freeze_chat_times(chat_dir, t, transcript=None):
+    """FR #5129: re-utime chat dir + files (+ transcript) after meta/jsonl writes.
+
+    On Windows, writing meta.json bumps directory mtime; under full-suite load that
+    can push born outside the bind window or leave store mtimes briefly unread.
+    Freeze times so CursorTurnWatcher.tick() deterministically returns started.
+    """
+    for f in chat_dir.iterdir():
+        if f.is_file():
+            os.utime(f, (t, t))
+    os.utime(chat_dir, (t, t))
+    if transcript is not None and os.path.isfile(str(transcript)):
+        os.utime(str(transcript), (t, t))
 
 
 def test_should_start_cursor_turn_watcher(monkeypatch):
@@ -165,7 +181,8 @@ def test_user_line_keeps_turn_open(tmp_path):
     t0 = time.time()
     d = _chat(tmp_path, born=t0)
     projects = tmp_path / "projects"
-    _arm_transcript(d, projects, [_text_line(), _user_line()])
+    tp = _arm_transcript(d, projects, [_text_line(), _user_line()])
+    _freeze_chat_times(d, t0, transcript=tp)
     now = [t0 + 1]
     w = bw.CursorTurnWatcher(
         since_wall=t0, chats_root=tmp_path, projects_root=projects, quiet_s=20,
