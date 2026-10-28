@@ -27,6 +27,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 
 | Symptom | Diagnosis / fix |
 |---|---|
+| Jeeves silent / outbox thread dead; stderr `UnicodeEncodeError` `charmap` `\\u2192` (FR #5157) | Same class as bob-ear #4396 / airc #4397. `info()` + `jeeves_main.safe_print` / `harden_stdio_replace`; `outbox_loop` logs ERROR and continues. Needs rebuilt `jeeves.exe` + Simon go to restart ircJeeves. Do not hotpatch ionos without that go. |
 | New repo never gets FR/MRB after create | Not on the resync list / not focused. Edit chair-home `%USERPROFILE%\.jeeves\resync-repos.txt` (what `configured_repos` reads) and/or `!focus low owner/repo`, then `!resync`. Digest-home twin `%USERPROFILE%\.bobiverse\resync-repos.txt` is seeded but not discovery when homes differ. Full playbook: `bobiverse-jeeves-repos` (FR #5134). |
 | Need to re-feed a given-up job now | `!resync` does not clear give-ups. Back up digest-home `queue.json` + `seat-ledger.json`, clear row `giveup_seats`/`cooldown_until`/`giveup_ts`/`giveup_count`/`needs_human` and ledger `giveup["owner/repo#n"]` (lower-case), then `!assign`. Cooldown is `GIVEUP_COOLDOWN_S=600`. Never restart during `!build`. See `bobiverse-jeeves-repos`. |
 | Commands "do nothing" for the ear | The ear is only recognised as `bob-<machine>` for a machine on the roster. Check `!status roster:`; `!resync`; confirm the SASL account is logged in (`chan-privs` logs). |
