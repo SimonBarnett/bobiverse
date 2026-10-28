@@ -23,6 +23,30 @@ from types import SimpleNamespace
 from typing import Any
 
 
+def harden_stdio_replace() -> None:
+    """FR #5157: NSSM/cp1252 stdout must not raise on U+2192 (same as #4396/#4397)."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        rec = getattr(stream, "reconfigure", None)
+        if callable(rec):
+            try:
+                rec(errors="replace")
+            except Exception:
+                pass
+
+
+def safe_print(*args, file=None, **kwargs) -> None:
+    """Print that never raises UnicodeEncodeError on a strict code page."""
+    kwargs.setdefault("flush", True)
+    try:
+        print(*args, file=file, **kwargs)
+    except UnicodeEncodeError:
+        stream = file if file is not None else sys.stdout
+        enc = getattr(stream, "encoding", None) or "ascii"
+        msg = " ".join(str(x) for x in args)
+        print(msg.encode(enc, errors="replace").decode(enc, errors="replace"), file=file, **kwargs)
+
+
 SELF_TEST_CHECKS = ("imports", "locks", "http", "queue", "health", "offer")  # builtins
 DEFAULT_SELF_TEST = ("imports", "locks", "http", "queue", "offer")
 
@@ -102,7 +126,7 @@ def load_check_plugins() -> dict[str, Any]:
 
 
 def _print_json(payload: dict) -> None:
-    print(json.dumps(payload, separators=(",", ":"), sort_keys=True), flush=True)
+    safe_print(json.dumps(payload, separators=(",", ":"), sort_keys=True), flush=True)
 
 
 def monitor_tools_dir() -> Path | None:
@@ -328,7 +352,7 @@ def run_self_test(
             if as_json:
                 _print_json(payload)
             else:
-                print(f"ERROR unknown_check:{c}", flush=True)
+                safe_print(f"ERROR unknown_check:{c}", flush=True)
             return 2
 
     findings: list[str] = []
@@ -387,14 +411,14 @@ def run_self_test(
     if as_json:
         _print_json(payload)
     else:
-        print(
+        safe_print(
             f"INFO self-test exit={exit_code} findings={len(findings)} errors={len(errors)}",
             flush=True,
         )
         for e in errors:
-            print(f"ERROR {e}", flush=True)
+            safe_print(f"ERROR {e}", flush=True)
         for f in findings:
-            print(f"FINDING {f}", flush=True)
+            safe_print(f"FINDING {f}", flush=True)
     return int(exit_code)
 
 
@@ -616,19 +640,19 @@ def run_heal(
     if as_json:
         _print_json(payload)
     else:
-        print(
+        safe_print(
             f"INFO heal exit={exit_code} actions={len(actions)} findings={len(findings)} errors={len(errors)} dry_run={int(dry_run)}",
             flush=True,
         )
         for a in actions:
-            print(f"ACTION {a}", flush=True)
+            safe_print(f"ACTION {a}", flush=True)
         for n in notes:
-            print(f"NOTE {n}", flush=True)
+            safe_print(f"NOTE {n}", flush=True)
         for e in errors:
-            print(f"ERROR {e}", flush=True)
+            safe_print(f"ERROR {e}", flush=True)
         for f in findings:
-            print(f"FINDING {f}", flush=True)
-        print(
+            safe_print(f"FINDING {f}", flush=True)
+        safe_print(
             f"INFO maintenance action={maintenance.get('action')} reason={maintenance.get('reason')}",
             flush=True,
         )
@@ -669,6 +693,7 @@ def parse_http_bind(raw: str) -> tuple[str, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    harden_stdio_replace()
     try:
         import crash_report
 
@@ -733,7 +758,7 @@ def main(argv: list[str] | None = None) -> int:
             "jeeves.exe: error: specify --self-test, --heal, --http-only, "
             "or --chair --http HOST:PORT (FR #2524: bare argv does not spawn maintenance)"
         )
-        print(msg, file=sys.stderr, flush=True)
+        safe_print(msg, file=sys.stderr, flush=True)
         return 2
 
     if args.self_test:
@@ -779,10 +804,10 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 _t, httpd = start_http_thread(home, host=host, port=port, briefer_nick=args.nick)
             except OSError as exc:
-                print(f"ERROR http bind failed {host}:{port} err={exc}", flush=True)
+                safe_print(f"ERROR http bind failed {host}:{port} err={exc}", flush=True)
                 return 1
             addr = httpd.server_address[:2]
-            print(f"INFO jeeves http listen {addr[0]}:{addr[1]} inproc=1 fr=1993", flush=True)
+            safe_print(f"INFO jeeves http listen {addr[0]}:{addr[1]} inproc=1 fr=1993", flush=True)
 
             if args.http_only and not args.chair:
                 try:

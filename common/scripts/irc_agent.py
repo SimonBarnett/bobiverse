@@ -3918,43 +3918,48 @@ class Client:
         # FR #2384: bob ear (non-chair) refuses worker job-wire lines misplaced in home\outbox.txt
         refuse_job_wire = not getattr(self.args, "chair", False)
         for line in lines:
-            # FR #226: re-normalize (BOM / pre-wrapped) before classify
-            kind, norm = normalize_outbox_line(line)
-            if kind == "empty":
-                continue
-            line = norm
-            if refuse_job_wire and is_misplaced_worker_job_wire(line):
-                preview = line if len(line) <= 160 else (line[:157] + "...")
-                info(f"WARN outbox refused misplaced worker job-wire (FR #2384): {preview}")
-                continue
-            if gate_fleet and bobreport.outbox_line_spam_for_fleet_channel(line, default_channel=self.chan):
-                continue
-            op = shop_ops.raw_op_line(line, self.original_nick)
-            if kind == "privmsg" or line.upper().startswith("PRIVMSG "):
-                # FR #3868: log every outbox send (and failures) so a lost !assign is visible.
-                try:
-                    wire = self.send_privmsg_lines(line)
-                except OSError as exc:
-                    preview = line if len(line) <= 160 else (line[:157] + "...")
-                    info(
-                        f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
-                    )
+            try:
+                # FR #226: re-normalize (BOM / pre-wrapped) before classify
+                kind, norm = normalize_outbox_line(line)
+                if kind == "empty":
                     continue
-                for w in wire:
-                    head = w.split(" :", 1)[0]
-                    prev = w if len(w) <= 160 else (w[:157] + "...")
-                    info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
-                sent.extend(wire)
-                # FR #4796: pace *_console Commands slower than shop chat.
-                time.sleep(flood_s_for_outbox_line(line))
-            elif op:
-                # bob-* shop ops (A23): KICK / MODE / NAMES on own #{machine}, raw.
-                self.send(op)
-                info(f"INFO shop-op sent {op.split(' :', 1)[0]}")
-                time.sleep(FLOOD_S)
-            else:
-                self.say(line)
-                sent.append(line)
+                line = norm
+                if refuse_job_wire and is_misplaced_worker_job_wire(line):
+                    preview = line if len(line) <= 160 else (line[:157] + "...")
+                    info(f"WARN outbox refused misplaced worker job-wire (FR #2384): {preview}")
+                    continue
+                if gate_fleet and bobreport.outbox_line_spam_for_fleet_channel(line, default_channel=self.chan):
+                    continue
+                op = shop_ops.raw_op_line(line, self.original_nick)
+                if kind == "privmsg" or line.upper().startswith("PRIVMSG "):
+                    # FR #3868: log every outbox send (and failures) so a lost !assign is visible.
+                    try:
+                        wire = self.send_privmsg_lines(line)
+                    except OSError as exc:
+                        preview = line if len(line) <= 160 else (line[:157] + "...")
+                        info(
+                            f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
+                        )
+                        continue
+                    for w in wire:
+                        head = w.split(" :", 1)[0]
+                        prev = w if len(w) <= 160 else (w[:157] + "...")
+                        info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
+                    sent.extend(wire)
+                    # FR #4796: pace *_console Commands slower than shop chat.
+                    time.sleep(flood_s_for_outbox_line(line))
+                elif op:
+                    # bob-* shop ops (A23): KICK / MODE / NAMES on own #{machine}, raw.
+                    self.send(op)
+                    info(f"INFO shop-op sent {op.split(' :', 1)[0]}")
+                    time.sleep(FLOOD_S)
+                else:
+                    self.say(line)
+                    sent.append(line)
+            except Exception as exc:  # noqa: BLE001 -- FR #5157
+                preview = line if len(str(line)) <= 160 else (str(line)[:157] + "...")
+                info(f"ERROR outbox: line failed {type(exc).__name__}: {preview}"[:220])
+                continue
         if new_last != last:
             save_outbox_pos(path, new_last)
         return sent
@@ -3995,6 +4000,8 @@ class Client:
                 self._maybe_prune_talk_seat_ghosts()
             except OSError:
                 return
+            except Exception as exc:  # noqa: BLE001 -- FR #5157: one line must not kill the thread
+                info(f"ERROR outbox-loop {type(exc).__name__}: {exc}"[:220])
             time.sleep(1)
 
     def _abort_gate(self, gate: str) -> None:
