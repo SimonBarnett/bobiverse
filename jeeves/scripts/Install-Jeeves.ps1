@@ -91,7 +91,8 @@ if (Test-Path -LiteralPath $bootstrap) {
 
 $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing - pack third_party\nssm\win64\nssm.exe or pass -Nssm' }
-if (-not $Python) { $Python = Resolve-BobiversePython }
+# FR #5150: MSI upgrade ships jeeves.exe; missing python must not 1603 RunInstall.
+if (-not $Python) { $Python = Resolve-BobiversePython -AllowMissing }
 # Chair home: under MSI LocalSystem, $env:USERPROFILE is often C:\Users\Default - that
 # breaks DPAPI identity and loses the real Administrator chair. Prefer an existing
 # Admin chair, else InstallRoot\home-jeeves (issue: win-mpre cutover 2026-09-29).
@@ -192,7 +193,14 @@ if (Test-Path $skillsSrc) {
     }
     Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames (Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'jeeves')
 }
-Install-BobiversePythonDeps -Python $Python
+$jeevesExeEarly = Join-Path $InstallRoot 'jeeves\jeeves.exe'
+if ($Python) {
+    Install-BobiversePythonDeps -Python $Python
+} elseif (Test-Path -LiteralPath $jeevesExeEarly -PathType Leaf) {
+    Write-Host 'WARN FR #5150 python missing; jeeves.exe present - skip python deps'
+} else {
+    throw 'python.exe not found (run Install-BootstrapTools.ps1)'
+}
 
 # Seed operators for !register
 $ops = Join-Path $ChairHome 'operators.txt'
@@ -369,6 +377,9 @@ if (Test-Path -LiteralPath $installWh) {
 # Chair IRC-operator credentials (DPAPI machine scope). Status only; the value is never printed.
 $operPy = Join-Path $here 'chair_oper.py'
 if (Test-Path -LiteralPath $operPy) {
+    if (-not $Python) {
+        Write-Host 'WARN FR #5150 skip oper provisioning (python missing)'
+    } else {
     try {
         $opArgs = @($operPy, 'provision', '--config-dir', $cfgDir)
         if ($OperFile) { $opArgs += @('--oper-file', $OperFile) }
@@ -376,6 +387,7 @@ if (Test-Path -LiteralPath $operPy) {
         & $Python @opArgs
     } catch {
         Write-Host "WARN oper provisioning: $($_.Exception.Message)"
+    }
     }
 }
 # Supervised BobCallback (ONSTART) - FR #1316: same account as digest home owner (not SYSTEM).

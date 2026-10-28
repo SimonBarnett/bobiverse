@@ -585,6 +585,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="SKIPCOPY" Secure="yes" />
     <Property Id="BOBIVERSE_SKIP_TOOLS" Secure="yes" />
     <Property Id="BOBIVERSE_CRASH_REPORT" Secure="yes" />
+    <!-- FR #4013 / #5150: fail closed before RemoveExistingProducts Error 1730 when not elevated. -->
+    <Condition Message="jeeves install needs administrator rights">
+      <![CDATA[Installed OR Privileged]]>
+    </Condition>
 "@
         }
         'bob' {
@@ -594,6 +598,10 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="SKIPCOPY" Secure="yes" />
     <Property Id="BOBIVERSE_SKIP_TOOLS" Secure="yes" />
     <Property Id="BOBIVERSE_CRASH_REPORT" Secure="yes" />
+    <!-- FR #4013 / #5150: fail closed before RemoveExistingProducts Error 1730 when not elevated. -->
+    <Condition Message="bob install needs administrator rights">
+      <![CDATA[Installed OR Privileged]]>
+    </Condition>
 "@
         }
         'airc' {
