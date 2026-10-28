@@ -3271,15 +3271,29 @@ $script:trayAliveMsg = [pscustomobject]@{
     Dir  = $script:startWorkerDir
 }
 $script:trayAliveSub = Register-ObjectEvent -InputObject $script:trayAliveTimer -EventName Elapsed -Action {
+    # FR #5145: share-safe write via Write-BobTrayAlive (races with bob-tray.exe).
+    # Do not Set-Content here — exclusive lock → RuntimeError → intake storm.
     try {
         $msg = $Event.MessageData
         $dir = if ($msg -and $msg.Dir) { [string]$msg.Dir } else { [string]$msg }
         if (-not $dir) { return }
-        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-        Set-Content -LiteralPath (Join-Path $dir 'tray.alive') -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
+        if (Get-Command Write-BobTrayAlive -ErrorAction SilentlyContinue) {
+            if (Write-BobTrayAlive -Dir $dir) { return }
+        }
+        else {
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+            $f = Join-Path $dir 'tray.alive'
+            $bytes = [Text.Encoding]::ASCII.GetBytes(('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID))
+            $fs = [IO.File]::Open($f, [IO.FileMode]::Create, [IO.FileAccess]::Write,
+                [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush() } finally { $fs.Dispose() }
+            return
+        }
+        # All retries failed (still locked / IO). Soft-log; must-report once per persistent miss.
+        throw (New-Object System.IO.IOException('Write-BobTrayAlive failed after retries'))
     }
     catch {
-        # FR #5052 must-report (heartbeat stamp)
+        # FR #5052 must-report (heartbeat stamp) — only after share-safe path exhausted
         try {
             $root = if ($Event.MessageData.Root) { [string]$Event.MessageData.Root } else { $null }
             if ($root) {

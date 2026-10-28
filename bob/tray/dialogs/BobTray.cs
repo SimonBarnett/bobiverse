@@ -821,6 +821,7 @@ namespace BobDialogs
         }
 
         // FR #2697: Threading.Timer callback — never shares the WinForms message pump with the PS engine poll.
+        // FR #5145: FileShare.ReadWrite|Delete — PS trayAliveTimer may write the same path; exclusive WriteAllText raced.
         void WriteTrayAlive()
         {
             try
@@ -829,7 +830,26 @@ namespace BobDialogs
                 string tick = EngineAliveStamp.ReadStampIso(aliveDir);
                 string line = DateTime.UtcNow.ToString("o") + " pid=" + Process.GetCurrentProcess().Id;
                 if (tick.Length > 0) line += " engine_last_tick=" + tick;
-                File.WriteAllText(aliveFile, line, Encoding.ASCII);
+                byte[] bytes = Encoding.ASCII.GetBytes(line);
+                for (int attempt = 0; attempt < 6; attempt++)
+                {
+                    try
+                    {
+                        using (FileStream fs = new FileStream(
+                            aliveFile, FileMode.Create, FileAccess.Write,
+                            FileShare.ReadWrite | FileShare.Delete))
+                        {
+                            fs.Write(bytes, 0, bytes.Length);
+                            fs.Flush();
+                        }
+                        return;
+                    }
+                    catch (IOException)
+                    {
+                        if (attempt >= 5) return;
+                        System.Threading.Thread.Sleep(25 * (attempt + 1));
+                    }
+                }
             }
             catch { }
         }

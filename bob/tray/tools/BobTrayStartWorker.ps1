@@ -14,12 +14,46 @@ function Get-BobTrayStartWorkerDir {
 }
 
 function Write-BobTrayAlive {
-    param([Parameter(Mandatory)][string]$Dir)
+    <#
+    .SYNOPSIS
+      Heartbeat stamp for run\startworker\tray.alive (FR #2697).
+    .NOTES
+      FR #5145: bob-tray.exe and the PS trayAliveTimer both write this file every ~2s.
+      Bare Set-Content / File.WriteAllText take exclusive locks and throw
+      "being used by another process", which FR #5050 then intakes as a crash.
+      Use FileShare.ReadWrite|Delete + short retries (same pattern as Add-BobiverseOutboxLine).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Dir,
+        [int]$Retries = 6,
+        [int]$DelayMs = 25
+    )
     try {
         if (-not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Force -Path $Dir | Out-Null }
         $f = Join-Path $Dir 'tray.alive'
-        Set-Content -LiteralPath $f -Value ('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID) -Encoding ASCII
-        return $true
+        $payload = '{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID
+        $bytes = [Text.Encoding]::ASCII.GetBytes($payload)
+        for ($i = 0; $i -lt $Retries; $i++) {
+            try {
+                $fs = [IO.File]::Open(
+                    $f,
+                    [IO.FileMode]::Create,
+                    [IO.FileAccess]::Write,
+                    [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+                )
+                try {
+                    $fs.Write($bytes, 0, $bytes.Length)
+                    $fs.Flush()
+                }
+                finally { $fs.Dispose() }
+                return $true
+            }
+            catch {
+                if ($i -ge ($Retries - 1)) { return $false }
+                Start-Sleep -Milliseconds ($DelayMs * ($i + 1))
+            }
+        }
+        return $false
     }
     catch { return $false }
 }
