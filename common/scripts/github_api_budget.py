@@ -15,8 +15,10 @@ from typing import Any, Callable
 
 # Chair core-bucket share of the shared SimonBarnett 5000/h allowance.
 DEFAULT_BUDGET_PER_HOUR = 1000
-# Stop non-essential REST when GitHub remaining drops below this floor.
+# Stop non-essential REST when GitHub *core* remaining drops below this floor.
+# Search is a separate 30/min bucket (FR #5148): never apply this floor to it.
 BACKOFF_FLOOR = 500
+SEARCH_RESOURCES = frozenset({"search", "code_search"})
 # No webhook deliveries for this long (while repos are configured) triggers one reconcile.
 WEBHOOK_GAP_S = 900.0
 
@@ -126,6 +128,16 @@ class GithubApiBudget:
             self.rate_reset: float | None = (
                 float(doc["rate_reset"]) if doc.get("rate_reset") is not None else None
             )
+            self.search_rate_remaining: int | None = (
+                int(doc["search_rate_remaining"])
+                if doc.get("search_rate_remaining") is not None
+                else None
+            )
+            self.search_rate_reset: float | None = (
+                float(doc["search_rate_reset"])
+                if doc.get("search_rate_reset") is not None
+                else None
+            )
         else:
             self.used = int(doc.get("used") or 0)
             self.hour = stored_hour
@@ -134,6 +146,16 @@ class GithubApiBudget:
             )
             self.rate_reset = (
                 float(doc["rate_reset"]) if doc.get("rate_reset") is not None else None
+            )
+            self.search_rate_remaining = (
+                int(doc["search_rate_remaining"])
+                if doc.get("search_rate_remaining") is not None
+                else None
+            )
+            self.search_rate_reset = (
+                float(doc["search_rate_reset"])
+                if doc.get("search_rate_reset") is not None
+                else None
             )
         self.etags = _read_json(self._etag_path())
         if not isinstance(self.etags, dict):
@@ -150,6 +172,8 @@ class GithubApiBudget:
                     "budget": self.budget_per_hour,
                     "rate_remaining": self.rate_remaining,
                     "rate_reset": self.rate_reset,
+                    "search_rate_remaining": self.search_rate_remaining,
+                    "search_rate_reset": self.search_rate_reset,
                 },
             )
         except OSError:
@@ -187,6 +211,13 @@ class GithubApiBudget:
             return False
         self.rate_remaining = None
         self.rate_reset = None
+        if self.search_rate_reset is not None:
+            try:
+                if float(self.clock()) >= float(self.search_rate_reset):
+                    self.search_rate_remaining = None
+                    self.search_rate_reset = None
+            except (TypeError, ValueError):
+                pass
         self._backoff_logged = False
         self._persist_budget()
         return True
@@ -242,6 +273,11 @@ class GithubApiBudget:
         self.log(f"WARN github-api backoff {why}")
 
     def note_headers(self, hdrs) -> None:
+        """Record GitHub rate headers per ``X-RateLimit-Resource`` (FR #5148).
+
+        ``rate_remaining`` / the 500 floor are **core** only. Search (30/min)
+        remaining of 29 must not block reconcile.
+        """
         if hdrs is None:
             return
         try:
@@ -250,10 +286,23 @@ class GithubApiBudget:
                 return
             rem = get("X-RateLimit-Remaining") or get("x-ratelimit-remaining")
             reset = get("X-RateLimit-Reset") or get("x-ratelimit-reset")
+            resource = (
+                get("X-RateLimit-Resource") or get("x-ratelimit-resource") or "core"
+            )
+            resource_s = str(resource).strip().lower() or "core"
             if rem is not None and str(rem).strip() != "":
-                self.rate_remaining = int(rem)
+                val = int(rem)
+                if resource_s in SEARCH_RESOURCES:
+                    self.search_rate_remaining = val
+                elif resource_s == "core":
+                    self.rate_remaining = val
+                # graphql / other buckets: do not overwrite core remaining
             if reset is not None and str(reset).strip() != "":
-                self.rate_reset = float(reset)
+                rst = float(reset)
+                if resource_s in SEARCH_RESOURCES:
+                    self.search_rate_reset = rst
+                elif resource_s == "core":
+                    self.rate_reset = rst
         except (TypeError, ValueError):
             pass
 

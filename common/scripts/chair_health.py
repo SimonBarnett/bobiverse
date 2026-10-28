@@ -361,6 +361,7 @@ def resync_cycle(
             # FR #4422: never skip silently — log why and surface retry/reset fields.
             why = bud.skip_reason("reconcile") or "budget-backoff"
             _log(f"WARN github-resync skipped: {why}")
+            _log(f"WARN github-resync resync_degraded reason={why}")
             return {
                 "ok": True,
                 "unaccepted": len(gitclaim.load_unaccepted(home)),
@@ -610,6 +611,14 @@ class ChairJobs:
                 if note == "budget-backoff":
                     why = res.get("skip_reason") or note
                     self.log(f"WARN github-resync skipped note={note} reason={why}")
+                    self.log(f"WARN github-resync resync_degraded reason={why}")
+                elif (
+                    res.get("failed")
+                    and not res.get("repos")
+                    and self.api_budget.in_backoff()
+                ):
+                    why = self.api_budget.skip_reason("reconcile") or "rate-limit-floor"
+                    self.log(f"WARN github-resync resync_degraded reason={why}")
                 else:
                     # FR #4959: surface unchanged= so repos=0 is not mistaken for "no repos".
                     self.log(
