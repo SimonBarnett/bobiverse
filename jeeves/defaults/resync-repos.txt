@@ -6,3 +6,4 @@ SimonBarnett/bobiverse
 SimonBarnett/xai-cookbook
 SimonBarnett/Club-Madeira
 SimonBarnett/ce-priority
+SimonBarnett/priority-branding

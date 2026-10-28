@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves-commands
 description: >
-  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, ping, or Jeeves permissions.
+  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, repo onboard / give-up clear (FR #5134), ping, or Jeeves permissions.
 
 ---
 
@@ -74,6 +74,16 @@ Chair pytest: `!assign` tests that hit `fr_row_offerable` must stamp fixture row
 ## !build (FR #4006 / skill FR #4038)
 
 Ops-only. `!build <owner/repo>[,...] <version> [ref]`, `!build status|cancel|dry-run`. Requires in-repo `.bobiverse/build.yml`. `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). Chair is token-less decide + announce; suite/pack/release run on the recipe machine (WP2). Full playbook (classification, announce lines, when to re-run): skill `bobiverse-build` / `jeeves/.grok/skills/bobiverse-build/SKILL.md` and `docs/bobiverse-build.md`.
+
+## Repo onboard + give-up clear (FR #5134)
+
+Full operator playbook: skill `bobiverse-jeeves-repos` (`jeeves/.grok/skills/bobiverse-jeeves-repos/SKILL.md`).
+
+- **Discovery file Jeeves reads:** `%USERPROFILE%\.jeeves\resync-repos.txt` (chair `--home` / `BOB_HOME`) via `configured_repos`, plus env `JEEVES_RESYNC_REPOS`, plus union of digest-home `focus.repos` (FR #3146). A twin is seeded at `%USERPROFILE%\.bobiverse\resync-repos.txt` but is not what discovery reads when homes differ.
+- **Onboard:** append `owner/repo` to the chair-home list (and/or `!focus low|medium|high owner/repo`), then `!resync`. Expected reply: `resync: roster refresh requested; GitHub FR/MRB re-sync queued; ...`. Example: `!focus low SimonBarnett/priority-branding` -> `focus: ... priority=9 (low)`.
+- **Give-up re-assign:** `GIVEUP_COOLDOWN_S=600`; clear **both** digest-home `queue.json` stamps (`giveup_seats`, `cooldown_until`, `giveup_ts`, `giveup_count`, `needs_human`) **and** `seat-ledger.json` `giveup["owner/repo#n"]` (lower-case key). `!resync` does **not** clear them. Then `!assign <seat> owner/repo FR|MRB|UAT|FIX N`. Back up both files first; never restart Jeeves during `!build`. Gap: recommend `!cleargiveup` (not implemented yet).
+
+`!help` already lists `!focus` and `!resync` for authorised principals.
 
 ## !installtest (FR #4026 WP3)
 

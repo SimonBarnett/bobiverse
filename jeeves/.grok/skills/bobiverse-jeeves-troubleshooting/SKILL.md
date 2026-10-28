@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves-troubleshooting
 description: >
-  Debug playbook for Jeeves/chair problems - command denials, empty queue, +h grant loops, webhook down alerts, roster/ChanServ, BobCallback permissions, DPAPI, NSSM. Use when the Jeeves chair, a webhook, or the roster misbehaves.
+  Debug playbook for Jeeves/chair problems - command denials, empty queue, +h grant loops, webhook down alerts, roster/ChanServ, BobCallback permissions, DPAPI, NSSM, repo onboard / give-up clear (FR #5134). Use when the Jeeves chair, a webhook, the roster, or a new-repo MRB filter misbehaves.
 ---
 
 # bobiverse-jeeves-troubleshooting
@@ -27,6 +27,8 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 
 | Symptom | Diagnosis / fix |
 |---|---|
+| New repo never gets FR/MRB after create | Not on the resync list / not focused. Edit chair-home `%USERPROFILE%\.jeeves\resync-repos.txt` (what `configured_repos` reads) and/or `!focus low owner/repo`, then `!resync`. Digest-home twin `%USERPROFILE%\.bobiverse\resync-repos.txt` is seeded but not discovery when homes differ. Full playbook: `bobiverse-jeeves-repos` (FR #5134). |
+| Need to re-feed a given-up job now | `!resync` does not clear give-ups. Back up digest-home `queue.json` + `seat-ledger.json`, clear row `giveup_seats`/`cooldown_until`/`giveup_ts`/`giveup_count`/`needs_human` and ledger `giveup["owner/repo#n"]` (lower-case), then `!assign`. Cooldown is `GIVEUP_COOLDOWN_S=600`. Never restart during `!build`. See `bobiverse-jeeves-repos`. |
 | Commands "do nothing" for the ear | The ear is only recognised as `bob-<machine>` for a machine on the roster. Check `!status roster:`; `!resync`; confirm the SASL account is logged in (`chan-privs` logs). |
 | Operator: Jeeves "not responding" but shop still assigns | Service can be healthy and offering while the **operator nick** is stuck unverified (WHOIS / account not linked). Check `chan-privs` / chair logs for unverified WHOIS on that nick; `Restart-Service ircJeeves` to refresh account/priv state. Leave seats alone; **never** restart `BobIrcd`/Ergo (harvest #2179). Dual BobCallback / `DigestLockBusy` is a separate heal path. |
 | Replies never arrive | Replies go by PM (not the channel). The chair logs `git-help pm nick=... kind=ear`; `cmd-trace.log` has the text. Rate limit: `!help`/`!list` 30 s per nick. |

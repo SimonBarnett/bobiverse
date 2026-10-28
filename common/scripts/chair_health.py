@@ -47,6 +47,7 @@ DEFAULT_RESYNC_REPOS = (
     "SimonBarnett/xai-cookbook",
     "SimonBarnett/Club-Madeira",
     "SimonBarnett/ce-priority",
+    "SimonBarnett/priority-branding",  # FR #5134
 )
 RESYNC_REPOS_NAME = "resync-repos.txt"
 

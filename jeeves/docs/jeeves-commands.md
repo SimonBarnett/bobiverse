@@ -115,6 +115,15 @@ per 30 minutes per nick (with a count of suppressed repeats); the WHOIS itself k
 
 `!resync` triggers the roster refresh and the GitHub resync immediately; `!status` reports both.
 
+## Onboard a repo + clear give-ups (FR #5134)
+
+Operator playbook skill: `jeeves/.grok/skills/bobiverse-jeeves-repos/SKILL.md` (`bobiverse-jeeves-repos`).
+
+* **Resync list Jeeves reads:** `%USERPROFILE%\.jeeves\resync-repos.txt` (chair `--home` / `BOB_HOME`) via `configured_repos`, plus `JEEVES_RESYNC_REPOS`, plus union of digest-home `focus.repos` (FR #3146). Install also seeds a twin under `%USERPROFILE%\.bobiverse\resync-repos.txt`; edit the chair-home file (or keep both identical).
+* **Onboard:** append `owner/repo`, `!focus low|medium|high owner/repo`, then `!resync` (reply: `resync: roster refresh requested; GitHub FR/MRB re-sync queued; ...`). Example: `!focus low SimonBarnett/priority-branding` -> `focus: SimonBarnett/priority-branding priority=9 (low)`. Webhook add needs Simon yes.
+* **Give-up clear:** `GIVEUP_COOLDOWN_S=600`. Clear both digest-home `queue.json` give-up stamps and `seat-ledger.json` `giveup["owner/repo#n"]` (lower-case). `!resync` does not clear them. Then `!assign`. Back up first; never restart Jeeves during `!build`. Recommended follow-up command: `!cleargiveup` (not implemented).
+* `!help` lists `!focus` and `!resync` for authorised principals.
+
 ## Remote worker start: `!startworker` (Bob ear, t810u)
 
 Not a chair command: it is handled by the **Bob ear of the target machine** (`bob-<machine>`), never by Jeeves (Jeeves runs no host ops).
