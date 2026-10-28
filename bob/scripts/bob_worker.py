@@ -6866,7 +6866,13 @@ class Supervisor:
             return bool(b is not None and want and getattr(b, "ack_open", False)
                         and getattr(b, "ack_job_ref", None) == want)
 
-        is_cursor = (self.kind or "").strip().lower() == "cursor"
+        kind = (self.kind or "").strip().lower()
+        is_cursor = kind == "cursor"
+        is_grok = kind == "grok"
+        # FR #5159: Grok also ACK-on-receipt (FR #4115 / #4889). Treating receipt ACK
+        # as ``block_on_receipt_ack`` skipped re-paste and left the job accepted
+        # (marchhare-29688 / regression of #4510).
+        receipt_ack = is_cursor or is_grok
 
         def _turn_running() -> bool:
             b = self.bored
@@ -6878,10 +6884,10 @@ class Supervisor:
             clear_local=_clear,
             is_acked=_acked,
             log=self.log,
-            giveup_on_fail=is_cursor,
-            block_on_receipt_ack=not is_cursor,
-            turn_running=_turn_running if is_cursor else (lambda: False),
-            clear_input=clear_console_input if is_cursor else (lambda: None),
+            giveup_on_fail=receipt_ack,
+            block_on_receipt_ack=not receipt_ack,
+            turn_running=_turn_running if receipt_ack else (lambda: False),
+            clear_input=clear_console_input if receipt_ack else (lambda: None),
         )
         self._recovery = rec
         return rec
