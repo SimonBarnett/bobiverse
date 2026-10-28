@@ -116,6 +116,17 @@ COMMANDS: tuple = (
                 "channel as Jeeves; the seat's ACK accepts it. Same checks as !bored: seat must be idle, no "
                 "self-MRB/UAT, row unaccepted and not cooldown/given-up. FIX (FR #4652) enqueues a red open PR from GitHub when missing; needs_human FIX rows are refused. UAT is per repo: use num 0. Reply by PM.",
                 ("focus", "list")),
+    CommandSpec(
+        "cleargiveup",
+        "!cleargiveup owner/repo#N [seat]",
+        "ops: clear queue giveup stamps and seat-ledger giveup for a job (FR #5135)",
+        OPS_ROLES,
+        "!cleargiveup SimonBarnett/bobiverse#5134 flamingo-9",
+        "Under the queue lock: drop giveup_seats / cooldown_until / giveup_ts / giveup_count / "
+        "needs_human on matching rows, or only the named seat from giveup_seats. Also clears "
+        "seat-ledger.json giveup[owner/repo#n] for that seat or the whole key. Reply by PM.",
+        ("assign", "list"),
+    ),
     CommandSpec("recycle", "!recycle [machine|all|dry-run [machine|all]]",
                 "route recycle to bob seats: bare/all = fleet; machine = one box; dry-run = plan only", OPS_ROLES,
                 "!recycle marchhare",
@@ -237,7 +248,7 @@ MATRIX = {
     "help": "any", "list": "any", "filter": "any", "status": "any", "ignored": "any", "ping": "any",
     "focus-read": "any",
     "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops", "build": "ops",
-    "installtest": "ops", "assign": "ops",
+    "installtest": "ops", "assign": "ops", "cleargiveup": "ops",
     "focus": "ops+allow", "unfocus": "ops+allow",
 }
 
@@ -263,6 +274,7 @@ def denied_line(cmd: str) -> str:
         "build": "build: denied (simon or bob-* ops only)",
         "installtest": "installtest: denied (simon or bob-* ops only)",
         "assign": "assign: denied (simon or bob-* ops only)",
+        "cleargiveup": "cleargiveup: denied (simon or bob-* ops only)",
     }.get(cmd, f"{cmd}: denied")
 
 

@@ -21,7 +21,7 @@ CHANS = ["#bobiverse", "#marchhare", "#win-mpre8vi4u6u", "#flamingo"]
 
 GH_JEEVES_COMMANDS = {"help", "list", "status", "resync", "sweep", "ignore", "ignored", "unignore",
                       "focus", "unfocus", "recycle"}          # gh-Jeeves/src/jeeves/commands.py @ 8d76d9a
-OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign", "build", "installtest"}
+OPS_ONLY = {"ignore", "unignore", "focus", "unfocus", "recycle", "resync", "sweep", "assign", "cleargiveup", "build", "installtest"}
 
 
 class FakeChair:
@@ -63,6 +63,7 @@ class FakeChair:
     for _n in ("handle_privmsg", "_maybe_chair_commands", "_maybe_git_list", "_maybe_git_help", "_maybe_focus_ignore", "_maybe_assign", "_git_say",
                "_handle_recycle_command", "_handle_bob_local_recycle_command", "_maybe_startworker",
                "_maybe_recycleseat",  # FR #5059 / #5120: handle_privmsg dispatches this after startworker
+               "_maybe_cleargiveup",  # FR #5135
                "_cc", "_ear_machine", "_account_of",
                "_principal", "_jobs", "_jobs_status_lines", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
                "_on_channel_names", "_workers"):
@@ -118,7 +119,7 @@ def test_registry_is_valid_and_has_every_gh_jeeves_command():
     assert cc.validate_registry() == []
     names = {c.name for c in cc.COMMANDS}
     assert GH_JEEVES_COMMANDS <= names
-    assert {"filter", "ping"} <= names
+    assert {"filter", "ping", "cleargiveup"} <= names
 
 
 def test_help_lists_every_command_for_owner_and_ear(chair):
@@ -179,6 +180,7 @@ def test_allowlist_env_is_focus_only(chair, monkeypatch):
     ("!recycle", "recycle: denied (authorised operator + services account required)"),
     ("!resync", "resync: denied (simon or bob-* ops only)"),
     ("!sweep #bobiverse", "sweep: denied (simon or bob-* ops only)"),
+    ("!cleargiveup o/a#1", "cleargiveup: denied (simon or bob-* ops only)"),
 ])
 def test_strangers_and_unverified_simon_are_denied_and_nothing_is_sent(chair, body, deny):
     for nick in ("mallory", "simon", "bob-nosuchbox"):
@@ -245,6 +247,20 @@ def test_ignore_family(chair, op):
     assert pm(chair, "mallory", "!ignored") == ["ignored (1):", "  o/a"]            # reads are open
     assert pm(chair, op, "!unignore o/a")[0] == "unignore: resumed o/a (new events only)"
     assert pm(chair, op, "!ignored") == ["ignored: (none)"]
+
+
+def test_cleargiveup_family(chair, op):
+    rows = gitclaim.load_unaccepted(chair.home)
+    rows[0]["needs_human"] = True
+    rows[0]["giveup_seats"] = "flamingo-1"
+    rows[0]["giveup_count"] = 1
+    gitclaim._write_queue(gitclaim.queue_path(chair.home), {"v": 1, "accepted": [], "unaccepted": rows})
+    gitclaim.ledger_giveup(chair.home, "flamingo-1", "o/a", "FR", "#1")
+    out = pm(chair, op, "!cleargiveup o/a#1")
+    assert out[0].startswith("cleargiveup: o/a#1 seat=all")
+    assert "queue_rows=1" in out[0]
+    assert not gitclaim.load_unaccepted(chair.home)[0].get("needs_human")
+    assert pm(chair, op, "!cleargiveup")[0].startswith("cleargiveup: usage")
 
 
 def test_focus_family(chair, op):
