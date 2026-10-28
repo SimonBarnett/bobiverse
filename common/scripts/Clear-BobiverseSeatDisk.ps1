@@ -27,11 +27,14 @@
   - FR #4883: when FreeGB is still under MinFreeGB after that, second pass:
     hardlink-dedupe identical agent.exe/grok.exe twins (keep both names, one
     extent), then reclaim nested .cursor/chats with KeepCursorHoursLow (default 6).
+  - FR #5154: when FreeGB is still under MinFreeGB after that, third pass:
+    reclaim known user-%TEMP% leftovers with KeepTempHoursLow (default 6) plus
+    extra pip/pytest dir names. Never wipe vscode/Outlook/NVIDIA TEMP trees.
 
   Never touches Ergo, ircd.yaml, secrets, the current seat session id, or
   running services. Pair with Clear-BobiverseJobWorktrees.ps1 for linked trees.
   When JobWorktrees prints FreeGB still low / removed=0, run this with -Reclaim
-  before filing a disk-capacity intake (FR #4192 / FR #4212 / FR #4864 / FR #4883).
+  before filing a disk-capacity intake (FR #4192 / FR #4212 / FR #4864 / FR #4883 / FR #5154).
 
 .EXAMPLE
   ..\scripts\Clear-BobiverseSeatDisk.ps1 -Reclaim -KeepSessionId 0ee19a2a-...
@@ -42,6 +45,7 @@ param(
     [string]$KeepSessionId = '',
     [int]$KeepSessionHours = 6,
     [int]$KeepTempHours = 24,
+    [int]$KeepTempHoursLow = 6,
     [int]$KeepCursorHours = 24,
     [int]$KeepCursorHoursLow = 6,
     [string]$GrokHome = '',
@@ -322,10 +326,49 @@ if ($freeNow -lt $MinFreeGB -and $CursorChatsRoot -and (Test-Path -LiteralPath $
     }
 }
 
+# FR #5154: third pass when user TEMP still dominates after 24h pattern cut.
+# Apply KeepTempHoursLow to known seat leftovers plus pip/pytest names.
+# Never wipe vscode / Outlook / NVIDIA / Diagnostics trees.
+$freeNow = Get-FreeGB
+if ($freeNow -lt $MinFreeGB -and $TempRoot -and (Test-Path -LiteralPath $TempRoot)) {
+    $lowTemp = [Math]::Abs([int]$KeepTempHoursLow)
+    if ($lowTemp -lt 1) { $lowTemp = 1 }
+    $keepTempHi = [Math]::Abs([int]$KeepTempHours)
+    if ($lowTemp -ge $keepTempHi) {
+        $lowTemp = [Math]::Max(1, $keepTempHi - 1)
+    }
+    $tempCutLow = (Get-Date).AddHours(-1 * $lowTemp)
+    Write-Host ("FR #5154 third-pass user-TEMP KeepTempHoursLow={0}" -f $lowTemp)
+    $lowPats = @(
+        'bobiverse-*', 'fr-*', 'mrb-*', 'pytest-of-*', 'gh-pr*', 'pr-*',
+        'pytest-*', 'pip-build-*', 'pip-install-*', 'pip-unpack*',
+        'pip-ephem-wheel-cache-*', 'a-search-*', 'priority-branding-*'
+    )
+    foreach ($pat in $lowPats) {
+        Get-ChildItem -LiteralPath $TempRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like $pat -and $_.LastWriteTime -lt $tempCutLow } |
+            ForEach-Object {
+                $removed += Remove-TreeSafe $_.FullName ('aged user-TEMP (low) ' + $pat)
+            }
+    }
+    Get-ChildItem -LiteralPath 'C:\Windows\Temp' -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-24) } |
+        ForEach-Object {
+            $removed += Remove-TreeSafe $_.FullName 'aged Windows\\Temp file (low 24h)'
+        }
+    foreach ($pat in $lowPats) {
+        Get-ChildItem -LiteralPath 'C:\Windows\Temp' -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like $pat -and $_.LastWriteTime -lt $tempCutLow } |
+            ForEach-Object {
+                $removed += Remove-TreeSafe $_.FullName ('aged Windows\\Temp dir (low) ' + $pat)
+            }
+    }
+}
+
 $freeNow = Get-FreeGB
 Write-Host ("Done removed_ops={0} FreeGB_now={1}" -f $removed, $freeNow)
 if ($freeNow -lt $MinFreeGB) {
-    Write-Warning ("FR #4192 / FR #4212 / FR #4226 / FR #4864 / FR #4883: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
+    Write-Warning ("FR #4192 / FR #4212 / FR #4226 / FR #4864 / FR #4883 / FR #5154: FreeGB={0} still below MinFreeGB={1} after SeatDisk reclaim (removed_ops={2}). Prefer a roomy drive for the job tree (e.g. D:\\...\\job-fr-N) or expand C: capacity; do not hand-delete C:\\ai\\* wt trees (FR #2727)." -f $freeNow, $MinFreeGB, $removed)
 
     # Ranked consumers so the next seat knows what still fills C: (live session / bin may remain).
     Write-Host '--- CRITICAL remaining consumers (GB) ---'
