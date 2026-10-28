@@ -8365,7 +8365,7 @@ def clear_giveup_job(
     home: Path, repo: str, ident: str, seat: str | None = None
 ) -> dict:
     """FR #5135: under the queue lock, clear giveup stamps + matching ledger entry."""
-    repo_c = (repo or "").strip()
+    repo_c = canonical_queue_repo((repo or "").strip()) or (repo or "").strip()
     ident_n = _norm_row_id(ident)
     seat_c = _canon_ledger_nick(seat) if seat else ""
     rows_n = 0
@@ -8376,7 +8376,7 @@ def clear_giveup_job(
                 for row in list(doc.get(bucket) or []):
                     if not isinstance(row, dict):
                         continue
-                    if str(row.get("repo") or "") != repo_c:
+                    if _repo_key(str(row.get("repo") or "")) != _repo_key(repo_c):
                         continue
                     if _norm_row_id(row.get("id")) != ident_n:
                         continue

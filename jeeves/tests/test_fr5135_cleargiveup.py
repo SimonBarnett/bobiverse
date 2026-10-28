@@ -89,3 +89,35 @@ def test_clear_giveup_job_one_seat(tmp_path):
     bucket = (led.get("giveup") or {}).get("o/a#1") or {}
     assert "flamingo-1" not in bucket
     assert "marchhare-2" in bucket
+
+def test_clear_giveup_job_repo_case_insensitive(tmp_path):
+    """Ops may type simonbarnett/... while queue stores SimonBarnett/... (fleet _repo_key)."""
+    home = tmp_path
+    gitclaim._write_queue(
+        gitclaim.queue_path(home),
+        {
+            "v": 1,
+            "accepted": [],
+            "unaccepted": [
+                {
+                    "repo": "SimonBarnett/bobiverse",
+                    "task": "FR",
+                    "id": "#5135",
+                    "needs_human": True,
+                    "giveup_count": 1,
+                    "giveup_seats": "marchhare-1",
+                    "cooldown_until": "2099-01-01T00:00:00Z",
+                    "giveup_ts": "2026-10-01T00:00:00Z",
+                }
+            ],
+        },
+    )
+    gitclaim.ledger_giveup(home, "marchhare-1", "SimonBarnett/bobiverse", "FR", "#5135")
+    out = gitclaim.clear_giveup_job(home, "simonbarnett/bobiverse", "#5135")
+    assert out["ok"] is True
+    assert out["queue_rows"] == 1
+    assert out["ledger"] >= 1
+    row = gitclaim.load_unaccepted(home)[0]
+    assert not row.get("needs_human")
+    assert not row.get("giveup_seats")
+
