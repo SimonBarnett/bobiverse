@@ -178,6 +178,37 @@ def classify_step_failure(step: str) -> FailureClass:
     return FailureClass(f"step:{step}", "step_failure", True, False, False)
 
 
+# FR #5121: pytest FAILED/ERROR nodeids — suite exit-code alone must not hide new failures.
+_PYTEST_FAILED_NODEID_RE = re.compile(
+    r"^(?:FAILED|ERROR)\s+(\S+?)(?:\s+-|\s*$)",
+    re.MULTILINE,
+)
+
+
+def parse_pytest_failed_nodeids(text: str) -> set[str]:
+    """Return pytest nodeids from FAILED/ERROR lines (set difference for build gate)."""
+    out: set[str] = set()
+    for m in _PYTEST_FAILED_NODEID_RE.finditer(text or ""):
+        nid = (m.group(1) or "").strip()
+        if nid:
+            out.add(nid)
+    return out
+
+
+def new_failing_nodeids(ref_stdout: str, baseline_stdout: str) -> set[str]:
+    """Nodeids failing at ref but not at baseline (incl. brand-new tests). FR #5121."""
+    return parse_pytest_failed_nodeids(ref_stdout) - parse_pytest_failed_nodeids(baseline_stdout)
+
+
+def append_pytest_nodeid(cmd: str, nodeid: str) -> str:
+    """Append a single nodeid for per-test solo rerun (FR #5121)."""
+    c = (cmd or "").rstrip()
+    n = (nodeid or "").strip()
+    if not n:
+        return c
+    return f"{c} {n}"
+
+
 # ------------------------------------------------------------------ dedupe
 
 
@@ -1072,51 +1103,80 @@ class BuildRunner:
                     blocking = True
                 baseline_failed = int(base_res.exit_code) != 0 or base_res.timed_out
 
-                solo_passed = False
+                # FR #5121: classify by failing nodeid set difference, not suite exit alone.
+                # While baseline is red, suite-level compare used to mark every new failure
+                # pre_existing. Diff FAILED/ERROR nodeids; only identical sets are pre_existing.
                 if ref_failed and not ref_res.timed_out:
-                    solo = self.run_command_fn(
-                        rendered_cmd,
-                        cwd=self._suite_cwd(suite),
-                        env=dict(suite.env or {}),
-                        timeout=float(suite.timeout),
-                        name=suite.name,
-                        ref_or_baseline=f"{self.ref}-solo",
-                    )
-                    report.suite_results.append(solo)
-                    self._write_log(f"{suite.name}-solo.log", solo.stdout)
-                    if solo.timed_out:
-                        failure = classify_step_failure(f"suite:{suite.name}:solo-timeout")
-                        filed = file_blocker_or_dedupe(
-                            self.filer,
-                            repo=self.repo,
-                            version=self.version,
-                            ref=self.ref,
-                            failure=failure,
-                            log_excerpt=solo.stdout[-1500:],
-                        )
-                        report.blockers_filed.append(filed)
-                        blocking = True
-                        continue
-                    solo_passed = int(solo.exit_code) == 0
-
-                if ref_failed:
-                    failure = classify_failure(
-                        suite.name,
-                        ref_failed=True,
-                        baseline_failed=baseline_failed,
-                        solo_passed=solo_passed,
-                    )
-                    if failure.kind in ("new_regression", "step_failure"):
-                        filed = file_blocker_or_dedupe(
-                            self.filer,
-                            repo=self.repo,
-                            version=self.version,
-                            ref=self.ref,
-                            failure=failure,
-                            log_excerpt=ref_res.stdout[-1500:],
-                        )
-                        report.blockers_filed.append(filed)
-                        blocking = True
+                    new_ids = sorted(new_failing_nodeids(ref_res.stdout, base_res.stdout))
+                    if not new_ids:
+                        ref_ids = parse_pytest_failed_nodeids(ref_res.stdout)
+                        if not ref_ids:
+                            # Fail closed: red suite with unparseable output.
+                            failure = classify_failure(
+                                suite.name,
+                                ref_failed=True,
+                                baseline_failed=False,
+                                solo_passed=False,
+                            )
+                            filed = file_blocker_or_dedupe(
+                                self.filer,
+                                repo=self.repo,
+                                version=self.version,
+                                ref=self.ref,
+                                failure=failure,
+                                log_excerpt=ref_res.stdout[-1500:],
+                            )
+                            report.blockers_filed.append(filed)
+                            blocking = True
+                        # else: identical failing set vs baseline → pre_existing, do not block
+                    else:
+                        for tid in new_ids:
+                            solo_cmd = append_pytest_nodeid(rendered_cmd, tid)
+                            solo = self.run_command_fn(
+                                solo_cmd,
+                                cwd=self._suite_cwd(suite),
+                                env=dict(suite.env or {}),
+                                timeout=float(suite.timeout),
+                                name=suite.name,
+                                ref_or_baseline=f"{self.ref}-solo",
+                            )
+                            report.suite_results.append(solo)
+                            safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", tid)[:80]
+                            self._write_log(f"{suite.name}-solo-{safe}.log", solo.stdout)
+                            if solo.timed_out:
+                                failure = classify_step_failure(
+                                    f"suite:{suite.name}:solo-timeout:{tid}"
+                                )
+                                filed = file_blocker_or_dedupe(
+                                    self.filer,
+                                    repo=self.repo,
+                                    version=self.version,
+                                    ref=self.ref,
+                                    failure=failure,
+                                    log_excerpt=solo.stdout[-1500:],
+                                )
+                                report.blockers_filed.append(filed)
+                                blocking = True
+                                continue
+                            solo_passed = int(solo.exit_code) == 0
+                            # New vs baseline by set diff ⇒ baseline_failed=False for this id.
+                            failure = classify_failure(
+                                tid,
+                                ref_failed=True,
+                                baseline_failed=False,
+                                solo_passed=solo_passed,
+                            )
+                            if failure.kind in ("new_regression", "step_failure"):
+                                filed = file_blocker_or_dedupe(
+                                    self.filer,
+                                    repo=self.repo,
+                                    version=self.version,
+                                    ref=self.ref,
+                                    failure=failure,
+                                    log_excerpt=ref_res.stdout[-1500:],
+                                )
+                                report.blockers_filed.append(filed)
+                                blocking = True
             except Exception as exc:
                 # FR #4316: LiveStateTouched / unexpected runner aborts must auto-file
                 # (suite regressions already file above; guard raises never reached that path).
