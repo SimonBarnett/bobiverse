@@ -44,10 +44,10 @@ No recipe => chair refuses. Same repo already building => refuse with running id
 
 | Kind | Rule | Blocks pack/release? |
 |---|---|---|
-| `new_regression` | Fails at ref, passes at baseline | **Yes** --- one intake issue (`feature-request` + `release-blocker`), deduped by test id |
+| `new_regression` | Pytest `FAILED`/`ERROR` nodeid at ref but not at baseline (set difference; FR #5121). Brand-new failing tests count. Red suite with no parseable nodeids fail-closed. | **Yes** --- one intake issue (`feature-request` + `release-blocker`), deduped by test id |
 | `step_failure` | Pack/fetch/upload/timeout step failed | **Yes** --- same filing path |
-| `pre_existing` | Fails at both ref and baseline | No |
-| `flaky` | Ref fail, one solo rerun at ref passes | No |
+| `pre_existing` | Same failing nodeid set at ref and baseline. **Never** treat suite-exit-only red as pre_existing while baseline is also red (that hid v1.0.5 117→132). | No |
+| `flaky` | New nodeid at ref, one solo rerun at ref passes | No |
 
 Hard timeouts (FR #3965 class) via `run_command` kill + `timed_out` => `step_failure`.
 

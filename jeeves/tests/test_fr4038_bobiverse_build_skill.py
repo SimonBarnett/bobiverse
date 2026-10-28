@@ -19,6 +19,10 @@ def test_fr4038_bobiverse_build_skill_exists_and_covers_contract():
     assert "name: bobiverse-build" in t
     assert "zero" in t.lower() and "token" in t.lower()
     assert "new_regression" in t and "pre_existing" in t and "flaky" in t and "step_failure" in t
+    # FR #5121 / MRB #5123: nodeid set-diff, not suite-exit pre_existing
+    assert "FR #5121" in t
+    assert "nodeid" in t.lower()
+    assert "set difference" in t.lower() or "set-diff" in t.lower()
     assert "dry-run" in t and "BUILD v1" in t
     assert "release-blocker" in t
     assert "When to" in t and "!build" in t
@@ -30,6 +34,8 @@ def test_fr4038_docs_and_commands_cross_link_skill():
     docs = _utf8(DOCS)
     assert "jeeves/.grok/skills/bobiverse-build/SKILL.md" in docs
     assert "FR #4038" in docs
+    assert "FR #5121" in docs
+    assert "nodeid" in docs.lower()
     cmd = _utf8(COMMANDS)
     assert "bobiverse-build" in cmd
     assert "FR #4038" in cmd
