@@ -2466,6 +2466,11 @@ class CursorTurnWatcher:
             return None
         now = float(self.clock())
         m = self._newest_mtime(d)
+        # FR #5129: under full-suite load, file mtimes can briefly read as 0 while the
+        # chat dir is already bound; fall back to directory mtime so turn_started fires.
+        if m <= 0.0:
+            with contextlib.suppress(OSError):
+                m = float(d.stat().st_mtime)
         fired = None
         if m > self._last_mtime:
             self._last_mtime = m

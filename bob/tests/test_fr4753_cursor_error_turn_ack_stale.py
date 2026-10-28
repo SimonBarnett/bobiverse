@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import bob_worker as bw
-from test_cursor_turn_watcher import _arm_transcript, _chat, _touch, _user_line
+from test_cursor_turn_watcher import _arm_transcript, _chat, _freeze_chat_times, _touch, _user_line
 from test_fr2802_bored_on_turn_end import FakeClock, _emitter, _wait
 
 
@@ -27,7 +27,7 @@ def test_cursor_turn_ended_status_error_arms_done_miss(tmp_path: Path):
     d = _chat(tmp_path, born=t0)
     projects = tmp_path / "projects"
     path = _arm_transcript(d, projects, [_user_line("FROM Jeeves")])
-    os.utime(path, (t0, t0))
+    _freeze_chat_times(d, t0, transcript=path)
     w = bw.CursorTurnWatcher(
         since_wall=t0 - 1,
         chats_root=tmp_path,
