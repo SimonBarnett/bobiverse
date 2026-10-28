@@ -331,6 +331,7 @@ routes to bobiverse via the split rule.
 - Vendor Sync-BobTrayFromAgenticBuild wipes OutDir; every Watch-dotsourced tray helper (StartWorker, RecycleSeat) must be in ownedTools or a re-sync deletes it.
 - Give-up/NACK exclusions are exact-seat only; a recycled nick on the same machine must not inherit a dead predecessor giveup_seats on auto-offer. needs_human stays global.
 - When handle_privmsg gains a new _maybe_* dispatch, bind that Client method on FakeChair in test_chair_commands_020 or every fall-through command raises AttributeError.
+- After MRB FAIL opens a companion fix PR, the FIX seat should fast-forward the assigned tip with that commit (HEAD:fr-N) so the original PR carries the fix; then close the companion as duplicate of the tip push.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
