@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
 
 import bob_worker as bw
 
@@ -20,7 +19,7 @@ def _chat(root, name="chat1", born=None):
     f.write_bytes(b"x")
     if born is not None:
         # FR #4754: on Windows CursorTurnWatcher._bind uses directory
-        # st_mtime/st_ctime only; utime store.db alone leaves dir born â‰ˆ now.
+        # st_mtime/st_ctime only; utime store.db alone leaves dir born ~= now.
         os.utime(f, (born, born))
         os.utime(d, (born, born))
     return d
@@ -155,6 +154,7 @@ def test_final_assistant_text_then_quiet_ends_once(tmp_path):
     d = _chat(tmp_path, born=t0)
     projects = tmp_path / "projects"
     path = _arm_transcript(d, projects, [_tool_line()])
+    _freeze_chat_times(d, t0, transcript=path)
     now = [t0 + 1]
     ev = []
     w = bw.CursorTurnWatcher(
@@ -192,6 +192,17 @@ def test_user_line_keeps_turn_open(tmp_path):
     now[0] = t0 + 120
     assert w.tick() is None
     assert w._active is True
+
+
+def test_mrb5130_tick_started_when_file_mtimes_read_zero(tmp_path, monkeypatch):
+    """Hostile: _newest_mtime 0 still starts when the bound chat dir has a real mtime (FR #5129)."""
+    t0 = time.time()
+    _chat(tmp_path, born=t0)
+    w = bw.CursorTurnWatcher(
+        since_wall=t0, chats_root=tmp_path, quiet_s=20, clock=lambda: t0 + 1,
+    )
+    monkeypatch.setattr(w, "_newest_mtime", lambda _d: 0.0)
+    assert w.tick() == "started"
 
 
 def test_quiet_env_clamped(monkeypatch):
