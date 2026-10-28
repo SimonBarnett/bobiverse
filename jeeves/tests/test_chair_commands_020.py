@@ -61,7 +61,9 @@ class FakeChair:
     def _refresh_ledger(self): pass          # no GitHub lookups in unit tests
 
     for _n in ("handle_privmsg", "_maybe_chair_commands", "_maybe_git_list", "_maybe_git_help", "_maybe_focus_ignore", "_maybe_assign", "_git_say",
-               "_handle_recycle_command", "_handle_bob_local_recycle_command", "_maybe_startworker", "_cc", "_ear_machine", "_account_of",
+               "_handle_recycle_command", "_handle_bob_local_recycle_command", "_maybe_startworker",
+               "_maybe_recycleseat",  # FR #5059 / #5120: handle_privmsg dispatches this after startworker
+               "_cc", "_ear_machine", "_account_of",
                "_principal", "_jobs", "_jobs_status_lines", "_whois_hint", "_cmd_trace", "_cmd_reply", "_privs", "_privs_skip_whois",
                "_on_channel_names", "_workers"):
         locals()[_n] = getattr(irc_agent.Client, _n)
