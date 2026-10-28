@@ -10,3 +10,11 @@ def test_empty_offer_operator_prefers_cleargiveup():
     assert "!cleargiveup owner/repo#N" in text
     assert "Preferred (FR #5135)" in text
     assert "ledger_clear_giveup" in text  # fallback retained
+
+
+def test_jeeves_commands_cleargiveup_not_marked_unimplemented():
+    cmd = ROOT / "jeeves" / "docs" / "jeeves-commands.md"
+    text = cmd.read_text(encoding="utf-8")
+    assert "!cleargiveup" in text
+    assert "(not implemented)" not in text
+    assert "Preferred (FR #5135)" in text or "FR #5135" in text
