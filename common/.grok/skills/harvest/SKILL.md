@@ -331,6 +331,7 @@ routes to bobiverse via the split rule.
 - Vendor Sync-BobTrayFromAgenticBuild wipes OutDir; every Watch-dotsourced tray helper (StartWorker, RecycleSeat) must be in ownedTools or a re-sync deletes it.
 - Give-up/NACK exclusions are exact-seat only; a recycled nick on the same machine must not inherit a dead predecessor giveup_seats on auto-offer. needs_human stays global.
 - When handle_privmsg gains a new _maybe_* dispatch, bind that Client method on FakeChair in test_chair_commands_020 or every fall-through command raises AttributeError.
+- Jeeves discovery reads chair-home %USERPROFILE%\.jeeves\resync-repos.txt (configured_repos), not the digest-home twin; focus.repos still unions via FR #3146; give-up recovery must clear both queue stamps and seat-ledger giveup[owner/repo#n] — !resync does not.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
