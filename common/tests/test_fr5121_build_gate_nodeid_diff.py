@@ -175,3 +175,89 @@ def test_fr5121_new_test_file_that_fails_blocks(tmp_path: Path):
     assert report.ok is False
     assert pack_calls == []
     assert report.blockers_filed[0]["kind"] == "new_regression"
+
+
+def test_mrb5122_error_nodeid_counts_as_fail():
+    """Hostile: collection ERROR lines must enter the set (not FAILED-only)."""
+    text = "ERROR jeeves/tests/test_broken.py::test_x - ImportError\n"
+    assert bb.parse_pytest_failed_nodeids(text) == {"jeeves/tests/test_broken.py::test_x"}
+    assert bb.new_failing_nodeids(text, "FAILED other.py::t - x\n") == {
+        "jeeves/tests/test_broken.py::test_x"
+    }
+
+
+def test_mrb5122_unparseable_red_fail_closed(tmp_path: Path):
+    """Hostile: red tip with no FAILED/ERROR nodeids must block pack (fail closed)."""
+    filer = bb.FakeGitHubFiler()
+    pack_calls: list = []
+
+    def run_fn(cmd, cwd=None, env=None, timeout=None, name="cmd", ref_or_baseline="", **_):
+        if ref_or_baseline == "tip":
+            return bb.SuiteRunResult(name, ref_or_baseline, 1, "boom no pytest lines\n", False, 0.01)
+        if ref_or_baseline == "baseline":
+            return bb.SuiteRunResult(name, ref_or_baseline, 1, BASE_LOG, False, 0.01)
+        return bb.SuiteRunResult(name, ref_or_baseline, 0, "ok", False, 0.01)
+
+    runner = bb.BuildRunner(
+        tmp_path,
+        "SimonBarnett/bobiverse",
+        "1.0.6",
+        "tip",
+        _mini_recipe(),
+        filer,
+        work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs",
+        local_machine="ionos",
+        run_command_fn=run_fn,
+        pack_fn=lambda **k: pack_calls.append(k) or [],
+        release_fn=lambda **k: None,
+        baseline_resolver=lambda *a, **k: "baseline",
+    )
+    report = runner.run()
+    assert report.ok is False
+    assert pack_calls == []
+    assert report.blockers_filed
+    assert report.blockers_filed[0]["kind"] == "new_regression"
+
+
+def test_mrb5122_error_nodeid_counts_as_fail():
+    """Hostile: collection ERROR lines must enter the set (not FAILED-only)."""
+    text = "ERROR jeeves/tests/test_broken.py::test_x - ImportError\n"
+    assert bb.parse_pytest_failed_nodeids(text) == {"jeeves/tests/test_broken.py::test_x"}
+    assert bb.new_failing_nodeids(text, "FAILED other.py::t - x\n") == {
+        "jeeves/tests/test_broken.py::test_x"
+    }
+
+
+def test_mrb5122_unparseable_red_fail_closed(tmp_path: Path):
+    """Hostile: red tip with no FAILED/ERROR nodeids must block pack (fail closed)."""
+    filer = bb.FakeGitHubFiler()
+    pack_calls: list = []
+
+    def run_fn(cmd, cwd=None, env=None, timeout=None, name="cmd", ref_or_baseline="", **_):
+        if ref_or_baseline == "tip":
+            return bb.SuiteRunResult(name, ref_or_baseline, 1, "boom no pytest lines\n", False, 0.01)
+        if ref_or_baseline == "baseline":
+            return bb.SuiteRunResult(name, ref_or_baseline, 1, BASE_LOG, False, 0.01)
+        return bb.SuiteRunResult(name, ref_or_baseline, 0, "ok", False, 0.01)
+
+    runner = bb.BuildRunner(
+        tmp_path,
+        "SimonBarnett/bobiverse",
+        "1.0.6",
+        "tip",
+        _mini_recipe(),
+        filer,
+        work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs",
+        local_machine="ionos",
+        run_command_fn=run_fn,
+        pack_fn=lambda **k: pack_calls.append(k) or [],
+        release_fn=lambda **k: None,
+        baseline_resolver=lambda *a, **k: "baseline",
+    )
+    report = runner.run()
+    assert report.ok is False
+    assert pack_calls == []
+    assert report.blockers_filed
+    assert report.blockers_filed[0]["kind"] == "new_regression"
