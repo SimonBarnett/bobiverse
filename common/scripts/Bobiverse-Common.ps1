@@ -1137,6 +1137,7 @@ function Resolve-BobiverseNssm {
 }
 
 function Resolve-BobiversePython {
+    param([switch]$AllowMissing)
     $py = Get-Command python.exe -ErrorAction SilentlyContinue
     if ($py) { return $py.Source }
     foreach ($c in @(
@@ -1146,6 +1147,7 @@ function Resolve-BobiversePython {
         )) {
         if (Test-Path -LiteralPath $c) { return $c }
     }
+    if ($AllowMissing) { return $null }
     throw 'python.exe not found (run Install-BootstrapTools.ps1)'
 }
 

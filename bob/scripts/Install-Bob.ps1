@@ -98,7 +98,9 @@ Write-Host "INFO MachineId=$MachineId nick=$nick"
 
 $Nssm = Resolve-BobiverseNssm -Preferred $Nssm -ScriptDir $here
 if (-not $Nssm) { throw 'nssm missing' }
-if (-not $Python) { $Python = Resolve-BobiversePython }
+# FR #5150: MSI upgrade ships scripts\bob-ear.exe. Missing python (SYSTEM PATH
+# after soft-fail bootstrap) must not 1603 the CA when the frozen ear is present.
+if (-not $Python) { $Python = Resolve-BobiversePython -AllowMissing }
 $user = Resolve-BobiverseServiceUser
 
 # FR #3904: read prior identity BEFORE Remove-BobiverseService (airc FR #1552 pattern).
@@ -261,7 +263,14 @@ if (Test-Path $skillsSrc) {
     Install-BobiverseSkills -RepoSkillsRoot $skillsDest -SkillNames (Get-BobiverseSkillNames -SkillsRoot $skillsDest -Product 'bob')
 }
 
-Install-BobiversePythonDeps -Python $Python
+$earExe = Join-Path $InstallRoot 'scripts\bob-ear.exe'
+if ($Python) {
+    Install-BobiversePythonDeps -Python $Python
+} elseif (Test-Path -LiteralPath $earExe -PathType Leaf) {
+    Write-Host 'WARN FR #5150 python missing; bob-ear.exe present - skip python deps'
+} else {
+    throw 'python.exe not found (run Install-BootstrapTools.ps1)'
+}
 # FR #3904: resolve Ergo PASS from sibling airc/jeeves when bob config is empty; seed local copy.
 [void](Import-BobiverseErgoPassword -InstallRoot $InstallRoot -HomeDir $BobHome)
 if (-not $env:BOB_IRC_PASSWORD) {
