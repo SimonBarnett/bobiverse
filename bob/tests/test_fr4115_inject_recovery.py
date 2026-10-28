@@ -155,13 +155,15 @@ def test_nack_line_and_outbox_append(tmp_path):
 
 
 def test_supervisor_recovery_writes_nack_to_run_dir_outbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_WORKER_SUBMIT_VERIFY_GIVEUP_GRACE_S", "0")
     sup, logs, clock, injected, relay = _sup(tmp_path, monkeypatch)
     sup.ack_miss.note_inject(ASSIGN, 0.0, own_nick=sup.nick)
     relay.last_unacked = ASSIGN
     res = sup._inject_recovery().on_failed(ASSIGN, attempt=2)
-    assert res == "nacked"
+    # FR #5159: grok ACK-on-receipt seats GIVEUP after a second paste fail (same as Cursor #4510).
+    assert res == "giveup"
     ob = bw.outbox_path_for_run(tmp_path)
-    assert "NACK MRB SimonBarnett/bobiverse#4116 inject failed" in ob.read_text(encoding="utf-8")
+    assert "GIVEUP MRB SimonBarnett/bobiverse#4116 submit-verify failed" in ob.read_text(encoding="utf-8")
     assert sup.ack_miss.last_line == ""  # cleared locally: no ack-miss recycle for a NACKed job
     assert relay.last_unacked == ""
 
