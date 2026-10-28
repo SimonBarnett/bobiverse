@@ -154,6 +154,7 @@ def test_final_assistant_text_then_quiet_ends_once(tmp_path):
     d = _chat(tmp_path, born=t0)
     projects = tmp_path / "projects"
     path = _arm_transcript(d, projects, [_tool_line()])
+    _freeze_chat_times(d, t0, transcript=path)
     now = [t0 + 1]
     ev = []
     w = bw.CursorTurnWatcher(
