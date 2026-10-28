@@ -21,9 +21,9 @@ Agent playbook: `jeeves/.grok/skills/bobiverse-build/SKILL.md` (FR #4038) --- ho
 
 | Kind | Rule |
 |---|---|
-| `new_regression` | Fails at ref, passes at baseline |
-| `pre_existing` | Fails at both |
-| `flaky` | Ref fail, one solo rerun at ref passes |
+| `new_regression` | `FAILED`/`ERROR` nodeid at ref not in baseline (FR #5121 set difference) |
+| `pre_existing` | Identical failing nodeid set at ref and baseline (not suite exit alone) |
+| `flaky` | New nodeid at ref, one solo rerun at ref passes |
 | `step_failure` | Pack/fetch/upload step failed |
 
 New regressions and step failures → one intake issue each (`feature-request` + `release-blocker`), deduped by test id / error signature.
