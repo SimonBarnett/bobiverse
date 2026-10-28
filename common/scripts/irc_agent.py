@@ -3033,6 +3033,47 @@ class Client:
         info(f"INFO git-assign sent {line} by={src} kind={who.kind}")
         return True
 
+    def _maybe_cleargiveup(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
+        """Chair only (FR #5135): ``!cleargiveup owner/repo#N [seat]`` ops PM/channel, reply PM."""
+        if not getattr(self.args, "chair", False):
+            return False
+        if not body.lstrip().lower().startswith("!cleargiveup"):
+            return False
+        if to_channel and not self._joined_channel(target):
+            return False
+        if src.lower() in self._mine_nicks():
+            return True
+        who = self._principal(src)
+        if not who.ops:
+            self._cmd_reply(src, "cleargiveup", [chair_commands.denied_line("cleargiveup")])
+            self._whois_hint(src)
+            info(f"INFO cleargiveup denied nick={src} kind={who.kind}")
+            return True
+        parsed = gitclaim.parse_cleargiveup_cmd(body)
+        if parsed is None:
+            self._cmd_reply(
+                src,
+                "cleargiveup",
+                ["cleargiveup: usage !cleargiveup owner/repo#N [seat]"],
+            )
+            return True
+        repo, ident, seat = parsed
+        out = gitclaim.clear_giveup_job(self.home, repo, ident, seat=seat or None)
+        if not out.get("ok"):
+            self._cmd_reply(src, "cleargiveup", ["cleargiveup: refused - lock"])
+            return True
+        who_s = out.get("seat") or "all"
+        self._cmd_reply(
+            src,
+            "cleargiveup",
+            [
+                f"cleargiveup: {out.get('repo')}{out.get('id')} seat={who_s} "
+                f"queue_rows={out.get('queue_rows')} ledger={out.get('ledger')}"
+            ],
+        )
+        info(f"INFO cleargiveup {repo}{ident} seat={who_s} by={src} kind={who.kind}")
+        return True
+
     def _maybe_focus_ignore(self, src: str, target: str, body: str, *, to_channel: bool) -> bool:
         """Chair only (#39 gap 3): !focus / !unfocus / !focus strict / !ignore / !unignore / !ignored.
 
@@ -3486,6 +3527,8 @@ class Client:
         if self._maybe_git_help(src, target, body, to_channel=to_channel):
             return
         if self._maybe_assign(src, target, body, to_channel=to_channel):
+            return
+        if self._maybe_cleargiveup(src, target, body, to_channel=to_channel):
             return
         if self._maybe_focus_ignore(src, target, body, to_channel=to_channel):
             return

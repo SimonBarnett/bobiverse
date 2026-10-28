@@ -8304,6 +8304,104 @@ def ledger_clear_giveup(
     return cleared[0]
 
 
+_CLEARGIVEUP_CMD = re.compile(
+    r"^!cleargiveup\s+(\S+?)#(\d+)(?:\s+(\S+))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_cleargiveup_cmd(body: str) -> tuple[str, str, str] | None:
+    """``!cleargiveup owner/repo#N [seat]`` -> (repo, '#N', seat-or-empty) (FR #5135)."""
+    m = _CLEARGIVEUP_CMD.match((body or "").strip())
+    if not m:
+        return None
+    return m.group(1).strip().strip("{}"), f"#{int(m.group(2))}", (m.group(3) or "").strip()
+
+
+def ledger_clear_giveup_entry(
+    home: Path, repo: str, ident: str, nick: str | None = None
+) -> int:
+    """FR #5135: drop ``giveup[owner/repo#n]`` for one seat or the whole key."""
+    key = _lkey(repo, ident)
+    me = _canon_ledger_nick(nick) if nick else ""
+    cleared = [0]
+
+    def _f(doc: dict) -> None:
+        gu = doc.get("giveup") or {}
+        bucket = gu.get(key)
+        if not isinstance(bucket, dict):
+            return
+        if me:
+            if me in bucket:
+                bucket.pop(me, None)
+                cleared[0] += 1
+            if not bucket:
+                gu.pop(key, None)
+        else:
+            cleared[0] += len(bucket)
+            gu.pop(key, None)
+
+    try:
+        _ledger_update(home, _f)
+    except OSError:
+        return 0
+    return cleared[0]
+
+
+def _strip_giveup_seat_from_row(row: dict, seat: str) -> None:
+    want = _canon_ledger_nick(seat)
+    kept = [
+        x.strip()
+        for x in str(row.get("giveup_seats") or "").split(",")
+        if x.strip() and _canon_ledger_nick(x) != want
+    ]
+    if kept:
+        row["giveup_seats"] = ",".join(kept)
+    else:
+        row.pop("giveup_seats", None)
+
+
+def clear_giveup_job(
+    home: Path, repo: str, ident: str, seat: str | None = None
+) -> dict:
+    """FR #5135: under the queue lock, clear giveup stamps + matching ledger entry."""
+    repo_c = canonical_queue_repo((repo or "").strip()) or (repo or "").strip()
+    ident_n = _norm_row_id(ident)
+    seat_c = _canon_ledger_nick(seat) if seat else ""
+    rows_n = 0
+    try:
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            for bucket in ("unaccepted", "accepted"):
+                for row in list(doc.get(bucket) or []):
+                    if not isinstance(row, dict):
+                        continue
+                    if _repo_key(str(row.get("repo") or "")) != _repo_key(repo_c):
+                        continue
+                    if _norm_row_id(row.get("id")) != ident_n:
+                        continue
+                    if seat_c:
+                        _strip_giveup_seat_from_row(row, seat_c)
+                    else:
+                        for k in ("giveup_seats", "cooldown_until", "giveup_ts", "needs_human"):
+                            row.pop(k, None)
+                        row["giveup_count"] = 0
+                    rows_n += 1
+            if rows_n:
+                _write_queue(queue_path(home), doc)
+    except (TimeoutError, OSError):
+        return {"ok": False, "error": "lock", "queue_rows": 0, "ledger": 0}
+    ledger_n = ledger_clear_giveup_entry(home, repo_c, ident_n, nick=seat_c or None)
+    return {
+        "ok": True,
+        "queue_rows": rows_n,
+        "ledger": ledger_n,
+        "seat": seat_c,
+        "repo": repo_c,
+        "id": ident_n,
+    }
+
+
 def live_seats_matching_require_machine(live: set[str], required: str) -> list[str]:
     """Live seat nicks that match a ``require_machine`` pin (FR #2446)."""
     req = str(required or "").strip()
