@@ -19,6 +19,7 @@
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
   FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
   and verify DONE sha256; reverse stream uses airc_dcc_bulk.py (TLS default on).
+  FR #5194: Put uses DCC by default when an Outbox is supplied; -ForceIrc retains chunked PUT.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Remote')]
 param(
@@ -58,6 +59,19 @@ param(
 
     [Parameter(ParameterSetName = 'Remote')]
     [string]$SandboxRoot = '',
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [switch]$ForceIrc,
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [string]$DccHost = '',
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [string]$DccRelay = '',
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [ValidateRange(1, 120)]
+    [int]$DccTimeoutSec = 10,
 
     [Parameter(ParameterSetName = 'Remote')]
     [ValidateRange(0, 10000)]
@@ -213,6 +227,84 @@ function New-AircPutChunks {
     }
 }
 
+function Start-AircDccUploadListener {
+    param(
+        [Parameter(Mandatory)][string]$LocalFile,
+        [Parameter(Mandatory)][int]$TimeoutSec,
+        [string]$AdvertiseHost = '',
+        [string]$Relay = ''
+    )
+    $scriptDir = $PSScriptRoot
+    $helper = Join-Path $scriptDir 'airc_dcc_upload.py'
+    if (-not (Test-Path -LiteralPath $helper)) { throw 'DCC upload helper missing' }
+
+    $python = ''
+    if ($env:AIRC_PYTHON -and $env:AIRC_PYTHON.Trim()) {
+        $python = $env:AIRC_PYTHON.Trim()
+    } else {
+        $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+        if (-not $pythonCommand) { $pythonCommand = Get-Command python -ErrorAction SilentlyContinue }
+        if ($pythonCommand) { $python = $pythonCommand.Source }
+    }
+    if (-not $python) { throw 'Python unavailable for DCC upload' }
+
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) (
+        'airc-dcc-upload-' + [guid]::NewGuid().ToString('N')
+    )
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $offerPath = Join-Path $dir 'offer.json'
+    $args = @(
+        $helper, '--file', (Resolve-Path -LiteralPath $LocalFile).Path,
+        '--offer-file', $offerPath, '--timeout', [string]$TimeoutSec
+    )
+    if ($AdvertiseHost) { $args += @('--advertise-host', $AdvertiseHost) }
+    if ($Relay) { $args += @('--relay', $Relay) }
+    $quotedArgs = @($args | ForEach-Object {
+        '"' + ([string]$_).Replace('"', '\"') + '"'
+    }) -join ' '
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $python
+    $startInfo.Arguments = $quotedArgs
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $startInfo
+    try {
+        if (-not $proc.Start()) { throw 'DCC upload helper did not start' }
+        $deadline = [datetime]::UtcNow.AddSeconds(15)
+        while ([datetime]::UtcNow -lt $deadline) {
+            if (Test-Path -LiteralPath $offerPath) {
+                $offer = Get-Content -LiteralPath $offerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                return [pscustomobject]@{
+                    Process = $proc
+                    Offer = $offer
+                    Directory = $dir
+                }
+            }
+            if ($proc.HasExited) { throw 'DCC upload listener could not start' }
+            Start-Sleep -Milliseconds 100
+        }
+        throw 'DCC upload listener startup timed out'
+    } catch {
+        try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Stop-AircDccUploadListener {
+    param([AllowNull()]$Session)
+    if ($null -eq $Session) { return }
+    $proc = $Session.Process
+    if ($proc -and -not $proc.HasExited) {
+        try { $proc.Kill() } catch { }
+        try { $proc.WaitForExit(3000) | Out-Null } catch { }
+    }
+    if ($Session.Directory) {
+        Remove-Item -LiteralPath $Session.Directory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function New-AircDccListenOffer {
     <#
       FR #5008: build a DCCLISTEN control line for the caller/ear.
@@ -300,6 +392,7 @@ function ConvertFrom-AircRemoteReply {
                     if ($tok -match '^via=(.+)$') { $via = $Matches[1] }
                     elseif ($tok -match '^bytes=(\d+)$') { $bytes = [int]$Matches[1] }
                     elseif ($tok -match '^sha256=([0-9a-f]+)$') { $sha = $Matches[1] }
+                    elseif ($tok -match '^reason=(.+)$') { $reason = $Matches[1] }
                     elseif (-not $reason -and $tok -notmatch '=') { $reason = $tok }
                 }
             }
@@ -785,10 +878,16 @@ function New-AircRemoteAttemptBodies {
         [string]$PathBody,
         [string]$LocalFilePath,
         [int]$ChunkSize,
-        [string]$Sandbox
+        [string]$Sandbox,
+        [bool]$UseDccPut = $false,
+        [string]$UploadHost = '',
+        [string]$UploadRelay = '',
+        [int]$UploadTimeoutSec = 10
     )
     $bodies = [string[]]@()
     $corrOut = $CorrId
+    $dccSession = $null
+    $putData = $null
     switch ($ActionName) {
         'Put' {
             if (-not $LocalFilePath) { throw 'Put requires -LocalFile' }
@@ -800,6 +899,26 @@ function New-AircRemoteAttemptBodies {
             }
             $put = New-AircPutChunks -LocalFile $LocalFilePath -RemotePath $PathBody -ChunkBytes $ChunkSize -JobId $corrOut -SandboxRoot $root
             $corrOut = $put.JobId
+            $putData = $put
+            if ($UseDccPut) {
+                try {
+                    $dccSession = Start-AircDccUploadListener -LocalFile $LocalFilePath `
+                        -TimeoutSec $UploadTimeoutSec -AdvertiseHost $UploadHost -Relay $UploadRelay
+                    $offer = $dccSession.Offer
+                    $body = 'DCCPUT id={0} path={1} bytes={2} sha256={3} host={4} port={5} token={6} tls=1 timeout={7}' -f `
+                        $corrOut, $PathBody, $put.Bytes, $put.Sha256, $offer.host, $offer.port, $offer.token, $UploadTimeoutSec
+                    if ($offer.relay) { $body += ' relay={0}' -f $offer.relay }
+                    return [pscustomobject]@{
+                        Bodies = [string[]]@($body)
+                        JobId = $corrOut
+                        DccSession = $dccSession
+                        Put = $putData
+                    }
+                } catch {
+                    Stop-AircDccUploadListener -Session $dccSession
+                    $dccSession = $null
+                }
+            }
             $bodies = [string[]]@($put.Lines)
         }
         'Psb64' {
@@ -820,12 +939,17 @@ function New-AircRemoteAttemptBodies {
             $bodies = [string[]]@((New-AircRemoteBody -Action $ActionName -Text $TextBody -Path $PathBody -JobId $corrOut))
         }
     }
-    return [pscustomobject]@{ Bodies = $bodies; JobId = $corrOut }
+    return [pscustomobject]@{
+        Bodies = $bodies
+        JobId = $corrOut
+        DccSession = $dccSession
+        Put = $putData
+    }
 }
 
 $pinnedJobId = [bool]$JobId
 $corr = if ($JobId) { $JobId } else { New-AircCorrelationId }
-$wantWait = [bool]$ReplyFile -and -not $WhatIf
+$wantWait = ([bool]$ReplyFile -or ($Action -eq 'Put' -and [bool]$Outbox)) -and -not $WhatIf
 $repliesJsonl = Resolve-AircRepliesJsonl -Outbox $Outbox -ReplyFile $ReplyFile
 $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec))
 $attempt = 0
@@ -838,8 +962,11 @@ $busyRetryActions = @('Command', 'Cmd', 'Psb64', 'Status')
 while ($true) {
     $attempt++
     $built = New-AircRemoteAttemptBodies -ActionName $Action -CorrId $corr -TextBody $Text -PathBody $Path `
-        -LocalFilePath $LocalFile -ChunkSize $ChunkBytes -Sandbox $SandboxRoot
+        -LocalFilePath $LocalFile -ChunkSize $ChunkBytes -Sandbox $SandboxRoot `
+        -UseDccPut:($Action -eq 'Put' -and -not $ForceIrc -and -not $WhatIf -and [bool]$Outbox) `
+        -UploadHost $DccHost -UploadRelay $DccRelay -UploadTimeoutSec $DccTimeoutSec
     $bodies = [string[]]@($built.Bodies)
+    $uploadSession = $built.DccSession
     $corr = [string]$built.JobId
     $privmsgs = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies $bodies)
     Write-Host ("INFO action={0} machine={1} id={2} lines={3} attempt={4}" -f $Action, $MachineId, $corr, $privmsgs.Count, $attempt)
@@ -847,7 +974,12 @@ while ($true) {
     $startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
 
     if ($Outbox) {
-        Write-AircOutbox -Outbox $Outbox -Lines $privmsgs -PaceMs $OutboxPaceMs -WhatIf:$WhatIf
+        try {
+            Write-AircOutbox -Outbox $Outbox -Lines $privmsgs -PaceMs $OutboxPaceMs -WhatIf:$WhatIf
+        } catch {
+            Stop-AircDccUploadListener -Session $uploadSession
+            throw
+        }
     } elseif ($WhatIf) {
         foreach ($l in $privmsgs) { Write-Host ('WHATIF {0}' -f (Protect-AircRemoteSecret $l)) }
     } else {
@@ -859,14 +991,78 @@ while ($true) {
 
     $remaining = [int][Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds)
     if ($remaining -lt 1) {
+        Stop-AircDccUploadListener -Session $uploadSession
         Write-Host ("ERROR timeout budget exhausted before wait id={0}" -f $corr)
         exit 2
     }
+    $dccWaitError = $null
     try {
         $rawLines = @(Wait-AircRemoteReplies -RepliesJsonl $repliesJsonl -ExpectJobId $corr -TimeoutSec $remaining -StartOffset $startOffset)
     } catch {
-        Write-Host ("ERROR {0}" -f (Protect-AircRemoteSecret ([string]$_)))
-        exit 2
+        if ($uploadSession) {
+            $dccWaitError = $_
+        } else {
+            Write-Host ("ERROR {0}" -f (Protect-AircRemoteSecret ([string]$_)))
+            exit 2
+        }
+    }
+    if ($uploadSession) {
+        $dccOk = $false
+        if (-not $dccWaitError) {
+            $parsed = ConvertFrom-AircRemoteReply -Lines $rawLines -ExpectJobId $corr
+            if ($uploadSession.Process -and -not $uploadSession.Process.HasExited) {
+                try { $uploadSession.Process.WaitForExit(5000) | Out-Null } catch { }
+            }
+            $helperOk = $uploadSession.Process -and $uploadSession.Process.HasExited `
+                -and $uploadSession.Process.ExitCode -eq 0
+            $dccOk = ([int]$parsed.ExitCode -eq 0) -and ($parsed.Via -eq 'dcc') `
+                -and ([int64]$parsed.Bytes -eq [int64]$built.Put.Bytes) `
+                -and ($parsed.Sha256 -eq $built.Put.Sha256) -and $helperOk
+        }
+        if ($dccOk) {
+            Write-Host ("INFO upload path=dcc bytes={0} sha256={1}" -f $built.Put.Bytes, $built.Put.Sha256)
+            Stop-AircDccUploadListener -Session $uploadSession
+        } elseif (-not $dccWaitError -and [int]$parsed.ExitCode -eq 126) {
+            Stop-AircDccUploadListener -Session $uploadSession
+            Write-Output $parsed
+            exit 126
+        } elseif (-not $dccWaitError -and $parsed.Reason -and $parsed.Reason -ne 'dcc') {
+            Stop-AircDccUploadListener -Session $uploadSession
+            Write-Output $parsed
+            exit ([int]$parsed.ExitCode)
+        } else {
+            $reason = if ($dccWaitError) {
+                'DCC handshake or transfer failed'
+            } else {
+                'DCC transfer failed'
+            }
+            Write-Host ("INFO upload path=irc reason={0}" -f $reason)
+            Stop-AircDccUploadListener -Session $uploadSession
+            $fallbackLines = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies ([string[]]@($built.Put.Lines)))
+            $startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
+            Write-AircOutbox -Outbox $Outbox -Lines $fallbackLines -PaceMs $OutboxPaceMs -WhatIf:$WhatIf
+            $remaining = [int][Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds)
+            if ($remaining -lt 1) {
+                Write-Host ("ERROR timeout budget exhausted during IRC PUT fallback id={0}" -f $corr)
+                exit 2
+            }
+            try {
+                $rawLines = @(Wait-AircRemoteReplies -RepliesJsonl $repliesJsonl -ExpectJobId $corr -TimeoutSec $remaining -StartOffset $startOffset)
+            } catch {
+                Write-Host ("ERROR {0}" -f (Protect-AircRemoteSecret ([string]$_)))
+                exit 2
+            }
+            if ($ReplyFile -and -not $ReplyFile.ToLowerInvariant().EndsWith('.jsonl')) {
+                $dir = Split-Path -Parent $ReplyFile
+                if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+                    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+                }
+                [System.IO.File]::WriteAllLines($ReplyFile, $rawLines, (New-Object System.Text.UTF8Encoding $false))
+            }
+            $parsed = ConvertFrom-AircRemoteReply -Lines $rawLines -ExpectJobId $corr
+        }
+    } elseif ($Action -eq 'Put') {
+        Write-Host ("INFO upload path=irc reason={0}" -f $(if ($ForceIrc) { 'forced' } else { 'DCC unavailable' }))
     }
     if ($ReplyFile -and -not $ReplyFile.ToLowerInvariant().EndsWith('.jsonl')) {
         $dir = Split-Path -Parent $ReplyFile

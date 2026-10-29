@@ -82,6 +82,7 @@ Finish every session with the harvest step.
 ## FR #5003 (reverse DCC bulk for oversized shell replies)
 
 | Large shell output floods IRC (minutes / reconnect wedge, see #5002) | Keep IRC as control plane. Caller may send `DCCLISTEN id=<job> host=<ip> port=<n> token=<hex>`; when output exceeds the bulk threshold and a matching offer exists, console **dials out** (NAT-friendly), streams body, replies `DONE id=... exit=... bytes=N sha256=H via=dcc`. Handshake failure within a few seconds falls back to existing IRC CONT paging (FR #4794). FR #5065: the fallback `err dcc failed` line uses the next unused seq before DONE (never seq=1 twice); else `ConvertFrom-AircRemoteReply` throws `duplicate seq=1`. Without `DCCLISTEN`, behaviour unchanged. Tip PR #5009 (`airc_dcc_bulk.py`). WP2 (#5008): TLS, ionos relay, bob-ear helper, live fleet timings. |
+| Large upload is slow or DCC cannot connect (FR #5194) | `Invoke-AircRemote.ps1 -Action Put` uses DCC/TLS by default with a one-use token; console reuses PUT write authorization and sandbox validation, verifies size/SHA-256, then atomically replaces the destination. A blocked connection falls back to PUT chunks over IRC; use `-ForceIrc` to opt out. `-DccHost` overrides best-effort address discovery; `-DccRelay host:port` uses the DCC relay. Logs identify `upload path=dcc` or `upload path=irc`; tokens are not logged. |
 
 ## FR #5008 (reverse-DCC TLS + framed leftovers)
 
@@ -104,4 +105,3 @@ Generalised from 18 harvested lessons that never reached this book (audit for FR
 | Large sandbox file must not dump over Query PRIVMSG (FR #4795) | `GET path fetch=chunk` returns size/sha256/seqs only; pull each piece with `GETCHUNK id=<job> seq=N` (next GETCHUNK is the ack; console never pushes the next chunk). Plain GET stays head-only. Secret paths rejected. |
 
 Symptom: console goes silent mid base64 dump; later STATUS gets no reply. Cause: Ergo fakelag / excess flood after hundreds of Query lines. Fix on tip: reply-line cap + truncate marker + token-bucket send pacing; reconnect on send failure. Controllers must not paste multi-KB base64 into shell stdout --- use PUT/file fetch.
-

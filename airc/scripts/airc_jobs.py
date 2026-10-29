@@ -371,8 +371,9 @@ class JobStore:
         try:
             nbytes = int(kv.get("bytes") or "-1")
             port = int(kv.get("port") or "0")
+            timeout_s = float(kv.get("timeout") or "10")
         except ValueError as exc:
-            raise JobProtocolError("bad_frame", "bytes or port not int", jid) from exc
+            raise JobProtocolError("bad_frame", "bytes, port, or timeout invalid", jid) from exc
         sha = (kv.get("sha256") or "").lower()
         token = (kv.get("token") or "").lower()
         host = (kv.get("host") or "").strip()
@@ -386,6 +387,8 @@ class JobStore:
             raise JobProtocolError("bad_frame", "token must be 16..64 hex", jid)
         if tls_raw not in {"0", "1"}:
             raise JobProtocolError("bad_frame", "tls must be 0 or 1", jid)
+        if not (1 <= timeout_s <= 120):
+            raise JobProtocolError("bad_frame", "timeout out of range 1..120", jid)
         if not host or any(c.isspace() for c in host) or not (1 <= port <= 65535):
             raise JobProtocolError("bad_frame", "invalid DCC endpoint", jid)
         dest = resolve_sandbox_path(self.drop_root, path)
@@ -417,17 +420,17 @@ class JobStore:
                 tls=(tls_raw == "1"),
                 relay=relay,
             )
-            body, digest = dcc.receive_offer_payload(offer, timeout_s=10.0)
+            body, digest = dcc.receive_offer_payload(offer, timeout_s=timeout_s)
             if len(body) != nbytes:
                 raise JobProtocolError("size", "DCC bytes != declared bytes", jid)
             if digest != sha or hashlib.sha256(body).hexdigest() != sha:
                 raise JobProtocolError("checksum", "DCC sha256 mismatch", jid)
             self._write_atomic(dest, body)
             self._write_atomic(self._payload_path(jid), body)
-            rec.state = "ready"
-            rec.bytes = len(body)
-            rec.sha256 = digest
             with self._lock:
+                rec.state = "ready"
+                rec.bytes = len(body)
+                rec.sha256 = digest
                 self._save(rec)
             return [
                 f"DONE id={jid} exit=0 bytes={len(body)} sha256={digest} via=dcc"
@@ -758,7 +761,7 @@ class JobProtocol:
             jid = exc.job_id or kv.get("id") or "-"
             lines = [f"err id={jid} code={exc.code} msg={exc.message}"]
             if verb.upper() == "DCCPUT":
-                lines.append(f"DONE id={jid} exit=1 via=dcc reason=dcc-failed")
+                lines.append(f"DONE id={jid} exit=1 via=dcc reason={exc.code}")
             return lines
 
     def handle_async(self, nick: str, verb: str, kv: dict[str, str]) -> None:

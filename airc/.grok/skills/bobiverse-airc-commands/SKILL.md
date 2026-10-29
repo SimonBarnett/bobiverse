@@ -31,7 +31,8 @@ PRIVMSG <machine>_console :psb64:<base64>
 - Default is **PowerShell 5.1** (`-NoProfile`); `cmd:` uses COMSPEC; `psb64:` is `-EncodedCommand` (UTF-16LE or UTF-8 payload).
 - Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
 - Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
-- PUT/RUN/JOB/UPDATE are separate FRs — see `docs/airc-remote-control.md`.
+- `Invoke-AircRemote.ps1 -Action Put -LocalFile <file> -Path <drop-relative-path> -Outbox <outbox>` uploads by DCC/TLS by default (FR #5194), verifies SHA-256 on the console, and has an automatic IRC PUT-chunk fallback when DCC is unavailable. Use `-ForceIrc` to require chunks. `-DccHost` overrides address discovery; `-DccRelay host:port` uses a relay.
+- Large console output also uses reverse DCC/TLS when offered with `DCCLISTEN`; failed DCC output falls back to IRC paging (FR #5003/#5008). PUT/RUN/JOB/UPDATE details: `docs/airc-remote-control.md`.
 
 ## Safe diagnostic commands
 
