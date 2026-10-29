@@ -32,27 +32,30 @@ def test_default_and_explicit_high_are_restricted_to_allowed_repos(tmp_path):
 
 
 def test_loaded_legacy_or_invalid_focus_cannot_make_other_repo_high(tmp_path):
-    p = tmp_path / fi.FOCUS_FILE
+    p = fi._root(tmp_path) / fi.FOCUS_FILE
     cases = (
-        {"repos": {"SimonBarnett/trutex": {"label": "high"}}},
-        {"repos": {"SimonBarnett/trutex": {"priority": "invalid", "label": "high"}}},
-        {"repos": {"SimonBarnett/trutex": {"priority": 1, "label": "high"}}},
-        {"repos": ["SimonBarnett/trutex"]},
+        ({"repos": {"SimonBarnett/trutex": {"label": "high"}}}, 9),
+        ({"repos": {"SimonBarnett/trutex": {"priority": "invalid", "label": "high"}}}, 9),
+        ({"repos": {"SimonBarnett/trutex": {"priority": 1, "label": "high"}}}, 5),
+        ({"repos": ["SimonBarnett/trutex"]}, 5),
     )
-    for raw in cases:
+    for raw, expected_priority in cases:
         p.write_text(json.dumps(raw), encoding="utf-8")
         doc = fi.load_focus(tmp_path)
-        assert fi.repo_priority(doc, "SimonBarnett/trutex") != fi.NAMED_PRIORITY["high"]
-        assert fi._repo_entry(doc, "SimonBarnett/trutex")[0] != fi.NAMED_PRIORITY["high"]
-        assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/trutex"))[1] != fi.NAMED_PRIORITY["high"]
+        assert doc["repos"]
+        assert fi.repo_priority(doc, "SimonBarnett/trutex") == expected_priority
+        assert fi._repo_entry(doc, "SimonBarnett/trutex")[0] == expected_priority
+        assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/trutex"))[1] == expected_priority
         assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/trutex"))
 
     for raw in (
         {"repos": {"SimonBarnett/bobiverse": {"priority": 1}}},
         {"repos": ["SimonBarnett/a-search"]},
     ):
+        fi._root(tmp_path).mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(raw), encoding="utf-8")
         doc = fi.load_focus(tmp_path)
+        assert doc["repos"]
         repo = next(iter(doc["repos"]))
         assert fi.repo_priority(doc, repo) == fi.NAMED_PRIORITY["high"]
         assert cd.is_high_priority(tmp_path, _row(repo))
