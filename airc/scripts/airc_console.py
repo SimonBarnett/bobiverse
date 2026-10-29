@@ -817,10 +817,6 @@ def resolve_channel_commands(cfg: dict | None) -> bool:
     return prof == "client"
 
 
-# FR #3774: fleet lobby channel for optional client presence-only JOIN.
-FLEET_PRESENCE_CHANNEL = "#bobiverse"
-
-
 def normalize_irc_channel(name: str) -> str:
     """Return ``#lowercase`` channel id, or ``\"\"`` when empty."""
     s = (name or "").strip()
@@ -865,7 +861,8 @@ def resolve_presence_channels(
     Resolution order:
     1. ``presence_channels`` in ``airc.json`` when the key is present (including ``[]``).
     2. Else ``AIRC_PRESENCE_CHANNELS`` (comma-separated; empty string = none) when set.
-    3. Else client profile defaults to ``#bobiverse``; fleet/workstation default none.
+    3. Else all profiles default to no extra channels. Clients join their selected
+       control channel (registered shop or #wonderland) separately.
     """
     data = cfg or {}
     if "presence_channels" in data:
@@ -876,9 +873,6 @@ def resolve_presence_channels(
     if prefer_env and "AIRC_PRESENCE_CHANNELS" in environ:
         return _coerce_presence_channel_list(environ.get("AIRC_PRESENCE_CHANNELS") or "") or []
 
-    prof = (profile or str(data.get("profile") or "")).strip().lower()
-    if prof == "client":
-        return [FLEET_PRESENCE_CHANNEL]
     return []
 
 

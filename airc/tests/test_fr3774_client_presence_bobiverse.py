@@ -1,4 +1,4 @@
-"""FR #3774: client presence-only JOIN of #bobiverse (commands stay on control channel)."""
+"""FR #5190: clients join their shop or #wonderland, not the fleet lobby by default."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,8 +17,8 @@ def test_normalize_and_resolve_presence_channels_defaults():
     assert ac.normalize_irc_channel("#Bobiverse") == "#bobiverse"
     assert ac.normalize_irc_channel("") == ""
 
-    # Client default: #bobiverse
-    assert ac.resolve_presence_channels({"profile": "client"}) == ["#bobiverse"]
+    # Clients use their selected control channel, with no default presence join.
+    assert ac.resolve_presence_channels({"profile": "client"}) == []
     # Fleet / workstation / missing: none
     assert ac.resolve_presence_channels({"profile": "fleet"}) == []
     assert ac.resolve_presence_channels({"profile": "workstation"}) == []
@@ -66,6 +66,19 @@ def test_join_commands_includes_presence_not_control_dupe():
     assert sum(1 for p in parts if p.lower() == "#walrus") == 1
 
 
+def test_client_default_joins_only_its_control_channel():
+    auth = ac.AuthPolicy(members=ac.ChannelMemberMap(channel="#walrus"))
+    core = ac.AircConsoleCore(
+        machine="walrus",
+        auth=auth,
+        nick="walrus_console",
+        channel_commands=True,
+        presence_channels=ac.resolve_presence_channels({"profile": "client"}),
+    )
+
+    assert core.join_commands() == ["JOIN #walrus"]
+
+
 def test_bobiverse_channel_traffic_never_executes_on_client():
     members = ac.ChannelMemberMap(channel="#walrus")
     members.apply_names("@simon")
@@ -109,12 +122,13 @@ def test_same_irc_channel_helper():
 def test_docs_and_install_mention_presence_channels():
     install = INSTALL.read_text(encoding="utf-8")
     assert "presence_channels" in install
-    assert "3774" in install or "FR #3774" in install
+    assert "5190" in install
+    assert "$capObj['presence_channels'] = @()" in install
     post = POST.read_text(encoding="utf-8")
     assert "presence_channels" in post or "#bobiverse" in post
-    assert "3774" in post
+    assert "5190" in post
     skill = SKILL.read_text(encoding="utf-8")
-    assert "presence" in skill.lower() or "3774" in skill
+    assert "presence" in skill.lower() or "5190" in skill
     svc = SERVICE.read_text(encoding="utf-8")
     assert "same_irc_channel" in svc or "FR #3774" in svc
     assert "presence_channels" in svc
