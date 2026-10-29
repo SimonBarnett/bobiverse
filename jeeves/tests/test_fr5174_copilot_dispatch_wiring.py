@@ -16,6 +16,7 @@ from pathlib import Path
 import bobreport
 import chair_health as ch
 import copilot_dispatch as cd
+import focus_ignore
 import gitclaim
 
 
@@ -72,6 +73,7 @@ def test_unknown_pool_no_dispatch(tmp_path):
 
 
 def test_send_failure_leaves_job_and_no_handoff(tmp_path):
+    focus_ignore.handle_focus_cmd(tmp_path, "high SimonBarnett/a-search")
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
     _queue(tmp_path, [_row(num=5058)])
     announced: list[str] = []
@@ -102,9 +104,10 @@ def test_send_failure_leaves_job_and_no_handoff(tmp_path):
 
 
 def test_pinned_job_skipped(tmp_path):
+    focus_ignore.handle_focus_cmd(tmp_path, "high SimonBarnett/a-search")
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
     pinned = _row(num=5221, require_machine="redqueen")
-    assert cd.should_dispatch(pinned, allowance=True) is False
+    assert cd.should_dispatch(pinned, allowance=True, home=tmp_path) is False
     _queue(tmp_path, [pinned])
     posts: list = []
 
@@ -212,6 +215,7 @@ def test_chair_tick_passes_fetch_and_post(tmp_path, monkeypatch):
 
 
 def test_successful_post_then_dispatch(tmp_path):
+    focus_ignore.handle_focus_cmd(tmp_path, "high SimonBarnett/a-search")
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
     _queue(tmp_path, [_row(num=16)])
     announced: list[str] = []

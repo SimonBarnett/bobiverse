@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import bobreport
+import focus_ignore
 import gitclaim
 import shop_listen
 
@@ -307,11 +308,55 @@ def build_task_body(row: dict) -> dict:
     return {"prompt": "\n".join(prompt_lines)}
 
 
-def should_dispatch(row: dict, *, allowance: bool) -> bool:
+def is_high_priority(home: Path, row: dict) -> bool:
+    repo = str(row.get("repo") or "").strip().lower()
+    if repo not in focus_ignore.COPILOT_HIGH_PRIORITY_REPOS:
+        return False
+    try:
+        return focus_ignore.offer_sort_key(home, row)[1] == focus_ignore.NAMED_PRIORITY["high"]
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def should_dispatch(
+    row: dict,
+    *,
+    allowance: bool,
+    home: Path | None = None,
+    now: float | None = None,
+) -> bool:
     if not allowance:
         return False
     task = str(row.get("task") or "").upper()
     if task not in ("FR", "FIX", "MRB"):
+        return False
+    if home is None or not is_high_priority(home, row):
+        return False
+    now_f = time.time() if now is None else float(now)
+    if (
+        gitclaim.row_needs_human(row, COPILOT_NICK)
+        or gitclaim.row_on_cooldown(row, now_f, COPILOT_NICK)
+        or gitclaim.row_gave_up_by(row, COPILOT_NICK)
+        or gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, COPILOT_NICK)
+    ):
+        return False
+    if task in ("FR", "FIX"):
+        labels = row.get("labels") or ()
+        if isinstance(labels, str):
+            labels = [labels]
+        title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+        if gitclaim.fr_hold_reason(
+            title=title,
+            body=str(row.get("body") or ""),
+            labels=tuple(str(label) for label in labels),
+        ):
+            return False
+        if task == "FR" and gitclaim.row_skip_fr_reason(row):
+            return False
+    if task == "MRB" and (
+        gitclaim.mrb_row_not_offerable_reason(row) is not None
+        or not gitclaim.mrb_row_offerable(row)
+    ):
         return False
     # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
     row_eff = dict(row) if isinstance(row, dict) else {}
@@ -396,7 +441,7 @@ def dispatch_row(
 ) -> dict:
     if not has_allowance(home):
         return {"status": "exhausted"}
-    if not should_dispatch(row, allowance=True):
+    if not should_dispatch(row, allowance=True, home=home, now=now):
         return {"status": "skip"}
     body = build_task_body(row)
     path = tasks_api_path(str(row.get("repo") or ""))
@@ -704,8 +749,8 @@ def tick(
         refresh_allowance(home, fetch_user=fetch_user, now=now_f)
     out: dict[str, Any] = {"dispatched": 0, "timed_out": 0}
     if has_allowance(home):
-        for row in gitclaim.load_unaccepted(home):
-            if should_dispatch(row, allowance=True):
+        for row in gitclaim.ordered_unaccepted(home):
+            if should_dispatch(row, allowance=True, home=home, now=now_f):
                 r = dispatch_row(
                     home, row, post=post, now=now_f, announce=announce
                 )

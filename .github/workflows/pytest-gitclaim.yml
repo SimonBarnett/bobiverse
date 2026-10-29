@@ -60,6 +60,24 @@ jobs:
             jeeves/tests/test_fr1323_mrb_done_no_reoffer.py `
             -q --tb=short
 
+      - name: Copilot priority and dispatch tests (FR #5186)
+        run: |
+          $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\jeeves"
+          python -m pytest `
+            common/tests/test_fr5186_focus_priority.py `
+            jeeves/tests/test_fr5170_copilot_dispatch.py `
+            jeeves/tests/test_fr5174_copilot_dispatch_wiring.py `
+            jeeves/tests/test_mrb5175_hostile_fr5174.py `
+            jeeves/tests/test_fr5186_copilot_priority.py `
+            jeeves/tests/test_fr628_repo_focus.py `
+            jeeves/tests/test_chair_focus_bored.py::test_focus_files_use_gh_jeeves_format `
+            jeeves/tests/test_chair_commands_020.py::test_focus_family `
+            jeeves/tests/test_fr3205_offer_order.py `
+            jeeves/tests/test_jeeves_hands_out_work.py::test_repo_then_priority_filter_order `
+            jeeves/tests/test_jeeves_hands_out_work.py::test_hi_repo_outranks_lo_repo `
+            jeeves/tests/test_mrb3265_offer_order_hostile.py `
+            -q --tb=short
+
       - name: Fair-isol digest-home leak canary (FR #2540)
         run: |
           # Tip regression vs 82346a1: github_pr_exists_checker setdefault(BOB_DIGEST_HOME)

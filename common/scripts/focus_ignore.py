@@ -34,7 +34,10 @@ import bobreport
 FOCUS_FILE = "focus.json"
 IGNORE_FILE = "ignored.json"
 NAMED_PRIORITY = {"high": 1, "hi": 1, "medium": 5, "med": 5, "low": 9, "lo": 9}
-DEFAULT_PRIORITY = 1
+DEFAULT_PRIORITY = 5
+COPILOT_HIGH_PRIORITY_REPOS = frozenset(
+    {"simonbarnett/bobiverse", "simonbarnett/a-search"}
+)
 UNFOCUSED_RANK = 10_000
 # FR #4969: unfocused priority-customer repos sort after every non-customer row.
 CUSTOMER_UNFOCUSED_RANK = UNFOCUSED_RANK + 10_000
@@ -103,6 +106,12 @@ def _short(repo: str) -> str:
     return (repo or "").rsplit("/", 1)[-1].lower()
 
 
+def _effective_repo_priority(repo: str, priority: int) -> int:
+    if priority == NAMED_PRIORITY["high"] and (repo or "").strip().lower() not in COPILOT_HIGH_PRIORITY_REPOS:
+        return DEFAULT_PRIORITY
+    return priority
+
+
 def repo_match(key: str, repo: str) -> bool:
     """Focus/ignore key vs a job repo: exact, or bare key == job short name,
     or full key vs bare job repo with the same short name."""
@@ -134,19 +143,38 @@ def load_focus(home: Path) -> dict[str, Any]:
     doc = empty_focus()
     repos = raw.get("repos")
     if isinstance(repos, list):
-        repos = {str(r): {"priority": 1} for r in repos}
+        repos = {
+            str(r): {
+                "priority": (
+                    NAMED_PRIORITY["high"]
+                    if str(r).strip().lower() in COPILOT_HIGH_PRIORITY_REPOS
+                    else DEFAULT_PRIORITY
+                )
+            }
+            for r in repos
+        }
     for k, v in (repos if isinstance(repos, dict) else {}).items():
         key = normalize_repo(str(k))
         if not key:
             continue
+        parsed_priority = True
         try:
             pr = int(v.get("priority") if isinstance(v, dict) else v)
         except (TypeError, ValueError):
             pr = DEFAULT_PRIORITY
+            parsed_priority = False
         pr = max(1, pr)
+        effective_pr = _effective_repo_priority(key, pr)
+        if effective_pr != pr:
+            parsed_priority = False
+        pr = effective_pr
         doc["repos"][key] = {
             "priority": pr,
-            "label": str(v.get("label") or _label(pr)) if isinstance(v, dict) else _label(pr),
+            "label": (
+                str(v.get("label") or _label(pr))
+                if isinstance(v, dict) and parsed_priority
+                else _label(pr)
+            ),
             "ts": str(v.get("ts") or "") if isinstance(v, dict) else "",
         }
     items = raw.get("items") if isinstance(raw.get("items"), dict) else {}
@@ -278,7 +306,9 @@ def repo_priority(doc: dict, repo: str) -> int | None:
     best = None
     for key, meta in (doc.get("repos") or {}).items():
         if repo_match(key, repo):
-            pr = int(meta.get("priority") or DEFAULT_PRIORITY)
+            pr = _effective_repo_priority(
+                str(key), int(meta.get("priority") or DEFAULT_PRIORITY)
+            )
             best = pr if best is None else min(best, pr)
     return best
 
@@ -354,7 +384,10 @@ def _repo_entry(doc: dict, repo: str) -> tuple[int, str] | None:
     best = None
     for key, meta in (doc.get("repos") or {}).items():
         if repo_match(key, repo):
-            cand = (int(meta.get("priority") or DEFAULT_PRIORITY), str(meta.get("ts") or ""))
+            priority = _effective_repo_priority(
+                str(key), int(meta.get("priority") or DEFAULT_PRIORITY)
+            )
+            cand = (priority, str(meta.get("ts") or ""))
             if best is None or cand < best:
                 best = cand
     return best
@@ -529,6 +562,10 @@ def _set_repo(home: Path, token: str, pr: int, label: str) -> list[str]:
     canon = normalize_repo(token)
     if not canon:
         return ["focus: usage !focus [n|high|medium|low] {repo|owner/repo#N}"]
+    effective_pr = _effective_repo_priority(canon, max(1, pr))
+    if effective_pr != max(1, pr):
+        label = _label(effective_pr)
+        pr = effective_pr
     doc = load_focus(home)
     repos = {k: v for k, v in doc["repos"].items() if k.lower() != canon.lower()
              and not (_short(k) == _short(canon) and (("/" in k) != ("/" in canon)))}
@@ -588,7 +625,9 @@ def handle_focus_cmd(home: Path, arg: str) -> list[str]:
     if len(parts) == 2 and _priority_token(parts[1]) is not None and _REPO_TOKEN.match(parts[0]):
         p2 = _priority_token(parts[1])
         return _set_repo(home, parts[0], p2[0], p2[1])
-    return _set_repo(home, raw if len(parts) > 1 else parts[0], DEFAULT_PRIORITY, "high")
+    return _set_repo(
+        home, raw if len(parts) > 1 else parts[0], DEFAULT_PRIORITY, _label(DEFAULT_PRIORITY)
+    )
 
 
 def handle_unfocus_cmd(home: Path, arg: str) -> list[str]:

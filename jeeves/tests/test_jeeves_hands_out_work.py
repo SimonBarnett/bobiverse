@@ -60,7 +60,7 @@ def test_falls_through_to_next_focused_repo_when_first_has_no_rows(_home):
 
 @pytest.mark.parametrize("tok,expect", [("hi", 1), ("lo", 9), ("high", 1), ("low", 9), ("medium", 5), ("3", 3)])
 def test_repo_then_priority_filter_order(_home, tok, expect):
-    fi.handle_focus_cmd(_home, f"bobiverse {tok}")
+    fi.handle_focus_cmd(_home, f"SimonBarnett/bobiverse {tok}")
     meta = fi.load_focus(_home)["repos"]
     (name, m), = list(meta.items())
     assert "bobiverse" in name and int(m["priority"]) == expect
@@ -75,7 +75,7 @@ def test_priority_then_repo_order_still_works(_home):
 def test_hi_repo_outranks_lo_repo(_home):
     _queue(_home, [_row("SimonBarnett/aaa", "FR", 1, 1), _row("SimonBarnett/bobiverse", "FR", 2, 2)])
     fi.handle_focus_cmd(_home, "aaa lo")
-    fi.handle_focus_cmd(_home, "bobiverse hi")
+    fi.handle_focus_cmd(_home, "SimonBarnett/bobiverse hi")
     status, job = gitclaim.offer_focus_top(_home, "ionos-1", "#ionos")
     assert job["repo"].endswith("bobiverse")
 
@@ -93,7 +93,7 @@ def test_fr2339_sibling_ignores_pinned_out_other_machine(_home):
         url="https://github.com/SimonBarnett/bobiverse/pull/2319",
     )
     _queue(_home, [row])
-    fi.handle_focus_cmd(_home, "hi bobiverse")
+    fi.handle_focus_cmd(_home, "hi SimonBarnett/bobiverse")
     # Live: ionos sibling + marchhare (pinned out by require_machine=ionos)
     live = {"win-mpre8vi4u6u-7764", "marchhare-40208", "win-mpre8vi4u6u-14452"}
     assert gitclaim.review_blocked_for_author(row, "win-mpre8vi4u6u-14452", live) is True  # exact author

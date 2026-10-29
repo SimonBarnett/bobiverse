@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import copilot_dispatch as cd
+import focus_ignore
 import gitclaim
 
 
@@ -22,7 +23,9 @@ def _row(**extra):
     return row
 
 
-def test_http_201_without_task_id_does_not_accept(tmp_path):
+def test_http_201_without_task_id_does_not_accept(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    focus_ignore.handle_focus_cmd(tmp_path, "high SimonBarnett/a-search")
     cd.refresh_allowance(
         tmp_path,
         fetch_user=lambda: {
@@ -49,13 +52,15 @@ def test_http_201_without_task_id_does_not_accept(tmp_path):
     assert any(r.get("id") == "#99" for r in gitclaim.load_unaccepted(tmp_path))
 
 
-def test_needs_ionos_pin_skipped():
+def test_needs_ionos_pin_skipped(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    focus_ignore.handle_focus_cmd(tmp_path, "high SimonBarnett/a-search")
     row = _row(require_machine="ionos")
-    assert cd.should_dispatch(row, allowance=True) is False
+    assert cd.should_dispatch(row, allowance=True, home=tmp_path) is False
     row2 = _row()
     row2["labels"] = ["needs-ionos"]
     # stamp if gitclaim maps the label
     with __import__("contextlib").suppress(Exception):
         gitclaim._stamp_require_machine(row2)
     if row2.get("require_machine"):
-        assert cd.should_dispatch(row2, allowance=True) is False
+        assert cd.should_dispatch(row2, allowance=True, home=tmp_path) is False

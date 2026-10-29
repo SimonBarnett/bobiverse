@@ -6,6 +6,7 @@ from pathlib import Path
 import bobreport
 import chair_health
 import copilot_dispatch as cd
+import focus_ignore
 import gitclaim
 import shop_listen
 
@@ -63,9 +64,11 @@ def test_parse_mrb_verdict():
     assert cd.parse_mrb_verdict("") is None
 
 
-def test_no_self_mrb_copilot():
+def test_no_self_mrb_copilot(tmp_path):
+    home = tmp_path
+    focus_ignore.handle_focus_cmd(home, "high SimonBarnett/bobiverse")
     row = _row(task="MRB", num=99, author_seat="copilot", url=f"https://github.com/{REPO}/pull/99")
-    assert cd.should_dispatch(row, allowance=True) is False
+    assert cd.should_dispatch(row, allowance=True, home=home) is False
     assert gitclaim.review_blocked_for_author(row, "copilot", live={"copilot"}) is True
 
 
@@ -253,6 +256,7 @@ def test_resync_only_on_fallback():
 
 
 def test_dispatch_posts_and_accepts(tmp_path):
+    focus_ignore.handle_focus_cmd(tmp_path, "high SimonBarnett/bobiverse")
     gitclaim.apply_queue_event(
         tmp_path,
         gitclaim.GitClaim(repo=REPO, task="FR", id="#12", event="issues", action="opened", line="x"),
