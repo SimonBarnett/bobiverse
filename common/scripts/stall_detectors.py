@@ -207,17 +207,40 @@ def detect_ack_stale(snap: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _accepted_nicks(snap: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for row in snap.get("accepted") or []:
+        for k in ("accepted_by", "offered_to", "nick"):
+            raw = str(row.get(k) or "").strip()
+            if not raw:
+                continue
+            nick = gitclaim.canonical_worker_nick(raw) or raw
+            if nick:
+                out.add(nick)
+                out.add(nick.lower())
+    return out
+
+
 def detect_bored_latency(snap: dict[str, Any]) -> list[dict[str, Any]]:
     now = float(snap.get("now") or 0)
     idle = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("idle") or [])}
     last_bored = snap.get("last_bored") or {}
+    last_activity = snap.get("last_activity") or {}
+    busy = _accepted_nicks(snap)
     out = []
     for nick in idle:
         if not nick:
             continue
+        if nick in busy or nick.lower() in busy:
+            continue
         ts = last_bored.get(nick)
         if ts is None:
             ts = last_bored.get(nick.lower())
+        act = last_activity.get(nick)
+        if act is None:
+            act = last_activity.get(nick.lower())
+        if act is not None:
+            ts = float(act) if ts is None else max(float(ts), float(act))
         if ts is None:
             continue
         lag = now - float(ts)
