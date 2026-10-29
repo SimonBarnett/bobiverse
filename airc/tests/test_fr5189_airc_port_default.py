@@ -75,6 +75,29 @@ def test_connect_does_not_fallback_for_custom_port(monkeypatch):
     assert attempts == [("irc.ntsa.uk", 7000)]
 
 
+def test_tls_connection_requires_tls_12(monkeypatch):
+    class FakeSocket:
+        def settimeout(self, _timeout):
+            pass
+
+    class FakeContext:
+        minimum_version = None
+
+        def wrap_socket(self, raw, server_hostname):
+            return raw
+
+    context = FakeContext()
+    monkeypatch.setattr(svc.socket, "create_connection", lambda *_args, **_kwargs: FakeSocket())
+    monkeypatch.setattr(svc.ssl, "create_default_context", lambda: context)
+    monkeypatch.setattr(svc, "info", lambda _message: None)
+
+    service = svc.AircConsoleService.__new__(svc.AircConsoleService)
+    service.args = SimpleNamespace(host="irc.ntsa.uk", port=7000, tls=True, tls_insecure=False)
+    svc.AircConsoleService.connect(service)
+
+    assert context.minimum_version == svc.ssl.TLSVersion.TLSv1_2
+
+
 def test_powerShell_launchers_use_environment_port_or_993():
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     expected_default = (

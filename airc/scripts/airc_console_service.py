@@ -616,6 +616,7 @@ class AircConsoleService:
                 raw = socket.create_connection((self.args.host, candidate_port), timeout=30)
                 if self.args.tls:
                     ctx = ssl.create_default_context()
+                    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
                     if self.args.tls_insecure:
                         ctx.check_hostname = False
                         ctx.verify_mode = ssl.CERT_NONE
