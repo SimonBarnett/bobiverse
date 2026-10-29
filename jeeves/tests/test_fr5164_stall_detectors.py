@@ -6,6 +6,7 @@ from pathlib import Path
 
 import stall_detectors as sd
 import stall_filer as sf
+import gitclaim
 
 
 def _mrb(url: str, author: str, giveups=()):
@@ -161,6 +162,10 @@ def test_bored_latency_ignores_a_seat_with_a_live_pending_offer():
     }
 
     assert sd.detect_bored_latency(snap) == []
+    snap["unaccepted"][0]["offered_ts"] = datetime.fromtimestamp(
+        now - gitclaim.offer_timeout_s({}) - 1, timezone.utc
+    ).isoformat()
+    assert sd.detect_bored_latency(snap)
 
 
 def test_filer_dedupe_comment_not_second_issue(tmp_path: Path):
