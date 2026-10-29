@@ -7620,6 +7620,10 @@ def offer_focus_top(
         return "empty", None
     live = live_seat_nicks(home)
     free = free_seat_nicks(home, live)
+    # FR #5163: unlock cross give-up / queue recycleseat for author-only MRB deadlock
+    # before the locked offer pick (same !bored can then stamp an offer).
+    with contextlib.suppress(Exception):
+        heal_mrb_reviewer_deadlock(home, idle=free, live=live, now=now_f)
     me_raw = (nick or "").strip()
     me = (canonical_worker_nick(me_raw) or me_raw).strip()
     ledger = ledger_load(home)
@@ -8472,6 +8476,300 @@ def row_skip_pin_ledger_heal_reason(row: dict) -> str | None:
     if _LIVING_TRACKING_UMBRELLA_RE.search(blob):
         return "living_tracking_body"
     return None
+
+
+# FR #5163: MRB reviewer deadlock (cross give-up / author-only among idle seats).
+MRB_REVIEWER_DEADLOCK_COOLDOWN_S = 180.0
+MRB_REVIEWER_DEADLOCK_STATE = "mrb-reviewer-deadlock.json"
+
+
+def mrb_reviewer_deadlock_state_path(home: Path) -> Path:
+    return _root(home) / MRB_REVIEWER_DEADLOCK_STATE
+
+
+def resolve_recycleseat_install_root(home: Path, explicit=None) -> Path:
+    """Install root for tray recycleseat queue (FR #5059 / #5163)."""
+    if explicit is not None and str(explicit).strip():
+        return Path(explicit)
+    env = (os.environ.get("BOB_INSTALL_ROOT") or "").strip()
+    if env:
+        return Path(env)
+    h = Path(home)
+    for cand in (h, h.parent, h.parent.parent if h.parent != h else h):
+        try:
+            if (cand / "run").is_dir() or (cand / "scripts").is_dir():
+                return cand
+        except OSError:
+            continue
+    return h
+
+
+def _mrb_idle_block_reason(
+    row: dict,
+    nick: str,
+    live: set[str],
+    ledger: dict | None = None,
+) -> str:
+    """Why an idle seat cannot take this MRB ('' = eligible). FR #5163."""
+    if _canon_task(row) != "MRB":
+        return "not-mrb"
+    if row_needs_human(row, nick):
+        return "needs_human"
+    if row_blocked_for_machine(row, nick):
+        return "machine"
+    if review_blocked_for_author(row, nick, live, ledger=ledger):
+        return "author"
+    if row_gave_up_by(row, nick, live=live):
+        return "giveup"
+    if ledger is not None:
+        why = ledger_blocks(ledger, row, nick, live)
+        if why:
+            if "gave up" in why.lower():
+                return "giveup"
+            return "ledger"
+    return ""
+
+
+def detect_mrb_reviewer_deadlock(
+    home: Path,
+    *,
+    idle: set[str] | None = None,
+    live: set[str] | None = None,
+    rows: list | None = None,
+    ledger: dict | None = None,
+) -> dict | None:
+    """Return deadlock info when every idle seat is ineligible for every waiting MRB.
+
+    FR #5163. ``None`` when there is no deadlock (or no idle / no MRB rows).
+    """
+    seats_live = set(live) if live is not None else live_seat_nicks(home)
+    seats_idle = set(idle) if idle is not None else free_seat_nicks(home, seats_live)
+    seats_idle = {
+        (canonical_worker_nick(n) or n or "").strip()
+        for n in seats_idle
+        if (canonical_worker_nick(n) or n or "").strip()
+    }
+    if not seats_idle:
+        return None
+    if rows is None:
+        try:
+            path = queue_path(home)
+            raw = json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
+            rows = [r for r in (raw.get("unaccepted") or []) if isinstance(r, dict)]
+        except Exception:
+            return None
+    mrb_rows = [
+        r
+        for r in rows
+        if isinstance(r, dict)
+        and _canon_task(r) == "MRB"
+        and not row_needs_human(r, "")
+    ]
+    if not mrb_rows:
+        return None
+    led = ledger if ledger is not None else ledger_load(home)
+    for nick in seats_idle:
+        for row in mrb_rows:
+            if not _mrb_idle_block_reason(row, nick, seats_live, led):
+                return None
+    clearable: list[tuple[dict, str]] = []
+    for row in mrb_rows:
+        authors = {a.lower() for a in row_author_seats(row)}
+        for nick in seats_idle:
+            if nick.lower() in authors:
+                continue
+            if row_gave_up_by(row, nick, live=seats_live):
+                clearable.append((row, nick))
+                continue
+            if led:
+                why = ledger_blocks(led, row, nick, seats_live)
+                if why and "gave up" in why.lower():
+                    clearable.append((row, nick))
+    kind = "cross_giveup" if clearable else "author_only"
+    sig_parts = sorted(
+        f"{str(r.get('repo') or '')}{_norm_row_id(r.get('id'))}" for r in mrb_rows
+    ) + sorted(n.lower() for n in seats_idle)
+    return {
+        "kind": kind,
+        "idle": sorted(seats_idle),
+        "live": sorted(seats_live),
+        "mrb_ids": sig_parts[: len(mrb_rows)],
+        "clearable": clearable,
+        "signature": "|".join(sig_parts),
+        "rows": mrb_rows,
+    }
+
+
+def _load_mrb_deadlock_state(home: Path) -> dict:
+    path = mrb_reviewer_deadlock_state_path(home)
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_mrb_deadlock_state(home: Path, state: dict) -> None:
+    path = mrb_reviewer_deadlock_state_path(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=0) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def heal_mrb_reviewer_deadlock(
+    home: Path,
+    *,
+    idle: set[str] | None = None,
+    live: set[str] | None = None,
+    install_root=None,
+    now: float | None = None,
+    locked_doc: dict | None = None,
+    cooldown_s: float | None = None,
+) -> list[str]:
+    """FR #5163: resolve idle-seat MRB reviewer deadlock.
+
+    1. Cross give-up: clear give-ups for idle non-author seats so an offer can proceed.
+    2. Author-only: queue one tray ``recycleseat`` request (deduped + rate-limited).
+
+    Returns human-readable heal lines (empty when no action).
+    """
+    import time as _time
+
+    now_f = _time.time() if now is None else float(now)
+    cool = (
+        float(cooldown_s)
+        if cooldown_s is not None
+        else float(MRB_REVIEWER_DEADLOCK_COOLDOWN_S)
+    )
+    seats_live = set(live) if live is not None else live_seat_nicks(home)
+    seats_idle = set(idle) if idle is not None else free_seat_nicks(home, seats_live)
+    ledger = ledger_load(home)
+
+    def _detect(doc_rows):
+        return detect_mrb_reviewer_deadlock(
+            home,
+            idle=seats_idle,
+            live=seats_live,
+            rows=doc_rows,
+            ledger=ledger,
+        )
+
+    lines: list[str] = []
+    cleared_n = 0
+
+    def _apply_clear(doc: dict, info: dict) -> int:
+        n = 0
+        seen: set[tuple[str, str, str]] = set()
+        for row, nick in info.get("clearable") or []:
+            repo = str(row.get("repo") or "")
+            ident = _norm_row_id(row.get("id"))
+            key = (_repo_key(repo), ident, _canon_ledger_nick(nick))
+            if key in seen:
+                continue
+            seen.add(key)
+            for r in doc.get("unaccepted") or []:
+                if not isinstance(r, dict):
+                    continue
+                if _repo_key(str(r.get("repo") or "")) != key[0]:
+                    continue
+                if _norm_row_id(r.get("id")) != ident:
+                    continue
+                _strip_giveup_seat_from_row(r, nick)
+                try:
+                    gc = int(r.get("giveup_count") or 0)
+                except (TypeError, ValueError):
+                    gc = 0
+                if gc > 0:
+                    r["giveup_count"] = gc - 1
+                r.pop("cooldown_until", None)
+                n += 1
+                with contextlib.suppress(Exception):
+                    ledger_clear_giveup(home, repo, ident, nick=nick, task="MRB")
+        return n
+
+    def _queue_recycle(info: dict) -> None:
+        nonlocal lines
+        root = resolve_recycleseat_install_root(home, install_root)
+        try:
+            import recycleseat as _rs
+
+            pick = sorted(info["idle"], key=lambda n: n.lower())[0]
+            rid = _rs.write_request(
+                _rs.queue_dir(root),
+                pick,
+                "jeeves",
+                "mrb-reviewer-deadlock",
+                now=now_f,
+            )
+            lines.append(
+                f"mrb-reviewer-deadlock author_only recycleseat={pick} id={rid}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            lines.append(
+                f"mrb-reviewer-deadlock author_only recycle_failed:{type(exc).__name__}"
+            )
+
+    def _stamp(info: dict) -> None:
+        _save_mrb_deadlock_state(
+            home,
+            {
+                "signature": info["signature"],
+                "ts": now_f,
+                "kind": info["kind"],
+                "cleared": cleared_n,
+            },
+        )
+
+    try:
+        if locked_doc is not None:
+            info = _detect(list(locked_doc.get("unaccepted") or []))
+            if not info:
+                return []
+            st = _load_mrb_deadlock_state(home)
+            last_sig = str(st.get("signature") or "")
+            last_ts = float(st.get("ts") or 0)
+            if last_sig == info["signature"] and (now_f - last_ts) < cool:
+                return []
+            if info["kind"] == "cross_giveup":
+                cleared_n = _apply_clear(locked_doc, info)
+                if cleared_n:
+                    lines.append(
+                        f"mrb-reviewer-deadlock cross_giveup cleared={cleared_n}"
+                    )
+            else:
+                _queue_recycle(info)
+            _stamp(info)
+            return lines
+
+        with _lock(home):
+            doc = _load_queue_unlocked(home)
+            info = _detect(list(doc.get("unaccepted") or []))
+            if not info:
+                return []
+            st = _load_mrb_deadlock_state(home)
+            last_sig = str(st.get("signature") or "")
+            last_ts = float(st.get("ts") or 0)
+            if last_sig == info["signature"] and (now_f - last_ts) < cool:
+                return []
+            if info["kind"] == "cross_giveup":
+                cleared_n = _apply_clear(doc, info)
+                if cleared_n:
+                    _write_queue(queue_path(home), doc)
+                    lines.append(
+                        f"mrb-reviewer-deadlock cross_giveup cleared={cleared_n}"
+                    )
+            else:
+                _queue_recycle(info)
+            _stamp(info)
+    except (TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return lines
+    return lines
 
 
 def heal_require_machine_all_gave_up(

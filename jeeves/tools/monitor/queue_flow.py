@@ -381,6 +381,19 @@ def check(args):
             else:
                 notes.append(f"pin ledger starve detected (heal skipped/empty): {detail}")
 
+    # FR #5163: MRB reviewer deadlock among idle seats (cross give-up / author-only).
+    if len(unaccepted) > 0 and idle_seat_count > 0:
+        try:
+            gc = _ensure_gitclaim()
+            mrb_dead = gc.heal_mrb_reviewer_deadlock(home)
+            if mrb_dead:
+                notes.append(
+                    "mrb reviewer deadlock healed (FR #5163): "
+                    + "; ".join(mrb_dead)
+                )
+        except Exception:
+            pass
+
     # FR #2448: sustained pin-only / gated empty while idle seats exist → finding after 10m.
     rm_n = int(gated_counts.get("require_machine") or 0)
     ungated_n = int(gated_counts.get("ungated") or 0)
