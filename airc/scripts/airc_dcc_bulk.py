@@ -21,6 +21,7 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 DCC_BULK_LINE_THRESHOLD = int(os.environ.get("AIRC_DCC_BULK_LINE_THRESHOLD", "48"))
 DCC_BULK_BYTE_THRESHOLD = int(os.environ.get("AIRC_DCC_BULK_BYTE_THRESHOLD", "12000"))
@@ -415,6 +416,47 @@ def listen_and_receive(
             pass
 
 
+def listen_and_send(
+    payload: bytes,
+    *,
+    token: str,
+    on_listening: Callable[[int], None],
+    host: str = "0.0.0.0",
+    port: int = 0,
+    timeout_s: float = DCC_HANDSHAKE_TIMEOUT_S,
+    tls: bool = True,
+) -> tuple[int, str]:
+    """Caller-side DCC upload listener; send the framed payload after console connects."""
+    if len(payload) > DCC_BULK_SIZE_CAP:
+        raise ValueError("payload over DCC_BULK_SIZE_CAP")
+    if not re.fullmatch(r"[0-9a-fA-F]{16,64}", token or ""):
+        raise ValueError("invalid DCC token")
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind((host, int(port)))
+        srv.listen(1)
+        srv.settimeout(timeout_s)
+        bound_port = int(srv.getsockname()[1])
+        tls_ctx = load_tls_server_context() if tls else None
+        on_listening(bound_port)
+        conn, _addr = srv.accept()
+    finally:
+        srv.close()
+    try:
+        if tls_ctx is not None:
+            conn = tls_ctx.wrap_socket(conn, server_side=True)
+        conn.settimeout(timeout_s)
+        _write_framed_bulk(conn, payload, token)
+        try:
+            conn.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+    finally:
+        conn.close()
+    return bound_port, sha256_hex(payload)
+
+
 def reverse_dcc_roundtrip_localhost(payload: bytes, *, timeout_s: float = 2.0) -> bytes:
     """Test helper: listen + send on localhost; return received body."""
     token = make_dcc_token()
@@ -600,6 +642,39 @@ def listen_via_relay_receive(
         sock.settimeout(timeout_s)
         sock.sendall(f"ROLE caller {expect_token}\n".encode("ascii"))
         return _read_framed_bulk(sock, expect_token)
+    finally:
+        sock.close()
+
+
+def receive_offer_payload(
+    offer: DccListenOffer,
+    *,
+    timeout_s: float = DCC_HANDSHAKE_TIMEOUT_S,
+) -> tuple[bytes, str]:
+    """Console-side DCC upload receiver; connect to the caller's listener and verify framing."""
+    if offer.relay:
+        relay_host, sep, relay_port = offer.relay.rpartition(":")
+        if not sep or not relay_host or not relay_port:
+            raise ValueError("bad relay host:port")
+        return listen_via_relay_receive(
+            relay_host=relay_host,
+            relay_port=int(relay_port),
+            expect_token=offer.token,
+            timeout_s=timeout_s,
+        )
+
+    raw = socket.create_connection((offer.host, int(offer.port)), timeout=timeout_s)
+    sock: socket.socket = raw
+    try:
+        if offer.tls:
+            sni = (
+                "localhost"
+                if offer.host in {"127.0.0.1", "::1", "localhost"}
+                else (offer.host or "localhost")
+            )
+            sock = load_tls_client_context().wrap_socket(raw, server_hostname=sni)
+        sock.settimeout(timeout_s)
+        return _read_framed_bulk(sock, offer.token)
     finally:
         sock.close()
 
