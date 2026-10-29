@@ -353,6 +353,8 @@ def is_high_priority(home: Path, row: dict) -> bool:
     """Use Jeeves' focus ordering; only an explicit high-ranked focus is eligible."""
     import focus_ignore
 
+    if not focus_ignore.is_high_priority_repo(str(row.get("repo") or "")):
+        return False
     key = focus_ignore.offer_sort_key(home, row)
     return len(key) > 1 and key[1] == focus_ignore.NAMED_PRIORITY["high"]
 

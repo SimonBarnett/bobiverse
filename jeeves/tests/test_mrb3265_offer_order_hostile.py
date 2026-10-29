@@ -86,15 +86,15 @@ def test_mrb3265_same_priority_mrb_beats_lower_numbered_fr(home: Path):
         home,
         [
             _row("SimonBarnett/a-search", "FR", 1, seq=1),
-            _row("SimonBarnett/Club-Madeira", "MRB", 99, seq=2),
+            _row("SimonBarnett/bobiverse", "MRB", 99, seq=2),
         ],
     )
     fi.handle_focus_cmd(home, "1 SimonBarnett/a-search")
-    fi.handle_focus_cmd(home, "1 SimonBarnett/Club-Madeira")
+    fi.handle_focus_cmd(home, "1 SimonBarnett/bobiverse")
     # Older ts on a-search must not promote its FR ahead of the MRB.
     doc = fi.load_focus(home)
     doc["repos"]["SimonBarnett/a-search"]["ts"] = "2026-01-01T00:00:00Z"
-    doc["repos"]["SimonBarnett/Club-Madeira"]["ts"] = "2026-12-01T00:00:00Z"
+    doc["repos"]["SimonBarnett/bobiverse"]["ts"] = "2026-12-01T00:00:00Z"
     fi.save_focus(home, doc)
     ordered = gitclaim.ordered_unaccepted(home)
     assert ordered[0]["task"] == "MRB" and ordered[0]["id"] == "#99"

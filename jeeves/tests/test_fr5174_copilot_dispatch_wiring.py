@@ -258,6 +258,8 @@ def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monke
         "SimonBarnett/trutex": {"priority": 9, "label": "low"},
     }
     focus_ignore.save_focus(digest_home, focus)
+    focus_ignore.handle_focus_cmd(digest_home, "SimonBarnett/ce-priority#39")
+    focus_ignore.handle_focus_cmd(digest_home, "SimonBarnett/trutex#33")
     _queue(
         digest_home,
         [
@@ -285,6 +287,7 @@ def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monke
     chair = ch.ChairJobs(
         chair_home,
         digest_home,
+        log=lambda _line: None,
         spawn=False,
         token_loader=lambda: ("test-token", "test"),
         clock=lambda: 1_000_000.0,

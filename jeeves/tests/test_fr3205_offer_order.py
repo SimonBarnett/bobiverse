@@ -128,20 +128,20 @@ def test_fr3205_focus_first_across_repos(home: Path):
 
 def test_fr3205_same_priority_interleave_by_kind_then_number(home: Path):
     """Same priority: MRB before FR, lowest number; repo name only as final tie-break (not focus ts)."""
-    # Older focus timestamp on agentic_fomprep must NOT beat a-search MRB of same priority.
+    # Older focus timestamp on bobiverse must NOT beat a-search MRB of same priority.
     _queue(
         home,
         [
             _row("SimonBarnett/a-search", "FR", 10, seq=1),
             _row("SimonBarnett/a-search", "MRB", 20, seq=2),
-            _row("agentic_fomprep", "FR", 5, seq=3),
-            _row("agentic_fomprep", "MRB", 8, seq=4),
+            _row("SimonBarnett/bobiverse", "FR", 5, seq=3),
+            _row("SimonBarnett/bobiverse", "MRB", 8, seq=4),
         ],
     )
-    fi.handle_focus_cmd(home, "1 agentic_fomprep")
-    # Force older ts on agentic_fomprep, newer on a-search (legacy bug used ts as tie-break).
+    fi.handle_focus_cmd(home, "1 SimonBarnett/bobiverse")
+    # Force older ts on bobiverse, newer on a-search (legacy bug used ts as tie-break).
     doc = fi.load_focus(home)
-    doc["repos"]["agentic_fomprep"]["ts"] = "2026-10-07T09:17:00Z"
+    doc["repos"]["SimonBarnett/bobiverse"]["ts"] = "2026-10-07T09:17:00Z"
     doc["repos"]["SimonBarnett/a-search"] = {
         "priority": 1,
         "label": "high",
