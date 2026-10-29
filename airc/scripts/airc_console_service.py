@@ -361,7 +361,7 @@ class AircConsoleService:
             info(line)
         self.auth_mode = "irc_ops"
         self.channel_commands = resolve_channel_commands(cfg)
-        # FR #3774: client defaults to presence JOIN #bobiverse; never a command target.
+        # FR #5190: clients join only the selected shop / #wonderland control channel.
         self.presence_channels = resolve_presence_channels(cfg)
         self.members = ChannelMemberMap(channel=self.channel)
         info(

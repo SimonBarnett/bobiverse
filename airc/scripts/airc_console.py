@@ -817,10 +817,6 @@ def resolve_channel_commands(cfg: dict | None) -> bool:
     return prof == "client"
 
 
-# FR #3774: fleet lobby channel for optional client presence-only JOIN.
-FLEET_PRESENCE_CHANNEL = "#bobiverse"
-
-
 def normalize_irc_channel(name: str) -> str:
     """Return ``#lowercase`` channel id, or ``\"\"`` when empty."""
     s = (name or "").strip()
@@ -860,14 +856,19 @@ def resolve_presence_channels(
     prefer_env: bool = True,
     env: dict[str, str] | None = None,
 ) -> list[str]:
-    """Extra channels to JOIN for presence only (FR #3774). Never command targets.
+    """Resolve optional presence-only JOINs; client profile stays on its control channel.
 
     Resolution order:
-    1. ``presence_channels`` in ``airc.json`` when the key is present (including ``[]``).
-    2. Else ``AIRC_PRESENCE_CHANNELS`` (comma-separated; empty string = none) when set.
-    3. Else client profile defaults to ``#bobiverse``; fleet/workstation default none.
+    1. Client profile never joins extra channels (FR #5190; ignore legacy settings).
+    2. Other profiles use ``presence_channels`` in ``airc.json`` when present.
+    3. Else use ``AIRC_PRESENCE_CHANNELS`` (comma-separated) when set.
+    4. Otherwise, join no extra channels.
     """
     data = cfg or {}
+    prof = (profile or str(data.get("profile") or "")).strip().lower()
+    if prof == "client":
+        return []
+
     if "presence_channels" in data:
         parsed = _coerce_presence_channel_list(data.get("presence_channels"))
         return parsed if parsed is not None else []
@@ -876,9 +877,6 @@ def resolve_presence_channels(
     if prefer_env and "AIRC_PRESENCE_CHANNELS" in environ:
         return _coerce_presence_channel_list(environ.get("AIRC_PRESENCE_CHANNELS") or "") or []
 
-    prof = (profile or str(data.get("profile") or "")).strip().lower()
-    if prof == "client":
-        return [FLEET_PRESENCE_CHANNEL]
     return []
 
 
@@ -2359,7 +2357,7 @@ class AircConsoleCore:
         # because the fleet control channel (#<machine>) carries chair / git-claim
         # traffic (issue titles) that must never be executed as a shell line.
         self.channel_commands = bool(channel_commands)
-        # FR #3774: extra JOIN targets for presence only (never command targets).
+        # Optional extra JOIN targets are only configured for non-client profiles.
         self.presence_channels = [
             normalize_irc_channel(c)
             for c in (presence_channels or [])
@@ -2374,9 +2372,9 @@ class AircConsoleCore:
         ]
 
     def join_commands(self) -> list[str]:
-        """JOIN control channel plus optional presence channels (FR #3774).
+        """JOIN control channel plus optional configured presence channels.
 
-        Presence channels (e.g. ``#bobiverse`` on client) are silent for commands —
+        Presence channels are silent for commands —
         ``handle_raw`` only executes channel traffic on ``self.channel``.
         """
         ordered: list[str] = []

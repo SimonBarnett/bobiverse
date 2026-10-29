@@ -50,7 +50,7 @@ Airc service (NSSM)
   ├─ nick {MachineId}_console; SASL (GUID in ConsoleHome\console.password)
   ├─ Ergo PASS in config\ergo.password (never invent)
   ├─ control channel: #{MachineId} if registered else #wonderland (FR #3834)
-  ├─ presence JOIN #bobiverse (client default; commands stay on control) (FR #3774)
+  ├─ client joins only registered shop / #wonderland fallback (FR #5190 supersedes #3774)
   ├─ shell / jobs / update capabilities (AIRC_* / airc.json; Bob fleet shell default ON FR #4030)
   └─ auth: live +o/+h/+a/+q on control only (no operators.txt roster)
 
@@ -86,4 +86,4 @@ Airc has no TipForm UI. Operator surfaces are service logs, `Invoke-AircRemote`,
 
 - Future HTML / TipForm-style status surface for console health (logs + Invoke-AircRemote remain primary)
 - Exact ChanServ probe timing under heavy Ergo load beyond FR #3834 / #4014 fallbacks
-- Whether client `presence_channels` defaults stay `#bobiverse`-only or grow with fleet policy
+- Whether non-client profiles need optional presence channels beyond their control channel

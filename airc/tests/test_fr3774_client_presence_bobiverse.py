@@ -1,4 +1,4 @@
-"""FR #3774: client presence-only JOIN of #bobiverse (commands stay on control channel)."""
+"""FR #5190: clients join their shop channel or #wonderland, not #bobiverse."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,14 +17,20 @@ def test_normalize_and_resolve_presence_channels_defaults():
     assert ac.normalize_irc_channel("#Bobiverse") == "#bobiverse"
     assert ac.normalize_irc_channel("") == ""
 
-    # Client default: #bobiverse
-    assert ac.resolve_presence_channels({"profile": "client"}) == ["#bobiverse"]
+    # Clients stay on their selected control channel, including with legacy settings.
+    assert ac.resolve_presence_channels({"profile": "client"}) == []
+    assert ac.resolve_presence_channels(
+        {"profile": "client", "presence_channels": ["#bobiverse"]}
+    ) == []
+    assert ac.resolve_presence_channels(
+        {"profile": "client"}, env={"AIRC_PRESENCE_CHANNELS": "#bobiverse"}
+    ) == []
     # Fleet / workstation / missing: none
     assert ac.resolve_presence_channels({"profile": "fleet"}) == []
     assert ac.resolve_presence_channels({"profile": "workstation"}) == []
     assert ac.resolve_presence_channels({}) == []
 
-    # Explicit empty list disables client default
+    # An explicit list still supports optional presence channels for other profiles.
     assert ac.resolve_presence_channels(
         {"profile": "client", "presence_channels": []}
     ) == []
@@ -45,14 +51,31 @@ def test_resolve_presence_channels_env_override(monkeypatch):
     assert ac.resolve_presence_channels({"profile": "client"}, prefer_env=True) == []
 
 
-def test_join_commands_includes_presence_not_control_dupe():
+def test_client_join_commands_only_include_control_channel():
     auth = ac.AuthPolicy(members=ac.ChannelMemberMap(channel="#walrus"))
     core = ac.AircConsoleCore(
         machine="walrus",
         auth=auth,
         nick="walrus_console",
         channel_commands=True,
-        presence_channels=["#bobiverse", "#walrus", "bobiverse"],
+        presence_channels=ac.resolve_presence_channels(
+            {"profile": "client", "presence_channels": ["#bobiverse"]}
+        ),
+    )
+    assert core.join_commands() == ["JOIN #walrus"]
+
+    core.channel = "#wonderland"
+    assert core.join_commands() == ["JOIN #wonderland"]
+
+
+def test_join_commands_includes_configured_presence_not_control_dupe():
+    auth = ac.AuthPolicy(members=ac.ChannelMemberMap(channel="#walrus"))
+    core = ac.AircConsoleCore(
+        machine="walrus",
+        auth=auth,
+        nick="walrus_console",
+        channel_commands=True,
+        presence_channels=["#ops", "#walrus", "ops"],
     )
     # control is #walrus
     cmds = core.join_commands()
@@ -60,13 +83,13 @@ def test_join_commands_includes_presence_not_control_dupe():
     assert cmds[0].startswith("JOIN ")
     parts = cmds[0].split(" ", 1)[1].split(",")
     assert parts[0].lower() == "#walrus"
-    assert parts.count("#bobiverse") == 1
+    assert parts.count("#ops") == 1
     assert "#walrus" in [p.lower() for p in parts]
     # only one walrus
     assert sum(1 for p in parts if p.lower() == "#walrus") == 1
 
 
-def test_bobiverse_channel_traffic_never_executes_on_client():
+def test_presence_channel_traffic_never_executes():
     members = ac.ChannelMemberMap(channel="#walrus")
     members.apply_names("@simon")
     members.mark_synced()
@@ -81,11 +104,11 @@ def test_bobiverse_channel_traffic_never_executes_on_client():
         nick="walrus_console",
         shell_runner=runner,
         channel_commands=True,
-        presence_channels=["#bobiverse"],
+        presence_channels=["#ops"],
     )
     # Presence channel: ignore even from +o
     hr = core.handle_raw(
-        ":simon!u@h PRIVMSG #bobiverse :cmd: echo should-not-run"
+        ":simon!u@h PRIVMSG #ops :cmd: echo should-not-run"
     )
     assert hr is not None
     assert hr.action == "silent_channel"
@@ -103,16 +126,16 @@ def test_bobiverse_channel_traffic_never_executes_on_client():
 
 def test_same_irc_channel_helper():
     assert ac.same_irc_channel("#Walrus", "walrus")
-    assert not ac.same_irc_channel("#bobiverse", "#walrus")
+    assert not ac.same_irc_channel("#ops", "#walrus")
 
 
 def test_docs_and_install_mention_presence_channels():
     install = INSTALL.read_text(encoding="utf-8")
     assert "presence_channels" in install
-    assert "3774" in install or "FR #3774" in install
+    assert "5190" in install or "FR #5190" in install
     post = POST.read_text(encoding="utf-8")
     assert "presence_channels" in post or "#bobiverse" in post
-    assert "3774" in post
+    assert "5190" in post
     skill = SKILL.read_text(encoding="utf-8")
     assert "presence" in skill.lower() or "3774" in skill
     svc = SERVICE.read_text(encoding="utf-8")
