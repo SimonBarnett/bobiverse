@@ -28,6 +28,8 @@ RESYNC_S = 3600.0
 # FR #3948: drain merge-on-green pending without seat CI polls.
 MERGE_ON_GREEN_S = 60.0
 FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
+STALL_S = 180.0
+FIRST_STALL_DELAY_S = 90.0
 WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
 FIRST_RESYNC_DELAY_S = 120.0
 FIRST_PROBE_DELAY_S = 45.0
@@ -436,6 +438,8 @@ class ChairJobs:
         self.next_probe = t0 + FIRST_PROBE_DELAY_S
         self.next_resync = t0 + FIRST_RESYNC_DELAY_S
         self.next_merge_on_green = t0 + FIRST_MERGE_ON_GREEN_DELAY_S
+        self.next_stall = t0 + FIRST_STALL_DELAY_S
+        self.resync_fail_streak = 0
         self.busy = threading.Lock()
         self.token_source = ""            # set at first resync
         self._token_logged = False
@@ -487,7 +491,9 @@ class ChairJobs:
             self.home, now=now, gap_s=WEBHOOK_GAP_S
         ):
             self.next_resync = now
-        if now < min(self.next_probe, self.next_resync, self.next_merge_on_green):
+        if now < min(
+            self.next_probe, self.next_resync, self.next_merge_on_green, self.next_stall
+        ):
             return False
         if not self.busy.acquire(blocking=False):
             return False
@@ -567,7 +573,49 @@ class ChairJobs:
                     )
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN merge-on-green: {type(exc).__name__}: {exc}")
+        now = self.clock()
+        if now >= self.next_stall:
+            self.next_stall = now + STALL_S
+            try:
+                self._stall_scan()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN stall-scan: {type(exc).__name__}: {exc}")
 
+
+    def _stall_scan(self) -> None:
+        """FR #5164: file one issue per distinct stall; never raise."""
+        import stall_detectors
+        import stall_filer
+        import gitclaim
+
+        doc = gitclaim.load_queue(self.digest_home)
+        live = gitclaim.live_seat_nicks(self.digest_home)
+        idle = gitclaim.free_seat_nicks(self.digest_home, live)
+        res = self.last_resync if isinstance(self.last_resync, dict) else {}
+        status = res.get("error") or (200 if res.get("ok") else None)
+        snap = {
+            "now": self.clock(),
+            "live": live,
+            "idle": idle,
+            "unaccepted": list(doc.get("unaccepted") or []),
+            "accepted": list(doc.get("accepted") or []),
+            "ledger": gitclaim.ledger_load(self.digest_home),
+            "resync_fail_streak": self.resync_fail_streak,
+            "last_resync_status": status,
+            "last_bored": {},
+        }
+        findings = stall_detectors.detect_all(snap)
+        if not findings:
+            return
+        actions = stall_filer.apply_findings(
+            findings,
+            home=self.home,
+            now=self.clock(),
+            excerpt="chair stall scan",
+            create=stall_filer.default_create,
+        )
+        for act in actions:
+            self.log(f"INFO stall-filer {act}")
 
     def _log_token_source_once(self, source: str) -> None:
         if self._token_logged:
@@ -587,6 +635,7 @@ class ChairJobs:
             self.token_source = source
             self._log_token_source_once(source)
             if not token:
+                self.resync_fail_streak = int(self.resync_fail_streak) + 1
                 self.last_resync = {"ok": False, "error": "no token"}
                 return
             essential = not self._startup_resync_done
@@ -606,6 +655,7 @@ class ChairJobs:
             self._startup_resync_done = True
             self.last_resync, self.last_resync_at = res, self.clock()
             if res.get("ok"):
+                self.resync_fail_streak = 0
                 note = res.get("note") or ""
                 # FR #4422: budget-backoff is a skip — keep WARN visible (resync_cycle also logs).
                 if note == "budget-backoff":
@@ -638,7 +688,9 @@ class ChairJobs:
                 for detail in list(res.get("pruned_detail") or [])[:40]:
                     self.log(f"INFO github-resync pruned {detail}")
             else:
+                self.resync_fail_streak = int(self.resync_fail_streak) + 1
                 self.log(f"WARN github-resync failed: {res.get('error')}")
         except Exception as exc:  # noqa: BLE001
+            self.resync_fail_streak = int(self.resync_fail_streak) + 1
             self.last_resync = {"ok": False, "error": type(exc).__name__}
             self.log(f"WARN github-resync error: {type(exc).__name__}: {exc}")
