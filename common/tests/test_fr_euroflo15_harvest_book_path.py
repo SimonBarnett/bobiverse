@@ -39,10 +39,13 @@ def _dry_run_text(*, job_repo: str, lesson: str) -> str:
 
 
 def test_euroflo15_product_default_map():
-    entry = intake.PRODUCT_DEFAULT_SKILL_BOOK.get("simonbarnett/euroflo")
-    assert entry is not None
-    assert entry[0] == "harvest-agent-skills"
-    assert entry[1] == ".grok/skills/harvest-agent-skills/SKILL.md"
+    assert "simonbarnett/euroflo" not in intake.PRODUCT_DEFAULT_SKILL_BOOK
+    book, path = intake.resolve_skill_book(
+        repo="SimonBarnett/euroflo",
+        topic_repos={"simonbarnett/euroflo"},
+    )
+    assert book == "harvest-agent-skills"
+    assert path == ".grok/skills/harvest-agent-skills/SKILL.md"
 
 
 def test_euroflo15_resolve_skill_book_never_bobiverse_harvest_path():

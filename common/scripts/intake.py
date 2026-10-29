@@ -487,10 +487,8 @@ def resolve_skill_book(
     (never invent ``common/.grok/skills/harvest``).
     FR #4970: other ``priority-customer`` topic repos park at repo-root harvest-agent-skills
     (topic set, not a hardcoded customer list).
-    FR #4990: euroflo/lynton/trutex/rees are also in PRODUCT_DEFAULT_SKILL_BOOK so
-    DryRun cannot invent common/.grok/skills/harvest when the topic set is empty.
     FR #4976: when the topic set is empty, any non-bobiverse ``SimonBarnett/*`` repo
-    still parks at repo-root harvest-agent-skills (euroflo#7).
+    still parks at repo-root harvest-agent-skills.
     """
     repo_l = str(repo or "").strip().lower()
     product = product_default_skill_book(repo_l, topic_repos=topic_repos, home=home)
