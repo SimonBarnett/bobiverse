@@ -60,7 +60,7 @@ def start(chair, task="FR", **extra):
     row = {
         "repo": REPO, "task": task, "id": "#5201",
         "title": "Fix timeout loop",
-        "url": f"https://github.com/{REPO}/{'pull' if task == 'MRB' else 'issues'}/5201",
+        "url": f"https://github.com/{REPO}/{'issues' if task == 'FR' else 'pull'}/5201",
     }
     row.update(extra)
     gitclaim._write_queue(
@@ -92,6 +92,11 @@ def test_timeout_returns_to_seats_without_redispatch(chair, task):
     assert not gitclaim.row_gave_up_by(row, "ionos-123")
     assert not gitclaim.row_on_cooldown(row, chair["now"], "ionos-123")
     assert gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, "copilot")
+    status, offered = gitclaim.offer_top(
+        home, "ionos-123", "#ionos", now=chair["now"],
+    )
+    assert status == "ok"
+    assert offered["id"] == "#5201"
     timeout(chair)
     assert len(chair["posts"]) == 1
     # The IRC ACK path can still take the returned job during Copilot's cooldown.
@@ -113,9 +118,11 @@ def test_existing_work_stays_on_original_task(chair, work):
             "body": f"Closes {REPO}#5201",
         }]
     elif work == "task":
-        chair["task"]["branch"] = "copilot/fr-5201-fix-timeout"
+        chair["task"]["branch"] = "copilot/fix-timeout"
+        chair["branches"] = [{"ref": "refs/heads/copilot/fix-timeout"}]
     else:
         chair["task"]["sessions"] = [{"pull_request_url": f"https://github.com/{REPO}/pull/5202"}]
+        chair["pulls"] = [{"number": 5202}]
     timeout(chair)
     assert gitclaim.load_accepted(chair["home"])[0]["nick"] == "copilot"
     assert not gitclaim.load_unaccepted(chair["home"])
@@ -211,3 +218,47 @@ def test_completed_webhook_does_not_resurrect_stale_task(chair):
     timeout(chair)
     assert not gitclaim.load_unaccepted(chair["home"])
     assert not cd._load_jobs(chair["home"])["jobs"]
+
+
+def test_stale_task_never_releases_an_irc_holder(chair):
+    start(chair)
+    home = chair["home"]
+    doc = gitclaim.load_queue(home)
+    doc["accepted"][0]["nick"] = "ionos-123"
+    gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    timeout(chair)
+    assert gitclaim.load_accepted(home)[0]["nick"] == "ionos-123"
+    assert not gitclaim.load_unaccepted(home)
+    assert not cd._load_jobs(home)["jobs"]
+
+
+def test_stale_task_artifacts_do_not_count_as_live_work(chair):
+    start(chair)
+    chair["task"].update({
+        "branch": "copilot/deleted-branch",
+        "pull_request_url": f"https://github.com/{REPO}/pull/5202",
+    })
+    timeout(chair)
+    assert gitclaim.load_unaccepted(chair["home"])[0]["giveup_seats"] == "copilot"
+
+
+def test_historical_failed_session_does_not_end_running_task(chair):
+    start(chair)
+    chair["task"]["sessions"] = [{"state": "failed"}, {"state": "running"}]
+    chair["now"] += 1
+    chair["chair"]._copilot_tick()
+    assert gitclaim.load_accepted(chair["home"])[0]["nick"] == "copilot"
+    assert not gitclaim.load_unaccepted(chair["home"])
+
+
+def test_return_checks_holder_under_queue_lock(chair):
+    start(chair)
+    home = chair["home"]
+    doc = gitclaim.load_queue(home)
+    doc["accepted"][0]["nick"] = "ionos-123"
+    gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    status, _ = shop_listen.return_job_to_unaccepted(
+        home, repo=REPO, task="FR", ident="#5201", expected_nick="copilot",
+    )
+    assert status == "missing"
+    assert gitclaim.load_accepted(home)[0]["nick"] == "ionos-123"

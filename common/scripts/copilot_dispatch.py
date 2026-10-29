@@ -15,6 +15,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 import bobreport
 import gitclaim
@@ -482,23 +483,42 @@ def _existing_work(job: dict, task_info: dict, get: Callable[[str], Any]) -> boo
     num = str(job["id"]).lstrip("#")
     task = str(job["task"]).lower()
 
-    def task_has_work(info: dict) -> bool:
-        for key in ("pull_request", "pull_request_url", "pull_requests",
-                    "branch", "branch_name", "head_ref"):
-            if info.get(key):
-                return True
-        return any(task_has_work(s) for s in info.get("sessions") or [] if isinstance(s, dict))
-
     if task == "mrb":
         return False  # The PR being reviewed is input, not Copilot's output.
-    if task_has_work(task_info):
-        return True
+    task_pulls: set[str] = set()
+    task_branches: set[str] = set()
+    artifacts = [task_info] + [
+        s for s in task_info.get("sessions") or [] if isinstance(s, dict)
+    ]
+    for info in artifacts:
+        for key in ("pull_request", "pull_request_url", "pull_requests"):
+            values = info.get(key) or []
+            if not isinstance(values, list):
+                values = [values]
+            for value in values:
+                url = (
+                    value.get("html_url") or value.get("url")
+                    if isinstance(value, dict) else value
+                )
+                parsed = gitclaim.parse_github_pull_url(str(url or ""))
+                if parsed and parsed[0].lower() == repo.lower():
+                    task_pulls.add(parsed[1])
+                elif not parsed and isinstance(value, dict) and value.get("number"):
+                    task_pulls.add(f"#{value['number']}")
+        for key in ("branch", "branch_name", "head_ref"):
+            branch = info.get(key)
+            if isinstance(branch, dict):
+                branch = branch.get("ref") or branch.get("name")
+            if isinstance(branch, str) and branch:
+                task_branches.add(branch.removeprefix("refs/heads/"))
     page = 1
     while True:
         pulls = get(f"repos/{repo}/pulls?state=open&per_page=100&page={page}")
         if not isinstance(pulls, list):
             raise ValueError("invalid pulls response")
         for pr in pulls:
+            if f"#{pr.get('number')}" in task_pulls:
+                return True
             login = str((pr.get("user") or {}).get("login") or "").lower()
             branch = str((pr.get("head") or {}).get("ref") or "")
             if "copilot" not in login and not branch.startswith("copilot/"):
@@ -509,6 +529,12 @@ def _existing_work(job: dict, task_info: dict, get: Callable[[str], Any]) -> boo
         if len(pulls) < 100:
             break
         page += 1
+    for branch in sorted(task_branches):
+        branches = get(f"repos/{repo}/git/matching-refs/heads/{quote(branch, safe='/')}")
+        if not isinstance(branches, list):
+            raise ValueError("invalid refs response")
+        if any(b.get("ref") == f"refs/heads/{branch}" for b in branches):
+            return True
     branches = get(f"repos/{repo}/git/matching-refs/heads/copilot/{task}-{num}")
     if not isinstance(branches, list):
         raise ValueError("invalid refs response")
@@ -538,14 +564,9 @@ def handle_timeout_or_fail(
                 info = get(f"{tasks_api_path(repo)}/{job['task_id']}")
                 if not isinstance(info, dict):
                     raise ValueError("invalid task response")
-                states = [info] + [
-                    s for s in info.get("sessions") or [] if isinstance(s, dict)
-                ]
-                for state_info in states:
-                    state = str(state_info.get("state") or state_info.get("status") or "").lower()
-                    if state in ("failed", "cancelled", "canceled", "error"):
-                        reason = state
-                        break
+                state = str(info.get("state") or info.get("status") or "").lower()
+                if state in ("failed", "cancelled", "canceled", "error"):
+                    reason = state
             started = float(job.get("started") or 0)
             if reason == "timeout" and now - started < TASK_TIMEOUT_S:
                 return {"status": "pending"}
@@ -563,7 +584,8 @@ def handle_timeout_or_fail(
             gitclaim.ledger_blocks(gitclaim.ledger_load(home), accepted, COPILOT_NICK)
         )
         status, moved = shop_listen.return_job_to_unaccepted(
-            home, repo=repo, task=task, ident=ident, now=now, reason=f"copilot {reason}"
+            home, repo=repo, task=task, ident=ident, now=now, reason=f"copilot {reason}",
+            expected_nick=COPILOT_NICK,
         )
         if status != "ok":
             return {"status": "error"}
