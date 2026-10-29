@@ -18,6 +18,7 @@ import re
 import subprocess
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -28,7 +29,7 @@ from typing import Callable, Literal
 import json
 
 from account_map import AccountMap, parse_message_tags
-from airc_jobs import JobProtocol, parse_job_verb
+from airc_jobs import JobProtocol, JobProtocolError, parse_job_verb
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -1466,6 +1467,7 @@ class ShellRequest:
     kind: ShellKind
     body: str
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    cancel_event: threading.Event | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -1803,7 +1805,30 @@ def build_shell_argv(req: ShellRequest) -> list[str]:
 def _clip_bytes(data: bytes, limit: int = SHELL_OUTPUT_MAX_BYTES) -> tuple[str, bool]:
     clipped = len(data) > limit
     chunk = data[:limit]
+    if chunk.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return chunk.decode("utf-16", errors="replace"), clipped
     return chunk.decode("utf-8", errors="replace"), clipped
+
+
+def _stop_shell_process(proc: subprocess.Popen) -> None:
+    """Stop only this shell's tree; never wait on inherited stdout pipe handles."""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def run_shell_request(
@@ -1818,31 +1843,45 @@ def run_shell_request(
         args = build_cmd_command_line(req.body or "")
     else:
         args = build_shell_argv(req)
-    try:
-        proc = subprocess.run(
-            args,
-            capture_output=True,
-            timeout=timeout_s,
-            cwd=cwd,
-            check=False,
+    cancel = req.cancel_event or threading.Event()
+    if cancel.is_set():
+        return ShellOutcome(req.job_id, 130, "", "cancelled")
+    # FR #5211: Windows communicate() can wait forever after timeout when a
+    # descendant inherits a capture pipe. Files let us return without pipe EOF.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        proc = subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, cwd=cwd,
         )
-    except subprocess.TimeoutExpired as exc:
-        out, _ = _clip_bytes(exc.stdout or b"")
-        err, _ = _clip_bytes(exc.stderr or b"")
-        err = plain_text_powershell_stderr(err)
-        err = (err + ("\n" if err else "") + f"timeout after {timeout_s:.0f}s").strip()
-        return ShellOutcome(job_id=req.job_id, exit_code=124, stdout=out, stderr=err)
-    out, out_clip = _clip_bytes(proc.stdout or b"")
-    err, err_clip = _clip_bytes(proc.stderr or b"")
+        deadline = time.monotonic() + timeout_s
+        reason = ""
+        try:
+            while proc.poll() is None:
+                if cancel.is_set():
+                    reason = "cancelled"
+                    break
+                if time.monotonic() >= deadline:
+                    reason = f"timeout after {timeout_s:.0f}s"
+                    break
+                cancel.wait(min(0.05, max(0, deadline - time.monotonic())))
+        finally:
+            if proc.poll() is None:
+                _stop_shell_process(proc)
+        exit_code = 130 if reason == "cancelled" else 124 if reason else int(proc.returncode)
+        stdout.seek(0)
+        stderr.seek(0)
+        out, out_clip = _clip_bytes(stdout.read(SHELL_OUTPUT_MAX_BYTES + 1))
+        err, err_clip = _clip_bytes(stderr.read(SHELL_OUTPUT_MAX_BYTES + 1))
     # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect — plain-text it.
     err = plain_text_powershell_stderr(err)
     if out_clip:
         out += "\n[clipped stdout]"
     if err_clip:
         err += "\n[clipped stderr]"
+    if reason:
+        err = (err + ("\n" if err else "") + reason).strip()
     return ShellOutcome(
         job_id=req.job_id,
-        exit_code=int(proc.returncode),
+        exit_code=exit_code,
         stdout=out,
         stderr=err,
     )
@@ -1850,11 +1889,22 @@ def run_shell_request(
 
 def chunk_irc_text(text: str, *, limit: int = IRC_SAFE_PAYLOAD, prefix: str = "") -> list[str]:
     """Split ``text`` so each ``prefix + chunk`` fits ``limit`` (IRC-safe)."""
-    room = max(8, limit - len(prefix))
-    raw = text.replace("\r", "").replace("\n", " ")
+    room = max(8, limit - len(prefix.encode("utf-8", errors="replace")))
+    raw = text.replace("\r", "").replace("\n", " ").replace("\x00", "\ufffd")
     if not raw:
         return [prefix] if prefix else [""]
-    return [prefix + raw[i : i + room] for i in range(0, len(raw), room)]
+    chunks: list[str] = []
+    piece = ""
+    size = 0
+    for char in raw:
+        width = len(char.encode("utf-8", errors="replace"))
+        if size + width > room:
+            chunks.append(prefix + piece)
+            piece, size = "", 0
+        piece += char
+        size += width
+    chunks.append(prefix + piece)
+    return chunks
 
 
 @dataclass
@@ -1905,17 +1955,10 @@ def _shell_reply_pieces(
         if stream and not parts:
             parts = [""]
         for part in parts:
-            body = part
-            first = True
-            while first or body:
-                first = False
-                # Conservative seq width so later pages (seq=100+) still fit IRC_SAFE_PAYLOAD.
-                prefix = f"{label} id={outcome.job_id} seq=99999 "
-                room = max(8, irc_limit - len(prefix))
-                piece, body = body[:room], body[room:]
-                pieces.append((label, piece))
-                if not body:
-                    break
+            # Conservative seq width so later pages (seq=100+) still fit IRC_SAFE_PAYLOAD.
+            prefix = f"{label} id={outcome.job_id} seq=99999 "
+            for chunk in chunk_irc_text(part, limit=irc_limit, prefix=prefix):
+                pieces.append((label, chunk[len(prefix):]))
 
     emit(outcome.stdout, "out")
     emit(outcome.stderr, "err")
@@ -2057,7 +2100,9 @@ class _ShellPending:
     """One queued shell command (FR #2632); ``done`` signals completion for wait=True."""
 
     command: str
+    job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     done: threading.Event = field(default_factory=threading.Event)
+    cancelled: threading.Event = field(default_factory=threading.Event)
 
 
 class ShellJobRunner:
@@ -2112,6 +2157,10 @@ class ShellJobRunner:
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
         item = _ShellPending(command=command)
+        try:
+            item.job_id = parse_shell_request(command).job_id
+        except ShellRequestError:
+            pass
 
         with self._lock:
             q = self._pending.setdefault(key, deque())
@@ -2151,6 +2200,8 @@ class ShellJobRunner:
     def _drain(self, key: str) -> None:
         while True:
             with self._lock:
+                if self._threads.get(key) is not threading.current_thread():
+                    return
                 q = self._pending.get(key)
                 if not q:
                     self._pending.pop(key, None)
@@ -2161,6 +2212,9 @@ class ShellJobRunner:
                 self._inflight_cmd[key] = item
             try:
                 self._run_one(key, item.command)
+            except Exception:
+                # A failing reply callback must not strand the remaining queue.
+                pass
             finally:
                 item.done.set()
                 with self._lock:
@@ -2174,14 +2228,20 @@ class ShellJobRunner:
 
     def _run_one(self, key: str, command: str) -> None:
         jid: str | None = None
+        next_seq = 1
+        with self._lock:
+            item = self._inflight_cmd.get(key)
         try:
             try:
                 req = parse_shell_request(command)
             except ShellRequestError as exc:
-                jid = uuid.uuid4().hex[:8]
+                jid = item.job_id if item is not None else uuid.uuid4().hex[:8]
                 self._emit(key, f"err id={jid} seq=1 {exc}")
                 self._emit(key, f"DONE id={jid} exit=2")
                 return
+            if item is not None:
+                req.job_id = item.job_id
+                req.cancel_event = item.cancelled
             jid = req.job_id
             if self.on_inflight:
                 try:
@@ -2219,6 +2279,15 @@ class ShellJobRunner:
                 else:
                     self._resume.pop((key, jid), None)
             for line in page.lines:
+                if req.cancel_event is not None and req.cancel_event.is_set() and outcome.exit_code != 130:
+                    self._emit(key, f"err id={jid} seq={next_seq} cancelled")
+                    self._emit(key, f"DONE id={jid} exit=130")
+                    with self._lock:
+                        self._resume.pop((key, jid), None)
+                    return
+                match = re.match(r"^(?:out|err) id=\S+ seq=(\d+)", line)
+                if match:
+                    next_seq = int(match.group(1)) + 1
                 self._emit(key, line)
             if self.on_shell_done:
                 try:
@@ -2234,8 +2303,10 @@ class ShellJobRunner:
         except Exception:
             # Keep drain alive for queued peers; always emit DONE when we have an id.
             if jid:
-                self._emit(key, f"err id={jid} seq=1 shell runner fault")
-                self._emit(key, f"DONE id={jid} exit=1")
+                try:
+                    self._emit(key, f"err id={jid} seq={next_seq} shell runner fault")
+                finally:
+                    self._emit(key, f"DONE id={jid} exit=1")
 
     def _emit(self, nick: str, line: str) -> None:
         # FR #2551: on_reply may raise ConnectionError after IRC drop; swallow so the
@@ -2245,6 +2316,38 @@ class ShellJobRunner:
                 self.on_reply(nick, line)
             except ConnectionError:
                 return
+            except UnicodeError:
+                return
+
+    def cancel(self, nick: str, job_id: str) -> bool:
+        """Cancel an active or queued shell owned by this Query, not another nick."""
+        key = nick.strip().lower()
+        jid = job_id.strip().lower()
+        removed: list[_ShellPending] = []
+        found = False
+        with self._lock:
+            active = self._inflight_cmd.get(key)
+            if active is not None and active.job_id == jid:
+                active.cancelled.set()
+                found = True
+            q = self._pending.get(key)
+            if q is not None:
+                for item in list(q):
+                    if item.job_id == jid:
+                        item.cancelled.set()
+                        q.remove(item)
+                        removed.append(item)
+                        found = True
+            self._resume.pop((key, jid), None)
+            if found:
+                self._dcc_listen.pop(jid, None)
+        for item in removed:
+            try:
+                self._emit(key, f"err id={jid} seq=1 cancelled")
+                self._emit(key, f"DONE id={jid} exit=130")
+            finally:
+                item.done.set()
+        return found
 
     def continue_replies(self, nick: str, job_id: str, offset: int | None = None) -> bool:
         """Emit the next FR #4794 page for a truncated shell job (no re-run).
@@ -2282,20 +2385,12 @@ class ShellJobRunner:
         out: list[tuple[str, str]] = []
         with self._lock:
             for key, item in list(self._inflight_cmd.items()):
-                try:
-                    jid = parse_shell_request(item.command).job_id
-                except ShellRequestError:
-                    jid = uuid.uuid4().hex[:8]
-                out.append((key, jid))
+                out.append((key, item.job_id))
             for key, q in list(self._pending.items()):
                 for item in list(q):
                     if self._inflight_cmd.get(key) is item:
                         continue
-                    try:
-                        jid = parse_shell_request(item.command).job_id
-                    except ShellRequestError:
-                        jid = uuid.uuid4().hex[:8]
-                    out.append((key, jid))
+                    out.append((key, item.job_id))
         return out
 
     def abandon_open_jobs(self) -> list[tuple[str, str]]:
@@ -2303,10 +2398,15 @@ class ShellJobRunner:
         ids = self.open_job_ids()
         with self._lock:
             pending_all = list(self._pending.items())
+            active = list(self._inflight_cmd.values())
             self._pending.clear()
             self._inflight_cmd.clear()
+        for item in active:
+            item.cancelled.set()
+            item.done.set()
         for _key, q in pending_all:
             for item in q:
+                item.cancelled.set()
                 item.done.set()
         return ids
 
@@ -2316,9 +2416,13 @@ class ShellJobRunner:
         with self._lock:
             self._threads.pop(key, None)
             pending = self._pending.pop(key, None)
-            self._inflight_cmd.pop(key, None)
+            active = self._inflight_cmd.pop(key, None)
+        if active is not None:
+            active.cancelled.set()
+            active.done.set()
         if pending:
             for item in pending:
+                item.cancelled.set()
                 item.done.set()
 
 
@@ -2613,6 +2717,17 @@ class AircConsoleCore:
                     text=text,
                     reply="DONE exit=126 jobs-disabled",
                 )
+            if verb == "CANCEL" and self.shell_runner is not None:
+                try:
+                    self.job_protocol.authorize(nick, verb)
+                except JobProtocolError:
+                    pass  # The job protocol emits its normal permission refusal below.
+                else:
+                    if self.shell_runner.cancel(nick, kv.get("id") or ""):
+                        meta = self._allow_meta(nick, account)
+                        return HandleResult(
+                            action="job", nick=nick, target=target, text=text, **meta
+                        )
             self.job_protocol.handle_async(nick, verb, kv)
             meta = self._allow_meta(nick, account)
             return HandleResult(
