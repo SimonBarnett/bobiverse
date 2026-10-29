@@ -45,6 +45,7 @@ QUEUE_NAME = "queue.json"
 LEGACY_UNACCEPTED = "git-unaccepted.json"
 LEGACY_ACCEPTED = "git-accepted.jsonl"
 ACTIVITY_NAME = "git-worker-activity.json"
+LAST_BORED_NAME = "last-bored.json"
 LOCK_NAME = "git-claim.lock"
 PENDING_NAME = "git-claim-pending.jsonl"
 ACCEPTED_CAP = 200
@@ -367,6 +368,63 @@ def format_claimed(job: dict) -> str:
 
 def is_bored_command(body: str) -> bool:
     return (body or "").strip().lower() == "!bored"
+
+
+def last_bored_path(home: Path) -> Path:
+    return _root(home) / LAST_BORED_NAME
+
+
+def load_last_bored(home: Path) -> dict[str, float]:
+    """FR #5166: last !bored unix time per canonical seat nick."""
+    p = last_bored_path(home)
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, val in raw.items():
+        nick = (canonical_worker_nick(str(key)) or str(key or "")).strip()
+        if not nick:
+            continue
+        try:
+            out[nick] = float(val)
+            out[nick.lower()] = float(val)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def record_last_bored(home: Path, nick: str, now: float | None = None) -> str | None:
+    """Stamp ``nick`` as having said !bored. Returns canonical nick or None."""
+    me = (canonical_worker_nick(nick) or (nick or "").strip())
+    if not me:
+        return None
+    import time as _time
+
+    ts = _time.time() if now is None else float(now)
+    doc = load_last_bored(home)
+    # drop lowercase aliases before write
+    clean = {k: v for k, v in doc.items() if k and k == (canonical_worker_nick(k) or k)}
+    clean[me] = ts
+    last_bored_path(home).write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
+    return me
+
+
+def merge_last_bored(*homes: Path) -> dict[str, float]:
+    """Union last-bored maps; later higher timestamp wins (FR #5166)."""
+    out: dict[str, float] = {}
+    for home in homes:
+        if home is None:
+            continue
+        for key, val in load_last_bored(home).items():
+            prev = out.get(key)
+            if prev is None or float(val) > float(prev):
+                out[key] = float(val)
+    return out
 
 
 def is_accept_command(body: str) -> bool:

@@ -3119,6 +3119,10 @@ class Client:
             return False
         now = time.time()
         if gitclaim.is_bored_command(body):
+            try:
+                gitclaim.record_last_bored(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN last-bored stamp {type(exc).__name__}")
             if chair:
                 try:
                     self._workers().on_bored(src, target)
