@@ -361,7 +361,7 @@ class AircConsoleService:
             info(line)
         self.auth_mode = "irc_ops"
         self.channel_commands = resolve_channel_commands(cfg)
-        # FR #3774: client defaults to presence JOIN #bobiverse; never a command target.
+        # FR #3774: explicit presence JOINs are silent; FR #5190 leaves them empty by default.
         self.presence_channels = resolve_presence_channels(cfg)
         self.members = ChannelMemberMap(channel=self.channel)
         info(

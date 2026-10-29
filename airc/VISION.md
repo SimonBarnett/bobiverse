@@ -50,7 +50,7 @@ Airc service (NSSM)
   ├─ nick {MachineId}_console; SASL (GUID in ConsoleHome\console.password)
   ├─ Ergo PASS in config\ergo.password (never invent)
   ├─ control channel: #{MachineId} if registered else #wonderland (FR #3834)
-  ├─ presence JOIN #bobiverse (client default; commands stay on control) (FR #3774)
+  ├─ optional presence JOINs (explicit config only; commands stay on control) (FR #3774 / #5190)
   ├─ shell / jobs / update capabilities (AIRC_* / airc.json; Bob fleet shell default ON FR #4030)
   └─ auth: live +o/+h/+a/+q on control only (no operators.txt roster)
 
@@ -77,6 +77,7 @@ Airc has no TipForm UI. Operator surfaces are service logs, `Invoke-AircRemote`,
 - Product path `/bobiverse/airc`; install `<ai root>\airc`; service name `Airc` (not `AircConsole`)
 - Console nick `{MachineId}_console`; MachineId = lowercase sanitized fleet id
 - Control channel: registered `#{MachineId}` else `#wonderland` (FR #3834); timeout log keeps `chanserv-probe timeout -> wonderland` (FR #4014)
+- Client default joins only that control channel; extra presence channels are opt-in (FR #5190)
 - Never invent Ergo PASS; never invent ConsoleHome on upgrade when AppParameters exist (FR #1552)
 - CAST IRON harvest + intake every session; never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `Airc`
@@ -86,4 +87,3 @@ Airc has no TipForm UI. Operator surfaces are service logs, `Invoke-AircRemote`,
 
 - Future HTML / TipForm-style status surface for console health (logs + Invoke-AircRemote remain primary)
 - Exact ChanServ probe timing under heavy Ergo load beyond FR #3834 / #4014 fallbacks
-- Whether client `presence_channels` defaults stay `#bobiverse`-only or grow with fleet policy
