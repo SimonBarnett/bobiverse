@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -156,18 +157,37 @@ class LessonOwner(NamedTuple):
     missing: bool = False
 
 
-def _priority_customer_topic_repos(topic_repos=None, home=None) -> set[str]:
-    """FR #4970 / #4969: topic set from caller, else last on-disk lookup (never drop)."""
+def _priority_customer_topic_repos(topic_repos=None, home=None, fetch_json=None) -> set[str]:
+    """FR #4970 / #4969: use cached topics, searching GitHub when the cache is empty."""
     if topic_repos is not None:
         return {str(x).strip().lower() for x in topic_repos if str(x).strip()}
-    if home is None:
-        return set()
     try:
         import priority_customer as _pc
 
-        return set(_pc.load_topic_repos(Path(home)))
+        if home is None:
+            configured = (os.environ.get("BOB_DIGEST_HOME") or "").strip()
+            profile = (os.environ.get("USERPROFILE") or os.environ.get("HOME") or "").strip()
+            home = Path(configured) if configured else Path(profile or Path.home()) / ".bobiverse"
+        home = Path(home)
+        repos = _pc.load_topic_repos(home)
+        if not repos:
+            repos = _pc.refresh_topic_repos(home, fetch_json=fetch_json)
+        return {str(x).strip().lower() for x in repos if str(x).strip()}
     except Exception:  # noqa: BLE001
         return set()
+
+
+def priority_customer_harvest_repos(topic_repos=None, home=None, fetch_json=None) -> frozenset[str]:
+    """Return the priority-customer repositories from the shared topic set."""
+    return frozenset(_priority_customer_topic_repos(topic_repos, home, fetch_json))
+
+
+def is_priority_customer_harvest_repo(
+    repo: str, topic_repos=None, home=None, fetch_json=None
+) -> bool:
+    """True only when ``repo`` appears in the shared priority-customer topic set."""
+    key = str(repo or "").strip().lower()
+    return bool(key and key in priority_customer_harvest_repos(topic_repos, home, fetch_json))
 
 
 def _customer_repo_from_topics(low: str, topics: set[str]) -> str | None:
@@ -286,24 +306,6 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
-    # euroflo#15 / FR #4990: priority-customer honesty box (never invent
-    # common/.grok/skills/harvest). Topic peers: euroflo / lynton / trutex / rees.
-    "simonbarnett/euroflo": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
-    "simonbarnett/lynton": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
-    "simonbarnett/trutex": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
-    "simonbarnett/rees": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
     # FR #4830: never invent common/.grok/skills/harvest on ce-priority; park in
     # unlocked dayworks-launcher (assert-lock / tip-loop class of ce-priority#36/#37/#38).
     "simonbarnett/ce-priority": (
@@ -311,16 +313,6 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "dayworks/.grok/skills/dayworks-launcher/SKILL.md",
     ),
 }
-
-# FR #4990: explicit priority-customer set (PRODUCT_DEFAULT above + PS1 branch).
-PRIORITY_CUSTOMER_HARVEST_REPOS = frozenset(
-    {
-        "simonbarnett/euroflo",
-        "simonbarnett/lynton",
-        "simonbarnett/trutex",
-        "simonbarnett/rees",
-    }
-)
 
 def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
     """FR #3959: bobiverse-* books never tip into product repos (a-search stubs).
@@ -334,7 +326,9 @@ def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
     book = str(skill_book or "").strip().lower()
     if not repo_l or not book:
         return str(repo or "").strip()
-    if repo_l not in PRODUCT_DEFAULT_SKILL_BOOK:
+    if repo_l not in PRODUCT_DEFAULT_SKILL_BOOK and not (
+        repo_l.startswith("simonbarnett/") and repo_l != "simonbarnett/bobiverse"
+    ):
         return str(repo or "").strip()
     if book.startswith("bobiverse-"):
         return "SimonBarnett/bobiverse"
@@ -491,8 +485,7 @@ def resolve_skill_book(
     (never invent ``common/.grok/skills/harvest``).
     FR #4970: other ``priority-customer`` topic repos park at repo-root harvest-agent-skills
     (topic set, not a hardcoded customer list).
-    FR #4990: euroflo/lynton/trutex/rees are also in PRODUCT_DEFAULT_SKILL_BOOK so
-    DryRun cannot invent common/.grok/skills/harvest when the topic set is empty.
+    FR #4990: customer repos use the shared repo-root honesty box even when the topic set is empty.
     FR #4976: when the topic set is empty, any non-bobiverse ``SimonBarnett/*`` repo
     still parks at repo-root harvest-agent-skills (euroflo#7).
     """

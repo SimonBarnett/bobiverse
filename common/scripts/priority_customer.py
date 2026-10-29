@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Callable
+import urllib.request
 
 import bobreport
 
@@ -77,11 +78,23 @@ def is_priority_customer(home: Path, repo: str) -> bool:
     return any(k == short or k.endswith("/" + short) for k in known)
 
 
-def refresh_topic_repos(home: Path, *, fetch_json: Callable[[str], object]) -> set[str]:
+def _fetch_topic_search_json(url: str) -> object:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def refresh_topic_repos(
+    home: Path, *, fetch_json: Callable[[str], object] | None = None
+) -> set[str]:
     """One GitHub search. On HTTP/timeout/budget error: WARN and keep last set."""
     last = load_topic_repos(home)
     try:
-        body = fetch_json(topic_search_url())
+        body = (fetch_json or _fetch_topic_search_json)(topic_search_url())
         if body is None:
             raise RuntimeError("empty_topic_search")
         items = body.get("items") if isinstance(body, dict) else body
