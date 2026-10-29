@@ -50,6 +50,8 @@ Replace the host as needed. Bodies are minimal scaffolds.
 curl -sS "https://irc.ntsa.uk/bob/v1/report"
 ```
 
+The public digest includes `connected_console_nicks` (a sorted array of currently observed `*_console` nicks) and `console_presence_updated_at` (UTC timestamp of the last chair NAMES refresh or membership change). Jeeves derives this read-only roster from channels it has joined; it requires no NickServ credentials. Consumers should treat the list as stale when its timestamp is old.
+
 ### POST report (status / ops)
 
 ```bash

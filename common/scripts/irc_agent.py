@@ -610,6 +610,8 @@ class Client:
             self.channels = [chan]
         self.chan = self.channels[0]
         self._pending_joins: set[str] = {c.lower() for c in self.channels}
+        self._console_names_synced: set[str] = set()
+        self._console_presence_last_nicks: tuple[str, ...] | None = None
         self._last_call_channel: str | None = None
         if args.home:
             os.environ["BOB_HOME"] = str(Path(args.home).expanduser())
@@ -1183,10 +1185,43 @@ class Client:
         return wk
 
     def _on_channel_names(self, chan: str, present: set) -> None:
+        channel = str(chan or "").strip().lower()
+        synced = getattr(self, "_console_names_synced", None)
+        if synced is None:
+            synced = set()
+            self._console_names_synced = synced
+        if channel in {str(ch or "").strip().lower() for ch in self.channels}:
+            synced.add(channel)
         try:
             self._workers().reconcile(chan, present)
         except Exception as exc:  # never kill the reader over the worker list
             info(f"WARN workers reconcile error {type(exc).__name__}")
+        self._publish_connected_console_nicks(refresh=True)
+
+    def _publish_connected_console_nicks(self, *, refresh: bool = False) -> None:
+        engine = getattr(self, "_privs_engine", None)
+        if engine is None:
+            return
+        synced = getattr(self, "_console_names_synced", set())
+        channels = {str(ch or "").strip().lower() for ch in self.channels}
+        if not channels or not channels.issubset(synced):
+            return
+        members = getattr(getattr(engine, "state", None), "members", {}) or {}
+        nicks = {
+            str(member.get("nick") or "")
+            for channel, entries in members.items()
+            if channel in synced and channel in channels and isinstance(entries, dict)
+            for member in entries.values()
+            if isinstance(member, dict) and str(member.get("nick") or "").lower().endswith("_console")
+        }
+        snapshot = tuple(sorted(nicks, key=str.casefold))
+        if not refresh and snapshot == getattr(self, "_console_presence_last_nicks", None):
+            return
+        try:
+            bobreport.update_connected_console_nicks(self._digest_home(), snapshot, refresh=refresh)
+            self._console_presence_last_nicks = snapshot
+        except Exception as exc:  # the public presence mirror must not disrupt IRC handling
+            info(f"WARN console-presence update error {type(exc).__name__}")
 
     def _chair_wire(self, cmd: str, parts: list, trailing: str, prefix: str, tags: dict) -> None:
         """Chair: feed membership/mode/account events to the privilege engine and the worker list."""
@@ -1195,6 +1230,13 @@ class Client:
         try:
             self._privs().on_line(cmd, parts, trailing, prefix, tags)
             who = chan_privs.clean_nick(prefix.split("!", 1)[0]) if prefix else ""
+            if cmd in ("PART", "KICK"):
+                chan = (parts[1] if len(parts) > 1 else trailing).lstrip(":")
+                gone = (parts[2].lstrip(":") if cmd == "KICK" and len(parts) > 2 else who)
+                if gone.lower() in self._mine_nicks():
+                    getattr(self, "_console_names_synced", set()).discard(chan.strip().lower())
+            if cmd in ("JOIN", "PART", "KICK", "QUIT", "NICK"):
+                self._publish_connected_console_nicks()
             if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
                 return        # own PART/QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
             if cmd in ("PART", "KICK"):
@@ -4019,6 +4061,8 @@ class Client:
         self._nickname_reserved = False
         self.live_nick = self.original_nick
         self._pending_joins = {c.lower() for c in self.channels}
+        self._console_names_synced = set()
+        self._console_presence_last_nicks = None
         self._chair_reset_session()
         # FR #3742: each IRC (re)connect is a new session for lost-DONE !bored heal.
         self._irc_session_started = time.time()

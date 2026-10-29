@@ -30,6 +30,7 @@ class FakeChair:
         self._op_try_at = {}
         self._oper_state = "off"
         self.accounts = None
+        self._console_names_synced = set()
 
     def send(self, line):
         self.sent.append(line)
@@ -56,6 +57,7 @@ class FakeChair:
     _privs = irc_agent.Client._privs
     _privs_skip_whois = irc_agent.Client._privs_skip_whois
     _on_channel_names = irc_agent.Client._on_channel_names
+    _publish_connected_console_nicks = irc_agent.Client._publish_connected_console_nicks
     _chair_wire = irc_agent.Client._chair_wire
     _maybe_git_claim = irc_agent.Client._maybe_git_claim
     _maybe_shop_listen = irc_agent.Client._maybe_shop_listen

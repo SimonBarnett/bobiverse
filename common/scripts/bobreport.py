@@ -712,6 +712,8 @@ def empty_digest() -> dict:
         "v": 1,
         "ts": "",
         "briefer": "",
+        "connected_console_nicks": [],
+        "console_presence_updated_at": "",
         "machines": {},
         "events": [],
     }
@@ -965,6 +967,8 @@ def _coerce_machine(mid: str, raw: object) -> dict:
 
 
 def _ensure_seats(doc: dict, home: Path | None = None) -> dict:
+    doc["connected_console_nicks"] = _coerce_console_nicks(doc.get("connected_console_nicks"))
+    doc["console_presence_updated_at"] = str(doc.get("console_presence_updated_at") or "")
     machines = doc.setdefault("machines", {})
     if not isinstance(machines, dict):
         machines = {}
@@ -995,6 +999,23 @@ def _ensure_seats(doc: dict, home: Path | None = None) -> dict:
     if pools is not None and not isinstance(pools, list):
         doc["cursor_pools"] = []
     return doc
+
+
+def _coerce_console_nicks(raw: object) -> list[str]:
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    unique: dict[str, str] = {}
+    for value in raw:
+        nick = str(value or "").strip()
+        if (
+            not nick
+            or len(nick) > 64
+            or not nick.lower().endswith("_console")
+            or any(ord(char) < 33 or ord(char) == 127 for char in nick)
+        ):
+            continue
+        unique.setdefault(nick.lower(), nick)
+    return sorted(unique.values(), key=str.casefold)
 
 
 def load_digest(home: Path) -> dict:
@@ -1542,6 +1563,20 @@ def persist_chair_nick(home: Path, nick: str) -> None:
     if str(doc.get("chairNick") or "") == n:
         return
     doc["chairNick"] = n
+    save_digest(root, doc)
+
+
+@_digest_locked
+def update_connected_console_nicks(home: Path, nicks: object, *, refresh: bool = False) -> None:
+    """Publish the chair's current NAMES view of Airc console nicks in the public digest."""
+    root = fleet_digest_home(Path(home))
+    doc = load_digest(root)
+    current = _coerce_console_nicks(doc.get("connected_console_nicks"))
+    updated = _coerce_console_nicks(nicks)
+    if current == updated and not refresh:
+        return
+    doc["connected_console_nicks"] = updated
+    doc["console_presence_updated_at"] = _utc_now_iso()
     save_digest(root, doc)
 
 
@@ -3186,6 +3221,8 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "ts": str(doc.get("ts") or _utc_now_iso()),
         "briefer": briefer,
         "chairNick": chair or briefer,
+        "connected_console_nicks": list(doc.get("connected_console_nicks") or []),
+        "console_presence_updated_at": str(doc.get("console_presence_updated_at") or ""),
         "machines": exported,
         "roster_machine_ids": sorted(roster),
         "chair_channels": channels,
