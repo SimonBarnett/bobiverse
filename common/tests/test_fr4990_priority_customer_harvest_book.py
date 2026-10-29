@@ -59,11 +59,11 @@ def _dry_run(repo: str, lesson: str) -> tuple[dict | None, str]:
     return payload, text
 
 
-def test_fr4990_product_default_lists_priority_customers():
+def test_fr4990_topic_customers_use_repo_root_honesty_box():
     for repo in PRIORITY_CUSTOMERS:
         key = repo.lower()
-        assert key in intake.PRODUCT_DEFAULT_SKILL_BOOK, f"missing PRODUCT_DEFAULT for {repo}"
-        book, path = intake.PRODUCT_DEFAULT_SKILL_BOOK[key]
+        assert key not in intake.PRODUCT_DEFAULT_SKILL_BOOK
+        book, path = intake.resolve_skill_book(repo=repo, topic_repos={key})
         assert book == "harvest-agent-skills"
         assert path.replace("\\", "/") == ".grok/skills/harvest-agent-skills/SKILL.md"
 

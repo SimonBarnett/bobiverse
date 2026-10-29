@@ -18,12 +18,11 @@ PRIORITY = (
 
 def test_mrb4991_product_default_and_ps1_regex():
     for key in PRIORITY:
-        assert key in intake.PRODUCT_DEFAULT_SKILL_BOOK
-        book, path = intake.PRODUCT_DEFAULT_SKILL_BOOK[key]
+        assert key not in intake.PRODUCT_DEFAULT_SKILL_BOOK
+        book, path = intake.resolve_skill_book(repo=key, topic_repos={key})
         assert book == "harvest-agent-skills"
         assert "harvest-agent-skills" in path.replace("\\", "/")
         assert "common/.grok/skills/harvest/SKILL.md" not in path.replace("\\", "/")
     text = HARVEST_PS1.read_text(encoding="utf-8")
     assert "FR #4990" in text
     assert "euroflo|lynton|trutex|rees" in text
-    assert "simonbarnett/rees" in {k.lower() for k in intake.PRIORITY_CUSTOMER_HARVEST_REPOS}

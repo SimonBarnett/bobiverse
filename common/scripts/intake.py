@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
+import urllib.request
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -156,8 +158,23 @@ class LessonOwner(NamedTuple):
     missing: bool = False
 
 
-def _priority_customer_topic_repos(topic_repos=None, home=None) -> set[str]:
-    """FR #4970 / #4969: topic set from caller, else last on-disk lookup (never drop)."""
+def _fetch_priority_customer_topic_json(url: str) -> object:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "bobiverse-intake",
+    }
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _priority_customer_topic_repos(
+    topic_repos=None, home=None, *, fetch_json: Callable[[str], object] | None = None
+) -> set[str]:
+    """FR #4970 / #4969: use cached topic repos, refreshing an empty cache."""
     if topic_repos is not None:
         return {str(x).strip().lower() for x in topic_repos if str(x).strip()}
     if home is None:
@@ -165,7 +182,14 @@ def _priority_customer_topic_repos(topic_repos=None, home=None) -> set[str]:
     try:
         import priority_customer as _pc
 
-        return set(_pc.load_topic_repos(Path(home)))
+        repos = set(_pc.load_topic_repos(Path(home)))
+        if repos:
+            return repos
+        return set(
+            _pc.refresh_topic_repos(
+                Path(home), fetch_json=fetch_json or _fetch_priority_customer_topic_json
+            )
+        )
     except Exception:  # noqa: BLE001
         return set()
 
@@ -286,24 +310,6 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "harvest-agent-skills",
         ".grok/skills/harvest-agent-skills/SKILL.md",
     ),
-    # euroflo#15 / FR #4990: priority-customer honesty box (never invent
-    # common/.grok/skills/harvest). Topic peers: euroflo / lynton / trutex / rees.
-    "simonbarnett/euroflo": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
-    "simonbarnett/lynton": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
-    "simonbarnett/trutex": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
-    "simonbarnett/rees": (
-        "harvest-agent-skills",
-        ".grok/skills/harvest-agent-skills/SKILL.md",
-    ),
     # FR #4830: never invent common/.grok/skills/harvest on ce-priority; park in
     # unlocked dayworks-launcher (assert-lock / tip-loop class of ce-priority#36/#37/#38).
     "simonbarnett/ce-priority": (
@@ -311,16 +317,6 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
         "dayworks/.grok/skills/dayworks-launcher/SKILL.md",
     ),
 }
-
-# FR #4990: explicit priority-customer set (PRODUCT_DEFAULT above + PS1 branch).
-PRIORITY_CUSTOMER_HARVEST_REPOS = frozenset(
-    {
-        "simonbarnett/euroflo",
-        "simonbarnett/lynton",
-        "simonbarnett/trutex",
-        "simonbarnett/rees",
-    }
-)
 
 def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
     """FR #3959: bobiverse-* books never tip into product repos (a-search stubs).
@@ -2166,11 +2162,13 @@ def file_submission(
                     _save_record(home, rec)
                     return rec
                 src = norm.get("source") if isinstance(norm.get("source"), dict) else {}
+                topic_repos = _priority_customer_topic_repos(home=home)
                 # FR #3317: planned/missing owner product -> held bobiverse issue (no PR).
                 owner = lesson_owner_repo(
                     title=title,
                     body=raw_body,
                     source=str((src or {}).get("skill_book") or ""),
+                    topic_repos=topic_repos,
                 )
                 repo_l = str(repo or "").strip().lower()
                 hold_repo = owner.repo if owner.missing else None
@@ -2214,6 +2212,7 @@ def file_submission(
                     title=title,
                     body=raw_body,
                     repo=str(repo or ""),
+                    topic_repos=topic_repos,
                 )
                 # FR #3959: bobiverse-* books tip on bobiverse, never ADD bob/ into product repos.
                 tip_repo = rewrite_harvest_repo_for_skill_book(str(repo or ""), book)
