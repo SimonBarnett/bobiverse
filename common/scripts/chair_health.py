@@ -667,9 +667,11 @@ class ChairJobs:
             return
 
         def fetch_user() -> dict:
-            data, _code = self._github_json(
+            data, code = self._github_json(
                 "GET", "https://api.github.com/copilot_internal/user"
             )
+            if not 200 <= code < 300:
+                raise RuntimeError(f"copilot pool HTTP {code}")
             return data if isinstance(data, dict) else {}
 
         def post(path: str, body: dict) -> dict:
@@ -678,7 +680,7 @@ class ChairJobs:
             )
             data, code = self._github_json("POST", url, body if isinstance(body, dict) else {})
             out = dict(data) if isinstance(data, dict) else {}
-            out.setdefault("status", int(code))
+            out["status"] = int(code)
             return out
 
         # FR #5174: queue.json / unaccepted live under digest_home (BOB_DIGEST_HOME),
@@ -736,6 +738,8 @@ class ChairJobs:
                     file_stall=lambda **kw: copilot_dispatch.file_webhook_stall(self.home, **kw),
                 )
                 act = (info or {}).get("action") or "error"
+                if act == "stall":
+                    act = "error"
                 self.log(f"INFO webhook-ensure repo={repo} action={act}")
             return
 
@@ -786,6 +790,8 @@ class ChairJobs:
                 file_stall=lambda **kw: copilot_dispatch.file_webhook_stall(self.home, **kw),
             )
             act = (info or {}).get("action") or "error"
+            if act == "stall":
+                act = "error"
             self.log(f"INFO webhook-ensure repo={repo} action={act}")
 
     def _stall_scan(self) -> None:

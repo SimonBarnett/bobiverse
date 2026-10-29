@@ -154,10 +154,10 @@ def allowance_from_pool(doc: dict) -> bool:
         return False
     if doc.get("tasks_exhausted") and not _reset_passed(doc):
         return False
-    if doc.get("unlimited"):
-        return True
     if str(doc.get("state") or "") == "unknown":
         return False  # FR #5174: fail closed (do not steal IRC jobs)
+    if doc.get("unlimited"):
+        return True
     rem = _num(doc.get("remaining"))
     pct = _num(doc.get("percent_remaining"))
     if rem is not None and rem > 0:
@@ -314,6 +314,9 @@ def should_dispatch(row: dict, *, allowance: bool) -> bool:
     if task not in ("FR", "FIX", "MRB"):
         return False
     # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
+    req = str(row.get("require_machine") or "").strip().lower()
+    if req and req not in ("*", "any", "none", "-"):
+        return False
     row_eff = dict(row) if isinstance(row, dict) else {}
     with contextlib.suppress(Exception):
         gitclaim._stamp_require_machine(row_eff)
@@ -414,7 +417,7 @@ def dispatch_row(
     if is_exhausted(resp):
         return {"status": "exhausted"}
     status = int(resp.get("status") or resp.get("status_code") or 0)
-    if status and status >= 400:
+    if status and not 200 <= status < 300:
         return {"status": "error", "response": resp}
     task_id = str(resp.get("id") or resp.get("task_id") or "")
     task_url = str(resp.get("html_url") or resp.get("url") or "")
@@ -652,7 +655,12 @@ def ensure_repo_webhook(
         "config": {"url": GIT_HOOK_URL, "content_type": "json", "insecure_ssl": "0"},
     }
     if match is None:
-        create(body)
+        try:
+            create(body)
+        except Exception as exc:  # noqa: BLE001
+            if file_stall:
+                file_stall(repo=repo, kind="webhook-ensure", error=str(exc))
+            return {"action": "stall", "repo": repo, "error": str(exc)}
         log.info("webhook ensure create repo=%s", repo)
         return {"action": "create", "repo": repo}
     events = {str(e) for e in (match.get("events") or [])}
@@ -660,7 +668,12 @@ def ensure_repo_webhook(
     if want <= events and active:
         return {"action": "ok", "repo": repo}
     hid = match.get("id")
-    patch(hid, body)
+    try:
+        patch(hid, body)
+    except Exception as exc:  # noqa: BLE001
+        if file_stall:
+            file_stall(repo=repo, kind="webhook-ensure", error=str(exc))
+        return {"action": "stall", "repo": repo, "error": str(exc)}
     log.info("webhook ensure repair repo=%s id=%s", repo, hid)
     return {"action": "repair", "repo": repo}
 
