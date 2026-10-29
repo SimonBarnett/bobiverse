@@ -91,6 +91,11 @@ def test_fr2581_overlay_writes_tip_when_local_updater_stale(tmp_path: Path):
         tip / "common/scripts/Update-BobiverseService.ps1",
         "# tip updater\n# FR #2563: backup-only Apply failures\nparam([switch]$NoCount)\n",
     )
+    write(
+        tip / "common/scripts/Watch-BobiverseService.ps1",
+        "# FR #5195: detached watchdog dependency\n" * 8
+        + "function Invoke-BobiverseServiceWatchdog { }\n",
+    )
     git(tip, "add", "-A")
     git(tip, "commit", "-q", "-m", "tip-2563")
     git(tip, "push", "-q", "origin", "main")

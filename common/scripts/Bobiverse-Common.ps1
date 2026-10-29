@@ -1872,6 +1872,11 @@ function Sync-BobiverseUpdaterFromOrigin {
         [string]$Branch = 'main',
         [string]$GitExe = ''
     )
+    # FR #5195: publish the detached watchdog dependency before the updater that requires it.
+    $watchdog = Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
+        -RelPath 'common/scripts/Watch-BobiverseService.ps1' `
+        -ContentMustMatch 'Invoke-BobiverseServiceWatchdog'
+    if (-not $watchdog.Ok) { return $watchdog }
     return Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
         -RelPath 'common/scripts/Update-BobiverseService.ps1' `
         -ContentMustMatch 'MaxAttempts|FR #2563|Update-Bobiverse|NoCount'

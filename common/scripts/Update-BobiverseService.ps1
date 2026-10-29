@@ -54,6 +54,66 @@ $script:LogFile = $null
 $script:StateFile = $null
 $script:PendingMinutes = 40
 
+function Protect-UpdatePath {
+    param([string]$Path, [switch]$Traverse)
+    if ($env:OS -ne 'Windows_NT') { return }
+    if (-not (Test-IsAdmin)) { throw 'update path protection requires elevation' }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    for ($ancestor = $item; $ancestor; $ancestor = $ancestor.Parent) {
+        if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'update path is a reparse point' }
+    }
+    $admins = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+    $system = New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'
+    $inherit = [Security.AccessControl.InheritanceFlags]::None
+    if ($item.PSIsContainer) {
+        $acl = New-Object Security.AccessControl.DirectorySecurity
+        $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    } else {
+        $acl = New-Object Security.AccessControl.FileSecurity
+    }
+    # Fresh DACL removes attacker-specific explicit grants as well as inheritance.
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($admins, $system)) {
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $sid, 'FullControl', $inherit, 'None', 'Allow')))
+    }
+    if ($Traverse) {
+        $users = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $users, 'ReadAndExecute', 'None', 'None', 'Allow')))
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $acl.SetOwner($admins)
+    Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+    $verified = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $verified.AreAccessRulesProtected -or
+        $verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $admins.Value) {
+        throw 'update path protection verification failed'
+    }
+    foreach ($rule in $verified.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne 'Allow') { continue }
+        $sid = $rule.IdentityReference.Value
+        if ($sid -in @($admins.Value, $system.Value)) { continue }
+        $read = [Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize'
+        if (-not $Traverse -or $sid -ne 'S-1-5-32-545' -or
+            ($rule.FileSystemRights -band (-bnot $read))) {
+            throw 'update path has an untrusted access grant'
+        }
+    }
+}
+
+function Copy-UpdateHelper {
+    param([string]$Source, [string]$Destination)
+    if ([IO.Path]::GetFullPath($Source) -eq [IO.Path]::GetFullPath($Destination)) { return }
+    if (Test-Path -LiteralPath $Destination) {
+        Protect-UpdatePath -Path $Destination
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
+    }
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+    Protect-UpdatePath -Path $Destination
+}
+
 function Set-UpdateLogReadable {
     # Only the diagnostic log is readable; helpers, plans and credential backups stay private.
     if ($env:OS -ne 'Windows_NT' -or -not $script:LogFile) { return }
@@ -265,14 +325,16 @@ function Ensure-ServiceRunning {
 
 function Start-DetachedApply {
     param([string]$Plan)
+    Protect-UpdatePath -Path $StateDir -Traverse
     $runDir = Join-Path $StateDir 'run'
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+    Protect-UpdatePath -Path $runDir
     # Run from a copy: the MSI replaces <InstallRoot>\scripts while the helper is still running.
     $helper = Join-Path $runDir 'Update-BobiverseService.ps1'
-    Copy-Item -LiteralPath $PSCommandPath -Destination $helper -Force
+    Copy-UpdateHelper -Source $PSCommandPath -Destination $helper
     $watchdog = Join-Path $PSScriptRoot 'Watch-BobiverseService.ps1'
     if ($Product -eq 'bob') {
-        Copy-Item -LiteralPath $watchdog -Destination (Join-Path $runDir 'Watch-BobiverseService.ps1') -Force
+        Copy-UpdateHelper -Source $watchdog -Destination (Join-Path $runDir 'Watch-BobiverseService.ps1')
     }
     $psArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Product {1} -Mode Apply -InstallRoot "{2}" -ServiceName {3} -StateDir "{4}" -PlanFile "{5}" -Repo {6}' -f `
         $helper, $Product, $InstallRoot, $ServiceName, $StateDir, $Plan, $Repo
@@ -296,13 +358,14 @@ function Start-DetachedApply {
 
 function Register-ServiceWatchdog {
     if ($Product -ne 'bob') { return }
+    Protect-UpdatePath -Path $StateDir -Traverse
     $runDir = Join-Path $StateDir 'run'
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+    Protect-UpdatePath -Path $runDir
     $helper = Join-Path $runDir 'Watch-BobiverseService.ps1'
     $source = Join-Path $PSScriptRoot 'Watch-BobiverseService.ps1'
-    if ([IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($helper)) {
-        Copy-Item -LiteralPath $source -Destination $helper -Force
-    }
+    Copy-UpdateHelper -Source $source -Destination $helper
+    Protect-UpdatePath -Path $helper
     $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -InstallRoot "{1}" -StateDir "{2}" -ServiceName "{3}"' -f `
         $helper, $InstallRoot, $StateDir, $ServiceName
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
@@ -606,6 +669,7 @@ function Invoke-Apply {
     $msiMutex = $null
     $msiHeld = $false
     $serviceTouched = $false
+    $installStarted = $false
     $downtimeFile = Join-Path $StateDir 'downtime.json'
     try {
         if ($DelaySeconds -gt 0) { Start-Sleep -Seconds $DelaySeconds }   # let the current instance finish starting
@@ -678,6 +742,7 @@ function Invoke-Apply {
         # FR #1432: a prior apply that rolled back files can leave ARP at the newer ProductCode while
         # InstallRoot\VERSION is old. The next msiexec /i then runs maintenance mode (no file rewrite)
         # and VERSION verify fails forever. Uninstall the desynced product first so /i is a real install.
+        $installStarted = $true
         $arp = Get-BobiverseArpProduct
         if ($arp -and $arp.Version -and $oldVer -and ($arp.Version -gt $oldVer)) {
             Write-UpdLog ("arp-desync-uninstall ARP={0} file={1} ProductCode={2}" -f $arp.DisplayVersion, $oldText, $arp.ProductCode)
@@ -827,7 +892,7 @@ function Invoke-Apply {
         # FR #1432: if msiexec registered the new product but verify failed, uninstall ARP before
         # restoring files so the next start is not stuck in maintenance-mode /i.
         try {
-            $arpFail = Get-BobiverseArpProduct
+            $arpFail = if ($installStarted) { Get-BobiverseArpProduct } else { $null }
             if ($arpFail -and $arpFail.Version -and $target -and ($arpFail.Version -ge $target)) {
                 Write-UpdLog ("arp-desync-uninstall on-fail ARP={0} ProductCode={1}" -f $arpFail.DisplayVersion, $arpFail.ProductCode)
                 [void](Invoke-BobiverseArpUninstall -ProductCode $arpFail.ProductCode -Why 'arp-desync-uninstall')
@@ -974,12 +1039,17 @@ function Invoke-Check {
 
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     $plan = Join-Path $StateDir 'plan.json'
+    if (Test-Path -LiteralPath $plan) {
+        Protect-UpdatePath -Path $plan
+        Remove-Item -LiteralPath $plan -Force -ErrorAction Stop
+    }
     @{
         product = $Product; tag = $tag; version = $remote.ToString(); msiName = [string]$msi.name
         msiUrl = [string]$msi.browser_download_url; shaUrl = [string]$sha.browser_download_url
         installRoot = $InstallRoot; serviceName = $ServiceName; fromVersion = $local.ToString()
         createdUtc = (Get-Date).ToUniversalTime().ToString('o')
     } | ConvertTo-Json | Set-Content -LiteralPath $plan -Encoding UTF8
+    Protect-UpdatePath -Path $plan
 
     $st.pending = @{ tag = $tag; atUtc = (Get-Date).ToUniversalTime().ToString('o') }
     $st.lastTag = $tag
@@ -1021,10 +1091,9 @@ try {
         # SYSTEM later runs a script copy and a plan from this folder: only SYSTEM + Administrators may write it
         # (ProgramData subfolders are user-writable by default = local privilege escalation otherwise).
         if ($defaultState -and (Test-IsAdmin)) {
-            try { & icacls.exe $StateDir /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' 2>&1 | Out-Null } catch { }
-            # Traverse/list only: no inherited access to plans, helper scripts, MSI logs or backups.
-            try { & icacls.exe $StateDir /grant:r '*S-1-5-32-545:RX' 2>&1 | Out-Null } catch { }
-            $global:LASTEXITCODE = 0
+            foreach ($directory in @((Join-Path $pd 'bobiverse'), (Join-Path $pd 'bobiverse\update'), $StateDir)) {
+                Protect-UpdatePath -Path $directory -Traverse
+            }
         }
         $script:LogFile = Join-Path $StateDir 'update.log'
         $script:StateFile = Join-Path $StateDir 'state.json'

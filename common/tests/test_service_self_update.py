@@ -339,7 +339,9 @@ def test_install_jeeves_leaves_existing_ergo_alone():
 
 def test_updater_state_dir_is_locked_down_and_lookups_throttled():
     t = _t("Update-BobiverseService.ps1")
-    assert "icacls.exe $StateDir /inheritance:r" in t          # SYSTEM later runs a script copy + plan from here
+    assert "Protect-UpdatePath -Path $directory -Traverse" in t
+    assert "SetAccessRuleProtection($true, $false)" in t
+    assert "$acl.SetOwner($admins)" in t
     assert "throttled" in t                                       # crash-looping service must not hammer the API
 
 

@@ -136,6 +136,7 @@ if ((Get-State).pending) {{ throw 'stale pending retained' }}
 def test_watchdog_is_registered_as_recurring_system_task(tmp_path):
     run_ps(tmp_path, f"""
 $Product='bob'; $ServiceName='ircBob'; $InstallRoot='{tmp_path}'; $StateDir='{tmp_path}'
+function Protect-UpdatePath {{ }}
 function New-ScheduledTaskAction {{ param($Execute,$Argument)
     if ($Argument -notlike '*Watch-BobiverseService.ps1*') {{ throw 'not watchdog' }}
     [pscustomobject]@{{Execute=$Execute;Argument=$Argument}}
@@ -161,4 +162,61 @@ function Register-ScheduledTask {{ param($TaskName,$Action,$Principal,$Trigger,$
 Register-ServiceWatchdog
 if (-not $script:registered) {{ throw 'not registered' }}
 if (-not (Test-Path (Join-Path $StateDir 'run/Watch-BobiverseService.ps1'))) {{ throw 'missing detached copy' }}
+""")
+
+
+def test_pre_stop_watchdog_failure_cannot_uninstall_desynced_product(tmp_path):
+    root = tmp_path / "install"
+    root.mkdir()
+    (root / "VERSION").write_text("1.0.3")
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({
+        "tag": "v1.0.7", "version": "1.0.7", "msiName": "bob-1.0.7.msi",
+        "msiUrl": "FAKE_MSI", "shaUrl": "FAKE_SHA",
+    }))
+    run_ps(tmp_path, f"""
+$Product='bob'; $ServiceName='ircBob'; $InstallRoot='{root}'; $StateDir='{tmp_path}'
+$PlanFile='{plan}'; $DelaySeconds=0; $VerifyOnly=$false
+$script:StateFile=Join-Path $StateDir 'state.json'; $script:LogFile=Join-Path $StateDir 'update.log'
+function Get-Asset {{ param($Url,$Dest)
+    if ($Url -eq 'FAKE_MSI') {{ Set-Content $Dest 'payload' }} else {{ Set-Content $Dest ('a'*64) }}
+}}
+function Get-FileHash {{ [pscustomobject]@{{Hash=('a'*64)}} }}
+function Backup-Install {{ return 'FAKE_BACKUP' }}
+function Register-ServiceWatchdog {{ throw 'watchdog registration unavailable' }}
+function Get-BobiverseArpProduct {{ [pscustomobject]@{{Version=[version]'1.0.7';ProductCode='FAKE'}} }}
+function Invoke-BobiverseArpUninstall {{ throw 'must not uninstall before install began' }}
+function Stop-Service {{ throw 'must not stop before watchdog armed' }}
+function Invoke-Rollback {{ throw 'must not rollback untouched install' }}
+function Unregister-ScheduledTask {{ }}
+Invoke-Apply
+$log=Get-Content $script:LogFile -Raw
+if ($log -match 'arp-desync|must not') {{ throw 'preflight modified live install' }}
+""")
+
+
+def test_dirty_tree_overlay_deploys_watchdog_before_updater(tmp_path):
+    common = ROOT / "common/scripts/Bobiverse-Common.ps1"
+    run_ps(tmp_path, f"""
+$tokens=$null; $errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('{common}',[ref]$tokens,[ref]$errors)
+$definition=$ast.Find({{param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq 'Sync-BobiverseUpdaterFromOrigin'}},$false)
+. ([scriptblock]::Create($definition.Extent.Text))
+$script:paths=@()
+function Sync-BobiverseScriptTipFromOrigin {{ param($InstallRoot,$Branch,$GitExe,$RelPath,$ContentMustMatch)
+    $script:paths += $RelPath
+    return [pscustomobject]@{{Ok=$true}}
+}}
+$result=Sync-BobiverseUpdaterFromOrigin -InstallRoot '{tmp_path}'
+if (-not $result.Ok -or $script:paths.Count -ne 2 -or
+    $script:paths[0] -notlike '*Watch-BobiverseService.ps1' -or
+    $script:paths[1] -notlike '*Update-BobiverseService.ps1') {{ throw 'wrong dependency publication order' }}
+$script:paths=@()
+function Sync-BobiverseScriptTipFromOrigin {{ param($RelPath)
+    $script:paths += $RelPath
+    return [pscustomobject]@{{Ok=$false}}
+}}
+$result=Sync-BobiverseUpdaterFromOrigin -InstallRoot '{tmp_path}'
+if ($result.Ok -or $script:paths.Count -ne 1) {{ throw 'activated updater without dependency' }}
 """)
