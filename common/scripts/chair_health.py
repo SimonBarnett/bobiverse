@@ -602,7 +602,7 @@ class ChairJobs:
             "ledger": gitclaim.ledger_load(self.digest_home),
             "resync_fail_streak": self.resync_fail_streak,
             "last_resync_status": status,
-            "last_bored": {},
+            "last_bored": gitclaim.merge_last_bored(self.home, self.digest_home),
         }
         findings = stall_detectors.detect_all(snap)
         if not findings:
