@@ -13,8 +13,8 @@
     - ALWAYS exits 0. Offline, rate limited (403/429), bad JSON, anything: log it and let the caller start
       the currently installed version.
   Mode Apply (the detached helper):
-    download MSI + .sha256 -> verify the hash (mismatch = abort, service untouched) -> stop the service
-    (only that service; no process is killed) -> back up the install tree and the small config/state homes
+    download MSI + .sha256 -> verify the hash (mismatch = abort, service untouched) -> back up the install tree
+    and the small config/state homes -> arm the independent watchdog -> stop only that service
     -> msiexec /i (MajorUpgrade removes the previous install; the MSI custom action reinstalls the service)
     -> refresh skills -> verify VERSION + service -> start. On ANY failure: restore the backup, re-register
     the service from the restored tree, start the previous version, and record the failure.
@@ -54,16 +54,28 @@ $script:LogFile = $null
 $script:StateFile = $null
 $script:PendingMinutes = 40
 
+function Set-UpdateLogReadable {
+    # Only the diagnostic log is readable; helpers, plans and credential backups stay private.
+    if ($env:OS -ne 'Windows_NT' -or -not $script:LogFile) { return }
+    try {
+        & icacls.exe $script:LogFile /grant:r '*S-1-5-32-545:R' 2>&1 | Out-Null
+        $global:LASTEXITCODE = 0
+    } catch { }
+}
+
 function Write-UpdLog {
     param([string]$Msg)
     $line = '{0} product={1} {2}' -f (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'), $Product, $Msg
     Write-Host "INFO self-update: $Msg"
     if (-not $script:LogFile) { return }
     try {
-        if ((Test-Path -LiteralPath $script:LogFile) -and ((Get-Item -LiteralPath $script:LogFile).Length -gt 524288)) {
+        $newLog = -not (Test-Path -LiteralPath $script:LogFile)
+        if (-not $newLog -and ((Get-Item -LiteralPath $script:LogFile).Length -gt 524288)) {
             Move-Item -LiteralPath $script:LogFile -Destination ($script:LogFile + '.1') -Force
+            $newLog = $true
         }
         Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8
+        if ($newLog) { Set-UpdateLogReadable }
     } catch { }
 }
 
@@ -236,10 +248,10 @@ function Set-Failure {
 function Ensure-ServiceRunning {
     # FR #2563: after pre-msiexec Apply abort (esp. backup fail) leave the service Running.
     param([string]$Why = 'apply-abort')
-    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if (-not $svc) { Write-UpdLog "ensure-running-skip missing=$ServiceName why=$Why"; return }
-    if ($svc.Status -eq 'Running') { Write-UpdLog "ensure-running already=$ServiceName why=$Why"; return }
     try {
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if (-not $svc) { Write-UpdLog "ensure-running-skip missing=$ServiceName why=$Why"; return }
+        if ($svc.Status -eq 'Running') { Write-UpdLog "ensure-running already=$ServiceName why=$Why"; return }
         Start-Service -Name $ServiceName -ErrorAction Stop
         if (Wait-ServiceState -Name $ServiceName -Status 'Running' -Seconds 60) {
             Write-UpdLog "ensure-running ok=$ServiceName why=$Why"
@@ -258,6 +270,10 @@ function Start-DetachedApply {
     # Run from a copy: the MSI replaces <InstallRoot>\scripts while the helper is still running.
     $helper = Join-Path $runDir 'Update-BobiverseService.ps1'
     Copy-Item -LiteralPath $PSCommandPath -Destination $helper -Force
+    $watchdog = Join-Path $PSScriptRoot 'Watch-BobiverseService.ps1'
+    if ($Product -eq 'bob') {
+        Copy-Item -LiteralPath $watchdog -Destination (Join-Path $runDir 'Watch-BobiverseService.ps1') -Force
+    }
     $psArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Product {1} -Mode Apply -InstallRoot "{2}" -ServiceName {3} -StateDir "{4}" -PlanFile "{5}" -Repo {6}' -f `
         $helper, $Product, $InstallRoot, $ServiceName, $StateDir, $Plan, $Repo
     $taskName = "bobiverse-update-$Product"
@@ -276,6 +292,26 @@ function Start-DetachedApply {
     $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ('powershell.exe ' + $psArgs); CurrentDirectory = $runDir }
     if ($r.ReturnValue -ne 0) { throw "Win32_Process Create failed ($($r.ReturnValue))" }
     return 'wmi-process'
+}
+
+function Register-ServiceWatchdog {
+    if ($Product -ne 'bob') { return }
+    $runDir = Join-Path $StateDir 'run'
+    New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+    $helper = Join-Path $runDir 'Watch-BobiverseService.ps1'
+    $source = Join-Path $PSScriptRoot 'Watch-BobiverseService.ps1'
+    if ([IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($helper)) {
+        Copy-Item -LiteralPath $source -Destination $helper -Force
+    }
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -InstallRoot "{1}" -StateDir "{2}" -ServiceName "{3}"' -f `
+        $helper, $InstallRoot, $StateDir, $ServiceName
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName 'bobiverse-watchdog-bob' -Action $action -Principal $principal `
+        -Trigger $trigger -Settings $settings -Force -ErrorAction Stop | Out-Null
 }
 
 # ---------------------------------------------------------------- Apply-mode helpers
@@ -569,6 +605,8 @@ function Invoke-Apply {
     $appParams = ''
     $msiMutex = $null
     $msiHeld = $false
+    $serviceTouched = $false
+    $downtimeFile = Join-Path $StateDir 'downtime.json'
     try {
         if ($DelaySeconds -gt 0) { Start-Sleep -Seconds $DelaySeconds }   # let the current instance finish starting
         $oldVer = ConvertTo-Ver (Get-Content -LiteralPath (Join-Path $InstallRoot 'VERSION') -Raw -ErrorAction SilentlyContinue)
@@ -610,6 +648,15 @@ function Invoke-Apply {
             Set-Failure -Tag $tag -Result 'install-slot-timeout'
             return
         }
+        # A backup can stall or fail: do it while the ear is still available.
+        $backup = Backup-Install -OldVersion $oldText
+        Write-UpdLog "backup-done dir=$(Split-Path -Leaf $backup)"
+        Register-ServiceWatchdog
+        if ($Product -eq 'bob') {
+            @{ atUtc = (Get-Date).ToUniversalTime().ToString('o') } |
+                ConvertTo-Json | Set-Content -LiteralPath $downtimeFile -Encoding UTF8
+        }
+        $serviceTouched = $true
         $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         $appParams = Get-ServiceAppParameters
         Write-AircPlannedRestartStamp -AppParameters $appParams
@@ -627,9 +674,6 @@ function Invoke-Apply {
             }
             Write-UpdLog "service-stopped $ServiceName"
         }
-
-        $backup = Backup-Install -OldVersion $oldText
-        Write-UpdLog "backup-done dir=$(Split-Path -Leaf $backup)"
 
         # FR #1432: a prior apply that rolled back files can leave ARP at the newer ProductCode while
         # InstallRoot\VERSION is old. The next msiexec /i then runs maintenance mode (no file rewrite)
@@ -791,8 +835,10 @@ function Invoke-Apply {
         } catch { Write-UpdLog "arp-desync-uninstall-warn $($_.Exception.Message)" }
         # FR #2563: backup-only fails must not burn MaxAttempts; always leave the service Running.
         $isBackupFail = $failMsg -match '(?i)backup of install tree failed'
-        if ($backup) { Invoke-Rollback -BackupDir $backup -AppParameters $appParams -Why 'install-failed' }
-        else { Ensure-ServiceRunning -Why $(if ($isBackupFail) { 'backup-failed' } else { 'apply-failed-pre-msi' }) }
+        if ($serviceTouched) {
+            if ($backup) { Invoke-Rollback -BackupDir $backup -AppParameters $appParams -Why 'install-failed' }
+            else { Ensure-ServiceRunning -Why $(if ($isBackupFail) { 'backup-failed' } else { 'apply-failed-pre-msi' }) }
+        }
         if ($isBackupFail) {
             Set-Failure -Tag $tag -Result 'backup-failed' -NoCount
             Write-UpdLog "backup-failed-no-loop-count tag=$tag (next Check may retry; -ForceCheck clears MaxAttempts block)"
@@ -800,6 +846,15 @@ function Invoke-Apply {
             Set-Failure -Tag $tag -Result 'rolled-back'
         }
     } finally {
+        # Runs even when rollback, state persistence, or a pre-install stop fails.
+        if ($serviceTouched) {
+            Ensure-ServiceRunning -Why 'apply-finally'
+            try {
+                if ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue).Status -eq 'Running') {
+                    Remove-Item -LiteralPath $downtimeFile -Force -ErrorAction SilentlyContinue
+                }
+            } catch { Write-UpdLog 'apply-finally service-status-unavailable (watchdog remains armed)' }
+        }
         if ($msiHeld) { try { $msiMutex.ReleaseMutex() } catch { } }
         try { $mutex.ReleaseMutex() } catch { }
         try { Unregister-ScheduledTask -TaskName "bobiverse-update-$Product" -Confirm:$false -ErrorAction SilentlyContinue } catch { }
@@ -828,12 +883,12 @@ function Invoke-Check {
             if ($t -and $t.State -eq 'Running') { $taskAlive = $true }
         } catch { }
         if (-not $taskAlive -and $pendingAgeMin -ge 2) {
-            Write-UpdLog "pending-orphan tag=$($st.pending.tag) ageMin=$([int]$pendingAgeMin) - helper task not running; clearing pending"
+            Write-UpdLog "pending-orphan tag=$($st.pending.tag) ageMin=$pendingAgeMin - helper task not running; clearing pending"
             $st.pending = $null
             $st.lastResult = 'pending-orphan-cleared'
             Save-State $st
             $st = Get-State
-        } elseif ($pendingAgeMin -lt $script:PendingMinutes) {
+        } elseif ($pendingAgeMin -ge 0 -and $pendingAgeMin -lt $script:PendingMinutes) {
             Write-UpdLog "check result=skipped-pending tag=$($st.pending.tag)"
             return
         } else {
@@ -967,15 +1022,25 @@ try {
         # (ProgramData subfolders are user-writable by default = local privilege escalation otherwise).
         if ($defaultState -and (Test-IsAdmin)) {
             try { & icacls.exe $StateDir /inheritance:r /grant:r 'NT AUTHORITY\SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' 2>&1 | Out-Null } catch { }
+            # Traverse/list only: no inherited access to plans, helper scripts, MSI logs or backups.
+            try { & icacls.exe $StateDir /grant:r '*S-1-5-32-545:RX' 2>&1 | Out-Null } catch { }
             $global:LASTEXITCODE = 0
         }
         $script:LogFile = Join-Path $StateDir 'update.log'
         $script:StateFile = Join-Path $StateDir 'state.json'
+        if (Test-Path -LiteralPath $script:LogFile) { Set-UpdateLogReadable }
     } catch {
         Write-Host "WARN self-update: cannot use state dir ($($_.Exception.GetType().Name))"
         exit 0
     }
-    if ($Mode -eq 'Apply') { Invoke-Apply } else { Invoke-Check }
+    if ($Mode -eq 'Apply') { Invoke-Apply } else {
+        if ($Product -eq 'bob' -and -not $DryRun -and -not $NoSpawn) {
+            try { Register-ServiceWatchdog } catch {
+                Write-UpdLog "watchdog-register-failed $($_.Exception.GetType().Name)"
+            }
+        }
+        Invoke-Check
+    }
 } catch {
     try { Write-UpdLog "unexpected-error $($_.Exception.GetType().Name): $($_.Exception.Message) - starting installed version" } catch { }
 }
