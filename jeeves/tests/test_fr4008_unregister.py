@@ -226,3 +226,72 @@ def test_register_gate_uses_modes_not_operators_txt(tmp_path: Path, monkeypatch)
     sent.clear()
     assert agent._handle_register_command("simon", "!register newt") is True
     assert any("REGISTER #newt" in x for x in sent)
+
+
+def test_fr5161_stale_list_does_not_readd_tombstoned_shop(tmp_path: Path):
+    """FR #5161: ChanServ LIST still showing a just-unregistered shop must not re-add it."""
+    rm.save_registered(
+        tmp_path,
+        {"ionos", "flamingo"},
+        source=rm.SOURCE_REGISTER,
+        channels=["#bobiverse", "#ionos", "#flamingo", "#wonderland"],
+    )
+    assert rm.remove_registered(tmp_path, "ionos") == "ionos"
+    assert "ionos" in rm.load_unregister_tombstones(tmp_path)
+    res = rm.sync_from_chanserv(
+        tmp_path,
+        ["#bobiverse", "#ionos", "#flamingo", "#wonderland"],
+        now=2000.0,
+    )
+    assert res is not None
+    added, _removed = res
+    assert "ionos" not in added
+    assert "ionos" not in rm.load_registered(tmp_path)
+    chans = [c.lower() for c in rm.load_registered_channels(tmp_path)]
+    assert "#ionos" not in chans
+    assert "ionos" in rm.load_unregister_tombstones(tmp_path)
+
+    later = rm.sync_from_chanserv(
+        tmp_path,
+        ["#bobiverse", "#flamingo", "#wonderland"],
+        now=2100.0,
+    )
+    assert later is not None
+    assert "ionos" not in rm.load_registered(tmp_path)
+    assert "ionos" not in rm.load_unregister_tombstones(tmp_path)
+
+
+def test_fr5161_stale_list_does_not_rejoin(tmp_path: Path, monkeypatch):
+    import irc_agent as ia
+
+    monkeypatch.setattr(ia, "FLOOD_S", 0.0)
+    rm.save_registered(
+        tmp_path,
+        {"ionos", "flamingo"},
+        source=rm.SOURCE_REGISTER,
+        channels=["#bobiverse", "#ionos", "#flamingo"],
+    )
+    members = {"#bobiverse": {"simon": {"nick": "simon", "modes": {"o"}}}}
+    agent, sent, _whispers = _make_agent(tmp_path, members)
+    monkeypatch.setattr("irc_agent.time.sleep", lambda s: None)
+    assert agent._handle_unregister_command("simon", "!unregister ionos") is True
+    assert agent._handle_unregister_command("simon", "!unregister ionos confirm") is True
+    sent.clear()
+    ia.Client._apply_chanserv_channels(
+        agent,
+        ["#bobiverse", "#ionos", "#flamingo"],
+    )
+    assert not any(x.upper().startswith("JOIN #IONOS") for x in sent)
+    assert "ionos" not in rm.load_registered(tmp_path)
+    assert "#ionos" not in [c.lower() for c in agent.channels]
+
+
+def test_fr5161_help_and_skill_pin_tombstone():
+    help_text = cc.help_text("unregister") if hasattr(cc, "help_text") else ""
+    src = (ROOT / "common" / "scripts" / "chair_commands.py").read_text(encoding="utf-8")
+    skill = (ROOT / "jeeves" / ".grok" / "skills" / "bobiverse-jeeves-commands" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    blob = src + "\n" + skill + "\n" + str(help_text)
+    assert "FR #5161" in blob
+    assert "tombstone" in blob.lower() or "lagging" in blob.lower()
