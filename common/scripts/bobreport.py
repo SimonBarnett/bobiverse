@@ -2450,6 +2450,18 @@ def apply_git_webhook(home: Path, event: str, payload: dict) -> GitWebhookOutcom
             gitclaim.clear_needs_human_from_owner_issue_comment(home, event, payload)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            import copilot_dispatch
+
+            copilot_dispatch.handle_issue_comment(home, payload)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        import copilot_dispatch as _cd5170
+
+        _cd5170.stamp_webhook_activity(home, ev, payload)
+    except Exception:  # noqa: BLE001
+        pass
 
     line = format_github_webhook_announce(event, payload)
     if not line.startswith(GIT_ANNOUNCE_PREFIX):

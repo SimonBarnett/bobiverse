@@ -28,6 +28,9 @@ RESYNC_S = 3600.0
 # FR #3948: drain merge-on-green pending without seat CI polls.
 MERGE_ON_GREEN_S = 60.0
 FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
+# FR #5170: Copilot virtual-seat poll + webhook ensure (not a resync).
+COPILOT_TICK_S = 45.0
+FIRST_COPILOT_DELAY_S = 20.0
 STALL_S = 180.0
 FIRST_STALL_DELAY_S = 90.0
 WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
@@ -438,6 +441,7 @@ class ChairJobs:
         self.next_probe = t0 + FIRST_PROBE_DELAY_S
         self.next_resync = t0 + FIRST_RESYNC_DELAY_S
         self.next_merge_on_green = t0 + FIRST_MERGE_ON_GREEN_DELAY_S
+        self.next_copilot = t0 + FIRST_COPILOT_DELAY_S
         self.next_stall = t0 + FIRST_STALL_DELAY_S
         self.resync_fail_streak = 0
         self.busy = threading.Lock()
@@ -492,7 +496,11 @@ class ChairJobs:
         ):
             self.next_resync = now
         if now < min(
-            self.next_probe, self.next_resync, self.next_merge_on_green, self.next_stall
+            self.next_probe,
+            self.next_resync,
+            self.next_merge_on_green,
+            self.next_stall,
+            self.next_copilot,
         ):
             return False
         if not self.busy.acquire(blocking=False):
@@ -580,6 +588,20 @@ class ChairJobs:
                 self._stall_scan()
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN stall-scan: {type(exc).__name__}: {exc}")
+        now = self.clock()
+        if now >= self.next_copilot:
+            self.next_copilot = now + COPILOT_TICK_S
+            try:
+                import copilot_dispatch
+
+                out = copilot_dispatch.tick(self.home)
+                if out.get("dispatched") or out.get("timed_out"):
+                    self.log(
+                        f"INFO copilot-dispatch dispatched={out.get('dispatched', 0)} "
+                        f"timed_out={out.get('timed_out', 0)}"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN copilot-dispatch: {type(exc).__name__}: {exc}")
 
 
     def _stall_scan(self) -> None:

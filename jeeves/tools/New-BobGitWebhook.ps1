@@ -18,7 +18,7 @@ if ($existing -split "`n" | Where-Object { $_ -eq $HookUrl }) {
     exit 0
 }
 
-$json = '{"name":"web","active":true,"events":["push","pull_request","issues","issue_comment"],"config":{"url":"' + $HookUrl + '","content_type":"json","insecure_ssl":"0"}}'
+$json = '{"name":"web","active":true,"events":["push","pull_request","pull_request_review","issues","issue_comment","check_suite","check_run","workflow_run"],"config":{"url":"' + $HookUrl + '","content_type":"json","insecure_ssl":"0"}}'
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("bob-git-hook-{0}.json" -f [guid]::NewGuid().ToString('n'))
 try {
     [IO.File]::WriteAllText($tmp, $json, [Text.UTF8Encoding]::new($false))
