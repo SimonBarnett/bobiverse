@@ -595,6 +595,8 @@ def open_debug_log(home: Path, *, enabled: bool) -> Path | None:
 
 class Client:
     def __init__(self, args: argparse.Namespace) -> None:
+        # Also the control-file boundary; keep it fixed across IRC reconnects.
+        self._process_started = time.time()
         self.args = args
         self.original_nick = args.nick
         self.live_nick = args.nick
@@ -654,8 +656,6 @@ class Client:
         self._outbox_gen = 0
         self._linelen = 512
         self._privmsg_text_max: int | None = None  # None → derive from nick/target/linelen
-        # FR #2728: chair !status uptime from process/agent construction, not first command.
-        self._process_started = time.time()
         # FR #3742: IRC session boundary for lost-DONE reconcile (updated in session()).
         self._irc_session_started = self._process_started
         self.ready = threading.Event()
@@ -2405,7 +2405,7 @@ class Client:
         return True
 
     def _consume_control_quit(self) -> bool:
-        reason = agent_control.consume_quit_request(self.home)
+        reason = agent_control.consume_quit_request(self.home, not_before=self._process_started)
         if reason is None:
             return False
         info(f"INFO agent quit request ({reason})")

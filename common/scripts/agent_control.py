@@ -39,12 +39,22 @@ def peek_quit_request(home: Path | str) -> str | None:
     return parts[1] if len(parts) > 1 else "stop"
 
 
-def consume_quit_request(home: Path | str) -> str | None:
+def consume_quit_request(home: Path | str, *, not_before: float | None = None) -> str | None:
+    path = quit_request_path(home)
+    if not_before is not None:
+        try:
+            # Use mtime, not the payload's whole seconds: live requests may arrive
+            # in the same second as startup, including from PowerShell writers.
+            if path.stat().st_mtime < not_before:
+                path.unlink(missing_ok=True)
+                return None
+        except OSError:
+            return None
     reason = peek_quit_request(home)
     if reason is None:
         return None
     try:
-        quit_request_path(home).unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except OSError:
         pass
     return reason
