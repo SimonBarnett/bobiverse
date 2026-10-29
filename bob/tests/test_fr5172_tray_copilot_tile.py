@@ -24,3 +24,14 @@ def test_rebuild_tiles_one_copilot_row():
     assert "Format-BobCopilotPoolLine" in sec
     assert "CopilotPool" in sec
     assert sec.count("Format-BobCopilotPoolLine") == 1
+
+
+def test_compiled_card_renders_copilot_and_engine_writes_before_skip_ui():
+    src = (ROOT / "tray" / "dialogs" / "BobStatus.cs").read_text(encoding="utf-8-sig")
+    assert 'Common.Str(d, "copilot_line")' in src
+    render = src.split("public int Render(Graphics g)", 1)[1].split("protected override", 1)[0]
+    assert render.count('Section(g, y, m.CopilotLine, "")') == 1
+    w = WATCH.read_text(encoding="utf-8-sig")
+    update = w.split("function Update-Hover", 1)[1]
+    assert update.index("New-BobTrayStatusModel -Hover $h") < update.index("if ($SkipUi) { return }")
+    assert update.index("Write-BobTrayStatusSnapshot -Root") < update.index("if ($SkipUi) { return }")

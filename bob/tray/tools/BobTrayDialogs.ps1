@@ -1,6 +1,6 @@
 ﻿#Requires -Version 5.1
 # t828u: the Acknowledge (About) and Status dialogs are compiled exes (tools\bob-about.exe, tools\bob-status.exe; sources in
-# dialogs\). FR #4938: Status shows Grok accounts only (no Cursor pool bars). The tray only (a) writes the status snapshot
+# dialogs\). Status shows Grok accounts and the Copilot pool (no Cursor pool bars). The tray only (a) writes the status snapshot
 # <root>\run\tray-status.json after every poll and (b) starts the exe.
 # Start-Process never waits, so the tray UI thread never blocks on a dialog or on the install scan; each exe is single-instance
 # (a second start just brings the open window forward). If an exe is missing the caller falls back to the old in-process dialog.
@@ -46,7 +46,7 @@ function ConvertTo-BobTrayStatusBar {
 
 function New-BobTrayStatusModel {
     <#
-      The pure data behind the Status card (FR #4938): Grok account rows only (one per canonical machine with workers as
+      The pure data behind the Status card: Copilot pool + Grok account rows (one per canonical machine with workers as
       "{irc nick}: {doing|idle}"), then alert + version footer. Cursor spending-group bars are omitted after account
       unification (one grok/cursor account per machine). $Hover is Get-BobTrayHover's object.
     #>
@@ -90,6 +90,12 @@ function New-BobTrayStatusModel {
         }
     }
     $ttl = $Title; if (-not $ttl -and $h) { $ttl = [string]$h.title }
+    $copilotPool = $null; $copilotLine = ''
+    if ($h) { $copilotPool = $h.copilot_pool; $copilotLine = [string]$h.copilot_line }
+    if (-not $copilotLine -and (Get-Command Format-BobCopilotPoolLine -ErrorAction SilentlyContinue)) {
+        $copilotLine = Format-BobCopilotPoolLine -Pool $copilotPool
+    }
+    if (-not $copilotLine) { $copilotLine = 'Copilot  unknown' }
     return [ordered]@{
         v         = 1
         ts        = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -102,6 +108,8 @@ function New-BobTrayStatusModel {
         overspend = $over
         cursor    = @($cursor.ToArray())
         grok      = @($grok.ToArray())
+        copilot_pool = $copilotPool
+        copilot_line = $copilotLine
         alert     = $(if ($AlertKind) { $AlertKind } else { 'none' })
         alerts    = @($Alerts | Where-Object { $_ })
         version   = $Version

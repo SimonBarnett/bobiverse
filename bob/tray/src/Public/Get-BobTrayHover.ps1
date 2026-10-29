@@ -870,8 +870,6 @@ function Format-BobCopilotPoolLine {
     param($Pool)
     if (-not $Pool) { return 'Copilot  unknown' }
     $state = [string]$Pool.state
-    if ($state -eq 'unknown') { return 'Copilot  unknown' }
-    if ($state -eq 'exhausted') { return 'Copilot  exhausted' }
     $used = $Pool.used
     $reset = [string]$Pool.reset_at
     $resetBit = ''
@@ -888,6 +886,8 @@ function Format-BobCopilotPoolLine {
         try { if ($null -ne $used) { $n = [int]$used } } catch { }
         return ('Copilot  unlimited, {0} used{1}' -f $n, $resetBit)
     }
+    if ($state -eq 'unknown') { return 'Copilot  unknown' }
+    if ($state -eq 'exhausted') { return 'Copilot  exhausted' }
     $rem = $Pool.remaining
     if ($null -ne $rem -and [string]$rem -ne '') {
         return ('Copilot  {0} remaining{1}' -f $rem, $resetBit)

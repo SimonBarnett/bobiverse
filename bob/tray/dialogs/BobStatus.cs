@@ -1,4 +1,4 @@
-﻿// t828u: Status card as a fast compiled exe. Same content as the TipForm (FR #4938): Grok account rows only
+﻿// t828u: Status card as a fast compiled exe. Same content as the TipForm: Copilot pool + Grok account rows
 // (Cursor spending-group bars removed after account unification), workers as "{irc nick}: {doing|idle}" from the digest,
 // alert, version footer.
 // Data is the snapshot the tray writes after every poll (<root>\run\tray-status.json); this exe never touches the network, so it
@@ -27,6 +27,7 @@ namespace BobDialogs
     internal class StatusModel
     {
         public string Title = "bob", Alert = "none", Version = "", Overspend = "", Note = "";
+        public string CopilotLine = "Copilot  unknown";
         public List<StatusRow> Cursor = new List<StatusRow>(), Grok = new List<StatusRow>();
 
         static StatusRow ParseRow(Dictionary<string, object> d)
@@ -48,6 +49,7 @@ namespace BobDialogs
             if (d == null) { m.Note = "snapshot is not an object"; return m; }
             string t = Common.Str(d, "title"); if (t.Length > 0) m.Title = t;
             m.Version = Common.Str(d, "version"); m.Overspend = Common.Str(d, "overspend");
+            string cp = Common.Str(d, "copilot_line"); if (cp.Length > 0) m.CopilotLine = cp;
             string a = Common.Str(d, "alert"); if (a.Length > 0) m.Alert = a;
             IList c = Common.List(d.ContainsKey("cursor") ? d["cursor"] : null);
             if (c != null) foreach (object o in c) { Dictionary<string, object> rd = Common.Dict(o); if (rd != null && Common.Str(rd, "heading").Length > 0) m.Cursor.Add(ParseRow(rd)); }
@@ -122,7 +124,7 @@ namespace BobDialogs
             Draw(g, m.Title, fTitle, Fg, 14, y);
             Draw(g, "X", fHead, Muted, CloseRect.X + 6, 10);
             y += 26;
-            // t832u / FR #4938: dashboard = per-machine Grok pools + workers (no Cursor section).
+            // Dashboard = per-machine Grok pools + workers and one account-wide Copilot pool (no Cursor section).
             // FR #5032: no "Grok accounts" heading --- every row is a Grok pool.
             if (m.Note.Length > 0) { Draw(g, m.Note, fText, Muted, 14, y); y += 22; }
             if (m.Grok.Count > 0)
@@ -137,6 +139,7 @@ namespace BobDialogs
                     y += 8;
                 }
             }
+            y = Section(g, y, m.CopilotLine, "");
             y += 6;
             Draw(g, "alert: " + m.Alert, fSmall, m.Alert == "none" ? Muted : Red, 14, y);
             string v = Footer.Length > 0 ? Footer : m.Version;
@@ -260,6 +263,7 @@ namespace BobDialogs
                 sb.AppendLine(m.Title); sb.AppendLine("cursor=" + m.Cursor.Count + " grok=" + m.Grok.Count + " alert=" + m.Alert);
                 foreach (StatusRow r in m.Cursor) sb.AppendLine("C " + r.Heading);
                 foreach (StatusRow r in m.Grok) { sb.AppendLine("G " + r.Heading); foreach (string l in r.Lines) sb.AppendLine("W " + l); }
+                sb.AppendLine(m.CopilotLine);
                 if (outFile.Length > 0) File.WriteAllText(outFile, sb.ToString(), new UTF8Encoding(false)); else Console.Write(sb.ToString());
                 return 0;
             }
