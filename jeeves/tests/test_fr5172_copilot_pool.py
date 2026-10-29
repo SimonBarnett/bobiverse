@@ -74,7 +74,7 @@ def test_dispatch_on_off(tmp_path):
     )
     assert cd.has_allowance(tmp_path) is False
     cd.refresh_allowance(tmp_path, fetch_user=lambda: {"bad": True}, now=800.0)
-    assert cd.has_allowance(tmp_path) is True  # unknown -> try
+    assert cd.has_allowance(tmp_path) is False  # FR #5174: unknown -> fail closed
 
 
 def test_tasks_quota_stops_dispatch(tmp_path):

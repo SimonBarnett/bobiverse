@@ -7,6 +7,8 @@ is exhausted.
 """
 from __future__ import annotations
 
+import contextlib
+
 import json
 import logging
 import time
@@ -155,7 +157,7 @@ def allowance_from_pool(doc: dict) -> bool:
     if doc.get("unlimited"):
         return True
     if str(doc.get("state") or "") == "unknown":
-        return True
+        return False  # FR #5174: fail closed (do not steal IRC jobs)
     rem = _num(doc.get("remaining"))
     pct = _num(doc.get("percent_remaining"))
     if rem is not None and rem > 0:
@@ -170,7 +172,7 @@ def allowance_from_pool(doc: dict) -> bool:
 
 
 def has_allowance(home: Path) -> bool:
-    """Live cache / last read. No cache means off (do not steal IRC jobs). Unknown means try."""
+    """Live cache / last read. No cache means off (do not steal IRC jobs). Unknown means off (FR #5174 fail closed)."""
     doc = load_allowance(home)
     if not doc:
         return False
@@ -311,6 +313,13 @@ def should_dispatch(row: dict, *, allowance: bool) -> bool:
     task = str(row.get("task") or "").upper()
     if task not in ("FR", "FIX", "MRB"):
         return False
+    # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
+    row_eff = dict(row) if isinstance(row, dict) else {}
+    with contextlib.suppress(Exception):
+        gitclaim._stamp_require_machine(row_eff)
+    req = str(row_eff.get("require_machine") or "").strip()
+    if req and req.lower() not in ("*", "any", "none", "-", ""):
+        return False
     if task == "MRB":
         authors = {a.lower() for a in gitclaim.row_author_seats(row)}
         if COPILOT_NICK in authors:
@@ -391,17 +400,26 @@ def dispatch_row(
         return {"status": "skip"}
     body = build_task_body(row)
     path = tasks_api_path(str(row.get("repo") or ""))
-    resp: dict = {}
-    if post is not None:
+    # FR #5174: never mark taken / announce without a real tasks POST + task id.
+    if post is None:
+        return {"status": "no-post"}
+    try:
         resp = post(path, body) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("copilot tasks POST failed: %s", type(exc).__name__)
+        return {"status": "send-failed", "error": type(exc).__name__}
+    if not isinstance(resp, dict):
+        resp = {}
     record_api_result(home, resp)
     if is_exhausted(resp):
         return {"status": "exhausted"}
-    status = int(resp.get("status") or 0)
+    status = int(resp.get("status") or resp.get("status_code") or 0)
     if status and status >= 400:
         return {"status": "error", "response": resp}
     task_id = str(resp.get("id") or resp.get("task_id") or "")
     task_url = str(resp.get("html_url") or resp.get("url") or "")
+    if not task_id:
+        return {"status": "error", "response": resp, "reason": "missing-task-id"}
     ident = str(row.get("id") or "")
     repo = str(row.get("repo") or "")
     task = str(row.get("task") or "FR").upper()
@@ -678,6 +696,7 @@ def tick(
     now: float | None = None,
     post: Callable[[str, dict], dict] | None = None,
     fetch_user: Callable[[], dict] | None = None,
+    announce: Callable[[str], None] | None = None,
 ) -> dict:
     """Refresh allowance, dispatch next eligible job, time out stale Copilot accepts."""
     now_f = time.time() if now is None else float(now)
@@ -687,7 +706,9 @@ def tick(
     if has_allowance(home):
         for row in gitclaim.load_unaccepted(home):
             if should_dispatch(row, allowance=True):
-                r = dispatch_row(home, row, post=post, now=now_f)
+                r = dispatch_row(
+                    home, row, post=post, now=now_f, announce=announce
+                )
                 if r.get("status") == "dispatched":
                     out["dispatched"] += 1
                 break

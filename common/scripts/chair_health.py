@@ -1,4 +1,4 @@
-﻿"""Chair background jobs (deterministic, no LLM, no IRC I/O of their own):
+"""Chair background jobs (deterministic, no LLM, no IRC I/O of their own):
 
 * webhook health probes every 30 min  (``WEBHOOK_PROBE_S``): GET report, GET jira, GET intake/<id> (404 = up) and a
   synthetic ``ping`` to POST git, against the local receiver and the public https URL. State in
@@ -11,6 +11,8 @@
 Everything network/clock/disk is injectable so tests use fakes.
 """
 from __future__ import annotations
+
+import contextlib
 
 import json
 import os
@@ -597,24 +599,7 @@ class ChairJobs:
         if now >= self.next_copilot:
             self.next_copilot = now + COPILOT_TICK_S
             try:
-                import copilot_dispatch
-
-                token, _src = self.token_loader()
-
-                def _fetch_user() -> dict:
-                    if not token or not self.fetch_json:
-                        raise RuntimeError("no token")
-                    return self.fetch_json("https://api.github.com/copilot_internal/user") or {}
-
-                out = copilot_dispatch.tick(
-                    self.home,
-                    fetch_user=_fetch_user if token else None,
-                )
-                if out.get("dispatched") or out.get("timed_out"):
-                    self.log(
-                        f"INFO copilot-dispatch dispatched={out.get('dispatched', 0)} "
-                        f"timed_out={out.get('timed_out', 0)}"
-                    )
+                self._copilot_tick()
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN copilot-dispatch: {type(exc).__name__}: {exc}")
         now = self.clock()
@@ -625,6 +610,90 @@ class ChairJobs:
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN webhook-ensure: {type(exc).__name__}: {exc}")
 
+
+
+    def _github_json(self, method: str, url: str, body: dict | None = None) -> tuple[dict | list | None, int]:
+        """Authenticated GitHub JSON helper for Copilot pool + tasks (FR #5174)."""
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        token, _src = self.token_loader()
+        if not token:
+            raise RuntimeError("no token")
+        # Prefer injected fetch_json for GET-only test doubles.
+        if method.upper() == "GET" and self.fetch_json is not None and body is None:
+            data = self.fetch_json(url)
+            return data, 200
+        raw = _json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(
+            url,
+            data=raw,
+            method=method.upper(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bobiverse-jeeves",
+                "Content-Type": "application/json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                text = resp.read().decode("utf-8") or "null"
+                code = int(resp.status)
+                parsed = _json.loads(text) if text not in ("", "null") else None
+                return parsed, code
+        except urllib.error.HTTPError as exc:
+            err_body = ""
+            with contextlib.suppress(Exception):
+                err_body = exc.read().decode("utf-8", errors="replace")
+            parsed = None
+            with contextlib.suppress(Exception):
+                parsed = _json.loads(err_body) if err_body else None
+            if not isinstance(parsed, dict):
+                parsed = {"message": err_body or str(exc), "status": int(exc.code)}
+            else:
+                parsed.setdefault("status", int(exc.code))
+            return parsed, int(exc.code)
+
+    def _copilot_tick(self) -> None:
+        """FR #5174: always pass fetch_user + tasks POST into copilot_dispatch.tick."""
+        import copilot_dispatch
+
+        token, _src = self.token_loader()
+        if not token:
+            self.log("WARN copilot-dispatch skipped: no token")
+            return
+
+        def fetch_user() -> dict:
+            data, _code = self._github_json(
+                "GET", "https://api.github.com/copilot_internal/user"
+            )
+            return data if isinstance(data, dict) else {}
+
+        def post(path: str, body: dict) -> dict:
+            url = path if str(path).startswith("http") else (
+                "https://api.github.com/" + str(path).lstrip("/")
+            )
+            data, code = self._github_json("POST", url, body if isinstance(body, dict) else {})
+            out = dict(data) if isinstance(data, dict) else {}
+            out.setdefault("status", int(code))
+            return out
+
+        # FR #5174: queue.json / unaccepted live under digest_home (BOB_DIGEST_HOME),
+        # not chair home (BOB_HOME / ~/.jeeves). Allowance + jobs cache share that path.
+        out = copilot_dispatch.tick(
+            self.digest_home,
+            fetch_user=fetch_user,
+            post=post,
+            announce=self.announce,
+        )
+        if out.get("dispatched") or out.get("timed_out"):
+            self.log(
+                f"INFO copilot-dispatch dispatched={out.get('dispatched', 0)} "
+                f"timed_out={out.get('timed_out', 0)}"
+            )
 
     def _ensure_webhooks(self) -> None:
         """FR #5172: ensure git hooks on every served repo (startup + hourly)."""
@@ -659,14 +728,15 @@ class ChairJobs:
                 return _p
 
             for repo in list(dict.fromkeys(repos)):
-                copilot_dispatch.ensure_repo_webhook(
+                info = copilot_dispatch.ensure_repo_webhook(
                     repo,
                     list_hooks=list_hooks,
                     create=make_create(repo),
                     patch=make_patch(repo),
                     file_stall=lambda **kw: copilot_dispatch.file_webhook_stall(self.home, **kw),
                 )
-                self.log(f"INFO webhook-ensure repo={repo} done")
+                act = (info or {}).get("action") or "error"
+                self.log(f"INFO webhook-ensure repo={repo} action={act}")
             return
 
         def _gh(method: str, url: str, body: dict | None = None):
@@ -708,14 +778,15 @@ class ChairJobs:
             return _p
 
         for repo in list(dict.fromkeys(repos)):
-            copilot_dispatch.ensure_repo_webhook(
+            info = copilot_dispatch.ensure_repo_webhook(
                 repo,
                 list_hooks=list_hooks,
                 create=make_create(repo),
                 patch=make_patch(repo),
                 file_stall=lambda **kw: copilot_dispatch.file_webhook_stall(self.home, **kw),
             )
-            self.log(f"INFO webhook-ensure repo={repo} done")
+            act = (info or {}).get("action") or "error"
+            self.log(f"INFO webhook-ensure repo={repo} action={act}")
 
     def _stall_scan(self) -> None:
         """FR #5164: file one issue per distinct stall; never raise."""
