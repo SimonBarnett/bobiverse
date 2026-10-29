@@ -1199,7 +1199,7 @@ class Client:
         except Exception as exc:  # never kill the reader over the worker list
             info(f"WARN workers reconcile error {type(exc).__name__}")
 
-    def _publish_connected_console_nicks(self) -> None:
+    def _publish_connected_console_nicks(self, *, refresh: bool = False) -> None:
         channels = {str(chan).lower() for chan in self.channels}
         if not channels or not channels.issubset(self._console_presence_synced):
             return
@@ -1211,7 +1211,7 @@ class Client:
             if str(entry.get("nick") or nick).lower().endswith("_console")
         }
         snapshot = tuple(sorted({nick.lower() for nick in nicks}))
-        if snapshot == self._connected_console_nicks:
+        if snapshot == self._connected_console_nicks and not refresh:
             return
         bobreport.set_connected_console_nicks(self._digest_home(), snapshot)
         self._connected_console_nicks = snapshot
@@ -1234,7 +1234,10 @@ class Client:
                 if chan in {str(item).lower() for item in self.channels}:
                     self._console_presence_synced.add(chan)
             if cmd in ("366", "JOIN", "PART", "KICK", "QUIT", "NICK"):
-                self._publish_connected_console_nicks()
+                try:
+                    self._publish_connected_console_nicks(refresh=cmd == "366")
+                except Exception as exc:  # noqa: BLE001 - presence export must not block chair events
+                    info(f"WARN console-presence publish error {type(exc).__name__}")
             who = chan_privs.clean_nick(prefix.split("!", 1)[0]) if prefix else ""
             if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
                 return        # own PART/QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker
