@@ -307,11 +307,31 @@ def build_task_body(row: dict) -> dict:
     return {"prompt": "\n".join(prompt_lines)}
 
 
-def should_dispatch(row: dict, *, allowance: bool) -> bool:
+def should_dispatch(row: dict, *, allowance: bool, now: float | None = None) -> bool:
     if not allowance:
         return False
     task = str(row.get("task") or "").upper()
     if task not in ("FR", "FIX", "MRB"):
+        return False
+    if gitclaim.row_needs_human(row):
+        return False
+    live = {COPILOT_NICK}
+    if gitclaim.row_gave_up_by(row, COPILOT_NICK, live=live):
+        return False
+    now_f = time.time() if now is None else float(now)
+    if gitclaim.row_on_cooldown(row, now_f, COPILOT_NICK, live=live):
+        return False
+    labels = row.get("labels") or []
+    if isinstance(labels, str):
+        labels = [labels]
+    title = str(row.get("title") or "").strip() or str(row.get("line") or "").strip()
+    if task in ("FR", "FIX") and gitclaim.fr_hold_reason(
+        title=title, body=str(row.get("body") or ""), labels=labels
+    ):
+        return False
+    if task == "MRB" and gitclaim.pr_hold_reason(
+        title=title, body=str(row.get("body") or ""), labels=labels
+    ):
         return False
     # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
     row_eff = dict(row) if isinstance(row, dict) else {}
@@ -327,6 +347,16 @@ def should_dispatch(row: dict, *, allowance: bool) -> bool:
         if gitclaim.review_blocked_for_author(row, COPILOT_NICK, live={COPILOT_NICK}):
             return False
     return True
+
+
+def is_high_priority(home: Path, row: dict) -> bool:
+    """Use Jeeves' focus ordering; only an explicit high-ranked focus is eligible."""
+    import focus_ignore
+
+    if not focus_ignore.is_high_priority_repo(str(row.get("repo") or "")):
+        return False
+    key = focus_ignore.offer_sort_key(home, row)
+    return len(key) > 1 and key[1] == focus_ignore.NAMED_PRIORITY["high"]
 
 
 def parse_mrb_verdict(body: str) -> str | None:
@@ -396,7 +426,9 @@ def dispatch_row(
 ) -> dict:
     if not has_allowance(home):
         return {"status": "exhausted"}
-    if not should_dispatch(row, allowance=True):
+    if not is_high_priority(home, row):
+        return {"status": "skip"}
+    if not should_dispatch(row, allowance=True, now=now):
         return {"status": "skip"}
     body = build_task_body(row)
     path = tasks_api_path(str(row.get("repo") or ""))
@@ -704,8 +736,10 @@ def tick(
         refresh_allowance(home, fetch_user=fetch_user, now=now_f)
     out: dict[str, Any] = {"dispatched": 0, "timed_out": 0}
     if has_allowance(home):
-        for row in gitclaim.load_unaccepted(home):
-            if should_dispatch(row, allowance=True):
+        for row in gitclaim.ordered_unaccepted(home):
+            if is_high_priority(home, row) and should_dispatch(
+                row, allowance=True, now=now_f
+            ):
                 r = dispatch_row(
                     home, row, post=post, now=now_f, announce=announce
                 )
