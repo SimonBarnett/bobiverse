@@ -19,7 +19,7 @@ CSC = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Microsoft.NET" / "Framewo
 needs_csc = pytest.mark.skipif(not (WIN and CSC.is_file()), reason="needs Windows + .NET Framework csc.exe")
 DIALOGS = REPO / "bob" / "tray" / "dialogs"
 TRAY_TOOLS = REPO / "bob" / "tray" / "tools"
-PS = shutil.which("powershell.exe") or shutil.which("powershell")
+PS = shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
 
 
 def _ps(script: str, timeout: int = 120) -> subprocess.CompletedProcess:
@@ -115,7 +115,7 @@ def test_about_lists_installs_like_the_old_dialog(dialogs, tmp_path):
     assert "\r\n" in raw                                              # same CRLF text as Format-BobInstallInfo
 
 
-def _model_json(tmp_path: Path) -> Path:
+def _model_json(tmp_path: Path, copilot_pool=None) -> Path:
     """Run the REAL PowerShell model builder + snapshot writer (stubbing only the module functions the live tray provides)."""
     if not PS:
         pytest.skip("needs powershell")
@@ -123,6 +123,7 @@ def _model_json(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     script = f"""
 . '{helper}'
+. '{DIALOGS.parent / "src" / "Public" / "Get-BobTrayHover.ps1"}'
 function Get-BobTrayBarPaint {{ param($RemainingPct, [int]$BarWidth = 100)
   if ($null -eq $RemainingPct -or [string]$RemainingPct -eq '') {{ return [pscustomobject]@{{ known = $false }} }}
   [pscustomobject]@{{ known = $true; remaining_pct = [int]$RemainingPct; fill_r = 63; fill_g = 185; fill_b = 80 }} }}
@@ -136,6 +137,9 @@ $h = [pscustomobject]@{{
                [pscustomobject]@{{ id = 'marchhare'; remaining_pct = 42; worker_lines = @() }},
                [pscustomobject]@{{ id = 'flamingo'; remaining_pct = 0; worker_lines = @() }})
 }}
+$pool = '{json.dumps(copilot_pool)}' | ConvertFrom-Json
+$h | Add-Member -NotePropertyName copilot_pool -NotePropertyValue $pool
+$h | Add-Member -NotePropertyName copilot_line -NotePropertyValue (Format-BobCopilotPoolLine -Pool $pool)
 $m = New-BobTrayStatusModel -Hover $h -AlertKind 'stall' -Alerts @('agent_stall x') -Version 'bob 1.2.3' -Machine 'marchhare' -Short 'bob marchhare tip' -Attention $true -AttentionSeq 7 -Pulse $true
 $p = Write-BobTrayStatusSnapshot -Root '{root}' -Model $m
 $p = Write-BobTrayStatusSnapshot -Root '{root}' -Model $m   # second write = the atomic Replace path
@@ -147,6 +151,56 @@ Write-Output $p
     assert p.is_file() and p == root / "run" / "tray-status.json"
     assert not (root / "run" / "tray-status.json.tmp").exists()
     return p
+
+
+COPILOT_POOLS = [
+    (None, "Copilot  unknown"),
+    ({"state": "unknown"}, "Copilot  unknown"),
+    ({"state": "ok", "remaining": 42}, "Copilot  42 remaining"),
+    ({"state": "ok", "remaining": 0}, "Copilot  0 remaining"),
+    ({"state": "exhausted", "remaining": 0}, "Copilot  exhausted"),
+    ({"unlimited": True, "used": 12, "remaining": 0}, "Copilot  unlimited, 12 used"),
+    ({"state": "exhausted", "unlimited": True, "used": 12, "remaining": 0}, "Copilot  unlimited, 12 used"),
+    ({"state": "unknown", "unlimited": True}, "Copilot  unlimited, 0 used"),
+]
+
+
+@pytest.mark.parametrize("pool,line", COPILOT_POOLS)
+def test_copilot_pool_survives_engine_snapshot(tmp_path, pool, line):
+    snap = _model_json(tmp_path, pool)
+    d = json.loads(snap.read_text(encoding="utf-8"))
+    assert d["copilot_pool"] == pool
+    assert d["copilot_line"] == line
+    assert d["cursor"] == []
+    assert len(d["grok"]) == 2
+    assert d["grok"][0]["workers"][1] == "marchhare-5832: idle"
+
+
+def test_copilot_snapshot_without_hover_or_formatter(tmp_path):
+    if not PS:
+        pytest.skip("needs powershell")
+    r = _ps(f"""
+$ErrorActionPreference = 'Stop'
+. '{TRAY_TOOLS / "BobTrayDialogs.ps1"}'
+$m = New-BobTrayStatusModel -Hover $null
+$p = Write-BobTrayStatusSnapshot -Root '{tmp_path}' -Model $m
+if (-not $p) {{ throw 'snapshot write failed' }}
+""")
+    assert r.returncode == 0, r.stdout + r.stderr
+    d = json.loads((tmp_path / "run" / "tray-status.json").read_text(encoding="utf-8"))
+    assert d["copilot_pool"] is None
+    assert d["copilot_line"] == "Copilot  unknown"
+
+
+@needs_csc
+@pytest.mark.parametrize("pool,line", COPILOT_POOLS)
+def test_copilot_pool_in_compiled_status(dialogs, tmp_path, pool, line):
+    snap = _model_json(tmp_path, pool)
+    out = tmp_path / "copilot.txt"
+    _run(dialogs / "bob-status.exe", "--check", str(snap), "--text-out", str(out))
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines.count(line) == 1
+    assert "cursor=0 grok=2 alert=stall" in lines
 
 
 @pytest.mark.skipif(not (WIN and PS), reason="needs powershell")

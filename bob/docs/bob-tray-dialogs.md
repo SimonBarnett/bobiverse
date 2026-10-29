@@ -21,9 +21,12 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
 * **About**: ntsa badge (embedded), "by Simon Barnett", `bob <version>  machine: <id>`, then one block per install of bob / jeeves / airc / ergo
   (version, BUILD.json date, commit, path, service state - the same text as the old `Format-BobInstallInfo`). The window opens first; the install
   scan (services, BUILD.json, git only when BUILD.json has no commit) runs on a worker thread and fills the box.
-* **Status** (FR #4938): Grok account rows only (one grok/cursor account per machine; Cursor spending-group bars removed), each machine's
+* **Status** (FR #4938 / #5179): Grok account rows (one grok/cursor account per machine; Cursor spending-group bars removed), each machine's
   workers as `{irc nick}: {doing|idle}` from the digest, `alert: <kind>`, version footer. It paints from `<root>\run\tray-status.json`, which
   the tray writes (atomically) after every poll; the exe never touches the network and re-reads the file every 2 s. Parked until X / Esc; drag by the title.
+  One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and
+  `unlimited` when reported as such (never as zero/exhausted). Live values require the #5173 `bobreport.py` deployment on
+  the digest host (`https://irc.ntsa.uk/bob/v1/report`); that deployment is separate and needs Simon's go.
 * **Single instance**: a named mutex per dialog; a second launch only brings the first window forward and exits.
 * **Tray**: `Start-BobTrayDialog` (`tools\BobTrayDialogs.ps1`) is a plain `Start-Process` - the tray UI thread never waits on a dialog or on the
   install scan (the old in-process About blocked it for seconds). If an exe is missing the tray falls back to the old PowerShell dialogs.
@@ -68,5 +71,5 @@ It runs the Status and About windows in-process (no second process to start).
 ### Status window shows the dashboard only (t832u)
 The plain-text block under the title (the old hover / tooltip `jobs_text`: fuel lines, "GitHub issue post: ready", "out of tokens, open with key")
 was drawn by mistake. It is gone from the exe and from the snapshot (`jobs_text` is no longer written): per-machine Grok pool
-rows with workers `{irc nick}: {doing|idle}`, alert and version only (FR #4938: no Cursor pool section; FR #5032: no
+rows with workers `{irc nick}: {doing|idle}`, one Copilot pool tile, alert and version (FR #4938: no Cursor pool section; FR #5032: no
 "Grok accounts" heading).
