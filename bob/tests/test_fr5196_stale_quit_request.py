@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -59,6 +60,27 @@ def test_consumer_without_cutoff_keeps_existing_contract(tmp_path):
     assert agent_control.peek_quit_request(tmp_path) == "stop"
     assert agent_control.consume_quit_request(tmp_path) == "stop"
     assert agent_control.consume_quit_request(tmp_path) is None
+
+
+def test_request_during_startup_before_client_construction_is_live(tmp_path, monkeypatch):
+    started = 1_800_000_000.5
+    monkeypatch.setattr(irc_agent, "_PROCESS_STARTED", started)
+    monkeypatch.setattr(irc_agent.time, "time", lambda: started + 30)
+    monkeypatch.setattr(irc_agent.bob_home, "ensure_homes", lambda **kwargs: None)
+    monkeypatch.delenv("BOB_IRC_DEBUG", raising=False)
+    monkeypatch.setenv("BOB_HOME", str(tmp_path))
+    agent_control.request_agent_quit(tmp_path, "stop")
+    path = agent_control.quit_request_path(tmp_path)
+    os.utime(path, (started + 10, started + 10))
+    client = irc_agent.Client(SimpleNamespace(
+        nick="Bob-test", channel="#test", home=str(tmp_path), outbox=None,
+    ))
+    client.request_shutdown = Mock()
+
+    assert client._process_started == started
+    assert client._consume_control_quit()
+    client.request_shutdown.assert_called_once_with(":control")
+    assert not path.exists()
 
 
 def test_install_and_upgrade_set_appdirectory_after_service_registration():
