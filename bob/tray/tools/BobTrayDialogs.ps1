@@ -296,22 +296,25 @@ function Invoke-BobTrayExeCommands {
     $f = Join-Path (Join-Path $Root 'run') 'tray-cmd.txt'
     $done = New-Object System.Collections.Generic.List[string]
     if (Test-Path -LiteralPath $f) {
-        $lines = @()
-        try { $lines = @(Get-Content -LiteralPath $f -ErrorAction Stop) } catch { }
-        $keep = New-Object System.Collections.Generic.List[string]
+        # FR #5177: claim before callbacks; a restart may kill this engine before returning.
+        # New commands go to $f and must not be deleted with the claimed batch.
+        $claimed = $f + '.' + [guid]::NewGuid().ToString('N') + '.pending'
+        try {
+            Move-Item -LiteralPath $f -Destination $claimed -ErrorAction Stop
+            $lines = @(Get-Content -LiteralPath $claimed -ErrorAction Stop)
+            $keep = @($lines | Where-Object { ([string]$_).Trim().ToLowerInvariant() -eq 'reload' })
+            if ($keep.Count -gt 0) {
+                Add-Content -LiteralPath $f -Value $keep -Encoding ascii -ErrorAction Stop
+            }
+            Remove-Item -LiteralPath $claimed -Force -ErrorAction Stop
+        } catch { return $done.ToArray() }
         foreach ($l in $lines) {
             $cmd = ([string]$l).Trim().ToLowerInvariant()
-            if ($cmd -eq 'reload') { $keep.Add($l); continue }
+            if ($cmd -eq 'reload') { continue }
             if ($cmd -eq 'ack' -and $OnAck) { & $OnAck; $done.Add('ack') }
             elseif ($cmd -eq 'exit' -and $OnExit) { & $OnExit; $done.Add('exit'); break }
             elseif ($cmd -eq 'restart' -and $OnRestart) { & $OnRestart; $done.Add('restart'); break }
         }
-        try {
-            if ($keep.Count -gt 0) {
-                Set-Content -LiteralPath $f -Value @($keep) -Encoding ascii
-            }
-            else { Remove-Item -LiteralPath $f -Force -ErrorAction Stop }
-        } catch { }
     }
     $pidText = [string]$env:BOB_TRAY_EXE_PID
     if ($done.Count -eq 0 -and $pidText -match '^\d+$' -and $ParentGone) {

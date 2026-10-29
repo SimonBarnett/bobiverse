@@ -51,6 +51,8 @@ It runs the Status and About windows in-process (no second process to start).
 * **Exit** closes the windows, hides the icon, stops the ircBob service (detached) and ends the engine; **Restart** hides the icon and has the engine
   re-launch the tray **without** restarting ircBob (FR #5111 `-SkipServiceRestart`). `Start-BobFleetTray.ps1` launches `bob-tray.exe` when it exists (ForceNew, tidy unchanged; ircBob restart-on-start only when not skipped) and
   kills the old PowerShell tray; without the exe it starts the PowerShell tray as before, which stays a complete fallback.
+  Restart allows up to 60 seconds for the graceful IRC logout and bootstrap (FR #5177). Commands are claimed before callbacks,
+  and engine startup discards stale commands so an interrupted restart cannot replay.
 * **Reload engine** (FR #5111): host-only recycle. Write `reload` to `<root>\run\tray-cmd.txt` (or menu **Reload engine**). The elevated `bob-tray.exe` runs `KillEngineTree` + `StartEngine` only --- no `taskkill` from Medium integrity, no host exit, no seat kill, no `sc stop ircBob`. Engine must leave `reload` lines for the host.
 
 ## Hot-patch the tray (FR #5111)
