@@ -39,7 +39,16 @@ def peek_quit_request(home: Path | str) -> str | None:
     return parts[1] if len(parts) > 1 else "stop"
 
 
-def consume_quit_request(home: Path | str) -> str | None:
+def consume_quit_request(home: Path | str, *, not_before: float | None = None) -> str | None:
+    """Discard requests predating this agent; mtime also covers legacy writers."""
+    if not_before is not None:
+        path = quit_request_path(home)
+        try:
+            if path.stat().st_mtime < not_before:
+                path.unlink(missing_ok=True)
+                return None
+        except OSError:
+            return None
     reason = peek_quit_request(home)
     if reason is None:
         return None
