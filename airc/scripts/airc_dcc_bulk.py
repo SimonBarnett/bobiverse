@@ -421,7 +421,7 @@ def listen_and_send(
     *,
     token: str,
     on_listening: Callable[[int], None],
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 0,
     timeout_s: float = DCC_HANDSHAKE_TIMEOUT_S,
     tls: bool = True,

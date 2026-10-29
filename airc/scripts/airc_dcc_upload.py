@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--file", required=True)
     parser.add_argument("--offer-file", required=True)
     parser.add_argument("--advertise-host", default="")
-    parser.add_argument("--bind-host", default="0.0.0.0")
+    parser.add_argument("--bind-host", default="")
     parser.add_argument("--relay", default="")
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args(argv)
@@ -74,7 +74,14 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_s=args.timeout,
             )
         else:
-            advertise_host = args.advertise_host or _route_address()
+            advertise_host = args.advertise_host
+            if args.bind_host:
+                bind_host = args.bind_host
+            elif advertise_host in {"127.0.0.1", "::1", "localhost"}:
+                bind_host = "127.0.0.1"
+            else:
+                bind_host = _route_address()
+            advertise_host = advertise_host or bind_host
 
             def publish(port: int) -> None:
                 _write_offer(
@@ -94,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
                 payload,
                 token=token,
                 on_listening=publish,
-                host=args.bind_host,
+                host=bind_host,
                 timeout_s=args.timeout,
                 tls=True,
             )
