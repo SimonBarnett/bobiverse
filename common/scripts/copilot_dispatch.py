@@ -11,6 +11,7 @@ import contextlib
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -307,8 +308,14 @@ def build_task_body(row: dict) -> dict:
     return {"prompt": "\n".join(prompt_lines)}
 
 
-def should_dispatch(row: dict, *, allowance: bool) -> bool:
+def should_dispatch(row: dict, *, allowance: bool, now: float | None = None) -> bool:
     if not allowance:
+        return False
+    if gitclaim.row_gave_up_by(row, COPILOT_NICK):
+        return False
+    if gitclaim.row_needs_human(row, COPILOT_NICK):
+        return False
+    if gitclaim.row_on_cooldown(row, time.time() if now is None else now, COPILOT_NICK):
         return False
     task = str(row.get("task") or "").upper()
     if task not in ("FR", "FIX", "MRB"):
@@ -396,7 +403,15 @@ def dispatch_row(
 ) -> dict:
     if not has_allowance(home):
         return {"status": "exhausted"}
-    if not should_dispatch(row, allowance=True):
+    if not should_dispatch(row, allowance=True, now=now):
+        return {"status": "skip"}
+    if gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, COPILOT_NICK):
+        return {"status": "skip"}
+    if any(
+        (j.get("repo"), j.get("task"), j.get("id"))
+        == (row.get("repo"), row.get("task"), row.get("id"))
+        for j in _load_jobs(home).get("jobs") or []
+    ):
         return {"status": "skip"}
     body = build_task_body(row)
     path = tasks_api_path(str(row.get("repo") or ""))
@@ -461,56 +476,109 @@ def dispatch_row(
     return {"status": "dispatched", "task_url": task_url, "line": line}
 
 
+def _existing_work(job: dict, task_info: dict, get: Callable[[str], Any]) -> bool:
+    """Check task output and GitHub before returning a cloud job to local seats."""
+    repo = str(job["repo"])
+    num = str(job["id"]).lstrip("#")
+    task = str(job["task"]).lower()
+
+    def task_has_work(info: dict) -> bool:
+        for key in ("pull_request", "pull_request_url", "pull_requests",
+                    "branch", "branch_name", "head_ref"):
+            if info.get(key):
+                return True
+        return any(task_has_work(s) for s in info.get("sessions") or [] if isinstance(s, dict))
+
+    if task == "mrb":
+        return False  # The PR being reviewed is input, not Copilot's output.
+    if task_has_work(task_info):
+        return True
+    page = 1
+    while True:
+        pulls = get(f"repos/{repo}/pulls?state=open&per_page=100&page={page}")
+        if not isinstance(pulls, list):
+            raise ValueError("invalid pulls response")
+        for pr in pulls:
+            login = str((pr.get("user") or {}).get("login") or "").lower()
+            branch = str((pr.get("head") or {}).get("ref") or "")
+            if "copilot" not in login and not branch.startswith("copilot/"):
+                continue
+            refs = gitclaim.extract_closes_issue_ids(str(pr.get("body") or ""), repo=repo)
+            if f"#{num}" in refs or re.match(rf"copilot/{task}-{re.escape(num)}(?:-|$)", branch):
+                return True
+        if len(pulls) < 100:
+            break
+        page += 1
+    branches = get(f"repos/{repo}/git/matching-refs/heads/copilot/{task}-{num}")
+    if not isinstance(branches, list):
+        raise ValueError("invalid refs response")
+    return any(
+        re.match(rf"refs/heads/copilot/{task}-{re.escape(num)}(?:-|$)", str(b.get("ref") or ""))
+        for b in branches
+    )
+
+
 def handle_timeout_or_fail(
-    home: Path, job: dict, *, now: float, reason: str = "timeout"
+    home: Path, job: dict, *, now: float, reason: str = "timeout",
+    get: Callable[[str], Any] | None = None,
 ) -> dict:
-    """Give-up semantics: stamp copilot on giveup_seats and requeue (no instant re-offer)."""
+    """Keep cloud work tracked, otherwise use the same GIVEUP path as IRC seats."""
     repo = str(job.get("repo") or "")
     task = str(job.get("task") or "FR").upper()
     ident = str(job.get("id") or "")
-    started = float(job.get("started") or 0)
-    if reason == "timeout" and started and (now - started) < TASK_TIMEOUT_S:
-        return {"status": "pending"}
-    try:
-        with gitclaim._lock(home):
-            doc = gitclaim._load_queue_unlocked(home)
-            acc = doc.get("accepted") or []
-            keep = []
-            moved = None
-            for r in acc:
-                if (
-                    str(r.get("repo")) == repo
-                    and str(r.get("id")) == ident
-                    and str(r.get("task") or "").upper() == task
-                    and str(r.get("nick") or "") == COPILOT_NICK
-                ):
-                    moved = dict(r)
-                else:
-                    keep.append(r)
-            doc["accepted"] = keep
-            if moved is None:
-                moved = {"repo": repo, "task": task, "id": ident}
-            seats = [
-                s.strip()
-                for s in str(moved.get("giveup_seats") or "").split(",")
-                if s.strip()
-            ]
-            if COPILOT_NICK not in {s.lower() for s in seats}:
-                seats.append(COPILOT_NICK)
-            moved["giveup_seats"] = ",".join(seats)
-            moved.pop("nick", None)
-            moved.pop("accepted_ts", None)
-            un = doc.setdefault("unaccepted", [])
-            if not any(
-                str(r.get("repo")) == repo
-                and str(r.get("id")) == ident
-                and str(r.get("task") or "").upper() == task
-                for r in un
-            ):
-                un.append(moved)
-            gitclaim._write_queue(gitclaim.queue_path(home), doc)
-    except (TimeoutError, OSError, ValueError):
-        return {"status": "error"}
+    accepted = next((
+        r for r in gitclaim.load_accepted(home)
+        if (r.get("repo"), str(r.get("task") or "").upper(), r.get("id"), r.get("nick"))
+        == (repo, task, ident, COPILOT_NICK)
+    ), None)
+    if accepted is not None:
+        info = {}
+        try:
+            if get is not None:
+                info = get(f"{tasks_api_path(repo)}/{job['task_id']}")
+                if not isinstance(info, dict):
+                    raise ValueError("invalid task response")
+                states = [info] + [
+                    s for s in info.get("sessions") or [] if isinstance(s, dict)
+                ]
+                for state_info in states:
+                    state = str(state_info.get("state") or state_info.get("status") or "").lower()
+                    if state in ("failed", "cancelled", "canceled", "error"):
+                        reason = state
+                        break
+            started = float(job.get("started") or 0)
+            if reason == "timeout" and now - started < TASK_TIMEOUT_S:
+                return {"status": "pending"}
+            if get is not None and _existing_work(job, info, get):
+                jobs = _load_jobs(home)
+                for tracked in jobs.get("jobs") or []:
+                    if tracked.get("task_id") == job.get("task_id"):
+                        tracked["started"] = now
+                _save_jobs(home, jobs)
+                return {"status": "tracking"}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("copilot work check failed: %s", type(exc).__name__)
+            return {"status": "pending"}
+        repeated = gitclaim.row_gave_up_by(accepted, COPILOT_NICK) or bool(
+            gitclaim.ledger_blocks(gitclaim.ledger_load(home), accepted, COPILOT_NICK)
+        )
+        status, moved = shop_listen.return_job_to_unaccepted(
+            home, repo=repo, task=task, ident=ident, now=now, reason=f"copilot {reason}"
+        )
+        if status != "ok":
+            return {"status": "error"}
+        gitclaim.ledger_note_event(home, COPILOT_NICK, "GIVEUP", task, repo, ident, job=moved)
+        if repeated:
+            import stall_detectors
+            import stall_filer
+
+            stall_filer.apply_findings(
+                stall_detectors.detect_all(
+                    {"live": {COPILOT_NICK}, "unaccepted": [moved]}
+                ),
+                home=home, now=now, excerpt=f"Repeated Copilot {reason}",
+                create=stall_filer.default_create,
+            )
     jobs = _load_jobs(home)
     jobs["jobs"] = [
         j
@@ -518,6 +586,8 @@ def handle_timeout_or_fail(
         if not (j.get("repo") == repo and j.get("id") == ident and j.get("task") == task)
     ]
     _save_jobs(home, jobs)
+    if accepted is None:
+        return {"status": "stale"}
     line = announce_complete(
         repo=repo, task=task, ident=ident, result="fail", reason=reason
     )
@@ -696,6 +766,7 @@ def tick(
     now: float | None = None,
     post: Callable[[str, dict], dict] | None = None,
     fetch_user: Callable[[], dict] | None = None,
+    get: Callable[[str], Any] | None = None,
     announce: Callable[[str], None] | None = None,
 ) -> dict:
     """Refresh allowance, dispatch next eligible job, time out stale Copilot accepts."""
@@ -703,18 +774,27 @@ def tick(
     if fetch_user is not None:
         refresh_allowance(home, fetch_user=fetch_user, now=now_f)
     out: dict[str, Any] = {"dispatched": 0, "timed_out": 0}
+    jobs = _load_jobs(home)
+    for job in list(jobs.get("jobs") or []):
+        r = handle_timeout_or_fail(home, job, now=now_f, reason="timeout", get=get)
+        if r.get("status") == "giveup":
+            out["timed_out"] += 1
+    ledger = gitclaim.ledger_load(home)
+    active = {
+        (j.get("repo"), j.get("task"), j.get("id"))
+        for j in _load_jobs(home).get("jobs") or []
+    }
     if has_allowance(home):
         for row in gitclaim.load_unaccepted(home):
-            if should_dispatch(row, allowance=True):
+            if (row.get("repo"), row.get("task"), row.get("id")) in active:
+                continue
+            if should_dispatch(row, allowance=True, now=now_f) and not gitclaim.ledger_blocks(
+                ledger, row, COPILOT_NICK
+            ):
                 r = dispatch_row(
                     home, row, post=post, now=now_f, announce=announce
                 )
                 if r.get("status") == "dispatched":
                     out["dispatched"] += 1
                 break
-    jobs = _load_jobs(home)
-    for job in list(jobs.get("jobs") or []):
-        r = handle_timeout_or_fail(home, job, now=now_f, reason="timeout")
-        if r.get("status") == "giveup":
-            out["timed_out"] += 1
     return out
