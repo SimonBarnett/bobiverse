@@ -971,6 +971,10 @@ while ($true) {
     $privmsgs = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies $bodies)
     Write-Host ("INFO action={0} machine={1} id={2} lines={3} attempt={4}" -f $Action, $MachineId, $corr, $privmsgs.Count, $attempt)
 
+    if ($Action -eq 'Put' -and -not $uploadSession -and $Outbox -and -not $WhatIf) {
+        $pacedSeconds = [Math]::Ceiling(([Math]::Max(0, $privmsgs.Count - 1) * $OutboxPaceMs) / 1000.0)
+        $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max($TimeoutSec, $pacedSeconds + 60))
+    }
     $startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
 
     if ($Outbox) {
@@ -1026,7 +1030,7 @@ while ($true) {
             Stop-AircDccUploadListener -Session $uploadSession
             Write-Output $parsed
             exit 126
-        } elseif (-not $dccWaitError -and $parsed.Reason -and $parsed.Reason -ne 'dcc') {
+        } elseif (-not $dccWaitError -and $parsed.Reason -and $parsed.Reason -ne 'dcc' -and $parsed.Reason -ne 'busy') {
             Stop-AircDccUploadListener -Session $uploadSession
             Write-Output $parsed
             exit ([int]$parsed.ExitCode)
@@ -1039,6 +1043,8 @@ while ($true) {
             Write-Host ("INFO upload path=irc reason={0}" -f $reason)
             Stop-AircDccUploadListener -Session $uploadSession
             $fallbackLines = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies ([string[]]@($built.Put.Lines)))
+            $pacedSeconds = [Math]::Ceiling(([Math]::Max(0, $fallbackLines.Count - 1) * $OutboxPaceMs) / 1000.0)
+            $deadline = [datetime]::UtcNow.AddSeconds([Math]::Max($TimeoutSec, $pacedSeconds + 60))
             $startOffset = Get-AircRepliesJsonlLength -Path $repliesJsonl
             Write-AircOutbox -Outbox $Outbox -Lines $fallbackLines -PaceMs $OutboxPaceMs -WhatIf:$WhatIf
             $remaining = [int][Math]::Ceiling(($deadline - [datetime]::UtcNow).TotalSeconds)

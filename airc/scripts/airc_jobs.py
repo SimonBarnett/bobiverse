@@ -683,6 +683,8 @@ def format_status_lines(*, airc_running: bool, versions: dict[str, str], machine
 class JobProtocol:
     """Dispatch FR #78 verbs; RUN executes via injected runner callback."""
 
+    MAX_CONCURRENT_DCC_PUTS = 4
+
     def __init__(
         self,
         store: JobStore,
@@ -704,6 +706,7 @@ class JobProtocol:
         self.airc_running = airc_running
         self.run_timeout_s = run_timeout_s
         self._lock = threading.Lock()
+        self._dcc_put_slots = threading.BoundedSemaphore(self.MAX_CONCURRENT_DCC_PUTS)
 
     def authorize(self, nick: str, verb: str) -> None:
         level = verb_level(verb)
@@ -772,15 +775,47 @@ class JobProtocol:
                 self._emit(nick, ln)
             return
         if verb == "DCCPUT":
-            def dcc_worker() -> None:
+            try:
+                self.authorize(nick, verb)
+            except JobProtocolError:
                 for ln in self.handle(nick, verb, kv):
                     self._emit(nick, ln)
+                return
+            if not self._dcc_put_slots.acquire(blocking=False):
+                jid = kv.get("id") or "-"
+                self._emit(nick, f"err id={jid} code=busy msg=DCC upload capacity reached")
+                self._emit(
+                    nick,
+                    f"DONE id={jid} exit=1 via=dcc reason=busy",
+                )
+                return
 
-            threading.Thread(
+            def dcc_worker() -> None:
+                try:
+                    for ln in self.handle(nick, verb, kv):
+                        self._emit(nick, ln)
+                except Exception:  # noqa: BLE001
+                    jid = kv.get("id") or "-"
+                    self._emit(nick, f"err id={jid} code=internal msg=DCC upload failed")
+                    self._emit(
+                        nick,
+                        f"DONE id={jid} exit=1 via=dcc reason=internal",
+                    )
+                finally:
+                    self._dcc_put_slots.release()
+
+            worker = threading.Thread(
                 target=dcc_worker,
                 name=f"airc-dccput-{kv.get('id', 'unknown')}",
                 daemon=True,
-            ).start()
+            )
+            try:
+                worker.start()
+            except RuntimeError:
+                self._dcc_put_slots.release()
+                jid = kv.get("id") or "-"
+                self._emit(nick, f"err id={jid} code=busy msg=DCC upload unavailable")
+                self._emit(nick, f"DONE id={jid} exit=1 via=dcc reason=busy")
             return
         lines = self.handle(nick, verb, kv)
         for ln in lines:

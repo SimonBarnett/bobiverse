@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from queue import Queue
 from pathlib import Path
 
 import airc_dcc_bulk as dcc
@@ -326,6 +327,44 @@ def test_dccput_frame_and_invoke_default_with_irc_override():
     assert "-not $ForceIrc" in script
     assert "$built.Put.Lines" in script
     assert "upload path=dcc" in script and "upload path=irc" in script
+
+
+def test_dccput_async_workers_are_authorized_and_bounded(tmp_path, monkeypatch):
+    replies: list[str] = []
+    started: Queue[str] = Queue()
+    release = threading.Event()
+    store = jobs.JobStore(tmp_path / "console")
+    proto = jobs.JobProtocol(
+        store,
+        verb_auth=jobs.VerbAuthPolicy(write_nicks={"bob-tm"}),
+        on_reply=lambda nick, line: replies.append(line),
+    )
+
+    def blocked_receive(nick: str, kv: dict[str, str]) -> list[str]:
+        jid = kv["id"]
+        started.put(jid)
+        assert release.wait(5)
+        return [f"DONE id={jid} exit=0 via=dcc"]
+
+    monkeypatch.setattr(store, "handle_dcc_put", blocked_receive)
+    for i in range(proto.MAX_CONCURRENT_DCC_PUTS):
+        proto.handle_async("bob-tm", "DCCPUT", {"id": f"{i:08x}"})
+    active = {started.get(timeout=3) for _ in range(proto.MAX_CONCURRENT_DCC_PUTS)}
+    assert len(active) == proto.MAX_CONCURRENT_DCC_PUTS
+
+    proto.handle_async("bob-tm", "DCCPUT", {"id": "ffffffff"})
+    assert any("code=busy" in line for line in replies)
+    assert started.empty()
+
+    proto.handle_async("bob-other", "DCCPUT", {"id": "eeeeeeee"})
+    assert any("reason=denied" in line for line in replies)
+    assert started.empty()
+
+    release.set()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and sum(line.startswith("DONE id=") for line in replies) < 6:
+        time.sleep(0.01)
+    assert sum(line.startswith("DONE id=") for line in replies) == 6
 
 
 def test_upload_docs_cover_dcc_output_and_upload():
