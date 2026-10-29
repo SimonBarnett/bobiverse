@@ -37,3 +37,18 @@ Typical pattern (incident 2026-10-05):
 - **Finding after 10 minutes** when `unaccepted>0`, idle shop seats exist, and ungated `offerable=0` (fleet-wide empty offerable). State file: `{ops_home}/pin-ledger-starve.json`.
 
 Also see `jeeves/docs/empty-offer-playbook.md` (FR #2448). Related: `jeeves/docs/monitoring.md` (idle_seats / queue_flow). Follow-ons folded here: ops playbook #2448, CAST IRON empty-offer tests #2449.
+
+## FR #5163 — MRB reviewer deadlock (idle seats)
+
+When every idle seat is ineligible for every waiting MRB (exact author self-MRB
+or give-up), Jeeves heals deterministically:
+
+1. **Cross give-up** — clear give-ups for idle *non-author* seats so an offer can
+   proceed (no manual `!cleargiveup`).
+2. **Author-only** — queue one tray `recycleseat` request
+   (`run/recycleseat/req-*.json`, kind `mrb-reviewer-deadlock`), deduped and
+   rate-limited (~180s per deadlock signature).
+
+Hooked from `offer_focus_top` (same `!bored` can then stamp an offer) and
+`queue_flow` monitor.
+
