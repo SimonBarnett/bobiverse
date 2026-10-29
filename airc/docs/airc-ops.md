@@ -2,6 +2,7 @@
 
 Service **Airc**, tree `<ai root>\airc`, nick **`{MachineId}_console`**.
 Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / `-MachineId`), not a raw Windows `COMPUTERNAME` unless they match.
+Airc connects to Ergo over TLS on port **993** by default and falls back to **6697** on a connection timeout or refusal. Set `AIRC_IRC_PORT` or pass `--port` / `-Port` to select the primary port.
 
 ## ConsoleHome (identity)
 

@@ -27,7 +27,7 @@ param(
     [string]$ConsoleHome,
     [string]$PasswordFile = '',
     [string]$HostName = 'irc.ntsa.uk',
-    [int]$Port = 6697,
+    [int]$Port = $(if ($env:AIRC_IRC_PORT) { [int]$env:AIRC_IRC_PORT } else { 993 }),
     [ValidateSet('', 'off', 'operators')]
     [string]$ShellMode = 'operators',
     [ValidateSet('', 'off', 'on')]

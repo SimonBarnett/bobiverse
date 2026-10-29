@@ -2,6 +2,8 @@
 
 Fleet IRC product: single-file MSIs for **Jeeves** (Ergo + chair), **Bob** ears, and **airc** consoles.
 
+Ergo accepts public TLS IRC connections on ports **6697** and **993**. Airc defaults to **993** and falls back to **6697** on a connection timeout or refusal; `AIRC_IRC_PORT` / `--port` can select a port explicitly.
+
 | MSI | Service(s) | Nick | Install tree |
 |-----|------------|------|--------------|
 | `jeeves-*.msi` | `BobIrcd` + `ircJeeves` | `Jeeves` | `<ai root>\jeeves` (+ Ergo → `<ai root>\ergo`) |

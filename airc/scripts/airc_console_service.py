@@ -602,18 +602,57 @@ class AircConsoleService:
         self._registered = False
         self._force_reconnect = False
         self._awaiting_pong = False
-        raw = socket.create_connection((self.args.host, int(self.args.port)), timeout=30)
-        if self.args.tls:
-            ctx = ssl.create_default_context()
-            if self.args.tls_insecure:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-            self.sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
-        else:
-            self.sock = raw
+        self.sock = None
+        port = int(self.args.port)
+        ports = [port]
+        if port == 993:
+            ports.append(6697)
+        elif port == 6697:
+            ports.append(993)
+
+        for attempt, candidate_port in enumerate(ports):
+            raw = None
+            try:
+                raw = socket.create_connection((self.args.host, candidate_port), timeout=30)
+                if self.args.tls:
+                    ctx = ssl.create_default_context()
+                    if self.args.tls_insecure:
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                    self.sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
+                else:
+                    self.sock = raw
+                port = candidate_port
+                break
+            except OSError as exc:
+                if raw is not None:
+                    try:
+                        raw.close()
+                    except OSError:
+                        pass
+                winerror = getattr(exc, "winerror", None)
+                timeout = (
+                    isinstance(exc, TimeoutError)
+                    or getattr(exc, "errno", None) == errno.ETIMEDOUT
+                    or winerror == 10060
+                )
+                refused = (
+                    isinstance(exc, ConnectionRefusedError)
+                    or getattr(exc, "errno", None) == errno.ECONNREFUSED
+                    or winerror == 10061
+                )
+                retryable = timeout or refused
+                if attempt + 1 >= len(ports) or not retryable:
+                    raise
+                info(
+                    f"INFO connect-fallback {self.args.host}:{candidate_port} -> "
+                    f"{self.args.host}:{ports[attempt + 1]} "
+                    f"reason={'timeout' if timeout else 'refused'}"
+                )
         self.sock.settimeout(1.0)
         self._last_recv = time.monotonic()
-        info(f"INFO connected {self.args.host}:{self.args.port} tls={self.args.tls}")
+        self.connected_port = port
+        info(f"INFO connected {self.args.host}:{port} tls={self.args.tls}")
 
     def send(self, line: str, *, flood: bool = True) -> None:
         if not self.sock:
@@ -1782,7 +1821,7 @@ class AircConsoleService:
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="airc console Windows service host (FR #253)")
     p.add_argument("--host", default=os.environ.get("AIRC_IRC_HOST", "irc.ntsa.uk"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("AIRC_IRC_PORT", "6697")))
+    p.add_argument("--port", type=int, default=int(os.environ.get("AIRC_IRC_PORT", "993")))
     p.add_argument("--tls", action="store_true", default=True)
     p.add_argument("--no-tls", action="store_false", dest="tls")
     p.add_argument("--tls-insecure", action="store_true")

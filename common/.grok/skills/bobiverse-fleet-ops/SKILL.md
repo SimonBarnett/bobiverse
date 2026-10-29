@@ -29,7 +29,7 @@ Per service start: (1) repo fast-forward of the install work tree (sparse `<prod
 **ARP VERSION truth (FR #1565 / harvest #1589):** after MSI, Windows ARP `DisplayVersion` is the installed VERSION truth. `Sync-BobiverseFromRepo` must heal `<InstallRoot>\VERSION` to match ARP and must **not** let a newer git/clone `VERSION` stamp clobber the MSI identity on start-up sync. Unit tests use `-ArpVersionOverride none` (or the script's equivalent) so live ARP does not poison CI. Merged PR #1577 + docs #1587.
 ## Fleet model (what talks to what)
 
-- **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 public, plaintext :6667 loopback). Runs on exactly one box.
+- **Ergo** IRC server (service `BobIrcd`, tree `<ai root>\ergo`, TLS :6697 and :993 public, plaintext :6667 loopback). Runs on exactly one box; Airc defaults to :993 and can fall back to :6697.
   NEVER edit `ircd.yaml`, never restart `BobIrcd` as part of a fix for something else.
 - **Jeeves** chair (service `ircJeeves`, nick `Jeeves`, `irc_agent.py --chair`): channel privileges, roster, queue, commands,
   digest, webhooks. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
