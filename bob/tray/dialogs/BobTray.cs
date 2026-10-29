@@ -564,6 +564,54 @@ namespace BobDialogs
                 try { HealEngine(); } catch { }
             }
             try { ObserveWorkerSeats(); } catch { }
+            try { HealIrcBobIfIdle(); } catch { }
+        }
+
+        // FR #5195: if ircBob is Stopped and no update is in progress, start it (do not heal worker seats).
+        void HealIrcBobIfIdle()
+        {
+            if (exiting) return;
+            if (IrcBobUpdateInProgress()) return;
+            try
+            {
+                using (ManagementObjectSearcher q = new ManagementObjectSearcher(
+                    "SELECT State FROM Win32_Service WHERE Name='ircBob'"))
+                {
+                    foreach (ManagementObject mo in q.Get())
+                    {
+                        string st = (mo["State"] ?? "").ToString();
+                        if (st == "Running" || st == "Start Pending") return;
+                        if (st == "Stopped")
+                        {
+                            TrayLifecycle.Write("ircbob-heal", "why", "stopped-idle", "via", "bob-tray-watchdog");
+                            Detached(Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? "C:\\Windows", "System32\\sc.exe"), "start ircBob");
+                        }
+                        return;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        bool IrcBobUpdateInProgress()
+        {
+            try
+            {
+                string pd = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                string path = Path.Combine(pd, "bobiverse", "update", "bob", "state.json");
+                if (!File.Exists(path)) return false;
+                string json = File.ReadAllText(path);
+                Match m = Regex.Match(json, "\"atUtc\"\\s*:\\s*\"([^\"]+)\"");
+                if (!m.Success) return false;
+                DateTime at;
+                if (!DateTime.TryParse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out at))
+                    return false;
+                double min = (DateTime.UtcNow - at.ToUniversalTime()).TotalMinutes;
+                if (min < 0) return false;
+                return min < 15;
+            }
+            catch { return false; }
         }
 
         void HealEngine()
