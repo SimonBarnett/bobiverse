@@ -118,14 +118,15 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
+    """Report rows abandoned by every live seat unless already parked for a human."""
     live = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("live") or [])}
     live = {n for n in live if n}
     if not live:
         return []
     out = []
     for row in list(snap.get("unaccepted") or []) + list(snap.get("accepted") or []):
-        if not live:
-            break
+        if not live or gitclaim.row_needs_human(row):
+            continue
         if all(gitclaim.row_gave_up_by(row, n, live=live) for n in live):
             rid = _row_id(row)
             out.append(
