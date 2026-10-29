@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import sys
+import tempfile
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 import airc_console as ac
+import airc_console_service as svc
 from airc_auth_helpers import ops_auth
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 
@@ -62,6 +66,118 @@ def test_multibyte_output_stays_within_irc_byte_budget():
     assert all(len(line.encode("utf-8")) <= ac.IRC_SAFE_PAYLOAD for line in lines)
     assert "".join(line.split(" ", 3)[-1] for line in lines[:-1]) == outcome.stdout
     assert lines[-1] == "DONE id=aaaa1111 exit=0"
+
+
+def test_capture_snapshot_does_not_reposition_inherited_writer():
+    with tempfile.NamedTemporaryFile() as capture:
+        capture.write(b"first")
+        capture.flush()
+        assert ac._read_shell_capture(capture.name) == b"first"
+        capture.write(b"second")
+        capture.flush()
+        assert ac._read_shell_capture(capture.name) == b"firstsecond"
+
+
+def test_shutdown_between_dequeue_and_execution_cannot_launch_shell(monkeypatch):
+    seen = []
+    runner = ac.ShellJobRunner(on_reply=lambda n, line: seen.append(line))
+    dequeued = threading.Event()
+    proceed = threading.Event()
+    run_one = runner._run_one
+
+    def pause(key, item):
+        dequeued.set()
+        assert proceed.wait(2)
+        run_one(key, item)
+
+    monkeypatch.setattr(runner, "_run_one", pause)
+    monkeypatch.setattr(
+        ac.subprocess, "Popen",
+        lambda *args, **kw: pytest.fail("abandoned shell must not launch"),
+    )
+    runner.start("op", "id=aaaa1111 echo never")
+    assert dequeued.wait(2)
+    with runner._lock:
+        item = runner._inflight_cmd["op"]
+        worker = runner._threads["op"]
+    runner.abandon_open_jobs()
+    proceed.set()
+    worker.join(2)
+    assert item.cancelled.is_set()
+    assert not worker.is_alive()
+    assert seen == []  # Shutdown owns the terminal reply after abandonment.
+
+
+def test_shutdown_owns_single_done_even_when_worker_finishes_during_flush(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTIC_IRC_PASSWORD", "test-only")
+    args = svc.build_arg_parser().parse_args(["--machine", "tm", "--home", str(tmp_path)])
+    service = svc.AircConsoleService(args)
+    service.sock = object()
+    sent = []
+    service.send_privmsg = lambda nick, text, **kw: sent.append(text)
+    started = threading.Event()
+
+    def run(req, **kw):
+        started.set()
+        assert req.cancel_event.wait(2)
+        return ac.ShellOutcome(req.job_id, 130, "", "cancelled")
+
+    monkeypatch.setattr(ac, "run_shell_request", run)
+    service.shell_runner.start("op", "id=aaaa1111 echo never")
+    assert started.wait(2)
+    with service.shell_runner._lock:
+        worker = service.shell_runner._threads["op"]
+    abandon = service.shell_runner.abandon_open_jobs
+
+    def abandon_and_finish():
+        ids = abandon()
+        worker.join(2)
+        assert not worker.is_alive()
+        return ids
+
+    monkeypatch.setattr(service.shell_runner, "abandon_open_jobs", abandon_and_finish)
+    service.flush_stop_dones()
+    assert [line for line in sent if line.startswith("DONE")] == ["DONE id=aaaa1111 exit=1"]
+    assert len([line for line in sent if line.startswith("err")]) == 1
+
+
+def test_windows_cleanup_is_pid_scoped_and_bounded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ac, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(ac.subprocess, "run", lambda args, **kw: calls.append((args, kw)))
+    proc = SimpleNamespace(
+        pid=12345, kill=lambda: calls.append("kill"),
+        wait=lambda **kw: calls.append(("wait", kw)),
+    )
+    ac._stop_shell_process(proc)
+    args, kwargs = calls[0]
+    assert args == ["taskkill.exe", "/PID", "12345", "/T", "/F"]
+    assert kwargs["timeout"] == 5
+    assert calls[-1] == ("wait", {"timeout": 5})
+
+
+def test_generated_shell_id_is_stable_and_cancellable(monkeypatch):
+    started = threading.Event()
+    seen = []
+
+    def run(req, **kw):
+        started.set()
+        assert req.cancel_event.wait(2)
+        return ac.ShellOutcome(req.job_id, 130, "", "cancelled")
+
+    monkeypatch.setattr(ac, "run_shell_request", run)
+    runner = ac.ShellJobRunner(on_reply=lambda n, line: seen.append(line))
+    runner.start("op", "echo generated-id")
+    assert started.wait(2)
+    ids = runner.open_job_ids()
+    assert ids == runner.open_job_ids()
+    nick, jid = ids[0]
+    with runner._lock:
+        worker = runner._threads[nick]
+    assert runner.cancel(nick, jid)
+    worker.join(2)
+    assert f"DONE id={jid} exit=130" in seen
+    assert runner.open_job_ids() == []
 
 
 def test_timeout_returns_partial_output_and_queue_advances(monkeypatch):

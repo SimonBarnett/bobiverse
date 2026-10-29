@@ -1831,6 +1831,14 @@ def _stop_shell_process(proc: subprocess.Popen) -> None:
         pass
 
 
+def _read_shell_capture(path: str) -> bytes:
+    # An inherited writer shares its file position with the parent. Open a
+    # separate reader; O_TEMPORARY shares delete access on Windows.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_TEMPORARY", 0)
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        return stream.read(SHELL_OUTPUT_MAX_BYTES + 1)
+
+
 def run_shell_request(
     req: ShellRequest,
     *,
@@ -1848,7 +1856,7 @@ def run_shell_request(
         return ShellOutcome(req.job_id, 130, "", "cancelled")
     # FR #5211: Windows communicate() can wait forever after timeout when a
     # descendant inherits a capture pipe. Files let us return without pipe EOF.
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    with tempfile.NamedTemporaryFile() as stdout, tempfile.NamedTemporaryFile() as stderr:
         proc = subprocess.Popen(
             args, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, cwd=cwd,
         )
@@ -1867,10 +1875,8 @@ def run_shell_request(
             if proc.poll() is None:
                 _stop_shell_process(proc)
         exit_code = 130 if reason == "cancelled" else 124 if reason else int(proc.returncode)
-        stdout.seek(0)
-        stderr.seek(0)
-        out, out_clip = _clip_bytes(stdout.read(SHELL_OUTPUT_MAX_BYTES + 1))
-        err, err_clip = _clip_bytes(stderr.read(SHELL_OUTPUT_MAX_BYTES + 1))
+        out, out_clip = _clip_bytes(_read_shell_capture(stdout.name))
+        err, err_clip = _clip_bytes(_read_shell_capture(stderr.name))
     # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect — plain-text it.
     err = plain_text_powershell_stderr(err)
     if out_clip:
@@ -2103,6 +2109,9 @@ class _ShellPending:
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     done: threading.Event = field(default_factory=threading.Event)
     cancelled: threading.Event = field(default_factory=threading.Event)
+    reply_lock: threading.RLock = field(default_factory=threading.RLock)
+    abandoned: bool = False
+    terminal_sent: bool = False
 
 
 class ShellJobRunner:
@@ -2211,46 +2220,49 @@ class ShellJobRunner:
                 item = q.popleft()
                 self._inflight_cmd[key] = item
             try:
-                self._run_one(key, item.command)
+                self._run_one(key, item)
             except Exception:
                 # A failing reply callback must not strand the remaining queue.
                 pass
             finally:
                 item.done.set()
                 with self._lock:
-                    if self._inflight_cmd.get(key) is item:
+                    idle = self._inflight_cmd.get(key) is item
+                    if idle:
                         self._inflight_cmd.pop(key, None)
-                if self.on_idle:
+                if idle and self.on_idle:
                     try:
                         self.on_idle(key)
                     except Exception:
                         pass
 
-    def _run_one(self, key: str, command: str) -> None:
+    def _run_one(self, key: str, item: _ShellPending) -> None:
         jid: str | None = None
         next_seq = 1
-        with self._lock:
-            item = self._inflight_cmd.get(key)
         try:
             try:
-                req = parse_shell_request(command)
+                req = parse_shell_request(item.command)
             except ShellRequestError as exc:
-                jid = item.job_id if item is not None else uuid.uuid4().hex[:8]
-                self._emit(key, f"err id={jid} seq=1 {exc}")
-                self._emit(key, f"DONE id={jid} exit=2")
+                jid = item.job_id
+                self._reply_job(key, f"err id={jid} seq=1 {exc}", item)
+                self._reply_job(key, f"DONE id={jid} exit=2", item)
                 return
-            if item is not None:
-                req.job_id = item.job_id
-                req.cancel_event = item.cancelled
+            req.job_id = item.job_id
+            req.cancel_event = item.cancelled
             jid = req.job_id
-            if self.on_inflight:
-                try:
-                    self.on_inflight(key, jid)
-                except Exception:
-                    pass
+            with item.reply_lock:
+                if item.abandoned:
+                    return
+                if self.on_inflight:
+                    try:
+                        self.on_inflight(key, jid)
+                    except Exception:
+                        pass
             # FR #4068: batch capture --- first IRC out only after the process exits.
             t0 = time.monotonic()
             outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
+            if item.abandoned:
+                return
             with self._lock:
                 peer = self._dcc_listen.pop(jid, None)
             page = format_shell_replies_ex(
@@ -2280,15 +2292,15 @@ class ShellJobRunner:
                     self._resume.pop((key, jid), None)
             for line in page.lines:
                 if req.cancel_event is not None and req.cancel_event.is_set() and outcome.exit_code != 130:
-                    self._emit(key, f"err id={jid} seq={next_seq} cancelled")
-                    self._emit(key, f"DONE id={jid} exit=130")
+                    self._reply_job(key, f"err id={jid} seq={next_seq} cancelled", item)
+                    self._reply_job(key, f"DONE id={jid} exit=130", item)
                     with self._lock:
                         self._resume.pop((key, jid), None)
                     return
                 match = re.match(r"^(?:out|err) id=\S+ seq=(\d+)", line)
                 if match:
                     next_seq = int(match.group(1)) + 1
-                self._emit(key, line)
+                self._reply_job(key, line, item)
             if self.on_shell_done:
                 try:
                     self.on_shell_done(
@@ -2304,9 +2316,17 @@ class ShellJobRunner:
             # Keep drain alive for queued peers; always emit DONE when we have an id.
             if jid:
                 try:
-                    self._emit(key, f"err id={jid} seq={next_seq} shell runner fault")
+                    self._reply_job(key, f"err id={jid} seq={next_seq} shell runner fault", item)
                 finally:
-                    self._emit(key, f"DONE id={jid} exit=1")
+                    self._reply_job(key, f"DONE id={jid} exit=1", item)
+
+    def _reply_job(self, nick: str, line: str, item: _ShellPending) -> None:
+        with item.reply_lock:
+            if item.abandoned or item.terminal_sent:
+                return
+            self._emit(nick, line)
+            if line.startswith("DONE "):
+                item.terminal_sent = True
 
     def _emit(self, nick: str, line: str) -> None:
         # FR #2551: on_reply may raise ConnectionError after IRC drop; swallow so the
@@ -2395,17 +2415,17 @@ class ShellJobRunner:
 
     def abandon_open_jobs(self) -> list[tuple[str, str]]:
         """Drop pending/in-flight bookkeeping and unblock waiters; return job ids (FR #2640)."""
-        ids = self.open_job_ids()
         with self._lock:
-            pending_all = list(self._pending.items())
-            active = list(self._inflight_cmd.values())
+            items = list(self._inflight_cmd.items())
+            items.extend((key, item) for key, q in self._pending.items() for item in q)
             self._pending.clear()
             self._inflight_cmd.clear()
-        for item in active:
-            item.cancelled.set()
-            item.done.set()
-        for _key, q in pending_all:
-            for item in q:
+        ids: list[tuple[str, str]] = []
+        for key, item in items:
+            with item.reply_lock:
+                item.abandoned = True
+                if not item.terminal_sent:
+                    ids.append((key, item.job_id))
                 item.cancelled.set()
                 item.done.set()
         return ids
