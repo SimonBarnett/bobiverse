@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import copilot_dispatch as cd
+import focus_ignore
 import gitclaim
 
 
@@ -23,6 +24,9 @@ def _row(**extra):
 
 
 def test_http_201_without_task_id_does_not_accept(tmp_path):
+    doc = focus_ignore.empty_focus()
+    doc["repos"] = {REPO: {"priority": 1, "label": "high"}}
+    focus_ignore.save_focus(tmp_path, doc)
     cd.refresh_allowance(
         tmp_path,
         fetch_user=lambda: {

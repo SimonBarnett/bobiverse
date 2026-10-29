@@ -6,6 +6,7 @@ from pathlib import Path
 import bobreport
 import chair_health
 import copilot_dispatch as cd
+import focus_ignore
 import gitclaim
 import shop_listen
 
@@ -23,6 +24,12 @@ def _row(task="FR", num=10, **extra):
     }
     row.update(extra)
     return row
+
+
+def _focus_high(home, repo=REPO):
+    doc = focus_ignore.empty_focus()
+    doc["repos"] = {repo: {"priority": 1, "label": "high"}}
+    focus_ignore.save_focus(home, doc)
 
 
 def test_build_task_body_uses_prompt_not_problem_statement():
@@ -253,6 +260,7 @@ def test_resync_only_on_fallback():
 
 
 def test_dispatch_posts_and_accepts(tmp_path):
+    _focus_high(tmp_path)
     gitclaim.apply_queue_event(
         tmp_path,
         gitclaim.GitClaim(repo=REPO, task="FR", id="#12", event="issues", action="opened", line="x"),
