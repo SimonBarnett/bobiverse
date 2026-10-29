@@ -538,6 +538,8 @@ namespace BobDialogs
         {
             try
             {
+                // FR #5177: commands belong to the previous engine, not its replacement.
+                File.Delete(cmdFile);
                 string wrap = Path.Combine(root, "tools\\_Watch-BobTray-" + machine + ".ps1");
                 string script = File.Exists(wrap) ? wrap : Path.Combine(root, "tools\\Watch-BobTray.ps1");
                 if (!File.Exists(script)) return;
@@ -797,8 +799,9 @@ namespace BobDialogs
             TrayLifecycle.Write("exit", "reason", "Restart", "via", "bob-tray-Restart");
             CloseWindows();
             notify.Visible = false;
-            Command("restart");   // the engine announces the IRC logout and runs Start-BobFleetTray -ForceNew (replaces this exe, restarts ircBob)
-            FinishAfterEngine(6000);
+            Command("restart");   // the engine logs out IRC, then runs Start-BobFleetTray -ForceNew -SkipServiceRestart
+            // FR #5177: allow the 30s outbox drain + 10s IRC shutdown + command poll and bootstrap.
+            FinishAfterEngine(60000);
         }
 
         void FinishAfterEngine(int waitMs)
