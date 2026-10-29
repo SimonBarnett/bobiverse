@@ -6559,7 +6559,12 @@ def free_seat_nicks(home: Path, live: set[str] | None = None) -> set[str]:
 
 def _canon_seat_nick(raw: str) -> str:
     v = str(raw or "").strip()
-    if not v or not bobreport.parse_seat_nick(v):
+    if not v:
+        return ""
+    # FR #5170: Copilot Coding Agent is a virtual seat (not machine-pid).
+    if v.lower() == "copilot":
+        return "copilot"
+    if not bobreport.parse_seat_nick(v):
         return ""
     return canonical_worker_nick(v) or v
 
