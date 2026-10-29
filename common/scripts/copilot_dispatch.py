@@ -506,6 +506,7 @@ def _file_timeout_stall(home: Path, job: dict) -> None:
         }],
         home=home,
         excerpt="Copilot timed out or failed repeatedly; do not create another CCA task.",
+        create=stall_filer.default_create,
     )
 
 
@@ -513,7 +514,9 @@ def _existing_work(job: dict, task_doc: dict, get: Callable[[str], Any]) -> dict
     """Recover work from the task, linked issue PRs, and pushed Copilot refs."""
     repo = str(job.get("repo") or "")
     num = str(job.get("id") or "").lstrip("#")
-    for blob in (task_doc, task_doc.get("result") or {}, *(task_doc.get("sessions") or [])):
+    for blob in (
+        task_doc, task_doc.get("result") or {}, *(task_doc.get("sessions") or []), job,
+    ):
         if not isinstance(blob, dict):
             continue
         pr = blob.get("pull_request") or blob.get("pull_request_url")
@@ -573,11 +576,18 @@ def handle_timeout_or_fail(
     task = str(job.get("task") or "FR").upper()
     ident = str(job.get("id") or "")
     started = float(job.get("started") or 0)
+    queue = gitclaim.load_queue(home)
     accepted = next(
-        (r for r in gitclaim.load_queue(home).get("accepted") or []
+        (r for r in queue.get("accepted") or []
          if _same_job(r, job) and str(r.get("nick") or "").lower() == COPILOT_NICK),
         None,
     )
+    if accepted is None and any(_same_job(r, job) for r in queue.get("unaccepted") or []):
+        status, accepted = shop_listen.accept_job_by_ref(
+            home, nick=COPILOT_NICK, channel="#bobiverse", repo=repo, task=task, ident=ident,
+        )
+        if status not in ("ok", "duplicate"):
+            return {"status": "pending"}
     if accepted is None:
         _update_job(home, job, remove=True)
         return {"status": "finished"}

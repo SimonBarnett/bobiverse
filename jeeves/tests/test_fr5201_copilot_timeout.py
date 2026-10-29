@@ -29,6 +29,7 @@ def chair(tmp_path, monkeypatch):
     digest.mkdir()
     now = [1_800_000_000.0]
     monkeypatch.setattr(cd.time, "time", lambda: now[0])
+    monkeypatch.setattr(stall_filer, "default_create", lambda *_: {"number": 5400})
     monkeypatch.setenv("BOB_DIGEST_HOME", str(digest))
     gitclaim._write_queue(
         gitclaim.queue_path(digest),
@@ -189,6 +190,68 @@ def test_repeated_work_timeout_stalls_without_abandoning_branch(chair, monkeypat
     _no_redispatch(chair)
     assert len(findings) == 1
     assert gitclaim.load_queue(digest)["accepted"]
+
+
+def test_repeated_timeout_attempts_real_stall_creation(chair, monkeypatch):
+    _, digest, _, responses, _ = chair
+    created = []
+    monkeypatch.setattr(
+        stall_filer, "default_create",
+        lambda title, body: created.append((title, body)) or {"number": 5400},
+    )
+    responses["refs"] = [{"ref": "refs/heads/copilot/fr-5201-timeout"}]
+    _advance(chair)
+    _advance(chair)
+    assert len(created) == 1
+    assert "stall:all-gave-up" in created[0][0]
+    assert stall_filer.load_state(digest)["fps"][f"stall:all-gave-up:{REPO}#5201"]["issue"] == 5400
+    _no_redispatch(chair)
+
+
+def test_recovery_revalidates_saved_branch_without_issue_number(chair):
+    _, digest, _, responses, _ = chair
+    responses["task"]["branch_name"] = "copilot/fix-timeout-handling"
+    responses["ref"] = {"object": {"sha": "abc123"}}
+    _advance(chair)
+    responses["task"] = {}
+    _advance(chair)
+    assert gitclaim.load_queue(digest)["accepted"]
+    assert cd._load_jobs(digest)["jobs"][0]["branch"] == "copilot/fix-timeout-handling"
+    _no_redispatch(chair)
+
+
+def test_queue_rebuild_preserves_running_task(chair):
+    _, digest, _, responses, _ = chair
+    gitclaim._write_queue(
+        gitclaim.queue_path(digest),
+        {"v": 1, "unaccepted": [_row()], "accepted": [], "done": []},
+    )
+    responses["refs"] = [{"ref": "refs/heads/copilot/fr-5201-timeout"}]
+    _advance(chair)
+    assert gitclaim.load_queue(digest)["accepted"][0]["nick"] == "copilot"
+    assert cd._load_jobs(digest)["jobs"][0]["task_id"] == "cca-5201"
+    _no_redispatch(chair)
+
+
+@pytest.mark.parametrize("work", ["closed-pr", "other-author", "unpushed-branch", "other-issue"])
+def test_unrelated_or_missing_work_does_not_prevent_giveup(chair, work):
+    _, digest, _, responses, _ = chair
+    if work == "closed-pr":
+        responses["task"]["pull_request_url"] = PR_URL
+        responses["pull"]["state"] = "closed"
+    elif work == "other-author":
+        responses["timeline"] = [{
+            "source": {"issue": {"number": 5300, "state": "open", "pull_request": {"html_url": PR_URL}}},
+        }]
+        responses["pull"].update(user={"login": "someone-else"}, head={"ref": "feature"})
+    elif work == "unpushed-branch":
+        responses["task"]["branch_name"] = "copilot/not-pushed-yet"
+    else:
+        responses["refs"] = [{"ref": "refs/heads/copilot/fr-15201-other"}]
+    _advance(chair)
+    assert gitclaim.load_queue(digest)["accepted"] == []
+    assert gitclaim.row_gave_up_by(gitclaim.load_unaccepted(digest)[0], "copilot")
+    _no_redispatch(chair)
 
 
 def test_recovery_api_failure_does_not_duplicate_work(chair):
