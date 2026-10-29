@@ -10,11 +10,12 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable, Literal
 
 # Limits (IRC-safe / retention)
@@ -34,6 +35,7 @@ VERB_LEVELS: dict[str, VerbLevel] = {
     "PUT": "write",
     "CHUNK": "write",
     "PUTEND": "write",
+    "DCCPUT": "write",
     "RUN": "exec",
     "CANCEL": "exec",
 }
@@ -50,7 +52,7 @@ _SECRET_SUFFIXES = (".password", ".token")
 
 _KV_RE = re.compile(r"(\w+)=([^\s]+)")
 _VERB_RE = re.compile(
-    r"^(?P<verb>STATUS|PUT|CHUNK|PUTEND|RUN|GETCHUNK|GET|JOB|CANCEL)(?:\s+(?P<rest>.*))?$",
+    r"^(?P<verb>STATUS|PUT|CHUNK|PUTEND|DCCPUT|RUN|GETCHUNK|GET|JOB|CANCEL)(?:\s+(?P<rest>.*))?$",
     re.IGNORECASE,
 )
 # FR #2570: optional leading id=<8 hex> before the verb (same pin as FR #75 shell).
@@ -137,13 +139,19 @@ def resolve_sandbox_path(drop_root: Path, raw_path: str) -> Path:
     """Resolve ``raw_path`` under drop_root; reject traversal / secrets / escape."""
     if not raw_path or not raw_path.strip():
         raise JobProtocolError("bad_path", "empty path")
-    p = raw_path.strip().replace("/", "\\")
-    if _is_secret_name(Path(p).name):
+    raw = raw_path.strip()
+    win_path = PureWindowsPath(raw)
+    if ".." in win_path.parts:
+        raise JobProtocolError("traversal", "path traversal rejected")
+    if _is_secret_name(win_path.name):
         raise JobProtocolError("secret_path", "refusing secret file name")
-    # Disallow device paths / UNC
-    if p.startswith("\\\\") or (len(p) >= 3 and p[1] == ":" and p[0].isalpha()):
-        # Absolute — only allow if under drop_root
-        cand = Path(p)
+    # Disallow device paths / UNC, including their POSIX-looking spelling.
+    if raw.startswith(("\\\\", "//")):
+        raise JobProtocolError("sandbox", "UNC/device paths are not allowed")
+    if win_path.drive and os.name != "nt":
+        raise JobProtocolError("sandbox", "Windows absolute path is not valid here")
+    if win_path.is_absolute() or win_path.drive:
+        cand = Path(raw)
         try:
             resolved = cand.resolve()
             root = drop_root.resolve()
@@ -154,9 +162,8 @@ def resolve_sandbox_path(drop_root: Path, raw_path: str) -> Path:
         if _is_secret_name(resolved.name):
             raise JobProtocolError("secret_path", "refusing secret file name")
         return resolved
-    if ".." in Path(p).parts:
-        raise JobProtocolError("traversal", "path traversal rejected")
-    cand = (drop_root / p).resolve()
+    relative = raw.replace("\\", os.sep).replace("/", os.sep)
+    cand = (drop_root / relative).resolve()
     root = drop_root.resolve()
     if root != cand and root not in cand.parents:
         raise JobProtocolError("sandbox", "path escapes sandbox")
@@ -238,6 +245,26 @@ class JobStore:
 
     def _payload_path(self, job_id: str) -> Path:
         return self._job_dir(job_id) / "payload.bin"
+
+    @staticmethod
+    def _write_atomic(dest: Path, data: bytes) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp", delete=False
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                tmp.write(data)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, dest)
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def _save(self, rec: JobRecord) -> None:
         d = self._job_dir(rec.id)
@@ -335,6 +362,89 @@ class JobStore:
             self._save(rec)
         return [f"ok id={jid} put path={dest.name} bytes={nbytes}"]
 
+    def handle_dcc_put(self, nick: str, kv: dict[str, str]) -> list[str]:
+        """Receive a DCC upload, verify it, then atomically commit under drop_root."""
+        jid = (kv.get("id") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{8}", jid):
+            raise JobProtocolError("bad_frame", "DCCPUT requires an 8-hex id", jid)
+        path = kv.get("path") or ""
+        try:
+            nbytes = int(kv.get("bytes") or "-1")
+            port = int(kv.get("port") or "0")
+        except ValueError as exc:
+            raise JobProtocolError("bad_frame", "bytes or port not int", jid) from exc
+        sha = (kv.get("sha256") or "").lower()
+        token = (kv.get("token") or "").lower()
+        host = (kv.get("host") or "").strip()
+        tls_raw = (kv.get("tls") or "1").strip()
+        relay = (kv.get("relay") or "").strip() or None
+        if nbytes < 0 or nbytes > MAX_PUT_BYTES:
+            raise JobProtocolError("size", f"bytes out of range 0..{MAX_PUT_BYTES}", jid)
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise JobProtocolError("bad_frame", "sha256 must be 64 hex", jid)
+        if not re.fullmatch(r"[0-9a-f]{16,64}", token):
+            raise JobProtocolError("bad_frame", "token must be 16..64 hex", jid)
+        if tls_raw not in {"0", "1"}:
+            raise JobProtocolError("bad_frame", "tls must be 0 or 1", jid)
+        if not host or any(c.isspace() for c in host) or not (1 <= port <= 65535):
+            raise JobProtocolError("bad_frame", "invalid DCC endpoint", jid)
+        dest = resolve_sandbox_path(self.drop_root, path)
+        with self._lock:
+            prior = self._meta.get(jid)
+            owner = nick.strip().lower()
+            if prior and prior.owner and prior.owner != owner:
+                raise JobProtocolError("owner", "DCCPUT owner mismatch", jid)
+            rec = JobRecord(
+                id=jid,
+                state="receiving",
+                created_ts=time.time(),
+                updated_ts=time.time(),
+                path=str(dest),
+                bytes=nbytes,
+                sha256=sha,
+                owner=owner,
+            )
+            self._save(rec)
+
+        try:
+            import airc_dcc_bulk as dcc
+
+            offer = dcc.DccListenOffer(
+                job_id=jid,
+                host=host,
+                port=port,
+                token=token,
+                tls=(tls_raw == "1"),
+                relay=relay,
+            )
+            body, digest = dcc.receive_offer_payload(offer, timeout_s=10.0)
+            if len(body) != nbytes:
+                raise JobProtocolError("size", "DCC bytes != declared bytes", jid)
+            if digest != sha or hashlib.sha256(body).hexdigest() != sha:
+                raise JobProtocolError("checksum", "DCC sha256 mismatch", jid)
+            self._write_atomic(dest, body)
+            self._write_atomic(self._payload_path(jid), body)
+            rec.state = "ready"
+            rec.bytes = len(body)
+            rec.sha256 = digest
+            with self._lock:
+                self._save(rec)
+            return [
+                f"DONE id={jid} exit=0 bytes={len(body)} sha256={digest} via=dcc"
+            ]
+        except JobProtocolError as exc:
+            with self._lock:
+                rec.state = "failed"
+                rec.error = exc.code
+                self._save(rec)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                rec.state = "failed"
+                rec.error = "dcc transfer failed"
+                self._save(rec)
+            raise JobProtocolError("dcc", "DCC transfer failed", jid) from exc
+
     def handle_chunk(self, nick: str, kv: dict[str, str]) -> list[str]:
         import base64
 
@@ -408,15 +518,18 @@ class JobStore:
                 raise JobProtocolError("size", "assembled size != declared bytes", jid)
             dest = Path(rec.path)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(blob)
-            self._payload_path(jid).write_bytes(blob)
+            self._write_atomic(dest, blob)
+            self._write_atomic(self._payload_path(jid), blob)
             rec.state = "ready"
             rec.bytes = len(blob)
             rec.sha256 = digest
             rec.seqs_expected = seqs
             self._chunks.pop(jid, None)
             self._save(rec)
-        return [f"ok id={jid} putend bytes={len(blob)} sha256={digest}"]
+        return [
+            f"ok id={jid} putend bytes={len(blob)} sha256={digest}",
+            f"DONE id={jid} exit=0 bytes={len(blob)} sha256={digest} via=irc",
+        ]
 
     def handle_get(self, kv: dict[str, str]) -> list[str]:
         if (kv.get("fetch") or "").lower() == "chunk":
@@ -621,6 +734,8 @@ class JobProtocol:
                 return lines
             if verb == "PUT":
                 return self.store.handle_put(nick, kv)
+            if verb == "DCCPUT":
+                return self.store.handle_dcc_put(nick, kv)
             if verb == "CHUNK":
                 return self.store.handle_chunk(nick, kv)
             if verb == "PUTEND":
@@ -641,7 +756,10 @@ class JobProtocol:
             raise JobProtocolError("bad_frame", f"unknown verb {verb}")
         except JobProtocolError as exc:
             jid = exc.job_id or kv.get("id") or "-"
-            return [f"err id={jid} code={exc.code} msg={exc.message}"]
+            lines = [f"err id={jid} code={exc.code} msg={exc.message}"]
+            if verb.upper() == "DCCPUT":
+                lines.append(f"DONE id={jid} exit=1 via=dcc reason=dcc-failed")
+            return lines
 
     def handle_async(self, nick: str, verb: str, kv: dict[str, str]) -> None:
         """Handle verb and emit replies (RUN may background)."""
@@ -649,6 +767,17 @@ class JobProtocol:
             lines = self.handle(nick, verb, kv)
             for ln in lines:
                 self._emit(nick, ln)
+            return
+        if verb == "DCCPUT":
+            def dcc_worker() -> None:
+                for ln in self.handle(nick, verb, kv):
+                    self._emit(nick, ln)
+
+            threading.Thread(
+                target=dcc_worker,
+                name=f"airc-dccput-{kv.get('id', 'unknown')}",
+                daemon=True,
+            ).start()
             return
         lines = self.handle(nick, verb, kv)
         for ln in lines:
