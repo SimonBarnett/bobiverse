@@ -133,7 +133,12 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
                     "id": ALL_GAVE_UP_ID,
                     "key": rid,
                     "title": f"stall:all-gave-up:{rid}",
-                    "evidence": {"live": sorted(live), "row": rid},
+                    "evidence": {
+                        "live": sorted(live),
+                        "row": rid,
+                        "giveup_seats": sorted(gitclaim.giveup_seat_set(row)),
+                        "needs_human": gitclaim.row_needs_human(row),
+                    },
                 }
             )
     return out
