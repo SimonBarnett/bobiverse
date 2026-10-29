@@ -3148,6 +3148,15 @@ def _public_queue(home: Path) -> dict:
     }
 
 
+def _digest_copilot_pool(home: Path) -> dict:
+    try:
+        import copilot_dispatch
+
+        return copilot_dispatch.pool_for_digest(home)
+    except Exception:  # noqa: BLE001
+        return {"state": "unknown", "source": "copilot_internal/user"}
+
+
 def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
     """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
@@ -3182,6 +3191,7 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "chair_channels": channels,
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
+        "copilot": _digest_copilot_pool(home),
     }
 
 

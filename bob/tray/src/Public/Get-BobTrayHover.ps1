@@ -862,6 +862,39 @@ function Format-BobResetLabel {
     catch { return $null }
 }
 
+function Format-BobCopilotPoolLine {
+    <#
+    .SYNOPSIS
+      One account-wide Copilot pool line for TipForm (FR #5172). Tray never calls GitHub.
+    #>
+    param($Pool)
+    if (-not $Pool) { return 'Copilot  unknown' }
+    $state = [string]$Pool.state
+    if ($state -eq 'unknown') { return 'Copilot  unknown' }
+    if ($state -eq 'exhausted') { return 'Copilot  exhausted' }
+    $used = $Pool.used
+    $reset = [string]$Pool.reset_at
+    $resetBit = ''
+    if ($reset) {
+        try {
+            $lab = Format-BobResetLabel -PeriodEnd $reset
+            if ($lab) { $resetBit = ('  reset {0}' -f $lab) }
+        } catch { }
+    }
+    $unlimited = $false
+    try { if ($Pool.unlimited) { $unlimited = [bool]$Pool.unlimited } } catch { }
+    if ($unlimited) {
+        $n = 0
+        try { if ($null -ne $used) { $n = [int]$used } } catch { }
+        return ('Copilot  unlimited, {0} used{1}' -f $n, $resetBit)
+    }
+    $rem = $Pool.remaining
+    if ($null -ne $rem -and [string]$rem -ne '') {
+        return ('Copilot  {0} remaining{1}' -f $rem, $resetBit)
+    }
+    return 'Copilot  unknown'
+}
+
 function Test-BobPeriodExpired {
     # True when period_end is known and already past: the usage figure that goes with it is stale.
     param($PeriodEnd, $Now = $null)
@@ -2654,6 +2687,8 @@ function Get-BobTrayHover {
         if ($ghPosting.issue_posting_ready) { $ghLine = 'GitHub issue post: ready' }
         else { $ghLine = 'GitHub issue post: not ready' }
     }
+    $copilotLine = Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
+    if ($copilotLine) { $jobLines = @(('  {0}' -f $copilotLine)) + $jobLines }
     $jobsText = (($poolLines + $jobLines) -join "`n")
     if ($ghLine) { $jobsText = $jobsText + "`n" + $ghLine }
 
@@ -2700,6 +2735,8 @@ function Get-BobTrayHover {
         account_period_end = $(if ($cursorWeek -and $cursorWeek.period_end) { [string]$cursorWeek.period_end } else { $null })
         account_reset_label = $(if ($cursorWeek -and $cursorWeek.period_end) { Format-BobResetLabel -PeriodEnd $cursorWeek.period_end -FetchedAt $cursorWeek.fetched_at } else { $null })
         gh_posting          = $ghPosting
+        copilot_pool        = $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null })
+        copilot_line        = $(Format-BobCopilotPoolLine -Pool $(if ($reportDigest -and $reportDigest.copilot) { $reportDigest.copilot } else { $null }))
         chair_channels      = $(
             if ($reportDigest -and $reportDigest.chair_channels) {
                 @($reportDigest.chair_channels | ForEach-Object { [string]$_ })
