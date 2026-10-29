@@ -610,6 +610,8 @@ class Client:
             self.channels = [chan]
         self.chan = self.channels[0]
         self._pending_joins: set[str] = {c.lower() for c in self.channels}
+        self._console_presence_synced: set[str] = set()
+        self._connected_console_nicks: tuple[str, ...] | None = None
         self._last_call_channel: str | None = None
         if args.home:
             os.environ["BOB_HOME"] = str(Path(args.home).expanduser())
@@ -1076,6 +1078,15 @@ class Client:
         self._op_try_at = {}
         self._cs_list_status = "unknown"
         self._cs_collector = None
+        self._console_presence_synced.clear()
+        self._connected_console_nicks = None
+        if getattr(self.args, "chair", False):
+            try:
+                bobreport.set_connected_console_nicks(
+                    self._digest_home(), [], ready=False
+                )
+            except Exception as exc:  # noqa: BLE001 - never fail reconnect on digest update
+                info(f"WARN console-presence reset error {type(exc).__name__}")
         eng = getattr(self, "_privs_engine", None)
         if eng is not None:
             eng.reset()
@@ -1188,12 +1199,42 @@ class Client:
         except Exception as exc:  # never kill the reader over the worker list
             info(f"WARN workers reconcile error {type(exc).__name__}")
 
+    def _publish_connected_console_nicks(self) -> None:
+        channels = {str(chan).lower() for chan in self.channels}
+        if not channels or not channels.issubset(self._console_presence_synced):
+            return
+        state = self._privs().state
+        nicks = {
+            str(entry.get("nick") or nick)
+            for chan in channels
+            for nick, entry in (state.members.get(chan) or {}).items()
+            if str(entry.get("nick") or nick).lower().endswith("_console")
+        }
+        snapshot = tuple(sorted({nick.lower() for nick in nicks}))
+        if snapshot == self._connected_console_nicks:
+            return
+        bobreport.set_connected_console_nicks(self._digest_home(), snapshot)
+        self._connected_console_nicks = snapshot
+
     def _chair_wire(self, cmd: str, parts: list, trailing: str, prefix: str, tags: dict) -> None:
         """Chair: feed membership/mode/account events to the privilege engine and the worker list."""
         if not getattr(self.args, "chair", False):
             return
         try:
             self._privs().on_line(cmd, parts, trailing, prefix, tags)
+            if cmd == "366":
+                chan = next(
+                    (
+                        str(part).lower()
+                        for part in parts[2:4]
+                        if str(part).startswith("#")
+                    ),
+                    "",
+                )
+                if chan in {str(item).lower() for item in self.channels}:
+                    self._console_presence_synced.add(chan)
+            if cmd in ("366", "JOIN", "PART", "KICK", "QUIT", "NICK"):
+                self._publish_connected_console_nicks()
             who = chan_privs.clean_nick(prefix.split("!", 1)[0]) if prefix else ""
             if not who or (who.lower() in self._mine_nicks() and cmd != "KICK"):
                 return        # own PART/QUIT/NICK; but a KICK *by* Jeeves still removes the kicked worker

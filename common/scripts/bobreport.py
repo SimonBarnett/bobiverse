@@ -714,6 +714,9 @@ def empty_digest() -> dict:
         "briefer": "",
         "machines": {},
         "events": [],
+        "connected_console_nicks": [],
+        "connected_console_nicks_updated_at": "",
+        "connected_console_nicks_ready": False,
     }
 
 
@@ -991,6 +994,15 @@ def _ensure_seats(doc: dict, home: Path | None = None) -> dict:
     doc.setdefault("events", [])
     if not isinstance(doc["events"], list):
         doc["events"] = []
+    doc["connected_console_nicks"] = _coerce_console_nicks(
+        doc.get("connected_console_nicks")
+    )
+    doc["connected_console_nicks_updated_at"] = str(
+        doc.get("connected_console_nicks_updated_at") or ""
+    )
+    doc["connected_console_nicks_ready"] = (
+        doc.get("connected_console_nicks_ready") is True
+    )
     pools = doc.get("cursor_pools")
     if pools is not None and not isinstance(pools, list):
         doc["cursor_pools"] = []
@@ -1428,6 +1440,36 @@ def _digest_locked(fn):
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _coerce_console_nicks(raw: object) -> list[str]:
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in raw:
+        nick = str(value or "").strip()
+        nick = nick.lower()
+        mid = nick[:-8] if nick.endswith("_console") else ""
+        if not mid or not normalize_machine_id(mid) or nick in seen:
+            continue
+        seen.add(nick)
+        out.append(nick)
+    return sorted(out, key=str.lower)
+
+
+@_digest_locked
+def set_connected_console_nicks(
+    home: Path, nicks: object, *, ready: bool = True
+) -> None:
+    """Publish the chair's synchronized, live *_console channel membership snapshot."""
+    doc = load_digest(home)
+    doc["connected_console_nicks"] = (
+        _coerce_console_nicks(nicks) if ready else []
+    )
+    doc["connected_console_nicks_updated_at"] = _utc_now_iso() if ready else ""
+    doc["connected_console_nicks_ready"] = bool(ready)
+    save_digest(home, doc)
 
 
 def _note_event(doc: dict, kind: str, **fields: object) -> None:
@@ -3189,6 +3231,9 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "machines": exported,
         "roster_machine_ids": sorted(roster),
         "chair_channels": channels,
+        "connected_console_nicks": doc["connected_console_nicks"],
+        "connected_console_nicks_updated_at": doc["connected_console_nicks_updated_at"],
+        "connected_console_nicks_ready": doc["connected_console_nicks_ready"],
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home),

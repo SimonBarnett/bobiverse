@@ -20,6 +20,8 @@ Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to
 | GET | `/bob/v1/hours/export?user=…&format=csv\|json` | Export entries |
 | GET | `/health` | Local BobCallback liveness (FR #1136): `ok`, `lock_age_s`, `last_digest_write`; **not** published on the IIS front-door |
 
+The public report includes `connected_console_nicks`, the sorted list of live `*_console` nicks observed in Jeeves-joined channels. `connected_console_nicks_ready` remains false until NAMES sync completes for every joined channel, and `connected_console_nicks_updated_at` is an ISO-UTC timestamp for the latest snapshot. These fields contain nicknames only and require no credentials to read.
+
 Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
 ### FR #5170: webhook-first queue; Copilot virtual seat
