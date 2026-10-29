@@ -89,7 +89,7 @@ def test_join_commands_includes_configured_presence_not_control_dupe():
     assert sum(1 for p in parts if p.lower() == "#walrus") == 1
 
 
-def test_presence_channel_traffic_never_executes():
+def test_bobiverse_channel_traffic_never_executes_on_client():
     members = ac.ChannelMemberMap(channel="#walrus")
     members.apply_names("@simon")
     members.mark_synced()
@@ -104,11 +104,11 @@ def test_presence_channel_traffic_never_executes():
         nick="walrus_console",
         shell_runner=runner,
         channel_commands=True,
-        presence_channels=["#ops"],
+        presence_channels=["#bobiverse"],
     )
     # Presence channel: ignore even from +o
     hr = core.handle_raw(
-        ":simon!u@h PRIVMSG #ops :cmd: echo should-not-run"
+        ":simon!u@h PRIVMSG #bobiverse :cmd: echo should-not-run"
     )
     assert hr is not None
     assert hr.action == "silent_channel"
@@ -126,7 +126,7 @@ def test_presence_channel_traffic_never_executes():
 
 def test_same_irc_channel_helper():
     assert ac.same_irc_channel("#Walrus", "walrus")
-    assert not ac.same_irc_channel("#ops", "#walrus")
+    assert not ac.same_irc_channel("#bobiverse", "#walrus")
 
 
 def test_docs_and_install_mention_presence_channels():
@@ -134,8 +134,8 @@ def test_docs_and_install_mention_presence_channels():
     assert "presence_channels" in install
     assert "5190" in install or "FR #5190" in install
     post = POST.read_text(encoding="utf-8")
-    assert "presence_channels" in post or "#bobiverse" in post
-    assert "5190" in post
+    assert "presence_channels" in post
+    assert "FR #5190 supersedes #3774" in post
     skill = SKILL.read_text(encoding="utf-8")
     assert "presence" in skill.lower() or "3774" in skill
     svc = SERVICE.read_text(encoding="utf-8")
