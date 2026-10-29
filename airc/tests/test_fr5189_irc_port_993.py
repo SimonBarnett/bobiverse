@@ -20,7 +20,15 @@ class FakeTLSContext:
 
 
 def stub_tls(monkeypatch):
-    monkeypatch.setattr(svc.ssl, "create_default_context", FakeTLSContext)
+    contexts = []
+
+    def create_context():
+        context = FakeTLSContext()
+        contexts.append(context)
+        return context
+
+    monkeypatch.setattr(svc.ssl, "create_default_context", create_context)
+    return contexts
 
 
 def test_argparse_default_port_is_993(monkeypatch):
@@ -69,13 +77,14 @@ def test_connect_falls_back_to_6697_after_timeout(monkeypatch):
         return sock
 
     monkeypatch.setattr(svc.socket, "create_connection", fake_create_connection)
-    stub_tls(monkeypatch)
+    tls_contexts = stub_tls(monkeypatch)
     console = svc.AircConsoleService.__new__(svc.AircConsoleService)
     console.args = argparse.Namespace(host="irc.example.test", port=993, tls=True, tls_insecure=False)
     console.sock = None
     console.connect()
 
     assert calls == [993, 6697]
+    assert tls_contexts[0].minimum_version == svc.ssl.TLSVersion.TLSv1_2
     assert console.args.port == 6697
     assert console.sock is opened[0]
     console.sock.close()
