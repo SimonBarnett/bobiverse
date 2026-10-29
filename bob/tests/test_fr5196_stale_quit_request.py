@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -58,3 +59,24 @@ def test_consumer_without_cutoff_keeps_existing_contract(tmp_path):
     assert agent_control.peek_quit_request(tmp_path) == "stop"
     assert agent_control.consume_quit_request(tmp_path) == "stop"
     assert agent_control.consume_quit_request(tmp_path) is None
+
+
+def test_install_and_upgrade_set_appdirectory_after_service_registration():
+    installer = Path(__file__).resolve().parents[1] / "scripts" / "Install-Bob.ps1"
+    text = installer.read_text(encoding="utf-8-sig")
+    remove = text.index("Remove-BobiverseService -Nssm $Nssm -Name $ServiceName")
+    install = text.index(
+        "[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs @('install',"
+    )
+    directory = (
+        "[void](Invoke-BobiverseNssmChecked -Exe $Nssm -NssmArgs "
+        "@('set', $ServiceName, 'AppDirectory', (Join-Path $InstallRoot 'scripts')))"
+    )
+    # Upgrade removes/re-registers the service; the same unconditional settings
+    # must run for clean installs and upgrades, before the service starts.
+    registration = text[install:text.index(directory)]
+    assert remove < install < text.index(directory) < text.index("Start-Service $ServiceName")
+    assert all(
+        line.startswith("[void](Invoke-BobiverseNssmChecked ")
+        for line in registration.splitlines()
+    )
