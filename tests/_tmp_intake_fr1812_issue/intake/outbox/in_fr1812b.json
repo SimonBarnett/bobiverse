@@ -1,0 +1,20 @@
+{
+  "norm": {
+    "kind": "harvest",
+    "repo": "SimonBarnett/bobiverse",
+    "title": "harvest: ear restart loop",
+    "body": "Session summary:\near died\n\nLessons:\n- pass --host\n",
+    "files": [],
+    "source": {
+      "machine": "flamingo",
+      "agent": "Invoke-BobiverseHarvest",
+      "skill_book": "harvest",
+      "version": ""
+    },
+    "idempotency_key": "hv-fr1812-issue1",
+    "contact": "",
+    "contact_public": false
+  },
+  "intake_id": "in_fr1812b",
+  "quarantine": false
+}
