@@ -3,6 +3,12 @@
 Service **Airc**, tree `<ai root>\airc`, nick **`{MachineId}_console`**.
 Canonical **MachineId** is the lowercase sanitized fleet id (`BOB_MACHINE_ID` / `-MachineId`), not a raw Windows `COMPUTERNAME` unless they match.
 
+## IRC connection
+
+Airc uses TLS on port **993** by default. Ergo also listens for TLS on **6697**.
+Set `AIRC_IRC_PORT`, Python `--port`, or launcher `-Port` to choose the preferred
+port; after a timeout or refusal, Airc tries the other TLS listener.
+
 ## ConsoleHome (identity)
 
 | Account | Preferred ConsoleHome |

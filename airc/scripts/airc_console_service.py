@@ -602,18 +602,33 @@ class AircConsoleService:
         self._registered = False
         self._force_reconnect = False
         self._awaiting_pong = False
-        raw = socket.create_connection((self.args.host, int(self.args.port)), timeout=30)
-        if self.args.tls:
-            ctx = ssl.create_default_context()
-            if self.args.tls_insecure:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-            self.sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
-        else:
-            self.sock = raw
-        self.sock.settimeout(1.0)
-        self._last_recv = time.monotonic()
-        info(f"INFO connected {self.args.host}:{self.args.port} tls={self.args.tls}")
+        preferred = int(self.args.port)
+        ports = resolve_irc_ports(preferred, tls=self.args.tls)
+        for index, port in enumerate(ports):
+            candidate = None
+            try:
+                candidate = socket.create_connection((self.args.host, port), timeout=30)
+                if self.args.tls:
+                    ctx = ssl.create_default_context()
+                    if self.args.tls_insecure:
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                    candidate = ctx.wrap_socket(candidate, server_hostname=self.args.host)
+                candidate.settimeout(1.0)
+                self.sock = candidate
+                self.args.port = port
+                self._last_recv = time.monotonic()
+                info(f"INFO connected {self.args.host}:{port} tls={self.args.tls}")
+                return
+            except OSError as exc:
+                if candidate is not None:
+                    try:
+                        candidate.close()
+                    except OSError:
+                        pass
+                if index + 1 >= len(ports) or not is_irc_port_fallback_error(exc):
+                    raise
+                info(f"INFO connect {self.args.host}:{port} failed ({exc}); trying {ports[index + 1]}")
 
     def send(self, line: str, *, flood: bool = True) -> None:
         if not self.sock:
@@ -1779,10 +1794,31 @@ class AircConsoleService:
         return 0
 
 
+DEFAULT_IRC_PORT = 993
+IRC_TLS_PORTS = (993, 6697)
+
+
+def resolve_irc_ports(preferred: int, *, tls: bool = True) -> tuple[int, ...]:
+    """Return the preferred TLS port followed by its alternate, if applicable."""
+    preferred = int(preferred)
+    if not tls or preferred not in IRC_TLS_PORTS:
+        return (preferred,)
+    return (preferred,) + tuple(port for port in IRC_TLS_PORTS if port != preferred)
+
+
+def is_irc_port_fallback_error(exc: OSError) -> bool:
+    """Only try the alternate TLS listener for connection timeouts or refusals."""
+    return (
+        isinstance(exc, TimeoutError)
+        or exc.errno in (errno.ETIMEDOUT, errno.ECONNREFUSED)
+        or getattr(exc, "winerror", None) in (10060, 10061)
+    )
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="airc console Windows service host (FR #253)")
     p.add_argument("--host", default=os.environ.get("AIRC_IRC_HOST", "irc.ntsa.uk"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("AIRC_IRC_PORT", "6697")))
+    p.add_argument("--port", type=int, default=int(os.environ.get("AIRC_IRC_PORT", str(DEFAULT_IRC_PORT))))
     p.add_argument("--tls", action="store_true", default=True)
     p.add_argument("--no-tls", action="store_false", dest="tls")
     p.add_argument("--tls-insecure", action="store_true")

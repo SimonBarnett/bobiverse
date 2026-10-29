@@ -8,6 +8,10 @@ Fleet IRC product: single-file MSIs for **Jeeves** (Ergo + chair), **Bob** ears,
 | `bob-*.msi` | `ircBob` (+ tray / Watch-AgentHealth) | `Bob-{machinename}` | `<ai root>\bob` |
 | `airc-*.msi` | `Airc` | `{machinename}_console` | `<ai root>\airc` |
 
+Airc connects to Ergo over TLS on port **993** by default. Ergo also accepts TLS on
+port **6697**; set `AIRC_IRC_PORT` or pass `--port` / `-Port` to select a port
+explicitly. Airc tries the alternate TLS listener after a connection timeout or refusal.
+
 ## Repository layout
 
 The repo is split per service; each folder holds that service's scripts, skills, agent layer, docs and tests.
