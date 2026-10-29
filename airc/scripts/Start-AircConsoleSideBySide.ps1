@@ -27,7 +27,7 @@ param(
     [string]$ConsoleHome,
     [string]$PasswordFile = '',
     [string]$HostName = 'irc.ntsa.uk',
-    [int]$Port = 6697,
+    [int]$Port = 993,
     [ValidateSet('', 'off', 'operators')]
     [string]$ShellMode = 'operators',
     [ValidateSet('', 'off', 'on')]

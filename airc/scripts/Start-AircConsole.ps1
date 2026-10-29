@@ -16,7 +16,7 @@ param(
     [string]$RepoRoot = '',
     [string]$Python = '',
     [string]$HostName = 'irc.ntsa.uk',
-    [int]$Port = 6697,
+    [int]$Port = 993,
     # Empty/auto -> Python {machine}_console (ChanServ shop) / {machine} lobby.
     [string]$Nick = 'auto',
     # Fleet shop id (ionos/flamingo/...). Prefer BOB_MACHINE_ID over COMPUTERNAME.
