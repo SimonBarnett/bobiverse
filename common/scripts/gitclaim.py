@@ -8770,6 +8770,17 @@ def heal_mrb_reviewer_deadlock(
                 "mrb-reviewer-deadlock",
                 now=now_f,
             )
+            # FR #5220: chair-local recycleseat JSON never reaches a remote tray.
+            # PRIVMSG !recycleseat so that machine's ear queues the recycle.
+            parsed = bobreport.parse_seat_nick(pick)
+            mid = (parsed[0] if parsed else "") or ""
+            if mid:
+                cmd = f"!recycleseat {pick} {mid}"
+                shop = worker_shop_channel(pick) or f"#{mid}"
+                with contextlib.suppress(Exception):
+                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel="#bobiverse")
+                with contextlib.suppress(Exception):
+                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel=shop)
             lines.append(
                 f"mrb-reviewer-deadlock author_only recycleseat={pick} id={rid}"
             )

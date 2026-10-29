@@ -797,6 +797,13 @@ class ChairJobs:
         doc = gitclaim.load_queue(self.digest_home)
         live = gitclaim.live_seat_nicks(self.digest_home)
         idle = gitclaim.free_seat_nicks(self.digest_home, live)
+        healed = []
+        with contextlib.suppress(Exception):
+            healed = gitclaim.heal_mrb_reviewer_deadlock(
+                self.digest_home, idle=idle, live=live, now=self.clock()
+            )
+        if healed:
+            self.log("INFO stall-heal " + "; ".join(healed))
         res = self.last_resync if isinstance(self.last_resync, dict) else {}
         status = res.get("error") or (200 if res.get("ok") else None)
         snap = {
@@ -809,6 +816,7 @@ class ChairJobs:
             "resync_fail_streak": self.resync_fail_streak,
             "last_resync_status": status,
             "last_bored": gitclaim.merge_last_bored(self.home, self.digest_home),
+            "deadlock_healed": bool(healed),
         }
         findings = stall_detectors.detect_all(snap)
         if not findings:
