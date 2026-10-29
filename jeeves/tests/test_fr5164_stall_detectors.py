@@ -82,6 +82,25 @@ def test_all_gave_up_fires_and_healthy_silent():
     assert sd.detect_all_gave_up(healthy) == []
 
 
+def test_all_gave_up_ignores_rows_already_parked_for_human():
+    row = _mrb(
+        "https://github.com/SimonBarnett/a-search/issues/5139",
+        "x",
+        ["flamingo-67876"],
+    )
+    row["task"] = "FR"
+    row["needs_human"] = True
+    snap = {
+        "live": {"flamingo-67876"},
+        "unaccepted": [row],
+    }
+
+    assert sd.detect_all_gave_up(snap) == []
+
+    row["needs_human"] = "true"
+    assert sd.detect_all_gave_up(snap) == []
+
+
 def test_sticky_auto_pin_and_healthy():
     stuck = {
         "unaccepted": [
