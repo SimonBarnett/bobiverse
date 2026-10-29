@@ -24,7 +24,7 @@ Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
 ### FR #5170: webhook-first queue; Copilot virtual seat
 
-Jeeves updates the job queue from `/bob/v1/git` deliveries (`issues`, `pull_request` including synchronize/closed, `pull_request_review`, `check_run`, `workflow_run`). `!resync` / hourly `github-resync` is the fallback (startup, webhook gap, delivery failure, safety interval). Required hook events include `pull_request_review`, `check_suite`, `check_run`, and `workflow_run` (`New-BobGitWebhook.ps1` / `copilot_dispatch.ensure_repo_webhook`). Permission failures file a stall issue (FR #5164). When Copilot allowance remains, Jeeves POSTs `agents/repos/{owner}/{repo}/tasks` with a `prompt` field and announces hand-off/completion as seat nick `copilot`.
+Jeeves updates the job queue from `/bob/v1/git` deliveries (`issues`, `pull_request` including synchronize/closed, `pull_request_review`, `check_run`, `workflow_run`). `!resync` / hourly `github-resync` is the fallback (startup, webhook gap, delivery failure, safety interval). Required hook events include `pull_request_review`, `check_suite`, `check_run`, and `workflow_run` (`New-BobGitWebhook.ps1` / `copilot_dispatch.ensure_repo_webhook`). Permission failures file a stall issue (FR #5164). When Copilot allowance remains, Jeeves POSTs `agents/repos/{owner}/{repo}/tasks` with a `prompt` field and announces hand-off/completion as seat nick `copilot`. FR #5172: allowance is `GET /copilot_internal/user` (5 min cache; `unlimited` or remaining/percent > 0). Chair calls `ensure_repo_webhook` on startup and hourly. Digest `copilot` pool is shown once on TipForm.
 
 ### Digest lock watchdog (FR #1136 / FR #1388)
 

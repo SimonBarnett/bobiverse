@@ -31,6 +31,8 @@ FIRST_MERGE_ON_GREEN_DELAY_S = 15.0
 # FR #5170: Copilot virtual-seat poll + webhook ensure (not a resync).
 COPILOT_TICK_S = 45.0
 FIRST_COPILOT_DELAY_S = 20.0
+WEBHOOK_ENSURE_S = 3600.0
+FIRST_WEBHOOK_ENSURE_DELAY_S = 8.0
 STALL_S = 180.0
 FIRST_STALL_DELAY_S = 90.0
 WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
@@ -442,6 +444,8 @@ class ChairJobs:
         self.next_resync = t0 + FIRST_RESYNC_DELAY_S
         self.next_merge_on_green = t0 + FIRST_MERGE_ON_GREEN_DELAY_S
         self.next_copilot = t0 + FIRST_COPILOT_DELAY_S
+        self.next_webhook_ensure = t0 + FIRST_WEBHOOK_ENSURE_DELAY_S
+        self._startup_webhook_ensure_done = False
         self.next_stall = t0 + FIRST_STALL_DELAY_S
         self.resync_fail_streak = 0
         self.busy = threading.Lock()
@@ -501,6 +505,7 @@ class ChairJobs:
             self.next_merge_on_green,
             self.next_stall,
             self.next_copilot,
+            self.next_webhook_ensure,
         ):
             return False
         if not self.busy.acquire(blocking=False):
@@ -594,7 +599,17 @@ class ChairJobs:
             try:
                 import copilot_dispatch
 
-                out = copilot_dispatch.tick(self.home)
+                token, _src = self.token_loader()
+
+                def _fetch_user() -> dict:
+                    if not token or not self.fetch_json:
+                        raise RuntimeError("no token")
+                    return self.fetch_json("https://api.github.com/copilot_internal/user") or {}
+
+                out = copilot_dispatch.tick(
+                    self.home,
+                    fetch_user=_fetch_user if token else None,
+                )
                 if out.get("dispatched") or out.get("timed_out"):
                     self.log(
                         f"INFO copilot-dispatch dispatched={out.get('dispatched', 0)} "
@@ -602,7 +617,105 @@ class ChairJobs:
                     )
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN copilot-dispatch: {type(exc).__name__}: {exc}")
+        now = self.clock()
+        if now >= self.next_webhook_ensure:
+            self.next_webhook_ensure = now + WEBHOOK_ENSURE_S
+            try:
+                self._ensure_webhooks()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN webhook-ensure: {type(exc).__name__}: {exc}")
 
+
+    def _ensure_webhooks(self) -> None:
+        """FR #5172: ensure git hooks on every served repo (startup + hourly)."""
+        import copilot_dispatch
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        repos = configured_repos(self.home)
+        if not repos:
+            repos = list(DEFAULT_RESYNC_REPOS)
+        token, _src = self.token_loader()
+        if not token:
+            self.log("WARN webhook-ensure skipped: no token")
+            return
+
+        if self.fetch_json is not None:
+            def list_hooks(repo: str) -> list:
+                rows = self.fetch_json(f"https://api.github.com/repos/{repo}/hooks")
+                return list(rows) if isinstance(rows, list) else []
+
+            def make_create(_repo: str):
+                def _c(body: dict) -> None:
+                    self.log(f"INFO webhook-ensure create (dry, fetch_json) events={body.get('events')}")
+
+                return _c
+
+            def make_patch(_repo: str):
+                def _p(hid, body: dict) -> None:
+                    self.log(f"INFO webhook-ensure repair (dry, fetch_json) id={hid}")
+
+                return _p
+
+            for repo in list(dict.fromkeys(repos)):
+                copilot_dispatch.ensure_repo_webhook(
+                    repo,
+                    list_hooks=list_hooks,
+                    create=make_create(repo),
+                    patch=make_patch(repo),
+                    file_stall=lambda **kw: copilot_dispatch.file_webhook_stall(self.home, **kw),
+                )
+                self.log(f"INFO webhook-ensure repo={repo} done")
+            return
+
+        def _gh(method: str, url: str, body: dict | None = None):
+            raw = _json.dumps(body).encode("utf-8") if body is not None else None
+            req = urllib.request.Request(
+                url,
+                data=raw,
+                method=method,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "bobiverse-jeeves",
+                    "Content-Type": "application/json",
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    text = resp.read().decode("utf-8") or "null"
+                    return _json.loads(text) if text != "null" else None
+            except urllib.error.HTTPError as exc:
+                if int(exc.code) in (401, 403, 404):
+                    raise PermissionError(f"hooks {exc.code}") from exc
+                raise
+
+        def list_hooks(repo: str) -> list:
+            rows = _gh("GET", f"https://api.github.com/repos/{repo}/hooks")
+            return list(rows) if isinstance(rows, list) else []
+
+        def make_create(repo: str):
+            def _c(body: dict) -> None:
+                _gh("POST", f"https://api.github.com/repos/{repo}/hooks", body)
+
+            return _c
+
+        def make_patch(repo: str):
+            def _p(hid, body: dict) -> None:
+                _gh("PATCH", f"https://api.github.com/repos/{repo}/hooks/{hid}", body)
+
+            return _p
+
+        for repo in list(dict.fromkeys(repos)):
+            copilot_dispatch.ensure_repo_webhook(
+                repo,
+                list_hooks=list_hooks,
+                create=make_create(repo),
+                patch=make_patch(repo),
+                file_stall=lambda **kw: copilot_dispatch.file_webhook_stall(self.home, **kw),
+            )
+            self.log(f"INFO webhook-ensure repo={repo} done")
 
     def _stall_scan(self) -> None:
         """FR #5164: file one issue per distinct stall; never raise."""

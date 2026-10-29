@@ -2247,7 +2247,7 @@ function Update-Hover {
                     # Format-BobCursorAccountLabel will pick tip/overspend when RemainingPct empty
                 }
             }
-            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels)
+            Rebuild-BobTrayTiles -Machines @($h.machines) -CursorPools @($h.cursor_pools) -AccountName $h.account_name -AccountPct $h.account_remaining_pct -AccountLabel $h.account_label -AccountReset $h.account_reset_label -AccountOverageGbp $h.account_overage_gbp -ChairChannels @($h.chair_channels) -CopilotPool $h.copilot_pool
             if ($script:alertLabel) {
                 $script:alertLabel.Text = ('alert: {0}' -f $script:alertKind)
                 $yAlert = 40
@@ -2689,7 +2689,7 @@ function Rebuild-BobTrayTiles {
     # FR #4938 / FR #5032: TipForm shows per-machine Grok pool rows (no 'Grok accounts' heading).
     # Cursor spending-group bars (grok chat / high cost / Low cost) are removed from the card.
     # Fuel still reads local Cursor/Grok elsewhere; this is display-only.
-    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels)
+    param($Machines, $CursorPools, $AccountName, $AccountPct, $AccountLabel, $AccountReset, $AccountOverageGbp, $ChairChannels, $CopilotPool)
     if (-not $script:tileHost) { return }
 
     # Format everything first so a throw never leaves a cleared host.
@@ -2723,6 +2723,12 @@ function Rebuild-BobTrayTiles {
         if ($overLine) {
             $y = Add-BobTraySectionHeader -X 0 -Y $y -Title '' -Icon $grokIcon -Agent $grokAgent `
                 -RightText $overLine -RightColor $overColor
+        }
+        # FR #5172: one account-wide Copilot pool (not per machine).
+        $copilotLine = $null
+        try { $copilotLine = Format-BobCopilotPoolLine -Pool $CopilotPool } catch { }
+        if ($copilotLine) {
+            $y = Add-BobTraySectionHeader -X 0 -Y $y -Title $copilotLine
         }
         $indent = 18
         $shownMachines = @{}

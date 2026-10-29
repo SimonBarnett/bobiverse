@@ -34,6 +34,8 @@ REQUIRED_HOOK_EVENTS = (
 ALLOWANCE_NAME = "copilot-allowance.json"
 JOBS_NAME = "copilot-jobs.json"
 TASK_TIMEOUT_S = 4 * 3600.0
+CACHE_S = 300.0
+COPILOT_USER_PATH = "copilot_internal/user"
 FALLBACK_REASONS = frozenset(
     {"startup", "webhook_gap", "delivery_failure", "safety_interval", "operator"}
 )
@@ -68,24 +70,174 @@ def set_allowance(home: Path, remaining: int | None = None, exhausted: bool | No
     if remaining is not None:
         doc["remaining"] = int(remaining)
         doc["exhausted"] = int(remaining) <= 0
+        if int(remaining) > 0:
+            doc["tasks_exhausted"] = False
+            doc["state"] = "ok"
     if exhausted is not None:
         doc["exhausted"] = bool(exhausted)
+        if not exhausted:
+            doc["tasks_exhausted"] = False
     Path(home).mkdir(parents=True, exist_ok=True)
     _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
-def has_allowance(home: Path) -> bool:
-    """Unknown remaining is off (deterministic fallback to IRC seats)."""
-    doc = load_allowance(home)
-    if doc.get("exhausted"):
-        return False
-    rem = doc.get("remaining")
-    if rem is None:
+def _num(val: object) -> float | None:
+    if val is None or val is True or val is False:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_user_quota(doc: dict | None) -> dict:
+    """Parse GET /copilot_internal/user. Bad shape is unknown, never exhausted."""
+    empty = {
+        "plan": "",
+        "used": None,
+        "remaining": None,
+        "unlimited": False,
+        "percent_remaining": None,
+        "reset_at": "",
+        "source": "copilot_internal/user",
+        "state": "unknown",
+        "fetched_at": "",
+    }
+    if not isinstance(doc, dict):
+        return dict(empty)
+    snaps = doc.get("quota_snapshots")
+    prem = snaps.get("premium_interactions") if isinstance(snaps, dict) else None
+    if not isinstance(prem, dict):
+        out = dict(empty)
+        out["plan"] = str(doc.get("copilot_plan") or "")
+        return out
+    unlimited = bool(prem.get("unlimited"))
+    remaining = _num(prem.get("remaining"))
+    percent = _num(prem.get("percent_remaining"))
+    used = _num(prem.get("credits_used"))
+    allowed = unlimited or (remaining is not None and remaining > 0) or (
+        percent is not None and percent > 0
+    )
+    state = "ok" if allowed else "exhausted"
+    return {
+        "plan": str(doc.get("copilot_plan") or ""),
+        "used": used,
+        "remaining": remaining,
+        "unlimited": unlimited,
+        "percent_remaining": percent,
+        "entitlement": _num(prem.get("entitlement")),
+        "overage_permitted": bool(prem.get("overage_permitted")),
+        "reset_at": str(doc.get("quota_reset_date_utc") or doc.get("quota_reset_date") or ""),
+        "source": "copilot_internal/user",
+        "state": state,
+        "fetched_at": "",
+    }
+
+
+def _reset_passed(doc: dict) -> bool:
+    reset = str(doc.get("reset_at") or "")
+    if not reset:
         return False
     try:
-        return int(rem) > 0
-    except (TypeError, ValueError):
+        from datetime import datetime, timezone
+
+        end = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) >= end
+    except ValueError:
         return False
+
+
+def allowance_from_pool(doc: dict) -> bool:
+    if not isinstance(doc, dict):
+        return False
+    if doc.get("tasks_exhausted") and not _reset_passed(doc):
+        return False
+    if doc.get("unlimited"):
+        return True
+    if str(doc.get("state") or "") == "unknown":
+        return True
+    rem = _num(doc.get("remaining"))
+    pct = _num(doc.get("percent_remaining"))
+    if rem is not None and rem > 0:
+        return True
+    if pct is not None and pct > 0:
+        return True
+    if rem == 0 or str(doc.get("state") or "") == "exhausted":
+        return False
+    if doc.get("exhausted") and rem is None:
+        return False
+    return False
+
+
+def has_allowance(home: Path) -> bool:
+    """Live cache / last read. No cache means off (do not steal IRC jobs). Unknown means try."""
+    doc = load_allowance(home)
+    if not doc:
+        return False
+    if (
+        doc.get("remaining") is None
+        and not doc.get("state")
+        and not doc.get("unlimited")
+        and not doc.get("exhausted")
+        and not doc.get("tasks_exhausted")
+    ):
+        return False
+    return allowance_from_pool(doc)
+
+
+def refresh_allowance(
+    home: Path,
+    *,
+    fetch_user: Callable[[], dict] | None = None,
+    now: float | None = None,
+) -> dict:
+    """Read GET /copilot_internal/user (5 min cache). Parse failure -> unknown."""
+    now_f = time.time() if now is None else float(now)
+    doc = load_allowance(home)
+    fetched = _num(doc.get("fetched_epoch"))
+    if fetched is not None and (now_f - fetched) < CACHE_S and doc.get("state"):
+        return doc
+    if fetch_user is None:
+        pool = dict(parse_user_quota(None))
+        pool["state"] = "unknown"
+        pool["fetched_at"] = ""
+        pool["fetched_epoch"] = now_f
+        Path(home).mkdir(parents=True, exist_ok=True)
+        merged = dict(doc)
+        merged.update(pool)
+        _allow_path(home).write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        return merged
+    try:
+        raw = fetch_user()
+        pool = parse_user_quota(raw if isinstance(raw, dict) else None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("copilot_internal/user failed: %s", type(exc).__name__)
+        pool = parse_user_quota(None)
+    pool["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_f))
+    pool["fetched_epoch"] = now_f
+    if pool.get("state") == "ok":
+        pool["tasks_exhausted"] = False
+        pool["exhausted"] = False
+    Path(home).mkdir(parents=True, exist_ok=True)
+    merged = dict(doc)
+    merged.update(pool)
+    _allow_path(home).write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    return merged
+
+
+def pool_for_digest(home: Path) -> dict:
+    doc = load_allowance(home)
+    return {
+        "plan": doc.get("plan") or "",
+        "used": doc.get("used"),
+        "remaining": doc.get("remaining"),
+        "unlimited": bool(doc.get("unlimited")),
+        "percent_remaining": doc.get("percent_remaining"),
+        "reset_at": doc.get("reset_at") or "",
+        "source": doc.get("source") or "copilot_internal/user",
+        "fetched_at": doc.get("fetched_at") or "",
+        "state": doc.get("state") or "unknown",
+    }
 
 
 def is_exhausted(resp: dict | None) -> bool:
@@ -104,7 +256,12 @@ def is_exhausted(resp: dict | None) -> bool:
 
 def record_api_result(home: Path, resp: dict | None) -> None:
     if is_exhausted(resp):
-        set_allowance(home, remaining=0, exhausted=True)
+        doc = load_allowance(home)
+        doc["tasks_exhausted"] = True
+        doc["exhausted"] = True
+        doc["state"] = "exhausted"
+        Path(home).mkdir(parents=True, exist_ok=True)
+        _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
         return
     if isinstance(resp, dict) and int(resp.get("status") or 0) in (200, 201, 202):
         doc = load_allowance(home)
@@ -424,6 +581,28 @@ def resync_is_fallback(reason: str) -> bool:
     return str(reason or "").strip().lower() in FALLBACK_REASONS
 
 
+def file_webhook_stall(home: Path, *, repo: str, kind: str = "webhook-ensure", error: str = "") -> None:
+    """FR #5164: permission / API failure on webhook ensure is a stall, not silent."""
+    try:
+        import stall_filer
+
+        stall_filer.apply_findings(
+            [
+                {
+                    "id": "webhook-ensure",
+                    "key": repo,
+                    "fingerprint": f"webhook-ensure:{repo}:{kind}",
+                    "title": f"Jeeves cannot ensure git webhook on {repo}",
+                    "evidence": {"repo": repo, "kind": kind, "error": error},
+                }
+            ],
+            home=home,
+            excerpt=error,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("stall-file webhook-ensure failed repo=%s", repo)
+
+
 def ensure_repo_webhook(
     repo: str,
     *,
@@ -468,14 +647,42 @@ def ensure_repo_webhook(
     return {"action": "repair", "repo": repo}
 
 
+def ensure_served_webhooks(
+    repos: list[str],
+    *,
+    list_hooks: Callable[[str], list],
+    create: Callable[[dict], Any],
+    patch: Callable[..., Any],
+    file_stall: Callable[..., Any] | None = None,
+    log_fn: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """Idempotent ensure for every served repo. Logs each action."""
+    actions: list[dict] = []
+    for repo in repos:
+        r = ensure_repo_webhook(
+            repo,
+            list_hooks=list_hooks,
+            create=create,
+            patch=patch,
+            file_stall=file_stall,
+        )
+        actions.append(r)
+        if log_fn:
+            log_fn(f"INFO webhook-ensure repo={repo} action={r.get('action')}")
+    return actions
+
+
 def tick(
     home: Path,
     *,
     now: float | None = None,
     post: Callable[[str, dict], dict] | None = None,
+    fetch_user: Callable[[], dict] | None = None,
 ) -> dict:
-    """Dispatch next eligible job to Copilot; time out stale Copilot accepts."""
+    """Refresh allowance, dispatch next eligible job, time out stale Copilot accepts."""
     now_f = time.time() if now is None else float(now)
+    if fetch_user is not None:
+        refresh_allowance(home, fetch_user=fetch_user, now=now_f)
     out: dict[str, Any] = {"dispatched": 0, "timed_out": 0}
     if has_allowance(home):
         for row in gitclaim.load_unaccepted(home):
