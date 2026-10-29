@@ -1,6 +1,7 @@
 """FR #5164: stall detectors + filer (dedupe, cap, spool)."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import stall_detectors as sd
@@ -146,6 +147,20 @@ def test_resync_ack_bored_healthy_and_fire():
         }
     )
     assert late and late[0]["id"] == sd.BORED_LATENCY_ID
+
+
+def test_bored_latency_ignores_a_seat_with_a_live_pending_offer():
+    now = 100_000.0
+    nick = "flamingo-1"
+    offered_ts = datetime.fromtimestamp(now - 30, timezone.utc).isoformat()
+    snap = {
+        "now": now,
+        "idle": {nick},
+        "last_bored": {nick: now - sd.BORED_LATENCY_S - 1},
+        "unaccepted": [{"offered_to": nick, "offered_ts": offered_ts}],
+    }
+
+    assert sd.detect_bored_latency(snap) == []
 
 
 def test_filer_dedupe_comment_not_second_issue(tmp_path: Path):
