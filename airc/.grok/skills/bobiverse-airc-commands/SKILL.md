@@ -32,6 +32,8 @@ PRIVMSG <machine>_console :psb64:<base64>
 - Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
 - Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
 - PUT/RUN/JOB/UPDATE are separate FRs — see `docs/airc-remote-control.md`.
+- **DCC output (FR #5003 / #5008):** caller sends `DCCLISTEN id= host= port= token= [tls=1] [relay=]`. Oversized shell replies: console dials out and sends framed bytes; IRC `DONE ... via=dcc`. Handshake fail -> IRC `CONT`/`RESUME` (`dcc failed ...; falling back to IRC`).
+- **DCC upload (FR #5194):** same `DCCLISTEN`, then `PUT path= id= bytes= sha256= via=dcc`. Console dials out and **reads** the frame, checks sha256, writes atomically under the drop sandbox (same path rules as IRC PUT). Fail -> `err ... dcc failed ...; falling back to IRC` then `CHUNK`/`PUTEND`. Use `Invoke-AircRemote -Action Put` (default DCC) or `-ForceIrcPut`.
 
 ## Safe diagnostic commands
 

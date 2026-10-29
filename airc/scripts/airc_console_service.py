@@ -410,6 +410,7 @@ class AircConsoleService:
             machine=self.machine,
             airc_running=True,
         )
+        self.job_protocol.dcc_receive = self._dcc_put_receive
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
@@ -448,6 +449,15 @@ class AircConsoleService:
         self._stopping = False
         # FR #2649: flush at most once so finally does not re-drain after sock=None.
         self._stop_flushed = False
+
+    def _dcc_put_receive(self, job_id: str):
+        """FR #5194: console dials the caller DCCLISTEN and reads the upload frame."""
+        import airc_dcc_bulk as _dcc
+
+        offer = self.shell_runner.peek_dcc_offer(job_id)
+        if offer is None:
+            raise RuntimeError("no DCCLISTEN for id")
+        return _dcc.receive_upload_from_offer(offer)
 
     def note_shell_inflight(self, nick: str, job_id: str) -> None:
         key = (nick or "").strip().lower()

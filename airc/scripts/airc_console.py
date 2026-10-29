@@ -2109,6 +2109,11 @@ class ShellJobRunner:
             self._dcc_listen[offer.job_id] = offer
         return True
 
+    def peek_dcc_offer(self, job_id: str):
+        """FR #5194: DCCLISTEN recorded for this job, or None."""
+        with self._lock:
+            return self._dcc_listen.get((job_id or "").strip().lower())
+
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
         item = _ShellPending(command=command)
