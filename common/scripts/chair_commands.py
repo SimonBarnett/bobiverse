@@ -81,7 +81,9 @@ COMMANDS: tuple = (
                 "inverse of !register: ChanServ UNREGISTER, drop roster, PART shop (+o/+h gate)", OPS_ROLES,
                 "!unregister dry-run ionos",
                 "Chair-only. Dry-run prints the plan; real run needs confirm or a repeat within 60s. "
-                "Core #bobiverse/#wonderland refused. Airc clients fall back to #wonderland (FR #3834).",
+                "Core #bobiverse/#wonderland refused. Airc clients fall back to #wonderland (FR #3834). "
+                "FR #5161: unregister is final locally (tombstone); a lagging ChanServ LIST cannot "
+                "re-add or rejoin the shop until LIST confirms it is gone.",
                 ("register", "status")),
     CommandSpec("resync", "!resync", "refresh the roster (ChanServ) now and re-sync open FR/MRB from GitHub with the Jeeves token (also automatic hourly / on webhook gap, FR #3212); purges ignored repos", OPS_ROLES, "!resync",
                 "Restricted to simon and bob-* nicks. Webhook model: no GitHub token; the roster mirror is "

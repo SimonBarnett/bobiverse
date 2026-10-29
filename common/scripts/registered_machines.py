@@ -6,6 +6,8 @@ and mirrors the machine channels (``#<machinename>``, never ``#bobiverse``) into
 registered are REMOVED. The file is a persisted cache - a ChanServ outage / denied / garbled
 reply keeps the last good list. ``!register <machine>`` still works (ChanServ REGISTER +
 immediate add + a forced re-sync). Bob ears do not self-REGISTER shops via this file.
+FR #5161: ``!unregister`` tombstones the machine so a lagging ChanServ LIST cannot
+re-add it; the tombstone clears when LIST no longer includes that shop.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ REGISTRY_NAME = "registered-machines.json"
 SOURCE_CHANSERV = "chanserv-list"
 SOURCE_REGISTER = "register-command"
 SOURCE_UNREGISTER = "unregister-command"
+TOMBSTONE_KEY = "unregister_tombstones"
 
 # Registered channels that are NOT machine shops. Anything with a character outside
 # [a-z0-9-] (e.g. #agentic_irc) is excluded by the id check below.
@@ -173,6 +176,23 @@ def load_registered_channels(home: Path) -> list[str]:
     return registered_channels_from_list(out)
 
 
+def load_unregister_tombstones(home: Path) -> dict[str, float]:
+    """FR #5161: machine ids locally unregistered while ChanServ LIST may still lag."""
+    raw = _read_doc(home).get(TOMBSTONE_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, val in raw.items():
+        mid = normalize_machine_id(str(key))
+        if not mid:
+            continue
+        try:
+            out[mid] = float(val)
+        except (TypeError, ValueError):
+            out[mid] = 0.0
+    return out
+
+
 def save_registered(
     home: Path,
     machines: set[str],
@@ -180,6 +200,7 @@ def save_registered(
     source: str | None = None,
     refreshed_at: float | None = None,
     channels: list[str] | None = None,
+    tombstones: dict[str, float] | None = None,
 ) -> None:
     """Persist machines (+ optional full ``channels`` list). ``refreshed_at`` only on ChanServ sync."""
     home = Path(home)
@@ -202,6 +223,17 @@ def save_registered(
         for key in ("refreshed_ts", "refreshed_at"):
             if prev.get(key) is not None:
                 payload[key] = prev[key]
+    if tombstones is None:
+        tombs = load_unregister_tombstones(home)
+    else:
+        tombs = {}
+        for key, val in tombstones.items():
+            mid = normalize_machine_id(str(key))
+            if mid:
+                tombs[mid] = float(val)
+    tombs = {m: t for m, t in tombs.items() if m not in skip}
+    if tombs:
+        payload[TOMBSTONE_KEY] = tombs
     _atomic_write(registry_path(home), json.dumps(payload, indent=2) + "\n")
 
 
@@ -211,7 +243,9 @@ def add_registered(home: Path, machine: str) -> str | None:
         return None
     cur = load_registered(home)
     cur.add(mid)
-    save_registered(home, cur, source=SOURCE_REGISTER)
+    tombs = load_unregister_tombstones(home)
+    tombs.pop(mid, None)
+    save_registered(home, cur, source=SOURCE_REGISTER, tombstones=tombs)
     return mid
 
 
@@ -232,7 +266,9 @@ def remove_registered(home: Path, machine: str) -> str | None:
             if str(c or "").strip().lower() != shop
         ]
         channels = with_chair_required_channels(channels)
-    save_registered(home, cur, source=SOURCE_UNREGISTER, channels=channels)
+    tombs = load_unregister_tombstones(home)
+    tombs[mid] = time.time()
+    save_registered(home, cur, source=SOURCE_UNREGISTER, channels=channels, tombstones=tombs)
     return mid
 
 
@@ -343,17 +379,27 @@ def sync_from_chanserv(
     ids = machine_ids_from_channels(channels)
     if not ids and not allow_empty:
         return None
+    tombs = load_unregister_tombstones(home)
+    # FR #5161: drop tombstones once ChanServ LIST no longer lists the shop.
+    tombs = {m: t for m, t in tombs.items() if m in ids}
+    ids = {m for m in ids if m not in tombs}
     cur = load_registered(home)
     added, removed = ids - cur, cur - ids
     # FR #3868: union required chair channels so a LIST that omitted #bobiverse
     # cannot persist a roster that makes the chair PART the fleet channel.
     full = with_chair_required_channels(channels)
+    full = [
+        c
+        for c in full
+        if (normalize_machine_id(c) or "") not in tombs
+    ]
     save_registered(
         Path(home),
         ids,
         source=SOURCE_CHANSERV,
         refreshed_at=time.time() if now is None else now,
         channels=full,
+        tombstones=tombs,
     )
     return added, removed
 
