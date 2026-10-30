@@ -86,4 +86,4 @@ Airc has no TipForm UI. Operator surfaces are service logs, `Invoke-AircRemote`,
 
 - Future HTML / TipForm-style status surface for console health (logs + Invoke-AircRemote remain primary)
 - Exact ChanServ probe timing under heavy Ergo load beyond FR #3834 / #4014 fallbacks
-- Whether client `presence_channels` defaults stay `#bobiverse`-only or grow with fleet policy
+- Client profiles use the registered shop or `#wonderland`; never auto-join fleet `#bobiverse` (FR #5190)

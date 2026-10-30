@@ -817,7 +817,7 @@ def resolve_channel_commands(cfg: dict | None) -> bool:
     return prof == "client"
 
 
-# FR #3774: fleet lobby channel for optional client presence-only JOIN.
+# FR #3774 / #5190: legacy client presence target, now excluded from client JOINs.
 FLEET_PRESENCE_CHANNEL = "#bobiverse"
 
 

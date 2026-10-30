@@ -84,9 +84,9 @@ def test_client_control_join_has_no_legacy_bobiverse_presence():
             machine="walrus",
             auth=ac.AuthPolicy(members=ac.ChannelMemberMap(channel=channel)),
             nick="walrus_console",
-            channel=channel,
             presence_channels=legacy_channels,
         )
+        core.channel = channel
         assert core.join_commands() == [f"JOIN {channel}"]
         assert "#bobiverse" not in core.join_commands()[0]
 
@@ -135,6 +135,8 @@ def test_docs_and_install_mention_presence_channels():
     install = INSTALL.read_text(encoding="utf-8")
     assert "presence_channels" in install
     assert "3774" in install or "FR #3774" in install
+    assert "@('#bobiverse')" not in install
+    assert "FR #5190" in install
     post = POST.read_text(encoding="utf-8")
     assert "presence_channels" in post or "#bobiverse" in post
     assert "3774" in post
