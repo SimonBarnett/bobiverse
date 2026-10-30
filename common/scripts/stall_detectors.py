@@ -50,6 +50,16 @@ def _author_nicks(row: dict) -> list[str]:
     return found
 
 
+def _is_stall_report_row(row: dict) -> bool:
+    title = str(row.get("title") or "").strip().lower()
+    body = str(row.get("body") or "").lower()
+    return title.startswith("stall:") or "<!-- stall-fp:" in body
+
+
+def _queue_rows(snap: dict[str, Any], bucket: str) -> list[dict]:
+    return [row for row in snap.get(bucket) or [] if not _is_stall_report_row(row)]
+
+
 def _idle_blocked(row: dict, nick: str, live: set[str], idle: set[str], ledger: dict) -> bool:
     me = (gitclaim.canonical_worker_nick(nick) or nick or "").strip()
     if not me:
@@ -89,7 +99,7 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
     if not idle:
         return []
     waiting = []
-    for row in snap.get("unaccepted") or []:
+    for row in _queue_rows(snap, "unaccepted"):
         if gitclaim._canon_task(row) != "MRB":
             continue
         if not gitclaim.mrb_row_offerable(row):
@@ -123,7 +133,7 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
     if not live:
         return []
     out = []
-    for row in list(snap.get("unaccepted") or []) + list(snap.get("accepted") or []):
+    for row in _queue_rows(snap, "unaccepted") + _queue_rows(snap, "accepted"):
         if not live:
             break
         if all(gitclaim.row_gave_up_by(row, n, live=live) for n in live):
@@ -141,7 +151,7 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
 
 def detect_sticky_auto_pin(snap: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
-    for row in snap.get("unaccepted") or []:
+    for row in _queue_rows(snap, "unaccepted"):
         stamped = str(row.get("require_machine") or "").strip().lower()
         if not stamped:
             continue
@@ -189,7 +199,7 @@ def detect_resync_fail(snap: dict[str, Any]) -> list[dict[str, Any]]:
 def detect_ack_stale(snap: dict[str, Any]) -> list[dict[str, Any]]:
     now = float(snap.get("now") or 0)
     out = []
-    for row in snap.get("accepted") or []:
+    for row in _queue_rows(snap, "accepted"):
         acked = float(row.get("acked_at") or row.get("accepted_at") or 0)
         last = float(row.get("last_activity") or acked or 0)
         if not last or now - last < ACK_STALE_S:
