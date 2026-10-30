@@ -78,6 +78,12 @@ Workaround until this tip is deployed: `Restart-Service ircBob`.
 
 ## Tray / recycle
 
+On startup the ear deletes `home\agent.quit.request` files whose modification
+time predates this agent's start. Only requests written during the current
+agent lifetime trigger graceful QUIT, including requests received during
+initialization or after an IRC reconnect. The installer sets NSSM's
+`AppDirectory` to `<install root>\scripts` on both fresh installs and upgrades.
+
 - Product Sync/ff runs on **ircBob Start-Bob** only — TipForm Start never updates the tree.
 - TipForm menu **Restart** -> `Restart-BobTrayWatcher` -> `Start-BobFleetTray -ForceNew` (restarts `ircBob` via `Restart-BobTrayService`, then relaunches TipForm in the interactive session so Sync/ff runs on ear start).
 - Ear-only: Desktop / Start Menu **Restart ircBob** / `scripts\Restart-BobEar.ps1` (announce -> `Restart-Service ircBob`).

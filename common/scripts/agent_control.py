@@ -25,11 +25,14 @@ def request_agent_quit(home: Path | str, reason: str = "stop") -> None:
         pass
 
 
-def peek_quit_request(home: Path | str) -> str | None:
+def peek_quit_request(home: Path | str, *, not_before: float | None = None) -> str | None:
     path = quit_request_path(home)
-    if not path.is_file():
-        return None
     try:
+        # Writers use integer seconds in the payload; mtime preserves requests
+        # arriving in the same second as startup, including PowerShell writers.
+        if not_before is not None and path.stat().st_mtime < not_before:
+            path.unlink(missing_ok=True)
+            return None
         raw = path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
@@ -39,8 +42,8 @@ def peek_quit_request(home: Path | str) -> str | None:
     return parts[1] if len(parts) > 1 else "stop"
 
 
-def consume_quit_request(home: Path | str) -> str | None:
-    reason = peek_quit_request(home)
+def consume_quit_request(home: Path | str, *, not_before: float | None = None) -> str | None:
+    reason = peek_quit_request(home, not_before=not_before)
     if reason is None:
         return None
     try:
