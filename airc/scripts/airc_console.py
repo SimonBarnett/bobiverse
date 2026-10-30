@@ -865,21 +865,24 @@ def resolve_presence_channels(
     Resolution order:
     1. ``presence_channels`` in ``airc.json`` when the key is present (including ``[]``).
     2. Else ``AIRC_PRESENCE_CHANNELS`` (comma-separated; empty string = none) when set.
-    3. Else client profile defaults to ``#bobiverse``; fleet/workstation default none.
+    3. Else no extra presence channels (FR #5190: client never auto-joins
+       ``#bobiverse``; control channel is shop or ``#wonderland``).
     """
     data = cfg or {}
+    environ = env if env is not None else os.environ
+    from_env = bool(prefer_env and "AIRC_PRESENCE_CHANNELS" in environ)
     if "presence_channels" in data:
         parsed = _coerce_presence_channel_list(data.get("presence_channels"))
-        return parsed if parsed is not None else []
-
-    environ = env if env is not None else os.environ
-    if prefer_env and "AIRC_PRESENCE_CHANNELS" in environ:
-        return _coerce_presence_channel_list(environ.get("AIRC_PRESENCE_CHANNELS") or "") or []
-
+        out = parsed if parsed is not None else []
+    elif from_env:
+        out = _coerce_presence_channel_list(environ.get("AIRC_PRESENCE_CHANNELS") or "") or []
+    else:
+        out = []
+    # FR #5190: drop leftover FR #3774 client default unless env opted in.
     prof = (profile or str(data.get("profile") or "")).strip().lower()
-    if prof == "client":
-        return [FLEET_PRESENCE_CHANNEL]
-    return []
+    if prof == "client" and not from_env:
+        out = [c for c in out if c != FLEET_PRESENCE_CHANNEL]
+    return out
 
 
 def legacy_operator_input_log_lines(args: object, cfg: dict | None) -> list[str]:
@@ -2376,7 +2379,7 @@ class AircConsoleCore:
     def join_commands(self) -> list[str]:
         """JOIN control channel plus optional presence channels (FR #3774).
 
-        Presence channels (e.g. ``#bobiverse`` on client) are silent for commands —
+        Presence channels (opt-in only; FR #5190 client never auto-joins #bobiverse) are silent for commands —
         ``handle_raw`` only executes channel traffic on ``self.channel``.
         """
         ordered: list[str] = []
