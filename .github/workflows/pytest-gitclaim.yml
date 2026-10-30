@@ -8,6 +8,8 @@ on:
     paths:
       - "common/scripts/gitclaim.py"
       - "common/scripts/bobreport.py"
+      - "common/scripts/copilot_dispatch.py"
+      - "common/scripts/focus_ignore.py"
       - "jeeves/tests/test_fr1150_resync_paginate.py"
       - "jeeves/tests/test_fr1093_require_machine_stale_rows.py"
       - "jeeves/tests/test_mrb1174_focus_needs_mrb1_offer.py"
@@ -22,6 +24,8 @@ on:
     paths:
       - "common/scripts/gitclaim.py"
       - "common/scripts/bobreport.py"
+      - "common/scripts/copilot_dispatch.py"
+      - "common/scripts/focus_ignore.py"
       - "jeeves/tests/test_fr1150_resync_paginate.py"
       - "jeeves/tests/test_fr2540_digest_home_no_leak.py"
       - ".github/workflows/pytest-gitclaim.yml"
@@ -58,6 +62,20 @@ jobs:
             jeeves/tests/test_fr1093_require_machine_stale_rows.py `
             jeeves/tests/test_mrb1174_focus_needs_mrb1_offer.py `
             jeeves/tests/test_fr1323_mrb_done_no_reoffer.py `
+            -q --tb=short
+
+      - name: Copilot priority and dispatch tests (FR #5186)
+        run: |
+          $env:PYTHONPATH = "$((Get-Location).Path)\common\scripts;$((Get-Location).Path)\jeeves"
+          python -m pytest `
+            common/tests/test_fr5186_focus_priority.py `
+            jeeves/tests/test_fr5170_copilot_dispatch.py `
+            jeeves/tests/test_fr5174_copilot_dispatch_wiring.py `
+            jeeves/tests/test_mrb5175_hostile_fr5174.py `
+            jeeves/tests/test_fr3205_offer_order.py `
+            jeeves/tests/test_mrb3265_offer_order_hostile.py `
+            jeeves/tests/test_chair_commands_020.py `
+            jeeves/tests/test_fr628_repo_focus.py `
             -q --tb=short
 
       - name: Fair-isol digest-home leak canary (FR #2540)

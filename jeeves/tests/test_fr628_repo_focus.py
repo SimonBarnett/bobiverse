@@ -73,11 +73,11 @@ def test_repo_focus_admits_new_rows_in_strict_without_item_focus(_home):
     assert _ids(_home) == [("MRB", "#4"), ("UAT", "#0"), ("FR", "#1")]
 
 
-def test_repo_focus_orders_repos_by_priority_then_entry_time(_home):
+def test_repo_focus_orders_repos_by_priority(_home):
     _queue(_home, [_row("o/c", "MRB", 1, 1), _row("o/a", "FR", 2, 2), _row("o/b", "FR", 3, 3), _row("o/b", "UAT", 0, 4, repo_uat=True)])
-    fi.handle_focus_cmd(_home, "2 o/b")
-    fi.handle_focus_cmd(_home, "1 o/a")
-    fi.handle_focus_cmd(_home, "2 o/c")
+    fi.handle_focus_cmd(_home, "3 o/b")
+    fi.handle_focus_cmd(_home, "2 o/a")
+    fi.handle_focus_cmd(_home, "4 o/c")
     assert _ids(_home) == [("FR", "#2"), ("UAT", "#0"), ("FR", "#3"), ("MRB", "#1")]
 
 

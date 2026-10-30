@@ -89,8 +89,8 @@ def test_mrb3265_same_priority_mrb_beats_lower_numbered_fr(home: Path):
             _row("SimonBarnett/Club-Madeira", "MRB", 99, seq=2),
         ],
     )
-    fi.handle_focus_cmd(home, "1 SimonBarnett/a-search")
-    fi.handle_focus_cmd(home, "1 SimonBarnett/Club-Madeira")
+    fi.handle_focus_cmd(home, "5 SimonBarnett/a-search")
+    fi.handle_focus_cmd(home, "5 SimonBarnett/Club-Madeira")
     # Older ts on a-search must not promote its FR ahead of the MRB.
     doc = fi.load_focus(home)
     doc["repos"]["SimonBarnett/a-search"]["ts"] = "2026-01-01T00:00:00Z"

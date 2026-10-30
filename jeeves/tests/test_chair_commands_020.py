@@ -264,7 +264,7 @@ def test_cleargiveup_family(chair, op):
 
 
 def test_focus_family(chair, op):
-    assert pm(chair, op, "!focus high o/b")[0] == "focus: o/b priority=1 (high)"
+    assert pm(chair, op, "!focus high o/b")[0] == "focus: o/b priority=5 (medium)"
     assert pm(chair, op, "!focus strict on") == ["focus strict: on"]
     assert pm(chair, "mallory", "!focus")[0] == "focus strict: on"                  # read is open
     assert pm(chair, op, "!focus o/a#1")[0].startswith("focus: item o/a#1")

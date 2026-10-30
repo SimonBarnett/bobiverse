@@ -138,13 +138,13 @@ def test_fr3205_same_priority_interleave_by_kind_then_number(home: Path):
             _row("agentic_fomprep", "MRB", 8, seq=4),
         ],
     )
-    fi.handle_focus_cmd(home, "1 agentic_fomprep")
+    fi.handle_focus_cmd(home, "5 agentic_fomprep")
     # Force older ts on agentic_fomprep, newer on a-search (legacy bug used ts as tie-break).
     doc = fi.load_focus(home)
     doc["repos"]["agentic_fomprep"]["ts"] = "2026-10-07T09:17:00Z"
     doc["repos"]["SimonBarnett/a-search"] = {
-        "priority": 1,
-        "label": "high",
+        "priority": 5,
+        "label": "medium",
         "ts": "2026-10-07T18:37:00Z",
     }
     fi.save_focus(home, doc)
