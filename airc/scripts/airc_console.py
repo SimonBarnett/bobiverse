@@ -17,7 +17,9 @@ import os
 import re
 import subprocess
 import shutil
+import signal
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -28,7 +30,7 @@ from typing import Callable, Literal
 import json
 
 from account_map import AccountMap, parse_message_tags
-from airc_jobs import JobProtocol, parse_job_verb
+from airc_jobs import JobProtocol, JobProtocolError, parse_job_verb
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -1466,6 +1468,7 @@ class ShellRequest:
     kind: ShellKind
     body: str
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    cancelled: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
 
 
 @dataclass
@@ -1803,7 +1806,46 @@ def build_shell_argv(req: ShellRequest) -> list[str]:
 def _clip_bytes(data: bytes, limit: int = SHELL_OUTPUT_MAX_BYTES) -> tuple[str, bool]:
     clipped = len(data) > limit
     chunk = data[:limit]
-    return chunk.decode("utf-8", errors="replace"), clipped
+    encoding = "utf-8-sig"
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    elif len(chunk) >= 4:
+        # Native Windows tools may redirect UTF-16 without a BOM.
+        sample = chunk[:512]
+        if sample[1::2].count(0) > len(sample) // 4:
+            encoding = "utf-16-le"
+        elif sample[::2].count(0) > len(sample) // 4:
+            encoding = "utf-16-be"
+    return chunk.decode(encoding, errors="replace").replace("\x00", ""), clipped
+
+
+def _read_shell_capture(path: str) -> bytes:
+    # Never seek the inherited writer: descendants share its file position.
+    # O_TEMPORARY shares delete access with NamedTemporaryFile on Windows.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_TEMPORARY", 0)
+    with os.fdopen(os.open(path, flags), "rb") as reader:
+        return reader.read(SHELL_OUTPUT_MAX_BYTES + 1)
+
+
+def _stop_shell_process(proc: subprocess.Popen) -> None:
+    """Best-effort process-tree kill, with no unbounded pipe drain or wait."""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=2, check=False,
+            )
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def run_shell_request(
@@ -1818,31 +1860,51 @@ def run_shell_request(
         args = build_cmd_command_line(req.body or "")
     else:
         args = build_shell_argv(req)
-    try:
-        proc = subprocess.run(
+    if req.cancelled.is_set():
+        return ShellOutcome(req.job_id, 130, "", "cancelled")
+    # Redirect to regular files: communicate() can wait forever on a descendant
+    # holding stdout/stderr open, even after subprocess.run's timeout kills cmd.
+    with tempfile.NamedTemporaryFile() as stdout, tempfile.NamedTemporaryFile() as stderr:
+        proc = subprocess.Popen(
             args,
-            capture_output=True,
-            timeout=timeout_s,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
             cwd=cwd,
-            check=False,
+            start_new_session=os.name != "nt",
         )
-    except subprocess.TimeoutExpired as exc:
-        out, _ = _clip_bytes(exc.stdout or b"")
-        err, _ = _clip_bytes(exc.stderr or b"")
-        err = plain_text_powershell_stderr(err)
-        err = (err + ("\n" if err else "") + f"timeout after {timeout_s:.0f}s").strip()
-        return ShellOutcome(job_id=req.job_id, exit_code=124, stdout=out, stderr=err)
-    out, out_clip = _clip_bytes(proc.stdout or b"")
-    err, err_clip = _clip_bytes(proc.stderr or b"")
+        deadline = time.monotonic() + timeout_s
+        reason = ""
+        try:
+            while True:
+                if req.cancelled.is_set():
+                    exit_code, reason = 130, "cancelled"
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    exit_code, reason = 124, f"timeout after {timeout_s:.0f}s"
+                    break
+                try:
+                    exit_code = proc.wait(timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            if proc.poll() is None or reason:
+                _stop_shell_process(proc)
+        out, out_clip = _clip_bytes(_read_shell_capture(stdout.name))
+        err, err_clip = _clip_bytes(_read_shell_capture(stderr.name))
     # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect — plain-text it.
     err = plain_text_powershell_stderr(err)
     if out_clip:
         out += "\n[clipped stdout]"
     if err_clip:
         err += "\n[clipped stderr]"
+    if reason:
+        err = (err + ("\n" if err else "") + reason).strip()
     return ShellOutcome(
         job_id=req.job_id,
-        exit_code=int(proc.returncode),
+        exit_code=int(exit_code),
         stdout=out,
         stderr=err,
     )
@@ -2058,6 +2120,8 @@ class _ShellPending:
 
     command: str
     done: threading.Event = field(default_factory=threading.Event)
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
 
 class ShellJobRunner:
@@ -2112,6 +2176,10 @@ class ShellJobRunner:
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
         item = _ShellPending(command=command)
+        try:
+            item.job_id = parse_shell_request(command).job_id
+        except ShellRequestError:
+            pass
 
         with self._lock:
             q = self._pending.setdefault(key, deque())
@@ -2151,6 +2219,8 @@ class ShellJobRunner:
     def _drain(self, key: str) -> None:
         while True:
             with self._lock:
+                if self._threads.get(key) is not threading.current_thread():
+                    return
                 q = self._pending.get(key)
                 if not q:
                     self._pending.pop(key, None)
@@ -2160,7 +2230,7 @@ class ShellJobRunner:
                 item = q.popleft()
                 self._inflight_cmd[key] = item
             try:
-                self._run_one(key, item.command)
+                self._run_one(key, item.command, item=item)
             finally:
                 item.done.set()
                 with self._lock:
@@ -2172,16 +2242,19 @@ class ShellJobRunner:
                     except Exception:
                         pass
 
-    def _run_one(self, key: str, command: str) -> None:
+    def _run_one(self, key: str, command: str, *, item: _ShellPending | None = None) -> None:
         jid: str | None = None
         try:
             try:
                 req = parse_shell_request(command)
             except ShellRequestError as exc:
-                jid = uuid.uuid4().hex[:8]
+                jid = item.job_id if item else uuid.uuid4().hex[:8]
                 self._emit(key, f"err id={jid} seq=1 {exc}")
                 self._emit(key, f"DONE id={jid} exit=2")
                 return
+            if item is not None:
+                req.job_id = item.job_id
+                req.cancelled = item.cancelled
             jid = req.job_id
             if self.on_inflight:
                 try:
@@ -2191,6 +2264,8 @@ class ShellJobRunner:
             # FR #4068: batch capture --- first IRC out only after the process exits.
             t0 = time.monotonic()
             outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
+            if req.cancelled.is_set():
+                outcome = ShellOutcome(jid, 130, "", "cancelled")
             with self._lock:
                 peer = self._dcc_listen.pop(jid, None)
             page = format_shell_replies_ex(
@@ -2214,11 +2289,14 @@ class ShellJobRunner:
                         f"dcc failed: {exc}; falling back to IRC",
                     )
             with self._lock:
-                if page.next_offset is not None:
+                if page.next_offset is not None and not req.cancelled.is_set():
                     self._resume[(key, jid)] = (outcome, page.next_offset)
                 else:
                     self._resume.pop((key, jid), None)
             for line in page.lines:
+                if req.cancelled.is_set():
+                    self._emit(key, f"DONE id={jid} exit=130")
+                    return
                 self._emit(key, line)
             if self.on_shell_done:
                 try:
@@ -2238,13 +2316,35 @@ class ShellJobRunner:
                 self._emit(key, f"DONE id={jid} exit=1")
 
     def _emit(self, nick: str, line: str) -> None:
-        # FR #2551: on_reply may raise ConnectionError after IRC drop; swallow so the
-        # worker thread does not die with an unhandled exception (crash hook).
+        # A failed output/log encoding must not kill the drain before terminal DONE.
         if self.on_reply:
             try:
                 self.on_reply(nick, line)
-            except ConnectionError:
+            except Exception:
                 return
+
+    def cancel(self, nick: str, job_id: str) -> bool:
+        """Cancel this Query's matching shell and discard its queued peers."""
+        key = nick.strip().lower()
+        jid = job_id.strip().lower()
+        with self._lock:
+            active = self._inflight_cmd.get(key)
+            pending = list(self._pending.get(key) or ())
+            items = ([active] if active else []) + pending
+            if not any(item.job_id == jid for item in items):
+                return False
+            self._pending.pop(key, None)
+            for item in items:
+                item.cancelled.set()
+                self._dcc_listen.pop(item.job_id, None)
+            for resume_key in list(self._resume):
+                if resume_key[0] == key:
+                    self._resume.pop(resume_key, None)
+        for item in pending:
+            self._emit(key, f"err id={item.job_id} seq=1 cancelled")
+            self._emit(key, f"DONE id={item.job_id} exit=130")
+            item.done.set()
+        return True
 
     def continue_replies(self, nick: str, job_id: str, offset: int | None = None) -> bool:
         """Emit the next FR #4794 page for a truncated shell job (no re-run).
@@ -2282,20 +2382,12 @@ class ShellJobRunner:
         out: list[tuple[str, str]] = []
         with self._lock:
             for key, item in list(self._inflight_cmd.items()):
-                try:
-                    jid = parse_shell_request(item.command).job_id
-                except ShellRequestError:
-                    jid = uuid.uuid4().hex[:8]
-                out.append((key, jid))
+                out.append((key, item.job_id))
             for key, q in list(self._pending.items()):
                 for item in list(q):
                     if self._inflight_cmd.get(key) is item:
                         continue
-                    try:
-                        jid = parse_shell_request(item.command).job_id
-                    except ShellRequestError:
-                        jid = uuid.uuid4().hex[:8]
-                    out.append((key, jid))
+                    out.append((key, item.job_id))
         return out
 
     def abandon_open_jobs(self) -> list[tuple[str, str]]:
@@ -2303,10 +2395,15 @@ class ShellJobRunner:
         ids = self.open_job_ids()
         with self._lock:
             pending_all = list(self._pending.items())
+            active = list(self._inflight_cmd.values())
             self._pending.clear()
             self._inflight_cmd.clear()
+        for item in active:
+            item.cancelled.set()
+            item.done.set()
         for _key, q in pending_all:
             for item in q:
+                item.cancelled.set()
                 item.done.set()
         return ids
 
@@ -2316,9 +2413,13 @@ class ShellJobRunner:
         with self._lock:
             self._threads.pop(key, None)
             pending = self._pending.pop(key, None)
-            self._inflight_cmd.pop(key, None)
+            active = self._inflight_cmd.pop(key, None)
+        if active:
+            active.cancelled.set()
+            active.done.set()
         if pending:
             for item in pending:
+                item.cancelled.set()
                 item.done.set()
 
 
@@ -2613,7 +2714,16 @@ class AircConsoleCore:
                     text=text,
                     reply="DONE exit=126 jobs-disabled",
                 )
-            self.job_protocol.handle_async(nick, verb, kv)
+            if verb == "CANCEL" and self.shell_runner is not None:
+                try:
+                    self.job_protocol.authorize(nick, verb)
+                except JobProtocolError:
+                    self.job_protocol.handle_async(nick, verb, kv)
+                else:
+                    if not self.shell_runner.cancel(nick, kv.get("id") or ""):
+                        self.job_protocol.handle_async(nick, verb, kv)
+            else:
+                self.job_protocol.handle_async(nick, verb, kv)
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="job", nick=nick, target=target, text=text, **meta
