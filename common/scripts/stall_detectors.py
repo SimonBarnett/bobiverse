@@ -128,12 +128,31 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
             break
         if all(gitclaim.row_gave_up_by(row, n, live=live) for n in live):
             rid = _row_id(row)
+            gave_up_seats = sorted(
+                {
+                    seat.strip()
+                    for seat in str(row.get("giveup_seats") or "").split(",")
+                    if seat.strip()
+                }
+            )
             out.append(
                 {
                     "id": ALL_GAVE_UP_ID,
                     "key": rid,
                     "title": f"stall:all-gave-up:{rid}",
-                    "evidence": {"live": sorted(live), "row": rid},
+                    "evidence": {
+                        "live": sorted(live),
+                        "gave_up_live": sorted(
+                            n for n in live if gitclaim.row_gave_up_by(row, n, live=live)
+                        ),
+                        "row": rid,
+                        "task": str(row.get("task") or "").upper(),
+                        "giveup_seats": gave_up_seats,
+                        "giveup_count": row.get("giveup_count"),
+                        "needs_human": row.get("needs_human") or False,
+                        "giveup_ts": row.get("giveup_ts") or "",
+                        "cooldown_until": row.get("cooldown_until") or "",
+                    },
                 }
             )
     return out

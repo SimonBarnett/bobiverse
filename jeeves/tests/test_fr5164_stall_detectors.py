@@ -68,6 +68,12 @@ def test_all_gave_up_fires_and_healthy_silent():
     )
     row["task"] = "FR"
     row["url"] = "https://github.com/SimonBarnett/a-search/issues/5058"
+    row.update(
+        giveup_count=2,
+        needs_human=True,
+        giveup_ts="2026-10-29T12:00:00Z",
+        cooldown_until="2026-10-29T12:05:00Z",
+    )
     bad = {
         "live": {"flamingo-1", "marchhare-1"},
         "unaccepted": [row],
@@ -75,6 +81,12 @@ def test_all_gave_up_fires_and_healthy_silent():
     found = sd.detect_all_gave_up(bad)
     assert len(found) == 1
     assert found[0]["id"] == sd.ALL_GAVE_UP_ID
+    assert found[0]["evidence"]["gave_up_live"] == ["flamingo-1", "marchhare-1"]
+    assert found[0]["evidence"]["giveup_seats"] == ["flamingo-1", "marchhare-1"]
+    assert found[0]["evidence"]["giveup_count"] == 2
+    assert found[0]["evidence"]["needs_human"] is True
+    assert found[0]["evidence"]["giveup_ts"] == "2026-10-29T12:00:00Z"
+    assert found[0]["evidence"]["cooldown_until"] == "2026-10-29T12:05:00Z"
     healthy = {
         "live": {"flamingo-1", "marchhare-1"},
         "unaccepted": [_mrb("https://github.com/SimonBarnett/a-search/pull/1", "x")],
