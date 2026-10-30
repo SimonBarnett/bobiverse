@@ -681,13 +681,25 @@ class ChairJobs:
             out.setdefault("status", int(code))
             return out
 
+        def get(path: str):
+            data, code = self._github_json(
+                "GET", "https://api.github.com/" + str(path).lstrip("/")
+            )
+            if int(code) == 404 and ("/tasks/" in path or "/git/ref/heads/" in path):
+                return {}
+            if not 200 <= int(code) < 300:
+                raise RuntimeError(f"GitHub work check HTTP {int(code)}")
+            return data
+
         # FR #5174: queue.json / unaccepted live under digest_home (BOB_DIGEST_HOME),
         # not chair home (BOB_HOME / ~/.jeeves). Allowance + jobs cache share that path.
         out = copilot_dispatch.tick(
             self.digest_home,
             fetch_user=fetch_user,
             post=post,
+            get=get,
             announce=self.announce,
+            now=self.clock(),
         )
         if out.get("dispatched") or out.get("timed_out"):
             self.log(
