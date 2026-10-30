@@ -120,7 +120,7 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
 def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
     live = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("live") or [])}
     live = {n for n in live if n}
-    if not live:
+    if len(live) < 2:
         return []
     out = []
     for row in list(snap.get("unaccepted") or []) + list(snap.get("accepted") or []):

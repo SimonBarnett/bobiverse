@@ -82,6 +82,21 @@ def test_all_gave_up_fires_and_healthy_silent():
     assert sd.detect_all_gave_up(healthy) == []
 
 
+def test_all_gave_up_silent_with_only_one_live_seat():
+    row = _mrb(
+        "https://github.com/SimonBarnett/bobiverse/issues/5225",
+        "x",
+        ["flamingo-48304"],
+    )
+    row["task"] = "FR"
+    snap = {
+        "live": {"flamingo-48304"},
+        "unaccepted": [row],
+    }
+
+    assert sd.detect_all_gave_up(snap) == []
+
+
 def test_sticky_auto_pin_and_healthy():
     stuck = {
         "unaccepted": [
