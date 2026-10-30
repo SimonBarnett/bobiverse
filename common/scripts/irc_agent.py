@@ -22,6 +22,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+_PROCESS_STARTED = time.time()
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bob_recycle  # noqa: E402
 import bobreport  # noqa: E402
@@ -595,8 +597,8 @@ def open_debug_log(home: Path, *, enabled: bool) -> Path | None:
 
 class Client:
     def __init__(self, args: argparse.Namespace) -> None:
-        # FR #2728 / #5196: lifetime boundary, before home setup or connection.
-        self._process_started = time.time()
+        # FR #2728 / #5196: retain the process boundary across startup checks.
+        self._process_started = _PROCESS_STARTED
         self.args = args
         self.original_nick = args.nick
         self.live_nick = args.nick

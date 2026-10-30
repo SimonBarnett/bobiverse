@@ -26,7 +26,7 @@ def client(tmp_path, monkeypatch):
     return irc_agent.Client(args)
 
 
-def test_old_request_removed_before_first_join(tmp_path, monkeypatch, client):
+def test_old_request_removed_before_first_join(tmp_path, client):
     path = agent_control.quit_request_path(tmp_path)
     agent_control.request_agent_quit(tmp_path, "previous stop")
     old = client._process_started - 4.5 * 3600
@@ -76,6 +76,15 @@ def test_live_request_during_initialization_is_preserved(client, monkeypatch):
     monkeypatch.setattr(irc_agent.bob_home, "ensure_homes", request_during_init)
     replacement = irc_agent.Client(client.args)
     assert path.exists()
+    replacement.request_shutdown = Mock()
+    assert replacement._consume_control_quit()
+    replacement.request_shutdown.assert_called_once_with(":control")
+
+
+def test_live_request_before_client_construction_is_preserved(client):
+    agent_control.request_agent_quit(client.home, "stop during startup checks")
+    replacement = irc_agent.Client(client.args)
+    assert replacement._process_started == client._process_started
     replacement.request_shutdown = Mock()
     assert replacement._consume_control_quit()
     replacement.request_shutdown.assert_called_once_with(":control")
