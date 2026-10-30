@@ -51,9 +51,8 @@ def _author_nicks(row: dict) -> list[str]:
 
 
 def _is_stall_report_row(row: dict) -> bool:
-    title = str(row.get("title") or "").strip().lower()
     body = str(row.get("body") or "").lower()
-    return title.startswith("stall:") or "<!-- stall-fp:" in body
+    return body.lstrip().startswith("<!-- stall-fp:")
 
 
 def _queue_rows(snap: dict[str, Any], bucket: str) -> list[dict]:

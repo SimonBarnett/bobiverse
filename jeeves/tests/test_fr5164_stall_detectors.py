@@ -88,7 +88,7 @@ def test_all_gave_up_ignores_stall_report_rows():
         "repo": "SimonBarnett/bobiverse",
         "ident": "#5181",
         "url": "https://github.com/SimonBarnett/bobiverse/issues/5181",
-        "title": "stall:all-gave-up:SimonBarnett/a-search#5139",
+        "title": "Jeeves cannot ensure git webhook on SimonBarnett/a-search",
         "body": "<!-- stall-fp:stall:all-gave-up:SimonBarnett/a-search#5139 -->",
         "giveup_seats": "flamingo-48304",
     }
@@ -96,6 +96,12 @@ def test_all_gave_up_ignores_stall_report_rows():
     assert sd.detect_all_gave_up(
         {"live": {"flamingo-48304"}, "unaccepted": [row]}
     ) == []
+    ordinary_stall_title = dict(row, title="stall: a regular product issue", body="User report")
+    assert len(
+        sd.detect_all_gave_up(
+            {"live": {"flamingo-48304"}, "unaccepted": [ordinary_stall_title]}
+        )
+    ) == 1
 
 
 def test_sticky_auto_pin_and_healthy():
