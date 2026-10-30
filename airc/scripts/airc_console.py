@@ -2316,10 +2316,12 @@ class ShellJobRunner:
                 self._emit(key, f"DONE id={jid} exit=1")
 
     def _emit(self, nick: str, line: str) -> None:
-        # A failed output/log encoding must not kill the drain before terminal DONE.
+        # FR #2551 / #5211: disconnect/encoding faults must not prevent terminal DONE.
         if self.on_reply:
             try:
                 self.on_reply(nick, line)
+            except ConnectionError:
+                return
             except Exception:
                 return
 
