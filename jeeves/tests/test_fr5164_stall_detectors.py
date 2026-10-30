@@ -81,6 +81,20 @@ def test_all_gave_up_fires_and_healthy_silent():
     }
     assert sd.detect_all_gave_up(healthy) == []
 
+    stall_issue = {
+        "task": "FR",
+        "repo": "SimonBarnett/bobiverse",
+        "url": "https://github.com/SimonBarnett/bobiverse/issues/5225",
+        "title": "stall:all-gave-up:SimonBarnett/bobiverse#5181",
+        "body": "<!-- stall-fp:stall:all-gave-up:SimonBarnett/bobiverse#5181 -->",
+        "giveup_seats": "flamingo-48304",
+    }
+    generated_from_stall = {
+        "live": {"flamingo-48304"},
+        "unaccepted": [stall_issue],
+    }
+    assert sd.detect_all_gave_up(generated_from_stall) == []
+
 
 def test_sticky_auto_pin_and_healthy():
     stuck = {
