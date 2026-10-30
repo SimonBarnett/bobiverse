@@ -700,6 +700,7 @@ class ChairJobs:
             get=get,
             announce=self.announce,
             now=self.clock(),
+            stall_home=self.home,
         )
         if out.get("dispatched") or out.get("timed_out"):
             self.log(

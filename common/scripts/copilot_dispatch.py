@@ -309,7 +309,7 @@ def build_task_body(row: dict) -> dict:
     return {"prompt": "\n".join(prompt_lines)}
 
 
-def should_dispatch(row: dict, *, allowance: bool) -> bool:
+def should_dispatch(row: dict, *, allowance: bool, now: float | None = None) -> bool:
     if not allowance:
         return False
     task = str(row.get("task") or "").upper()
@@ -318,7 +318,7 @@ def should_dispatch(row: dict, *, allowance: bool) -> bool:
     if gitclaim.row_gave_up_by(row, COPILOT_NICK):
         return False
     if gitclaim.row_needs_human(row) or gitclaim.row_on_cooldown(
-        row, time.time(), COPILOT_NICK
+        row, time.time() if now is None else now, COPILOT_NICK
     ):
         return False
     # FR #5174: machine-pinned rows stay on IRC seats (never Copilot).
@@ -404,7 +404,7 @@ def dispatch_row(
 ) -> dict:
     if not has_allowance(home):
         return {"status": "exhausted"}
-    if not should_dispatch(row, allowance=True):
+    if not should_dispatch(row, allowance=True, now=now):
         return {"status": "skip"}
     if gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, COPILOT_NICK):
         return {"status": "skip"}
@@ -532,6 +532,8 @@ def _file_repeated_failure(home: Path, job: dict, *, now: float, reason: str) ->
     import stall_detectors
     import stall_filer
 
+    if "<!-- stall-fp:" in str(job.get("body") or ""):
+        return
     key = f"{job.get('repo')}{job.get('id')}"
     stall_filer.apply_findings(
         [{
@@ -551,6 +553,7 @@ def handle_timeout_or_fail(
     home: Path, job: dict, *, now: float, reason: str = "timeout",
     get: Callable[[str], Any] | None = None,
     announce: Callable[[str], None] | None = None,
+    stall_home: Path | None = None,
 ) -> dict:
     """Track delivered work or use the same durable GIVEUP path as an IRC seat."""
     repo = str(job.get("repo") or "")
@@ -646,7 +649,7 @@ def handle_timeout_or_fail(
                     tracked["check_after"] = now + TASK_TIMEOUT_S
             _save_jobs(home, jobs)
             if repeated:
-                _file_repeated_failure(home, job, now=now, reason=reason)
+                _file_repeated_failure(stall_home or home, accepted, now=now, reason=reason)
             return {"status": "tracking", **work}
     # Write the durable exclusion first so a queue rebuild cannot lose it.
     gitclaim.ledger_note_event(home, COPILOT_NICK, "GIVEUP", task, repo, ident, accepted)
@@ -658,7 +661,7 @@ def handle_timeout_or_fail(
         return {"status": "error"}
     _forget_job(home, job)
     if repeated:
-        _file_repeated_failure(home, job, now=now, reason=reason)
+        _file_repeated_failure(stall_home or home, accepted, now=now, reason=reason)
     line = announce_complete(
         repo=repo, task=task, ident=ident, result="fail", reason=reason
     )
@@ -842,6 +845,7 @@ def tick(
     fetch_user: Callable[[], dict] | None = None,
     get: Callable[[str], Any] | None = None,
     announce: Callable[[str], None] | None = None,
+    stall_home: Path | None = None,
 ) -> dict:
     """Refresh allowance, dispatch next eligible job, time out stale Copilot accepts."""
     now_f = time.time() if now is None else float(now)
@@ -850,21 +854,17 @@ def tick(
     out: dict[str, Any] = {"dispatched": 0, "timed_out": 0}
     if has_allowance(home):
         for row in gitclaim.load_unaccepted(home):
-            if (
-                should_dispatch(row, allowance=True)
-                and not gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, COPILOT_NICK)
-                and not any(_same_job(j, row) for j in _load_jobs(home).get("jobs") or [])
-            ):
-                r = dispatch_row(
-                    home, row, post=post, now=now_f, announce=announce
-                )
-                if r.get("status") == "dispatched":
-                    out["dispatched"] += 1
-                break
+            r = dispatch_row(home, row, post=post, now=now_f, announce=announce)
+            if r.get("status") in ("skip", "tracking"):
+                continue
+            if r.get("status") == "dispatched":
+                out["dispatched"] += 1
+            break
     jobs = _load_jobs(home)
     for job in list(jobs.get("jobs") or []):
         r = handle_timeout_or_fail(
-            home, job, now=now_f, reason="timeout", get=get, announce=announce
+            home, job, now=now_f, reason="timeout", get=get, announce=announce,
+            stall_home=stall_home,
         )
         if r.get("status") == "giveup":
             out["timed_out"] += 1
