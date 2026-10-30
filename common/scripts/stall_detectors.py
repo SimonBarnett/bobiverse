@@ -126,6 +126,8 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
     for row in list(snap.get("unaccepted") or []) + list(snap.get("accepted") or []):
         if not live:
             break
+        if "<!-- stall-fp:" in str(row.get("body") or ""):
+            continue
         if all(gitclaim.row_gave_up_by(row, n, live=live) for n in live):
             rid = _row_id(row)
             out.append(

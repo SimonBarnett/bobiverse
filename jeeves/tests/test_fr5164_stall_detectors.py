@@ -82,6 +82,19 @@ def test_all_gave_up_fires_and_healthy_silent():
     assert sd.detect_all_gave_up(healthy) == []
 
 
+def test_all_gave_up_ignores_stall_filer_rows():
+    row = _mrb(
+        "https://github.com/SimonBarnett/bobiverse/issues/5237",
+        "x",
+        ["flamingo-1"],
+    )
+    row["task"] = "FR"
+    row["body"] = "<!-- stall-fp:stall:all-gave-up:SimonBarnett/bobiverse#5236 -->"
+    snap = {"live": {"flamingo-1"}, "unaccepted": [row]}
+
+    assert sd.detect_all_gave_up(snap) == []
+
+
 def test_sticky_auto_pin_and_healthy():
     stuck = {
         "unaccepted": [
