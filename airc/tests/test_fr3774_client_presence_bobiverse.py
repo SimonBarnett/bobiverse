@@ -76,14 +76,18 @@ def test_join_commands_includes_presence_not_control_dupe():
 
 
 def test_client_control_join_has_no_legacy_bobiverse_presence():
+    machine = "HRS-PRIORITY-DE"
+    assert len(machine) == 15
+    assert ac.shop_channel(machine) == "#hrs-priority-de"
+    assert ac.machine_console_nick(machine) == "hrs-priority-de_console"
     legacy_channels = ac.resolve_presence_channels(
         {"profile": "client", "presence_channels": ["#bobiverse"]}
     )
-    for channel in ("#walrus", "#wonderland"):
+    for channel in ("#hrs-priority-de", "#wonderland"):
         core = ac.AircConsoleCore(
-            machine="walrus",
+            machine=machine,
             auth=ac.AuthPolicy(members=ac.ChannelMemberMap(channel=channel)),
-            nick="walrus_console",
+            nick=ac.machine_console_nick(machine),
             presence_channels=legacy_channels,
         )
         core.channel = channel
