@@ -75,6 +75,10 @@ def test_all_gave_up_fires_and_healthy_silent():
     found = sd.detect_all_gave_up(bad)
     assert len(found) == 1
     assert found[0]["id"] == sd.ALL_GAVE_UP_ID
+    stall_report = dict(row, body="<!-- stall-fp:stall:all-gave-up:a-search#5058 -->")
+    assert sd.detect_all_gave_up(
+        {"live": {"flamingo-1", "marchhare-1"}, "unaccepted": [stall_report]}
+    ) == []
     healthy = {
         "live": {"flamingo-1", "marchhare-1"},
         "unaccepted": [_mrb("https://github.com/SimonBarnett/a-search/pull/1", "x")],

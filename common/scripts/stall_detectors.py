@@ -16,6 +16,8 @@ RESYNC_FAIL_ID = "resync-fail"
 ACK_STALE_ID = "ack-stale"
 BORED_LATENCY_ID = "bored-latency"
 
+STALL_REPORT_MARKER = "<!-- stall-fp:"
+
 RESYNC_FAIL_N = 3
 ACK_STALE_S = 45 * 60
 BORED_LATENCY_S = 240.0
@@ -126,6 +128,8 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
     for row in list(snap.get("unaccepted") or []) + list(snap.get("accepted") or []):
         if not live:
             break
+        if STALL_REPORT_MARKER in str(row.get("body") or ""):
+            continue
         if all(gitclaim.row_gave_up_by(row, n, live=live) for n in live):
             rid = _row_id(row)
             out.append(
