@@ -865,21 +865,33 @@ def resolve_presence_channels(
     Resolution order:
     1. ``presence_channels`` in ``airc.json`` when the key is present (including ``[]``).
     2. Else ``AIRC_PRESENCE_CHANNELS`` (comma-separated; empty string = none) when set.
-    3. Else client profile defaults to ``#bobiverse``; fleet/workstation default none.
+    3. Else no extra presence channels.
+
+    The client profile cannot join the fleet-only ``#bobiverse`` channel. This also
+    filters legacy client configuration written by older installers.
     """
     data = cfg or {}
+    prof = (profile or str(data.get("profile") or "")).strip().lower()
     if "presence_channels" in data:
         parsed = _coerce_presence_channel_list(data.get("presence_channels"))
-        return parsed if parsed is not None else []
+        channels = parsed if parsed is not None else []
+    else:
+        environ = env if env is not None else os.environ
+        if prefer_env and "AIRC_PRESENCE_CHANNELS" in environ:
+            channels = (
+                _coerce_presence_channel_list(environ.get("AIRC_PRESENCE_CHANNELS") or "")
+                or []
+            )
+        else:
+            channels = []
 
-    environ = env if env is not None else os.environ
-    if prefer_env and "AIRC_PRESENCE_CHANNELS" in environ:
-        return _coerce_presence_channel_list(environ.get("AIRC_PRESENCE_CHANNELS") or "") or []
-
-    prof = (profile or str(data.get("profile") or "")).strip().lower()
     if prof == "client":
-        return [FLEET_PRESENCE_CHANNEL]
-    return []
+        return [
+            channel
+            for channel in channels
+            if not same_irc_channel(channel, FLEET_PRESENCE_CHANNEL)
+        ]
+    return channels
 
 
 def legacy_operator_input_log_lines(args: object, cfg: dict | None) -> list[str]:

@@ -1,4 +1,4 @@
-"""FR #3774: client presence-only JOIN of #bobiverse (commands stay on control channel)."""
+"""FR #5190: client joins its shop or #wonderland, never fleet #bobiverse."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,8 +17,16 @@ def test_normalize_and_resolve_presence_channels_defaults():
     assert ac.normalize_irc_channel("#Bobiverse") == "#bobiverse"
     assert ac.normalize_irc_channel("") == ""
 
-    # Client default: #bobiverse
-    assert ac.resolve_presence_channels({"profile": "client"}) == ["#bobiverse"]
+    # Client control-channel selection is handled separately; no extra default JOIN.
+    assert ac.resolve_presence_channels({"profile": "client"}) == []
+    # Older installs persist this generated default in airc.json; filter it out.
+    assert ac.resolve_presence_channels(
+        {"profile": "client", "presence_channels": ["#bobiverse"]}
+    ) == []
+    # Other explicitly configured presence channels remain supported.
+    assert ac.resolve_presence_channels(
+        {"profile": "client", "presence_channels": ["#bobiverse", "#ops"]}
+    ) == ["#ops"]
     # Fleet / workstation / missing: none
     assert ac.resolve_presence_channels({"profile": "fleet"}) == []
     assert ac.resolve_presence_channels({"profile": "workstation"}) == []
@@ -40,6 +48,7 @@ def test_resolve_presence_channels_env_override(monkeypatch):
         "#bobiverse",
         "#ops",
     ]
+    assert ac.resolve_presence_channels({"profile": "client"}) == ["#ops"]
     monkeypatch.setenv("AIRC_PRESENCE_CHANNELS", "")
     # Empty env string means none (even for client) when key is set
     assert ac.resolve_presence_channels({"profile": "client"}, prefer_env=True) == []
@@ -64,6 +73,22 @@ def test_join_commands_includes_presence_not_control_dupe():
     assert "#walrus" in [p.lower() for p in parts]
     # only one walrus
     assert sum(1 for p in parts if p.lower() == "#walrus") == 1
+
+
+def test_client_control_join_has_no_legacy_bobiverse_presence():
+    legacy_channels = ac.resolve_presence_channels(
+        {"profile": "client", "presence_channels": ["#bobiverse"]}
+    )
+    for channel in ("#walrus", "#wonderland"):
+        core = ac.AircConsoleCore(
+            machine="walrus",
+            auth=ac.AuthPolicy(members=ac.ChannelMemberMap(channel=channel)),
+            nick="walrus_console",
+            channel=channel,
+            presence_channels=legacy_channels,
+        )
+        assert core.join_commands() == [f"JOIN {channel}"]
+        assert "#bobiverse" not in core.join_commands()[0]
 
 
 def test_bobiverse_channel_traffic_never_executes_on_client():
