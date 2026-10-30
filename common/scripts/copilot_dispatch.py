@@ -307,7 +307,13 @@ def build_task_body(row: dict) -> dict:
     return {"prompt": "\n".join(prompt_lines)}
 
 
-def should_dispatch(row: dict, *, allowance: bool, now: float | None = None) -> bool:
+def should_dispatch(
+    row: dict,
+    *,
+    allowance: bool,
+    now: float | None = None,
+    home: Path | None = None,
+) -> bool:
     if not allowance:
         return False
     task = str(row.get("task") or "").upper()
@@ -317,6 +323,10 @@ def should_dispatch(row: dict, *, allowance: bool, now: float | None = None) -> 
         return False
     live = {COPILOT_NICK}
     if gitclaim.row_gave_up_by(row, COPILOT_NICK, live=live):
+        return False
+    if home is not None and gitclaim.ledger_blocks(
+        gitclaim.ledger_load(Path(home)), row, COPILOT_NICK, live=live
+    ):
         return False
     now_f = time.time() if now is None else float(now)
     if gitclaim.row_on_cooldown(row, now_f, COPILOT_NICK, live=live):
@@ -428,7 +438,7 @@ def dispatch_row(
         return {"status": "exhausted"}
     if not is_high_priority(home, row):
         return {"status": "skip"}
-    if not should_dispatch(row, allowance=True, now=now):
+    if not should_dispatch(row, allowance=True, now=now, home=home):
         return {"status": "skip"}
     body = build_task_body(row)
     path = tasks_api_path(str(row.get("repo") or ""))
@@ -738,7 +748,7 @@ def tick(
     if has_allowance(home):
         for row in gitclaim.ordered_unaccepted(home):
             if is_high_priority(home, row) and should_dispatch(
-                row, allowance=True, now=now_f
+                row, allowance=True, now=now_f, home=home
             ):
                 r = dispatch_row(
                     home, row, post=post, now=now_f, announce=announce

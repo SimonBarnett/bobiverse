@@ -274,6 +274,31 @@ def test_dispatch_posts_and_accepts(tmp_path, monkeypatch):
     assert any(r.get("nick") == "copilot" and r.get("id") == "#12" for r in acc)
 
 
+def test_dispatch_respects_durable_giveup_after_queue_rebuild(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    fi.handle_focus_cmd(tmp_path, f"high {REPO}")
+    row = _row(num=13)
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {"v": 1, "unaccepted": [row], "accepted": [], "done": []},
+    )
+    gitclaim.ledger_giveup(tmp_path, "copilot", REPO, "FR", "#13")
+    cd.set_allowance(tmp_path, remaining=1)
+    posts = []
+
+    out = cd.dispatch_row(
+        tmp_path,
+        row,
+        post=lambda *args: posts.append(args) or {"status": 201, "id": "task-13"},
+        now=2.0,
+    )
+
+    assert out["status"] == "skip"
+    assert posts == []
+    assert any(r.get("id") == "#13" for r in gitclaim.load_unaccepted(tmp_path))
+    assert not gitclaim.load_accepted(tmp_path)
+
+
 def test_copilot_comment_completes_mrb(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
     gitclaim.apply_queue_event(
