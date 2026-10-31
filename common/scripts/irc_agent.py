@@ -632,6 +632,8 @@ class Client:
         except Exception as exc:  # pragma: no cover
             info(f"WARN home-migration skipped {type(exc).__name__}")
         self.home.mkdir(parents=True, exist_ok=True)
+        # FR #5196: ignore quit files written before this process started.
+        self._started_at = time.time()
         protect.protect_path(self.home)
         if getattr(args, "chair", False):
             bobreport.persist_chair_nick(self.home, args.nick)
@@ -2558,7 +2560,9 @@ class Client:
         return True
 
     def _consume_control_quit(self) -> bool:
-        reason = agent_control.consume_quit_request(self.home)
+        reason = agent_control.consume_quit_request(
+            self.home, ignore_before=getattr(self, "_started_at", None)
+        )
         if reason is None:
             return False
         info(f"INFO agent quit request ({reason})")
