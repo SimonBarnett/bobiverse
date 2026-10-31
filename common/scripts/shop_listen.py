@@ -588,6 +588,7 @@ def return_job_to_unaccepted(
     ident: str,
     now: float | None = None,
     reason: str = "",
+    expected_nick: str = "",
 ) -> tuple[str, dict | None]:
     """Return an accepted job to unaccepted after NACK/GIVEUP (FR #180 cooldown + needs_human)."""
     import time as _time
@@ -607,6 +608,8 @@ def return_job_to_unaccepted(
                         ai = i
                         break
             if ai is None:
+                return "missing", None
+            if expected_nick and str(doc["accepted"][ai].get("nick") or "").lower() != expected_nick.lower():
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
             gave_up_by = str(job.get("nick") or "").strip()
