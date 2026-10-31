@@ -166,8 +166,13 @@ function Get-Asset {
             Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
             Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
             if ((Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
-                Write-UpdLog ("download-ok method=iwr bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
-                return
+                if (Test-LooksLikeHtmlAsset -Path $Dest) {
+                    $lastErr = 'iwr saved html body'
+                    Write-UpdLog "download-warn $lastErr"
+                } else {
+                    Write-UpdLog ("download-ok method=iwr bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
+                    return
+                }
             }
             $lastErr = 'iwr produced empty file'
             Write-UpdLog "download-warn $lastErr"
@@ -192,8 +197,13 @@ function Get-Asset {
                 $ccode = $LASTEXITCODE
                 $ErrorActionPreference = $prev
                 if ($ccode -eq 0 -and (Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
-                    Write-UpdLog ("download-ok method=curl bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
-                    return
+                    if (Test-LooksLikeHtmlAsset -Path $Dest) {
+                        $lastErr = 'curl saved html body'
+                        Write-UpdLog "download-warn $lastErr"
+                    } else {
+                        Write-UpdLog ("download-ok method=curl bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
+                        return
+                    }
                 }
                 $lastErr = "curl exit=$ccode $(($clog | Select-Object -First 3) -join ' ')"
                 Write-UpdLog "download-warn method=curl $lastErr"
@@ -208,6 +218,31 @@ function Get-Asset {
     }
     Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
     throw "download-failed after $attempts attempts: $lastErr"
+}
+
+function Test-LooksLikeHtmlAsset {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+        $buf = New-Object byte[] 64
+        $n = $fs.Read($buf, 0, 64)
+        if ($n -le 0) { return $true }
+        $head = [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)
+    } finally { $fs.Close() }
+    return ($head -match '(?i)^\s*<(!DOCTYPE|html|head|body)\b')
+}
+
+function Read-ExpectedSha256 {
+    # FR #5344: GitHub/IWR copies can carry UTF-8 BOM or `hash *name` lines.
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $raw = [System.IO.File]::ReadAllText($Path)
+    if ($raw.Length -gt 0 -and [int][char]$raw[0] -eq 0xFEFF) { $raw = $raw.Substring(1) }
+    foreach ($line in ($raw -split '\r?\n')) {
+        if ($line -match '([0-9a-fA-F]{64})') { return $Matches[1].ToLowerInvariant() }
+    }
+    return $null
 }
 
 function Test-IsAdmin {
@@ -616,10 +651,21 @@ function Invoke-Apply {
             Set-Failure -Tag $tag -Result 'download-failed'
             return
         }
-        $expected = $null
-        $first = (Get-Content -LiteralPath $shaFile -TotalCount 1 -ErrorAction SilentlyContinue)
-        if ($first -match '^\s*([0-9a-fA-F]{64})\b') { $expected = $Matches[1].ToLowerInvariant() }
+        $expected = Read-ExpectedSha256 -Path $shaFile
         $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+        if (-not $expected -or $expected -ne $actual) {
+            Write-UpdLog "sha256-retry tag=$tag expected=$expected actual=$actual"
+            try {
+                Get-Asset -Url ([string]$plan.msiUrl) -Dest $msi
+                Get-Asset -Url ([string]$plan.shaUrl) -Dest $shaFile
+            } catch {
+                Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
+                Set-Failure -Tag $tag -Result 'download-failed'
+                return
+            }
+            $expected = Read-ExpectedSha256 -Path $shaFile
+            $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
         if (-not $expected -or $expected -ne $actual) {
             Write-UpdLog "sha256-mismatch tag=$tag expected=$expected actual=$actual - aborted, service untouched"
             Set-Failure -Tag $tag -Result 'sha256-mismatch'
