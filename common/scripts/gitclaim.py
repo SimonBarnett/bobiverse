@@ -10507,6 +10507,7 @@ def resync_from_github(
     failed: list[str] = []
     unchanged: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
+    open_issue_ids: dict[str, set[str]] = {}  # FR #5267: open issue numbers per fetched repo
     skipped_draft = 0
     skipped_ci = 0
     fix_added = 0  # FR #4596: FIX enqueue adds counted into github-resync ok added=
@@ -10582,6 +10583,15 @@ def resync_from_github(
             issues = []
         if not isinstance(prs, list):
             prs = []
+        # FR #5267: open issue ids (not pulls) so accepted rows for closed issues can leave.
+        issue_ids: set[str] = set()
+        for iss in issues:
+            if not isinstance(iss, dict) or not isinstance(iss.get("number"), int):
+                continue
+            if iss.get("pull_request"):
+                continue
+            issue_ids.add(f"#{int(iss['number'])}")
+        open_issue_ids[repo] = issue_ids
         # t853u: repo-level UAT gate. Excluded issues (needs-human, boards/mrb-home, harvest/skill
         # records, CRITICAL spam, safe-to-close, needs-mrb1 — FR #1416) never hold a repo back;
         # every other open issue or any open PR does.
@@ -11556,6 +11566,21 @@ def resync_from_github(
             except Exception:
                 focus_pruned = 0
                 focus_redundant = 0
+            # FR #5267: closed issue/PR (or cancel already delivered) leaves accepted,
+            # whoever holds it. Stranded nick=copilot rows return to the seat queue.
+            try:
+                import copilot_dispatch as _cd5267
+
+                _cd5267.settle_stuck_accepted_unlocked(
+                    home,
+                    doc,
+                    now=time.time(),
+                    open_issues=open_issue_ids,
+                    open_pulls=open_pulls_map,
+                    fetched_repos=set(fetched),
+                )
+            except Exception:  # noqa: BLE001 — queue write must still happen
+                pass
             _write_queue(queue_path(home), doc)
             # FR #3205: refresh ordered offer candidates off the IRC thread (resync path).
             with contextlib.suppress(Exception):

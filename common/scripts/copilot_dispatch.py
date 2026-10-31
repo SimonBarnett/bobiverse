@@ -11,6 +11,7 @@ import contextlib
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -73,6 +74,27 @@ def load_allowance(home: Path) -> dict:
     return doc if isinstance(doc, dict) else {"remaining": None, "exhausted": False}
 
 
+def _clear_copilot_cooldown(doc: dict) -> None:
+    """Drop the legacy cooldown and the FR #5397 per-fuel copilot block."""
+    doc.pop("exhausted_until", None)
+    doc.pop("exhausted_until_utc", None)
+    doc.pop("pause_announced_until", None)
+    fuels = doc.get("fuels")
+    if not isinstance(fuels, dict):
+        return
+    block = fuels.get("copilot")
+    if not isinstance(block, dict):
+        return
+    block = dict(block)
+    block.pop("exhausted_until", None)
+    block.pop("exhausted_until_utc", None)
+    if block:
+        fuels["copilot"] = block
+    else:
+        fuels.pop("copilot", None)
+    doc["fuels"] = fuels
+
+
 def set_allowance(home: Path, remaining: int | None = None, exhausted: bool | None = None) -> None:
     doc = load_allowance(home)
     if remaining is not None:
@@ -81,16 +103,12 @@ def set_allowance(home: Path, remaining: int | None = None, exhausted: bool | No
         if int(remaining) > 0:
             doc["tasks_exhausted"] = False
             doc["state"] = "ok"
-            doc.pop("exhausted_until", None)
-            doc.pop("exhausted_until_utc", None)
-            doc.pop("pause_announced_until", None)
+            _clear_copilot_cooldown(doc)
     if exhausted is not None:
         doc["exhausted"] = bool(exhausted)
         if not exhausted:
             doc["tasks_exhausted"] = False
-            doc.pop("exhausted_until", None)
-            doc.pop("exhausted_until_utc", None)
-            doc.pop("pause_announced_until", None)
+            _clear_copilot_cooldown(doc)
     Path(home).mkdir(parents=True, exist_ok=True)
     _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
@@ -452,6 +470,9 @@ def build_task_body(row: dict) -> dict:
 def should_dispatch(row: dict, *, allowance: bool) -> bool:
     if not allowance:
         return False
+    # FR #5267: a give-up release is never offered back to Copilot.
+    if gitclaim.nick_in_giveup_seats(row, COPILOT_NICK):
+        return False
     task = str(row.get("task") or "").upper()
     if task not in ("FR", "FIX", "MRB"):
         return False
@@ -603,6 +624,409 @@ def dispatch_row(
     return {"status": "dispatched", "task_url": task_url, "line": line}
 
 
+def _explicitly_off(val: object) -> bool:
+    if val is False or val == 0:
+        return True
+    return isinstance(val, str) and val.strip().lower() in ("0", "false", "no", "off")
+
+
+def dispatch_enabled(home: Path) -> bool:
+    """False when Copilot dispatch is off (FR #5267).
+
+    Off when ``copilot-allowance.json`` is absent, or when that file (or its
+    ``copilot`` block) sets ``enabled`` false. An explicit ``BOB_FUEL_COPILOT``
+    off-value from FR #5317 counts too; an unset variable does not, so a
+    present allowance file still drives dispatch.
+    """
+    if not _allow_path(home).is_file():
+        return False
+    doc = load_allowance(home)
+    if _explicitly_off(doc.get("enabled")):
+        return False
+    cop = doc.get("copilot")
+    if isinstance(cop, dict) and _explicitly_off(cop.get("enabled")):
+        return False
+    raw = os.environ.get("BOB_FUEL_COPILOT")
+    if raw is not None and str(raw).strip():
+        try:
+            import fuel_chain
+
+            if not fuel_chain.stage_enabled("copilot"):
+                return False
+        except Exception:  # noqa: BLE001
+            if _explicitly_off(raw):
+                return False
+    return True
+
+
+def _is_copilot_row(row: dict) -> bool:
+    return str(row.get("nick") or "").strip().lower() == COPILOT_NICK
+
+
+def _done_blocks_requeue(doc: dict, repo: str, task: str, ident: str) -> bool:
+    for r in doc.get("done") or []:
+        if not isinstance(r, dict):
+            continue
+        if not gitclaim._same(r, repo, task, ident):
+            continue
+        if str(r.get("result") or "").upper() in ("CLOSED", "MERGED", "COPILOT_PR"):
+            return True
+    return False
+
+
+def _forget_job(home: Path, repo: str, task: str, ident: str) -> None:
+    jobs = _load_jobs(home)
+    kept = []
+    for job in jobs.get("jobs") or []:
+        if not isinstance(job, dict):
+            continue
+        if (
+            gitclaim._repo_key(job.get("repo")) == gitclaim._repo_key(repo)
+            and str(job.get("task") or "").upper() == str(task or "").upper()
+            and gitclaim._norm_row_id(job.get("id")) == gitclaim._norm_row_id(ident)
+        ):
+            continue
+        kept.append(job)
+    if len(kept) != len(jobs.get("jobs") or []):
+        jobs["jobs"] = kept
+        _save_jobs(home, jobs)
+
+
+def _matching_job(home: Path, row: dict) -> dict | None:
+    repo = str(row.get("repo") or "")
+    task = str(row.get("task") or "").upper()
+    ident = gitclaim._norm_row_id(row.get("id"))
+    for job in _load_jobs(home).get("jobs") or []:
+        if not isinstance(job, dict):
+            continue
+        if (
+            gitclaim._repo_key(job.get("repo")) == gitclaim._repo_key(repo)
+            and str(job.get("task") or "").upper() == task
+            and gitclaim._norm_row_id(job.get("id")) == ident
+        ):
+            return job
+    return None
+
+
+def _job_is_live(job: dict | None, now: float) -> bool:
+    if not isinstance(job, dict):
+        return False
+    if str(job.get("state") or "").strip().lower() in (
+        "completed",
+        "complete",
+        "failed",
+        "done",
+        "cancelled",
+        "canceled",
+        "error",
+    ):
+        return False
+    try:
+        started = float(job.get("started") or 0)
+    except (TypeError, ValueError):
+        started = 0.0
+    if not started:
+        return False
+    return (float(now) - started) < TASK_TIMEOUT_S
+
+
+def _pull_url(repo: str, raw: str) -> str:
+    text = str(raw or "").strip()
+    if "/pull/" in text:
+        return text
+    num = text.lstrip("#")
+    if num.isdigit() and repo:
+        return f"https://github.com/{repo}/pull/{num}"
+    return ""
+
+
+def _job_pr_url(job: dict | None, repo: str) -> str:
+    if not isinstance(job, dict):
+        return ""
+    if str(job.get("pr_state") or "").strip().lower() == "closed":
+        return ""
+    for key in ("pr_url", "pull_url", "html_url"):
+        url = _pull_url(repo, str(job.get(key) or ""))
+        if "/pull/" in url:
+            return url
+    for key in ("pr", "pr_id", "pull", "pull_number"):
+        url = _pull_url(repo, str(job.get(key) or ""))
+        if url:
+            return url
+    return ""
+
+
+def _sibling_copilot_pr(doc: dict, row: dict) -> str:
+    """Open Copilot MRB that references this issue (PR webhook tracker)."""
+    repo = str(row.get("repo") or "")
+    ident = gitclaim._norm_row_id(row.get("id"))
+    key = gitclaim.fr_issue_key(repo, ident)
+    for bucket in ("unaccepted", "accepted"):
+        for other in doc.get(bucket) or []:
+            if not isinstance(other, dict) or other is row:
+                continue
+            if str(other.get("task") or "").upper() != "MRB":
+                continue
+            if gitclaim._repo_key(other.get("repo")) != gitclaim._repo_key(repo):
+                continue
+            if str(other.get("state") or "").strip().lower() == "closed":
+                continue
+            author = " ".join(
+                str(other.get(k) or "")
+                for k in ("author_seat", "author", "opened_by", "nick", "implementer_seat")
+            ).lower()
+            if "copilot" not in author:
+                continue
+            refs = [gitclaim._norm_row_id(x) for x in gitclaim._row_refs(other)]
+            sup = str(other.get("supersedes") or "")
+            if ident not in refs and sup != key and ident not in sup:
+                continue
+            url = _pull_url(repo, str(other.get("url") or "")) or _pull_url(
+                repo, str(other.get("id") or "")
+            )
+            if url:
+                return url
+    return ""
+
+
+def _live_copilot_pr_url(doc: dict, row: dict, job: dict | None) -> str:
+    """URL of a live Copilot PR for this row, or empty."""
+    repo = str(row.get("repo") or "")
+    task = str(row.get("task") or "").upper()
+    from_job = _job_pr_url(job, repo)
+    if from_job:
+        return from_job
+    if task == "FR":
+        return _sibling_copilot_pr(doc, row)
+    if task in ("MRB", "PR") and str(row.get("state") or "").strip().lower() != "closed":
+        return _pull_url(repo, str(row.get("url") or "")) or _pull_url(
+            repo, str(row.get("id") or "")
+        )
+    return ""
+
+
+def _ids_for_repo(mapping: dict | None, repo: str) -> set[str]:
+    if not isinstance(mapping, dict):
+        return set()
+    key = gitclaim._repo_key(repo)
+    found = None
+    for name, nums in mapping.items():
+        if gitclaim._repo_key(name) == key:
+            found = nums
+            break
+    if not found:
+        return set()
+    return {gitclaim._norm_row_id(n) for n in found}
+
+
+def _repo_was_fetched(repo: str, fetched: set | None) -> bool:
+    if not fetched:
+        return False
+    key = gitclaim._repo_key(repo)
+    return any(gitclaim._repo_key(r) == key for r in fetched)
+
+
+def _row_is_terminal(
+    row: dict,
+    *,
+    open_issues: dict | None,
+    open_pulls: dict | None,
+    fetched_repos: set | None,
+) -> bool:
+    """Closed issue/PR, or cancel already delivered (FR #5267)."""
+    if row.get("cancel_pending") and row.get("cancel_notified"):
+        return True
+    if str(row.get("state") or "").strip().lower() == "closed":
+        return True
+    if row.get("merged") in (True, "true", "1", 1):
+        return True
+    repo = str(row.get("repo") or "")
+    if not _repo_was_fetched(repo, fetched_repos):
+        return False
+    task = str(row.get("task") or "").upper()
+    ident = gitclaim._norm_row_id(row.get("id"))
+    if task in ("FR", "PR") and open_issues is not None:
+        return ident not in _ids_for_repo(open_issues, repo)
+    if task == "MRB" and open_pulls is not None:
+        return ident not in _ids_for_repo(open_pulls, repo)
+    return False
+
+
+def _idle_holder(home: Path | None, row: dict) -> None:
+    if home is None:
+        return
+    seat = gitclaim._seat_holder_nick(row)
+    if not seat:
+        return
+    ident = str(row.get("id") or "").lstrip("#")
+    with contextlib.suppress(Exception):
+        bobreport.clear_seat_doing(home, seat, only_if_work_contains=ident or "x")
+
+
+def _to_done(row: dict, *, result: str, url: str = "") -> dict:
+    fin = dict(row)
+    holder = gitclaim._seat_holder_nick(row)
+    fin["result"] = result
+    fin["done_ts"] = gitclaim._utc_now()
+    if holder:
+        fin["done_by"] = holder
+    if url:
+        fin["url"] = url
+    if result in ("CLOSED", "MERGED"):
+        fin["state"] = "closed"
+        if result == "MERGED":
+            fin["merged"] = True
+    for k in (
+        "nick",
+        "accepted_ts",
+        "accepted_by",
+        "offered_to",
+        "offered_ts",
+        "offered_channel",
+        "cancel_pending",
+    ):
+        fin.pop(k, None)
+    return fin
+
+
+def _stamp_copilot_giveup(row: dict, *, now: float) -> None:
+    seats = [s.strip() for s in str(row.get("giveup_seats") or "").split(",") if s.strip()]
+    if COPILOT_NICK not in {s.lower() for s in seats}:
+        seats.append(COPILOT_NICK)
+    row["giveup_seats"] = ",".join(seats)
+    row["giveup_ts"] = gitclaim._utc_now()
+    row["cooldown_until"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(float(now) + float(gitclaim.GIVEUP_COOLDOWN_S)),
+    )
+
+
+def _giveup_release(doc: dict, row: dict, *, now: float) -> str:
+    """Move a copilot hold back to unaccepted with give-up cooldown.
+
+    Returns ``released`` when appended, ``deduped`` when the seat queue
+    already has the row (stamp that copy; do not add a second one).
+    """
+    repo = str(row.get("repo") or "")
+    task = str(row.get("task") or "").upper()
+    ident = str(row.get("id") or "")
+    un = doc.setdefault("unaccepted", [])
+    for existing in un:
+        if isinstance(existing, dict) and gitclaim._same(existing, repo, task, ident):
+            _stamp_copilot_giveup(existing, now=now)
+            return "deduped"
+    moved = dict(row)
+    _stamp_copilot_giveup(moved, now=now)
+    moved.pop("nick", None)
+    moved.pop("accepted_ts", None)
+    moved.pop("accepted_by", None)
+    un.append(moved)
+    return "released"
+
+
+def _append_done(doc: dict, fin: dict) -> None:
+    done = doc.setdefault("done", [])
+    done.append(fin)
+    cap = int(getattr(gitclaim, "DONE_CAP", 100) or 100)
+    if len(done) > cap:
+        doc["done"] = done[-cap:]
+
+
+def settle_stuck_accepted_unlocked(
+    home: Path,
+    doc: dict,
+    *,
+    now: float | None = None,
+    open_issues: dict | None = None,
+    open_pulls: dict | None = None,
+    fetched_repos: set | None = None,
+) -> dict:
+    """Drop terminal accepts and release stranded nick=copilot rows (FR #5267).
+
+    Mutates ``doc`` and forgets matching copilot jobs. Does not take the queue
+    lock and does not write ``queue.json`` (the caller holds the lock).
+    """
+    now_f = time.time() if now is None else float(now)
+    enabled = dispatch_enabled(home)
+    dropped = 0
+    released = 0
+    kept: list[dict] = []
+    for row in doc.get("accepted") or []:
+        if not isinstance(row, dict):
+            continue
+        repo = str(row.get("repo") or "")
+        task = str(row.get("task") or "").upper()
+        ident = str(row.get("id") or "")
+        if _row_is_terminal(
+            row,
+            open_issues=open_issues,
+            open_pulls=open_pulls,
+            fetched_repos=fetched_repos,
+        ):
+            result = "MERGED" if row.get("merged") in (True, "true", "1", 1) else "CLOSED"
+            _append_done(doc, _to_done(row, result=result))
+            _idle_holder(home, row)
+            _forget_job(home, repo, task, ident)
+            dropped += 1
+            continue
+        if not _is_copilot_row(row):
+            kept.append(row)
+            continue
+        job = _matching_job(home, row)
+        pr_url = _live_copilot_pr_url(doc, row, job)
+        if pr_url and task == "FR":
+            # The open PR (webhook MRB) tracks the work. Do not re-offer the issue.
+            _append_done(doc, _to_done(row, result="COPILOT_PR", url=pr_url))
+            _idle_holder(home, row)
+            _forget_job(home, repo, task, ident)
+            dropped += 1
+            continue
+        if pr_url and task in ("MRB", "PR"):
+            # Already tracked via the PR webhook row, or this hold is that PR.
+            # Never keep a second copy.
+            _giveup_release(doc, row, now=now_f)
+            _idle_holder(home, row)
+            _forget_job(home, repo, task, ident)
+            released += 1
+            continue
+        if enabled and _job_is_live(job, now_f):
+            kept.append(row)
+            continue
+        _giveup_release(doc, row, now=now_f)
+        _idle_holder(home, row)
+        _forget_job(home, repo, task, ident)
+        released += 1
+    doc["accepted"] = kept
+    return {"dropped": dropped, "released": released}
+
+
+def settle_stuck_accepted(
+    home: Path,
+    *,
+    now: float | None = None,
+    open_issues: dict | None = None,
+    open_pulls: dict | None = None,
+    fetched_repos: set | None = None,
+) -> dict:
+    """Lock, settle, and persist. Safe to call from the chair tick."""
+    now_f = time.time() if now is None else float(now)
+    try:
+        with gitclaim._lock(home):
+            doc = gitclaim._load_queue_unlocked(home)
+            stats = settle_stuck_accepted_unlocked(
+                home,
+                doc,
+                now=now_f,
+                open_issues=open_issues,
+                open_pulls=open_pulls,
+                fetched_repos=fetched_repos,
+            )
+            gitclaim._write_queue(gitclaim.queue_path(home), doc)
+            return stats
+    except (TimeoutError, OSError, ValueError):
+        return {"dropped": 0, "released": 0}
+
+
 def handle_timeout_or_fail(
     home: Path, job: dict, *, now: float, reason: str = "timeout"
 ) -> dict:
@@ -630,6 +1054,12 @@ def handle_timeout_or_fail(
                 else:
                     keep.append(r)
             doc["accepted"] = keep
+            # FR #5267: a row already moved to done (closed issue / live PR)
+            # must not be synthesized back into the seat queue.
+            if moved is None and _done_blocks_requeue(doc, repo, task, ident):
+                gitclaim._write_queue(gitclaim.queue_path(home), doc)
+                _forget_job(home, repo, task, ident)
+                return {"status": "closed"}
             if moved is None:
                 moved = {"repo": repo, "task": task, "id": ident}
             seats = [
@@ -840,13 +1270,28 @@ def tick(
     fetch_user: Callable[[], dict] | None = None,
     announce: Callable[[str], None] | None = None,
 ) -> dict:
-    """Refresh allowance, dispatch next eligible job, time out stale Copilot accepts."""
+    """Refresh allowance, dispatch next eligible job, time out stale Copilot accepts.
+
+    FR #5267: first settle closed accepts and stranded nick=copilot rows.
+    Dispatch stays off (and the Copilot API is not called) when the allowance
+    file is absent or ``enabled`` is false.
+    """
     now_f = time.time() if now is None else float(now)
+    settled = settle_stuck_accepted(home, now=now_f)
+    out: dict[str, Any] = {
+        "dispatched": 0,
+        "timed_out": 0,
+        "dropped": int(settled.get("dropped") or 0),
+        "released": int(settled.get("released") or 0),
+    }
+    if not dispatch_enabled(home):
+        out["disabled"] = True
+        return out
     if cooldown_active(home, now=now_f):
-        return {"dispatched": 0, "timed_out": 0, "paused": True}
+        out["paused"] = True
+        return out
     if fetch_user is not None:
         refresh_allowance(home, fetch_user=fetch_user, now=now_f)
-    out: dict[str, Any] = {"dispatched": 0, "timed_out": 0}
     if has_allowance(home, now=now_f):
         for row in gitclaim.load_unaccepted(home):
             if should_dispatch(row, allowance=True):
