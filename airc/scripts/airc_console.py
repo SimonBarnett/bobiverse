@@ -2238,6 +2238,12 @@ class ShellJobRunner:
             self._dcc_listen[offer.job_id] = offer
         return True
 
+    def take_dcclisten(self, job_id: str):
+        """FR #5293: pop a DCCLISTEN offer for an EXTENSION (or other) job id."""
+        key = (job_id or "").strip().lower()
+        with self._lock:
+            return self._dcc_listen.pop(key, None)
+
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
         item = _ShellPending(command=command)
@@ -2757,13 +2763,28 @@ class AircConsoleCore:
                 )
             if not isinstance(result, _extension.ExtensionVerbResult):
                 result = _extension.ExtensionVerbResult(False, "EXTENSION err bad-runner")
+            qid = (ext.get("qid") or result.job_id or "").strip().lower()
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            log = _extension.build_extension_log(ext["action"], whatif=ext["whatif"])
+            send_fn = getattr(self, "extension_log_send", None)
+            delivered = _extension.deliver_extension_log(
+                job_id=qid or result.job_id,
+                log=log,
+                offer=offer,
+                send_fn=send_fn,
+            )
+            reply = f"{result.reply_text()} {delivered['summary']} {delivered['done']}"
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="extension",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=result.reply_text(),
+                reply=reply[:IRC_SAFE_PAYLOAD],
                 **meta,
             )
 

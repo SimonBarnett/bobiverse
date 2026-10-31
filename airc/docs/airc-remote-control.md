@@ -33,7 +33,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
-| `EXTENSION install\|status [-WhatIf]` | Isolated stub worker (FR #5290). Auth same as UPDATE (`update=off` refuses). No GPO/registry in this slice. Default id `cgmpadejahkaggjpffnhaoiafbnicgpa`. |
+| `EXTENSION install\|status [-WhatIf]` | Isolated stub worker (FR #5290). Auth same as UPDATE (`update=off` refuses). FR #5293: structured log (`failures[]`) via DCCLISTEN same job id (`DONE ... via=dcc` + sha) or IRC CONT. No GPO/registry in this slice. Default id `cgmpadejahkaggjpffnhaoiafbnicgpa`. |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
 
