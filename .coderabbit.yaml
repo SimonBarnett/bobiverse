@@ -84,10 +84,11 @@ reviews:
       - name: Tests accompany behaviour changes
         mode: warning
         instructions: >-
-          Pass if the PR changes no executable code (*.py, *.ps1, *.psm1, *.cmd, *.cs)
-          outside tests/ directories. Otherwise pass only if the PR also adds or modifies
-          at least one file under a tests/ directory (e.g. bob/tests, jeeves/tests,
-          airc/tests, common/tests) that exercises the changed behaviour. Fail otherwise.
+          Pass if the PR changes no executable code (*.py, *.ps1, *.psm1, *.cmd, *.bat, *.cs)
+          outside tests/ directories. Otherwise, for EACH service directory (bob, jeeves,
+          airc, common) whose executable code changed, the PR must also add or modify at
+          least one file under that service's tests/ directory that exercises the changed
+          behaviour. Fail and name the service(s) missing tests otherwise.
       - name: No secrets committed
         mode: warning
         instructions: >-
