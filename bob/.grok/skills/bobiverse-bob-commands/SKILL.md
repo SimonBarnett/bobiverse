@@ -27,7 +27,7 @@ description: >
 | FR #5059 `!recycleseat <nick> [machine]` | Shop or `#bobiverse`: ops (+o/+h), bob-* ear, Jeeves or owner. Ear queues `run\\recycleseat\\req-*.json`; elevated tray stop+verify then start. Stop fail / PID still alive => no new seat + intake report |
 | Shop wire in `#<machine>`: `!bored`, `ACK`, `DONE`, `NACK`, `GIVEUP` | Worker <-> Jeeves job assignment (workers JOIN the shop only) |
 | `home\outbox.txt` lines `PRIVMSG <target> :<text>` | Sent verbatim (UTF-8, NO BOM, newline-terminated; only complete lines are consumed, offset in `outbox.txt.pos`). Identical send interface on every machine (FR #2174). This is how you "type as the ear" |
-| `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted) |
+| `PRIVMSG <machine>_console :<cmd>` | Remote shell on that box through Airc (`bob-*` ears are allowlisted). **FR #5539:** the ear never splits an over-long console PRIVMSG (overflow fragments would run as a second command). The whole line is dropped; use a shorter command or DCC PUT |
 | Incoming channel/PM PRIVMSG | FR #2174: always appended (scrubbed) to `home\inbound-transcript.log` as `UTC channel nick text` — listen without `BOB_IRC_DEBUG` |
 | Incoming `*_console` Query `out`/`err`/`DONE` PMs | FR #1546: ear appends them to `<bob home>\airc-replies.jsonl` so `Invoke-AircRemote -ReplyFile` can poll until DONE (skips digest for those lines) |
 | FR #4796 driver pacing for `*_console` outbox | `Invoke-AircRemote -OutboxPaceMs` / `-PostBurstCoolMs`; ear `CONSOLE_OUTBOX_FLOOD_S` (env `BOB_CONSOLE_OUTBOX_FLOOD_S`); console token-bucket is FR #4790 |
