@@ -46,7 +46,7 @@ PRIVMSG marchhare_console :UPDATE airc
 PRIVMSG marchhare_console :UPDATE airc 0.1.20
 ```
 
-- **Bare `UPDATE airc` (no version)** = latest GitHub Release airc MSI for `SimonBarnett/bobiverse` (sha256-checked). The console schedules Check **without** `-TargetVersion`; `Update-BobiverseService.ps1` calls `GET /repos/.../releases/latest` and selects the matching `airc-x.y.z.msi` + `.sha256` (FR #5280 / parent Success S3).
+- **Bare `UPDATE airc` (no version)** = latest GitHub Release airc MSI for `SimonBarnett/bobiverse` (sha256-checked). The console schedules Check **without** `-TargetVersion`; `Update-BobiverseService.ps1` calls `GET /repos/.../releases/latest` and selects the matching `airc-x.y.z.msi` + `.sha256` (FR #5280 / parent Success S3). FR #5353: if `/releases/latest` 404s (prerelease-only / `--latest=false` catalog), Check lists `/releases` and picks the newest semver tag with the product MSI (non-prerelease preferred), with short retries on transient 403/429.
 - **Pinned `UPDATE airc x.y.z`** = that release tag only (`-TargetVersion`; API `/releases/tags/vX.Y.Z`). Invalid/mismatched pins log `target-version-mismatch` and do not install.
 - Schedules **Check** mode of `Update-BobiverseService.ps1` with `-ForceCheck` (and optional `-TargetVersion` only when pinned).
 - Detached helper (scheduled task / WMI) runs **Apply** later; the live airc process never invokes `msiexec`.
