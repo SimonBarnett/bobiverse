@@ -1,10 +1,13 @@
-"""Airc EXTENSION verb + isolated worker (FR #5290 / FR #5292).
+"""Airc EXTENSION verb + isolated worker (FR #5290 / #5292 / #5293).
 
-FR-A: verb + isolated stub. FR-C: LDAP computer enum + per-host registry
-ForceInstall fallback (no GPO in this module). Auth matches UPDATE.
+FR-A: verb + isolated worker. FR-C: LDAP enum + per-host Chrome/Edge
+ForceInstall fallback. FR-D: structured log via DCCLISTEN or IRC CONT.
+Auth matches UPDATE. Never secrets on IRC.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 from dataclasses import dataclass
@@ -215,3 +218,112 @@ def run_extension_verb(
     if whatif:
         bits.append("whatif=1")
     return ExtensionVerbResult(True, " ".join(bits), job_id=qid)
+
+
+_SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
+
+
+def _scrub(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {
+            k: _scrub(v)
+            for k, v in obj.items()
+            if not _SECRET_KEY_RE.search(str(k))
+        }
+    if isinstance(obj, list):
+        return [_scrub(x) for x in obj]
+    if isinstance(obj, str) and _SECRET_KEY_RE.search(obj) and "=" in obj:
+        return "[redacted]"
+    return obj
+
+
+def build_extension_log(
+    action: str,
+    *,
+    whatif: bool = False,
+    hosts: list[dict] | None = None,
+    failures: list[dict] | None = None,
+    gpo: dict | None = None,
+    fallback: dict | None = None,
+    extra: dict | None = None,
+    extension_id: str = DEFAULT_EXTENSION_ID,
+) -> dict[str, Any]:
+    fails = list(failures or [])
+    if extra:
+        fails = fails  # extra is scrubbed, never merged as secrets
+    log = {
+        "action": action,
+        "whatif": bool(whatif),
+        "extension_id": extension_id,
+        "gpo": gpo or {"attempted": False, "name": "Priority-web-extension"},
+        "fallback": fallback or {"attempted": False},
+        "hosts": list(hosts or []),
+        "failures": fails
+        or [{"step": "gpo", "error": "not-implemented-fr-b"}],
+    }
+    if extra:
+        for k, v in extra.items():
+            if not _SECRET_KEY_RE.search(str(k)):
+                log[k] = v
+    log = _scrub(log)
+    log["failure_count"] = len(log.get("failures") or [])
+    return log
+
+
+def extension_log_bytes(log: dict[str, Any]) -> bytes:
+    return (json.dumps(log, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+
+
+def deliver_extension_log(
+    *,
+    job_id: str,
+    log: dict[str, Any],
+    offer: Any | None = None,
+    send_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    import airc_dcc_bulk as _dcc
+
+    jid = (job_id or "").strip().lower() or "00000000"
+    raw = extension_log_bytes(log)
+    digest = hashlib.sha256(raw).hexdigest()
+    nfail = int(log.get("failure_count") or 0)
+    summary = f"EXTENSION log failures={nfail} action={log.get('action')} bytes={len(raw)}"
+    lines: list[str] = [f"out id={jid} seq=1 {summary}"]
+    for i, fail in enumerate(log.get("failures") or [], start=2):
+        lines.append(f"out id={jid} seq={i} failure {json.dumps(fail, separators=(',', ':'))}")
+    if offer is not None:
+        sender = send_fn or _dcc.send_offer_payload
+        try:
+            sender(raw, offer)
+            done = _dcc.format_done_via_dcc(jid, 0, nbytes=len(raw), sha256=digest, via="dcc")
+            return {
+                "via": "dcc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": [lines[0], done],
+                "done": done,
+            }
+        except Exception as exc:
+            lines.append(f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC")
+            done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
+            lines.append(done)
+            return {
+                "via": "irc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": lines,
+                "done": done,
+            }
+    lines.append("CONT id=" + jid + " offset=1")
+    done = f"DONE id={jid} exit=0 via=irc"
+    lines.append(done)
+    return {
+        "via": "irc",
+        "sha256": digest,
+        "nbytes": len(raw),
+        "summary": summary,
+        "lines": lines,
+        "done": done,
+    }
