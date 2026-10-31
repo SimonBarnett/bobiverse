@@ -907,6 +907,14 @@ class ChairJobs:
         findings = stall_detectors.detect_all(snap)
         if not findings:
             return
+        # FR #5181: park all-gave-up rows so the next scan skips them
+        # (needs_human) and seats stop re-offering abandoned human work.
+        with contextlib.suppress(Exception):
+            n_park = stall_detectors.stamp_needs_human_for_all_gave_up(
+                self.digest_home, findings
+            )
+            if n_park:
+                self.log(f"INFO stall-park needs_human n={n_park}")
         actions = stall_filer.apply_findings(
             findings,
             home=self.home,
