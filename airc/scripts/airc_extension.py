@@ -420,8 +420,11 @@ def default_apply_force_install_as(
     value: str,
     username: str,
     password: str,
-) -> None:
-    """Retry registry write after IPC$ with CredMan user. Never log the secret."""
+) -> bool:
+    """Retry registry write after IPC$ with CredMan user. Never log the secret.
+
+    FR #5585: return the wrote bool from default_apply_force_install.
+    """
     import shutil
     import subprocess
 
@@ -438,7 +441,7 @@ def default_apply_force_install_as(
         )
         if p.returncode != 0:
             raise OSError(5, "credman-ipc-failed")
-        default_apply_force_install(host, product, value)
+        return bool(default_apply_force_install(host, product, value))
     finally:
         subprocess.run(
             [net, "use", ipc, "/delete", "/y"],
@@ -447,7 +450,7 @@ def default_apply_force_install_as(
         )
 
 
-def default_apply_force_install(host: str, product: str, value: str) -> None:
+def default_apply_force_install(host: str, product: str, value: str) -> bool:
     import winreg
 
     key_path = CHROME_FORCE_KEY if product == "chrome" else EDGE_FORCE_KEY
@@ -469,12 +472,73 @@ def default_apply_force_install(host: str, product: str, value: str) -> None:
             ext_id = (value or "").split(";", 1)[0]
             slot = next_forcelist_name(names, values, ext_id)
             if slot is None:
-                return
+                return False
             winreg.SetValueEx(key, slot, 0, winreg.REG_SZ, value)
+            return True
         finally:
             winreg.CloseKey(key)
     finally:
         winreg.CloseKey(rem)
+
+
+def default_read_forcelist(host: str, product: str) -> tuple[list[str], list[str]]:
+    """FR #5585: read Chrome/Edge ForceInstall values (no write)."""
+    import winreg
+
+    key_path = CHROME_FORCE_KEY if product == "chrome" else EDGE_FORCE_KEY
+    rem = winreg.ConnectRegistry(host, winreg.HKEY_LOCAL_MACHINE)
+    try:
+        try:
+            key = winreg.OpenKey(rem, key_path)
+        except OSError:
+            return [], []
+        try:
+            names: list[str] = []
+            values: list[str] = []
+            idx = 0
+            while True:
+                try:
+                    n, v, _typ = winreg.EnumValue(key, idx)
+                except OSError:
+                    break
+                names.append(str(n))
+                values.append(str(v or ""))
+                idx += 1
+            return names, values
+        finally:
+            winreg.CloseKey(key)
+    finally:
+        winreg.CloseKey(rem)
+
+
+def probe_host_forcelist(
+    host: str,
+    extension_id: str,
+    *,
+    reader: Callable[[str, str], tuple[list[str], list[str]]] | None = None,
+) -> dict[str, Any] | None:
+    """Return would_write/present per browser, or None if the registry is unreadable."""
+    read = reader or default_read_forcelist
+    try:
+        cn, cv = read(host, "chrome")
+        en, ev = read(host, "edge")
+    except Exception:
+        return None
+    chrome_need = next_forcelist_name(cn, cv, extension_id) is not None
+    edge_need = next_forcelist_name(en, ev, extension_id) is not None
+    return {
+        "chrome_present": not chrome_need,
+        "edge_present": not edge_need,
+        "would_write": chrome_need or edge_need,
+    }
+
+
+def _apply_wrote(fn: Callable[..., Any], *args: Any) -> bool:
+    """Void writers count as wrote; default_apply returns False on already-present."""
+    out = fn(*args)
+    if out is None:
+        return True
+    return bool(out)
 
 
 def fill_holes_work(
@@ -490,12 +554,14 @@ def fill_holes_work(
     extra_hosts: list[str] | None = None,
     is_dc: Callable[[str], bool] | None = None,
     dc_enum: Callable[[], list[str]] | None = None,
+    read_forcelist: Callable[[str, str], tuple[list[str], list[str]]] | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
     """FR #5292: LDAP enum + per-host Chrome/Edge ForceInstall. Never uses extra_hosts.
 
     FR #5364: on access-denied, retry with CredMan PriorityAirc/ExtensionAdmin.
     FR #5538: status is read-only; skip DCs; append a free forcelist name.
+    FR #5585: would_write / chrome/edge true only when a forcelist slot is free.
     """
     _ = extra_hosts
     enum = ldap_enum or default_ldap_enum
@@ -520,17 +586,26 @@ def fill_holes_work(
         if not ping(name):
             hosts_out.append({"host": name, "ok": False, "error": "unreachable"})
             continue
-        if not writes:
-            hosts_out.append(
-                {"host": name, "ok": True, "would_write": True, "skipped": "status"}
-            )
-            continue
-        if whatif:
-            hosts_out.append({"host": name, "ok": True, "would_write": True})
+        plan = probe_host_forcelist(
+            name, extension_id, reader=read_forcelist
+        )
+        if not writes or whatif:
+            would = True if plan is None else bool(plan["would_write"])
+            row: dict[str, Any] = {"host": name, "ok": True, "would_write": would}
+            if not writes:
+                row["skipped"] = "status" if would else "already"
+            elif not would:
+                row["skipped"] = "already"
+            if plan is not None:
+                row["chrome"] = bool(plan["chrome_present"])
+                row["edge"] = bool(plan["edge_present"])
+                if not would:
+                    row["state"] = "present"
+            hosts_out.append(row)
             continue
         try:
-            apply(name, "chrome", value)
-            apply(name, "edge", value)
+            chrome_w = _apply_wrote(apply, name, "chrome", value)
+            edge_w = _apply_wrote(apply, name, "edge", value)
         except Exception as exc:
             if not is_access_denied(exc):
                 hosts_out.append(
@@ -550,26 +625,45 @@ def fill_holes_work(
                 )
                 continue
             try:
-                apply_as(name, "chrome", value, user, pw)
-                apply_as(name, "edge", value, user, pw)
+                chrome_w = _apply_wrote(apply_as, name, "chrome", value, user, pw)
+                edge_w = _apply_wrote(apply_as, name, "edge", value, user, pw)
             except Exception as exc2:
                 hosts_out.append(
                     {"host": name, "ok": False, "error": type(exc2).__name__}
                 )
                 continue
-            wrote = True
+            if chrome_w or edge_w:
+                wrote = True
             hosts_out.append(
                 {
                     "host": name,
                     "ok": True,
-                    "chrome": True,
-                    "edge": True,
+                    "chrome": chrome_w,
+                    "edge": edge_w,
                     "auth": "credman",
+                    **(
+                        {"skipped": "already", "state": "present"}
+                        if not (chrome_w or edge_w)
+                        else {}
+                    ),
                 }
             )
             continue
-        wrote = True
-        hosts_out.append({"host": name, "ok": True, "chrome": True, "edge": True})
+        if chrome_w or edge_w:
+            wrote = True
+        hosts_out.append(
+            {
+                "host": name,
+                "ok": True,
+                "chrome": chrome_w,
+                "edge": edge_w,
+                **(
+                    {"skipped": "already", "state": "present"}
+                    if not (chrome_w or edge_w)
+                    else {}
+                ),
+            }
+        )
     return {
         "ok": True,
         "action": action,
