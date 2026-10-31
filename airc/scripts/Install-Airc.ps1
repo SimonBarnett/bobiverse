@@ -669,15 +669,10 @@ try {
         profile = $prof
         auth_mode = $authMode
     }
-    # FR #3774: client presence-only JOIN #bobiverse (commands stay on control channel).
-    # Empty array disables. Fleet/workstation omit / empty by default.
-    if ($prof -eq 'client') {
-        $capObj['presence_channels'] = @('#bobiverse')
-    } else {
-        $capObj['presence_channels'] = @()
-    }
+    # FR #5190: client does not auto-join #bobiverse (shop or #wonderland is control).
+    $capObj['presence_channels'] = @()
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
-    Write-Host ("INFO FR #3287/#3289/#3393/#3774/#5295 wrote {0} profile={1} shell={2} jobs={3} update={4} extension={5} require_account={6} sync_from_repo={7} self_update={8} presence_channels={9}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedExtension, $resolvedRequire, $resolvedSync, $resolvedSelf, (($capObj['presence_channels'] -join ',')))
+    Write-Host ("INFO FR #3287/#3289/#3393/#3774/#5190/#5295 wrote {0} profile={1} shell={2} jobs={3} update={4} extension={5} require_account={6} sync_from_repo={7} self_update={8} presence_channels={9}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedExtension, $resolvedRequire, $resolvedSync, $resolvedSelf, (($capObj['presence_channels'] -join ',')))
     Write-Host ("INFO FR #4030 shell resolve shell={0} source={1} bob={2} explicit={3}" -f $resolvedShell, $shellSource, $isBobMachine, ($shellSource -eq 'explicit'))
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
