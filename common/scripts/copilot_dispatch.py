@@ -38,7 +38,11 @@ JOBS_NAME = "copilot-jobs.json"
 TASK_TIMEOUT_S = 4 * 3600.0
 CACHE_S = 300.0
 COPILOT_COOLDOWN_S = 7 * 86400.0
-FUEL_COOLDOWN_S = {"copilot": COPILOT_COOLDOWN_S}
+FUEL_COOLDOWN_S = {
+    "copilot": COPILOT_COOLDOWN_S,
+    "cursor": COPILOT_COOLDOWN_S,
+    "grok": COPILOT_COOLDOWN_S,
+}
 COPILOT_USER_PATH = "copilot_internal/user"
 FALLBACK_REASONS = frozenset(
     {"startup", "webhook_gap", "delivery_failure", "safety_interval", "operator"}
@@ -183,10 +187,32 @@ def fuel_cooldown_seconds(fuel: str = "copilot") -> float:
     return float(FUEL_COOLDOWN_S.get((fuel or "copilot").strip().lower(), COPILOT_COOLDOWN_S))
 
 
+def _fuel_name(fuel: str) -> str:
+    return (fuel or "copilot").strip().lower() or "copilot"
+
+
+def _fuel_block(doc: dict, fuel: str) -> dict:
+    fuels = doc.get("fuels")
+    if not isinstance(fuels, dict):
+        return {}
+    block = fuels.get(_fuel_name(fuel))
+    return block if isinstance(block, dict) else {}
+
+
+def fuel_exhausted_until(home: Path, fuel: str = "copilot") -> float | None:
+    """FR #5397: per-fuel exhausted_until; Copilot still reads the legacy top-level key."""
+    doc = load_allowance(home)
+    until = _num(_fuel_block(doc, fuel).get("exhausted_until"))
+    if until is not None:
+        return until
+    if _fuel_name(fuel) == "copilot":
+        return _num(doc.get("exhausted_until"))
+    return None
+
+
 def cooldown_active(home: Path, *, now: float | None = None, fuel: str = "copilot") -> bool:
-    _ = fuel
     now_f = time.time() if now is None else float(now)
-    until = _num(load_allowance(home).get("exhausted_until"))
+    until = fuel_exhausted_until(home, fuel)
     return until is not None and now_f < until
 
 
@@ -333,18 +359,31 @@ def mark_tokens_exhausted(
 ) -> dict[str, Any]:
     """FR #5316: persist per-fuel cooldown; Copilot is 7 days. No probing until then."""
     now_f = time.time() if now is None else float(now)
-    until = now_f + fuel_cooldown_seconds(fuel)
+    name = _fuel_name(fuel)
+    until = now_f + fuel_cooldown_seconds(name)
     doc = load_allowance(home)
-    already = _num(doc.get("exhausted_until"))
-    doc["tasks_exhausted"] = True
-    doc["exhausted"] = True
-    doc["state"] = "exhausted"
-    doc["exhausted_until"] = until
-    doc["exhausted_until_utc"] = _utc_iso(until)
-    doc["fuel"] = (fuel or "copilot").strip().lower()
+    already = fuel_exhausted_until(home, name)
+    fuels = doc.get("fuels")
+    if not isinstance(fuels, dict):
+        fuels = {}
+    block = dict(fuels.get(name) or {}) if isinstance(fuels.get(name), dict) else {}
+    block["exhausted_until"] = until
+    block["exhausted_until_utc"] = _utc_iso(until)
+    fuels[name] = block
+    doc["fuels"] = fuels
+    doc["fuel"] = name
+    if name == "copilot":
+        doc["tasks_exhausted"] = True
+        doc["exhausted"] = True
+        doc["state"] = "exhausted"
+        doc["exhausted_until"] = until
+        doc["exhausted_until_utc"] = _utc_iso(until)
     Path(home).mkdir(parents=True, exist_ok=True)
-    released = release_held_copilot_rows(home)
-    line = f"Copilot out of tokens - paused until {doc['exhausted_until_utc']}"
+    released = 0
+    if name == "copilot":
+        released = release_held_copilot_rows(home)
+    until_utc = _utc_iso(until)
+    line = f"{name} out of tokens - paused until {until_utc}"
     announced = doc.get("pause_announced_until")
     if announced != until:
         doc["pause_announced_until"] = until
