@@ -30,7 +30,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
 | `GET path` | hash/size + head (80 chars). Does not send the file. |
 | `GET path fetch=chunk` then `GETCHUNK id seq` | FR #4795 outbound fetch. Open returns bytes/sha256/seqs only. Each GETCHUNK returns one <=300-byte raw chunk. The next GETCHUNK is the ack; the console never pushes the following chunk. |
-| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
+| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Optional leading `id=<job>` (FR #5532). Reply is `UPDATE accepted id=...` then `DONE id= exit=`. Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
 | `PRIORITY prepare <ENAME>` | TYPE=P named prep: EXEC `REPPREPDIRECT2`; success only if SDK ok **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced (FR #5286). Never form-prep; never SQL-fake UPD; never a password on IRC |
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |

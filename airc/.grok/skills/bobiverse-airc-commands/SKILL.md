@@ -51,11 +51,12 @@ Prefer remote **`UPDATE airc`** over free-form `msiexec` / `Restart-Service Airc
 
 ```text
 PRIVMSG {mid}_console :UPDATE airc
+PRIVMSG {mid}_console :id=c25bd00e UPDATE airc
 PRIVMSG {mid}_console :UPDATE airc 1.0.9
 PRIVMSG {mid}_console :id=c25bd00e VERSION
 ```
 
-- **Latest vs pin:** bare `UPDATE airc` takes the latest GitHub Release MSI. `UPDATE airc <ver>` pins `-TargetVersion` (FR #5280 / FR #77).
+- **Latest vs pin:** bare `UPDATE airc` takes the latest GitHub Release MSI. `UPDATE airc <ver>` pins `-TargetVersion` (FR #5280 / FR #77). Leading `id=<job>` is accepted (FR #5532); reply is `UPDATE accepted id=...` then `DONE id= exit=`.
 - **Restart contract (Refs #5277):** after Apply, expect Airc Running and `{mid}_console` to answer again within a **120s** reconnect budget without manual repair. If it does not, file intake; do not invent a second msiexec.
 - **Failure intake (FR #5279):** each Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, ...) files one `kind:issue` on `SimonBarnett/bobiverse`. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted.
 - **VERSION (FR #5281):** same auth as STATUS. Reply is `out id= seq=1 VERSION machine=... airc_ver=...` then `DONE id= exit=0`. Reads `<ai root>\\airc\\VERSION` only (missing -> `-`; no ARP). Allowed when `shell=off` / `jobs=off`.
