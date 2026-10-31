@@ -30,6 +30,15 @@ import json
 from account_map import AccountMap, parse_message_tags
 from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
 
+
+def priority_worker_argv(install_root: str | Path | None = None) -> list[str]:
+    """FR #5283: only advertised invocation of the in-tree Priority worker."""
+    root = Path(install_root or os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    entry = root / "airc" / "priority-worker" / "priority_worker.py"
+    if not entry.is_file():
+        entry = root / "priority-worker" / "priority_worker.py"
+    return [sys.executable, str(entry), "--from-airc"]
+
 NICK = "console"
 IRC_NICK_MAX = 30
 DEFAULT_SHELL = os.environ.get("COMSPEC") or "cmd.exe"
