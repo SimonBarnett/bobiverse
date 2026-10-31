@@ -4,39 +4,41 @@
 **Product path:** `airc/`  
 **Date:** 2026-10-31  
 **Plan folder:** `bob/plan/work/plan-20261031-150101`  
-**Builds on:** FR #3991 `airc-network-installer.exe` (already laid in MSI at `<ai root>\airc\airc-network-installer.exe`)
+**Builds on:** FR #3991 `airc_network_installer` module / tooling (logic reused in-service; standalone exe may remain for offline use)
+
+**Decisions locked:** operator MC cards 2026-10-31
 
 ## Objective
 
-LOCKED: An authorized remote **`LEGION {target}`** on `{mid}_console` installs **airc** on one Windows **hostname or IP** by running the existing **`airc-network-installer`** (latest GitHub Release MSI, **`AIRC_PROFILE=client`**) inside an **isolated** worker, with CredMan **`PriorityAirc/LegionAdmin`**, returning **DCC** logs and failures (CONT fallback), without crashing service `Airc`. Optional **`-WhatIf`** dry-run.
+LOCKED: An authorized remote **`LEGION {target}`** on `{mid}_console` installs **airc** on one Windows **hostname or IP** by having the **Airc service spawn a new isolated worker process** that **imports the `airc_network_installer` module** (FR #3991 logic — latest GitHub Release MSI, **`AIRC_PROFILE=client`**, **no `--force`** in MVP) — **not** as a separate operator-facing product exe — with CredMan **`PriorityAirc/LegionAdmin`** passed via a **wrapper** (`-u` + password over secure env/channel the installer accepts; never on IRC), returning **DCC** logs and failures (CONT fallback), without crashing service `Airc`. Optional **`-WhatIf`** → installer dry-run. Per-host timeout **900s** (installer default).
 
 ## Success
 
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
-| S1 | LEGION verb | `LEGION {target}` [optional `-WhatIf`] accepted; auth **same as UPDATE** (`update=off` blocks); unauthorized → existing exits | Wire tests | No verb; agents run installer by hand only |
-| S2 | Uses network installer | Worker invokes laid-in / packaged `airc-network-installer` (FR #3991) for that single target — latest Release airc MSI, profile **client** — not a new parallel installer | Log shows installer invocation; MSI from bobiverse Releases | Reimplements msiexec from scratch; foreign MSI URL |
-| S3 | Target installed | Happy path: target ends with service **Airc** Running (or installer-documented success); `-WhatIf` makes no remote changes | Lab VM; WhatIf → dry-run flags | WhatIf writes; success claimed without installer ok |
-| S4 | Isolation | Detached worker only; never run network-installer/msiexec/PsExec on IRC receive thread; worker fault → Airc still Running | Fault injection | Service Stopped after LEGION |
+| S1 | LEGION verb | `LEGION {target}` [optional `-WhatIf`] accepted; auth **same as UPDATE** (`update=off` blocks); unauthorized → existing exits | Wire tests | No verb; agents run standalone installer by hand only |
+| S2 | In-service installer logic | Service-owned **new worker instance** imports **`airc_network_installer`** for that single target — latest Release airc MSI, profile **client** — **not** shelling out to a separate product `airc-network-installer.exe` as the LEGION path | Log shows module worker; MSI from bobiverse Releases | LEGION requires operator to launch standalone exe; foreign MSI URL; reimplements msiexec from scratch |
+| S3 | Target installed | Happy path: target ends with service **Airc** Running (or installer-documented success); `-WhatIf` makes no remote changes; **never** pass `--force` in MVP | Lab VM; WhatIf dry-run | WhatIf writes; `--force` used; success without installer ok |
+| S4 | Isolation | New detached worker process only; never run install/PsExec on IRC receive thread; worker fault → Airc still Running | Fault injection | Service Stopped after LEGION |
 | S5 | DCC logs | Full installer log + summary via DCC when `DCCLISTEN` offered, else CONT; failures included; short IRC + DONE | Harness | PRIVMSG-only multi-MB log; failures omitted |
-| S6 | Secrets | CredMan `PriorityAirc/LegionAdmin` only; no password on IRC/DCC/intake | Redaction | Password in LEGION args |
-| S7 | Single target | One hostname/IP per command; refuse empty/ambiguous TARGET | Parse tests | OU/list expansion without new FR |
+| S6 | Secrets | CredMan `PriorityAirc/LegionAdmin`; wrapper passes `-u` + password via **secure env/channel** (never IRC; prefer never cleartext argv); redaction tests | Grep/process-list policy in tests | Password in LEGION IRC line or DCC log |
+| S7 | Single target | One hostname/IP per command; refuse empty/ambiguous TARGET; timeout **900s** | Parse + timeout tests | OU/list expansion; unbounded hang |
 
 LOCKED.
 
 ## Shape
 
-Primary: **service** (console verb orchestrating existing network-installer exe/module).
+Primary: **service** (LEGION is part of Airc; starts a **new isolated worker instance** importing network-installer module).
 
 LOCKED
 
 ## Stack
 
-Default: Airc `LEGION {target}` → detached worker → `airc-network-installer` (`--hosts {target} --profile client`, latest MSI download as today) with CredMan `PriorityAirc/LegionAdmin` mapped to installer username/password prompts/env as documented — never echo password → DCC log dir / summary.
+Default: Airc `LEGION {target}` → **new isolated worker process** → import **`airc_network_installer`** (single host, profile client, latest MSI, timeout 900, no `--force`; `-WhatIf` → dry-run) → CredMan wrapper (`PriorityAirc/LegionAdmin` → `-u` + secure password channel) → DCC log/summary.
 
-Why: FR #3991 already compiles and ships the installer; LEGION makes it a first-class remote verb like UPDATE/NETWORK.
+Why: FR #3991 logic already exists; LEGION makes it a first-class **service** capability like UPDATE/NETWORK without a peer product exe path.
 
-Why-not: New install engine; CIDR/AD blast from LEGION MVP (installer still supports those offline); STATUS-level open auth.
+Why-not: Operator-launched `airc-network-installer.exe` as the LEGION implementation; new install engine; CIDR/AD blast from LEGION MVP; STATUS-level open auth; always `--force`.
 
 LOCKED
 
@@ -48,16 +50,17 @@ Operator
   PRIVMSG {mid}_console :LEGION {hostname|ip} [-WhatIf]
        |
        v
-Airc service
+Airc service (live console)
   - auth = UPDATE; update=off refuse
-  - spawn ISOLATED worker
+  - spawn NEW ISOLATED worker PROCESS (service-owned)
        |
        v
-LEGION worker
-  - resolve CredMan PriorityAirc/LegionAdmin
-  - run airc-network-installer for single --hosts TARGET
-    profile=client, latest MSI (or --dry-run for -WhatIf)
-  - collect log-dir / summary → DCC or CONT
+LEGION worker instance
+  - CredMan PriorityAirc/LegionAdmin → wrapper (-u + secure env/channel)
+  - import airc_network_installer for single TARGET
+    profile=client, latest MSI, timeout=900, no --force
+    (-WhatIf → dry-run)
+  - collect logs/summary → DCC or CONT
        |
        v
 DONE id= exit=
@@ -73,26 +76,24 @@ None.
 
 | Area | Today | Gap |
 |------|-------|-----|
-| `airc-network-installer.exe` | Shipped in MSI (FR #3991); CLI/PsExec/AD/CIDR | Not a console verb |
-| LEGION | Absent | Verb + isolation + DCC + CredMan wire |
-| Remote install from IRC | Manual drop/run installer | First-class LEGION |
+| `airc_network_installer` / exe | FR #3991 module + frozen exe in MSI | Not wired as console LEGION worker |
+| LEGION | Absent | Verb + service-owned worker instance + CredMan wrapper + DCC |
+| Remote install from IRC | Manual run of network installer | First-class LEGION |
 
 ## LOCKED
 
 - Grammar: `LEGION {target}` optional `-WhatIf`; target = one hostname or IP
-- Reuse FR #3991 network installer; profile **client**; **latest** Release MSI
+- **Part of Airc service:** new isolated worker process **imports `airc_network_installer` module** (no separate product exe as the LEGION path)
+- Profile **client**; **latest** Release MSI; timeout **900s**; **no `--force`** in MVP
 - Auth = UPDATE; `update=off` blocks LEGION
-- CredMan: `PriorityAirc/LegionAdmin`
-- Isolated worker; DCC logs + failures
+- CredMan: `PriorityAirc/LegionAdmin`; wrapper → `-u` + secure env/channel (not IRC)
+- DCC logs + failures
 - Anti-omnibus slices
 
 ## UNKNOWN
 
-- Exact argv mapping CredMan → installer (`-u` + env vs helper wrapper)
-- Whether laid-in `airc-network-installer.exe` must be preferred over `python -m airc_network_installer`
-- Per-host timeout default for single-target LEGION (installer default 900s OK?)
-- Force reinstall flag out of MVP (installer has `--force`)
+- (none for MVP — operator MC cards closed 2026-10-31)
 
 ## Implementation slices
 
-See `drafts/backlog.md`.
+See `drafts/backlog.md` (#5308–#5312).
