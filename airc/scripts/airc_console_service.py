@@ -1529,14 +1529,24 @@ class AircConsoleService:
             # (Invoke-AircRemote / ReplyFile wait on DONE; never start a subprocess).
             self.send_privmsg(hr.nick, hr.reply)
             info(f"INFO capability-deny to={hr.nick} {hr.reply}")
-        elif hr.action in {"help", "close", "update", "priority"} and hr.nick and hr.reply:
+        elif hr.action in {
+            "help",
+            "close",
+            "update",
+            "priority",
+            "network",
+            "extension",
+            "legion",
+        } and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             # FR #5284: PRIORITY may emit out id= + DONE id= on separate lines.
+            # FR #5518: NETWORK / EXTENSION / LEGION accepted+DONE must reach IRC
+            # (Invoke-AircRemote waits on DONE; DCC payload alone is not enough).
             for part in str(hr.reply).splitlines():
                 line = part.strip()
                 if line:
                     self.send_privmsg(hr.nick, line)
-            if hr.action in {"update", "priority"}:
+            if hr.action in {"update", "priority", "network", "extension", "legion"}:
                 # FR #4067: auth-allow before update-reply (issue covers UPDATE).
                 if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
                     try:
