@@ -358,6 +358,7 @@ function Get-Asset {
 }
 
 function Test-LooksLikeHtmlAsset {
+    # FR #5413: UTF-8 BOM + <!DOCTYPE used to miss and become sha256-mismatch.
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
     $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -365,9 +366,11 @@ function Test-LooksLikeHtmlAsset {
         $buf = New-Object byte[] 64
         $n = $fs.Read($buf, 0, 64)
         if ($n -le 0) { return $true }
-        $head = [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)
+        $off = 0
+        if ($n -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { $off = 3 }
+        $head = [System.Text.Encoding]::ASCII.GetString($buf, $off, $n - $off)
     } finally { $fs.Close() }
-    return ($head -match '(?i)^\s*<(!DOCTYPE|html|head|body)\b')
+    return ($head -match '(?i)^\s*(<(!DOCTYPE|html|head|body)\b|\{)')
 }
 
 function Read-ExpectedSha256 {
@@ -787,9 +790,12 @@ function Invoke-Apply {
         try {
             Get-Asset -Url $msiUrl -Dest $msi
             Get-Asset -Url $shaUrl -Dest $shaFile
+            if ((Test-LooksLikeHtmlAsset -Path $msi) -or (Test-LooksLikeHtmlAsset -Path $shaFile)) {
+                throw 'download-failed html-or-json-body'
+            }
         } catch {
             Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
-            Set-Failure -Tag $tag -Result 'download-failed'
+            Set-Failure -Tag $tag -Result 'download-failed' -Detail ([string]$_.Exception.Message)
             return
         }
         $expected = Read-ExpectedSha256 -Path $shaFile
@@ -797,11 +803,15 @@ function Invoke-Apply {
         if (-not $expected -or $expected -ne $actual) {
             Write-UpdLog "sha256-retry tag=$tag expected=$expected actual=$actual"
             try {
-                Get-Asset -Url ([string]$plan.msiUrl) -Dest $msi
-                Get-Asset -Url ([string]$plan.shaUrl) -Dest $shaFile
+                # FR #5413: retry the repaired URLs, not the stale plan API/query URLs.
+                Get-Asset -Url $msiUrl -Dest $msi
+                Get-Asset -Url $shaUrl -Dest $shaFile
+                if ((Test-LooksLikeHtmlAsset -Path $msi) -or (Test-LooksLikeHtmlAsset -Path $shaFile)) {
+                    throw 'download-failed html-or-json-body'
+                }
             } catch {
                 Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
-                Set-Failure -Tag $tag -Result 'download-failed'
+                Set-Failure -Tag $tag -Result 'download-failed' -Detail ([string]$_.Exception.Message)
                 return
             }
             $expected = Read-ExpectedSha256 -Path $shaFile
@@ -809,7 +819,7 @@ function Invoke-Apply {
         }
         if (-not $expected -or $expected -ne $actual) {
             Write-UpdLog "sha256-mismatch tag=$tag expected=$expected actual=$actual - aborted, service untouched"
-            Set-Failure -Tag $tag -Result 'sha256-mismatch'
+            Set-Failure -Tag $tag -Result 'sha256-mismatch' -Detail ("expected={0} actual={1}" -f $expected, $actual)
             Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             return
         }
