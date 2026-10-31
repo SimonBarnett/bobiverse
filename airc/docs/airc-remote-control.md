@@ -33,6 +33,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
+| `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312). UPDATE-class auth. CredMan `PriorityAirc/LegionAdmin`. Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
 | `EXTENSION install|status [-WhatIf]` | Isolated worker: DC + GPO `Priority-web-extension` ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). DCC/CONT log (FR #5293). Default id `cgmpadejahkaggjpffnhaoiafbnicgpa`. No DC -> GPO fail closed |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
@@ -105,3 +106,16 @@ PRIVMSG marchhare_console :id=aabbccdd EXTENSION install -WhatIf
 - Default ForceInstall id: `cgmpadejahkaggjpffnhaoiafbnicgpa` plus `https://clients2.google.com/service/update2/crx` for Chrome and Edge.
 - GPO happy path: `Priority-web-extension` at domain root (FR-B). Fill-holes: LDAP AD computers + remote registry (FR-C). Isolated worker (FR-A).
 - Log: DCCLISTEN same job id (`DONE ... via=dcc` + sha256) or IRC CONT. CAST IRON: no passwords on IRC or in the DCC body.
+
+## LEGION (FR #5312) - docs contract
+
+Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isolated worker imports `airc_network_installer` (FR #3991). One hostname or IPv4.
+
+```text
+PRIVMSG marchhare_console :id=aabbccdd DCCLISTEN id=aabbccdd host=127.0.0.1 port=7700 token=<hex> tls=1
+PRIVMSG marchhare_console :id=aabbccdd LEGION walrus
+PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
+```
+
+- CredMan `PriorityAirc/LegionAdmin` via secure env. CAST IRON: no secrets on IRC or in the DCC body.
+- Same job `id=` on DCCLISTEN and LEGION. WhatIf is dry-run (no remote install).
