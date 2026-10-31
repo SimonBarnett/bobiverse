@@ -19,6 +19,9 @@
   so sequential Commands do not stack under Ergo fakelag. Console token-bucket is FR #4790.
   FR #5008: New-AircDccListenOffer / Test-AircDccDoneSha256 build DCCLISTEN (tls=/relay=)
   and verify DONE sha256; reverse stream uses airc_dcc_bulk.py (TLS default on).
+  FR #5194: PUT defaults to via=dcc (console dials the caller listen and reads the
+  same framed blob); -ForceIrcPut keeps IRC CHUNK/PUTEND only. DCC failure falls
+  back to those chunks.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Remote')]
 param(
@@ -70,6 +73,9 @@ param(
     [Parameter(ParameterSetName = 'Remote')]
     [ValidateRange(1, 100000)]
     [int]$BurstReplyThreshold = 20,
+
+    [Parameter(ParameterSetName = 'Remote')]
+    [switch]$ForceIrcPut,
 
     [Parameter(ParameterSetName = 'Remote')]
     [switch]$WhatIf,
@@ -178,7 +184,8 @@ function New-AircPutChunks {
         [Parameter(Mandatory)][string]$RemotePath,
         [int]$ChunkBytes = 240,
         [string]$JobId = '',
-        [string]$SandboxRoot = ''
+        [string]$SandboxRoot = '',
+        [switch]$ForceIrcPut
     )
     if (-not (Test-Path -LiteralPath $LocalFile)) { throw "LocalFile not found: $LocalFile" }
     if ($ChunkBytes -lt 32 -or $ChunkBytes -gt 350) { throw 'ChunkBytes must be 32..350 (IRC-safe)' }
@@ -191,7 +198,9 @@ function New-AircPutChunks {
     $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $LocalFile))
     $sha = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add(('PUT path={0} id={1} bytes={2} sha256={3}' -f $RemotePath, $id, $bytes.Length, $sha))
+    $putLine = 'PUT path={0} id={1} bytes={2} sha256={3}' -f $RemotePath, $id, $bytes.Length, $sha
+    if (-not $ForceIrcPut) { $putLine = $putLine + ' via=dcc' }
+    [void]$lines.Add($putLine)
     $seq = 0
     $offset = 0
     while ($offset -lt $bytes.Length) {
@@ -584,6 +593,9 @@ function Invoke-AircRemoteSelfTest {
         $put = New-AircPutChunks -LocalFile $file -RemotePath $remote -ChunkBytes 64 -SandboxRoot $tmp
         Assert-True ($put.Seqs -eq 4) 'PUT chunk boundary count'
         Assert-True ($put.Lines[0] -match '^PUT path=') 'PUT header'
+        Assert-True ($put.Lines[0] -match 'via=dcc') 'PUT default via=dcc (FR #5194)'
+        $ircPut = New-AircPutChunks -LocalFile $file -RemotePath $remote -ChunkBytes 64 -SandboxRoot $tmp -ForceIrcPut
+        Assert-True ($ircPut.Lines[0] -notmatch 'via=dcc') 'ForceIrcPut omits via=dcc'
         Assert-True ($put.Lines[-1] -match '^PUTEND id=') 'PUTEND trailer'
         Assert-True ($put.Sha256.Length -eq 64) 'sha256 length'
         # reassemble
@@ -785,7 +797,8 @@ function New-AircRemoteAttemptBodies {
         [string]$PathBody,
         [string]$LocalFilePath,
         [int]$ChunkSize,
-        [string]$Sandbox
+        [string]$Sandbox,
+        [switch]$IrcPut
     )
     $bodies = [string[]]@()
     $corrOut = $CorrId
@@ -798,7 +811,7 @@ function New-AircRemoteAttemptBodies {
                 $ai = if ($env:AI_ROOT) { $env:AI_ROOT } else { 'C:\ai' }
                 $root = Join-Path $ai 'airc\drop'
             }
-            $put = New-AircPutChunks -LocalFile $LocalFilePath -RemotePath $PathBody -ChunkBytes $ChunkSize -JobId $corrOut -SandboxRoot $root
+            $put = New-AircPutChunks -LocalFile $LocalFilePath -RemotePath $PathBody -ChunkBytes $ChunkSize -JobId $corrOut -SandboxRoot $root -ForceIrcPut:$IrcPut
             $corrOut = $put.JobId
             $bodies = [string[]]@($put.Lines)
         }
@@ -838,7 +851,7 @@ $busyRetryActions = @('Command', 'Cmd', 'Psb64', 'Status')
 while ($true) {
     $attempt++
     $built = New-AircRemoteAttemptBodies -ActionName $Action -CorrId $corr -TextBody $Text -PathBody $Path `
-        -LocalFilePath $LocalFile -ChunkSize $ChunkBytes -Sandbox $SandboxRoot
+        -LocalFilePath $LocalFile -ChunkSize $ChunkBytes -Sandbox $SandboxRoot -IrcPut:$ForceIrcPut
     $bodies = [string[]]@($built.Bodies)
     $corr = [string]$built.JobId
     $privmsgs = @(New-AircPrivmsgLines -MachineId $MachineId -Bodies $bodies)

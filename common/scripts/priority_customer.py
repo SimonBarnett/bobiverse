@@ -22,6 +22,23 @@ def _root(home: Path) -> Path:
     return bobreport.fleet_digest_home(Path(home))
 
 
+def github_topic_fetch(url: str) -> object:
+    """GET GitHub JSON (topic search). Token from GH_TOKEN / GITHUB_TOKEN when set."""
+    import json
+    import urllib.request
+
+    hdrs = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "bobiverse-intake",
+    }
+    tok = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if tok:
+        hdrs["Authorization"] = "Bearer " + tok
+    req = urllib.request.Request(url, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def topic_search_url() -> str:
     owner = (os.environ.get("JEEVES_GITHUB_OWNER") or "SimonBarnett").strip() or "SimonBarnett"
     q = f"user:{owner}+topic:{TOPIC}"
