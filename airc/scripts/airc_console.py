@@ -2471,6 +2471,8 @@ class AircConsoleCore:
         presence_channels: list[str] | None = None,
         priority_runner: Callable[..., _priority.PriorityVerbResult] | None = None,
         priority_allowlist_path: str | None = None,
+        priority_allowlist: str | None = None,
+        priority_fixture: str | None = None,
         extension_runner: Callable[..., _extension.ExtensionVerbResult] | None = None,
     ) -> None:
         self.machine = machine_id(machine)
@@ -2485,7 +2487,9 @@ class AircConsoleCore:
         self.job_protocol = job_protocol
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
         self.priority_runner = priority_runner or _priority.run_priority_verb
-        self.priority_allowlist_path = priority_allowlist_path
+        self.priority_allowlist_path = priority_allowlist_path or priority_allowlist
+        self.priority_allowlist = priority_allowlist or priority_allowlist_path
+        self.priority_fixture = priority_fixture
         self.extension_runner = extension_runner or _extension.run_extension_verb
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
@@ -2650,7 +2654,7 @@ class AircConsoleCore:
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
-                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
@@ -2659,6 +2663,30 @@ class AircConsoleCore:
             )
 
         caps = self.capabilities
+
+        # FR #5285: PRIORITY form walk (read path) via in-service fixture worker.
+        if _priority.parse_priority_walk_command(cmd) is not None:
+            allow = _priority.resolve_walk_allowlist_path(
+                self.install_root, self.priority_allowlist or self.priority_allowlist_path
+            )
+            fix = Path(self.priority_fixture) if self.priority_fixture else None
+            result = _priority.run_priority_walk(
+                text=cmd,
+                allowlist_path=allow,
+                fixture_path=fix,
+            )
+            if self.job_protocol is not None:
+                for ln in result.lines:
+                    self.job_protocol._emit(nick, ln)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply="\n".join(result.lines),
+                **meta,
+            )
 
         # FR #5284: PRIORITY connect/status — allowlist + CredMan; never password on IRC.
         pri = _priority.parse_priority_command(cmd)
