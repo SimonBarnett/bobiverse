@@ -3209,7 +3209,9 @@ function Get-BobiverseAircClientAllowedScriptNames {
         # Legacy host when airc\airc.exe is absent (SkipAircExe / pre-exe trees)
         'airc_console.py',
         'airc_console_service.py',
-        'airc_jobs.py'
+        'airc_jobs.py',
+        # FR #5288: Priority Client connect/allowlist module (in-service; client+fleet)
+        'airc_priority.py'
     )
 }
 

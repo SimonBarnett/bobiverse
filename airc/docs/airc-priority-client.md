@@ -65,3 +65,9 @@ shell=off capability denies PRIORITY with DONE exit=126 (same gate family as fre
 - Never put Priority passwords on IRC, in logs, intake, harvest, or git.
 - Never invent a web URL / company outside the allowlist.
 - CredMan only for the web user password.
+
+## MSI / client allow-list (FR-G / #5288)
+
+Default **on** for both `AIRC_PROFILE=client` and fleet. Not a separate MSI Feature and not opt-in.
+Client `Remove-BobiverseAircClientExtraPayload` keeps `airc\priority-worker\*` and `scripts\airc_priority.py` so the in-service Priority module is not stripped.
+

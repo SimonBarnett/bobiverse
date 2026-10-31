@@ -30,6 +30,7 @@ import json
 from account_map import AccountMap, parse_message_tags
 from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
 import airc_priority as _priority
+import airc_extension as _extension
 
 
 def priority_worker_argv(install_root: str | Path | None = None) -> list[str]:
@@ -63,12 +64,12 @@ _PRIVMSG_RE = re.compile(
 _CHANNEL_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 _CTCP_PING_RE = re.compile(r"^\x01PING(?: (.*))?\x01\s*$", re.IGNORECASE | re.DOTALL)
 _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
-# FR #77: UPDATE airc|bob|jeeves [version] ??? fleet MSI via detached updater only.
+# FR #77: UPDATE airc|bob|jeeves [version] — fleet MSI via detached updater only.
 _UPDATE_CMD_RE = re.compile(
     r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+))?\s*$",
     re.IGNORECASE,
 )
-# Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth ??? AuthPolicy
+# Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth — AuthPolicy
 # must still require operators (+ account when --require-account / --accounts).
 _BOB_FLEET_NICK_RE = re.compile(r"^bob-[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 
@@ -101,7 +102,7 @@ def resolve_machine_id(
 
     Order: explicit ``-MachineId`` / override, then ``AIRC_CONSOLE_MACHINE``,
     then ``BOB_MACHINE_ID``. Hostname (``COMPUTERNAME`` / ``HOSTNAME``) is only
-    used when ``allow_hostname_fallback`` is true ??? callers must treat that as
+    used when ``allow_hostname_fallback`` is true — callers must treat that as
     an explicit choice so the console does not silently join the wrong shop.
     """
     if override and str(override).strip():
@@ -393,7 +394,7 @@ def schedule_fleet_update(
         args.append("-NoSpawn")
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=90)
-    except Exception as e:  # noqa: BLE001 ??? surface to IRC as spawn-failed
+    except Exception as e:  # noqa: BLE001 — surface to IRC as spawn-failed
         r = UpdateScheduleResult(
             False,
             "spawn-failed",
@@ -509,9 +510,9 @@ def console_nick(machine: str | None = None, explicit: str | None = None) -> str
 def domain_or_workgroup_id(override: str | None = None) -> str:
     """Windows domain NetBIOS name, or workgroup, sanitized for ``#{id}``.
 
-    Order: explicit / ``AIRC_CONSOLE_DOMAIN`` ??? ``USERDNSDOMAIN`` first label ???
-    ``USERDOMAIN`` when it differs from ``COMPUTERNAME`` ??? short NetGetJoinInformation
-    probe ??? ``USERDOMAIN`` ??? ``workgroup``. Never blocks unbounded on WMI.
+    Order: explicit / ``AIRC_CONSOLE_DOMAIN`` → ``USERDNSDOMAIN`` first label →
+    ``USERDOMAIN`` when it differs from ``COMPUTERNAME`` → short NetGetJoinInformation
+    probe → ``USERDOMAIN`` → ``workgroup``. Never blocks unbounded on WMI.
     """
     if override and override.strip():
         return _sanitize_id(override)
@@ -675,7 +676,7 @@ def parse_ping_command(text: str) -> str | None:
 def is_bob_fleet_nick(nick: str) -> bool:
     """True for fleet ear nick shape ``bob-{machinename}`` (issue #302).
 
-    FR #3286: this is a naming helper only ??? never treat the pattern as authentication.
+    FR #3286: this is a naming helper only — never treat the pattern as authentication.
     """
     return bool(_BOB_FLEET_NICK_RE.match((nick or "").strip()))
 
@@ -799,7 +800,7 @@ class ChannelMemberMap:
                     prefs = [p for p in prefs if p != pref]
                 self._members[key] = "".join(prefs)
             elif ch_m in "klbeI":
-                # Modes that consume a parameter ??? skip the arg.
+                # Modes that consume a parameter — skip the arg.
                 if arg_i < len(args):
                     arg_i += 1
 
@@ -927,7 +928,7 @@ def format_auth_allow_log(
     mode: str | None,
     action: str,
 ) -> str:
-    """FR #4067: ``auth-allow nick=??? account=??? channel=??? mode=??? action=shell|job|pipe|update``."""
+    """FR #4067: ``auth-allow nick=… account=… channel=… mode=… action=shell|job|pipe|update``."""
     return (
         f"auth-allow nick={nick or '-'} account={account or '-'} "
         f"channel={channel or '-'} mode={mode or '-'} action={action}"
@@ -1040,7 +1041,7 @@ class ConsoleCapabilities:
     ``jobs`` / ``update``: finer gates when shell is ``operators``.
 
     FR #3764: ``update`` is the **remote** UPDATE verb (ops-gated IRC command). It is
-    not automatic MSI self-update / git sync ??? those are ``self_update`` /
+    not automatic MSI self-update / git sync — those are ``self_update`` /
     ``sync_from_repo`` in ``AircStartUpdatePolicy`` (client defaults both off).
     """
 
@@ -1318,9 +1319,9 @@ def load_start_update_policy(
     """Merge env + ``config\\airc.json`` into start-hook policy (FR #3289).
 
     Precedence:
-    - ``BOBIVERSE_NO_UPDATE=1`` ??? both off
+    - ``BOBIVERSE_NO_UPDATE=1`` → both off
     - ``BOBIVERSE_SYNC_FROM_REPO=0|1`` / ``BOBIVERSE_SELF_UPDATE=0|1`` when set
-    - ``BOB_AUTOUPDATE=0`` ??? self_update off (updater also honours this)
+    - ``BOB_AUTOUPDATE=0`` → self_update off (updater also honours this)
     - ``airc.json`` ``sync_from_repo`` / ``self_update``
     - defaults: sync off, self_update on
     """
@@ -1349,7 +1350,7 @@ def resolve_sync_from_repo_for_install(
     prior: bool | None,
     explicit: bool | None,
 ) -> bool:
-    """Fresh / omitted ??? False; explicit MSI/CLI wins; else keep prior (FR #3289)."""
+    """Fresh / omitted → False; explicit MSI/CLI wins; else keep prior (FR #3289)."""
     if explicit is not None:
         return bool(explicit)
     if prior is not None:
@@ -1363,7 +1364,7 @@ def resolve_self_update_for_install(
     explicit: bool | None,
     profile: str | None = None,
 ) -> bool:
-    """Fresh / omitted ??? True; explicit wins; else keep prior (FR #3289).
+    """Fresh / omitted → True; explicit wins; else keep prior (FR #3289).
 
     FR #3393: ``AIRC_PROFILE=workstation`` defaults False (no SYSTEM GitHub MSI
     channel) unless MSI/CLI sets ``AIRC_SELF_UPDATE`` explicitly.
@@ -1618,8 +1619,8 @@ def resolve_comspec() -> str:
 
 
 # FR #2580: redirected powershell.exe defaults $OutputEncoding to ASCII, which
-# best-fits non-ASCII (?????a, CJK????) before airc UTF-8-decodes stdout (U+FFFD).
-# FR #2641: also silence progress records ??? redirected hosts otherwise emit
+# best-fits non-ASCII (α→a, CJK→?) before airc UTF-8-decodes stdout (U+FFFD).
+# FR #2641: also silence progress records — redirected hosts otherwise emit
 # ``#< CLIXML`` / ``Preparing modules for first use`` on stderr (extra IRC flood
 # and a non-empty StdErr for ExitCode 0 callers).
 # FR #2910: keep each preamble statement on its own line so terminating errors
@@ -1821,14 +1822,14 @@ def is_console_self_reply(text: str) -> bool:
 def sanitize_console_operator_text(text: str) -> str:
     """Strip Halloy/bobtalk nick-prefix and ``Heard:`` wrappers (FR #2570).
 
-    Live failure: clients relay ``@marchhare_console marchhare here. weekly=27. Heard: STATUS ???``
+    Live failure: clients relay ``@marchhare_console marchhare here. weekly=27. Heard: STATUS …``
     into the console PRIVMSG; PowerShell then sees ``@marchhare_console`` as a splat.
     Prefer the payload after ``Heard:``; otherwise strip a bobtalk ``@nick mid here.`` prefix
     when the remainder looks like a console command / FR #78 verb.
 
     FR #2570 follow-up: bobtalk-only presence lines (no command after the prefix) return
-    empty so ``handle_raw`` drops them ??? never pipe ``@nick`` / ``weekly=N`` into PowerShell.
-    MRB #2573: do not treat PowerShell ``@(???)`` / ``@'`` / ``@"`` as nick-mentions; drop only
+    empty so ``handle_raw`` drops them — never pipe ``@nick`` / ``weekly=N`` into PowerShell.
+    MRB #2573: do not treat PowerShell ``@(…)`` / ``@'`` / ``@"`` as nick-mentions; drop only
     ``@token`` nick-like lines. Remove unreachable duplicate sanitize tail.
     """
     raw = (text or "").strip()
@@ -1910,7 +1911,7 @@ def build_cmd_command_line(body: str) -> str:
 def build_shell_argv(req: ShellRequest) -> list[str]:
     if req.kind == "cmd":
         # Shape for inspectors/tests. Execution uses build_cmd_command_line
-        # (FR #3773) ??? do not subprocess.run this list for trailing-\\ bodies.
+        # (FR #3773) — do not subprocess.run this list for trailing-\\ bodies.
         body = prepare_cmd_body(req.body or "")
         return [resolve_comspec(), "/d", "/s", "/c", body]
     if req.kind == "psb64":
@@ -1962,7 +1963,7 @@ def run_shell_request(
         return ShellOutcome(job_id=req.job_id, exit_code=124, stdout=out, stderr=err)
     out, out_clip = _clip_bytes(proc.stdout or b"")
     err, err_clip = _clip_bytes(proc.stderr or b"")
-    # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect ??? plain-text it.
+    # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect — plain-text it.
     err = plain_text_powershell_stderr(err)
     if out_clip:
         out += "\n[clipped stdout]"
@@ -2259,7 +2260,7 @@ class ShellJobRunner:
                     t.start()
 
         if overflow:
-            # FR #2612 / #2632: queue full ??? fail closed with DONE (Wait must not hang).
+            # FR #2612 / #2632: queue full — fail closed with DONE (Wait must not hang).
             try:
                 req = parse_shell_request(command)
                 jid = req.job_id
@@ -2472,6 +2473,7 @@ class AircConsoleCore:
         priority_allowlist_path: str | None = None,
         priority_allowlist: str | None = None,
         priority_fixture: str | None = None,
+        extension_runner: Callable[..., _extension.ExtensionVerbResult] | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -2488,6 +2490,7 @@ class AircConsoleCore:
         self.priority_allowlist_path = priority_allowlist_path or priority_allowlist
         self.priority_allowlist = priority_allowlist or priority_allowlist_path
         self.priority_fixture = priority_fixture
+        self.extension_runner = extension_runner or _extension.run_extension_verb
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
         # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
@@ -2513,7 +2516,7 @@ class AircConsoleCore:
     def join_commands(self) -> list[str]:
         """JOIN control channel plus optional presence channels (FR #3774).
 
-        Presence channels (e.g. ``#bobiverse`` on client) are silent for commands ???
+        Presence channels (e.g. ``#bobiverse`` on client) are silent for commands —
         ``handle_raw`` only executes channel traffic on ``self.channel``.
         """
         ordered: list[str] = []
@@ -2583,7 +2586,7 @@ class AircConsoleCore:
         if amap is not None and account:
             amap.set(nick, account)
 
-        # Issue #298: CTCP PING / "ping [pattern]" ??? no operator auth; presence only.
+        # Issue #298: CTCP PING / "ping [pattern]" — no operator auth; presence only.
         ctcp_payload = parse_ctcp_ping(text or "")
         if ctcp_payload is not None:
             return HandleResult(
@@ -2606,7 +2609,7 @@ class AircConsoleCore:
             if is_channel_target(target):
                 self.channel_traffic.append(text)
                 return HandleResult(action="silent_channel", nick=nick, target=target, text=text)
-            # Direct ping that does not match us ??? ignore quietly.
+            # Direct ping that does not match us — ignore quietly.
             return HandleResult(action="ping_miss", nick=nick, target=target, text=text)
 
         if is_channel_target(target):
@@ -2650,8 +2653,9 @@ class AircConsoleCore:
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
-                    "(ops-gated remote; not auto self-update ??? FR #3764); "
+                    "(ops-gated remote; not auto self-update — FR #3764); "
                     "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
+                    "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
                     ".quit closes; silent on channel; answers ping"
@@ -2684,7 +2688,7 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5284: PRIORITY connect/status ??? allowlist + CredMan; never password on IRC.
+        # FR #5284: PRIORITY connect/status — allowlist + CredMan; never password on IRC.
         pri = _priority.parse_priority_command(cmd)
         if pri is not None:
             if caps.shell_mode == "off":
@@ -2713,6 +2717,49 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=result.reply_text(),
+                **meta,
+            )
+
+        # FR #5290: EXTENSION install/status — isolated stub worker; same auth as UPDATE.
+        ext = _extension.parse_extension_command(cmd)
+        if ext is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.update == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 update-disabled",
+                )
+            try:
+                result = self.extension_runner(
+                    action=ext["action"],
+                    whatif=ext["whatif"],
+                    job_id=ext.get("qid") or "",
+                )
+            except TypeError:
+                result = self.extension_runner(action=ext["action"])
+            except Exception:
+                result = _extension.ExtensionVerbResult(
+                    False, "EXTENSION err isolated-fault", job_id=ext.get("qid") or ""
+                )
+            if not isinstance(result, _extension.ExtensionVerbResult):
+                result = _extension.ExtensionVerbResult(False, "EXTENSION err bad-runner")
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="extension",
                 nick=nick,
                 target=target,
                 text=text,
@@ -2862,7 +2909,7 @@ def ensure_nickserv_password(path: Path, *, mint: bool = True) -> str | None:
     """Load or mint the NickServ password (issue #271).
 
     First start writes a GUID into ``console.password`` and reuses it later.
-    This is **not** the Ergo server PASS ??? that comes from env / ergo.password.
+    This is **not** the Ergo server PASS — that comes from env / ergo.password.
     """
     import uuid
 
@@ -2888,7 +2935,7 @@ def resolve_server_password(
     home: Path | None = None,
     password_file: Path | None = None,
 ) -> str | None:
-    """Ergo / IRC server PASS ??? never invent; never use NickServ GUID file alone.
+    """Ergo / IRC server PASS — never invent; never use NickServ GUID file alone.
 
     Order: AIRC_CONSOLE_SERVER_PASSWORD, AGENTIC_IRC_PASSWORD, AIRC_CONSOLE_PASSWORD
     (legacy), then ``ergo.password`` / ``connect.password`` beside home or
@@ -2915,7 +2962,7 @@ def resolve_server_password(
                 home / "connect.password",
             ]
         )
-    # Fleet default connect.password ??? only when using the real user console home
+    # Fleet default connect.password — only when using the real user console home
     # (avoid leaking ~/.grok secrets into hermetic tests with a tmp home).
     real_home = home_dir()
     if home is None or Path(home).resolve() == real_home.resolve():
