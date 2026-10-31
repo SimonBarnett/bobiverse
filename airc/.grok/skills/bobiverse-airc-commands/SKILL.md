@@ -109,3 +109,21 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 - **WhatIf:** read-only plan (no writes).
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
+
+## LEGION remote install (FR #5312)
+
+Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`.
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
+PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
+```
+
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU targets: `DONE exit=126 bad-target`.
+- **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
+- **WhatIf:** installer dry-run (no remote install).
+- **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
+- **Isolation:** installer is not on the IRC receive thread; worker fault must not stop Airc.
+
+See `docs/airc-remote-control.md` and `docs/feature-request-airc-legion-2026-10-31.md`.

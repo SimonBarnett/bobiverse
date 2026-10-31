@@ -34,6 +34,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
 | NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou. Full data+log via DCCLISTEN same job id or IRC CONT. |
+| `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312). UPDATE-class auth. CredMan `PriorityAirc/LegionAdmin`. Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
 | EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
@@ -119,3 +120,16 @@ PRIVMSG marchhare_console :id=aabbccdd NETWORK diag -WhatIf
 
 - Same job `id=` on DCCLISTEN and NETWORK. Success: short IRC accepted + `DONE ... via=dcc` (or CONT). CAST IRON: no secrets on IRC or in the DCC body.
 - `shell=off` / not-op use the existing `DONE exit=126` exits. Worker fault must not stop Airc.
+
+## LEGION (FR #5312) - docs contract
+
+Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isolated worker imports `airc_network_installer` (FR #3991). One hostname or IPv4.
+
+```text
+PRIVMSG marchhare_console :id=aabbccdd DCCLISTEN id=aabbccdd host=127.0.0.1 port=7700 token=<hex> tls=1
+PRIVMSG marchhare_console :id=aabbccdd LEGION walrus
+PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
+```
+
+- CredMan `PriorityAirc/LegionAdmin` via secure env. CAST IRON: no secrets on IRC or in the DCC body.
+- Same job `id=` on DCCLISTEN and LEGION. WhatIf is dry-run (no remote install).
