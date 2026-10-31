@@ -401,9 +401,9 @@ def run_legion_verb(
     qid = (job_id or "").strip().lower() or "00000000"
     work = worker or installer_legion_work
     extra = " whatif=1" if whatif else ""
+    # FR #5583: accept only; DONE is last after out/CONT from deliver_*.
     accepted = (
-        f"LEGION accepted id={qid} target={target} timeout={LEGION_TIMEOUT_S}{extra}\n"
-        f"DONE id={qid} exit=0"
+        f"LEGION accepted id={qid} target={target} timeout={LEGION_TIMEOUT_S}{extra}"
     )
     work_kw: dict[str, Any] = {}
     if "credman" in _kw:

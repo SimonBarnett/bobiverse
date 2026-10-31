@@ -3448,7 +3448,7 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             reply = result.reply_text()
             if delivered is not None:
-                reply = f"{reply} {delivered['summary']} {delivered['done']}"
+                reply = f"{reply} {delivered['summary']}"
             return HandleResult(
                 action="legion",
                 nick=nick,
@@ -3525,7 +3525,7 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             reply = result.reply_text()
             if delivered is not None:
-                reply = f"{reply} {delivered['summary']} {delivered['done']}"
+                reply = f"{reply} {delivered['summary']}"
             return HandleResult(
                 action="network",
                 nick=nick,
@@ -3607,7 +3607,7 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             reply = result.reply_text()
             if delivered is not None:
-                reply = f"{reply} {delivered['summary']} {delivered['done']}"
+                reply = f"{reply} {delivered['summary']}"
             return HandleResult(
                 action="extension",
                 nick=nick,

@@ -200,7 +200,8 @@ def run_network_verb(
     qid = (job_id or "").strip().lower() or "00000000"
     work = worker or inventory_work
     extra = " whatif=1" if whatif else ""
-    accepted = f"NETWORK accepted id={qid} action={action}{extra}\nDONE id={qid} exit=0"
+    # FR #5583: accept only; DONE is last after out/CONT from deliver_*.
+    accepted = f"NETWORK accepted id={qid} action={action}{extra}"
 
     def _finish(data: dict[str, Any]) -> NetworkVerbResult:
         hosts = list(data.get("hosts") or [])
