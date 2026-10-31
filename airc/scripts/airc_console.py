@@ -3269,6 +3269,20 @@ class AircConsoleCore:
                 **meta,
             )
 
+        # FR #5533: bare / unknown PRIORITY is usage, not a PowerShell command.
+        usage_jid = _priority.parse_priority_usage(cmd)
+        if usage_jid is not None:
+            qid = usage_jid or uuid.uuid4().hex[:8]
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=_priority.format_priority_usage(qid),
+                **meta,
+            )
+
         # FR #5308: LEGION {target} --- isolated stub worker; same auth as UPDATE.
         leg = _legion.parse_legion_command(cmd)
         if leg is not None:
