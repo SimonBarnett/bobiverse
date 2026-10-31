@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 import airc_console as ac
 import airc_dcc_bulk as dcc
@@ -100,8 +101,11 @@ def test_fr5300_console_wires_dcclisten_same_job_id():
     core.network_log_send = send
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd NETWORK diag")
     assert hr is not None and hr.action == "network"
-    assert "via=dcc" in (hr.reply or "")
-    assert "hosts=" in (hr.reply or "")
+    assert "NETWORK accepted" in (hr.reply or "")
+    for _ in range(50):
+        if sent:
+            break
+        time.sleep(0.02)
     assert sent
     body = json.loads(sent[0].decode("utf-8"))
     assert "hosts" in body and "failures" in body
