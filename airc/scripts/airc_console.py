@@ -2617,6 +2617,8 @@ class ShellJobRunner:
         self._inflight_cmd: dict[str, _ShellPending] = {}
         # FR #4794: (nick, job_id) -> (outcome, next_offset) for CONT/RESUME pages.
         self._resume: dict[tuple[str, str], tuple[ShellOutcome, int]] = {}
+        # FR #5519: "log" entries stay CONT-able when shell=off.
+        self._resume_kind: dict[tuple[str, str], str] = {}
         # FR #5003: job_id -> DccListenOffer from caller DCCLISTEN (reverse DCC).
         self._dcc_listen: dict[str, object] = {}
 
@@ -2635,6 +2637,38 @@ class ShellJobRunner:
         """FR #5194: DCCLISTEN recorded for this job, or None (leave in place for PUT fallback)."""
         with self._lock:
             return self._dcc_listen.get((job_id or "").strip().lower())
+
+    def register_log_resume(
+        self,
+        nick: str,
+        job_id: str,
+        body: str,
+        *,
+        next_offset: int = 1,
+    ) -> None:
+        """FR #5519: store NETWORK/EXTENSION/LEGION IRC log body for CONT.
+
+        Piece 0 is a marker so advertised ``CONT offset=1`` starts at the payload.
+        """
+        key = nick.strip().lower()
+        jid = (job_id or "").strip().lower()
+        if not key or not jid:
+            return
+        outcome = ShellOutcome(
+            job_id=jid,
+            exit_code=0,
+            stdout="log\n" + (body or ""),
+            stderr="",
+        )
+        with self._lock:
+            self._resume[(key, jid)] = (outcome, max(1, int(next_offset)))
+            self._resume_kind[(key, jid)] = "log"
+
+    def resume_kind(self, nick: str, job_id: str) -> str:
+        key = nick.strip().lower()
+        jid = (job_id or "").strip().lower()
+        with self._lock:
+            return self._resume_kind.get((key, jid), "")
 
     def take_dcclisten(self, job_id: str):
         """FR #5293: pop a DCCLISTEN offer for an EXTENSION (or other) job id."""
@@ -2838,6 +2872,7 @@ class ShellJobRunner:
                         removed.append(item)
                         found = True
             self._resume.pop((key, jid), None)
+            self._resume_kind.pop((key, jid), None)
             if found:
                 self._dcc_listen.pop(jid, None)
         for item in removed:
@@ -2875,6 +2910,7 @@ class ShellJobRunner:
                 self._resume[(key, jid)] = (outcome, page.next_offset)
             else:
                 self._resume.pop((key, jid), None)
+                self._resume_kind.pop((key, jid), None)
         for line in page.lines:
             self._emit(key, line)
         return True
@@ -3060,6 +3096,22 @@ class AircConsoleCore:
             text=text,
             reply=f"DONE{id_bit} exit=126 {reason}",
         )
+
+    def _register_verb_log_resume(self, nick: str, job_id: str, delivered: dict | None) -> None:
+        """FR #5519: IRC fallback CONT must have a resume buffer (payload bytes)."""
+        if not delivered or str(delivered.get("via") or "") != "irc":
+            return
+        runner = self.shell_runner
+        if runner is None or not hasattr(runner, "register_log_resume"):
+            return
+        raw = delivered.get("payload")
+        if isinstance(raw, bytes):
+            body = raw.decode("utf-8", errors="replace")
+        else:
+            body = str(raw or "")
+        if not body.strip():
+            return
+        runner.register_log_resume(nick, job_id, body, next_offset=1)
 
     def _register_priority_job(self, job_id: str, nick: str) -> dict[str, Any]:
         """FR #5526: track async PRIORITY connect (separate from per-nick shell inflight)."""
@@ -3364,6 +3416,7 @@ class AircConsoleCore:
                     offer=offer,
                     send_fn=send_fn,
                 )
+                self._register_verb_log_resume(nick, qid or res.job_id, delivered)
                 emit = getattr(self, "legion_log_emit", None)
                 if callable(emit):
                     emit(delivered)
@@ -3440,6 +3493,7 @@ class AircConsoleCore:
                     offer=offer,
                     send_fn=send_fn,
                 )
+                self._register_verb_log_resume(nick, qid or res.job_id, delivered)
                 emit = getattr(self, "network_log_emit", None)
                 if callable(emit):
                     emit(delivered)
@@ -3521,6 +3575,7 @@ class AircConsoleCore:
                     offer=offer,
                     send_fn=send_fn,
                 )
+                self._register_verb_log_resume(nick, qid or res.job_id, delivered)
                 emit = getattr(self, "extension_log_emit", None)
                 if callable(emit):
                     emit(delivered)
@@ -3663,9 +3718,12 @@ class AircConsoleCore:
                 )
 
         # FR #4794: CONT/RESUME pages truncated shell output (no re-run).
+        # FR #5519: log-origin buffers stay CONT-able when shell=off.
         cont = parse_cont_request(cmd)
         if cont is not None and self.shell_runner is not None:
-            if caps.shell_mode == "off":
+            jid_pre, _off_pre = cont
+            log_cont = self.shell_runner.resume_kind(nick, jid_pre) == "log"
+            if caps.shell_mode == "off" and not log_cont:
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,
