@@ -1936,7 +1936,11 @@ class Client:
                 recipe_machine = "ionos"
         qdir = self._build_queue_dir()
         ok = bobiverse_build.consume_build_v1(
-            route_line, local, recipe_machine, queue_dir=qdir
+            route_line,
+            local,
+            recipe_machine,
+            queue_dir=qdir,
+            route_marker_dir=bobiverse_build.default_build_route_marker_dir(),
         )
         if ok:
             info(
@@ -1980,13 +1984,20 @@ class Client:
             or shutil.which("python")
             or r"C:\Python\Python312\python.exe"
         )
-        lock_path = Path(self.home) / "build-locks.json"
+        lock_path = bobiverse_build.default_machine_build_lock_path()
         result_path = Path(str(job_path) + ".result.json")
         log_path = Path(str(job_path) + ".runner.log")
+        work_dir = (
+            Path(os.environ.get("ProgramData", "C:/ProgramData"))
+            / "Bobiverse"
+            / "build-work"
+            / f"{version}-{job_path.stem}"
+        )
         cmd = [
             py, "-u", str(script), "--job", str(job_path), "--checkout",
             "--lock-file", str(lock_path), "--result-file", str(result_path),
             "--local-machine", local_machine,
+            "--work-dir", str(work_dir),
         ]
         logf = open(log_path, "a", encoding="utf-8")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

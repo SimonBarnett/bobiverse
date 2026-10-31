@@ -66,7 +66,7 @@ Ops only (simon / bob-* ears). Workers never see `!build` in `!help`.
 
 Typical shapes (channel `#bobiverse` + ops PM from chair):
 
-- **Route / start:** `BUILD v1 repos=owner/repo version=X ref=Y` --- recipe machine consumes this.
+- **Route / start:** `BUILD v1 repos=owner/repo version=X ref=Y [id=b-...]` --- recipe machine consumes this. FR #5266: chair and ear both hear the wire, but O_EXCL `%ProgramData%\Bobiverse\build-routes\<id>.claimed` plus a machine-global `build-locks.json` and unique `build-work\<ver>-<job>` keep one runner; git stderr is in `result.json`.
 - **Dry-run plan:** lines starting `build dry-run:` (machine, suites, baseline, would classify, nothing published).
 - **Success:** `BUILD ok <repo> version=... ref=... tag=... prerelease ...` (pack+release ran; no new_regression/step_failure blockers).
 - **Failure:** `BUILD fail <repo> version=... ref=... blockers=N pack=... release=...` or `BUILD fail ... wrong machine`.

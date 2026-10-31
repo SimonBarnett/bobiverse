@@ -47,7 +47,8 @@ def _git(args: list[str], cwd: Path | None, log: list[str], timeout: float = 180
     )
     log.append(f"$ git {' '.join(args)}\nrc={cp.returncode}\n{cp.stdout}{cp.stderr}")
     if cp.returncode != 0:
-        raise RuntimeError(f"git {args[0]} failed rc={cp.returncode}")
+        err = (cp.stderr or cp.stdout or "").strip().replace("\n", " ")[:800]
+        raise RuntimeError(f"git {args[0]} failed rc={cp.returncode}: {err}")
     return cp.stdout.strip()
 
 
@@ -55,9 +56,21 @@ def checkout(repo: str, ref: str, work: Path, log: list[str]) -> tuple[Path, Pat
     """Clean clone at ref + baseline worktree. Returns (src, baseline_dir, sha, baseline_tag)."""
     src = work / "src"
     base = work / "baseline"
+    work.mkdir(parents=True, exist_ok=True)
+    lock = work / ".runner.lock"
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(str(lock), flags)
+    except FileExistsError:
+        raise RuntimeError(f"work lock held: {lock}") from None
+    try:
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+    finally:
+        os.close(fd)
     _rmtree(base)
     _rmtree(src)
-    work.mkdir(parents=True, exist_ok=True)
+    if src.exists() or base.exists():
+        raise RuntimeError(f"checkout refuse: leftover {src if src.exists() else base}")
     _git(["clone", "--quiet", "--filter=blob:none", f"https://github.com/{repo}.git", str(src)], None, log)
     if ref and ref != "HEAD":
         _git(["checkout", "--quiet", "--detach", ref], src, log)
