@@ -645,7 +645,12 @@ def _token(raw: str, *, max_len: int = 64) -> str:
 
 
 def collect_airc_build_meta(ai_root: Path | None = None) -> dict[str, str]:
-    """FR #5534: commit / built_utc from airc BUILD.json, overlay HOTPATCH.json."""
+    """FR #5534 / #5589: BUILD.json commit+built_utc; HOTPATCH overlays commit only.
+
+    HOTPATCH.json schema: ``commit`` (or ``hotpatch_commit`` / ``sha``) and
+    ``hotpatched_utc`` (legacy ``built_utc`` / ``at_utc`` is the hotpatch time,
+    never the exe build time).
+    """
     root = Path(ai_root or os.environ.get("AI_ROOT") or r"C:\ai") / "airc"
     meta: dict[str, str] = {}
     for name, overlay in (("BUILD.json", False), ("HOTPATCH.json", True)):
@@ -658,12 +663,20 @@ def collect_airc_build_meta(ai_root: Path | None = None) -> dict[str, str]:
             continue
         if not isinstance(data, dict):
             continue
-        commit = _token(str(data.get("commit") or data.get("sha") or ""))
-        built = _token(
+        commit = _token(
             str(
-                data.get("built_utc")
-                or data.get("hotpatched_utc")
-                or data.get("at_utc")
+                data.get("commit")
+                or data.get("hotpatch_commit")
+                or data.get("sha")
+                or ""
+            )
+        )
+        built = _token(str(data.get("built_utc") or data.get("at_utc") or ""), max_len=40)
+        patched = _token(
+            str(
+                data.get("hotpatched_utc")
+                or (data.get("built_utc") if overlay else "")
+                or (data.get("at_utc") if overlay else "")
                 or ""
             ),
             max_len=40,
@@ -672,8 +685,8 @@ def collect_airc_build_meta(ai_root: Path | None = None) -> dict[str, str]:
             meta["hotpatch"] = "1"
             if commit:
                 meta["commit"] = commit
-            if built:
-                meta["built_utc"] = built
+            if patched:
+                meta["hotpatched_utc"] = patched
         else:
             if commit:
                 meta["commit"] = commit
@@ -701,6 +714,9 @@ def format_version_lines(
         bits.append(f"commit={commit}")
     if built:
         bits.append(f"built={built}")
+    patched = _token(info.get("hotpatched_utc") or "", max_len=40)
+    if patched:
+        bits.append(f"hotpatched={patched}")
     if str(info.get("hotpatch") or "") == "1":
         bits.append("hotpatch=1")
     return [" ".join(bits)]

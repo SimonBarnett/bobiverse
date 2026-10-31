@@ -60,7 +60,8 @@ def test_fr5534_hotpatch_overlays_commit(tmp_path):
     lines = _proto(tmp_path).handle("bob-mh", "VERSION", {"id": "11223344"})
     body = lines[0]
     assert "commit=bbbbbbbb" in body
-    assert "built=2026-10-31T20:14:00Z" in body
+    assert "built=2026-01-01T00:00:00Z" in body
+    assert "hotpatched=2026-10-31T20:14:00Z" in body
     assert "hotpatch=1" in body
 
 
