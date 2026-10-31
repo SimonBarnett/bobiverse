@@ -28,7 +28,7 @@ Disable **every** LLM or token pool: no Grok, no Cursor, no OpenRouter, no Sand,
   - Every step produces its expected wire line or state change within a bounded time.
   - `queue.json` and webhook state match the expected snapshot after each step.
   - A process-level guard proves no network call to any LLM or token endpoint happened (for example, the env for all AI keys is unset and any outbound HTTP except loopback fails the test).
-- **G2: live smoke test (manual, after deploy; procedure in section 16.3).** Use a throwaway issue on a sandbox repo, with workers configured with no token pools. Watch the announce, the queue row, `!bored`, Jeeves assign, ACK, busy, DONE, idle and supersede, using `irc.log` plus `GET https://irc.ntsa.uk/bob/v1/report`.
+- **G2: live smoke test (manual, after deploy; procedure in section 16.3).** Use a throwaway issue on a sandbox repo, with workers configured with no token pools. Watch the announce, the queue row, `!bored`, Jeeves assign, ACK, busy, DONE, idle and supersede, using `irc.log` plus `GET https://bob.ntsa.uk/bob/v1/report`.
 - A gh-Jeeves release is **not** shippable unless G1 is green and G2 has been run and recorded.
 
 ```mermaid
@@ -59,7 +59,7 @@ Evidence for each is in sections 4, 11, 12 and 18. Each FR needs a failing test 
 | K6 | **The `BobJeeves` service is Disabled** and Jeeves runs from the scheduled task `BobJeeves-chair` | section 4.3 | Jeeves as its own Windows service (agentic_build #330 / FR #7): `Install-BobJeeves.ps1 -Apply` sets **start= auto**, failure restart, and **Disable-ScheduledTask BobJeeves-chair**. |
 | K7 | **The `BobIrcd` service shows Stopped while ergo.exe runs** outside it | section 4.3 | **Report only.** gh-Jeeves must not touch Ergo/BobIrcd; raise it for Simon in agentic_build. Jeeves health should detect the IRC server being down. |
 | K8 | **The receiver launcher `BobReport-ionos` is ad hoc** (a script in the Administrator profile, not in any repo) | section 4.3, section 18 | gh-Jeeves (or agentic_build) owns the receiver service and installer. |
-| K9 | **`config/bobiverse.json` has duplicate `reportUrl` keys** (with and without :7700) | section 4.2 | A single key (`https://irc.ntsa.uk/bob/v1/report`) plus `jeeves.config_lint` / FR #10 tests. |
+| K9 | **`config/bobiverse.json` has duplicate `reportUrl` keys** (with and without :7700) | section 4.2 | A single key (`https://bob.ntsa.uk/bob/v1/report`) plus `jeeves.config_lint` / FR #10 tests. |
 | K10 | **Docs contradict the rules:** 3 agentic_build README diagrams and the `bob-token-efficient-handoff` skill say "Jeeves offers the job" | section 4.4 | Fix the docs and skills; gh-Jeeves README is the source of truth with small diagrams. **FR #11** + lint `tests/test_docs_k10_fr11.py`. |
 | K11 | **ASSIGN has no owner:** hand/LLM multi-line wakes while busy (blocks gate) | sections 11, 12, 18 | **Resolved by FR #106:** deterministic single-line **Jeeves assign**, one open item per worker, busy-gated. |
 | K12 | **Worker sessions look idle:** FROM payloads run as hidden `agent.exe -r <session> -p` processes, not in the visible seat | section 11 | Busy state on the webhook/TipForm from ACK/DONE; the worker pack echoes its task in the seat. **FR #13** sets `machines.<id>.working_on` from ACK/DONE (`tests/test_worker_busy_tipform_k12_fr13.py`); seat echo + TUI visibility: AgentMonitor #90. |
@@ -90,7 +90,7 @@ Seed skills (each is a seed FR with a test or lint that checks the skill exists 
 - Jeeves is the fleet's **deterministic GIT chair**. It uses **no LLM**; it is 100% scripts. Nick `Jeeves` on the private Ergo server `irc.ntsa.uk:6697` (TLS), hosted on **ionos**.
 - **Jeeves does:**
   - Announces GitHub webhook events as single `GIT …` lines on `#bobiverse` (bobs and Jeeves only).
-  - Owns the **task queue** (unaccepted, accepted, done) on the digest webhook `https://irc.ntsa.uk/bob/v1/report`. The on-disk `queue.json` is only a crash mirror.
+  - Owns the **task queue** (unaccepted, accepted, done) on the digest webhook `https://bob.ntsa.uk/bob/v1/report`. The on-disk `queue.json` is only a crash mirror.
   - On trusted worker **`!bored`** in `#{machine}`, **assigns** the next job (FR #106): `<nick>: <TYPE> <owner/repo>#<n> <url>` (ear OFFER retired).
   - Records worker **ACK/DONE** in every `#{machine}`, updating the queue and worker busy/idle on the webhook.
   - Answers **`!list`** / shop commands by private message where specified.
@@ -187,7 +187,7 @@ Seed skills (each is a seed FR with a test or lint that checks the skill exists 
   - Copies the skills.
   - No Windows services.
 - TipForm consumes the digest (`Read-BobReportDigestHttp` → `Apply-BobIrcDigestCursorPools`). The tray's **Plan** menu launches Grok or Cursor in plan mode with only skills-visionary (`Install-VisionarySkills.ps1`).
-- `config/bobiverse.json` has `chairNick: Jeeves`, `chairHome: ionos`. **Was:** two `reportUrl` keys (`:7700` and IIS HTTPS). **Now (FR #10 / K9):** single `reportUrl` `https://irc.ntsa.uk/bob/v1/report`; linted by `jeeves.config_lint`.
+- `config/bobiverse.json` has `chairNick: Jeeves`, `chairHome: ionos`. **Was:** two `reportUrl` keys (`:7700` and IIS HTTPS). **Now (FR #10 / K9):** single `reportUrl` `https://bob.ntsa.uk/bob/v1/report`; linted by `jeeves.config_lint`.
 - `tools/Close-BobSupersededGithub.ps1` and `Close-BobMrbPassedIssues.ps1` handle supersede on GitHub (closing PRs and issues). They do not manage the queue.
 - `tools/Bob-IrcTcpTestServer.ps1` is a minimal wire test server. gh-Jeeves needs a proper local test ircd (see #329).
 
@@ -389,8 +389,8 @@ Other requirements:
 7. UAT is worker vision-fidelity of main after MRB PASS (FR #187); worker `DONE UAT` stamps PASS/FAIL.
 
 ## 9. Webhook contracts
-- **GitHub → Bob GIT hook** (reference: `club-madeira-onboarding` hook **685447057**): URL `https://irc.ntsa.uk/bob/v1/git`, events `issues`, `pull_request`, `push`, content type `json`, active, SSL verification on, **no secret configured**. New repos, gh-Jeeves included, copy this.
-- **Digest `https://irc.ntsa.uk/bob/v1/report`:**
+- **GitHub → Bob GIT hook** (reference: `club-madeira-onboarding` hook **685447057**): URL `https://bob.ntsa.uk/bob/v1/git`, events `issues`, `pull_request`, `push`, content type `json`, active, SSL verification on, **no secret configured**. New repos, gh-Jeeves included, copy this.
+- **Digest `https://bob.ntsa.uk/bob/v1/report`:**
   - `GET`: public JSON with `machines.<id>` (`nick, online, lastSeen, jobs, running, queued, working_on, workers{pid:{working_on, agent, model}}, pcent`), `cursor_pools[]` and `queue{unaccepted, accepted}` (gh-Jeeves adds `done`).
   - `POST`: shared-secret header (redacted), allow-listed IPs, ops `merge | delete-worker | shop-down | git-claim`. gh-Jeeves adds ops for `ack`, `done`, `release` and `worker-busy/idle`, or folds them into `merge`.
 - The `http://bob.ntsa.uk/bob/v1/digest` URL is dead (404). The env override is `AGENTIC_IRC_DIGEST_URL` / `BOB_DIGEST_URL`.
@@ -501,7 +501,7 @@ Rollback: re-enable task `BobJeeves-chair` on the tagged legacy checkout. The qu
 
 ### 16.3 Live smoke test procedure (G2)
 1. Pre-check:
-   - `GET https://irc.ntsa.uk/bob/v1/report`: Jeeves `lastSeen` is fresh.
+   - `GET https://bob.ntsa.uk/bob/v1/report`: Jeeves `lastSeen` is fresh.
    - The ear on the test machine and one worker seat are configured with **no token pools**, and the worker is a scripted fake that replies ACK and DONE.
 2. On a sandbox repo with the Bob hook, open issue "smoke <timestamp>". Expect `GIT issues <repo> opened #n` on #bobiverse (ionos `~\.agentic-irc-bobiverse\irc.log`) and `FR #n` in `queue.unaccepted`.
 3. The worker/monitor sends `!bored` in `#{machine}`. Expect Jeeves assign: `<nick>: FR <repo>#n <url>`.

@@ -26,9 +26,9 @@ re-deriving.
 
 ## reportUrl
 
-`reportUrl` is HTTPS `https://irc.ntsa.uk/bob/v1/report`. GET and POST use
+`reportUrl` is HTTPS `https://bob.ntsa.uk/bob/v1/report`. GET and POST use
 that URL (`bob-digest-webhook`). Do not use `http://bob.ntsa.uk/bob/v1/digest`
-(404). Git events are `https://irc.ntsa.uk/bob/v1/git`, not this URL.
+(404). Git events are `https://bob.ntsa.uk/bob/v1/git`, not this URL.
 
 **Every `bob-*` must POST `pcent`.** `Write-BobIrcStatus` builds `pcent`
 from Cursor spending groups and `Send-BobDigestWebhookIfChanged` includes

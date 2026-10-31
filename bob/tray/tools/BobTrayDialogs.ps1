@@ -227,7 +227,7 @@ function Sync-BobTrayStatusWorkersFromDigest {
         if (-not $digest) {
             $url = [string]$ReportUrl
             if (-not $url) { $url = [string]$env:BOB_DIGEST_REPORT_URL }
-            if (-not $url) { $url = 'https://irc.ntsa.uk/bob/v1/report' }
+            if (-not $url) { $url = 'https://bob.ntsa.uk/bob/v1/report' }
             $url = $url.Trim()
             $sec = [Math]::Max(2, [int]$TimeoutSec)
             $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $sec -Headers @{ Accept = 'application/json' }

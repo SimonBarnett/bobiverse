@@ -139,7 +139,7 @@ reviews:
            DCC output. Flag any new path where they could leak.
         2. Hostnames: HTTP webhooks (report, intake, git, hours, jira, digest) must target
            https://bob.ntsa.uk/bob/v1/... in new or changed code; flag new
-           https://irc.ntsa.uk/bob/v1/... uses. IRC itself stays on irc.ntsa.uk with TLS
+           https://bob.ntsa.uk/bob/v1/... uses. IRC itself stays on irc.ntsa.uk with TLS
            ports 993 or 6697 only; flag plaintext 6667 or other hard-coded hosts/IPs.
         3. Behaviour changes without tests: a change in bob/, jeeves/, airc/ or common/
            code should come with a test under the matching tests/ directory.

@@ -23,9 +23,9 @@ import registered_machines
 REPORT_CMD = "!report"
 REPORT_GONE = "ERR report gone — use callback or GET /bob/v1/report"
 NO_MACHINE = "ERR no such machine"
-DEFAULT_DIGEST_URL = "https://irc.ntsa.uk/bob/v1/report"
+DEFAULT_DIGEST_URL = "https://bob.ntsa.uk/bob/v1/report"
 DIGEST_URL_ENV = "BOB_DIGEST_URL"
-BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://irc.ntsa.uk/bob/v1/report"
+BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://bob.ntsa.uk/bob/v1/report"
 DIGEST_PREFIX = "BOB DIGEST v1 "
 MAX_DIGEST_LINE = 350
 FLEET_CHANNEL = "#bobiverse"
@@ -277,7 +277,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
 HELP_TEXT = (
-    "GET https://irc.ntsa.uk/bob/v1/report   fleet JSON digest\n"
+    "GET https://bob.ntsa.uk/bob/v1/report   fleet JSON digest\n"
     "!recycle <id>       Jeeves only: fleet recycle\n"
     "write: POST reportUrl (no !report; no !bobiverse)"
 )
@@ -652,7 +652,14 @@ def parse_bobiverse_query(body: str) -> tuple[str, str | None] | None:
 
 
 def digest_url() -> str:
-    return (os.environ.get(DIGEST_URL_ENV) or os.environ.get("BOB_DIGEST_URL") or "").strip() or DEFAULT_DIGEST_URL
+    raw = (os.environ.get(DIGEST_URL_ENV) or os.environ.get("BOB_DIGEST_URL") or "").strip()
+    if raw:
+        return raw
+    try:
+        import bob_public_base as _bpb
+        return _bpb.default_digest_url()
+    except ImportError:  # pragma: no cover
+        return DEFAULT_DIGEST_URL
 
 
 def fetch_digest_http(url: str | None = None, timeout: float = 15.0) -> dict | None:

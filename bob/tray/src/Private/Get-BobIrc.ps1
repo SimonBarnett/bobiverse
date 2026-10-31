@@ -395,7 +395,7 @@ function Save-BobCursorPoolForSeat {
 
 function Get-BobDigestUrl {
     # FR #354: public GET digest is the same document as reportUrl (IIS has no /digest).
-    # Never default to bob.ntsa.uk (does not resolve).
+    # FR #5272: default report host is bob.ntsa.uk (webhooks); IRC host stays irc.ntsa.uk.
     foreach ($cand in @($env:BOB_DIGEST_URL)) {
         if ($cand -and [string]$cand.Trim()) { return [string]$cand.Trim() }
     }
@@ -409,7 +409,7 @@ function Get-BobDigestUrl {
         }
     }
     catch { }
-    return 'https://irc.ntsa.uk/bob/v1/report'
+    return 'https://bob.ntsa.uk/bob/v1/report'
 }
 
 function Read-BobReportDigestHttp {

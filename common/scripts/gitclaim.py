@@ -8716,7 +8716,7 @@ def detect_mrb_reviewer_deadlock(
     else:
         # author_only recycleseat only when every idle block is author (not
         # giveup/cooldown). Sole-seat GIVEUP must stick until another seat
-        # appears or an operator !cleargiveup / !assign.
+        # appears or an operator !cleargiveup / !assign (FR #5268 / #5270).
         if not all(
             _mrb_idle_block_reason(row, nick, seats_live, led) == "author"
             for nick in seats_idle

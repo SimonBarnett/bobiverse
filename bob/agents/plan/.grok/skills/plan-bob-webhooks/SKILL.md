@@ -14,7 +14,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -32,15 +32,15 @@ No IRC restart. No digest producer code.
 
 | Role | URL | Who uses it |
 |------|-----|-------------|
-| **GitHub webhook** (this skill) | `https://irc.ntsa.uk/bob/v1/git` | GitHub → Jeeves `GIT ...` on `#bobiverse` |
-| **Digest report** (document only) | `https://irc.ntsa.uk/bob/v1/report` | Fleet / TipForm GET+POST `op=merge`; `config/bobiverse.json` `reportUrl` |
+| **GitHub webhook** (this skill) | `https://bob.ntsa.uk/bob/v1/git` | GitHub → Jeeves `GIT ...` on `#bobiverse` |
+| **Digest report** (document only) | `https://bob.ntsa.uk/bob/v1/report` | Fleet / TipForm GET+POST `op=merge`; `config/bobiverse.json` `reportUrl` |
 
 Never point a GitHub hook at `/bob/v1/report` (that path expects
 `X-Bob-Secret` digest merges). Never HMAC/webhook secret in git,
 issues, or channel.
 
 Source of truth for reportUrl in the build pack:
-`agentic_build/config/bobiverse.json` → `"reportUrl": "https://irc.ntsa.uk/bob/v1/report"`.
+`agentic_build/config/bobiverse.json` → `"reportUrl": "https://bob.ntsa.uk/bob/v1/report"`.
 
 ## Gate: hook BEFORE any push or issue (required)
 
@@ -64,7 +64,7 @@ It is the single source of truth for the hook and exits 0 only when:
 
 1. The hook matches the fleet config **exactly** (creates it if absent, PATCHes
    drift, never adds a second one, leaves unrelated hooks alone):
-   url `https://irc.ntsa.uk/bob/v1/git`, `content_type` `json`,
+   url `https://bob.ntsa.uk/bob/v1/git`, `content_type` `json`,
    `insecure_ssl` `0`, events `issues`,`pull_request`,`push`,`issue_comment`, active (FR #4711).
 2. A `ping` delivery returned **2xx** (the receiver answers 204).
 3. Items opened before the hook existed are replayed as `opened` events
@@ -131,14 +131,14 @@ a secret on a command line, in chat, in git, or in an issue.
 Write `hook.json` UTF-8 **without BOM**:
 
 ```
-{"name":"web","active":true,"events":["push","pull_request","issues","issue_comment"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
+{"name":"web","active":true,"events":["push","pull_request","issues","issue_comment"],"config":{"url":"https://bob.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
 ```
 
 PowerShell `ConvertTo-Json` often adds a BOM and GitHub returns 400
 "Problems parsing JSON". Prefer:
 
 ```powershell
-$json = '{"name":"web","active":true,"events":["push","pull_request","issues","issue_comment"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}'
+$json = '{"name":"web","active":true,"events":["push","pull_request","issues","issue_comment"],"config":{"url":"https://bob.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}'
 [IO.File]::WriteAllText("$PWD\hook.json", $json, [Text.UTF8Encoding]::new($false))
 gh api repos/SimonBarnett/<name>/hooks -X POST --input hook.json
 ```
@@ -155,7 +155,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\New-BobGitWebhook.ps1 
 gh api repos/SimonBarnett/<name>/hooks --jq '.[].config.url'
 ```
 
-If `https://irc.ntsa.uk/bob/v1/git` is already there, do not create a
+If `https://bob.ntsa.uk/bob/v1/git` is already there, do not create a
 second hook. Leave other hooks (Amplify, etc.) in place.
 
 ## Check
@@ -167,7 +167,7 @@ Manual spot-checks:
 gh api repos/SimonBarnett/<name>/hooks/<id>/deliveries --jq '.[0] | {event,status,status_code}'
 ```
 
-- GET `https://irc.ntsa.uk/bob/v1/git` is 405 (POST only)
+- GET `https://bob.ntsa.uk/bob/v1/git` is 405 (POST only)
 
 ## Do not
 

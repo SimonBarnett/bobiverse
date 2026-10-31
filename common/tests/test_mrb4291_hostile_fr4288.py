@@ -67,7 +67,18 @@ def test_mrb4291_client_skips_existing_pr_param(tmp_path: Path):
     )
     assert r.returncode == 0, r.stdout + r.stderr
     assert "SKIPPED harvest ExistingPrUrl tip-loop (FR #4288" in r.stdout
+    assert "SKIPPED harvest lesson-review loop" not in r.stdout
     assert "HARVESTED" not in r.stdout
+
+
+def test_fr5483_existing_pr_skip_before_lesson_review():
+    src = ROOT / "common" / "scripts" / "Invoke-BobiverseHarvest.ps1"
+    text = src.read_text(encoding="utf-8-sig")
+    i4288 = text.find("SKIPPED harvest ExistingPrUrl tip-loop")
+    i4780 = text.find("SKIPPED harvest lesson-review loop")
+    assert i4288 >= 0 and i4780 >= 0
+    assert i4288 < i4780
+    assert "FR #5483" in text
 
 
 def test_mrb4291_intake_existing_pr_wins_before_tip(tmp_path: Path):

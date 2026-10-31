@@ -60,12 +60,12 @@ Get-WebBinding -Name <site>
 
 TLS handshake `CN=` + SAN must include the hostname. Browser or
 `Invoke-WebRequest https://<host>/` is 200. For the webhook site,
-`GET https://irc.ntsa.uk/bob/v1/report` and `/bob/v1/git` are 405.
+`GET https://bob.ntsa.uk/bob/v1/report` and `/bob/v1/git` are 405.
 
 ## After HTTPS is up
 
 Fleet digest URL lives in `config/bobiverse.json` as `reportUrl`
-`https://irc.ntsa.uk/bob/v1/report`. Keep port 80 for ACME renewals.
+`https://bob.ntsa.uk/bob/v1/report`. Keep port 80 for ACME renewals.
 
 GitHub will now accept hooks. Skill `setup-github-webhooks`.
 

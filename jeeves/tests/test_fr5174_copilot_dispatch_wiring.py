@@ -242,7 +242,6 @@ def _focus_high(home):
         repo: {"priority": 1, "label": "high"} for repo in (
             "SimonBarnett/bobiverse",
             "SimonBarnett/a-search",
-            "SimonBarnett/agentic_fomprep",
         )
     }
     focus_ignore.save_focus(home, doc)
@@ -263,7 +262,6 @@ def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monke
         repo: {"priority": 1, "label": "high"} for repo in (
             "SimonBarnett/bobiverse",
             "SimonBarnett/a-search",
-            "SimonBarnett/agentic_fomprep",
         )
     }
     focus["repos"]["SimonBarnett/other"] = {"priority": 9, "label": "low"}
@@ -309,15 +307,14 @@ def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monke
     for _ in range(3):
         chair._copilot_tick()
 
-    assert len(posts) == 3
+    assert len(posts) == 2
     assert {
         url.split("/agents/repos/", 1)[1].split("/tasks", 1)[0] for url in posts
     } == {
         "SimonBarnett/bobiverse",
         "SimonBarnett/a-search",
-        "SimonBarnett/agentic_fomprep",
     }
     remaining = gitclaim.load_unaccepted(digest_home)
     assert {row["id"] for row in remaining} == {
-        "#5139", "#5170", "#5221", "#39", "#33", "#1", "#2"
+        "#237", "#5139", "#5170", "#5221", "#39", "#33", "#1", "#2"
     }

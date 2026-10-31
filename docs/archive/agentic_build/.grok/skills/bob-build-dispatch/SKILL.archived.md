@@ -30,7 +30,7 @@ Default is `Select-BobGitWorker` (capacity pair, not a nick called cursor).
 
 **Fuel, before Start-BobBuild:** follow `bob-token-handoff`. Do not re-reason it.
 
-1. Read the live digest webhook first (`https://irc.ntsa.uk/bob/v1/report`, `pcent.cursor-models`). Do not invent the percent. MarchHare has no Cursor login.
+1. Read the live digest webhook first (`https://bob.ntsa.uk/bob/v1/report`, `pcent.cursor-models`). Do not invent the percent. MarchHare has no Cursor login.
 2. Cursor Models remaining > 0 -> `cursor-models`, else `grok-build`. `-AllowCopilot` adds copilot only after that. Never Other Models.
 3. Code agents: **PR = low** (Composer `composer-2.5`, or grok.exe `build0.1` when listed, else `grok-4.5`). **MRB = medium** (`grok-4.6`). **UAT = high** (Bob assigns only; Bob stamps UAT). Maximize free/cheap agents when included fuel remains.
 4. Bob listens and assigns only. Bob does not implement and does not write the MRB.
@@ -70,4 +70,5 @@ Prefer instructional wording for secrets ("do not set an API key environment var
 
 ## Long jobs
 
-Product builds often exceed a few minutes. Rely on Watch-BobAgents for unning_orphan / inbox_stale / gent_stall. Do not Stop-BobBuild solely because wall time feels long while the worker process is alive. Prefer profiles.generic.timeoutSec >= 7200 on legion boxes.
+Product builds often exceed a few minutes. Rely on Watch-BobAgents for 
+unning_orphan / inbox_stale / gent_stall. Do not Stop-BobBuild solely because wall time feels long while the worker process is alive. Prefer profiles.generic.timeoutSec >= 7200 on legion boxes.
