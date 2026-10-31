@@ -47,9 +47,12 @@ def test_fr5448_mrb5367_pin_targets_contract_not_no_ldap_phrase():
     assert "workgroup-or-no-dc" in pin or "ldap" in pin.lower()
     assert "airc-network-worker" in src
     assert '"ldap": False' in src or '"ldap": ldap_ok' in src
-    # FR #5559: this file must not reintroduce the live-empty assert.
+    # FR #5559: first contract test must not call live default_ldap_enum expecting [].
     this = (ROOT / "airc" / "tests" / "test_fr5448_ldap_false_contract.py").read_text(
         encoding="utf-8"
     )
-    assert "assert nw.default_ldap_enum() == []" not in this
+    start = this.index("def test_fr5448_stub_and_empty_enum_are_ldap_false")
+    end = this.index("\ndef test_fr5559_live_default_ldap_enum_shape", start)
+    stub_test = this[start:end]
+    assert "default_ldap_enum()" not in stub_test
     assert "FR #5559" in this
