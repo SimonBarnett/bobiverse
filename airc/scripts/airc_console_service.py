@@ -62,6 +62,7 @@ from airc_console import (
     wonderland_channel,
 )
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
+import airc_extension as _airc_extension  # FR #5426: EXTENSION runner for AircConsoleCore
 
 FLOOD_S = 0.35  # legacy fixed gap; FR #4790 prefers token bucket below
 # FR #4790: sustain under Ergo fakelag (~1-2 msg/s). Burst then pace.
@@ -325,6 +326,7 @@ class AircConsoleService:
             cli_shell_mode=getattr(args, "shell_mode", None) or _mode_tok,
             cli_jobs=getattr(args, "jobs", None),
             cli_update=getattr(args, "update_cap", None),
+            cli_extension=getattr(args, "extension_cap", None),
             cli_require_account=bool(args.require_account) if getattr(args, "require_account", False) else None,
             cli_accounts=list(args.accounts or []),
             default_shell_mode="operators",
@@ -410,6 +412,7 @@ class AircConsoleService:
             machine=self.machine,
             airc_running=True,
         )
+        self.job_protocol.dcc_receive = self._dcc_put_receive
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
@@ -449,6 +452,15 @@ class AircConsoleService:
         self._stopping = False
         # FR #2649: flush at most once so finally does not re-drain after sock=None.
         self._stop_flushed = False
+
+    def _dcc_put_receive(self, job_id: str):
+        """FR #5194: console dials the caller DCCLISTEN and reads the upload frame."""
+        import airc_dcc_bulk as _dcc
+
+        offer = self.shell_runner.peek_dcc_offer(job_id)
+        if offer is None:
+            raise RuntimeError("no DCCLISTEN for id")
+        return _dcc.receive_upload_from_offer(offer)
 
     def note_shell_inflight(self, nick: str, job_id: str) -> None:
         key = (nick or "").strip().lower()
@@ -1857,6 +1869,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["off", "on"],
         help="FR #3287: off refuses UPDATE airc|bob|jeeves",
+    )
+    p.add_argument(
+        "--extension",
+        dest="extension_cap",
+        default=None,
+        choices=["off", "on"],
+        help="FR #5295: off refuses EXTENSION install|status",
     )
     p.add_argument("--cwd", default=None)
     p.add_argument("--idle-sec", type=float, default=3600.0)

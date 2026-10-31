@@ -38,6 +38,8 @@ param(
     [string]$Jobs = '',
     [ValidateSet('', 'off', 'on')]
     [string]$UpdateCap = '',
+    [ValidateSet('', 'off', 'on')]
+    [string]$ExtensionCap = '',
     [switch]$RequireAccount,
     [string[]]$Accounts = @(),
     # FR #3401 / #3639: every profile authorises by live control-channel +o/+h (irc_ops).
@@ -657,9 +659,13 @@ if ($useAircExe) {
     if (-not $UpdateCap -and $priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) {
         $UpdateCap = [string]$priorId.UpdateCap
     }
+    if (-not $ExtensionCap -and $priorId -and $priorId.PSObject.Properties['ExtensionCap'] -and $priorId.ExtensionCap) {
+        $ExtensionCap = [string]$priorId.ExtensionCap
+    }
     if ($ShellMode -in @('off', 'operators')) { $appParams += " --shell-mode $ShellMode" }
     if ($Jobs -in @('off', 'on')) { $appParams += " --jobs $Jobs" }
     if ($UpdateCap -in @('off', 'on')) { $appParams += " --update $UpdateCap" }
+    if ($ExtensionCap -in @('off', 'on')) { $appParams += " --extension $ExtensionCap" }
     if ($RequireAccount -or ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount)) {
         $appParams += ' --require-account'
         $RequireAccount = $true
@@ -671,7 +677,7 @@ if ($useAircExe) {
         $appParams += ' --accounts'
         foreach ($a in $Accounts) { $appParams += " $a" }
     }
-    Write-Host ("INFO FR #3287 AppParameters capabilities shell={0} jobs={1} update={2} require_account={3} accounts={4}" -f $(if ($ShellMode) { $ShellMode } else { '-' }), $(if ($Jobs) { $Jobs } else { '-' }), $(if ($UpdateCap) { $UpdateCap } else { '-' }), [int][bool]$RequireAccount, $Accounts.Count)
+    Write-Host ("INFO FR #3287/#5295 AppParameters capabilities shell={0} jobs={1} update={2} extension={3} require_account={4} accounts={5}" -f $(if ($ShellMode) { $ShellMode } else { '-' }), $(if ($Jobs) { $Jobs } else { '-' }), $(if ($UpdateCap) { $UpdateCap } else { '-' }), $(if ($ExtensionCap) { $ExtensionCap } else { '-' }), [int][bool]$RequireAccount, $Accounts.Count)
     $appTarget = $aircExe
     $appDirectory = $packRoot
     Write-Host "INFO Airc Application=airc.exe (FR #2397 cutover)"
@@ -711,9 +717,13 @@ if ($useAircExe) {
     if (-not $UpdateCap -and $priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.UpdateCap) {
         $UpdateCap = [string]$priorId.UpdateCap
     }
+    if (-not $ExtensionCap -and $priorId -and $priorId.PSObject.Properties['ExtensionCap'] -and $priorId.ExtensionCap) {
+        $ExtensionCap = [string]$priorId.ExtensionCap
+    }
     if ($ShellMode -in @('off', 'operators')) { $appParams += " -ShellMode $ShellMode" }
     if ($Jobs -in @('off', 'on')) { $appParams += " -Jobs $Jobs" }
     if ($UpdateCap -in @('off', 'on')) { $appParams += " -UpdateCap $UpdateCap" }
+    if ($ExtensionCap -in @('off', 'on')) { $appParams += " -ExtensionCap $ExtensionCap" }
     if ($RequireAccount -or ($priorId -and $priorId.PSObject.Properties['RequireAccount'] -and $priorId.RequireAccount)) {
         $appParams += ' -RequireAccount'
         $RequireAccount = $true

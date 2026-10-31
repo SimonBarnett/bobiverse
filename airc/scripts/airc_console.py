@@ -69,7 +69,7 @@ _CTCP_PING_RE = re.compile(r"^\x01PING(?: (.*))?\x01\s*$", re.IGNORECASE | re.DO
 _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
 # FR #77: UPDATE airc|bob|jeeves [version] - fleet MSI via detached updater only.
 _UPDATE_CMD_RE = re.compile(
-    r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+))?\s*$",
+    r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+(?:\.\d+)?))?\s*$",
     re.IGNORECASE,
 )
 # Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth - AuthPolicy
@@ -1260,16 +1260,21 @@ class ConsoleCapabilities:
     """FR #3287: install-time remote capability gates (survive MSI upgrade).
 
     ``shell_mode``: ``off`` = STATUS/VERSION/ping only; ``operators`` = FR #75 shell for auth nicks.
-    ``jobs`` / ``update``: finer gates when shell is ``operators``.
+    ``jobs`` / ``update`` / ``extension``: finer gates when shell is ``operators``.
 
     FR #3764: ``update`` is the **remote** UPDATE verb (ops-gated IRC command). It is
-    not automatic MSI self-update / git sync - those are ``self_update`` /
+    not automatic MSI self-update / git sync --- those are ``self_update`` /
     ``sync_from_repo`` in ``AircStartUpdatePolicy`` (client defaults both off).
+
+    FR #5295: ``extension`` gates the remote EXTENSION verb. Fleet default ``on``;
+    client and workstation profiles default ``off``. ``update=off`` still refuses
+    EXTENSION (parent S8). Cap-off reply is ``DONE exit=126 extension-disabled``.
     """
 
     shell_mode: Literal["off", "operators"] = "operators"
     jobs: Literal["off", "on"] = "on"
     update: Literal["on", "off"] = "on"
+    extension: Literal["on", "off"] = "on"
     require_account: bool = False
     accounts: tuple[str, ...] = ()
 
@@ -1278,6 +1283,7 @@ class ConsoleCapabilities:
         return (
             f"INFO capabilities shell={self.shell_mode} jobs={self.jobs} "
             f"update={self.update} (remote UPDATE; not auto self-update) "
+            f"extension={self.extension} "
             f"require_account={int(bool(self.require_account))} "
             f"accounts={len(self.accounts)}"
         )
@@ -1416,6 +1422,7 @@ def load_capabilities(
     cli_shell_mode: str | None = None,
     cli_jobs: str | None = None,
     cli_update: str | None = None,
+    cli_extension: str | None = None,
     cli_require_account: bool | None = None,
     cli_accounts: list[str] | tuple[str, ...] | None = None,
     default_shell_mode: str = "operators",
@@ -1450,6 +1457,12 @@ def load_capabilities(
     update = _norm_on_off(
         cli_update if cli_update is not None else data.get("update"), default="on"
     )
+    prof = str(data.get("profile") or "").strip().lower()
+    ext_default = "off" if prof in {"client", "workstation"} else "on"
+    extension = _norm_on_off(
+        cli_extension if cli_extension is not None else data.get("extension"),
+        default=ext_default,
+    )
 
     req = cli_require_account
     if req is None:
@@ -1476,6 +1489,7 @@ def load_capabilities(
         shell_mode=mode,  # type: ignore[arg-type]
         jobs=jobs,  # type: ignore[arg-type]
         update=update,  # type: ignore[arg-type]
+        extension=extension,  # type: ignore[arg-type]
         require_account=bool(req),
         accounts=tuple(uniq),
     )
@@ -1638,6 +1652,25 @@ def resolve_update_cap_for_install(
         return "off"
     if prof == "client":
         return "on"
+    prior_l = (prior or "").strip().lower()
+    if prior_l in {"off", "on"}:
+        return prior_l
+    return "on"
+
+
+def resolve_extension_cap_for_install(
+    *,
+    prior: str | None,
+    explicit: str | None,
+    profile: str | None = None,
+) -> str:
+    """Fleet default ``on``; client and workstation default ``off`` (FR #5295)."""
+    exp = (explicit or "").strip().lower()
+    if exp in {"off", "on"}:
+        return exp
+    prof = (profile or "").strip().lower()
+    if prof in {"workstation", "client"}:
+        return "off"
     prior_l = (prior or "").strip().lower()
     if prior_l in {"off", "on"}:
         return prior_l
@@ -2457,8 +2490,13 @@ class ShellJobRunner:
         if offer is None:
             return False
         with self._lock:
-            self._dcc_listen[offer.job_id] = offer
+            self._dcc_listen[(offer.job_id or "").strip().lower()] = offer
         return True
+
+    def peek_dcc_offer(self, job_id: str):
+        """FR #5194: DCCLISTEN recorded for this job, or None (leave in place for PUT fallback)."""
+        with self._lock:
+            return self._dcc_listen.get((job_id or "").strip().lower())
 
     def take_dcclisten(self, job_id: str):
         """FR #5293: pop a DCCLISTEN offer for an EXTENSION (or other) job id."""
@@ -2892,7 +2930,8 @@ class AircConsoleCore:
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
                     "LEGION {host|ip} [-WhatIf] isolated worker (FR #5308); "
                     f"capabilities shell={self.capabilities.shell_mode} "
-                    f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
+                    f"jobs={self.capabilities.jobs} update={self.capabilities.update} "
+                    f"extension={self.capabilities.extension}; "
                     ".quit closes; silent on channel; answers ping"
                 ),
             )
@@ -3094,7 +3133,8 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5290: EXTENSION install/status - isolated stub worker; same auth as UPDATE.
+        # FR #5290 / #5295: EXTENSION install/status --- isolated worker; UPDATE-style auth
+        # plus dedicated extension=off (client/workstation default refuse).
         ext = _extension.parse_extension_command(cmd)
         if ext is not None:
             if caps.shell_mode == "off":
@@ -3112,6 +3152,14 @@ class AircConsoleCore:
                     target=target,
                     text=text,
                     reply="DONE exit=126 update-disabled",
+                )
+            if caps.extension == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 extension-disabled",
                 )
             try:
                 result = self.extension_runner(
