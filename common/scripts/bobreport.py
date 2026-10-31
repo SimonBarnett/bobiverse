@@ -272,6 +272,7 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "on_demand_limit_cents",
     "on_demand_remaining_pct",
     "sand_period_end",
+    "console_nicks",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
@@ -704,6 +705,7 @@ def _empty_machine(machine_id: str) -> dict:
         "working_on": "",
         "workers": {},
         "worker_list": [],
+        "console_nicks": [],
     }
 
 
@@ -924,6 +926,27 @@ def worker_list_for_export(ent: dict) -> list[dict]:
     return sorted(rows, key=lambda r: r["nick"].lower())
 
 
+def coerce_console_nicks(raw: object) -> list[str]:
+    """FR #5204: public ``*_console`` nicks only (no secrets, no workers)."""
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    out = []
+    seen = set()
+    for item in raw:
+        nick = str(item or "").strip()
+        low = nick.lower()
+        if not nick or not low.endswith("_console") or low in seen:
+            continue
+        seen.add(low)
+        out.append(nick)
+    return sorted(out, key=lambda s: s.lower())
+
+
+def console_nicks_from_present(present: object) -> list[str]:
+    """NAMES / JOIN set -> credential-free airc console nicks."""
+    return coerce_console_nicks(present)
+
+
 def _coerce_machine(mid: str, raw: object) -> dict:
     base = _empty_machine(mid)
     if not isinstance(raw, dict):
@@ -939,6 +962,7 @@ def _coerce_machine(mid: str, raw: object) -> dict:
             "working_on": str(raw.get("working_on") or ""),
             "workers": _coerce_workers(mid, raw.get("workers")),
             "worker_list": _coerce_worker_list(raw.get("worker_list")),
+            "console_nicks": coerce_console_nicks(raw.get("console_nicks")),
         }
     )
     if isinstance(raw.get("pcent"), dict):
@@ -1424,6 +1448,41 @@ def _digest_locked(fn):
             return fn(home, *args, **kwargs)
 
     return wrapper
+
+
+@_digest_locked
+def set_machine_console_nicks(home: Path, mid: str, nicks: object) -> list[str]:
+    """Persist shop ``*_console`` presence for GET /bob/v1/report."""
+    cid = fold_machine_id(normalize_machine_id(mid) or mid)
+    cleaned = coerce_console_nicks(nicks)
+    doc = load_digest(home)
+    machines = doc.setdefault("machines", {})
+    if not isinstance(machines, dict):
+        machines = {}
+        doc["machines"] = machines
+    ent = machines.get(cid)
+    if not isinstance(ent, dict):
+        ent = _empty_machine(cid)
+        machines[cid] = ent
+    if coerce_console_nicks(ent.get("console_nicks")) != cleaned:
+        ent["console_nicks"] = cleaned
+        save_digest(home, doc)
+    return cleaned
+
+
+@_digest_locked
+def remove_machine_console_nick(home: Path, mid: str, nick: str) -> list[str]:
+    cid = fold_machine_id(normalize_machine_id(mid) or mid)
+    gone = str(nick or "").strip().lower()
+    doc = load_digest(home)
+    ent = (doc.get("machines") or {}).get(cid)
+    if not isinstance(ent, dict):
+        return []
+    kept = [n for n in coerce_console_nicks(ent.get("console_nicks")) if n.lower() != gone]
+    if kept != coerce_console_nicks(ent.get("console_nicks")):
+        ent["console_nicks"] = kept
+        save_digest(home, doc)
+    return kept
 
 
 def _utc_now_iso() -> str:
@@ -2889,6 +2948,7 @@ def export_machine_for_tray(
     out.setdefault("status", "I am offline" if not out.get("online") else "I am online")
     out.setdefault("working_on", "")
     out["workers"] = worker_list_for_export(base)
+    out["console_nicks"] = coerce_console_nicks(base.get("console_nicks"))
     out.setdefault("weekly", None)
     out.setdefault("period_end", None)
     out.setdefault("lastSeen", None)
@@ -3208,7 +3268,17 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home),
         "intake_outbox": _intake_outbox_public(home),
+        # FR #5204: live airc *_console nicks from shop NAMES (no NickServ).
+        "airc_consoles": _airc_consoles_from_machines(exported),
     }
+
+
+def _airc_consoles_from_machines(machines: dict) -> list[str]:
+    found: list[str] = []
+    for ent in (machines or {}).values():
+        if isinstance(ent, dict):
+            found.extend(coerce_console_nicks(ent.get("console_nicks")))
+    return coerce_console_nicks(found)
 
 
 def _chunk_json(raw: str) -> list[str]:
