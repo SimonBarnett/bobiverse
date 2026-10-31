@@ -1102,6 +1102,18 @@ function Invoke-Check {
 
     $st = Get-State
     if ($st.pending) {
+        # FR #5494: pending for a tag already at or behind installed VERSION is leftover
+        # (flamingo v0.1.17 pending while bob is 0.1.31). Clear without stale-pending intake.
+        $pendingVer = ConvertTo-Ver $st.pending.tag
+        if ($local -and $pendingVer -and $pendingVer -le $local) {
+            Write-UpdLog "pending-already-installed tag=$($st.pending.tag) local=$($local.ToString()) - clearing (FR #5494)"
+            $st.pending = $null
+            $st.lastResult = 'pending-already-installed'
+            Save-State $st
+            $st = Get-State
+        }
+    }
+    if ($st.pending) {
         $at = ConvertTo-UtcDate $st.pending.atUtc
         $pendingAgeMin = if ($at) { ((Get-Date).ToUniversalTime() - $at).TotalMinutes } else { [double]::PositiveInfinity }
         # FR #1018: clear orphan pending when the helper scheduled task is not Running

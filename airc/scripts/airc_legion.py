@@ -10,7 +10,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from socket import gethostname as socket_hostname
 from typing import Any, Callable
@@ -34,6 +34,9 @@ class LegionVerbResult:
     ok: bool
     reply: str
     job_id: str = ""
+    status: str = ""
+    error: str = ""
+    failures: list[dict[str, Any]] = field(default_factory=list)
 
     def reply_text(self) -> str:
         return self.reply
@@ -411,6 +414,7 @@ def run_legion_verb(
     job_id: str = "",
     worker: Callable[..., Any] | None = None,
     wait: bool = False,
+    on_done: Callable[[LegionVerbResult], Any] | None = None,
     **_kw: Any,
 ) -> LegionVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
@@ -424,30 +428,52 @@ def run_legion_verb(
     if "credman" in _kw:
         work_kw["credman"] = _kw["credman"]
 
-    def _call() -> dict[str, Any]:
+    def _finish(data: dict[str, Any], *, reply: str | None = None) -> LegionVerbResult:
+        err = str(data.get("error") or "")
+        fails = list(data.get("failures") or [])
+        if not fails and err:
+            fails = [{"host": data.get("target") or target, "error": err}]
+        res = LegionVerbResult(
+            bool(data.get("ok", True)),
+            reply or accepted,
+            job_id=qid,
+            status=str(data.get("status") or ""),
+            error=err,
+            failures=fails,
+        )
+        if on_done is not None:
+            on_done(res)
+        return res
+
+    def _call_work() -> dict[str, Any]:
         try:
             data = work(target, whatif=whatif, **work_kw)
         except TypeError:
             data = work(target=target, whatif=whatif, **work_kw)
         return data if isinstance(data, dict) else {}
 
-    def _safe() -> dict[str, Any]:
+    def _safe() -> LegionVerbResult:
         try:
-            return _call()
-        except Exception:
-            return {}
+            data = _call_work()
+            if str(data.get("error") or "") == "credman-missing":
+                return _finish(
+                    data,
+                    reply=f"DONE id={qid} exit=126 credman-missing",
+                )
+            return _finish(data)
+        except Exception as exc:
+            return _finish(
+                {
+                    "ok": False,
+                    "target": target,
+                    "error": type(exc).__name__,
+                    "status": "",
+                }
+            )
 
     if wait:
         # FR #5389: CredRead lives here (or in installer_legion_work), not on accept.
-        data = _safe()
-        if str(data.get("error") or "") == "credman-missing":
-            return LegionVerbResult(
-                False,
-                f"DONE id={qid} exit=126 credman-missing",
-                job_id=qid,
-            )
-        return LegionVerbResult(True, accepted, job_id=qid)
-
+        return _safe()
     threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
     return LegionVerbResult(True, accepted, job_id=qid)
 

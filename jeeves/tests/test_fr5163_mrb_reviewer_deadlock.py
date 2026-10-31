@@ -170,6 +170,34 @@ def test_fr5163_no_heal_when_one_seat_eligible(tmp_path, monkeypatch):
     assert job.get("offered_to") == "ionos-9"
 
 
+def test_fr5270_single_idle_giveup_not_cross_clear(tmp_path, monkeypatch):
+    """Lone idle seat GIVEUP must not be healed as cross_giveup (FR #5270 / #5268)."""
+    a = "marchhare-1"
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    registered_machines.save_registered(tmp_path, {"marchhare"})
+    digest = bobreport.empty_digest()
+    digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    digest["machines"]["marchhare"]["worker_list"] = [{"nick": a, "state": "idle"}]
+    bobreport.save_digest(tmp_path, digest)
+    row = _mrb_row(repo="SimonBarnett/bobiverse", num=1, author="", giveup=a)
+    row.pop("author_seat", None)
+    doc = {"v": 1, "unaccepted": [row], "accepted": [], "done": []}
+    gitclaim._write_queue(gitclaim.queue_path(tmp_path), doc)
+    live = gitclaim.live_seat_nicks(tmp_path)
+    idle = gitclaim.free_seat_nicks(tmp_path, live)
+    assert idle == {a}
+    info = gitclaim.detect_mrb_reviewer_deadlock(
+        tmp_path, idle=idle, live=live, rows=doc["unaccepted"]
+    )
+    # Main FR #5268: sole-seat giveup is not author_only recycleseat (return None).
+    assert info is None
+    gitclaim.heal_mrb_reviewer_deadlock(tmp_path, idle=idle, live=live)
+    kept = gitclaim.load_queue(tmp_path)["unaccepted"][0]
+    assert a in str(kept.get("giveup_seats") or "")
+    st, job = gitclaim.offer_focus_top(tmp_path, a, "#marchhare", now=1000.0)
+    assert st == "empty" and job is None
+
+
 def test_fr5268_sole_idle_giveup_not_cleared(tmp_path, monkeypatch):
     """FR #5268: one idle seat that GIVEUP'd the only MRB must keep giveup_seats.
 
