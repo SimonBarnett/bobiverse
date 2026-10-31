@@ -29,6 +29,7 @@ import json
 
 from account_map import AccountMap, parse_message_tags
 from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
+import airc_priority as _priority
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -2458,6 +2459,8 @@ class AircConsoleCore:
         capabilities: ConsoleCapabilities | None = None,
         channel_commands: bool = False,
         presence_channels: list[str] | None = None,
+        priority_runner: Callable[..., _priority.PriorityVerbResult] | None = None,
+        priority_allowlist_path: str | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -2469,6 +2472,9 @@ class AircConsoleCore:
         self.update_scheduler = update_scheduler or schedule_fleet_update
         self.install_root = install_root
         self.job_protocol = job_protocol
+        # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
+        self.priority_runner = priority_runner or _priority.run_priority_verb
+        self.priority_allowlist_path = priority_allowlist_path
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
         # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
@@ -2632,6 +2638,7 @@ class AircConsoleCore:
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
                     ".quit closes; silent on channel; answers ping"
@@ -2639,6 +2646,42 @@ class AircConsoleCore:
             )
 
         caps = self.capabilities
+
+        # FR #5284: PRIORITY connect/status — allowlist + CredMan; never password on IRC.
+        pri = _priority.parse_priority_command(cmd)
+        if pri is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            job_id, subcmd, instance_id = pri
+            try:
+                result = self.priority_runner(
+                    subcmd,
+                    instance_id,
+                    job_id=job_id,
+                    install_root=self.install_root,
+                    allowlist_path=self.priority_allowlist_path,
+                )
+            except TypeError:
+                result = self.priority_runner(subcmd, instance_id, job_id=job_id)
+            if not isinstance(result, _priority.PriorityVerbResult):
+                result = _priority.PriorityVerbResult(
+                    False, 1, job_id or "00000000", {"ok": False}, error="bad-priority-runner"
+                )
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=result.reply_text(),
+                **meta,
+            )
 
         # FR #77: UPDATE schedules Update-BobiverseService Check (detached); never msiexec here.
         parsed = parse_update_command(cmd)

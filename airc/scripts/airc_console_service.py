@@ -1504,10 +1504,14 @@ class AircConsoleService:
             # (Invoke-AircRemote / ReplyFile wait on DONE; never start a subprocess).
             self.send_privmsg(hr.nick, hr.reply)
             info(f"INFO capability-deny to={hr.nick} {hr.reply}")
-        elif hr.action in {"help", "close", "update"} and hr.nick and hr.reply:
+        elif hr.action in {"help", "close", "update", "priority"} and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
-            self.send_privmsg(hr.nick, hr.reply)
-            if hr.action == "update":
+            # FR #5284: PRIORITY may emit out id= + DONE id= on separate lines.
+            for part in str(hr.reply).splitlines():
+                line = part.strip()
+                if line:
+                    self.send_privmsg(hr.nick, line)
+            if hr.action in {"update", "priority"}:
                 # FR #4067: auth-allow before update-reply (issue covers UPDATE).
                 if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
                     try:
@@ -1515,7 +1519,7 @@ class AircConsoleService:
                     except Exception:
                         pass
                 log_auth_allow(hr)
-                info(f"INFO update-reply to={hr.nick} {hr.reply}")
+                info(f"INFO {hr.action}-reply to={hr.nick} lines={len(str(hr.reply).splitlines())}")
         elif hr.action in {"shell", "job", "pipe"}:
             # FR #4067: auth-allow (mode/account/channel) replaces bare INFO shell/job/pipe.
             if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
