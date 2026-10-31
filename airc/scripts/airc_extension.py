@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +27,7 @@ FORCE_INSTALL_ENTRY = f"{DEFAULT_EXTENSION_ID};{DEFAULT_UPDATE_URL}"
 CHROME_FORCE_KEY = r"SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
 EDGE_FORCE_KEY = r"SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
 CREDMAN_TARGET = "PriorityAirc/ExtensionAdmin"
+GPO_SCRIPT_NAME = "Invoke-AircExtensionGpo.ps1"
 
 _EXTENSION_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?EXTENSION\s+(install|status)(?P<rest>.*)$"
@@ -56,8 +59,58 @@ def parse_extension_command(text: str) -> dict[str, Any] | None:
 
 
 
+def _is_frozen_airc_runtime() -> bool:
+    return bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+
+
+def gpo_script_candidates() -> list[Path]:
+    """Ordered search paths for Invoke-AircExtensionGpo.ps1 (FR #5522)."""
+    name = GPO_SCRIPT_NAME
+    out: list[Path] = []
+    mei = getattr(sys, "_MEIPASS", None)
+    frozen = _is_frozen_airc_runtime()
+    # Frozen one-file: bundled --add-data lands under _MEIPASS (must win).
+    if mei:
+        out.append(Path(mei) / name)
+        out.append(Path(mei) / "scripts" / name)
+    if frozen:
+        roots: list[Path] = []
+        env = (os.environ.get("AIRC_INSTALL_ROOT") or "").strip()
+        if env:
+            roots.append(Path(env))
+        exe = Path(sys.executable).resolve()
+        # Pack stages airc\airc.exe under the install root.
+        if exe.parent.name.lower() == "airc":
+            roots.append(exe.parent.parent)
+            roots.append(exe.parent)
+        else:
+            roots.append(exe.parent)
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root.resolve()) if root.exists() else str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            # Flat install: <root>\scripts\...
+            out.append(root / "scripts" / name)
+            # Nested: <root>\airc\scripts\... (seen on MarchHare hotpatch trees)
+            out.append(root / "airc" / "scripts" / name)
+            out.append(root / name)
+    # Dev / non-frozen: module directory (and still a fallback when frozen).
+    out.append(Path(__file__).resolve().parent / name)
+    return out
+
+
 def gpo_script_path() -> Path:
-    return Path(__file__).resolve().parent / "Invoke-AircExtensionGpo.ps1"
+    """Resolve GPO helper for source, install tree, or frozen airc.exe (FR #5522)."""
+    cands = gpo_script_candidates()
+    for c in cands:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            continue
+    return cands[0]
 
 
 def run_extension_gpo_work(
