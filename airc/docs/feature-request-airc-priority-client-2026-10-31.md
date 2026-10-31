@@ -103,7 +103,7 @@ No TipForm/HTML UI. Mocks out of scope (same as `airc/VISION.md`).
 - Client-profile MSI default vs opt-in for Priority module
 - SQL gate required always vs fail-closed when sqlcmd missing
 - Vendor vs reference relationship to `SimonBarnett/agentic_fomprep`
-- Browser/Playwright Priority path (follow-on)
+- Browser/Playwright Priority path (follow-on FR-H, SimonBarnett/bobiverse#5289; see `feature-request-airc-priority-playwright-2026-10-31.md`)
 - Allowlist file path/schema under `<ai root>\airc\config\`
 
 ## Implementation slices
@@ -111,4 +111,5 @@ No TipForm/HTML UI. Mocks out of scope (same as `airc/VISION.md`).
 Anti-omnibus: file **one** small GitHub issue at a time.
 
 - FR-A (schema + CredMan allowlist): SimonBarnett/bobiverse#5275
-- FR-B ... FR-H: stay unfiled drafts until FR-A lands (do not invent a repo `drafts/backlog.md`)
+- FR-H (Playwright follow-on, out of MVP): SimonBarnett/bobiverse#5289 (`feature-request-airc-priority-playwright-2026-10-31.md`)
+- Other slices: filed as separate issues (do not invent a repo `drafts/backlog.md`)
