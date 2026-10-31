@@ -145,8 +145,12 @@ def mrb_coderabbit_offer(
     return True, ""
 
 
-def apply_mrb_coderabbit_gate(row: dict, now: float) -> bool:
-    """Mutate ``row`` stamps. Return True when the offer must wait."""
+def apply_mrb_coderabbit_gate(row: dict, now: float, *, lookup=None) -> bool:
+    """Mutate ``row`` stamps. Return True when the offer must wait.
+
+    FR #5394: prefer stamped ``coderabbit=ready`` (webhook). Live lookup is
+    optional and must be the caller's budgeted checker on ``!bored``.
+    """
     if not isinstance(row, dict):
         return False
     if str(row.get("task") or "").strip().upper() != "MRB":
@@ -158,10 +162,16 @@ def apply_mrb_coderabbit_gate(row: dict, now: float) -> bool:
     repo = str(row.get("repo") or "").strip()
     num = str(row.get("id") or "").strip().lstrip("#")
     has = False
-    try:
-        has = bool(lookup_coderabbit_reviewed(repo, num, str(row.get("head_sha") or "")))
-    except Exception:
-        has = False
+    if str(row.get("coderabbit") or "").strip().lower() == "ready":
+        has = True
+    else:
+        try:
+            if lookup is not None:
+                has = bool(lookup(repo, num))
+            else:
+                has = bool(lookup_coderabbit_reviewed(repo, num, str(row.get("head_sha") or "")))
+        except Exception:
+            has = False
     hold, tag = mrb_coderabbit_offer(
         row,
         now=now,

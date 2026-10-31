@@ -233,7 +233,11 @@ If `git -C <ai root>\<product> status` reports **No commits yet** on `master` (o
 
 ## Self-update Apply URL repair (FR #5357)
 
-`Invoke-Apply` rebuilds empty or `api.github.com/.../releases/assets/<id>` plan URLs from `tag` + `msiName` via `Repair-PlanAssetUrl` (same allowlist as Check). `Get-Asset` tries `curl.exe` first (Retries=4), then WinPS `Invoke-WebRequest`, so a half-open TLS stall is not the first path.
+`Invoke-Apply` rebuilds empty or `api.github.com/.../releases/assets/<id>` plan URLs from `tag` + `msiName` via `Repair-PlanAssetUrl` (same allowlist as Check). Rejected local paths and foreign hosts are not rebuilt into `releases/download`. `Get-Asset` tries `curl.exe` first (Retries=4), then WinPS `Invoke-WebRequest`, so a half-open TLS stall is not the first path.
+
+## Self-update latest 404 fallback (FR #5353)
+
+Bare Check hits `GET /repos/.../releases/latest` first (FR #5280). When that 404s (prerelease-only / `--latest=false` catalog), it lists `/releases?per_page=30` and picks the newest semver tag that has `{product}-N.N.N.msi` (non-prerelease preferred). Transient 403/429/network get short retries. Four-part MSI names in that list picker are follow-up #5429 (Check itself already accepts 3- or 4-part via FR #5354).
 
 ## Self-update backup / loop-guard (FR #2563)
 

@@ -2,6 +2,7 @@
 
 FR-A: verb + isolated worker. FR-B: DC + GPO Priority-web-extension.
 FR-C: LDAP enum + per-host Chrome/Edge ForceInstall fallback (always after GPO).
+FR #5364: machine account first; CredMan PriorityAirc/ExtensionAdmin on access-denied.
 FR-D: structured log via DCCLISTEN or IRC CONT.
 Auth matches UPDATE. Never secrets on IRC.
 """
@@ -22,6 +23,7 @@ DEFAULT_GPO_NAME = "Priority-web-extension"
 FORCE_INSTALL_ENTRY = f"{DEFAULT_EXTENSION_ID};{DEFAULT_UPDATE_URL}"
 CHROME_FORCE_KEY = r"SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
 EDGE_FORCE_KEY = r"SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+CREDMAN_TARGET = "PriorityAirc/ExtensionAdmin"
 
 _EXTENSION_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?EXTENSION\s+(install|status)(?P<rest>.*)$"
@@ -278,6 +280,61 @@ def default_ping_host(host: str) -> bool:
         return False
 
 
+def is_access_denied(exc: BaseException) -> bool:
+    """True for remote-registry access-denied (FR #5364)."""
+    if isinstance(exc, PermissionError):
+        return True
+    if int(getattr(exc, "winerror", 0) or 0) == 5:
+        return True
+    if int(getattr(exc, "errno", 0) or 0) in (5, 13):
+        return True
+    msg = str(exc).lower()
+    return "access is denied" in msg or "access denied" in msg
+
+
+def default_extension_credman() -> dict[str, str]:
+    """CredMan ``PriorityAirc/ExtensionAdmin``. Empty means missing (fail closed)."""
+    try:
+        from airc_legion import LegionCredmanError, read_legion_credman
+
+        return read_legion_credman(target=CREDMAN_TARGET)
+    except Exception:
+        return {}
+
+
+def default_apply_force_install_as(
+    host: str,
+    product: str,
+    value: str,
+    username: str,
+    password: str,
+) -> None:
+    """Retry registry write after IPC$ with CredMan user. Never log the secret."""
+    import shutil
+    import subprocess
+
+    net = shutil.which("net")
+    if not net:
+        raise OSError(5, "net-missing")
+    ipc = r"\\{0}\IPC$".format(host)
+    try:
+        p = subprocess.run(
+            [net, "use", ipc, password, "/user:" + username],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if p.returncode != 0:
+            raise OSError(5, "credman-ipc-failed")
+        default_apply_force_install(host, product, value)
+    finally:
+        subprocess.run(
+            [net, "use", ipc, "/delete", "/y"],
+            capture_output=True,
+            timeout=10,
+        )
+
+
 def default_apply_force_install(host: str, product: str, value: str) -> None:
     import winreg
 
@@ -301,14 +358,21 @@ def fill_holes_work(
     ldap_enum: Callable[[], list[str]] | None = None,
     ping_host: Callable[[str], bool] | None = None,
     apply_force_install: Callable[[str, str, str], None] | None = None,
+    apply_force_install_as: Callable[..., None] | None = None,
+    credman_reader: Callable[[], dict[str, str]] | None = None,
     extra_hosts: list[str] | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
-    """FR #5292: LDAP enum + per-host Chrome/Edge ForceInstall. Never uses extra_hosts."""
+    """FR #5292: LDAP enum + per-host Chrome/Edge ForceInstall. Never uses extra_hosts.
+
+    FR #5364: on access-denied, retry with CredMan PriorityAirc/ExtensionAdmin.
+    """
     _ = extra_hosts
     enum = ldap_enum or default_ldap_enum
     ping = ping_host or default_ping_host
     apply = apply_force_install or default_apply_force_install
+    apply_as = apply_force_install_as or default_apply_force_install_as
+    read_creds = credman_reader or default_extension_credman
     value = force_install_value(extension_id)
     hosts_out: list[dict[str, Any]] = []
     wrote = False
@@ -326,8 +390,40 @@ def fill_holes_work(
             apply(name, "chrome", value)
             apply(name, "edge", value)
         except Exception as exc:
+            if not is_access_denied(exc):
+                hosts_out.append(
+                    {"host": name, "ok": False, "error": type(exc).__name__}
+                )
+                continue
+            creds = {}
+            try:
+                creds = read_creds() or {}
+            except Exception:
+                creds = {}
+            user = str(creds.get("username") or "").strip()
+            pw = str(creds.get("password") or "")
+            if not user or not pw:
+                hosts_out.append(
+                    {"host": name, "ok": False, "error": "credman-missing"}
+                )
+                continue
+            try:
+                apply_as(name, "chrome", value, user, pw)
+                apply_as(name, "edge", value, user, pw)
+            except Exception as exc2:
+                hosts_out.append(
+                    {"host": name, "ok": False, "error": type(exc2).__name__}
+                )
+                continue
+            wrote = True
             hosts_out.append(
-                {"host": name, "ok": False, "error": type(exc).__name__}
+                {
+                    "host": name,
+                    "ok": True,
+                    "chrome": True,
+                    "edge": True,
+                    "auth": "credman",
+                }
             )
             continue
         wrote = True

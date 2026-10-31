@@ -5,7 +5,9 @@
 .DESCRIPTION
   Mode Check (default; called by Start-Bob / Start-Jeeves / Start-AircConsole BEFORE the main process):
     - honours the opt-out (BOB_AUTOUPDATE=0, BOBIVERSE_NO_UPDATE=1, or <InstallRoot>\config\autoupdate.disabled)
-    - asks the public GitHub releases/latest endpoint (no token, 15 s timeout, no gh needed)
+    - asks the public GitHub releases/latest endpoint (no token, 15 s timeout, no gh needed);
+      FR #5353: on 404 (prerelease-only / never_latest catalog) falls back to listing releases
+      and picks the newest semver tag that has this product MSI (non-prerelease preferred)
     - compares with <InstallRoot>\VERSION (never downgrades)
     - if newer and not loop-guarded: writes a plan and starts a DETACHED helper (scheduled task as SYSTEM,
       falling back to a WMI-created process). It never installs inline: msiexec replaces the very service
@@ -38,6 +40,7 @@ param(
     [string]$PlanFile = '',
     [string]$StateDir = '',
     [string]$ReleaseJson = '',      # test hook: local release JSON instead of GitHub
+    [string]$ReleaseListJson = '',  # FR #5353 test hook: release array JSON (list fallback)
     [string]$TargetVersion = '',    # FR #77/#5280: omit = latest release; pin UPDATE airc|bob|jeeves <ver> (tag vX.Y.Z)
     [switch]$AllowLocalAssets,      # test hook: plan asset "urls" may be local files
     [switch]$DryRun,                # Check: decide + log only
@@ -82,7 +85,12 @@ function Get-OptOutReason {
 
 function ConvertTo-Ver {
     param([string]$Text)
-    if ($Text -and ($Text -match '(\d+)\.(\d+)\.(\d+)')) {
+    # FR #5354: allow optional 4th segment (v1.0.0.1 / bob-0.1.32.2.msi). Exactly-3-part
+    # tags still parse as Major.Minor.Build (Revision unset).
+    if ($Text -and ($Text -match '(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?')) {
+        if ($Matches[4]) {
+            return [version]('{0}.{1}.{2}.{3}' -f $Matches[1], $Matches[2], $Matches[3], $Matches[4])
+        }
         return [version]('{0}.{1}.{2}' -f $Matches[1], $Matches[2], $Matches[3])
     }
     return $null
@@ -117,18 +125,100 @@ function ConvertTo-UtcDate {
     try { return [datetime]::Parse($Text, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } catch { return $null }
 }
 
+function Invoke-GitHubReleaseApi {
+    # Token-less GitHub API with short retries for transient 403/429/network blips.
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [int]$Retries = 2
+    )
+    $headers = @{ 'User-Agent' = 'bobiverse-self-update'; Accept = 'application/vnd.github+json' }
+    $last = $null
+    for ($i = 0; $i -le $Retries; $i++) {
+        try {
+            return Invoke-RestMethod -Uri $Uri -Headers $headers -TimeoutSec 15
+        } catch {
+            $last = $_
+            $code = $null
+            try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+            if ($code -eq 404) { throw }
+            if ($i -lt $Retries) {
+                Start-Sleep -Seconds (1 + $i)
+            }
+        }
+    }
+    throw $last
+}
+
+function Select-BestReleaseFromList {
+    # FR #5353: pick newest semver release that has {Product}-N.N.N.msi.
+    # Prefer non-prerelease; among the same class, higher version wins.
+    param(
+        $Releases,
+        [string]$ProductName
+    )
+    $best = $null
+    $bestVer = $null
+    $bestPre = $true
+    foreach ($r in @($Releases)) {
+        if (-not $r) { continue }
+        if ($r.draft) { continue }
+        $tv = ConvertTo-Ver ([string]$r.tag_name)
+        if (-not $tv) { continue }
+        $assets = @($r.assets)
+        $msi = @(
+            $assets | Where-Object {
+                $_.name -match ('^{0}-(\d+\.\d+\.\d+)\.msi$' -f [regex]::Escape($ProductName))
+            }
+        ) | Select-Object -First 1
+        if (-not $msi) { continue }
+        $pre = [bool]$r.prerelease
+        if ($null -eq $best) {
+            $best = $r; $bestVer = $tv; $bestPre = $pre
+            continue
+        }
+        if ($bestPre -and -not $pre) {
+            $best = $r; $bestVer = $tv; $bestPre = $pre
+            continue
+        }
+        if (($pre -eq $bestPre) -and ($tv -gt $bestVer)) {
+            $best = $r; $bestVer = $tv
+        }
+    }
+    return $best
+}
+
 function Get-LatestRelease {
     if ($ReleaseJson) { return (Get-Content -LiteralPath $ReleaseJson -Raw | ConvertFrom-Json) }
+    # FR #5353 test hook: exercise list selection without hitting the network.
+    if ($ReleaseListJson) {
+        $list = Get-Content -LiteralPath $ReleaseListJson -Raw | ConvertFrom-Json
+        $picked = Select-BestReleaseFromList -Releases $list -ProductName $Product
+        if (-not $picked) { throw 'no-matching-release-in-list' }
+        return $picked
+    }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    # FR #5280: bare UPDATE (empty TargetVersion) always hits releases/latest.
-    $uri = "https://api.github.com/repos/$Repo/releases/latest"
     $tv = ConvertTo-Ver $TargetVersion
     if ($tv) {
         # FR #77: UPDATE <product> <ver> pins an allowlisted release tag (never a free-form URL).
         $uri = "https://api.github.com/repos/$Repo/releases/tags/v$($tv.ToString())"
+        return (Invoke-GitHubReleaseApi -Uri $uri)
     }
-    return (Invoke-RestMethod -Uri $uri `
-            -Headers @{ 'User-Agent' = 'bobiverse-self-update'; Accept = 'application/vnd.github+json' } -TimeoutSec 15)
+    # FR #5280: bare UPDATE (empty TargetVersion) always hits releases/latest first.
+    $latestUri = "https://api.github.com/repos/$Repo/releases/latest"
+    try {
+        return (Invoke-GitHubReleaseApi -Uri $latestUri)
+    } catch {
+        $code = $null
+        try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($code -ne 404) { throw }
+        # FR #5353: /releases/latest 404 when the catalog is prerelease-only (--latest=false).
+        Write-UpdLog 'check latest-endpoint-404 - falling back to releases list (FR #5353)'
+        $listUri = "https://api.github.com/repos/$Repo/releases?per_page=30"
+        $list = Invoke-GitHubReleaseApi -Uri $listUri
+        $picked = Select-BestReleaseFromList -Releases $list -ProductName $Product
+        if (-not $picked) { throw 'no-matching-release-after-latest-404' }
+        return $picked
+    }
 }
 
 function Test-AssetUrl {
@@ -324,14 +414,15 @@ function Set-Failure {
 }
 
 function Write-CheckFailIntake {
-    param([string]$Result)
+    # FR #5354: pass release tag when known so idempotency keys are not tag=-.
+    param([string]$Result, [string]$Tag = '')
     try {
         $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
         if ((Test-Path -LiteralPath $common) -and -not (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue)) {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag '' -Result $Result -InstallRoot $InstallRoot
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -InstallRoot $InstallRoot
         }
     } catch { }
 }
@@ -991,10 +1082,15 @@ function Invoke-Check {
     }
     if (-not $rel -or -not $rel.assets) { Write-UpdLog 'check result=no-release-data - starting installed version'; return }
 
-    $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
+    # FR #5354: 3- or 4-part product MSI (bob-1.0.0.1.msi) and matching tag_name.
+    $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
     $tagVer = $null
-    if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+)$') { $tagVer = ConvertTo-Ver $Matches[1] }
-    if (-not $msi -or -not $tagVer) { Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"; Write-CheckFailIntake -Result 'no-matching-asset'; return }
+    if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+(?:\.\d+)?)$') { $tagVer = ConvertTo-Ver $Matches[1] }
+    if (-not $msi -or -not $tagVer) {
+        Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"
+        Write-CheckFailIntake -Result 'no-matching-asset' -Tag ([string]$rel.tag_name)
+        return
+    }
     $remote = ConvertTo-Ver ([string]$msi.name)
     if (-not $remote -or $remote -ne $tagVer) { Write-UpdLog "check result=asset-tag-mismatch tag=$($rel.tag_name) asset=$($msi.name)"; return }
     $want = ConvertTo-Ver $TargetVersion
@@ -1007,7 +1103,9 @@ function Invoke-Check {
     $msiUrl = Resolve-AssetDownloadUrl -Asset $msi -Tag ([string]$rel.tag_name)
     $shaUrl = Resolve-AssetDownloadUrl -Asset $sha -Tag ([string]$rel.tag_name)
     if (-not (Test-AssetUrl -Url $msiUrl) -or -not (Test-AssetUrl -Url $shaUrl)) {
-        Write-UpdLog 'check result=asset-url-rejected'; Write-CheckFailIntake -Result 'asset-url-rejected'; return
+        Write-UpdLog 'check result=asset-url-rejected'
+        Write-CheckFailIntake -Result 'asset-url-rejected' -Tag ([string]$rel.tag_name)
+        return
     }
 
     $tag = 'v' + $remote.ToString()

@@ -8,9 +8,9 @@ COMMON = ROOT / "common/scripts/Bobiverse-Common.ps1"
 PRIO = ROOT / "airc/docs/airc-priority-client.md"
 
 
-def test_mrb5342_remaining_31_has_module_and_worker():
+def test_mrb5342_remaining_has_module_and_worker():
     t = ALLOW.read_text(encoding="utf-8")
-    assert "len(CLIENT_REMAINING_FILES) == 31" in t
+    assert "len(CLIENT_REMAINING_FILES) == 32" in t
     assert r"scripts\airc_priority.py" in t
     assert r"airc\priority-worker\priority_worker.py" in t
     allow = COMMON.read_text(encoding="utf-8-sig")

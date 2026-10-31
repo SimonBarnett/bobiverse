@@ -7906,7 +7906,15 @@ def offer_focus_top(
                 try:
                     import fuel_chain
 
-                    if fuel_chain.apply_mrb_coderabbit_gate(cand, now_f):
+                    def _cr_lookup(repo: str, num: str, _row=cand):
+                        return fuel_chain.lookup_coderabbit_reviewed(
+                            repo, num, str(_row.get("head_sha") or "")
+                        )
+
+                    cr_check = _budgeted_github(_cr_lookup, budget, "coderabbit")
+                    if fuel_chain.apply_mrb_coderabbit_gate(
+                        cand, now_f, lookup=cr_check
+                    ):
                         purged = True
                         return None
                 except Exception:
@@ -8214,7 +8222,15 @@ def offer_top(
                 try:
                     import fuel_chain
 
-                    if fuel_chain.apply_mrb_coderabbit_gate(row, now_f):
+                    def _cr_lookup(repo: str, num: str, _row=row):
+                        return fuel_chain.lookup_coderabbit_reviewed(
+                            repo, num, str(_row.get("head_sha") or "")
+                        )
+
+                    cr_check = _budgeted_github(_cr_lookup, budget, "coderabbit")
+                    if fuel_chain.apply_mrb_coderabbit_gate(
+                        row, now_f, lookup=cr_check
+                    ):
                         i += 1
                         continue
                 except Exception:
