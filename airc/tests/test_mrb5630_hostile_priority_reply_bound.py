@@ -1,4 +1,4 @@
-﻿"""MRB #5630 hostile pins for FR #5616 PRIORITY IRC reply bound."""
+"""MRB #5630 hostile pins for FR #5616 PRIORITY IRC reply bound."""
 from __future__ import annotations
 
 import json
@@ -34,6 +34,6 @@ def test_mrb5630_never_character_slices_json():
 def test_mrb5630_docs_pin_350_and_reply_too_large():
     root = Path(ap.__file__).resolve().parents[1]
     docs = (root / "docs" / "airc-priority-client.md").read_text(encoding="utf-8")
-    assert "350 UTF-8 bytes" in docs or "350" in docs
+    assert "350 UTF-8 bytes" in docs
     assert "reply-too-large" in docs
     assert ap.PRIORITY_REPLY_MAX_BYTES == ac.IRC_SAFE_PAYLOAD == 350
