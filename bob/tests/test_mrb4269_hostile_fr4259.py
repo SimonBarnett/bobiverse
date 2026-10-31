@@ -1,4 +1,8 @@
-"""MRB #4269 hostile pins for FR #4259 repeat-DONE / harvest-expiry held flush."""
+"""MRB #4269 hostile pins for FR #4259 repeat-DONE / harvest-expiry held flush.
+
+FR #5505 extends expiry flush (keep harvest across ACK-on-receipt; flush even when
+free/done pending; held-assign watchdog).
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,9 +18,13 @@ def test_bob_worker_fr4259_repeat_done_and_expiry_flush_contiguous():
     assert "FR #4259: repeat DONE after turn_ended must not re-arm harvest." in text
     assert "bored: ignore repeat DONE (already fired !bored)" in text
     assert "bored: ignore repeat DONE after turn_ended (harvest already released)" in text
-    assert "def _flush_held_on_harvest_expiry(self, now: float) -> None:" in text
-    assert "bored: harvest expired - released" in text
-    assert "self._flush_held_on_harvest_expiry(now)" in text
+    assert "def _flush_held_on_harvest_expiry(self, now: float" in text
+    assert "_flush_held_on_harvest_expiry(now" in text
+    assert "harvest expired" in text
+    # FR #5505
+    assert "FR #5505" in text
+    assert "_flush_held_assign_watchdog" in text
+    assert "held_assign_watchdog_s" in text
 
 
 def test_bob_worker_skill_documents_fr4259():
