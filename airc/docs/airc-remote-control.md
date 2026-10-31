@@ -31,6 +31,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `GET path` | hash/size + head (80 chars). Does not send the file. |
 | `GET path fetch=chunk` then `GETCHUNK id seq` | FR #4795 outbound fetch. Open returns bytes/sha256/seqs only. Each GETCHUNK returns one <=300-byte raw chunk. The next GETCHUNK is the ack; the console never pushes the following chunk. |
 | `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
+| `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
 
@@ -50,6 +51,20 @@ PRIVMSG marchhare_console :UPDATE airc 0.1.20
 - Pending / loop-guard / rollback / sha256 mismatch behaviour is owned by the updater (same as service-start self-update).
 - **FR #5279:** each distinct Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, …) files one `kind:issue` on `SimonBarnett/bobiverse` via intake. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted. `Set-Failure` and `schedule_fleet_update` both call this path. Local `state.json` counts are unchanged.
 - Machine id: explicit `-MachineId`, then `AIRC_CONSOLE_MACHINE` / `BOB_MACHINE_ID`; hostname fallback must be conscious (Start-AircConsole warns).
+
+
+## PRIORITY connect/status (FR #5284 / #5275) --- shipped
+
+Authorized PRIVMSG only (same operators / live +o/+h as other console verbs). Instance URLs come from the allowlist only; passwords from CredMan only.
+
+```text
+PRIVMSG marchhare_console :PRIORITY status
+PRIVMSG marchhare_console :id=aabbccdd PRIORITY connect example-dev
+```
+
+- Allowlist: `<ai root>\\airc\\config\\priority-instances.json` (example: `airc/config/priority-instances.example.json`). Schema and CAST IRON rules: [airc-priority-client.md](./airc-priority-client.md).
+- Replies: `out id=<corr> seq=1 <json>` then `DONE id=<corr> exit=0|1` (multi-line; console service splits on newlines).
+- Live Web SDK worker packaging is FR-B (#5283); unit/SelfTest path may use a mock connector that never echoes the password.
 
 ## Encoding policy
 
