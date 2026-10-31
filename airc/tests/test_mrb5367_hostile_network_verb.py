@@ -37,7 +37,8 @@ def test_mrb5367_whatif_still_stub():
 def test_mrb5367_module_and_help_pin():
     src = (ROOT / "airc/scripts/airc_network.py").read_text(encoding="utf-8")
     cons = (ROOT / "airc/scripts/airc_console.py").read_text(encoding="utf-8")
-    assert "No LDAP" in src
+    assert "workgroup-or-no-dc" in src
+    assert '"ldap": False' in src or "ldap_ok" in src
     assert "airc-network-worker" in src
     assert "parse_network_command" in cons
     assert "update-disabled" in cons
