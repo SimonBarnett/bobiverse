@@ -1,7 +1,11 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # CodeRabbit config for bobiverse (Bob Fleet monorepo: bob / jeeves / airc / common).
-# Trial goal: an extra advisory reviewer alongside the fleet's hostile MRB.
-# CodeRabbit comments only. It never approves, blocks, commits, or opens follow-up PRs.
+# Trial goal: offload review, test-writing and issue-planning work from fleet worker seats
+# (Grok/Cursor/Aider tokens) onto CodeRabbit. MRB workers verify CodeRabbit's findings.
+# CodeRabbit never approves or blocks, and never auto-merges. Simon does every merge.
+# Anything that writes code (tests, docstrings, fixes, conflict resolution) runs ONLY
+# when someone asks for it with an @coderabbitai command or checkbox, and it lands as a
+# commit on the PR branch or as a separate stacked PR. It never pushes to main.
 language: en-GB
 tone_instructions: >-
   Be terse and concrete. Lead with the defect and its impact, cite file and line.
@@ -28,7 +32,7 @@ reviews:
   assess_linked_issues: true
   related_issues: true
   related_prs: true
-  suggested_labels: false
+  suggested_labels: false         # Jeeves dispatch is label-driven (needs-human, hold, machine:*, priority/*)
   auto_apply_labels: false
   suggested_reviewers: false
   auto_assign_reviewers: false
@@ -39,29 +43,33 @@ reviews:
 
   auto_review:
     enabled: true
-    drafts: false
-    auto_incremental_review: true
-    auto_pause_after_reviewed_commits: 5
+    drafts: true                  # early feedback on worker drafts saves MRB rework
+    auto_incremental_review: true # re-review each push (incremental, only new commits)
+    auto_pause_after_reviewed_commits: 10
     base_branches: []             # default branch (main) only
     ignore_title_keywords:
-      - "[WIP]"
-      - "WIP:"
       - "[skip review]"
 
-  # Nothing that writes to the repo or opens PRs.
+  # On-request only (command or walkthrough checkbox). Output is a stacked PR or a commit on
+  # the PR branch. Nothing runs automatically and nothing targets main directly.
+  #   @coderabbitai generate unit tests      -> tests for the PR's changes
+  #   @coderabbitai generate docstrings      -> follow-up PR with docstrings
+  #   @coderabbitai fix comments             -> applies unresolved CodeRabbit findings
+  #   @coderabbitai fix-ci                   -> stacked PR fixing failing checks
+  #   @coderabbitai resolve merge conflict   -> commits a resolution to the PR branch
   finishing_touches:
     docstrings:
-      enabled: false
+      enabled: true
     unit_tests:
-      enabled: false
+      enabled: true
     simplify:
-      enabled: false
+      enabled: false              # refactors churn MRB scope; not worth the review cost
     autofix:
-      enabled: false
+      enabled: true
     fix_ci:
-      enabled: false
+      enabled: true
     resolve_merge_conflict:
-      enabled: false
+      enabled: true
 
   pre_merge_checks:
     docstrings:
@@ -87,6 +95,14 @@ reviews:
           connect.password or ircd.yaml under config/, or adds a literal password, API key,
           GitHub token (ghp_, gho_, github_pat_), webhook secret or private key to any file.
           Example/template files with obvious placeholders pass.
+      - name: Docs follow behaviour changes
+        mode: warning
+        instructions: >-
+          Pass if the PR changes no executable code. Otherwise pass only if either (a) the
+          PR also updates at least one of the matching service's AGENTS.md, VISION.md,
+          docs/*.md or .grok/skills/*/SKILL.md, or (b) the changed behaviour (verbs, ports,
+          config keys, file paths, IRC/webhook frames) is not described in any existing doc
+          in that service. Fail otherwise and name the stale doc.
 
   path_filters:
     - "!dist/**"
@@ -232,6 +248,11 @@ knowledge_base:
       - "**/AGENTS.md"
       - "**/VISION.md"
   learnings:
+    scope: local                  # learns from replies like "@coderabbitai that is intentional because ..."
+    approval_delay: 0
+  issues:
+    scope: local                  # linked/related issue lookup inside bobiverse
+  pull_requests:
     scope: local
   web_search:
     enabled: true
@@ -239,13 +260,41 @@ knowledge_base:
 code_generation:
   docstrings:
     language: en-GB
+    path_instructions:
+      - path: "**/*.py"
+        instructions: >-
+          Pure ASCII only (no em dashes, arrows or smart quotes; see #4967). One-line summary,
+          then FR/issue reference if known (e.g. "FR #5188"). No change to code.
   unit_tests:
-    path_instructions: []
+    path_instructions:
+      - path: "**/*.{py,ps1,psm1}"
+        instructions: |
+          Use pytest. Put tests in the changed service's tests dir
+          (airc/tests, bob/tests, jeeves/tests, common/tests), named
+          test_fr<issue>_<topic>.py when the PR references an FR/issue. Modules are importable
+          by bare name because the repo-root conftest.py puts <service>/scripts on sys.path.
+          No network, no real IRC, no real Windows services or registry: mock subprocess,
+          sockets and HTTP. For PowerShell changes, test by reading the .ps1 text and asserting
+          the behaviour-relevant structure (as existing tests do), and skip anything that
+          needs Windows with pytest.mark.skipif(sys.platform != "win32"). Each test must fail
+          if the PR's fix is reverted. Files must be ASCII.
 
 issue_enrichment:
   auto_enrich:
-    enabled: false          # the fleet files many issues; do not comment on them
+    enabled: true           # duplicate/twin detection, similar issues, related PRs on each new issue
+  labeling:
+    auto_apply_labels: false  # Jeeves owns labels (dispatch/hold/machine pins); never auto-apply
+    labeling_instructions: []
   planning:
-    enabled: false
+    enabled: true           # Coding Plan comment on the issue; on demand with @coderabbitai plan
     auto_planning:
-      enabled: false
+      enabled: true
+      labels:               # plan FR/bug issues automatically, but not ones held for a human
+        - feature-request
+        - FR
+        - bug
+        - "!needs-human"
+        - "!hold"
+        - "!owner-missing"
+        - "!harvest"
+        - "!skill"
