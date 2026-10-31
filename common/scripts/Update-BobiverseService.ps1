@@ -383,6 +383,7 @@ function Set-Failure {
     param(
         [string]$Tag,
         [string]$Result,
+        [string]$Detail = '',
         [switch]$NoCount   # FR #2563: record outcome without burning MaxAttempts (backup-only fails)
     )
     $st = Get-State
@@ -396,7 +397,7 @@ function Set-Failure {
     $st.lastTag = $Tag
     $st.lastAttemptUtc = (Get-Date).ToUniversalTime().ToString('o')
     Save-State $st
-    # FR #5279: deterministic bobiverse issue per failure class (same key = no twin flood).
+    # FR #5279 / FR #5411: deterministic issue per class; Detail carries msiexec exit N.
     try {
         $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
         if (-not (Test-Path -LiteralPath $common) -and $InstallRoot) {
@@ -406,7 +407,7 @@ function Set-Failure {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -InstallRoot $InstallRoot
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot
         }
     } catch {
         Write-UpdLog "FR #5279 update-fail-intake-warn $($_.Exception.GetType().Name)"
@@ -1006,7 +1007,7 @@ function Invoke-Apply {
         } else {
             $failResult = 'rolled-back'
             if ($failMsg -match '(?i)msiexec exit') { $failResult = 'msiexec-exit' }
-            Set-Failure -Tag $tag -Result $failResult
+            Set-Failure -Tag $tag -Result $failResult -Detail $failMsg
         }
     } finally {
         if ($msiHeld) { try { $msiMutex.ReleaseMutex() } catch { } }
