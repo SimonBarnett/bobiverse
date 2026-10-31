@@ -43,6 +43,19 @@ _VERB_RE = re.compile(
 )
 
 
+_CR_COUNTER_RE = re.compile(
+    r"(?i)\b(cr_findings|confirmed|fp)=(\d+)\b"
+)
+
+
+def mrb_cr_counters(rest: str) -> dict[str, int]:
+    """FR #5317: optional ``cr_findings=N confirmed=N fp=N`` after the DONE URL."""
+    out: dict[str, int] = {}
+    for key, raw in _CR_COUNTER_RE.findall(rest or ""):
+        out[str(key).lower()] = int(raw)
+    return out
+
+
 @dataclass(frozen=True)
 class ShopJobLine:
     verb: str  # ACK|DONE|NACK|GIVEUP

@@ -174,8 +174,12 @@ def test_register_command_forces_resync(tmp_path):
 
 def test_register_handler_adds_and_flags_refresh():
     src = (__import__("pathlib").Path(irc_agent.__file__)).read_text(encoding="utf-8")
-    h = src.split("def _handle_register_command", 1)[1].split("def _maybe_grant_bob_modes", 1)[0]
-    assert "add_registered(self._digest_home()" in h and "self._cs_force = True" in h
+    assert "def _finish_register_ok" in src
+    fin = src.split("def _finish_register_ok", 1)[1].split("def _finish_register_fail", 1)[0]
+    assert "add_registered(self._digest_home()" in fin and "self._cs_force = True" in fin
+    h = src.split("def _handle_register_command", 1)[1].split("def _handle_unregister_command", 1)[0]
+    assert "_cs_register_wait" in h
+    assert "ACK registered" not in h
 
 
 def test_stale_timeout_keeps_roster(tmp_path, monkeypatch):

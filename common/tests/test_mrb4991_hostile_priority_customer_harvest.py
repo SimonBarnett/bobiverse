@@ -26,4 +26,8 @@ def test_mrb4991_product_default_and_ps1_regex():
     text = HARVEST_PS1.read_text(encoding="utf-8")
     assert "FR #4990" in text
     assert "euroflo|lynton|trutex|rees" in text
-    assert "simonbarnett/rees" in {k.lower() for k in intake.PRIORITY_CUSTOMER_HARVEST_REPOS}
+    got = intake.harvest_priority_customer_repos(
+        topic_repos={"SimonBarnett/rees", "SimonBarnett/hrsmith"}
+    )
+    assert "simonbarnett/rees" in got
+    assert "simonbarnett/hrsmith" in got

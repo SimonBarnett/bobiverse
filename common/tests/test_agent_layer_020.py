@@ -49,6 +49,9 @@ def test_every_skill_book_exists_and_has_matching_frontmatter():
 def test_cast_iron_rule_is_in_every_skill_and_every_agents_file():
     files = _all_skill_files() + [ROOT / f"AGENTS.{p}.md" for p in PRODUCTS]
     assert len(files) >= 9 + 3 + 3
+    # FR #5271: new product skills (e.g. bobiverse-jeeves-repos) must be in the union and carry CAST IRON.
+    names = {p.parent.name for p in _all_skill_files()}
+    assert "bobiverse-jeeves-repos" in names
     keep_flow = "## Keep the flow of work to the workers going"
     for f in files:
         t = f.read_text(encoding="utf-8-sig")
