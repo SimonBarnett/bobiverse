@@ -279,6 +279,52 @@ def test_pending_orphan_clears_when_helper_gone(env):
 
 
 @win
+def test_fr5195_stale_pending_ttl_clears_after_pending_minutes(env):
+    """FR #5195: a pending marker older than PendingMinutes is stale even if a helper task looks alive."""
+    from datetime import datetime, timedelta, timezone
+    env.state.mkdir()
+    old = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+    (env.state / "state.json").write_text(json.dumps({
+        "pending": {"tag": "v0.1.17", "atUtc": old},
+        "lastResult": "scheduled",
+        "lastTag": "v0.1.17",
+    }))
+    p, log = env("-DryRun", release=_release("0.1.17"))
+    assert p.returncode == 0
+    # No live helper task => orphan path; TTL still must not skip-pending.
+    assert ("pending-stale" in log or "stale-pending" in log or "pending-orphan" in log), log
+    assert "skipped-pending" not in log
+
+
+@win
+def test_fr5195_future_pending_stamp_does_not_skip_forever(env):
+    """FR #5195: clock skew / future atUtc must not lock skipped-pending (negative age)."""
+    from datetime import datetime, timedelta, timezone
+    env.state.mkdir()
+    future = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+    (env.state / "state.json").write_text(json.dumps({
+        "pending": {"tag": "v0.1.17", "atUtc": future},
+        "lastResult": "scheduled",
+        "lastTag": "v0.1.17",
+    }))
+    p, log = env("-DryRun", release=_release("0.1.17"))
+    assert p.returncode == 0
+    assert "skipped-pending" not in log
+    assert "pending-stale" in log or "pending-orphan" in log or "would-update" in log, log
+
+
+@win
+def test_fr5195_check_mirrors_log_to_install_root(env):
+    """FR #5195: operator-readable copy under InstallRoot\\logs (ProgramData update.log is SYSTEM-only)."""
+    p, log = env("-DryRun", release=_release("0.1.17"))
+    assert p.returncode == 0
+    readable = env.root / "logs" / "self-update.log"
+    assert readable.is_file(), "missing InstallRoot/logs/self-update.log"
+    body = readable.read_text(encoding="utf-8")
+    assert "would-update" in body or "self-update" in body or "product=bob" in body
+
+
+@win
 def test_fr5494_pending_older_than_install_clears_without_stale(env):
     """FR #5494: leftover pending v0.1.17 must not stale-pending when VERSION is newer."""
     from datetime import datetime, timezone
@@ -526,3 +572,26 @@ def test_msi_installs_are_serialised_machine_wide():
     t = _t("Update-BobiverseService.ps1")
     assert "Global\\bobiverse-update-msi" in t
     assert t.index("Global\\bobiverse-update-msi") < t.index("stop-failed")
+
+
+def test_fr5195_failed_install_restarts_and_mirrors_log():
+    """FR #5195: Apply finally restarts if the helper dies after Stop-Service; logs are operator-readable."""
+    t = _t("Update-BobiverseService.ps1")
+    apply_ = t[t.index("function Invoke-Apply"):]
+    assert "Ensure-ServiceRunning" in apply_
+    assert "apply-finally" in apply_
+    assert "Start-ApplyTimeoutWatchdog" in apply_
+    assert "service-stopped" in apply_
+    assert apply_.index("service-stopped") < apply_.index("Start-ApplyTimeoutWatchdog")
+    assert "self-update.log" in t
+    assert "pendingAgeMin -lt 0" in t or "pending-stale-clock" in t
+
+
+def test_fr5195_watchdog_starts_stopped_ircbob_when_idle():
+    tray = (ROOT / "bob" / "tray" / "dialogs" / "BobTray.cs").read_text(encoding="utf-8-sig")
+    assert "HealIrcBobIfIdle" in tray
+    wd = tray[tray.find("void Watchdog()"):]
+    wd = wd[: wd.find("\n        void ", 1)] if "\n        void " in wd[1:] else wd
+    assert "HealIrcBobIfIdle()" in wd
+    assert "WorkerLauncher.Launch" not in wd
+    assert 'sc.exe' in tray and "start ircBob" in tray

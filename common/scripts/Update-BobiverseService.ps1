@@ -54,6 +54,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:LogFile = $null
+$script:ReadableLog = $null
 $script:StateFile = $null
 $script:PendingMinutes = 40
 
@@ -68,6 +69,17 @@ function Write-UpdLog {
         }
         Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8
     } catch { }
+    # FR #5195: ProgramData update.log is SYSTEM-only; mirror under InstallRoot\logs for operators.
+    if ($script:ReadableLog) {
+        try {
+            $dir = Split-Path -Parent $script:ReadableLog
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+            if ((Test-Path -LiteralPath $script:ReadableLog) -and ((Get-Item -LiteralPath $script:ReadableLog).Length -gt 524288)) {
+                Move-Item -LiteralPath $script:ReadableLog -Destination ($script:ReadableLog + '.1') -Force
+            }
+            Add-Content -LiteralPath $script:ReadableLog -Value $line -Encoding UTF8
+        } catch { }
+    }
 }
 
 function Get-OptOutReason {
@@ -461,6 +473,36 @@ function Ensure-ServiceRunning {
     }
 }
 
+function Start-ApplyTimeoutWatchdog {
+    # FR #5195: if Apply is killed after Stop-Service, a delayed heal starts the service when msiexec is gone.
+    param([int]$DelaySeconds = 180)
+    $runDir = Join-Path $StateDir 'run'
+    New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+    $heal = Join-Path $runDir 'Heal-StoppedService.ps1'
+    @"
+param([string]`$ServiceName)
+Start-Sleep -Seconds $DelaySeconds
+if (Get-CimInstance Win32_Process -Filter "Name='msiexec.exe'" -ErrorAction SilentlyContinue) { exit 0 }
+`$svc = Get-Service -Name `$ServiceName -ErrorAction SilentlyContinue
+if (`$svc -and `$svc.Status -eq 'Stopped') {
+    try { Start-Service -Name `$ServiceName -ErrorAction Stop } catch { }
+}
+"@ | Set-Content -LiteralPath $heal -Encoding UTF8
+    $taskName = "bobiverse-heal-$Product"
+    try {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -ServiceName {1}' -f $heal, $ServiceName)
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+        Write-UpdLog "heal-watchdog-armed delaySec=$DelaySeconds task=$taskName"
+    } catch {
+        Write-UpdLog "heal-watchdog-skip $($_.Exception.GetType().Name)"
+    }
+}
+
 function Start-DetachedApply {
     param([string]$Plan)
     $runDir = Join-Path $StateDir 'run'
@@ -779,6 +821,7 @@ function Invoke-Apply {
     $appParams = ''
     $msiMutex = $null
     $msiHeld = $false
+    $script:ApplySucceeded = $false
     try {
         if ($DelaySeconds -gt 0) { Start-Sleep -Seconds $DelaySeconds }   # let the current instance finish starting
         $oldVer = ConvertTo-Ver (Get-Content -LiteralPath (Join-Path $InstallRoot 'VERSION') -Raw -ErrorAction SilentlyContinue)
@@ -856,6 +899,7 @@ function Invoke-Apply {
                 return
             }
             Write-UpdLog "service-stopped $ServiceName"
+            Start-ApplyTimeoutWatchdog
         }
 
         $backup = Backup-Install -OldVersion $oldText
@@ -1005,6 +1049,7 @@ function Invoke-Apply {
         $st.failures.Remove($tag)
         Save-State $st
         Write-UpdLog "apply-ok now=$($newVer.ToString()) tag=$tag"
+        $script:ApplySucceeded = $true
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         Remove-OldBackups
     } catch {
@@ -1035,9 +1080,11 @@ function Invoke-Apply {
         if ($msiHeld) { try { $msiMutex.ReleaseMutex() } catch { } }
         try { $mutex.ReleaseMutex() } catch { }
         try { Unregister-ScheduledTask -TaskName "bobiverse-update-$Product" -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-        # FR #5277: PowerShell return inside try still runs finally. Heal here so
-        # download-failed / stop-failed / msiexec-timeout / apply-skip-after-stop
-        # cannot leave Airc (or bob/jeeves) Stopped. Check mode never stops the service.
+        if ($script:ApplySucceeded) {
+            try { Unregister-ScheduledTask -TaskName "bobiverse-heal-$Product" -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        }
+        # FR #5277 / #5195: finally heal so abort or crash-after-stop cannot leave
+        # ircBob/ircJeeves/Airc Stopped. Check mode never stops the service.
         if (-not $VerifyOnly) {
             Ensure-ServiceRunning -Why 'apply-finally-heal'
         }
@@ -1077,7 +1124,12 @@ function Invoke-Check {
             $t = Get-ScheduledTask -TaskName $helperTask -ErrorAction SilentlyContinue
             if ($t -and $t.State -eq 'Running') { $taskAlive = $true }
         } catch { }
-        if (-not $taskAlive -and $pendingAgeMin -ge 2) {
+        # FR #5195: future atUtc (clock skew) and age >= PendingMinutes never skip forever.
+        if ($pendingAgeMin -lt 0) {
+            Write-UpdLog "pending-stale-clock tag=$($st.pending.tag) ageMin=$([int]$pendingAgeMin) - future stamp; clearing pending"
+            Set-Failure -Tag $st.pending.tag -Result 'stale-pending'
+            $st = Get-State
+        } elseif (-not $taskAlive -and $pendingAgeMin -ge 2) {
             Write-UpdLog "pending-orphan tag=$($st.pending.tag) ageMin=$([int]$pendingAgeMin) - helper task not running; clearing pending"
             $st.pending = $null
             $st.lastResult = 'pending-orphan-cleared'
@@ -1236,6 +1288,7 @@ try {
             $global:LASTEXITCODE = 0
         }
         $script:LogFile = Join-Path $StateDir 'update.log'
+        $script:ReadableLog = Join-Path $InstallRoot 'logs\self-update.log'
         $script:StateFile = Join-Path $StateDir 'state.json'
     } catch {
         Write-Host "WARN self-update: cannot use state dir ($($_.Exception.GetType().Name))"
