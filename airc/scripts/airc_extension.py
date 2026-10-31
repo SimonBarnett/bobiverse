@@ -300,8 +300,40 @@ def next_forcelist_name(
 
 
 def default_dc_hostnames() -> list[str]:
-    """Best-effort DC names; empty when ADSI is unavailable (tests inject is_dc)."""
-    return []
+    """ADSI Domain Controllers (SERVER_TRUST_ACCOUNT). Empty when ADSI unavailable.
+
+    FR #5538: live fill-holes must skip DCs; tests may still inject ``is_dc`` /
+    ``dc_enum`` without calling this.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if os.name != "nt":
+        return []
+    ps = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not ps:
+        return []
+    # 8192 = ADS_UF_SERVER_TRUST_ACCOUNT (domain controller).
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$s=[adsisearcher]"
+        "'(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))';"
+        "$s.PageSize=200; [void]$s.PropertiesToLoad.Add('name');"
+        "($s.FindAll() | ForEach-Object { $_.Properties['name'][0] })"
+    )
+    try:
+        p = subprocess.run(
+            [ps, "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+    except Exception:
+        return []
+    if p.returncode != 0:
+        return []
+    return [ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip()]
 
 
 def force_install_value(extension_id: str = DEFAULT_EXTENSION_ID) -> str:

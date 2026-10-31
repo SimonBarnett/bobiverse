@@ -67,3 +67,29 @@ def test_fr5538_default_apply_uses_next_name(monkeypatch):
     monkeypatch.setattr(winreg, "CloseKey", lambda *_a: None)
     ex.default_apply_force_install("pc1", "chrome", ex.force_install_value())
     assert set_names == ["2"]
+
+
+def test_fr5538_default_dc_enum_skips_without_is_dc_inject():
+    writes: list[tuple] = []
+    body = ex.fill_holes_work(
+        "install",
+        ldap_enum=lambda: ["pc1", "WALRUS"],
+        ping_host=lambda _h: True,
+        apply_force_install=lambda *a: writes.append(a),
+        dc_enum=lambda: ["WALRUS"],
+    )
+    hosts = {h["host"]: h for h in body["hosts"]}
+    assert hosts["WALRUS"].get("skipped") == "dc"
+    assert not any(h == "WALRUS" for h, *_ in writes)
+    assert any(h == "pc1" for h, *_ in writes)
+
+
+def test_fr5538_default_dc_hostnames_uses_adsi_not_stub():
+    src = open(ex.__file__, encoding="utf-8").read()
+    start = src.index("def default_dc_hostnames")
+    end = src.index("\ndef force_install_value", start)
+    body = src[start:end]
+    assert "adsisearcher" in body
+    assert "8192" in body
+    assert "PropertiesToLoad" in body
+    assert "subprocess.run" in body
