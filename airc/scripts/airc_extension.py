@@ -528,7 +528,32 @@ def run_extension_verb(
     if wait:
         _safe()
     else:
-        threading.Thread(target=_safe, name="airc-extension-worker", daemon=True).start()
+        import airc_isolated as _iso
+
+        if _iso.is_packaged_work(work):
+
+            def _from_child(data: Any) -> None:
+                nonlocal last
+                if isinstance(data, dict):
+                    last = data
+
+            _iso.start_isolated(
+                wait=False,
+                run=_safe,
+                packaged=(
+                    "airc_extension",
+                    "fill_holes_work",
+                    {
+                        "action": action,
+                        "whatif": bool(whatif),
+                        "extension_id": DEFAULT_EXTENSION_ID,
+                    },
+                ),
+                name="airc-extension-worker",
+                on_done=_from_child,
+            )
+        else:
+            threading.Thread(target=_safe, name="airc-extension-worker", daemon=True).start()
     bits = [
         "EXTENSION accepted",
         f"id={qid}",

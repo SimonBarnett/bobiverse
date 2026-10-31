@@ -2142,6 +2142,12 @@ def kick_frozen_service_start_hooks(
     return policy
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if "--isolated-job" in raw:
+        # FR #5537: child process of the same airc.exe / python, not a peer binary.
+        from airc_isolated import isolated_job_main
+
+        return isolated_job_main(raw)
     try:
         import crash_report
 
