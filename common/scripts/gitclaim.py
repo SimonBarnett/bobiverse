@@ -858,7 +858,7 @@ def is_docs_mrb_pin_pr(
     head_ref: str = "",
     labels: tuple[str, ...] | list[str] = (),
 ) -> bool:
-    """True for a ``docs/mrb-*`` hostile pin PR (FR #4917)."""
+    """True for a ``docs/mrb-*`` hostile pin PR (FR #4917 / #5500)."""
     del labels  # reserved; pins are branch/title shaped
     if re.match(r"(?i)^docs/mrb-", (head_ref or "").strip()):
         return True
@@ -2246,6 +2246,14 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         # (opened/ready_for_review/edited/synchronize all call _append_unaccepted).
         if action in ("opened", "ready_for_review", "edited", "synchronize") and is_intake_harvest_receipt_pr(
             title=title, body=body, labels=labels
+        ):
+            return None
+        # FR #5500: docs/mrb-* pin PRs never become MRB via webhook.
+        _head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+        if action in ("opened", "ready_for_review", "edited", "synchronize") and is_docs_mrb_pin_pr(
+            title=title,
+            head_ref=str(_head.get("ref") or ""),
+            labels=labels,
         ):
             return None
         # bobiverse#224 / #781: FAIL-fix PRs never start a second MRB (open/ready only).
@@ -4333,6 +4341,13 @@ def mrb_row_not_offerable_reason(
         or row.get("branch")
         or ""
     )
+    # FR #5500: every docs/mrb-* pin is not an MRB job (not only pin-of-pin).
+    if is_docs_mrb_pin_pr(
+        title=str(row.get("title") or ""),
+        head_ref=head_ref,
+        labels=labs_t,
+    ):
+        return "docs_mrb_pin"
     if is_lesson_of_lesson_pr(
         title=str(row.get("title") or ""),
         body=str(row.get("body") or ""),
@@ -9456,6 +9471,8 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
             return None
         if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
             return None
+        if is_docs_mrb_pin_pr(title=title, labels=labels):
+            return None
         if is_mrb_fix_pr_title(title):
             return None
         lesson = is_harvest_lesson_pr(title=title, labels=labels)
@@ -10736,6 +10753,21 @@ def resync_from_github(
                 skipped_open_pulls.add((repo, f"#{num}"))
                 print(
                     f"resync skip harvest-receipt PR {repo}#{num}",
+                    flush=True,
+                )
+                continue
+            # FR #5500: docs/mrb-* pins never become MRB (resync stored empty title
+            # so offer-time lesson_of_lesson could not see first-level pins).
+            _resync_head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+            if is_docs_mrb_pin_pr(
+                title=title,
+                head_ref=str(_resync_head.get("ref") or ""),
+                labels=pr_labels,
+            ):
+                skipped_draft += 1
+                skipped_open_pulls.add((repo, f"#{num}"))
+                print(
+                    f"resync skip docs/mrb pin PR {repo}#{num}",
                     flush=True,
                 )
                 continue
