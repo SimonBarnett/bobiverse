@@ -424,7 +424,9 @@ function Stage-Product([string]$Name) {
         if (Test-Path -LiteralPath $pwSrc) {
             $pwDest = Join-Path $aircExeDir 'priority-worker'
             New-Item -ItemType Directory -Force -Path $pwDest | Out-Null
-            Copy-Item -Path (Join-Path $pwSrc '*') -Destination $pwDest -Recurse -Force
+            Get-ChildItem -LiteralPath $pwSrc -Force | Where-Object { $_.Name -ne '__pycache__' } | ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $pwDest -Recurse -Force
+            }
             Write-Host 'INFO airc staged airc\priority-worker (FR #5283)'
         } else {
             throw 'airc pack requires airc/priority-worker (FR #5283)'

@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import binascii
 import fnmatch
+import importlib.util
 import os
 import re
 import subprocess
@@ -153,6 +154,63 @@ def parse_update_command(text: str) -> tuple[str, str | None] | None:
     if product not in UPDATE_PRODUCTS:
         return None
     return product, m.group(2)
+
+
+_PRIORITY_PREPARE_RE = re.compile(
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+prepare(?:\s+(.*))?$"
+)
+
+
+def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
+    """FR #5286: ``PRIORITY prepare <ENAME>`` or ``name=`` / ``instance=``."""
+    m = _PRIORITY_PREPARE_RE.match((text or "").strip())
+    if not m:
+        return None
+    rest = (m.group(2) or "").strip()
+    kv = {k.lower(): v for k, v in re.findall(r"(\w+)=([^\s]+)", rest)}
+    name = kv.get("name") or kv.get("ename") or ""
+    if not name:
+        first = rest.split()[0] if rest and "=" not in rest.split()[0] else ""
+        name = first
+    out = {"name": name, "instance": kv.get("instance") or ""}
+    if m.group(1):
+        out["qid"] = m.group(1).lower()
+    return out
+
+
+def _load_priority_worker():
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[1] / "priority-worker" / "priority_worker.py",
+        Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc") / "priority-worker" / "priority_worker.py",
+    ]
+    for p in candidates:
+        if p.is_file():
+            spec = importlib.util.spec_from_file_location("priority_worker", p)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return mod
+    return None
+
+
+def load_priority_instances(install_root: str | Path | None = None) -> list[dict]:
+    root = Path(install_root or os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    for rel in (
+        Path("config") / "priority-instances.json",
+        Path("config") / "priority-instances.example.json",
+    ):
+        p = root / rel
+        if not p.is_file():
+            p = root.parent / "airc" / rel if root.name != "airc" else p
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return []
+            rows = data.get("instances") if isinstance(data, dict) else data
+            return [r for r in (rows or []) if isinstance(r, dict)]
+    return []
 
 
 @dataclass
@@ -2639,6 +2697,7 @@ class AircConsoleCore:
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
+                    "PRIORITY prepare <ENAME> [instance=] (FR #5286 REPPREPDIRECT2); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
                     f"capabilities shell={self.capabilities.shell_mode} "
@@ -2690,6 +2749,43 @@ class AircConsoleCore:
                 target=target,
                 text=text,
                 reply=result.reply_line(),
+                **meta,
+            )
+
+        # FR #5286: PRIORITY prepare (TYPE=P EXEC REPPREPDIRECT2 + UPD/.prp gates).
+        prep = parse_priority_prepare_command(cmd)
+        if prep is not None:
+            pw = _load_priority_worker()
+            run = getattr(pw, "run_priority_prepare", None) if pw else None
+            insts = load_priority_instances(self.install_root)
+            if run:
+                body = run(
+                    prep.get("name") or "",
+                    instance_id=prep.get("instance") or "",
+                    instances=insts,
+                )
+            else:
+                body = {
+                    "ok": False,
+                    "reason": "name_missing" if not (prep.get("name") or "") else "instance_unknown",
+                    "ename": prep.get("name") or "",
+                    "sql_faked": False,
+                }
+            # Never put passwords on the wire.
+            blob = json.dumps(
+                {k: v for k, v in body.items() if "pass" not in str(k).lower()},
+                separators=(",", ":"),
+            )
+            jid = (prep.get("qid") or "").strip() or uuid.uuid4().hex[:8]
+            exit_code = 0 if body.get("ok") else 1
+            reply = f"out id={jid} seq=1 PRIORITY prepare {blob} DONE id={jid} exit={exit_code}"
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=reply[:IRC_SAFE_PAYLOAD],
                 **meta,
             )
 
