@@ -2219,9 +2219,22 @@ def _stop_shell_process(proc: subprocess.Popen) -> None:
 
 
 def _read_shell_capture(path: str) -> bytes:
-    # An inherited writer shares its file position with the parent. Open a
-    # separate reader. Do not use O_TEMPORARY: WinError 13 while the writer
-    # still holds NamedTemporaryFile (FR #5211 Windows).
+    # Separate reader so an inherited writer does not share this seek pointer.
+    # Windows exclusive NamedTemporaryFile needs share-mode CreateFile (FR #5211).
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+
+        generic_read = 0x80000000
+        share = 0x1 | 0x2 | 0x4
+        handle = ctypes.windll.kernel32.CreateFileW(
+            str(path), generic_read, share, None, 3, 0, None
+        )
+        if handle in (-1, 0xFFFFFFFF):
+            raise OSError(ctypes.GetLastError(), "CreateFileW", path)
+        fd = msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+        with os.fdopen(fd, "rb") as stream:
+            return stream.read(SHELL_OUTPUT_MAX_BYTES + 1)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     with os.fdopen(os.open(path, flags), "rb") as stream:
         return stream.read(SHELL_OUTPUT_MAX_BYTES + 1)
@@ -2242,11 +2255,23 @@ def run_shell_request(
     cancel = req.cancel_event or threading.Event()
     if cancel.is_set():
         return ShellOutcome(req.job_id, 130, "", "cancelled")
-    # FR #5211: Windows communicate() can wait forever after timeout when a
-    # descendant inherits a capture pipe. Files let us return without pipe EOF.
-    with tempfile.NamedTemporaryFile() as stdout, tempfile.NamedTemporaryFile() as stderr:
+    # FR #5211: files instead of pipes so timeout does not wait on inherited EOF.
+    # mkstemp (not NamedTemporaryFile): Windows exclusive lock blocks a second open.
+    out_path = err_path = ""
+    out_h = err_h = None
+    out = err = ""
+    out_clip = err_clip = False
+    reason = ""
+    exit_code = 1
+    try:
+        fd_out, out_path = tempfile.mkstemp(prefix="airc-sh-out-")
+        fd_err, err_path = tempfile.mkstemp(prefix="airc-sh-err-")
+        os.close(fd_out)
+        os.close(fd_err)
+        out_h = open(out_path, "wb")
+        err_h = open(err_path, "wb")
         proc = subprocess.Popen(
-            args, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, cwd=cwd,
+            args, stdin=subprocess.DEVNULL, stdout=out_h, stderr=err_h, cwd=cwd,
         )
         deadline = time.monotonic() + timeout_s
         reason = ""
@@ -2262,9 +2287,24 @@ def run_shell_request(
         finally:
             if proc.poll() is None:
                 _stop_shell_process(proc)
-        exit_code = 130 if reason == "cancelled" else 124 if reason else int(proc.returncode)
-        out, out_clip = _clip_bytes(_read_shell_capture(stdout.name))
-        err, err_clip = _clip_bytes(_read_shell_capture(stderr.name))
+        exit_code = 130 if reason == "cancelled" else 124 if reason else int(proc.returncode or 0)
+        out_h.flush()
+        err_h.flush()
+        out, out_clip = _clip_bytes(_read_shell_capture(out_path))
+        err, err_clip = _clip_bytes(_read_shell_capture(err_path))
+    finally:
+        for handle in (out_h, err_h):
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+        for path in (out_path, err_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
     # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect - plain-text it.
     err = plain_text_powershell_stderr(err)
     if out_clip:
