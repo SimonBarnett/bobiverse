@@ -139,6 +139,7 @@ def _make_agent(tmp_path, members):
         channels=["#bobiverse", "#ionos"],
         _unregister_pending=uc.PendingUnregisterStore(),
         _cs_unregister_wait={},
+        _cs_register_wait={},
         _cs_force=False,
         _privs_engine=_FakePriv(members),
         _mine_nicks=lambda: {"jeeves"},

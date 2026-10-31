@@ -232,6 +232,34 @@ function Set-Failure {
     $st.lastTag = $Tag
     $st.lastAttemptUtc = (Get-Date).ToUniversalTime().ToString('o')
     Save-State $st
+    # FR #5279: deterministic bobiverse issue per failure class (same key = no twin flood).
+    try {
+        $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+        if (-not (Test-Path -LiteralPath $common) -and $InstallRoot) {
+            $common = Join-Path $InstallRoot 'scripts\Bobiverse-Common.ps1'
+        }
+        if ((Test-Path -LiteralPath $common) -and -not (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue)) {
+            . $common
+        }
+        if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -InstallRoot $InstallRoot
+        }
+    } catch {
+        Write-UpdLog "FR #5279 update-fail-intake-warn $($_.Exception.GetType().Name)"
+    }
+}
+
+function Write-CheckFailIntake {
+    param([string]$Result)
+    try {
+        $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+        if ((Test-Path -LiteralPath $common) -and -not (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue)) {
+            . $common
+        }
+        if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag '' -Result $Result -InstallRoot $InstallRoot
+        }
+    } catch { }
 }
 
 function Ensure-ServiceRunning {
@@ -798,7 +826,9 @@ function Invoke-Apply {
             Set-Failure -Tag $tag -Result 'backup-failed' -NoCount
             Write-UpdLog "backup-failed-no-loop-count tag=$tag (next Check may retry; -ForceCheck clears MaxAttempts block)"
         } else {
-            Set-Failure -Tag $tag -Result 'rolled-back'
+            $failResult = 'rolled-back'
+            if ($failMsg -match '(?i)msiexec exit') { $failResult = 'msiexec-exit' }
+            Set-Failure -Tag $tag -Result $failResult
         }
     } finally {
         if ($msiHeld) { try { $msiMutex.ReleaseMutex() } catch { } }
@@ -863,6 +893,7 @@ function Invoke-Check {
         try { $code = [int]$_.Exception.Response.StatusCode } catch { }
         $kind = if ($code -eq 403 -or $code -eq 429) { 'rate-limited' } elseif ($code) { "http-$code" } else { 'offline-or-error' }
         Write-UpdLog "check result=release-lookup-failed kind=$kind local=$($local.ToString()) - starting installed version"
+        Write-CheckFailIntake -Result 'release-lookup-failed'
         return
     }
     if (-not $rel -or -not $rel.assets) { Write-UpdLog 'check result=no-release-data - starting installed version'; return }
@@ -870,7 +901,7 @@ function Invoke-Check {
     $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
     $tagVer = $null
     if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+)$') { $tagVer = ConvertTo-Ver $Matches[1] }
-    if (-not $msi -or -not $tagVer) { Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"; return }
+    if (-not $msi -or -not $tagVer) { Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"; Write-CheckFailIntake -Result 'no-matching-asset'; return }
     $remote = ConvertTo-Ver ([string]$msi.name)
     if (-not $remote -or $remote -ne $tagVer) { Write-UpdLog "check result=asset-tag-mismatch tag=$($rel.tag_name) asset=$($msi.name)"; return }
     $want = ConvertTo-Ver $TargetVersion
@@ -881,7 +912,7 @@ function Invoke-Check {
     $sha = @($rel.assets | Where-Object { $_.name -eq ($msi.name + '.sha256') }) | Select-Object -First 1
     if (-not $sha) { Write-UpdLog "check result=no-sha256-asset tag=$($rel.tag_name) - not updating"; return }
     if (-not (Test-AssetUrl -Url ([string]$msi.browser_download_url)) -or -not (Test-AssetUrl -Url ([string]$sha.browser_download_url))) {
-        Write-UpdLog 'check result=asset-url-rejected'; return
+        Write-UpdLog 'check result=asset-url-rejected'; Write-CheckFailIntake -Result 'asset-url-rejected'; return
     }
 
     $tag = 'v' + $remote.ToString()
@@ -942,6 +973,11 @@ function Invoke-Check {
         $st.lastResult = 'spawn-failed'
         Save-State $st
         Write-UpdLog "check result=spawn-failed $($_.Exception.GetType().Name) - starting installed version"
+        try {
+            if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
+                $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $tag -Result 'spawn-failed' -InstallRoot $InstallRoot
+            }
+        } catch { }
     }
 }
 

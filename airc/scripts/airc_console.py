@@ -28,7 +28,7 @@ from typing import Callable, Literal
 import json
 
 from account_map import AccountMap, parse_message_tags
-from airc_jobs import JobProtocol, parse_job_verb
+from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -167,6 +167,102 @@ class UpdateScheduleResult:
         return " ".join(bits)[:400]
 
 
+_UPDATE_INTAKE_STATUSES = frozenset(
+    {
+        "updater-missing",
+        "spawn-failed",
+        "asset-url-rejected",
+        "no-matching-asset",
+        "no-sha256-asset",
+        "release-lookup-failed",
+        "rejected-product",
+    }
+)
+
+
+def _redact_update_intake_text(text: str) -> str:
+    """FR #5279 / MRB #5326: never put secrets on intake title/body (python path)."""
+    try:
+        from crash_report import redact
+
+        return redact(text or "")
+    except Exception:
+        return re.sub(
+            r"(?i)(password|token|secret|authorization)\s*[=:]\s*\S+",
+            r"\1=<redacted>",
+            text or "",
+        )
+
+
+def report_update_failure_intake(
+    *,
+    product: str,
+    result: str,
+    tag: str = "",
+    detail: str = "",
+    dry_run: bool = False,
+) -> dict:
+    """FR #5279: file one intake issue per machine+product+tag+result (best-effort)."""
+    mid = (os.environ.get("BOB_MACHINE_ID") or os.environ.get("COMPUTERNAME") or "unknown").strip()
+    mid = re.sub(r"[^a-z0-9-]", "-", mid.lower()) or "unknown"
+    prod = re.sub(r"[^a-z0-9-]", "-", (product or "unknown").lower())
+    tg = re.sub(r"[^A-Za-z0-9._-]", "-", tag) if tag else "-"
+    res = re.sub(r"[^a-z0-9-]", "-", (result or "unknown").lower())
+    key = f"airc-update-fail|{mid}|{prod}|{tg}|{res}"
+    title = _redact_update_intake_text(f"airc UPDATE fail {res} product={prod}")
+    safe_detail = _redact_update_intake_text((detail or "")[:400])
+    body = _redact_update_intake_text(
+        "FR #5279 UPDATE / Apply failure (deterministic intake).\n"
+        f"product={prod}\ntag={tg}\nresult={res}\nidempotency_key={key}\n"
+        f"detail={safe_detail}"
+    )
+    payload = {
+        "ok": True,
+        "idempotency_key": key,
+        "kind": "issue",
+        "repo": "SimonBarnett/bobiverse",
+        "title": title,
+        "body": body,
+        "product": prod,
+        "result": res,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return payload
+    script = Path(__file__).resolve().parent / "Report-BobiverseIntakeIssue.ps1"
+    if not script.is_file():
+        alt = Path(__file__).resolve().parents[1] / "scripts" / "Report-BobiverseIntakeIssue.ps1"
+        script = alt if alt.is_file() else script
+    if not script.is_file():
+        payload["ok"] = False
+        payload["skipped"] = "report-script-missing"
+        return payload
+    ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
+    args = [
+        ps if Path(ps).is_file() else "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Title",
+        title,
+        "-Body",
+        body,
+        "-Repo",
+        "SimonBarnett/bobiverse",
+        "-Kind",
+        "issue",
+        "-IdempotencyKey",
+        key,
+    ]
+    try:
+        subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
+    except Exception:
+        payload["ok"] = False
+    return payload
+
+
 def _is_frozen_airc_runtime() -> bool:
     """True under PyInstaller airc.exe (FR #2949)."""
     return bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
@@ -240,17 +336,21 @@ def schedule_fleet_update(
     """
     product = (product or "").strip().lower()
     if product not in UPDATE_PRODUCTS:
-        return UpdateScheduleResult(False, "rejected-product", product=product, version=version)
+        r = UpdateScheduleResult(False, "rejected-product", product=product, version=version)
+        _maybe_intake_update_failure(r)
+        return r
     install_root = resolve_fleet_update_install_root(install_root)
     script = _find_update_bobiverse_script(install_root, updater_script)
     if script is None or not script.is_file():
-        return UpdateScheduleResult(
+        r = UpdateScheduleResult(
             False,
             "updater-missing",
             detail=str(script or (Path(install_root) / "scripts" / "Update-BobiverseService.ps1")),
             product=product,
             version=version,
         )
+        _maybe_intake_update_failure(r)
+        return r
     if not service_name:
         service_name = {"bob": "ircBob", "jeeves": "ircJeeves"}.get(product, "Airc")
     ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -284,13 +384,15 @@ def schedule_fleet_update(
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=90)
     except Exception as e:  # noqa: BLE001 — surface to IRC as spawn-failed
-        return UpdateScheduleResult(
+        r = UpdateScheduleResult(
             False,
             "spawn-failed",
             detail=type(e).__name__,
             product=product,
             version=version,
         )
+        _maybe_intake_update_failure(r)
+        return r
     out = ((p.stdout or "") + "\n" + (p.stderr or "")).lower()
     # Prefer updater log phrases when present in stdout (Write-Host).
     status = "check-ran"
@@ -329,7 +431,23 @@ def schedule_fleet_update(
             break
     if not detail and p.returncode != 0:
         detail = f"exit={p.returncode}"
-    return UpdateScheduleResult(ok, status, detail=detail, product=product, version=version)
+    r = UpdateScheduleResult(ok, status, detail=detail, product=product, version=version)
+    _maybe_intake_update_failure(r)
+    return r
+
+
+def _maybe_intake_update_failure(result: UpdateScheduleResult) -> None:
+    if result.ok or result.status not in _UPDATE_INTAKE_STATUSES:
+        return
+    try:
+        report_update_failure_intake(
+            product=result.product or "",
+            result=result.status,
+            tag=result.version or "",
+            detail=result.detail or "",
+        )
+    except Exception:
+        pass
 
 
 def shutil_which_powershell() -> str:
@@ -908,7 +1026,7 @@ def legacy_operator_input_log_lines(args: object, cfg: dict | None) -> list[str]
 class ConsoleCapabilities:
     """FR #3287: install-time remote capability gates (survive MSI upgrade).
 
-    ``shell_mode``: ``off`` = STATUS/ping only; ``operators`` = FR #75 shell for auth nicks.
+    ``shell_mode``: ``off`` = STATUS/VERSION/ping only; ``operators`` = FR #75 shell for auth nicks.
     ``jobs`` / ``update``: finer gates when shell is ``operators``.
 
     FR #3764: ``update`` is the **remote** UPDATE verb (ops-gated IRC command). It is
@@ -2511,7 +2629,7 @@ class AircConsoleCore:
                     "cmd: COMSPEC escape (prefer cmd: dir for listings; bare dir is PS); "
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
-                    "STATUS|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
+                    "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
                     f"capabilities shell={self.capabilities.shell_mode} "
@@ -2596,8 +2714,8 @@ class AircConsoleCore:
         parsed = parse_job_verb(cmd)
         if parsed is not None and self.job_protocol is not None:
             verb, kv = parsed
-            # FR #3287: shell=off keeps STATUS only; jobs=off refuses write/exec verbs.
-            if caps.shell_mode == "off" and verb != "STATUS":
+            # FR #3287 / #5281: shell=off / jobs=off keep STATUS + VERSION (read).
+            if caps.shell_mode == "off" and verb not in CAPS_OFF_ALLOWED_VERBS:
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,
@@ -2605,7 +2723,7 @@ class AircConsoleCore:
                     text=text,
                     reply="DONE exit=126 shell-disabled",
                 )
-            if caps.jobs == "off" and verb != "STATUS":
+            if caps.jobs == "off" and verb not in CAPS_OFF_ALLOWED_VERBS:
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,

@@ -22,6 +22,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | Verb | Purpose |
 |------|---------|
 | `STATUS` | Airc Running + VERSION files (bob/airc/jeeves); replies as `out id= seq=` then `DONE` (FR #2575) |
+| `VERSION` | Current airc install version from `<ai root>\\airc\\VERSION` (missing -> `-`; no ARP fallback); same `out id= seq=` + `DONE exit=0` framing; allowed when `shell=off` / `jobs=off` like STATUS (FR #5281) |
 | plain line | PowerShell (default); UTF-8 `$OutputEncoding` wrap so StdOut keeps Greek/CJK (FR #2580); `$ProgressPreference=SilentlyContinue` so StdErr stays free of CLIXML progress noise (FR #2641); terminating / `Write-Error` StdErr is decoded from CLIXML to plain text with user-relative `At line:` (FR #2910 / #2918) |
 | `cmd: …` | COMSPEC escape hatch (`chcp 65001` prefixed, FR #2580); trailing `\` paths like `cmd: dir C:\` work (FR #3773: `/d /s /c` string cmdline, not list2cmdline) |
 | `psb64:<b64>` | `powershell -EncodedCommand` (same UTF-8 wrap) |
@@ -47,6 +48,7 @@ PRIVMSG marchhare_console :UPDATE airc 0.1.20
 - Reply (`UPDATE accepted status=scheduled ...` or `UPDATE skipped-pending ...`) is sent **before** the transport is stopped.
 - Assets must be `https://github.com/SimonBarnett/bobiverse/releases/download/...`; foreign URLs are rejected (`asset-url-rejected`).
 - Pending / loop-guard / rollback / sha256 mismatch behaviour is owned by the updater (same as service-start self-update).
+- **FR #5279:** each distinct Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, …) files one `kind:issue` on `SimonBarnett/bobiverse` via intake. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted. `Set-Failure` and `schedule_fleet_update` both call this path. Local `state.json` counts are unchanged.
 - Machine id: explicit `-MachineId`, then `AIRC_CONSOLE_MACHINE` / `BOB_MACHINE_ID`; hostname fallback must be conscious (Start-AircConsole warns).
 
 ## Encoding policy
