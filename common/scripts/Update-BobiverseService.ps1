@@ -150,7 +150,8 @@ function Invoke-GitHubReleaseApi {
 }
 
 function Select-BestReleaseFromList {
-    # FR #5353: pick newest semver release that has {Product}-N.N.N.msi.
+    # FR #5353 / FR #5412 / FR #5429: pick newest semver release that has
+    # {Product}-N.N.N.msi or {Product}-N.N.N.N.msi (same pattern as Invoke-Check).
     # Prefer non-prerelease; among the same class, higher version wins.
     param(
         $Releases,
@@ -159,6 +160,7 @@ function Select-BestReleaseFromList {
     $best = $null
     $bestVer = $null
     $bestPre = $true
+    $msiRe = '^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($ProductName)
     foreach ($r in @($Releases)) {
         if (-not $r) { continue }
         if ($r.draft) { continue }
@@ -167,7 +169,7 @@ function Select-BestReleaseFromList {
         $assets = @($r.assets)
         $msi = @(
             $assets | Where-Object {
-                $_.name -match ('^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($ProductName))
+                $_.name -match $msiRe
             }
         ) | Select-Object -First 1
         if (-not $msi) { continue }
@@ -358,6 +360,7 @@ function Get-Asset {
 }
 
 function Test-LooksLikeHtmlAsset {
+    # FR #5413: UTF-8 BOM + <!DOCTYPE used to miss and become sha256-mismatch.
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
     $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -365,9 +368,11 @@ function Test-LooksLikeHtmlAsset {
         $buf = New-Object byte[] 64
         $n = $fs.Read($buf, 0, 64)
         if ($n -le 0) { return $true }
-        $head = [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)
+        $off = 0
+        if ($n -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { $off = 3 }
+        $head = [System.Text.Encoding]::ASCII.GetString($buf, $off, $n - $off)
     } finally { $fs.Close() }
-    return ($head -match '(?i)^\s*<(!DOCTYPE|html|head|body)\b')
+    return ($head -match '(?i)^\s*(<(!DOCTYPE|html|head|body)\b|\{)')
 }
 
 function Read-ExpectedSha256 {
@@ -787,9 +792,12 @@ function Invoke-Apply {
         try {
             Get-Asset -Url $msiUrl -Dest $msi
             Get-Asset -Url $shaUrl -Dest $shaFile
+            if ((Test-LooksLikeHtmlAsset -Path $msi) -or (Test-LooksLikeHtmlAsset -Path $shaFile)) {
+                throw 'download-failed html-or-json-body'
+            }
         } catch {
             Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
-            Set-Failure -Tag $tag -Result 'download-failed'
+            Set-Failure -Tag $tag -Result 'download-failed' -Detail ([string]$_.Exception.Message)
             return
         }
         $expected = Read-ExpectedSha256 -Path $shaFile
@@ -797,11 +805,15 @@ function Invoke-Apply {
         if (-not $expected -or $expected -ne $actual) {
             Write-UpdLog "sha256-retry tag=$tag expected=$expected actual=$actual"
             try {
-                Get-Asset -Url ([string]$plan.msiUrl) -Dest $msi
-                Get-Asset -Url ([string]$plan.shaUrl) -Dest $shaFile
+                # FR #5413: retry the repaired URLs, not the stale plan API/query URLs.
+                Get-Asset -Url $msiUrl -Dest $msi
+                Get-Asset -Url $shaUrl -Dest $shaFile
+                if ((Test-LooksLikeHtmlAsset -Path $msi) -or (Test-LooksLikeHtmlAsset -Path $shaFile)) {
+                    throw 'download-failed html-or-json-body'
+                }
             } catch {
                 Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
-                Set-Failure -Tag $tag -Result 'download-failed'
+                Set-Failure -Tag $tag -Result 'download-failed' -Detail ([string]$_.Exception.Message)
                 return
             }
             $expected = Read-ExpectedSha256 -Path $shaFile
@@ -809,7 +821,7 @@ function Invoke-Apply {
         }
         if (-not $expected -or $expected -ne $actual) {
             Write-UpdLog "sha256-mismatch tag=$tag expected=$expected actual=$actual - aborted, service untouched"
-            Set-Failure -Tag $tag -Result 'sha256-mismatch'
+            Set-Failure -Tag $tag -Result 'sha256-mismatch' -Detail ("expected={0} actual={1}" -f $expected, $actual)
             Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             return
         }
@@ -1091,12 +1103,13 @@ function Invoke-Check {
     }
     if (-not $rel -or -not $rel.assets) { Write-UpdLog 'check result=no-release-data - starting installed version'; return }
 
-    # FR #5354: 3- or 4-part product MSI (bob-1.0.0.1.msi) and matching tag_name.
+    # FR #5354 / FR #5412: 3- or 4-part product MSI (bob-1.0.0.1.msi) and matching tag_name.
     $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
     $tagVer = $null
     if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+(?:\.\d+)?)$') { $tagVer = ConvertTo-Ver $Matches[1] }
     if (-not $msi -or -not $tagVer) {
-        Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"
+        $assetNames = (@($rel.assets) | ForEach-Object { [string]$_.name }) -join ','
+        Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name) assets=$assetNames"
         Write-CheckFailIntake -Result 'no-matching-asset' -Tag ([string]$rel.tag_name)
         return
     }
