@@ -26,7 +26,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | plain line | PowerShell (default); UTF-8 `$OutputEncoding` wrap so StdOut keeps Greek/CJK (FR #2580); `$ProgressPreference=SilentlyContinue` so StdErr stays free of CLIXML progress noise (FR #2641); terminating / `Write-Error` StdErr is decoded from CLIXML to plain text with user-relative `At line:` (FR #2910 / #2918) |
 | `cmd: ???` | COMSPEC escape hatch (`chcp 65001` prefixed, FR #2580); trailing `\` paths like `cmd: dir C:\` work (FR #3773: `/d /s /c` string cmdline, not list2cmdline) |
 | `psb64:<b64>` | `powershell -EncodedCommand` (same UTF-8 wrap) |
-| `PUT path` + chunks | Write file (base64 seq). Default `via=dcc` (FR #5194): send `DCCLISTEN` first; console dials out and reads `token\\n` + u32be + body + `sha256\\n`, verifies, writes via a temp file. On DCC fail the console stays in receiving and IRC `CHUNK`/`PUTEND` still land. `-ForceIrcPut` skips DCC. |
+| `PUT path` + chunks | Write file (base64 seq). Default `via=dcc` (FR #5194): send `DCCLISTEN` first; console dials out and reads `token\\n` + u32be + body + `sha256\\n`, verifies, writes via a temp file. `via=dcc` size cap is 2 MiB (`DCC_BULK_SIZE_CAP`, FR #5536); IRC PUT stays 256 KiB. On DCC fail the console stays in receiving and IRC `CHUNK`/`PUTEND` still land. `-ForceIrcPut` skips DCC. |
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
 | `GET path` | hash/size + head (80 chars). Does not send the file. |
 | `GET path fetch=chunk` then `GETCHUNK id seq` | FR #4795 outbound fetch. Open returns bytes/sha256/seqs only. Each GETCHUNK returns one <=300-byte raw chunk. The next GETCHUNK is the ack; the console never pushes the following chunk. |

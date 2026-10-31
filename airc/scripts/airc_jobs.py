@@ -19,6 +19,15 @@ from typing import Callable, Literal
 
 # Limits (IRC-safe / retention)
 MAX_PUT_BYTES = 256 * 1024
+
+
+def put_max_bytes(via: str = "") -> int:
+    """FR #5536: IRC PUT stays 256 KiB; via=dcc uses DCC_BULK_SIZE_CAP (2 MiB)."""
+    if (via or "").strip().lower() == "dcc":
+        from airc_dcc_bulk import DCC_BULK_SIZE_CAP
+
+        return int(DCC_BULK_SIZE_CAP)
+    return MAX_PUT_BYTES
 MAX_CHUNK_RAW = 300
 MAX_JOBS_RETAINED = 64
 JOB_RETENTION_S = 7 * 24 * 3600
@@ -342,12 +351,13 @@ class JobStore:
         except ValueError as exc:
             raise JobProtocolError("bad_frame", "bytes not int", jid) from exc
         sha = (kv.get("sha256") or "").lower()
-        if nbytes < 0 or nbytes > MAX_PUT_BYTES:
-            raise JobProtocolError("size", f"bytes out of range 0..{MAX_PUT_BYTES}", jid)
+        via = (kv.get("via") or "").strip().lower()
+        limit = put_max_bytes(via)
+        if nbytes < 0 or nbytes > limit:
+            raise JobProtocolError("size", f"bytes out of range 0..{limit}", jid)
         if sha and (len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha)):
             raise JobProtocolError("bad_frame", "sha256 must be 64 hex", jid)
         dest = resolve_sandbox_path(self.drop_root, path)
-        via = (kv.get("via") or "").strip().lower()
         with self._lock:
             rec = JobRecord(
                 id=jid,
@@ -377,6 +387,8 @@ class JobStore:
                 ]
             expect = sha or (dig or "").lower()
             try:
+                if len(blob) > put_max_bytes("dcc"):
+                    raise JobProtocolError("size", f"dcc payload over {put_max_bytes('dcc')}", jid)
                 if nbytes and len(blob) != nbytes:
                     raise JobProtocolError("size", "dcc size != declared bytes", jid)
                 digest = atomic_place_file(dest, blob, expect)
