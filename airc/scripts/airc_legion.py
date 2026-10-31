@@ -455,7 +455,33 @@ def run_legion_verb(
     if wait:
         # FR #5389: CredRead lives here (or in installer_legion_work), not on accept.
         return _safe()
-    threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
+    import airc_isolated as _iso
+
+    if _iso.is_packaged_work(work):
+
+        def _from_child(data: Any) -> None:
+            payload = data if isinstance(data, dict) else {}
+            if str(payload.get("error") or "") == "credman-missing" and not whatif:
+                _finish(
+                    payload,
+                    reply=f"DONE id={qid} exit=126 credman-missing",
+                )
+            else:
+                _finish(payload)
+
+        _iso.start_isolated(
+            wait=False,
+            run=_call_work,
+            packaged=(
+                "airc_legion",
+                "installer_legion_work",
+                {"target": target, "whatif": bool(whatif)},
+            ),
+            name="airc-legion-worker",
+            on_done=_from_child,
+        )
+    else:
+        threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
     return LegionVerbResult(True, accepted, job_id=qid)
 
 

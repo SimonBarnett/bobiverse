@@ -64,6 +64,7 @@ $files = @(
     'scripts\airc_console_service.py',
     'scripts\airc_intake_event.py',
     'scripts\airc_credman.py',  # FR #5526 native CredMan (PRIORITY/LEGION/EXTENSION)
+    'scripts\airc_isolated.py',  # FR #5537 in-service isolated process helper
     'scripts\account_map.py',
     'scripts\Start-AircConsole.ps1',
     'scripts\Start-AircConsole.cmd',
