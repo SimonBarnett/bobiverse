@@ -624,13 +624,74 @@ def collect_status_versions(ai_root: Path | None = None) -> dict[str, str]:
     return out
 
 
-def format_version_lines(*, versions: dict[str, str], machine: str) -> list[str]:
-    """FR #5281: airc install version only (STATUS keeps the aggregate).
+def _token(raw: str, *, max_len: int = 64) -> str:
+    """Single IRC token: no spaces, no secret-shaped keys."""
+    t = re.sub(r"\s+", "", str(raw or "").strip())
+    if re.search(r"(?i)pass|secret|token|pwd", t):
+        return ""
+    return t[:max_len]
+
+
+def collect_airc_build_meta(ai_root: Path | None = None) -> dict[str, str]:
+    """FR #5534: commit / built_utc from airc BUILD.json, overlay HOTPATCH.json."""
+    root = Path(ai_root or os.environ.get("AI_ROOT") or r"C:\ai") / "airc"
+    meta: dict[str, str] = {}
+    for name, overlay in (("BUILD.json", False), ("HOTPATCH.json", True)):
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        commit = _token(str(data.get("commit") or data.get("sha") or ""))
+        built = _token(
+            str(
+                data.get("built_utc")
+                or data.get("hotpatched_utc")
+                or data.get("at_utc")
+                or ""
+            ),
+            max_len=40,
+        )
+        if overlay:
+            meta["hotpatch"] = "1"
+            if commit:
+                meta["commit"] = commit
+            if built:
+                meta["built_utc"] = built
+        else:
+            if commit:
+                meta["commit"] = commit
+            if built:
+                meta["built_utc"] = built
+    return meta
+
+
+def format_version_lines(
+    *,
+    versions: dict[str, str],
+    machine: str,
+    build: dict[str, str] | None = None,
+) -> list[str]:
+    """FR #5281 / #5534: airc VERSION plus optional commit/built/hotpatch.
 
     Version source is ``<ai root>\\airc\\VERSION``. Missing/unreadable -> ``-``.
-    No ARP / registry fallback (document: install file is the only source).
+    No ARP / registry fallback. BUILD.json / HOTPATCH.json add identity tokens.
     """
-    return [f"VERSION machine={machine} airc_ver={versions.get('airc', '-')}"]
+    bits = [f"VERSION machine={machine} airc_ver={versions.get('airc', '-')}"]
+    info = build or {}
+    commit = _token(info.get("commit") or "")
+    built = _token(info.get("built_utc") or "", max_len=40)
+    if commit:
+        bits.append(f"commit={commit}")
+    if built:
+        bits.append(f"built={built}")
+    if str(info.get("hotpatch") or "") == "1":
+        bits.append("hotpatch=1")
+    return [" ".join(bits)]
 
 
 def format_status_lines(*, airc_running: bool, versions: dict[str, str], machine: str) -> list[str]:
@@ -699,7 +760,11 @@ class JobProtocol:
                 return lines
             if verb == "VERSION":
                 vers = collect_status_versions(self.ai_root)
-                body = format_version_lines(versions=vers, machine=self.machine)
+                body = format_version_lines(
+                    versions=vers,
+                    machine=self.machine,
+                    build=collect_airc_build_meta(self.ai_root),
+                )
                 jid = (kv.get("id") or "").strip().lower() or new_job_id()
                 lines = [
                     f"out id={jid} seq={i} {part}" for i, part in enumerate(body, start=1)
