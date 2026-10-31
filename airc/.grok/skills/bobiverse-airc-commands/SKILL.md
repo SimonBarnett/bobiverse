@@ -73,4 +73,21 @@ PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
 
 See `docs/airc-remote-control.md`, `docs/feature-request-airc-priority-client-2026-10-31.md`, and `bobiverse-airc-troubleshooting`.
 
+## EXTENSION Priority web (FR #5294)
 
+Authorized **UPDATE-class** verb. Isolated in-service worker (never a peer `*Client.exe`). Default extension id `cgmpadejahkaggjpffnhaoiafbnicgpa` (Chrome Web Store update URL for Chrome and Edge).
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e EXTENSION install
+PRIVMSG {mid}_console :id=c25bd00e EXTENSION install -WhatIf
+PRIVMSG {mid}_console :id=c25bd00e EXTENSION status
+```
+
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`).
+- **GPO happy path:** worker uses GroupPolicy on GPO `Priority-web-extension` linked at domain root (`ExtensionInstallForcelist` for Chrome and Edge). `-WhatIf` is read-only (no GPO/registry/gpupdate writes).
+- **Fill-holes:** after GPO (or when DC is missing), LDAP AD computers only; reachable hosts get remote registry ForceInstall; unreachable = logged failure. Machine account first; optional CredMan target `PriorityAirc/ExtensionAdmin` on access-denied (never put that password on IRC).
+- **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... sha256= via=dcc`. No offer or DCC fail -> IRC CONT + failure lines. No secrets in the log.
+- **Isolation:** AD/GPO/registry loops are not on the IRC receive thread; worker fault must not stop service Airc.
+
+See `docs/airc-remote-control.md` and `docs/feature-request-airc-extension-priority-web-2026-10-31.md`.
