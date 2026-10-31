@@ -1,4 +1,4 @@
-# Feature request: Airc LEGION — remote install via network installer
+# Feature request: Airc LEGION  -  remote install via network installer
 
 **Repo:** `SimonBarnett/bobiverse`  
 **Product path:** `airc/`  
@@ -10,14 +10,14 @@
 
 ## Objective
 
-LOCKED: An authorized remote **`LEGION {target}`** on `{mid}_console` installs **airc** on one Windows **hostname or IP** by having the **Airc service spawn a new isolated worker process** that **imports the `airc_network_installer` module** (FR #3991 logic — latest GitHub Release MSI, **`AIRC_PROFILE=client`**, **no `--force`** in MVP) — **not** as a separate operator-facing product exe — with CredMan **`PriorityAirc/LegionAdmin`** passed via a **wrapper** (`-u` + password over secure env/channel the installer accepts; never on IRC), returning **DCC** logs and failures (CONT fallback), without crashing service `Airc`. Optional **`-WhatIf`** → installer dry-run. Per-host timeout **900s** (installer default).
+LOCKED: An authorized remote **`LEGION {target}`** on `{mid}_console` installs **airc** on one Windows **hostname or IP** by having the **Airc service spawn a new isolated worker process** that **imports the `airc_network_installer` module** (FR #3991 logic  -  latest GitHub Release MSI, **`AIRC_PROFILE=client`**, **no `--force`** in MVP)  -  **not** as a separate operator-facing product exe  -  with CredMan **`PriorityAirc/LegionAdmin`** passed via a **wrapper** (`-u` + password over secure env/channel the installer accepts; never on IRC), returning **DCC** logs and failures (CONT fallback), without crashing service `Airc`. Optional **`-WhatIf`** → installer dry-run. Per-host timeout **900s** (installer default).
 
 ## Success
 
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
 | S1 | LEGION verb | `LEGION {target}` [optional `-WhatIf`] accepted; auth **same as UPDATE** (`update=off` blocks); unauthorized → existing exits | Wire tests | No verb; agents run standalone installer by hand only |
-| S2 | In-service installer logic | Service-owned **new worker instance** imports **`airc_network_installer`** for that single target — latest Release airc MSI, profile **client** — **not** shelling out to a separate product `airc-network-installer.exe` as the LEGION path | Log shows module worker; MSI from bobiverse Releases | LEGION requires operator to launch standalone exe; foreign MSI URL; reimplements msiexec from scratch |
+| S2 | In-service installer logic | Service-owned **new worker instance** imports **`airc_network_installer`** for that single target  -  latest Release airc MSI, profile **client**  -  **not** shelling out to a separate product `airc-network-installer.exe` as the LEGION path | Log shows module worker; MSI from bobiverse Releases | LEGION requires operator to launch standalone exe; foreign MSI URL; reimplements msiexec from scratch |
 | S3 | Target installed | Happy path: target ends with service **Airc** Running (or installer-documented success); `-WhatIf` makes no remote changes; **never** pass `--force` in MVP | Lab VM; WhatIf dry-run | WhatIf writes; `--force` used; success without installer ok |
 | S4 | Isolation | New detached worker process only; never run install/PsExec on IRC receive thread; worker fault → Airc still Running | Fault injection | Service Stopped after LEGION |
 | S5 | DCC logs | Full installer log + summary via DCC when `DCCLISTEN` offered, else CONT; failures included; short IRC + DONE | Harness | PRIVMSG-only multi-MB log; failures omitted |
@@ -28,7 +28,9 @@ LOCKED.
 
 ## Shape
 
-Primary: **service** (LEGION is part of Airc; starts a **new isolated worker instance** importing network-installer module).
+Primary: **service**
+
+LEGION is part of Airc; starts a new isolated worker instance importing the network-installer module.
 
 LOCKED
 
@@ -70,7 +72,8 @@ LOCKED
 
 ## Screens
 
-None.
+Wire-only. HTML mocks under airc/docs/mocks/legion/ (home / empty / error) for intake validation (not a GUI product).
+
 
 ## Gap vs current tree
 
@@ -92,8 +95,16 @@ None.
 
 ## UNKNOWN
 
-- (none for MVP — operator MC cards closed 2026-10-31)
+- (none for MVP  -  operator MC cards closed 2026-10-31)
 
 ## Implementation slices
 
-See `drafts/backlog.md` (#5308–#5312).
+1. **FR-A** - LEGION verb + isolated worker scaffold - https://github.com/SimonBarnett/bobiverse/issues/5308
+2. **FR-B** - invoke airc_network_installer for one target - https://github.com/SimonBarnett/bobiverse/issues/5309
+3. **FR-C** - CredMan PriorityAirc/LegionAdmin wrapper - https://github.com/SimonBarnett/bobiverse/issues/5310
+4. **FR-D** - DCC install logs including failures - https://github.com/SimonBarnett/bobiverse/issues/5311
+5. **FR-E** - Skills/docs - https://github.com/SimonBarnett/bobiverse/issues/5312
+
+Docs PR: https://github.com/SimonBarnett/bobiverse/pull/5313 . Living slices stay open (Refs only).
+#5308 #5309 #5310 #5311 #5312
+
