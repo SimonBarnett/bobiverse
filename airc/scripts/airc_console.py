@@ -3485,20 +3485,24 @@ class AircConsoleCore:
                     "sql_faked": False,
                 }
             # Never put passwords on the wire.
+            # FR #5525: out + DONE on separate lines (connect/status framing); truncate
+            # only the out line so DONE detectors (^DONE id=) always see a full PRIVMSG.
             blob = json.dumps(
                 {k: v for k, v in body.items() if "pass" not in str(k).lower()},
                 separators=(",", ":"),
             )
             jid = (prep.get("qid") or "").strip() or uuid.uuid4().hex[:8]
             exit_code = 0 if body.get("ok") else 1
-            reply = f"out id={jid} seq=1 PRIORITY prepare {blob} DONE id={jid} exit={exit_code}"
+            out_line = f"out id={jid} seq=1 {blob}"[:IRC_SAFE_PAYLOAD]
+            done_line = f"DONE id={jid} exit={exit_code}"
+            reply = f"{out_line}\n{done_line}"
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="priority",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=reply[:IRC_SAFE_PAYLOAD],
+                reply=reply,
                 **meta,
             )
 

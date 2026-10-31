@@ -116,6 +116,9 @@ def test_fr5286_type_p_never_form_prep():
 
 
 def test_fr5286_console_prepare_framing_no_password():
+    """FR #5525: out and DONE are separate lines; no echoed verb; DONE detectors fire."""
+    import re
+
     auth = ops_auth("op")
     core = ac.AircConsoleCore(
         machine="tm",
@@ -124,15 +127,83 @@ def test_fr5286_console_prepare_framing_no_password():
         nick="tm_console",
         job_protocol=MagicMock(),
     )
-    hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev")
+    hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=c25bd00e PRIORITY prepare")
     assert hr is not None
     assert hr.action == "priority"
+    lines = (hr.reply or "").splitlines()
+    assert len(lines) == 2, hr.reply
+    assert lines[0].startswith("out id=c25bd00e seq=1 {")
+    assert "PRIORITY prepare" not in lines[0]
+    assert "DONE" not in lines[0]
+    assert lines[1] == "DONE id=c25bd00e exit=1"
+    assert re.match(r"^DONE id=[0-9a-f]{8} exit=\d+$", lines[1])
     text = (hr.reply or "") + " " + (hr.text or "")
     assert "password=" not in text.lower()
     # help mentions PRIORITY prepare
     help_hr = core.handle_raw(":op!u@h PRIVMSG tm_console :!help")
     assert "PRIORITY" in (help_hr.reply or "")
     assert "prepare" in (help_hr.reply or "").lower()
+
+
+def test_fr5525_prepare_minted_id_matches_both_lines():
+    auth = ops_auth("op")
+    core = ac.AircConsoleCore(
+        machine="tm",
+        auth=auth,
+        sessions=ac.ConsoleSessionManager(on_output=None),
+        nick="tm_console",
+        job_protocol=MagicMock(),
+    )
+    hr = core.handle_raw(":op!u@h PRIVMSG tm_console :PRIORITY prepare")
+    assert hr and hr.action == "priority"
+    lines = (hr.reply or "").splitlines()
+    assert len(lines) == 2
+    out_id = lines[0].split()[1].removeprefix("id=")
+    done_id = lines[1].split()[1].removeprefix("id=")
+    assert len(out_id) == 8 and out_id == done_id
+    assert lines[1] == f"DONE id={done_id} exit=1"
+
+
+def test_fr5525_prepare_large_body_keeps_done_intact():
+    auth = ops_auth("op")
+    long_ename = "E" * 400
+
+    def run(name, **kw):
+        return {
+            "ok": False,
+            "reason": "still_unprepared",
+            "ename": long_ename,
+            "sql_faked": False,
+            "detail": "x" * 200,
+        }
+
+    class _Pw:
+        run_priority_prepare = staticmethod(run)
+
+    core = ac.AircConsoleCore(
+        machine="tm",
+        auth=auth,
+        sessions=ac.ConsoleSessionManager(on_output=None),
+        nick="tm_console",
+        job_protocol=MagicMock(),
+    )
+    # Force worker path with oversized body via monkeypatched loader.
+    import airc_console as mod
+
+    orig = mod._load_priority_worker
+    mod._load_priority_worker = lambda: _Pw
+    try:
+        hr = core.handle_raw(
+            ":op!u@h PRIVMSG tm_console :id=aabbccdd PRIORITY prepare HUGE"
+        )
+    finally:
+        mod._load_priority_worker = orig
+    assert hr and hr.action == "priority"
+    lines = (hr.reply or "").splitlines()
+    assert len(lines) >= 2
+    assert lines[-1] == "DONE id=aabbccdd exit=1"
+    assert lines[0].startswith("out id=aabbccdd seq=1")
+    assert len(lines[0]) <= ac.IRC_SAFE_PAYLOAD
 
 
 def test_fr5286_skills_document_prepare_gates():
@@ -258,8 +329,13 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
     assert hr is not None
     assert hr.action == "priority"
     assert calls["hooks"] >= 1
-    assert '"ok":true' in (hr.reply or "").replace(" ", "") or '"reason":"prepared"' in (
-        hr.reply or ""
-    )
+    lines = (hr.reply or "").splitlines()
+    assert len(lines) == 2
+    assert lines[-1] == "DONE id=c25bd00e exit=0"
+    assert lines[0].startswith("out id=c25bd00e seq=1 {")
+    assert "PRIORITY prepare" not in lines[0]
+    blob = lines[0].split("seq=1 ", 1)[1]
+    payload = json.loads(blob)
+    assert payload.get("ok") is True or payload.get("reason") == "prepared"
     assert "password=" not in (hr.reply or "").lower()
     assert "FAKE_" not in (hr.reply or "")
