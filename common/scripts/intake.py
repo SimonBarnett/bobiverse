@@ -1060,6 +1060,39 @@ _HARVEST_GENERIC_TOKENS = frozenset(
         "this",
         "when",
         "into",
+        # FR #5606: programming / English verbs that appear in every product
+        # PR body ("returns the parent…", "Duplicates closed: none") must not
+        # twin-match an unrelated CredMan / apply lesson when the open-twin
+        # filter is lagging or the full PR body is used as a fake bullet.
+        "return",
+        "returns",
+        "none",
+        "true",
+        "false",
+        "void",
+        "bool",
+        "null",
+        "wrote",
+        "write",
+        "claim",
+        "makes",
+        "make",
+        "closed",
+        "closes",
+        "merged",
+        "pass",
+        "fail",
+        "fixed",
+        "fix",
+        "evidence",
+        "plan",
+        "test",
+        "tests",
+        "duplicate",
+        "duplicates",
+        "searched",
+        "parent",
+        "container",
     }
 )
 
@@ -1152,7 +1185,12 @@ def _harvest_pr_matches_lessons(
         return True
     if any(lesson_covered_by_existing_md(tip_md, row) for row in rows):
         return True
-    bullets = _iter_skill_bullet_texts(body) or [body]
+    # FR #5606: only compare against explicit markdown bullets. Falling back
+    # to the whole PR body made product FR tips (Summary/Evidence/Closes)
+    # look like harvest-lesson text and twin-matched on generic verbs.
+    bullets = _iter_skill_bullet_texts(body)
+    if not bullets:
+        return False
     for row in rows:
         if any(
             harvest_pr_covers_new_lesson(title, exist, row, new_title=new_title)
