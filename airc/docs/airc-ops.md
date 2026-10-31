@@ -79,6 +79,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <ai root>\airc\scripts\Invok
 
 PUT/RUN/JOB verbs are constructed by the helper (sandbox under `<ai root>\airc\drop` by default); server-side acceptance is FR #78.
 
+## Hung shell recovery (FR #5211)
+
+- If partial `out id=...` arrives without `DONE`, try `CANCEL id=<shell-id>` from the same authorized Query nick. It cancels that active or queued shell with `DONE ... exit=130`; other queued commands continue. PUT/RUN cancellation keeps its existing protocol.
+- `STATUS` is handled independently of the shell queue. If STATUS also times out, check the ear's `airc-replies.jsonl` and the client's Airc log for disconnect/restart evidence; a missing DONE alone does not prove a running shell is hung.
+- If the console remains unresponsive, run `Restart-Service Airc` locally on the **affected client**, or through an independent authorized administration channel. Restart **only Airc**; never Ergo/BobIrcd, seats, or broad process names. Then retry STATUS followed by a short command.
+- Shell capture is bounded by the shell timeout (default 120 seconds, plus bounded process cleanup), without waiting for descendant pipe EOF. UTF-16 BOM output is decoded, invalid UTF-8 is replaced, and NUL is replaced before IRC framing. Do not dump configuration files containing credentials; inspect only known non-secret fields.
+- A source hotpatch requires the usual backup and Airc-only restart. Frozen `airc.exe` needs a separately approved rebuild/redeploy; changing Python source beside it does not patch the running executable.
+
 ## Install / secrets / update
 
 - **FR #4216:** airc MSI embeds `<ai root>\airc\config\ergo.password`; Install seeds ConsoleHome from it. Pack fails closed without `AIRC_PACK_ERGO_PASSWORD` / packer connect.password. **Never invent** the Ergo PASS; NickServ GUID is minted into ConsoleHome `console.password`.

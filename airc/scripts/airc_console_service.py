@@ -565,14 +565,13 @@ class AircConsoleService:
             return
         safe_reason = (reason or "service-stop").replace("\n", " ").replace("\r", " ")[:80]
         jobs: dict[tuple[str, str], None] = {}
-        for nick, jid in self.shell_inflight().items():
-            jobs[(nick, jid)] = None
         try:
-            for nick, jid in self.shell_runner.open_job_ids():
+            for nick, jid in self.shell_runner.abandon_open_jobs():
                 jobs[(nick, jid)] = None
-            self.shell_runner.abandon_open_jobs()
         except Exception as e:
             info(f"INFO stop-flush-runner-err {e}")
+        for nick, jid in self.shell_inflight().items():
+            jobs[(nick, jid)] = None
         for nick, jid in list(jobs.keys()):
             self._out_q.put((nick, f"err id={jid} seq=1 {safe_reason}"))
             self._out_q.put((nick, f"DONE id={jid} exit=1"))
