@@ -52,7 +52,7 @@ PRIVMSG marchhare_console :id=aabbccdd PRIORITY connect example-dev
 - PRIORITY connect <id> - CredMan fetch for credentialTarget, then connect. Until FR-B ships the Node Web SDK worker, SelfTest/unit path uses mock_connect (non-empty password required; password never echoed).
 - Bare `PRIORITY` (or an unknown sub-verb) is usage, not a shell command (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows` then `DONE id= exit=2`.
 
-Reply framing matches FR #75:
+Reply framing matches FR #75. Each reply is one `out` line within **350 UTF-8 bytes** (same budget as shell `IRC_SAFE_PAYLOAD`) followed by `DONE` (FR #5616). Echoed instance tokens in unknown-instance errors are shortened with ASCII `...` so the reason stays visible. If a reply still cannot fit, the console substitutes compact `{"ok":false,"action":...,"error":"reply-too-large","bytes":n}` with exit `1` (never character-slices JSON mid-document).
 
 ```text
 out id=<corr> seq=1 {"action":"connect","company":"live1","ok":true,...}
