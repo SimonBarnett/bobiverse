@@ -238,7 +238,7 @@ def test_fr5510_announce_only_on_change(tmp_path: Path):
     sweep.run_stuck_sweep(
         home,
         now=now,
-        live=set(),
+        live={"redqueen-1"},
         idle=set(),
         open_items=[],
         act=False,
@@ -249,10 +249,78 @@ def test_fr5510_announce_only_on_change(tmp_path: Path):
     sweep.run_stuck_sweep(
         home,
         now=now,
-        live=set(),
+        live={"redqueen-1"},
         idle=set(),
         open_items=[],
         act=False,
         announce=notes.append,
     )
     assert len(notes) == n0  # fingerprint unchanged
+
+
+def test_fr5510_no_seats_no_alert(tmp_path: Path):
+    """Idle work is not stuck while no live fleet seats (Simon 2026-10-31)."""
+    home = tmp_path / "digest"
+    now = 1_700_000_000.0
+    _queue(
+        home,
+        accepted=[
+            {
+                "repo": "SimonBarnett/bobiverse",
+                "task": "FR",
+                "id": "#1",
+                "nick": "copilot",
+                "accepted_ts": _iso(now - 2000.0),
+                "line": "FR #1",
+            }
+        ],
+    )
+    notes: list[str] = []
+    report = sweep.run_stuck_sweep(
+        home,
+        now=now,
+        live=set(),
+        idle=set(),
+        open_items=[],
+        act=True,
+        announce=notes.append,
+    )
+    assert report.get("paused") == "no seats"
+    assert report.get("stuck") == []
+    assert notes == []
+    assert sweep.digest_stuck_section(home) == [{"paused": "no seats"}]
+    assert sweep.format_stuck_lines(home) == ["stuck: paused: no seats"]
+    # bookkeeping: gone holder still released
+    doc = gitclaim.load_queue(home)
+    assert doc["accepted"] == []
+
+
+def test_fr5510_fuel_zero_no_alert(tmp_path: Path):
+    home = tmp_path / "digest"
+    now = 1_700_000_000.0
+    _queue(home, unaccepted=[], accepted=[])
+    notes: list[str] = []
+    report = sweep.run_stuck_sweep(
+        home,
+        now=now,
+        live={"redqueen-1"},
+        idle={"redqueen-1"},
+        open_items=[
+            {
+                "repo": "SimonBarnett/bobiverse",
+                "kind": "pr",
+                "id": "#4967",
+                "title": "lesson(bobiverse-bob-worker): harvest hold flush",
+                "body": "## Lesson\n\nMRB (light triage)\n",
+                "labels": ["via-intake", "skill"],
+                "draft": True,
+            }
+        ],
+        act=False,
+        announce=notes.append,
+        fuel_ok=False,
+    )
+    assert report.get("paused") == "no fuel"
+    assert report.get("stuck") == []
+    assert notes == []
+    assert report["actions"]["enqueued"] == 0
