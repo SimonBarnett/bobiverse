@@ -3142,9 +3142,8 @@ class AircConsoleCore:
                 allowlist_path=allow,
                 fixture_path=fix,
             )
-            if self.job_protocol is not None:
-                for ln in result.lines:
-                    self.job_protocol._emit(nick, ln)
+            # FR #5524: do not JobProtocol._emit here. on_line sends HandleResult.reply
+            # for action=priority (FR #5518). Emitting plus reply doubled every walk line.
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="priority",
