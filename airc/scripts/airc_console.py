@@ -433,7 +433,9 @@ class UpdateScheduleResult:
             bits.append(f"version={ver}")
         if self.detail:
             bits.append(self.detail)
-        if self.ok:
+        # FR #5584: ``current`` (already up to date) is success with
+        # ``UPDATE current`` wording --- not ``UPDATE accepted`` / exit=1.
+        if self.ok and self.status != "current":
             bits[0] = "UPDATE accepted"
             bits.insert(2, f"status={self.status}")
         body = " ".join(bits)[:400]
@@ -696,7 +698,11 @@ def schedule_fleet_update(
             status = "scheduled"
         elif status == "update-scheduled":
             status = "scheduled"
-    elif status in {"skipped-pending", "blocked-loop-guard", "skipped-optout", "cooldown", "current"}:
+    elif status == "current":
+        # FR #5584: no-op Check (local == latest) is success; callers must not
+        # treat DONE exit=1 as a failure when there is nothing to install.
+        ok = True
+    elif status in {"skipped-pending", "blocked-loop-guard", "skipped-optout", "cooldown"}:
         ok = False
     detail = ""
     for line in (p.stdout or "").splitlines()[::-1]:
