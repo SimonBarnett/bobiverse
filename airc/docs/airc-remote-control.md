@@ -34,7 +34,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `PRIORITY prepare <ENAME>` | TYPE=P named prep: EXEC `REPPREPDIRECT2`; success only if SDK ok **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced (FR #5286). Never form-prep; never SQL-fake UPD; never a password on IRC |
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
-| NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou. Full data+log via DCCLISTEN same job id or IRC CONT. |
+| NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou (parent-container DN; FR #5587). Full data+log via DCCLISTEN same job id or IRC CONT. |
 | `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312). UPDATE-class auth. CredMan `PriorityAirc/LegionAdmin`. Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
 | EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). Fill-holes: machine account first, then CredMan `PriorityAirc/ExtensionAdmin` on access-denied (FR #5364; fail closed `credman-missing`; never on IRC). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
 
@@ -113,7 +113,7 @@ PRIVMSG marchhare_console :id=aabbccdd EXTENSION install -WhatIf
 
 ## NETWORK (FR #5301) - docs contract
 
-Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isolated worker (FR-A #5298). Inventory fields (FR-B #5299): `hostname`, `ips[]`, `ou`.
+Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isolated worker (FR-A #5298). Inventory fields (FR-B #5299): `hostname`, `ips[]`, `ou` (parent-container DN, including `CN=Computers,...`; FR #5587).
 
 ```text
 PRIVMSG marchhare_console :id=aabbccdd DCCLISTEN id=aabbccdd host=127.0.0.1 port=7700 token=<hex> tls=1
