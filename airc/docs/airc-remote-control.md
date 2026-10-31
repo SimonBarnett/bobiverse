@@ -47,6 +47,7 @@ PRIVMSG marchhare_console :UPDATE airc 0.1.20
 - **Pinned `UPDATE airc x.y.z`** = that release tag only (`-TargetVersion`; API `/releases/tags/vX.Y.Z`). Invalid/mismatched pins log `target-version-mismatch` and do not install.
 - Schedules **Check** mode of `Update-BobiverseService.ps1` with `-ForceCheck` (and optional `-TargetVersion` only when pinned).
 - Detached helper (scheduled task / WMI) runs **Apply** later; the live airc process never invokes `msiexec`.
+- **FR #5277 restart:** Apply `finally` always `Ensure-ServiceRunning` so msiexec-timeout / download-failed / stop-failed / rollback still leave the service Running. Console reconnect budget **120s**. Matrix: [airc-update-restart-matrix.md](./airc-update-restart-matrix.md).
 - Reply (`UPDATE accepted status=scheduled ...` or `UPDATE skipped-pending ...`) is sent **before** the transport is stopped.
 - Assets must be `https://github.com/SimonBarnett/bobiverse/releases/download/...`; foreign URLs are rejected (`asset-url-rejected`).
 - Pending / loop-guard / rollback / sha256 mismatch behaviour is owned by the updater (same as service-start self-update).
