@@ -378,12 +378,16 @@ def mark_tokens_exhausted(
     now: float | None = None,
     announce: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """FR #5316: persist per-fuel cooldown; Copilot is 7 days. No probing until then."""
+    """FR #5316 / #5397 / #5433: persist per-fuel cooldown; keep an active until."""
     now_f = time.time() if now is None else float(now)
     name = _fuel_name(fuel)
-    until = now_f + fuel_cooldown_seconds(name)
     doc = load_allowance(home)
     already = fuel_exhausted_until(home, name)
+    # FR #5433: do not extend or re-announce while the current until is still active.
+    if already and now_f < already:
+        until = already
+    else:
+        until = now_f + fuel_cooldown_seconds(name)
     fuels = doc.get("fuels")
     if not isinstance(fuels, dict):
         fuels = {}
@@ -414,7 +418,6 @@ def mark_tokens_exhausted(
             with contextlib.suppress(Exception):
                 bobreport.enqueue_chair_fleet_privmsg(home, line)
     _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    _ = already
     return {"exhausted_until": until, "released": released, "line": line}
 
 
