@@ -55,12 +55,27 @@ def stub_network_work(
 
 
 def ou_from_dn(dn: str | None) -> str:
+    """Parent container DN (strip leaf RDN). FR #5587: keep CN=Computers etc.
+
+    Splits on the first unescaped comma (even-length backslash run before it).
+    Empty / single-RDN / no parent -> ``unknown``.
+    """
     raw = (dn or "").strip()
     if not raw:
         return "unknown"
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    kept = [p for p in parts if p[:3].upper() in {"OU=", "DC="}]
-    return ",".join(kept) if kept else "unknown"
+    i = 0
+    while i < len(raw):
+        if raw[i] == ",":
+            n = 0
+            j = i - 1
+            while j >= 0 and raw[j] == "\\":
+                n += 1
+                j -= 1
+            if n % 2 == 0:
+                parent = raw[i + 1 :].strip()
+                return parent if parent else "unknown"
+        i += 1
+    return "unknown"
 
 
 def default_ldap_enum() -> list[Any]:
