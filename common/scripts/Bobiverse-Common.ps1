@@ -3244,7 +3244,9 @@ function Get-BobiverseAircClientAllowedScriptNames {
         'airc_console_service.py',
         'airc_jobs.py',
         # FR #5288: Priority Client connect/allowlist module (in-service; client+fleet)
-        'airc_priority.py'
+        'airc_priority.py',
+        # FR #5526: native CredReadW helper (PRIORITY/LEGION/EXTENSION; no PS timeout)
+        'airc_credman.py'
     )
 }
 

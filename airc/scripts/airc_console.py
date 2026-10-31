@@ -26,7 +26,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 import json
 
 from account_map import AccountMap, parse_message_tags
@@ -2950,6 +2950,10 @@ class AircConsoleCore:
         self.priority_allowlist_path = priority_allowlist_path or priority_allowlist
         self.priority_allowlist = priority_allowlist or priority_allowlist_path
         self.priority_fixture = priority_fixture
+        # FR #5526: service binds this to _on_console_out for async PRIORITY connect.
+        self.priority_reply_send: Callable[[str, str], None] | None = None
+        self._priority_jobs_lock = threading.Lock()
+        self._priority_jobs: dict[str, dict[str, Any]] = {}
         self.extension_runner = extension_runner or _extension.run_extension_verb
         self.network_runner = network_runner or _network.run_network_verb
         self.legion_runner = legion_runner or _legion.run_legion_verb
@@ -3021,6 +3025,32 @@ class AircConsoleCore:
             reply=reply,
             deny_reason=reason,
         )
+
+    def _register_priority_job(self, job_id: str, nick: str) -> dict[str, Any]:
+        """FR #5526: track async PRIORITY connect (separate from per-nick shell inflight)."""
+        jid = (job_id or "").strip().lower()
+        entry: dict[str, Any] = {
+            "nick": nick,
+            "abandoned": False,
+            "terminal": False,
+        }
+        with self._priority_jobs_lock:
+            self._priority_jobs[jid] = entry
+        return entry
+
+    def abandon_open_priority_jobs(self) -> list[tuple[str, str]]:
+        """FR #5526: mark open PRIORITY jobs abandoned; return (nick, job_id) for stop flush."""
+        out: list[tuple[str, str]] = []
+        with self._priority_jobs_lock:
+            for jid, entry in list(self._priority_jobs.items()):
+                if entry.get("terminal") or entry.get("abandoned"):
+                    continue
+                entry["abandoned"] = True
+                nick = str(entry.get("nick") or "")
+                if nick and jid:
+                    out.append((nick, jid))
+            self._priority_jobs.clear()
+        return out
 
     def _allow_meta(self, nick: str, account: str | None) -> dict[str, str | None]:
         """FR #4067: mode/account/channel for auth-allow on shell/job/pipe/update."""
@@ -3155,6 +3185,7 @@ class AircConsoleCore:
             )
 
         # FR #5284: PRIORITY connect/status - allowlist + CredMan; never password on IRC.
+        # FR #5526: when priority_reply_send is bound, connect runs off the receive loop.
         pri = _priority.parse_priority_command(cmd)
         if pri is not None:
             if caps.shell_mode == "off":
@@ -3166,27 +3197,75 @@ class AircConsoleCore:
                     reply="DONE exit=126 shell-disabled",
                 )
             job_id, subcmd, instance_id = pri
+            qid = (job_id or "").strip().lower() or uuid.uuid4().hex[:8]
+            send_hook = getattr(self, "priority_reply_send", None)
+            use_async = (
+                subcmd == "connect"
+                and callable(send_hook)
+                and nick
+            )
+            on_done = None
+            if use_async:
+                entry = self._register_priority_job(qid, nick)
+
+                def _deliver(res: _priority.PriorityVerbResult, _entry=entry, _nick=nick) -> None:
+                    with self._priority_jobs_lock:
+                        if _entry.get("abandoned") or _entry.get("terminal"):
+                            return
+                        _entry["terminal"] = True
+                    hook = getattr(self, "priority_reply_send", None)
+                    if not callable(hook):
+                        return
+                    # _on_console_out flattens newlines — send each wire line alone.
+                    for line in res.reply_lines():
+                        try:
+                            hook(str(_nick), line)
+                        except Exception:
+                            break
+
+                on_done = _deliver
             try:
-                result = self.priority_runner(
-                    subcmd,
-                    instance_id,
-                    job_id=job_id,
-                    install_root=self.install_root,
-                    allowlist_path=self.priority_allowlist_path,
-                )
+                if use_async:
+                    result = self.priority_runner(
+                        subcmd,
+                        instance_id,
+                        job_id=qid,
+                        install_root=self.install_root,
+                        allowlist_path=self.priority_allowlist_path,
+                        wait=False,
+                        on_done=on_done,
+                    )
+                else:
+                    result = self.priority_runner(
+                        subcmd,
+                        instance_id,
+                        job_id=qid,
+                        install_root=self.install_root,
+                        allowlist_path=self.priority_allowlist_path,
+                    )
             except TypeError:
-                result = self.priority_runner(subcmd, instance_id, job_id=job_id)
+                try:
+                    result = self.priority_runner(
+                        subcmd,
+                        instance_id,
+                        job_id=qid,
+                        install_root=self.install_root,
+                        allowlist_path=self.priority_allowlist_path,
+                    )
+                except TypeError:
+                    result = self.priority_runner(subcmd, instance_id, job_id=qid)
             if not isinstance(result, _priority.PriorityVerbResult):
                 result = _priority.PriorityVerbResult(
-                    False, 1, job_id or "00000000", {"ok": False}, error="bad-priority-runner"
+                    False, 1, qid, {"ok": False}, error="bad-priority-runner"
                 )
             meta = self._allow_meta(nick, account)
+            reply = "" if getattr(result, "pending", False) else result.reply_text()
             return HandleResult(
                 action="priority",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=result.reply_text(),
+                reply=reply,
                 **meta,
             )
 

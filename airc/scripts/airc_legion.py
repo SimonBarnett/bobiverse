@@ -125,63 +125,17 @@ def read_legion_credman(
         if not user or not pw:
             raise LegionCredmanError("credman-missing")
         return {"username": user, "password": pw}
-    import subprocess
+    # FR #5526: native CredReadW (no PowerShell timeout on missing targets).
+    import airc_credman as _cred
 
-    ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
-    script = r"""
-param([Parameter(Mandatory=$true)][string]$Target)
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class LegionCredRead {
-  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
-  public struct CREDENTIAL {
-    public uint Flags; public uint Type; public string TargetName; public string Comment;
-    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
-    public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;
-    public uint AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
-  }
-  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-  public static extern bool CredRead(string target, uint type, int reserved, out IntPtr cred);
-  [DllImport("advapi32.dll", SetLastError=true)]
-  public static extern void CredFree(IntPtr cred);
-  public static string ReadPair(string target) {
-    IntPtr p;
-    if (!CredRead(target, 1, 0, out p) || p == IntPtr.Zero) return null;
-    try {
-      var c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
-      string user = c.UserName ?? "";
-      string pw = "";
-      if (c.CredentialBlob != IntPtr.Zero && c.CredentialBlobSize > 0)
-        pw = Marshal.PtrToStringUni(c.CredentialBlob, (int)c.CredentialBlobSize / 2) ?? "";
-      return "U=" + user + "\nP=" + pw;
-    } finally { CredFree(p); }
-  }
-}
-"@
-$pair = [LegionCredRead]::ReadPair($Target)
-if ($null -eq $pair) { Write-Output 'CRED_MISSING'; exit 2 }
-[Console]::Out.Write($pair)
-"""
     try:
-        p = subprocess.run(
-            [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, "-Target", target],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise LegionCredmanError(f"credman-read-failed:{type(exc).__name__}") from exc
-    out = p.stdout or ""
-    if p.returncode != 0 or out.strip() == "CRED_MISSING":
+        pair = _cred.read_generic_credential(target)
+    except _cred.CredmanError as exc:
+        raise LegionCredmanError(f"credman-read-failed:{exc.reason}") from exc
+    if pair is None:
         raise LegionCredmanError("credman-missing")
-    user, pw = "", ""
-    for line in out.splitlines():
-        if line.startswith("U="):
-            user = line[2:].strip()
-        elif line.startswith("P="):
-            pw = line[2:]
+    user = str(pair.username or "").strip()
+    pw = str(pair.password or "")
     if not user or not pw:
         raise LegionCredmanError("credman-empty")
     return {"username": user, "password": pw}

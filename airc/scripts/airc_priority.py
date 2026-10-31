@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -157,12 +158,28 @@ def fetch_credman_password(
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> str:
-    """Read a generic CredMan password for ``target``. Never log the return value."""
+    """Read a generic CredMan password for ``target``. Never log the return value.
+
+    FR #5526: default path uses native CredReadW (``airc_credman``). A supplied
+    ``runner`` keeps the legacy PowerShell path for tests/compatibility.
+    """
     t = (target or "").strip()
     if not t:
         raise PriorityConfigError("credentialTarget empty")
-    # PowerShell CredMan via CredentialManager module when present; else cmdkey is
-    # list-only. Prefer Win32 CredRead via a small PS snippet (no password print).
+    if runner is None:
+        import airc_credman as _cred
+
+        try:
+            pair = _cred.read_generic_credential(t)
+        except _cred.CredmanError as e:
+            raise PriorityConfigError(f"credman-read-failed:{e.reason}") from e
+        if pair is None:
+            raise PriorityConfigError("credman-missing")
+        if not pair.password:
+            raise PriorityConfigError("credman-empty")
+        return pair.password
+
+    # Legacy PowerShell / Add-Type path (injected runner only).
     ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
     script = r"""
 param([Parameter(Mandatory=$true)][string]$Target)
@@ -198,9 +215,8 @@ $pw = [BobCredRead]::ReadGeneric($Target)
 if ($null -eq $pw) { Write-Output 'CRED_MISSING'; exit 2 }
 [Console]::Out.Write($pw)
 """
-    run = runner or subprocess.run
     try:
-        p = run(
+        p = runner(
             [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, "-Target", t],
             capture_output=True,
             text=True,
@@ -249,8 +265,11 @@ class PriorityVerbResult:
     job_id: str
     payload: dict[str, Any]
     error: str = ""
+    pending: bool = False
 
     def reply_lines(self) -> list[str]:
+        if self.pending:
+            return []
         body = dict(self.payload)
         if self.error and "error" not in body:
             body["error"] = self.error
@@ -275,6 +294,58 @@ class PriorityVerbResult:
         return "\n".join(self.reply_lines())
 
 
+def _connect_work(
+    inst: PriorityInstance,
+    jid: str,
+    *,
+    cred_fetcher: Callable[[str], str] | None,
+    connector: ConnectFn | None,
+) -> PriorityVerbResult:
+    """CredMan fetch + connector. Never put secrets in the returned payload."""
+    fetch = cred_fetcher or fetch_credman_password
+    password = ""
+    try:
+        try:
+            password = fetch(inst.credential_target)
+        except PriorityConfigError as e:
+            return PriorityVerbResult(
+                False,
+                1,
+                jid,
+                {"ok": False, "action": "connect", "id": inst.id},
+                error=str(e),
+            )
+        conn = connector or mock_connect
+        result = conn(inst, password)
+    except Exception as exc:  # noqa: BLE001 --- isolate worker faults
+        return PriorityVerbResult(
+            False,
+            1,
+            jid,
+            {"ok": False, "action": "connect", "id": inst.id},
+            error=f"isolated-fault:{type(exc).__name__}",
+        )
+    finally:
+        password = ""  # noqa: F841 --- drop local reference
+
+    if not isinstance(result, dict):
+        return PriorityVerbResult(
+            False,
+            1,
+            jid,
+            {"ok": False, "action": "connect", "id": inst.id},
+            error="bad-connector",
+        )
+    # Strip any accidental secret keys from connector output.
+    safe = {k: v for k, v in result.items() if "pass" not in str(k).lower()}
+    ok = bool(safe.get("ok"))
+    if "action" not in safe:
+        safe["action"] = "connect"
+    for k, v in inst.public_dict().items():
+        safe.setdefault(k, v)
+    return PriorityVerbResult(ok, 0 if ok else 1, jid, safe)
+
+
 def run_priority_verb(
     subcmd: str,
     instance_id: str | None,
@@ -285,8 +356,16 @@ def run_priority_verb(
     allowlist: Mapping[str, PriorityInstance] | None = None,
     cred_fetcher: Callable[[str], str] | None = None,
     connector: ConnectFn | None = None,
+    wait: bool = True,
+    on_done: Callable[[PriorityVerbResult], Any] | None = None,
 ) -> PriorityVerbResult:
-    """Execute ``connect`` / ``status``. Passwords never enter the returned payload."""
+    """Execute ``connect`` / ``status``. Passwords never enter the returned payload.
+
+    FR #5526: when ``wait=False`` and ``on_done`` is set for ``connect``, CredMan
+    + connector run on a daemon worker thread so the IRC receive loop stays free.
+    Allowlist / status / validation stay synchronous. Default ``wait=True`` keeps
+    direct-call and mock behaviour unchanged.
+    """
     import uuid
 
     jid = (job_id or uuid.uuid4().hex[:8]).lower()
@@ -340,36 +419,33 @@ def run_priority_verb(
             False, 2, jid, {"ok": False}, error=f"unknown-subcmd:{subcmd}"
         )
 
-    fetch = cred_fetcher or fetch_credman_password
-    try:
-        password = fetch(inst.credential_target)
-    except PriorityConfigError as e:
+    # FR #5526: opt-in async connect (CredMan + connector off the IRC loop).
+    if not wait and on_done is not None:
+        done_once = threading.Lock()
+        finished = False
+
+        def _worker() -> None:
+            nonlocal finished
+            res = _connect_work(
+                inst, jid, cred_fetcher=cred_fetcher, connector=connector
+            )
+            with done_once:
+                if finished:
+                    return
+                finished = True
+            try:
+                on_done(res)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_worker, name="airc-priority-worker", daemon=True
+        ).start()
         return PriorityVerbResult(
-            False,
-            1,
-            jid,
-            {"ok": False, "action": "connect", "id": inst.id},
-            error=str(e),
+            True, 0, jid, {"ok": True, "action": "connect", "id": inst.id}, pending=True
         )
 
-    conn = connector or mock_connect
-    try:
-        result = conn(inst, password)
-    finally:
-        password = ""  # noqa: F841 --- drop local reference
-
-    if not isinstance(result, dict):
-        return PriorityVerbResult(
-            False, 1, jid, {"ok": False, "action": "connect", "id": inst.id}, error="bad-connector"
-        )
-    # Strip any accidental secret keys from connector output.
-    safe = {k: v for k, v in result.items() if "pass" not in str(k).lower()}
-    ok = bool(safe.get("ok"))
-    if "action" not in safe:
-        safe["action"] = "connect"
-    for k, v in inst.public_dict().items():
-        safe.setdefault(k, v)
-    return PriorityVerbResult(ok, 0 if ok else 1, jid, safe)
+    return _connect_work(inst, jid, cred_fetcher=cred_fetcher, connector=connector)
 
 # --- FR #5285 form walk (fixture read path) ---
 

@@ -454,6 +454,8 @@ class AircConsoleService:
                 self._on_console_out(str(nick), text)
 
         attach_verb_log_hooks(self.core, send_fn=_verb_log_send, emit_fn=_verb_log_emit)
+        # FR #5526: async PRIORITY connect delivers out/DONE via the verified out queue.
+        self.core.priority_reply_send = self._on_console_out
         self.sock: ssl.SSLSocket | socket.socket | None = None
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
@@ -598,6 +600,14 @@ class AircConsoleService:
             info(f"INFO stop-flush-runner-err {e}")
         for nick, jid in self.shell_inflight().items():
             jobs[(nick, jid)] = None
+        # FR #5526: PRIORITY connect in-flight (job-id keyed; not per-nick shell).
+        try:
+            abandon = getattr(self.core, "abandon_open_priority_jobs", None)
+            if callable(abandon):
+                for nick, jid in abandon():
+                    jobs[(nick, jid)] = None
+        except Exception as e:
+            info(f"INFO stop-flush-priority-err {e}")
         for nick, jid in list(jobs.keys()):
             self._out_q.put((nick, f"err id={jid} seq=1 {safe_reason}"))
             self._out_q.put((nick, f"DONE id={jid} exit=1"))
@@ -1568,6 +1578,7 @@ class AircConsoleService:
             # FR #5284: PRIORITY may emit out id= + DONE id= on separate lines.
             # FR #5518: NETWORK / EXTENSION / LEGION accepted+DONE must reach IRC
             # (Invoke-AircRemote waits on DONE; DCC payload alone is not enough).
+            # FR #5526: pending async PRIORITY connect returns reply="" — skip blank PRIVMSG.
             for part in str(hr.reply).splitlines():
                 line = part.strip()
                 if line:
