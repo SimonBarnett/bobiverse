@@ -112,7 +112,7 @@ See `docs/airc-remote-control.md` and `docs/feature-request-airc-extension-prior
 
 ## NETWORK diagnostic (FR #5301)
 
-Authorized **UPDATE-class** verb. Isolated worker (never LDAP/DNS/sweep on the IRC receive thread). Inventory contract: `hostname`, `ips[]`, `ou` (from AD `distinguishedName` when present). Runtime inventory is FR-B (#5299); this book is the wire/docs contract.
+Authorized **UPDATE-class** verb. Isolated worker (never LDAP/DNS/sweep on the IRC receive thread). Inventory contract: `hostname`, `ips[]`, `ou` (parent-container DN from AD `distinguishedName`; FR #5587). Runtime inventory is FR-B (#5299); this book is the wire/docs contract.
 
 ```text
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
