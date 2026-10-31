@@ -29,7 +29,7 @@ assigns only.
 ## Fuel (do not re-reason)
 
 Before the driver starts a worker, the number comes from the **live digest
-webhook** (`bob-token-handoff`, `https://irc.ntsa.uk/bob/v1/report`
+webhook** (`bob-token-handoff`, `https://bob.ntsa.uk/bob/v1/report`
 `pcent.cursor-models`). Do not invent it. MarchHare has no Cursor login.
 
 - Cursor Models remaining > 0 -> `cursor-models`, else grok.exe (`grok-build`).

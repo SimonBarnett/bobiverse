@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Builds ONE harvest payload (kind=harvest, repo = -Repo / job repo / lesson owner; never a silent bobiverse default) from -Summary / -Lesson /
-  optional -SkillFile contents and POSTs it to https://irc.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4986: skip/empty/(no new playbook) Lesson never opens a tip. FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). FR #4917: FIX/MRB/re-DONE on lesson or docs/mrb pin PRs skip tip filing (PR metadata + job kind); source.version stamps HARVEST_SCRIPT_VERSION. Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
+  optional -SkillFile contents and POSTs it to https://bob.ntsa.uk/bob/v1/intake. FR #4288: -ExistingPrUrl (or a pull URL in Summary/Lesson) fail-closes tip filing (linked; no second lesson PR). FR #4986: skip/empty/(no new playbook) Lesson never opens a tip. FR #4780: MRB/review of a harvest-lesson tip must not open another lesson tip (lesson-review meta + 24h dedup). FR #4917: FIX/MRB/re-DONE on lesson or docs/mrb pin PRs skip tip filing (PR metadata + job kind); source.version stamps HARVEST_SCRIPT_VERSION. Product -Repo harvest-agent-skills without ExistingPrUrl stays (FR #3189). No password or token is needed.
   Offline or failing POSTs are written to harvest-outbox/ and resent by -Flush (same idempotency_key, so retries
   never duplicate). Refuses to send anything that looks like a secret. Prints a receipt (intake id) or the queue file.
 
@@ -27,7 +27,7 @@ param(
     [string]$JobRepo = '',  # FR #3189: offered job owner/name (or BOB_JOB_REPO / run\job-repo.txt)
     [string]$ExistingPrUrl = '',  # FR #1812: when set / already in Summary, intake links PR (no fallback skill issue)
     [string]$Book = 'harvest',  # FR #2705: sets source.skill_book for lesson -> SKILL.md routing
-    [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
+    [string]$IntakeUrl = 'https://bob.ntsa.uk/bob/v1/intake',
     [string]$Machine = '',
     [string]$OutboxDir = '',
     [switch]$Flush,

@@ -247,7 +247,7 @@ flowchart TD
 
 ## License / ownership
 
-Public product under SimonBarnett. Plan seat created this repo with Bob GIT webhook `https://irc.ntsa.uk/bob/v1/git`.
+Public product under SimonBarnett. Plan seat created this repo with Bob GIT webhook `https://bob.ntsa.uk/bob/v1/git`.
 
 ## Machine capability (bobiverse#168)
 

@@ -32,7 +32,7 @@ Picker selected `cursor-models`, `Start-BobBuild -Task git -Fuel cursor-models`,
 
 ## Digest fuel gate (before start)
 
-Follow `bob-token-handoff` first. GET `https://irc.ntsa.uk/bob/v1/report` and read `pcent.cursor-models`.
+Follow `bob-token-handoff` first. GET `https://bob.ntsa.uk/bob/v1/report` and read `pcent.cursor-models`.
 
 - Remaining > 0: start this script.
 - Remaining 0 or the key is missing: do not start cursor-agent. Fall through to grok-build. Do not invent a percent. MarchHare has no Cursor login; do not treat a local Cursor miss there as "empty" without the digest.

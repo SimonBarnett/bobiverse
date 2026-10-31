@@ -20,7 +20,7 @@ No Jira license is required on the customer's side for this: the **Send web requ
 
 Simon provides the full HTTPS URL. Typical forms:
 
-- `https://irc.ntsa.uk/bob/v1/jira` — public endpoint behind IIS on Simon's host
+- `https://bob.ntsa.uk/bob/v1/jira` — public endpoint behind IIS on Simon's host
 
 The path is `/bob/v1/jira`. Method: **POST**. Content-Type: `application/json`.
 

@@ -3,7 +3,7 @@
 
 Public IIS front-door GET is **/bob/v1/report** only (FR #149 / FR #354). Local bobcallback
 also serves `/bob/v1/digest` and `/digest` with the same JSON body; those aliases are not
-published through the irc.ntsa.uk IIS rewrite today (GET https://irc.ntsa.uk/bob/v1/digest -> 404).
+published through the bob.ntsa.uk IIS rewrite today (GET https://bob.ntsa.uk/bob/v1/digest -> 404).
 
 Durable POST envelopes go through webhook_queue; chair announces on #bobiverse.
 

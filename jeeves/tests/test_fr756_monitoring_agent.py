@@ -72,7 +72,7 @@ CAST_IRON = "CAST IRON RULE - HARVEST AND FILE EVERYTHING"
 HARVEST_MARKS = (
     "Invoke-BobiverseHarvest.ps1",
     "Report-BobiverseIntakeIssue.ps1",
-    "https://irc.ntsa.uk/bob/v1/intake",
+    "https://bob.ntsa.uk/bob/v1/intake",
 )
 
 REQUIRED_SKILL_BOOKS = (

@@ -13,7 +13,7 @@ github: https://github.com/SimonBarnett/bobiverse
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    Prefer `.\common\scripts\Report-BobiverseIntakeIssue.ps1` when present (FR #4297); else `.\scripts\Report-BobiverseIntakeIssue.ps1`.
 >    `.\common\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
@@ -93,7 +93,7 @@ flowchart TD
    cannot be opened, file a `harvest:` issue with the intended PR title, branch,
    file list and body in this turn.
 2. **No `gh`, or not authenticated** → POST to the Bob webhook intake
-   `https://irc.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
+   `https://bob.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
    service files it with label `via-intake`. Send an `idempotency_key` so
    retries never duplicate. Missing/empty `kind` defaults to `issue`.
 3. **Offline / intake unreachable** → write the JSON payload to a local
@@ -129,7 +129,7 @@ requirement. Never commit secrets.
 curl:
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
   -H "Content-Type: application/json" \
   -d @harvest.json
 ```
@@ -170,7 +170,7 @@ PowerShell:
 # (Summary drift / DONE retries must not mint a second tip). Intake claims state=filing early,
 # settles filing/open_lesson_twin, and links open seat+lesson twins instead of opening #3823.
 # or:
-Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
+Invoke-RestMethod -Method Post -Uri 'https://bob.ntsa.uk/bob/v1/intake' `
   -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
 ```
 

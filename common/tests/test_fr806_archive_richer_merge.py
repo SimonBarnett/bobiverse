@@ -18,7 +18,7 @@ def test_harvest_skill_cast_iron_and_intake_commands():
     assert "CAST IRON" in text
     assert "Report-BobiverseIntakeIssue.ps1" in text
     assert "Invoke-BobiverseHarvest.ps1" in text
-    assert "POST https://irc.ntsa.uk/bob/v1/intake" in text
+    assert "POST https://bob.ntsa.uk/bob/v1/intake" in text
     assert "SimonBarnett/bobiverse" in text
     # archived homes must not be live intake targets
     assert "github: https://github.com/SimonBarnett/agentic_build" not in text

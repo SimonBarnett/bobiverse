@@ -15,7 +15,7 @@ One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, clos
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -85,7 +85,7 @@ Shop wire (workers in `#{machine}` only): `!bored` -> assign -> `ACK` -> work ->
 
 ## Digest + worker status
 
-`GET https://irc.ntsa.uk/bob/v1/report` (and local digest home): machine online/lastSeen, workers idle/offered/doing, `working_on`, queue counts. Stale digest / missing worker rows / START tiles stuck -> intake FR after de-dup.
+`GET https://bob.ntsa.uk/bob/v1/report` (and local digest home): machine online/lastSeen, workers idle/offered/doing, `working_on`, queue counts. Stale digest / missing worker rows / START tiles stuck -> intake FR after de-dup.
 
 ## IRC direction rules
 

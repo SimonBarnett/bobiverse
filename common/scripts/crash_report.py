@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 DEFAULT_REPO = "SimonBarnett/bobiverse"
-DEFAULT_INTAKE = "https://irc.ntsa.uk/bob/v1/intake"
+DEFAULT_INTAKE = "https://bob.ntsa.uk/bob/v1/intake"
 _SIG_RE = re.compile(r"crash-sig:([0-9a-f]{8,64})", re.I)
 # FR #2668: Bearer/Basic must consume the token after the scheme (old KV rule left it).
 _AUTH_SCHEME_RE = re.compile(
@@ -457,7 +457,14 @@ def _post_intake(title: str, body: str, *, repo: str, sig: str, exe: str) -> dic
     if not policy.send:
         raise RuntimeError("crash-report disabled")
     raw_url = (os.environ.get("BOB_INTAKE_URL") or "").strip()
-    url = raw_url or DEFAULT_INTAKE
+    if raw_url:
+        url = raw_url
+    else:
+        try:
+            import bob_public_base as _bpb
+            url = _bpb.default_intake_url()
+        except ImportError:  # pragma: no cover
+            url = DEFAULT_INTAKE
     # FR #5050 / #4963: dedupe_key comments/reopens; idempotency_key is retry-only.
     dkey = str(sig or "").strip()[:128]
     payload = {

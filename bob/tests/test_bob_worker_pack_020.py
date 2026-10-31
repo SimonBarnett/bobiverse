@@ -16,7 +16,7 @@ TRAY = ROOT / "third_party" / "bob-tray" / "tools" / "Watch-BobTray.ps1"
 SK = ROOT / ".grok" / "skills"
 WIN = pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="needs Windows PowerShell")
 RULE = ("CAST IRON RULE - HARVEST AND FILE EVERYTHING", "Report-BobiverseIntakeIssue.ps1", "Invoke-BobiverseHarvest.ps1",
-        "https://irc.ntsa.uk/bob/v1/intake", "-Repo SimonBarnett/bobiverse")
+        "https://bob.ntsa.uk/bob/v1/intake", "-Repo SimonBarnett/bobiverse")
 RESUME_RX = re.compile(r"(?i)(--resume|--continue|-r\b|--session\b|--chat\b)")
 JOB_SKILLS = ("bobiverse-bob-job-irc", "bobiverse-bob-job-fr", "bobiverse-bob-job-mrb", "bobiverse-bob-job-uat")
 DUPLICATE_RULE = ("One issue per issue: when MRB (or any worker) finds a twin/duplicate issue, "
@@ -334,7 +334,7 @@ def test_bob_book_start_guides_cover_every_required_topic(book):
     assert re.search(r"(?i)never.{0,80}(resume|continue|attach)", t)
     assert not re.search(r"(?i)(xai-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|password\s*[:=]\s*[A-Za-z0-9]{6,})", t)
     for h in re.findall(r"https?://([A-Za-z0-9.-]+)", t):
-        assert h.lower() in {"irc.ntsa.uk", "github.com", "api.github.com", "cursor.com", "raw.githubusercontent.com"}, h
+        assert h.lower() in {"irc.ntsa.uk", "bob.ntsa.uk", "github.com", "api.github.com", "cursor.com", "raw.githubusercontent.com"}, h
 
 
 def test_bob_agents_md_points_at_the_new_guides():

@@ -19,7 +19,7 @@ the MRB. Follow this order. Do not re-reason it from chat memory.
 
 ## 1. Fuel number from the live digest
 
-GET `https://irc.ntsa.uk/bob/v1/report` (`bob-digest-webhook` checklist).
+GET `https://bob.ntsa.uk/bob/v1/report` (`bob-digest-webhook` checklist).
 Use `pcent.cursor-models` (auto / low cost models remaining).
 
 - Missing key: unknown. Do not invent `0` and do not invent a positive percent.

@@ -2,7 +2,7 @@
 ---
 name: bob-digest-webhook
 description: >
-  Fleet digest at https://irc.ntsa.uk/bob/v1/report: shape, who POSTs pcent,
+  Fleet digest at https://bob.ntsa.uk/bob/v1/report: shape, who POSTs pcent,
   who consumes cursor_pools, and the accuracy checklist. Use when the user
   says digest webhook, reportUrl, pcent, cursor_pools, TipForm n/a,
   MarchHare Cursor, fingerprint, _digest-webhook-posted.json, or
@@ -21,13 +21,13 @@ recipe. Do not re-derive the URL or the group map.
 
 | | |
 |---|---|
-| URL | `https://irc.ntsa.uk/bob/v1/report` |
+| URL | `https://bob.ntsa.uk/bob/v1/report` |
 | Config | `config/bobiverse.json` `reportUrl` (same string) |
-| GET | `Get-BobDigestUrl` (FR #354). Env: `AGENTIC_IRC_DIGEST_URL`, then `BOB_DIGEST_URL`. Else `config/bobiverse.json` `digestUrl` or `reportUrl`. Hard default: `https://irc.ntsa.uk/bob/v1/report`. Never `http://bob.ntsa.uk/bob/v1/digest` (does not resolve; IIS has no `/digest`). |
+| GET | `Get-BobDigestUrl` (FR #354). Env: `AGENTIC_IRC_DIGEST_URL`, then `BOB_DIGEST_URL`. Else `config/bobiverse.json` `digestUrl` or `reportUrl`. Hard default: `https://bob.ntsa.uk/bob/v1/report`. Never `http://bob.ntsa.uk/bob/v1/digest` (does not resolve; IIS has no `/digest`). |
 | POST | `Get-BobDigestReportUrl`: `reportUrl`, else `BOB_REPORT_URL`, else `AGENTIC_IRC_REPORT_URL`. |
 | Auth | Header `X-Bob-Secret` from `BOB_REPORT_SECRET` or `~\.grok\bob\report.secret`. Never git, never the JSON body. |
 | Verb | POST `op=merge` on a real peer delta (`Send-BobDigestWebhookIfChanged`). GET is read-only for TipForm / fuel. Do not HTTP GET as the publish path. |
-| Git hook | `https://irc.ntsa.uk/bob/v1/git` is a different URL (`setup-github-webhooks`). Do not POST digest merges there. |
+| Git hook | `https://bob.ntsa.uk/bob/v1/git` is a different URL (`setup-github-webhooks`). Do not POST digest merges there. |
 
 Cache: `Read-BobReportDigestHttp` holds the GET for 60 seconds.
 
@@ -110,11 +110,11 @@ machines.<id>.task | jobs | weekly | running | queued | uptime_since
 Run this before trusting a bar or a fuel pick. Do not type a percent the JSON does not contain.
 
 ```
-curl -fsS https://irc.ntsa.uk/bob/v1/report
+curl -fsS https://bob.ntsa.uk/bob/v1/report
 ```
 
 1. HTTP 200 and JSON. If it fails, do not fall back to `http://bob.ntsa.uk/bob/v1/digest`.
-2. `reportUrl` in `config/bobiverse.json` is exactly `https://irc.ntsa.uk/bob/v1/report`.
+2. `reportUrl` in `config/bobiverse.json` is exactly `https://bob.ntsa.uk/bob/v1/report`.
 3. Each online builder that has a Cursor login has a `pcent` object. MarchHare may omit Cursor keys; that is not a license to invent them.
 4. Keys you act on: `cursor-models` (auto / low cost models), `high-cost-models`, `grok-chat`. `on-demand` may be present and is not a bar.
 5. `cursor_pools` rows must carry distinct `period_end` (grok-chat = Sand weekly / `sand_period_end`; high/auto = billing / `cursor_period_end`). Empty `cursor_pools: []` means peers cannot paint correct resets (issue #456).

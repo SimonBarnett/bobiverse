@@ -31,7 +31,7 @@ flowchart LR
 *Caption: find the first hop where the event disappears.*
 
 1. **Hook delivery:** repo Settings → Webhooks → Recent Deliveries. The hook
-   posts `issues`, `pull_request`, `push` as JSON to `https://irc.ntsa.uk/bob/v1/git`.
+   posts `issues`, `pull_request`, `push` as JSON to `https://bob.ntsa.uk/bob/v1/git`.
    Redeliver if it failed.
 2. **Receiver / secret filter:** scan **only** secret-bearing fields, not the
    whole payload — titles that merely *discuss* `ghp_` must still announce (#206 / FR #15).

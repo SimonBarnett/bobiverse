@@ -16,7 +16,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/skills-visionary -Kind harvest -Title "short title" -Body "what / where / evidence / fix"`
 >    (FR #3318: Plan process → skills-visionary; product decisions → `-Repo SimonBarnett/<product>`; never bobiverse harvest for those).
@@ -113,7 +113,7 @@ Self-contained git setup harvested into this pack (do **not** require
 installing all of `agentic_build`):
 
 1. `plan-create-repo` — public `gh repo create` under SimonBarnett.
-2. `plan-bob-webhooks` — GitHub → `https://irc.ntsa.uk/bob/v1/git`
+2. `plan-bob-webhooks` — GitHub → `https://bob.ntsa.uk/bob/v1/git`
    (never `/bob/v1/report`; that digest URL is documented only).
 3. `plan-enable-prs` — forking on, no blocking ruleset, Cursor GitHub
    App All repositories so `cursor[bot]` can push/PR.

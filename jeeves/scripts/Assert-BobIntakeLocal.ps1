@@ -3,13 +3,13 @@
 .SYNOPSIS
   Smoke: POST /bob/v1/intake locally and via public ARR; expect HTTP 202 (FR #1014).
 .DESCRIPTION
-  IIS ARR on irc.ntsa.uk rewrites /bob/v1/intake to 127.0.0.1:7700. When BobCallback is down,
+  IIS ARR on bob.ntsa.uk rewrites /bob/v1/intake to 127.0.0.1:7700. When BobCallback is down,
   ARR returns 502.3 (0x80072efd). This assert proves the upstream is up and the rewrite works.
 #>
 [CmdletBinding()]
 param(
     [string]$LocalBase = 'http://127.0.0.1:7700',
-    [string]$PublicBase = 'https://irc.ntsa.uk',
+    [string]$PublicBase = 'https://bob.ntsa.uk',
     [switch]$SkipPublic
 )
 

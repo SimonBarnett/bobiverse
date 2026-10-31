@@ -48,7 +48,7 @@ flowchart TD
    - `event=resync` phase start/end with counts
 3. **Presence:** nick `Jeeves` is in `#bobiverse` (op) and silently in every
    `#{machine}` (confirm via log joins + IRC if needed).
-4. **Digest lastSeen:** `GET https://irc.ntsa.uk/bob/v1/report` — Jeeves /
+4. **Digest lastSeen:** `GET https://bob.ntsa.uk/bob/v1/report` — Jeeves /
    machine `lastSeen` is fresh.
 5. **Version drift:** running version equals the latest gh-Jeeves release tag
    (`jeeves-release` / `JEEVES_RELEASE_TAG`).

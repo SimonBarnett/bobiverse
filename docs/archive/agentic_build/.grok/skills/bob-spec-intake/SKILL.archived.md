@@ -69,7 +69,7 @@ Every new repo under `SimonBarnett` (this intake or any other create):
    protect `main` so that only collaborators can open PRs. A GitHub user
    forks the repo and opens a PR. No extra permission step.
 2. **Git webhook, same turn.** Skill `setup-github-webhooks`. Skip if
-   `https://irc.ntsa.uk/bob/v1/git` is already on the repo. Do not point
+   `https://bob.ntsa.uk/bob/v1/git` is already on the repo. Do not point
    GitHub at `/bob/v1/report`. No hook secret in git, issues, or channel.
    Leave other hooks (Amplify and the rest) in place.
 3. **Cursor GitHub App, same turn.** Skill `setup-github-cursor`. Cursor
@@ -87,7 +87,7 @@ Write `hook.json` UTF-8 **without BOM** (PowerShell `ConvertTo-Json` adds a
 BOM and GitHub returns 400):
 
 ```json
-{"name":"web","active":true,"events":["push","pull_request","issues"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
+{"name":"web","active":true,"events":["push","pull_request","issues"],"config":{"url":"https://bob.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
 ```
 
 ```powershell

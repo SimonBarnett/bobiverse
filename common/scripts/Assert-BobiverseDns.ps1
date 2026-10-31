@@ -23,7 +23,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$RequiredHosts = @('github.com', 'api.github.com', 'irc.ntsa.uk'),
+    [string[]]$RequiredHosts = @('github.com', 'api.github.com', 'irc.ntsa.uk', 'bob.ntsa.uk'),
     [string[]]$PreferredPublicDns = @('8.8.8.8', '1.1.1.1'),
     [switch]$RepairDnsServers,
     [switch]$ClearStaleHostsPins,

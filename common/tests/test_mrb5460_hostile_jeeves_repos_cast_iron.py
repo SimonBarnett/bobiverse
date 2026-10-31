@@ -8,7 +8,7 @@ MARKERS = (
     "CAST IRON RULE - HARVEST AND FILE EVERYTHING",
     "Report-BobiverseIntakeIssue.ps1",
     "Invoke-BobiverseHarvest.ps1",
-    "https://irc.ntsa.uk/bob/v1/intake",
+    "https://bob.ntsa.uk/bob/v1/intake",
     "-Repo SimonBarnett/bobiverse",
 )
 

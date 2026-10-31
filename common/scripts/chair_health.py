@@ -47,7 +47,11 @@ FIRST_PROBE_DELAY_S = 45.0
 STATE_NAME = "webhook-health.json"
 TOKEN_SOURCE_LOG = "resync-token-source.log"
 LOCAL_BASE = "http://127.0.0.1:7700"
-PUBLIC_BASE = "https://irc.ntsa.uk"
+try:
+    import bob_public_base as _bpb
+    PUBLIC_BASE = _bpb.DEFAULT_PUBLIC_BASE
+except ImportError:  # pragma: no cover - flat install without helper
+    PUBLIC_BASE = "https://bob.ntsa.uk"
 PROBE_ZEN = "jeeves-health-probe"          # bobcallback acks this ping quietly (no queue, no announce)
 PROBE_REPO = "SimonBarnett/bobiverse"
 MAX_REPOS = 60
@@ -74,9 +78,14 @@ CHECKS = (
 
 
 def targets() -> dict[str, str]:
+    public = (
+        os.environ.get("JEEVES_PROBE_PUBLIC")
+        or os.environ.get("BOB_PUBLIC_BASE")
+        or PUBLIC_BASE
+    )
     return {
         "local": (os.environ.get("JEEVES_PROBE_LOCAL") or LOCAL_BASE).rstrip("/"),
-        "public": (os.environ.get("JEEVES_PROBE_PUBLIC") or PUBLIC_BASE).rstrip("/"),
+        "public": public.strip().rstrip("/"),
     }
 
 

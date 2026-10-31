@@ -135,7 +135,7 @@ if (-not $allow) {
 
 $url = $IntakeUrl
 if (-not $url) { $url = [string]$env:BOB_INTAKE_URL }
-if (-not $url) { $url = 'https://irc.ntsa.uk/bob/v1/intake' }
+if (-not $url) { $url = 'https://bob.ntsa.uk/bob/v1/intake' }
 
 $title = Redact-Fr3685CrashText -Text ('airc install: Install-Airc.cmd failed exit={0} profile={1}' -f $ExitCode, $Profile)
 $payload = @{

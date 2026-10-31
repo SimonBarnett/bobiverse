@@ -41,7 +41,7 @@ Each fleet box has a **shop** room `#<machine-id>` (`#flamingo`, `#marchhare`, `
 
 Jeeves is the only nick that says `GIT` on `#bobiverse`. `bob-*` does not auto-claim those lines. When a `w-*` ear has been idle for more than 2 minutes, `Watch-Bobiverse` appends `PRIVMSG #<shop> :!BORED` to **that worker's** `outbox.txt` (not the builder outbox, not the chair outbox). Jeeves returns only the top not-yet-accepted row as `!TASK {repo} {task} {#id}` and marks it accepted in that step. The worker does not say `!ACCEPT`. It runs `Start-BobBuild` and posts `working_on` as `{agent} {model} {task} {repo}{#id}` to the digest webhook, then clears `working_on` when the job leaves inbox/running.
 
-Not-yet-accepted rows are `git_unaccepted.items` on `https://irc.ntsa.uk/bob/v1/report` (`repo`, `task` `PR`|`MRB`, `id` `#n`, `seq`). This repo reads that document and does not write it. Do not merge until agentic_irc #197 follow-up uses the same object and the same `!TASK` accept step. Skill `bob-git-accept`.
+Not-yet-accepted rows are `git_unaccepted.items` on `https://bob.ntsa.uk/bob/v1/report` (`repo`, `task` `PR`|`MRB`, `id` `#n`, `seq`). This repo reads that document and does not write it. Do not merge until agentic_irc #197 follow-up uses the same object and the same `!TASK` accept step. Skill `bob-git-accept`.
 
 After this lands on `main`, recycle **Watch-Bobiverse** on each box so the poller loads the shop tick. Recycle Jeeves only with the agentic_irc chair-queue change.
 

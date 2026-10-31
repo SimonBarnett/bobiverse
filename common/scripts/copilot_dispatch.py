@@ -26,7 +26,7 @@ import shop_listen
 log = logging.getLogger("copilot_dispatch")
 
 COPILOT_NICK = "copilot"
-GIT_HOOK_URL = "https://irc.ntsa.uk/bob/v1/git"
+GIT_HOOK_URL = "https://bob.ntsa.uk/bob/v1/git"
 REQUIRED_HOOK_EVENTS = (
     "issues",
     "issue_comment",

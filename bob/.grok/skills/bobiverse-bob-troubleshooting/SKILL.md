@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -41,8 +41,8 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 | Seat-wrapper kill removed a diagnosing shell | Never `match Watch-BobTray` broadly; the filter is `-File ...Watch-BobTray.ps1`. |
 | Ear joins then quits in seconds (NSSM restarts) | **FR #5196:** leftover `agent.quit.request` from a previous stop. The ear now ignores/deletes files written before process start or older than 90s. Delete the file under the ear home and restart `ircBob`. If NSSM event 1030 says AppDirectory unset, re-run `Install-Bob.ps1` (always sets AppDirectory to `InstallRoot\scripts`). |
 | Service shows old code after MSI | NSSM path/params stale - re-run `Install-Bob.ps1`; check `<ai root>\bob\VERSION`. |
-| Digest POST fails | Machine not on the roster Jeeves publishes, or `reportUrl` unreachable. `Assert-BobDigestWebhookLocal.ps1`; `GET https://irc.ntsa.uk/bob/v1/report` should be 200. |
-| `GET https://irc.ntsa.uk/bob/v1/digest` returns 404 | Expected on the public IIS front-door (FR #149). Public digest JSON is `GET https://irc.ntsa.uk/bob/v1/report`. Local bobcallback on `:7700` still answers `/bob/v1/digest` and `/digest` with the same body. |
+| Digest POST fails | Machine not on the roster Jeeves publishes, or `reportUrl` unreachable. `Assert-BobDigestWebhookLocal.ps1`; `GET https://bob.ntsa.uk/bob/v1/report` should be 200. |
+| `GET https://bob.ntsa.uk/bob/v1/digest` returns 404 | Expected on the public IIS front-door (FR #149). Public digest JSON is `GET https://bob.ntsa.uk/bob/v1/report`. Local bobcallback on `:7700` still answers `/bob/v1/digest` and `/digest` with the same body. |
 | Need to check NSSM env (e.g. `BOBIVERSE_NO_UPDATE`) | Do **not** run `nssm get ircBob AppEnvironmentExtra` and print the raw block - it includes `AGENTIC_IRC_PASSWORD` (FR #147). Print key names only (split on first `=`). See `bobiverse-fleet-ops` hotpatch rule. |
 | `!startworker` NACKs `nobody is logged in` while `InstallRoot\run\startworker\tray.alive` is fresh | Frozen `bob-ear.exe` resolved install root via `Path(__file__).parent.parent` under `_MEIPASS` (often `C:\Windows\Temp\_MEI*`), so the ear looked for `Temp\run\startworker` (FR #2666 / PR #2671). Confirm `Start-Bob.ps1` exports `BOB_INSTALL_ROOT=$InstallRoot` before launch; restart `ircBob` so the env is picked up. Full frozen-aware resolve needs a rebuilt `bob-ear.exe` (`resolve_bob_install_root` / `--install-root`). Do not treat a fresh tray.alive under InstallRoot as proof the ear sees it until the root is correct. |
 | `!startworker` NACKs `engine_stale` / queue stalled while `tray.alive` is fresh (UI thread spinning, log quiet) (FR #4136) | Hung-but-alive PS engine: `bob-tray.exe` HealEngine only used to restart exited engines. Tip: engine writes `engine.alive` after each startworker queue tick; HealEngine kills the engine tree when that stamp is stale (>120s) and restarts; `tray.alive` carries `engine_last_tick`; ear NACKs `engine_stale` when tray.alive is fresh but engine.alive is not. Rebuild `bob-tray.exe` + hotpatch `Watch-BobTray.ps1` / tip ear. Does not fix the UI-thread spin root cause. |
