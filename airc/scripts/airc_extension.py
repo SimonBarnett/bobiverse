@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,8 +206,12 @@ def extension_gpo_then_fill_holes(
 
 
 def service_extension_runner(**kw: Any) -> ExtensionVerbResult:
-    """Production: GPO then fill-holes, wait for structured payload."""
-    return run_extension_verb(worker=extension_gpo_then_fill_holes, wait=True, **kw)
+    """Production: GPO then fill-holes, isolated (FR #5291 / parent S4).
+
+    Do not wait on the handler --- that blocks IRC receive for nltest/GPO.
+    Structured gpo=ok/fail belongs on the DCC/CONT log (FR #5293), not the accept line.
+    """
+    return run_extension_verb(worker=extension_gpo_then_fill_holes, wait=False, **kw)
 
 def stub_extension_work(
     action: str,
