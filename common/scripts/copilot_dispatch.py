@@ -37,6 +37,8 @@ ALLOWANCE_NAME = "copilot-allowance.json"
 JOBS_NAME = "copilot-jobs.json"
 TASK_TIMEOUT_S = 4 * 3600.0
 CACHE_S = 300.0
+COPILOT_COOLDOWN_S = 7 * 86400.0
+FUEL_COOLDOWN_S = {"copilot": COPILOT_COOLDOWN_S}
 COPILOT_USER_PATH = "copilot_internal/user"
 FALLBACK_REASONS = frozenset(
     {"startup", "webhook_gap", "delivery_failure", "safety_interval", "operator"}
@@ -75,10 +77,16 @@ def set_allowance(home: Path, remaining: int | None = None, exhausted: bool | No
         if int(remaining) > 0:
             doc["tasks_exhausted"] = False
             doc["state"] = "ok"
+            doc.pop("exhausted_until", None)
+            doc.pop("exhausted_until_utc", None)
+            doc.pop("pause_announced_until", None)
     if exhausted is not None:
         doc["exhausted"] = bool(exhausted)
         if not exhausted:
             doc["tasks_exhausted"] = False
+            doc.pop("exhausted_until", None)
+            doc.pop("exhausted_until_utc", None)
+            doc.pop("pause_announced_until", None)
     Path(home).mkdir(parents=True, exist_ok=True)
     _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
@@ -171,8 +179,21 @@ def allowance_from_pool(doc: dict) -> bool:
     return False
 
 
-def has_allowance(home: Path) -> bool:
+def fuel_cooldown_seconds(fuel: str = "copilot") -> float:
+    return float(FUEL_COOLDOWN_S.get((fuel or "copilot").strip().lower(), COPILOT_COOLDOWN_S))
+
+
+def cooldown_active(home: Path, *, now: float | None = None, fuel: str = "copilot") -> bool:
+    _ = fuel
+    now_f = time.time() if now is None else float(now)
+    until = _num(load_allowance(home).get("exhausted_until"))
+    return until is not None and now_f < until
+
+
+def has_allowance(home: Path, *, now: float | None = None) -> bool:
     """Live cache / last read. No cache means off (do not steal IRC jobs). Unknown means off (FR #5174 fail closed)."""
+    if cooldown_active(home, now=now):
+        return False
     doc = load_allowance(home)
     if not doc:
         return False
@@ -195,6 +216,8 @@ def refresh_allowance(
 ) -> dict:
     """Read GET /copilot_internal/user (5 min cache). Parse failure -> unknown."""
     now_f = time.time() if now is None else float(now)
+    if cooldown_active(home, now=now_f):
+        return load_allowance(home)
     doc = load_allowance(home)
     fetched = _num(doc.get("fetched_epoch"))
     if fetched is not None and (now_f - fetched) < CACHE_S and doc.get("state"):
@@ -220,10 +243,16 @@ def refresh_allowance(
     if pool.get("state") == "ok":
         pool["tasks_exhausted"] = False
         pool["exhausted"] = False
+        pool.pop("exhausted_until", None)
+        pool.pop("exhausted_until_utc", None)
+        pool.pop("pause_announced_until", None)
     Path(home).mkdir(parents=True, exist_ok=True)
     merged = dict(doc)
     merged.update(pool)
     _allow_path(home).write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    if merged.get("state") == "exhausted":
+        mark_tokens_exhausted(home, now=now_f)
+        return load_allowance(home)
     return merged
 
 
@@ -239,6 +268,7 @@ def pool_for_digest(home: Path) -> dict:
         "source": doc.get("source") or "copilot_internal/user",
         "fetched_at": doc.get("fetched_at") or "",
         "state": doc.get("state") or "unknown",
+        "resume_at": doc.get("exhausted_until_utc") or "",
     }
 
 
@@ -253,17 +283,90 @@ def is_exhausted(resp: dict | None) -> bool:
         return True
     if "allowance exhausted" in msg or "quota exceeded" in msg:
         return True
+    if "out of tokens" in msg or "no tokens" in msg or "token quota" in msg:
+        return True
     return False
 
 
-def record_api_result(home: Path, resp: dict | None) -> None:
+def _utc_iso(epoch: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def release_held_copilot_rows(home: Path) -> int:
+    """Return Copilot-accepted rows to unaccepted for other fuel (no giveup_seats)."""
+    n = 0
+    try:
+        with gitclaim._lock(home):
+            doc = gitclaim._load_queue_unlocked(home)
+            acc = doc.get("accepted") or []
+            keep = []
+            un = doc.setdefault("unaccepted", [])
+            for r in acc:
+                if str(r.get("nick") or "").strip().lower() == COPILOT_NICK:
+                    moved = dict(r)
+                    moved.pop("nick", None)
+                    moved.pop("accepted_ts", None)
+                    if not any(
+                        str(u.get("repo")) == str(moved.get("repo"))
+                        and str(u.get("id")) == str(moved.get("id"))
+                        and str(u.get("task") or "").upper()
+                        == str(moved.get("task") or "").upper()
+                        for u in un
+                    ):
+                        un.append(moved)
+                    n += 1
+                else:
+                    keep.append(r)
+            doc["accepted"] = keep
+            gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    except (TimeoutError, OSError, ValueError):
+        return n
+    return n
+
+
+def mark_tokens_exhausted(
+    home: Path,
+    *,
+    fuel: str = "copilot",
+    now: float | None = None,
+    announce: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """FR #5316: persist per-fuel cooldown; Copilot is 7 days. No probing until then."""
+    now_f = time.time() if now is None else float(now)
+    until = now_f + fuel_cooldown_seconds(fuel)
+    doc = load_allowance(home)
+    already = _num(doc.get("exhausted_until"))
+    doc["tasks_exhausted"] = True
+    doc["exhausted"] = True
+    doc["state"] = "exhausted"
+    doc["exhausted_until"] = until
+    doc["exhausted_until_utc"] = _utc_iso(until)
+    doc["fuel"] = (fuel or "copilot").strip().lower()
+    Path(home).mkdir(parents=True, exist_ok=True)
+    released = release_held_copilot_rows(home)
+    line = f"Copilot out of tokens - paused until {doc['exhausted_until_utc']}"
+    announced = doc.get("pause_announced_until")
+    if announced != until:
+        doc["pause_announced_until"] = until
+        if announce:
+            announce(line)
+        else:
+            with contextlib.suppress(Exception):
+                bobreport.enqueue_chair_fleet_privmsg(home, line)
+    _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    _ = already
+    return {"exhausted_until": until, "released": released, "line": line}
+
+
+def record_api_result(
+    home: Path,
+    resp: dict | None,
+    *,
+    now: float | None = None,
+    announce: Callable[[str], None] | None = None,
+) -> None:
     if is_exhausted(resp):
-        doc = load_allowance(home)
-        doc["tasks_exhausted"] = True
-        doc["exhausted"] = True
-        doc["state"] = "exhausted"
-        Path(home).mkdir(parents=True, exist_ok=True)
-        _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        mark_tokens_exhausted(home, now=now, announce=announce)
         return
     if isinstance(resp, dict) and int(resp.get("status") or 0) in (200, 201, 202):
         doc = load_allowance(home)
@@ -394,7 +497,7 @@ def dispatch_row(
     now: float | None = None,
     announce: Callable[[str], None] | None = None,
 ) -> dict:
-    if not has_allowance(home):
+    if not has_allowance(home, now=now):
         return {"status": "exhausted"}
     if not should_dispatch(row, allowance=True):
         return {"status": "skip"}
@@ -410,7 +513,7 @@ def dispatch_row(
         return {"status": "send-failed", "error": type(exc).__name__}
     if not isinstance(resp, dict):
         resp = {}
-    record_api_result(home, resp)
+    record_api_result(home, resp, now=now, announce=announce)
     if is_exhausted(resp):
         return {"status": "exhausted"}
     status = int(resp.get("status") or resp.get("status_code") or 0)
@@ -700,10 +803,12 @@ def tick(
 ) -> dict:
     """Refresh allowance, dispatch next eligible job, time out stale Copilot accepts."""
     now_f = time.time() if now is None else float(now)
+    if cooldown_active(home, now=now_f):
+        return {"dispatched": 0, "timed_out": 0, "paused": True}
     if fetch_user is not None:
         refresh_allowance(home, fetch_user=fetch_user, now=now_f)
     out: dict[str, Any] = {"dispatched": 0, "timed_out": 0}
-    if has_allowance(home):
+    if has_allowance(home, now=now_f):
         for row in gitclaim.load_unaccepted(home):
             if should_dispatch(row, allowance=True):
                 r = dispatch_row(
