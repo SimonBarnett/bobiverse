@@ -278,15 +278,41 @@ def _read_framed_bulk(sock: socket.socket, expect_token: str) -> tuple[bytes, st
     dig = bytes(dig_buf).split(b"\n", 1)[0].decode("ascii").lower()
     if dig != sha256_hex(body):
         raise ValueError("sha256 mismatch")
+    # FR #5612: receiver confirms it read the body before the sender reports via=dcc.
+    _send_ack(sock, dig)
     return body, dig
 
 
+def _send_ack(sock: socket.socket, digest: str) -> None:
+    sock.sendall(b"ACK " + digest.encode("ascii") + b"\n")
+
+
+def _expect_ack(sock: socket.socket, digest: str) -> None:
+    """FR #5612: wait for ACK <sha256>\\n. Missing ack -> no via=dcc success."""
+    buf = bytearray()
+    try:
+        while b"\n" not in buf:
+            chunk = sock.recv(80)
+            if not chunk:
+                raise ConnectionError("dcc failed: no ack")
+            buf.extend(chunk)
+            if len(buf) > 96:
+                raise ConnectionError("dcc failed: no ack")
+    except (TimeoutError, socket.timeout) as exc:
+        raise ConnectionError("dcc failed: no ack") from exc
+    line = bytes(buf).split(b"\n", 1)[0].decode("ascii", errors="replace").strip()
+    want = "ACK " + digest.lower()
+    if line.lower() != want.lower():
+        raise ConnectionError("dcc failed: no ack")
+
+
 def _write_framed_bulk(sock: socket.socket, payload: bytes, token: str) -> None:
-    digest = sha256_hex(payload).encode("ascii")
+    digest = sha256_hex(payload)
     header = token.encode("ascii") + b"\n" + struct.pack(">I", len(payload))
     sock.sendall(header)
     sock.sendall(payload)
-    sock.sendall(digest + b"\n")
+    sock.sendall(digest.encode("ascii") + b"\n")
+    _expect_ack(sock, digest)
 
 
 def _pin_tls12(ctx: ssl.SSLContext) -> ssl.SSLContext:
@@ -378,10 +404,6 @@ def reverse_dcc_send(
             sock = load_tls_client_context().wrap_socket(raw, server_hostname=sni)
         sock.settimeout(timeout_s)
         _write_framed_bulk(sock, payload, token)
-        try:
-            sock.shutdown(socket.SHUT_WR)
-        except Exception:
-            pass
     finally:
         try:
             sock.close()
@@ -589,10 +611,6 @@ def reverse_dcc_send_via_relay(
         sock.settimeout(timeout_s)
         sock.sendall(f"ROLE console {token}\n".encode("ascii"))
         _write_framed_bulk(sock, payload, token)
-        try:
-            sock.shutdown(socket.SHUT_WR)
-        except Exception:
-            pass
     finally:
         sock.close()
 
