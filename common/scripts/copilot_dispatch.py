@@ -250,12 +250,15 @@ def quota_pause_until(
     Other fuels keep the FR #5316 seven-day pause unless a reset date is given.
     """
     parsed = parse_quota_reset_epoch(reset_date)
-    if parsed is not None:
+    now_f = float(now)
+    # Stale API date (midnight already passed, e.g. token-out on the 1st) must
+    # not unpause immediately; fall through like a missing date.
+    if parsed is not None and parsed > now_f:
         return parsed, "api"
     name = _fuel_name(fuel)
     if name == "copilot":
-        return first_of_next_month_utc(now), "fallback-1st"
-    return float(now) + fuel_cooldown_seconds(name), "fixed-7d"
+        return first_of_next_month_utc(now_f), "fallback-1st"
+    return now_f + fuel_cooldown_seconds(name), "fixed-7d"
 
 
 def _fuel_name(fuel: str) -> str:

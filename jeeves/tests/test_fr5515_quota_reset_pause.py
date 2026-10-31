@@ -47,11 +47,20 @@ def test_fr5515_token_out_on_the_first_uses_following_month():
     assert until == _epoch(2026, 12, 1)
 
 
-def test_fr5515_token_out_on_the_first_honours_api_date():
+def test_fr5515_token_out_on_the_first_honours_future_api_date():
+    first = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc).timestamp()
+    until, source = cd.quota_pause_until(first, reset_date="2026-12-01", fuel="copilot")
+    assert source == "api"
+    assert until == _epoch(2026, 12, 1)
+
+
+def test_fr5515_stale_api_date_on_the_first_falls_back():
+    """quota_reset_date of today at 00:00 UTC is already past at noon; must not unpause."""
     first = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc).timestamp()
     until, source = cd.quota_pause_until(first, reset_date="2026-11-01", fuel="copilot")
-    assert source == "api"
-    assert until == _epoch(2026, 11, 1)
+    assert source == "fallback-1st"
+    assert until == _epoch(2026, 12, 1)
+    assert until > first
 
 
 def test_fr5515_bad_api_date_falls_back():
