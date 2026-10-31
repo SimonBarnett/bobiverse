@@ -645,7 +645,7 @@ def _token(raw: str, *, max_len: int = 64) -> str:
 
 
 def collect_airc_build_meta(ai_root: Path | None = None) -> dict[str, str]:
-    """FR #5534 / #5589: BUILD.json commit+built_utc; HOTPATCH overlays commit only.
+    """FR #5534 / FR #5589: BUILD.json commit+built_utc; HOTPATCH overlays commit only.
 
     HOTPATCH.json schema: ``commit`` (or ``hotpatch_commit`` / ``sha``) and
     ``hotpatched_utc`` (legacy ``built_utc`` / ``at_utc`` is the hotpatch time,
