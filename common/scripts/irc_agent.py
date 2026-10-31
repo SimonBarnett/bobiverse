@@ -513,6 +513,14 @@ def expand_irc_outbound_line(
         return [s]
     budget = text_max if text_max is not None else privmsg_text_budget(nick=nick, target=target, linelen=linelen)
     pieces = split_privmsg_body(text, budget)
+    # FR #5539: *_console treats each PRIVMSG as one command. Never emit overflow
+    # fragments (a split body can execute as a second shell). Drop the whole line.
+    if len(pieces) > 1 and _AIRC_CONSOLE_NICK_RE.match(target):
+        info(
+            f"INFO outbox reject overlong console PRIVMSG target={target} "
+            f"bytes={len(text.encode('utf-8'))} budget={budget}"
+        )
+        return []
     return [f"PRIVMSG {target} :{p}" for p in pieces]
 
 
