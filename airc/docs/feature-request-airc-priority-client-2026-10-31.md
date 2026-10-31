@@ -108,4 +108,7 @@ No TipForm/HTML UI. Mocks out of scope (same as `airc/VISION.md`).
 
 ## Implementation slices
 
-See plan `drafts/backlog.md` (FR-A … FR-H). File **one** small GitHub issue at a time.
+Anti-omnibus: file **one** small GitHub issue at a time.
+
+- FR-A (schema + CredMan allowlist): SimonBarnett/bobiverse#5275
+- FR-B ... FR-H: stay unfiled drafts until FR-A lands (do not invent a repo `drafts/backlog.md`)
