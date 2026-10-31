@@ -118,4 +118,5 @@ def test_mrb5620_pins_expect_ack_and_docs():
     skill_text = skill.read_text(encoding="utf-8")
     assert "FR #5612" in skill_text
     assert "ACK <sha256>" in skill_text
-    assert "FR #5611" in skill_text  # fold keep-both with upload off-IRC wording
+    assert "DCC upload" in skill_text
+    assert "via=dcc" in skill_text
