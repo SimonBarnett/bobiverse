@@ -1,14 +1,18 @@
-"""Airc LEGION verb + isolated worker scaffold (FR #5308).
+"""Airc LEGION verb + isolated worker (FR #5308 / #5309).
 
-No installer invoke in this slice (stub worker). Auth matches UPDATE.
-Worker faults must not stop Airc. Single hostname or IPv4 only.
+FR-A: verb + stub. FR-B: import ``airc_network_installer`` for one host,
+profile client, latest Release MSI, no --force. Auth matches UPDATE.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
+
+# In-service module (FR #3991). LEGION must not shell a peer installer exe.
+import airc_network_installer as _netinst  # noqa: F401
 
 LEGION_TIMEOUT_S = 900
 
@@ -66,6 +70,10 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
     return {"qid": qid, "error": None, "target": parts[0], "whatif": whatif}
 
 
+_ALLOWED_MSI_PREFIX = "https://github.com/SimonBarnett/bobiverse/releases"
+_CREDMAN_TARGET = "PriorityAirc/LegionAdmin"
+
+
 def stub_legion_work(
     target: str,
     *,
@@ -82,6 +90,113 @@ def stub_legion_work(
     }
 
 
+def _msi_allowed(msi: str | None) -> bool:
+    raw = (msi or "").strip()
+    if not raw:
+        return True
+    if "://" not in raw:
+        return True
+    return raw.lower().startswith(_ALLOWED_MSI_PREFIX.lower())
+
+
+def default_legion_credman() -> dict[str, str]:
+    """FR #5309 hook; FR-C #5310 fills live CredMan. Never logs the secret."""
+    return {}
+
+
+def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
+    """Import-path invoke. WhatIf / dry_run never calls install_remote."""
+    from airc_network_installer.github_msi import download_latest_airc_msi
+    from airc_network_installer.install import install_local, install_remote
+
+    host = (spec.get("hosts") or [""])[0]
+    dry = bool(spec.get("dry_run"))
+    if dry:
+        return {"ok": True, "status": "dry-run", "host": host, "profile": spec.get("profile")}
+    msi = (spec.get("msi") or "").strip()
+    if not msi:
+        dest = spec.get("download_dir") or os.getcwd()
+        msi_path, _tag = download_latest_airc_msi(dest)
+        msi = str(msi_path)
+    password = os.environ.get("AIRC_LEGION_PASSWORD", "")
+    user = spec.get("username") or ""
+    log_dir = spec.get("log_dir") or "airc-install-logs"
+    return {
+        "ok": True,
+        "status": "scheduled",
+        "host": host,
+        "msi": msi,
+        "install_remote": install_remote,
+        "install_local": install_local,
+        "username": user,
+        "has_password": bool(password),
+        "log_dir": log_dir,
+    }
+
+
+def installer_legion_work(
+    target: str,
+    *,
+    whatif: bool = False,
+    run_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    credman: Callable[[], dict[str, str]] | None = None,
+    msi: str | None = None,
+    log_dir: str | None = None,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """FR #5309: one host, client profile, latest Release MSI, no --force."""
+    if not _msi_allowed(msi):
+        return {
+            "ok": False,
+            "target": target,
+            "whatif": bool(whatif),
+            "invoked_installer": False,
+            "force": False,
+            "timeout_s": LEGION_TIMEOUT_S,
+            "profile": "client",
+            "error": "foreign-msi-url",
+        }
+    ident = (credman or default_legion_credman)() or {}
+    user = str(ident.get("username") or "").strip()
+    secret = str(ident.get("password") or "")
+    spec: dict[str, Any] = {
+        "hosts": [target],
+        "profile": "client",
+        "force": False,
+        "timeout_s": LEGION_TIMEOUT_S,
+        "dry_run": bool(whatif),
+        "whatif": bool(whatif),
+        "msi": (msi or "").strip(),
+        "log_dir": log_dir or "airc-install-logs",
+        "credman_target": _CREDMAN_TARGET,
+    }
+    if user:
+        spec["username"] = user
+        spec["password_via"] = "secure-env"
+        if secret:
+            os.environ["AIRC_LEGION_PASSWORD"] = secret
+    try:
+        out = (run_fn or default_installer_run)(spec)
+    finally:
+        if secret:
+            os.environ.pop("AIRC_LEGION_PASSWORD", None)
+    status = str((out or {}).get("status") or "")
+    return {
+        "ok": bool((out or {}).get("ok", True)),
+        "target": target,
+        "whatif": bool(whatif),
+        "dry_run": bool(whatif),
+        "invoked_installer": True,
+        "force": False,
+        "timeout_s": LEGION_TIMEOUT_S,
+        "profile": "client",
+        "hosts": [target],
+        "status": status,
+        "log_dir": spec["log_dir"],
+        "error": (out or {}).get("error"),
+    }
+
+
 def run_legion_verb(
     *,
     target: str = "",
@@ -92,7 +207,7 @@ def run_legion_verb(
     **_kw: Any,
 ) -> LegionVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
-    work = worker or stub_legion_work
+    work = worker or installer_legion_work
 
     def _safe() -> None:
         try:
