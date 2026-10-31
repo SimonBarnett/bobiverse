@@ -133,10 +133,32 @@ function Get-LatestRelease {
 
 function Test-AssetUrl {
     param([string]$Url)
-    if ($Url -match '^https://') {
-        return ($Url -match ('^https://github\.com/{0}/releases/download/[^?#\s]+$' -f [regex]::Escape($Repo)))
+    $u = ([string]$Url).Trim()
+    if ($u -match '^https://') {
+        return ($u -match ('^https://github\.com/{0}/releases/download/[^?#\s]+$' -f [regex]::Escape($Repo)))
     }
-    return ($AllowLocalAssets -and (Test-Path -LiteralPath $Url))
+    return ($AllowLocalAssets -and (Test-Path -LiteralPath $u))
+}
+
+function Resolve-AssetDownloadUrl {
+    # FR #5345: GitHub assets JSON may omit browser_download_url or only expose
+    # api.github.com/repos/.../releases/assets/<id>. Rebuild the allowlisted
+    # github.com/{repo}/releases/download/{tag}/{name} URL. Never accept foreign hosts.
+    # Never rebuild when an explicit https URL failed the allowlist (except the assets API).
+    param($Asset, [string]$Tag)
+    if (-not $Asset) { return '' }
+    $direct = ([string]$Asset.browser_download_url).Trim()
+    if (-not $direct) { $direct = ([string]$Asset.url).Trim() }
+    if (Test-AssetUrl -Url $direct) { return $direct }
+    $apiOk = $direct -match ('^https://api\.github\.com/repos/{0}/releases/assets/\d+$' -f [regex]::Escape($Repo))
+    if ($direct -match '^https://' -and -not $apiOk) { return $direct }
+    $name = ([string]$Asset.name).Trim()
+    $tag = ([string]$Tag).Trim()
+    if ($name -notmatch '^[A-Za-z0-9._+-]+$' -or $tag -notmatch '^v?\d+\.\d+\.\d+$') { return $direct }
+    if ($tag -notmatch '^v') { $tag = 'v' + $tag }
+    $built = "https://github.com/$Repo/releases/download/$tag/$name"
+    if (Test-AssetUrl -Url $built) { return $built }
+    return $direct
 }
 
 function Get-Asset {
@@ -917,7 +939,9 @@ function Invoke-Check {
     }
     $sha = @($rel.assets | Where-Object { $_.name -eq ($msi.name + '.sha256') }) | Select-Object -First 1
     if (-not $sha) { Write-UpdLog "check result=no-sha256-asset tag=$($rel.tag_name) - not updating"; return }
-    if (-not (Test-AssetUrl -Url ([string]$msi.browser_download_url)) -or -not (Test-AssetUrl -Url ([string]$sha.browser_download_url))) {
+    $msiUrl = Resolve-AssetDownloadUrl -Asset $msi -Tag ([string]$rel.tag_name)
+    $shaUrl = Resolve-AssetDownloadUrl -Asset $sha -Tag ([string]$rel.tag_name)
+    if (-not (Test-AssetUrl -Url $msiUrl) -or -not (Test-AssetUrl -Url $shaUrl)) {
         Write-UpdLog 'check result=asset-url-rejected'; Write-CheckFailIntake -Result 'asset-url-rejected'; return
     }
 
@@ -959,7 +983,7 @@ function Invoke-Check {
     $plan = Join-Path $StateDir 'plan.json'
     @{
         product = $Product; tag = $tag; version = $remote.ToString(); msiName = [string]$msi.name
-        msiUrl = [string]$msi.browser_download_url; shaUrl = [string]$sha.browser_download_url
+        msiUrl = $msiUrl; shaUrl = $shaUrl
         installRoot = $InstallRoot; serviceName = $ServiceName; fromVersion = $local.ToString()
         createdUtc = (Get-Date).ToUniversalTime().ToString('o')
     } | ConvertTo-Json | Set-Content -LiteralPath $plan -Encoding UTF8

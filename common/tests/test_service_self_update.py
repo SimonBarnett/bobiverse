@@ -122,6 +122,30 @@ def test_foreign_asset_urls_are_rejected(env):
 
 
 @win
+def test_fr5345_api_asset_url_rebuilds_github_download(env):
+    """Live GitHub sometimes omits browser_download_url or only has assets API url."""
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        name = a["name"]
+        a["url"] = f"https://api.github.com/repos/{REPO}/releases/assets/1"
+        a["browser_download_url"] = ""
+        a["name"] = name
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0
+    assert "asset-url-rejected" not in log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+
+
+@win
+def test_fr5345_foreign_url_not_rebuilt_from_name(env):
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        a["browser_download_url"] = "https://evil.example/x/" + a["name"]
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0 and "asset-url-rejected" in log and "would-update" not in log
+
+
+@win
 def test_other_products_asset_is_ignored(env):
     p, log = env("-DryRun", release=_release("0.1.17", product="jeeves"))
     assert p.returncode == 0 and "no-matching-asset" in log
