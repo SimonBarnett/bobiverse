@@ -50,6 +50,7 @@ PRIVMSG marchhare_console :id=aabbccdd PRIORITY connect example-dev
 - PRIORITY status - list allowlisted instance ids.
 - PRIORITY status <id> - public identity fields (url/company/user/credentialTarget; never the password).
 - PRIORITY connect <id> - CredMan fetch for credentialTarget, then connect. Until FR-B ships the Node Web SDK worker, SelfTest/unit path uses mock_connect (non-empty password required; password never echoed).
+- Bare `PRIORITY` (or an unknown sub-verb) is usage, not a shell command (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows` then `DONE id= exit=2`.
 
 Reply framing matches FR #75:
 
