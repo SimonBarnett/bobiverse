@@ -5,6 +5,8 @@ profile client, latest Release MSI, no --force. Auth matches UPDATE.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import threading
@@ -332,3 +334,117 @@ def run_legion_verb(
         f"DONE id={qid} exit=0"
     )
     return LegionVerbResult(True, reply, job_id=qid)
+
+
+_SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
+
+
+def _scrub(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {
+            k: _scrub(v)
+            for k, v in obj.items()
+            if not _SECRET_KEY_RE.search(str(k))
+        }
+    if isinstance(obj, list):
+        return [_scrub(x) for x in obj]
+    if isinstance(obj, str) and _SECRET_KEY_RE.search(obj) and "=" in obj:
+        return "[redacted]"
+    return obj
+
+
+def build_legion_log(
+    *,
+    target: str = "",
+    whatif: bool = False,
+    summary: str = "",
+    failures: list[dict] | None = None,
+    extra: dict | None = None,
+) -> dict[str, Any]:
+    """FR #5311: installer log + failures[]; secrets stripped."""
+    log: dict[str, Any] = {
+        "target": target,
+        "whatif": bool(whatif),
+        "summary": summary,
+        "failures": list(failures or []),
+        "timeout_s": LEGION_TIMEOUT_S,
+        "profile": "client",
+        "force": False,
+    }
+    if extra:
+        for k, v in extra.items():
+            if not _SECRET_KEY_RE.search(str(k)):
+                log[k] = v
+    log = _scrub(log)
+    log["failure_count"] = len(log.get("failures") or [])
+    return log
+
+
+def legion_log_bytes(log: dict[str, Any]) -> bytes:
+    return (json.dumps(log, separators=(",", ":"), sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def deliver_legion_log(
+    *,
+    job_id: str,
+    log: dict[str, Any],
+    offer: Any | None = None,
+    send_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    import airc_dcc_bulk as _dcc
+
+    jid = (job_id or "").strip().lower() or "00000000"
+    raw = legion_log_bytes(log)
+    digest = hashlib.sha256(raw).hexdigest()
+    nfail = int(log.get("failure_count") or 0)
+    summary = (
+        f"LEGION log target={log.get('target')} failures={nfail} "
+        f"bytes={len(raw)}"
+    )
+    lines: list[str] = [f"out id={jid} seq=1 {summary}"]
+    for i, fail in enumerate(log.get("failures") or [], start=2):
+        lines.append(
+            f"out id={jid} seq={i} failure {json.dumps(fail, separators=(',', ':'))}"
+        )
+    if offer is not None:
+        sender = send_fn or _dcc.send_offer_payload
+        try:
+            sender(raw, offer)
+            done = _dcc.format_done_via_dcc(
+                jid, 0, nbytes=len(raw), sha256=digest, via="dcc"
+            )
+            return {
+                "via": "dcc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": [lines[0], done],
+                "done": done,
+            }
+        except Exception as exc:
+            lines.append(
+                f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
+            )
+            done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
+            lines.append(done)
+            return {
+                "via": "irc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": lines,
+                "done": done,
+            }
+    lines.append("CONT id=" + jid + " offset=1")
+    done = f"DONE id={jid} exit=0 via=irc"
+    lines.append(done)
+    return {
+        "via": "irc",
+        "sha256": digest,
+        "nbytes": len(raw),
+        "summary": summary,
+        "lines": lines,
+        "done": done,
+    }

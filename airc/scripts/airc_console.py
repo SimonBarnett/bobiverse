@@ -2779,13 +2779,35 @@ class AircConsoleCore:
                 )
             if not isinstance(result, _legion.LegionVerbResult):
                 result = _legion.LegionVerbResult(False, "LEGION err bad-runner")
+            qid = (leg.get("qid") or result.job_id or "").strip().lower()
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            fails = getattr(result, "failures", None)
+            if not fails and getattr(result, "error", None):
+                fails = [{"host": leg.get("target"), "error": str(result.error)}]
+            log = _legion.build_legion_log(
+                target=leg.get("target") or "",
+                whatif=bool(leg.get("whatif")),
+                summary=getattr(result, "status", None) or "",
+                failures=list(fails or []),
+            )
+            send_fn = getattr(self, "legion_log_send", None)
+            delivered = _legion.deliver_legion_log(
+                job_id=qid or result.job_id,
+                log=log,
+                offer=offer,
+                send_fn=send_fn,
+            )
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="legion",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=result.reply_text(),
+                reply=f"{result.reply_text()} {delivered['summary']} {delivered['done']}",
                 **meta,
             )
 
