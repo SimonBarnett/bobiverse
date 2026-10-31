@@ -236,6 +236,15 @@ def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
     force = bool(spec.get("force"))
     timeout_s = float(spec.get("timeout_s") or LEGION_TIMEOUT_S)
     if dry:
+        psexec = find_psexec(str(spec.get("psexec") or ""))
+        raw_msi = (spec.get("msi") or "").strip()
+        if raw_msi:
+            try:
+                msi_note = str(_resolve_legion_msi_path(spec))
+            except Exception as exc:  # noqa: BLE001
+                msi_note = f"msi-unresolved:{type(exc).__name__}"
+        else:
+            msi_note = "latest"
         return {
             "ok": True,
             "status": "dry-run",
@@ -243,6 +252,8 @@ def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
             "profile": profile,
             "force": force,
             "timeout_s": timeout_s,
+            "msi": msi_note,
+            "psexec": psexec or "psexec-missing",
         }
 
     try:
@@ -358,7 +369,8 @@ def installer_legion_work(
     ident = (credman or default_legion_credman)() or {}
     user = str(ident.get("username") or "").strip()
     secret = str(ident.get("password") or "")
-    if not user or not secret:
+    credman_missing = not user or not secret
+    if credman_missing and not whatif:
         return {
             "ok": False,
             "target": target,
@@ -391,7 +403,12 @@ def installer_legion_work(
         if secret:
             os.environ.pop("AIRC_LEGION_PASSWORD", None)
     status = str((out or {}).get("status") or "")
-    return {
+    fails = list((out or {}).get("failures") or [])
+    err = (out or {}).get("error")
+    if credman_missing:
+        fails.append({"host": target, "error": "credman-missing"})
+        err = None if whatif else "credman-missing"
+    body: dict[str, Any] = {
         "ok": bool((out or {}).get("ok", True)),
         "target": target,
         "whatif": bool(whatif),
@@ -403,8 +420,14 @@ def installer_legion_work(
         "hosts": [target],
         "status": status,
         "log_dir": spec["log_dir"],
-        "error": (out or {}).get("error"),
+        "error": err,
+        "failures": fails,
     }
+    if (out or {}).get("msi"):
+        body["msi"] = (out or {}).get("msi")
+    if (out or {}).get("psexec"):
+        body["psexec"] = (out or {}).get("psexec")
+    return body
 
 
 def run_legion_verb(
@@ -455,7 +478,7 @@ def run_legion_verb(
     def _safe() -> LegionVerbResult:
         try:
             data = _call_work()
-            if str(data.get("error") or "") == "credman-missing":
+            if str(data.get("error") or "") == "credman-missing" and not whatif:
                 return _finish(
                     data,
                     reply=f"DONE id={qid} exit=126 credman-missing",
