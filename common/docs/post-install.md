@@ -231,6 +231,10 @@ After a manual `git pull --ff-only` on the install work tree, run `Sync-Bobivers
 
 If `git -C <ai root>\<product> status` reports **No commits yet** on `master` (or any branch) while `origin/main` fetches fine, the install `.git` was left after init without a successful first checkout. `Sync-BobiverseWorkTree` heals that on the next service start (or a manual Sync): it checks out `origin/main` with the sparse `product/` + `common/` set and logs `worktree-heal-unborn`. Config, home, and secrets stay untouched. Tests: `common/tests/test_worktree_sync_020.py::test_fr2944_unborn_empty_master_heals_to_main`.
 
+## Self-update Apply URL repair (FR #5357)
+
+`Invoke-Apply` rebuilds empty or `api.github.com/.../releases/assets/<id>` plan URLs from `tag` + `msiName` via `Repair-PlanAssetUrl` (same allowlist as Check). Rejected local paths and foreign hosts are not rebuilt into `releases/download`. `Get-Asset` tries `curl.exe` first (Retries=4), then WinPS `Invoke-WebRequest`, so a half-open TLS stall is not the first path.
+
 ## Self-update latest 404 fallback (FR #5353)
 
 Bare Check hits `GET /repos/.../releases/latest` first (FR #5280). When that 404s (prerelease-only / `--latest=false` catalog), it lists `/releases?per_page=30` and picks the newest semver tag that has `{product}-N.N.N.msi` (non-prerelease preferred). Transient 403/429/network get short retries. Four-part MSI names in that list picker are follow-up #5429 (Check itself already accepts 3- or 4-part via FR #5354).

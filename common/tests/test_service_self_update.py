@@ -283,6 +283,32 @@ def test_sha256_match_is_verified_and_verify_only_touches_nothing(env):
 
 
 @win
+def test_fr5357_apply_repairs_empty_plan_url_from_tag_name(env):
+    """Stale plan with empty/API url must rebuild allowlisted github download path."""
+    data = b"pretend msi"
+    plan = _plan(env, data, hashlib.sha256(data).hexdigest() + "  bob-0.1.17.msi\n")
+    doc = json.loads(plan.read_text(encoding="utf-8"))
+    doc["msiUrl"] = f"https://api.github.com/repos/{REPO}/releases/assets/9"
+    doc["shaUrl"] = f"https://api.github.com/repos/{REPO}/releases/assets/10"
+    plan.write_text(json.dumps(doc), encoding="utf-8")
+    p, log = env("-AllowLocalAssets", "-DelaySeconds", "0", "-VerifyOnly", "-PlanFile", str(plan), mode="Apply")
+    assert p.returncode == 0
+    assert "apply-repair-url" in log, log
+    assert "github.com/SimonBarnett/bobiverse/releases/download/v0.1.17/bob-0.1.17.msi" in log
+    # After repair, Get-Asset hits the rebuilt github URL (live or failed); either path proves repair ran.
+
+
+@win
+def test_fr5357_get_asset_prefers_curl_then_iwr():
+    t = _t("Update-BobiverseService.ps1")
+    i = t.index("function Get-Asset")
+    chunk = t[i : i + 4500]
+    assert "FR #5357" in chunk
+    assert chunk.find("method=curl") < chunk.find("method=iwr")
+    assert "Retries = 4" in chunk
+
+
+@win
 def test_local_asset_urls_rejected_without_test_hook(env):
     data = b"x"
     plan = _plan(env, data, hashlib.sha256(data).hexdigest())
