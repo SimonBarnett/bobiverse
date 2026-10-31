@@ -152,7 +152,7 @@ def test_fr5286_default_hooks_wire_cred_upd_prp():
     def fetcher(target: str) -> str:
         seen["cred"] += 1
         assert target == "PriorityWeb/example-dev"
-        # FAKE_ placeholder — never a real secret (FR #3304).
+        # FAKE_ placeholder - never a real secret (FR #3304).
         return "FAKE_" + "PREPARE_SECRET"
 
     def lock_reader(*, ename, instance, exec_type="P"):
@@ -169,7 +169,7 @@ def test_fr5286_default_hooks_wire_cred_upd_prp():
 
     def prp_stat(**kw):
         mt["n"] += 1
-        # first call before, second after — advance
+        # first call before, second after - advance
         return 1000.0 if mt["n"] == 1 else 1001.0
 
     hooks = pw.build_default_prepare_hooks(
@@ -216,7 +216,7 @@ def test_fr5286_console_prepare_uses_hooks_not_bare_no_cred(monkeypatch, tmp_pat
             prp_stat=lambda **k: 2.0 if calls.setdefault("prp", 0) or True else 1.0,
         )
 
-    # prp_stat needs before < after — use counter
+    # prp_stat needs before < after - use counter
     state = {"n": 0}
 
     def fake_hooks2(install_root=None):
