@@ -31,6 +31,20 @@ def test_mrb5568_writes_gate_and_forcelist_helpers():
     assert body["hosts"][0].get("skipped") == "status"
 
 
+def test_mrb5568_install_skips_dc_before_write():
+    writes: list = []
+    body = ex.fill_holes_work(
+        "install",
+        ldap_enum=lambda: ["dc1"],
+        ping_host=lambda _h: True,
+        apply_force_install=lambda *a: writes.append(a),
+        is_dc=lambda _h: True,
+        whatif=False,
+    )
+    assert writes == []
+    assert body["hosts"][0].get("skipped") == "dc"
+
+
 def test_mrb5568_skill_cites_5538():
     skill = (
         ROOT / "airc" / ".grok" / "skills" / "bobiverse-airc-commands" / "SKILL.md"
