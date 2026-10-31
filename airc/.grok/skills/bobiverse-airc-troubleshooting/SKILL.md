@@ -89,7 +89,7 @@ Finish every session with the harvest step.
 
 ## FR #5003 (reverse DCC bulk for oversized shell replies)
 
-| Large shell output floods IRC (minutes / reconnect wedge, see #5002) | Keep IRC as control plane. Caller may send `DCCLISTEN id=<job> host=<ip> port=<n> token=<hex>`; when output exceeds the bulk threshold and a matching offer exists, console **dials out** (NAT-friendly), streams body, replies `DONE id=... exit=... bytes=N sha256=H via=dcc`. Handshake failure within a few seconds falls back to existing IRC CONT paging (FR #4794). FR #5065: the fallback `err dcc failed` line uses the next unused seq before DONE (never seq=1 twice); else `ConvertFrom-AircRemoteReply` throws `duplicate seq=1`. Without `DCCLISTEN`, behaviour unchanged. Tip PR #5009 (`airc_dcc_bulk.py`). WP2 (#5008): TLS, ionos relay, bob-ear helper, live fleet timings. |
+| Large shell output floods IRC (minutes / reconnect wedge, see #5002) | Keep IRC as control plane. Caller may send `DCCLISTEN id=<job> host=<ip> port=<n> token=<hex>`; when output exceeds the bulk threshold and a matching offer exists, console **dials out** (NAT-friendly), streams body, waits for ACK sha256 (FR #5612), replies `DONE id=... exit=... bytes=N sha256=H via=dcc`. No ack or handshake failure falls back to existing IRC CONT paging (FR #4794). FR #5065: the fallback `err dcc failed` line uses the next unused seq before DONE (never seq=1 twice); else `ConvertFrom-AircRemoteReply` throws `duplicate seq=1`. Without `DCCLISTEN`, behaviour unchanged. Tip PR #5009 (`airc_dcc_bulk.py`). WP2 (#5008): TLS, ionos relay, bob-ear helper, live fleet timings. |
 
 ## FR #5008 (reverse-DCC TLS + framed leftovers)
 
