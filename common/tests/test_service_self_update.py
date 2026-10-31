@@ -146,6 +146,43 @@ def test_fr5345_foreign_url_not_rebuilt_from_name(env):
 
 
 @win
+def test_fr5410_github_download_url_with_query_is_accepted(env):
+    """Live GitHub sometimes adds ?X-Amz= on browser_download_url; Check must not reject."""
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        a["browser_download_url"] = a["browser_download_url"] + "?X-Amz-Signature=EXAMPLE"
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+
+
+@win
+def test_fr5410_objects_github_url_rebuilds_download_path(env):
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        a["url"] = a["browser_download_url"]
+        a["browser_download_url"] = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/" + a["name"]
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+
+
+@win
+def test_fr5410_four_part_tag_rebuilds_from_api_url(env):
+    rel = _release("0.1.17.1")
+    (env.root / "VERSION").write_text("0.1.16\n")
+    for a in rel["assets"]:
+        a["url"] = f"https://api.github.com/repos/{REPO}/releases/assets/2"
+        a["browser_download_url"] = ""
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update" in log or "latest=0.1.17.1" in log
+
+
+@win
 def test_other_products_asset_is_ignored(env):
     p, log = env("-DryRun", release=_release("0.1.17", product="jeeves"))
     assert p.returncode == 0 and "no-matching-asset" in log
