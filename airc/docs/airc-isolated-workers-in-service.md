@@ -1,4 +1,4 @@
-# Airc isolated workers — in-service only (no peer binaries)
+# Airc isolated workers  -  in-service only (no peer binaries)
 
 **LOCKED** (operator 2026-10-31). Also recorded in `airc/VISION.md`.
 
@@ -26,14 +26,14 @@ and MUST NOT be:
 | Priority Client | `feature-request-airc-priority-client-2026-10-31.md` (#5275+) |
 | EXTENSION | `feature-request-airc-extension-priority-web-2026-10-31.md` (#5290+) |
 | NETWORK diag | `feature-request-airc-network-diag-2026-10-31.md` (#5302+) |
-| LEGION | `feature-request-airc-legion-2026-10-31.md` (#5308+) — module import, not peer installer exe |
-| UPDATE restart pack | `feature-request-airc-remote-update-restart-2026-10-31.md` (#5277+) — detached updater scripts already in deploy tree |
+| LEGION | `feature-request-airc-legion-2026-10-31.md` (#5308+)  -  module import, not peer installer exe |
+| UPDATE restart pack | `feature-request-airc-remote-update-restart-2026-10-31.md` (#5277+)  -  detached updater scripts already in deploy tree |
 
 ## Allowed
 
 - Service-owned child process: `python`/`airc` worker entry that imports `airc_*` packages from the install tree.
 - PowerShell under `airc\scripts` / `common\scripts` already laid down by the product MSI (e.g. `Update-BobiverseService.ps1`).
-- Historical standalone tools in the MSI for **manual/offline** use only — not as the console-verb runtime.
+- Historical standalone tools in the MSI for **manual/offline** use only  -  not as the console-verb runtime.
 
 ## Fail-when
 
