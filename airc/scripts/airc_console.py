@@ -3186,12 +3186,15 @@ class AircConsoleCore:
                     reply="DONE exit=126 update-disabled",
                 )
             if leg.get("error"):
+                # FR #5527: include id= so ear/airc-replies can correlate denies.
+                qid = str(leg.get("qid") or "").strip().lower()
+                id_bit = f" id={qid}" if qid else ""
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,
                     target=target,
                     text=text,
-                    reply=f"DONE exit=126 bad-target reason={leg['error']}",
+                    reply=f"DONE{id_bit} exit=126 bad-target reason={leg['error']}",
                 )
             qid = str(leg.get("qid") or "").strip().lower()
             offer = None
