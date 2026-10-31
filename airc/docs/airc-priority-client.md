@@ -33,7 +33,7 @@ Required per instance: id, url (must be https://), company, user, credentialTarg
 
 Loader rules (airc/scripts/airc_priority.py):
 
-- Prefer live priority-instances.json; else example for docs/tests; override with env AIRC_PRIORITY_ALLOWLIST.
+- Prefer live priority-instances.json; else example for docs/tests; override with env AIRC_PRIORITY_ALLOWLIST. PRIORITY form walk uses the same resolver (FR #5535).
 - Fail closed when missing, empty instances, unknown id, non-https URL, or duplicate id.
 - Reject any JSON key whose name contains pass or is secret / token / pwd (CredMan only).
 

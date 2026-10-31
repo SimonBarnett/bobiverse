@@ -624,16 +624,13 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
 
 
 def resolve_walk_allowlist_path(install_root: str | None, override: str | None) -> Path | None:
+    """FR #5535: same live-then-example resolution as PRIORITY status/connect."""
     if override:
         return Path(override)
-    if not install_root:
+    try:
+        return resolve_allowlist_path(install_root)
+    except PriorityConfigError:
         return None
-    root = Path(install_root)
-    for rel in ("priority-instances.json", "config/priority-instances.json"):
-        cand = root / rel
-        if cand.is_file():
-            return cand
-    return None
 
 
 def run_priority_walk(
