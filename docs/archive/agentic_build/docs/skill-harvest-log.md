@@ -111,7 +111,7 @@ close with the merged PR URL; do not FIX a MERGED PR. Home:
 Simon: creating a new repo must leave it public so anyone can open a
 PR, and must add the GitHub hook in the same turn. Home:
 `bob-spec-intake` section **New GitHub repo**. Hook playbook stays
-`setup-github-webhooks` (`https://irc.ntsa.uk/bob/v1/git`, events
+`setup-github-webhooks` (`https://bob.ntsa.uk/bob/v1/git`, events
 push / pull_request / issues, no secret).
 
 ## 2026-09-23 (mojibake) split setup-github-webhooks + setup-ssl-certs
@@ -125,8 +125,8 @@ Ergo PEM). `github-irc-webhooks` is a pointer only.
 
 Ionos IIS `irc-ntsa` has Let's Encrypt (win-acme renewal
 `IIS irc-ntsa webhook`). Default GitHub hook on every SimonBarnett
-repo: `https://irc.ntsa.uk/bob/v1/git` (push/PR/issues). Fleet
-`reportUrl` is `https://irc.ntsa.uk/bob/v1/report`. New repos need
+repo: `https://bob.ntsa.uk/bob/v1/git` (push/PR/issues). Fleet
+`reportUrl` is `https://bob.ntsa.uk/bob/v1/report`. New repos need
 the hook added (no user-account default). Do not replace the Ergo
 PEM renewal. Home: `github-irc-webhooks`. Jeeves announce stays
 agentic_irc `jeeves-git-webhook`.

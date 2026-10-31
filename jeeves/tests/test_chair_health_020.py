@@ -9,7 +9,7 @@ import chair_health as ch
 import gitclaim
 from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per service
 
-BASES = {"local": "http://127.0.0.1:7700", "public": "https://irc.ntsa.uk"}
+BASES = {"local": "http://127.0.0.1:7700", "public": "https://bob.ntsa.uk"}
 OK = {"/bob/v1/report": 200, "/bob/v1/jira": 200, "/bob/v1/intake/jeeves-health-probe": 404, "/bob/v1/git": 204}
 
 
@@ -40,8 +40,12 @@ def test_probe_all_up_no_announce_and_state_file(tmp_path):
     st = json.loads((tmp_path / "webhook-health.json").read_text())
     assert st["targets"]["local"]["up"] and st["targets"]["public"]["up"]
     # checks: GET report, GET jira, GET intake/<id> (404 = up), synthetic git ping POST - on BOTH targets
-    seen = {(m, u.split("://", 1)[1].split("/", 1)[0], u[u.index("/bob"):]) for m, u, _b, _h in h.calls}
-    for host in ("127.0.0.1:7700", "irc.ntsa.uk"):
+    def _host_path(u: str):
+        rest = u.split("://", 1)[1]
+        host, _, path = rest.partition("/")
+        return host, "/" + path
+    seen = {(m, *_host_path(u)) for m, u, _b, _h in h.calls}
+    for host in ("127.0.0.1:7700", "bob.ntsa.uk"):
         assert ("GET", host, "/bob/v1/report") in seen
         assert ("GET", host, "/bob/v1/jira") in seen
         assert ("GET", host, "/bob/v1/intake/jeeves-health-probe") in seen

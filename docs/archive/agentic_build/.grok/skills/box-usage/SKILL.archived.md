@@ -21,7 +21,7 @@ Run on the **target** Windows box via local-exec (ionos, flamingo, marchhare,
 ce-priority-dev1). Do not guess another host's quota from chat.
 
 **Peers:** the fleet source of truth is the digest webhook
-`https://irc.ntsa.uk/bob/v1/report` (`bob-digest-webhook`), not a guess and
+`https://bob.ntsa.uk/bob/v1/report` (`bob-digest-webhook`), not a guess and
 not MarchHare's local Cursor file (MarchHare has no Cursor login). Publish
 path is `Write-BobIrcStatus`, which adds `pcent` from
 `cursor_spending_groups` (PR #306). TipForm consumes that `pcent` and
@@ -30,7 +30,7 @@ path is `Write-BobIrcStatus`, which adds `pcent` from
 ## Digest curl (before you quote a peer percent)
 
 ```
-curl -fsS https://irc.ntsa.uk/bob/v1/report
+curl -fsS https://bob.ntsa.uk/bob/v1/report
 ```
 
 Checklist (detail in `bob-digest-webhook`):

@@ -26,7 +26,7 @@ Staged and installed trees stay flat. The old spellings (`third_party\bob-tray`,
   the tray writes (atomically) after every poll; the exe never touches the network and re-reads the file every 2 s. Parked until X / Esc; drag by the title.
   One account-wide Copilot tile uses `copilot_pool` / `copilot_line` from the snapshot, showing `unknown` when absent and
   `unlimited` when reported as such (never as zero/exhausted). Live values require the #5173 `bobreport.py` deployment on
-  the digest host (`https://irc.ntsa.uk/bob/v1/report`); that deployment is separate and needs Simon's go.
+  the digest host (`https://bob.ntsa.uk/bob/v1/report`); that deployment is separate and needs Simon's go.
 * **Single instance**: a named mutex per dialog; a second launch only brings the first window forward and exits.
 * **Tray**: `Start-BobTrayDialog` (`tools\BobTrayDialogs.ps1`) is a plain `Start-Process` - the tray UI thread never waits on a dialog or on the
   install scan (the old in-process About blocked it for seconds). If an exe is missing the tray falls back to the old PowerShell dialogs.

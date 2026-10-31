@@ -9,7 +9,7 @@ _FR3450_BODY = """
 ## Where it lives (existing code)
 
 The fleet digest webhook is BobCallback (default `127.0.0.1:7700`, public front door
-`https://irc.ntsa.uk/bob/v1/report`):
+`https://bob.ntsa.uk/bob/v1/report`):
 
 - `common/scripts/bobcallback.py`: route constants (`REPORT_PATH`, `INTAKE_PATH`), `serve()`.
 - Agents POST partial time entries; Haitch GETs them to draft Priority hours.

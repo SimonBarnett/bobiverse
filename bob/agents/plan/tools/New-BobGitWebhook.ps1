@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Repo,
 
-    [string]$HookUrl = 'https://irc.ntsa.uk/bob/v1/git'
+    [string]$HookUrl = 'https://bob.ntsa.uk/bob/v1/git'
 )
 
 $ErrorActionPreference = 'Stop'

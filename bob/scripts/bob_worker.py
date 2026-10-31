@@ -2665,7 +2665,7 @@ _OUT_OF_FUEL_RX = re.compile(
     r"|rate\s*limit(?:ed|ing)?\b"
     r")"
 )
-DEFAULT_DIGEST_REPORT_URL = "https://irc.ntsa.uk/bob/v1/report"
+DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 
 def is_out_of_fuel_text(text: str) -> bool:

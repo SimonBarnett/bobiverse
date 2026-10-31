@@ -3,7 +3,7 @@
 Verification chore after the pin-starve incident (#2446) and empty-offer playbook (#2448 / PR #2455).
 **Heal PR #2450 was still open** at snapshot time (MRB in progress on another seat) — this is a pre-heal baseline plus gap notes, not a claim that ledger heal has landed.
 
-Source: live `GET https://irc.ntsa.uk/bob/v1/report` → `queue` (chair mirror), plus `gh issue list` on focused repos.
+Source: live `GET https://bob.ntsa.uk/bob/v1/report` → `queue` (chair mirror), plus `gh issue list` on focused repos.
 
 ## Snapshot (2026-10-05 ~10:02 UTC)
 
@@ -54,7 +54,7 @@ Open agentic_fomprep feature-request living work: **#56** present as unaccepted 
 ## Method (repeatable)
 
 ```powershell
-$r = Invoke-RestMethod https://irc.ntsa.uk/bob/v1/report
+$r = Invoke-RestMethod https://bob.ntsa.uk/bob/v1/report
 $r.queue.unaccepted | Select-Object task, repo, id, require_machine
 $r.queue.accepted   | Select-Object task, repo, id, require_machine, offered_to
 gh issue list --repo SimonBarnett/bobiverse --state open --json number,title,labels

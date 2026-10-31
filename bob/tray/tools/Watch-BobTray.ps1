@@ -1021,7 +1021,7 @@ function Get-BobTrayGrokFuelRemaining {
 function Get-BobTrayDigestReportUrl {
     $u = [string]$env:BOB_DIGEST_REPORT_URL
     if ($u) { return $u.Trim() }
-    return 'https://irc.ntsa.uk/bob/v1/report'
+    return 'https://bob.ntsa.uk/bob/v1/report'
 }
 
 function Get-BobTrayMachineGrokChatPcent {

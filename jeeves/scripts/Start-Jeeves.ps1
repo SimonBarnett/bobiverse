@@ -78,7 +78,7 @@ if (Test-Path -LiteralPath $watchIrcd) {
 }
 
 # Ensure bobcallback listens on 127.0.0.1:7700 (digest + intake + jira).
-# FR #1014: ARR on irc.ntsa.uk returns IIS 502.3 when nothing listens on :7700.
+# FR #1014: ARR on bob.ntsa.uk returns IIS 502.3 when nothing listens on :7700.
 function Test-BobCallbackListening {
     try {
         $conns = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 7700 -State Listen -ErrorAction SilentlyContinue

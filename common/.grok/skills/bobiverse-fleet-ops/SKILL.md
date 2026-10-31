@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -34,8 +34,8 @@ Per service start: (1) repo fast-forward of the install work tree (sparse `<prod
 - **Jeeves** chair (service `ircJeeves`, nick `Jeeves`, `irc_agent.py --chair`): channel privileges, roster, queue, commands,
   digest, webhooks. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
   `#bobiverse` + `#<machine>`. **Airc** console (service `Airc`, nick `<machine>_console`): remote shell over PRIVMSG.
-- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://irc.ntsa.uk/bob/v1/digest` is 404.
-  Public URL `https://irc.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
+- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://bob.ntsa.uk/bob/v1/digest` is 404.
+  Public URL `https://bob.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
 - **BobAutoFocus retired (FR #3190):** do not re-enable the interim scheduled task that ran `<ai root>\ops\auto-focus.py` every 2 minutes and appended per-item `!focus` lines. Jeeves MSI post-upgrade restarts only `BobCallback` / `BobAutoFeed`, then calls `Unregister-BobAutoFocus.ps1` for leftovers. Repo-level `!focus <Owner/repo>` is the only focus path. `jeeves/tools/monitor/auto_focus.py` is a read-only MONITORING health check, not that ops spammer.
 - **Digest** (`digest.json` + `registered-machines.json` roster + `chair-outbox.txt`) lives in the digest home
   (`BOB_DIGEST_HOME`, default `~\.bobiverse`). Roster = ChanServ-registered `#<machine>` shop channels, mirrored every ~2 min.
@@ -56,7 +56,7 @@ Get-Content <InstallRoot>\VERSION                                   # installed 
 Get-Content <InstallRoot>\logs\stdout.log -Tail 60                  # service log (stderr.log beside it)
 Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook receiver (jeeves box)
 (Invoke-WebRequest http://127.0.0.1:7700/bob/v1/report -UseBasicParsing).StatusCode      # 200 = receiver up
-(Invoke-WebRequest https://irc.ntsa.uk/bob/v1/report -UseBasicParsing).StatusCode        # 200 = public path up
+(Invoke-WebRequest https://bob.ntsa.uk/bob/v1/report -UseBasicParsing).StatusCode        # 200 = public path up
 ```
 
 - IRC connection: stdout shows `joined #bobiverse,... as <nick>`; `chair-status oper=ok chanserv-list=ok op-in=...`.

@@ -19,6 +19,7 @@ def test_assert_bobiverse_dns_pins_required_hosts_and_repair_switches():
         "github.com",
         "api.github.com",
         "irc.ntsa.uk",
+        "bob.ntsa.uk",
         "8.8.8.8",
         "1.1.1.1",
         "RepairDnsServers",

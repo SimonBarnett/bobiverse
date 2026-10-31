@@ -3,7 +3,7 @@
 
 ## Behaviour (check once at start)
 
-1. Read digest `machines.<id>.pcent["grok-chat"]` from `https://irc.ntsa.uk/bob/v1/report`.
+1. Read digest `machines.<id>.pcent["grok-chat"]` from `https://bob.ntsa.uk/bob/v1/report`.
    - **> 0** → start on the pool (`fuel_mode: pool`)
    - **0** → `Show-BobTraySessionApiKeyDialog`; session key only (`fuel_mode: session-key`)
    - **blank/missing** → stop and flag; never start keyless (`fuel_mode: unknown`)

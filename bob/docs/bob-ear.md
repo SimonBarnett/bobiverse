@@ -39,7 +39,7 @@ Do **not** mint a fresh GUID for an already-registered NickServ account.
 
 ## Public airc console roster (FR #5204)
 
-`GET https://irc.ntsa.uk/bob/v1/report` includes `airc_consoles` (and per-machine `console_nicks`): live shop `*_console` nicks from chair NAMES. No NickServ. Priority Agent airc picker can verify presence without IRC credentials.
+`GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (and per-machine `console_nicks`): live shop `*_console` nicks from chair NAMES. No NickServ. Priority Agent airc picker can verify presence without IRC credentials.
 
 ## Outbox (send) — identical on every machine
 

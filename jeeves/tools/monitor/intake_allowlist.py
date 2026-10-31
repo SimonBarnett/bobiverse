@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 
 from _common import EXIT_FINDING, EXIT_OK, run_check
 
-DEFAULT_INTAKE_URL = "https://irc.ntsa.uk/bob/v1/intake"
+DEFAULT_INTAKE_URL = "https://bob.ntsa.uk/bob/v1/intake"
 # Must stay aligned with common/scripts/intake.py DEFAULT_ALLOW_REPOS (FR #3023 / #3050 / #3117).
 REQUIRED_ALLOW_REPOS = (
     "SimonBarnett/bobiverse",

@@ -59,5 +59,5 @@ Title: short delay symptom. Body: what / where / evidence (script JSON / exit) /
 - Act as chair or claim shop jobs
 - Conclude "no skills" because `.\skills` is missing - use `.grok\skills`
 
-- Intake URL: https://irc.ntsa.uk/bob/v1/intake
+- Intake URL: https://bob.ntsa.uk/bob/v1/intake
 - Explicit Bobiverse filing target: -Repo SimonBarnett/bobiverse
