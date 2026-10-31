@@ -28,7 +28,8 @@ if (-not (Test-Path -LiteralPath $src)) { throw "missing $src" }
 $pyPaths = @(Get-BobiverseRepoDirs -Root $RepoRoot -Sub 'scripts')
 $pathArgs = @(); foreach ($pp in $pyPaths) { $pathArgs += @('--paths', $pp) }
 
-$hidden = @('account_map', 'airc_console', 'airc_jobs', 'airc_dcc_bulk', 'cryptography')
+# FR #5526: airc_credman is imported inside fetch/read helpers (not a top-level import).
+$hidden = @('account_map', 'airc_console', 'airc_jobs', 'airc_dcc_bulk', 'airc_credman', 'cryptography')
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 
 # FR #5522: EXTENSION GPO step needs Invoke-AircExtensionGpo.ps1 inside the onefile

@@ -27,6 +27,7 @@ KEEP_SCRIPTS = (
     "airc_console_service.py",
     "crash_report.py",
     "airc_priority.py",  # FR #5288 Priority Client module
+    "airc_credman.py",  # FR #5526 native CredMan helper
 )
 
 # Must be gone after client allow-list (union leftovers / docs).
@@ -51,6 +52,7 @@ GONE_SCRIPTS = (
 # FR #5283 adds airc\priority-worker (3 files) under the kept airc\ tree.
 # FR #5288 keeps scripts\airc_priority.py on the client allow-list.
 # FR #5366 keeps airc\priority-worker\fixtures\form_walk.json (airc\ keep-all).
+# FR #5526 keeps scripts\airc_credman.py (native CredMan for PRIORITY/LEGION/EXTENSION).
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
@@ -81,13 +83,14 @@ CLIENT_REMAINING_FILES = frozenset(
         r"scripts\Uninstall-Airc.ps1",
         r"scripts\Update-BobiverseService.ps1",
         r"scripts\airc_priority.py",
+        r"scripts\airc_credman.py",
         r"airc\priority-worker\priority_worker.py",
         r"airc\priority-worker\README.md",
         r"airc\priority-worker\package.json",
         r"airc\priority-worker\fixtures\form_walk.json",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 32
+assert len(CLIENT_REMAINING_FILES) == 33
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:

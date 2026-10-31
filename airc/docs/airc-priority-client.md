@@ -60,6 +60,11 @@ DONE id=<corr> exit=0
 
 shell=off capability denies PRIORITY with DONE exit=126 (same gate family as free-form shell until a dedicated Priority capability lands).
 
+### CredMan + receive-loop isolation (FR #5526)
+
+- Default CredMan path is native `CredReadW` via `airc/scripts/airc_credman.py` (no PowerShell / Add-Type subprocess). A missing target returns `credman-missing` in milliseconds (exit 1). LEGION / EXTENSION reuse the same helper through `read_legion_credman`.
+- Live service binds `priority_reply_send` so `PRIORITY connect` runs CredMan + connector on a worker thread; the IRC receive loop keeps serving other commands. Wire shape is unchanged (no accept line; exactly one `DONE id=`).
+
 ## CAST IRON secrets
 
 - Never put Priority passwords on IRC, in logs, intake, harvest, or git.
@@ -69,4 +74,4 @@ shell=off capability denies PRIORITY with DONE exit=126 (same gate family as fre
 ## MSI / client allow-list (FR-G / #5288)
 
 Default **on** for both `AIRC_PROFILE=client` and fleet. Not a separate MSI Feature and not opt-in.
-Client `Remove-BobiverseAircClientExtraPayload` keeps `airc\priority-worker\*` and `scripts\airc_priority.py` so the in-service Priority module is not stripped.
+Client `Remove-BobiverseAircClientExtraPayload` keeps `airc\priority-worker\*`, `scripts\airc_priority.py`, and `scripts\airc_credman.py` so the in-service Priority module is not stripped.
