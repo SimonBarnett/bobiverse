@@ -30,6 +30,7 @@ import json
 from account_map import AccountMap, parse_message_tags
 from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
 import airc_priority as _priority
+import airc_extension as _extension
 
 
 def priority_worker_argv(install_root: str | Path | None = None) -> list[str]:
@@ -2470,6 +2471,7 @@ class AircConsoleCore:
         presence_channels: list[str] | None = None,
         priority_runner: Callable[..., _priority.PriorityVerbResult] | None = None,
         priority_allowlist_path: str | None = None,
+        extension_runner: Callable[..., _extension.ExtensionVerbResult] | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -2484,6 +2486,7 @@ class AircConsoleCore:
         # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
         self.priority_runner = priority_runner or _priority.run_priority_verb
         self.priority_allowlist_path = priority_allowlist_path
+        self.extension_runner = extension_runner or _extension.run_extension_verb
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
         # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
@@ -2648,6 +2651,7 @@ class AircConsoleCore:
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
                     "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); "
+                    "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
                     ".quit closes; silent on channel; answers ping"
@@ -2685,6 +2689,49 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=result.reply_text(),
+                **meta,
+            )
+
+        # FR #5290: EXTENSION install/status — isolated stub worker; same auth as UPDATE.
+        ext = _extension.parse_extension_command(cmd)
+        if ext is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.update == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 update-disabled",
+                )
+            try:
+                result = self.extension_runner(
+                    action=ext["action"],
+                    whatif=ext["whatif"],
+                    job_id=ext.get("qid") or "",
+                )
+            except TypeError:
+                result = self.extension_runner(action=ext["action"])
+            except Exception:
+                result = _extension.ExtensionVerbResult(
+                    False, "EXTENSION err isolated-fault", job_id=ext.get("qid") or ""
+                )
+            if not isinstance(result, _extension.ExtensionVerbResult):
+                result = _extension.ExtensionVerbResult(False, "EXTENSION err bad-runner")
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="extension",
                 nick=nick,
                 target=target,
                 text=text,
