@@ -15,7 +15,12 @@ def test_fr5309_whatif_dry_run_no_remote_install():
         seen.append(spec)
         return {"ok": True, "status": "dry-run"}
 
-    body = lg.installer_legion_work("walrus", whatif=True, run_fn=run_fn)
+    body = lg.installer_legion_work(
+        "walrus",
+        whatif=True,
+        run_fn=run_fn,
+        credman=lambda: {"username": "u", "password": "FAKE_x"},
+    )
     assert body["ok"] is True
     assert body["invoked_installer"] is True
     assert body["whatif"] is True
@@ -41,6 +46,7 @@ def test_fr5309_live_spec_latest_release_not_foreign_url():
         whatif=False,
         run_fn=run_fn,
         msi="https://github.com/SimonBarnett/bobiverse/releases/download/v1/airc.msi",
+        credman=lambda: {"username": "u", "password": "FAKE_x"},
     )
     assert body["ok"] is True
     assert body["invoked_installer"] is True
@@ -90,7 +96,10 @@ def test_fr5309_console_whatif_no_secret():
     def runner(**kw):
         return lg.run_legion_verb(
             worker=lambda target, **k: lg.installer_legion_work(
-                target, run_fn=lambda spec: {"ok": True, "status": "dry-run"}, **k
+                target,
+                run_fn=lambda spec: {"ok": True, "status": "dry-run"},
+                credman=lambda: {"username": "u", "password": "FAKE_x"},
+                **k,
             ),
             **kw,
         )
