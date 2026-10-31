@@ -1,4 +1,4 @@
-﻿"""FR #5505: assign held during post-NACK harvest hold must inject when hold ends.
+"""FR #5505: assign held during post-NACK harvest hold must inject when hold ends.
 
 Production path: ACK-on-receipt writes through write_outbox -> BoredEmitter.on_outbox,
 which must not cancel the harvest hold while the assign is still parked. When the hold
