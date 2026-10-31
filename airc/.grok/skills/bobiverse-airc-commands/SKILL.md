@@ -106,7 +106,7 @@ PRIVMSG {mid}_console :id=c25bd00e EXTENSION status
 - **GPO happy path:** worker uses GroupPolicy on GPO `Priority-web-extension` linked at domain root (`ExtensionInstallForcelist` for Chrome and Edge). `-WhatIf` is read-only (no GPO/registry/gpupdate writes). **FR #5538:** `EXTENSION status` is read-only fill-holes (no HKLM writes); install appends a free forcelist value name and never writes DCs.
 - **Fill-holes:** after GPO (or when DC is missing), LDAP AD computers only; reachable hosts get remote registry ForceInstall; unreachable = logged failure. Machine account first; optional CredMan target `PriorityAirc/ExtensionAdmin` on access-denied (never put that password on IRC).
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... sha256= via=dcc`. No offer or DCC fail -> IRC CONT + failure lines. No secrets in the log.
-- **Isolation:** AD/GPO/registry loops are not on the IRC receive thread; worker fault must not stop service Airc.
+- **Isolation:** in-service child (`airc_isolated` + `extension_gpo_then_fill_holes`, FR #5522); worker fault must not stop service Airc.
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-extension-priority-web-2026-10-31.md`.
 

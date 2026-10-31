@@ -657,12 +657,16 @@ def run_extension_verb(
             }
             _finish(payload)
 
+        # FR #5522: child must run the same packaged worker (GPO then fill-holes
+        # when service_extension_runner passes extension_gpo_then_fill_holes). Hard-coding
+        # fill_holes_work skipped Invoke-AircExtensionGpo.ps1 after FR #5537 isolation.
+        fn_name = getattr(work, "__name__", "") or "fill_holes_work"
         _iso.start_isolated(
             wait=False,
             run=_safe,
             packaged=(
                 "airc_extension",
-                "fill_holes_work",
+                fn_name,
                 {
                     "action": action,
                     "whatif": bool(whatif),
@@ -694,6 +698,22 @@ def _scrub(obj: Any) -> Any:
     return obj
 
 
+
+def _format_gpo_log_block(gpo: dict[str, Any]) -> dict[str, Any]:
+    """FR #5522 / #5586: honor attempted=False when the GPO step did not run."""
+    attempted = True if "attempted" not in gpo else bool(gpo.get("attempted"))
+    return {
+        "attempted": attempted,
+        "name": (gpo.get("gpo_name") or gpo.get("name") or DEFAULT_GPO_NAME),
+        "ok": bool(gpo.get("ok")) if attempted else False,
+        "result": gpo.get("gpo"),
+        "browsers": list(gpo.get("browsers") or []),
+        "policy_names": list(gpo.get("policy_names") or []),
+        "reason": gpo.get("reason"),
+        "wrote_gpo": bool(gpo.get("wrote_gpo")),
+    }
+
+
 def build_extension_log(
     action: str,
     *,
@@ -723,7 +743,7 @@ def build_extension_log(
         "action": action,
         "whatif": bool(whatif),
         "extension_id": extension_id,
-        "gpo": ({"attempted": True, "name": (gpo.get("gpo_name") or gpo.get("name") or DEFAULT_GPO_NAME), "ok": bool(gpo.get("ok")), "result": gpo.get("gpo"), "browsers": list(gpo.get("browsers") or []), "policy_names": list(gpo.get("policy_names") or []), "reason": gpo.get("reason"), "wrote_gpo": bool(gpo.get("wrote_gpo"))} if isinstance(gpo, dict) else (gpo or {"attempted": False, "name": DEFAULT_GPO_NAME})),
+        "gpo": (_format_gpo_log_block(gpo) if isinstance(gpo, dict) else (gpo or {"attempted": False, "name": DEFAULT_GPO_NAME})),
         "fallback": fallback or {"attempted": False},
         "hosts": list(hosts or []),
         "failures": fails,
@@ -753,15 +773,33 @@ def extension_log_from_payload(
             gpo["gpo"] = data.get("gpo")
         if "reason" not in gpo and data.get("gpo_reason") is not None:
             gpo["reason"] = data.get("gpo_reason")
-    elif data:
+    elif data and (
+        data.get("gpo") is not None
+        or data.get("gpo_reason") is not None
+        or data.get("wrote_gpo")
+        or data.get("policy_names")
+    ):
+        # Real GPO fields present without gpo_detail (legacy shape).
         gpo = {
-            "ok": bool(data.get("ok")),
+            "ok": bool(data.get("ok")) if data.get("gpo") in {"ok", "present"} else bool(data.get("wrote_gpo")),
             "gpo": data.get("gpo"),
             "gpo_name": data.get("gpo_name") or DEFAULT_GPO_NAME,
             "browsers": list(data.get("browsers") or []),
             "policy_names": list(data.get("policy_names") or []),
             "reason": data.get("gpo_reason") or data.get("reason"),
             "wrote_gpo": bool(data.get("wrote_gpo")),
+        }
+    elif data:
+        # FR #5586 / #5522: fill-holes-only payload --- GPO step did not run.
+        gpo = {
+            "ok": False,
+            "gpo": None,
+            "gpo_name": DEFAULT_GPO_NAME,
+            "browsers": [],
+            "policy_names": [],
+            "reason": "gpo_step_skipped",
+            "wrote_gpo": False,
+            "attempted": False,
         }
     else:
         gpo = None
