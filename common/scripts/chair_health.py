@@ -872,6 +872,15 @@ class ChairJobs:
             self.log("INFO stall-heal " + "; ".join(healed))
         res = self.last_resync if isinstance(self.last_resync, dict) else {}
         status = res.get("error") or (200 if res.get("ok") else None)
+        last_activity = {}
+        for nick in idle:
+            if not nick:
+                continue
+            ts = gitclaim.last_worker_activity(self.digest_home, nick)
+            if ts is None:
+                ts = gitclaim.last_worker_activity(self.home, nick)
+            if ts is not None:
+                last_activity[nick] = float(ts)
         snap = {
             "now": self.clock(),
             "live": live,
@@ -882,6 +891,7 @@ class ChairJobs:
             "resync_fail_streak": self.resync_fail_streak,
             "last_resync_status": status,
             "last_bored": gitclaim.merge_last_bored(self.home, self.digest_home),
+            "last_activity": last_activity,
             "deadlock_healed": bool(healed),
         }
         findings = stall_detectors.detect_all(snap)
