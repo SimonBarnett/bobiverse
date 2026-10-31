@@ -126,6 +126,52 @@ def append_airc_reply_jsonl(
         fh.write(line)
         fh.flush()
     return dest
+
+
+# FR #5588: over-long *_console outbox body embeds id=<hex> for correlation.
+_CONSOLE_OUTBOX_ID_RE = re.compile(r"(?i)\bid=([0-9a-f]+)\b")
+
+
+def note_overlong_console_privmsg_reject(
+    home: Path | str | None,
+    *,
+    console_nick: str,
+    ear_nick: str,
+    text: str,
+    budget: int,
+) -> None:
+    """FR #5588: synthetic err+DONE when an over-long *_console PRIVMSG is dropped.
+
+    Wire still sends nothing (FR #5539). Callers waiting on airc-replies.jsonl /
+    inbound-transcript get a visible completion instead of hanging forever.
+    No-op when home is missing or the body has no id=<hex>.
+    """
+    if home is None:
+        return
+    m = _CONSOLE_OUTBOX_ID_RE.search(text or "")
+    if not m:
+        return
+    qid = m.group(1).lower()
+    console = (console_nick or "").strip()
+    if not console or not _AIRC_CONSOLE_NICK_RE.match(console):
+        return
+    nbytes = len((text or "").encode("utf-8"))
+    err_body = f"err id={qid} seq=1 code=too_long bytes={nbytes} budget={budget}"
+    done_body = f"DONE id={qid} exit=1"
+    home_p = Path(home)
+    ear = (ear_nick or "").strip() or "ear"
+    for body in (err_body, done_body):
+        try:
+            append_airc_reply_jsonl(home_p, console, body)
+        except OSError as exc:
+            info(f"WARN airc-replies synthetic too_long failed {type(exc).__name__}")
+        try:
+            # Shape matches a real console PM: channel=ear nick, nick=*_console.
+            inbound_transcript.append_inbound(home_p, ear, console, body)
+        except Exception:
+            pass
+
+
 # FR #68: cap each outbox tick so chair +o and ChanServ sync cannot starve.
 OUTBOX_LINES_PER_TICK = 8
 # IRC classic line limit is 512 bytes including CRLF. Ergo rejects oversize relays with 417.
@@ -497,6 +543,8 @@ def expand_irc_outbound_line(
     nick: str,
     linelen: int = 512,
     text_max: int | None = None,
+    home: Path | str | None = None,
+    ear_nick: str | None = None,
 ) -> list[str]:
     """Expand one outbox/chat line into wire line(s). Non-PRIVMSG pass through."""
     # rstrip only CR/LF — never strip trailing body spaces (reassembly must be exact).
@@ -515,10 +563,18 @@ def expand_irc_outbound_line(
     pieces = split_privmsg_body(text, budget)
     # FR #5539: *_console treats each PRIVMSG as one command. Never emit overflow
     # fragments (a split body can execute as a second shell). Drop the whole line.
+    # FR #5588: when home is set, also write synthetic err+DONE for the caller.
     if len(pieces) > 1 and _AIRC_CONSOLE_NICK_RE.match(target):
         info(
             f"INFO outbox reject overlong console PRIVMSG target={target} "
             f"bytes={len(text.encode('utf-8'))} budget={budget}"
+        )
+        note_overlong_console_privmsg_reject(
+            home,
+            console_nick=target,
+            ear_nick=ear_nick or nick,
+            text=text,
+            budget=budget,
         )
         return []
     return [f"PRIVMSG {target} :{p}" for p in pieces]
@@ -749,6 +805,8 @@ class Client:
             nick=nick,
             linelen=getattr(self, "_linelen", 512) or 512,
             text_max=getattr(self, "_privmsg_text_max", None),
+            home=getattr(self, "home", None),
+            ear_nick=nick,
         )
         out: list[str] = []
         for w in wire_lines:
