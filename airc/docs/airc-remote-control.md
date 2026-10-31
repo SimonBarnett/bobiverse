@@ -30,22 +30,24 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
 | `GET path` | hash/size + head (80 chars). Does not send the file. |
 | `GET path fetch=chunk` then `GETCHUNK id seq` | FR #4795 outbound fetch. Open returns bytes/sha256/seqs only. Each GETCHUNK returns one <=300-byte raw chunk. The next GETCHUNK is the ack; the console never pushes the following chunk. |
-| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77) |
+| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 
-## UPDATE (FR #77) — shipped
+## UPDATE (FR #77 / FR #5280) - shipped
 
-Authorized PRIVMSG only (operators list; `bob-<machine>` when seeded — FR #3286, never arbitrary `bob-*`):
+Authorized PRIVMSG only (operators list; `bob-<machine>` when seeded - FR #3286, never arbitrary `bob-*`):
 
 ```text
 PRIVMSG marchhare_console :UPDATE airc
 PRIVMSG marchhare_console :UPDATE airc 0.1.20
 ```
 
-- Schedules **Check** mode of `Update-BobiverseService.ps1` with `-ForceCheck` (and optional `-TargetVersion`).
+- **Bare `UPDATE airc` (no version)** = latest GitHub Release airc MSI for `SimonBarnett/bobiverse` (sha256-checked). The console schedules Check **without** `-TargetVersion`; `Update-BobiverseService.ps1` calls `GET /repos/.../releases/latest` and selects the matching `airc-x.y.z.msi` + `.sha256` (FR #5280 / parent Success S3).
+- **Pinned `UPDATE airc x.y.z`** = that release tag only (`-TargetVersion`; API `/releases/tags/vX.Y.Z`). Invalid/mismatched pins log `target-version-mismatch` and do not install.
+- Schedules **Check** mode of `Update-BobiverseService.ps1` with `-ForceCheck` (and optional `-TargetVersion` only when pinned).
 - Detached helper (scheduled task / WMI) runs **Apply** later; the live airc process never invokes `msiexec`.
-- Reply (`UPDATE accepted status=scheduled …` or `UPDATE skipped-pending …`) is sent **before** the transport is stopped.
-- Assets must be `https://github.com/SimonBarnett/bobiverse/releases/download/...`; foreign URLs are rejected.
+- Reply (`UPDATE accepted status=scheduled ...` or `UPDATE skipped-pending ...`) is sent **before** the transport is stopped.
+- Assets must be `https://github.com/SimonBarnett/bobiverse/releases/download/...`; foreign URLs are rejected (`asset-url-rejected`).
 - Pending / loop-guard / rollback / sha256 mismatch behaviour is owned by the updater (same as service-start self-update).
 - **FR #5279:** each distinct Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, …) files one `kind:issue` on `SimonBarnett/bobiverse` via intake. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted. `Set-Failure` and `schedule_fleet_update` both call this path. Local `state.json` counts are unchanged.
 - Machine id: explicit `-MachineId`, then `AIRC_CONSOLE_MACHINE` / `BOB_MACHINE_ID`; hostname fallback must be conscious (Start-AircConsole warns).
