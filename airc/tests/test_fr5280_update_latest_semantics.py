@@ -33,13 +33,20 @@ def _release(ver: str, product: str = "airc", sha: bool = True) -> dict:
 
 
 def test_fr5280_get_latest_release_uses_latest_api_when_unpinned():
+    """FR #5280 / #5447: bare Check hits /releases/latest; FR #5353 list-fallback on 404."""
     t = UPD.read_text(encoding="utf-8-sig")
     fn = t[t.index("function Get-LatestRelease") : t.index("function Test-AssetUrl")]
     assert "/releases/latest" in fn
     assert "/releases/tags/v" in fn
     # Pin path only when ConvertTo-Ver TargetVersion is truthy
     assert "if ($tv)" in fn
-    assert re.search(r"\$uri\s*=\s*\"https://api\.github\.com/repos/\$Repo/releases/latest\"", fn)
+    assert re.search(
+        r"\$latestUri\s*=\s*\"https://api\.github\.com/repos/\$Repo/releases/latest\"",
+        fn,
+    )
+    assert "latest-endpoint-404" in fn
+    assert "Select-BestReleaseFromList" in fn
+    assert "releases?per_page=" in fn
 
 
 def test_fr5280_bare_schedule_omits_target_version(tmp_path, monkeypatch):
