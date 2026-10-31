@@ -136,3 +136,4 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
 
 - CredMan `PriorityAirc/LegionAdmin` via secure env. CAST IRON: no secrets on IRC or in the DCC body.
 - Same job `id=` on DCCLISTEN and LEGION. WhatIf is dry-run (no remote install).
+- FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).

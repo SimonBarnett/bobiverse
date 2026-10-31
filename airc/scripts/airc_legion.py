@@ -37,6 +37,10 @@ class LegionVerbResult:
     status: str = ""
     error: str = ""
     failures: list[dict[str, Any]] = field(default_factory=list)
+    # FR #5530 retest: WhatIf plan fields for the DCC log (msi/psexec).
+    msi: str = ""
+    psexec: str = ""
+    plan: dict[str, Any] = field(default_factory=dict)
 
     def reply_text(self) -> str:
         return self.reply
@@ -414,6 +418,17 @@ def run_legion_verb(
         fails = list(data.get("failures") or [])
         if not fails and err:
             fails = [{"host": data.get("target") or target, "error": err}]
+        msi = str(data.get("msi") or "")
+        psexec = str(data.get("psexec") or "")
+        plan = data.get("plan") if isinstance(data.get("plan"), dict) else {}
+        # FR #5530: surface WhatIf probe results even when worker only set top-level keys.
+        if whatif and (msi or psexec) and not plan:
+            plan = {
+                "target": str(data.get("target") or target),
+                "msi": msi or "latest",
+                "psexec": psexec or "psexec-missing",
+                "install": "skipped (whatif)",
+            }
         res = LegionVerbResult(
             bool(data.get("ok", True)),
             reply or accepted,
@@ -421,6 +436,9 @@ def run_legion_verb(
             status=str(data.get("status") or ""),
             error=err,
             failures=fails,
+            msi=msi,
+            psexec=psexec,
+            plan=dict(plan),
         )
         if on_done is not None:
             on_done(res)
