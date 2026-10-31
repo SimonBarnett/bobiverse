@@ -1162,6 +1162,13 @@ def _harvest_pr_matches_lessons(
     return False
 
 
+def _is_harvest_lesson_pr(pr: dict[str, Any]) -> bool:
+    """True for harvest-lesson labelled or ``lesson(book):`` title tips (FR #5569)."""
+    labs = {str(x).lower() for x in (pr.get("labels") or [])}
+    title = str(pr.get("title") or "")
+    return "harvest-lesson" in labs or title.lower().startswith("lesson(")
+
+
 def find_open_harvest_lesson_twin(
     filer: Any,
     repo: str,
@@ -1184,6 +1191,10 @@ def find_open_harvest_lesson_twin(
     if not keys:
         return None
     for pr in _filer_list_open_pulls(filer, repo):
+        # FR #5569: live list_open_pulls is every open PR. Never treat a
+        # product FR tip as an open harvest-lesson twin.
+        if not _is_harvest_lesson_pr(pr):
+            continue
         if _harvest_pr_matches_lessons(pr, lesson_rows, new_title=new_title):
             return pr
     return None
