@@ -58,8 +58,9 @@ def test_mrb5604_whatif_plan_reports_system_identity():
     )
     assert body["whatif"] is True
     assert body["plan"]["identity"].startswith("SYSTEM")
-    assert body["plan"]["identity"].endswith("$") or "\\" in body["plan"]["identity"]
+    assert "(" in body["plan"]["identity"] and body["plan"]["identity"].endswith(")")
     assert body["computer_account"].endswith("$")
+    assert body["computer_account"] in body["plan"]["identity"]
 
 
 def test_mrb5604_ok_true_never_maps_access_denied():
