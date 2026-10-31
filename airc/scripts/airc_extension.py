@@ -1,8 +1,10 @@
-"""Airc EXTENSION verb + isolated worker scaffold (FR #5290 / FR #5293).
+"""Airc EXTENSION verb + isolated worker (FR #5290 / #5291 / #5292 / #5293).
 
-No GPO/AD/registry mutation in this slice (stub worker). Auth matches UPDATE
-(ops/half-ops; ``update=off`` refuses). Worker faults must not stop Airc.
-FR #5293: structured operation log via DCCLISTEN or IRC CONT; never secrets.
+FR-A: verb + isolated worker. FR-B: DC + GPO Priority-web-extension.
+FR-C: LDAP enum + per-host Chrome/Edge ForceInstall fallback (always after GPO).
+FR #5364: machine account first; CredMan PriorityAirc/ExtensionAdmin on access-denied.
+FR-D: structured log via DCCLISTEN or IRC CONT.
+Auth matches UPDATE. Never secrets on IRC.
 """
 from __future__ import annotations
 
@@ -11,9 +13,17 @@ import json
 import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 DEFAULT_EXTENSION_ID = "cgmpadejahkaggjpffnhaoiafbnicgpa"
+CHROME_WEB_STORE_UPDATE = "https://clients2.google.com/service/update2/crx"
+DEFAULT_UPDATE_URL = CHROME_WEB_STORE_UPDATE
+DEFAULT_GPO_NAME = "Priority-web-extension"
+FORCE_INSTALL_ENTRY = f"{DEFAULT_EXTENSION_ID};{DEFAULT_UPDATE_URL}"
+CHROME_FORCE_KEY = r"SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
+EDGE_FORCE_KEY = r"SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+CREDMAN_TARGET = "PriorityAirc/ExtensionAdmin"
 
 _EXTENSION_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?EXTENSION\s+(install|status)(?P<rest>.*)$"
@@ -25,6 +35,7 @@ class ExtensionVerbResult:
     ok: bool
     reply: str
     job_id: str = ""
+    payload: dict[str, Any] | None = None
 
     def reply_text(self) -> str:
         return self.reply
@@ -42,13 +53,168 @@ def parse_extension_command(text: str) -> dict[str, Any] | None:
     }
 
 
+
+
+def gpo_script_path() -> Path:
+    return Path(__file__).resolve().parent / "Invoke-AircExtensionGpo.ps1"
+
+
+def run_extension_gpo_work(
+    action: str = "install",
+    *,
+    whatif: bool = False,
+    extension_id: str = DEFAULT_EXTENSION_ID,
+    update_url: str = DEFAULT_UPDATE_URL,
+    gpo_name: str = DEFAULT_GPO_NAME,
+    runner: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """FR #5291: DC discovery + GPO ForceInstall for Chrome and Edge."""
+    eid = (extension_id or DEFAULT_EXTENSION_ID).strip() or DEFAULT_EXTENSION_ID
+    url = (update_url or DEFAULT_UPDATE_URL).strip() or DEFAULT_UPDATE_URL
+    name = (gpo_name or DEFAULT_GPO_NAME).strip() or DEFAULT_GPO_NAME
+    if runner is not None:
+        body = runner(
+            action=action,
+            whatif=whatif,
+            extension_id=eid,
+            update_url=url,
+            gpo_name=name,
+        )
+        if not isinstance(body, dict):
+            return {
+                "ok": False,
+                "gpo": "fail",
+                "reason": "bad_runner",
+                "wrote_gpo": False,
+                "wrote_registry": False,
+                "extension_id": eid,
+                "browsers": [],
+                "policy_names": [],
+            }
+        body.setdefault("extension_id", eid)
+        body.setdefault("wrote_registry", False)
+        body.setdefault("browsers", ["chrome", "edge"] if body.get("ok") else [])
+        body.setdefault(
+            "policy_names",
+            [name] if body.get("gpo") in {"ok", "present"} else [],
+        )
+        return body
+    script = gpo_script_path()
+    if not script.is_file():
+        return {
+            "ok": False,
+            "gpo": "fail",
+            "reason": "gpo_script_missing",
+            "wrote_gpo": False,
+            "wrote_registry": False,
+            "extension_id": eid,
+            "browsers": [],
+            "policy_names": [],
+        }
+    args = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Action",
+        action,
+        "-ExtensionId",
+        eid,
+        "-UpdateUrl",
+        url,
+        "-GpoName",
+        name,
+    ]
+    if whatif:
+        args.append("-WhatIf")
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "ok": False,
+            "gpo": "fail",
+            "reason": "gpo_invoke_failed",
+            "error": type(exc).__name__,
+            "wrote_gpo": False,
+            "wrote_registry": False,
+            "extension_id": eid,
+            "browsers": [],
+            "policy_names": [],
+        }
+    raw_lines = (proc.stdout or "").strip().splitlines()
+    blob = raw_lines[-1] if raw_lines else ""
+    try:
+        data = json.loads(blob) if blob else {}
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict) or not data:
+        return {
+            "ok": False,
+            "gpo": "fail",
+            "reason": "gpo_bad_json" if blob else "gpo_empty_output",
+            "exit_code": proc.returncode,
+            "stderr_tail": (proc.stderr or "")[-400:],
+            "wrote_gpo": False,
+            "wrote_registry": False,
+            "extension_id": eid,
+            "browsers": [],
+            "policy_names": [],
+        }
+    data.setdefault("wrote_registry", False)
+    data.setdefault("extension_id", eid)
+    return data
+
+
+def extension_gpo_then_fill_holes(
+    action: str = "install",
+    *,
+    whatif: bool = False,
+    extension_id: str = DEFAULT_EXTENSION_ID,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Vision order: GPO first, then always FR-C fill-holes."""
+    gpo_kw = {k: kw[k] for k in ("update_url", "gpo_name", "runner") if k in kw}
+    hole_kw = {k: v for k, v in kw.items() if k not in {"update_url", "gpo_name", "runner"}}
+    gpo = run_extension_gpo_work(
+        action, whatif=whatif, extension_id=extension_id, **gpo_kw
+    )
+    holes = fill_holes_work(
+        action, whatif=whatif, extension_id=extension_id, **hole_kw
+    )
+    out = dict(holes) if isinstance(holes, dict) else {"ok": False, "reason": "bad_fill_holes"}
+    out["gpo"] = gpo.get("gpo") if isinstance(gpo, dict) else "fail"
+    out["gpo_detail"] = gpo
+    out["wrote_gpo"] = bool(isinstance(gpo, dict) and gpo.get("wrote_gpo"))
+    if isinstance(gpo, dict):
+        out["browsers"] = list(
+            dict.fromkeys(list(gpo.get("browsers") or []) + list(out.get("browsers") or []))
+        )
+        out["policy_names"] = list(gpo.get("policy_names") or [])
+        out["gpo_reason"] = gpo.get("reason")
+    out["ok"] = bool(isinstance(gpo, dict) and gpo.get("ok")) or bool(out.get("ok"))
+    return out
+
+
+def service_extension_runner(**kw: Any) -> ExtensionVerbResult:
+    """Production: GPO then fill-holes, wait for structured payload."""
+    return run_extension_verb(worker=extension_gpo_then_fill_holes, wait=True, **kw)
+
 def stub_extension_work(
     action: str,
     *,
     whatif: bool = False,
     extension_id: str = DEFAULT_EXTENSION_ID,
 ) -> dict[str, Any]:
-    """FR-A stub: never writes GPO/registry (FR-B/C)."""
+    """FR-A stub: never writes GPO/registry (FR-B)."""
     return {
         "ok": True,
         "action": action,
@@ -56,6 +222,220 @@ def stub_extension_work(
         "wrote_gpo": False,
         "wrote_registry": False,
         "extension_id": extension_id,
+    }
+
+
+def force_install_value(extension_id: str = DEFAULT_EXTENSION_ID) -> str:
+    return f"{extension_id};{CHROME_WEB_STORE_UPDATE}"
+
+
+def default_ldap_enum() -> list[str]:
+    """AD computer names via LDAP/ADSI. Empty when DC is unavailable (no invented hosts)."""
+    import os
+    import shutil
+    import subprocess
+
+    if os.name != "nt":
+        return []
+    ps = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not ps:
+        return []
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$s=[adsisearcher]'(objectCategory=computer)';"
+        "$s.PageSize=500; [void]$s.PropertiesToLoad.Add('name');"
+        "($s.FindAll() | ForEach-Object { $_.Properties['name'][0] })"
+    )
+    try:
+        p = subprocess.run(
+            [ps, "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+    except Exception:
+        return []
+    if p.returncode != 0:
+        return []
+    return [ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip()]
+
+
+def default_ping_host(host: str) -> bool:
+    import os
+    import shutil
+    import subprocess
+
+    ping = shutil.which("ping")
+    if not ping or not (host or "").strip():
+        return False
+    args = (
+        [ping, "-n", "1", "-w", "800", host]
+        if os.name == "nt"
+        else [ping, "-c", "1", "-W", "1", host]
+    )
+    try:
+        p = subprocess.run(args, capture_output=True, timeout=3)
+        return p.returncode == 0
+    except Exception:
+        return False
+
+
+def is_access_denied(exc: BaseException) -> bool:
+    """True for remote-registry access-denied (FR #5364)."""
+    if isinstance(exc, PermissionError):
+        return True
+    if int(getattr(exc, "winerror", 0) or 0) == 5:
+        return True
+    if int(getattr(exc, "errno", 0) or 0) in (5, 13):
+        return True
+    msg = str(exc).lower()
+    return "access is denied" in msg or "access denied" in msg
+
+
+def default_extension_credman() -> dict[str, str]:
+    """CredMan ``PriorityAirc/ExtensionAdmin``. Empty means missing (fail closed)."""
+    try:
+        from airc_legion import LegionCredmanError, read_legion_credman
+
+        return read_legion_credman(target=CREDMAN_TARGET)
+    except Exception:
+        return {}
+
+
+def default_apply_force_install_as(
+    host: str,
+    product: str,
+    value: str,
+    username: str,
+    password: str,
+) -> None:
+    """Retry registry write after IPC$ with CredMan user. Never log the secret."""
+    import shutil
+    import subprocess
+
+    net = shutil.which("net")
+    if not net:
+        raise OSError(5, "net-missing")
+    ipc = r"\\{0}\IPC$".format(host)
+    try:
+        p = subprocess.run(
+            [net, "use", ipc, password, "/user:" + username],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if p.returncode != 0:
+            raise OSError(5, "credman-ipc-failed")
+        default_apply_force_install(host, product, value)
+    finally:
+        subprocess.run(
+            [net, "use", ipc, "/delete", "/y"],
+            capture_output=True,
+            timeout=10,
+        )
+
+
+def default_apply_force_install(host: str, product: str, value: str) -> None:
+    import winreg
+
+    key_path = CHROME_FORCE_KEY if product == "chrome" else EDGE_FORCE_KEY
+    rem = winreg.ConnectRegistry(host, winreg.HKEY_LOCAL_MACHINE)
+    try:
+        key = winreg.CreateKey(rem, key_path)
+        try:
+            winreg.SetValueEx(key, "1", 0, winreg.REG_SZ, value)
+        finally:
+            winreg.CloseKey(key)
+    finally:
+        winreg.CloseKey(rem)
+
+
+def fill_holes_work(
+    action: str,
+    *,
+    whatif: bool = False,
+    extension_id: str = DEFAULT_EXTENSION_ID,
+    ldap_enum: Callable[[], list[str]] | None = None,
+    ping_host: Callable[[str], bool] | None = None,
+    apply_force_install: Callable[[str, str, str], None] | None = None,
+    apply_force_install_as: Callable[..., None] | None = None,
+    credman_reader: Callable[[], dict[str, str]] | None = None,
+    extra_hosts: list[str] | None = None,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """FR #5292: LDAP enum + per-host Chrome/Edge ForceInstall. Never uses extra_hosts.
+
+    FR #5364: on access-denied, retry with CredMan PriorityAirc/ExtensionAdmin.
+    """
+    _ = extra_hosts
+    enum = ldap_enum or default_ldap_enum
+    ping = ping_host or default_ping_host
+    apply = apply_force_install or default_apply_force_install
+    apply_as = apply_force_install_as or default_apply_force_install_as
+    read_creds = credman_reader or default_extension_credman
+    value = force_install_value(extension_id)
+    hosts_out: list[dict[str, Any]] = []
+    wrote = False
+    for host in list(enum() or []):
+        name = str(host or "").strip()
+        if not name:
+            continue
+        if not ping(name):
+            hosts_out.append({"host": name, "ok": False, "error": "unreachable"})
+            continue
+        if whatif:
+            hosts_out.append({"host": name, "ok": True, "would_write": True})
+            continue
+        try:
+            apply(name, "chrome", value)
+            apply(name, "edge", value)
+        except Exception as exc:
+            if not is_access_denied(exc):
+                hosts_out.append(
+                    {"host": name, "ok": False, "error": type(exc).__name__}
+                )
+                continue
+            creds = {}
+            try:
+                creds = read_creds() or {}
+            except Exception:
+                creds = {}
+            user = str(creds.get("username") or "").strip()
+            pw = str(creds.get("password") or "")
+            if not user or not pw:
+                hosts_out.append(
+                    {"host": name, "ok": False, "error": "credman-missing"}
+                )
+                continue
+            try:
+                apply_as(name, "chrome", value, user, pw)
+                apply_as(name, "edge", value, user, pw)
+            except Exception as exc2:
+                hosts_out.append(
+                    {"host": name, "ok": False, "error": type(exc2).__name__}
+                )
+                continue
+            wrote = True
+            hosts_out.append(
+                {
+                    "host": name,
+                    "ok": True,
+                    "chrome": True,
+                    "edge": True,
+                    "auth": "credman",
+                }
+            )
+            continue
+        wrote = True
+        hosts_out.append({"host": name, "ok": True, "chrome": True, "edge": True})
+    return {
+        "ok": True,
+        "action": action,
+        "whatif": bool(whatif),
+        "wrote_gpo": False,
+        "wrote_registry": wrote,
+        "extension_id": extension_id,
+        "hosts": hosts_out,
     }
 
 
@@ -69,12 +449,22 @@ def run_extension_verb(
     **_kw: Any,
 ) -> ExtensionVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
-    work = worker or stub_extension_work
+    work = worker or fill_holes_work
+    last: dict[str, Any] = {}
 
     def _safe() -> None:
+        nonlocal last
         try:
-            work(action=action, whatif=whatif, extension_id=DEFAULT_EXTENSION_ID)
+            out = work(
+                action=action,
+                whatif=whatif,
+                extension_id=DEFAULT_EXTENSION_ID,
+                **_kw,
+            )
+            if isinstance(out, dict):
+                last = out
         except Exception:
+            last = {"ok": False, "gpo": "fail", "reason": "worker_exception"}
             return
 
     if wait:
@@ -86,10 +476,19 @@ def run_extension_verb(
         f"id={qid}",
         f"action={action}",
         f"extension={DEFAULT_EXTENSION_ID}",
+        f"gpo={DEFAULT_GPO_NAME}",
     ]
     if whatif:
         bits.append("whatif=1")
-    return ExtensionVerbResult(True, " ".join(bits), job_id=qid)
+    if wait and last:
+        gpo = str(last.get("gpo") or ("ok" if last.get("ok") else "fail"))
+        bits.append(f"gpo_result={gpo}")
+        if last.get("reason"):
+            bits.append(f"reason={last.get('reason')}")
+        browsers = last.get("browsers") or []
+        if browsers:
+            bits.append("browsers=" + ",".join(str(b) for b in browsers))
+    return ExtensionVerbResult(True, " ".join(bits), job_id=qid, payload=last or None)
 
 
 _SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
@@ -127,7 +526,7 @@ def build_extension_log(
         "action": action,
         "whatif": bool(whatif),
         "extension_id": extension_id,
-        "gpo": gpo or {"attempted": False, "name": "Priority-web-extension"},
+        "gpo": ({"attempted": True, "name": (gpo.get("gpo_name") or gpo.get("name") or DEFAULT_GPO_NAME), "ok": bool(gpo.get("ok")), "result": gpo.get("gpo"), "browsers": list(gpo.get("browsers") or []), "policy_names": list(gpo.get("policy_names") or []), "reason": gpo.get("reason"), "wrote_gpo": bool(gpo.get("wrote_gpo"))} if isinstance(gpo, dict) else (gpo or {"attempted": False, "name": DEFAULT_GPO_NAME})),
         "fallback": fallback or {"attempted": False},
         "hosts": list(hosts or []),
         "failures": fails
