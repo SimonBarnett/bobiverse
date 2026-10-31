@@ -1007,6 +1007,31 @@ def is_intake_harvest_receipt_pr(
     return False
 
 
+def is_offerable_intake_skill_lesson_pr(
+    *,
+    title: str = "",
+    body: str = "",
+    labels: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """FR #5506: real via-intake+skill lesson (not a GhCliFiler receipt).
+
+    Drafts with a lesson body / light-triage brief are shop MRB work. Receipt
+    titles or ``Invoke-BobiverseHarvest`` / ``Session summary:`` footers stay skipped.
+    """
+    labs = {str(x).strip().lower() for x in (labels or []) if str(x).strip()}
+    if "via-intake" not in labs or "skill" not in labs:
+        return False
+    if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
+        return False
+    title_s = (title or "").strip()
+    if _HARVEST_RECEIPT_STATUS_RE.search(title_s):
+        return False
+    body_s = body or ""
+    if re.search(r"(?im)^(?:##\s*)?Lesson\b|MRB \(light triage\)", body_s):
+        return True
+    return bool(title_s) and not HARVEST_TITLE_RE.match(title_s)
+
+
 
 def issue_skip_fr_reason(
     *,
@@ -2239,9 +2264,13 @@ def claim_from_payload(event: str, payload: dict, *, line: str = "") -> GitClaim
         body = str(pr.get("body") or "")
         labels = _label_names(pr.get("labels"))
         # FR #2650 / #2604: draft PRs never become MRB (resync already skips drafts).
+        # FR #5506: draft via-intake+skill lesson PRs are offerable (not receipts).
         # MRB #2651: also edited/synchronize — _apply_claim_to_doc appends unaccepted for those.
         if action in ("opened", "ready_for_review", "edited", "synchronize") and pr.get("draft") is True:
-            return None
+            if not is_offerable_intake_skill_lesson_pr(
+                title=title, body=body, labels=labels
+            ):
+                return None
         # FR #2650 / MRB #2651: intake harvest receipt PRs never become MRB via webhook
         # (opened/ready_for_review/edited/synchronize all call _append_unaccepted).
         if action in ("opened", "ready_for_review", "edited", "synchronize") and is_intake_harvest_receipt_pr(
@@ -9467,7 +9496,9 @@ def claim_from_github_issue(repo: str, issue: dict) -> GitClaim | None:
         return None
     if issue.get("pull_request") is not None or str(issue.get("html_url") or "").find("/pull/") >= 0:
         # Open PR -> MRB row.
-        if issue.get("draft") is True:
+        if issue.get("draft") is True and not is_offerable_intake_skill_lesson_pr(
+            title=title, body=body, labels=labels
+        ):
             return None
         if is_intake_harvest_receipt_pr(title=title, body=body, labels=labels):
             return None
@@ -10738,14 +10769,19 @@ def resync_from_github(
                     )
             # FR #2604: draft open PRs must not become MRB jobs; still count as open
             # for UAT/repo_clear and FR supersede via open_pulls_map above.
+            # FR #5506: draft via-intake+skill lessons backfill as MRB (#4444/#4967).
             if pr.get("draft") is True:
-                skipped_draft += 1
-                skipped_open_pulls.add((repo, f"#{num}"))
-                print(
-                    f"resync skip draft PR {repo}#{num}",
-                    flush=True,
-                )
-                continue
+                pr_labels = _label_names(pr.get("labels"))
+                if not is_offerable_intake_skill_lesson_pr(
+                    title=title, body=body, labels=pr_labels
+                ):
+                    skipped_draft += 1
+                    skipped_open_pulls.add((repo, f"#{num}"))
+                    print(
+                        f"resync skip draft PR {repo}#{num}",
+                        flush=True,
+                    )
+                    continue
             # FR #2650: intake harvest receipt PRs (even non-draft) never become MRB.
             pr_labels = _label_names(pr.get("labels"))
             if is_intake_harvest_receipt_pr(title=title, body=body, labels=pr_labels):
