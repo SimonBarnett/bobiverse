@@ -92,6 +92,24 @@ PRIVMSG {mid}_console :id=c25bd00e EXTENSION status
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-extension-priority-web-2026-10-31.md`.
 
+## NETWORK diagnostic (FR #5301)
+
+Authorized **UPDATE-class** verb. Isolated worker (never LDAP/DNS/sweep on the IRC receive thread). Inventory contract: `hostname`, `ips[]`, `ou` (from AD `distinguishedName` when present). Runtime inventory is FR-B (#5299); this book is the wire/docs contract.
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e NETWORK
+PRIVMSG {mid}_console :id=c25bd00e NETWORK diag
+PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
+```
+
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`; `shell=off` refuses with `DONE exit=126 shell-disabled`). Unauthorized is `DONE exit=126 not-op`.
+- **Isolation:** worker thread/child; fault must not stop service Airc; console still handles STATUS.
+- **Payload:** short IRC `NETWORK accepted` + `DONE id= exit=`; full inventory + log via DCCLISTEN same job `id=` (`DONE ... via=dcc`) or IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
+- **WhatIf:** read-only plan (no writes).
+
+See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
+
 ## LEGION remote install (FR #5312)
 
 Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`.
