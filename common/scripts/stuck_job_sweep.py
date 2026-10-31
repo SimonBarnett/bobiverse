@@ -469,6 +469,7 @@ def run_stuck_sweep(
     act: bool = True,
     log: Callable[[str], None] | None = None,
     announce: Callable[[str], None] | None = None,
+    fuel_ok: bool | None = None,
 ) -> dict:
     """Classify, optionally act, persist report, announce on fingerprint change."""
     import gitclaim
@@ -569,10 +570,20 @@ def run_stuck_sweep(
     stuck = [c for c in classified if c.get("stuck")]
     # Held items always appear in the report (acceptance: listed with rule).
     held = [c for c in classified if c.get("state") == "held"]
+    # FR #5510: idle work is not stuck while nothing can take it (no seats / no fuel).
+    # Holder-gone release still runs (bookkeeping). Do not alert or list stuck rows.
+    paused = None
+    if not live_set:
+        paused = "no seats"
+    elif fuel_ok is False:
+        paused = "no fuel"
+    if paused:
+        stuck = []
     report = {
         "v": 1,
         "ts": _utc_now(),
         "now": now_f,
+        "paused": paused or "",
         "stuck": stuck,
         "held": held,
         "classified": classified,
@@ -586,6 +597,8 @@ def run_stuck_sweep(
             for s in stuck + held
         )
     )
+    if paused:
+        fp = f"paused:{paused}"
     prev = ""
     fp_path = announce_fp_path(home)
     try:
@@ -598,7 +611,9 @@ def run_stuck_sweep(
             fp_path.write_text(fp + "\n", encoding="utf-8")
         except OSError:
             pass
-        if announce and (stuck or held):
+        if paused:
+            pass
+        elif announce and (stuck or held):
             n_stuck = len(stuck)
             n_held = len(held)
             announce(
@@ -620,6 +635,9 @@ def run_stuck_sweep(
 def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
     """Lines for ``!stuck`` (PM)."""
     report = load_stuck_report(home)
+    paused = str(report.get("paused") or "").strip()
+    if paused:
+        return [f"stuck: paused: {paused}"]
     stuck = list(report.get("stuck") or [])
     held = list(report.get("held") or [])
     if not stuck and not held:
@@ -642,6 +660,9 @@ def format_stuck_lines(home: Path, *, limit: int = 40) -> list[str]:
 def digest_stuck_section(home: Path) -> list[dict]:
     """Public digest ``stuck`` list (repo, number, task, state, rule, age, holder)."""
     report = load_stuck_report(home)
+    paused = str(report.get("paused") or "").strip()
+    if paused:
+        return [{"paused": paused}]
     out: list[dict] = []
     for row in list(report.get("stuck") or []) + list(report.get("held") or []):
         if not isinstance(row, dict):
