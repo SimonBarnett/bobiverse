@@ -724,9 +724,19 @@ class ChairJobs:
             return parsed, int(exc.code)
 
     def _copilot_tick(self) -> None:
-        """FR #5174: always pass fetch_user + tasks POST into copilot_dispatch.tick."""
+        """FR #5174: always pass fetch_user + tasks POST into copilot_dispatch.tick.
+
+        FR #5267: release stranded accepts before any Copilot API call, including
+        when there is no token (dispatch stays off).
+        """
         import copilot_dispatch
 
+        swept = copilot_dispatch.settle_stuck_accepted(self.digest_home, now=self.clock())
+        if swept.get("dropped") or swept.get("released"):
+            self.log(
+                f"INFO copilot-queue dropped={swept.get('dropped', 0)} "
+                f"released={swept.get('released', 0)}"
+            )
         token, _src = self.token_loader()
         if not token:
             self.log("WARN copilot-dispatch skipped: no token")
