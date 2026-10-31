@@ -253,6 +253,11 @@ def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monke
     digest_home = tmp_path / "digest"
     chair_home.mkdir()
     digest_home.mkdir()
+    # FR #5267: dispatch stays off until copilot-allowance.json exists.
+    (digest_home / "copilot-allowance.json").write_text(
+        json.dumps({"enabled": True, "remaining": 10, "state": "ok", "unlimited": True}),
+        encoding="utf-8",
+    )
     focus = focus_ignore.empty_focus()
     focus["repos"] = {
         repo: {"priority": 1, "label": "high"} for repo in (
