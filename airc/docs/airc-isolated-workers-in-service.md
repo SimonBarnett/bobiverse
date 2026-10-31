@@ -23,7 +23,7 @@ and MUST NOT be:
 
 | Capability | Vision / issues |
 |------------|-----------------|
-| Priority Client | `feature-request-airc-priority-client-2026-10-31.md` (#5275+) |
+| Priority Client | `feature-request-airc-priority-client-2026-10-31.md` (#5275+); pack path `airc/priority-worker` (FR #5283) |
 | EXTENSION | `feature-request-airc-extension-priority-web-2026-10-31.md` (#5290+) |
 | NETWORK diag | `feature-request-airc-network-diag-2026-10-31.md` (#5302+) |
 | LEGION | `feature-request-airc-legion-2026-10-31.md` (#5308+)  -  module import, not peer installer exe |

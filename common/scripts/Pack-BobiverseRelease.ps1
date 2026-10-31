@@ -416,6 +416,19 @@ function Stage-Product([string]$Name) {
             Copy-Item -LiteralPath $aexe -Destination (Join-Path $aircExeDir 'airc.exe') -Force
             Write-Host 'INFO airc staged airc\airc.exe'
         }
+        # FR #5283: service-owned Priority Web SDK worker (not PriorityClient.exe).
+        $pwSrc = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'priority-worker'
+        if (-not (Test-Path -LiteralPath $pwSrc)) {
+            $pwSrc = Join-Path $RepoRoot 'airc\priority-worker'
+        }
+        if (Test-Path -LiteralPath $pwSrc) {
+            $pwDest = Join-Path $aircExeDir 'priority-worker'
+            New-Item -ItemType Directory -Force -Path $pwDest | Out-Null
+            Copy-Item -Path (Join-Path $pwSrc '*') -Destination $pwDest -Recurse -Force
+            Write-Host 'INFO airc staged airc\priority-worker (FR #5283)'
+        } else {
+            throw 'airc pack requires airc/priority-worker (FR #5283)'
+        }
         # FR #3991: elevated network-wide installer (UAC admin). Laid at INSTALLDIR root so
         # <ai root>\airc\airc-network-installer.exe can be re-run from any airc box; always
         # downloads Latest airc MSI (not the version it shipped with). Also emit versioned
