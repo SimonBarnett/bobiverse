@@ -389,6 +389,28 @@ def test_in_progress_merge_is_not_touched(world):
     assert (r / "bob/scripts/b1.ps1").read_text() == "# bob 1\n"
 
 
+def test_in_progress_merge_on_linked_worktree_is_not_touched(world):
+    """PR #4444: .git is a file in a linked worktree; Test-Path .git/MERGE_HEAD misses it."""
+    r = world.root("bob")
+    assert world.sync("bob").returncode == 0
+    wt = world.tmp / "bob-linked-wt"
+    git(r, "worktree", "add", "-q", "-b", "wt-main", str(wt))
+    assert (wt / ".git").is_file()
+    git(wt, "checkout", "-q", "-b", "side-merge")
+    write(wt / "bob/scripts/b1.ps1", "# side\n")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "-m", "side")
+    git(wt, "checkout", "-q", "wt-main")
+    git(wt, "merge", "--no-commit", "--no-ff", "side-merge", check=False)
+    assert git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0
+    assert not (wt / ".git" / "MERGE_HEAD").exists()
+    world.upstream("bob/scripts/b2.ps1", "# upstream b2\n")
+    out = world.sync("bob", root_dir=wt)
+    assert out.returncode == 0 and "operation in progress" in out.text
+    assert "MERGE_HEAD" in out.text
+    assert (wt / "bob/scripts/b2.ps1").read_text() != "# upstream b2\n"
+
+
 # ---------------------------------------------------------------- wiring / docs
 def _t(rel):
     return (REPO / rel).read_text(encoding="utf-8-sig")
@@ -408,6 +430,10 @@ def test_sync_script_precedence_and_safety_contract():
     assert "Sync-BobiverseWorkTree" in t and "BOBIVERSE_REPO" in t
     c = _t("common/scripts/Bobiverse-Common.ps1")
     assert "--ff-only" in c and "sparse-checkout" in c and "'--no-cone'" in c
+    sync_fn = c.split("function Sync-BobiverseWorkTree")[1].split("function Test-BobiverseSplitRepo")[0]
+    assert "rev-parse" in sync_fn and "--verify" in sync_fn and "MERGE_HEAD" in sync_fn
+    assert "Join-Path $root \".git\\$m\"" not in sync_fn
+    assert "Join-Path $root '.git\\$m'" not in sync_fn
     for forbidden in ("reset --hard", "'reset'", "'stash'", "'clean'", "checkout', '-f'", "'--force'"):
         assert forbidden not in c.split("function Sync-BobiverseWorkTree")[1].split("function Test-BobiverseSplitRepo")[0], forbidden
 
