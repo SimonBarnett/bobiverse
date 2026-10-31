@@ -181,7 +181,7 @@ Public msiexec properties are forwarded into the deferred `RunInstall` custom ac
 
 - **jeeves**: `OPERFILE=`, `OPERNAME=`, `OPACCOUNTS=`, `SKIPERGO=1`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
 - **bob**: `MACHINEID=`, `IRCHOST=`, `SKIPCOPY=1`, `BOBIVERSE_SKIP_TOOLS=1` (FR #3290)
-- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
+- **airc**: `MACHINEID=`, `AIRC_SHELL=off|operators`, `AIRC_JOBS=off|on`, `AIRC_UPDATE=off|on`, `AIRC_EXTENSION=off|on` (FR #5295; client/workstation default off), `AIRC_REQUIRE_ACCOUNT=1`, `AIRC_ACCOUNTS=simon,other` (FR #3287), `AIRC_SYNC_FROM_REPO=0|1`, `AIRC_SELF_UPDATE=0|1` (FR #3289), `AIRC_INSTALL_TOOLS=1` (FR #3290), `AIRC_PROFILE=fleet|workstation`, `AIRC_AGENT_LAYER=0|1`, `AIRC_PURGE=1` on uninstall (FR #3292)
 
 Example: `msiexec /i jeeves-0.1.19.msi /qn OPERFILE=C:\secure\oper.txt SKIPERGO=1`
 

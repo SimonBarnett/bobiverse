@@ -585,7 +585,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
             # FR #3290: AIRC_INSTALL_TOOLS=1 opts into git/gh/python/node bootstrap (default skip when airc.exe present).
             # FR #3292: AIRC_PROFILE=workstation / AIRC_AGENT_LAYER=0 skips agent briefings/skills.
             # FR #3291: BOBIVERSE_CRASH_REPORT (empty = preserve / shell=off => crash-report.json enabled=false).
-            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -ShellMode &quot;[AIRC_SHELL]&quot; -Jobs &quot;[AIRC_JOBS]&quot; -UpdateCap &quot;[AIRC_UPDATE]&quot; -RequireAccount &quot;[AIRC_REQUIRE_ACCOUNT]&quot; -Accounts &quot;[AIRC_ACCOUNTS]&quot; -SyncFromRepo &quot;[AIRC_SYNC_FROM_REPO]&quot; -SelfUpdate &quot;[AIRC_SELF_UPDATE]&quot; -InstallTools &quot;[AIRC_INSTALL_TOOLS]&quot; -Profile &quot;[AIRC_PROFILE]&quot; -AgentLayer &quot;[AIRC_AGENT_LAYER]&quot; -CrashReport &quot;[BOBIVERSE_CRASH_REPORT]&quot;'
+            ' -InstallRoot &quot;[INSTALLDIR].&quot; -MachineId &quot;[MACHINEID]&quot; -MsiProductVersion &quot;[ProductVersion]&quot; -ShellMode &quot;[AIRC_SHELL]&quot; -Jobs &quot;[AIRC_JOBS]&quot; -UpdateCap &quot;[AIRC_UPDATE]&quot; -ExtensionCap &quot;[AIRC_EXTENSION]&quot; -RequireAccount &quot;[AIRC_REQUIRE_ACCOUNT]&quot; -Accounts &quot;[AIRC_ACCOUNTS]&quot; -SyncFromRepo &quot;[AIRC_SYNC_FROM_REPO]&quot; -SelfUpdate &quot;[AIRC_SELF_UPDATE]&quot; -InstallTools &quot;[AIRC_INSTALL_TOOLS]&quot; -Profile &quot;[AIRC_PROFILE]&quot; -AgentLayer &quot;[AIRC_AGENT_LAYER]&quot; -CrashReport &quot;[BOBIVERSE_CRASH_REPORT]&quot;'
         }
     }
     $msiProps = switch ($Name) {
@@ -623,6 +623,7 @@ function Build-Msi([string]$Name, [string]$Stage) {
     <Property Id="AIRC_SHELL" Secure="yes" />
     <Property Id="AIRC_JOBS" Secure="yes" />
     <Property Id="AIRC_UPDATE" Secure="yes" />
+    <Property Id="AIRC_EXTENSION" Secure="yes" />
     <Property Id="AIRC_REQUIRE_ACCOUNT" Secure="yes" />
     <Property Id="AIRC_ACCOUNTS" Secure="yes" />
     <Property Id="AIRC_SYNC_FROM_REPO" Secure="yes" />
