@@ -389,6 +389,8 @@ def reverse_dcc_send(
     """Console connects out and writes token + u32be len + body + sha256.
 
     FR #5008: pass ``tls=True`` to wrap the stream (default False keeps WP1 tests).
+    FR #5612: waits for ``ACK <sha256>`` before returning; missing/wrong ack raises
+    ``ConnectionError("dcc failed: no ack")`` so IRC can fall back.
     """
     if len(payload) > DCC_BULK_SIZE_CAP:
         raise ValueError("payload over DCC_BULK_SIZE_CAP")
