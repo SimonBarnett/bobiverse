@@ -31,7 +31,7 @@ PRIVMSG <machine>_console :psb64:<base64>
 - Default is **PowerShell 5.1** (`-NoProfile`); `cmd:` uses COMSPEC; `psb64:` is `-EncodedCommand` (UTF-16LE or UTF-8 payload).
 - Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
 - Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
-- PUT/RUN/JOB/UPDATE are separate FRs - see `docs/airc-remote-control.md`.
+- PUT/RUN/JOB/UPDATE are separate FRs - see `docs/airc-remote-control.md`. **FR #5280:** bare `UPDATE airc` (no version) schedules Check against the **latest** GitHub Release airc MSI; `UPDATE airc x.y.z` pins a tag.
 - **VERSION (FR #5281):** same auth as STATUS (`+o/+h`+). `PRIVMSG {mid}_console :id=<8hex> VERSION` replies `out id= seq=1 VERSION machine=... airc_ver=...` then `DONE id= exit=0`. Reads `<ai root>\\airc\\VERSION` only (missing -> `-`; no ARP). Allowed when `shell=off` / `jobs=off` like STATUS. STATUS still returns the bob/airc/jeeves aggregate.
 
 ## Safe diagnostic commands
