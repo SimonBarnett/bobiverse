@@ -20,7 +20,8 @@ def test_fr5298_parse_network_and_diag():
     w = nw.parse_network_command("id=aabbccdd NETWORK diag -WhatIf")
     assert w["whatif"] is True and w["qid"] == "aabbccdd"
     assert nw.parse_network_command("STATUS") is None
-    assert nw.parse_network_command("NETWORK sweep") is None
+    sweep = nw.parse_network_command("NETWORK sweep")
+    assert sweep and sweep.get("usage")
 
 
 def test_fr5298_unauthorized_not_op():

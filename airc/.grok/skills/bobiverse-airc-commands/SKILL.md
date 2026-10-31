@@ -77,6 +77,8 @@ See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
 Bare `PRIORITY` (or an unknown sub-verb) is usage, not PowerShell (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows` then `DONE id= exit=2`.
 
+**FR #5614:** the same usage shape applies to unknown `NETWORK` / `EXTENSION` actions and unknown flags (including `LEGION … -Force`): `err … code=usage` or `code=usage unknown-flag=-Force` then `DONE exit=2`. CTCP-framed lines (e.g. `\x01VERSION\x01`) are ignored and never run as PowerShell.
+
 Use the **built-in** Airc Priority Client. Do not copy NAS one-off clients or drop packs. CredMan + instance allowlist only; never invent `url` / company / SQL.
 
 ```text

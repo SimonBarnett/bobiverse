@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 _NETWORK_CMD_RE = re.compile(
-    r"(?is)^(?:id=([0-9a-f]{8})\s+)?NETWORK(?:\s+diag)?(?:\s+(-WhatIf))?\s*$"
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?NETWORK(?:\s+(.*))?$"
 )
+NETWORK_USAGE = "[diag] [-WhatIf]"
 
 
 @dataclass
@@ -33,10 +34,30 @@ def parse_network_command(text: str) -> dict[str, Any] | None:
     m = _NETWORK_CMD_RE.match((text or "").strip())
     if not m:
         return None
+    qid = (m.group(1) or "").lower()
+    tokens = [(t or "").strip() for t in (m.group(2) or "").split() if t.strip()]
+    whatif = False
+    extra = False
+    unknown = ""
+    for tok in tokens:
+        low = tok.lower()
+        if low == "diag":
+            continue
+        if low == "-whatif":
+            whatif = True
+            continue
+        if tok.startswith("-"):
+            unknown = tok
+            break
+        extra = True
+    if unknown:
+        return {"qid": qid, "usage": True, "unknown_flag": unknown}
+    if extra:
+        return {"qid": qid, "usage": True}
     return {
-        "qid": (m.group(1) or "").lower(),
+        "qid": qid,
         "action": "diag",
-        "whatif": bool(m.group(2)),
+        "whatif": whatif,
     }
 
 

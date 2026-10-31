@@ -67,6 +67,7 @@ _PRIVMSG_RE = re.compile(
 )
 _CHANNEL_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 _CTCP_PING_RE = re.compile(r"^\x01PING(?: (.*))?\x01\s*$", re.IGNORECASE | re.DOTALL)
+_CTCP_ANY_RE = re.compile(r"^\x01([A-Za-z]+)(?:[^\x01]*)\x01\s*$")
 _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
 # FR #77: UPDATE airc|bob|jeeves [version] - fleet MSI via detached updater only.
 # FR #5532: optional leading job id= (same framing as PRIORITY/LEGION/VERSION).
@@ -932,6 +933,29 @@ def parse_ctcp_ping(text: str) -> str | None:
     if not m:
         return None
     return m.group(1) if m.group(1) is not None else ""
+
+
+def parse_ctcp_message(text: str) -> str | None:
+    """FR #5614: any CTCP tag (VERSION, ACTION, ...) or None."""
+    m = _CTCP_ANY_RE.match(text or "")
+    if not m:
+        return None
+    return (m.group(1) or "").upper()
+
+
+def format_known_verb_usage(
+    job_id: str,
+    verb: str,
+    allowed: str,
+    unknown_flag: str | None = None,
+) -> str:
+    """FR #5614 / #5533: usage reply, never PowerShell."""
+    qid = (job_id or "").strip().lower() or "00000000"
+    if unknown_flag:
+        err = f"err id={qid} seq=1 code=usage unknown-flag={unknown_flag}"
+    else:
+        err = f"err id={qid} seq=1 code=usage {verb} {allowed}"
+    return f"{err}\nDONE id={qid} exit=2"
 
 
 def parse_ping_command(text: str) -> str | None:
@@ -3182,6 +3206,15 @@ class AircConsoleCore:
                 text=text,
                 reply=ctcp_payload,
             )
+        ctcp_tag = parse_ctcp_message(text or "")
+        if ctcp_tag is not None:
+            # FR #5614: CTCP VERSION/ACTION/... must never fall through to PowerShell.
+            return HandleResult(
+                action="ctcp_ignore",
+                nick=nick,
+                target=target,
+                text=text,
+            )
         ping_pat = parse_ping_command(text or "")
         if ping_pat is not None:
             if nick_matches_pattern(ping_pat, self.nick, self.machine):
@@ -3388,6 +3421,21 @@ class AircConsoleCore:
                 return self._capability_deny(
                     nick, target, text, "update-disabled", qid
                 )
+            if leg.get("unknown_flag") or leg.get("error") == "unknown-flag":
+                meta = self._allow_meta(nick, account)
+                return HandleResult(
+                    action="legion",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=format_known_verb_usage(
+                        qid,
+                        "LEGION",
+                        "{host|ip} [-WhatIf]",
+                        str(leg.get("unknown_flag") or ""),
+                    ),
+                    **meta,
+                )
             if leg.get("error"):
                 # FR #5527: include id= so ear/airc-replies can correlate denies.
                 return self._capability_deny(
@@ -3482,6 +3530,21 @@ class AircConsoleCore:
         net = _network.parse_network_command(cmd)
         if net is not None:
             qid = str(net.get("qid") or "").strip().lower()
+            if net.get("usage"):
+                meta = self._allow_meta(nick, account)
+                return HandleResult(
+                    action="network",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=format_known_verb_usage(
+                        qid,
+                        "NETWORK",
+                        _network.NETWORK_USAGE,
+                        net.get("unknown_flag") or None,
+                    ),
+                    **meta,
+                )
             if caps.shell_mode == "off":
                 return self._capability_deny(
                     nick, target, text, "shell-disabled", qid
@@ -3561,6 +3624,21 @@ class AircConsoleCore:
         ext = _extension.parse_extension_command(cmd)
         if ext is not None:
             qid = str(ext.get("qid") or "").strip().lower()
+            if ext.get("usage"):
+                meta = self._allow_meta(nick, account)
+                return HandleResult(
+                    action="extension",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=format_known_verb_usage(
+                        qid,
+                        "EXTENSION",
+                        _extension.EXTENSION_USAGE,
+                        ext.get("unknown_flag") or None,
+                    ),
+                    **meta,
+                )
             if caps.shell_mode == "off":
                 return self._capability_deny(
                     nick, target, text, "shell-disabled", qid
