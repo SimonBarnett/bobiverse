@@ -233,7 +233,11 @@ If `git -C <ai root>\<product> status` reports **No commits yet** on `master` (o
 
 ## Self-update asset URL allowlist (FR #5410)
 
-Check rejects foreign hosts (`asset-url-rejected`) but must accept GitHub `browser_download_url` values with `?`/`#` query, `objects.githubusercontent.com` CDN URLs, and assets-API URLs by rebuilding `github.com/{repo}/releases/download/{tag}/{name}` (3- or 4-part tags). `evil.example` stays rejected.
+Check rejects foreign hosts (`asset-url-rejected`) but must accept GitHub `browser_download_url` values with `?`/`#` query, `objects.githubusercontent.com` CDN URLs, and assets-API URLs by rebuilding `github.com/{repo}/releases/download/{tag}/{name}` (3- or 4-part tags). `evil.example` stays rejected. Rejected local paths are not rebuilt into `releases/download`.
+
+## Self-update Apply URL repair (FR #5357)
+
+`Invoke-Apply` rebuilds empty or `api.github.com/.../releases/assets/<id>` plan URLs from `tag` + `msiName` via `Repair-PlanAssetUrl` (same allowlist as Check). Rejected local paths and foreign hosts are not rebuilt into `releases/download`. `Get-Asset` tries `curl.exe` first (Retries=4), then WinPS `Invoke-WebRequest`, so a half-open TLS stall is not the first path.
 
 ## Self-update latest 404 fallback (FR #5353)
 
