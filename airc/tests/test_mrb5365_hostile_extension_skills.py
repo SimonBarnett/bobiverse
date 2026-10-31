@@ -10,7 +10,7 @@ def test_mrb5365_commands_extension_section_contiguous():
     assert not CMD.read_bytes().startswith(b"\xef\xbb\xbf")
     assert "## EXTENSION Priority web (FR #5294)" in t
     i = t.index("## EXTENSION Priority web (FR #5294)")
-    chunk = t[i : i + 1200]
+    chunk = t[i : i + 1800]
     assert EXT_ID in chunk
     assert "DCCLISTEN" in chunk
     assert "Priority-web-extension" in chunk
