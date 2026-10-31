@@ -253,6 +253,8 @@ function Resolve-AssetDownloadUrl {
     $cdn = $norm -match '^https://objects\.githubusercontent\.com/'
     # Rebuild empty, assets-API, our github.com/.../releases/, or objects CDN.
     # Never promote rejected local paths or foreign hosts (FR #5357 / #5410 / MRB #5439).
+    # FR #5437: 4-part tags (v0.1.17.1) must rebuild; a 3-part-only tag regex
+    # left API/CDN urls as-is and Check logged asset-url-rejected.
     if ($direct -and -not $apiOk -and -not $ours -and -not $cdn) { return $direct }
     $name = ([string]$Asset.name).Trim()
     $tag = ([string]$Tag).Trim()

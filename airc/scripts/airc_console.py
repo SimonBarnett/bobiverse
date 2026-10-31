@@ -68,7 +68,7 @@ _CTCP_PING_RE = re.compile(r"^\x01PING(?: (.*))?\x01\s*$", re.IGNORECASE | re.DO
 _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
 # FR #77: UPDATE airc|bob|jeeves [version] — fleet MSI via detached updater only.
 _UPDATE_CMD_RE = re.compile(
-    r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+))?\s*$",
+    r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+(?:\.\d+)?))?\s*$",
     re.IGNORECASE,
 )
 # Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth — AuthPolicy

@@ -170,6 +170,25 @@ def test_fr5410_objects_github_url_rebuilds_download_path(env):
 
 
 @win
+def test_fr5437_four_part_tag_rebuilds_from_api_url(env):
+    """FR #5437: v0.1.17.1 + assets API url must not be asset-url-rejected."""
+    rel = _release("0.1.17.1")
+    for a in rel["assets"]:
+        a["url"] = f"https://api.github.com/repos/{REPO}/releases/assets/2"
+        a["browser_download_url"] = ""
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update" in log and "0.1.17.1" in log
+
+
+def test_fr5437_resolve_pins_four_part_tag():
+    t = _t("Update-BobiverseService.ps1")
+    assert "FR #5437" in t
+    assert r"v?\d+\.\d+\.\d+(?:\.\d+)?" in t
+
+
+@win
 def test_fr5410_four_part_tag_rebuilds_from_api_url(env):
     rel = _release("0.1.17.1")
     (env.root / "VERSION").write_text("0.1.16\n")
