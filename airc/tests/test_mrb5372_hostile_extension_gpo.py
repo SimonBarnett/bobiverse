@@ -23,7 +23,9 @@ def test_mrb5372_no_lgpo_chrome_edge_keys():
 def test_mrb5372_service_runner_does_not_block_handler():
     """Parent S4: GPO must not wait on the IRC receive thread."""
     src = inspect.getsource(ex.service_extension_runner)
-    assert "wait=True" not in src.replace(" ", "")
+    compact = "".join(src.split())
+    assert "wait=False" in compact
+    assert "wait=True" not in compact
     assert "run_extension_gpo_work" in src
 
 

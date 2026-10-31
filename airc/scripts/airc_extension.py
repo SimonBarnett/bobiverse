@@ -175,7 +175,7 @@ def run_extension_gpo_work(
 def service_extension_runner(**kw: Any) -> ExtensionVerbResult:
     """Production runner: GPO in isolated thread/child (FR #5291 / parent S4).
 
-    Do not wait=True here --- that blocks the IRC receive handler for nltest/GPO.
+    Do not wait on the handler --- that blocks IRC receive for nltest/GPO.
     Structured gpo=ok/fail belongs on the DCC/CONT log (FR #5293), not the accept line.
     """
     return run_extension_verb(worker=run_extension_gpo_work, wait=False, **kw)
