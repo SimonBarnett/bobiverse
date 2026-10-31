@@ -449,6 +449,11 @@ class JobStore:
                         dest.unlink()
                     except OSError:
                         pass
+                if exc.code == "timeout":
+                    return [
+                        f"err id={jid} code=timeout msg=job I/O timeout",
+                        f"DONE id={jid} exit=1",
+                    ]
                 raise
             with self._lock:
                 rec.state = "ready"
@@ -535,7 +540,31 @@ class JobStore:
             if rec.bytes and len(blob) != rec.bytes:
                 raise JobProtocolError("size", "assembled size != declared bytes", jid)
             dest = Path(rec.path)
-            digest = atomic_place_file(dest, blob, expect)
+            # FR #5611: do not hold the store lock across blocking disk I/O.
+        io_t = float(getattr(self, "job_io_timeout_s", JOB_IO_TIMEOUT_S) or JOB_IO_TIMEOUT_S)
+        try:
+            digest = run_job_io(
+                lambda: atomic_place_file(dest, blob, expect),
+                io_t,
+                job_id=jid,
+            )
+        except JobProtocolError as exc:
+            with self._lock:
+                rec = self._meta.get(jid)
+                if rec:
+                    rec.state = "failed"
+                    rec.error = exc.message
+                    self._save(rec)
+            if exc.code == "timeout":
+                return [
+                    f"err id={jid} code=timeout msg=job I/O timeout",
+                    f"DONE id={jid} exit=1",
+                ]
+            raise
+        with self._lock:
+            rec = self._meta.get(jid)
+            if not rec:
+                raise JobProtocolError("state", "job vanished during putend", jid)
             self._payload_path(jid).write_bytes(blob)
             rec.state = "ready"
             rec.bytes = len(blob)
@@ -805,6 +834,7 @@ class JobProtocol:
         self.job_io_timeout_s = float(job_io_timeout_s)
         # Tests stay inline; the live console sets inline_jobs=False (FR #5611).
         self.inline_jobs = bool(inline_jobs)
+        self.store.job_io_timeout_s = self.job_io_timeout_s
         self._lock = threading.Lock()
         self.dcc_receive = None  # FR #5194: (job_id) -> (bytes, sha256)
 
@@ -875,7 +905,11 @@ class JobProtocol:
             raise JobProtocolError("bad_frame", f"unknown verb {verb}")
         except JobProtocolError as exc:
             jid = exc.job_id or kv.get("id") or "-"
-            return [f"err id={jid} code={exc.code} msg={exc.message}"]
+            lines = [f"err id={jid} code={exc.code} msg={exc.message}"]
+            # FR #5611: I/O timeout must complete the job for callers waiting on DONE.
+            if exc.code == "timeout":
+                lines.append(f"DONE id={jid} exit=1")
+            return lines
 
     def handle_async(self, nick: str, verb: str, kv: dict[str, str]) -> None:
         """Handle verb and emit replies (FR #5611: PUT/GET I/O off the IRC thread)."""
