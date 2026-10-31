@@ -283,6 +283,59 @@ def stub_extension_work(
     }
 
 
+def next_forcelist_name(
+    existing_names: list[str],
+    existing_values: list[str],
+    extension_id: str,
+) -> str | None:
+    """FR #5538: next unused 1,2,3... or None if the extension id is already present."""
+    ext = (extension_id or "").strip()
+    if ext and any(ext in str(v) for v in existing_values):
+        return None
+    used = {str(n) for n in existing_names}
+    n = 1
+    while str(n) in used:
+        n += 1
+    return str(n)
+
+
+def default_dc_hostnames() -> list[str]:
+    """ADSI Domain Controllers (SERVER_TRUST_ACCOUNT). Empty when ADSI unavailable.
+
+    FR #5538: live fill-holes must skip DCs; tests may still inject ``is_dc`` /
+    ``dc_enum`` without calling this.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if os.name != "nt":
+        return []
+    ps = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not ps:
+        return []
+    # 8192 = ADS_UF_SERVER_TRUST_ACCOUNT (domain controller).
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$s=[adsisearcher]"
+        "'(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))';"
+        "$s.PageSize=200; [void]$s.PropertiesToLoad.Add('name');"
+        "($s.FindAll() | ForEach-Object { $_.Properties['name'][0] })"
+    )
+    try:
+        p = subprocess.run(
+            [ps, "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+    except Exception:
+        return []
+    if p.returncode != 0:
+        return []
+    return [ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip()]
+
+
 def force_install_value(extension_id: str = DEFAULT_EXTENSION_ID) -> str:
     return f"{extension_id};{CHROME_WEB_STORE_UPDATE}"
 
@@ -401,7 +454,22 @@ def default_apply_force_install(host: str, product: str, value: str) -> None:
     try:
         key = winreg.CreateKey(rem, key_path)
         try:
-            winreg.SetValueEx(key, "1", 0, winreg.REG_SZ, value)
+            names: list[str] = []
+            values: list[str] = []
+            idx = 0
+            while True:
+                try:
+                    n, v, _typ = winreg.EnumValue(key, idx)
+                except OSError:
+                    break
+                names.append(str(n))
+                values.append(str(v or ""))
+                idx += 1
+            ext_id = (value or "").split(";", 1)[0]
+            slot = next_forcelist_name(names, values, ext_id)
+            if slot is None:
+                return
+            winreg.SetValueEx(key, slot, 0, winreg.REG_SZ, value)
         finally:
             winreg.CloseKey(key)
     finally:
@@ -419,11 +487,14 @@ def fill_holes_work(
     apply_force_install_as: Callable[..., None] | None = None,
     credman_reader: Callable[[], dict[str, str]] | None = None,
     extra_hosts: list[str] | None = None,
+    is_dc: Callable[[str], bool] | None = None,
+    dc_enum: Callable[[], list[str]] | None = None,
     **_kw: Any,
 ) -> dict[str, Any]:
     """FR #5292: LDAP enum + per-host Chrome/Edge ForceInstall. Never uses extra_hosts.
 
     FR #5364: on access-denied, retry with CredMan PriorityAirc/ExtensionAdmin.
+    FR #5538: status is read-only; skip DCs; append a free forcelist name.
     """
     _ = extra_hosts
     enum = ldap_enum or default_ldap_enum
@@ -431,6 +502,10 @@ def fill_holes_work(
     apply = apply_force_install or default_apply_force_install
     apply_as = apply_force_install_as or default_apply_force_install_as
     read_creds = credman_reader or default_extension_credman
+    writes = (action or "").strip().lower() in {"install", "forceinstall", "apply"}
+    if is_dc is None:
+        dc_set = {str(x).lower() for x in (dc_enum or default_dc_hostnames)()}
+        is_dc = lambda h: str(h).lower() in dc_set  # noqa: E731
     value = force_install_value(extension_id)
     hosts_out: list[dict[str, Any]] = []
     wrote = False
@@ -438,8 +513,16 @@ def fill_holes_work(
         name = str(host or "").strip()
         if not name:
             continue
+        if is_dc(name):
+            hosts_out.append({"host": name, "ok": True, "skipped": "dc"})
+            continue
         if not ping(name):
             hosts_out.append({"host": name, "ok": False, "error": "unreachable"})
+            continue
+        if not writes:
+            hosts_out.append(
+                {"host": name, "ok": True, "would_write": True, "skipped": "status"}
+            )
             continue
         if whatif:
             hosts_out.append({"host": name, "ok": True, "would_write": True})
@@ -528,7 +611,32 @@ def run_extension_verb(
     if wait:
         _safe()
     else:
-        threading.Thread(target=_safe, name="airc-extension-worker", daemon=True).start()
+        import airc_isolated as _iso
+
+        if _iso.is_packaged_work(work):
+
+            def _from_child(data: Any) -> None:
+                nonlocal last
+                if isinstance(data, dict):
+                    last = data
+
+            _iso.start_isolated(
+                wait=False,
+                run=_safe,
+                packaged=(
+                    "airc_extension",
+                    "fill_holes_work",
+                    {
+                        "action": action,
+                        "whatif": bool(whatif),
+                        "extension_id": DEFAULT_EXTENSION_ID,
+                    },
+                ),
+                name="airc-extension-worker",
+                on_done=_from_child,
+            )
+        else:
+            threading.Thread(target=_safe, name="airc-extension-worker", daemon=True).start()
     bits = [
         "EXTENSION accepted",
         f"id={qid}",

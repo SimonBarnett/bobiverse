@@ -31,7 +31,7 @@ and MUST NOT be:
 
 ## Allowed
 
-- Service-owned child process: `python`/`airc` worker entry that imports `airc_*` packages from the install tree.
+- Service-owned child process: `python`/`airc` worker entry that imports `airc_*` packages from the install tree. FR #5537: NETWORK / EXTENSION / LEGION default work uses `airc_isolated.py` (`--isolated-job` on the same airc.exe / python), not an in-process daemon thread for the verb body.
 - PowerShell under `airc\scripts` / `common\scripts` already laid down by the product MSI (e.g. `Update-BobiverseService.ps1`).
 - Historical standalone tools in the MSI for **manual/offline** use only  -  not as the console-verb runtime.
 

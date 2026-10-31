@@ -231,7 +231,31 @@ def run_network_verb(
 
     if wait:
         return _safe()
-    threading.Thread(target=_safe, name="airc-network-worker", daemon=True).start()
+    import airc_isolated as _iso
+
+    if _iso.is_packaged_work(work):
+
+        def _from_child(data: Any) -> None:
+            payload = data if isinstance(data, dict) else {
+                "ok": False,
+                "hosts": [],
+                "log": [{"error": "isolated-fault", "step": "worker"}],
+            }
+            _finish(payload)
+
+        _iso.start_isolated(
+            wait=False,
+            run=_safe,
+            packaged=(
+                "airc_network",
+                "inventory_work",
+                {"action": action, "whatif": bool(whatif)},
+            ),
+            name="airc-network-worker",
+            on_done=_from_child,
+        )
+    else:
+        threading.Thread(target=_safe, name="airc-network-worker", daemon=True).start()
     return NetworkVerbResult(True, accepted, job_id=qid)
 
 
