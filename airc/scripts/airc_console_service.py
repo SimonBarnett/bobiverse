@@ -62,6 +62,7 @@ from airc_console import (
     wonderland_channel,
 )
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
+import airc_extension as _airc_extension  # FR #5426: EXTENSION runner for AircConsoleCore
 
 FLOOD_S = 0.35  # legacy fixed gap; FR #4790 prefers token bucket below
 # FR #4790: sustain under Ergo fakelag (~1-2 msg/s). Burst then pace.
