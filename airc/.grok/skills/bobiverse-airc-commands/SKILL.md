@@ -60,6 +60,18 @@ PRIVMSG {mid}_console :id=c25bd00e VERSION
 - **Failure intake (FR #5279):** each Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, ...) files one `kind:issue` on `SimonBarnett/bobiverse`. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted.
 - **VERSION (FR #5281):** same auth as STATUS. Reply is `out id= seq=1 VERSION machine=... airc_ver=...` then `DONE id= exit=0`. Reads `<ai root>\\airc\\VERSION` only (missing -> `-`; no ARP). Allowed when `shell=off` / `jobs=off`.
 
+## PRIORITY prepare (FR #5286)
+
+Named procedure prep for TYPE=P only. Never form-prep. Never SQL-fake `UPD`.
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
+```
+
+Walk: EXEC `REPPREPDIRECT2`. Success (`reason=prepared`) only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** the `.prp` mtime advanced. Other reasons: `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`, `sdk_not_ok`. CredMan target from the instance allowlist (FR #5275); result JSON has SQL + `.prp` evidence and never a password.
+
+See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
+
 ## Priority Client (FR #5287)
 
 Use the **built-in** Airc Priority Client. Do not copy NAS one-off clients or drop packs. CredMan + instance allowlist only; never invent `url` / company / SQL.

@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import binascii
 import fnmatch
+import importlib.util
 import os
 import re
 import subprocess
@@ -66,12 +67,12 @@ _PRIVMSG_RE = re.compile(
 _CHANNEL_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 _CTCP_PING_RE = re.compile(r"^\x01PING(?: (.*))?\x01\s*$", re.IGNORECASE | re.DOTALL)
 _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
-# FR #77: UPDATE airc|bob|jeeves [version] — fleet MSI via detached updater only.
+# FR #77: UPDATE airc|bob|jeeves [version] - fleet MSI via detached updater only.
 _UPDATE_CMD_RE = re.compile(
     r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+(?:\.\d+)?))?\s*$",
     re.IGNORECASE,
 )
-# Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth — AuthPolicy
+# Fleet ear nick shape bob-{machine}. FR #3286: pattern alone is NOT auth - AuthPolicy
 # must still require operators (+ account when --require-account / --accounts).
 _BOB_FLEET_NICK_RE = re.compile(r"^bob-[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 
@@ -104,7 +105,7 @@ def resolve_machine_id(
 
     Order: explicit ``-MachineId`` / override, then ``AIRC_CONSOLE_MACHINE``,
     then ``BOB_MACHINE_ID``. Hostname (``COMPUTERNAME`` / ``HOSTNAME``) is only
-    used when ``allow_hostname_fallback`` is true — callers must treat that as
+    used when ``allow_hostname_fallback`` is true - callers must treat that as
     an explicit choice so the console does not silently join the wrong shop.
     """
     if override and str(override).strip():
@@ -157,6 +158,225 @@ def parse_update_command(text: str) -> tuple[str, str | None] | None:
     if product not in UPDATE_PRODUCTS:
         return None
     return product, m.group(2)
+
+
+_PRIORITY_PREPARE_RE = re.compile(
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+prepare(?:\s+(.*))?$"
+)
+
+
+def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
+    """FR #5286: ``PRIORITY prepare <ENAME>`` or ``name=`` / ``instance=``."""
+    m = _PRIORITY_PREPARE_RE.match((text or "").strip())
+    if not m:
+        return None
+    rest = (m.group(2) or "").strip()
+    kv = {k.lower(): v for k, v in re.findall(r"(\w+)=([^\s]+)", rest)}
+    name = kv.get("name") or kv.get("ename") or ""
+    if not name:
+        # Prefer a positional token even when key=value tokens appear first
+        # (e.g. ``PRIORITY prepare instance=dev FOO``).
+        for tok in rest.split():
+            if "=" not in tok:
+                name = tok
+                break
+    out = {"name": name, "instance": kv.get("instance") or ""}
+    if m.group(1):
+        out["qid"] = m.group(1).lower()
+    return out
+
+
+def _load_priority_worker():
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[1] / "priority-worker" / "priority_worker.py",
+        Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc") / "priority-worker" / "priority_worker.py",
+    ]
+    for p in candidates:
+        if p.is_file():
+            spec = importlib.util.spec_from_file_location("priority_worker", p)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return mod
+    return None
+
+
+def load_priority_instances(install_root: str | Path | None = None) -> list[dict]:
+    """Prefer airc_priority allowlist (same as connect/status); fall back to raw JSON."""
+    try:
+        al = _priority.load_priority_allowlist(
+            _priority.resolve_allowlist_path(install_root)
+        )
+        return [inst.public_dict() for inst in al.values()]
+    except Exception:  # noqa: BLE001 - missing allowlist falls through
+        pass
+    root = Path(install_root or os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    for rel in (
+        Path("config") / "priority-instances.json",
+        Path("config") / "priority-instances.example.json",
+    ):
+        pth = root / rel
+        if not pth.is_file():
+            pth = root.parent / "airc" / rel if root.name != "airc" else pth
+        if pth.is_file():
+            try:
+                data = json.loads(pth.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return []
+            rows = data.get("instances") if isinstance(data, dict) else data
+            return [r for r in (rows or []) if isinstance(r, dict)]
+    return []
+
+
+def _priority_sqlcmd_lock(
+    *,
+    ename: str,
+    instance: dict,
+    exec_type: str = "P",
+    runner=None,
+) -> dict | None:
+    """Read EXECPREPLOCK row via sqlcmd. Never UPDATEs. Returns None when missing."""
+    server = str(instance.get("sqlServer") or instance.get("sql_server") or "").strip()
+    db = str(instance.get("systemDb") or instance.get("system_db") or "system").strip()
+    if not server or not ename:
+        return None
+    # TYPE=P/R named lock join - read only.
+    q = (
+        "SET NOCOUNT ON; "
+        "SELECT E.ENAME, E.[T$EXEC], E.[TYPE], L.UPD "
+        "FROM dbo.T$EXEC E "
+        "JOIN dbo.EXECPREPLOCK L ON L.[T$EXEC]=E.[T$EXEC] "
+        f"WHERE E.ENAME=N'{ename.replace(chr(39), chr(39)+chr(39))}' "
+        f"AND E.[TYPE]=N'{exec_type}';"
+    )
+    run = runner or subprocess.run
+    try:
+        proc = run(
+            ["sqlcmd", "-S", server, "-E", "-d", db, "-Q", q, "-W", "-h", "-1", "-s", "|"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    for line in (proc.stdout or "").splitlines():
+        s = line.strip()
+        if not s or "rows affected" in s.lower():
+            continue
+        parts = [x.strip() for x in s.split("|")]
+        if len(parts) < 4:
+            continue
+        try:
+            exec_id = int(parts[1])
+        except ValueError:
+            continue
+        return {
+            "name": parts[0],
+            "exec_id": exec_id,
+            "exec_type": parts[2],
+            "upd": parts[3],
+        }
+    return None
+
+
+def _priority_sdk_repprep(
+    *,
+    ename: str,
+    instance: dict,
+    path: str = "REPPREPDIRECT2",
+    form_prep: bool = False,
+    cred_fetcher=None,
+    node_runner=None,
+    **_k,
+) -> dict:
+    """Run node mjs REPPREPDIRECT2 walk. Password via env only; never logged."""
+    if form_prep or path.upper() != "REPPREPDIRECT2":
+        return {"ok": False, "path": path, "reason": "refused_non_repprep"}
+    root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    mjs_candidates = [
+        root / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
+        root / "priority-worker" / "run-repprep-via-exec.mjs",
+        Path(os.environ.get("AIRC_PRIORITY_REPPREP_MJS") or ""),
+    ]
+    mjs = next((c for c in mjs_candidates if c and c.is_file()), None)
+    node = (
+        os.environ.get("AIRC_PRIORITY_NODE")
+        or os.environ.get("NODE_EXE")
+        or "node"
+    )
+    target = str(instance.get("credentialTarget") or "").strip()
+    fetch = cred_fetcher or _priority.fetch_credman_password
+    try:
+        secret = fetch(target) if target else ""
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "path": path, "reason": "no_cred"}
+    if not secret:
+        return {"ok": False, "path": path, "reason": "no_cred"}
+    if mjs is None:
+        return {"ok": False, "path": path, "reason": "sdk_mjs_missing"}
+    env = os.environ.copy()
+    env["PRIORITY_SDK_PASSWORD"] = secret
+    run = node_runner or subprocess.run
+    try:
+        proc = run(
+            [
+                node,
+                str(mjs),
+                "--name",
+                ename,
+                "--company",
+                str(instance.get("company") or ""),
+                "--url",
+                str(instance.get("url") or ""),
+                "--user",
+                str(instance.get("user") or ""),
+                "--proc",
+                "REPPREPDIRECT2",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "path": path, "reason": f"sdk_exec_failed:{type(e).__name__}"}
+    finally:
+        env.pop("PRIORITY_SDK_PASSWORD", None)
+        secret = None  # noqa: F841
+    raw = (proc.stdout or "").strip().splitlines()
+    payload = None
+    for line in reversed(raw):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                payload = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "path": path,
+            "reason": "sdk_bad_json",
+            "node_exit": proc.returncode,
+        }
+    ok = bool(payload.get("ok"))
+    return {"ok": ok, "path": path, "sdk": {"ended": payload.get("ended"), "errors": payload.get("errors")}}
+
+
+def build_console_prepare_hooks(install_root: str | Path | None = None) -> dict:
+    """Wire CredMan + sqlcmd UPD + .prp + node REPPREPDIRECT2 for PRIORITY prepare."""
+    pw = _load_priority_worker()
+    if pw is None or not hasattr(pw, "build_default_prepare_hooks"):
+        return {}
+    return pw.build_default_prepare_hooks(
+        cred_fetcher=_priority.fetch_credman_password,
+        lock_reader=_priority_sqlcmd_lock,
+        sdk_exec=lambda **kw: _priority_sdk_repprep(
+            cred_fetcher=_priority.fetch_credman_password, **kw
+        ),
+    )
 
 
 @dataclass
@@ -396,7 +616,7 @@ def schedule_fleet_update(
         args.append("-NoSpawn")
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=90)
-    except Exception as e:  # noqa: BLE001 — surface to IRC as spawn-failed
+    except Exception as e:  # noqa: BLE001 - surface to IRC as spawn-failed
         r = UpdateScheduleResult(
             False,
             "spawn-failed",
@@ -678,7 +898,7 @@ def parse_ping_command(text: str) -> str | None:
 def is_bob_fleet_nick(nick: str) -> bool:
     """True for fleet ear nick shape ``bob-{machinename}`` (issue #302).
 
-    FR #3286: this is a naming helper only — never treat the pattern as authentication.
+    FR #3286: this is a naming helper only - never treat the pattern as authentication.
     """
     return bool(_BOB_FLEET_NICK_RE.match((nick or "").strip()))
 
@@ -802,7 +1022,7 @@ class ChannelMemberMap:
                     prefs = [p for p in prefs if p != pref]
                 self._members[key] = "".join(prefs)
             elif ch_m in "klbeI":
-                # Modes that consume a parameter — skip the arg.
+                # Modes that consume a parameter - skip the arg.
                 if arg_i < len(args):
                     arg_i += 1
 
@@ -1655,7 +1875,7 @@ def resolve_comspec() -> str:
 
 # FR #2580: redirected powershell.exe defaults $OutputEncoding to ASCII, which
 # best-fits non-ASCII (α→a, CJK→?) before airc UTF-8-decodes stdout (U+FFFD).
-# FR #2641: also silence progress records — redirected hosts otherwise emit
+# FR #2641: also silence progress records - redirected hosts otherwise emit
 # ``#< CLIXML`` / ``Preparing modules for first use`` on stderr (extra IRC flood
 # and a non-empty StdErr for ExitCode 0 callers).
 # FR #2910: keep each preamble statement on its own line so terminating errors
@@ -1863,7 +2083,7 @@ def sanitize_console_operator_text(text: str) -> str:
     when the remainder looks like a console command / FR #78 verb.
 
     FR #2570 follow-up: bobtalk-only presence lines (no command after the prefix) return
-    empty so ``handle_raw`` drops them — never pipe ``@nick`` / ``weekly=N`` into PowerShell.
+    empty so ``handle_raw`` drops them - never pipe ``@nick`` / ``weekly=N`` into PowerShell.
     MRB #2573: do not treat PowerShell ``@(…)`` / ``@'`` / ``@"`` as nick-mentions; drop only
     ``@token`` nick-like lines. Remove unreachable duplicate sanitize tail.
     """
@@ -1946,7 +2166,7 @@ def build_cmd_command_line(body: str) -> str:
 def build_shell_argv(req: ShellRequest) -> list[str]:
     if req.kind == "cmd":
         # Shape for inspectors/tests. Execution uses build_cmd_command_line
-        # (FR #3773) — do not subprocess.run this list for trailing-\\ bodies.
+        # (FR #3773) - do not subprocess.run this list for trailing-\\ bodies.
         body = prepare_cmd_body(req.body or "")
         return [resolve_comspec(), "/d", "/s", "/c", body]
     if req.kind == "psb64":
@@ -1998,7 +2218,7 @@ def run_shell_request(
         return ShellOutcome(job_id=req.job_id, exit_code=124, stdout=out, stderr=err)
     out, out_clip = _clip_bytes(proc.stdout or b"")
     err, err_clip = _clip_bytes(proc.stderr or b"")
-    # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect — plain-text it.
+    # FR #2910: PowerShell 5.1 error stream is CLIXML under redirect - plain-text it.
     err = plain_text_powershell_stderr(err)
     if out_clip:
         out += "\n[clipped stdout]"
@@ -2306,7 +2526,7 @@ class ShellJobRunner:
                     t.start()
 
         if overflow:
-            # FR #2612 / #2632: queue full — fail closed with DONE (Wait must not hang).
+            # FR #2612 / #2632: queue full - fail closed with DONE (Wait must not hang).
             try:
                 req = parse_shell_request(command)
                 jid = req.job_id
@@ -2566,7 +2786,7 @@ class AircConsoleCore:
     def join_commands(self) -> list[str]:
         """JOIN control channel plus optional presence channels (FR #3774).
 
-        Presence channels (e.g. ``#bobiverse`` on client) are silent for commands —
+        Presence channels (e.g. ``#bobiverse`` on client) are silent for commands -
         ``handle_raw`` only executes channel traffic on ``self.channel``.
         """
         ordered: list[str] = []
@@ -2636,7 +2856,7 @@ class AircConsoleCore:
         if amap is not None and account:
             amap.set(nick, account)
 
-        # Issue #298: CTCP PING / "ping [pattern]" — no operator auth; presence only.
+        # Issue #298: CTCP PING / "ping [pattern]" - no operator auth; presence only.
         ctcp_payload = parse_ctcp_ping(text or "")
         if ctcp_payload is not None:
             return HandleResult(
@@ -2659,7 +2879,7 @@ class AircConsoleCore:
             if is_channel_target(target):
                 self.channel_traffic.append(text)
                 return HandleResult(action="silent_channel", nick=nick, target=target, text=text)
-            # Direct ping that does not match us — ignore quietly.
+            # Direct ping that does not match us - ignore quietly.
             return HandleResult(action="ping_miss", nick=nick, target=target, text=text)
 
         if is_channel_target(target):
@@ -2702,8 +2922,9 @@ class AircConsoleCore:
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
+                    "PRIORITY prepare <ENAME> [instance=] (FR #5286 REPPREPDIRECT2); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
-                    "(ops-gated remote; not auto self-update — FR #3764); "
+                    "(ops-gated remote; not auto self-update - FR #3764); "
                     "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
@@ -2741,7 +2962,7 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5284: PRIORITY connect/status — allowlist + CredMan; never password on IRC.
+        # FR #5284: PRIORITY connect/status - allowlist + CredMan; never password on IRC.
         pri = _priority.parse_priority_command(cmd)
         if pri is not None:
             if caps.shell_mode == "off":
@@ -2850,7 +3071,7 @@ class AircConsoleCore:
                 **meta,
             )
 
-        # FR #5298: NETWORK / NETWORK diag — isolated stub worker; same auth as UPDATE.
+        # FR #5298: NETWORK / NETWORK diag - isolated stub worker; same auth as UPDATE.
         net = _network.parse_network_command(cmd)
         if net is not None:
             if caps.shell_mode == "off":
@@ -3028,6 +3249,45 @@ class AircConsoleCore:
                 **meta,
             )
 
+        # FR #5286: PRIORITY prepare (TYPE=P EXEC REPPREPDIRECT2 + UPD/.prp gates).
+        prep = parse_priority_prepare_command(cmd)
+        if prep is not None:
+            pw = _load_priority_worker()
+            run = getattr(pw, "run_priority_prepare", None) if pw else None
+            insts = load_priority_instances(self.install_root)
+            if run:
+                hooks = build_console_prepare_hooks(self.install_root)
+                body = run(
+                    prep.get("name") or "",
+                    instance_id=prep.get("instance") or "",
+                    instances=insts,
+                    **hooks,
+                )
+            else:
+                body = {
+                    "ok": False,
+                    "reason": "name_missing" if not (prep.get("name") or "") else "worker_missing",
+                    "ename": prep.get("name") or "",
+                    "sql_faked": False,
+                }
+            # Never put passwords on the wire.
+            blob = json.dumps(
+                {k: v for k, v in body.items() if "pass" not in str(k).lower()},
+                separators=(",", ":"),
+            )
+            jid = (prep.get("qid") or "").strip() or uuid.uuid4().hex[:8]
+            exit_code = 0 if body.get("ok") else 1
+            reply = f"out id={jid} seq=1 PRIORITY prepare {blob} DONE id={jid} exit={exit_code}"
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=reply[:IRC_SAFE_PAYLOAD],
+                **meta,
+            )
+
         # FR #5003: caller advertises reverse-DCC listen endpoint before/alongside shell.
         if self.shell_runner is not None and cmd.upper().startswith("DCCLISTEN"):
             if self.shell_runner.note_dcclisten(cmd):
@@ -3126,7 +3386,7 @@ def ensure_nickserv_password(path: Path, *, mint: bool = True) -> str | None:
     """Load or mint the NickServ password (issue #271).
 
     First start writes a GUID into ``console.password`` and reuses it later.
-    This is **not** the Ergo server PASS — that comes from env / ergo.password.
+    This is **not** the Ergo server PASS - that comes from env / ergo.password.
     """
     import uuid
 
@@ -3152,7 +3412,7 @@ def resolve_server_password(
     home: Path | None = None,
     password_file: Path | None = None,
 ) -> str | None:
-    """Ergo / IRC server PASS — never invent; never use NickServ GUID file alone.
+    """Ergo / IRC server PASS - never invent; never use NickServ GUID file alone.
 
     Order: AIRC_CONSOLE_SERVER_PASSWORD, AGENTIC_IRC_PASSWORD, AIRC_CONSOLE_PASSWORD
     (legacy), then ``ergo.password`` / ``connect.password`` beside home or
@@ -3179,7 +3439,7 @@ def resolve_server_password(
                 home / "connect.password",
             ]
         )
-    # Fleet default connect.password — only when using the real user console home
+    # Fleet default connect.password - only when using the real user console home
     # (avoid leaking ~/.grok secrets into hermetic tests with a tmp home).
     real_home = home_dir()
     if home is None or Path(home).resolve() == real_home.resolve():
