@@ -3019,6 +3019,7 @@ class AircConsoleCore:
         if not m:
             return None
         nick, target, text = m.group(1), m.group(2), m.group(3)
+        self.verb_log_nick = nick
         account = tags.get("account")
         amap = getattr(self.auth, "account_map", None)
         if amap is not None and account:
@@ -3404,6 +3405,9 @@ class AircConsoleCore:
                 offer=offer,
                 send_fn=send_fn,
             )
+            emit = getattr(self, "extension_log_emit", None)
+            if callable(emit):
+                emit(delivered)
             reply = f"{result.reply_text()} {delivered['summary']} {delivered['done']}"
             meta = self._allow_meta(nick, account)
             return HandleResult(
