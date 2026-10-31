@@ -682,6 +682,7 @@ class Client:
         self._cs_collector: registered_machines.ChanServListCollector | None = None
         self._unregister_pending = unregister_cmd.PendingUnregisterStore()
         self._cs_unregister_wait: dict[str, str] = {}  # shop_l -> asker
+        self._cs_register_wait: dict[str, dict] = {}  # shop_l -> {asker, mid, sent_at} FR #5274
         self._cs_sent_at = 0.0
         self._cs_force = False
         self._cs_fail_at = 0.0
@@ -1313,7 +1314,64 @@ class Client:
             self._cs_collector = None
             self._cs_fail_at = now
 
+    def _register_now(self) -> float:
+        return time.time()
+
+    def _register_wait_s(self) -> float:
+        try:
+            return max(5.0, float(os.environ.get("BOB_CHANSERV_REGISTER_WAIT_S") or unregister_cmd.REGISTER_WAIT_S))
+        except ValueError:
+            return unregister_cmd.REGISTER_WAIT_S
+
+    def _finish_register_ok(self, shop: str, mid: str, who: str) -> None:
+        registered_machines.add_registered(self._digest_home(), mid)
+        self._cs_force = True
+        self.whisper(who, f"ACK registered {shop}")
+        self.send(f"PRIVMSG {unregister_cmd.FLEET} :{unregister_cmd.REGISTERED_WIRE.format(mid=mid)}")
+        info(f"INFO register machine={mid} by={who}")
+
+    def _finish_register_fail(self, shop: str, mid: str, who: str, reason: str) -> None:
+        self.whisper(who, f"ERR !register ChanServ {shop} {reason}".strip()[:350])
+        info(f"INFO register failed machine={mid} by={who} reason={reason[:80]}")
+
+    def _expire_register_waits(self) -> None:
+        """FR #5274: no ACK if ChanServ never replies."""
+        if not getattr(self, "_cs_register_wait", None):
+            return
+        now_fn = getattr(self, "_register_now", time.time)
+        now = now_fn()
+        wait_fn = getattr(self, "_register_wait_s", None)
+        wait_s = wait_fn() if callable(wait_fn) else unregister_cmd.REGISTER_WAIT_S
+        for shop_l, pending in list(self._cs_register_wait.items()):
+            sent_at = float(pending.get("sent_at") or 0.0)
+            if now - sent_at < wait_s:
+                continue
+            self._cs_register_wait.pop(shop_l, None)
+            who = str(pending.get("asker") or "")
+            mid = str(pending.get("mid") or shop_l.lstrip("#"))
+            shop = f"#{mid}"
+            if who:
+                self._finish_register_fail(shop, mid, who, "timeout (no ChanServ REGISTER reply)")
+
     def _on_chanserv_notice(self, text: str) -> None:
+        kind, shop = unregister_cmd.parse_chanserv_register_result(text)
+        pending_map = getattr(self, "_cs_register_wait", None) or {}
+        if pending_map and kind in ("ok", "fail"):
+            shop_l = (shop or "").lower()
+            pending = pending_map.pop(shop_l, None) if shop_l else None
+            if pending is None and len(pending_map) == 1:
+                only = next(iter(pending_map))
+                pending = pending_map.pop(only, None)
+                shop_l = only
+            if pending:
+                who = str(pending.get("asker") or "")
+                mid = str(pending.get("mid") or (shop_l or "").lstrip("#"))
+                shop_use = shop or f"#{mid}"
+                if kind == "ok" and who:
+                    self._finish_register_ok(shop_use, mid, who)
+                elif who:
+                    reason = (text or "ChanServ REGISTER failed").strip()[:200]
+                    self._finish_register_fail(shop_use, mid, who, reason)
         # FR #4008: ChanServ UNREGISTER verification-code round-trip
         conf = unregister_cmd.parse_chanserv_unregister_confirm(text)
         if conf:
@@ -1442,12 +1500,15 @@ class Client:
             self.send(f"JOIN {shop}")
             time.sleep(FLOOD_S)
         # Jeeves owns registration (Bob does not self-REGISTER).
+        # FR #5274: ACK + roster + REGISTERED v1 only after ChanServ confirms.
         self.send(f"PRIVMSG ChanServ :REGISTER {shop}")
         time.sleep(FLOOD_S)
-        registered_machines.add_registered(self._digest_home(), mid)
-        self._cs_force = True  # #42: re-sync the mirror from ChanServ right away
-        self.whisper(who, f"ACK registered {shop}")
-        info(f"INFO register machine={mid} by={who}")
+        self._cs_register_wait[shop.lower()] = {
+            "asker": who,
+            "mid": mid,
+            "sent_at": getattr(self, "_register_now", time.time)(),
+        }
+        info(f"INFO register wait ChanServ machine={mid} by={who}")
         return True
 
     def _handle_unregister_command(self, asker: str, body: str) -> bool:
@@ -3995,6 +4056,7 @@ class Client:
                 self._maybe_bobiverse_pull()
                 # FR #68: establish chair/ChanServ privileges before draining backlog.
                 self._maybe_chanserv_sync()
+                self._expire_register_waits()
                 self._ensure_chan_ops()
                 self._chan_privs_tick()
                 self.drain_outbox_once()

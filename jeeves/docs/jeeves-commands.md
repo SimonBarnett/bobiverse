@@ -29,7 +29,7 @@ Every reply is also appended to `<chair home>/cmd-trace.log` (bounded to ~256 KB
 | `!build <owner/repo>[,..] <version> [ref]` / `!build status|cancel|dry-run ...` | PM: queued / dry-run plan / refused (no recipe, single-flight, denied) | **Ops only (simon / bob-*).** FR #4006/#4025 deterministic BUILD: in-repo `.bobiverse/build.yml`, no agent tokens. `<version>` must be numeric `x.y.z` or `x.y.z.w` (digits only); `v0.1.32` / `0.1.32-test2` are refused (#4186). Chair announces `BUILD v1` on #bobiverse; recipe machine (`ionos`/fold) enqueues + runs suites/pack/prerelease (never Latest); auto `release-blocker` issues. |
 | `!installtest <owner/repo> <version> [tag]` / `!installtest dry-run ...` | PM: queued / dry-run plan / refused (no install_test, wrong machine, denied) | **Ops only (simon / bob-*).** FR #4026 WP3 INSTALL-TEST: msiexec pre-release MSIs + post-checks; release-blocker on fail; recipe `install_test` on ionos/fold. |
 | `ping` / `ping <glob>` (no `!`) | `pong` | in a channel or by PM |
-| `!register <#channel|machine>` | `ACK registered #<mid>` or `ERR !register denied (operators only) machine=<mid>` | +o/+h in #bobiverse (FR #4008); ChanServ REGISTER + roster add; operators.txt ignored |
+| `!register <#channel|machine>` | `ACK registered #<mid>` after ChanServ confirms; else `ERR !register ChanServ ...` / timeout; denied: `ERR !register denied (+o/+h required)` | +o/+h in #bobiverse (FR #4008 / #5274); ACK + roster + `REGISTERED v1 <mid>` on #bobiverse only after ChanServ REGISTER ok (or already-registered); operators.txt ignored |
 | `!unregister <#channel|machine> [confirm]` / `!unregister dry-run <..>` | plan PM then `ACK unregistered #<mid>`; dry-run sends nothing; core refuse; idempotent not-registered | +o/+h gate; confirm or repeat within 60s; ChanServ UNREGISTER (+ code NOTICE); remove_registered; PART; `UNREGISTERED v1 <mid>` in #bobiverse; airc falls back to #wonderland (FR #3834/#4008); dry-run/confirm plan lists `*_console` nicks in `#<mid>` or `none seen` (FR #4040) |
 | shop wire: `!bored`, `ACK`, `DONE`, `NACK`/`GIVEUP` | assign line / quiet | unchanged (`gitclaim`, `shop_listen`) |
 
@@ -158,11 +158,11 @@ Skill-intake consolidation: when a worker takes an FR from skill intake (label:s
 
 - FR #1016 ionos chair/queue verification: [fr-1016-ionos-live-evidence.md](./fr-1016-ionos-live-evidence.md)
 
-## !register / !unregister (FR #4008)
+## !register / !unregister (FR #4008 / #5274)
 
 | Command | Gate | Notes |
 |---------|------|-------|
-| `!register <#channel|machine>` | live +o/+h in #bobiverse | ChanServ REGISTER + roster; operators.txt ignored |
+| `!register <#channel|machine>` | live +o/+h in #bobiverse | ChanServ REGISTER; ACK + roster + `REGISTERED v1 <mid>` only after ChanServ confirms (or already-registered); timeout/fail -> ERR, no ACK; operators.txt ignored |
 | `!unregister dry-run <..>` | same | prints plan (includes `*_console` list / none seen, FR #4040), sends nothing |
 | `!unregister <..> [confirm]` | same | plan then confirm/repeat within 60s; ChanServ UNREGISTER (+ code round-trip); PART; `UNREGISTERED v1 <mid>` on #bobiverse |
 | core refuse | - | `#bobiverse` / `#wonderland` refused |
