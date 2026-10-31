@@ -1,6 +1,7 @@
 """FR #5519: NETWORK/EXTENSION/LEGION IRC CONT fallback without DCCLISTEN."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import airc_console as ac
@@ -51,13 +52,20 @@ def test_fr5519_network_emit_cont_without_dcclisten(tmp_path, monkeypatch):
 def test_fr5519_extension_emit_without_dcclisten(tmp_path):
     emitted: list[dict] = []
     core = _core(tmp_path)
+    # Isolated packaged GPO child can exceed a unit-test wait; pin IRC emit with wait=True.
+    core.extension_runner = lambda **kw: __import__("airc_extension").run_extension_verb(
+        wait=True, worker=__import__("airc_extension").fill_holes_work, **kw
+    )
     svc.attach_verb_log_hooks(core, send_fn=lambda *_a, **_k: None, emit_fn=emitted.append)
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd EXTENSION status")
     assert hr is not None
     if hr.action == "capability_deny":
         return
     assert hr.action == "extension"
-    assert emitted
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not emitted:
+        time.sleep(0.02)
+    assert emitted, "IRC fallback must emit CONT/DONE when DCCLISTEN is absent"
     lines = "\n".join(str(x) for x in (emitted[0].get("lines") or []))
     assert "CONT id=aabbccdd" in lines or "DONE id=aabbccdd" in lines
 
