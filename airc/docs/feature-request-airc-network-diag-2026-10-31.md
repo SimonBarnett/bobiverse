@@ -17,8 +17,8 @@ LOCKED: An authorized remote **`NETWORK diag`** on `{mid}_console` runs an **iso
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
 | S1 | NETWORK verb | Authorized `NETWORK diag` [optional `-WhatIf`] accepted; auth **same as STATUS** (ops/half-ops; allowed when `shell=off`); unauthorized → existing auth exits | Wire tests; skills | No verb; blocked by shell=off incorrectly |
-| S2 | AD inventory | Worker enumerates AD computer objects via LDAP; each row includes hostname, resolved IP(s), OU distinguished name/path, reachability summary | Lab domain: DCC/JSON lists computers with OU + IPs | Invents hosts outside AD; missing OU; no IPs when DNS works |
-| S3 | Ping + DNS | For each inventoried host (or bounded subset documented), record DNS resolve result and ICMP reachability; failures listed in log | Fixture/lab: known up/down hosts marked correctly | Silent skip of all probes; hangs IRC thread |
+| S2 | AD inventory | Worker enumerates AD computers via **shared LDAP helper** (with EXTENSION #5292); each row: `hostname`, `ips[]` (**IPv4/A**), `ou`, reachability; cap **500** hosts with `truncated` meta when over | Lab: DCC/JSON rows with OU + IPv4; shared helper used | Invents non-AD hosts; unbounded enum; IPv6 required for DONE |
+| S3 | Ping + DNS | Per host (≤500): DNS + ICMP with **1s** timeouts, **32** parallel; fields `dns_ok`, `ping_ok`, `error`; failures in log | Lab: up/down hosts; parallelism bounded | Silent skip; IRC-thread hang; no timeout |
 | S4 | Local console note | Result includes local airc service/STATUS/VERSION snapshot for the console box (no remote IRC port probes on peer hosts) | Log contains local `airc_ver` / Running; no mandatory TCP 6667 scans of AD PCs | Remote Ergo port scan required for DONE |
 | S5 | Isolation | Detached/child worker (EXTENSION/UPDATE class); LDAP/ping loops never on IRC receive thread; worker fault → Airc still Running | Fault injection | Service Stopped after NETWORK |
 | S6 | DCC data + logs | Full structured inventory + probe log via reverse DCC when `DCCLISTEN` offered, else CONT; short IRC summary + DONE; all failures in log | Harness with/without DCCLISTEN | Multi-KB PRIVMSG flood only; failures omitted |
@@ -35,9 +35,9 @@ LOCKED
 
 ## Stack
 
-Default: Airc `NETWORK diag` → detached PowerShell/Python worker → LDAP AD computers → DNS + ICMP → local STATUS/VERSION read → JSON/line log → DCCLISTEN path (FR #5003).
+Default: Airc `NETWORK diag` → detached worker → **shared** LDAP/AD helper → DNS (A/IPv4) + ICMP (1s, 32-wide, max 500) → local STATUS/VERSION → snake_case JSON (`hostname`, `ips[]`, `ou`, `dns_ok`, `ping_ok`, `error` + meta) → DCCLISTEN (FR #5003).
 
-Why: Customer-network debug from inside; reuse EXTENSION LDAP + DCC patterns; STATUS-like auth for read-only.
+Why: Customer-network debug from inside; shared LDAP with EXTENSION; STATUS-like auth; bounded probes.
 
 Why-not: In-process IRC-thread scans; subnet invent without AD; remote IRC port scanning of every PC; separate NetworkDiag.exe product.
 
@@ -89,14 +89,15 @@ None.
 - Fields: hostname, IPs, OU, reachability; ping + DNS; local airc STATUS/VERSION only (no remote IRC ports)
 - Auth: same as STATUS; allowed when shell=off
 - Isolated detached worker; DCC log + failures (CONT fallback)
+- Defaults: **max 500 hosts**; **1s DNS** + **1s ping** timeouts; **32** parallel probes; overflow hosts listed as `truncated`
+- Result schema (snake_case): per host `hostname`, `ips[]`, `ou`, `dns_ok`, `ping_ok`, `error`; meta `machine`, `airc_ver`, `airc_running`, `truncated`
+- **Shared** airc LDAP/AD helper module with EXTENSION fill-holes (#5292)
+- **IPv4-only MVP** (A records + IPv4 ping); AAAA/IPv6 follow-on
 - Anti-omnibus slices
 
 ## UNKNOWN
 
-- Max host / timeout / parallelism knobs (defaults TBD in implement FR-A)
-- Exact JSON schema field names
-- Whether to share LDAP helper module with EXTENSION FR #5292
-- IPv6 inclusion vs IPv4-only MVP
+- (none for MVP — operator MC cards closed 2026-10-31)
 
 ## Implementation slices
 
