@@ -234,6 +234,8 @@ function Get-BobiverseArpDisplayVersion([string]$ProductName) {
     return ''
 }
 # Test hook: -ArpVersionOverride none|- means "no ARP row" (skip live registry).
+# FR #5479: unit fixtures that assert InstallRoot\VERSION must pass this hook, else a
+# machine-global Bobiverse ARP DisplayVersion heals the tmp tree before the FR #1018 skip.
 $arpOverride = if ($ArpVersionOverride) { $ArpVersionOverride.Trim() } else { '' }
 $arpVerText = if ($arpOverride -in @('none', '-', 'null')) {
     ''
