@@ -30,9 +30,12 @@ EDGE_FORCE_KEY = r"SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist"
 CREDMAN_TARGET = "PriorityAirc/ExtensionAdmin"
 GPO_SCRIPT_NAME = "Invoke-AircExtensionGpo.ps1"
 
+# FR #5615: match the verb only. Action and flags are whole tokens in parse.
 _EXTENSION_CMD_RE = re.compile(
-    r"(?is)^(?:id=([0-9a-f]{8})\s+)?EXTENSION\s+(install|status)(?P<rest>.*)$"
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?EXTENSION(?:\s+(?P<rest>.*))?$"
 )
+_WHATIF_TOKEN_RE = re.compile(r"(?i)^-WhatIf$")
+_ALLOWED_ACTIONS = frozenset({"install", "status"})
 
 
 @dataclass
@@ -47,15 +50,27 @@ class ExtensionVerbResult:
 
 
 def parse_extension_command(text: str) -> dict[str, Any] | None:
+    """FR #5615: install|status are whole words; -WhatIf is a whole token.
+
+    Unknown tokens -> error=usage (never a prefix install).
+    """
     m = _EXTENSION_CMD_RE.match((text or "").strip())
     if not m:
         return None
-    rest = m.group("rest") or ""
-    return {
-        "qid": (m.group(1) or "").lower(),
-        "action": m.group(2).lower(),
-        "whatif": bool(re.search(r"(?i)-WhatIf", rest)),
-    }
+    qid = (m.group(1) or "").lower()
+    parts = [p for p in (m.group("rest") or "").split() if p]
+    if not parts:
+        return {"qid": qid, "action": "", "whatif": False, "error": "usage"}
+    action = parts[0].lower()
+    if action not in _ALLOWED_ACTIONS:
+        return {"qid": qid, "action": "", "whatif": False, "error": "usage"}
+    whatif = False
+    for tok in parts[1:]:
+        if _WHATIF_TOKEN_RE.match(tok):
+            whatif = True
+            continue
+        return {"qid": qid, "action": "", "whatif": False, "error": "usage"}
+    return {"qid": qid, "action": action, "whatif": whatif, "error": None}
 
 
 

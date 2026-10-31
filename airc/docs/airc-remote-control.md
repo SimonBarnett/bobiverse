@@ -107,6 +107,7 @@ Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses).
 PRIVMSG marchhare_console :id=aabbccdd DCCLISTEN id=aabbccdd host=127.0.0.1 port=7700 token=<hex> tls=1
 PRIVMSG marchhare_console :id=aabbccdd EXTENSION install
 PRIVMSG marchhare_console :id=aabbccdd EXTENSION install -WhatIf
+# FR #5615: action and -WhatIf are whole tokens. EXTENSION installation / -whatiffy / extra flags -> DONE exit=126 bad-extension-cmd (never a real install).
 ```
 
 - Default ForceInstall id: `cgmpadejahkaggjpffnhaoiafbnicgpa` plus `https://clients2.google.com/service/update2/crx` for Chrome and Edge.

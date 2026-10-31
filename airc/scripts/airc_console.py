@@ -3573,6 +3573,10 @@ class AircConsoleCore:
                 return self._capability_deny(
                     nick, target, text, "extension-disabled", qid
                 )
+            if ext.get("error"):
+                return self._capability_deny(
+                    nick, target, text, "bad-extension-cmd", qid
+                )
             qid = str(ext.get("qid") or "").strip().lower()
             offer = None
             if self.shell_runner is not None and qid:
