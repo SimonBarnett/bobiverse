@@ -62,6 +62,7 @@ from airc_console import (
     wonderland_channel,
 )
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
+import airc_extension as _airc_extension  # FR #5426: EXTENSION runner for AircConsoleCore
 
 FLOOD_S = 0.35  # legacy fixed gap; FR #4790 prefers token bucket below
 # FR #4790: sustain under Ergo fakelag (~1-2 msg/s). Burst then pace.
@@ -325,6 +326,7 @@ class AircConsoleService:
             cli_shell_mode=getattr(args, "shell_mode", None) or _mode_tok,
             cli_jobs=getattr(args, "jobs", None),
             cli_update=getattr(args, "update_cap", None),
+            cli_extension=getattr(args, "extension_cap", None),
             cli_require_account=bool(args.require_account) if getattr(args, "require_account", False) else None,
             cli_accounts=list(args.accounts or []),
             default_shell_mode="operators",
@@ -410,6 +412,7 @@ class AircConsoleService:
             machine=self.machine,
             airc_running=True,
         )
+        self.job_protocol.dcc_receive = self._dcc_put_receive
         self.core = AircConsoleCore(
             machine=self.machine,
             auth=auth,
@@ -449,6 +452,15 @@ class AircConsoleService:
         self._stopping = False
         # FR #2649: flush at most once so finally does not re-drain after sock=None.
         self._stop_flushed = False
+
+    def _dcc_put_receive(self, job_id: str):
+        """FR #5194: console dials the caller DCCLISTEN and reads the upload frame."""
+        import airc_dcc_bulk as _dcc
+
+        offer = self.shell_runner.peek_dcc_offer(job_id)
+        if offer is None:
+            raise RuntimeError("no DCCLISTEN for id")
+        return _dcc.receive_upload_from_offer(offer)
 
     def note_shell_inflight(self, nick: str, job_id: str) -> None:
         key = (nick or "").strip().lower()
@@ -603,18 +615,31 @@ class AircConsoleService:
         self._registered = False
         self._force_reconnect = False
         self._awaiting_pong = False
-        raw = socket.create_connection((self.args.host, int(self.args.port)), timeout=30)
-        if self.args.tls:
-            ctx = ssl.create_default_context()
-            if self.args.tls_insecure:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-            self.sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
-        else:
-            self.sock = raw
-        self.sock.settimeout(1.0)
-        self._last_recv = time.monotonic()
-        info(f"INFO connected {self.args.host}:{self.args.port} tls={self.args.tls}")
+        preferred = int(self.args.port)
+        last: OSError | None = None
+        for port in resolve_irc_ports(preferred):
+            try:
+                raw = socket.create_connection((self.args.host, int(port)), timeout=30)
+                if self.args.tls:
+                    ctx = ssl.create_default_context()
+                    if self.args.tls_insecure:
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                    self.sock = ctx.wrap_socket(raw, server_hostname=self.args.host)
+                else:
+                    self.sock = raw
+                self.sock.settimeout(1.0)
+                self._last_recv = time.monotonic()
+                self.args.port = int(port)
+                info(f"INFO connected {self.args.host}:{port} tls={self.args.tls}")
+                return
+            except OSError as exc:
+                last = exc
+                info(f"INFO connect {self.args.host}:{port} failed ({exc}); trying next port")
+                continue
+        if last is not None:
+            raise last
+        raise ConnectionError("connect: no IRC port remaining")
 
     def send(self, line: str, *, flood: bool = True) -> None:
         if not self.sock:
@@ -1784,10 +1809,24 @@ class AircConsoleService:
         return 0
 
 
+# FR #5189: customer egress often blocks 6697; Ergo also listens on 993 (IMAPS).
+DEFAULT_IRC_PORT = 993
+FALLBACK_IRC_PORTS = (993, 6697)
+
+
+def resolve_irc_ports(preferred: int) -> list[int]:
+    """Try preferred first, then the other TLS listener(s)."""
+    out: list[int] = []
+    for port in (int(preferred),) + FALLBACK_IRC_PORTS:
+        if port not in out:
+            out.append(port)
+    return out
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="airc console Windows service host (FR #253)")
     p.add_argument("--host", default=os.environ.get("AIRC_IRC_HOST", "irc.ntsa.uk"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("AIRC_IRC_PORT", "6697")))
+    p.add_argument("--port", type=int, default=int(os.environ.get("AIRC_IRC_PORT", str(DEFAULT_IRC_PORT))))
     p.add_argument("--tls", action="store_true", default=True)
     p.add_argument("--no-tls", action="store_false", dest="tls")
     p.add_argument("--tls-insecure", action="store_true")
@@ -1857,6 +1896,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["off", "on"],
         help="FR #3287: off refuses UPDATE airc|bob|jeeves",
+    )
+    p.add_argument(
+        "--extension",
+        dest="extension_cap",
+        default=None,
+        choices=["off", "on"],
+        help="FR #5295: off refuses EXTENSION install|status",
     )
     p.add_argument("--cwd", default=None)
     p.add_argument("--idle-sec", type=float, default=3600.0)

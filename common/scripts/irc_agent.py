@@ -545,6 +545,10 @@ def reconnect_cap() -> int | None:
     return n if n >= 0 else None
 
 
+# FR #5352: reserved-nick stall; do not crash-report or tight-loop reconnect.
+NICKNAME_RESERVED_BACKOFF_S = 300.0
+
+
 # FR #4980: half-open / silent link detection (mirror airc IDLE_PING / IDLE_DEAD).
 def idle_ping_s() -> float:
     raw = (os.environ.get("BOB_IRC_IDLE_PING_S") or "60").strip()
@@ -1331,27 +1335,100 @@ class Client:
         info(f"INFO register machine={mid} by={who}")
 
     def _finish_register_fail(self, shop: str, mid: str, who: str, reason: str) -> None:
-        self.whisper(who, f"ERR !register ChanServ {shop} {reason}".strip()[:350])
+        line = f"ERR !register ChanServ {shop} {reason}".strip()[:350]
+        self.whisper(who, line)
+        # FR #5349: ChanServ fail text must be visible in the shop, not only whispered.
+        try:
+            self.send(f"PRIVMSG {shop} :{line}")
+        except Exception:
+            pass
         info(f"INFO register failed machine={mid} by={who} reason={reason[:80]}")
 
+    def _register_join_wait_s(self) -> float:
+        try:
+            return max(3.0, float(os.environ.get("BOB_CHANSERV_REGISTER_JOIN_WAIT_S") or 15.0))
+        except ValueError:
+            return 15.0
+
+    def _chair_present_in_shop(self, shop: str) -> bool:
+        for n in self._mine_nicks():
+            if self._nick_modes_in_channel(n, shop):
+                return True
+        return False
+
+    def _send_chanserv_register(self, shop: str, mid: str, who: str) -> None:
+        """FR #5274: ACK only after ChanServ; FR #5349: caller already has JOIN echo."""
+        self.send(f"PRIVMSG ChanServ :REGISTER {shop}")
+        time.sleep(FLOOD_S)
+        self._cs_register_wait[shop.lower()] = {
+            "asker": who,
+            "mid": mid,
+            "sent_at": getattr(self, "_register_now", time.time)(),
+            "phase": "register",
+        }
+        info(f"INFO register wait ChanServ machine={mid} by={who}")
+
+    def _promote_register_join_wait(self, shop: str) -> None:
+        shop_l = (shop or "").strip().lower()
+        if not shop_l.startswith("#"):
+            return
+        pending = (getattr(self, "_cs_register_wait", None) or {}).get(shop_l)
+        if not pending or pending.get("phase") != "join":
+            return
+        who = str(pending.get("asker") or "")
+        mid = str(pending.get("mid") or shop_l.lstrip("#"))
+        self._cs_register_wait.pop(shop_l, None)
+        if who:
+            self._send_chanserv_register(f"#{mid}", mid, who)
+
+    def _on_register_presence_line(self, cmd: str, parts: list, trailing: str, prefix: str) -> None:
+        """FR #5349: own JOIN echo / 366 / +o promotes join-wait to ChanServ REGISTER."""
+        pending = getattr(self, "_cs_register_wait", None) or {}
+        if not pending or not any(p.get("phase") == "join" for p in pending.values()):
+            return
+        who = prefix.split("!", 1)[0].lstrip(":") if prefix else ""
+        shop = ""
+        if cmd == "JOIN":
+            if who.lower() not in self._mine_nicks():
+                return
+            shop = (parts[1] if len(parts) > 1 else trailing).lstrip(":")
+        elif cmd == "366":
+            shop = (parts[2] if len(parts) > 2 else "").lstrip(":")
+        elif cmd == "MODE":
+            shop = (parts[1] if len(parts) > 1 else "").lstrip(":")
+            modes = " ".join(parts[2:]) + " " + (trailing or "")
+            if "+" not in modes or "o" not in modes:
+                return
+        if shop:
+            self._promote_register_join_wait(shop)
+
     def _expire_register_waits(self) -> None:
-        """FR #5274: no ACK if ChanServ never replies."""
+        """FR #5274: no ACK if ChanServ never replies. FR #5349: JOIN-wait timeout too."""
         if not getattr(self, "_cs_register_wait", None):
             return
         now_fn = getattr(self, "_register_now", time.time)
         now = now_fn()
         wait_fn = getattr(self, "_register_wait_s", None)
         wait_s = wait_fn() if callable(wait_fn) else unregister_cmd.REGISTER_WAIT_S
+        join_fn = getattr(self, "_register_join_wait_s", None)
+        join_s = join_fn() if callable(join_fn) else 15.0
         for shop_l, pending in list(self._cs_register_wait.items()):
             sent_at = float(pending.get("sent_at") or 0.0)
-            if now - sent_at < wait_s:
+            phase = str(pending.get("phase") or "register")
+            limit = join_s if phase == "join" else wait_s
+            if now - sent_at < limit:
                 continue
             self._cs_register_wait.pop(shop_l, None)
             who = str(pending.get("asker") or "")
             mid = str(pending.get("mid") or shop_l.lstrip("#"))
             shop = f"#{mid}"
             if who:
-                self._finish_register_fail(shop, mid, who, "timeout (no ChanServ REGISTER reply)")
+                reason = (
+                    "timeout (no JOIN echo before REGISTER)"
+                    if phase == "join"
+                    else "timeout (no ChanServ REGISTER reply)"
+                )
+                self._finish_register_fail(shop, mid, who, reason)
 
     def _on_chanserv_notice(self, text: str) -> None:
         kind, shop = unregister_cmd.parse_chanserv_register_result(text)
@@ -1497,18 +1574,22 @@ class Client:
         shop = f"#{mid}"
         if shop.lower() not in {c.lower() for c in self.channels}:
             self.channels.append(shop)
+        already = self._chair_present_in_shop(shop)
+        if not already:
+            # FR #5349: Ergo often requires presence (and sometimes +o) before REGISTER.
             self.send(f"JOIN {shop}")
             time.sleep(FLOOD_S)
+            self._cs_register_wait[shop.lower()] = {
+                "asker": who,
+                "mid": mid,
+                "sent_at": getattr(self, "_register_now", time.time)(),
+                "phase": "join",
+            }
+            info(f"INFO register wait JOIN machine={mid} by={who}")
+            return True
         # Jeeves owns registration (Bob does not self-REGISTER).
         # FR #5274: ACK + roster + REGISTERED v1 only after ChanServ confirms.
-        self.send(f"PRIVMSG ChanServ :REGISTER {shop}")
-        time.sleep(FLOOD_S)
-        self._cs_register_wait[shop.lower()] = {
-            "asker": who,
-            "mid": mid,
-            "sent_at": getattr(self, "_register_now", time.time)(),
-        }
-        info(f"INFO register wait ChanServ machine={mid} by={who}")
+        self._send_chanserv_register(shop, mid, who)
         return True
 
     def _handle_unregister_command(self, asker: str, body: str) -> bool:
@@ -3196,7 +3277,16 @@ class Client:
             return True
         if gitclaim.parse_worker_ack(body):
             self._git_ack(src, target, now)
+            try:
+                gitclaim.record_last_bored(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN last-bored stamp {type(exc).__name__}")
             return True
+        if gitclaim.shop_line_resets_bored_clock(body):
+            try:
+                gitclaim.record_last_bored(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN last-bored stamp {type(exc).__name__}")
         shop = gitclaim.worker_shop_channel(src)
         if shop and bobreport.normalize_channel(target).lower() == shop:
             gitclaim.note_worker_activity(self.home, src, now)
@@ -3872,6 +3962,11 @@ class Client:
                         cmd == "PRIVMSG" and "account" in tags
                     ):
                         self._chair_wire(cmd, parts, trailing, prefix, tags)
+                    if cmd in ("JOIN", "366", "MODE"):
+                        try:
+                            self._on_register_presence_line(cmd, parts, trailing, prefix)
+                        except Exception as exc:
+                            info(f"INFO register-join {type(exc).__name__}")
                     if cmd == "001":
                         self.ready.set()
 
@@ -4170,25 +4265,19 @@ class Client:
                 break
 
     def _surface_nickname_reserved(self, gate: str) -> None:
-        """FR #3904: NICKNAME_RESERVED must not loop silently — crash-report once per process."""
+        """FR #3904 / #5352: reserved nick is a credential stall, not a crash.
+
+        Log once per process. Do not file a crash hook. Fix
+        home\\nickserv.password or oper SAREGISTER.
+        """
         if getattr(self, "_nickname_reserved_reported", False):
             return
         self._nickname_reserved_reported = True
         info(
-            "INFO FR #3904 surface NICKNAME_RESERVED - fix home\\nickserv.password "
-            "or oper SAREGISTER; filing crash report"
+            "INFO FR #3904/#5352 NICKNAME_RESERVED stall "
+            f"gate={gate or 'NICKNAME_RESERVED'} - fix home\\nickserv.password "
+            "or oper SAREGISTER; not a crash"
         )
-        try:
-            import crash_report
-
-            crash_report.report_exception(
-                "bob-ear",
-                TimeoutError,
-                TimeoutError(gate or "NICKNAME_RESERVED"),
-                None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            info(f"WARN FR #3904 crash-report skipped {type(exc).__name__}")
 
     def run_forever(self) -> None:
         backoff = 1.0
@@ -4200,10 +4289,11 @@ class Client:
                 backoff = 1.0
                 attempt = 0
             except TimeoutError as te:
-                # FR #3904: reserved-nick credential failure was invisible without AppStdout.
+                # FR #3904 / #5352: reserved nick is visible in stdout, not a crash hook.
                 gate = str(te) if te else ""
                 if "NICKNAME_RESERVED" in gate or getattr(self, "_nickname_reserved", False):
                     self._surface_nickname_reserved(gate or "NICKNAME_RESERVED")
+                    backoff = max(backoff, NICKNAME_RESERVED_BACKOFF_S)
             except Exception as e:
                 info(f"INFO session end {type(e).__name__}")
             try:

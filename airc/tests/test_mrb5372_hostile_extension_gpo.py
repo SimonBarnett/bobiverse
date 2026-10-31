@@ -26,7 +26,7 @@ def test_mrb5372_service_runner_does_not_block_handler():
     compact = "".join(src.split())
     assert "wait=False" in compact
     assert "wait=True" not in compact
-    assert "run_extension_gpo_work" in src
+    assert "extension_gpo_then_fill_holes" in src
 
 
 def test_mrb5372_force_install_entry():

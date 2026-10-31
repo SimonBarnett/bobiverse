@@ -169,6 +169,29 @@ def resolve_sandbox_path(drop_root: Path, raw_path: str) -> Path:
     return cand
 
 
+def atomic_place_file(dest: Path, blob: bytes, expect_sha: str = "") -> str:
+    """Write blob via a temp file, verify sha256, then replace dest (FR #5194)."""
+    digest = hashlib.sha256(blob).hexdigest()
+    if expect_sha and digest != expect_sha.lower():
+        raise JobProtocolError("checksum", "sha256 mismatch")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".airc-put.tmp")
+    try:
+        tmp.write_bytes(blob)
+        on_disk = hashlib.sha256(tmp.read_bytes()).hexdigest()
+        if on_disk != digest:
+            raise JobProtocolError("checksum", "sha256 mismatch after write")
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return digest
+
+
 @dataclass
 class JobRecord:
     id: str
@@ -324,6 +347,7 @@ class JobStore:
         if sha and (len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha)):
             raise JobProtocolError("bad_frame", "sha256 must be 64 hex", jid)
         dest = resolve_sandbox_path(self.drop_root, path)
+        via = (kv.get("via") or "").strip().lower()
         with self._lock:
             rec = JobRecord(
                 id=jid,
@@ -337,6 +361,43 @@ class JobStore:
             )
             self._chunks[jid] = {}
             self._save(rec)
+        if via == "dcc":
+            recv = getattr(self, "dcc_receive", None)
+            if recv is None:
+                return [
+                    f"ok id={jid} put path={dest.name} bytes={nbytes}",
+                    f"err id={jid} dcc-put unavailable; falling back to IRC",
+                ]
+            try:
+                blob, dig = recv(jid)
+            except Exception as exc:
+                return [
+                    f"ok id={jid} put path={dest.name} bytes={nbytes}",
+                    f"err id={jid} dcc failed: {exc}; falling back to IRC",
+                ]
+            expect = sha or (dig or "").lower()
+            try:
+                if nbytes and len(blob) != nbytes:
+                    raise JobProtocolError("size", "dcc size != declared bytes", jid)
+                digest = atomic_place_file(dest, blob, expect)
+            except JobProtocolError as exc:
+                with self._lock:
+                    rec.state = "failed"
+                    rec.error = exc.message
+                    self._save(rec)
+                if dest.exists():
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                raise
+            with self._lock:
+                rec.state = "ready"
+                rec.bytes = len(blob)
+                rec.sha256 = digest
+                self._chunks.pop(jid, None)
+                self._save(rec)
+            return [f"ok id={jid} putend bytes={len(blob)} sha256={digest} via=dcc"]
         return [f"ok id={jid} put path={dest.name} bytes={nbytes}"]
 
     def handle_chunk(self, nick: str, kv: dict[str, str]) -> list[str]:
@@ -362,6 +423,8 @@ class JobStore:
             raise JobProtocolError("size", f"chunk larger than {MAX_CHUNK_RAW}", jid)
         with self._lock:
             rec = self._meta.get(jid)
+            if rec and rec.state == "ready":
+                return [f"ok id={jid} chunk seq={seq} already=1"]
             if not rec or rec.state not in {"receiving"}:
                 raise JobProtocolError("state", "no receiving PUT for id", jid)
             if rec.owner and rec.owner != nick.strip().lower():
@@ -389,6 +452,8 @@ class JobStore:
         sha = (kv.get("sha256") or "").lower()
         with self._lock:
             rec = self._meta.get(jid)
+            if rec and rec.state == "ready":
+                return [f"ok id={jid} putend already=1 sha256={rec.sha256}"]
             if not rec or rec.state != "receiving":
                 raise JobProtocolError("state", "no receiving PUT for id", jid)
             if rec.owner and rec.owner != nick.strip().lower():
@@ -411,8 +476,7 @@ class JobStore:
             if rec.bytes and len(blob) != rec.bytes:
                 raise JobProtocolError("size", "assembled size != declared bytes", jid)
             dest = Path(rec.path)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(blob)
+            digest = atomic_place_file(dest, blob, expect)
             self._payload_path(jid).write_bytes(blob)
             rec.state = "ready"
             rec.bytes = len(blob)
@@ -601,6 +665,7 @@ class JobProtocol:
         self.airc_running = airc_running
         self.run_timeout_s = run_timeout_s
         self._lock = threading.Lock()
+        self.dcc_receive = None  # FR #5194: (job_id) -> (bytes, sha256)
 
     def authorize(self, nick: str, verb: str) -> None:
         level = verb_level(verb)
@@ -642,6 +707,7 @@ class JobProtocol:
                 lines.append(f"DONE id={jid} exit=0")
                 return lines
             if verb == "PUT":
+                self.store.dcc_receive = self.dcc_receive
                 return self.store.handle_put(nick, kv)
             if verb == "CHUNK":
                 return self.store.handle_chunk(nick, kv)

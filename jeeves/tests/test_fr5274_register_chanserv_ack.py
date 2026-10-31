@@ -49,6 +49,11 @@ def _make_agent(tmp_path, members, now=None):
     agent._handle_register_command = Client._handle_register_command.__get__(agent, Client)
     agent._on_chanserv_notice = Client._on_chanserv_notice.__get__(agent, Client)
     agent._register_wait_s = Client._register_wait_s.__get__(agent, Client)
+    agent._register_join_wait_s = Client._register_join_wait_s.__get__(agent, Client)
+    agent._chair_present_in_shop = Client._chair_present_in_shop.__get__(agent, Client)
+    agent._send_chanserv_register = Client._send_chanserv_register.__get__(agent, Client)
+    agent._promote_register_join_wait = Client._promote_register_join_wait.__get__(agent, Client)
+    agent._on_register_presence_line = Client._on_register_presence_line.__get__(agent, Client)
     agent._expire_register_waits = Client._expire_register_waits.__get__(agent, Client)
     agent._finish_register_ok = Client._finish_register_ok.__get__(agent, Client)
     agent._finish_register_fail = Client._finish_register_fail.__get__(agent, Client)
@@ -77,6 +82,9 @@ def test_fr5274_register_does_not_ack_before_chanserv(tmp_path: Path, monkeypatc
     members = {"#bobiverse": {"simon": {"nick": "simon", "modes": {"o"}}}}
     agent, sent, whispers, _ = _make_agent(tmp_path, members)
     assert agent._handle_register_command("simon", "!register redqueen") is True
+    assert any(x == "JOIN #redqueen" for x in sent)
+    assert not any("REGISTER #redqueen" in x for x in sent)
+    agent._on_register_presence_line("JOIN", ["JOIN", "#redqueen"], "", "Jeeves!j@h")
     assert any("REGISTER #redqueen" in x for x in sent)
     assert not any(m.startswith("ACK registered") for _, m in whispers)
     assert not rm.is_registered(tmp_path, "redqueen")
@@ -88,6 +96,7 @@ def test_fr5274_register_ack_and_announce_on_chanserv_ok(tmp_path: Path, monkeyp
     members = {"#bobiverse": {"simon": {"nick": "simon", "modes": {"o"}}}}
     agent, sent, whispers, _ = _make_agent(tmp_path, members)
     agent._handle_register_command("simon", "!register redqueen")
+    agent._on_register_presence_line("JOIN", ["JOIN", "#redqueen"], "", "Jeeves!j@h")
     agent._on_chanserv_notice("Successfully registered channel #redqueen")
     assert any(m.startswith("ACK registered #redqueen") for _, m in whispers)
     assert any("PRIVMSG #bobiverse :REGISTERED v1 redqueen" in x for x in sent)
@@ -101,6 +110,7 @@ def test_fr5274_register_no_ack_on_chanserv_fail(tmp_path: Path, monkeypatch):
     members = {"#bobiverse": {"simon": {"nick": "simon", "modes": {"h"}}}}
     agent, sent, whispers, _ = _make_agent(tmp_path, members)
     agent._handle_register_command("simon", "!register redqueen")
+    agent._on_register_presence_line("JOIN", ["JOIN", "#redqueen"], "", "Jeeves!j@h")
     agent._on_chanserv_notice("You must be in the channel to register it")
     assert not any(m.startswith("ACK registered") for _, m in whispers)
     assert any("ERR !register" in m and "ChanServ" in m for _, m in whispers)
@@ -113,6 +123,7 @@ def test_fr5274_register_no_ack_on_timeout(tmp_path: Path, monkeypatch):
     members = {"#bobiverse": {"simon": {"nick": "simon", "modes": {"o"}}}}
     agent, sent, whispers, clock = _make_agent(tmp_path, members)
     agent._handle_register_command("simon", "!register redqueen")
+    agent._on_register_presence_line("JOIN", ["JOIN", "#redqueen"], "", "Jeeves!j@h")
     clock["t"] = 100.0 + uc.REGISTER_WAIT_S + 1
     agent._expire_register_waits()
     assert not any(m.startswith("ACK registered") for _, m in whispers)

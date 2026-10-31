@@ -370,6 +370,14 @@ def is_bored_command(body: str) -> bool:
     return (body or "").strip().lower() == "!bored"
 
 
+def shop_line_resets_bored_clock(body: str) -> bool:
+    """FR #5203: ACK/DONE/NACK/GIVEUP mean the seat is not waiting to !bored."""
+    text = (body or "").strip()
+    if not text:
+        return False
+    return bool(re.match(r"(?i)^(?:@?\S+[:,]\s*)?(?:ACK|DONE|NACK|GIVEUP)\b", text))
+
+
 def last_bored_path(home: Path) -> Path:
     return _root(home) / LAST_BORED_NAME
 
@@ -3559,6 +3567,15 @@ def _coerce_row(row: dict) -> dict | None:
         out["closed_by"] = str(row.get("closed_by"))
     if row.get("cancel_reason"):
         out["cancel_reason"] = str(row.get("cancel_reason"))[:200]
+    # FR #5317: CodeRabbit wait stamps must survive queue reload (else timeout never fires).
+    if row.get("coderabbit"):
+        out["coderabbit"] = str(row.get("coderabbit"))
+    try:
+        raw_cr = row.get("coderabbit_wait_since")
+        if raw_cr is not None and str(raw_cr).strip() != "":
+            out["coderabbit_wait_since"] = float(raw_cr)
+    except (TypeError, ValueError):
+        pass
     return out
 
 
@@ -5751,6 +5768,14 @@ def format_assign_line(nick: str, row: dict) -> str:
     """Wire line the seats and Watch-AgentHealth parse: ``<nick>: FR|MRB|UAT owner/repo#N url``."""
     num = str(row.get("id") or "").strip().lstrip("#")
     line = f"{nick}: {_canon_task(row)} {row.get('repo') or ''}#{num} {resolve_assign_url(row)}"
+    try:
+        import fuel_chain
+
+        extra = fuel_chain.assign_suffix(row)
+    except Exception:
+        extra = ""
+    if extra:
+        line = f"{line} {extra}"
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", line)).strip()
 
 
@@ -7885,6 +7910,23 @@ def offer_focus_top(
                     return None
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     return None
+                # FR #5317: optional CodeRabbit wait (off by default; timeout still offers).
+                try:
+                    import fuel_chain
+
+                    def _cr_lookup(repo: str, num: str, _row=cand):
+                        return fuel_chain.lookup_coderabbit_reviewed(
+                            repo, num, str(_row.get("head_sha") or "")
+                        )
+
+                    cr_check = _budgeted_github(_cr_lookup, budget, "coderabbit")
+                    if fuel_chain.apply_mrb_coderabbit_gate(
+                        cand, now_f, lookup=cr_check
+                    ):
+                        purged = True
+                        return None
+                except Exception:
+                    pass
                 to = str(cand.get("offered_to") or "").strip()
                 if to and not _same_seat(to, me):
                     try:
@@ -8185,6 +8227,22 @@ def offer_top(
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     i += 1
                     continue
+                try:
+                    import fuel_chain
+
+                    def _cr_lookup(repo: str, num: str, _row=row):
+                        return fuel_chain.lookup_coderabbit_reviewed(
+                            repo, num, str(_row.get("head_sha") or "")
+                        )
+
+                    cr_check = _budgeted_github(_cr_lookup, budget, "coderabbit")
+                    if fuel_chain.apply_mrb_coderabbit_gate(
+                        row, now_f, lookup=cr_check
+                    ):
+                        i += 1
+                        continue
+                except Exception:
+                    pass
                 row_eff = enrich_review_author_fields(doc, row)
                 led = ledger_load(home)
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(

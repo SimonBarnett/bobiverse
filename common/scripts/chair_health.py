@@ -37,6 +37,10 @@ WEBHOOK_ENSURE_S = 3600.0
 FIRST_WEBHOOK_ENSURE_DELAY_S = 8.0
 STALL_S = 180.0
 FIRST_STALL_DELAY_S = 90.0
+# FR #5359: retry intake/outbox while the chair runs (not only at BobCallback start).
+INTAKE_OUTBOX_S = 60.0
+FIRST_INTAKE_OUTBOX_DELAY_S = 30.0
+INTAKE_OUTBOX_BACKOFF_MAX_S = 900.0
 WEBHOOK_GAP_S = gab.WEBHOOK_GAP_S
 FIRST_RESYNC_DELAY_S = 120.0
 FIRST_PROBE_DELAY_S = 45.0
@@ -449,6 +453,9 @@ class ChairJobs:
         self.next_webhook_ensure = t0 + FIRST_WEBHOOK_ENSURE_DELAY_S
         self._startup_webhook_ensure_done = False
         self.next_stall = t0 + FIRST_STALL_DELAY_S
+        self.next_intake_outbox = t0 + FIRST_INTAKE_OUTBOX_DELAY_S
+        self._intake_backoff_s = INTAKE_OUTBOX_S
+        self._intake_announced_at = 0.0
         self.resync_fail_streak = 0
         self.busy = threading.Lock()
         self.token_source = ""            # set at first resync
@@ -463,6 +470,11 @@ class ChairJobs:
     def _announce(self, text: str) -> None:
         import bobreport
         bobreport.enqueue_chair_fleet_privmsg(self.digest_home, text)
+
+    def request_intake_outbox_drain(self) -> None:
+        """FR #5359: GitHub is reachable again; drain the queue now."""
+        self.next_intake_outbox = 0.0
+        self._intake_backoff_s = INTAKE_OUTBOX_S
 
     def request_resync(self) -> None:
         # FR #4959: operator !resync must force-refresh (not ride stale issues ETags).
@@ -508,6 +520,7 @@ class ChairJobs:
             self.next_stall,
             self.next_copilot,
             self.next_webhook_ensure,
+            self.next_intake_outbox,
         ):
             return False
         if not self.busy.acquire(blocking=False):
@@ -609,8 +622,61 @@ class ChairJobs:
                 self._ensure_webhooks()
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN webhook-ensure: {type(exc).__name__}: {exc}")
+        now = self.clock()
+        if now >= self.next_intake_outbox:
+            try:
+                self._drain_intake_outbox()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN intake-outbox-drain: {type(exc).__name__}: {exc}")
+                self._intake_backoff_s = min(
+                    INTAKE_OUTBOX_BACKOFF_MAX_S, max(INTAKE_OUTBOX_S, self._intake_backoff_s) * 2.0
+                )
+                self.next_intake_outbox = now + self._intake_backoff_s
 
+    def _drain_intake_outbox(self) -> None:
+        """FR #5359: retry the whole intake/outbox with backoff; announce queued age."""
+        import intake
+        import gh_filer
 
+        now = self.clock()
+        snap = intake.intake_outbox_snapshot(self.digest_home, now=now)
+        count = int(snap.get("count") or 0)
+        age = snap.get("oldest_age_s")
+        gh_ok = bool(snap.get("gh_cli"))
+        if count and (
+            self._intake_announced_at <= 0.0 or (now - self._intake_announced_at) >= 900.0
+        ):
+            age_s = int(age) if age is not None else 0
+            line = (
+                f"INTAKE OUTBOX queued={count} oldest_age_s={age_s} "
+                f"gh={'ok' if gh_ok else 'MISSING'}"
+            )
+            self.announce(line)
+            self.log("INFO " + line)
+            self._intake_announced_at = now
+        if count == 0:
+            self._intake_backoff_s = INTAKE_OUTBOX_S
+            self.next_intake_outbox = now + INTAKE_OUTBOX_S
+            return
+        if not gh_ok:
+            self._intake_backoff_s = min(INTAKE_OUTBOX_BACKOFF_MAX_S, self._intake_backoff_s * 2.0)
+            self.next_intake_outbox = now + self._intake_backoff_s
+            self.log("WARN intake-outbox gh MISSING; queued until gh is installed")
+            return
+        filer = gh_filer.default_filer()
+        stats = intake.drain_intake_outbox_all(self.digest_home, filer, batch=20)
+        c = stats.as_counts()
+        self.log(
+            "INFO intake_outbox_drain "
+            f"filed={c.get('filed')} receipt={c.get('recorded_receipt')} "
+            f"dup={c.get('skipped_duplicate')} deferred={c.get('deferred')}"
+        )
+        if c.get("deferred"):
+            self._intake_backoff_s = min(INTAKE_OUTBOX_BACKOFF_MAX_S, self._intake_backoff_s * 2.0)
+            self.next_intake_outbox = now + self._intake_backoff_s
+            return
+        self._intake_backoff_s = INTAKE_OUTBOX_S
+        self.next_intake_outbox = now + INTAKE_OUTBOX_S
 
     def _github_json(self, method: str, url: str, body: dict | None = None) -> tuple[dict | list | None, int]:
         """Authenticated GitHub JSON helper for Copilot pool + tasks (FR #5174)."""
@@ -799,6 +865,15 @@ class ChairJobs:
         idle = gitclaim.free_seat_nicks(self.digest_home, live)
         res = self.last_resync if isinstance(self.last_resync, dict) else {}
         status = res.get("error") or (200 if res.get("ok") else None)
+        last_activity = {}
+        for nick in idle:
+            if not nick:
+                continue
+            ts = gitclaim.last_worker_activity(self.digest_home, nick)
+            if ts is None:
+                ts = gitclaim.last_worker_activity(self.home, nick)
+            if ts is not None:
+                last_activity[nick] = float(ts)
         snap = {
             "now": self.clock(),
             "live": live,
@@ -809,6 +884,7 @@ class ChairJobs:
             "resync_fail_streak": self.resync_fail_streak,
             "last_resync_status": status,
             "last_bored": gitclaim.merge_last_bored(self.home, self.digest_home),
+            "last_activity": last_activity,
         }
         findings = stall_detectors.detect_all(snap)
         if not findings:
@@ -862,6 +938,8 @@ class ChairJobs:
             self.last_resync, self.last_resync_at = res, self.clock()
             if res.get("ok"):
                 self.resync_fail_streak = 0
+                if res.get("note") != "budget-backoff":
+                    self.request_intake_outbox_drain()
                 note = res.get("note") or ""
                 # FR #4422: budget-backoff is a skip — keep WARN visible (resync_cycle also logs).
                 if note == "budget-backoff":
