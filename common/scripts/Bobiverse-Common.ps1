@@ -1008,6 +1008,109 @@ function Send-BobiverseAircInstallFailureIntake {
 }
 
 
+function Get-BobiverseUpdateFailureIdempotencyKey {
+    <#
+      FR #5279: machine + product + tag + result. Stable across retries.
+    #>
+    param(
+        [string]$Machine = '',
+        [string]$Product = '',
+        [string]$Tag = '',
+        [string]$Result = ''
+    )
+    $mid = $Machine
+    if (-not $mid) { $mid = [string]$env:BOB_MACHINE_ID }
+    if (-not $mid) { $mid = [string]$env:COMPUTERNAME }
+    $mid = ($mid.ToLowerInvariant() -replace '[^a-z0-9-]', '-')
+    $prod = ($(if ($Product) { $Product } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
+    $tg = ($(if ($Tag) { $Tag } else { '-' })) -replace '[^A-Za-z0-9._-]', '-'
+    $res = ($(if ($Result) { $Result } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
+    return ('airc-update-fail|{0}|{1}|{2}|{3}' -f $mid, $prod, $tg, $res)
+}
+
+
+function Send-BobiverseUpdateFailureIntake {
+    <#
+      FR #5279: map UPDATE/Apply failure classes to intake kind=issue with
+      idempotency_key = machine|product|tag|result. Classes include
+      download-failed, msiexec-exit, msiexec-timeout, stop-failed,
+      backup-failed, spawn-failed, updater-missing, asset-url-rejected
+      (plus sha256-mismatch / stop-timeout / rolled-back when Set-Failure records them).
+      Never throws. Redacts secrets. Same key on retry must not flood twins.
+    #>
+    param(
+        [string]$Product = 'airc',
+        [string]$Tag = '',
+        [Parameter(Mandatory)][string]$Result,
+        [string]$Detail = '',
+        [string]$InstallRoot = '',
+        [string]$Repo = 'SimonBarnett/bobiverse',
+        [string]$IntakeUrl = '',
+        [switch]$DryRun
+    )
+    $safeDetail = Redact-BobiverseCrashText -Text $Detail
+    $key = Get-BobiverseUpdateFailureIdempotencyKey -Product $Product -Tag $Tag -Result $Result
+    $safeTitle = Redact-BobiverseCrashText -Text ("airc UPDATE fail {0} product={1}" -f $Result, $Product)
+    $safeBody = Redact-BobiverseCrashText -Text @(
+        'FR #5279 UPDATE / Apply failure (deterministic intake).',
+        ('product={0}' -f $Product),
+        ('tag={0}' -f $(if ($Tag) { $Tag } else { '-' })),
+        ('result={0}' -f $Result),
+        ('idempotency_key={0}' -f $key),
+        ('detail={0}' -f $safeDetail)
+    ) -join [Environment]::NewLine
+
+    $out = [pscustomobject]@{
+        skipped          = $false
+        dry_run          = [bool]$DryRun
+        kind             = 'issue'
+        repo             = $Repo
+        title            = $safeTitle
+        body             = $safeBody
+        idempotency_key  = $key
+        report           = $null
+    }
+
+    $allow = $true
+    try {
+        if (Get-Command Test-BobiverseCrashReportAllowsIntake -ErrorAction SilentlyContinue) {
+            $allow = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
+        }
+    } catch { $allow = $true }
+    if (-not $allow) {
+        $out.skipped = $true
+        return $out
+    }
+
+    $report = $null
+    try {
+        $report = Resolve-BobiverseAircIntakeReportScript -InstallRoot $InstallRoot -ScriptsDir $PSScriptRoot
+    } catch { $report = $null }
+    if (-not $report) {
+        $out.skipped = $true
+        return $out
+    }
+    $out.report = $report
+    try {
+        $splat = @{
+            Title          = $safeTitle
+            Body           = $safeBody
+            Repo           = $Repo
+            Kind           = 'issue'
+            IdempotencyKey = $key
+        }
+        if ($DryRun) { $splat.DryRun = $true }
+        if ($IntakeUrl) { $splat.IntakeUrl = $IntakeUrl }
+        if ($InstallRoot) { $splat.InstallRoot = $InstallRoot }
+        $null = & $report @splat
+    } catch {
+        $out.skipped = $true
+        $out | Add-Member -NotePropertyName error -NotePropertyValue $_.Exception.Message
+    }
+    return $out
+}
+
+
 # FR #3639: Get-BobiverseAircFleetOperatorRoster / Resolve-BobiverseAircOperatorNicks /
 # Merge-BobiverseAircOperatorsFile were removed. airc authorises by live control-channel
 # +o/+h on every profile; there is no operators.txt or fleet-operators roster to build.

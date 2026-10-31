@@ -46,6 +46,7 @@ PRIVMSG marchhare_console :UPDATE airc 0.1.20
 - Reply (`UPDATE accepted status=scheduled …` or `UPDATE skipped-pending …`) is sent **before** the transport is stopped.
 - Assets must be `https://github.com/SimonBarnett/bobiverse/releases/download/...`; foreign URLs are rejected.
 - Pending / loop-guard / rollback / sha256 mismatch behaviour is owned by the updater (same as service-start self-update).
+- **FR #5279:** each distinct Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, …) files one `kind:issue` on `SimonBarnett/bobiverse` via intake. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted. `Set-Failure` and `schedule_fleet_update` both call this path. Local `state.json` counts are unchanged.
 - Machine id: explicit `-MachineId`, then `AIRC_CONSOLE_MACHINE` / `BOB_MACHINE_ID`; hostname fallback must be conscious (Start-AircConsole warns).
 
 ## Encoding policy
