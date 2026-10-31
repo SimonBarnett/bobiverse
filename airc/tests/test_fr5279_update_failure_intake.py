@@ -42,6 +42,7 @@ def test_fr5279_failure_classes_documented():
         "spawn-failed",
         "updater-missing",
         "asset-url-rejected",
+        "msiexec-exit",
     ):
         assert tag in common
 

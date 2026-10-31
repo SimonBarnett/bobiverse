@@ -180,6 +180,20 @@ _UPDATE_INTAKE_STATUSES = frozenset(
 )
 
 
+def _redact_update_intake_text(text: str) -> str:
+    """FR #5279 / MRB #5326: never put secrets on intake title/body (python path)."""
+    try:
+        from crash_report import redact
+
+        return redact(text or "")
+    except Exception:
+        return re.sub(
+            r"(?i)(password|token|secret|authorization)\s*[=:]\s*\S+",
+            r"\1=<redacted>",
+            text or "",
+        )
+
+
 def report_update_failure_intake(
     *,
     product: str,
@@ -195,11 +209,12 @@ def report_update_failure_intake(
     tg = re.sub(r"[^A-Za-z0-9._-]", "-", tag) if tag else "-"
     res = re.sub(r"[^a-z0-9-]", "-", (result or "unknown").lower())
     key = f"airc-update-fail|{mid}|{prod}|{tg}|{res}"
-    title = f"airc UPDATE fail {res} product={prod}"
-    body = (
+    title = _redact_update_intake_text(f"airc UPDATE fail {res} product={prod}")
+    safe_detail = _redact_update_intake_text((detail or "")[:400])
+    body = _redact_update_intake_text(
         "FR #5279 UPDATE / Apply failure (deterministic intake).\n"
         f"product={prod}\ntag={tg}\nresult={res}\nidempotency_key={key}\n"
-        f"detail={detail[:400]}"
+        f"detail={safe_detail}"
     )
     payload = {
         "ok": True,
