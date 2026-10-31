@@ -1,0 +1,251 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit config for bobiverse (Bob Fleet monorepo: bob / jeeves / airc / common).
+# Trial goal: an extra advisory reviewer alongside the fleet's hostile MRB.
+# CodeRabbit comments only. It never approves, blocks, commits, or opens follow-up PRs.
+language: en-GB
+tone_instructions: >-
+  Be terse and concrete. Lead with the defect and its impact, cite file and line.
+  Skip praise, style nits and restating the diff. British English.
+early_access: false
+
+reviews:
+  profile: chill                  # cut nitpicks; MRB workers already do style/drift
+  request_changes_workflow: false # legacy alias, kept explicit
+  auto_approvals:
+    enabled: false                # never approve or request changes; Simon merges
+  # Summary goes in the walkthrough comment, never into the worker-written PR body.
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: >-
+    3-6 bullets: behaviour change, affected service(s) (bob / jeeves / airc / common),
+    install or upgrade impact, and whether tests were added or changed.
+  review_status: true
+  review_details: false
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: false
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: true   # fleet workers are AI agents; the prompt block helps them act
+  abort_on_close: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 5
+    base_branches: []             # default branch (main) only
+    ignore_title_keywords:
+      - "[WIP]"
+      - "WIP:"
+      - "[skip review]"
+
+  # Nothing that writes to the repo or opens PRs.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: warning
+    custom_checks:
+      - name: Tests accompany behaviour changes
+        mode: warning
+        instructions: >-
+          Pass if the PR changes no executable code (*.py, *.ps1, *.psm1, *.cmd, *.cs)
+          outside tests/ directories. Otherwise pass only if the PR also adds or modifies
+          at least one file under a tests/ directory (e.g. bob/tests, jeeves/tests,
+          airc/tests, common/tests) that exercises the changed behaviour. Fail otherwise.
+      - name: No secrets committed
+        mode: warning
+        instructions: >-
+          Fail if the PR adds or modifies a file named ergo.password, console.password,
+          connect.password or ircd.yaml under config/, or adds a literal password, API key,
+          GitHub token (ghp_, gho_, github_pat_), webhook secret or private key to any file.
+          Example/template files with obvious placeholders pass.
+
+  path_filters:
+    - "!dist/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!common/third_party/**"
+    - "!docs/archive/**"
+    - "!**/__pycache__/**"
+    - "!**/*.pyc"
+    - "!**/*.msi"
+    - "!**/*.exe"
+    - "!**/*.dll"
+    - "!**/*.wixpdb"
+    - "!**/*.zip"
+    - "!**/*.pdf"
+    - "!**/*.png"
+    - "!**/*.ico"
+    - "!**/*.patch"
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+    - "!**/poetry.lock"
+    - "!**/go.sum"
+    - "!**/evidence/**"
+
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Fleet-wide priorities, in order. Only raise issues that would cause a real defect,
+        outage, leak or wrong documentation; skip style and naming nits.
+        1. Secrets: ergo.password, console.password, connect.password, IRC/NickServ passwords,
+           GitHub tokens and webhook secrets must never be committed, logged, echoed to IRC,
+           written to intake/digest payloads, passed in child-process argv, or included in
+           DCC output. Flag any new path where they could leak.
+        2. Hostnames: HTTP webhooks (report, intake, git, hours, jira, digest) must target
+           https://bob.ntsa.uk/bob/v1/... in new or changed code; flag new
+           https://irc.ntsa.uk/bob/v1/... uses. IRC itself stays on irc.ntsa.uk with TLS
+           ports 993 or 6697 only; flag plaintext 6667 or other hard-coded hosts/IPs.
+        3. Behaviour changes without tests: a change in bob/, jeeves/, airc/ or common/
+           code should come with a test under the matching tests/ directory.
+        4. Docs drift: if behaviour, verbs, ports, file paths or config keys change, check the
+           matching AGENTS.md, VISION.md, docs/*.md and .grok/skills/*/SKILL.md still agree.
+    - path: "**/*.{ps1,psm1,psd1}"
+      instructions: |
+        Windows PowerShell 5.1 runs as SYSTEM under services and installers. Check for:
+        - "$var:" inside double-quoted strings (parsed as a drive/scope qualifier and fails);
+          require "${var}:" or "$($var):".
+        - Reading and writing the same file in one pipeline
+          (Get-Content X | ... | Set-Content X), which truncates it; require reading into a
+          variable first.
+        - $ErrorActionPreference changes that are not restored (save/restore in try/finally),
+          and native commands whose $LASTEXITCODE is ignored.
+        - Non-idempotent installs: every install/upgrade step must be safe to rerun
+          (service exists, folder exists, ACL already set, MSI already installed).
+        - Services left stopped on any error, timeout or early return; stops need a
+          guaranteed restart or explicit recovery path.
+        - Encoding: Set-Content/Out-File without -Encoding, and BOM or non-ASCII in scripts
+          that PS 5.1 parses as ANSI.
+        - Secrets in argv, Write-Host, transcripts or log files.
+    - path: "**/*.py"
+      instructions: |
+        Python services (bob, jeeves, airc console) run unattended as Windows services.
+        Focus on: unhandled exceptions that kill a service loop, blocking calls without
+        timeouts (sockets, subprocess, HTTP), reconnect/backoff correctness for IRC,
+        subprocess calls that leak secrets in argv or ignore return codes, file writes that
+        are not atomic for state files shared between processes, and determinism
+        (no wall-clock or random dependence in logic that tests assert on).
+        Read UTF-8 files with encoding="utf-8-sig" where a BOM may be present.
+    - path: "**/tests/**"
+      instructions: |
+        Tests must exercise the behaviour claimed in the PR, not just mock it away. Flag tests
+        that would pass if the fix were reverted, tests that hit the network or real IRC, and
+        tests that depend on the host OS without a skip marker.
+    - path: "**/*.{cmd,bat}"
+      instructions: |
+        Batch files used by installers: check quoting of paths with spaces, errorlevel
+        handling after each command, and that nothing echoes a secret.
+    - path: "**/*.cs"
+      instructions: |
+        Tray app (WinForms). Flag UI-thread blocking network calls, unhandled exceptions in
+        timers/event handlers, and hard-coded hosts that bypass the webhook rule above.
+    - path: "**/*.md"
+      instructions: |
+        These are feature requests, visions and runbooks that fleet workers implement
+        literally. Only flag: contradictions with current code or other docs, wrong
+        protocol frames/verbs/ports/paths, undefined acceptance criteria, missing failure or
+        timeout semantics, and broken references to files or issues. Ignore wording,
+        formatting and Markdown style.
+    - path: ".github/workflows/**"
+      instructions: |
+        Check that workflows pin actions, use least-privilege permissions, never print
+        secrets, and do not run untrusted PR code with write tokens.
+
+  tools:
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    ruff:
+      enabled: true
+    pylint:
+      enabled: false        # no repo pylintrc; ruff covers the useful checks with less noise
+    flake8:
+      enabled: false        # duplicate of ruff
+    psscriptanalyzer:
+      enabled: true
+    blinter:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    yamllint:
+      enabled: true
+    github-checks:
+      enabled: true
+    ast-grep:
+      essential_rules: true
+    golangci-lint:
+      enabled: false        # no Go sources in the repo
+    shellcheck:
+      enabled: false        # no shell scripts
+    markdownlint:
+      enabled: false        # agent-written docs; style noise
+    languagetool:
+      enabled: false        # spelling/grammar noise
+    htmlhint:
+      enabled: false        # only UI mocks under airc/docs/mocks
+    biome:
+      enabled: false
+    eslint:
+      enabled: false
+    hadolint:
+      enabled: false
+
+chat:
+  auto_reply: false         # only answer when @coderabbitai is tagged; avoids bot-to-bot loops with workers
+  art: false
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/AGENTS.md"
+      - "**/VISION.md"
+  learnings:
+    scope: local
+  web_search:
+    enabled: true
+
+code_generation:
+  docstrings:
+    language: en-GB
+  unit_tests:
+    path_instructions: []
+
+issue_enrichment:
+  auto_enrich:
+    enabled: false          # the fleet files many issues; do not comment on them
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
