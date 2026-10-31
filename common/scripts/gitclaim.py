@@ -8694,18 +8694,23 @@ def detect_mrb_reviewer_deadlock(
             if not _mrb_idle_block_reason(row, nick, seats_live, led):
                 return None
     clearable: list[tuple[dict, str]] = []
-    for row in mrb_rows:
-        authors = {a.lower() for a in row_author_seats(row)}
-        for nick in seats_idle:
-            if nick.lower() in authors:
-                continue
-            if row_gave_up_by(row, nick, live=seats_live):
-                clearable.append((row, nick))
-                continue
-            if led:
-                why = ledger_blocks(led, row, nick, seats_live)
-                if why and "gave up" in why.lower():
+    # FR #5270 / #5268: a lone idle seat that GIVEUP'd the only waiting MRB must
+    # NOT be classified as cross_giveup. Clearing that stamp re-offers the same
+    # job on the next offer_after_giveup / !bored (release-blocker 1.0.9).
+    # True cross-giveup heal needs at least two idle seats.
+    if len(seats_idle) >= 2:
+        for row in mrb_rows:
+            authors = {a.lower() for a in row_author_seats(row)}
+            for nick in seats_idle:
+                if nick.lower() in authors:
+                    continue
+                if row_gave_up_by(row, nick, live=seats_live):
                     clearable.append((row, nick))
+                    continue
+                if led:
+                    why = ledger_blocks(led, row, nick, seats_live)
+                    if why and "gave up" in why.lower():
+                        clearable.append((row, nick))
     kind = "cross_giveup" if clearable else "author_only"
     sig_parts = sorted(
         f"{str(r.get('repo') or '')}{_norm_row_id(r.get('id'))}" for r in mrb_rows
