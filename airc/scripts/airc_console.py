@@ -2816,7 +2816,12 @@ class AircConsoleCore:
                 take = getattr(self.shell_runner, "take_dcclisten", None)
                 if callable(take):
                     offer = take(qid)
-            log = _extension.build_extension_log(ext["action"], whatif=ext["whatif"])
+            payload = getattr(result, "payload", None) or {}
+            log = _extension.build_extension_log(
+                ext["action"],
+                whatif=ext["whatif"],
+                gpo=payload if payload else None,
+            )
             send_fn = getattr(self, "extension_log_send", None)
             delivered = _extension.deliver_extension_log(
                 job_id=qid or result.job_id,
