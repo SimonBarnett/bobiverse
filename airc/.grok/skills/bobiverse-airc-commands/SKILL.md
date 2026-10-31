@@ -134,7 +134,7 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
 PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU targets: `DONE exit=126 bad-target`.
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU/invalid targets: `DONE exit=126 bad-target reason=empty|list|ou|invalid` (FR #5528: `bad_host!` is invalid, not list).
 - **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
 - **WhatIf:** installer dry-run (no remote install).
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.

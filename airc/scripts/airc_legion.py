@@ -55,7 +55,8 @@ def _classify_target(raw: str) -> str | None:
         return "ou"
     if _IPV4_RE.match(t) or _HOST_RE.match(t):
         return None
-    return "list"
+    # FR #5528: punctuation/illegal hostname is not a host list.
+    return "invalid"
 
 
 def parse_legion_command(text: str) -> dict[str, Any] | None:
