@@ -137,7 +137,7 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 
 - **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
 - **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
-- **WhatIf:** installer dry-run (no remote install).
+- **WhatIf:** installer dry-run plan (no remote install). Still runs the planner when `PriorityAirc/LegionAdmin` is missing; records `credman-missing` in `failures[]` (FR #5530). Live LEGION without CredMan still fail-closes.
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
 - **Isolation:** installer is not on the IRC receive thread; worker fault must not stop Airc.
 
