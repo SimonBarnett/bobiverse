@@ -280,6 +280,68 @@ def parse_priority_usage(text: str) -> str | None:
 
 PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|formStart|subform|getRows"
 
+# FR #5616: must match airc_console.IRC_SAFE_PAYLOAD (no reverse import; cycle risk).
+PRIORITY_REPLY_MAX_BYTES = 350
+PRIORITY_ECHO_MAX_ESCAPED_BYTES = 64
+
+
+def bound_echo_token(
+    token: str,
+    *,
+    max_escaped: int = PRIORITY_ECHO_MAX_ESCAPED_BYTES,
+) -> str:
+    """Shorten a user token so its json.dumps form fits max_escaped UTF-8 bytes."""
+    raw = str(token or "")
+    if len(json.dumps(raw, ensure_ascii=True).encode("utf-8")) <= max_escaped:
+        return raw
+    lo, hi = 0, len(raw)
+    best = "..."
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = raw[:mid] + "..."
+        if len(json.dumps(cand, ensure_ascii=True).encode("utf-8")) <= max_escaped:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def format_bounded_priority_out(
+    job_id: str,
+    payload: dict[str, Any],
+    exit_code: int,
+    *,
+    max_bytes: int = PRIORITY_REPLY_MAX_BYTES,
+) -> tuple[str, int]:
+    """Return (framed out line, effective exit). Oversized -> compact reply-too-large."""
+    jid = (job_id or "").strip().lower() or "00000000"
+    body = dict(payload or {})
+    line_json = json.dumps(body, separators=(",", ":"), sort_keys=True)
+    low = line_json.lower()
+    # Key-shaped only: error codes like password-refused must stay visible.
+    if re.search(r'"(?:password|passwd|secret|pwd|token)"\s*:', low):
+        line_json = json.dumps(
+            {"ok": False, "error": "redacted-unsafe-payload"},
+            separators=(",", ":"),
+        )
+        out = f"out id={jid} seq=1 {line_json}"
+        return out, 1
+    out = f"out id={jid} seq=1 {line_json}"
+    nbytes = len(out.encode("utf-8"))
+    if nbytes <= max_bytes:
+        return out, int(exit_code)
+    action = str(body.get("action") or body.get("op") or "priority")
+    fallback = {
+        "ok": False,
+        "action": action,
+        "error": "reply-too-large",
+        "bytes": nbytes,
+    }
+    fb_json = json.dumps(fallback, separators=(",", ":"), sort_keys=True)
+    return f"out id={jid} seq=1 {fb_json}", 1
+
+
 
 def format_priority_usage(job_id: str) -> str:
     qid = (job_id or "").strip().lower() or "00000000"
@@ -304,22 +366,11 @@ class PriorityVerbResult:
         body = dict(self.payload)
         if self.error and "error" not in body:
             body["error"] = self.error
-        line = json.dumps(body, separators=(",", ":"), sort_keys=True)
-        # Never allow password-shaped values into the wire JSON.
-        low = line.lower()
-        if "password" in low or '"secret"' in low:
-            line = json.dumps(
-                {"ok": False, "error": "redacted-unsafe-payload"},
-                separators=(",", ":"),
-            )
-            return [
-                f"out id={self.job_id} seq=1 {line}",
-                f"DONE id={self.job_id} exit=1",
-            ]
-        return [
-            f"out id={self.job_id} seq=1 {line}",
-            f"DONE id={self.job_id} exit={self.exit_code}",
-        ]
+        # FR #5616: redact first, then bound the framed out line (never slice JSON).
+        out, exit_code = format_bounded_priority_out(
+            self.job_id, body, self.exit_code
+        )
+        return [out, f"DONE id={self.job_id} exit={exit_code}"]
 
     def reply_text(self) -> str:
         return "\n".join(self.reply_lines())
@@ -433,8 +484,13 @@ def run_priority_verb(
     try:
         inst = get_instance(instance_id, al)
     except PriorityConfigError as e:
+        # FR #5616: shorten echoed id so unknown-instance reason survives IRC budget.
+        bounded = bound_echo_token(instance_id or "")
+        err = str(e)
+        if "unknown instance" in err.lower():
+            err = f"unknown instance id: {bounded or '?'}"
         return PriorityVerbResult(
-            False, 1, jid, {"ok": False, "action": subcmd, "id": instance_id}, error=str(e)
+            False, 1, jid, {"ok": False, "action": subcmd, "id": bounded}, error=err
         )
 
     if subcmd == "status":
@@ -653,32 +709,40 @@ def run_priority_walk(
     op, kv = parsed
     jid = (kv.get("id") or job_id_fallback or "00000000").lower()
     if _secret_in_kv(kv):
-        payload = {"ok": False, "error": "password-refused"}
-        body = json.dumps(payload, separators=(",", ":"))
-        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
-        return PriorityWalkResult(False, 2, jid, lines, payload)
+        payload = {"ok": False, "error": "password-refused", "action": "walk"}
+        out, exit_code = format_bounded_priority_out(jid, payload, 2)
+        lines = (out, f"DONE id={jid} exit={exit_code}")
+        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     inst_id = (kv.get("instance") or "").strip()
     allow = load_allowlist_rows(allowlist_path)
     if resolve_instance_row(allow, inst_id) is None:
-        payload = {"ok": False, "error": "unknown-instance"}
-        body = json.dumps(payload, separators=(",", ":"))
-        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
-        return PriorityWalkResult(False, 2, jid, lines, payload)
+        payload = {"ok": False, "error": "unknown-instance", "action": "walk"}
+        out, exit_code = format_bounded_priority_out(jid, payload, 2)
+        lines = (out, f"DONE id={jid} exit={exit_code}")
+        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     form = (kv.get("form") or "").strip()
     if not form:
-        payload = {"ok": False, "error": "missing-form"}
-        body = json.dumps(payload, separators=(",", ":"))
-        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
-        return PriorityWalkResult(False, 2, jid, lines, payload)
+        payload = {"ok": False, "error": "missing-form", "action": "walk"}
+        out, exit_code = format_bounded_priority_out(jid, payload, 2)
+        lines = (out, f"DONE id={jid} exit={exit_code}")
+        return PriorityWalkResult(False, exit_code, jid, lines, payload)
     fix = Path(fixture_path) if fixture_path else default_fixture_path()
     try:
         forms = load_fixture(fix)
         payload = walk_fixture(op, forms, kv)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        payload = {"ok": False, "error": "fixture-miss", "detail": type(exc).__name__}
-        body = json.dumps(payload, separators=(",", ":"))
-        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
-        return PriorityWalkResult(False, 2, jid, lines, payload)
-    body = json.dumps(payload, separators=(",", ":"))
-    lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=0")
-    return PriorityWalkResult(True, 0, jid, lines, payload)
+        payload = {
+            "ok": False,
+            "error": "fixture-miss",
+            "detail": type(exc).__name__,
+            "action": "walk",
+        }
+        out, exit_code = format_bounded_priority_out(jid, payload, 2)
+        lines = (out, f"DONE id={jid} exit={exit_code}")
+        return PriorityWalkResult(False, exit_code, jid, lines, payload)
+    if "action" not in payload:
+        payload = {**payload, "action": "walk"}
+    out, exit_code = format_bounded_priority_out(jid, payload, 0)
+    lines = (out, f"DONE id={jid} exit={exit_code}")
+    ok = exit_code == 0 and bool(payload.get("ok"))
+    return PriorityWalkResult(ok, exit_code, jid, lines, payload)
