@@ -22,7 +22,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | Verb | Purpose |
 |------|---------|
 | `STATUS` | Airc Running + VERSION files (bob/airc/jeeves); replies as `out id= seq=` then `DONE` (FR #2575) |
-| `VERSION` | Current airc install version from `<ai root>\\airc\\VERSION` (missing -> `-`; no ARP fallback); same `out id= seq=` + `DONE exit=0` framing; allowed when `shell=off` / `jobs=off` like STATUS (FR #5281) |
+| `VERSION` | Current airc install version from `<ai root>\\airc\\VERSION` (missing -> `-`; no ARP fallback) plus `commit=` / `built=` from `BUILD.json` and `hotpatch=1` overlay from `HOTPATCH.json` (FR #5281 / #5534); same `out id= seq=` + `DONE exit=0` framing; allowed when `shell=off` / `jobs=off` like STATUS |
 | plain line | PowerShell (default); UTF-8 `$OutputEncoding` wrap so StdOut keeps Greek/CJK (FR #2580); `$ProgressPreference=SilentlyContinue` so StdErr stays free of CLIXML progress noise (FR #2641); terminating / `Write-Error` StdErr is decoded from CLIXML to plain text with user-relative `At line:` (FR #2910 / #2918) |
 | `cmd: ???` | COMSPEC escape hatch (`chcp 65001` prefixed, FR #2580); trailing `\` paths like `cmd: dir C:\` work (FR #3773: `/d /s /c` string cmdline, not list2cmdline) |
 | `psb64:<b64>` | `powershell -EncodedCommand` (same UTF-8 wrap) |
