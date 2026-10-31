@@ -130,7 +130,7 @@ See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnos
 
 ## LEGION remote install (FR #5312)
 
-Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`.
+Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`. Default identity SYSTEM (FR #5594). Optional CredMan `PriorityAirc/LegionAdmin` (`AIRC_LEGION_USE_CREDMAN=1`) still fail-closes live with `credman-missing`; WhatIf still plans (FR #5530).
 
 ```text
 PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
@@ -139,8 +139,8 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 ```
 
 - **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
-- **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
-- **WhatIf:** installer dry-run plan (no remote install). Still runs the planner when `PriorityAirc/LegionAdmin` is missing; records `credman-missing` in `failures[]` (FR #5530). Live LEGION without CredMan still fail-closes.
+- **Identity (FR #5594):** Airc LocalSystem / computer account (`DOMAIN\\HOST$`). Target must grant that account local Administrators. Access denied -> `system-access-denied` plus a hint. CredMan `PriorityAirc/LegionAdmin` is off-by-default (`AIRC_LEGION_USE_CREDMAN=1` only; never on IRC, never in argv). Explicit CredMan fallback still fail-closes live LEGION with `credman-missing` when the target is empty.
+- **WhatIf:** installer dry-run plan (no remote install). Log reports `identity=SYSTEM (HOST$)` (FR #5530 / #5594). When an explicit CredMan fallback is requested and missing, WhatIf still plans and records `credman-missing` in `failures[]`.
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
 - **Isolation:** installer is not on the IRC receive thread; worker fault must not stop Airc.
 

@@ -110,4 +110,8 @@ Docs PR: https://github.com/SimonBarnett/bobiverse/pull/5313 . Living slices sta
 
 ## FR #5530 WhatIf without CredMan
 
--WhatIf still runs the installer planner when CredMan is missing. The DCC log must include msi and psexec (or psexec-missing) plus a credman-missing failure row. Live (non-WhatIf) still fail-closes before install_remote. Never put secrets in the plan or log.
+-WhatIf still runs the installer planner. The DCC log must include msi and psexec (or psexec-missing). Never put secrets in the plan or log.
+
+## FR #5594 SYSTEM / computer account (supersedes default CredMan)
+
+Default LEGION identity is the Airc service LocalSystem. Domain targets see `DOMAIN\\HOST$`. No CredMan read and no password in the environment. Access denied maps to `system-access-denied` plus a hint that the source computer account must be in the target local Administrators group. `PriorityAirc/LegionAdmin` remains as an explicit off-by-default fallback (`AIRC_LEGION_USE_CREDMAN=1`) for workgroup hosts. WhatIf reports `identity=SYSTEM (HOST$)`.
