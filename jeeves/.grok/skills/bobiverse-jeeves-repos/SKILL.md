@@ -5,9 +5,19 @@ description: >
   Use when adding a repo to the MRB filter, resync-repos.txt, !focus priority, clearing give-ups, or /bobiverse-jeeves-repos.
 ---
 
-# bobiverse-jeeves-repos (FR #5134)
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-> CAST IRON harvest: file every gap via intake; never put tokens/secrets in filings or skills.
+# bobiverse-jeeves-repos (FR #5134)
 
 Operator playbooks for the deterministic chair. Prefer this skill over rediscovering paths from live ionos files.
 Cross-links: bobiverse-jeeves-commands, bobiverse-jeeves-troubleshooting, docs/jeeves-commands.md.
