@@ -37,7 +37,9 @@ def test_mrb5386_secret_not_on_wire():
         machine="tm",
         auth=ops_auth("op", channel="#tm"),
         nick="tm_console",
-        legion_runner=lambda **kw: lg.run_legion_verb(credman=lambda: {}, **kw),
+        legion_runner=lambda **kw: lg.run_legion_verb(
+            credman=lambda: {}, wait=True, **kw
+        ),
     )
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :LEGION box1")
     assert hr.reply == "DONE id=00000000 exit=126 credman-missing" or (

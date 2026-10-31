@@ -66,6 +66,7 @@ def test_fr5310_console_missing_exit_126():
     def runner(**kw):
         return lg.run_legion_verb(
             credman=lambda: {},
+            wait=True,
             **kw,
         )
 
