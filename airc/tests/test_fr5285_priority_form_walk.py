@@ -18,17 +18,17 @@ def _core(auth_ops=("bob-marchhare",), machine="marchhare", **kw):
 
 
 def test_fr5285_parse_form_walk_verbs():
-    p = ap.parse_priority_command("PRIORITY formStart instance=fixture form=CUST")
+    p = ap.parse_priority_walk_command("PRIORITY formStart instance=fixture form=CUST")
     assert p is not None
     assert p[0] == "formStart"
     assert p[1]["instance"] == "fixture"
     assert p[1]["form"] == "CUST"
-    p = ap.parse_priority_command("id=aabbccdd PRIORITY getRows instance=fixture form=CUST")
+    p = ap.parse_priority_walk_command("id=aabbccdd PRIORITY getRows instance=fixture form=CUST")
     assert p is not None
     assert p[0] == "getRows"
     assert p[1]["id"] == "aabbccdd"
-    assert ap.parse_priority_command("UPDATE airc") is None
-    assert ap.parse_priority_command("PRIORITY prepare ENAME=FOO") is None
+    assert ap.parse_priority_walk_command("UPDATE airc") is None
+    assert ap.parse_priority_walk_command("PRIORITY prepare ENAME=FOO") is None
 
 
 def test_fr5285_fixture_formstart_subform_getrows_no_mjs(tmp_path):
