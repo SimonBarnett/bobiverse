@@ -223,9 +223,15 @@ function Get-LatestRelease {
     }
 }
 
+function Normalize-AssetUrl {
+    # FR #5410: GitHub sometimes appends ?X-Amz= / fragments on browser_download_url.
+    param([string]$Url)
+    return (([string]$Url).Trim() -replace '[?#].*$', '')
+}
+
 function Test-AssetUrl {
     param([string]$Url)
-    $u = ([string]$Url).Trim()
+    $u = Normalize-AssetUrl -Url $Url
     if ($u -match '^https://') {
         return ($u -match ('^https://github\.com/{0}/releases/download/[^?#\s]+$' -f [regex]::Escape($Repo)))
     }
@@ -233,19 +239,21 @@ function Test-AssetUrl {
 }
 
 function Resolve-AssetDownloadUrl {
-    # FR #5345: GitHub assets JSON may omit browser_download_url or only expose
-    # api.github.com/repos/.../releases/assets/<id>. Rebuild the allowlisted
-    # github.com/{repo}/releases/download/{tag}/{name} URL. Never accept foreign hosts.
-    # Never rebuild when an explicit https URL failed the allowlist (except the assets API).
+    # FR #5345 / #5410: omit browser_download_url, assets API, signed query, or
+    # objects.githubusercontent.com -> rebuild allowlisted github.com download path.
+    # Never rebuild a foreign host (evil.example). FR #5354: 3- or 4-part tags.
     param($Asset, [string]$Tag)
     if (-not $Asset) { return '' }
     $direct = ([string]$Asset.browser_download_url).Trim()
     if (-not $direct) { $direct = ([string]$Asset.url).Trim() }
-    if (Test-AssetUrl -Url $direct) { return $direct }
-    $apiOk = $direct -match ('^https://api\.github\.com/repos/{0}/releases/assets/\d+$' -f [regex]::Escape($Repo))
-    # Rebuild only when empty or GitHub assets API. Never promote a rejected local path
-    # or foreign host into releases/download (FR #5357 / MRB #5416).
-    if ($direct -and -not $apiOk) { return $direct }
+    if (Test-AssetUrl -Url $direct) { return (Normalize-AssetUrl -Url $direct) }
+    $norm = Normalize-AssetUrl -Url $direct
+    $apiOk = $norm -match ('^https://api\.github\.com/repos/{0}/releases/assets/\d+$' -f [regex]::Escape($Repo))
+    $ours = $norm -match ('^https://github\.com/{0}/releases/' -f [regex]::Escape($Repo))
+    $cdn = $norm -match '^https://objects\.githubusercontent\.com/'
+    # Rebuild empty, assets-API, our github.com/.../releases/, or objects CDN.
+    # Never promote rejected local paths or foreign hosts (FR #5357 / #5410 / MRB #5439).
+    if ($direct -and -not $apiOk -and -not $ours -and -not $cdn) { return $direct }
     $name = ([string]$Asset.name).Trim()
     $tag = ([string]$Tag).Trim()
     if ($name -notmatch '^[A-Za-z0-9._+-]+$' -or $tag -notmatch '^v?\d+\.\d+\.\d+(?:\.\d+)?$') { return $direct }
