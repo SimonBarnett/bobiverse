@@ -82,6 +82,8 @@ def _row_id(row: dict) -> str:
 
 def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
     """Idle seats exist, every waiting offerable MRB is blocked for every idle seat."""
+    if snap.get("deadlock_healed"):
+        return []
     idle = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("idle") or [])}
     idle = {n for n in idle if n}
     live = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("live") or [])}
