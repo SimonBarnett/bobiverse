@@ -38,7 +38,7 @@ param(
     [string]$PlanFile = '',
     [string]$StateDir = '',
     [string]$ReleaseJson = '',      # test hook: local release JSON instead of GitHub
-    [string]$TargetVersion = '',    # FR #77: pin UPDATE airc|bob|jeeves <ver> (tag vX.Y.Z)
+    [string]$TargetVersion = '',    # FR #77/#5280: omit = latest release; pin UPDATE airc|bob|jeeves <ver> (tag vX.Y.Z)
     [switch]$AllowLocalAssets,      # test hook: plan asset "urls" may be local files
     [switch]$DryRun,                # Check: decide + log only
     [switch]$NoSpawn,               # Check: write plan/state but do not start the helper
@@ -120,6 +120,7 @@ function ConvertTo-UtcDate {
 function Get-LatestRelease {
     if ($ReleaseJson) { return (Get-Content -LiteralPath $ReleaseJson -Raw | ConvertFrom-Json) }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    # FR #5280: bare UPDATE (empty TargetVersion) always hits releases/latest.
     $uri = "https://api.github.com/repos/$Repo/releases/latest"
     $tv = ConvertTo-Ver $TargetVersion
     if ($tv) {
