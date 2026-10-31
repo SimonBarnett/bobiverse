@@ -4894,17 +4894,20 @@ class BoredEmitter:
         per incident so 3/3 is reachable; unknown fuel readings still do not count as exhausted (#3923);
       * never while busy: open ACK (ack_stale_s), agent not ready, pending inject work before ACK
         (assign_grace_s), or post-DONE/NACK/GIVEUP harvest hold (harvest_hold_s; outbox activity extends it);
+      * FR #5505: ACK-on-receipt for a still-parked assign must not clear harvest_hold; when harvest
+        expires (or held-assign watchdog fires), always release_held_assigns even if free/done !bored
+        is still pending, so an ACKed hold cannot sit idle forever;
       * any forward marks pending work; outbox activity resets idle / extends harvest; at most one line per
         second per reason; only the seat's own shop; never after IRC loss/shutdown (stop()).
     Overrides: BOB_WORKER_HARVEST_HOLD_S, BOB_WORKER_ASSIGN_GRACE_S, BOB_WORKER_BORED_ON_TURN_END,
-    BOB_WORKER_TURN_HOLD_MAX_S, BOB_WORKER_DONE_MISS_GRACE_S.
+    BOB_WORKER_TURN_HOLD_MAX_S, BOB_WORKER_DONE_MISS_GRACE_S, BOB_WORKER_HELD_ASSIGN_WATCHDOG_S.
     Event driven: a thread sleeps on a Condition until the next due time or a state change - no polling tick."""
 
     def __init__(self, send: Callable[[], bool], log: Callable[[str], None], idle_s: float = 120.0, repeat_s: float = 180.0,
                  ack_stale_s: float = 2700.0, retry_s: float = 5.0, clock: Callable[[], float] = time.monotonic,
                  nak_s: float = 120.0, harvest_hold_s: float | None = None, assign_grace_s: float | None = None,
                  turn_hold_max_s: float | None = None, done_miss_grace_s: float | None = None,
-                 ack_quiet_s: float | None = None):
+                 ack_quiet_s: float | None = None, held_assign_watchdog_s: float | None = None):
         self.send, self.log, self.clock = send, log, clock
         self.idle_s, self.repeat_s, self.ack_stale_s, self.retry_s = idle_s, repeat_s, ack_stale_s, retry_s
         # FR #4827: past ack_stale_s, keep the ACK while the turn is open or agent I/O
@@ -4933,6 +4936,12 @@ class BoredEmitter:
             float(done_miss_grace_s) if done_miss_grace_s is not None
             else _env_float("BOB_WORKER_DONE_MISS_GRACE_S", 20.0, 5.0, 600.0)
         )
+        # FR #5505: ACKed-on-receipt but never injected — inject (or give up) after this delay.
+        self.held_assign_watchdog_s = (
+            float(held_assign_watchdog_s) if held_assign_watchdog_s is not None
+            else _env_float("BOB_WORKER_HELD_ASSIGN_WATCHDOG_S", 180.0, 30.0, 3600.0)
+        )
+        self._held_assign_since: Optional[float] = None
         self._nak_due: Optional[float] = None
         self._cv = threading.Condition()
         self._ready = False
@@ -5051,6 +5060,8 @@ class BoredEmitter:
     def note_held_assign(self) -> None:
         """FR #2811: Relay parked an assign; stay offer-pending until flush."""
         with self._cv:
+            if not self._held_assign:
+                self._held_assign_since = self.clock()
             self._held_assign = True
             self._idle_since = None
             self._cv.notify_all()
@@ -5058,6 +5069,7 @@ class BoredEmitter:
     def clear_held_assign(self) -> None:
         with self._cv:
             self._held_assign = False
+            self._held_assign_since = None
             self._cv.notify_all()
 
     def _mark_job_finished(self, job: Optional[str], *, via_done: bool = False) -> None:
@@ -5518,7 +5530,17 @@ class BoredEmitter:
                             pass
                     self._inject_pending = False
                     self._inject_at = None
-                    self._harvest_until = None
+                    # FR #5505: ACK-on-receipt for a still-parked assign must not cancel the
+                    # post-DONE/NACK harvest hold — expiry (or watchdog) flushes the park.
+                    pending_held = False
+                    try:
+                        pending_held = bool(self.relay is not None and self.relay.has_pending_work())
+                    except Exception:
+                        pending_held = False
+                    if not pending_held and not self._held_assign:
+                        self._harvest_until = None
+                    elif self._held_assign_since is None:
+                        self._held_assign_since = now
                     self._fuel_lost_checked_at = None  # FR #3019: re-arm mid-job fuel poll
                     self._fuel_lost_streak = 0  # FR #3923: new ACK starts a fresh streak
                     self._clear_done_miss()
@@ -5636,15 +5658,46 @@ class BoredEmitter:
                 self._idle_since = now
         return False
 
-    def _flush_held_on_harvest_expiry(self, now: float) -> None:
-        """FR #4259: harvest wait ended with no open turn — deliver parked assigns.
+    def _flush_held_assign_watchdog(self, now: float) -> None:
+        """FR #5505: if an ACKed assign stayed parked past held_assign_watchdog_s, inject it.
+
+        Covers the case where harvest was cleared (or never armed) but Relay still parks
+        work and no turn_ended will flush it. Caller holds ``self._cv``.
+        """
+        if self._turn_open or self.held_assign_watchdog_s <= 0:
+            return
+        pending = False
+        try:
+            pending = bool(self.relay is not None and self.relay.has_pending_work())
+        except Exception:
+            pending = False
+        if not pending and not self._held_assign:
+            self._held_assign_since = None
+            return
+        # Still inside an active harvest / open-turn hold — wait for expiry flush.
+        if self._harvest_until is not None and now < float(self._harvest_until):
+            return
+        if self._extend_hold_for_open_turn(now):
+            return
+        since = self._held_assign_since
+        if since is None:
+            # ACK opened busy while work was already parked (or note_held raced).
+            since = float(self._ack_at) if self._ack_open and self._ack_at is not None else now
+            self._held_assign_since = since
+        if now - float(since) < float(self.held_assign_watchdog_s):
+            return
+        self._flush_held_on_harvest_expiry(now, why="held-assign watchdog")
+
+    def _flush_held_on_harvest_expiry(self, now: float, *, why: str = "harvest expired") -> None:
+        """FR #4259 / FR #5505: deliver parked assigns when harvest ends (or watchdog).
 
         Without this, a held assign (``_held_assign`` / ``relay.has_pending_work``) keeps
         ``_busy`` true forever after a repeat-DONE re-arm, so ``!bored`` never fires again.
-        Called under ``self._cv``. Skip when a done/free !bored is still pending — that
-        path flushes via ``post_bored`` (FR #2811).
+        Called under ``self._cv``. FR #5505: also flush when a free/done !bored is still
+        pending — ACK-on-receipt can open ``_ack_open`` and block ``post_bored`` forever
+        while the assign stays parked. Skip only while a turn is still open.
         """
-        if self._turn_open or self._pending_harvest_fire():
+        if self._turn_open:
             return
         had_held = bool(self._held_assign)
         released = 0
@@ -5655,23 +5708,30 @@ class BoredEmitter:
             released = 0
         if self._held_assign:
             self._held_assign = False
+        self._held_assign_since = None
         if released:
             self._inject_pending = True
             self._inject_at = now
             self._idle_since = None
-            self.log(f"bored: harvest expired - released {released} held assign(s)")
+            # New work supersedes a pending free/done !bored from the prior job.
+            if self._pending_harvest_fire():
+                self._last_free_key = self._free_key
+                self._last_done_key = self._done_key
+                self._hold_started_at = None
+            self.log(f"bored: {why} - released {released} held assign(s)")
         elif had_held:
-            self.log("bored: harvest expired - cleared held-assign flag")
+            self.log(f"bored: {why} - cleared held-assign flag")
 
     def _reason(self, now: float) -> Optional[str]:
         if self._stopped or not self._ready or now < self._retry_at:
             return None
-        # FR #4259: when harvest wait expires with no open turn and no pending done/free
-        # fire, flush held assigns *before* the busy check so a parked job cannot block
-        # !bored forever. Pending done/free still flush via post_bored (FR #2811).
+        # FR #4259 / FR #5505: when harvest wait expires with no open turn, flush held
+        # assigns *before* the busy check (even if free/done !bored is still pending).
         if self._harvest_until is not None and now >= self._harvest_until:
             self._harvest_until = None
-            self._flush_held_on_harvest_expiry(now)
+            self._flush_held_on_harvest_expiry(now, why="harvest expired")
+        # FR #5505: ACKed-on-receipt hold never injected — watchdog injects after deadline.
+        self._flush_held_assign_watchdog(now)
         if self._busy(now):
             self._idle_since = None
             if self._nak_due is not None and now >= self._nak_due:
@@ -5754,6 +5814,14 @@ class BoredEmitter:
             wakes.append(float(self._done_miss_armed_at) + float(self.done_miss_grace_s))
         if self._harvest_until is not None and now < self._harvest_until:
             wakes.append(self._harvest_until)
+        # FR #5505: wake when held-assign watchdog is due.
+        if (
+            self.held_assign_watchdog_s > 0
+            and self._held_assign_since is not None
+            and (self._held_assign or (self.relay is not None and self.relay.has_pending_work()))
+        ):
+            if self._harvest_until is None or now >= float(self._harvest_until):
+                wakes.append(float(self._held_assign_since) + float(self.held_assign_watchdog_s))
         # FR #2834: while open-turn extends past harvest_hold_s, wake at the safety cap.
         if self._extend_hold_for_open_turn(now) and self._hold_started_at is not None:
             wakes.append(float(self._hold_started_at) + float(self.turn_hold_max_s))
