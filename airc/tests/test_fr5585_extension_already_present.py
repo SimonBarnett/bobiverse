@@ -119,3 +119,39 @@ def test_fr5585_pins():
     assert not (ROOT / "airc" / "scripts" / "airc_extension.py").read_bytes().startswith(
         b"\xef\xbb\xbf"
     )
+
+def test_fr5585_credman_apply_as_propagates_false(monkeypatch):
+    """CredMan path must not treat void/None as wrote=True (FR #5585)."""
+    monkeypatch.setattr(ex, "default_apply_force_install", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "C:\\Windows\\System32\\net.exe" if name == "net" else None
+    )
+
+    class P:
+        returncode = 0
+
+    monkeypatch.setattr("subprocess.run", lambda *_a, **_k: P())
+    assert (
+        ex.default_apply_force_install_as(
+            "h", "chrome", ex.force_install_value(), "u", "FAKE_pw"
+        )
+        is False
+    )
+
+    body = ex.fill_holes_work(
+        "install",
+        ldap_enum=lambda: ["pc1"],
+        ping_host=lambda _h: True,
+        is_dc=lambda _h: False,
+        apply_force_install=lambda *_a: (_ for _ in ()).throw(
+            PermissionError("Access is denied")
+        ),
+        apply_force_install_as=lambda *_a: False,
+        credman_reader=lambda: {"username": "u", "password": "FAKE_pw"},
+        read_forcelist=_reader_already,
+    )
+    row = body["hosts"][0]
+    assert row.get("chrome") is False
+    assert row.get("edge") is False
+    assert row.get("skipped") == "already"
+    assert body["wrote_registry"] is False

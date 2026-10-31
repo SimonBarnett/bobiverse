@@ -420,8 +420,11 @@ def default_apply_force_install_as(
     value: str,
     username: str,
     password: str,
-) -> None:
-    """Retry registry write after IPC$ with CredMan user. Never log the secret."""
+) -> bool:
+    """Retry registry write after IPC$ with CredMan user. Never log the secret.
+
+    FR #5585: return the wrote bool from default_apply_force_install.
+    """
     import shutil
     import subprocess
 
@@ -438,7 +441,7 @@ def default_apply_force_install_as(
         )
         if p.returncode != 0:
             raise OSError(5, "credman-ipc-failed")
-        default_apply_force_install(host, product, value)
+        return bool(default_apply_force_install(host, product, value))
     finally:
         subprocess.run(
             [net, "use", ipc, "/delete", "/y"],
