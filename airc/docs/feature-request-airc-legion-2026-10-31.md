@@ -101,7 +101,7 @@ Wire-only. HTML mocks under airc/docs/mocks/legion/ (home / empty / error) for i
 
 1. **FR-A** - LEGION verb + isolated worker scaffold - https://github.com/SimonBarnett/bobiverse/issues/5308
 2. **FR-B** - invoke airc_network_installer for one target - https://github.com/SimonBarnett/bobiverse/issues/5309 (module import, client profile, WhatIf=dry-run)
-3. **FR-C** - CredMan PriorityAirc/LegionAdmin wrapper - https://github.com/SimonBarnett/bobiverse/issues/5310
+3. **FR-C** - CredMan PriorityAirc/LegionAdmin wrapper - https://github.com/SimonBarnett/bobiverse/issues/5310 (fail closed ``credman-missing``; secret never on IRC)
 4. **FR-D** - DCC install logs including failures - https://github.com/SimonBarnett/bobiverse/issues/5311
 5. **FR-E** - Skills/docs - https://github.com/SimonBarnett/bobiverse/issues/5312
 

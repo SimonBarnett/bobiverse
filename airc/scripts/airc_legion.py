@@ -71,7 +71,12 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
 
 
 _ALLOWED_MSI_PREFIX = "https://github.com/SimonBarnett/bobiverse/releases"
-_CREDMAN_TARGET = "PriorityAirc/LegionAdmin"
+CREDMAN_TARGET = "PriorityAirc/LegionAdmin"
+_CREDMAN_TARGET = CREDMAN_TARGET
+
+
+class LegionCredmanError(RuntimeError):
+    """CredMan target missing or unreadable (fail closed)."""
 
 
 def stub_legion_work(
@@ -99,9 +104,87 @@ def _msi_allowed(msi: str | None) -> bool:
     return raw.lower().startswith(_ALLOWED_MSI_PREFIX.lower())
 
 
+def read_legion_credman(
+    *,
+    target: str = CREDMAN_TARGET,
+    reader: Callable[[], dict[str, str]] | None = None,
+) -> dict[str, str]:
+    """Read ``PriorityAirc/LegionAdmin``. Never log the secret. Fail closed."""
+    if reader is not None:
+        got = reader() or {}
+        user = str(got.get("username") or "").strip()
+        pw = str(got.get("password") or "")
+        if not user or not pw:
+            raise LegionCredmanError("credman-missing")
+        return {"username": user, "password": pw}
+    import subprocess
+
+    ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
+    script = r"""
+param([Parameter(Mandatory=$true)][string]$Target)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class LegionCredRead {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct CREDENTIAL {
+    public uint Flags; public uint Type; public string TargetName; public string Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;
+    public uint AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
+  }
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool CredRead(string target, uint type, int reserved, out IntPtr cred);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern void CredFree(IntPtr cred);
+  public static string ReadPair(string target) {
+    IntPtr p;
+    if (!CredRead(target, 1, 0, out p) || p == IntPtr.Zero) return null;
+    try {
+      var c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
+      string user = c.UserName ?? "";
+      string pw = "";
+      if (c.CredentialBlob != IntPtr.Zero && c.CredentialBlobSize > 0)
+        pw = Marshal.PtrToStringUni(c.CredentialBlob, (int)c.CredentialBlobSize / 2) ?? "";
+      return "U=" + user + "\nP=" + pw;
+    } finally { CredFree(p); }
+  }
+}
+"@
+$pair = [LegionCredRead]::ReadPair($Target)
+if ($null -eq $pair) { Write-Output 'CRED_MISSING'; exit 2 }
+[Console]::Out.Write($pair)
+"""
+    try:
+        p = subprocess.run(
+            [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, "-Target", target],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise LegionCredmanError(f"credman-read-failed:{type(exc).__name__}") from exc
+    out = p.stdout or ""
+    if p.returncode != 0 or out.strip() == "CRED_MISSING":
+        raise LegionCredmanError("credman-missing")
+    user, pw = "", ""
+    for line in out.splitlines():
+        if line.startswith("U="):
+            user = line[2:].strip()
+        elif line.startswith("P="):
+            pw = line[2:]
+    if not user or not pw:
+        raise LegionCredmanError("credman-empty")
+    return {"username": user, "password": pw}
+
+
 def default_legion_credman() -> dict[str, str]:
-    """FR #5309 hook; FR-C #5310 fills live CredMan. Never logs the secret."""
-    return {}
+    """Live CredMan ``PriorityAirc/LegionAdmin``. Empty dict means missing (fail closed)."""
+    try:
+        return read_legion_credman()
+    except LegionCredmanError:
+        return {}
 
 
 def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
@@ -159,6 +242,17 @@ def installer_legion_work(
     ident = (credman or default_legion_credman)() or {}
     user = str(ident.get("username") or "").strip()
     secret = str(ident.get("password") or "")
+    if not user or not secret:
+        return {
+            "ok": False,
+            "target": target,
+            "whatif": bool(whatif),
+            "invoked_installer": False,
+            "force": False,
+            "timeout_s": LEGION_TIMEOUT_S,
+            "profile": "client",
+            "error": "credman-missing",
+        }
     spec: dict[str, Any] = {
         "hosts": [target],
         "profile": "client",
@@ -208,6 +302,14 @@ def run_legion_verb(
 ) -> LegionVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
     work = worker or installer_legion_work
+    if worker is None:
+        ident = (_kw.get("credman") or default_legion_credman)() or {}
+        if not ident.get("username") or not ident.get("password"):
+            return LegionVerbResult(
+                False,
+                f"DONE id={qid} exit=126 credman-missing",
+                job_id=qid,
+            )
 
     def _safe() -> None:
         try:
