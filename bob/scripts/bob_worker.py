@@ -2284,13 +2284,21 @@ def stale_replay_assign_key(
     user_key: Optional[str],
     finished_keys,
     open_ack_key: Optional[str],
+    done_keys=None,
 ) -> Optional[str]:
-    """FR #4842: return finished user_key when it differs from the open ACK (stale replay)."""
+    """FR #4842 / #5327: return finished user_key when it differs from the open ACK.
+
+    FR #5327: never treat a DONE-finished key as stale-replay (transcript lag after
+    DONE K + assign J still shows K). GIVEUP/NACK-finished keys still hit.
+    """
     uk = (user_key or "").strip()
     if not uk:
         return None
     open_k = (open_ack_key or "").strip()
     if open_k and uk.lower() == open_k.lower():
+        return None
+    done = {str(x).strip().lower() for x in (done_keys or []) if x}
+    if uk.lower() in done:
         return None
     finished = {str(x).strip().lower() for x in (finished_keys or []) if x}
     if uk.lower() not in finished:
@@ -4899,6 +4907,8 @@ class BoredEmitter:
         self._ack_job_key: Optional[str] = None  # FR #1732: open ACK job id
         # FR #4730: jobs this seat already closed — replayed ACK must not reopen busy / hit IRC.
         self._finished_job_keys: set[str] = set()
+        # FR #5327: DONE-only subset of finished — never stale-replay GIVEUP these.
+        self._done_job_keys: set[str] = set()
         self.run_dir: Optional[Path] = None  # FR #3189: write job-repo.txt for harvest routing
         self._idle_since: Optional[float] = None
         self._last_bored: Optional[float] = None
@@ -5014,13 +5024,21 @@ class BoredEmitter:
             self._held_assign = False
             self._cv.notify_all()
 
-    def _mark_job_finished(self, job: Optional[str]) -> None:
-        """FR #4730: remember a job closed by DONE/NACK/GIVEUP (caller holds ``_cv``)."""
+    def _mark_job_finished(self, job: Optional[str], *, via_done: bool = False) -> None:
+        """FR #4730: remember a job closed by DONE/NACK/GIVEUP (caller holds ``_cv``).
+
+        FR #5327: ``via_done=True`` also records ``_done_job_keys`` so stale-replay
+        never GIVEUPs a job this seat already DONE'd.
+        """
         if not job:
             return
         self._finished_job_keys.add(job)
         while len(self._finished_job_keys) > 64:
             self._finished_job_keys.pop()
+        if via_done:
+            self._done_job_keys.add(job)
+            while len(self._done_job_keys) > 64:
+                self._done_job_keys.pop()
 
     def note_fresh_assign(self, line: str) -> None:
         """FR #4730: re-offer of a finished job may ACK again; clear its finished mark."""
@@ -5029,6 +5047,7 @@ class BoredEmitter:
             return
         with self._cv:
             self._finished_job_keys.discard(key)
+            self._done_job_keys.discard(key)
 
     def should_forward_outbox(self, payload: str) -> bool:
         """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd."""
@@ -5055,6 +5074,7 @@ class BoredEmitter:
                 user_key=user_key,
                 finished_keys=self._finished_job_keys,
                 open_ack_key=self._ack_job_key,
+                done_keys=self._done_job_keys,
             )
             open_k = self._ack_job_key
             if not hit:
@@ -5468,7 +5488,7 @@ class BoredEmitter:
                     self._clear_done_miss()
             elif _OUT_DONE_RX.match(p):
                 job = outbox_job_key(p)
-                self._mark_job_finished(job)
+                self._mark_job_finished(job, via_done=True)
                 # FR #1732: DONE for another id must not clear an open ACK.
                 # FR #4842: cross-job DONE is not a silent drop — log it and arm done-miss
                 # for the open ACK so the seat is reminded about the real job.
@@ -6282,8 +6302,9 @@ class Supervisor:
                     pw.note_activity()
             if self.bored:
                 self.bored.turn_started(turn=turn, sid=None)
-            # FR #4842: if the new user turn is a finished assign K while ACK J is open,
-            # emit GIVEUP K stale-replay and re-inject J (never let the seat work K off-ledger).
+            # FR #4842 / #5327: if the new user turn is a GIVEUP/NACK-finished assign K
+            # while ACK J is open, emit GIVEUP K stale-replay and re-inject J. DONE-finished
+            # K (transcript lag after a healthy job change) must not GIVEUP or re-inject.
             try:
                 w = getattr(self, "_cursor_turn_watcher", None)
                 tp = w._transcript_file(w._bind()) if w is not None and w._bind() else None
