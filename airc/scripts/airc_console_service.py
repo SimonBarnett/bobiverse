@@ -325,6 +325,7 @@ class AircConsoleService:
             cli_shell_mode=getattr(args, "shell_mode", None) or _mode_tok,
             cli_jobs=getattr(args, "jobs", None),
             cli_update=getattr(args, "update_cap", None),
+            cli_extension=getattr(args, "extension_cap", None),
             cli_require_account=bool(args.require_account) if getattr(args, "require_account", False) else None,
             cli_accounts=list(args.accounts or []),
             default_shell_mode="operators",
@@ -1857,6 +1858,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["off", "on"],
         help="FR #3287: off refuses UPDATE airc|bob|jeeves",
+    )
+    p.add_argument(
+        "--extension",
+        dest="extension_cap",
+        default=None,
+        choices=["off", "on"],
+        help="FR #5295: off refuses EXTENSION install|status",
     )
     p.add_argument("--cwd", default=None)
     p.add_argument("--idle-sec", type=float, default=3600.0)

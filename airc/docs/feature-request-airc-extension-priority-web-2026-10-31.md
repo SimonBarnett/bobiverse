@@ -116,3 +116,7 @@ None. Mocks out of scope.
 ## Implementation slices
 
 See GitHub issues #5290-#5295 (FR-A through FR-F implement slices).
+
+## FR #5295 (capability slice)
+
+Dedicated extension cap sits beside update. Client and workstation default extension=off. DONE exit=126 extension-disabled when cap-off. Parent S8 still holds: update=off refuses EXTENSION. Auth remains live +o/+h.
