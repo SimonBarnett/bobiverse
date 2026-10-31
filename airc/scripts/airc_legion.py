@@ -226,8 +226,12 @@ def _resolve_legion_msi_path(spec: dict[str, Any]) -> Path:
     return Path(raw)
 
 
-def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
-    """Import-path invoke. WhatIf / dry_run never calls install_remote (FR #5382)."""
+def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str, Any]:
+    """Import-path invoke. WhatIf / dry_run never calls install_remote (FR #5382).
+
+    FR #5529: secret is an explicit kwarg (or leftover env for older callers),
+    never written into the service process environment.
+    """
     from airc_network_installer.install import find_psexec, install_local, install_remote
 
     host = str((spec.get("hosts") or [""])[0] or "")
@@ -262,7 +266,7 @@ def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
             "error": "msi-missing",
         }
 
-    password = os.environ.get("AIRC_LEGION_PASSWORD", "")
+    password = secret or os.environ.get("AIRC_LEGION_PASSWORD", "")
     user = str(spec.get("username") or "")
     log_dir = Path(str(spec.get("log_dir") or "airc-install-logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -383,13 +387,12 @@ def installer_legion_work(
     if user:
         spec["username"] = user
         spec["password_via"] = "secure-env"
-        if secret:
-            os.environ["AIRC_LEGION_PASSWORD"] = secret
+    # FR #5529: pass secret only as a runner kwarg, never os.environ.
+    runner = run_fn or default_installer_run
     try:
-        out = (run_fn or default_installer_run)(spec)
-    finally:
-        if secret:
-            os.environ.pop("AIRC_LEGION_PASSWORD", None)
+        out = runner(spec, secret=secret)
+    except TypeError:
+        out = runner(spec)
     status = str((out or {}).get("status") or "")
     return {
         "ok": bool((out or {}).get("ok", True)),
