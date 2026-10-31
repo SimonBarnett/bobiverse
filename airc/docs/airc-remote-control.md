@@ -35,7 +35,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
 | NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou. Full data+log via DCCLISTEN same job id or IRC CONT. |
 | `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312). UPDATE-class auth. CredMan `PriorityAirc/LegionAdmin`. Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
-| EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
+| EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). Fill-holes: machine account first, then CredMan `PriorityAirc/ExtensionAdmin` on access-denied (FR #5364; fail closed `credman-missing`; never on IRC). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
 
