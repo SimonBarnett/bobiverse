@@ -146,11 +146,40 @@ def _is_secret_name(name: str) -> bool:
     return any(low.endswith(suf) for suf in _SECRET_SUFFIXES)
 
 
+# FR #5610: DOS/Win32 reserved devices (stem before first dot).
+_WIN_RESERVED_DEVICES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
+
+def _is_win_reserved_device_component(name: str) -> bool:
+    """True when a path component is CON/PRN/AUX/NUL/COM1-9/LPT1-9.
+
+    Stem is the text before the first dot after stripping trailing spaces and dots
+    (``COM1.txt``, ``nul. ``, ``LPT1.log``).
+    """
+    s = (name or "").strip().rstrip(". ").strip()
+    if not s:
+        return False
+    stem = s.split(".", 1)[0].rstrip(". ").strip()
+    return stem.lower() in _WIN_RESERVED_DEVICES
+
+
+def _reject_win_reserved_device_path(raw: str) -> None:
+    parts = [x for x in raw.replace("/", "\\").split("\\") if x not in ("", ".")]
+    for part in parts:
+        if _is_win_reserved_device_component(part):
+            raise JobProtocolError("bad_path", "reserved device name")
+
+
 def resolve_sandbox_path(drop_root: Path, raw_path: str) -> Path:
-    """Resolve ``raw_path`` under drop_root; reject traversal / secrets / escape."""
+    """Resolve ``raw_path`` under drop_root; reject traversal / secrets / devices / escape."""
     if not raw_path or not raw_path.strip():
         raise JobProtocolError("bad_path", "empty path")
     p = raw_path.strip().replace("/", "\\")
+    _reject_win_reserved_device_path(p)
     if _is_secret_name(Path(p).name):
         raise JobProtocolError("secret_path", "refusing secret file name")
     # Disallow device paths / UNC
