@@ -69,17 +69,19 @@ def test_offer_skips_unreviewed_until_timeout(tmp_path, monkeypatch):
 def test_offer_when_coderabbit_reviewed(tmp_path, monkeypatch):
     monkeypatch.setenv("BOB_FUEL_CODERABBIT", "1")
     home = _home(tmp_path)
+    # FR #5394: !bored uses stamped ready (or the shared budget); no extra live GET.
+    row = _mrb_row("3", since=1_000.0)
+    row["coderabbit"] = "ready"
     gitclaim._write_queue(
         gitclaim.queue_path(home),
         {
             "v": 1,
-            "unaccepted": [_mrb_row("3", since=1_000.0)],
+            "unaccepted": [row],
             "accepted": [],
             "done": [],
             "workers": {},
         },
     )
-    monkeypatch.setattr(fuel_chain, "lookup_coderabbit_reviewed", lambda *a, **k: True)
     st, job = gitclaim.offer_focus_top(
         home, "n-1", "#n", now=1_010.0, pr_exists=lambda r, n: True
     )
