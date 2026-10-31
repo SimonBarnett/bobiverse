@@ -3,6 +3,8 @@
 * webhook health probes every 30 min  (``WEBHOOK_PROBE_S``): GET report, GET jira, GET intake/<id> (404 = up) and a
   synthetic ``ping`` to POST git, against the local receiver and the public https URL. State in
   ``webhook-health.json``; announce on #bobiverse (via chair-outbox) ONLY when a target flips up<->down.
+* FR #5510 stuck-job sweep every 10 min (+ startup): classify queue/open catalog,
+  release silent/dead-holder accepts, enqueue untracked offerable items, digest/!stuck report.
 * authenticated ``gitclaim.resync_from_github`` on a **low cadence** (``RESYNC_S`` = 1h, FR #3212) plus gap-triggered
   reconcile when git webhooks go quiet (``WEBHOOK_GAP_S``). Uses ETag/304 conditional GETs and the shared
   ``github_api_budget`` hourly counter. Token SOURCE (never the value) is written once per process to
@@ -37,6 +39,9 @@ WEBHOOK_ENSURE_S = 3600.0
 FIRST_WEBHOOK_ENSURE_DELAY_S = 8.0
 STALL_S = 180.0
 FIRST_STALL_DELAY_S = 90.0
+# FR #5510: stuck-job sweep (classify / release silent accepts / enqueue untracked).
+STUCK_SWEEP_S = 600.0
+FIRST_STUCK_SWEEP_DELAY_S = 20.0
 # FR #5359: retry intake/outbox while the chair runs (not only at BobCallback start).
 INTAKE_OUTBOX_S = 60.0
 FIRST_INTAKE_OUTBOX_DELAY_S = 30.0
@@ -462,6 +467,7 @@ class ChairJobs:
         self.next_webhook_ensure = t0 + FIRST_WEBHOOK_ENSURE_DELAY_S
         self._startup_webhook_ensure_done = False
         self.next_stall = t0 + FIRST_STALL_DELAY_S
+        self.next_stuck_sweep = t0 + FIRST_STUCK_SWEEP_DELAY_S
         self.next_intake_outbox = t0 + FIRST_INTAKE_OUTBOX_DELAY_S
         self._intake_backoff_s = INTAKE_OUTBOX_S
         self._intake_announced_at = 0.0
@@ -527,6 +533,7 @@ class ChairJobs:
             self.next_resync,
             self.next_merge_on_green,
             self.next_stall,
+            self.next_stuck_sweep,
             self.next_copilot,
             self.next_webhook_ensure,
             self.next_intake_outbox,
@@ -617,6 +624,13 @@ class ChairJobs:
                 self._stall_scan()
             except Exception as exc:  # noqa: BLE001
                 self.log(f"WARN stall-scan: {type(exc).__name__}: {exc}")
+        now = self.clock()
+        if now >= self.next_stuck_sweep:
+            self.next_stuck_sweep = now + STUCK_SWEEP_S
+            try:
+                self._stuck_job_sweep()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"WARN stuck-sweep: {type(exc).__name__}: {exc}")
         now = self.clock()
         if now >= self.next_copilot:
             self.next_copilot = now + COPILOT_TICK_S
@@ -879,6 +893,32 @@ class ChairJobs:
             )
             act = (info or {}).get("action") or "error"
             self.log(f"INFO webhook-ensure repo={repo} action={act}")
+
+
+    def _stuck_job_sweep(self) -> None:
+        """FR #5510: classify open/queue work; release silent accepts; enqueue untracked."""
+        import stuck_job_sweep
+        import gitclaim
+
+        live = gitclaim.live_seat_nicks(self.digest_home)
+        idle = gitclaim.free_seat_nicks(self.digest_home, live)
+        activity = {}
+        for nick in live:
+            ts = gitclaim.last_worker_activity(self.digest_home, nick)
+            if ts is None:
+                ts = gitclaim.last_worker_activity(self.home, nick)
+            if ts is not None:
+                activity[str(nick).lower()] = float(ts)
+        stuck_job_sweep.run_stuck_sweep(
+            self.digest_home,
+            now=self.clock(),
+            live=live,
+            idle=idle,
+            activity=activity,
+            act=True,
+            log=self.log,
+            announce=self.announce,
+        )
 
     def _stall_scan(self) -> None:
         """FR #5164: file one issue per distinct stall; never raise."""

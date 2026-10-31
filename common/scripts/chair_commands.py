@@ -3,7 +3,7 @@
 Deterministic, token-less, no secrets. Pure functions (no sockets / no clock unless injected) so the
 fake-IRC tests drive them exactly like the live chair does. ``irc_agent.Client`` is the thin glue.
 
-gh-Jeeves reference commands restored here: !help !list (+ !filter alias) !status !resync !sweep !ignore
+gh-Jeeves reference commands restored here: !help !list (+ !filter alias) !status !stuck !resync !sweep !ignore
 !ignored !unignore !focus !unfocus !recycle !build (FR #4006) !installtest (FR #4026) and the bare ``ping`` -> ``pong``. The shop wire (``!bored``,
 ``ACK``/``DONE``/``NACK``) lives in gitclaim / shop_listen and is not a PM command.
 
@@ -158,6 +158,16 @@ COMMANDS: tuple = (
         "Requires install_test in .bobiverse/build.yml; runs on recipe install_test.machine (fold-aware).",
         ("build", "status"),
     ),
+    CommandSpec(
+        "stuck",
+        "!stuck",
+        "list stuck/held open jobs from the stuck-job sweep (FR #5510)",
+        ALL_ROLES,
+        "!stuck",
+        "Read-only. Shows silent accepted rows, untracked offerable opens, and held items with the rule. "
+        "The sweep runs every 10 min in the chair (no agent).",
+        ("status", "list", "resync"),
+    ),
     CommandSpec("ping", "ping [nick-glob]", "channel or PM: reply pong (bare word, no !)", ALL_ROLES, "ping",
                 "Jeeves answers pong to a bare ping, or to ping <glob> when the glob matches its nick.", ("help",)),
 )
@@ -247,7 +257,7 @@ def classify(nick, account=None, *, ear_machine: Callable = lambda n: None) -> P
 
 MATRIX = {
     # command -> who may run it
-    "help": "any", "list": "any", "filter": "any", "status": "any", "ignored": "any", "ping": "any",
+    "help": "any", "list": "any", "filter": "any", "status": "any", "ignored": "any", "stuck": "any", "ping": "any",
     "focus-read": "any",
     "ignore": "ops", "unignore": "ops", "sweep": "ops", "resync": "ops", "recycle": "ops", "build": "ops",
     "installtest": "ops", "assign": "ops", "cleargiveup": "ops",
@@ -283,6 +293,7 @@ def denied_line(cmd: str) -> str:
 # ------------------------------------------------------------------ parsing
 _HELP_RE = re.compile(r"^!+\s*help(?:\s+(\S+))?\s*$", re.I)
 _STATUS_RE = re.compile(r"^!+\s*status\s*$", re.I)
+_STUCK_RE = re.compile(r"^!+\s*stuck\s*$", re.I)
 _RESYNC_RE = re.compile(r"^!+\s*resync\s*$", re.I)
 _SWEEP_RE = re.compile(r"^!+\s*sweep(?:\s+(#?\S+))?\s*$", re.I)
 _FILTER_RE = re.compile(r"^!+\s*filter\b(.*)$", re.I)
@@ -300,6 +311,15 @@ def parse_help(body: str):
 
 def is_status(body: str) -> bool:
     return bool(_STATUS_RE.match((body or "").strip()))
+
+
+def is_stuck(body: str) -> bool:
+    return bool(_STUCK_RE.match((body or "").strip()))
+
+
+def stuck_lines(home: Path) -> list:
+    import stuck_job_sweep
+    return stuck_job_sweep.format_stuck_lines(home)
 
 
 def is_resync(body: str) -> bool:

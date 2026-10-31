@@ -3071,6 +3071,10 @@ class Client:
             lines = list(lines) + self._jobs_status_lines()
             self._cmd_reply(src, "status", lines)
             return True
+        if chair_commands.is_stuck(text):
+            lines = chair_commands.stuck_lines(self._digest_home())
+            self._cmd_reply(src, "stuck", lines)
+            return True
         if chair_commands.is_resync(text):
             who = self._principal(src)
             if not chair_commands.may("resync", who):

@@ -1,7 +1,7 @@
 ---
 name: bobiverse-jeeves-commands
 description: >
-  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep, !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, repo onboard / give-up clear (FR #5134), ping, or Jeeves permissions.
+  Full Jeeves chair command reference, replies, authorization matrix and how to test every command as the bob ear. Use when asked about !help, !list, !filter, !status, !resync, !sweep / !stuck (FR #5510), !ignore, !focus, !recycle / !build (FR #4006) / !installtest (FR #4026), bobiverse-build skill, repo onboard / give-up clear (FR #5134), ping, or Jeeves permissions.
 
 ---
 
@@ -33,6 +33,7 @@ Authoritative reference: `docs/jeeves-commands.md` (read it for the full table, 
 | `!help [cmd]` | anyone | role-aware list / one-command detail (PM reply; 30 s per-nick limit) |
 | `!list [all\|repo\|fr\|mrb\|uat]`, `!filter ...` | anyone | queue by PM (`!filter` = alias of `!list`; 30 s per-nick limit); strict focus hides unfocused items ("queue empty") |
 | `!status` | anyone | version, uptime, queue counts, roster, `github_resync:`, `webhooks:` |
+| `!stuck` | anyone | FR #5510: list stuck/held jobs from the stuck-job sweep (silent accepts, untracked, hold rules) |
 | `!resync` | owner, ears | refresh roster from ChanServ + run the authenticated GitHub FR/MRB resync now; purges ignored repos |
 | `!sweep [#chan]` | owner, ears | re-plan +h/+o grants in a channel |
 | `!ignore <repo>`, `!unignore <repo>`, `!ignored` | owner/ears (ignored: anyone) | suppress/resume a repo for the whole chair |
@@ -92,3 +93,4 @@ Full operator playbook: skill `bobiverse-jeeves-repos` (`jeeves/.grok/skills/bob
 
 Ops-only. `!installtest <owner/repo> <version> [tag]`, `!installtest dry-run ....` Requires `install_test` in `.bobiverse/build.yml`. Chair is token-less decide + announce; msiexec/post-check run on the recipe `install_test.machine`. Failures become release-blocker issues (WP2 filer).
 
+- FR #5510: stuck-job sweep every 10 min — classify open/queue work, release silent/dead-holder accepts (30m), enqueue untracked offerable, digest stuck + !stuck; never touch needs_human/require_machine/self-MRB; no merge/close.
