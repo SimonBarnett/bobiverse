@@ -69,6 +69,8 @@ _CHANNEL_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 _CTCP_PING_RE = re.compile(r"^\x01PING(?: (.*))?\x01\s*$", re.IGNORECASE | re.DOTALL)
 _PING_CMD_RE = re.compile(r"^\s*ping(?:\s+(\S+))?\s*$", re.IGNORECASE)
 # FR #77: UPDATE airc|bob|jeeves [version] - fleet MSI via detached updater only.
+# FR #5532: optional leading job id= (same framing as PRIORITY/LEGION/VERSION).
+_LEADING_JOB_ID_RE = re.compile(r"(?is)^id=([0-9a-f]{8})\s+")
 _UPDATE_CMD_RE = re.compile(
     r"^\s*UPDATE\s+(airc|bob|jeeves)(?:\s+v?(\d+\.\d+\.\d+(?:\.\d+)?))?\s*$",
     re.IGNORECASE,
@@ -150,9 +152,19 @@ def machine_id(override: str | None = None) -> str:
     return mid
 
 
+def split_console_job_id(text: str) -> tuple[str | None, str]:
+    """FR #5532: optional ``id=<8hex> `` frame before a console verb."""
+    raw = (text or "").strip()
+    m = _LEADING_JOB_ID_RE.match(raw)
+    if not m:
+        return None, raw
+    return m.group(1).lower(), raw[m.end() :]
+
+
 def parse_update_command(text: str) -> tuple[str, str | None] | None:
     """Return ``(product, version|None)`` for an allowlisted UPDATE verb, else None."""
-    m = _UPDATE_CMD_RE.match(text or "")
+    _jid, rest = split_console_job_id(text)
+    m = _UPDATE_CMD_RE.match(rest)
     if not m:
         return None
     product = m.group(1).lower()
@@ -411,18 +423,22 @@ class UpdateScheduleResult:
     detail: str = ""
     product: str = ""
     version: str | None = None
+    job_id: str = ""
 
     def reply_line(self) -> str:
         ver = self.version or ""
-        bits = [f"UPDATE {self.status}", f"product={self.product or '?'}"]
+        qid = (self.job_id or "").strip().lower() or "00000000"
+        bits = [f"UPDATE {self.status}", f"id={qid}", f"product={self.product or '?'}"]
         if ver:
             bits.append(f"version={ver}")
         if self.detail:
             bits.append(self.detail)
         if self.ok:
             bits[0] = "UPDATE accepted"
-            bits.insert(1, f"status={self.status}")
-        return " ".join(bits)[:400]
+            bits.insert(2, f"status={self.status}")
+        body = " ".join(bits)[:400]
+        exit_code = 0 if self.ok else 1
+        return f"{body}\nDONE id={qid} exit={exit_code}"
 
 
 _UPDATE_INTAKE_STATUSES = frozenset(
@@ -3269,6 +3285,20 @@ class AircConsoleCore:
                 **meta,
             )
 
+        # FR #5533: bare / unknown PRIORITY is usage, not a PowerShell command.
+        usage_jid = _priority.parse_priority_usage(cmd)
+        if usage_jid is not None:
+            qid = usage_jid or uuid.uuid4().hex[:8]
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=_priority.format_priority_usage(qid),
+                **meta,
+            )
+
         # FR #5308: LEGION {target} --- isolated stub worker; same auth as UPDATE.
         leg = _legion.parse_legion_command(cmd)
         if leg is not None:
@@ -3528,13 +3558,15 @@ class AircConsoleCore:
         parsed = parse_update_command(cmd)
         if parsed is not None:
             # FR #3287: shell=off is status-only; update=off refuses even when shell=operators.
+            qid, _rest = split_console_job_id(cmd)
+            qid = (qid or "").strip().lower() or uuid.uuid4().hex[:8]
             if caps.shell_mode == "off":
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,
                     target=target,
                     text=text,
-                    reply="DONE exit=126 shell-disabled",
+                    reply=f"DONE id={qid} exit=126 shell-disabled",
                 )
             if caps.update == "off":
                 return HandleResult(
@@ -3542,7 +3574,7 @@ class AircConsoleCore:
                     nick=nick,
                     target=target,
                     text=text,
-                    reply="DONE exit=126 update-disabled",
+                    reply=f"DONE id={qid} exit=126 update-disabled",
                 )
             product, ver = parsed
             try:
@@ -3558,6 +3590,7 @@ class AircConsoleCore:
                 result = UpdateScheduleResult(
                     False, "bad-scheduler", product=product, version=ver
                 )
+            result.job_id = qid
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="update",
@@ -3612,8 +3645,10 @@ class AircConsoleCore:
             )
 
         # FR #5003: caller advertises reverse-DCC listen endpoint before/alongside shell.
-        if self.shell_runner is not None and cmd.upper().startswith("DCCLISTEN"):
-            if self.shell_runner.note_dcclisten(cmd):
+        if self.shell_runner is not None:
+            import airc_dcc_bulk as _dcc_listen
+
+            if _dcc_listen.is_dcclisten_command(cmd) and self.shell_runner.note_dcclisten(cmd):
                 meta = self._allow_meta(nick, account)
                 return HandleResult(
                     action="dcc_listen", nick=nick, target=target, text=text, **meta

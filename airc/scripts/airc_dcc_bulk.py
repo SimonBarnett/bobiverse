@@ -88,10 +88,20 @@ def _default_tls_pem() -> tuple[str, str]:
 
 
 
+_LEADING_JOB_ID_RE = re.compile(r"(?is)^id=[0-9a-f]{8}\s+")
 _DCCLISTEN_RE = re.compile(
     r"(?is)^DCCLISTEN\s+id=([0-9a-f]{8})\s+host=(\S+)\s+port=(\d+)\s+token=([0-9a-f]{16,64})"
     r"(?:\s+tls=([01]))?(?:\s+relay=(\S+))?\s*$"
 )
+
+
+def strip_leading_job_id(text: str) -> str:
+    """FR #5531: optional console framing ``id=<8hex> `` before DCCLISTEN."""
+    return _LEADING_JOB_ID_RE.sub("", (text or "").strip(), count=1)
+
+
+def is_dcclisten_command(text: str) -> bool:
+    return strip_leading_job_id(text).upper().startswith("DCCLISTEN")
 _DONE_TRAILING_RE = re.compile(
     r"(?i)^DONE\s+id=([0-9a-f]+)\s+exit=(-?\d+)(?:\s+(\S.*))?$"
 )
@@ -151,7 +161,7 @@ def make_dcc_token() -> str:
 
 
 def parse_dcclisten(text: str) -> DccListenOffer | None:
-    m = _DCCLISTEN_RE.match((text or "").strip())
+    m = _DCCLISTEN_RE.match(strip_leading_job_id(text))
     if not m:
         return None
     tls_g = m.group(5)

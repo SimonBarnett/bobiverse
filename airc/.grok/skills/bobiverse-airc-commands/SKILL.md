@@ -33,7 +33,7 @@ PRIVMSG <machine>_console :psb64:<base64>
 - Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
 - PUT/RUN/JOB/UPDATE are separate FRs - see `docs/airc-remote-control.md`. **FR #5280:** bare `UPDATE airc` (no version) schedules Check against the **latest** GitHub Release airc MSI; `UPDATE airc x.y.z` pins a tag.
 - **VERSION (FR #5281):** same auth as STATUS (`+o/+h`+). `PRIVMSG {mid}_console :id=<8hex> VERSION` replies `out id= seq=1 VERSION machine=... airc_ver=... [commit=...] [built=...] [hotpatch=1]` then `DONE id= exit=0` (FR #5534). Reads `<ai root>\\airc\\VERSION` plus `BUILD.json` / `HOTPATCH.json` when present (missing version -> `-`; no ARP). Allowed when `shell=off` / `jobs=off` like STATUS. STATUS still returns the bob/airc/jeeves aggregate.
-- **DCC output (FR #5003 / #5008):** caller sends `DCCLISTEN id= host= port= token= [tls=1] [relay=]`. Oversized shell replies: console dials out and sends framed bytes; IRC `DONE ... via=dcc`. Handshake fail -> IRC `CONT`/`RESUME` (`dcc failed ...; falling back to IRC`).
+- **DCC output (FR #5003 / #5008 / #5531):** caller sends `DCCLISTEN id= host= port= token= [tls=1] [relay=]` (optional leading job `id=<job> ` is accepted; bare `DCCLISTEN` still works). Oversized shell replies: console dials out and sends framed bytes; IRC `DONE ... via=dcc`. Handshake fail -> IRC `CONT`/`RESUME` (`dcc failed ...; falling back to IRC`).
 - **DCC upload (FR #5194):** same `DCCLISTEN`, then `PUT path= id= bytes= sha256= via=dcc`. Console dials out and **reads** the frame, checks sha256, writes atomically under the drop sandbox (same path rules as IRC PUT). Fail -> `err ... dcc failed ...; falling back to IRC` then `CHUNK`/`PUTEND`. Use `Invoke-AircRemote -Action Put` (default DCC) or `-ForceIrcPut`.
 
 ## Safe diagnostic commands
@@ -51,11 +51,12 @@ Prefer remote **`UPDATE airc`** over free-form `msiexec` / `Restart-Service Airc
 
 ```text
 PRIVMSG {mid}_console :UPDATE airc
+PRIVMSG {mid}_console :id=c25bd00e UPDATE airc
 PRIVMSG {mid}_console :UPDATE airc 1.0.9
 PRIVMSG {mid}_console :id=c25bd00e VERSION
 ```
 
-- **Latest vs pin:** bare `UPDATE airc` takes the latest GitHub Release MSI. `UPDATE airc <ver>` pins `-TargetVersion` (FR #5280 / FR #77).
+- **Latest vs pin:** bare `UPDATE airc` takes the latest GitHub Release MSI. `UPDATE airc <ver>` pins `-TargetVersion` (FR #5280 / FR #77). Leading `id=<job>` is accepted (FR #5532); reply is `UPDATE accepted id=...` then `DONE id= exit=`.
 - **Restart contract (Refs #5277):** after Apply, expect Airc Running and `{mid}_console` to answer again within a **120s** reconnect budget without manual repair. If it does not, file intake; do not invent a second msiexec.
 - **Failure intake (FR #5279):** each Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, ...) files one `kind:issue` on `SimonBarnett/bobiverse`. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted.
 - **VERSION (FR #5281):** same auth as STATUS. Reply is `out id= seq=1 VERSION machine=... airc_ver=... [commit=...] [built=...] [hotpatch=1]` then `DONE id= exit=0` (FR #5534). Reads `<ai root>\\airc\\VERSION` plus `BUILD.json` / `HOTPATCH.json` when present (missing version -> `-`; no ARP). Allowed when `shell=off` / `jobs=off`.
@@ -73,6 +74,8 @@ Walk: EXEC `REPPREPDIRECT2`. Success (`reason=prepared`) only when SDK `ok=true`
 See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
 ## Priority Client (FR #5287)
+
+Bare `PRIORITY` (or an unknown sub-verb) is usage, not PowerShell (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows` then `DONE id= exit=2`.
 
 Use the **built-in** Airc Priority Client. Do not copy NAS one-off clients or drop packs. CredMan + instance allowlist only; never invent `url` / company / SQL.
 

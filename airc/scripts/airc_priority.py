@@ -23,6 +23,12 @@ EXAMPLE_ALLOWLIST_NAME = "priority-instances.example.json"
 _PRIORITY_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+(connect|status)(?:\s+(\S+))?\s*$"
 )
+_PRIORITY_ANY_RE = re.compile(
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY(?:\s+(\S+).*)?$"
+)
+_PRIORITY_KNOWN_SUB = frozenset(
+    {"connect", "status", "prepare", "formstart", "subform", "getrows"}
+)
 
 _REQUIRED_INSTANCE_KEYS = ("id", "url", "company", "user", "credentialTarget")
 
@@ -256,6 +262,31 @@ def parse_priority_command(text: str) -> tuple[str | None, str, str | None] | No
     if not m:
         return None
     return m.group(1), m.group(2).lower(), m.group(3)
+
+
+def parse_priority_usage(text: str) -> str | None:
+    """FR #5533: PRIORITY with no/unknown sub-verb. Returns job id or '' (not None).
+
+    Known sub-verbs (connect/status/prepare/form walk) return None so their parsers win.
+    """
+    m = _PRIORITY_ANY_RE.match((text or "").strip())
+    if not m:
+        return None
+    sub = (m.group(2) or "").strip().lower()
+    if sub in _PRIORITY_KNOWN_SUB:
+        return None
+    return (m.group(1) or "").lower()
+
+
+PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|formStart|subform|getRows"
+
+
+def format_priority_usage(job_id: str) -> str:
+    qid = (job_id or "").strip().lower() or "00000000"
+    return (
+        f"err id={qid} seq=1 code=usage PRIORITY {PRIORITY_USAGE_SUBVERBS}\n"
+        f"DONE id={qid} exit=2"
+    )
 
 
 @dataclass
