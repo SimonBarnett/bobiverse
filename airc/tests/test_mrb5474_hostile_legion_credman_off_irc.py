@@ -26,7 +26,7 @@ def test_mrb5474_run_legion_verb_does_not_call_credman_on_accept():
     )
     assert calls["n"] == 0
     assert "LEGION accepted" in res.reply
-    assert "exit=0" in res.reply
+    # FR #5583: accept line has no DONE; exit comes after the log.
 
 
 def test_mrb5474_wait_true_surfaces_credman_missing_from_worker():

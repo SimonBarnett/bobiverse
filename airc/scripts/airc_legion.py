@@ -1,7 +1,9 @@
-"""Airc LEGION verb + isolated worker (FR #5308 / #5309).
+"""Airc LEGION verb + isolated worker (FR #5308 / #5309 / FR #5594).
 
 FR-A: verb + stub. FR-B: import ``airc_network_installer`` for one host,
 profile client, latest Release MSI, no --force. Auth matches UPDATE.
+FR #5594: default identity is LocalSystem / computer account. CredMan
+``PriorityAirc/LegionAdmin`` is an explicit off-by-default fallback.
 """
 from __future__ import annotations
 
@@ -41,6 +43,9 @@ class LegionVerbResult:
     msi: str = ""
     psexec: str = ""
     plan: dict[str, Any] = field(default_factory=dict)
+    identity: str = ""
+    computer_account: str = ""
+    identity_label: str = ""
 
     def reply_text(self) -> str:
         return self.reply
@@ -85,10 +90,52 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
 _ALLOWED_MSI_PREFIX = "https://github.com/SimonBarnett/bobiverse/releases"
 CREDMAN_TARGET = "PriorityAirc/LegionAdmin"
 _CREDMAN_TARGET = CREDMAN_TARGET
+_USE_CREDMAN_ENV = "AIRC_LEGION_USE_CREDMAN"
+_ACCESS_DENIED_RE = re.compile(
+    r"(?is)access(?: is)? denied|winerror[\s:=]?5\b|error[\s:=]?5\b|"
+    r"1326|logon failure|admin\$|winrm"
+)
 
 
 class LegionCredmanError(RuntimeError):
     """CredMan target missing or unreadable (fail closed)."""
+
+
+def legion_system_identity(
+    *,
+    hostname_fn: Callable[[], str] | None = None,
+    domain_fn: Callable[[], str] | None = None,
+) -> dict[str, str]:
+    """FR #5594: LocalSystem as DOMAIN\\HOST$ (or HOST$ on workgroup)."""
+    host = str((hostname_fn or socket_hostname)() or "LOCAL").split(".")[0]
+    host = re.sub(r"[^A-Za-z0-9\-]", "", host).upper() or "LOCAL"
+    domain = str((domain_fn or (lambda: os.environ.get("USERDOMAIN") or ""))() or "")
+    domain = re.sub(r"[^A-Za-z0-9\-]", "", domain).upper()
+    if domain and domain not in ("WORKGROUP", host):
+        acct = f"{domain}\\{host}$"
+    else:
+        acct = f"{host}$"
+    return {
+        "identity": "SYSTEM",
+        "computer_account": acct,
+        "identity_label": f"SYSTEM ({acct})",
+    }
+
+
+def _credman_fallback_requested() -> bool:
+    raw = str(os.environ.get(_USE_CREDMAN_ENV) or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _access_denied_reason(blob: str) -> bool:
+    return bool(_ACCESS_DENIED_RE.search(blob or ""))
+
+
+def _system_access_hint(account: str) -> str:
+    return (
+        f"source computer account {account} must be in the target local "
+        "Administrators group (GPO restricted groups or Bob Fleet installers AD group)"
+    )
 
 
 def stub_legion_work(
@@ -329,21 +376,28 @@ def installer_legion_work(
             "profile": "client",
             "error": "foreign-msi-url",
         }
-    ident = (credman or default_legion_credman)() or {}
-    user = str(ident.get("username") or "").strip()
-    secret = str(ident.get("password") or "")
-    credman_missing = not user or not secret
-    if credman_missing and not whatif:
-        return {
-            "ok": False,
-            "target": target,
-            "whatif": bool(whatif),
-            "invoked_installer": False,
-            "force": False,
-            "timeout_s": LEGION_TIMEOUT_S,
-            "profile": "client",
-            "error": "credman-missing",
-        }
+    use_credman = credman is not None or _credman_fallback_requested()
+    sys_ident = legion_system_identity()
+    user = ""
+    secret = ""
+    credman_missing = False
+    if use_credman:
+        ident = (credman or default_legion_credman)() or {}
+        user = str(ident.get("username") or "").strip()
+        secret = str(ident.get("password") or "")
+        credman_missing = not user or not secret
+        if credman_missing and not whatif:
+            return {
+                "ok": False,
+                "target": target,
+                "whatif": bool(whatif),
+                "invoked_installer": False,
+                "force": False,
+                "timeout_s": LEGION_TIMEOUT_S,
+                "profile": "client",
+                "error": "credman-missing",
+                "identity": "CREDMAN",
+            }
     spec: dict[str, Any] = {
         "hosts": [target],
         "profile": "client",
@@ -353,15 +407,22 @@ def installer_legion_work(
         "whatif": bool(whatif),
         "msi": (msi or "").strip(),
         "log_dir": log_dir or "airc-install-logs",
-        "credman_target": _CREDMAN_TARGET,
+        "identity": "CREDMAN" if use_credman else "SYSTEM",
+        "computer_account": sys_ident["computer_account"],
+        "identity_label": (
+            f"CREDMAN ({user})" if use_credman else sys_ident["identity_label"]
+        ),
     }
-    if user:
+    if use_credman and user:
+        spec["credman_target"] = _CREDMAN_TARGET
         spec["username"] = user
         spec["password_via"] = "secure-env"
+    elif use_credman:
+        spec["credman_target"] = _CREDMAN_TARGET
     # FR #5529: pass secret only as a runner kwarg, never os.environ.
     runner = run_fn or default_installer_run
     try:
-        out = runner(spec, secret=secret)
+        out = runner(spec, secret=secret) if use_credman else runner(spec)
     except TypeError:
         out = runner(spec)
     status = str((out or {}).get("status") or "")
@@ -370,6 +431,13 @@ def installer_legion_work(
     if credman_missing:
         fails.append({"host": target, "error": "credman-missing"})
         err = None if whatif else "credman-missing"
+    detail = str((out or {}).get("detail") or "")
+    blob = " ".join(str(x) for x in (err, detail, status, fails))
+    hint = ""
+    if (not use_credman) and (not bool((out or {}).get("ok", True))) and _access_denied_reason(blob):
+        err = "system-access-denied"
+        hint = _system_access_hint(sys_ident["computer_account"])
+        fails.append({"host": target, "error": "system-access-denied", "hint": hint})
     body: dict[str, Any] = {
         "ok": bool((out or {}).get("ok", True)),
         "target": target,
@@ -384,11 +452,24 @@ def installer_legion_work(
         "log_dir": spec["log_dir"],
         "error": err,
         "failures": fails,
+        "identity": spec["identity"],
+        "computer_account": spec["computer_account"],
+        "identity_label": spec["identity_label"],
     }
+    if hint:
+        body["hint"] = hint
     if (out or {}).get("msi"):
         body["msi"] = (out or {}).get("msi")
     if (out or {}).get("psexec"):
         body["psexec"] = (out or {}).get("psexec")
+    if whatif:
+        body["plan"] = {
+            "target": target,
+            "identity": spec["identity_label"],
+            "msi": body.get("msi") or "latest",
+            "psexec": body.get("psexec") or "psexec-missing",
+            "install": "skipped (whatif)",
+        }
     return body
 
 
@@ -422,13 +503,17 @@ def run_legion_verb(
         psexec = str(data.get("psexec") or "")
         plan = data.get("plan") if isinstance(data.get("plan"), dict) else {}
         # FR #5530: surface WhatIf probe results even when worker only set top-level keys.
-        if whatif and (msi or psexec) and not plan:
+        ident_label = str(data.get("identity_label") or "")
+        if whatif and not plan:
             plan = {
                 "target": str(data.get("target") or target),
+                "identity": ident_label or "SYSTEM",
                 "msi": msi or "latest",
                 "psexec": psexec or "psexec-missing",
                 "install": "skipped (whatif)",
             }
+        elif whatif and ident_label and "identity" not in plan:
+            plan = {**plan, "identity": ident_label}
         res = LegionVerbResult(
             bool(data.get("ok", True)),
             reply or accepted,
@@ -439,6 +524,9 @@ def run_legion_verb(
             msi=msi,
             psexec=psexec,
             plan=dict(plan),
+            identity=str(data.get("identity") or ""),
+            computer_account=str(data.get("computer_account") or ""),
+            identity_label=ident_label,
         )
         if on_done is not None:
             on_done(res)
