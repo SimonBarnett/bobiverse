@@ -109,7 +109,7 @@ Wire-only. HTML mocks under `airc/docs/mocks/` describe IRC summary / empty / er
 
 1. **FR-A** — `NETWORK` verb + isolated worker scaffold (stub payload OK) — [#5298](https://github.com/SimonBarnett/bobiverse/issues/5298)
 2. **FR-B** — Inventory collect: machines, IPs, OU/AD data — [#5299](https://github.com/SimonBarnett/bobiverse/issues/5299)
-3. **FR-C** — DCC delivery of data + structured log (failures included) — [#5300](https://github.com/SimonBarnett/bobiverse/issues/5300)
+3. **FR-C** — DCC delivery of data + structured log (failures included) — [#5300](https://github.com/SimonBarnett/bobiverse/issues/5300) (implemented: `build_network_payload` / `deliver_network_payload`)
 4. **FR-D** — Skills/docs (`bobiverse-airc-commands`, `airc-remote-control.md`) — [#5301](https://github.com/SimonBarnett/bobiverse/issues/5301)
 
 Docs PR: [#5297](https://github.com/SimonBarnett/bobiverse/pull/5297).

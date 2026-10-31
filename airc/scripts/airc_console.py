@@ -32,6 +32,7 @@ from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
 import airc_priority as _priority
 import airc_extension as _extension
 import airc_network as _network
+import airc_legion as _legion
 
 
 def priority_worker_argv(install_root: str | Path | None = None) -> list[str]:
@@ -2482,6 +2483,7 @@ class AircConsoleCore:
         priority_fixture: str | None = None,
         extension_runner: Callable[..., _extension.ExtensionVerbResult] | None = None,
         network_runner: Callable[..., _network.NetworkVerbResult] | None = None,
+        legion_runner: Callable[..., _legion.LegionVerbResult] | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -2500,6 +2502,7 @@ class AircConsoleCore:
         self.priority_fixture = priority_fixture
         self.extension_runner = extension_runner or _extension.run_extension_verb
         self.network_runner = network_runner or _network.run_network_verb
+        self.legion_runner = legion_runner or _legion.run_legion_verb
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
         # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
@@ -2666,6 +2669,7 @@ class AircConsoleCore:
                     "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
                     "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
                     "NETWORK|NETWORK diag isolated worker (FR #5298); "
+                    "LEGION {host|ip} [-WhatIf] isolated worker (FR #5308); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
                     ".quit closes; silent on channel; answers ping"
@@ -2734,6 +2738,57 @@ class AircConsoleCore:
                 **meta,
             )
 
+        # FR #5308: LEGION {target} --- isolated stub worker; same auth as UPDATE.
+        leg = _legion.parse_legion_command(cmd)
+        if leg is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.update == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 update-disabled",
+                )
+            if leg.get("error"):
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=f"DONE exit=126 bad-target reason={leg['error']}",
+                )
+            try:
+                result = self.legion_runner(
+                    target=leg["target"],
+                    whatif=leg["whatif"],
+                    job_id=leg.get("qid") or "",
+                )
+            except TypeError:
+                result = self.legion_runner(target=leg["target"])
+            except Exception:
+                result = _legion.LegionVerbResult(
+                    False, "LEGION err isolated-fault", job_id=leg.get("qid") or ""
+                )
+            if not isinstance(result, _legion.LegionVerbResult):
+                result = _legion.LegionVerbResult(False, "LEGION err bad-runner")
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="legion",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=result.reply_text(),
+                **meta,
+            )
+
         # FR #5298: NETWORK / NETWORK diag — isolated stub worker; same auth as UPDATE.
         net = _network.parse_network_command(cmd)
         if net is not None:
@@ -2767,13 +2822,32 @@ class AircConsoleCore:
                 )
             if not isinstance(result, _network.NetworkVerbResult):
                 result = _network.NetworkVerbResult(False, "NETWORK err bad-runner")
+            qid = (net.get("qid") or result.job_id or "").strip().lower()
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            payload = _network.build_network_payload(
+                net["action"],
+                whatif=net["whatif"],
+                hosts=getattr(result, "hosts", None),
+                failures=getattr(result, "failures", None),
+            )
+            send_fn = getattr(self, "network_log_send", None)
+            delivered = _network.deliver_network_payload(
+                job_id=qid or result.job_id,
+                payload=payload,
+                offer=offer,
+                send_fn=send_fn,
+            )
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="network",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=result.reply_text(),
+                reply=f"{result.reply_text()} {delivered['summary']} {delivered['done']}",
                 **meta,
             )
 
@@ -2816,7 +2890,12 @@ class AircConsoleCore:
                 take = getattr(self.shell_runner, "take_dcclisten", None)
                 if callable(take):
                     offer = take(qid)
-            log = _extension.build_extension_log(ext["action"], whatif=ext["whatif"])
+            payload = getattr(result, "payload", None) or {}
+            log = _extension.build_extension_log(
+                ext["action"],
+                whatif=ext["whatif"],
+                gpo=payload if payload else None,
+            )
             send_fn = getattr(self, "extension_log_send", None)
             delivered = _extension.deliver_extension_log(
                 job_id=qid or result.job_id,
