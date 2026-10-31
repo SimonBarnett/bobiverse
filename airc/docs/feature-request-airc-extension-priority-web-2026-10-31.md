@@ -3,25 +3,28 @@
 **Repo:** `SimonBarnett/bobiverse`  
 **Product path:** `airc/`  
 **Date:** 2026-10-31  
-**Plan folder:** `bob/plan/work/plan-20261031-143743`
+**Plan folder:** `bob/plan/work/plan-20261031-143743`  
+**Decisions locked:** operator MC cards 2026-10-31
 
-Related: `airc/VISION.md`, DCC bulk FR #5003 / #5008, remote-control verb model (STATUS / UPDATE).
+Related: `airc/VISION.md`, DCC bulk FR #5003 / #5008, remote-control verb model (STATUS / UPDATE), UPDATE cap FR #3287 / #3764.
 
 ## Objective
 
-LOCKED: An authorized remote **`EXTENSION`** command on `{mid}_console` force-installs the Priority web extension (`cgmpadejahkaggjpffnhaoiafbnicgpa`) for **Chrome and Edge** across the customer domain — happy path via **DC + GPO**, with **LDAP AD computer enum + per-host registry / local policy** fallbacks when GPO is unavailable — while the install worker runs **isolated** from the Airc service process and returns a **DCC** (or CONT fallback) log including every failure.
+LOCKED: An authorized remote **`EXTENSION install`** on `{mid}_console` force-installs the Priority web extension (`cgmpadejahkaggjpffnhaoiafbnicgpa`) for **Chrome and Edge** across the customer domain — **DC + GPO** via `Set-GPRegistryValue` / `New-GPO`, then **always** LDAP AD computer enum + per-host registry / local policy to **fill holes** on reachable hosts — while the install worker runs **isolated** from the Airc service process and returns a **DCC** (or CONT fallback) log including every failure; optional **`-WhatIf`** dry-run; auth same as **UPDATE** (ops/half-ops; `update=off` blocks EXTENSION).
 
 ## Success
 
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
-| S1 | EXTENSION verb | Authorized `EXTENSION` (grammar TBD) is accepted like STATUS/UPDATE; unauthorized → existing auth exits | Wire tests; skills document verb | No verb; agents hand-edit GPO only |
-| S2 | GPO happy path | When a DC is reachable and caller has rights, worker finds DC and adds ForceInstall for extension id on **Chrome + Edge** domain policy so domain machines receive the extension | Lab/domain test: GPO/ExtensionInstallForcelist (or ADMX equivalent) contains `cgmpadejahkaggjpffnhaoiafbnicgpa` + documented update URL for both products | DC reachable but only one browser; silent no-op; wrong OU with no coverage |
-| S3 | Registry / local-policy fallback | When DC/GPO unavailable or GPO apply fails, enumerate **AD computer objects (LDAP)** and apply local machine policy / registry ForceInstall on each **reachable** networked host for Chrome + Edge | Test with DC down or deny-GPO: reachable hosts get registry keys; unreachable hosts listed as failures in log | Fallback does nothing; only console box fixed; invents hosts outside AD |
-| S4 | Isolation | EXTENSION work runs in a **detached / child worker** (or equivalent job) — never AD/GPO/registry loops on the IRC receive thread; worker faults must not crash or stop service `Airc` | Fault-injection: worker exception → service still Running + DONE/err; no unhandled exception killing console | GPO code in-process on message handler; service Stopped after bad EXTENSION |
-| S5 | DCC log + failures | Operation writes a structured log (hosts attempted, GPO vs fallback, per-host ok/fail); delivered via reverse **DCC** when caller offered `DCCLISTEN` (FR #5003), else IRC CONT; **all failures** appear in that log and short IRC summary | Harness: DCCLISTEN + EXTENSION → via=dcc body lists failures; without DCCLISTEN → CONT pages include failures | Failures only in local files with empty IRC; multi-KB log floods PRIVMSG only |
-| S6 | Extension id LOCKED | Default / primary id is `cgmpadejahkaggjpffnhaoiafbnicgpa` (Priority web); optional override only if allowlisted in config | Config/example + tests pin default id | Random ids without allowlist; missing default |
-| S7 | Secrets / blast radius | No domain admin passwords on IRC; use existing machine identity / CredMan / run-as policy documented; no secrets in DCC/intake | Redaction tests | Password in EXTENSION args or DCC log |
+| S1 | EXTENSION verb | Authorized `EXTENSION install` [optional `-WhatIf`] accepted; unauthorized / `update=off` → existing UPDATE-style auth exits | Wire tests; skills document verb | No verb; agents hand-edit GPO only; WhatIf writes policy |
+| S2 | GPO happy path | When a DC is reachable and caller has rights, worker finds DC and uses **PowerShell GroupPolicy** (`New-GPO` / `Set-GPRegistryValue` as needed) to set ForceInstall for id + **Chrome Web Store update URL** on **Chrome and Edge** domain policy | Lab/domain test: GPO ExtensionInstallForcelist contains `cgmpadejahkaggjpffnhaoiafbnicgpa;https://clients2.google.com/service/update2/crx` for both products | DC reachable but only one browser; silent no-op |
+| S3 | Fill-holes fallback | **After** GPO attempt (success or fail), enumerate **AD computer objects (LDAP)** and apply local/registry ForceInstall on each **reachable** host still missing coverage (Chrome + Edge); machine account first, **CredMan fallback** on access-denied when configured | Lab: after EXTENSION, hole hosts get registry keys; access-denied without CredMan logged as failure; with CredMan succeeds | Skips fallback when GPO ok; invents non-AD hosts; password on IRC |
+| S3b | gpupdate | After GPO write, **best-effort** `gpupdate /force` on reachable hosts; log per-host gpupdate failures (do not require wait-until-applied) | Log shows gpupdate attempted; failures listed; DONE not blocked on full domain refresh | No refresh attempt; hung wait forever for all hosts |
+| S4 | Isolation | EXTENSION work runs in a **detached / child worker** — never AD/GPO/registry loops on the IRC receive thread; worker faults must not crash or stop service `Airc` | Fault-injection: worker exception → service still Running + DONE/err | GPO on message handler; service Stopped after bad EXTENSION |
+| S5 | DCC log + failures | Structured log (GPO, hosts, fill-holes, gpupdate, every failure) via reverse **DCC** when `DCCLISTEN` offered, else IRC CONT; short IRC summary includes failure counts | Harness with/without DCCLISTEN | Failures only local; PRIVMSG flood of full log |
+| S6 | Extension id + update URL | Default id `cgmpadejahkaggjpffnhaoiafbnicgpa`; ForceInstall update URL **`https://clients2.google.com/service/update2/crx`** for **both** Chrome and Edge policy trees | Config/example + tests | Missing default; different undocumented URLs without config |
+| S7 | Secrets / blast radius | No domain passwords on IRC; machine account first; optional CredMan for remote registry only; no secrets in DCC/intake | Redaction tests | Password in EXTENSION args or DCC log |
+| S8 | Auth = UPDATE | Same ops/half-ops gate as UPDATE; **`update=off` also refuses EXTENSION** | Cap matrix tests | EXTENSION works when update=off; arbitrary bob-* |
 
 LOCKED.
 
@@ -33,41 +36,43 @@ LOCKED
 
 ## Stack
 
-Default: Airc console verb dispatch (Python) → **detached worker** (PowerShell preferred for GPO/AD/registry) → Group Policy / LGPO / registry `ExtensionInstallForcelist` for Chrome (`SOFTWARE\Policies\Google\Chrome\...`) and Edge (`SOFTWARE\Policies\Microsoft\Edge\...`) → LDAP AD computer enum for fallback → existing reverse DCC for log bytes.
+Default: Airc console `EXTENSION install` [-WhatIf] → **detached worker** (PowerShell) → **GroupPolicy** module (`New-GPO` / `Set-GPRegistryValue`) for Chrome + Edge `ExtensionInstallForcelist` → LDAP AD computer enum → per-host registry/local policy (machine account, then CredMan) → best-effort remote `gpupdate /force` → reverse DCC for log bytes.
 
-Why: Matches fleet remote-control wire, UPDATE-style isolation precedent (FR #77 detached Apply), and Chromium enterprise force-install.
+ForceInstall entry shape: `cgmpadejahkaggjpffnhaoiafbnicgpa;https://clients2.google.com/service/update2/crx`
 
-Why-not: Editing GPO inside the live IRC thread; shipping a separate ExtensionInstaller.exe product; per-agent one-off scripts; IRC-only multi-MB logs.
+Why: Matches fleet remote-control wire, UPDATE isolation + UPDATE auth reuse, Chromium enterprise force-install.
 
-LOCKED (UNKNOWN: exact update URL string(s) for Chrome vs Edge store/enterprise; whether to use LGPO.exe vs raw registry; domain join required on console).
+Why-not: GPMC-COM-only; backup-modify-import as primary; IRC-thread GPO; separate ExtensionInstaller.exe; fallback-only-when-GPO-fails (holes after successful GPO would remain).
+
+LOCKED
 
 ## Architecture
 
 ```
 Operator/agent
   [optional] DCCLISTEN id=… host=… port=… token=…
-  PRIVMSG {mid}_console :EXTENSION …
+  PRIVMSG {mid}_console :EXTENSION install [-WhatIf]
        |
        v
 Airc service (live)
-  - auth (+o/+h)
-  - reply accepted / start job (DONE framing)
-  - spawn ISOLATED worker (scheduled task / WMI / job proc)
-  - never run DC/GPO/LDAP loops on IRC thread
+  - auth: same as UPDATE (+o/+h); update=off => refuse
+  - reply accepted / start job
+  - spawn ISOLATED worker
        |
        v
 EXTENSION worker (isolated)
-  1) Try find DC + edit GPO ForceInstall (Chrome+Edge, id cgmpadejahkaggjpffnhaoiafbnicgpa)
-  2) Else / also gaps: LDAP enum computers → per-host registry/local policy ForceInstall
-  3) Build structured log (ok/fail per step/host)
+  1) Find DC + New-GPO/Set-GPRegistryValue ForceInstall
+     Chrome+Edge, id+https://clients2.google.com/service/update2/crx
+  2) ALWAYS then: LDAP enum computers → fill holes via registry/local policy
+     (machine account; CredMan on access-denied if configured)
+  3) Best-effort gpupdate /force on reachable hosts
+  4) Structured log (ok/fail per step/host); -WhatIf skips writes
        |
        v
 Airc replies
   - short IRC summary + DONE exit=
-  - full log via DCC (or CONT fallback) including failures
+  - full log via DCC (or CONT) including failures
 ```
-
-Trust: IRC control plane; DCC for bulk log; domain rights required for GPO/remote registry; fail closed without inventing DCs; hotpatch restarts Airc only — worker isolation means a hung GPMC must not take down the console.
 
 LOCKED for Phase 0.
 
@@ -79,33 +84,35 @@ None. Mocks out of scope.
 
 | Area | Today | Gap |
 |------|-------|-----|
-| EXTENSION verb | Absent | New verb + auth/capability |
-| GPO / extension force-install | Absent in airc | DC discovery + Chrome/Edge ForceInstall |
-| Per-host fallback | Absent | LDAP computer enum + registry/local policy |
-| Isolation | UPDATE uses detached Apply | Same class of isolation for EXTENSION |
-| DCC | Shell/bulk output FR #5003 | Wire EXTENSION job log through DCCLISTEN path |
-| Extension id | Not in product | Pin `cgmpadejahkaggjpffnhaoiafbnicgpa` |
+| EXTENSION verb | Absent | `EXTENSION install` [-WhatIf] + UPDATE-equivalent auth |
+| GPO | Absent | DC + Set-GPRegistryValue/New-GPO Chrome+Edge |
+| Fill-holes | Absent | Always-after-GPO LDAP + registry; machine then CredMan |
+| gpupdate | Absent | Best-effort remote `/force` |
+| Isolation | UPDATE detached | Same class for EXTENSION |
+| DCC | Shell bulk FR #5003 | EXTENSION job log via DCCLISTEN |
+| Extension id / URL | Not in product | Pin id + Chrome Web Store update URL |
 
 ## LOCKED
 
 - Repo `SimonBarnett/bobiverse`; product `airc/`
-- Verb `EXTENSION`; default extension id `cgmpadejahkaggjpffnhaoiafbnicgpa`
+- Grammar: `EXTENSION install` with optional `-WhatIf` only (no browser filter flags in MVP)
+- Default extension id `cgmpadejahkaggjpffnhaoiafbnicgpa`
+- Update URL for both browsers: `https://clients2.google.com/service/update2/crx`
+- GPO via PowerShell GroupPolicy (`New-GPO` / `Set-GPRegistryValue`)
+- Fallback **always after GPO** to fill holes (LDAP AD computers + local/registry)
+- Per-host auth: machine account first, CredMan fallback
+- Auth/cap: same as UPDATE; `update=off` blocks EXTENSION
+- After GPO: trigger `gpupdate /force` on reachable hosts (best-effort, log failures)
+- Isolated worker; DCC log including failures
 - Chrome + Edge
-- Happy path DC+GPO; fallback AD LDAP computers + local/registry ForceInstall
-- Isolated worker (service must not die)
-- DCC log including failures (CONT fallback)
-- Anti-omnibus small issues
 
 ## UNKNOWN
 
-- Exact verb grammar (`EXTENSION install`, flags for `-WhatIf`, browser filter)
-- Chrome/Edge update URL(s) for ForceInstall list entries
-- GPO edit mechanism (GPMC COM, `New-GPO`/`Set-GPRegistryValue`, backup-modify-import)
-- Whether fallback runs only when GPO fails or also fills holes after GPO
-- Remote registry auth (LocalSystem vs CredMan domain account)
-- Capability flag (`jobs` / new `extension=` cap) for client profile
-- gpupdate / wait policy after GPO change
+- Exact CredMan target name/schema for optional domain account (when machine account denied)
+- Which GPO name/OU linkage is default when creating vs updating an existing Priority/airc GPO
+- Whether `-WhatIf` still runs LDAP discovery (read-only) or skips enum entirely
+- LGPO.exe vs raw registry on workgroup-joined / non-domain reachable hosts inside AD enum results (edge case)
 
 ## Implementation slices
 
-See `drafts/backlog.md`.
+See `drafts/backlog.md` (#5290–#5295).
