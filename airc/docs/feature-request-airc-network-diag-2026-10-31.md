@@ -17,11 +17,11 @@ LOCKED: An authorized remote **`NETWORK diag`** on `{mid}_console` runs an **iso
 | id | metric | target | how measured | fail-when |
 |----|--------|--------|--------------|-----------|
 | S1 | NETWORK verb | Authorized `NETWORK diag` [optional `-WhatIf`] accepted; auth **same as STATUS** (ops/half-ops; allowed when `shell=off`); unauthorized → existing auth exits | Wire tests; skills | No verb; blocked by shell=off incorrectly |
-| S2 | AD inventory | Worker enumerates AD computers via **shared LDAP helper** (with EXTENSION #5292); each row: `hostname`, `ips[]` (**IPv4/A**), `ou`, reachability; cap **500** hosts with `truncated` meta when over | Lab: DCC/JSON rows with OU + IPv4; shared helper used | Invents non-AD hosts; unbounded enum; IPv6 required for DONE |
+| S2 | AD inventory | Worker enumerates AD computers via **shared LDAP helper** (with EXTENSION #5292); each row: `hostname`, `ips[]` (**IPv4/A**), `ou`; **reachability is derived** (`reachable = any(ping_ok)` across that host's IPv4s; no extra field); cap **500** hosts with `truncated` meta when over | Lab: DCC/JSON rows with OU + IPv4; shared helper used | Invents non-AD hosts; unbounded enum; IPv6 required for DONE |
 | S3 | Ping + DNS | Per host (≤500): DNS + ICMP with **1s** timeouts, **32** parallel; fields `dns_ok`, `ping_ok`, `error`; failures in log | Lab: up/down hosts; parallelism bounded | Silent skip; IRC-thread hang; no timeout |
 | S4 | Local console note | Result includes local airc service/STATUS/VERSION snapshot for the console box (no remote IRC port probes on peer hosts) | Log contains local `airc_ver` / Running; no mandatory TCP 6667 scans of AD PCs | Remote Ergo port scan required for DONE |
 | S5 | Isolation | Detached/child worker (EXTENSION/UPDATE class); LDAP/ping loops never on IRC receive thread; worker fault → Airc still Running | Fault injection | Service Stopped after NETWORK |
-| S6 | DCC data + logs | Full structured inventory + probe log via reverse DCC when `DCCLISTEN` offered, else CONT; short IRC summary + DONE; all failures in log | Harness with/without DCCLISTEN | Multi-KB PRIVMSG flood only; failures omitted |
+| S6 | DCC data + logs | Full structured inventory + probe log via reverse DCC when `DCCLISTEN` is offered **with the same job `id=` as `NETWORK diag`**. DCC connect/handshake fail → fall back to CONT pages and `DONE ... via=irc reason=dcc-fail` (same as FR #5003). Success DONE includes `via=dcc` transfer meta. No DCCLISTEN → CONT only. Short IRC summary + DONE; all failures in log | Harness with/without DCCLISTEN | Multi-KB PRIVMSG flood only; failures omitted |
 | S7 | `-WhatIf` | Read-only full plan: may still LDAP enum + DNS (no destructive actions; NETWORK is read-only — WhatIf = same inventory without optional aggressive probes if any are added later). MVP: WhatIf ≡ diag (all read-only) or skips ICMP if operator policy prefers — **LOCKED MVP: WhatIf runs full read-only diag including ping/DNS** (ICMP is non-mutating) | Wire: WhatIf returns same schema, exit=0, no writes | WhatIf mutates AD/GPO |
 | S8 | Secrets | No passwords on IRC/DCC; machine account LDAP; no secret OU data beyond DN names | Redaction | Creds in log |
 
@@ -47,12 +47,12 @@ LOCKED
 
 ```
 Operator/agent
-  [optional] DCCLISTEN id=… …
-  PRIVMSG {mid}_console :NETWORK diag [-WhatIf]
+  [optional] DCCLISTEN id=<job> …
+  PRIVMSG {mid}_console :NETWORK diag [-WhatIf]  (same id=<job>)
        |
        v
 Airc service (live)
-  - auth = STATUS (+o/+h); shell=off still allows NETWORK
+  - auth = same STATUS path (channel +o/+h/+a/+q); shell=off still allows NETWORK
   - spawn ISOLATED worker
        |
        v
@@ -101,4 +101,10 @@ None.
 
 ## Implementation slices
 
-See `drafts/backlog.md`.
+Anti-omnibus: one issue at a time.
+
+- FR-A verb + isolated worker: SimonBarnett/bobiverse#5302
+- FR-B AD LDAP inventory: #5303
+- FR-C ping/DNS + local STATUS: #5304
+- FR-D DCC result log: #5305
+- FR-E skills/docs: #5306
