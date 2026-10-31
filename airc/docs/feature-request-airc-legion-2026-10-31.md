@@ -108,3 +108,6 @@ Wire-only. HTML mocks under airc/docs/mocks/legion/ (home / empty / error) for i
 Docs PR: https://github.com/SimonBarnett/bobiverse/pull/5313 . Living slices stay open (Refs only).
 #5308 #5309 #5310 #5311 #5312
 
+## FR #5530 WhatIf without CredMan
+
+-WhatIf still runs the installer planner when CredMan is missing. The DCC log must include msi and psexec (or psexec-missing) plus a credman-missing failure row. Live (non-WhatIf) still fail-closes before install_remote. Never put secrets in the plan or log.

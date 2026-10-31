@@ -3352,11 +3352,21 @@ class AircConsoleCore:
                 fails = list(res.failures or [])
                 if not fails and res.error:
                     fails = [{"host": leg.get("target"), "error": str(res.error)}]
+                # FR #5530: WhatIf plan (msi/psexec) must reach the DCC JSON.
+                extra: dict = {}
+                if getattr(res, "msi", ""):
+                    extra["msi"] = res.msi
+                if getattr(res, "psexec", ""):
+                    extra["psexec"] = res.psexec
+                plan = getattr(res, "plan", None)
+                if isinstance(plan, dict) and plan:
+                    extra["plan"] = plan
                 log = _legion.build_legion_log(
                     target=leg.get("target") or "",
                     whatif=bool(leg.get("whatif")),
                     summary=res.status or "",
                     failures=fails,
+                    extra=extra or None,
                 )
                 delivered = _legion.deliver_legion_log(
                     job_id=qid or res.job_id,
