@@ -208,6 +208,59 @@ def fuel_cooldown_seconds(fuel: str = "copilot") -> float:
     return float(FUEL_COOLDOWN_S.get((fuel or "copilot").strip().lower(), COPILOT_COOLDOWN_S))
 
 
+def parse_quota_reset_epoch(value: object) -> float | None:
+    """FR #5515: quota_reset_date / quota_reset_date_utc -> 00:00 UTC that calendar day."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        s = raw.replace("Z", "+00:00")
+        if "T" not in s:
+            s = s + "T00:00:00+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        midnight = datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+        return midnight.timestamp()
+    except ValueError:
+        return None
+
+
+def first_of_next_month_utc(now: float) -> float:
+    from datetime import datetime, timezone
+
+    dt = datetime.fromtimestamp(float(now), tz=timezone.utc)
+    if dt.month == 12:
+        nxt = datetime(dt.year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        nxt = datetime(dt.year, dt.month + 1, 1, tzinfo=timezone.utc)
+    return nxt.timestamp()
+
+
+def quota_pause_until(
+    now: float,
+    *,
+    reset_date: object = None,
+    fuel: str = "copilot",
+) -> tuple[float, str]:
+    """FR #5515: Copilot pauses until API reset date, else 1st of next month.
+
+    Other fuels keep the FR #5316 seven-day pause unless a reset date is given.
+    """
+    parsed = parse_quota_reset_epoch(reset_date)
+    now_f = float(now)
+    # Stale API date (midnight already passed, e.g. token-out on the 1st) must
+    # not unpause immediately; fall through like a missing date.
+    if parsed is not None and parsed > now_f:
+        return parsed, "api"
+    name = _fuel_name(fuel)
+    if name == "copilot":
+        return first_of_next_month_utc(now_f), "fallback-1st"
+    return now_f + fuel_cooldown_seconds(name), "fixed-7d"
+
+
 def _fuel_name(fuel: str) -> str:
     return (fuel or "copilot").strip().lower() or "copilot"
 
@@ -298,7 +351,7 @@ def refresh_allowance(
     merged.update(pool)
     _allow_path(home).write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     if merged.get("state") == "exhausted":
-        mark_tokens_exhausted(home, now=now_f)
+        mark_tokens_exhausted(home, now=now_f, reset_date=merged.get("reset_at"))
         return load_allowance(home)
     return merged
 
@@ -316,6 +369,7 @@ def pool_for_digest(home: Path) -> dict:
         "fetched_at": doc.get("fetched_at") or "",
         "state": doc.get("state") or "unknown",
         "resume_at": doc.get("exhausted_until_utc") or "",
+        "resume_source": doc.get("exhausted_until_source") or "",
     }
 
 
@@ -377,8 +431,9 @@ def mark_tokens_exhausted(
     fuel: str = "copilot",
     now: float | None = None,
     announce: Callable[[str], None] | None = None,
+    reset_date: object = None,
 ) -> dict[str, Any]:
-    """FR #5316 / #5397 / #5433: persist per-fuel cooldown; keep an active until."""
+    """FR #5316 / #5397 / #5433 / #5515: persist per-fuel cooldown; keep an active until."""
     now_f = time.time() if now is None else float(now)
     name = _fuel_name(fuel)
     doc = load_allowance(home)
@@ -386,14 +441,23 @@ def mark_tokens_exhausted(
     # FR #5433: do not extend or re-announce while the current until is still active.
     if already and now_f < already:
         until = already
+        source = str(doc.get("exhausted_until_source") or _fuel_block(doc, name).get("exhausted_until_source") or "")
+        if not source:
+            source = "api" if parse_quota_reset_epoch(reset_date) is not None else (
+                "fallback-1st" if name == "copilot" else "fixed-7d"
+            )
     else:
-        until = now_f + fuel_cooldown_seconds(name)
+        raw = reset_date
+        if raw is None:
+            raw = doc.get("reset_at") or doc.get("quota_reset_date") or doc.get("quota_reset_date_utc")
+        until, source = quota_pause_until(now_f, reset_date=raw, fuel=name)
     fuels = doc.get("fuels")
     if not isinstance(fuels, dict):
         fuels = {}
     block = dict(fuels.get(name) or {}) if isinstance(fuels.get(name), dict) else {}
     block["exhausted_until"] = until
     block["exhausted_until_utc"] = _utc_iso(until)
+    block["exhausted_until_source"] = source
     fuels[name] = block
     doc["fuels"] = fuels
     doc["fuel"] = name
@@ -403,12 +467,13 @@ def mark_tokens_exhausted(
         doc["state"] = "exhausted"
         doc["exhausted_until"] = until
         doc["exhausted_until_utc"] = _utc_iso(until)
+        doc["exhausted_until_source"] = source
     Path(home).mkdir(parents=True, exist_ok=True)
     released = 0
     if name == "copilot":
         released = release_held_copilot_rows(home)
     until_utc = _utc_iso(until)
-    line = f"{name} out of tokens - paused until {until_utc}"
+    line = f"{name} out of tokens - paused until {until_utc} ({source})"
     announced = doc.get("pause_announced_until")
     if announced != until:
         doc["pause_announced_until"] = until
@@ -418,7 +483,7 @@ def mark_tokens_exhausted(
             with contextlib.suppress(Exception):
                 bobreport.enqueue_chair_fleet_privmsg(home, line)
     _allow_path(home).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    return {"exhausted_until": until, "released": released, "line": line}
+    return {"exhausted_until": until, "released": released, "line": line, "source": source}
 
 
 def record_api_result(

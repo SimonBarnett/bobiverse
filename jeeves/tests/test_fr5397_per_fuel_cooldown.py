@@ -24,7 +24,7 @@ def test_fr5397_copilot_still_uses_legacy_key(tmp_path):
     assert cd.cooldown_active(tmp_path, now=NOW, fuel="copilot")
     assert not cd.cooldown_active(tmp_path, now=NOW, fuel="cursor")
     raw = json.loads((tmp_path / cd.ALLOWANCE_NAME).read_text(encoding="utf-8"))
-    assert raw["exhausted_until"] == NOW + cd.COPILOT_COOLDOWN_S
+    assert raw["exhausted_until"] == cd.first_of_next_month_utc(NOW)
     assert raw["fuels"]["copilot"]["exhausted_until"] == raw["exhausted_until"]
 
 
