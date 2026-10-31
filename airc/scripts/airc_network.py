@@ -1,10 +1,12 @@
-"""Airc NETWORK verb + isolated worker scaffold (FR #5298).
+"""Airc NETWORK verb + isolated inventory worker (FR #5298 / #5299 / #5300).
 
-No LDAP/DNS inventory in this slice (stub worker). Auth matches UPDATE.
-Worker faults must not stop Airc.
+FR-A: verb + isolated stub. FR-B: LDAP computers + ips[] + OU/DN.
+FR-C: structured inventory+log via DCCLISTEN or IRC CONT. Auth matches UPDATE.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 from dataclasses import dataclass
@@ -50,6 +52,85 @@ def stub_network_work(
     }
 
 
+def ou_from_dn(dn: str | None) -> str:
+    raw = (dn or "").strip()
+    if not raw:
+        return "unknown"
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    kept = [p for p in parts if p[:3].upper() in {"OU=", "DC="}]
+    return ",".join(kept) if kept else "unknown"
+
+
+def default_ldap_enum() -> list[Any]:
+    """Workgroup / no-DC: empty (documented). Tests inject AD rows."""
+    return []
+
+
+def default_resolve_ips(host: str) -> list[str]:
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET)
+    except OSError:
+        raise
+    ips: list[str] = []
+    for item in infos:
+        addr = item[4][0]
+        if addr not in ips:
+            ips.append(addr)
+    return ips
+
+
+def inventory_work(
+    action: str = "diag",
+    *,
+    whatif: bool = False,
+    ldap_enum: Callable[[], list[Any]] | None = None,
+    resolve_ips: Callable[[str], list[str]] | None = None,
+    extra_hosts: list[str] | None = None,
+    **_kw: Any,
+) -> dict[str, Any]:
+    """FR #5299: hostname + ips[] + ou. Never uses extra_hosts."""
+    _ = extra_hosts
+    enum = ldap_enum or default_ldap_enum
+    resolve = resolve_ips or default_resolve_ips
+    rows = list(enum() or [])
+    hosts: list[dict[str, Any]] = []
+    log: list[dict[str, Any]] = []
+    for raw in rows:
+        if isinstance(raw, str):
+            name, dn = raw.strip(), ""
+        elif isinstance(raw, dict):
+            name = str(raw.get("hostname") or raw.get("name") or "").strip()
+            dn = str(raw.get("dn") or raw.get("distinguishedName") or "")
+        else:
+            continue
+        if not name:
+            continue
+        rec: dict[str, Any] = {
+            "hostname": name,
+            "ips": [],
+            "ou": ou_from_dn(dn),
+            "dn": dn or "unknown",
+        }
+        try:
+            rec["ips"] = list(resolve(name) or [])
+        except Exception as exc:
+            rec["ips"] = []
+            log.append({"host": name, "error": type(exc).__name__, "step": "resolve"})
+        hosts.append(rec)
+    ldap_ok = bool(rows)
+    return {
+        "ok": True,
+        "action": action,
+        "whatif": bool(whatif),
+        "hosts": hosts,
+        "log": log,
+        "ldap": ldap_ok,
+        "limit": "" if ldap_ok else "workgroup-or-no-dc",
+    }
+
+
 def run_network_verb(
     *,
     action: str = "diag",
@@ -60,11 +141,11 @@ def run_network_verb(
     **_kw: Any,
 ) -> NetworkVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
-    work = worker or stub_network_work
+    work = worker or inventory_work
 
     def _safe() -> None:
         try:
-            work(action=action, whatif=whatif)
+            work(action=action, whatif=whatif, **_kw)
         except Exception:
             return
 
@@ -75,3 +156,116 @@ def run_network_verb(
     extra = " whatif=1" if whatif else ""
     reply = f"NETWORK accepted id={qid} action={action}{extra}\nDONE id={qid} exit=0"
     return NetworkVerbResult(True, reply, job_id=qid)
+
+
+_SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
+
+
+def _scrub(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {
+            k: _scrub(v)
+            for k, v in obj.items()
+            if not _SECRET_KEY_RE.search(str(k))
+        }
+    if isinstance(obj, list):
+        return [_scrub(x) for x in obj]
+    if isinstance(obj, str) and _SECRET_KEY_RE.search(obj) and "=" in obj:
+        return "[redacted]"
+    return obj
+
+
+def build_network_payload(
+    action: str = "diag",
+    *,
+    whatif: bool = False,
+    hosts: list[dict] | None = None,
+    failures: list[dict] | None = None,
+    extra: dict | None = None,
+) -> dict[str, Any]:
+    """FR #5300: inventory hosts[] plus operation failures[]; secrets stripped."""
+    payload: dict[str, Any] = {
+        "action": action,
+        "whatif": bool(whatif),
+        "hosts": list(hosts or []),
+        "failures": list(failures or []),
+    }
+    if extra:
+        for k, v in extra.items():
+            if not _SECRET_KEY_RE.search(str(k)):
+                payload[k] = v
+    payload = _scrub(payload)
+    payload["host_count"] = len(payload.get("hosts") or [])
+    payload["failure_count"] = len(payload.get("failures") or [])
+    return payload
+
+
+def network_payload_bytes(payload: dict[str, Any]) -> bytes:
+    return (json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def deliver_network_payload(
+    *,
+    job_id: str,
+    payload: dict[str, Any],
+    offer: Any | None = None,
+    send_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    import airc_dcc_bulk as _dcc
+
+    jid = (job_id or "").strip().lower() or "00000000"
+    raw = network_payload_bytes(payload)
+    digest = hashlib.sha256(raw).hexdigest()
+    nfail = int(payload.get("failure_count") or 0)
+    nhost = int(payload.get("host_count") or 0)
+    summary = (
+        f"NETWORK log hosts={nhost} failures={nfail} "
+        f"action={payload.get('action')} bytes={len(raw)}"
+    )
+    lines: list[str] = [f"out id={jid} seq=1 {summary}"]
+    for i, fail in enumerate(payload.get("failures") or [], start=2):
+        lines.append(
+            f"out id={jid} seq={i} failure {json.dumps(fail, separators=(',', ':'))}"
+        )
+    if offer is not None:
+        sender = send_fn or _dcc.send_offer_payload
+        try:
+            sender(raw, offer)
+            done = _dcc.format_done_via_dcc(
+                jid, 0, nbytes=len(raw), sha256=digest, via="dcc"
+            )
+            return {
+                "via": "dcc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": [lines[0], done],
+                "done": done,
+            }
+        except Exception as exc:
+            lines.append(
+                f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
+            )
+            done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
+            lines.append(done)
+            return {
+                "via": "irc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": lines,
+                "done": done,
+            }
+    lines.append("CONT id=" + jid + " offset=1")
+    done = f"DONE id={jid} exit=0 via=irc"
+    lines.append(done)
+    return {
+        "via": "irc",
+        "sha256": digest,
+        "nbytes": len(raw),
+        "summary": summary,
+        "lines": lines,
+        "done": done,
+    }
