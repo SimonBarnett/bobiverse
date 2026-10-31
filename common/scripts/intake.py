@@ -312,15 +312,27 @@ PRODUCT_DEFAULT_SKILL_BOOK: dict[str, tuple[str, str]] = {
     ),
 }
 
-# FR #4990: explicit priority-customer set (PRODUCT_DEFAULT above + PS1 branch).
-PRIORITY_CUSTOMER_HARVEST_REPOS = frozenset(
-    {
-        "simonbarnett/euroflo",
-        "simonbarnett/lynton",
-        "simonbarnett/trutex",
-        "simonbarnett/rees",
-    }
-)
+def harvest_priority_customer_repos(*, home=None, topic_repos=None, fetch_json=None):
+    """FR #5184: customer harvest set from the saved priority-customer topic.
+
+    Prefer ``load_topic_repos``. If that file is missing or empty, refresh via
+    the topic search (injected ``fetch_json``). Never fall back to a hardcoded list.
+    """
+    if topic_repos is not None:
+        return frozenset(_priority_customer_topic_repos(topic_repos, None))
+    home_p = Path(home) if home else None
+    if home_p is not None:
+        loaded = _priority_customer_topic_repos(None, home_p)
+        if loaded:
+            return frozenset(loaded)
+        try:
+            import priority_customer as _pc
+
+            fetch = fetch_json or _pc.github_topic_fetch
+            return frozenset(_pc.refresh_topic_repos(home_p, fetch_json=fetch))
+        except Exception:  # noqa: BLE001
+            return frozenset()
+    return frozenset()
 
 def rewrite_harvest_repo_for_skill_book(repo: str, skill_book: str) -> str:
     """FR #3959: bobiverse-* books never tip into product repos (a-search stubs).
