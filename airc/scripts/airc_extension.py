@@ -31,8 +31,9 @@ CREDMAN_TARGET = "PriorityAirc/ExtensionAdmin"
 GPO_SCRIPT_NAME = "Invoke-AircExtensionGpo.ps1"
 
 _EXTENSION_CMD_RE = re.compile(
-    r"(?is)^(?:id=([0-9a-f]{8})\s+)?EXTENSION\s+(install|status)(?P<rest>.*)$"
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?EXTENSION(?:\s+(?P<rest>.*))?$"
 )
+EXTENSION_USAGE = "install|status [-WhatIf]"
 
 
 @dataclass
@@ -50,11 +51,30 @@ def parse_extension_command(text: str) -> dict[str, Any] | None:
     m = _EXTENSION_CMD_RE.match((text or "").strip())
     if not m:
         return None
-    rest = m.group("rest") or ""
+    qid = (m.group(1) or "").lower()
+    parts = [(p or "").strip() for p in (m.group("rest") or "").split() if p.strip()]
+    if not parts or parts[0].lower() not in {"install", "status"}:
+        return {"qid": qid, "usage": True}
+    action = parts[0].lower()
+    whatif = False
+    unknown = ""
+    extra = False
+    for tok in parts[1:]:
+        if tok.lower() == "-whatif":
+            whatif = True
+            continue
+        if tok.startswith("-"):
+            unknown = tok
+            break
+        extra = True
+    if unknown:
+        return {"qid": qid, "usage": True, "unknown_flag": unknown}
+    if extra:
+        return {"qid": qid, "usage": True}
     return {
-        "qid": (m.group(1) or "").lower(),
-        "action": m.group(2).lower(),
-        "whatif": bool(re.search(r"(?i)-WhatIf", rest)),
+        "qid": qid,
+        "action": action,
+        "whatif": whatif,
     }
 
 

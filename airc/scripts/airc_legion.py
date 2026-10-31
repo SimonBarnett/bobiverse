@@ -77,14 +77,24 @@ def parse_legion_command(text: str) -> dict[str, Any] | None:
     rest = re.sub(r"(?i)(?:^|\s)-WhatIf(?:\s|$)", " ", rest).strip()
     parts = [p for p in rest.split() if p]
     qid = (m.group(1) or "").lower()
-    if not parts:
+    flags = [p for p in parts if p.startswith("-")]
+    hosts = [p for p in parts if not p.startswith("-")]
+    if flags:
+        return {
+            "qid": qid,
+            "error": "unknown-flag",
+            "unknown_flag": flags[0],
+            "target": " ".join(hosts),
+            "whatif": whatif,
+        }
+    if not hosts:
         return {"qid": qid, "error": "empty", "target": "", "whatif": whatif}
-    if len(parts) > 1:
-        return {"qid": qid, "error": "list", "target": rest, "whatif": whatif}
-    err = _classify_target(parts[0])
+    if len(hosts) > 1:
+        return {"qid": qid, "error": "list", "target": " ".join(hosts), "whatif": whatif}
+    err = _classify_target(hosts[0])
     if err:
-        return {"qid": qid, "error": err, "target": parts[0], "whatif": whatif}
-    return {"qid": qid, "error": None, "target": parts[0], "whatif": whatif}
+        return {"qid": qid, "error": err, "target": hosts[0], "whatif": whatif}
+    return {"qid": qid, "error": None, "target": hosts[0], "whatif": whatif}
 
 
 _ALLOWED_MSI_PREFIX = "https://github.com/SimonBarnett/bobiverse/releases"
