@@ -3277,7 +3277,16 @@ class Client:
             return True
         if gitclaim.parse_worker_ack(body):
             self._git_ack(src, target, now)
+            try:
+                gitclaim.record_last_bored(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN last-bored stamp {type(exc).__name__}")
             return True
+        if gitclaim.shop_line_resets_bored_clock(body):
+            try:
+                gitclaim.record_last_bored(self.home, src, now)
+            except Exception as exc:  # noqa: BLE001
+                info(f"WARN last-bored stamp {type(exc).__name__}")
         shop = gitclaim.worker_shop_channel(src)
         if shop and bobreport.normalize_channel(target).lower() == shop:
             gitclaim.note_worker_activity(self.home, src, now)

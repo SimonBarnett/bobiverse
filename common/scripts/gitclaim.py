@@ -370,6 +370,14 @@ def is_bored_command(body: str) -> bool:
     return (body or "").strip().lower() == "!bored"
 
 
+def shop_line_resets_bored_clock(body: str) -> bool:
+    """FR #5203: ACK/DONE/NACK/GIVEUP mean the seat is not waiting to !bored."""
+    text = (body or "").strip()
+    if not text:
+        return False
+    return bool(re.match(r"(?i)^(?:@?\S+[:,]\s*)?(?:ACK|DONE|NACK|GIVEUP)\b", text))
+
+
 def last_bored_path(home: Path) -> Path:
     return _root(home) / LAST_BORED_NAME
 
