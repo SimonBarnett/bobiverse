@@ -22,6 +22,7 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 
 | Symptom | Diagnosis / fix |
 |---|---|
+| EXTENSION install times out / no log | Offer `DCCLISTEN` with the **same** `id=` as `EXTENSION install` (FR #5293). Without it the console uses IRC CONT pages. Auth is UPDATE-class (`update=off` refuses). Default id `cgmpadejahkaggjpffnhaoiafbnicgpa`. Worker is isolated (FR #5290); GPO `Priority-web-extension` + LDAP fill-holes (FR #5291/#5292). Never put domain passwords on IRC. |
 | `sasl-fail 904` / `433`, `<machine>_console` reserved | Wrong NickServ GUID vs the console home in use. Tip (FR #4388) tries legacy heal (incl. SystemProfile) then one-shot oper `NickServ PASSWD` when `oper.cred` / `BOB_OPER_*` / `ergo-oper*` is present. Manual: Oper `NickServ PASSWD <machine>_console <value from console.password>` then `Restart-Service Airc`. `ERASE` needs `/OPER` + `accreg`. |
 | Console home is `C:\Users\Default\.airc` | Quiet MSI as LocalSystem picked the Default profile and orphaned the GUID. Use `C:\Users\Administrator\.airc` or `<ai root>\airc\home` (Install-Airc does this now). |
 | MSI upgrade minted a new ConsoleHome / lost GUID | Upgrade skipped live `AppParameters` / `airc-install.json` and fell through to a profile default. Preserve identity: live AppParameters → install.json → defaults last (FR #1552 / #1583). |
