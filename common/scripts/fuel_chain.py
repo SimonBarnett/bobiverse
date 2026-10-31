@@ -77,8 +77,43 @@ def coderabbit_reviewed_head(
 
 def lookup_coderabbit_reviewed(repo: str, num: str, head: str = "") -> bool:
     """Live GitHub lookup. Fail-open as 'not yet' (timeout still offers). No secrets logged."""
-    del repo, num, head
-    return False
+    repo_s = str(repo or "").strip()
+    num_s = str(num or "").strip().lstrip("#")
+    if not repo_s or not num_s.isdigit():
+        return False
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not token:
+        return False
+    import json
+    import urllib.request
+
+    api = f"https://api.github.com/repos/{repo_s}/pulls/{num_s}/reviews"
+    req = urllib.request.Request(
+        api,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bobiverse-fuel-chain",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            reviews = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return False
+    if not isinstance(reviews, list):
+        return False
+    want = str(head or "").strip()
+    if not want:
+        return any(
+            isinstance(r, dict)
+            and _CR_BOT.match(
+                str(((r.get("user") or {}) if isinstance(r.get("user"), dict) else {}).get("login") or "")
+            )
+            for r in reviews
+        )
+    return coderabbit_reviewed_head(reviews, [], want)
 
 
 def mrb_coderabbit_offer(
