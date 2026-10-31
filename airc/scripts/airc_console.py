@@ -2270,8 +2270,13 @@ class ShellJobRunner:
         if offer is None:
             return False
         with self._lock:
-            self._dcc_listen[offer.job_id] = offer
+            self._dcc_listen[(offer.job_id or "").strip().lower()] = offer
         return True
+
+    def peek_dcc_offer(self, job_id: str):
+        """FR #5194: DCCLISTEN recorded for this job, or None (leave in place for PUT fallback)."""
+        with self._lock:
+            return self._dcc_listen.get((job_id or "").strip().lower())
 
     def take_dcclisten(self, job_id: str):
         """FR #5293: pop a DCCLISTEN offer for an EXTENSION (or other) job id."""
