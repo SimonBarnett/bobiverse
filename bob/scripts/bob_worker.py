@@ -2323,8 +2323,9 @@ def stale_replay_compare_ready(
     """True when it is safe to run stale-replay compare (FR #5403).
 
     Wait until the latest user assign is the open ACK (J), or turn-started
-    for J, or the wait after inject has elapsed. DONE-key exemption stays
-    in stale_replay_assign_key.
+    for J, or the wait after inject/ACK has elapsed. Callers should pass
+    ``_inject_at or _ack_at`` because ACK clears ``_inject_at`` (MRB #5435).
+    DONE-key exemption stays in stale_replay_assign_key.
     """
     if turn_started_for_open:
         return True
@@ -6340,10 +6341,15 @@ class Supervisor:
         if not uk:
             return
         open_k = getattr(self.bored, "_ack_job_key", None)
+        # MRB #5435: ACK clears _inject_at; fall back to _ack_at so the wait
+        # still covers transcript lag after ACK J (the usual Cursor race).
+        wait_from = getattr(self.bored, "_inject_at", None)
+        if wait_from is None:
+            wait_from = getattr(self.bored, "_ack_at", None)
         if not stale_replay_compare_ready(
             user_key=uk,
             open_ack_key=open_k,
-            inject_at=getattr(self.bored, "_inject_at", None),
+            inject_at=wait_from,
             now=time.time(),
         ):
             self.log("relay: stale-replay wait for transcript newer than inject")
