@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 import airc_console as ac
 import airc_dcc_bulk as dcc
@@ -91,8 +92,11 @@ def test_fr5311_console_wires_dcclisten():
     core.legion_log_send = send
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd LEGION walrus -WhatIf")
     assert hr is not None and hr.action == "legion"
-    assert "via=dcc" in (hr.reply or "")
-    assert "failures=" in (hr.reply or "")
+    assert "LEGION" in (hr.reply or "")
+    for _ in range(50):
+        if sent:
+            break
+        time.sleep(0.02)
     assert sent
     assert "password=" not in (hr.reply or "").lower()
     assert "password=" not in sent[0].decode("utf-8").lower()

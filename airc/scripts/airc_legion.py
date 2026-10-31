@@ -10,7 +10,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 # In-service module (FR #3991). LEGION must not shell a peer installer exe.
@@ -32,6 +32,9 @@ class LegionVerbResult:
     ok: bool
     reply: str
     job_id: str = ""
+    status: str = ""
+    error: str = ""
+    failures: list[dict[str, Any]] = field(default_factory=list)
 
     def reply_text(self) -> str:
         return self.reply
@@ -300,40 +303,73 @@ def run_legion_verb(
     job_id: str = "",
     worker: Callable[..., Any] | None = None,
     wait: bool = False,
+    on_done: Callable[[LegionVerbResult], Any] | None = None,
     **_kw: Any,
 ) -> LegionVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
     work = worker or installer_legion_work
-    if worker is None:
-        ident = (_kw.get("credman") or default_legion_credman)() or {}
-        if not ident.get("username") or not ident.get("password"):
-            return LegionVerbResult(
-                False,
-                f"DONE id={qid} exit=126 credman-missing",
-                job_id=qid,
-            )
-
-    def _safe() -> None:
-        try:
-            work(target, whatif=whatif)
-        except TypeError:
-            try:
-                work(target=target, whatif=whatif)
-            except Exception:
-                return
-        except Exception:
-            return
-
-    if wait:
-        _safe()
-    else:
-        threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
     extra = " whatif=1" if whatif else ""
-    reply = (
+    accepted = (
         f"LEGION accepted id={qid} target={target} timeout={LEGION_TIMEOUT_S}{extra}\n"
         f"DONE id={qid} exit=0"
     )
-    return LegionVerbResult(True, reply, job_id=qid)
+
+    def _finish(data: dict[str, Any], *, reply: str | None = None) -> LegionVerbResult:
+        err = str(data.get("error") or "")
+        fails = list(data.get("failures") or [])
+        if not fails and err:
+            fails = [{"host": data.get("target") or target, "error": err}]
+        res = LegionVerbResult(
+            bool(data.get("ok", True)),
+            reply or accepted,
+            job_id=qid,
+            status=str(data.get("status") or ""),
+            error=err,
+            failures=fails,
+        )
+        if on_done is not None:
+            on_done(res)
+        return res
+
+    if worker is None:
+        ident = (_kw.get("credman") or default_legion_credman)() or {}
+        if not ident.get("username") or not ident.get("password"):
+            return _finish(
+                {
+                    "ok": False,
+                    "target": target,
+                    "error": "credman-missing",
+                    "status": "",
+                },
+                reply=f"DONE id={qid} exit=126 credman-missing",
+            )
+
+    def _call_work() -> dict[str, Any]:
+        try:
+            data = work(target, whatif=whatif)
+        except TypeError:
+            data = work(target=target, whatif=whatif)
+        if not isinstance(data, dict):
+            return {"ok": True, "target": target, "status": "", "error": ""}
+        return data
+
+    def _safe() -> LegionVerbResult:
+        try:
+            return _finish(_call_work())
+        except Exception as exc:
+            return _finish(
+                {
+                    "ok": False,
+                    "target": target,
+                    "error": type(exc).__name__,
+                    "status": "",
+                }
+            )
+
+    if wait:
+        return _safe()
+    threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
+    return LegionVerbResult(True, accepted, job_id=qid)
 
 
 _SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")

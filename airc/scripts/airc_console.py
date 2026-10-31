@@ -3193,49 +3193,70 @@ class AircConsoleCore:
                     text=text,
                     reply=f"DONE exit=126 bad-target reason={leg['error']}",
                 )
-            try:
-                result = self.legion_runner(
-                    target=leg["target"],
-                    whatif=leg["whatif"],
-                    job_id=leg.get("qid") or "",
-                )
-            except TypeError:
-                result = self.legion_runner(target=leg["target"])
-            except Exception:
-                result = _legion.LegionVerbResult(
-                    False, "LEGION err isolated-fault", job_id=leg.get("qid") or ""
-                )
-            if not isinstance(result, _legion.LegionVerbResult):
-                result = _legion.LegionVerbResult(False, "LEGION err bad-runner")
-            qid = (leg.get("qid") or result.job_id or "").strip().lower()
+            qid = str(leg.get("qid") or "").strip().lower()
             offer = None
             if self.shell_runner is not None and qid:
                 take = getattr(self.shell_runner, "take_dcclisten", None)
                 if callable(take):
                     offer = take(qid)
-            fails = getattr(result, "failures", None)
-            if not fails and getattr(result, "error", None):
-                fails = [{"host": leg.get("target"), "error": str(result.error)}]
-            log = _legion.build_legion_log(
-                target=leg.get("target") or "",
-                whatif=bool(leg.get("whatif")),
-                summary=getattr(result, "status", None) or "",
-                failures=list(fails or []),
-            )
             send_fn = getattr(self, "legion_log_send", None)
-            delivered = _legion.deliver_legion_log(
-                job_id=qid or result.job_id,
-                log=log,
-                offer=offer,
-                send_fn=send_fn,
-            )
+            delivered: dict | None = None
+
+            def _deliver_installer(res: _legion.LegionVerbResult) -> None:
+                nonlocal delivered
+                fails = list(res.failures or [])
+                if not fails and res.error:
+                    fails = [{"host": leg.get("target"), "error": str(res.error)}]
+                log = _legion.build_legion_log(
+                    target=leg.get("target") or "",
+                    whatif=bool(leg.get("whatif")),
+                    summary=res.status or "",
+                    failures=fails,
+                )
+                delivered = _legion.deliver_legion_log(
+                    job_id=qid or res.job_id,
+                    log=log,
+                    offer=offer,
+                    send_fn=send_fn,
+                )
+                emit = getattr(self, "legion_log_emit", None)
+                if callable(emit):
+                    emit(delivered)
+
+            try:
+                result = self.legion_runner(
+                    target=leg["target"],
+                    whatif=leg["whatif"],
+                    job_id=qid,
+                    on_done=_deliver_installer,
+                )
+            except TypeError:
+                try:
+                    result = self.legion_runner(
+                        target=leg["target"],
+                        whatif=leg["whatif"],
+                        job_id=qid,
+                    )
+                except TypeError:
+                    result = self.legion_runner(target=leg["target"])
+            except Exception:
+                result = _legion.LegionVerbResult(
+                    False, "LEGION err isolated-fault", job_id=qid
+                )
+            if not isinstance(result, _legion.LegionVerbResult):
+                result = _legion.LegionVerbResult(False, "LEGION err bad-runner")
+            if delivered is None and (result.failures or result.error or result.status):
+                _deliver_installer(result)
             meta = self._allow_meta(nick, account)
+            reply = result.reply_text()
+            if delivered is not None:
+                reply = f"{reply} {delivered['summary']} {delivered['done']}"
             return HandleResult(
                 action="legion",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=f"{result.reply_text()} {delivered['summary']} {delivered['done']}",
+                reply=reply,
                 **meta,
             )
 
