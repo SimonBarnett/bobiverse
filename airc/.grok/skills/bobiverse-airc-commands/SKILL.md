@@ -123,7 +123,7 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 
 - **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Unauthorized is `DONE exit=126 not-op`.
 - **Isolation:** worker thread/child; fault must not stop service Airc; console still handles STATUS.
-- **Payload:** short IRC `NETWORK accepted` + `DONE id= exit=`; full inventory + log via DCCLISTEN same job `id=` (`DONE ... via=dcc`) or IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
+- **Payload:** short IRC `NETWORK accepted` + `DONE id= exit=`; full inventory + log via DCCLISTEN same job `id=` (`DONE ... via=dcc`) or IRC CONT. **FR #5519:** no-offer / DCC-fail registers a resume buffer so `CONT id=<job>` returns the log body (not `no resume buffer`). CAST IRON: no secrets on IRC or in the DCC body.
 - **WhatIf:** read-only plan (no writes).
 
 See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.

@@ -827,6 +827,7 @@ def deliver_extension_log(
             }
         except Exception as exc:
             lines.append(f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC")
+            lines.append("CONT id=" + jid + " offset=1")
             done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
             lines.append(done)
             return {
@@ -836,6 +837,7 @@ def deliver_extension_log(
                 "summary": summary,
                 "lines": lines,
                 "done": done,
+                "payload": raw,
             }
     lines.append("CONT id=" + jid + " offset=1")
     done = f"DONE id={jid} exit=0 via=irc"
@@ -847,4 +849,5 @@ def deliver_extension_log(
         "summary": summary,
         "lines": lines,
         "done": done,
+        "payload": raw,
     }
