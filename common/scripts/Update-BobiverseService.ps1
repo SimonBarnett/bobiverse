@@ -161,15 +161,30 @@ function Resolve-AssetDownloadUrl {
     return $direct
 }
 
+function Repair-PlanAssetUrl {
+    # FR #5357: Apply may still have an empty / assets-API URL from an old plan.json.
+    param([string]$Url, [string]$Name, [string]$Tag)
+    if (Test-AssetUrl -Url $Url) { return ([string]$Url).Trim() }
+    $asset = [pscustomobject]@{
+        name                  = $Name
+        browser_download_url  = $Url
+        url                   = $Url
+    }
+    $fixed = Resolve-AssetDownloadUrl -Asset $asset -Tag $Tag
+    if ($fixed -and $fixed -ne $Url) {
+        Write-UpdLog ("apply-repair-url from={0} to={1}" -f $Url, $fixed)
+    }
+    return $fixed
+}
+
 function Get-Asset {
-    # FR #1545: hard timeout + retries + curl.exe fallback. Invoke-WebRequest can stall
-    # forever on a half-open GitHub TLS socket (0-byte OutFile, mutex held). curl --max-time
-    # fails closed so Apply can Set-Failure download-failed and release the mutex.
+    # FR #1545 / FR #5357: curl first (WinPS IWR stalls on half-open TLS), then IWR.
+    # curl --max-time fails closed so Apply can Set-Failure download-failed.
     param(
         [string]$Url,
         [string]$Dest,
         [int]$TimeoutSec = 120,
-        [int]$Retries = 2
+        [int]$Retries = 4
     )
     if (-not (Test-AssetUrl -Url $Url)) { throw "asset url rejected" }
     if ($Url -notmatch '^https://') {
@@ -183,22 +198,6 @@ function Get-Asset {
     $lastErr = $null
     for ($i = 1; $i -le $attempts; $i++) {
         Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
-        # 1) IWR with hard TimeoutSec (no-progress stalls still hang on some WinPS builds --- keep short).
-        try {
-            Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
-            Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
-            if ((Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
-                Write-UpdLog ("download-ok method=iwr bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
-                return
-            }
-            $lastErr = 'iwr produced empty file'
-            Write-UpdLog "download-warn $lastErr"
-        } catch {
-            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
-            Write-UpdLog "download-warn method=iwr $lastErr"
-        }
-        Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
-        # 2) curl.exe fallback (Windows 10+ ships curl).
         $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
         if (-not (Test-Path -LiteralPath $curl)) {
             $cmd = Get-Command curl.exe -ErrorAction SilentlyContinue
@@ -206,7 +205,7 @@ function Get-Asset {
         }
         if (Test-Path -LiteralPath $curl) {
             try {
-                Write-UpdLog ("download-try method=curl attempt={0}/{1} max-time={2}s" -f $i, $attempts, $TimeoutSec)
+                Write-UpdLog ("download-try method=curl attempt={0}/{1} max-time={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
                 $prev = $ErrorActionPreference
                 $ErrorActionPreference = 'Continue'
                 $clog = & $curl -sSL --fail --retry 2 --retry-delay 2 --connect-timeout 30 --max-time $TimeoutSec `
@@ -225,6 +224,20 @@ function Get-Asset {
             }
         } else {
             Write-UpdLog 'download-warn curl.exe not found'
+        }
+        Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+        try {
+            Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
+            Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
+            if ((Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
+                Write-UpdLog ("download-ok method=iwr bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
+                return
+            }
+            $lastErr = 'iwr produced empty file'
+            Write-UpdLog "download-warn $lastErr"
+        } catch {
+            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+            Write-UpdLog "download-warn method=iwr $lastErr"
         }
         if ($i -lt $attempts) { Start-Sleep -Seconds ([Math]::Min(5 * $i, 15)) }
     }
@@ -630,9 +643,11 @@ function Invoke-Apply {
         New-Item -ItemType Directory -Force -Path $work | Out-Null
         $msi = Join-Path $work ([string]$plan.msiName)
         $shaFile = $msi + '.sha256'
+        $msiUrl = Repair-PlanAssetUrl -Url ([string]$plan.msiUrl) -Name ([string]$plan.msiName) -Tag $tag
+        $shaUrl = Repair-PlanAssetUrl -Url ([string]$plan.shaUrl) -Name (([string]$plan.msiName) + '.sha256') -Tag $tag
         try {
-            Get-Asset -Url ([string]$plan.msiUrl) -Dest $msi
-            Get-Asset -Url ([string]$plan.shaUrl) -Dest $shaFile
+            Get-Asset -Url $msiUrl -Dest $msi
+            Get-Asset -Url $shaUrl -Dest $shaFile
         } catch {
             Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
             Set-Failure -Tag $tag -Result 'download-failed'

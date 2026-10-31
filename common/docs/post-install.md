@@ -231,6 +231,10 @@ After a manual `git pull --ff-only` on the install work tree, run `Sync-Bobivers
 
 If `git -C <ai root>\<product> status` reports **No commits yet** on `master` (or any branch) while `origin/main` fetches fine, the install `.git` was left after init without a successful first checkout. `Sync-BobiverseWorkTree` heals that on the next service start (or a manual Sync): it checks out `origin/main` with the sparse `product/` + `common/` set and logs `worktree-heal-unborn`. Config, home, and secrets stay untouched. Tests: `common/tests/test_worktree_sync_020.py::test_fr2944_unborn_empty_master_heals_to_main`.
 
+## Self-update Apply URL repair (FR #5357)
+
+`Invoke-Apply` rebuilds empty or `api.github.com/.../releases/assets/<id>` plan URLs from `tag` + `msiName` via `Repair-PlanAssetUrl` (same allowlist as Check). `Get-Asset` tries `curl.exe` first (Retries=4), then WinPS `Invoke-WebRequest`, so a half-open TLS stall is not the first path.
+
 ## Self-update backup / loop-guard (FR #2563)
 
 `Update-BobiverseService.ps1` Apply backs up the install tree with robocopy before msiexec. Exit codes 0–7 are success; on ≥8 it logs failing paths, retries once, and excludes volatile dirs/files (`.pytest_cache`, `peers.json`, `*.lock`). A backup-only failure records `lastResult=backup-failed` **without** burning `MaxAttempts`, and `Ensure-ServiceRunning` restarts the service so seats/ear are not left Stopped. If a tag is already at `blocked-loop-guard`, operator escape is `-ForceCheck` (IRC UPDATE path): it clears that tag’s failure count and reschedules. Clear state manually only when needed: delete the tag key under `<StateDir>\state.json` `failures`, or wait for a newer release.
