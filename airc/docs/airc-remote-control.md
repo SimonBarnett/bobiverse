@@ -33,7 +33,8 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
-| `EXTENSION install|status [-WhatIf]` | Isolated worker: DC + GPO `Priority-web-extension` ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). DCC/CONT log (FR #5293). Default id `cgmpadejahkaggjpffnhaoiafbnicgpa`. No DC -> GPO fail closed |
+| NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou. Full data+log via DCCLISTEN same job id or IRC CONT. |
+| EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
 
@@ -105,3 +106,16 @@ PRIVMSG marchhare_console :id=aabbccdd EXTENSION install -WhatIf
 - Default ForceInstall id: `cgmpadejahkaggjpffnhaoiafbnicgpa` plus `https://clients2.google.com/service/update2/crx` for Chrome and Edge.
 - GPO happy path: `Priority-web-extension` at domain root (FR-B). Fill-holes: LDAP AD computers + remote registry (FR-C). Isolated worker (FR-A).
 - Log: DCCLISTEN same job id (`DONE ... via=dcc` + sha256) or IRC CONT. CAST IRON: no passwords on IRC or in the DCC body.
+
+## NETWORK (FR #5301) - docs contract
+
+Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isolated worker (FR-A #5298). Inventory fields (FR-B #5299): `hostname`, `ips[]`, `ou`.
+
+```text
+PRIVMSG marchhare_console :id=aabbccdd DCCLISTEN id=aabbccdd host=127.0.0.1 port=7700 token=<hex> tls=1
+PRIVMSG marchhare_console :id=aabbccdd NETWORK diag
+PRIVMSG marchhare_console :id=aabbccdd NETWORK diag -WhatIf
+```
+
+- Same job `id=` on DCCLISTEN and NETWORK. Success: short IRC accepted + `DONE ... via=dcc` (or CONT). CAST IRON: no secrets on IRC or in the DCC body.
+- `shell=off` / not-op use the existing `DONE exit=126` exits. Worker fault must not stop Airc.
