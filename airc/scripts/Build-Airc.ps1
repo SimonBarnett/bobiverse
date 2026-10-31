@@ -31,6 +31,12 @@ $pathArgs = @(); foreach ($pp in $pyPaths) { $pathArgs += @('--paths', $pp) }
 $hidden = @('account_map', 'airc_console', 'airc_jobs', 'airc_dcc_bulk', 'cryptography')
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 
+# FR #5522: EXTENSION GPO step needs Invoke-AircExtensionGpo.ps1 inside the onefile
+# image (gpo_script_path reads _MEIPASS). Windows --add-data is src;dest.
+$gpoPs1 = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Invoke-AircExtensionGpo.ps1'
+if (-not (Test-Path -LiteralPath $gpoPs1)) { throw "missing $gpoPs1" }
+$addDataArgs = @('--add-data', ($gpoPs1 + ';.'))
+
 if (-not $Python) {
     foreach ($c in @((Get-Command python.exe -ErrorAction SilentlyContinue).Source, 'C:\Program Files\Python312\python.exe', 'C:\Python312\python.exe')) {
         if ($c -and (Test-Path -LiteralPath $c)) { $Python = $c; break }
@@ -63,6 +69,7 @@ $argList = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--cons
     '--distpath', $dist, '--workpath', (Join-Path $work 'build'), '--specpath', $work)
 $argList += $pathArgs
 $argList += $hiddenArgs
+$argList += $addDataArgs
 $argList += @('--exclude-module', 'tkinter', '--exclude-module', 'numpy', '--exclude-module', 'pandas', '--exclude-module', 'matplotlib', $src)
 
 $argText = (($argList | ForEach-Object {
