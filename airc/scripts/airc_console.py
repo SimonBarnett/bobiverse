@@ -188,12 +188,31 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
 
 
 def _load_priority_worker():
+    # FR #5523: pack path is <install>\\airc\\priority-worker, not __file__/_MEIPASS.
+    candidates: list[Path] = []
+    d = _priority.resolve_priority_worker_dir()
+    if d is not None:
+        candidates.append(d / "priority_worker.py")
     here = Path(__file__).resolve()
-    candidates = [
-        here.parents[1] / "priority-worker" / "priority_worker.py",
-        Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc") / "priority-worker" / "priority_worker.py",
-    ]
+    candidates.extend(
+        [
+            here.parents[1] / "airc" / "priority-worker" / "priority_worker.py",
+            here.parents[1] / "priority-worker" / "priority_worker.py",
+            Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+            / "airc"
+            / "priority-worker"
+            / "priority_worker.py",
+            Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+            / "priority-worker"
+            / "priority_worker.py",
+        ]
+    )
+    seen: set[str] = set()
     for p in candidates:
+        key = str(p).lower()
+        if key in seen:
+            continue
+        seen.add(key)
         if p.is_file():
             spec = importlib.util.spec_from_file_location("priority_worker", p)
             if spec and spec.loader:
@@ -295,7 +314,12 @@ def _priority_sdk_repprep(
     if form_prep or path.upper() != "REPPREPDIRECT2":
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    pw = _priority.resolve_priority_worker_dir(root)
     mjs_candidates = [
+        (pw / "sdk" / "run-repprep-via-exec.mjs") if pw else Path(),
+        (pw / "run-repprep-via-exec.mjs") if pw else Path(),
+        root / "airc" / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
+        root / "airc" / "priority-worker" / "run-repprep-via-exec.mjs",
         root / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
         root / "priority-worker" / "run-repprep-via-exec.mjs",
         Path(os.environ.get("AIRC_PRIORITY_REPPREP_MJS") or ""),
@@ -3019,6 +3043,7 @@ class AircConsoleCore:
         if not m:
             return None
         nick, target, text = m.group(1), m.group(2), m.group(3)
+        self.verb_log_nick = nick
         account = tags.get("account")
         amap = getattr(self.auth, "account_map", None)
         if amap is not None and account:
@@ -3117,9 +3142,8 @@ class AircConsoleCore:
                 allowlist_path=allow,
                 fixture_path=fix,
             )
-            if self.job_protocol is not None:
-                for ln in result.lines:
-                    self.job_protocol._emit(nick, ln)
+            # FR #5524: do not JobProtocol._emit here. on_line sends HandleResult.reply
+            # for action=priority (FR #5518). Emitting plus reply doubled every walk line.
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="priority",
@@ -3186,12 +3210,15 @@ class AircConsoleCore:
                     reply="DONE exit=126 update-disabled",
                 )
             if leg.get("error"):
+                # FR #5527: include id= so ear/airc-replies can correlate denies.
+                qid = str(leg.get("qid") or "").strip().lower()
+                id_bit = f" id={qid}" if qid else ""
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,
                     target=target,
                     text=text,
-                    reply=f"DONE exit=126 bad-target reason={leg['error']}",
+                    reply=f"DONE{id_bit} exit=126 bad-target reason={leg['error']}",
                 )
             qid = str(leg.get("qid") or "").strip().lower()
             offer = None
@@ -3404,6 +3431,9 @@ class AircConsoleCore:
                 offer=offer,
                 send_fn=send_fn,
             )
+            emit = getattr(self, "extension_log_emit", None)
+            if callable(emit):
+                emit(delivered)
             reply = f"{result.reply_text()} {delivered['summary']} {delivered['done']}"
             meta = self._allow_meta(nick, account)
             return HandleResult(
@@ -3481,20 +3511,24 @@ class AircConsoleCore:
                     "sql_faked": False,
                 }
             # Never put passwords on the wire.
+            # FR #5525: out + DONE on separate lines (connect/status framing); truncate
+            # only the out line so DONE detectors (^DONE id=) always see a full PRIVMSG.
             blob = json.dumps(
                 {k: v for k, v in body.items() if "pass" not in str(k).lower()},
                 separators=(",", ":"),
             )
             jid = (prep.get("qid") or "").strip() or uuid.uuid4().hex[:8]
             exit_code = 0 if body.get("ok") else 1
-            reply = f"out id={jid} seq=1 PRIORITY prepare {blob} DONE id={jid} exit={exit_code}"
+            out_line = f"out id={jid} seq=1 {blob}"[:IRC_SAFE_PAYLOAD]
+            done_line = f"DONE id={jid} exit={exit_code}"
+            reply = f"{out_line}\n{done_line}"
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="priority",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=reply[:IRC_SAFE_PAYLOAD],
+                reply=reply,
                 **meta,
             )
 

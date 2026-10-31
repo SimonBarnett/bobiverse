@@ -34,7 +34,7 @@ def _allow(tmp_path: Path) -> Path:
 
 
 def test_mrb5337_job_protocol_emit_delivers_out_and_done(tmp_path):
-    """Live service path uses JobProtocol._emit for form-walk lines."""
+    """FR #5524: walk delivery is HandleResult.reply only (on_line), not _emit."""
     seen: list[tuple[str, str]] = []
 
     class StubJobs:
@@ -57,10 +57,9 @@ def test_mrb5337_job_protocol_emit_delivers_out_and_done(tmp_path):
         "id=aabbccdd PRIORITY formStart instance=fixture form=CUST"
     )
     assert r and r.action == "priority"
-    assert seen, "expected JobProtocol._emit calls for live IRC delivery"
-    assert seen[0][0] == "bob-marchhare"
-    assert any(ln.startswith("out id=aabbccdd") for _, ln in seen)
-    assert any(ln == "DONE id=aabbccdd exit=0" for _, ln in seen)
+    assert seen == []
+    assert "out id=aabbccdd" in (r.reply or "")
+    assert "DONE id=aabbccdd exit=0" in (r.reply or "")
 
 
 def test_mrb5337_refuse_url_kv_does_not_bypass_allowlist(tmp_path):

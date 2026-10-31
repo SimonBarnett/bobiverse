@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -408,7 +409,56 @@ def parse_priority_walk_command(text: str) -> tuple[str, dict[str, str]] | None:
     return op, kv
 
 
+def _priority_install_roots(install_root: str | Path | None = None) -> list[Path]:
+    """FR #5523: frozen onefile __file__ is _MEIPASS; pack lives under <ai>\\airc\\airc\\."""
+    roots: list[Path] = []
+    if install_root:
+        roots.append(Path(install_root))
+    env = (os.environ.get("AIRC_INSTALL_ROOT") or "").strip()
+    if env:
+        roots.append(Path(env))
+    frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+    if frozen:
+        exe = Path(str(getattr(sys, "executable", "") or "")).resolve()
+        if exe.parent.name.lower() == "airc":
+            roots.append(exe.parent)
+            roots.append(exe.parent.parent)
+        elif str(exe):
+            roots.append(exe.parent)
+    here = Path(__file__).resolve()
+    if here.parent.name.lower() == "scripts":
+        roots.append(here.parents[1])
+        if len(here.parents) > 2:
+            roots.append(here.parents[2])
+    roots.append(Path(r"C:\ai\airc"))
+    out: list[Path] = []
+    seen: set[str] = set()
+    for r in roots:
+        key = str(r).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def resolve_priority_worker_dir(install_root: str | Path | None = None) -> Path | None:
+    """First existing priority-worker dir (nested pack or flat)."""
+    for root in _priority_install_roots(install_root):
+        for rel in (Path("airc") / "priority-worker", Path("priority-worker")):
+            d = root / rel
+            if (d / "priority_worker.py").is_file() or (
+                d / "fixtures" / "form_walk.json"
+            ).is_file():
+                return d
+    return None
+
+
 def default_fixture_path() -> Path:
+    """FR #5523: never rely on Path(__file__).parents[1] alone (frozen _MEIPASS)."""
+    d = resolve_priority_worker_dir()
+    if d is not None:
+        return d / "fixtures" / "form_walk.json"
     return Path(__file__).resolve().parents[1] / "priority-worker" / "fixtures" / "form_walk.json"
 
 

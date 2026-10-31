@@ -64,6 +64,13 @@ from airc_console import (
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 import airc_extension as _airc_extension  # FR #5426: EXTENSION runner for AircConsoleCore
 
+def attach_verb_log_hooks(core, *, send_fn, emit_fn) -> None:
+    """FR #5519: wire NETWORK/EXTENSION/LEGION DCC send + IRC CONT emit."""
+    for name in ("network", "legion", "extension"):
+        setattr(core, f"{name}_log_send", send_fn)
+        setattr(core, f"{name}_log_emit", emit_fn)
+
+
 FLOOD_S = 0.35  # legacy fixed gap; FR #4790 prefers token bucket below
 # FR #4790: sustain under Ergo fakelag (~1-2 msg/s). Burst then pace.
 FLOOD_RATE_PER_S = 1.5
@@ -428,6 +435,25 @@ class AircConsoleService:
         )
         self.core.channel = self.channel
         self.core.presence_channels = list(self.presence_channels)
+
+        def _verb_log_send(payload, offer, **_k):
+            import airc_dcc_bulk as _dcc
+
+            return _dcc.send_offer_payload(payload, offer)
+
+        def _verb_log_emit(delivered):
+            nick = getattr(self.core, "verb_log_nick", None)
+            if not nick or not isinstance(delivered, dict):
+                return
+            for line in delivered.get("lines") or []:
+                text = str(line).strip()
+                if not text:
+                    continue
+                if text.upper().startswith("DONE "):
+                    continue
+                self._on_console_out(str(nick), text)
+
+        attach_verb_log_hooks(self.core, send_fn=_verb_log_send, emit_fn=_verb_log_emit)
         self.sock: ssl.SSLSocket | socket.socket | None = None
         self._send_lock = threading.Lock()
         self._stop = threading.Event()

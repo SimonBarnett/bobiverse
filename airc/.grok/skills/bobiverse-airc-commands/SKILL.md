@@ -83,6 +83,7 @@ PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
 
 - **Allowlist:** `config\priority-instances.json` (schema: `airc/config/priority-instances.example.json`). Unknown instance -> refuse.
 - **CredMan:** password lives in the Windows credential named `credentialTarget` (example `PriorityWeb/example-dev`). Never put a Priority password on IRC, in skills, or in intake.
+- **Form walk replies (FR #5524):** PRIORITY formStart/subform/getRows must return HandleResult.reply only (newline-separated out+DONE). Do not also JobProtocol._emit after FR #5518 on_line already sends action=priority --- that double-fires every walk line.
 - **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
 
 See `docs/airc-remote-control.md`, `docs/feature-request-airc-priority-client-2026-10-31.md`, and `bobiverse-airc-troubleshooting`.
@@ -134,7 +135,7 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
 PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU/invalid targets: `DONE exit=126 bad-target reason=empty|list|ou|invalid` (FR #5528: `bad_host!` is invalid, not list).
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
 - **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
 - **WhatIf:** installer dry-run (no remote install).
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
