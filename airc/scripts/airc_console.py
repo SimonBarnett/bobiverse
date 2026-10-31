@@ -29,6 +29,7 @@ import json
 
 from account_map import AccountMap, parse_message_tags
 from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
+import airc_priority as airc_priority
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -2458,6 +2459,8 @@ class AircConsoleCore:
         capabilities: ConsoleCapabilities | None = None,
         channel_commands: bool = False,
         presence_channels: list[str] | None = None,
+        priority_allowlist: str | None = None,
+        priority_fixture: str | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -2477,6 +2480,8 @@ class AircConsoleCore:
         # because the fleet control channel (#<machine>) carries chair / git-claim
         # traffic (issue titles) that must never be executed as a shell line.
         self.channel_commands = bool(channel_commands)
+        self.priority_allowlist = priority_allowlist
+        self.priority_fixture = priority_fixture
         # FR #3774: extra JOIN targets for presence only (never command targets).
         self.presence_channels = [
             normalize_irc_channel(c)
@@ -2630,6 +2635,7 @@ class AircConsoleCore:
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
                     "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
+                    "PRIORITY formStart|subform|getRows (FR #5285 fixture read walk); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
                     f"capabilities shell={self.capabilities.shell_mode} "
@@ -2639,6 +2645,28 @@ class AircConsoleCore:
             )
 
         caps = self.capabilities
+
+        # FR #5285: PRIORITY form walk (read path) via in-service fixture worker.
+        if airc_priority.parse_priority_command(cmd) is not None:
+            allow = airc_priority.resolve_allowlist_path(self.install_root, self.priority_allowlist)
+            fix = Path(self.priority_fixture) if self.priority_fixture else None
+            result = airc_priority.run_priority_walk(
+                text=cmd,
+                allowlist_path=allow,
+                fixture_path=fix,
+            )
+            if self.job_protocol is not None:
+                for ln in result.lines:
+                    self.job_protocol._emit(nick, ln)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply="\n".join(result.lines),
+                **meta,
+            )
 
         # FR #77: UPDATE schedules Update-BobiverseService Check (detached); never msiexec here.
         parsed = parse_update_command(cmd)

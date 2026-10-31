@@ -31,6 +31,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `GET path` | hash/size + head (80 chars). Does not send the file. |
 | `GET path fetch=chunk` then `GETCHUNK id seq` | FR #4795 outbound fetch. Open returns bytes/sha256/seqs only. Each GETCHUNK returns one <=300-byte raw chunk. The next GETCHUNK is the ack; the console never pushes the following chunk. |
 | `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
+| `PRIORITY formStart\|subform\|getRows` | FR #5285 read-path form walk via in-service fixture worker (JSON + `DONE id= exit=`). Allowlisted instance only; no passwords on IRC; no agent `.mjs`. |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
 
