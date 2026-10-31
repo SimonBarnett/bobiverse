@@ -2220,8 +2220,9 @@ def _stop_shell_process(proc: subprocess.Popen) -> None:
 
 def _read_shell_capture(path: str) -> bytes:
     # An inherited writer shares its file position with the parent. Open a
-    # separate reader; O_TEMPORARY shares delete access on Windows.
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_TEMPORARY", 0)
+    # separate reader. Do not use O_TEMPORARY: WinError 13 while the writer
+    # still holds NamedTemporaryFile (FR #5211 Windows).
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     with os.fdopen(os.open(path, flags), "rb") as stream:
         return stream.read(SHELL_OUTPUT_MAX_BYTES + 1)
 
