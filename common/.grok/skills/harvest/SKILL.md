@@ -335,6 +335,7 @@ routes to bobiverse via the split rule.
 - GitHub search remaining must never be stored as core rate_remaining; BACKOFF_FLOOR=500 is core-only; search uses SEARCH_BACKOFF_FLOOR=1.
 - Copilot-high is HIGH_PRIORITY_REPOS plus is_high_priority_repo; item-focus rank 1 is shop order only and must not imply Copilot dispatch.
 - Accept-only NETWORK/LEGION replies plus emit-last DONE so clients do not stop before out/CONT.
+- A known verb with a bad action/flag must reply code=usage DONE exit=2, never PowerShell CommandNotFound.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
