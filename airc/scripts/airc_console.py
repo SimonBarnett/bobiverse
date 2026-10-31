@@ -3612,8 +3612,10 @@ class AircConsoleCore:
             )
 
         # FR #5003: caller advertises reverse-DCC listen endpoint before/alongside shell.
-        if self.shell_runner is not None and cmd.upper().startswith("DCCLISTEN"):
-            if self.shell_runner.note_dcclisten(cmd):
+        if self.shell_runner is not None:
+            import airc_dcc_bulk as _dcc_listen
+
+            if _dcc_listen.is_dcclisten_command(cmd) and self.shell_runner.note_dcclisten(cmd):
                 meta = self._allow_meta(nick, account)
                 return HandleResult(
                     action="dcc_listen", nick=nick, target=target, text=text, **meta
