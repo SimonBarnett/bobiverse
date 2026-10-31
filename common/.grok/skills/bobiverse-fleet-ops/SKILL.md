@@ -180,3 +180,4 @@ Generalised from 32 harvested lessons that never reached this book (audit for FR
 - When SeatDisk FreeGB stays under MinFreeGB after reclaim, check install git branch: ff-only-on-main means a leftover fr-* branch leaves flat scripts pre-#4883; hotpatch from origin/main:common/scripts/Clear-BobiverseSeatDisk.ps1 then -Reclaim before filing capacity.
 - FR #5154: if user Temp still dominates the CRITICAL report, SeatDisk third-pass uses KeepTempHoursLow on known leftover dir names (pip-build/pytest) --- never vscode/Outlook trees and never a hand-delete of C:\ai\* (FR #2727).
 - Write reload to run/tray-cmd.txt so elevated bob-tray.exe KillEngineTree+StartEngine; never taskkill the High-integrity engine from a Medium shell
+- MRB fold on airc-commands SKILL.md: when VERSION FR tip races DCCLISTEN tip, keep both bullets (FR #5534 commit/built/hotpatch + FR #5531 leading id=); commit fold as tip author (FR #4496)
