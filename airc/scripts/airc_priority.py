@@ -1,6 +1,7 @@
-"""Airc Priority Client - allowlist + PRIORITY connect/status (FR #5275 / #5284).
+"""Airc Priority Client - allowlist + PRIORITY connect/status (FR #5275 / #5284) + form walk (FR #5285).
 
 CAST IRON: never put Priority passwords on IRC, in logs, intake, or git.
+Form walk uses an in-service fixture worker (no agent .mjs).
 CredMan only (``credentialTarget``). Instance URLs come from the allowlist only.
 """
 from __future__ import annotations
@@ -354,7 +355,7 @@ def run_priority_verb(
     try:
         result = conn(inst, password)
     finally:
-        password = ""  # noqa: F841 — drop local reference
+        password = ""  # noqa: F841 --- drop local reference
 
     if not isinstance(result, dict):
         return PriorityVerbResult(
@@ -368,3 +369,162 @@ def run_priority_verb(
     for k, v in inst.public_dict().items():
         safe.setdefault(k, v)
     return PriorityVerbResult(ok, 0 if ok else 1, jid, safe)
+
+# --- FR #5285 form walk (fixture read path) ---
+
+WALK_OPS = frozenset({"formstart", "subform", "getrows"})
+OP_WIRE = {"formstart": "formStart", "subform": "subform", "getrows": "getRows"}
+_ID_PREFIX_RE = re.compile(r"(?is)^id=([0-9a-f]{8})\s+(.*)$")
+_KV_RE = re.compile(r"(\w+)=([^\s]+)")
+_WALK_VERB_RE = re.compile(
+    r"(?is)^PRIORITY\s+(formStart|subform|getRows)(?:\s+(.*))?$",
+)
+_SECRET_KEYS = frozenset({"password", "passwd", "secret", "token", "pwd"})
+
+
+@dataclass(frozen=True)
+class PriorityWalkResult:
+    ok: bool
+    exit_code: int
+    job_id: str
+    lines: tuple[str, ...]
+    payload: dict[str, Any]
+
+
+def parse_priority_walk_command(text: str) -> tuple[str, dict[str, str]] | None:
+    raw = (text or "").strip()
+    leading_id = ""
+    m_id = _ID_PREFIX_RE.match(raw)
+    if m_id:
+        leading_id = (m_id.group(1) or "").lower()
+        raw = (m_id.group(2) or "").strip()
+    m = _WALK_VERB_RE.match(raw)
+    if not m:
+        return None
+    op = m.group(1)
+    kv = {mm.group(1).lower(): mm.group(2) for mm in _KV_RE.finditer(m.group(2) or "")}
+    if leading_id and "id" not in kv:
+        kv["id"] = leading_id
+    return op, kv
+
+
+def default_fixture_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "priority-worker" / "fixtures" / "form_walk.json"
+
+
+def load_allowlist_rows(path: Path | None) -> list[dict[str, Any]]:
+    if path is None or not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    inst = data.get("instances")
+    if not isinstance(inst, list):
+        return []
+    return [x for x in inst if isinstance(x, dict) and str(x.get("id") or "").strip()]
+
+
+def resolve_instance_row(allowlist: list[dict[str, Any]], instance_id: str) -> dict[str, Any] | None:
+    want = (instance_id or "").strip().lower()
+    for row in allowlist:
+        if str(row.get("id") or "").strip().lower() == want:
+            return row
+    return None
+
+
+def _secret_in_kv(kv: dict[str, str]) -> bool:
+    return any(k.lower() in _SECRET_KEYS for k in kv)
+
+
+def load_fixture(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    forms = data.get("forms")
+    if not isinstance(forms, dict):
+        raise ValueError("fixture missing forms")
+    return forms
+
+
+def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str, Any]:
+    form = (kv.get("form") or "").strip()
+    rec = forms.get(form)
+    if not isinstance(rec, dict):
+        raise KeyError(form)
+    wire = OP_WIRE[op.lower()]
+    out: dict[str, Any] = {"ok": True, "op": wire, "form": form, "instance": kv.get("instance", "")}
+    if wire == "subform":
+        path = (kv.get("path") or "").strip()
+        subs = rec.get("subforms") or {}
+        if path not in subs:
+            raise KeyError(path)
+        out["path"] = path
+        out["subform"] = subs[path]
+    elif wire == "getRows":
+        rows = rec.get("rows") or []
+        out["rows"] = list(rows)
+        out["count"] = len(rows)
+    else:
+        out["title"] = rec.get("title") or form
+        out["subforms"] = list((rec.get("subforms") or {}).keys())
+    return out
+
+
+def resolve_walk_allowlist_path(install_root: str | None, override: str | None) -> Path | None:
+    if override:
+        return Path(override)
+    if not install_root:
+        return None
+    root = Path(install_root)
+    for rel in ("priority-instances.json", "config/priority-instances.json"):
+        cand = root / rel
+        if cand.is_file():
+            return cand
+    return None
+
+
+def run_priority_walk(
+    *,
+    text: str,
+    allowlist_path: Path | None,
+    fixture_path: Path | None = None,
+    job_id_fallback: str = "",
+) -> PriorityWalkResult:
+    parsed = parse_priority_walk_command(text)
+    if parsed is None:
+        jid = job_id_fallback or "-"
+        return PriorityWalkResult(
+            False,
+            2,
+            jid,
+            (f"err id={jid} code=bad_frame msg=not-priority", f"DONE id={jid} exit=2"),
+            {},
+        )
+    op, kv = parsed
+    jid = (kv.get("id") or job_id_fallback or "00000000").lower()
+    if _secret_in_kv(kv):
+        payload = {"ok": False, "error": "password-refused"}
+        body = json.dumps(payload, separators=(",", ":"))
+        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
+        return PriorityWalkResult(False, 2, jid, lines, payload)
+    inst_id = (kv.get("instance") or "").strip()
+    allow = load_allowlist_rows(allowlist_path)
+    if resolve_instance_row(allow, inst_id) is None:
+        payload = {"ok": False, "error": "unknown-instance"}
+        body = json.dumps(payload, separators=(",", ":"))
+        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
+        return PriorityWalkResult(False, 2, jid, lines, payload)
+    form = (kv.get("form") or "").strip()
+    if not form:
+        payload = {"ok": False, "error": "missing-form"}
+        body = json.dumps(payload, separators=(",", ":"))
+        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
+        return PriorityWalkResult(False, 2, jid, lines, payload)
+    fix = Path(fixture_path) if fixture_path else default_fixture_path()
+    try:
+        forms = load_fixture(fix)
+        payload = walk_fixture(op, forms, kv)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        payload = {"ok": False, "error": "fixture-miss", "detail": type(exc).__name__}
+        body = json.dumps(payload, separators=(",", ":"))
+        lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=2")
+        return PriorityWalkResult(False, 2, jid, lines, payload)
+    body = json.dumps(payload, separators=(",", ":"))
+    lines = (f"out id={jid} seq=1 {body}", f"DONE id={jid} exit=0")
+    return PriorityWalkResult(True, 0, jid, lines, payload)
