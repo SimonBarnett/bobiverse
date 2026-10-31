@@ -1,0 +1,14 @@
+{
+  "forms": {
+    "CUST": {
+      "title": "Customers",
+      "subforms": {
+        "LINES": {"title": "Contacts"}
+      },
+      "rows": [
+        {"cust": "1000", "name": "Acme"},
+        {"cust": "1001", "name": "Beta"}
+      ]
+    }
+  }
+}

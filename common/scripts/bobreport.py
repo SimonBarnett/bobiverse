@@ -3157,6 +3157,21 @@ def _digest_copilot_pool(home: Path) -> dict:
         return {"state": "unknown", "source": "copilot_internal/user"}
 
 
+def _intake_outbox_public(home: Path) -> dict:
+    """FR #5359: queued intake/outbox count + age + gh presence (no secrets)."""
+    try:
+        import intake
+
+        snap = intake.intake_outbox_snapshot(home)
+    except Exception:
+        snap = {"count": 0, "oldest_age_s": None, "gh_cli": False}
+    return {
+        "count": int(snap.get("count") or 0),
+        "oldest_age_s": snap.get("oldest_age_s"),
+        "gh_cli": bool(snap.get("gh_cli")),
+    }
+
+
 def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
     """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
@@ -3192,6 +3207,7 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home),
+        "intake_outbox": _intake_outbox_public(home),
     }
 
 

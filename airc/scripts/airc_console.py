@@ -30,6 +30,10 @@ import json
 
 from account_map import AccountMap, parse_message_tags
 from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
+import airc_priority as _priority
+import airc_extension as _extension
+import airc_network as _network
+import airc_legion as _legion
 
 
 def priority_worker_argv(install_root: str | Path | None = None) -> list[str]:
@@ -2294,6 +2298,12 @@ class ShellJobRunner:
             self._dcc_listen[offer.job_id] = offer
         return True
 
+    def take_dcclisten(self, job_id: str):
+        """FR #5293: pop a DCCLISTEN offer for an EXTENSION (or other) job id."""
+        key = (job_id or "").strip().lower()
+        with self._lock:
+            return self._dcc_listen.pop(key, None)
+
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
         item = _ShellPending(command=command)
@@ -2525,6 +2535,13 @@ class AircConsoleCore:
         capabilities: ConsoleCapabilities | None = None,
         channel_commands: bool = False,
         presence_channels: list[str] | None = None,
+        priority_runner: Callable[..., _priority.PriorityVerbResult] | None = None,
+        priority_allowlist_path: str | None = None,
+        priority_allowlist: str | None = None,
+        priority_fixture: str | None = None,
+        extension_runner: Callable[..., _extension.ExtensionVerbResult] | None = None,
+        network_runner: Callable[..., _network.NetworkVerbResult] | None = None,
+        legion_runner: Callable[..., _legion.LegionVerbResult] | None = None,
     ) -> None:
         self.machine = machine_id(machine)
         self.channel = shop_channel(self.machine)
@@ -2536,6 +2553,14 @@ class AircConsoleCore:
         self.update_scheduler = update_scheduler or schedule_fleet_update
         self.install_root = install_root
         self.job_protocol = job_protocol
+        # FR #5284: PRIORITY connect/status (injectable for SelfTest mocks).
+        self.priority_runner = priority_runner or _priority.run_priority_verb
+        self.priority_allowlist_path = priority_allowlist_path or priority_allowlist
+        self.priority_allowlist = priority_allowlist or priority_allowlist_path
+        self.priority_fixture = priority_fixture
+        self.extension_runner = extension_runner or _extension.run_extension_verb
+        self.network_runner = network_runner or _network.run_network_verb
+        self.legion_runner = legion_runner or _legion.run_legion_verb
         # Default operators preserves pre-#3287 unit tests / hotpatched fleets without airc.json.
         self.capabilities = capabilities or ConsoleCapabilities()
         # FR #3401 / #3639: *who* may command is always live channel +o/+h (AuthPolicy).
@@ -2700,6 +2725,10 @@ class AircConsoleCore:
                     "PRIORITY prepare <ENAME> [instance=] (FR #5286 REPPREPDIRECT2); "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
+                    "PRIORITY connect|status [instance-id] (CredMan + allowlist, FR #5284); PRIORITY formStart|subform|getRows (FR #5285 fixture walk); "
+                    "EXTENSION install|status [-WhatIf] isolated worker (FR #5290); "
+                    "NETWORK|NETWORK diag isolated worker (FR #5298); "
+                    "LEGION {host|ip} [-WhatIf] isolated worker (FR #5308); "
                     f"capabilities shell={self.capabilities.shell_mode} "
                     f"jobs={self.capabilities.jobs} update={self.capabilities.update}; "
                     ".quit closes; silent on channel; answers ping"
@@ -2707,6 +2736,264 @@ class AircConsoleCore:
             )
 
         caps = self.capabilities
+
+        # FR #5285: PRIORITY form walk (read path) via in-service fixture worker.
+        if _priority.parse_priority_walk_command(cmd) is not None:
+            allow = _priority.resolve_walk_allowlist_path(
+                self.install_root, self.priority_allowlist or self.priority_allowlist_path
+            )
+            fix = Path(self.priority_fixture) if self.priority_fixture else None
+            result = _priority.run_priority_walk(
+                text=cmd,
+                allowlist_path=allow,
+                fixture_path=fix,
+            )
+            if self.job_protocol is not None:
+                for ln in result.lines:
+                    self.job_protocol._emit(nick, ln)
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply="\n".join(result.lines),
+                **meta,
+            )
+
+        # FR #5284: PRIORITY connect/status — allowlist + CredMan; never password on IRC.
+        pri = _priority.parse_priority_command(cmd)
+        if pri is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            job_id, subcmd, instance_id = pri
+            try:
+                result = self.priority_runner(
+                    subcmd,
+                    instance_id,
+                    job_id=job_id,
+                    install_root=self.install_root,
+                    allowlist_path=self.priority_allowlist_path,
+                )
+            except TypeError:
+                result = self.priority_runner(subcmd, instance_id, job_id=job_id)
+            if not isinstance(result, _priority.PriorityVerbResult):
+                result = _priority.PriorityVerbResult(
+                    False, 1, job_id or "00000000", {"ok": False}, error="bad-priority-runner"
+                )
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="priority",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=result.reply_text(),
+                **meta,
+            )
+
+        # FR #5308: LEGION {target} --- isolated stub worker; same auth as UPDATE.
+        leg = _legion.parse_legion_command(cmd)
+        if leg is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.update == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 update-disabled",
+                )
+            if leg.get("error"):
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply=f"DONE exit=126 bad-target reason={leg['error']}",
+                )
+            try:
+                result = self.legion_runner(
+                    target=leg["target"],
+                    whatif=leg["whatif"],
+                    job_id=leg.get("qid") or "",
+                )
+            except TypeError:
+                result = self.legion_runner(target=leg["target"])
+            except Exception:
+                result = _legion.LegionVerbResult(
+                    False, "LEGION err isolated-fault", job_id=leg.get("qid") or ""
+                )
+            if not isinstance(result, _legion.LegionVerbResult):
+                result = _legion.LegionVerbResult(False, "LEGION err bad-runner")
+            qid = (leg.get("qid") or result.job_id or "").strip().lower()
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            fails = getattr(result, "failures", None)
+            if not fails and getattr(result, "error", None):
+                fails = [{"host": leg.get("target"), "error": str(result.error)}]
+            log = _legion.build_legion_log(
+                target=leg.get("target") or "",
+                whatif=bool(leg.get("whatif")),
+                summary=getattr(result, "status", None) or "",
+                failures=list(fails or []),
+            )
+            send_fn = getattr(self, "legion_log_send", None)
+            delivered = _legion.deliver_legion_log(
+                job_id=qid or result.job_id,
+                log=log,
+                offer=offer,
+                send_fn=send_fn,
+            )
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="legion",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=f"{result.reply_text()} {delivered['summary']} {delivered['done']}",
+                **meta,
+            )
+
+        # FR #5298: NETWORK / NETWORK diag — isolated stub worker; same auth as UPDATE.
+        net = _network.parse_network_command(cmd)
+        if net is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.update == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 update-disabled",
+                )
+            try:
+                result = self.network_runner(
+                    action=net["action"],
+                    whatif=net["whatif"],
+                    job_id=net.get("qid") or "",
+                )
+            except TypeError:
+                result = self.network_runner(action=net["action"])
+            except Exception:
+                result = _network.NetworkVerbResult(
+                    False, "NETWORK err isolated-fault", job_id=net.get("qid") or ""
+                )
+            if not isinstance(result, _network.NetworkVerbResult):
+                result = _network.NetworkVerbResult(False, "NETWORK err bad-runner")
+            qid = (net.get("qid") or result.job_id or "").strip().lower()
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            payload = _network.build_network_payload(
+                net["action"],
+                whatif=net["whatif"],
+                hosts=getattr(result, "hosts", None),
+                failures=getattr(result, "failures", None),
+            )
+            send_fn = getattr(self, "network_log_send", None)
+            delivered = _network.deliver_network_payload(
+                job_id=qid or result.job_id,
+                payload=payload,
+                offer=offer,
+                send_fn=send_fn,
+            )
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="network",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=f"{result.reply_text()} {delivered['summary']} {delivered['done']}",
+                **meta,
+            )
+
+        # FR #5290: EXTENSION install/status — isolated stub worker; same auth as UPDATE.
+        ext = _extension.parse_extension_command(cmd)
+        if ext is not None:
+            if caps.shell_mode == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 shell-disabled",
+                )
+            if caps.update == "off":
+                return HandleResult(
+                    action="capability_deny",
+                    nick=nick,
+                    target=target,
+                    text=text,
+                    reply="DONE exit=126 update-disabled",
+                )
+            try:
+                result = self.extension_runner(
+                    action=ext["action"],
+                    whatif=ext["whatif"],
+                    job_id=ext.get("qid") or "",
+                )
+            except TypeError:
+                result = self.extension_runner(action=ext["action"])
+            except Exception:
+                result = _extension.ExtensionVerbResult(
+                    False, "EXTENSION err isolated-fault", job_id=ext.get("qid") or ""
+                )
+            if not isinstance(result, _extension.ExtensionVerbResult):
+                result = _extension.ExtensionVerbResult(False, "EXTENSION err bad-runner")
+            qid = (ext.get("qid") or result.job_id or "").strip().lower()
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            payload = getattr(result, "payload", None) or {}
+            log = _extension.build_extension_log(
+                ext["action"],
+                whatif=ext["whatif"],
+                gpo=payload if payload else None,
+            )
+            send_fn = getattr(self, "extension_log_send", None)
+            delivered = _extension.deliver_extension_log(
+                job_id=qid or result.job_id,
+                log=log,
+                offer=offer,
+                send_fn=send_fn,
+            )
+            reply = f"{result.reply_text()} {delivered['summary']} {delivered['done']}"
+            meta = self._allow_meta(nick, account)
+            return HandleResult(
+                action="extension",
+                nick=nick,
+                target=target,
+                text=text,
+                reply=reply[:IRC_SAFE_PAYLOAD],
+                **meta,
+            )
 
         # FR #77: UPDATE schedules Update-BobiverseService Check (detached); never msiexec here.
         parsed = parse_update_command(cmd)

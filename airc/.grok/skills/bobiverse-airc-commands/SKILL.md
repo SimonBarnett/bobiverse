@@ -70,3 +70,72 @@ Walk: EXEC `REPPREPDIRECT2`. Success (`reason=prepared`) only when SDK `ok=true`
 
 See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
+## Priority Client (FR #5287)
+
+Use the **built-in** Airc Priority Client. Do not copy NAS one-off clients or drop packs. CredMan + instance allowlist only; never invent `url` / company / SQL.
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY connect instance=example-dev
+PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
+```
+
+- **Allowlist:** `config\priority-instances.json` (schema: `airc/config/priority-instances.example.json`). Unknown instance -> refuse.
+- **CredMan:** password lives in the Windows credential named `credentialTarget` (example `PriorityWeb/example-dev`). Never put a Priority password on IRC, in skills, or in intake.
+- **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
+
+See `docs/airc-remote-control.md`, `docs/feature-request-airc-priority-client-2026-10-31.md`, and `bobiverse-airc-troubleshooting`.
+
+## EXTENSION Priority web (FR #5294)
+
+Authorized **UPDATE-class** verb. Isolated in-service worker (never a peer `*Client.exe`). Default extension id `cgmpadejahkaggjpffnhaoiafbnicgpa` (Chrome Web Store update URL for Chrome and Edge).
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e EXTENSION install
+PRIVMSG {mid}_console :id=c25bd00e EXTENSION install -WhatIf
+PRIVMSG {mid}_console :id=c25bd00e EXTENSION status
+```
+
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`).
+- **GPO happy path:** worker uses GroupPolicy on GPO `Priority-web-extension` linked at domain root (`ExtensionInstallForcelist` for Chrome and Edge). `-WhatIf` is read-only (no GPO/registry/gpupdate writes).
+- **Fill-holes:** after GPO (or when DC is missing), LDAP AD computers only; reachable hosts get remote registry ForceInstall; unreachable = logged failure. Machine account first; optional CredMan target `PriorityAirc/ExtensionAdmin` on access-denied (never put that password on IRC).
+- **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... sha256= via=dcc`. No offer or DCC fail -> IRC CONT + failure lines. No secrets in the log.
+- **Isolation:** AD/GPO/registry loops are not on the IRC receive thread; worker fault must not stop service Airc.
+
+See `docs/airc-remote-control.md` and `docs/feature-request-airc-extension-priority-web-2026-10-31.md`.
+
+## NETWORK diagnostic (FR #5301)
+
+Authorized **UPDATE-class** verb. Isolated worker (never LDAP/DNS/sweep on the IRC receive thread). Inventory contract: `hostname`, `ips[]`, `ou` (from AD `distinguishedName` when present). Runtime inventory is FR-B (#5299); this book is the wire/docs contract.
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e NETWORK
+PRIVMSG {mid}_console :id=c25bd00e NETWORK diag
+PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
+```
+
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`; `shell=off` refuses with `DONE exit=126 shell-disabled`). Unauthorized is `DONE exit=126 not-op`.
+- **Isolation:** worker thread/child; fault must not stop service Airc; console still handles STATUS.
+- **Payload:** short IRC `NETWORK accepted` + `DONE id= exit=`; full inventory + log via DCCLISTEN same job `id=` (`DONE ... via=dcc`) or IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
+- **WhatIf:** read-only plan (no writes).
+
+See `docs/airc-remote-control.md` and `docs/feature-request-airc-network-diagnostic-2026-10-31.md`.
+
+## LEGION remote install (FR #5312)
+
+Authorized **UPDATE-class** verb. Isolated worker imports in-service `airc_network_installer` (FR #3991) for **one** hostname or IPv4. Profile client, latest Release MSI, timeout 900s, no `--force`.
+
+```text
+PRIVMSG {mid}_console :id=c25bd00e DCCLISTEN id=c25bd00e host=<ip> port=<n> token=<hex> tls=1
+PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
+PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
+```
+
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU targets: `DONE exit=126 bad-target`.
+- **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
+- **WhatIf:** installer dry-run (no remote install).
+- **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
+- **Isolation:** installer is not on the IRC receive thread; worker fault must not stop Airc.
+
+See `docs/airc-remote-control.md` and `docs/feature-request-airc-legion-2026-10-31.md`.

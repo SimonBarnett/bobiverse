@@ -315,6 +315,7 @@ function Invoke-BobiverseMsiexecSerialized {
       (ERROR_INSTALL_ALREADY_RUNNING) a few times instead of leaving services half-upgraded.
       FR #4012: clear stuck InProgress / Rollback before run; retry exit 1705
       (previous installation in progress) after Clear-BobiverseMsiPendingTransaction.
+      FR #5411: retry exit 1603 once the same way (file-in-use / pending after stop).
     #>
     param(
         [Parameter(Mandatory)][string[]]$ArgumentList,
@@ -346,6 +347,12 @@ function Invoke-BobiverseMsiexecSerialized {
             $code = [int]$p.ExitCode
             if ($code -eq 1618) {
                 Write-Host "WARN FR#2475 msiexec exit 1618 (already running); retry in $RetryDelaySec s attempt=$attempt"
+                Start-Sleep -Seconds $RetryDelaySec
+                continue
+            }
+            if ($code -eq 1603) {
+                Write-Host "WARN FR#5411 msiexec exit 1603 (fatal error); clear pending and retry attempt=$attempt"
+                [void](Clear-BobiverseMsiPendingTransaction -Why 'after-1603')
                 Start-Sleep -Seconds $RetryDelaySec
                 continue
             }
@@ -3209,7 +3216,9 @@ function Get-BobiverseAircClientAllowedScriptNames {
         # Legacy host when airc\airc.exe is absent (SkipAircExe / pre-exe trees)
         'airc_console.py',
         'airc_console_service.py',
-        'airc_jobs.py'
+        'airc_jobs.py',
+        # FR #5288: Priority Client connect/allowlist module (in-service; client+fleet)
+        'airc_priority.py'
     )
 }
 
