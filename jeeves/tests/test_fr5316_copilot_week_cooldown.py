@@ -23,6 +23,20 @@ def _row(num=10):
 
 def test_fr5316_no_tokens_sets_seven_day_cooldown(tmp_path):
     cd.set_allowance(tmp_path, remaining=3)
+    (tmp_path / "focus.json").write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "repos": {
+                    REPO.lower(): {"priority": 1, "label": "high", "ts": "1"}
+                },
+                "items": {},
+                "item_seq": 0,
+                "strict": False,
+            }
+        ),
+        encoding="utf-8",
+    )
     posts: list = []
 
     def post(*_a, **_k):
@@ -34,8 +48,8 @@ def test_fr5316_no_tokens_sets_seven_day_cooldown(tmp_path):
     assert cd.is_exhausted({"status": 403, "message": "out of tokens"})
     assert cd.cooldown_active(tmp_path, now=NOW)
     until = cd.load_allowance(tmp_path).get("exhausted_until")
-    assert until == NOW + cd.COPILOT_COOLDOWN_S
-    assert until == NOW + 7 * 86400
+    assert until == cd.first_of_next_month_utc(NOW)
+    assert cd.load_allowance(tmp_path).get("exhausted_until_source") == "fallback-1st"
     assert not cd.has_allowance(tmp_path, now=NOW)
     # no further dispatch / no probing
     again = cd.dispatch_row(tmp_path, _row(11), post=post, now=NOW + 60)
@@ -81,13 +95,15 @@ def test_fr5316_cooldown_survives_reload(tmp_path):
     cd.mark_tokens_exhausted(tmp_path, now=NOW)
     p = tmp_path / cd.ALLOWANCE_NAME
     raw = json.loads(p.read_text(encoding="utf-8"))
-    assert raw["exhausted_until"] == NOW + 7 * 86400
+    until = cd.first_of_next_month_utc(NOW)
+    assert raw["exhausted_until"] == until
+    assert raw.get("exhausted_until_source") == "fallback-1st"
     assert cd.cooldown_active(tmp_path, now=NOW + 100)
     assert not cd.has_allowance(tmp_path, now=NOW + 100)
-    # after 7 days, cooldown lifts; dispatch still requires allowance/enabled
-    assert not cd.cooldown_active(tmp_path, now=NOW + 7 * 86400 + 1)
+    # after quota month-start, cooldown lifts; dispatch still requires allowance/enabled
+    assert not cd.cooldown_active(tmp_path, now=until + 1)
     cd.set_allowance(tmp_path, remaining=2)
-    assert cd.has_allowance(tmp_path, now=NOW + 7 * 86400 + 1)
+    assert cd.has_allowance(tmp_path, now=until + 1)
 
 
 def test_fr5316_digest_shows_resume(tmp_path):

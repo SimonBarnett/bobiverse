@@ -17,7 +17,7 @@ def test_mrb5477_exact_expiry_extends(tmp_path):
     at_expiry = cd.mark_tokens_exhausted(
         tmp_path, fuel="copilot", now=until, announce=announced.append
     )
-    assert at_expiry["exhausted_until"] == until + cd.COPILOT_COOLDOWN_S
+    assert at_expiry["exhausted_until"] == cd.first_of_next_month_utc(until)
     assert len(announced) == 2
 
 

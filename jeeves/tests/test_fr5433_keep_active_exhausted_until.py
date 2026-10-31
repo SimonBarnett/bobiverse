@@ -14,7 +14,7 @@ def test_fr5433_second_call_keeps_until_and_skips_announce(tmp_path):
         tmp_path, fuel="copilot", now=NOW, announce=announced.append
     )
     until = first["exhausted_until"]
-    assert until == NOW + cd.COPILOT_COOLDOWN_S
+    assert until == cd.first_of_next_month_utc(NOW)
     assert len(announced) == 1
 
     later = NOW + 3600
@@ -34,11 +34,12 @@ def test_fr5433_expired_until_extends_and_announces(tmp_path):
     cd.mark_tokens_exhausted(
         tmp_path, fuel="copilot", now=NOW, announce=announced.append
     )
-    expired = NOW + cd.COPILOT_COOLDOWN_S + 5
+    first_until = cd.first_of_next_month_utc(NOW)
+    expired = first_until + 5
     again = cd.mark_tokens_exhausted(
         tmp_path, fuel="copilot", now=expired, announce=announced.append
     )
-    assert again["exhausted_until"] == expired + cd.COPILOT_COOLDOWN_S
+    assert again["exhausted_until"] == cd.first_of_next_month_utc(expired)
     assert len(announced) == 2
 
 
