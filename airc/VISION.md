@@ -52,7 +52,9 @@ Airc service (NSSM)
   ├─ control channel: #{MachineId} if registered else #wonderland (FR #3834)
   ├─ presence JOIN is opt-in (FR #5190: client never auto-joins #bobiverse)
   ├─ shell / jobs / update capabilities (AIRC_* / airc.json; Bob fleet shell default ON FR #4030)
-  └─ auth: live +o/+h/+a/+q on control only (no operators.txt roster)
+  ├─ auth: live +o/+h/+a/+q on control only (no operators.txt roster)
+  └─ isolated long jobs: NEW worker process/instance **in the airc service deployment**
+       (import modules / scripts from `<ai root>\airc`  -  no peer product binaries)
 
 Install / upgrade
   ├─ AppParameters preserve ConsoleHome (FR #1552)
@@ -61,6 +63,8 @@ Install / upgrade
 ```
 
 Trust: no secrets in filings/logs; Ergo PASS / NickServ GUID stay in config/ConsoleHome with Protect-BobiverseSecretPath ACLs. Hotpatch restarts **Airc** only; never touch Ergo / `BobIrcd`.
+
+**CAST IRON  -  isolated workers (operator 2026-10-31):** every isolated process started from airc code for verbs such as UPDATE helpers, EXTENSION, NETWORK, LEGION, Priority Client must be **deployed as part of the Airc service tree** (module import or service-owned child running airc-packaged code). **No separate product binaries** (`*Client.exe`, `*Worker.exe`, peer installers as the verb runtime). Offline/manual tools already in MSI (e.g. historical `airc-network-installer.exe`) may remain for non-verb use; console verbs must not depend on them as the implementation path. See `docs/airc-isolated-workers-in-service.md`.
 
 LOCKED
 
@@ -81,6 +85,7 @@ Airc has no TipForm UI. Operator surfaces are service logs, `Invoke-AircRemote`,
 - CAST IRON harvest + intake every session; never print secrets
 - Hotpatch: never touch Ergo / `BobIrcd`; restart only `Airc`
 - One console per box: Install removes leftover `AircConsole` from SCM
+- CAST IRON isolated workers: **in-service deployment only**  -  no separate product binaries for verb runtimes (EXTENSION / NETWORK / LEGION / Priority / similar); see `docs/airc-isolated-workers-in-service.md`
 
 ## UNKNOWN
 

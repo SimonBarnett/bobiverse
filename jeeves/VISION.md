@@ -50,6 +50,7 @@ ircJeeves (chair)
   ├─ nick Jeeves; +o on #bobiverse; silent assign on shops
   ├─ queue.json (unaccepted / accepted / done) + seat-ledger
   ├─ offer_focus_top / assign_row / gitclaim gates
+  │    ├─ optional fuel-chain (FR #5317; each stage off by default; never load-bearing)
   │    ├─ focus / ignore / require_machine
   │    ├─ exact-seat giveup_seats + cooldown (FR #5088)
   │    ├─ needs_human global auto-offer block (FR #4336); !assign may still hand out
