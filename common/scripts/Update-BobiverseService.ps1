@@ -150,7 +150,8 @@ function Invoke-GitHubReleaseApi {
 }
 
 function Select-BestReleaseFromList {
-    # FR #5353: pick newest semver release that has {Product}-N.N.N.msi.
+    # FR #5353 / FR #5412 / FR #5429: pick newest semver release that has
+    # {Product}-N.N.N.msi or {Product}-N.N.N.N.msi (same pattern as Invoke-Check).
     # Prefer non-prerelease; among the same class, higher version wins.
     param(
         $Releases,
@@ -159,6 +160,7 @@ function Select-BestReleaseFromList {
     $best = $null
     $bestVer = $null
     $bestPre = $true
+    $msiRe = '^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($ProductName)
     foreach ($r in @($Releases)) {
         if (-not $r) { continue }
         if ($r.draft) { continue }
@@ -167,7 +169,7 @@ function Select-BestReleaseFromList {
         $assets = @($r.assets)
         $msi = @(
             $assets | Where-Object {
-                $_.name -match ('^{0}-(\d+\.\d+\.\d+)\.msi$' -f [regex]::Escape($ProductName))
+                $_.name -match $msiRe
             }
         ) | Select-Object -First 1
         if (-not $msi) { continue }
@@ -1082,12 +1084,13 @@ function Invoke-Check {
     }
     if (-not $rel -or -not $rel.assets) { Write-UpdLog 'check result=no-release-data - starting installed version'; return }
 
-    # FR #5354: 3- or 4-part product MSI (bob-1.0.0.1.msi) and matching tag_name.
+    # FR #5354 / FR #5412: 3- or 4-part product MSI (bob-1.0.0.1.msi) and matching tag_name.
     $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
     $tagVer = $null
     if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+(?:\.\d+)?)$') { $tagVer = ConvertTo-Ver $Matches[1] }
     if (-not $msi -or -not $tagVer) {
-        Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"
+        $assetNames = (@($rel.assets) | ForEach-Object { [string]$_.name }) -join ','
+        Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name) assets=$assetNames"
         Write-CheckFailIntake -Result 'no-matching-asset' -Tag ([string]$rel.tag_name)
         return
     }
