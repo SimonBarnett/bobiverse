@@ -1,10 +1,10 @@
-# Feature request: Airc remote UPDATE — restart guarantee, latest release, failure issues, VERSION
+# Feature request: Airc remote UPDATE - restart guarantee, latest release, failure issues, VERSION
 
 **Repo:** `SimonBarnett/bobiverse`  
 **Product path:** `airc/` (+ shared `common/scripts/Update-BobiverseService.ps1`)  
 **Date:** 2026-10-31  
 **Plan folder:** `bob/plan/work/plan-20261031-143130`  
-**Supersedes / extends:** FR #77 (`UPDATE airc` detached Check/Apply) — does **not** invent a second update channel
+**Supersedes / extends:** FR #77 (`UPDATE airc` detached Check/Apply) - does **not** invent a second update channel
 
 Related: `airc/VISION.md`, `airc/docs/airc-remote-control.md` (UPDATE section), `airc/docs/feature-request-airc-remote-control-2026-10-01.md` S5.
 
@@ -83,7 +83,7 @@ None (no UI). Mocks out of scope.
 
 ## LOCKED
 
-- Target `SimonBarnett/bobiverse`; extend FR #77 — do not add a parallel update exe
+- Target `SimonBarnett/bobiverse`; extend FR #77 - do not add a parallel update exe
 - Restart guarantee after every UPDATE attempt (S2) is the primary bar
 - Latest release default; optional version pin kept
 - Deterministic intake issues on failure classes (S4)
