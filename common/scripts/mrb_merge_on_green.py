@@ -2917,12 +2917,66 @@ def enqueue_from_done(
             sha = ""
     if not sha:
         return None
+    url = pr_url or str(st.get("html_url") or "")
+    # FR #5581: CONFLICTING/DIRTY at DONE time → queue conflict FIX at once and
+    # do not leave a merge-pending row that sits while the seat stays "doing".
+    conflict = merge_attempt_conflict_reason(
+        mergeable=st.get("mergeable") if isinstance(st, dict) else "",
+        merge_state=str(
+            (st.get("merge_state_status") if isinstance(st, dict) else None)
+            or (st.get("mergeable_state") if isinstance(st, dict) else None)
+            or ""
+        ),
+    )
+    if conflict:
+        fix = offer_dirty_conflict_fix(
+            home,
+            repo=pr_repo,
+            pr=pr_num,
+            sha=sha,
+            url=url,
+            reason=conflict,
+        )
+        # Park so resync/process_pending do not re-try merge on this SHA.
+        doc = load_ledger(home)
+        park_conflict(
+            doc,
+            {
+                "repo": gitclaim.canonical_queue_repo(pr_repo),
+                "pr": str(pr_num).lstrip("#"),
+                "pass_sha": sha,
+                "url": url,
+                "nick": nick,
+            },
+            reason=conflict,
+            head_sha=sha,
+        )
+        # Drop any prior pending merge row for this PR.
+        key = _row_key(pr_repo, pr_num)
+        pending = [
+            p
+            for p in (doc.get("pending") or [])
+            if isinstance(p, dict) and str(p.get("key") or "") != key
+        ]
+        doc["pending"] = pending
+        save_ledger(home, doc)
+        return {
+            "key": key,
+            "repo": gitclaim.canonical_queue_repo(pr_repo),
+            "pr": str(pr_num).lstrip("#"),
+            "pass_sha": sha,
+            "url": url,
+            "nick": nick,
+            "status": "conflict",
+            "conflict_reason": conflict,
+            "conflict_fix": fix,
+        }
     return enqueue(
         home,
         repo=pr_repo,
         pr=pr_num,
         pass_sha=sha,
-        url=pr_url or str(st.get("html_url") or ""),
+        url=url,
         nick=nick,
         hold_reason=hold,
     )

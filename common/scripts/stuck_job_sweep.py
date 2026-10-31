@@ -13,6 +13,10 @@ never merge or close):
 * silent or dead-holder ``accepted`` → release (prior ACK void) and re-offer
 * ``untracked`` offerable → enqueue
 * held past its window → report only
+* FR #5581: digest ``doing`` tile for an MRB PR that already has a PASS/FAIL
+  verdict (done[] or merge-on-green park), with no ``updated`` for
+  ``VERDICTED_DOING_S`` (15 min) → ``clear_seat_doing`` (bookkeeping; still
+  runs under no-seats/no-fuel pause; pause only suppresses stuck alerts)
 
 Report: ``stuck-report.json`` + digest ``stuck`` section + ``!stuck`` + one
 #bobiverse line when the stuck set fingerprint changes.
@@ -30,6 +34,8 @@ SILENT_ACCEPTED_S = 1800.0
 STUCK_SWEEP_S = 600.0
 FIRST_STUCK_SWEEP_DELAY_S = 20.0
 UNACCEPTED_STARVE_S = 1800.0
+# FR #5581: digest "doing" tile whose PR already has an MRB verdict, idle >15 min.
+VERDICTED_DOING_S = 900.0
 
 REPORT_NAME = "stuck-report.json"
 CATALOG_NAME = "open-catalog.json"
@@ -361,6 +367,146 @@ def _queue_index(doc: dict) -> dict[str, tuple[str, dict]]:
     return idx
 
 
+def _mrb_pr_is_verdicted(home: Path, repo: str, num: str) -> bool:
+    """True when this PR already has an MRB PASS/FAIL (done[]) or merge-on-green park.
+
+    FR #5581: hung seats that posted a PASS board / DONE but left digest ``doing``
+    must be idleable by the stuck sweep without waiting for the PR to merge/close.
+    """
+    import gitclaim
+
+    repo_c = gitclaim.canonical_queue_repo(repo)
+    want = str(num or "").lstrip("#")
+    if not repo_c or not want:
+        return False
+    try:
+        q = gitclaim.load_queue(home)
+    except (OSError, ValueError, json.JSONDecodeError):
+        q = {}
+    for row in list(q.get("done") or []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("task") or "").upper() != "MRB":
+            continue
+        if gitclaim.canonical_queue_repo(str(row.get("repo") or "")) != repo_c:
+            continue
+        if str(row.get("id") or "").lstrip("#") != want:
+            continue
+        res = str(row.get("result") or "").strip().upper()
+        if res in ("PASS", "FAIL", "MERGED", "CLOSED"):
+            return True
+    try:
+        import mrb_merge_on_green as mog
+
+        doc = mog.load_ledger(home)
+        key = mog._row_key(repo_c, want)
+        for bucket in (
+            mog.CONFLICT_KEY,
+            mog.CONFLICT_FIX_KEY,
+            mog.CI_FAILED_KEY,
+            mog.CI_FIX_KEY,
+            mog.MRB_FAIL_FIX_KEY,
+        ):
+            blob = doc.get(bucket)
+            if isinstance(blob, dict) and (
+                key in blob
+                or any(
+                    isinstance(v, dict)
+                    and gitclaim.canonical_queue_repo(str(v.get("repo") or "")) == repo_c
+                    and str(v.get("pr") or "").lstrip("#") == want
+                    for v in blob.values()
+                )
+            ):
+                return True
+        for row in doc.get("pending") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("key") or "") == key:
+                return True
+            if (
+                gitclaim.canonical_queue_repo(str(row.get("repo") or "")) == repo_c
+                and str(row.get("pr") or "").lstrip("#") == want
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def clear_verdicted_doing_tiles(
+    home: Path,
+    *,
+    now: float,
+    log: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """Idle digest doing tiles for MRB PRs that already have a verdict and are stale.
+
+    FR #5581 acceptance: no update for more than ``VERDICTED_DOING_S`` (15 min).
+    Bookkeeping always runs (even under no-seats/no-fuel pause).
+    """
+    import bobreport
+    import gitclaim
+
+    cleared: list[dict] = []
+    try:
+        digest = bobreport.load_digest(home)
+    except Exception:
+        return []
+    machines = digest.get("machines") if isinstance(digest, dict) else None
+    if not isinstance(machines, dict):
+        return []
+    for mid, ent in list(machines.items()):
+        if not isinstance(ent, dict):
+            continue
+        for row in list(ent.get("worker_list") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("state") or "").lower() != "doing":
+                continue
+            work = str(row.get("work") or "").strip()
+            parsed = gitclaim._orphan_mrb_repo_num(work)
+            if not parsed:
+                continue
+            repo, num = parsed
+            updated = _parse_ts(row.get("updated"))
+            if updated is None:
+                continue
+            age = float(now) - float(updated)
+            if age < VERDICTED_DOING_S:
+                continue
+            if not _mrb_pr_is_verdicted(home, repo, num):
+                continue
+            nick = str(row.get("nick") or "").strip()
+            if not nick:
+                continue
+            try:
+                out = bobreport.clear_seat_doing(
+                    home, nick, only_if_work_contains=num
+                )
+            except Exception:
+                continue
+            if getattr(out, "ok", False):
+                info = {
+                    "repo": repo,
+                    "number": _norm_id(num),
+                    "task": "MRB",
+                    "holder": nick,
+                    "age_s": int(age),
+                    "state": "doing",
+                    "stuck": True,
+                    "stuck_reason": "verdicted_doing_stale",
+                    "rule": "",
+                    "title": work[:120],
+                }
+                cleared.append(info)
+                if log:
+                    log(
+                        f"stuck-sweep clear-doing {nick} {repo}#{num} "
+                        f"age_s={int(age)} reason=verdicted_doing_stale"
+                    )
+    return cleared
+
+
 def release_silent_accepted(
     home: Path,
     *,
@@ -534,7 +680,8 @@ def run_stuck_sweep(
         if info.get("stuck_reason") == "untracked_offerable":
             untracked_infos.append(info)
 
-    actions = {"released": 0, "enqueued": 0}
+    actions = {"released": 0, "enqueued": 0, "cleared_doing": 0}
+    cleared_doing: list[dict] = []
     if act:
         released = release_silent_accepted(
             home,
@@ -546,6 +693,12 @@ def run_stuck_sweep(
         actions["released"] = len(released)
         enq = enqueue_untracked(home, untracked_infos, log=log)
         actions["enqueued"] = len(enq)
+        # FR #5581: clear stale digest doing tiles for already-verdicted MRBs.
+        # Bookkeeping always (same class as holder-gone release under pause).
+        cleared_doing = clear_verdicted_doing_tiles(home, now=now_f, log=log)
+        actions["cleared_doing"] = len(cleared_doing)
+        for info in cleared_doing:
+            classified.append(info)
         # Refresh classification after acts (best-effort).
         if released or enq:
             doc2 = gitclaim.load_queue(home)
@@ -571,7 +724,8 @@ def run_stuck_sweep(
     # Held items always appear in the report (acceptance: listed with rule).
     held = [c for c in classified if c.get("state") == "held"]
     # FR #5510: idle work is not stuck while nothing can take it (no seats / no fuel).
-    # Holder-gone release still runs (bookkeeping). Do not alert or list stuck rows.
+    # Holder-gone release and FR #5581 verdicted-doing clear still run (bookkeeping).
+    # Do not alert or list stuck rows while paused.
     paused = None
     if not live_set:
         paused = "no seats"
@@ -618,7 +772,8 @@ def run_stuck_sweep(
             n_held = len(held)
             announce(
                 f"stuck-sweep stuck={n_stuck} held={n_held} "
-                f"released={actions['released']} enqueued={actions['enqueued']}"
+                f"released={actions['released']} enqueued={actions['enqueued']} "
+                f"cleared_doing={actions.get('cleared_doing', 0)}"
             )
         elif announce and not stuck and not held and prev:
             announce("stuck-sweep clear")
@@ -627,7 +782,8 @@ def run_stuck_sweep(
         log(
             f"stuck-sweep classified={len(classified)} stuck={len(stuck)} "
             f"held={len(held)} released={actions['released']} "
-            f"enqueued={actions['enqueued']}"
+            f"enqueued={actions['enqueued']} "
+            f"cleared_doing={actions.get('cleared_doing', 0)}"
         )
     return report
 
