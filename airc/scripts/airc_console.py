@@ -57,6 +57,9 @@ SHELL_TIMEOUT_S = 120.0
 # FR #2632: per-Query pending shell commands (beyond the one in flight). Overflow
 # still fail-closes with busy DONE so Wait never hangs without a DONE (#2612).
 SHELL_PENDING_MAX = 8
+# FR #5613: unused DCCLISTEN offers expire; dict is size-capped.
+DCCLISTEN_TTL_S = 60.0
+DCCLISTEN_MAX = 32
 UPDATE_PRODUCTS = frozenset({"airc", "bob", "jeeves"})
 SHELL_MODE_TOKENS = frozenset({"off", "operators"})
 JOBS_TOKENS = frozenset({"off", "on"})
@@ -2625,24 +2628,46 @@ class ShellJobRunner:
         self._resume: dict[tuple[str, str], tuple[ShellOutcome, int]] = {}
         # FR #5519: "log" entries stay CONT-able when shell=off.
         self._resume_kind: dict[tuple[str, str], str] = {}
-        # FR #5003: job_id -> DccListenOffer from caller DCCLISTEN (reverse DCC).
-        self._dcc_listen: dict[str, object] = {}
+        # FR #5003 / #5613: job_id -> (DccListenOffer, noted_mono).
+        self._dcc_listen: dict[str, tuple[object, float]] = {}
+        self._now = time.monotonic
+        self.dcc_listen_events: list[str] = []
+
+    def _prune_dcclisten_locked(self) -> None:
+        now = float(self._now())
+        dead = [
+            jid
+            for jid, (_off, noted) in list(self._dcc_listen.items())
+            if now - float(noted) > DCCLISTEN_TTL_S
+        ]
+        for jid in dead:
+            self._dcc_listen.pop(jid, None)
+            self.dcc_listen_events.append(f"expired id={jid} ttl={int(DCCLISTEN_TTL_S)}")
 
     def note_dcclisten(self, text: str) -> bool:
-        """Record a caller ``DCCLISTEN`` offer (FR #5003). Returns True when parsed."""
+        """Record a caller ``DCCLISTEN`` offer (FR #5003 / #5613 TTL + cap)."""
         import airc_dcc_bulk as _dcc
 
         offer = _dcc.parse_dcclisten(text)
         if offer is None:
             return False
+        key = (offer.job_id or "").strip().lower()
         with self._lock:
-            self._dcc_listen[(offer.job_id or "").strip().lower()] = offer
+            self._prune_dcclisten_locked()
+            while len(self._dcc_listen) >= DCCLISTEN_MAX and key not in self._dcc_listen:
+                oldest = min(self._dcc_listen.items(), key=lambda kv: kv[1][1])
+                self._dcc_listen.pop(oldest[0], None)
+                self.dcc_listen_events.append(f"evicted id={oldest[0]} cap={DCCLISTEN_MAX}")
+            self._dcc_listen[key] = (offer, float(self._now()))
         return True
 
     def peek_dcc_offer(self, job_id: str):
         """FR #5194: DCCLISTEN recorded for this job, or None (leave in place for PUT fallback)."""
+        key = (job_id or "").strip().lower()
         with self._lock:
-            return self._dcc_listen.get((job_id or "").strip().lower())
+            self._prune_dcclisten_locked()
+            slot = self._dcc_listen.get(key)
+            return slot[0] if slot else None
 
     def register_log_resume(
         self,
@@ -2677,10 +2702,21 @@ class ShellJobRunner:
             return self._resume_kind.get((key, jid), "")
 
     def take_dcclisten(self, job_id: str):
-        """FR #5293: pop a DCCLISTEN offer for an EXTENSION (or other) job id."""
+        """FR #5293 / #5613: pop a live DCCLISTEN offer (expired slots are dropped)."""
         key = (job_id or "").strip().lower()
         with self._lock:
-            return self._dcc_listen.pop(key, None)
+            self._prune_dcclisten_locked()
+            slot = self._dcc_listen.pop(key, None)
+            return slot[0] if slot else None
+
+    def discard_dcclisten(self, job_id: str, *, reason: str = "verb-done") -> None:
+        """FR #5613: drop unused offer when a non-bulk verb finishes for this id."""
+        key = (job_id or "").strip().lower()
+        if not key:
+            return
+        with self._lock:
+            if self._dcc_listen.pop(key, None) is not None:
+                self.dcc_listen_events.append(f"cleared id={key} reason={reason}")
 
     def start(self, nick: str, command: str) -> str:
         key = nick.strip().lower()
@@ -2782,8 +2818,7 @@ class ShellJobRunner:
             outcome = run_shell_request(req, timeout_s=self.timeout_s, cwd=self.cwd)
             if item.abandoned:
                 return
-            with self._lock:
-                peer = self._dcc_listen.pop(jid, None)
+            peer = self.take_dcclisten(jid)
             page = format_shell_replies_ex(
                 outcome,
                 prefer_dcc_bulk=True,
@@ -3160,6 +3195,15 @@ class AircConsoleCore:
             "allow_channel": detail.get("channel"),
         }
 
+    def _clear_unused_dcclisten(self, job_id: str, *, reason: str) -> None:
+        """FR #5613: VERSION/STATUS/PRIORITY/UPDATE must not leave a stale offer."""
+        runner = self.shell_runner
+        if runner is None:
+            return
+        discard = getattr(runner, "discard_dcclisten", None)
+        if callable(discard):
+            discard(job_id, reason=reason)
+
     def handle_raw(self, line: str) -> HandleResult | None:
         tags, rest = parse_message_tags(line.rstrip("\r\n"))
         m = _PRIVMSG_RE.match(rest)
@@ -3255,7 +3299,8 @@ class AircConsoleCore:
         caps = self.capabilities
 
         # FR #5285: PRIORITY form walk (read path) via in-service fixture worker.
-        if _priority.parse_priority_walk_command(cmd) is not None:
+        walk = _priority.parse_priority_walk_command(cmd)
+        if walk is not None:
             allow = _priority.resolve_walk_allowlist_path(
                 self.install_root, self.priority_allowlist or self.priority_allowlist_path
             )
@@ -3267,6 +3312,7 @@ class AircConsoleCore:
             )
             # FR #5524: do not JobProtocol._emit here. on_line sends HandleResult.reply
             # for action=priority (FR #5518). Emitting plus reply doubled every walk line.
+            self._clear_unused_dcclisten((walk[1] or {}).get("id") or "", reason="priority")
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="priority",
@@ -3351,6 +3397,7 @@ class AircConsoleCore:
                 result = _priority.PriorityVerbResult(
                     False, 1, qid, {"ok": False}, error="bad-priority-runner"
                 )
+            self._clear_unused_dcclisten(qid, reason="priority")
             meta = self._allow_meta(nick, account)
             reply = "" if getattr(result, "pending", False) else result.reply_text()
             return HandleResult(
@@ -3674,6 +3721,7 @@ class AircConsoleCore:
                     False, "bad-scheduler", product=product, version=ver
                 )
             result.job_id = qid
+            self._clear_unused_dcclisten(qid, reason="update")
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="update",
@@ -3713,6 +3761,7 @@ class AircConsoleCore:
                 separators=(",", ":"),
             )
             jid = (prep.get("qid") or "").strip() or uuid.uuid4().hex[:8]
+            self._clear_unused_dcclisten(jid, reason="priority")
             exit_code = 0 if body.get("ok") else 1
             out_line = f"out id={jid} seq=1 {blob}"[:IRC_SAFE_PAYLOAD]
             done_line = f"DONE id={jid} exit={exit_code}"
@@ -3791,6 +3840,8 @@ class AircConsoleCore:
                             action="job", nick=nick, target=target, text=text, **meta
                         )
             self.job_protocol.handle_async(nick, verb, kv)
+            if verb in {"STATUS", "VERSION"}:
+                self._clear_unused_dcclisten(kv.get("id") or "", reason=verb.lower())
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="job", nick=nick, target=target, text=text, **meta

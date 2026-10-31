@@ -186,6 +186,6 @@ def test_runner_note_dcclisten_tls_relay_fields():
         "DCCLISTEN id=aabbccdd host=127.0.0.1 port=1 "
         "token=0123456789abcdef0123456789abcdef tls=1 relay=127.0.0.1:9"
     )
-    offer = runner._dcc_listen["aabbccdd"]
+    offer = runner.peek_dcc_offer("aabbccdd")
     assert offer.tls is True
     assert offer.relay == "127.0.0.1:9"
