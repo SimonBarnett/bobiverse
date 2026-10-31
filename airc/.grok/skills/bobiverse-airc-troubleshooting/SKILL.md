@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -35,6 +35,7 @@ Start with `bobiverse-fleet-ops`. Airc-specific lessons:
 | Command reply truncated | Prefer FR #75 chunked `out`/`DONE` framing; use `Invoke-AircRemote.ps1 -Action Psb64` / PUT (FR #76/#78) instead of gist+irm. |
 | `-ReplyFile` times out / never sees `DONE` | Ear must be capturing `*_console` Query lines into `<bob home>\airc-replies.jsonl` (FR #1546). Confirm the helper prefixed `id=<8hex>`, the jsonl path resolves beside Outbox / `BOB_HOME` / `<ai root>\bob\home`, and ircBob is running. Do not expect a static pre-written ReplyFile. |
 | Long Command stalls after `out … seq=1` (no further lines / no DONE) | Often Airc restart mid-emit (`probe interrupted -> stop` in `airc-console.log`). FR #2612: outbound queue + stop DONE flush. Check console log for stop/reconnect during the Wait; avoid hotpatch Restart-Service while ReplyFile runs; raise `-TimeoutSec` for large line counts. |
+| Partial shell output then STATUS also times out (FR #5211) | STATUS bypasses the shell queue, so this is not proof of a stuck subprocess; check client Airc logs and ear capture. Try `CANCEL id=<shell-id>` from the same authorized Query (active/queued shell gets DONE exit=130; other queued commands continue). If still unresponsive, locally `Restart-Service Airc` on the affected client **only**, then retry STATUS. Tip uses file-backed batch capture to avoid inherited-pipe EOF hangs, decodes UTF-16 BOMs, replaces malformed UTF-8/NUL for IRC, and chunks by UTF-8 bytes. Never dump a credential-bearing ini file. |
 | Second concurrent `Invoke-AircRemote` gets `busy` + exit=1 | Pre-#2632 airc fail-closed on overlap. Tip queues per Query (FR #2632); hotpatch/rebuild airc so `ShellJobRunner` queues, or rely on Invoke-AircRemote busy retry (`-MaxRetries`). Overflow still busy-fails when pending_max is full. |
 | `-Action Status` timeout / empty StdOut / `DONE` id mismatch / PS splat `@machine_console` (FR #2570 / #2575) | Client relayed bobtalk `Heard:` line into the console; or Status lacked `id=` / DONE; or body was bare `STATUS` (StdOut empty). Fixed: sanitize Heard:/@nick noise; Status sends `id=… STATUS`; console replies `out id=… seq=1 STATUS machine=…` then `DONE id=… exit=0`. Use ear `airc-replies.jsonl` only --- a different `.jsonl` path is an empty Wait. |
 | Command StdOut mangles Greek/CJK to `a` / U+FFFD / `?` (FR #2580) | Redirected powershell.exe `$OutputEncoding` was ASCII (best-fit). Fixed: `encode_ps_encoded_command` / `psb64` wrap UTF-8 OutputEncoding; `cmd:` prefixes `chcp 65001`. Hotpatch `airc_console.py` + Restart-Service Airc (or tip MSI). |
@@ -111,4 +112,3 @@ Generalised from 18 harvested lessons that never reached this book (audit for FR
 | Large sandbox file must not dump over Query PRIVMSG (FR #4795) | `GET path fetch=chunk` returns size/sha256/seqs only; pull each piece with `GETCHUNK id=<job> seq=N` (next GETCHUNK is the ack; console never pushes the next chunk). Plain GET stays head-only. Secret paths rejected. |
 
 Symptom: console goes silent mid base64 dump; later STATUS gets no reply. Cause: Ergo fakelag / excess flood after hundreds of Query lines. Fix on tip: reply-line cap + truncate marker + token-bucket send pacing; reconnect on send failure. Controllers must not paste multi-KB base64 into shell stdout --- use PUT/file fetch.
-

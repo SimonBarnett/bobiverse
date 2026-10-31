@@ -15,7 +15,7 @@ Chair logs showed intermittent `webhook-health local DOWN` / recover after 12–
 |-------|--------|
 | BobCallback | Scheduled task **Running**; python listening `127.0.0.1:7700` |
 | Local POST `/bob/v1/intake` | **HTTP 202** via `Report-BobiverseIntakeIssue.ps1` (`intake_id=in_1c16def2537f4904`) |
-| Public POST `https://irc.ntsa.uk/bob/v1/intake` | **HTTP 202** (same script path) |
+| Public POST `https://bob.ntsa.uk/bob/v1/intake` | **HTTP 202** (same script path) |
 | Flush | `Invoke-BobiverseHarvest.ps1 -Flush` → `sent=0 kept=0` (queue drained) |
 | Health semantics | `intake=404` on GET `/bob/v1/intake/jeeves-health-probe` counts as **UP** in `chair_health.CHECKS` |
 

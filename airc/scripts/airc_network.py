@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 _NETWORK_CMD_RE = re.compile(
@@ -22,6 +22,8 @@ class NetworkVerbResult:
     ok: bool
     reply: str
     job_id: str = ""
+    hosts: list[dict[str, Any]] = field(default_factory=list)
+    failures: list[dict[str, Any]] = field(default_factory=list)
 
     def reply_text(self) -> str:
         return self.reply
@@ -138,24 +140,45 @@ def run_network_verb(
     job_id: str = "",
     worker: Callable[..., Any] | None = None,
     wait: bool = False,
+    on_done: Callable[[NetworkVerbResult], Any] | None = None,
     **_kw: Any,
 ) -> NetworkVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
     work = worker or inventory_work
+    extra = " whatif=1" if whatif else ""
+    accepted = f"NETWORK accepted id={qid} action={action}{extra}\nDONE id={qid} exit=0"
 
-    def _safe() -> None:
+    def _finish(data: dict[str, Any]) -> NetworkVerbResult:
+        hosts = list(data.get("hosts") or [])
+        failures = list(data.get("failures") or data.get("log") or [])
+        res = NetworkVerbResult(
+            bool(data.get("ok", True)),
+            accepted,
+            job_id=qid,
+            hosts=hosts,
+            failures=failures,
+        )
+        if on_done is not None:
+            on_done(res)
+        return res
+
+    def _safe() -> NetworkVerbResult:
         try:
-            work(action=action, whatif=whatif, **_kw)
-        except Exception:
-            return
+            data = work(action=action, whatif=whatif, **_kw)
+            if not isinstance(data, dict):
+                data = {"ok": True, "hosts": [], "log": []}
+        except Exception as exc:
+            data = {
+                "ok": False,
+                "hosts": [],
+                "log": [{"error": type(exc).__name__, "step": "worker"}],
+            }
+        return _finish(data)
 
     if wait:
-        _safe()
-    else:
-        threading.Thread(target=_safe, name="airc-network-worker", daemon=True).start()
-    extra = " whatif=1" if whatif else ""
-    reply = f"NETWORK accepted id={qid} action={action}{extra}\nDONE id={qid} exit=0"
-    return NetworkVerbResult(True, reply, job_id=qid)
+        return _safe()
+    threading.Thread(target=_safe, name="airc-network-worker", daemon=True).start()
+    return NetworkVerbResult(True, accepted, job_id=qid)
 
 
 _SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")

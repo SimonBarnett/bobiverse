@@ -75,11 +75,88 @@ def test_all_gave_up_fires_and_healthy_silent():
     found = sd.detect_all_gave_up(bad)
     assert len(found) == 1
     assert found[0]["id"] == sd.ALL_GAVE_UP_ID
+    assert found[0]["evidence"]["giveup_seats"] == ["flamingo-1", "marchhare-1"]
+    assert found[0]["evidence"]["needs_human"] is False
     healthy = {
         "live": {"flamingo-1", "marchhare-1"},
         "unaccepted": [_mrb("https://github.com/SimonBarnett/a-search/pull/1", "x")],
     }
     assert sd.detect_all_gave_up(healthy) == []
+
+
+def test_all_gave_up_ignores_rows_already_parked_for_human():
+    """FR #5181: needs_human rows are parked — do not re-alert as all-gave-up."""
+    row = _mrb(
+        "https://github.com/SimonBarnett/a-search/issues/5139",
+        "x",
+        ["flamingo-67876"],
+    )
+    row["task"] = "FR"
+    row["needs_human"] = True
+    snap = {
+        "live": {"flamingo-67876"},
+        "unaccepted": [row],
+    }
+    assert sd.detect_all_gave_up(snap) == []
+    row["needs_human"] = "true"
+    assert sd.detect_all_gave_up(snap) == []
+
+
+def test_chair_health_stall_scan_parks_all_gave_up():
+    """Source pin: _stall_scan stamps needs_human before filing (FR #5181)."""
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "common"
+        / "scripts"
+        / "chair_health.py"
+    ).read_text(encoding="utf-8")
+    scan = src[src.find("def _stall_scan") :]
+    assert "stamp_needs_human_for_all_gave_up" in scan
+    assert scan.find("stamp_needs_human_for_all_gave_up") < scan.find(
+        "stall_filer.apply_findings"
+    )
+
+
+def test_stamp_needs_human_for_all_gave_up(tmp_path):
+    """FR #5181: first all-gave-up finding parks the queue row for a human."""
+    import gitclaim
+
+    row = {
+        "task": "FR",
+        "repo": "SimonBarnett/a-search",
+        "id": "#5139",
+        "url": "https://github.com/SimonBarnett/a-search/issues/5139",
+        "title": "amazon 403",
+        "giveup_seats": "flamingo-67876",
+        "giveup_count": 1,
+        "line": "x",
+        "ts": "t",
+        "seq": 1,
+        "event": "",
+        "action": "",
+    }
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {"v": 1, "unaccepted": [row], "accepted": [], "done": []},
+    )
+    findings = [
+        {
+            "id": sd.ALL_GAVE_UP_ID,
+            "key": "SimonBarnett/a-search#5139",
+            "fingerprint": "stall:all-gave-up:SimonBarnett/a-search#5139",
+            "evidence": {"row": "SimonBarnett/a-search#5139"},
+        }
+    ]
+    n = sd.stamp_needs_human_for_all_gave_up(tmp_path, findings)
+    assert n == 1
+    parked = gitclaim.load_queue(tmp_path)["unaccepted"][0]
+    assert gitclaim.row_needs_human(parked) is True
+    # Second detect is silent once parked.
+    snap = {
+        "live": {"flamingo-67876"},
+        "unaccepted": [parked],
+    }
+    assert sd.detect_all_gave_up(snap) == []
 
 
 def test_sticky_auto_pin_and_healthy():

@@ -37,6 +37,10 @@ Workers still only inject lines **FROM Jeeves** addressed to that seat (`bob_wor
 
 Do **not** mint a fresh GUID for an already-registered NickServ account.
 
+## Public airc console roster (FR #5204)
+
+`GET https://bob.ntsa.uk/bob/v1/report` includes `airc_consoles` (and per-machine `console_nicks`): live shop `*_console` nicks from chair NAMES. No NickServ. Priority Agent airc picker can verify presence without IRC credentials.
+
 ## Outbox (send) — identical on every machine
 
 UTF-8 **no BOM**. Append one complete line per send to `<bob home>\outbox.txt`. Only lines starting with `PRIVMSG ` are sent raw (same interface on Ionos / MarchHare / Flamingo):

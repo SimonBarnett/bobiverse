@@ -15,7 +15,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -83,7 +83,7 @@ Full operator playbook: skill `bobiverse-jeeves-repos` (`jeeves/.grok/skills/bob
 - **Discovery file Jeeves reads:** `%USERPROFILE%\.jeeves\resync-repos.txt` (chair `--home` / `BOB_HOME`) via `configured_repos`, plus env `JEEVES_RESYNC_REPOS`, plus union of digest-home `focus.repos` (FR #3146). A twin is seeded at `%USERPROFILE%\.bobiverse\resync-repos.txt` but is not what discovery reads when homes differ.
 - **Onboard:** append `owner/repo` to the chair-home list (and/or `!focus low|medium|high owner/repo`), then `!resync`. Expected reply: `resync: roster refresh requested; GitHub FR/MRB re-sync queued; ...`. Example: `!focus low SimonBarnett/priority-branding` -> `focus: ... priority=9 (low)`.
 
-- **FR #5163 MRB reviewer deadlock:** when every idle seat is ineligible for every waiting MRB (author or give-up), Jeeves clears cross give-ups for idle non-authors or queues one tray `recycleseat` (kind `mrb-reviewer-deadlock`), deduped/~180s. No manual `!cleargiveup` / recycle required for that stall.
+- **FR #5163 / #5268 MRB reviewer deadlock:** when every idle seat is ineligible for every waiting MRB, Jeeves may clear cross give-ups (idle non-authors) or queue one tray `recycleseat` (kind `mrb-reviewer-deadlock`), deduped/~180s. Cross-giveup clear requires two or more idle seats. A sole idle seat that GIVEUP'd the only waiting MRB is not healed (give-up sticks; FR #2811 / #628). No manual `!cleargiveup` for a true multi-seat stall.
 - **Give-up re-assign:** `GIVEUP_COOLDOWN_S=600`; clear **both** digest-home `queue.json` stamps (`giveup_seats`, `cooldown_until`, `giveup_ts`, `giveup_count`, `needs_human`) **and** `seat-ledger.json` `giveup["owner/repo#n"]` (lower-case key). `!resync` does **not** clear them. Then `!assign <seat> owner/repo FR|MRB|UAT|FIX N`. Back up both files first; never restart Jeeves during `!build`. Gap: recommend `!cleargiveup` (not implemented yet).
 
 `!help` already lists `!focus` and `!resync` for authorised principals.

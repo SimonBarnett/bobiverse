@@ -33,11 +33,24 @@ def _run_harvest(*extra: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+# FR #5481: lesson-review (FR #4780/#4917) runs before the FR #4371 CLOSED-duplicate gate.
+_LESSON_SKIP = (
+    "SKIPPED harvest CLOSED-duplicate lesson loop",
+    "SKIPPED harvest lesson-review loop (FR #4780/#4917)",
+    "SKIPPED harvest lesson/pin job (FR #4917)",
+)
+
+
+def _assert_harvest_skipped(stdout: str) -> None:
+    assert any(m in stdout for m in _LESSON_SKIP), stdout
+
+
 def test_harvest_script_documents_fr4371_skip_and_closes_strip():
     text = HARVEST.read_text(encoding="utf-8-sig")
     assert "FR #4371" in text
     assert "Test-HarvestClosedDuplicateLessonLoop" in text
     assert "SKIPPED harvest CLOSED-duplicate lesson loop" in text
+    assert "SKIPPED harvest lesson-review loop (FR #4780/#4917)" in text
     assert "Protect-HarvestBodyClosesKeywords" in text or "Neutralize-HarvestClosesKeywords" in text
 
 
@@ -53,7 +66,7 @@ def test_harvest_skips_closed_duplicate_already_merged_mrb(tmp_path: Path):
         str(tmp_path / "harvest-outbox"),
     )
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "SKIPPED harvest CLOSED-duplicate lesson loop" in r.stdout
+    _assert_harvest_skipped(r.stdout)
     assert "HARVESTED" not in r.stdout
     assert "QUEUED" not in r.stdout
     out = tmp_path / "harvest-outbox"
@@ -72,7 +85,7 @@ def test_harvest_skips_cast_iron_already_covers_closed(tmp_path: Path):
         str(tmp_path / "harvest-outbox"),
     )
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "SKIPPED harvest CLOSED-duplicate lesson loop" in r.stdout
+    _assert_harvest_skipped(r.stdout)
 
 
 def test_harvest_neutralizes_closes_in_queued_body(tmp_path: Path):
@@ -81,14 +94,14 @@ def test_harvest_neutralizes_closes_in_queued_body(tmp_path: Path):
         "-Repo",
         "SimonBarnett/bobiverse",
         "-Summary",
-        "FR #4371: skip CLOSED-duplicate tip-loop; tip wrongly Closes #4363 in narrative",
+        "FR #5481: pack client keep.ps1 count; tip wrongly Closes #4363 in narrative",
         "-Lesson",
-        "Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs and neutralizes Closes #N (FR #4371).",
+        "Invoke-BobiverseHarvest neutralizes Closes #N in harvest tip bodies (FR #4371).",
         "-OutboxDir",
         str(tmp_path / "harvest-outbox"),
     )
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "SKIPPED harvest CLOSED-duplicate lesson loop" not in r.stdout
+    assert not any(m in r.stdout for m in _LESSON_SKIP), r.stdout
     assert "QUEUED" in r.stdout or "HARVESTED" in r.stdout
     files = list((tmp_path / "harvest-outbox").glob("*.json"))
     assert files, r.stdout + r.stderr

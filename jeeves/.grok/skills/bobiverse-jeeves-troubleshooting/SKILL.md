@@ -14,7 +14,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -27,6 +27,7 @@ Start with `bobiverse-fleet-ops` (health checks, hotpatch rules, known-failure t
 
 | Symptom | Diagnosis / fix |
 |---|---|
+| Copilot timeout creates another CCA task for the same job (FR #5201) | Check `copilot-jobs.json`, `queue.json`, and `seat-ledger.json` in digest home, not chair home. Preserve the original task when it has a Copilot PR or pushed branch; a failed work lookup must not trigger redispatch. Without work, use the normal seat GIVEUP path (cooldown/count plus durable ledger exclusion) so IRC seats can take the row via `!bored`. Repeated Copilot give-up uses the existing all-gave-up stall filer; do not clear give-up stamps to restart the loop. |
 | Jeeves silent / outbox thread dead; stderr `UnicodeEncodeError` `charmap` `\\u2192` (FR #5157) | Same class as bob-ear #4396 / airc #4397. `info()` + `jeeves_main.safe_print` / `harden_stdio_replace`; `outbox_loop` logs ERROR and continues. Needs rebuilt `jeeves.exe` + Simon go to restart ircJeeves. Do not hotpatch ionos without that go. |
 | New repo never gets FR/MRB after create | Not on the resync list / not focused. Edit chair-home `%USERPROFILE%\.jeeves\resync-repos.txt` (what `configured_repos` reads) and/or `!focus low owner/repo`, then `!resync`. Digest-home twin `%USERPROFILE%\.bobiverse\resync-repos.txt` is seeded but not discovery when homes differ. Full playbook: `bobiverse-jeeves-repos` (FR #5134). |
 | Need to re-feed a given-up job now | `!resync` does not clear give-ups. Back up digest-home `queue.json` + `seat-ledger.json`, clear row `giveup_seats`/`cooldown_until`/`giveup_ts`/`giveup_count`/`needs_human` and ledger `giveup["owner/repo#n"]` (lower-case), then `!assign`. Cooldown is `GIVEUP_COOLDOWN_S=600`. Never restart during `!build`. See `bobiverse-jeeves-repos`. |

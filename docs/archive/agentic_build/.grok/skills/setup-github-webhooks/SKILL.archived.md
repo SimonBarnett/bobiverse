@@ -5,7 +5,7 @@ description: >
   Set up GitHub repository webhooks. Use when the user says set up
   webhooks on git, GitHub hook, add hook to a repo or all repos, hook
   URL, /setup-github-webhooks, or a new SimonBarnett repo needs
-  https://irc.ntsa.uk/bob/v1/git. Cursor Web PR/push grant is
+  https://bob.ntsa.uk/bob/v1/git. Cursor Web PR/push grant is
   setup-github-cursor. HTTPS on the receiver is
   setup-ssl-certs. Jeeves announce text is agentic_irc
   jeeves-git-webhook.
@@ -19,7 +19,7 @@ do `setup-ssl-certs` first.
 
 Default fleet receiver (every SimonBarnett repo):
 
-`https://irc.ntsa.uk/bob/v1/git`
+`https://bob.ntsa.uk/bob/v1/git`
 
 Events: `push`, `pull_request`, `issues`. JSON body. No hook secret
 in git, issues, or channel. Do not point GitHub at
@@ -36,7 +36,7 @@ auto-claim those lines. Skill `jeeves-git-webhook` in
 Write `hook.json` UTF-8 **without BOM**:
 
 ```
-{"name":"web","active":true,"events":["push","pull_request","issues"],"config":{"url":"https://irc.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
+{"name":"web","active":true,"events":["push","pull_request","issues"],"config":{"url":"https://bob.ntsa.uk/bob/v1/git","content_type":"json","insecure_ssl":"0"}}
 ```
 
 ```
@@ -85,10 +85,10 @@ Cursor Web / `cursor[bot]` push+PR is skill `setup-github-cursor`
 
 ## Check
 
-- Hook `config.url` is `https://irc.ntsa.uk/bob/v1/git`
+- Hook `config.url` is `https://bob.ntsa.uk/bob/v1/git`
 - `insecure_ssl` is `0`
 - Latest delivery 204
-- GET `https://irc.ntsa.uk/bob/v1/git` is 405 (POST only)
+- GET `https://bob.ntsa.uk/bob/v1/git` is 405 (POST only)
 
 ## Do not
 

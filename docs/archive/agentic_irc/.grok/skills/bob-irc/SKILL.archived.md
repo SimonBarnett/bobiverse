@@ -55,7 +55,7 @@ Do **not** use `!bobiverse` to refresh or read the digest (#174).
 
 ## Status read / write
 
-- **Read:** public HTTP GET `https://irc.ntsa.uk/bob/v1/report` (same path as
+- **Read:** public HTTP GET `https://bob.ntsa.uk/bob/v1/report` (same path as
   write; also `/bob/v1/digest` and `/digest`). No secret. Nothing in the digest
   is secure. `!bobiverse` is **gone** (#174) — chair whispers one ERR pointer
   to that URL if asked. bob-* refresh local `digest.json` via HTTP GET (not
@@ -71,7 +71,7 @@ Do **not** use `!bobiverse` to refresh or read the digest (#174).
   **GET /bob/v1/report** (and `/bob/v1/digest`) returns JSON. Default bind
   `127.0.0.1` is not peer-reachable — bind a reachable address and open the
   IONOS port. DNS is optional (IP URL is fine). Live URL:
-  `https://irc.ntsa.uk/bob/v1/report` (GET digest JSON; POST **204**/**200**;
+  `https://bob.ntsa.uk/bob/v1/report` (GET digest JSON; POST **204**/**200**;
   **401** = secret mismatch — writers need ionos `~\.grok\bob\report.secret`).
   `BOB_REPORT_ALLOW` is IPs for POST only. Metrics: long-running
   `tools/Watch-BobDigestMetrics.ps1` every 2 minutes posts xAI weekly +
@@ -189,7 +189,7 @@ Human monitor (flamingo): Halloy nick not `bob-*` (e.g. `simon`).
 `%AppData%\halloy\config.toml`: server `irc.ntsa.uk:6697` TLS,
 `password_file` = connect.password, channel `#bobiverse` only (shops are
 dynamic). `/join #flamingo` while that bob is up. Read digest at
-`https://irc.ntsa.uk/bob/v1/report` (do not type `!bobiverse` — it is gone).
+`https://bob.ntsa.uk/bob/v1/report` (do not type `!bobiverse` — it is gone).
 Address a `bob-*` nick (`@bob-ionos`, `bob-flamingo:`, Query): that seat
 ACKs one English line (status + weekly). `weekly=0` still answers
 (empty weekly is not deaf; #54). Optional **grok-talk** (LLM listen+reply;

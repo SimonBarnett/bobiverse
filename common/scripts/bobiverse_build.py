@@ -523,7 +523,8 @@ def dry_run_plan(recipe: BuildRecipe, *, repo: str, version: str, ref: str) -> l
 
 
 BUILD_V1_RE = re.compile(
-    r"^BUILD\s+v1\s+repos=(?P<repos>\S+)\s+version=(?P<version>\S+)\s+ref=(?P<ref>\S+)\s*$",
+    r"^BUILD\s+v1\s+repos=(?P<repos>\S+)\s+version=(?P<version>\S+)\s+ref=(?P<ref>\S+)"
+    r"(?:\s+id=(?P<id>\S+))?\s*$",
     re.IGNORECASE,
 )
 
@@ -564,6 +565,7 @@ def parse_build_v1_route(text: str) -> dict | None:
         "repos": repos,
         "version": m.group("version"),
         "ref": m.group("ref"),
+        "id": (m.group("id") or "").strip(),
         "raw": raw,
     }
 
@@ -1455,22 +1457,68 @@ def enqueue_build_job(
     return path
 
 
+def default_build_route_marker_dir() -> Path:
+    """FR #5266: machine-global BUILD v1 route claims (chair + ear share this)."""
+    return Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-routes"
+
+
+def default_machine_build_lock_path() -> Path:
+    """FR #5266: one BuildLock file per machine, not per home."""
+    return Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Bobiverse" / "build-locks.json"
+
+
+def build_route_id(route: dict) -> str:
+    rid = str(route.get("id") or "").strip()
+    if rid:
+        return rid
+    raw = str(route.get("raw") or "")
+    return "h-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def claim_build_route_marker(marker_dir: Path | str, route_id: str) -> bool:
+    """O_EXCL claim. First caller True; later callers on the same id False."""
+    rid = "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in str(route_id or "").strip())
+    if not rid:
+        rid = "unknown"
+    d = Path(marker_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{rid}.claimed"
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(str(path), flags)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    try:
+        os.write(fd, f"{int(time.time())}\n".encode("ascii"))
+    finally:
+        os.close(fd)
+    return True
+
+
 def consume_build_v1(
     line: str,
     local_machine: str,
     recipe_machine: str,
     *,
     queue_dir: Path | str | None = None,
+    route_marker_dir: Path | str | None = None,
 ) -> bool:
     """Return True when this host should accept the BUILD v1 route (optionally enqueue).
 
     Does not pack/release in-process; writes a job JSON when ``queue_dir`` is set.
+    FR #5266: when ``route_marker_dir`` is set, the first caller on this machine
+    claims the route id with O_EXCL; later chair/ear copies return False.
     """
     route = parse_build_v1_route(line)
     if not route:
         return False
     if not is_recipe_build_machine(recipe_machine, local_machine):
         return False
+    if route_marker_dir is not None:
+        if not claim_build_route_marker(route_marker_dir, build_route_id(route)):
+            return False
     if queue_dir is not None:
         enqueue_build_job(
             route,

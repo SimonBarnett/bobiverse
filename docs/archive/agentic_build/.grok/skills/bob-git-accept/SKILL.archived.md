@@ -52,7 +52,7 @@ Legacy `w-<short>-<pid>` nicks are retired for the trust gate; live seats use
 Source of truth for **not-yet-accepted** jobs is the digest report / Jeeves
 queue (`queue.json` crash mirror):
 
-`https://irc.ntsa.uk/bob/v1/report`
+`https://bob.ntsa.uk/bob/v1/report`
 
 (`reportUrl` in `config/bobiverse.json`.)
 

@@ -21,7 +21,7 @@ def test_start_jeeves_waits_for_bobcallback_listen():
 def test_assert_intake_expects_http_202_local_and_public():
     text = ASSERT.read_text(encoding="utf-8")
     assert "127.0.0.1:7700" in text
-    assert "irc.ntsa.uk" in text
+    assert "bob.ntsa.uk" in text
     assert "/bob/v1/intake" in text
     assert "202" in text
     assert "SkipPublic" in text

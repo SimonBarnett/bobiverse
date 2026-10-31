@@ -47,7 +47,11 @@ FIRST_PROBE_DELAY_S = 45.0
 STATE_NAME = "webhook-health.json"
 TOKEN_SOURCE_LOG = "resync-token-source.log"
 LOCAL_BASE = "http://127.0.0.1:7700"
-PUBLIC_BASE = "https://irc.ntsa.uk"
+try:
+    import bob_public_base as _bpb
+    PUBLIC_BASE = _bpb.DEFAULT_PUBLIC_BASE
+except ImportError:  # pragma: no cover - flat install without helper
+    PUBLIC_BASE = "https://bob.ntsa.uk"
 PROBE_ZEN = "jeeves-health-probe"          # bobcallback acks this ping quietly (no queue, no announce)
 PROBE_REPO = "SimonBarnett/bobiverse"
 MAX_REPOS = 60
@@ -74,9 +78,14 @@ CHECKS = (
 
 
 def targets() -> dict[str, str]:
+    public = (
+        os.environ.get("JEEVES_PROBE_PUBLIC")
+        or os.environ.get("BOB_PUBLIC_BASE")
+        or PUBLIC_BASE
+    )
     return {
         "local": (os.environ.get("JEEVES_PROBE_LOCAL") or LOCAL_BASE).rstrip("/"),
-        "public": (os.environ.get("JEEVES_PROBE_PUBLIC") or PUBLIC_BASE).rstrip("/"),
+        "public": public.strip().rstrip("/"),
     }
 
 
@@ -724,9 +733,19 @@ class ChairJobs:
             return parsed, int(exc.code)
 
     def _copilot_tick(self) -> None:
-        """FR #5174: always pass fetch_user + tasks POST into copilot_dispatch.tick."""
+        """FR #5174: always pass fetch_user + tasks POST into copilot_dispatch.tick.
+
+        FR #5267: release stranded accepts before any Copilot API call, including
+        when there is no token (dispatch stays off).
+        """
         import copilot_dispatch
 
+        swept = copilot_dispatch.settle_stuck_accepted(self.digest_home, now=self.clock())
+        if swept.get("dropped") or swept.get("released"):
+            self.log(
+                f"INFO copilot-queue dropped={swept.get('dropped', 0)} "
+                f"released={swept.get('released', 0)}"
+            )
         token, _src = self.token_loader()
         if not token:
             self.log("WARN copilot-dispatch skipped: no token")
@@ -747,12 +766,19 @@ class ChairJobs:
             out.setdefault("status", int(code))
             return out
 
+        def get(path: str):
+            data, code = self._github_json("GET", "https://api.github.com/" + path.lstrip("/"))
+            if not 200 <= code < 300:
+                raise RuntimeError(f"Copilot tracking GET failed ({code})")
+            return data
+
         # FR #5174: queue.json / unaccepted live under digest_home (BOB_DIGEST_HOME),
         # not chair home (BOB_HOME / ~/.jeeves). Allowance + jobs cache share that path.
         out = copilot_dispatch.tick(
             self.digest_home,
             fetch_user=fetch_user,
             post=post,
+            get=get,
             announce=self.announce,
         )
         if out.get("dispatched") or out.get("timed_out"):
@@ -897,6 +923,14 @@ class ChairJobs:
         findings = stall_detectors.detect_all(snap)
         if not findings:
             return
+        # FR #5181: park all-gave-up rows so the next scan skips them
+        # (needs_human) and seats stop re-offering abandoned human work.
+        with contextlib.suppress(Exception):
+            n_park = stall_detectors.stamp_needs_human_for_all_gave_up(
+                self.digest_home, findings
+            )
+            if n_park:
+                self.log(f"INFO stall-park needs_human n={n_park}")
         actions = stall_filer.apply_findings(
             findings,
             home=self.home,

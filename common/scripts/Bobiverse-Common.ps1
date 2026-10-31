@@ -1904,7 +1904,8 @@ function Sync-BobiverseScriptTipFromOrigin {
         [string]$Branch = 'main',
         [string]$GitExe = '',
         [string]$ContentMustMatch = '',
-        [int]$MinBytes = 40
+        [int]$MinBytes = 40,
+        [switch]$Optional
     )
     $git = if ($GitExe) { $GitExe } else {
         $cmd = Get-Command git -ErrorAction SilentlyContinue
@@ -1930,6 +1931,15 @@ function Sync-BobiverseScriptTipFromOrigin {
             $err = ''
             if (Test-Path -LiteralPath ($tmp + '.err')) {
                 $err = (Get-Content -LiteralPath ($tmp + '.err') -Raw -ErrorAction SilentlyContinue)
+            }
+            # FR #5480: optional harvest overlays (intake.py) must not fail Sync when
+            # origin/<branch> never had that path (old remotes / 4297 fixtures).
+            if ($Optional -and $err -match 'does not exist|exists on disk|pathspec|invalid object name') {
+                return [pscustomobject]@{
+                    Ok     = $true
+                    Reason = "skip missing $spec (FR #5480)"
+                    Bytes  = 0
+                }
             }
             return [pscustomobject]@{ Ok = $false; Reason = "git show $spec failed: $err" }
         }
@@ -2002,13 +2012,15 @@ function Sync-BobiverseHarvestScriptsFromOrigin {
     $bytes = 0
     # FR #4783 / FR #4780: also tip-heal intake.py (is_lesson_review_meta_loop) -
     # same dirty-ff lag class; never hand WriteAllText of `git show` String[].
+    # FR #5480: intake.py overlay is Optional - missing origin blob is skip, not FAIL.
     foreach ($pair in @(
-            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'Protect-HarvestBodyClosesKeywords|FR #4371|FR #4419|ExistingPrUrl|Invoke-BobiverseHarvest|FR #4780' },
-            @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake' },
-            @{ Rel = 'common/scripts/intake.py'; Match = 'is_lesson_review_meta_loop|FR #4780|/bob/v1/intake' }
+            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'Protect-HarvestBodyClosesKeywords|FR #4371|FR #4419|ExistingPrUrl|Invoke-BobiverseHarvest|FR #4780'; Optional = $false },
+            @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake'; Optional = $false },
+            @{ Rel = 'common/scripts/intake.py'; Match = 'is_lesson_review_meta_loop|FR #4780|/bob/v1/intake'; Optional = $true }
         )) {
+        $opt = [bool]$pair.Optional
         $r = Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
-            -RelPath $pair.Rel -ContentMustMatch $pair.Match
+            -RelPath $pair.Rel -ContentMustMatch $pair.Match -Optional:$opt
         $results += $r
         if (-not $r.Ok) {
             $ok = $false
@@ -3478,3 +3490,24 @@ function Remove-BobiverseAircClientExtraPayload {
     Write-Host ("INFO FR #3514 client allow-list purge count={0}" -f $removed.Count)
     return @($removed)
 }
+
+
+function Get-BobiversePublicBase {
+    <#
+      FR #5272: fleet public HTTP origin for webhooks (not IRC).
+      Env BOB_PUBLIC_BASE overrides; default https://bob.ntsa.uk
+    #>
+    $raw = [string]$env:BOB_PUBLIC_BASE
+    if ($raw -and $raw.Trim()) {
+        return $raw.Trim().TrimEnd('/')
+    }
+    return 'https://bob.ntsa.uk'
+}
+
+function Get-BobiversePublicUrl {
+    param([Parameter(Mandatory)][string]$Path)
+    $base = Get-BobiversePublicBase
+    if (-not $Path.StartsWith('/')) { $Path = '/' + $Path }
+    return ($base + $Path)
+}
+

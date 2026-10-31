@@ -1,7 +1,7 @@
 #Requires -Version 4.0
 <#
 .SYNOPSIS
-  POST kind=issue|fr|skill|harvest to https://irc.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
+  POST kind=issue|fr|skill|harvest to https://bob.ntsa.uk/bob/v1/intake (honesty-box / no-gh path).
 
 .DESCRIPTION
   Intake is open: NO password/secret is sent or needed. (Optional X-Bob-Intake-Key
@@ -23,7 +23,7 @@ param(
     # (skills-visionary / a-search / ...); bobiverse stays harvest. Never hardcode
     # harvest for a product Plan-seat lesson repo.
     [string]$Book = '',
-    [string]$IntakeUrl = 'https://irc.ntsa.uk/bob/v1/intake',
+    [string]$IntakeUrl = 'https://bob.ntsa.uk/bob/v1/intake',
     [string]$IdempotencyKey = '',
     [string]$Machine = '',
     [string]$Agent = 'Report-BobiverseIntakeIssue',

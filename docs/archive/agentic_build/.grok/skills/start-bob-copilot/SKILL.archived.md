@@ -16,7 +16,7 @@ Copilot is an optional fuel (`-AllowCopilot`), including hostile MRB only when t
 
 ## Digest fuel gate (before start)
 
-Follow `bob-token-handoff` first. GET `https://irc.ntsa.uk/bob/v1/report` and read `pcent.cursor-models`. Do not invent the percent.
+Follow `bob-token-handoff` first. GET `https://bob.ntsa.uk/bob/v1/report` and read `pcent.cursor-models`. Do not invent the percent.
 
 Start Copilot only when fuel is `copilot`: the operator passed `-AllowCopilot` / `-Fuel copilot`, and included `cursor-models` is already 0 (or the picker explicitly chose copilot). While `cursor-models` remaining is above 0, do not offload here. Never Other Models. PR stays the low tier; MRB stays medium (`grok-4.6`) on cursor-models or grok-build. UAT stays with Bob.
 

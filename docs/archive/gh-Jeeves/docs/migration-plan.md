@@ -45,7 +45,7 @@ Re-enable task `BobJeeves-chair` on the tagged legacy checkout. The queue format
 ## 16.3 Live smoke test procedure (G2)
 
 1. Pre-check:
-   - `GET https://irc.ntsa.uk/bob/v1/report`: Jeeves `lastSeen` is fresh.
+   - `GET https://bob.ntsa.uk/bob/v1/report`: Jeeves `lastSeen` is fresh.
    - The ear on the test machine and one worker seat are configured with **no token pools**, and the worker is a scripted fake that replies ACK and DONE.
 2. On a sandbox repo with the Bob hook, open issue "smoke &lt;timestamp&gt;". Expect `GIT issues &lt;repo&gt; opened #n` on #bobiverse (ionos `~\.agentic-irc-bobiverse\irc.log`) and `FR #n` in `queue.unaccepted`.
 3. The worker/monitor sends `!bored` in `#{machine}`. Expect Jeeves assign: `&lt;nick&gt;: FR &lt;repo&gt;#n &lt;url&gt;` (FR #106).

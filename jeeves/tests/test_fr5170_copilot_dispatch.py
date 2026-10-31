@@ -6,6 +6,7 @@ from pathlib import Path
 import bobreport
 import chair_health
 import copilot_dispatch as cd
+import focus_ignore as fi
 import gitclaim
 import shop_listen
 
@@ -39,6 +40,7 @@ def test_tasks_api_path():
 
 
 def test_exhaustion_stops_and_resumes(tmp_path):
+    fi.handle_focus_cmd(tmp_path, f"high {REPO}")
     cd.set_allowance(tmp_path, remaining=5)
     assert cd.has_allowance(tmp_path)
     assert cd.is_exhausted({"status": 403, "message": "quota exceeded"})
@@ -253,6 +255,7 @@ def test_resync_only_on_fallback():
 
 
 def test_dispatch_posts_and_accepts(tmp_path):
+    fi.handle_focus_cmd(tmp_path, f"high {REPO}")
     gitclaim.apply_queue_event(
         tmp_path,
         gitclaim.GitClaim(repo=REPO, task="FR", id="#12", event="issues", action="opened", line="x"),

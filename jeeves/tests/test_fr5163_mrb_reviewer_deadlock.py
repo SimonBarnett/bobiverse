@@ -189,11 +189,56 @@ def test_fr5270_single_idle_giveup_not_cross_clear(tmp_path, monkeypatch):
     info = gitclaim.detect_mrb_reviewer_deadlock(
         tmp_path, idle=idle, live=live, rows=doc["unaccepted"]
     )
-    assert info is not None
-    assert info["kind"] == "author_only"
-    assert info["clearable"] == []
+    # Main FR #5268: sole-seat giveup is not author_only recycleseat (return None).
+    assert info is None
     gitclaim.heal_mrb_reviewer_deadlock(tmp_path, idle=idle, live=live)
     kept = gitclaim.load_queue(tmp_path)["unaccepted"][0]
     assert a in str(kept.get("giveup_seats") or "")
     st, job = gitclaim.offer_focus_top(tmp_path, a, "#marchhare", now=1000.0)
     assert st == "empty" and job is None
+
+
+def test_fr5268_sole_idle_giveup_not_cleared(tmp_path, monkeypatch):
+    """FR #5268: one idle seat that GIVEUP'd the only MRB must keep giveup_seats.
+
+    Before the fix, detect_mrb_reviewer_deadlock treated this as cross_giveup,
+    heal cleared the stamp, and offer_focus_top re-offered the same job.
+    """
+    monkeypatch.setenv("BOB_DIGEST_HOME", str(tmp_path))
+    nick = "marchhare-1"
+    registered_machines.save_registered(tmp_path, {"marchhare"})
+    digest = bobreport.empty_digest()
+    digest["machines"]["marchhare"] = bobreport._empty_machine("marchhare")
+    digest["machines"]["marchhare"]["worker_list"] = [
+        {"nick": nick, "state": "idle"}
+    ]
+    bobreport.save_digest(tmp_path, digest)
+    row = _mrb_row(
+        repo="SimonBarnett/bobiverse",
+        num=1,
+        author="flamingo-99",
+        giveup=nick,
+    )
+    gitclaim._write_queue(
+        gitclaim.queue_path(tmp_path),
+        {"v": 1, "unaccepted": [row], "accepted": [], "done": []},
+    )
+    live = gitclaim.live_seat_nicks(tmp_path)
+    free = gitclaim.free_seat_nicks(tmp_path, live)
+    assert free == {nick}
+    assert gitclaim.detect_mrb_reviewer_deadlock(
+        tmp_path, idle=free, live=live
+    ) is None
+    install = tmp_path / "install"
+    install.mkdir()
+    assert gitclaim.heal_mrb_reviewer_deadlock(
+        tmp_path, install_root=install, now=1_000_000.0
+    ) == []
+    kept = gitclaim.load_queue(tmp_path)["unaccepted"][0]
+    assert nick in str(kept.get("giveup_seats") or "")
+    st, job = gitclaim.offer_focus_top(
+        tmp_path, nick, "#marchhare", pr_exists=lambda *a, **k: True
+    )
+    assert st == "empty" and job is None
+    after = gitclaim.load_queue(tmp_path)["unaccepted"][0]
+    assert nick in str(after.get("giveup_seats") or "")

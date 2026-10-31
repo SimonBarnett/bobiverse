@@ -120,14 +120,22 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
+    """Report rows abandoned by every live seat unless already parked for a human.
+
+    FR #5181: ``needs_human`` rows are intentional parks — skip them so the
+    stall filer does not keep re-alerting (class of a-search#5139).
+    """
     live = {gitclaim.canonical_worker_nick(n) or n for n in (snap.get("live") or [])}
     live = {n for n in live if n}
     if not live:
         return []
     out = []
     for row in list(snap.get("unaccepted") or []) + list(snap.get("accepted") or []):
-        if not live:
-            break
+        if not isinstance(row, dict):
+            continue
+        # FR #5181: parked-for-human rows are not actionable stalls.
+        if gitclaim.row_needs_human(row):
+            continue
         if all(gitclaim.row_gave_up_by(row, n, live=live) for n in live):
             rid = _row_id(row)
             out.append(
@@ -135,10 +143,55 @@ def detect_all_gave_up(snap: dict[str, Any]) -> list[dict[str, Any]]:
                     "id": ALL_GAVE_UP_ID,
                     "key": rid,
                     "title": f"stall:all-gave-up:{rid}",
-                    "evidence": {"live": sorted(live), "row": rid},
+                    "evidence": {
+                        "live": sorted(live),
+                        "row": rid,
+                        "giveup_seats": sorted(gitclaim.giveup_seat_set(row)),
+                        "needs_human": False,
+                    },
                 }
             )
     return out
+
+
+def stamp_needs_human_for_all_gave_up(
+    home: Any,
+    findings: list[dict[str, Any]],
+) -> int:
+    """FR #5181: park queue rows that just triggered all-gave-up (first alert).
+
+    Returns the number of rows stamped. Subsequent scans skip via
+    ``row_needs_human`` in ``detect_all_gave_up``.
+    """
+    keys = {
+        str(f.get("key") or "").strip()
+        for f in (findings or [])
+        if isinstance(f, dict) and str(f.get("id") or "") == ALL_GAVE_UP_ID
+    }
+    keys.discard("")
+    if not keys:
+        return 0
+    stamped = 0
+    try:
+        with gitclaim._lock(home):
+            doc = gitclaim._load_queue_unlocked(home)
+            changed = False
+            for bucket in ("unaccepted", "accepted"):
+                for row in list(doc.get(bucket) or []):
+                    if not isinstance(row, dict):
+                        continue
+                    if _row_id(row) not in keys:
+                        continue
+                    if gitclaim.row_needs_human(row):
+                        continue
+                    row["needs_human"] = True
+                    stamped += 1
+                    changed = True
+            if changed:
+                gitclaim._write_queue(gitclaim.queue_path(home), doc)
+    except Exception:
+        return 0
+    return stamped
 
 
 def detect_sticky_auto_pin(snap: dict[str, Any]) -> list[dict[str, Any]]:
