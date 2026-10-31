@@ -415,36 +415,41 @@ def run_legion_verb(
 ) -> LegionVerbResult:
     qid = (job_id or "").strip().lower() or "00000000"
     work = worker or installer_legion_work
-    if worker is None:
-        ident = (_kw.get("credman") or default_legion_credman)() or {}
-        if not ident.get("username") or not ident.get("password"):
+    extra = " whatif=1" if whatif else ""
+    accepted = (
+        f"LEGION accepted id={qid} target={target} timeout={LEGION_TIMEOUT_S}{extra}\n"
+        f"DONE id={qid} exit=0"
+    )
+    work_kw: dict[str, Any] = {}
+    if "credman" in _kw:
+        work_kw["credman"] = _kw["credman"]
+
+    def _call() -> dict[str, Any]:
+        try:
+            data = work(target, whatif=whatif, **work_kw)
+        except TypeError:
+            data = work(target=target, whatif=whatif, **work_kw)
+        return data if isinstance(data, dict) else {}
+
+    def _safe() -> dict[str, Any]:
+        try:
+            return _call()
+        except Exception:
+            return {}
+
+    if wait:
+        # FR #5389: CredRead lives here (or in installer_legion_work), not on accept.
+        data = _safe()
+        if str(data.get("error") or "") == "credman-missing":
             return LegionVerbResult(
                 False,
                 f"DONE id={qid} exit=126 credman-missing",
                 job_id=qid,
             )
+        return LegionVerbResult(True, accepted, job_id=qid)
 
-    def _safe() -> None:
-        try:
-            work(target, whatif=whatif)
-        except TypeError:
-            try:
-                work(target=target, whatif=whatif)
-            except Exception:
-                return
-        except Exception:
-            return
-
-    if wait:
-        _safe()
-    else:
-        threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
-    extra = " whatif=1" if whatif else ""
-    reply = (
-        f"LEGION accepted id={qid} target={target} timeout={LEGION_TIMEOUT_S}{extra}\n"
-        f"DONE id={qid} exit=0"
-    )
-    return LegionVerbResult(True, reply, job_id=qid)
+    threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
+    return LegionVerbResult(True, accepted, job_id=qid)
 
 
 _SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
