@@ -3559,6 +3559,15 @@ def _coerce_row(row: dict) -> dict | None:
         out["closed_by"] = str(row.get("closed_by"))
     if row.get("cancel_reason"):
         out["cancel_reason"] = str(row.get("cancel_reason"))[:200]
+    # FR #5317: CodeRabbit wait stamps must survive queue reload (else timeout never fires).
+    if row.get("coderabbit"):
+        out["coderabbit"] = str(row.get("coderabbit"))
+    try:
+        raw_cr = row.get("coderabbit_wait_since")
+        if raw_cr is not None and str(raw_cr).strip() != "":
+            out["coderabbit_wait_since"] = float(raw_cr)
+    except (TypeError, ValueError):
+        pass
     return out
 
 
@@ -5751,6 +5760,14 @@ def format_assign_line(nick: str, row: dict) -> str:
     """Wire line the seats and Watch-AgentHealth parse: ``<nick>: FR|MRB|UAT owner/repo#N url``."""
     num = str(row.get("id") or "").strip().lstrip("#")
     line = f"{nick}: {_canon_task(row)} {row.get('repo') or ''}#{num} {resolve_assign_url(row)}"
+    try:
+        import fuel_chain
+
+        extra = fuel_chain.assign_suffix(row)
+    except Exception:
+        extra = ""
+    if extra:
+        line = f"{line} {extra}"
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", line)).strip()
 
 
@@ -7885,6 +7902,15 @@ def offer_focus_top(
                     return None
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     return None
+                # FR #5317: optional CodeRabbit wait (off by default; timeout still offers).
+                try:
+                    import fuel_chain
+
+                    if fuel_chain.apply_mrb_coderabbit_gate(cand, now_f):
+                        purged = True
+                        return None
+                except Exception:
+                    pass
                 to = str(cand.get("offered_to") or "").strip()
                 if to and not _same_seat(to, me):
                     try:
@@ -8185,6 +8211,14 @@ def offer_top(
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     i += 1
                     continue
+                try:
+                    import fuel_chain
+
+                    if fuel_chain.apply_mrb_coderabbit_gate(row, now_f):
+                        i += 1
+                        continue
+                except Exception:
+                    pass
                 row_eff = enrich_review_author_fields(doc, row)
                 led = ledger_load(home)
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(
