@@ -10,6 +10,8 @@ import json
 import os
 import re
 import subprocess
+import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -20,6 +22,12 @@ EXAMPLE_ALLOWLIST_NAME = "priority-instances.example.json"
 
 _PRIORITY_CMD_RE = re.compile(
     r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY\s+(connect|status)(?:\s+(\S+))?\s*$"
+)
+_PRIORITY_ANY_RE = re.compile(
+    r"(?is)^(?:id=([0-9a-f]{8})\s+)?PRIORITY(?:\s+(\S+).*)?$"
+)
+_PRIORITY_KNOWN_SUB = frozenset(
+    {"connect", "status", "prepare", "formstart", "subform", "getrows"}
 )
 
 _REQUIRED_INSTANCE_KEYS = ("id", "url", "company", "user", "credentialTarget")
@@ -156,12 +164,28 @@ def fetch_credman_password(
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> str:
-    """Read a generic CredMan password for ``target``. Never log the return value."""
+    """Read a generic CredMan password for ``target``. Never log the return value.
+
+    FR #5526: default path uses native CredReadW (``airc_credman``). A supplied
+    ``runner`` keeps the legacy PowerShell path for tests/compatibility.
+    """
     t = (target or "").strip()
     if not t:
         raise PriorityConfigError("credentialTarget empty")
-    # PowerShell CredMan via CredentialManager module when present; else cmdkey is
-    # list-only. Prefer Win32 CredRead via a small PS snippet (no password print).
+    if runner is None:
+        import airc_credman as _cred
+
+        try:
+            pair = _cred.read_generic_credential(t)
+        except _cred.CredmanError as e:
+            raise PriorityConfigError(f"credman-read-failed:{e.reason}") from e
+        if pair is None:
+            raise PriorityConfigError("credman-missing")
+        if not pair.password:
+            raise PriorityConfigError("credman-empty")
+        return pair.password
+
+    # Legacy PowerShell / Add-Type path (injected runner only).
     ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
     script = r"""
 param([Parameter(Mandatory=$true)][string]$Target)
@@ -197,9 +221,8 @@ $pw = [BobCredRead]::ReadGeneric($Target)
 if ($null -eq $pw) { Write-Output 'CRED_MISSING'; exit 2 }
 [Console]::Out.Write($pw)
 """
-    run = runner or subprocess.run
     try:
-        p = run(
+        p = runner(
             [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, "-Target", t],
             capture_output=True,
             text=True,
@@ -241,6 +264,31 @@ def parse_priority_command(text: str) -> tuple[str | None, str, str | None] | No
     return m.group(1), m.group(2).lower(), m.group(3)
 
 
+def parse_priority_usage(text: str) -> str | None:
+    """FR #5533: PRIORITY with no/unknown sub-verb. Returns job id or '' (not None).
+
+    Known sub-verbs (connect/status/prepare/form walk) return None so their parsers win.
+    """
+    m = _PRIORITY_ANY_RE.match((text or "").strip())
+    if not m:
+        return None
+    sub = (m.group(2) or "").strip().lower()
+    if sub in _PRIORITY_KNOWN_SUB:
+        return None
+    return (m.group(1) or "").lower()
+
+
+PRIORITY_USAGE_SUBVERBS = "connect|status|prepare|formStart|subform|getRows"
+
+
+def format_priority_usage(job_id: str) -> str:
+    qid = (job_id or "").strip().lower() or "00000000"
+    return (
+        f"err id={qid} seq=1 code=usage PRIORITY {PRIORITY_USAGE_SUBVERBS}\n"
+        f"DONE id={qid} exit=2"
+    )
+
+
 @dataclass
 class PriorityVerbResult:
     ok: bool
@@ -248,8 +296,11 @@ class PriorityVerbResult:
     job_id: str
     payload: dict[str, Any]
     error: str = ""
+    pending: bool = False
 
     def reply_lines(self) -> list[str]:
+        if self.pending:
+            return []
         body = dict(self.payload)
         if self.error and "error" not in body:
             body["error"] = self.error
@@ -274,6 +325,58 @@ class PriorityVerbResult:
         return "\n".join(self.reply_lines())
 
 
+def _connect_work(
+    inst: PriorityInstance,
+    jid: str,
+    *,
+    cred_fetcher: Callable[[str], str] | None,
+    connector: ConnectFn | None,
+) -> PriorityVerbResult:
+    """CredMan fetch + connector. Never put secrets in the returned payload."""
+    fetch = cred_fetcher or fetch_credman_password
+    password = ""
+    try:
+        try:
+            password = fetch(inst.credential_target)
+        except PriorityConfigError as e:
+            return PriorityVerbResult(
+                False,
+                1,
+                jid,
+                {"ok": False, "action": "connect", "id": inst.id},
+                error=str(e),
+            )
+        conn = connector or mock_connect
+        result = conn(inst, password)
+    except Exception as exc:  # noqa: BLE001 --- isolate worker faults
+        return PriorityVerbResult(
+            False,
+            1,
+            jid,
+            {"ok": False, "action": "connect", "id": inst.id},
+            error=f"isolated-fault:{type(exc).__name__}",
+        )
+    finally:
+        password = ""  # noqa: F841 --- drop local reference
+
+    if not isinstance(result, dict):
+        return PriorityVerbResult(
+            False,
+            1,
+            jid,
+            {"ok": False, "action": "connect", "id": inst.id},
+            error="bad-connector",
+        )
+    # Strip any accidental secret keys from connector output.
+    safe = {k: v for k, v in result.items() if "pass" not in str(k).lower()}
+    ok = bool(safe.get("ok"))
+    if "action" not in safe:
+        safe["action"] = "connect"
+    for k, v in inst.public_dict().items():
+        safe.setdefault(k, v)
+    return PriorityVerbResult(ok, 0 if ok else 1, jid, safe)
+
+
 def run_priority_verb(
     subcmd: str,
     instance_id: str | None,
@@ -284,8 +387,16 @@ def run_priority_verb(
     allowlist: Mapping[str, PriorityInstance] | None = None,
     cred_fetcher: Callable[[str], str] | None = None,
     connector: ConnectFn | None = None,
+    wait: bool = True,
+    on_done: Callable[[PriorityVerbResult], Any] | None = None,
 ) -> PriorityVerbResult:
-    """Execute ``connect`` / ``status``. Passwords never enter the returned payload."""
+    """Execute ``connect`` / ``status``. Passwords never enter the returned payload.
+
+    FR #5526: when ``wait=False`` and ``on_done`` is set for ``connect``, CredMan
+    + connector run on a daemon worker thread so the IRC receive loop stays free.
+    Allowlist / status / validation stay synchronous. Default ``wait=True`` keeps
+    direct-call and mock behaviour unchanged.
+    """
     import uuid
 
     jid = (job_id or uuid.uuid4().hex[:8]).lower()
@@ -339,36 +450,33 @@ def run_priority_verb(
             False, 2, jid, {"ok": False}, error=f"unknown-subcmd:{subcmd}"
         )
 
-    fetch = cred_fetcher or fetch_credman_password
-    try:
-        password = fetch(inst.credential_target)
-    except PriorityConfigError as e:
+    # FR #5526: opt-in async connect (CredMan + connector off the IRC loop).
+    if not wait and on_done is not None:
+        done_once = threading.Lock()
+        finished = False
+
+        def _worker() -> None:
+            nonlocal finished
+            res = _connect_work(
+                inst, jid, cred_fetcher=cred_fetcher, connector=connector
+            )
+            with done_once:
+                if finished:
+                    return
+                finished = True
+            try:
+                on_done(res)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_worker, name="airc-priority-worker", daemon=True
+        ).start()
         return PriorityVerbResult(
-            False,
-            1,
-            jid,
-            {"ok": False, "action": "connect", "id": inst.id},
-            error=str(e),
+            True, 0, jid, {"ok": True, "action": "connect", "id": inst.id}, pending=True
         )
 
-    conn = connector or mock_connect
-    try:
-        result = conn(inst, password)
-    finally:
-        password = ""  # noqa: F841 --- drop local reference
-
-    if not isinstance(result, dict):
-        return PriorityVerbResult(
-            False, 1, jid, {"ok": False, "action": "connect", "id": inst.id}, error="bad-connector"
-        )
-    # Strip any accidental secret keys from connector output.
-    safe = {k: v for k, v in result.items() if "pass" not in str(k).lower()}
-    ok = bool(safe.get("ok"))
-    if "action" not in safe:
-        safe["action"] = "connect"
-    for k, v in inst.public_dict().items():
-        safe.setdefault(k, v)
-    return PriorityVerbResult(ok, 0 if ok else 1, jid, safe)
+    return _connect_work(inst, jid, cred_fetcher=cred_fetcher, connector=connector)
 
 # --- FR #5285 form walk (fixture read path) ---
 
@@ -408,7 +516,56 @@ def parse_priority_walk_command(text: str) -> tuple[str, dict[str, str]] | None:
     return op, kv
 
 
+def _priority_install_roots(install_root: str | Path | None = None) -> list[Path]:
+    """FR #5523: frozen onefile __file__ is _MEIPASS; pack lives under <ai>\\airc\\airc\\."""
+    roots: list[Path] = []
+    if install_root:
+        roots.append(Path(install_root))
+    env = (os.environ.get("AIRC_INSTALL_ROOT") or "").strip()
+    if env:
+        roots.append(Path(env))
+    frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+    if frozen:
+        exe = Path(str(getattr(sys, "executable", "") or "")).resolve()
+        if exe.parent.name.lower() == "airc":
+            roots.append(exe.parent)
+            roots.append(exe.parent.parent)
+        elif str(exe):
+            roots.append(exe.parent)
+    here = Path(__file__).resolve()
+    if here.parent.name.lower() == "scripts":
+        roots.append(here.parents[1])
+        if len(here.parents) > 2:
+            roots.append(here.parents[2])
+    roots.append(Path(r"C:\ai\airc"))
+    out: list[Path] = []
+    seen: set[str] = set()
+    for r in roots:
+        key = str(r).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def resolve_priority_worker_dir(install_root: str | Path | None = None) -> Path | None:
+    """First existing priority-worker dir (nested pack or flat)."""
+    for root in _priority_install_roots(install_root):
+        for rel in (Path("airc") / "priority-worker", Path("priority-worker")):
+            d = root / rel
+            if (d / "priority_worker.py").is_file() or (
+                d / "fixtures" / "form_walk.json"
+            ).is_file():
+                return d
+    return None
+
+
 def default_fixture_path() -> Path:
+    """FR #5523: never rely on Path(__file__).parents[1] alone (frozen _MEIPASS)."""
+    d = resolve_priority_worker_dir()
+    if d is not None:
+        return d / "fixtures" / "form_walk.json"
     return Path(__file__).resolve().parents[1] / "priority-worker" / "fixtures" / "form_walk.json"
 
 
@@ -467,16 +624,13 @@ def walk_fixture(op: str, forms: dict[str, Any], kv: dict[str, str]) -> dict[str
 
 
 def resolve_walk_allowlist_path(install_root: str | None, override: str | None) -> Path | None:
+    """FR #5535: same live-then-example resolution as PRIORITY status/connect."""
     if override:
         return Path(override)
-    if not install_root:
+    try:
+        return resolve_allowlist_path(install_root)
+    except PriorityConfigError:
         return None
-    root = Path(install_root)
-    for rel in ("priority-instances.json", "config/priority-instances.json"):
-        cand = root / rel
-        if cand.is_file():
-            return cand
-    return None
 
 
 def run_priority_walk(

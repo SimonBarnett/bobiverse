@@ -64,8 +64,62 @@ def ou_from_dn(dn: str | None) -> str:
 
 
 def default_ldap_enum() -> list[Any]:
-    """Workgroup / no-DC: empty (documented). Tests inject AD rows."""
-    return []
+    """AD computers via LDAP/ADSI (hostname + distinguishedName).
+
+    FR #5521: NETWORK diag must not stub ``[]`` on a domain-joined console.
+    Empty when not Windows, PowerShell missing, or DC/ADSI unavailable
+    (workgroup / no-DC path — never invent hosts).
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if os.name != "nt":
+        return []
+    ps = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not ps:
+        return []
+    # Pair lines N=<name> / D=<distinguishedName> (ADSI Properties keys are lower).
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$s=[adsisearcher]'(objectCategory=computer)';"
+        "$s.PageSize=500;"
+        "[void]$s.PropertiesToLoad.Add('name');"
+        "[void]$s.PropertiesToLoad.Add('distinguishedName');"
+        "foreach($r in $s.FindAll()){"
+        "$n=$null;$d=$null;"
+        "if($r.Properties['name'] -and $r.Properties['name'].Count -gt 0){$n=$r.Properties['name'][0]};"
+        "if($r.Properties['distinguishedname'] -and $r.Properties['distinguishedname'].Count -gt 0){"
+        "$d=$r.Properties['distinguishedname'][0]};"
+        "if($n){Write-Output ('N='+[string]$n);Write-Output ('D='+[string]$d)}"
+        "}"
+    )
+    try:
+        p = subprocess.run(
+            [ps, "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception:
+        return []
+    if p.returncode != 0:
+        return []
+    rows: list[dict[str, str]] = []
+    cur_name = ""
+    cur_dn = ""
+    for line in (p.stdout or "").splitlines():
+        raw = line.strip()
+        if raw.startswith("N="):
+            if cur_name:
+                rows.append({"hostname": cur_name, "dn": cur_dn})
+            cur_name = raw[2:].strip()
+            cur_dn = ""
+        elif raw.startswith("D="):
+            cur_dn = raw[2:].strip()
+    if cur_name:
+        rows.append({"hostname": cur_name, "dn": cur_dn})
+    return rows
 
 
 def default_resolve_ips(host: str) -> list[str]:
@@ -177,7 +231,31 @@ def run_network_verb(
 
     if wait:
         return _safe()
-    threading.Thread(target=_safe, name="airc-network-worker", daemon=True).start()
+    import airc_isolated as _iso
+
+    if _iso.is_packaged_work(work):
+
+        def _from_child(data: Any) -> None:
+            payload = data if isinstance(data, dict) else {
+                "ok": False,
+                "hosts": [],
+                "log": [{"error": "isolated-fault", "step": "worker"}],
+            }
+            _finish(payload)
+
+        _iso.start_isolated(
+            wait=False,
+            run=_safe,
+            packaged=(
+                "airc_network",
+                "inventory_work",
+                {"action": action, "whatif": bool(whatif)},
+            ),
+            name="airc-network-worker",
+            on_done=_from_child,
+        )
+    else:
+        threading.Thread(target=_safe, name="airc-network-worker", daemon=True).start()
     return NetworkVerbResult(True, accepted, job_id=qid)
 
 

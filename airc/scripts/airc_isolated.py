@@ -1,0 +1,151 @@
+"""FR #5537: in-service isolated process for NETWORK / EXTENSION / LEGION work.
+
+Spawns the same Python / frozen airc.exe with ``--isolated-job`` (stdin JSON,
+stdout JSON). Not a peer product binary. Secrets never on argv.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+from pathlib import Path
+from typing import Any, Callable
+
+_SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
+_PACKAGED_MODULES = frozenset({"airc_legion", "airc_network", "airc_extension"})
+
+
+def is_packaged_work(fn: Any) -> bool:
+    """True when ``fn`` is a shipped airc_* default worker (safe to subprocess)."""
+    if not callable(fn):
+        return False
+    name = getattr(fn, "__name__", "")
+    if not name or name.startswith("<"):
+        return False
+    return getattr(fn, "__module__", "") in _PACKAGED_MODULES
+
+
+def isolated_argv() -> list[str]:
+    helper = Path(__file__).resolve()
+    exe = sys.executable
+    if getattr(sys, "frozen", False):
+        return [exe, "--isolated-job"]
+    return [exe, str(helper)]
+
+
+def _child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("AIRC_LEGION_PASSWORD", None)
+    return env
+
+
+def _scrub_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in (kwargs or {}).items():
+        if _SECRET_KEY_RE.search(str(k)):
+            continue
+        if callable(v):
+            continue
+        out[k] = v
+    return out
+
+
+def call_isolated_module(
+    module: str,
+    func: str,
+    kwargs: dict[str, Any] | None = None,
+    *,
+    timeout_s: float = 900,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    """Run ``module.func(**kwargs)`` in a child process. Returns a JSON object."""
+    spec = {
+        "module": module,
+        "func": func,
+        "kwargs": _scrub_kwargs(kwargs or {}),
+    }
+    run = runner or subprocess.run
+    p = run(
+        isolated_argv(),
+        input=json.dumps(spec, separators=(",", ":")),
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        env=_child_env(),
+    )
+    if p.returncode != 0:
+        err = (p.stderr or p.stdout or "").strip().splitlines()
+        reason = err[-1] if err else f"exit-{p.returncode}"
+        return {"ok": False, "error": f"isolated-fault:{reason[:80]}"}
+    try:
+        data = json.loads(p.stdout or "{}")
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "isolated-fault:bad-json"}
+    return data if isinstance(data, dict) else {"ok": False, "error": "isolated-fault:bad-payload"}
+
+
+def start_isolated(
+    *,
+    wait: bool,
+    run: Callable[[], Any],
+    packaged: tuple[str, str, dict[str, Any]] | None = None,
+    name: str = "airc-isolated",
+    on_done: Callable[[Any], Any] | None = None,
+) -> Any:
+    """``wait``: run now. Else packaged default -> child process; injected fn -> thread."""
+
+    def _finish(result: Any) -> Any:
+        if on_done is not None:
+            on_done(result)
+        return result
+
+    if wait:
+        return _finish(run())
+
+    def _bg() -> None:
+        try:
+            if packaged is not None:
+                module, func, kwargs = packaged
+                _finish(call_isolated_module(module, func, kwargs))
+            else:
+                _finish(run())
+        except Exception as exc:  # noqa: BLE001
+            _finish({"ok": False, "error": type(exc).__name__})
+
+    threading.Thread(target=_bg, name=name, daemon=True).start()
+    return None
+
+
+def isolated_job_main(argv: list[str] | None = None) -> int:
+    """Child entry: read spec on stdin, call packaged func, print JSON."""
+    raw = sys.stdin.read()
+    try:
+        spec = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        print(json.dumps({"ok": False, "error": "isolated-fault:bad-spec"}))
+        return 2
+    module = str(spec.get("module") or "")
+    func = str(spec.get("func") or "")
+    if module not in _PACKAGED_MODULES or not func.isidentifier():
+        print(json.dumps({"ok": False, "error": "isolated-fault:refused-target"}))
+        return 2
+    kwargs = spec.get("kwargs") if isinstance(spec.get("kwargs"), dict) else {}
+    kwargs = _scrub_kwargs(kwargs)
+    try:
+        mod = __import__(module, fromlist=[func])
+        fn = getattr(mod, func)
+        data = fn(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"ok": False, "error": type(exc).__name__}))
+        return 1
+    if not isinstance(data, dict):
+        data = {"ok": True, "result": str(type(data).__name__)}
+    print(json.dumps(data, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(isolated_job_main())

@@ -64,6 +64,13 @@ from airc_console import (
 from airc_jobs import JobProtocol, JobStore, VerbAuthPolicy
 import airc_extension as _airc_extension  # FR #5426: EXTENSION runner for AircConsoleCore
 
+def attach_verb_log_hooks(core, *, send_fn, emit_fn) -> None:
+    """FR #5519: wire NETWORK/EXTENSION/LEGION DCC send + IRC CONT emit."""
+    for name in ("network", "legion", "extension"):
+        setattr(core, f"{name}_log_send", send_fn)
+        setattr(core, f"{name}_log_emit", emit_fn)
+
+
 FLOOD_S = 0.35  # legacy fixed gap; FR #4790 prefers token bucket below
 # FR #4790: sustain under Ergo fakelag (~1-2 msg/s). Burst then pace.
 FLOOD_RATE_PER_S = 1.5
@@ -428,6 +435,27 @@ class AircConsoleService:
         )
         self.core.channel = self.channel
         self.core.presence_channels = list(self.presence_channels)
+
+        def _verb_log_send(payload, offer, **_k):
+            import airc_dcc_bulk as _dcc
+
+            return _dcc.send_offer_payload(payload, offer)
+
+        def _verb_log_emit(delivered):
+            nick = getattr(self.core, "verb_log_nick", None)
+            if not nick or not isinstance(delivered, dict):
+                return
+            for line in delivered.get("lines") or []:
+                text = str(line).strip()
+                if not text:
+                    continue
+                if text.upper().startswith("DONE "):
+                    continue
+                self._on_console_out(str(nick), text)
+
+        attach_verb_log_hooks(self.core, send_fn=_verb_log_send, emit_fn=_verb_log_emit)
+        # FR #5526: async PRIORITY connect delivers out/DONE via the verified out queue.
+        self.core.priority_reply_send = self._on_console_out
         self.sock: ssl.SSLSocket | socket.socket | None = None
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
@@ -572,6 +600,14 @@ class AircConsoleService:
             info(f"INFO stop-flush-runner-err {e}")
         for nick, jid in self.shell_inflight().items():
             jobs[(nick, jid)] = None
+        # FR #5526: PRIORITY connect in-flight (job-id keyed; not per-nick shell).
+        try:
+            abandon = getattr(self.core, "abandon_open_priority_jobs", None)
+            if callable(abandon):
+                for nick, jid in abandon():
+                    jobs[(nick, jid)] = None
+        except Exception as e:
+            info(f"INFO stop-flush-priority-err {e}")
         for nick, jid in list(jobs.keys()):
             self._out_q.put((nick, f"err id={jid} seq=1 {safe_reason}"))
             self._out_q.put((nick, f"DONE id={jid} exit=1"))
@@ -1529,14 +1565,25 @@ class AircConsoleService:
             # (Invoke-AircRemote / ReplyFile wait on DONE; never start a subprocess).
             self.send_privmsg(hr.nick, hr.reply)
             info(f"INFO capability-deny to={hr.nick} {hr.reply}")
-        elif hr.action in {"help", "close", "update", "priority"} and hr.nick and hr.reply:
+        elif hr.action in {
+            "help",
+            "close",
+            "update",
+            "priority",
+            "network",
+            "extension",
+            "legion",
+        } and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             # FR #5284: PRIORITY may emit out id= + DONE id= on separate lines.
+            # FR #5518: NETWORK / EXTENSION / LEGION accepted+DONE must reach IRC
+            # (Invoke-AircRemote waits on DONE; DCC payload alone is not enough).
+            # FR #5526: pending async PRIORITY connect returns reply="" — skip blank PRIVMSG.
             for part in str(hr.reply).splitlines():
                 line = part.strip()
                 if line:
                     self.send_privmsg(hr.nick, line)
-            if hr.action in {"update", "priority"}:
+            if hr.action in {"update", "priority", "network", "extension", "legion"}:
                 # FR #4067: auth-allow before update-reply (issue covers UPDATE).
                 if not getattr(hr, "allow_account", None) and getattr(self, "account_map", None):
                     try:
@@ -2095,6 +2142,12 @@ def kick_frozen_service_start_hooks(
     return policy
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if "--isolated-job" in raw:
+        # FR #5537: child process of the same airc.exe / python, not a peer binary.
+        from airc_isolated import isolated_job_main
+
+        return isolated_job_main(raw)
     try:
         import crash_report
 

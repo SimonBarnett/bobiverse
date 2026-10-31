@@ -32,9 +32,9 @@ PRIVMSG <machine>_console :psb64:<base64>
 - Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
 - Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
 - PUT/RUN/JOB/UPDATE are separate FRs - see `docs/airc-remote-control.md`. **FR #5280:** bare `UPDATE airc` (no version) schedules Check against the **latest** GitHub Release airc MSI; `UPDATE airc x.y.z` pins a tag.
-- **VERSION (FR #5281):** same auth as STATUS (`+o/+h`+). `PRIVMSG {mid}_console :id=<8hex> VERSION` replies `out id= seq=1 VERSION machine=... airc_ver=...` then `DONE id= exit=0`. Reads `<ai root>\\airc\\VERSION` only (missing -> `-`; no ARP). Allowed when `shell=off` / `jobs=off` like STATUS. STATUS still returns the bob/airc/jeeves aggregate.
-- **DCC output (FR #5003 / #5008):** caller sends `DCCLISTEN id= host= port= token= [tls=1] [relay=]`. Oversized shell replies: console dials out and sends framed bytes; IRC `DONE ... via=dcc`. Handshake fail -> IRC `CONT`/`RESUME` (`dcc failed ...; falling back to IRC`).
-- **DCC upload (FR #5194):** same `DCCLISTEN`, then `PUT path= id= bytes= sha256= via=dcc`. Console dials out and **reads** the frame, checks sha256, writes atomically under the drop sandbox (same path rules as IRC PUT). Fail -> `err ... dcc failed ...; falling back to IRC` then `CHUNK`/`PUTEND`. Use `Invoke-AircRemote -Action Put` (default DCC) or `-ForceIrcPut`.
+- **VERSION (FR #5281):** same auth as STATUS (`+o/+h`+). `PRIVMSG {mid}_console :id=<8hex> VERSION` replies `out id= seq=1 VERSION machine=... airc_ver=... [commit=...] [built=...] [hotpatch=1]` then `DONE id= exit=0` (FR #5534). Reads `<ai root>\\airc\\VERSION` plus `BUILD.json` / `HOTPATCH.json` when present (missing version -> `-`; no ARP). Allowed when `shell=off` / `jobs=off` like STATUS. STATUS still returns the bob/airc/jeeves aggregate.
+- **DCC output (FR #5003 / #5008 / #5531):** caller sends `DCCLISTEN id= host= port= token= [tls=1] [relay=]` (optional leading job `id=<job> ` is accepted; bare `DCCLISTEN` still works). Oversized shell replies: console dials out and sends framed bytes; IRC `DONE ... via=dcc`. Handshake fail -> IRC `CONT`/`RESUME` (`dcc failed ...; falling back to IRC`).
+- **DCC upload (FR #5194 / #5536):** same `DCCLISTEN`, then `PUT path= id= bytes= sha256= via=dcc`. Size cap is the DCC bulk cap (2 MiB); IRC PUT stays 256 KiB. Console dials out and **reads** the frame, checks sha256, writes atomically under the drop sandbox (same path rules as IRC PUT). Fail -> `err ... dcc failed ...; falling back to IRC` then `CHUNK`/`PUTEND`. Use `Invoke-AircRemote -Action Put` (default DCC) or `-ForceIrcPut`.
 
 ## Safe diagnostic commands
 
@@ -51,14 +51,15 @@ Prefer remote **`UPDATE airc`** over free-form `msiexec` / `Restart-Service Airc
 
 ```text
 PRIVMSG {mid}_console :UPDATE airc
+PRIVMSG {mid}_console :id=c25bd00e UPDATE airc
 PRIVMSG {mid}_console :UPDATE airc 1.0.9
 PRIVMSG {mid}_console :id=c25bd00e VERSION
 ```
 
-- **Latest vs pin:** bare `UPDATE airc` takes the latest GitHub Release MSI. `UPDATE airc <ver>` pins `-TargetVersion` (FR #5280 / FR #77).
+- **Latest vs pin:** bare `UPDATE airc` takes the latest GitHub Release MSI. `UPDATE airc <ver>` pins `-TargetVersion` (FR #5280 / FR #77). Leading `id=<job>` is accepted (FR #5532); reply is `UPDATE accepted id=...` then `DONE id= exit=`.
 - **Restart contract (Refs #5277):** after Apply, expect Airc Running and `{mid}_console` to answer again within a **120s** reconnect budget without manual repair. If it does not, file intake; do not invent a second msiexec.
 - **Failure intake (FR #5279):** each Apply/Check failure class (`download-failed`, `msiexec-exit`, `msiexec-timeout`, `stop-failed`, `backup-failed`, `spawn-failed`, `updater-missing`, `asset-url-rejected`, ...) files one `kind:issue` on `SimonBarnett/bobiverse`. `idempotency_key` = `airc-update-fail|{machine}|{product}|{tag}|{result}` so retries do not twin-flood. Title/body are redacted.
-- **VERSION (FR #5281):** same auth as STATUS. Reply is `out id= seq=1 VERSION machine=... airc_ver=...` then `DONE id= exit=0`. Reads `<ai root>\\airc\\VERSION` only (missing -> `-`; no ARP). Allowed when `shell=off` / `jobs=off`.
+- **VERSION (FR #5281):** same auth as STATUS. Reply is `out id= seq=1 VERSION machine=... airc_ver=... [commit=...] [built=...] [hotpatch=1]` then `DONE id= exit=0` (FR #5534). Reads `<ai root>\\airc\\VERSION` plus `BUILD.json` / `HOTPATCH.json` when present (missing version -> `-`; no ARP). Allowed when `shell=off` / `jobs=off`.
 
 ## PRIORITY prepare (FR #5286)
 
@@ -74,6 +75,8 @@ See `docs/airc-remote-control.md` and `bobiverse-airc-troubleshooting`.
 
 ## Priority Client (FR #5287)
 
+Bare `PRIORITY` (or an unknown sub-verb) is usage, not PowerShell (FR #5533): `err id= seq=1 code=usage PRIORITY connect|status|prepare|formStart|subform|getRows` then `DONE id= exit=2`.
+
 Use the **built-in** Airc Priority Client. Do not copy NAS one-off clients or drop packs. CredMan + instance allowlist only; never invent `url` / company / SQL.
 
 ```text
@@ -83,6 +86,7 @@ PRIVMSG {mid}_console :id=c25bd00e PRIORITY prepare FOO instance=example-dev
 
 - **Allowlist:** `config\priority-instances.json` (schema: `airc/config/priority-instances.example.json`). Unknown instance -> refuse.
 - **CredMan:** password lives in the Windows credential named `credentialTarget` (example `PriorityWeb/example-dev`). Never put a Priority password on IRC, in skills, or in intake.
+- **Form walk replies (FR #5524):** PRIORITY formStart/subform/getRows must return HandleResult.reply only (newline-separated out+DONE). Do not also JobProtocol._emit after FR #5518 on_line already sends action=priority --- that double-fires every walk line.
 - **Prepare gates (S4):** TYPE=P uses EXEC `REPPREPDIRECT2`. Success only when SDK `ok=true` **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced. Reasons include `still_unprepared`, `prp_unchanged`, `no_cred`, `name_missing`. Never SQL-fake UPD; never form-prep for TYPE=P.
 
 See `docs/airc-remote-control.md`, `docs/feature-request-airc-priority-client-2026-10-31.md`, and `bobiverse-airc-troubleshooting`.
@@ -98,8 +102,8 @@ PRIVMSG {mid}_console :id=c25bd00e EXTENSION install -WhatIf
 PRIVMSG {mid}_console :id=c25bd00e EXTENSION status
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`).
-- **GPO happy path:** worker uses GroupPolicy on GPO `Priority-web-extension` linked at domain root (`ExtensionInstallForcelist` for Chrome and Edge). `-WhatIf` is read-only (no GPO/registry/gpupdate writes).
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` / `extension=off` refuse with `DONE id=<qid> exit=126 …` when the command carried `id=` - FR #5552).
+- **GPO happy path:** worker uses GroupPolicy on GPO `Priority-web-extension` linked at domain root (`ExtensionInstallForcelist` for Chrome and Edge). `-WhatIf` is read-only (no GPO/registry/gpupdate writes). **FR #5538:** `EXTENSION status` is read-only fill-holes (no HKLM writes); install appends a free forcelist value name and never writes DCs.
 - **Fill-holes:** after GPO (or when DC is missing), LDAP AD computers only; reachable hosts get remote registry ForceInstall; unreachable = logged failure. Machine account first; optional CredMan target `PriorityAirc/ExtensionAdmin` on access-denied (never put that password on IRC).
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... sha256= via=dcc`. No offer or DCC fail -> IRC CONT + failure lines. No secrets in the log.
 - **Isolation:** AD/GPO/registry loops are not on the IRC receive thread; worker fault must not stop service Airc.
@@ -117,7 +121,7 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag
 PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`; `shell=off` refuses with `DONE exit=126 shell-disabled`). Unauthorized is `DONE exit=126 not-op`.
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Unauthorized is `DONE exit=126 not-op`.
 - **Isolation:** worker thread/child; fault must not stop service Airc; console still handles STATUS.
 - **Payload:** short IRC `NETWORK accepted` + `DONE id= exit=`; full inventory + log via DCCLISTEN same job `id=` (`DONE ... via=dcc`) or IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
 - **WhatIf:** read-only plan (no writes).
@@ -134,9 +138,9 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
 PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU targets: `DONE exit=126 bad-target`.
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
 - **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
-- **WhatIf:** installer dry-run (no remote install).
+- **WhatIf:** installer dry-run plan (no remote install). Still runs the planner when `PriorityAirc/LegionAdmin` is missing; records `credman-missing` in `failures[]` (FR #5530). Live LEGION without CredMan still fail-closes.
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
 - **Isolation:** installer is not on the IRC receive thread; worker fault must not stop Airc.
 

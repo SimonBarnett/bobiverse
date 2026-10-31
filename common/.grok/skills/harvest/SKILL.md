@@ -241,7 +241,7 @@ routes to bobiverse via the split rule.
 - When a whole-file SKILL.md overwrite drops rules, restore from git show reverse of the wipe commit; widen Measure-BobTrayWorkerSeats pin windows when comments grow; drop nested skill-dba\.grok from Sync-BobiverseAgentFolders staging.
 - On Windows Node 22, npm test should use node --test "tests/**/*.test.js"; a bare tests directory arg can fail MODULE_NOT_FOUND
 - GitGuardian Generic Password on test placeholders: use secret-placeholder-* and squash/force-push the PR tip so the old FAKE_* string is gone from PR history; bobiverse docs/mrb pins go under jeeves/tests because docs/ is gitignored
-- FR #3824 / #4953: one harvest per lesson --- skip/link when an open harvest-lesson PR (any seat) already covers the lesson text or title stem; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823)
+- FR #3824 / #4953: one harvest per lesson --- skip/link when an open harvest-lesson PR (any seat) already covers the lesson text or title stem; idempotency_key prefers seat+normalized lesson so DONE retries do not open twin tips (#3822/#3823). **FR #5569:** twin match is harvest-lesson / ``lesson(`` tips only; a just-opened product FR PR must not become ``url=`` on HARVESTED.
 - FR #3827: FAIL-supersede skip also matches stay/durable in bobiverse-bob-job-mrb, thin harvest tip/restatement, and do-not-append second copy under harvest (tip #3826 class)
 - FR #4308: FAIL-supersede skip also matches thinner tip + durable lesson already on main (a-search#1980/#2283 tip-loop class; not contiguous thin harvest tip)
 - FR #4484: FAIL-supersede skip also matches restates main and admit main already has (a-search#3470 class; those phrases are not already-on-main / second-copy / job-mrb)

@@ -55,7 +55,8 @@ def _classify_target(raw: str) -> str | None:
         return "ou"
     if _IPV4_RE.match(t) or _HOST_RE.match(t):
         return None
-    return "list"
+    # FR #5528: punctuation/illegal hostname is not a host list.
+    return "invalid"
 
 
 def parse_legion_command(text: str) -> dict[str, Any] | None:
@@ -124,63 +125,17 @@ def read_legion_credman(
         if not user or not pw:
             raise LegionCredmanError("credman-missing")
         return {"username": user, "password": pw}
-    import subprocess
+    # FR #5526: native CredReadW (no PowerShell timeout on missing targets).
+    import airc_credman as _cred
 
-    ps = os.environ.get("SystemRoot", r"C:\Windows") + r"\System32\WindowsPowerShell\v1.0\powershell.exe"
-    script = r"""
-param([Parameter(Mandatory=$true)][string]$Target)
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class LegionCredRead {
-  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
-  public struct CREDENTIAL {
-    public uint Flags; public uint Type; public string TargetName; public string Comment;
-    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
-    public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;
-    public uint AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
-  }
-  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-  public static extern bool CredRead(string target, uint type, int reserved, out IntPtr cred);
-  [DllImport("advapi32.dll", SetLastError=true)]
-  public static extern void CredFree(IntPtr cred);
-  public static string ReadPair(string target) {
-    IntPtr p;
-    if (!CredRead(target, 1, 0, out p) || p == IntPtr.Zero) return null;
-    try {
-      var c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
-      string user = c.UserName ?? "";
-      string pw = "";
-      if (c.CredentialBlob != IntPtr.Zero && c.CredentialBlobSize > 0)
-        pw = Marshal.PtrToStringUni(c.CredentialBlob, (int)c.CredentialBlobSize / 2) ?? "";
-      return "U=" + user + "\nP=" + pw;
-    } finally { CredFree(p); }
-  }
-}
-"@
-$pair = [LegionCredRead]::ReadPair($Target)
-if ($null -eq $pair) { Write-Output 'CRED_MISSING'; exit 2 }
-[Console]::Out.Write($pair)
-"""
     try:
-        p = subprocess.run(
-            [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, "-Target", target],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise LegionCredmanError(f"credman-read-failed:{type(exc).__name__}") from exc
-    out = p.stdout or ""
-    if p.returncode != 0 or out.strip() == "CRED_MISSING":
+        pair = _cred.read_generic_credential(target)
+    except _cred.CredmanError as exc:
+        raise LegionCredmanError(f"credman-read-failed:{exc.reason}") from exc
+    if pair is None:
         raise LegionCredmanError("credman-missing")
-    user, pw = "", ""
-    for line in out.splitlines():
-        if line.startswith("U="):
-            user = line[2:].strip()
-        elif line.startswith("P="):
-            pw = line[2:]
+    user = str(pair.username or "").strip()
+    pw = str(pair.password or "")
     if not user or not pw:
         raise LegionCredmanError("credman-empty")
     return {"username": user, "password": pw}
@@ -226,8 +181,12 @@ def _resolve_legion_msi_path(spec: dict[str, Any]) -> Path:
     return Path(raw)
 
 
-def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
-    """Import-path invoke. WhatIf / dry_run never calls install_remote (FR #5382)."""
+def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str, Any]:
+    """Import-path invoke. WhatIf / dry_run never calls install_remote (FR #5382).
+
+    FR #5529: secret is an explicit kwarg (or leftover env for older callers),
+    never written into the service process environment.
+    """
     from airc_network_installer.install import find_psexec, install_local, install_remote
 
     host = str((spec.get("hosts") or [""])[0] or "")
@@ -236,6 +195,15 @@ def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
     force = bool(spec.get("force"))
     timeout_s = float(spec.get("timeout_s") or LEGION_TIMEOUT_S)
     if dry:
+        psexec = find_psexec(str(spec.get("psexec") or ""))
+        raw_msi = (spec.get("msi") or "").strip()
+        if raw_msi:
+            try:
+                msi_note = str(_resolve_legion_msi_path(spec))
+            except Exception as exc:  # noqa: BLE001
+                msi_note = f"msi-unresolved:{type(exc).__name__}"
+        else:
+            msi_note = "latest"
         return {
             "ok": True,
             "status": "dry-run",
@@ -243,6 +211,8 @@ def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
             "profile": profile,
             "force": force,
             "timeout_s": timeout_s,
+            "msi": msi_note,
+            "psexec": psexec or "psexec-missing",
         }
 
     try:
@@ -262,7 +232,7 @@ def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
             "error": "msi-missing",
         }
 
-    password = os.environ.get("AIRC_LEGION_PASSWORD", "")
+    password = secret or os.environ.get("AIRC_LEGION_PASSWORD", "")
     user = str(spec.get("username") or "")
     log_dir = Path(str(spec.get("log_dir") or "airc-install-logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -358,7 +328,8 @@ def installer_legion_work(
     ident = (credman or default_legion_credman)() or {}
     user = str(ident.get("username") or "").strip()
     secret = str(ident.get("password") or "")
-    if not user or not secret:
+    credman_missing = not user or not secret
+    if credman_missing and not whatif:
         return {
             "ok": False,
             "target": target,
@@ -383,15 +354,19 @@ def installer_legion_work(
     if user:
         spec["username"] = user
         spec["password_via"] = "secure-env"
-        if secret:
-            os.environ["AIRC_LEGION_PASSWORD"] = secret
+    # FR #5529: pass secret only as a runner kwarg, never os.environ.
+    runner = run_fn or default_installer_run
     try:
-        out = (run_fn or default_installer_run)(spec)
-    finally:
-        if secret:
-            os.environ.pop("AIRC_LEGION_PASSWORD", None)
+        out = runner(spec, secret=secret)
+    except TypeError:
+        out = runner(spec)
     status = str((out or {}).get("status") or "")
-    return {
+    fails = list((out or {}).get("failures") or [])
+    err = (out or {}).get("error")
+    if credman_missing:
+        fails.append({"host": target, "error": "credman-missing"})
+        err = None if whatif else "credman-missing"
+    body: dict[str, Any] = {
         "ok": bool((out or {}).get("ok", True)),
         "target": target,
         "whatif": bool(whatif),
@@ -403,8 +378,14 @@ def installer_legion_work(
         "hosts": [target],
         "status": status,
         "log_dir": spec["log_dir"],
-        "error": (out or {}).get("error"),
+        "error": err,
+        "failures": fails,
     }
+    if (out or {}).get("msi"):
+        body["msi"] = (out or {}).get("msi")
+    if (out or {}).get("psexec"):
+        body["psexec"] = (out or {}).get("psexec")
+    return body
 
 
 def run_legion_verb(
@@ -455,7 +436,7 @@ def run_legion_verb(
     def _safe() -> LegionVerbResult:
         try:
             data = _call_work()
-            if str(data.get("error") or "") == "credman-missing":
+            if str(data.get("error") or "") == "credman-missing" and not whatif:
                 return _finish(
                     data,
                     reply=f"DONE id={qid} exit=126 credman-missing",
@@ -474,7 +455,33 @@ def run_legion_verb(
     if wait:
         # FR #5389: CredRead lives here (or in installer_legion_work), not on accept.
         return _safe()
-    threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
+    import airc_isolated as _iso
+
+    if _iso.is_packaged_work(work):
+
+        def _from_child(data: Any) -> None:
+            payload = data if isinstance(data, dict) else {}
+            if str(payload.get("error") or "") == "credman-missing" and not whatif:
+                _finish(
+                    payload,
+                    reply=f"DONE id={qid} exit=126 credman-missing",
+                )
+            else:
+                _finish(payload)
+
+        _iso.start_isolated(
+            wait=False,
+            run=_call_work,
+            packaged=(
+                "airc_legion",
+                "installer_legion_work",
+                {"target": target, "whatif": bool(whatif)},
+            ),
+            name="airc-legion-worker",
+            on_done=_from_child,
+        )
+    else:
+        threading.Thread(target=_safe, name="airc-legion-worker", daemon=True).start()
     return LegionVerbResult(True, accepted, job_id=qid)
 
 

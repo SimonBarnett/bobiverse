@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
+import threading
 
 import airc_console as ac
 import airc_dcc_bulk as dcc
@@ -84,9 +84,11 @@ def test_fr5300_dcc_fail_falls_back_to_irc():
 
 def test_fr5300_console_wires_dcclisten_same_job_id():
     sent: list[bytes] = []
+    done = threading.Event()
 
     def send(payload: bytes, offer, **_k):
         sent.append(payload)
+        done.set()
 
     auth = ops_auth("op", channel="#tm")
     core = ac.AircConsoleCore(
@@ -102,10 +104,8 @@ def test_fr5300_console_wires_dcclisten_same_job_id():
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd NETWORK diag")
     assert hr is not None and hr.action == "network"
     assert "NETWORK accepted" in (hr.reply or "")
-    for _ in range(50):
-        if sent:
-            break
-        time.sleep(0.02)
+    # FR #5575: isolated NETWORK worker can exceed 1s under airc/tests load.
+    assert done.wait(5.0), "network_log_send never ran"
     assert sent
     body = json.loads(sent[0].decode("utf-8"))
     assert "hosts" in body and "failures" in body
