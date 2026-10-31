@@ -102,7 +102,7 @@ PRIVMSG {mid}_console :id=c25bd00e EXTENSION install -WhatIf
 PRIVMSG {mid}_console :id=c25bd00e EXTENSION status
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`).
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` / `extension=off` refuse with `DONE id=<qid> exit=126 …` when the command carried `id=` - FR #5552).
 - **GPO happy path:** worker uses GroupPolicy on GPO `Priority-web-extension` linked at domain root (`ExtensionInstallForcelist` for Chrome and Edge). `-WhatIf` is read-only (no GPO/registry/gpupdate writes).
 - **Fill-holes:** after GPO (or when DC is missing), LDAP AD computers only; reachable hosts get remote registry ForceInstall; unreachable = logged failure. Machine account first; optional CredMan target `PriorityAirc/ExtensionAdmin` on access-denied (never put that password on IRC).
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... sha256= via=dcc`. No offer or DCC fail -> IRC CONT + failure lines. No secrets in the log.
@@ -121,7 +121,7 @@ PRIVMSG {mid}_console :id=c25bd00e NETWORK diag
 PRIVMSG {mid}_console :id=c25bd00e NETWORK diag -WhatIf
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`; `shell=off` refuses with `DONE exit=126 shell-disabled`). Unauthorized is `DONE exit=126 not-op`.
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Unauthorized is `DONE exit=126 not-op`.
 - **Isolation:** worker thread/child; fault must not stop service Airc; console still handles STATUS.
 - **Payload:** short IRC `NETWORK accepted` + `DONE id= exit=`; full inventory + log via DCCLISTEN same job `id=` (`DONE ... via=dcc`) or IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
 - **WhatIf:** read-only plan (no writes).
@@ -138,7 +138,7 @@ PRIVMSG {mid}_console :id=c25bd00e LEGION walrus
 PRIVMSG {mid}_console :id=c25bd00e LEGION 10.0.0.8 -WhatIf
 ```
 
-- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` refuses with `DONE exit=126 update-disabled`). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
+- **Auth:** same as UPDATE (`+o`/`+h`; `update=off` / `shell=off` refuse with `DONE id=<qid> exit=126 update-disabled|shell-disabled` when the command carried `id=` - FR #5552). Empty/list/OU/invalid targets: `DONE id=<id> exit=126 bad-target reason=empty|list|ou|invalid` (id= omitted only when the operator sent no id; FR #5527). FR #5528: `bad_host!` is invalid, not list.
 - **CredMan:** `PriorityAirc/LegionAdmin` via secure env (never on IRC, never in argv).
 - **WhatIf:** installer dry-run plan (no remote install). Still runs the planner when `PriorityAirc/LegionAdmin` is missing; records `credman-missing` in `failures[]` (FR #5530). Live LEGION without CredMan still fail-closes.
 - **Log:** same job `id=` as `DCCLISTEN` -> `DONE ... via=dcc`. No offer or DCC fail -> IRC CONT. CAST IRON: no secrets on IRC or in the DCC body.
