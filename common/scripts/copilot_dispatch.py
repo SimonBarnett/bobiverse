@@ -1316,14 +1316,14 @@ def tick(
         "dropped": int(settled.get("dropped") or 0),
         "released": int(settled.get("released") or 0),
     }
+    if fetch_user is not None:
+        refresh_allowance(home, fetch_user=fetch_user, now=now_f)
     if not dispatch_enabled(home):
         out["disabled"] = True
         return out
     if cooldown_active(home, now=now_f):
         out["paused"] = True
         return out
-    if fetch_user is not None:
-        refresh_allowance(home, fetch_user=fetch_user, now=now_f)
     if has_allowance(home, now=now_f):
         for row in gitclaim.ordered_unaccepted(home):
             if is_high_priority(home, row) and should_dispatch(
