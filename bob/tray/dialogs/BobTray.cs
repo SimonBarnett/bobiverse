@@ -872,24 +872,27 @@ namespace BobDialogs
         }
 
         // FR #2697: Threading.Timer callback — never shares the WinForms message pump with the PS engine poll.
-        // FR #5145: FileShare.ReadWrite|Delete — PS trayAliveTimer may write the same path; exclusive WriteAllText raced.
+        // FR #5145 / #5346: FileShare.ReadWrite|Delete + OpenOrCreate — PS trayAliveTimer may write the same path.
+        // Sharing miss is not a crash; next timer tick retries (no intake).
         void WriteTrayAlive()
         {
             try
             {
+                // FR #5346
                 Directory.CreateDirectory(aliveDir);
                 string tick = EngineAliveStamp.ReadStampIso(aliveDir);
                 string line = DateTime.UtcNow.ToString("o") + " pid=" + Process.GetCurrentProcess().Id;
                 if (tick.Length > 0) line += " engine_last_tick=" + tick;
                 byte[] bytes = Encoding.ASCII.GetBytes(line);
-                for (int attempt = 0; attempt < 6; attempt++)
+                for (int attempt = 0; attempt < 12; attempt++)
                 {
                     try
                     {
                         using (FileStream fs = new FileStream(
-                            aliveFile, FileMode.Create, FileAccess.Write,
+                            aliveFile, FileMode.OpenOrCreate, FileAccess.Write,
                             FileShare.ReadWrite | FileShare.Delete))
                         {
+                            fs.SetLength(0);
                             fs.Write(bytes, 0, bytes.Length);
                             fs.Flush();
                         }
@@ -897,8 +900,8 @@ namespace BobDialogs
                     }
                     catch (IOException)
                     {
-                        if (attempt >= 5) return;
-                        System.Threading.Thread.Sleep(25 * (attempt + 1));
+                        if (attempt >= 11) return;
+                        System.Threading.Thread.Sleep(40 * (attempt + 1));
                     }
                 }
             }

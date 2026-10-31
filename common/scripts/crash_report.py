@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 DEFAULT_REPO = "SimonBarnett/bobiverse"
-DEFAULT_INTAKE = "https://irc.ntsa.uk/bob/v1/intake"
+DEFAULT_INTAKE = "https://bob.ntsa.uk/bob/v1/intake"
 _SIG_RE = re.compile(r"crash-sig:([0-9a-f]{8,64})", re.I)
 # FR #2668: Bearer/Basic must consume the token after the scheme (old KV rule left it).
 _AUTH_SCHEME_RE = re.compile(
@@ -265,9 +265,10 @@ def redact(text: str) -> str:
 
 _PROBE_EXE = frozenset({"probe", "crash-probe", "crash_probe"})
 _DO_NOT_FILE_RE = re.compile(r"(?i)do-not-file|probe-shape-only")
-# FR #2535: pytest tmpdir symlink cleanup on Windows (WinError 448 / untrusted mount).
+# FR #2535 / #5422: pytest tmpdir symlink cleanup on Windows (448 untrusted mount, 5/32 access).
 _PYTEST_EPHEMERAL_RE = re.compile(r"(?i)pytest-of-|pytest-current")
-_UNTRUSTED_MOUNT_RE = re.compile(r"(?i)untrusted mount point|WinError\s*448")
+_UNTRUSTED_MOUNT_RE = re.compile(r"(?i)untrusted mount point|WinError\s*448|WinError\s*5\b")
+_PYTEST_ACCESS_WINERRORS = frozenset({5, 32, 448})
 _SHIPPED_EXE_INSTALL = frozenset(
     {
         "jeeves",
@@ -291,13 +292,37 @@ def _blob_for_skip(exc_value: BaseException | None, body: str = "", title: str =
 
 
 def _is_pytest_untrusted_mount(exc_value: BaseException | None, blob: str) -> bool:
-    """True for OSError WinError 448 (or message twin) on pytest-of-*/pytest-current paths."""
+    """True for pytest sessionfinish symlink noise on pytest-of-*/pytest-current paths.
+
+    FR #2535: WinError 448 untrusted mount. FR #5422: PermissionError / WinError 5 or 32
+    (cleanup_dead_symlinks exists/resolve on pytest-current).
+    """
     if not _PYTEST_EPHEMERAL_RE.search(blob):
         return False
     if exc_value is not None and isinstance(exc_value, OSError):
-        if getattr(exc_value, "winerror", None) == 448:
+        if getattr(exc_value, "winerror", None) in _PYTEST_ACCESS_WINERRORS:
+            return True
+        if isinstance(exc_value, PermissionError):
             return True
     return bool(_UNTRUSTED_MOUNT_RE.search(blob))
+
+
+def wrap_cleanup_dead_symlinks(fn):
+    """FR #5422: pytest 9.1.1 sessionfinish must not fail the suite on pytest-current access."""
+    if getattr(fn, "_fr5422_safe", False):
+        return fn
+
+    def _safe(root):
+        try:
+            return fn(root)
+        except OSError as e:
+            blob = _blob_for_skip(e)
+            if _is_pytest_untrusted_mount(e, blob):
+                return None
+            raise
+
+    _safe._fr5422_safe = True  # type: ignore[attr-defined]
+    return _safe
 
 
 def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str = "", title: str = "") -> bool:
@@ -305,8 +330,9 @@ def should_skip_report(exe: str, exc_value: BaseException | None, *, body: str =
 
     Markers: exe name `probe` / `crash-probe`, or message/body/title containing
     `do-not-file` or `probe-shape-only`.
-    FR #2535: OSError WinError 448 (untrusted mount point) whose path mentions
-    pytest-of- or pytest-current — pytest sessionfinish symlink cleanup, not a product crash.
+    FR #2535 / #5422: OSError WinError 448/5/32 (untrusted mount or access denied)
+    whose path mentions pytest-of- or pytest-current — pytest sessionfinish
+    symlink cleanup, not a product crash.
     FR #2541: KeyboardInterrupt / SystemExit are intentional shutdown (service stop /
     Ctrl+C), not product crashes — airc filed KeyboardInterrupt during TimeoutError
     handling when NSSM stopped the console mid-recv.
@@ -431,7 +457,14 @@ def _post_intake(title: str, body: str, *, repo: str, sig: str, exe: str) -> dic
     if not policy.send:
         raise RuntimeError("crash-report disabled")
     raw_url = (os.environ.get("BOB_INTAKE_URL") or "").strip()
-    url = raw_url or DEFAULT_INTAKE
+    if raw_url:
+        url = raw_url
+    else:
+        try:
+            import bob_public_base as _bpb
+            url = _bpb.default_intake_url()
+        except ImportError:  # pragma: no cover
+            url = DEFAULT_INTAKE
     # FR #5050 / #4963: dedupe_key comments/reopens; idempotency_key is retry-only.
     dkey = str(sig or "").strip()[:128]
     payload = {

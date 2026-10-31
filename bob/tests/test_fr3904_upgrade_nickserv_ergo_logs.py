@@ -67,8 +67,9 @@ def test_fr3904_install_seeds_ergo_from_sibling_or_docs():
 def test_fr3904_irc_agent_surfaces_nickname_reserved():
     t = IRC_AGENT.read_text(encoding="utf-8")
     assert "NICKNAME_RESERVED" in t
-    # Must call crash_report on reserved-nick abort (not silent forever reconnect).
-    assert "report_exception" in t or "crash_report" in t
+    # FR #5352: stall is logged, not crash-reported.
+    assert "FR #3904" in t or "3904" in t
+    assert "_surface_nickname_reserved" in t
     # Pin FR so hostile MRB can find the gate.
     assert "3904" in t or "FR #3904" in t
 

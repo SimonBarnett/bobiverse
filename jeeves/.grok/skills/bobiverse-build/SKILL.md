@@ -10,7 +10,7 @@ description: >
 # bobiverse-build
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
-> File every issue/FR/bug/gap in the same turn via intake (`https://irc.ntsa.uk/bob/v1/intake`):
+> File every issue/FR/bug/gap in the same turn via intake (`https://bob.ntsa.uk/bob/v1/intake`):
 > `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 > End sessions with `Invoke-BobiverseHarvest.ps1 -Repo <job-repo> -Summary ... -Lesson ...` then `-Flush`.
 > Bob fleet lessons use `-Repo SimonBarnett/bobiverse`. Never put tokens, passwords, SASL/NickServ secrets, keys or private hostnames in a filing or skill.
@@ -66,7 +66,7 @@ Ops only (simon / bob-* ears). Workers never see `!build` in `!help`.
 
 Typical shapes (channel `#bobiverse` + ops PM from chair):
 
-- **Route / start:** `BUILD v1 repos=owner/repo version=X ref=Y` --- recipe machine consumes this.
+- **Route / start:** `BUILD v1 repos=owner/repo version=X ref=Y [id=b-...]` --- recipe machine consumes this. FR #5266: chair and ear both hear the wire, but O_EXCL `%ProgramData%\Bobiverse\build-routes\<id>.claimed` plus a machine-global `build-locks.json` and unique `build-work\<ver>-<job>` keep one runner; git stderr is in `result.json`.
 - **Dry-run plan:** lines starting `build dry-run:` (machine, suites, baseline, would classify, nothing published).
 - **Success:** `BUILD ok <repo> version=... ref=... tag=... prerelease ...` (pack+release ran; no new_regression/step_failure blockers).
 - **Failure:** `BUILD fail <repo> version=... ref=... blockers=N pack=... release=...` or `BUILD fail ... wrong machine`.

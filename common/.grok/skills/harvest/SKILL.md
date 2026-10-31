@@ -13,7 +13,7 @@ github: https://github.com/SimonBarnett/bobiverse
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    Prefer `.\common\scripts\Report-BobiverseIntakeIssue.ps1` when present (FR #4297); else `.\scripts\Report-BobiverseIntakeIssue.ps1`.
 >    `.\common\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
@@ -93,7 +93,7 @@ flowchart TD
    cannot be opened, file a `harvest:` issue with the intended PR title, branch,
    file list and body in this turn.
 2. **No `gh`, or not authenticated** → POST to the Bob webhook intake
-   `https://irc.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
+   `https://bob.ntsa.uk/bob/v1/intake`. No GitHub account needed; the
    service files it with label `via-intake`. Send an `idempotency_key` so
    retries never duplicate. Missing/empty `kind` defaults to `issue`.
 3. **Offline / intake unreachable** → write the JSON payload to a local
@@ -129,7 +129,7 @@ requirement. Never commit secrets.
 curl:
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
   -H "Content-Type: application/json" \
   -d @harvest.json
 ```
@@ -170,7 +170,7 @@ PowerShell:
 # (Summary drift / DONE retries must not mint a second tip). Intake claims state=filing early,
 # settles filing/open_lesson_twin, and links open seat+lesson twins instead of opening #3823.
 # or:
-Invoke-RestMethod -Method Post -Uri 'https://irc.ntsa.uk/bob/v1/intake' `
+Invoke-RestMethod -Method Post -Uri 'https://bob.ntsa.uk/bob/v1/intake' `
   -ContentType 'application/json' -Body (Get-Content harvest.json -Raw)
 ```
 
@@ -256,7 +256,7 @@ routes to bobiverse via the split rule.
 - Harvest session summaries / intake PR bodies must never contain the GitHub keyword Closes #N (or Fixes #N) for product FRs --- narrative mentions of stripping accidental Closes still auto-link; write `Closes` as `Close`+`s` split, or say `closing-keyword`, or cite `#N` without Closes/Fixes (MRB #4099)
 - Enable-provider FR when stale tip is far behind main: implement fresh from origin/main, open successor Closes PR, close old tip with Duplicate of #N / fixed by PR #M; scrub STILL_DARK/DISABLED_LOCAL/floors (N enabled x 2) and hardcoded dark-of-webgains samples in sibling enable tests
 - needs_human stamped => every seat skipped on !bored/done-offer/LOST_ACK; only !assign; recycled same-machine nick inherits dead giveup_seats/author_seat when predecessor not live
-- Invoke-BobiverseHarvest skips CLOSED-duplicate harvest-lesson MRBs that restate job-mrb already-merged playbook; neutralize Closes/Fixes issue refs in tip bodies (FR #4371).
+- Invoke-BobiverseHarvest skips harvest-lesson / pin closeouts on the FR #4780/#4917 lesson-review path first; the FR #4371 CLOSED-duplicate gate remains as a later belt. Neutralize Closes/Fixes issue refs in tip bodies (FR #4371 / #5481).
 - !build LiveStateTouched focus lost N<=max_lost is concurrent chair prune (FR #1508/#1520), not suite wipe --- use same max_lost threshold for focus as queue (#4408)
 - FR #4415: offer seat-holds void when unaccepted/accepted row absent; stamp via=ack-missing for FR #4115; format_bored_busy_nak names seat+job; mrb_row_offerable rejects state=closed; apply_queue_event closed clears holds
 - BOM-less ASCII gates for Install-Airc*.ps1 / Ensure-BobTrayRunning.ps1 / intake.py must run in CI on every PR (pytest-ascii-bom.yml); comment-only Unicode merges red main when only pytest-gitclaim runs
@@ -331,6 +331,7 @@ routes to bobiverse via the split rule.
 - Vendor Sync-BobTrayFromAgenticBuild wipes OutDir; every Watch-dotsourced tray helper (StartWorker, RecycleSeat) must be in ownedTools or a re-sync deletes it.
 - Give-up/NACK exclusions are exact-seat only; a recycled nick on the same machine must not inherit a dead predecessor giveup_seats on auto-offer. needs_human stays global.
 - When handle_privmsg gains a new _maybe_* dispatch, bind that Client method on FakeChair in test_chair_commands_020 or every fall-through command raises AttributeError.
+- GitHub search remaining must never be stored as core rate_remaining; BACKOFF_FLOOR=500 is core-only; search uses SEARCH_BACKOFF_FLOOR=1.
 
 ## Harvest digest (lessons audit 2026-10-06)
 

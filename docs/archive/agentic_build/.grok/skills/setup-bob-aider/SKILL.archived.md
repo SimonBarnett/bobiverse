@@ -146,7 +146,7 @@ if (-not $env:OPENROUTER_API_KEY) {
 
 Verified 2026-09-24 MarchHare: `aider 0.86.2` + `openrouter/openrouter/free` → `pong`.
 
-Report activity to `https://irc.ntsa.uk/bob/v1/report` with **agent=`aider`** and
+Report activity to `https://bob.ntsa.uk/bob/v1/report` with **agent=`aider`** and
 **model=`openrouter/...`** while working; clear when idle.
 
 ## Model / API keys (free-first)
@@ -164,7 +164,7 @@ Store keys in User env + `~\.grok\aider.env` on the seat, not in git.
 
 1. Fuel id `aider-free` in digest / TipForm Agents (same IRC watcher + webhook
    rules as Cursor/Grok).
-2. On start: report `https://irc.ntsa.uk/bob/v1/report` with **agent=`aider`**
+2. On start: report `https://bob.ntsa.uk/bob/v1/report` with **agent=`aider`**
    and **model=`<backend/model>`**.
 3. On finish/fail/idle: clear jobs (worker activity webhook).
 4. Launch via venv `aider.exe`, not system Python.

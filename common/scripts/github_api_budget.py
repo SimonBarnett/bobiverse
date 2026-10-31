@@ -18,7 +18,10 @@ DEFAULT_BUDGET_PER_HOUR = 1000
 # Stop non-essential REST when GitHub *core* remaining drops below this floor.
 # Search is a separate 30/min bucket (FR #5148): never apply this floor to it.
 BACKOFF_FLOOR = 500
+# Search is 30/min (FR #5148 / #5341). Wait for reset instead of applying BACKOFF_FLOOR.
+SEARCH_BACKOFF_FLOOR = 1
 SEARCH_RESOURCES = frozenset({"search", "code_search"})
+SEARCH_PATH_MARKERS = ("search",)
 # No webhook deliveries for this long (while repos are configured) triggers one reconcile.
 WEBHOOK_GAP_S = 900.0
 
@@ -222,6 +225,24 @@ class GithubApiBudget:
         self._persist_budget()
         return True
 
+    def _path_is_search(self, path: str) -> bool:
+        p = str(path or "").strip().lower()
+        return any(m in p for m in SEARCH_PATH_MARKERS) and "reconcile" not in p
+
+    def search_in_backoff(self) -> bool:
+        """True when the search bucket is empty and its reset is still in the future."""
+        self._roll_hour()
+        self.clear_rate_limit_if_reset()
+        if self.search_rate_remaining is None:
+            return False
+        if self.search_rate_reset is not None:
+            try:
+                if float(self.clock()) >= float(self.search_rate_reset):
+                    return False
+            except (TypeError, ValueError):
+                pass
+        return int(self.search_rate_remaining) < SEARCH_BACKOFF_FLOOR
+
     def in_backoff(self) -> bool:
         self._roll_hour()
         # FR #4422: after GitHub's reset time, forget the stale remaining=0 floor block.
@@ -239,6 +260,10 @@ class GithubApiBudget:
         if essential:
             return self.remaining_budget() > 0 or self.used == 0
         if self.in_backoff():
+            self._log_backoff_once(path)
+            return False
+        # FR #5341: a drained search bucket waits for its own reset; core work continues.
+        if self._path_is_search(path) and self.search_in_backoff():
             self._log_backoff_once(path)
             return False
         return True
@@ -259,6 +284,13 @@ class GithubApiBudget:
                 f"rate-limit-floor path={path} used={self.used}/{self.budget_per_hour} "
                 f"remaining={rem} floor={self.floor} reset={reset}"
             )
+        if self._path_is_search(path) and self.search_in_backoff():
+            srem = self.search_rate_remaining if self.search_rate_remaining is not None else "?"
+            sreset = _fmt_reset_local(self.search_rate_reset, now=self.clock())
+            return (
+                f"search-rate-limit-floor path={path} search_remaining={srem} "
+                f"search_floor={SEARCH_BACKOFF_FLOOR} search_reset={sreset}"
+            )
         return ""
 
     def _log_backoff_once(self, path: str) -> None:
@@ -273,10 +305,10 @@ class GithubApiBudget:
         self.log(f"WARN github-api backoff {why}")
 
     def note_headers(self, hdrs) -> None:
-        """Record GitHub rate headers per ``X-RateLimit-Resource`` (FR #5148).
+        """Record GitHub rate headers per ``X-RateLimit-Resource`` (FR #5148 / #5341).
 
         ``rate_remaining`` / the 500 floor are **core** only. Search (30/min)
-        remaining of 29 must not block reconcile.
+        remaining of 25 must not block reconcile; search uses SEARCH_BACKOFF_FLOOR.
         """
         if hdrs is None:
             return

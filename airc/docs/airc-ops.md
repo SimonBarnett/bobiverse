@@ -79,6 +79,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <ai root>\airc\scripts\Invok
 
 PUT/RUN/JOB verbs are constructed by the helper (sandbox under `<ai root>\airc\drop` by default); server-side acceptance is FR #78.
 
+## Hung shell recovery (FR #5211)
+
+- If partial `out id=...` arrives without `DONE`, try `CANCEL id=<shell-id>` from the same authorized Query nick. It cancels that active or queued shell with `DONE ... exit=130`; other queued commands continue. PUT/RUN cancellation keeps its existing protocol.
+- `STATUS` is handled independently of the shell queue. If STATUS also times out, check the ear's `airc-replies.jsonl` and the client's Airc log for disconnect/restart evidence; a missing DONE alone does not prove a running shell is hung.
+- If the console remains unresponsive, run `Restart-Service Airc` locally on the **affected client**, or through an independent authorized administration channel. Restart **only Airc**; never Ergo/BobIrcd, seats, or broad process names. Then retry STATUS followed by a short command.
+- Shell capture is bounded by the shell timeout (default 120 seconds, plus bounded process cleanup), without waiting for descendant pipe EOF. UTF-16 BOM output is decoded, invalid UTF-8 is replaced, and NUL is replaced before IRC framing. Do not dump configuration files containing credentials; inspect only known non-secret fields.
+- A source hotpatch requires the usual backup and Airc-only restart. Frozen `airc.exe` needs a separately approved rebuild/redeploy; changing Python source beside it does not patch the running executable.
+
 ## Install / secrets / update
 
 - **FR #4216:** airc MSI embeds `<ai root>\airc\config\ergo.password`; Install seeds ConsoleHome from it. Pack fails closed without `AIRC_PACK_ERGO_PASSWORD` / packer connect.password. **Never invent** the Ergo PASS; NickServ GUID is minted into ConsoleHome `console.password`.
@@ -120,6 +128,8 @@ Get-Content $env:USERPROFILE\.airc\*.log -Tail 40 -ErrorAction SilentlyContinue
 - Updater: `common/scripts/Update-BobiverseService.ps1` (staged beside product scripts on install)
 - **FR #4015 (nssm DisplayName):** never leave unsubstituted `#machine` --- resolve `-MachineId` / script id / sanitized `COMPUTERNAME` (fallback `local`) so DisplayName is e.g. `airc console (#walrus IRC shell)`.
 - **FR #4030 (fleet / Bob remote shell ON):** fleet installs default `shell=operators` (1.0.0: fresh-default was `off` when Bob detect missed). Upgrade migrates legacy fresh-default / unmarked `shell=off` unless `shell_source=explicit`. Console `WARN` logs shell=off on Bob with source. Workstation profile still defaults off.
+- **FR #5295 (EXTENSION cap):** fleet `extension=on`; client and workstation default `extension=off`. Cap-off reply is `DONE exit=126 extension-disabled`. Unauthorized stays `DONE exit=126 not-op`. `update=off` still refuses EXTENSION. MSI `AIRC_EXTENSION=on|off`.
 - **FR #4390:** ON is the value `operators` (AppParameters `--shell-mode operators`). The JSON key is named `shell`; never write or expect `"shell": "shell"`.
 - **FR #4014 (no hardcoded #ionos in warnings):** installer/start messages use the target machine id and name `#wonderland` when `#<machine>` is unregistered (e.g. `#walrus is not registered; joining #wonderland`). Never `instead of #ionos`.
 - **FR #4013 (non-elevated install / Error 1730):** tip MSI requires `Privileged` (message: `airc install needs administrator rights`) and `InstallPrivileges=elevated` so an unelevated `/i` fails closed before `RemoveExistingProducts` Error **1730** / generic **1603**. `Install-Airc.ps1` self-elevates via UAC; cancel/failure exits **740** with the same plain message and does not write the FR #3759 fail-reported flag / outer intake.
+- **FR #5312 (LEGION):** `LEGION {host|ip}` [-WhatIf] is UPDATE-class. Isolated worker imports `airc_network_installer` (FR #3991); CredMan `PriorityAirc/LegionAdmin`; DCCLISTEN same job id or CONT. Never secrets on IRC.

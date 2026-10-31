@@ -66,7 +66,7 @@ Builder recycle does not use this split as an excuse to restart Ergo. See `bob-i
 
 ## GIT outbox
 
-GitHub delivers to `https://irc.ntsa.uk/bob/v1/git` (`setup-github-webhooks`). Jeeves announces accepted events as `GIT ...` on `#bobiverse` from **its** outbox. `bob-*` and talk seats do not narrate GIT. Announce text: agentic_irc skill `jeeves-git-webhook`. A create/ping is `GIT ping`.
+GitHub delivers to `https://bob.ntsa.uk/bob/v1/git` (`setup-github-webhooks`). Jeeves announces accepted events as `GIT ...` on `#bobiverse` from **its** outbox. `bob-*` and talk seats do not narrate GIT. Announce text: agentic_irc skill `jeeves-git-webhook`. A create/ping is `GIT ping`.
 
 Digest merges go to `/bob/v1/report`, not `/bob/v1/git`.
 

@@ -28,7 +28,7 @@ when the TUI does not reload.
 
 ## Source of truth
 
-`GET https://irc.ntsa.uk/bob/v1/report` (digest webhook):
+`GET https://bob.ntsa.uk/bob/v1/report` (digest webhook):
 
 - `machines.<id>`: `nick`, `online`, `lastSeen`, `jobs`, `running`, `queued`,
   `working_on` (**TipForm busy text**), `workers{pid:{working_on, agent, model}}`.

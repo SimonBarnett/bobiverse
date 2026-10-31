@@ -18,17 +18,18 @@ function Write-BobTrayAlive {
     .SYNOPSIS
       Heartbeat stamp for run\startworker\tray.alive (FR #2697).
     .NOTES
-      FR #5145: bob-tray.exe and the PS trayAliveTimer both write this file every ~2s.
+      FR #5145 / #5346: bob-tray.exe and the PS trayAliveTimer both write this file every ~2s.
       Bare Set-Content / File.WriteAllText take exclusive locks and throw
       "being used by another process", which FR #5050 then intakes as a crash.
-      Use FileShare.ReadWrite|Delete + short retries (same pattern as Add-BobiverseOutboxLine).
+      Use OpenOrCreate + FileShare.ReadWrite|Delete + short retries. Sharing miss is not a crash.
     #>
     param(
         [Parameter(Mandatory)][string]$Dir,
-        [int]$Retries = 6,
-        [int]$DelayMs = 25
+        [int]$Retries = 12,
+        [int]$DelayMs = 40
     )
     try {
+        # FR #5346: OpenOrCreate + share miss is not a crash.
         if (-not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Force -Path $Dir | Out-Null }
         $f = Join-Path $Dir 'tray.alive'
         $payload = '{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID
@@ -37,11 +38,12 @@ function Write-BobTrayAlive {
             try {
                 $fs = [IO.File]::Open(
                     $f,
-                    [IO.FileMode]::Create,
+                    [IO.FileMode]::OpenOrCreate,
                     [IO.FileAccess]::Write,
                     [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
                 )
                 try {
+                    $fs.SetLength(0)
                     $fs.Write($bytes, 0, $bytes.Length)
                     $fs.Flush()
                 }

@@ -4,7 +4,7 @@ After product merge #3911:
 - Sibling airc/jeeves ergo.password resolve + seed
 - Ensure-BobiverseBobNickServPassword migrate + fail-closed
 - Install-Bob prior AppParameters before Remove; AppStdout under logs
-- irc_agent crash-reports NICKNAME_RESERVED once
+- irc_agent surfaces NICKNAME_RESERVED once (FR #5352: not a crash)
 - Skills UTF-8 without mojibake (jeeves\\config\\ergo.password contiguous)
 """
 from __future__ import annotations
@@ -47,8 +47,8 @@ def test_mrb3911_irc_agent_nickname_reserved_crash_report():
     t = IRC_AGENT.read_text(encoding="utf-8")
     assert "NICKNAME_RESERVED" in t
     assert "FR #3904" in t or "3904" in t
-    assert "report_exception" in t
-    # one-shot gate
+    assert "_surface_nickname_reserved" in t
+    assert "report_exception" not in t.split("def _surface_nickname_reserved")[1][:800]
     assert "_nickname_reserved_reported" in t or "nickname_reserved" in t.lower()
 
 

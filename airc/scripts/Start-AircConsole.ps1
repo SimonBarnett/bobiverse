@@ -16,7 +16,7 @@ param(
     [string]$RepoRoot = '',
     [string]$Python = '',
     [string]$HostName = 'irc.ntsa.uk',
-    [int]$Port = 6697,
+    [int]$Port = 993,
     # Empty/auto -> Python {machine}_console (ChanServ shop) / {machine} lobby.
     [string]$Nick = 'auto',
     # Fleet shop id (ionos/flamingo/...). Prefer BOB_MACHINE_ID over COMPUTERNAME.
@@ -44,6 +44,8 @@ param(
     [string]$Jobs = '',
     [ValidateSet('', 'off', 'on')]
     [string]$UpdateCap = '',
+    [ValidateSet('', 'off', 'on')]
+    [string]$ExtensionCap = '',
     [switch]$TlsInsecure,
     [switch]$ServiceMode,
     # Reserved {machine}_console needs SASL before NICK (Ergo nick reservation).
@@ -228,6 +230,7 @@ if ($ShellMode -in @('off', 'operators')) { $argsList += @('--shell-mode', $Shel
 $argsList += @('--auth-mode', 'irc_ops')  # FR #3639
 if ($Jobs -in @('off', 'on')) { $argsList += @('--jobs', $Jobs) }
 if ($UpdateCap -in @('off', 'on')) { $argsList += @('--update', $UpdateCap) }
+if ($ExtensionCap -in @('off', 'on')) { $argsList += @('--extension', $ExtensionCap) }
 if ($TlsInsecure) { $argsList += '--tls-insecure' }
 # #34: always pass the choice explicitly (a bare omission must never silently flip it).
 if ($Sasl) { $argsList += '--sasl' } else {

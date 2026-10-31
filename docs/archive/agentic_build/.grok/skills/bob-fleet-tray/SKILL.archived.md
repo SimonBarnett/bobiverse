@@ -270,7 +270,7 @@ Card place: `Get-BobTrayTipPlacement` (icon rect, then sticky when already visib
 3. Confirm `$notify.Visible` path still sets Visible=$true after start.
 4. Confirm `NotifyIcon.Text` is empty (no white P+ chip).
 5. Confirm title `#Bobiverse (<id>)`, three Cursor bars (grok chat, high cost models, Low cost models) from **local** Spending when this host has a Cursor login; digest only fills nulls when it does not. Seat labels beside names; shared % on ntsa seats.
-6. Bars stuck at `n/a` on MarchHare (no Cursor login): digest GET is not `https://irc.ntsa.uk/bob/v1/report`, or peers omitted `pcent`. Checklist: `bob-digest-webhook`. Do not invent the percent. On ionos/flamingo, `n/a` means local Spending failed — fix local, do not fall back to digest for the pool check.
+6. Bars stuck at `n/a` on MarchHare (no Cursor login): digest GET is not `https://bob.ntsa.uk/bob/v1/report`, or peers omitted `pcent`. Checklist: `bob-digest-webhook`. Do not invent the percent. On ionos/flamingo, `n/a` means local Spending failed — fix local, do not fall back to digest for the pool check.
 7. Click / Status does nothing: TipForm C# failed to compile -- check for duplicate `SendMessage` P/Invoke or Add-Type errors in the log.
 8. Refresh clears the card: rebuild cleared controls while redraw was suspended, or an exception after Clear -- drop WM_SETREDRAW; format labels before Clear; ResumeLayout + Refresh always.
 9. If card flashes on poll: verify SuspendLayout/ResumeLayout wraps `Rebuild-BobTrayTiles` (no SetRedraw).

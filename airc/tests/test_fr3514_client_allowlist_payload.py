@@ -26,6 +26,7 @@ KEEP_SCRIPTS = (
     "Report-AircInstallCmdFailure.ps1",
     "airc_console_service.py",
     "crash_report.py",
+    "airc_priority.py",  # FR #5288 Priority Client module
 )
 
 # Must be gone after client allow-list (union leftovers / docs).
@@ -42,11 +43,14 @@ GONE_SCRIPTS = (
     "Sync-BobiverseFromRepo.ps1",
 )
 
-# FR #3582 / #3685 / #3988 / #4216 / #4400: exact remaining files after client purge when
-# airc.exe + embedded config\ergo.password are present (27).
-# SkipAircExe pack stages omit airc\airc.exe -> 26; both must exclude fleet-operators.txt.
+# FR #3582 / #3685 / #3988 / #4216 / #4400 / #5283: exact remaining files after client purge when
+# airc.exe + embedded config\ergo.password are present (30).
+# SkipAircExe pack stages omit airc\airc.exe -> 29; both must exclude fleet-operators.txt.
 # FR #3899 added scripts\Fetch-Nssm.ps1 to the client allow-list for nssm self-heal.
 # FR #4216 airc pack embeds config\ergo.password; client purge must keep it (mrb3585).
+# FR #5283 adds airc\priority-worker (3 files) under the kept airc\ tree.
+# FR #5288 keeps scripts\airc_priority.py on the client allow-list.
+# FR #5366 keeps airc\priority-worker\fixtures\form_walk.json (airc\ keep-all).
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
@@ -76,9 +80,14 @@ CLIENT_REMAINING_FILES = frozenset(
         r"scripts\Uninstall-Airc.cmd",
         r"scripts\Uninstall-Airc.ps1",
         r"scripts\Update-BobiverseService.ps1",
+        r"scripts\airc_priority.py",
+        r"airc\priority-worker\priority_worker.py",
+        r"airc\priority-worker\README.md",
+        r"airc\priority-worker\package.json",
+        r"airc\priority-worker\fixtures\form_walk.json",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 27
+assert len(CLIENT_REMAINING_FILES) == 32
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -128,6 +137,13 @@ def test_fr3582_client_purge_drops_fleet_operators(tmp_path: Path):
         "FAKE_ergo_pass_fr4400\n", encoding="utf-8"
     )
     (stage / "airc" / "airc.exe").write_bytes(b"MZ")
+    pw = stage / "airc" / "priority-worker"
+    pw.mkdir()
+    (pw / "priority_worker.py").write_text("# stub\n", encoding="utf-8")
+    (pw / "README.md").write_text("stub\n", encoding="utf-8")
+    (pw / "package.json").write_text("{}\n", encoding="utf-8")
+    (pw / "fixtures").mkdir()
+    (pw / "fixtures" / "form_walk.json").write_text("{}\n", encoding="utf-8")
     (stage / "third_party" / "nssm" / "win64" / "nssm.exe").write_bytes(b"MZ")
     for name in KEEP_SCRIPTS:
         (stage / "scripts" / name).write_text("# stub\n", encoding="utf-8")
@@ -259,8 +275,8 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
         f"client remaining files mismatch (got {len(rels)}, want {len(expected)}): "
         + ", ".join(sorted(rels))
     )
-    # With airc.exe+ergo=27; SkipAircExe+ergo=26; either missing drops one more (25).
-    assert len(expected) in (25, 26, 27)
+    # With airc.exe+ergo+priority+form_walk=32; SkipAircExe+ergo=31; either missing drops one more (30).
+    assert len(expected) in (30, 31, 32)
     # FR #4400: when pack embedded Ergo PASS, client remaining set must include it.
     if (stage / "config" / "ergo.password").is_file():
         assert r"config\ergo.password" in rels

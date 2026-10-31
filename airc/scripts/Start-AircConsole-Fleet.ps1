@@ -21,7 +21,7 @@ param(
     [ValidateSet('auto', 'registered', 'wonderland', 'domain-lobby')]
     [string]$ShopMode = 'auto',
     [string]$HostName = 'irc.ntsa.uk',
-    [int]$Port = 6697,
+    [int]$Port = 993,
     [string]$Python = '',
     [switch]$Sasl,
     [switch]$NoSasl

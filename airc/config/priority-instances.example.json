@@ -1,0 +1,14 @@
+{
+  "instances": [
+    {
+      "id": "example-dev",
+      "url": "https://prioritydev.example.invalid",
+      "company": "live1",
+      "user": "api-user",
+      "credentialTarget": "PriorityWeb/example-dev",
+      "sqlServer": ".\\PRI",
+      "systemDb": "system",
+      "prepDir": "E:\\priority\\system\\prep"
+    }
+  ]
+}

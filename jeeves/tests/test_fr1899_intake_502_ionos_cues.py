@@ -8,7 +8,7 @@ def test_fr1899_1739_body_reverse_proxy_bobcallback_stamps_ionos():
     body = (
         "what: Invoke-BobiverseHarvest.ps1 -Flush got HTTP 502 from intake; "
         "payload KEPT in harvest-outbox\n"
-        "fix: check irc.ntsa.uk /bob/v1/intake reverse proxy / bobcallback; "
+        "fix: check bob.ntsa.uk /bob/v1/intake reverse proxy / bobcallback; "
         "operator can Flush when 502 clears."
     )
     assert (

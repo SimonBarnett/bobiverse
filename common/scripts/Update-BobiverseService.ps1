@@ -5,7 +5,9 @@
 .DESCRIPTION
   Mode Check (default; called by Start-Bob / Start-Jeeves / Start-AircConsole BEFORE the main process):
     - honours the opt-out (BOB_AUTOUPDATE=0, BOBIVERSE_NO_UPDATE=1, or <InstallRoot>\config\autoupdate.disabled)
-    - asks the public GitHub releases/latest endpoint (no token, 15 s timeout, no gh needed)
+    - asks the public GitHub releases/latest endpoint (no token, 15 s timeout, no gh needed);
+      FR #5353: on 404 (prerelease-only / never_latest catalog) falls back to listing releases
+      and picks the newest semver tag that has this product MSI (non-prerelease preferred)
     - compares with <InstallRoot>\VERSION (never downgrades)
     - if newer and not loop-guarded: writes a plan and starts a DETACHED helper (scheduled task as SYSTEM,
       falling back to a WMI-created process). It never installs inline: msiexec replaces the very service
@@ -38,7 +40,8 @@ param(
     [string]$PlanFile = '',
     [string]$StateDir = '',
     [string]$ReleaseJson = '',      # test hook: local release JSON instead of GitHub
-    [string]$TargetVersion = '',    # FR #77: pin UPDATE airc|bob|jeeves <ver> (tag vX.Y.Z)
+    [string]$ReleaseListJson = '',  # FR #5353 test hook: release array JSON (list fallback)
+    [string]$TargetVersion = '',    # FR #77/#5280: omit = latest release; pin UPDATE airc|bob|jeeves <ver> (tag vX.Y.Z)
     [switch]$AllowLocalAssets,      # test hook: plan asset "urls" may be local files
     [switch]$DryRun,                # Check: decide + log only
     [switch]$NoSpawn,               # Check: write plan/state but do not start the helper
@@ -94,7 +97,12 @@ function Get-OptOutReason {
 
 function ConvertTo-Ver {
     param([string]$Text)
-    if ($Text -and ($Text -match '(\d+)\.(\d+)\.(\d+)')) {
+    # FR #5354: allow optional 4th segment (v1.0.0.1 / bob-0.1.32.2.msi). Exactly-3-part
+    # tags still parse as Major.Minor.Build (Revision unset).
+    if ($Text -and ($Text -match '(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?')) {
+        if ($Matches[4]) {
+            return [version]('{0}.{1}.{2}.{3}' -f $Matches[1], $Matches[2], $Matches[3], $Matches[4])
+        }
         return [version]('{0}.{1}.{2}' -f $Matches[1], $Matches[2], $Matches[3])
     }
     return $null
@@ -129,36 +137,170 @@ function ConvertTo-UtcDate {
     try { return [datetime]::Parse($Text, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } catch { return $null }
 }
 
+function Invoke-GitHubReleaseApi {
+    # Token-less GitHub API with short retries for transient 403/429/network blips.
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [int]$Retries = 2
+    )
+    $headers = @{ 'User-Agent' = 'bobiverse-self-update'; Accept = 'application/vnd.github+json' }
+    $last = $null
+    for ($i = 0; $i -le $Retries; $i++) {
+        try {
+            return Invoke-RestMethod -Uri $Uri -Headers $headers -TimeoutSec 15
+        } catch {
+            $last = $_
+            $code = $null
+            try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+            if ($code -eq 404) { throw }
+            if ($i -lt $Retries) {
+                Start-Sleep -Seconds (1 + $i)
+            }
+        }
+    }
+    throw $last
+}
+
+function Select-BestReleaseFromList {
+    # FR #5353 / FR #5412 / FR #5429: pick newest semver release that has
+    # {Product}-N.N.N.msi or {Product}-N.N.N.N.msi (same pattern as Invoke-Check).
+    # Prefer non-prerelease; among the same class, higher version wins.
+    param(
+        $Releases,
+        [string]$ProductName
+    )
+    $best = $null
+    $bestVer = $null
+    $bestPre = $true
+    $msiRe = '^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($ProductName)
+    foreach ($r in @($Releases)) {
+        if (-not $r) { continue }
+        if ($r.draft) { continue }
+        $tv = ConvertTo-Ver ([string]$r.tag_name)
+        if (-not $tv) { continue }
+        $assets = @($r.assets)
+        $msi = @(
+            $assets | Where-Object {
+                $_.name -match $msiRe
+            }
+        ) | Select-Object -First 1
+        if (-not $msi) { continue }
+        $pre = [bool]$r.prerelease
+        if ($null -eq $best) {
+            $best = $r; $bestVer = $tv; $bestPre = $pre
+            continue
+        }
+        if ($bestPre -and -not $pre) {
+            $best = $r; $bestVer = $tv; $bestPre = $pre
+            continue
+        }
+        if (($pre -eq $bestPre) -and ($tv -gt $bestVer)) {
+            $best = $r; $bestVer = $tv
+        }
+    }
+    return $best
+}
+
 function Get-LatestRelease {
     if ($ReleaseJson) { return (Get-Content -LiteralPath $ReleaseJson -Raw | ConvertFrom-Json) }
+    # FR #5353 test hook: exercise list selection without hitting the network.
+    if ($ReleaseListJson) {
+        $list = Get-Content -LiteralPath $ReleaseListJson -Raw | ConvertFrom-Json
+        $picked = Select-BestReleaseFromList -Releases $list -ProductName $Product
+        if (-not $picked) { throw 'no-matching-release-in-list' }
+        return $picked
+    }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $uri = "https://api.github.com/repos/$Repo/releases/latest"
     $tv = ConvertTo-Ver $TargetVersion
     if ($tv) {
         # FR #77: UPDATE <product> <ver> pins an allowlisted release tag (never a free-form URL).
         $uri = "https://api.github.com/repos/$Repo/releases/tags/v$($tv.ToString())"
+        return (Invoke-GitHubReleaseApi -Uri $uri)
     }
-    return (Invoke-RestMethod -Uri $uri `
-            -Headers @{ 'User-Agent' = 'bobiverse-self-update'; Accept = 'application/vnd.github+json' } -TimeoutSec 15)
+    # FR #5280: bare UPDATE (empty TargetVersion) always hits releases/latest first.
+    $latestUri = "https://api.github.com/repos/$Repo/releases/latest"
+    try {
+        return (Invoke-GitHubReleaseApi -Uri $latestUri)
+    } catch {
+        $code = $null
+        try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($code -ne 404) { throw }
+        # FR #5353: /releases/latest 404 when the catalog is prerelease-only (--latest=false).
+        Write-UpdLog 'check latest-endpoint-404 - falling back to releases list (FR #5353)'
+        $listUri = "https://api.github.com/repos/$Repo/releases?per_page=30"
+        $list = Invoke-GitHubReleaseApi -Uri $listUri
+        $picked = Select-BestReleaseFromList -Releases $list -ProductName $Product
+        if (-not $picked) { throw 'no-matching-release-after-latest-404' }
+        return $picked
+    }
+}
+
+function Normalize-AssetUrl {
+    # FR #5410: GitHub sometimes appends ?X-Amz= / fragments on browser_download_url.
+    param([string]$Url)
+    return (([string]$Url).Trim() -replace '[?#].*$', '')
 }
 
 function Test-AssetUrl {
     param([string]$Url)
-    if ($Url -match '^https://') {
-        return ($Url -match ('^https://github\.com/{0}/releases/download/[^?#\s]+$' -f [regex]::Escape($Repo)))
+    $u = Normalize-AssetUrl -Url $Url
+    if ($u -match '^https://') {
+        return ($u -match ('^https://github\.com/{0}/releases/download/[^?#\s]+$' -f [regex]::Escape($Repo)))
     }
-    return ($AllowLocalAssets -and (Test-Path -LiteralPath $Url))
+    return ($AllowLocalAssets -and (Test-Path -LiteralPath $u))
+}
+
+function Resolve-AssetDownloadUrl {
+    # FR #5345 / #5410: omit browser_download_url, assets API, signed query, or
+    # objects.githubusercontent.com -> rebuild allowlisted github.com download path.
+    # Never rebuild a foreign host (evil.example). FR #5354: 3- or 4-part tags.
+    param($Asset, [string]$Tag)
+    if (-not $Asset) { return '' }
+    $direct = ([string]$Asset.browser_download_url).Trim()
+    if (-not $direct) { $direct = ([string]$Asset.url).Trim() }
+    if (Test-AssetUrl -Url $direct) { return (Normalize-AssetUrl -Url $direct) }
+    $norm = Normalize-AssetUrl -Url $direct
+    $apiOk = $norm -match ('^https://api\.github\.com/repos/{0}/releases/assets/\d+$' -f [regex]::Escape($Repo))
+    $ours = $norm -match ('^https://github\.com/{0}/releases/' -f [regex]::Escape($Repo))
+    $cdn = $norm -match '^https://objects\.githubusercontent\.com/'
+    # Rebuild empty, assets-API, our github.com/.../releases/, or objects CDN.
+    # Never promote rejected local paths or foreign hosts (FR #5357 / #5410 / MRB #5439).
+    # FR #5437: 4-part tags (v0.1.17.1) must rebuild; a 3-part-only tag regex
+    # left API/CDN urls as-is and Check logged asset-url-rejected.
+    if ($direct -and -not $apiOk -and -not $ours -and -not $cdn) { return $direct }
+    $name = ([string]$Asset.name).Trim()
+    $tag = ([string]$Tag).Trim()
+    if ($name -notmatch '^[A-Za-z0-9._+-]+$' -or $tag -notmatch '^v?\d+\.\d+\.\d+(?:\.\d+)?$') { return $direct }
+    if ($tag -notmatch '^v') { $tag = 'v' + $tag }
+    $built = "https://github.com/$Repo/releases/download/$tag/$name"
+    if (Test-AssetUrl -Url $built) { return $built }
+    return $direct
+}
+
+function Repair-PlanAssetUrl {
+    # FR #5357: Apply may still have an empty / assets-API URL from an old plan.json.
+    param([string]$Url, [string]$Name, [string]$Tag)
+    if (Test-AssetUrl -Url $Url) { return ([string]$Url).Trim() }
+    $asset = [pscustomobject]@{
+        name                  = $Name
+        browser_download_url  = $Url
+        url                   = $Url
+    }
+    $fixed = Resolve-AssetDownloadUrl -Asset $asset -Tag $Tag
+    if ($fixed -and $fixed -ne $Url) {
+        Write-UpdLog ("apply-repair-url from={0} to={1}" -f $Url, $fixed)
+    }
+    return $fixed
 }
 
 function Get-Asset {
-    # FR #1545: hard timeout + retries + curl.exe fallback. Invoke-WebRequest can stall
-    # forever on a half-open GitHub TLS socket (0-byte OutFile, mutex held). curl --max-time
-    # fails closed so Apply can Set-Failure download-failed and release the mutex.
+    # FR #1545 / FR #5357: curl first (WinPS IWR stalls on half-open TLS), then IWR.
+    # curl --max-time fails closed so Apply can Set-Failure download-failed.
     param(
         [string]$Url,
         [string]$Dest,
         [int]$TimeoutSec = 120,
-        [int]$Retries = 2
+        [int]$Retries = 4
     )
     if (-not (Test-AssetUrl -Url $Url)) { throw "asset url rejected" }
     if ($Url -notmatch '^https://') {
@@ -172,22 +314,7 @@ function Get-Asset {
     $lastErr = $null
     for ($i = 1; $i -le $attempts; $i++) {
         Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
-        # 1) IWR with hard TimeoutSec (no-progress stalls still hang on some WinPS builds --- keep short).
-        try {
-            Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
-            Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
-            if ((Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
-                Write-UpdLog ("download-ok method=iwr bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
-                return
-            }
-            $lastErr = 'iwr produced empty file'
-            Write-UpdLog "download-warn $lastErr"
-        } catch {
-            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
-            Write-UpdLog "download-warn method=iwr $lastErr"
-        }
-        Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
-        # 2) curl.exe fallback (Windows 10+ ships curl).
+        # FR #5357: curl first, then IWR (keep HTML reject from main).
         $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
         if (-not (Test-Path -LiteralPath $curl)) {
             $cmd = Get-Command curl.exe -ErrorAction SilentlyContinue
@@ -195,7 +322,7 @@ function Get-Asset {
         }
         if (Test-Path -LiteralPath $curl) {
             try {
-                Write-UpdLog ("download-try method=curl attempt={0}/{1} max-time={2}s" -f $i, $attempts, $TimeoutSec)
+                Write-UpdLog ("download-try method=curl attempt={0}/{1} max-time={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
                 $prev = $ErrorActionPreference
                 $ErrorActionPreference = 'Continue'
                 $clog = & $curl -sSL --fail --retry 2 --retry-delay 2 --connect-timeout 30 --max-time $TimeoutSec `
@@ -203,8 +330,13 @@ function Get-Asset {
                 $ccode = $LASTEXITCODE
                 $ErrorActionPreference = $prev
                 if ($ccode -eq 0 -and (Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
-                    Write-UpdLog ("download-ok method=curl bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
-                    return
+                    if (Test-LooksLikeHtmlAsset -Path $Dest) {
+                        $lastErr = 'curl saved html body'
+                        Write-UpdLog "download-warn $lastErr"
+                    } else {
+                        Write-UpdLog ("download-ok method=curl bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
+                        return
+                    }
                 }
                 $lastErr = "curl exit=$ccode $(($clog | Select-Object -First 3) -join ' ')"
                 Write-UpdLog "download-warn method=curl $lastErr"
@@ -215,10 +347,58 @@ function Get-Asset {
         } else {
             Write-UpdLog 'download-warn curl.exe not found'
         }
+        Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+        try {
+            Write-UpdLog ("download-try method=iwr attempt={0}/{1} timeout={2}s url={3}" -f $i, $attempts, $TimeoutSec, $Url)
+            Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec $TimeoutSec -Headers @{ 'User-Agent' = 'bobiverse-self-update' }
+            if ((Test-Path -LiteralPath $Dest) -and ((Get-Item -LiteralPath $Dest).Length -gt 0)) {
+                if (Test-LooksLikeHtmlAsset -Path $Dest) {
+                    $lastErr = 'iwr saved html body'
+                    Write-UpdLog "download-warn $lastErr"
+                } else {
+                    Write-UpdLog ("download-ok method=iwr bytes={0}" -f (Get-Item -LiteralPath $Dest).Length)
+                    return
+                }
+            } else {
+                $lastErr = 'iwr produced empty file'
+                Write-UpdLog "download-warn $lastErr"
+            }
+        } catch {
+            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+            Write-UpdLog "download-warn method=iwr $lastErr"
+        }
         if ($i -lt $attempts) { Start-Sleep -Seconds ([Math]::Min(5 * $i, 15)) }
     }
     Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
     throw "download-failed after $attempts attempts: $lastErr"
+}
+
+function Test-LooksLikeHtmlAsset {
+    # FR #5413: UTF-8 BOM + <!DOCTYPE used to miss and become sha256-mismatch.
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+        $buf = New-Object byte[] 64
+        $n = $fs.Read($buf, 0, 64)
+        if ($n -le 0) { return $true }
+        $off = 0
+        if ($n -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { $off = 3 }
+        $head = [System.Text.Encoding]::ASCII.GetString($buf, $off, $n - $off)
+    } finally { $fs.Close() }
+    return ($head -match '(?i)^\s*(<(!DOCTYPE|html|head|body)\b|\{)')
+}
+
+function Read-ExpectedSha256 {
+    # FR #5344: GitHub/IWR copies can carry UTF-8 BOM or `hash *name` lines.
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $raw = [System.IO.File]::ReadAllText($Path)
+    if ($raw.Length -gt 0 -and [int][char]$raw[0] -eq 0xFEFF) { $raw = $raw.Substring(1) }
+    foreach ($line in ($raw -split '\r?\n')) {
+        if ($line -match '([0-9a-fA-F]{64})') { return $Matches[1].ToLowerInvariant() }
+    }
+    return $null
 }
 
 function Test-IsAdmin {
@@ -230,6 +410,7 @@ function Set-Failure {
     param(
         [string]$Tag,
         [string]$Result,
+        [string]$Detail = '',
         [switch]$NoCount   # FR #2563: record outcome without burning MaxAttempts (backup-only fails)
     )
     $st = Get-State
@@ -243,10 +424,39 @@ function Set-Failure {
     $st.lastTag = $Tag
     $st.lastAttemptUtc = (Get-Date).ToUniversalTime().ToString('o')
     Save-State $st
+    # FR #5279 / FR #5411: deterministic issue per class; Detail carries msiexec exit N.
+    try {
+        $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+        if (-not (Test-Path -LiteralPath $common) -and $InstallRoot) {
+            $common = Join-Path $InstallRoot 'scripts\Bobiverse-Common.ps1'
+        }
+        if ((Test-Path -LiteralPath $common) -and -not (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue)) {
+            . $common
+        }
+        if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -Detail $Detail -InstallRoot $InstallRoot
+        }
+    } catch {
+        Write-UpdLog "FR #5279 update-fail-intake-warn $($_.Exception.GetType().Name)"
+    }
+}
+
+function Write-CheckFailIntake {
+    # FR #5354: pass release tag when known so idempotency keys are not tag=-.
+    param([string]$Result, [string]$Tag = '')
+    try {
+        $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
+        if ((Test-Path -LiteralPath $common) -and -not (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue)) {
+            . $common
+        }
+        if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -InstallRoot $InstallRoot
+        }
+    } catch { }
 }
 
 function Ensure-ServiceRunning {
-    # FR #2563: after pre-msiexec Apply abort (esp. backup fail) leave the service Running.
+    # FR #2563 / FR #5277: after any Apply abort/skip/timeout/ok leave the service Running.
     param([string]$Why = 'apply-abort')
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $svc) { Write-UpdLog "ensure-running-skip missing=$ServiceName why=$Why"; return }
@@ -622,21 +832,41 @@ function Invoke-Apply {
         New-Item -ItemType Directory -Force -Path $work | Out-Null
         $msi = Join-Path $work ([string]$plan.msiName)
         $shaFile = $msi + '.sha256'
+        $msiUrl = Repair-PlanAssetUrl -Url ([string]$plan.msiUrl) -Name ([string]$plan.msiName) -Tag $tag
+        $shaUrl = Repair-PlanAssetUrl -Url ([string]$plan.shaUrl) -Name (([string]$plan.msiName) + '.sha256') -Tag $tag
         try {
-            Get-Asset -Url ([string]$plan.msiUrl) -Dest $msi
-            Get-Asset -Url ([string]$plan.shaUrl) -Dest $shaFile
+            Get-Asset -Url $msiUrl -Dest $msi
+            Get-Asset -Url $shaUrl -Dest $shaFile
+            if ((Test-LooksLikeHtmlAsset -Path $msi) -or (Test-LooksLikeHtmlAsset -Path $shaFile)) {
+                throw 'download-failed html-or-json-body'
+            }
         } catch {
             Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
-            Set-Failure -Tag $tag -Result 'download-failed'
+            Set-Failure -Tag $tag -Result 'download-failed' -Detail ([string]$_.Exception.Message)
             return
         }
-        $expected = $null
-        $first = (Get-Content -LiteralPath $shaFile -TotalCount 1 -ErrorAction SilentlyContinue)
-        if ($first -match '^\s*([0-9a-fA-F]{64})\b') { $expected = $Matches[1].ToLowerInvariant() }
+        $expected = Read-ExpectedSha256 -Path $shaFile
         $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
         if (-not $expected -or $expected -ne $actual) {
+            Write-UpdLog "sha256-retry tag=$tag expected=$expected actual=$actual"
+            try {
+                # FR #5413: retry the repaired URLs, not the stale plan API/query URLs.
+                Get-Asset -Url $msiUrl -Dest $msi
+                Get-Asset -Url $shaUrl -Dest $shaFile
+                if ((Test-LooksLikeHtmlAsset -Path $msi) -or (Test-LooksLikeHtmlAsset -Path $shaFile)) {
+                    throw 'download-failed html-or-json-body'
+                }
+            } catch {
+                Write-UpdLog "download-failed $($_.Exception.GetType().Name): $($_.Exception.Message) - service untouched"
+                Set-Failure -Tag $tag -Result 'download-failed' -Detail ([string]$_.Exception.Message)
+                return
+            }
+            $expected = Read-ExpectedSha256 -Path $shaFile
+            $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        if (-not $expected -or $expected -ne $actual) {
             Write-UpdLog "sha256-mismatch tag=$tag expected=$expected actual=$actual - aborted, service untouched"
-            Set-Failure -Tag $tag -Result 'sha256-mismatch'
+            Set-Failure -Tag $tag -Result 'sha256-mismatch' -Detail ("expected={0} actual={1}" -f $expected, $actual)
             Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             return
         }
@@ -842,7 +1072,9 @@ function Invoke-Apply {
             Set-Failure -Tag $tag -Result 'backup-failed' -NoCount
             Write-UpdLog "backup-failed-no-loop-count tag=$tag (next Check may retry; -ForceCheck clears MaxAttempts block)"
         } else {
-            Set-Failure -Tag $tag -Result 'rolled-back'
+            $failResult = 'rolled-back'
+            if ($failMsg -match '(?i)msiexec exit') { $failResult = 'msiexec-exit' }
+            Set-Failure -Tag $tag -Result $failResult -Detail $failMsg
         }
     } finally {
         if ($msiHeld) { try { $msiMutex.ReleaseMutex() } catch { } }
@@ -850,9 +1082,11 @@ function Invoke-Apply {
         try { Unregister-ScheduledTask -TaskName "bobiverse-update-$Product" -Confirm:$false -ErrorAction SilentlyContinue } catch { }
         if ($script:ApplySucceeded) {
             try { Unregister-ScheduledTask -TaskName "bobiverse-heal-$Product" -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-        } else {
-            # FR #5195: helper abort or crash-after-stop — do not leave ircBob/ircJeeves/Airc Stopped.
-            Ensure-ServiceRunning -Why 'apply-finally'
+        }
+        # FR #5277 / #5195: finally heal so abort or crash-after-stop cannot leave
+        # ircBob/ircJeeves/Airc Stopped. Check mode never stops the service.
+        if (-not $VerifyOnly) {
+            Ensure-ServiceRunning -Why 'apply-finally-heal'
         }
     }
 }
@@ -918,14 +1152,21 @@ function Invoke-Check {
         try { $code = [int]$_.Exception.Response.StatusCode } catch { }
         $kind = if ($code -eq 403 -or $code -eq 429) { 'rate-limited' } elseif ($code) { "http-$code" } else { 'offline-or-error' }
         Write-UpdLog "check result=release-lookup-failed kind=$kind local=$($local.ToString()) - starting installed version"
+        Write-CheckFailIntake -Result 'release-lookup-failed'
         return
     }
     if (-not $rel -or -not $rel.assets) { Write-UpdLog 'check result=no-release-data - starting installed version'; return }
 
-    $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
+    # FR #5354 / FR #5412: 3- or 4-part product MSI (bob-1.0.0.1.msi) and matching tag_name.
+    $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
     $tagVer = $null
-    if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+)$') { $tagVer = ConvertTo-Ver $Matches[1] }
-    if (-not $msi -or -not $tagVer) { Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"; return }
+    if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+(?:\.\d+)?)$') { $tagVer = ConvertTo-Ver $Matches[1] }
+    if (-not $msi -or -not $tagVer) {
+        $assetNames = (@($rel.assets) | ForEach-Object { [string]$_.name }) -join ','
+        Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name) assets=$assetNames"
+        Write-CheckFailIntake -Result 'no-matching-asset' -Tag ([string]$rel.tag_name)
+        return
+    }
     $remote = ConvertTo-Ver ([string]$msi.name)
     if (-not $remote -or $remote -ne $tagVer) { Write-UpdLog "check result=asset-tag-mismatch tag=$($rel.tag_name) asset=$($msi.name)"; return }
     $want = ConvertTo-Ver $TargetVersion
@@ -935,8 +1176,12 @@ function Invoke-Check {
     }
     $sha = @($rel.assets | Where-Object { $_.name -eq ($msi.name + '.sha256') }) | Select-Object -First 1
     if (-not $sha) { Write-UpdLog "check result=no-sha256-asset tag=$($rel.tag_name) - not updating"; return }
-    if (-not (Test-AssetUrl -Url ([string]$msi.browser_download_url)) -or -not (Test-AssetUrl -Url ([string]$sha.browser_download_url))) {
-        Write-UpdLog 'check result=asset-url-rejected'; return
+    $msiUrl = Resolve-AssetDownloadUrl -Asset $msi -Tag ([string]$rel.tag_name)
+    $shaUrl = Resolve-AssetDownloadUrl -Asset $sha -Tag ([string]$rel.tag_name)
+    if (-not (Test-AssetUrl -Url $msiUrl) -or -not (Test-AssetUrl -Url $shaUrl)) {
+        Write-UpdLog 'check result=asset-url-rejected'
+        Write-CheckFailIntake -Result 'asset-url-rejected' -Tag ([string]$rel.tag_name)
+        return
     }
 
     $tag = 'v' + $remote.ToString()
@@ -977,7 +1222,7 @@ function Invoke-Check {
     $plan = Join-Path $StateDir 'plan.json'
     @{
         product = $Product; tag = $tag; version = $remote.ToString(); msiName = [string]$msi.name
-        msiUrl = [string]$msi.browser_download_url; shaUrl = [string]$sha.browser_download_url
+        msiUrl = $msiUrl; shaUrl = $shaUrl
         installRoot = $InstallRoot; serviceName = $ServiceName; fromVersion = $local.ToString()
         createdUtc = (Get-Date).ToUniversalTime().ToString('o')
     } | ConvertTo-Json | Set-Content -LiteralPath $plan -Encoding UTF8
@@ -997,6 +1242,11 @@ function Invoke-Check {
         $st.lastResult = 'spawn-failed'
         Save-State $st
         Write-UpdLog "check result=spawn-failed $($_.Exception.GetType().Name) - starting installed version"
+        try {
+            if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
+                $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $tag -Result 'spawn-failed' -InstallRoot $InstallRoot
+            }
+        } catch { }
     }
 }
 

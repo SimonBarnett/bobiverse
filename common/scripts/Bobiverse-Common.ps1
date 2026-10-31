@@ -315,6 +315,7 @@ function Invoke-BobiverseMsiexecSerialized {
       (ERROR_INSTALL_ALREADY_RUNNING) a few times instead of leaving services half-upgraded.
       FR #4012: clear stuck InProgress / Rollback before run; retry exit 1705
       (previous installation in progress) after Clear-BobiverseMsiPendingTransaction.
+      FR #5411: retry exit 1603 once the same way (file-in-use / pending after stop).
     #>
     param(
         [Parameter(Mandatory)][string[]]$ArgumentList,
@@ -346,6 +347,12 @@ function Invoke-BobiverseMsiexecSerialized {
             $code = [int]$p.ExitCode
             if ($code -eq 1618) {
                 Write-Host "WARN FR#2475 msiexec exit 1618 (already running); retry in $RetryDelaySec s attempt=$attempt"
+                Start-Sleep -Seconds $RetryDelaySec
+                continue
+            }
+            if ($code -eq 1603) {
+                Write-Host "WARN FR#5411 msiexec exit 1603 (fatal error); clear pending and retry attempt=$attempt"
+                [void](Clear-BobiverseMsiPendingTransaction -Why 'after-1603')
                 Start-Sleep -Seconds $RetryDelaySec
                 continue
             }
@@ -1005,6 +1012,109 @@ function Send-BobiverseAircInstallFailureIntake {
             error   = $_.Exception.Message
         }
     }
+}
+
+
+function Get-BobiverseUpdateFailureIdempotencyKey {
+    <#
+      FR #5279: machine + product + tag + result. Stable across retries.
+    #>
+    param(
+        [string]$Machine = '',
+        [string]$Product = '',
+        [string]$Tag = '',
+        [string]$Result = ''
+    )
+    $mid = $Machine
+    if (-not $mid) { $mid = [string]$env:BOB_MACHINE_ID }
+    if (-not $mid) { $mid = [string]$env:COMPUTERNAME }
+    $mid = ($mid.ToLowerInvariant() -replace '[^a-z0-9-]', '-')
+    $prod = ($(if ($Product) { $Product } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
+    $tg = ($(if ($Tag) { $Tag } else { '-' })) -replace '[^A-Za-z0-9._-]', '-'
+    $res = ($(if ($Result) { $Result } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
+    return ('airc-update-fail|{0}|{1}|{2}|{3}' -f $mid, $prod, $tg, $res)
+}
+
+
+function Send-BobiverseUpdateFailureIntake {
+    <#
+      FR #5279: map UPDATE/Apply failure classes to intake kind=issue with
+      idempotency_key = machine|product|tag|result. Classes include
+      download-failed, msiexec-exit, msiexec-timeout, stop-failed,
+      backup-failed, spawn-failed, updater-missing, asset-url-rejected
+      (plus sha256-mismatch / stop-timeout / rolled-back when Set-Failure records them).
+      Never throws. Redacts secrets. Same key on retry must not flood twins.
+    #>
+    param(
+        [string]$Product = 'airc',
+        [string]$Tag = '',
+        [Parameter(Mandatory)][string]$Result,
+        [string]$Detail = '',
+        [string]$InstallRoot = '',
+        [string]$Repo = 'SimonBarnett/bobiverse',
+        [string]$IntakeUrl = '',
+        [switch]$DryRun
+    )
+    $safeDetail = Redact-BobiverseCrashText -Text $Detail
+    $key = Get-BobiverseUpdateFailureIdempotencyKey -Product $Product -Tag $Tag -Result $Result
+    $safeTitle = Redact-BobiverseCrashText -Text ("airc UPDATE fail {0} product={1}" -f $Result, $Product)
+    $safeBody = Redact-BobiverseCrashText -Text @(
+        'FR #5279 UPDATE / Apply failure (deterministic intake).',
+        ('product={0}' -f $Product),
+        ('tag={0}' -f $(if ($Tag) { $Tag } else { '-' })),
+        ('result={0}' -f $Result),
+        ('idempotency_key={0}' -f $key),
+        ('detail={0}' -f $safeDetail)
+    ) -join [Environment]::NewLine
+
+    $out = [pscustomobject]@{
+        skipped          = $false
+        dry_run          = [bool]$DryRun
+        kind             = 'issue'
+        repo             = $Repo
+        title            = $safeTitle
+        body             = $safeBody
+        idempotency_key  = $key
+        report           = $null
+    }
+
+    $allow = $true
+    try {
+        if (Get-Command Test-BobiverseCrashReportAllowsIntake -ErrorAction SilentlyContinue) {
+            $allow = [bool](Test-BobiverseCrashReportAllowsIntake -InstallRoot $InstallRoot)
+        }
+    } catch { $allow = $true }
+    if (-not $allow) {
+        $out.skipped = $true
+        return $out
+    }
+
+    $report = $null
+    try {
+        $report = Resolve-BobiverseAircIntakeReportScript -InstallRoot $InstallRoot -ScriptsDir $PSScriptRoot
+    } catch { $report = $null }
+    if (-not $report) {
+        $out.skipped = $true
+        return $out
+    }
+    $out.report = $report
+    try {
+        $splat = @{
+            Title          = $safeTitle
+            Body           = $safeBody
+            Repo           = $Repo
+            Kind           = 'issue'
+            IdempotencyKey = $key
+        }
+        if ($DryRun) { $splat.DryRun = $true }
+        if ($IntakeUrl) { $splat.IntakeUrl = $IntakeUrl }
+        if ($InstallRoot) { $splat.InstallRoot = $InstallRoot }
+        $null = & $report @splat
+    } catch {
+        $out.skipped = $true
+        $out | Add-Member -NotePropertyName error -NotePropertyValue $_.Exception.Message
+    }
+    return $out
 }
 
 
@@ -1794,7 +1904,8 @@ function Sync-BobiverseScriptTipFromOrigin {
         [string]$Branch = 'main',
         [string]$GitExe = '',
         [string]$ContentMustMatch = '',
-        [int]$MinBytes = 40
+        [int]$MinBytes = 40,
+        [switch]$Optional
     )
     $git = if ($GitExe) { $GitExe } else {
         $cmd = Get-Command git -ErrorAction SilentlyContinue
@@ -1820,6 +1931,15 @@ function Sync-BobiverseScriptTipFromOrigin {
             $err = ''
             if (Test-Path -LiteralPath ($tmp + '.err')) {
                 $err = (Get-Content -LiteralPath ($tmp + '.err') -Raw -ErrorAction SilentlyContinue)
+            }
+            # FR #5480: optional harvest overlays (intake.py) must not fail Sync when
+            # origin/<branch> never had that path (old remotes / 4297 fixtures).
+            if ($Optional -and $err -match 'does not exist|exists on disk|pathspec|invalid object name') {
+                return [pscustomobject]@{
+                    Ok     = $true
+                    Reason = "skip missing $spec (FR #5480)"
+                    Bytes  = 0
+                }
             }
             return [pscustomobject]@{ Ok = $false; Reason = "git show $spec failed: $err" }
         }
@@ -1892,13 +2012,15 @@ function Sync-BobiverseHarvestScriptsFromOrigin {
     $bytes = 0
     # FR #4783 / FR #4780: also tip-heal intake.py (is_lesson_review_meta_loop) -
     # same dirty-ff lag class; never hand WriteAllText of `git show` String[].
+    # FR #5480: intake.py overlay is Optional - missing origin blob is skip, not FAIL.
     foreach ($pair in @(
-            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'Protect-HarvestBodyClosesKeywords|FR #4371|FR #4419|ExistingPrUrl|Invoke-BobiverseHarvest|FR #4780' },
-            @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake' },
-            @{ Rel = 'common/scripts/intake.py'; Match = 'is_lesson_review_meta_loop|FR #4780|/bob/v1/intake' }
+            @{ Rel = 'common/scripts/Invoke-BobiverseHarvest.ps1'; Match = 'Protect-HarvestBodyClosesKeywords|FR #4371|FR #4419|ExistingPrUrl|Invoke-BobiverseHarvest|FR #4780'; Optional = $false },
+            @{ Rel = 'common/scripts/Report-BobiverseIntakeIssue.ps1'; Match = 'Report-BobiverseIntakeIssue|/bob/v1/intake'; Optional = $false },
+            @{ Rel = 'common/scripts/intake.py'; Match = 'is_lesson_review_meta_loop|FR #4780|/bob/v1/intake'; Optional = $true }
         )) {
+        $opt = [bool]$pair.Optional
         $r = Sync-BobiverseScriptTipFromOrigin -InstallRoot $InstallRoot -Branch $Branch -GitExe $GitExe `
-            -RelPath $pair.Rel -ContentMustMatch $pair.Match
+            -RelPath $pair.Rel -ContentMustMatch $pair.Match -Optional:$opt
         $results += $r
         if (-not $r.Ok) {
             $ok = $false
@@ -3106,7 +3228,9 @@ function Get-BobiverseAircClientAllowedScriptNames {
         # Legacy host when airc\airc.exe is absent (SkipAircExe / pre-exe trees)
         'airc_console.py',
         'airc_console_service.py',
-        'airc_jobs.py'
+        'airc_jobs.py',
+        # FR #5288: Priority Client connect/allowlist module (in-service; client+fleet)
+        'airc_priority.py'
     )
 }
 
@@ -3366,3 +3490,24 @@ function Remove-BobiverseAircClientExtraPayload {
     Write-Host ("INFO FR #3514 client allow-list purge count={0}" -f $removed.Count)
     return @($removed)
 }
+
+
+function Get-BobiversePublicBase {
+    <#
+      FR #5272: fleet public HTTP origin for webhooks (not IRC).
+      Env BOB_PUBLIC_BASE overrides; default https://bob.ntsa.uk
+    #>
+    $raw = [string]$env:BOB_PUBLIC_BASE
+    if ($raw -and $raw.Trim()) {
+        return $raw.Trim().TrimEnd('/')
+    }
+    return 'https://bob.ntsa.uk'
+}
+
+function Get-BobiversePublicUrl {
+    param([Parameter(Mandatory)][string]$Path)
+    $base = Get-BobiversePublicBase
+    if (-not $Path.StartsWith('/')) { $Path = '/' + $Path }
+    return ($base + $Path)
+}
+

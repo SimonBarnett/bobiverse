@@ -17,8 +17,8 @@ def test_normalize_and_resolve_presence_channels_defaults():
     assert ac.normalize_irc_channel("#Bobiverse") == "#bobiverse"
     assert ac.normalize_irc_channel("") == ""
 
-    # Client default: #bobiverse
-    assert ac.resolve_presence_channels({"profile": "client"}) == ["#bobiverse"]
+    # FR #5190: client default is none (never auto-join #bobiverse)
+    assert ac.resolve_presence_channels({"profile": "client"}) == []
     # Fleet / workstation / missing: none
     assert ac.resolve_presence_channels({"profile": "fleet"}) == []
     assert ac.resolve_presence_channels({"profile": "workstation"}) == []

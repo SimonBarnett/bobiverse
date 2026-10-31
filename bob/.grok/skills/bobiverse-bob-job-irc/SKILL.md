@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -66,16 +66,16 @@ ACK <TYPE> <owner/repo>#<N> [short title]
 
 ```text
 DONE FR  <owner/repo>#<N> <pr-url>
-DONE MRB <owner/repo>#<N> PASS|FAIL <pr-url>
+DONE MRB <owner/repo>#<N> PASS|FAIL <pr-url> [cr_findings=<n> confirmed=<n> fp=<n>]
 DONE UAT <owner/repo>#<N> PASS|FAIL [<url>]
 ```
 
 * `TYPE` and `owner/repo#N` = the **assigned** values, even if the work turned into something else.
 * **FR never carries PASS/FAIL** (FR #2419). Wire is `DONE FR owner/repo#N <pr-url>` only. A mistaken `DONE FR ... PASS <url>` is **ignored** by `shop_listen.parse_shop_job_line` (PASS/FAIL stripped; URL kept) so ACC still completes - do not rely on that; emit the FR form without PASS.
-* MRB: exactly one `PASS` or `FAIL` + the PR url. UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
+* MRB: exactly one `PASS` or `FAIL` + the PR url. Optional FR #5317 `cr_findings=<n> confirmed=<n> fp=<n>` may follow that url (shop_listen keeps the url). UAT: `PASS` or `FAIL` (url optional: the release url on PASS - a PASS means no gaps, docs updated and the release created - or the UAT evidence comment / gap FRs on FAIL; a FAIL means an FR per gap and NO release).
 * **FR / MRB: verify before DONE (t826u)** - FR: the PR body has `Closes <owner>/<repo>#N` and `closingIssuesReferences` lists N; MRB: the originating issue is closed (by the merge, or by you with a comment) or, if not merged yet, linked. Never DONE with an unlinked, still-open issue.
 * **Duplicates first (t857u)** - before FR DONE the PR body has `Duplicates closed:` (each duplicate FR/issue of what the PR fixes already commented `Duplicate of #N / fixed by PR #M` and closed as not planned; real extra issues get a `Closes <owner>/<repo>#D` line). MRB re-checks it before PASS. See `bobiverse-bob-job-fr` / `bobiverse-bob-job-mrb`.
-* **One line, nothing after the url.** Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment, never on the DONE line.
+* **One line, nothing after the url** except the optional MRB `cr_*` counters (FR #5317). Fix-PR numbers, SHAs, caveats and follow-ups go on a SEPARATE outbox line or a GitHub comment.
 * **FR #108:** capture the URL printed by `gh pr create` into a variable, then write DONE with that exact URL. Do not invent `pull/N` before create returns (see `bobiverse-bob-job-fr`).
 * Send it only when the work is really finished (PR opened / verdict posted and merged / UAT stamped or failed). Send it **after** the evidence is in place, never before.
 * Examples:

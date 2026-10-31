@@ -5,9 +5,19 @@ description: >
   Use when adding a repo to the MRB filter, resync-repos.txt, !focus priority, clearing give-ups, or /bobiverse-jeeves-repos.
 ---
 
-# bobiverse-jeeves-repos (FR #5134)
+> **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
+> 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
+>    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
+>    queued locally and retried):
+>    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
+>    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
+> 3. BEFORE finishing ANY debugging session run the harvest step:
+>    `.\scripts\Invoke-BobiverseHarvest.ps1 -Summary "what broke / what fixed it" -Lesson "one learned playbook line"`
+>    then `.\scripts\Invoke-BobiverseHarvest.ps1 -Flush` to resend anything that was queued while offline.
+> 4. Never put a token, password, SASL/NickServ secret, key or private hostname in a filing, a skill or a log.
 
-> CAST IRON harvest: file every gap via intake; never put tokens/secrets in filings or skills.
+# bobiverse-jeeves-repos (FR #5134)
 
 Operator playbooks for the deterministic chair. Prefer this skill over rediscovering paths from live ionos files.
 Cross-links: bobiverse-jeeves-commands, bobiverse-jeeves-troubleshooting, docs/jeeves-commands.md.
@@ -39,7 +49,7 @@ Goal: open issues become FR rows and open PRs become MRB rows after !resync / we
    - FR #3146: focus.repos is **unioned** into GitHub resync discovery, so a focused repo is fetched even if missing from resync-repos.txt. Still add the file line for durable onboarding after unfocus.
 3. **Run !resync** (ops: simon account or bob-* ear). Expected PM reply shape:
    `resync: roster refresh requested; GitHub FR/MRB re-sync queued; queue unaccepted=U accepted=A purged_ignored=P`
-4. **GitHub webhook** (GIT events -> #bobiverse / queue): confirm the repo has the Bob/Jeeves hook (https://irc.ntsa.uk/bob/v1/git). Adding a hook needs **Simon yes**. Without the hook, hourly/gap !resync still merges open FR/MRB; webhooks remain the preferred source of truth (FR #3212).
+4. **GitHub webhook** (GIT events -> #bobiverse / queue): confirm the repo has the Bob/Jeeves hook (https://bob.ntsa.uk/bob/v1/git). Adding a hook needs **Simon yes**. Without the hook, hourly/gap !resync still merges open FR/MRB; webhooks remain the preferred source of truth (FR #3212).
 5. Confirm with !list owner/repo / !status (github_resync: line) and a shop !bored on an idle seat.
 
 ### Quick path (priority-branding class)

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Airc NETWORK - empty inventory</title>
+  <style>
+    body { font-family: Consolas, monospace; background: #1e1e1e; color: #eee; margin: 2rem; }
+    .irc { background: #111; border: 1px solid #444; padding: 1rem; max-width: 40rem; white-space: pre-wrap; }
+    .warn { color: #fc6; }
+  </style>
+</head>
+<body>
+  <h1>NETWORK diag — empty / workgroup limit</h1>
+  <div class="irc" data-state="empty">out id=net02 seq=1 NETWORK diag started job=net02
+out id=net02 seq=2 <span class="warn">hosts=0 note=no_ldap_or_enum_empty</span>
+DONE id=net02 exit=0 via=dcc sha256=…</div>
+  <p>Structured payload still returned (empty hosts[]); log explains why.</p>
+</body>
+</html>

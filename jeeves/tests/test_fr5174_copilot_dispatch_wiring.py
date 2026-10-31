@@ -16,6 +16,7 @@ from pathlib import Path
 import bobreport
 import chair_health as ch
 import copilot_dispatch as cd
+import focus_ignore
 import gitclaim
 
 
@@ -36,12 +37,12 @@ UNLIMITED = {
 }
 
 
-def _row(task="FR", num=5058, **extra):
+def _row(task="FR", num=5058, repo=REPO, **extra):
     row = {
-        "repo": REPO,
+        "repo": repo,
         "task": task,
         "id": f"#{num}",
-        "url": f"https://github.com/{REPO}/issues/{num}",
+        "url": f"https://github.com/{repo}/issues/{num}",
         "title": "do the thing",
         "ts": "t",
         "event": "issues",
@@ -72,6 +73,7 @@ def test_unknown_pool_no_dispatch(tmp_path):
 
 
 def test_send_failure_leaves_job_and_no_handoff(tmp_path):
+    _focus_high(tmp_path)
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
     _queue(tmp_path, [_row(num=5058)])
     announced: list[str] = []
@@ -102,6 +104,7 @@ def test_send_failure_leaves_job_and_no_handoff(tmp_path):
 
 
 def test_pinned_job_skipped(tmp_path):
+    _focus_high(tmp_path)
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
     pinned = _row(num=5221, require_machine="redqueen")
     assert cd.should_dispatch(pinned, allowance=True) is False
@@ -212,6 +215,7 @@ def test_chair_tick_passes_fetch_and_post(tmp_path, monkeypatch):
 
 
 def test_successful_post_then_dispatch(tmp_path):
+    _focus_high(tmp_path)
     cd.refresh_allowance(tmp_path, fetch_user=lambda: UNLIMITED, now=1.0)
     _queue(tmp_path, [_row(num=16)])
     announced: list[str] = []
@@ -230,3 +234,87 @@ def test_successful_post_then_dispatch(tmp_path):
         str(r.get("nick") or "").lower() == "copilot" and r.get("id") == "#16"
         for r in (gitclaim.load_queue(tmp_path).get("accepted") or [])
     )
+
+
+def _focus_high(home):
+    doc = focus_ignore.empty_focus()
+    doc["repos"] = {
+        repo: {"priority": 1, "label": "high"} for repo in (
+            "SimonBarnett/bobiverse",
+            "SimonBarnett/a-search",
+        )
+    }
+    focus_ignore.save_focus(home, doc)
+
+
+def test_real_chair_dispatches_only_high_priority_offerable_jobs(tmp_path, monkeypatch):
+    chair_home = tmp_path / "jeeves"
+    digest_home = tmp_path / "digest"
+    chair_home.mkdir()
+    digest_home.mkdir()
+    # FR #5267: dispatch stays off until copilot-allowance.json exists.
+    (digest_home / "copilot-allowance.json").write_text(
+        json.dumps({"enabled": True, "remaining": 10, "state": "ok", "unlimited": True}),
+        encoding="utf-8",
+    )
+    focus = focus_ignore.empty_focus()
+    focus["repos"] = {
+        repo: {"priority": 1, "label": "high"} for repo in (
+            "SimonBarnett/bobiverse",
+            "SimonBarnett/a-search",
+        )
+    }
+    focus["repos"]["SimonBarnett/other"] = {"priority": 9, "label": "low"}
+    focus_ignore.save_focus(digest_home, focus)
+    focus_ignore.handle_focus_cmd(digest_home, "SimonBarnett/ce-priority#39")
+    focus_ignore.handle_focus_cmd(digest_home, "SimonBarnett/trutex#33")
+    _queue(
+        digest_home,
+        [
+            _row(repo="SimonBarnett/bobiverse", num=5186),
+            _row(repo="SimonBarnett/a-search", num=5058),
+            _row(repo="SimonBarnett/agentic_fomprep", num=237),
+            _row(repo="SimonBarnett/a-search", num=5139, needs_human=True),
+            _row(repo="SimonBarnett/a-search", num=5170, labels=["on-hold"]),
+            _row(repo="SimonBarnett/a-search", num=5221, require_machine="redqueen"),
+            _row(repo="SimonBarnett/ce-priority", num=39),
+            _row(repo="SimonBarnett/trutex", num=33),
+            _row(repo="SimonBarnett/other", num=1),
+            _row(repo="SimonBarnett/unfocused", num=2),
+        ],
+    )
+    posts: list[str] = []
+
+    def fake_gh(method, url, body=None):
+        if "copilot_internal/user" in url:
+            return UNLIMITED, 200
+        if str(method).upper() == "POST" and "/tasks" in str(url):
+            posts.append(str(url))
+            task_id = f"task-{len(posts)}"
+            return {"id": task_id, "html_url": f"https://github.com/tasks/{task_id}"}, 201
+        return {}, 200
+
+    chair = ch.ChairJobs(
+        chair_home,
+        digest_home,
+        log=lambda _line: None,
+        spawn=False,
+        token_loader=lambda: ("test-token", "test"),
+        clock=lambda: 1_000_000.0,
+    )
+    monkeypatch.setattr(chair, "_github_json", fake_gh)
+
+    for _ in range(3):
+        chair._copilot_tick()
+
+    assert len(posts) == 2
+    assert {
+        url.split("/agents/repos/", 1)[1].split("/tasks", 1)[0] for url in posts
+    } == {
+        "SimonBarnett/bobiverse",
+        "SimonBarnett/a-search",
+    }
+    remaining = gitclaim.load_unaccepted(digest_home)
+    assert {row["id"] for row in remaining} == {
+        "#237", "#5139", "#5170", "#5221", "#39", "#33", "#1", "#2"
+    }

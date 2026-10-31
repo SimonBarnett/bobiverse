@@ -2284,18 +2284,62 @@ def stale_replay_assign_key(
     user_key: Optional[str],
     finished_keys,
     open_ack_key: Optional[str],
+    done_keys=None,
 ) -> Optional[str]:
-    """FR #4842: return finished user_key when it differs from the open ACK (stale replay)."""
+    """FR #4842 / #5327: return finished user_key when it differs from the open ACK.
+
+    FR #5327: never treat a DONE-finished key as stale-replay (transcript lag after
+    DONE K + assign J still shows K). GIVEUP/NACK-finished keys still hit.
+    """
     uk = (user_key or "").strip()
     if not uk:
         return None
     open_k = (open_ack_key or "").strip()
     if open_k and uk.lower() == open_k.lower():
         return None
+    done = {str(x).strip().lower() for x in (done_keys or []) if x}
+    if uk.lower() in done:
+        return None
     finished = {str(x).strip().lower() for x in (finished_keys or []) if x}
     if uk.lower() not in finished:
         return None
     return uk
+
+
+def stale_replay_wait_s(default: float = 8.0) -> float:
+    """FR #5403: how long to wait for transcript J after inject."""
+    return _env_float("BOB_WORKER_STALE_REPLAY_WAIT_S", default, 1.0, 60.0)
+
+
+def stale_replay_compare_ready(
+    *,
+    user_key: Optional[str],
+    open_ack_key: Optional[str],
+    inject_at: Optional[float],
+    now: float,
+    wait_s: Optional[float] = None,
+    turn_started_for_open: bool = False,
+) -> bool:
+    """True when it is safe to run stale-replay compare (FR #5403).
+
+    Wait until the latest user assign is the open ACK (J), or turn-started
+    for J, or the wait after inject/ACK has elapsed. Callers should pass
+    ``_inject_at or _ack_at`` because ACK clears ``_inject_at`` (MRB #5435).
+    DONE-key exemption stays in stale_replay_assign_key.
+    """
+    if turn_started_for_open:
+        return True
+    uk = (user_key or "").strip()
+    open_k = (open_ack_key or "").strip()
+    if open_k and uk and uk.lower() == open_k.lower():
+        return True
+    if inject_at is None:
+        return True
+    limit = float(wait_s) if wait_s is not None else stale_replay_wait_s()
+    try:
+        return float(now) - float(inject_at) >= limit
+    except (TypeError, ValueError):
+        return True
 
 
 def _cursor_turn_quiet_s(default: float = 20.0) -> float:
@@ -2621,7 +2665,7 @@ _OUT_OF_FUEL_RX = re.compile(
     r"|rate\s*limit(?:ed|ing)?\b"
     r")"
 )
-DEFAULT_DIGEST_REPORT_URL = "https://irc.ntsa.uk/bob/v1/report"
+DEFAULT_DIGEST_REPORT_URL = "https://bob.ntsa.uk/bob/v1/report"
 
 
 def is_out_of_fuel_text(text: str) -> bool:
@@ -4899,6 +4943,8 @@ class BoredEmitter:
         self._ack_job_key: Optional[str] = None  # FR #1732: open ACK job id
         # FR #4730: jobs this seat already closed — replayed ACK must not reopen busy / hit IRC.
         self._finished_job_keys: set[str] = set()
+        # FR #5327: DONE-only subset of finished — never stale-replay GIVEUP these.
+        self._done_job_keys: set[str] = set()
         self.run_dir: Optional[Path] = None  # FR #3189: write job-repo.txt for harvest routing
         self._idle_since: Optional[float] = None
         self._last_bored: Optional[float] = None
@@ -5014,13 +5060,21 @@ class BoredEmitter:
             self._held_assign = False
             self._cv.notify_all()
 
-    def _mark_job_finished(self, job: Optional[str]) -> None:
-        """FR #4730: remember a job closed by DONE/NACK/GIVEUP (caller holds ``_cv``)."""
+    def _mark_job_finished(self, job: Optional[str], *, via_done: bool = False) -> None:
+        """FR #4730: remember a job closed by DONE/NACK/GIVEUP (caller holds ``_cv``).
+
+        FR #5327: ``via_done=True`` also records ``_done_job_keys`` so stale-replay
+        never GIVEUPs a job this seat already DONE'd.
+        """
         if not job:
             return
         self._finished_job_keys.add(job)
         while len(self._finished_job_keys) > 64:
             self._finished_job_keys.pop()
+        if via_done:
+            self._done_job_keys.add(job)
+            while len(self._done_job_keys) > 64:
+                self._done_job_keys.pop()
 
     def note_fresh_assign(self, line: str) -> None:
         """FR #4730: re-offer of a finished job may ACK again; clear its finished mark."""
@@ -5029,6 +5083,7 @@ class BoredEmitter:
             return
         with self._cv:
             self._finished_job_keys.discard(key)
+            self._done_job_keys.discard(key)
 
     def should_forward_outbox(self, payload: str) -> bool:
         """FR #4730: False for a replayed ACK of a job already DONE/NACK/GIVEUP'd."""
@@ -5055,6 +5110,7 @@ class BoredEmitter:
                 user_key=user_key,
                 finished_keys=self._finished_job_keys,
                 open_ack_key=self._ack_job_key,
+                done_keys=self._done_job_keys,
             )
             open_k = self._ack_job_key
             if not hit:
@@ -5468,7 +5524,7 @@ class BoredEmitter:
                     self._clear_done_miss()
             elif _OUT_DONE_RX.match(p):
                 job = outbox_job_key(p)
-                self._mark_job_finished(job)
+                self._mark_job_finished(job, via_done=True)
                 # FR #1732: DONE for another id must not clear an open ACK.
                 # FR #4842: cross-job DONE is not a silent drop — log it and arm done-miss
                 # for the open ACK so the seat is reminded about the real job.
@@ -6271,6 +6327,81 @@ class Supervisor:
         th.start()
         self.log(f"out-of-fuel: watcher started (kind={kind} pid={agent_pid})")
 
+    def _cursor_stale_replay_check(self, *, schedule_wait: bool = False) -> None:
+        """FR #4842 / #5327 / #5403: compare transcript user key to open ACK.
+
+        Wait until the latest user assign is J (or wait_s after inject) before
+        comparing. DONE-finished keys stay exempt in stale_replay_assign_key.
+        """
+        if self.bored is None:
+            return
+        w = getattr(self, "_cursor_turn_watcher", None)
+        tp = w._transcript_file(w._bind()) if w is not None and w._bind() else None
+        uk = cursor_transcript_latest_user_assign_key(tp) if tp else None
+        if not uk:
+            return
+        open_k = getattr(self.bored, "_ack_job_key", None)
+        # MRB #5435: ACK clears _inject_at; fall back to _ack_at so the wait
+        # still covers transcript lag after ACK J (the usual Cursor race).
+        wait_from = getattr(self.bored, "_inject_at", None)
+        if wait_from is None:
+            wait_from = getattr(self.bored, "_ack_at", None)
+        if not stale_replay_compare_ready(
+            user_key=uk,
+            open_ack_key=open_k,
+            inject_at=wait_from,
+            now=time.time(),
+        ):
+            self.log("relay: stale-replay wait for transcript newer than inject")
+            if schedule_wait:
+                wait_s = stale_replay_wait_s()
+
+                def _later() -> None:
+                    with contextlib.suppress(Exception):
+                        self._cursor_stale_replay_check(schedule_wait=False)
+
+                threading.Timer(wait_s, _later).start()
+            return
+
+        def _write(s: str) -> bool:
+            ob = getattr(self, "outbox_path", None) or getattr(self.bored, "run_dir", None)
+            try:
+                if ob is not None:
+                    p = Path(ob)
+                    if p.is_dir():
+                        p = p / "outbox.txt"
+                    shop = getattr(getattr(self, "irc", None), "shop", None) or "#shop"
+                    line = f"PRIVMSG {shop} :{s}"
+                    with p.open("a", encoding="utf-8") as fh:
+                        fh.write(line + "\n")
+                    return True
+            except Exception:
+                pass
+            try:
+                return bool(self.irc.say(self.irc.shop, s))
+            except Exception:
+                return False
+
+        def _reinject() -> bool:
+            line = getattr(self.relay, "last_line", None) or getattr(
+                self.relay, "last_unacked", None
+            )
+            if not line or not self.proc:
+                return False
+            if (assign_job_key(line) or "").lower() != (
+                self.bored._ack_job_key or ""
+            ).lower():
+                return False
+            try:
+                clear_console_input()
+            except Exception:
+                pass
+            return bool(self._inject_line(self.proc, line, sync=False))
+
+        self.bored.note_stale_replay_user_assign(
+            uk, write_giveup=_write, reinject_open=_reinject
+        )
+
     def _start_cursor_turn_watcher(self) -> None:
         """Cursor: release held assigns on an inferred turn end (no 600 s fallback wait)."""
         self._turn_watch_stop = threading.Event()
@@ -6282,55 +6413,11 @@ class Supervisor:
                     pw.note_activity()
             if self.bored:
                 self.bored.turn_started(turn=turn, sid=None)
-            # FR #4842: if the new user turn is a finished assign K while ACK J is open,
-            # emit GIVEUP K stale-replay and re-inject J (never let the seat work K off-ledger).
+            # FR #4842 / #5327: if the new user turn is a GIVEUP/NACK-finished assign K
+            # while ACK J is open, emit GIVEUP K stale-replay and re-inject J. DONE-finished
+            # K (transcript lag after a healthy job change) must not GIVEUP or re-inject.
             try:
-                w = getattr(self, "_cursor_turn_watcher", None)
-                tp = w._transcript_file(w._bind()) if w is not None and w._bind() else None
-                uk = cursor_transcript_latest_user_assign_key(tp) if tp else None
-                if uk and self.bored is not None:
-
-                    def _write(s: str) -> bool:
-                        # Prefer shop outbox so drain forwards GIVEUP to Jeeves.
-                        ob = getattr(self, "outbox_path", None) or getattr(
-                            self.bored, "run_dir", None
-                        )
-                        try:
-                            if ob is not None:
-                                p = Path(ob)
-                                if p.is_dir():
-                                    p = p / "outbox.txt"
-                                shop = getattr(getattr(self, "irc", None), "shop", None) or "#shop"
-                                line = f"PRIVMSG {shop} :{s}"
-                                with p.open("a", encoding="utf-8") as fh:
-                                    fh.write(line + "\n")
-                                return True
-                        except Exception:
-                            pass
-                        try:
-                            return bool(self.irc.say(self.irc.shop, s))
-                        except Exception:
-                            return False
-
-                    def _reinject() -> bool:
-                        line = getattr(self.relay, "last_line", None) or getattr(
-                            self.relay, "last_unacked", None
-                        )
-                        if not line or not self.proc:
-                            return False
-                        if (assign_job_key(line) or "").lower() != (
-                            self.bored._ack_job_key or ""
-                        ).lower():
-                            return False
-                        try:
-                            clear_console_input()
-                        except Exception:
-                            pass
-                        return bool(self._inject_line(self.proc, line, sync=False))
-
-                    self.bored.note_stale_replay_user_assign(
-                        uk, write_giveup=_write, reinject_open=_reinject
-                    )
+                self._cursor_stale_replay_check(schedule_wait=True)
             except Exception as e:  # noqa: BLE001
                 self.log(f"relay: stale-replay check failed {type(e).__name__}")
 

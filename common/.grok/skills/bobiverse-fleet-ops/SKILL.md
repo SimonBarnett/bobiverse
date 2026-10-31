@@ -9,7 +9,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -34,8 +34,8 @@ Per service start: (1) repo fast-forward of the install work tree (sparse `<prod
 - **Jeeves** chair (service `ircJeeves`, nick `Jeeves`, `irc_agent.py --chair`): channel privileges, roster, queue, commands,
   digest, webhooks. **Bob ear** (service `ircBob`, nick `Bob-<machine>`, SASL account `bob-<machine>`): one per box, JOINs
   `#bobiverse` + `#<machine>`. **Airc** console (service `Airc`, nick `<machine>_console`): remote shell over PRIVMSG.
-- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://irc.ntsa.uk/bob/v1/digest` is 404.
-  Public URL `https://irc.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
+- **bobcallback** (scheduled task `BobCallback`, SYSTEM, `127.0.0.1:7700`): receives `/bob/v1/report|digest|git|intake|jira` locally. Public IIS front-door GET for the digest JSON is **`/bob/v1/report` only** (FR #149); `https://bob.ntsa.uk/bob/v1/digest` is 404.
+  Public URL `https://bob.ntsa.uk/bob/v1/...` is an IIS URL-Rewrite site (`irc-ntsa`) in front of it.
 - **BobAutoFocus retired (FR #3190):** do not re-enable the interim scheduled task that ran `<ai root>\ops\auto-focus.py` every 2 minutes and appended per-item `!focus` lines. Jeeves MSI post-upgrade restarts only `BobCallback` / `BobAutoFeed`, then calls `Unregister-BobAutoFocus.ps1` for leftovers. Repo-level `!focus <Owner/repo>` is the only focus path. `jeeves/tools/monitor/auto_focus.py` is a read-only MONITORING health check, not that ops spammer.
 - **Digest** (`digest.json` + `registered-machines.json` roster + `chair-outbox.txt`) lives in the digest home
   (`BOB_DIGEST_HOME`, default `~\.bobiverse`). Roster = ChanServ-registered `#<machine>` shop channels, mirrored every ~2 min.
@@ -56,7 +56,7 @@ Get-Content <InstallRoot>\VERSION                                   # installed 
 Get-Content <InstallRoot>\logs\stdout.log -Tail 60                  # service log (stderr.log beside it)
 Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook receiver (jeeves box)
 (Invoke-WebRequest http://127.0.0.1:7700/bob/v1/report -UseBasicParsing).StatusCode      # 200 = receiver up
-(Invoke-WebRequest https://irc.ntsa.uk/bob/v1/report -UseBasicParsing).StatusCode        # 200 = public path up
+(Invoke-WebRequest https://bob.ntsa.uk/bob/v1/report -UseBasicParsing).StatusCode        # 200 = public path up
 ```
 
 - IRC connection: stdout shows `joined #bobiverse,... as <nick>`; `chair-status oper=ok chanserv-list=ok op-in=...`.
@@ -132,7 +132,7 @@ Get-ScheduledTask BobCallback | Get-ScheduledTaskInfo               # webhook re
 | `PropertyNotFoundException` / StrictMode `.Count` on `Sort-Object`/`Where-Object` | Pipeline of one item is a **scalar**, not an array | Wrap with `@(...)` before `.Count` / index ops (FR #1664 / PR #1672 / harvest #1689). Leave separate FreeGB capacity FRs open when they are distinct from the StrictMode bug |
 | Agent transcript shows Ergo/SASL password after `nssm get` | `AppEnvironmentExtra` dumped raw (FR #147) | Print env **key names only** (split on first `=`); never paste AppEnvironmentExtra values into logs, filings, or chat |
 | Self-update Apply hung / 0-byte MSI / mutex stuck | `Get-Asset` stalled on GitHub download without timeout | FR #1545: IWR TimeoutSec + curl `--max-time` fallback; throw → `download-failed` + mutex release (PR #1561). Check `...\update\<product>\update.log` |
-| `Update-BobiverseService -Mode Check` -> `no-matching-asset` | GitHub release tag lacks `<product>-<ver>.msi` (+ `.sha256`) | Pack `-Product all` (or that product), `gh release upload` both files, then `Assert-BobiverseReleaseAssets.ps1 -Tag <tag>` (FR #2354) |
+| `Update-BobiverseService -Mode Check` -> `no-matching-asset` | GitHub release tag lacks `<product>-<ver>.msi` (+ `.sha256`), or the list fallback used a 3-part-only MSI regex and skipped a 4-part tag | Pack `-Product all`, `gh release upload` both files, `Assert-BobiverseReleaseAssets.ps1 -Tag <tag>` (FR #2354). List picker and Check share the 3- or 4-part MSI regex (FR #5412 / #5429). |
 | Wrapper splat behaves oddly / wrong args | Script used automatic `$args` for splatting | Rename to an explicit array (e.g. `$launchArgs`) before `@splat` (PR #1588) |
 | InstallRoot `VERSION` jumps after sync / disagrees with ARP | Sync copied a newer clone `VERSION` over the MSI stamp | ARP `DisplayVersion` wins; Sync heals InstallRoot to ARP and skips clone clobber (FR #1565 / #1589 / PR #1577) |
 | Quiet MSI **1603** / `Assert-BobiverseInstallVersion` after RunInstall (FR #2948) | Install tree is a sparse work tree; `Copy-BobiverseVersion` resolved `src\VERSION` → stale `common\VERSION` when `RepoRoot==InstallRoot` and overwrote the MSI-laid `VERSION` | Forward `-MsiProductVersion` into `Copy-BobiverseVersion` (MSI wins); same-tree keep laid `VERSION` when it differs from git common. Product #2950. Do **not** park this playbook under `harvest` (MRB #2963 FAIL). |

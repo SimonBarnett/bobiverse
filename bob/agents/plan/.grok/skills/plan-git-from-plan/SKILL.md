@@ -15,7 +15,7 @@ description: >
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
 > 1. ALWAYS harvest skills you learn and file EVERY issue / FR / bug / gap you find to the intake webhook in the
 >    SAME turn. Never leave a finding unfiled, never "note it for later", never skip it because it is small.
-> 2. File with the intake webhook (no secret or login needed; `POST https://irc.ntsa.uk/bob/v1/intake`; offline it is
+> 2. File with the intake webhook (no secret or login needed; `POST https://bob.ntsa.uk/bob/v1/intake`; offline it is
 >    queued locally and retried):
 >    `..\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 >    (`-Kind issue|fr|skill|harvest`; always pass an explicit `-Repo owner/name`).
@@ -62,8 +62,8 @@ python tools/validate-vision-pack.py docs/vision.md --mocks-dir docs/mocks
    `!ignore` / `!focus`, not a hardcoded intake list.
 
 2. **Bob git webhook** — skill `plan-bob-webhooks`.
-   Hook URL `https://irc.ntsa.uk/bob/v1/git` only.
-   Digest `https://irc.ntsa.uk/bob/v1/report` is not a GitHub hook.
+   Hook URL `https://bob.ntsa.uk/bob/v1/git` only.
+   Digest `https://bob.ntsa.uk/bob/v1/report` is not a GitHub hook.
    **Gate:** `python tools/bob_git_hook.py SimonBarnett/<name>` must exit 0
    (exact hook config, ping 2xx, Jeeves `GIT ping` seen) **before step 4**.
    No push and no issue until it does. Anything earlier is never delivered.

@@ -43,6 +43,19 @@ _VERB_RE = re.compile(
 )
 
 
+_CR_COUNTER_RE = re.compile(
+    r"(?i)\b(cr_findings|confirmed|fp)=(\d+)\b"
+)
+
+
+def mrb_cr_counters(rest: str) -> dict[str, int]:
+    """FR #5317: optional ``cr_findings=N confirmed=N fp=N`` after the DONE URL."""
+    out: dict[str, int] = {}
+    for key, raw in _CR_COUNTER_RE.findall(rest or ""):
+        out[str(key).lower()] = int(raw)
+    return out
+
+
 @dataclass(frozen=True)
 class ShopJobLine:
     verb: str  # ACK|DONE|NACK|GIVEUP
@@ -575,6 +588,7 @@ def return_job_to_unaccepted(
     ident: str,
     now: float | None = None,
     reason: str = "",
+    expected_nick: str = "",
 ) -> tuple[str, dict | None]:
     """Return an accepted job to unaccepted after NACK/GIVEUP (FR #180 cooldown + needs_human)."""
     import time as _time
@@ -594,6 +608,8 @@ def return_job_to_unaccepted(
                         ai = i
                         break
             if ai is None:
+                return "missing", None
+            if expected_nick and str(doc["accepted"][ai].get("nick") or "").lower() != expected_nick.lower():
                 return "missing", None
             job = dict(doc["accepted"].pop(ai))
             gave_up_by = str(job.get("nick") or "").strip()

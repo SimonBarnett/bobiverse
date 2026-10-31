@@ -6,7 +6,7 @@
   "docs": "docs/bobiverse.md",
   "host": "irc.ntsa.uk",
   "port": 6697,
-  "reportUrl": "https://irc.ntsa.uk/bob/v1/report",
+  "reportUrl": "https://bob.ntsa.uk/bob/v1/report",
   "reportPort": 7700,
   "shortids": {},
   "nicks": {},

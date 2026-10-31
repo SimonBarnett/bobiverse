@@ -10,6 +10,23 @@ import registered_machines as rm
 
 FLEET = "#bobiverse"
 UNREGISTERED_WIRE = "UNREGISTERED v1 {mid}"
+REGISTERED_WIRE = "REGISTERED v1 {mid}"
+REGISTER_WAIT_S = 20.0
+
+# Ergo / Atheme ChanServ REGISTER outcomes (FR #5274).
+_CS_REG_OK = re.compile(
+    r"(?i)(?:successfully registered channel\s+(#\S+)|"
+    r"channel\s+(#\S+)\s+is now registered|"
+    r"(#\S+)\s+is now registered|"
+    r"channel\s+(#\S+)\s+is already registered|"
+    r"(#\S+)\s+is already registered)"
+)
+_CS_REG_FAIL = re.compile(
+    r"(?i)(?:could not register|registration (?:is )?disabled|"
+    r"must be (?:in|an operator)|insufficient|permission|"
+    r"command restricted|not authorised|not authorized)"
+)
+_CS_REG_SHOP = re.compile(r"(#\S+)")
 
 # Ergo ChanServ confirmation: "... UNREGISTER #chan CODE" or "type: /cs UNREGISTER #chan CODE"
 _CS_CONFIRM = re.compile(
@@ -148,6 +165,24 @@ def build_unregister_plan(
         plan.notes.append("note: airc clients on this shop fall back to #wonderland on next connect (FR #3834)")
         plan.notes.append(console_nicks_note(mid, members))  # FR #4040
     return plan
+
+
+def parse_chanserv_register_result(notice: str) -> tuple[str, str | None]:
+    """Return (ok|fail|unknown, shop_or_none) for a ChanServ REGISTER notice.
+
+    ``already registered`` is ok: the channel exists on ChanServ (FR #5274).
+    """
+    t = (notice or "").strip()
+    if not t:
+        return "unknown", None
+    m = _CS_REG_OK.search(t)
+    if m:
+        shop = next((g for g in m.groups() if g), None)
+        return "ok", shop
+    if _CS_REG_FAIL.search(t):
+        sm = _CS_REG_SHOP.search(t)
+        return "fail", sm.group(1) if sm else None
+    return "unknown", None
 
 
 def parse_chanserv_unregister_confirm(notice: str) -> tuple[str, str] | None:

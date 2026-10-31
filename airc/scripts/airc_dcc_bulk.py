@@ -680,6 +680,137 @@ def dcclisten_helper_roundtrip(
     return line, holder["data"], holder["dig"]
 
 
+def reverse_dcc_recv(
+    *,
+    host: str,
+    port: int,
+    token: str,
+    timeout_s: float = DCC_HANDSHAKE_TIMEOUT_S,
+    tls: bool = False,
+) -> tuple[bytes, str]:
+    """Console connects out and reads a caller-sent framed upload (FR #5194)."""
+    raw = socket.create_connection((host, int(port)), timeout=timeout_s)
+    sock: socket.socket = raw
+    try:
+        if tls:
+            sni = (
+                "localhost"
+                if host in {"127.0.0.1", "::1", "localhost"}
+                else (host or "localhost")
+            )
+            sock = load_tls_client_context().wrap_socket(raw, server_hostname=sni)
+        sock.settimeout(timeout_s)
+        return _read_framed_bulk(sock, token)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def listen_and_send_upload(
+    payload: bytes,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 0,
+    token: str,
+    timeout_s: float = DCC_HANDSHAKE_TIMEOUT_S,
+    tls: bool = False,
+    ready: threading.Event | None = None,
+    port_out: dict | None = None,
+) -> int:
+    """Caller-side upload: bind, accept console reverse connect, write framed body."""
+    if len(payload) > DCC_BULK_SIZE_CAP:
+        raise ValueError("payload over DCC_BULK_SIZE_CAP")
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, int(port)))
+    srv.listen(1)
+    srv.settimeout(timeout_s)
+    bound_port = int(srv.getsockname()[1])
+    if port_out is not None:
+        port_out["port"] = bound_port
+    tls_ctx = load_tls_server_context() if tls else None
+    if ready is not None:
+        ready.set()
+    try:
+        conn, _addr = srv.accept()
+    finally:
+        srv.close()
+    try:
+        if tls_ctx is not None:
+            conn = tls_ctx.wrap_socket(conn, server_side=True)
+        conn.settimeout(timeout_s)
+        _write_framed_bulk(conn, payload, token)
+        try:
+            conn.shutdown(socket.SHUT_WR)
+        except Exception:
+            pass
+        return bound_port
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def receive_upload_from_offer(
+    offer: DccListenOffer,
+    *,
+    timeout_s: float = DCC_HANDSHAKE_TIMEOUT_S,
+) -> tuple[bytes, str]:
+    """Console-side FR #5194: dial the caller DCCLISTEN and read the upload frame."""
+    if offer.relay:
+        host, _, port_s = offer.relay.partition(":")
+        if not host or not port_s:
+            raise ValueError("bad relay host:port")
+        sock = socket.create_connection((host, int(port_s)), timeout=timeout_s)
+        try:
+            sock.settimeout(timeout_s)
+            sock.sendall(f"ROLE console {offer.token}\n".encode("ascii"))
+            return _read_framed_bulk(sock, offer.token)
+        finally:
+            sock.close()
+    return reverse_dcc_recv(
+        host=offer.host,
+        port=offer.port,
+        token=offer.token,
+        timeout_s=timeout_s,
+        tls=bool(offer.tls),
+    )
+
+
+def upload_roundtrip_localhost(payload: bytes, *, timeout_s: float = 2.0) -> bytes:
+    """Test helper: caller listen+send, console recv on localhost."""
+    token = make_dcc_token()
+    ready = threading.Event()
+    port_box: dict = {}
+    err: list[BaseException] = []
+
+    def _serve() -> None:
+        try:
+            listen_and_send_upload(
+                payload, token=token, timeout_s=timeout_s, ready=ready, port_out=port_box
+            )
+        except BaseException as exc:  # noqa: BLE001
+            err.append(exc)
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    if not ready.wait(timeout=timeout_s):
+        raise TimeoutError("upload listen not ready")
+    body, _dig = reverse_dcc_recv(
+        host="127.0.0.1",
+        port=int(port_box["port"]),
+        token=token,
+        timeout_s=timeout_s,
+    )
+    t.join(timeout=timeout_s + 1.0)
+    if err:
+        raise err[0]
+    return body
+
+
 def send_offer_payload(
     payload: bytes,
     offer: DccListenOffer,

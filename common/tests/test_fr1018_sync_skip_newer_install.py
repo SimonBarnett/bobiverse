@@ -41,6 +41,9 @@ def test_sync_skips_when_install_version_newer_than_clone(tmp_path):
 
     env = {**os.environ}
     env.pop("BOBIVERSE_NO_UPDATE", None)
+    # FR #5479: live HKLM ARP / BOBIVERSE_REPO must not stamp this fixture (0.1.31 heal).
+    env["BOB_AI_ROOT"] = str(tmp_path)
+    env["BOBIVERSE_REPO"] = str(install)
     p = subprocess.run(
         [
             PS,
@@ -53,6 +56,8 @@ def test_sync_skips_when_install_version_newer_than_clone(tmp_path):
             "jeeves",
             "-InstallRoot",
             str(install),
+            "-ArpVersionOverride",
+            "none",
         ],
         capture_output=True,
         text=True,
@@ -64,3 +69,11 @@ def test_sync_skips_when_install_version_newer_than_clone(tmp_path):
     assert "sync-skip-newer-install" in out, out
     assert (install / "VERSION").read_text(encoding="utf-8").strip() == "0.1.21"
     assert (install / "scripts" / "keep.ps1").read_text(encoding="utf-8").startswith("# keep")
+
+
+def test_fr5479_1018_isolates_arp_and_repo():
+    src = Path(__file__).read_text(encoding="utf-8")
+    assert "-ArpVersionOverride" in src
+    assert '"none"' in src
+    assert "BOBIVERSE_REPO" in src
+    assert "FR #5479" in src

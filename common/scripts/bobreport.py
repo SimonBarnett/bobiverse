@@ -23,9 +23,9 @@ import registered_machines
 REPORT_CMD = "!report"
 REPORT_GONE = "ERR report gone — use callback or GET /bob/v1/report"
 NO_MACHINE = "ERR no such machine"
-DEFAULT_DIGEST_URL = "https://irc.ntsa.uk/bob/v1/report"
+DEFAULT_DIGEST_URL = "https://bob.ntsa.uk/bob/v1/report"
 DIGEST_URL_ENV = "BOB_DIGEST_URL"
-BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://irc.ntsa.uk/bob/v1/report"
+BOBIVERSE_GONE = "ERR !bobiverse gone — GET https://bob.ntsa.uk/bob/v1/report"
 DIGEST_PREFIX = "BOB DIGEST v1 "
 MAX_DIGEST_LINE = 350
 FLEET_CHANNEL = "#bobiverse"
@@ -272,11 +272,12 @@ _TRAY_MACHINE_EXPORT_KEYS = (
     "on_demand_limit_cents",
     "on_demand_remaining_pct",
     "sand_period_end",
+    "console_nicks",
 )
 WORKER_NICK_RE = re.compile(r"^w-([a-z0-9]+)-(\d+)_?$", re.I)
 
 HELP_TEXT = (
-    "GET https://irc.ntsa.uk/bob/v1/report   fleet JSON digest\n"
+    "GET https://bob.ntsa.uk/bob/v1/report   fleet JSON digest\n"
     "!recycle <id>       Jeeves only: fleet recycle\n"
     "write: POST reportUrl (no !report; no !bobiverse)"
 )
@@ -651,7 +652,14 @@ def parse_bobiverse_query(body: str) -> tuple[str, str | None] | None:
 
 
 def digest_url() -> str:
-    return (os.environ.get(DIGEST_URL_ENV) or os.environ.get("BOB_DIGEST_URL") or "").strip() or DEFAULT_DIGEST_URL
+    raw = (os.environ.get(DIGEST_URL_ENV) or os.environ.get("BOB_DIGEST_URL") or "").strip()
+    if raw:
+        return raw
+    try:
+        import bob_public_base as _bpb
+        return _bpb.default_digest_url()
+    except ImportError:  # pragma: no cover
+        return DEFAULT_DIGEST_URL
 
 
 def fetch_digest_http(url: str | None = None, timeout: float = 15.0) -> dict | None:
@@ -704,6 +712,7 @@ def _empty_machine(machine_id: str) -> dict:
         "working_on": "",
         "workers": {},
         "worker_list": [],
+        "console_nicks": [],
     }
 
 
@@ -924,6 +933,27 @@ def worker_list_for_export(ent: dict) -> list[dict]:
     return sorted(rows, key=lambda r: r["nick"].lower())
 
 
+def coerce_console_nicks(raw: object) -> list[str]:
+    """FR #5204: public ``*_console`` nicks only (no secrets, no workers)."""
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    out = []
+    seen = set()
+    for item in raw:
+        nick = str(item or "").strip()
+        low = nick.lower()
+        if not nick or not low.endswith("_console") or low in seen:
+            continue
+        seen.add(low)
+        out.append(nick)
+    return sorted(out, key=lambda s: s.lower())
+
+
+def console_nicks_from_present(present: object) -> list[str]:
+    """NAMES / JOIN set -> credential-free airc console nicks."""
+    return coerce_console_nicks(present)
+
+
 def _coerce_machine(mid: str, raw: object) -> dict:
     base = _empty_machine(mid)
     if not isinstance(raw, dict):
@@ -939,6 +969,7 @@ def _coerce_machine(mid: str, raw: object) -> dict:
             "working_on": str(raw.get("working_on") or ""),
             "workers": _coerce_workers(mid, raw.get("workers")),
             "worker_list": _coerce_worker_list(raw.get("worker_list")),
+            "console_nicks": coerce_console_nicks(raw.get("console_nicks")),
         }
     )
     if isinstance(raw.get("pcent"), dict):
@@ -1424,6 +1455,41 @@ def _digest_locked(fn):
             return fn(home, *args, **kwargs)
 
     return wrapper
+
+
+@_digest_locked
+def set_machine_console_nicks(home: Path, mid: str, nicks: object) -> list[str]:
+    """Persist shop ``*_console`` presence for GET /bob/v1/report."""
+    cid = fold_machine_id(normalize_machine_id(mid) or mid)
+    cleaned = coerce_console_nicks(nicks)
+    doc = load_digest(home)
+    machines = doc.setdefault("machines", {})
+    if not isinstance(machines, dict):
+        machines = {}
+        doc["machines"] = machines
+    ent = machines.get(cid)
+    if not isinstance(ent, dict):
+        ent = _empty_machine(cid)
+        machines[cid] = ent
+    if coerce_console_nicks(ent.get("console_nicks")) != cleaned:
+        ent["console_nicks"] = cleaned
+        save_digest(home, doc)
+    return cleaned
+
+
+@_digest_locked
+def remove_machine_console_nick(home: Path, mid: str, nick: str) -> list[str]:
+    cid = fold_machine_id(normalize_machine_id(mid) or mid)
+    gone = str(nick or "").strip().lower()
+    doc = load_digest(home)
+    ent = (doc.get("machines") or {}).get(cid)
+    if not isinstance(ent, dict):
+        return []
+    kept = [n for n in coerce_console_nicks(ent.get("console_nicks")) if n.lower() != gone]
+    if kept != coerce_console_nicks(ent.get("console_nicks")):
+        ent["console_nicks"] = kept
+        save_digest(home, doc)
+    return kept
 
 
 def _utc_now_iso() -> str:
@@ -2889,6 +2955,7 @@ def export_machine_for_tray(
     out.setdefault("status", "I am offline" if not out.get("online") else "I am online")
     out.setdefault("working_on", "")
     out["workers"] = worker_list_for_export(base)
+    out["console_nicks"] = coerce_console_nicks(base.get("console_nicks"))
     out.setdefault("weekly", None)
     out.setdefault("period_end", None)
     out.setdefault("lastSeen", None)
@@ -3157,6 +3224,21 @@ def _digest_copilot_pool(home: Path) -> dict:
         return {"state": "unknown", "source": "copilot_internal/user"}
 
 
+def _intake_outbox_public(home: Path) -> dict:
+    """FR #5359: queued intake/outbox count + age + gh presence (no secrets)."""
+    try:
+        import intake
+
+        snap = intake.intake_outbox_snapshot(home)
+    except Exception:
+        snap = {"count": 0, "oldest_age_s": None, "gh_cli": False}
+    return {
+        "count": int(snap.get("count") or 0),
+        "oldest_age_s": snap.get("oldest_age_s"),
+        "gh_cli": bool(snap.get("gh_cli")),
+    }
+
+
 def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
     """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
@@ -3192,7 +3274,18 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "cursor_pools": build_cursor_pools(doc, exported, now),
         "queue": _public_queue(home),
         "copilot": _digest_copilot_pool(home),
+        "intake_outbox": _intake_outbox_public(home),
+        # FR #5204: live airc *_console nicks from shop NAMES (no NickServ).
+        "airc_consoles": _airc_consoles_from_machines(exported),
     }
+
+
+def _airc_consoles_from_machines(machines: dict) -> list[str]:
+    found: list[str] = []
+    for ent in (machines or {}).values():
+        if isinstance(ent, dict):
+            found.extend(coerce_console_nicks(ent.get("console_nicks")))
+    return coerce_console_nicks(found)
 
 
 def _chunk_json(raw: str) -> list[str]:

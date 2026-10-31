@@ -135,12 +135,24 @@ class WorkerTracker:
     def on_leave(self, nick: str, channel: str) -> int | None:
         """PART / KICK from a machine channel."""
         mid = machine_for_channel(self.home, channel)
+        if mid and str(nick or "").lower().endswith("_console"):
+            bobreport.remove_machine_console_nick(self.home, mid, nick)
         if not mid or nick.lower() not in {n.lower() for n in self.listed(mid)}:
             return None
         return self.post(payload_for("worker-remove", mid, nick))
 
     def on_quit(self, nick: str) -> list[int]:
-        return [self.post(payload_for("worker-remove", mid, nick)) for mid in self._machines_with(nick)]
+        codes = [
+            self.post(payload_for("worker-remove", mid, nick))
+            for mid in self._machines_with(nick)
+        ]
+        if str(nick or "").lower().endswith("_console"):
+            doc = bobreport.load_digest(self.home)
+            for mid, ent in (doc.get("machines") or {}).items():
+                nicks = bobreport.coerce_console_nicks((ent or {}).get("console_nicks"))
+                if any(n.lower() == nick.lower() for n in nicks):
+                    bobreport.remove_machine_console_nick(self.home, mid, nick)
+        return codes
 
     def on_nick(self, old: str, new: str) -> list[int]:
         """The old nick is gone from the channel; the new one is re-added when it next speaks."""
@@ -158,4 +170,8 @@ class WorkerTracker:
             self.post(payload_for("worker-remove", mid, n))
         if gone:
             self.log(f"INFO workers reconcile {channel}: removed {','.join(gone)} (not in channel)")
+        # FR #5204: persist live *_console nicks for the public digest roster.
+        bobreport.set_machine_console_nicks(
+            self.home, mid, bobreport.console_nicks_from_present(present)
+        )
         return gone

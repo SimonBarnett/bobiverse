@@ -1,0 +1,301 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit config for bobiverse (Bob Fleet monorepo: bob / jeeves / airc / common).
+# Trial goal: offload review, test-writing and issue-planning work from fleet worker seats
+# (Grok/Cursor/Aider tokens) onto CodeRabbit. MRB workers verify CodeRabbit's findings.
+# CodeRabbit never approves or blocks, and never auto-merges. Simon does every merge.
+# Anything that writes code (tests, docstrings, fixes, conflict resolution) runs ONLY
+# when someone asks for it with an @coderabbitai command or checkbox, and it lands as a
+# commit on the PR branch or as a separate stacked PR. It never pushes to main.
+language: en-GB
+tone_instructions: >-
+  Be terse and concrete. Lead with the defect and its impact, cite file and line.
+  Skip praise, style nits and restating the diff. British English.
+early_access: false
+
+reviews:
+  profile: chill                  # cut nitpicks; MRB workers already do style/drift
+  request_changes_workflow: false # legacy alias, kept explicit
+  auto_approvals:
+    enabled: false                # never approve or request changes; Simon merges
+  # Summary goes in the walkthrough comment, never into the worker-written PR body.
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: >-
+    3-6 bullets: behaviour change, affected service(s) (bob / jeeves / airc / common),
+    install or upgrade impact, and whether tests were added or changed.
+  review_status: true
+  review_details: false
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: false         # Jeeves dispatch is label-driven (needs-human, hold, machine:*, priority/*)
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: true   # fleet workers are AI agents; the prompt block helps them act
+  abort_on_close: true
+
+  auto_review:
+    enabled: true
+    drafts: true                  # early feedback on worker drafts saves MRB rework
+    auto_incremental_review: true # re-review each push (incremental, only new commits)
+    auto_pause_after_reviewed_commits: 10
+    base_branches: []             # default branch (main) only
+    ignore_title_keywords:
+      - "[skip review]"
+
+  # On-request only (command or walkthrough checkbox). Output is a stacked PR or a commit on
+  # the PR branch. Nothing runs automatically and nothing targets main directly.
+  #   @coderabbitai generate unit tests      -> tests for the PR's changes
+  #   @coderabbitai generate docstrings      -> follow-up PR with docstrings
+  #   @coderabbitai fix comments             -> applies unresolved CodeRabbit findings
+  #   @coderabbitai fix-ci                   -> stacked PR fixing failing checks
+  #   @coderabbitai resolve merge conflict   -> commits a resolution to the PR branch
+  finishing_touches:
+    docstrings:
+      enabled: true
+    unit_tests:
+      enabled: true
+    simplify:
+      enabled: false              # refactors churn MRB scope; not worth the review cost
+    autofix:
+      enabled: true
+    fix_ci:
+      enabled: true
+    resolve_merge_conflict:
+      enabled: true
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: warning
+    custom_checks:
+      - name: Tests accompany behaviour changes
+        mode: warning
+        instructions: >-
+          Pass if the PR changes no executable code (*.py, *.ps1, *.psm1, *.cmd, *.bat, *.cs)
+          outside tests/ directories. Otherwise, for EACH service directory (bob, jeeves,
+          airc, common) whose executable code changed, the PR must also add or modify at
+          least one file under that service's tests/ directory that exercises the changed
+          behaviour. Fail and name the service(s) missing tests otherwise.
+      - name: No secrets committed
+        mode: warning
+        instructions: >-
+          Fail if the PR adds or modifies a file named ergo.password, console.password,
+          connect.password or ircd.yaml under config/, or adds a literal password, API key,
+          GitHub token (ghp_, gho_, github_pat_), webhook secret or private key to any file.
+          Example/template files with obvious placeholders pass.
+      - name: Docs follow behaviour changes
+        mode: warning
+        instructions: >-
+          Pass if the PR changes no executable code. Otherwise pass only if either (a) the
+          PR also updates at least one of the matching service's AGENTS.md, VISION.md,
+          docs/*.md or .grok/skills/*/SKILL.md, or (b) the changed behaviour (verbs, ports,
+          config keys, file paths, IRC/webhook frames) is not described in any existing doc
+          in that service. Fail otherwise and name the stale doc.
+
+  path_filters:
+    - "!dist/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!common/third_party/**"
+    - "!docs/archive/**"
+    - "!**/__pycache__/**"
+    - "!**/*.pyc"
+    - "!**/*.msi"
+    - "!**/*.exe"
+    - "!**/*.dll"
+    - "!**/*.wixpdb"
+    - "!**/*.zip"
+    - "!**/*.pdf"
+    - "!**/*.png"
+    - "!**/*.ico"
+    - "!**/*.patch"
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+    - "!**/poetry.lock"
+    - "!**/go.sum"
+    - "!**/evidence/**"
+
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Fleet-wide priorities, in order. Only raise issues that would cause a real defect,
+        outage, leak or wrong documentation; skip style and naming nits.
+        1. Secrets: ergo.password, console.password, connect.password, IRC/NickServ passwords,
+           GitHub tokens and webhook secrets must never be committed, logged, echoed to IRC,
+           written to intake/digest payloads, passed in child-process argv, or included in
+           DCC output. Flag any new path where they could leak.
+        2. Hostnames: HTTP webhooks (report, intake, git, hours, jira, digest) must target
+           https://bob.ntsa.uk/bob/v1/... in new or changed code; flag new
+           https://bob.ntsa.uk/bob/v1/... uses. IRC itself stays on irc.ntsa.uk with TLS
+           ports 993 or 6697 only; flag plaintext 6667 or other hard-coded hosts/IPs.
+        3. Behaviour changes without tests: a change in bob/, jeeves/, airc/ or common/
+           code should come with a test under the matching tests/ directory.
+        4. Docs drift: if behaviour, verbs, ports, file paths or config keys change, check the
+           matching AGENTS.md, VISION.md, docs/*.md and .grok/skills/*/SKILL.md still agree.
+    - path: "**/*.{ps1,psm1,psd1}"
+      instructions: |
+        Windows PowerShell 5.1 runs as SYSTEM under services and installers. Check for:
+        - "$var:" inside double-quoted strings (parsed as a drive/scope qualifier and fails);
+          require "${var}:" or "$($var):".
+        - Reading and writing the same file in one pipeline
+          (Get-Content X | ... | Set-Content X), which truncates it; require reading into a
+          variable first.
+        - $ErrorActionPreference changes that are not restored (save/restore in try/finally),
+          and native commands whose $LASTEXITCODE is ignored.
+        - Non-idempotent installs: every install/upgrade step must be safe to rerun
+          (service exists, folder exists, ACL already set, MSI already installed).
+        - Services left stopped on any error, timeout or early return; stops need a
+          guaranteed restart or explicit recovery path.
+        - Encoding: Set-Content/Out-File without -Encoding, and BOM or non-ASCII in scripts
+          that PS 5.1 parses as ANSI.
+        - Secrets in argv, Write-Host, transcripts or log files.
+    - path: "**/*.py"
+      instructions: |
+        Python services (bob, jeeves, airc console) run unattended as Windows services.
+        Focus on: unhandled exceptions that kill a service loop, blocking calls without
+        timeouts (sockets, subprocess, HTTP), reconnect/backoff correctness for IRC,
+        subprocess calls that leak secrets in argv or ignore return codes, file writes that
+        are not atomic for state files shared between processes, and determinism
+        (no wall-clock or random dependence in logic that tests assert on).
+        Read UTF-8 files with encoding="utf-8-sig" where a BOM may be present.
+    - path: "**/tests/**"
+      instructions: |
+        Tests must exercise the behaviour claimed in the PR, not just mock it away. Flag tests
+        that would pass if the fix were reverted, tests that hit the network or real IRC, and
+        tests that depend on the host OS without a skip marker.
+    - path: "**/*.{cmd,bat}"
+      instructions: |
+        Batch files used by installers: check quoting of paths with spaces, errorlevel
+        handling after each command, and that nothing echoes a secret.
+    - path: "**/*.cs"
+      instructions: |
+        Tray app (WinForms). Flag UI-thread blocking network calls, unhandled exceptions in
+        timers/event handlers, and hard-coded hosts that bypass the webhook rule above.
+    - path: "**/*.md"
+      instructions: |
+        These are feature requests, visions and runbooks that fleet workers implement
+        literally. Only flag: contradictions with current code or other docs, wrong
+        protocol frames/verbs/ports/paths, undefined acceptance criteria, missing failure or
+        timeout semantics, and broken references to files or issues. Ignore wording,
+        formatting and Markdown style.
+    - path: ".github/workflows/**"
+      instructions: |
+        Check that workflows pin actions, use least-privilege permissions, never print
+        secrets, and do not run untrusted PR code with write tokens.
+
+  tools:
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    ruff:
+      enabled: true
+    pylint:
+      enabled: false        # no repo pylintrc; ruff covers the useful checks with less noise
+    flake8:
+      enabled: false        # duplicate of ruff
+    psscriptanalyzer:
+      enabled: true
+    blinter:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    yamllint:
+      enabled: true
+    github-checks:
+      enabled: true
+    ast-grep:
+      essential_rules: true
+    golangci-lint:
+      enabled: false        # no Go sources in the repo
+    shellcheck:
+      enabled: false        # no shell scripts
+    markdownlint:
+      enabled: false        # agent-written docs; style noise
+    languagetool:
+      enabled: false        # spelling/grammar noise
+    htmlhint:
+      enabled: false        # only UI mocks under airc/docs/mocks
+    biome:
+      enabled: false
+    eslint:
+      enabled: false
+    hadolint:
+      enabled: false
+
+chat:
+  auto_reply: false         # only answer when @coderabbitai is tagged; avoids bot-to-bot loops with workers
+  art: false
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/AGENTS.md"
+      - "**/VISION.md"
+  learnings:
+    scope: local                  # learns from replies like "@coderabbitai that is intentional because ..."
+    approval_delay: 0
+  issues:
+    scope: local                  # linked/related issue lookup inside bobiverse
+  pull_requests:
+    scope: local
+  web_search:
+    enabled: true
+
+code_generation:
+  docstrings:
+    language: en-GB
+    path_instructions:
+      - path: "**/*.py"
+        instructions: >-
+          Pure ASCII only (no em dashes, arrows or smart quotes; see #4967). One-line summary,
+          then FR/issue reference if known (e.g. "FR #5188"). No change to code.
+  unit_tests:
+    path_instructions:
+      - path: "**/*.{py,ps1,psm1}"
+        instructions: |
+          Use pytest. Put tests in the changed service's tests dir
+          (airc/tests, bob/tests, jeeves/tests, common/tests), named
+          test_fr<issue>_<topic>.py when the PR references an FR/issue. Modules are importable
+          by bare name because the repo-root conftest.py puts <service>/scripts on sys.path.
+          No network, no real IRC, no real Windows services or registry: mock subprocess,
+          sockets and HTTP. For PowerShell changes, test by reading the .ps1 text and asserting
+          the behaviour-relevant structure (as existing tests do), and skip anything that
+          needs Windows with pytest.mark.skipif(sys.platform != "win32"). Each test must fail
+          if the PR's fix is reverted. Files must be ASCII.
+
+issue_enrichment:
+  auto_enrich:
+    enabled: true           # duplicate/twin detection, similar issues, related PRs on each new issue
+  labeling:
+    auto_apply_labels: false  # Jeeves owns labels (dispatch/hold/machine pins); never auto-apply
+    labeling_instructions: []
+  planning:
+    enabled: true           # Coding Plan comment on the issue; on demand with @coderabbitai plan
+    auto_planning:
+      enabled: true
+      labels:               # plan FR/bug issues automatically, but not ones held for a human
+        - feature-request
+        - FR
+        - bug
+        - "!needs-human"
+        - "!hold"
+        - "!owner-missing"
+        - "!harvest"
+        - "!skill"

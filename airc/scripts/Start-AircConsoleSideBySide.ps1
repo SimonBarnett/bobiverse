@@ -27,13 +27,15 @@ param(
     [string]$ConsoleHome,
     [string]$PasswordFile = '',
     [string]$HostName = 'irc.ntsa.uk',
-    [int]$Port = 6697,
+    [int]$Port = 993,
     [ValidateSet('', 'off', 'operators')]
     [string]$ShellMode = 'operators',
     [ValidateSet('', 'off', 'on')]
     [string]$Jobs = 'on',
     [ValidateSet('', 'off', 'on')]
     [string]$UpdateCap = 'off',
+    [ValidateSet('', 'off', 'on')]
+    [string]$ExtensionCap = 'off',
     [switch]$Sasl,
     [switch]$NoSasl,
     [string]$LogFile = '',
@@ -118,6 +120,7 @@ if ($Sasl) { $argList += '--sasl' } else { $argList += '--no-sasl' }
 if ($ShellMode -in @('off', 'operators')) { $argList += @('--shell-mode', $ShellMode) }
 if ($Jobs -in @('off', 'on')) { $argList += @('--jobs', $Jobs) }
 if ($UpdateCap -in @('off', 'on')) { $argList += @('--update', $UpdateCap) }
+if ($ExtensionCap -in @('off', 'on')) { $argList += @('--extension', $ExtensionCap) }
 
 Write-Host ("INFO FR #5079 side-by-side nick={0} home={1} log={2}" -f $Nick, $ConsoleHome, $LogFile)
 Write-Host 'INFO do not use Start-Process -RedirectStandardOutput for long-lived consoles (parent exit closes pipes)'

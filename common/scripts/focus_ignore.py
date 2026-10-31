@@ -34,7 +34,14 @@ import bobreport
 FOCUS_FILE = "focus.json"
 IGNORE_FILE = "ignored.json"
 NAMED_PRIORITY = {"high": 1, "hi": 1, "medium": 5, "med": 5, "low": 9, "lo": 9}
-DEFAULT_PRIORITY = 1
+DEFAULT_PRIORITY = 9
+DEFAULT_ITEM_RANK = 1
+HIGH_PRIORITY_REPOS = frozenset(
+    {
+        "simonbarnett/bobiverse",
+        "simonbarnett/a-search",
+    }
+)
 UNFOCUSED_RANK = 10_000
 # FR #4969: unfocused priority-customer repos sort after every non-customer row.
 CUSTOMER_UNFOCUSED_RANK = UNFOCUSED_RANK + 10_000
@@ -81,6 +88,29 @@ def normalize_repo(token: str) -> str | None:
     if not s or _ITEM_TOKEN.match(s) or not _REPO_TOKEN.match(s):
         return None
     return s
+
+
+def is_high_priority_repo(repo: str) -> bool:
+    normalized = normalize_repo(str(repo or ""))
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if lowered in HIGH_PRIORITY_REPOS:
+        return True
+    return "/" not in lowered and any(
+        lowered == allowed.rsplit("/", 1)[-1] for allowed in HIGH_PRIORITY_REPOS
+    )
+
+
+def _effective_priority(repo: str, value: object) -> int:
+    try:
+        priority = int(value)
+    except (TypeError, ValueError, OverflowError):
+        priority = DEFAULT_PRIORITY
+    priority = max(1, priority)
+    if priority == NAMED_PRIORITY["high"] and not is_high_priority_repo(repo):
+        return NAMED_PRIORITY["medium"]
+    return priority
 
 
 def normalize_item_ref(token: str) -> tuple[str, str, str] | None:
@@ -134,19 +164,23 @@ def load_focus(home: Path) -> dict[str, Any]:
     doc = empty_focus()
     repos = raw.get("repos")
     if isinstance(repos, list):
-        repos = {str(r): {"priority": 1} for r in repos}
+        repos = {str(r): {"priority": NAMED_PRIORITY["high"]} for r in repos}
     for k, v in (repos if isinstance(repos, dict) else {}).items():
         key = normalize_repo(str(k))
         if not key:
             continue
+        raw_priority = v.get("priority") if isinstance(v, dict) else v
         try:
-            pr = int(v.get("priority") if isinstance(v, dict) else v)
-        except (TypeError, ValueError):
-            pr = DEFAULT_PRIORITY
-        pr = max(1, pr)
+            requested_priority = int(raw_priority)
+        except (TypeError, ValueError, OverflowError):
+            requested_priority = None
+        pr = _effective_priority(key, raw_priority)
+        label = str(v.get("label") or _label(pr)) if isinstance(v, dict) else _label(pr)
+        if requested_priority is None or pr != requested_priority:
+            label = _label(pr)
         doc["repos"][key] = {
             "priority": pr,
-            "label": str(v.get("label") or _label(pr)) if isinstance(v, dict) else _label(pr),
+            "label": label,
             "ts": str(v.get("ts") or "") if isinstance(v, dict) else "",
         }
     items = raw.get("items") if isinstance(raw.get("items"), dict) else {}
@@ -158,7 +192,7 @@ def load_focus(home: Path) -> dict[str, Any]:
         try:
             rk = int(v.get("rank") or v.get("priority") or 1) if isinstance(v, dict) else int(v)
         except (TypeError, ValueError):
-            rk = DEFAULT_PRIORITY
+            rk = DEFAULT_ITEM_RANK
         rk = max(1, rk)
         doc["items"][key] = {
             "rank": rk,
@@ -278,7 +312,8 @@ def repo_priority(doc: dict, repo: str) -> int | None:
     best = None
     for key, meta in (doc.get("repos") or {}).items():
         if repo_match(key, repo):
-            pr = int(meta.get("priority") or DEFAULT_PRIORITY)
+            value = meta.get("priority") if isinstance(meta, dict) else meta
+            pr = _effective_priority(repo, value)
             best = pr if best is None else min(best, pr)
     return best
 
@@ -294,7 +329,7 @@ def item_rank(doc: dict, row: dict) -> int | None:
             continue
         k_repo, k_id, _ = parsed
         if k_id.lstrip("#") == num and repo_match(k_repo, repo):
-            return int(meta.get("rank") or DEFAULT_PRIORITY)
+            return int(meta.get("rank") or DEFAULT_ITEM_RANK)
     return None
 
 
@@ -354,7 +389,11 @@ def _repo_entry(doc: dict, repo: str) -> tuple[int, str] | None:
     best = None
     for key, meta in (doc.get("repos") or {}).items():
         if repo_match(key, repo):
-            cand = (int(meta.get("priority") or DEFAULT_PRIORITY), str(meta.get("ts") or ""))
+            value = meta.get("priority") if isinstance(meta, dict) else meta
+            cand = (
+                _effective_priority(repo, value),
+                str(meta.get("ts") or "") if isinstance(meta, dict) else "",
+            )
             if best is None or cand < best:
                 best = cand
     return best
@@ -529,6 +568,9 @@ def _set_repo(home: Path, token: str, pr: int, label: str) -> list[str]:
     canon = normalize_repo(token)
     if not canon:
         return ["focus: usage !focus [n|high|medium|low] {repo|owner/repo#N}"]
+    effective_pr = _effective_priority(canon, pr)
+    if effective_pr != pr:
+        pr, label = effective_pr, _label(effective_pr)
     doc = load_focus(home)
     repos = {k: v for k, v in doc["repos"].items() if k.lower() != canon.lower()
              and not (_short(k) == _short(canon) and (("/" in k) != ("/" in canon)))}
@@ -588,7 +630,7 @@ def handle_focus_cmd(home: Path, arg: str) -> list[str]:
     if len(parts) == 2 and _priority_token(parts[1]) is not None and _REPO_TOKEN.match(parts[0]):
         p2 = _priority_token(parts[1])
         return _set_repo(home, parts[0], p2[0], p2[1])
-    return _set_repo(home, raw if len(parts) > 1 else parts[0], DEFAULT_PRIORITY, "high")
+    return _set_repo(home, raw if len(parts) > 1 else parts[0], DEFAULT_PRIORITY, _label(DEFAULT_PRIORITY))
 
 
 def handle_unfocus_cmd(home: Path, arg: str) -> list[str]:

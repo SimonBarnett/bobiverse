@@ -122,6 +122,86 @@ def test_foreign_asset_urls_are_rejected(env):
 
 
 @win
+def test_fr5345_api_asset_url_rebuilds_github_download(env):
+    """Live GitHub sometimes omits browser_download_url or only has assets API url."""
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        name = a["name"]
+        a["url"] = f"https://api.github.com/repos/{REPO}/releases/assets/1"
+        a["browser_download_url"] = ""
+        a["name"] = name
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0
+    assert "asset-url-rejected" not in log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+
+
+@win
+def test_fr5345_foreign_url_not_rebuilt_from_name(env):
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        a["browser_download_url"] = "https://evil.example/x/" + a["name"]
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0 and "asset-url-rejected" in log and "would-update" not in log
+
+
+@win
+def test_fr5410_github_download_url_with_query_is_accepted(env):
+    """Live GitHub sometimes adds ?X-Amz= on browser_download_url; Check must not reject."""
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        a["browser_download_url"] = a["browser_download_url"] + "?X-Amz-Signature=EXAMPLE"
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+
+
+@win
+def test_fr5410_objects_github_url_rebuilds_download_path(env):
+    rel = _release("0.1.17")
+    for a in rel["assets"]:
+        a["url"] = a["browser_download_url"]
+        a["browser_download_url"] = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/" + a["name"]
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update local=0.1.16 latest=0.1.17" in log
+
+
+@win
+def test_fr5437_four_part_tag_rebuilds_from_api_url(env):
+    """FR #5437: v0.1.17.1 + assets API url must not be asset-url-rejected."""
+    rel = _release("0.1.17.1")
+    for a in rel["assets"]:
+        a["url"] = f"https://api.github.com/repos/{REPO}/releases/assets/2"
+        a["browser_download_url"] = ""
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update" in log and "0.1.17.1" in log
+
+
+def test_fr5437_resolve_pins_four_part_tag():
+    t = _t("Update-BobiverseService.ps1")
+    assert "FR #5437" in t
+    assert r"v?\d+\.\d+\.\d+(?:\.\d+)?" in t
+
+
+@win
+def test_fr5410_four_part_tag_rebuilds_from_api_url(env):
+    rel = _release("0.1.17.1")
+    (env.root / "VERSION").write_text("0.1.16\n")
+    for a in rel["assets"]:
+        a["url"] = f"https://api.github.com/repos/{REPO}/releases/assets/2"
+        a["browser_download_url"] = ""
+    p, log = env("-DryRun", release=rel)
+    assert p.returncode == 0, log
+    assert "asset-url-rejected" not in log
+    assert "would-update" in log or "latest=0.1.17.1" in log
+
+
+@win
 def test_other_products_asset_is_ignored(env):
     p, log = env("-DryRun", release=_release("0.1.17", product="jeeves"))
     assert p.returncode == 0 and "no-matching-asset" in log
@@ -271,6 +351,52 @@ def test_sha256_mismatch_aborts_and_records_failure(env):
 
 
 @win
+def test_fr5344_sha256_file_utf8_bom_still_verifies(env):
+    data = b"pretend msi bytes"
+    digest = hashlib.sha256(data).hexdigest()
+    plan = _plan(env, data, digest + "  bob-0.1.17.msi\n")
+    sha_path = env.tmp / "assets" / "bob-0.1.17.msi.sha256"
+    sha_path.write_bytes(b"\xef\xbb\xbf" + (digest + "  bob-0.1.17.msi\n").encode("ascii"))
+    p, log = env("-AllowLocalAssets", "-DelaySeconds", "0", "-VerifyOnly", "-PlanFile", str(plan), mode="Apply")
+    assert p.returncode == 0
+    assert "sha256-verified" in log, log
+    assert "sha256-mismatch" not in log
+
+
+@win
+def test_fr5344_html_download_is_not_treated_as_msi(env):
+    plan = _plan(env, b"<!DOCTYPE html><html><body>rate limit</body></html>", "0" * 64 + "  bob-0.1.17.msi\n")
+    p, log = env("-AllowLocalAssets", "-DelaySeconds", "0", "-PlanFile", str(plan), mode="Apply")
+    assert p.returncode == 0
+    assert "download-failed" in log
+    assert "sha256-mismatch" not in log
+    assert "msiexec" not in log
+    assert (env.root / "VERSION").read_text().strip() == "0.1.16"
+
+
+@win
+def test_fr5413_retry_uses_repaired_urls_and_mismatch_has_detail():
+    t = _t("Update-BobiverseService.ps1")
+    i = t.index("sha256-retry")
+    chunk = t[i : i + 900]
+    assert "Get-Asset -Url $msiUrl" in chunk
+    assert "Get-Asset -Url ([string]$plan.msiUrl)" not in chunk
+    assert "FR #5413" in chunk
+    assert "Set-Failure -Tag $tag -Result 'sha256-mismatch' -Detail" in t
+
+
+@win
+def test_fr5413_bom_html_is_download_failed_not_sha_mismatch(env):
+    html = b"\xef\xbb\xbf<!DOCTYPE html><html>denied</html>"
+    plan = _plan(env, html, "0" * 64 + "  bob-0.1.17.msi\n")
+    p, log = env("-AllowLocalAssets", "-DelaySeconds", "0", "-PlanFile", str(plan), mode="Apply")
+    assert p.returncode == 0
+    assert "download-failed" in log
+    assert "sha256-mismatch" not in log
+    assert (env.root / "VERSION").read_text().strip() == "0.1.16"
+
+
+@win
 def test_sha256_match_is_verified_and_verify_only_touches_nothing(env):
     data = b"pretend msi bytes"
     plan = _plan(env, data, hashlib.sha256(data).hexdigest() + "  bob-0.1.17.msi\n")
@@ -279,6 +405,32 @@ def test_sha256_match_is_verified_and_verify_only_touches_nothing(env):
     assert "sha256-verified" in log and "verify-only done" in log
     assert "service-stopped" not in log and "backup-done" not in log
     assert (env.root / "VERSION").read_text().strip() == "0.1.16"
+
+
+@win
+def test_fr5357_apply_repairs_empty_plan_url_from_tag_name(env):
+    """Stale plan with empty/API url must rebuild allowlisted github download path."""
+    data = b"pretend msi"
+    plan = _plan(env, data, hashlib.sha256(data).hexdigest() + "  bob-0.1.17.msi\n")
+    doc = json.loads(plan.read_text(encoding="utf-8"))
+    doc["msiUrl"] = f"https://api.github.com/repos/{REPO}/releases/assets/9"
+    doc["shaUrl"] = f"https://api.github.com/repos/{REPO}/releases/assets/10"
+    plan.write_text(json.dumps(doc), encoding="utf-8")
+    p, log = env("-AllowLocalAssets", "-DelaySeconds", "0", "-VerifyOnly", "-PlanFile", str(plan), mode="Apply")
+    assert p.returncode == 0
+    assert "apply-repair-url" in log, log
+    assert "github.com/SimonBarnett/bobiverse/releases/download/v0.1.17/bob-0.1.17.msi" in log
+    # After repair, Get-Asset hits the rebuilt github URL (live or failed); either path proves repair ran.
+
+
+@win
+def test_fr5357_get_asset_prefers_curl_then_iwr():
+    t = _t("Update-BobiverseService.ps1")
+    i = t.index("function Get-Asset")
+    chunk = t[i : i + 4500]
+    assert "FR #5357" in chunk
+    assert chunk.find("method=curl") < chunk.find("method=iwr")
+    assert "Retries = 4" in chunk
 
 
 @win

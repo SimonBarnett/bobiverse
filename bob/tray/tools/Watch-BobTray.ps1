@@ -1021,7 +1021,7 @@ function Get-BobTrayGrokFuelRemaining {
 function Get-BobTrayDigestReportUrl {
     $u = [string]$env:BOB_DIGEST_REPORT_URL
     if ($u) { return $u.Trim() }
-    return 'https://irc.ntsa.uk/bob/v1/report'
+    return 'https://bob.ntsa.uk/bob/v1/report'
 }
 
 function Get-BobTrayMachineGrokChatPcent {
@@ -3277,40 +3277,25 @@ $script:trayAliveMsg = [pscustomobject]@{
     Dir  = $script:startWorkerDir
 }
 $script:trayAliveSub = Register-ObjectEvent -InputObject $script:trayAliveTimer -EventName Elapsed -Action {
-    # FR #5145: share-safe write via Write-BobTrayAlive (races with bob-tray.exe).
-    # Do not Set-Content here — exclusive lock → RuntimeError → intake storm.
+    # FR #5145 / #5346: share-safe write via Write-BobTrayAlive (races with bob-tray.exe).
+    # Do not Set-Content here. Sharing miss is not a crash — never must-report / intake.
     try {
         $msg = $Event.MessageData
         $dir = if ($msg -and $msg.Dir) { [string]$msg.Dir } else { [string]$msg }
         if (-not $dir) { return }
         if (Get-Command Write-BobTrayAlive -ErrorAction SilentlyContinue) {
-            if (Write-BobTrayAlive -Dir $dir) { return }
-        }
-        else {
-            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-            $f = Join-Path $dir 'tray.alive'
-            $bytes = [Text.Encoding]::ASCII.GetBytes(('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID))
-            $fs = [IO.File]::Open($f, [IO.FileMode]::Create, [IO.FileAccess]::Write,
-                [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
-            try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush() } finally { $fs.Dispose() }
+            [void](Write-BobTrayAlive -Dir $dir)
             return
         }
-        # All retries failed (still locked / IO). Soft-log; must-report once per persistent miss.
-        throw (New-Object System.IO.IOException('Write-BobTrayAlive failed after retries'))
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $f = Join-Path $dir 'tray.alive'
+        $bytes = [Text.Encoding]::ASCII.GetBytes(('{0} pid={1}' -f [datetime]::UtcNow.ToString('o'), $PID))
+        $fs = [IO.File]::Open($f, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Write,
+            [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        try { $fs.SetLength(0); $fs.Write($bytes, 0, $bytes.Length); $fs.Flush() } finally { $fs.Dispose() }
     }
     catch {
-        # FR #5052 must-report (heartbeat stamp) — only after share-safe path exhausted
-        try {
-            $root = if ($Event.MessageData.Root) { [string]$Event.MessageData.Root } else { $null }
-            if ($root) {
-                $hf = Join-Path $root 'src\Private\Invoke-BobMustReportFailure.ps1'
-                if (Test-Path -LiteralPath $hf) { . $hf }
-            }
-            if (Get-Command Invoke-BobMustReportFailure -ErrorAction SilentlyContinue) {
-                Invoke-BobMustReportFailure -Component 'tray' -Site 'trayAliveTimer' -Exception $_.Exception
-            }
-        }
-        catch { Write-TrayLog ('FR #5052 alive report: ' + $_.Exception.Message) }
+        # FR #5346: next 2s tick retries. Do not Invoke-BobMustReportFailure for a share miss.
     }
 } -MessageData $script:trayAliveMsg
 $script:trayAliveTimer.Start()

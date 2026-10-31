@@ -16,7 +16,7 @@ def test_fr2454_verify_doc_has_snapshot_and_method():
         "2455",
         "2449",
         "Invoke-RestMethod",
-        "irc.ntsa.uk/bob/v1/report",
+        "bob.ntsa.uk/bob/v1/report",
         "#2450",
     ):
         assert needle in text, needle

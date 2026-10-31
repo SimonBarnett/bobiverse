@@ -27,6 +27,7 @@ param(
     [string]$ShellMode = '',
     [string]$Jobs = '',
     [string]$UpdateCap = '',
+    [string]$ExtensionCap = '',
     [string]$RequireAccount = '',
     [string]$Accounts = '',
     # FR #3639: retired MSI AIRC_OPERATORS / -OperatorsExtra. Accepted (old callers bind), logged, ignored.
@@ -550,6 +551,15 @@ elseif ($priorId -and $priorId.PSObject.Properties['UpdateCap'] -and $priorId.Up
     if ($resolvedUpdate -notin @('off', 'on')) { $resolvedUpdate = 'on' }
 } else { $resolvedUpdate = 'on' }
 
+# FR #5295: EXTENSION cap - client and workstation default off (GPO blast radius).
+$expExtension = ([string]$ExtensionCap).Trim().ToLowerInvariant()
+if ($expExtension -in @('off', 'on')) { $resolvedExtension = $expExtension }
+elseif ($prof -in @('workstation', 'client')) { $resolvedExtension = 'off' }
+elseif ($priorId -and $priorId.PSObject.Properties['ExtensionCap'] -and $priorId.ExtensionCap) {
+    $resolvedExtension = ([string]$priorId.ExtensionCap).Trim().ToLowerInvariant()
+    if ($resolvedExtension -notin @('off', 'on')) { $resolvedExtension = 'on' }
+} else { $resolvedExtension = 'on' }
+
 # FR #3393: workstation defaults require_account=true unless MSI/CLI set explicitly.
 $expRequire = $null
 $reqRaw = ([string]$RequireAccount).Trim().ToLowerInvariant()
@@ -624,6 +634,7 @@ try {
         ShellMode    = $resolvedShell
         Jobs         = $resolvedJobs
         UpdateCap    = $resolvedUpdate
+        ExtensionCap = $resolvedExtension
         RequireAccount = $resolvedRequire
         Accounts     = ($resolvedAccounts -join ',')
         SyncFromRepo = $resolvedSync
@@ -650,6 +661,7 @@ try {
         shell_explicit = [bool]($shellSource -eq 'explicit')
         jobs = $resolvedJobs
         update = $resolvedUpdate
+        extension = $resolvedExtension
         require_account = $resolvedRequire
         accounts = @($resolvedAccounts)
         sync_from_repo = $resolvedSync
@@ -657,15 +669,10 @@ try {
         profile = $prof
         auth_mode = $authMode
     }
-    # FR #3774: client presence-only JOIN #bobiverse (commands stay on control channel).
-    # Empty array disables. Fleet/workstation omit / empty by default.
-    if ($prof -eq 'client') {
-        $capObj['presence_channels'] = @('#bobiverse')
-    } else {
-        $capObj['presence_channels'] = @()
-    }
+    # FR #5190: client does not auto-join #bobiverse (shop or #wonderland is control).
+    $capObj['presence_channels'] = @()
     ($capObj | ConvertTo-Json) | Set-Content -LiteralPath $capPath -Encoding utf8
-    Write-Host ("INFO FR #3287/#3289/#3393/#3774 wrote {0} profile={1} shell={2} jobs={3} update={4} require_account={5} sync_from_repo={6} self_update={7} presence_channels={8}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedRequire, $resolvedSync, $resolvedSelf, (($capObj['presence_channels'] -join ',')))
+    Write-Host ("INFO FR #3287/#3289/#3393/#3774/#5190/#5295 wrote {0} profile={1} shell={2} jobs={3} update={4} extension={5} require_account={6} sync_from_repo={7} self_update={8} presence_channels={9}" -f $capPath, $prof, $resolvedShell, $resolvedJobs, $resolvedUpdate, $resolvedExtension, $resolvedRequire, $resolvedSync, $resolvedSelf, (($capObj['presence_channels'] -join ',')))
     Write-Host ("INFO FR #4030 shell resolve shell={0} source={1} bob={2} explicit={3}" -f $resolvedShell, $shellSource, $isBobMachine, ($shellSource -eq 'explicit'))
 } catch {
     Write-Host ("WARN airc.json: {0}" -f $_.Exception.Message)
@@ -716,6 +723,7 @@ $args = @{
     ShellMode   = $resolvedShell
     Jobs        = $resolvedJobs
     UpdateCap   = $resolvedUpdate
+    ExtensionCap = $resolvedExtension
     Profile     = $prof
     AuthMode    = 'irc_ops'
 }

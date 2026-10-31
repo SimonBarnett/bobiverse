@@ -312,7 +312,7 @@ def test_focus_files_use_gh_jeeves_format(_home):
     fi.handle_focus_cmd(_home, "strict on")
     d = json.loads((_home / "focus.json").read_text("utf-8"))
     assert d["v"] == 1 and d["strict"] is True
-    assert d["repos"]["o/b"]["priority"] == 1
+    assert d["repos"]["o/b"]["priority"] == fi.DEFAULT_PRIORITY
     assert d["items"]["o/a#3"]["rank"] == 1 and d["items"]["o/a#3"]["id"] == "#3"
     fi.handle_ignore_cmd(_home, "o/z")
     assert json.loads((_home / "ignored.json").read_text("utf-8"))["repos"] == ["o/z"]

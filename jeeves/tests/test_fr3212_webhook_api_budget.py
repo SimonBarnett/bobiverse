@@ -274,7 +274,7 @@ def test_budget_backoff_skips_non_essential(tmp_path: Path):
 # --------------------------------------------------------------------------- 6. gap detection
 def test_gap_detection_triggers_one_reconcile(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("JEEVES_RESYNC_REPOS", "o/a")
-    monkeypatch.setattr(ch, "targets", lambda: {"local": "http://127.0.0.1:7700", "public": "https://irc.ntsa.uk"})
+    monkeypatch.setattr(ch, "targets", lambda: {"local": "http://127.0.0.1:7700", "public": "https://bob.ntsa.uk"})
     # Skip webhook probes interfering: push next_probe far out via clock.
 
     class Clock:

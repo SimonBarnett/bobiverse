@@ -8,6 +8,32 @@ from pathlib import Path
 import protect
 
 QUIT_REQUEST = "agent.quit.request"
+# FR #5196: leftover files from a previous process must not quit a fresh start.
+QUIT_TTL_S = 90.0
+
+
+def _parse_quit_file(path: Path) -> tuple[float | None, str | None]:
+    if not path.is_file():
+        return None, None
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None, None
+    if not raw:
+        return None, None
+    parts = raw.split(maxsplit=1)
+    ts: float | None = None
+    reason = "stop"
+    if parts and parts[0].isdigit():
+        ts = float(parts[0])
+        reason = parts[1] if len(parts) > 1 else "stop"
+    else:
+        reason = parts[1] if len(parts) > 1 else (parts[0] if parts else "stop")
+        try:
+            ts = path.stat().st_mtime
+        except OSError:
+            ts = None
+    return ts, reason
 
 
 def quit_request_path(home: Path | str) -> Path:
@@ -26,27 +52,39 @@ def request_agent_quit(home: Path | str, reason: str = "stop") -> None:
 
 
 def peek_quit_request(home: Path | str) -> str | None:
+    _ts, reason = _parse_quit_file(quit_request_path(home))
+    return reason
+
+
+def consume_quit_request(
+    home: Path | str,
+    *,
+    ignore_before: float | None = None,
+    now: float | None = None,
+    ttl_s: float | None = QUIT_TTL_S,
+) -> str | None:
+    """Return a live quit reason and delete the file.
+
+    FR #5196: files written before ``ignore_before`` (process start) or older
+    than ``ttl_s`` are deleted and ignored so a restart does not graceful-quit
+    on a leftover ``agent.quit.request``.
+    """
     path = quit_request_path(home)
-    if not path.is_file():
-        return None
-    try:
-        raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not raw:
-        return None
-    parts = raw.split(maxsplit=1)
-    return parts[1] if len(parts) > 1 else "stop"
-
-
-def consume_quit_request(home: Path | str) -> str | None:
-    reason = peek_quit_request(home)
+    ts, reason = _parse_quit_file(path)
     if reason is None:
         return None
     try:
-        quit_request_path(home).unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except OSError:
         pass
+    wall = time.time() if now is None else float(now)
+    stale = False
+    if ts is not None and ignore_before is not None and ts < (float(ignore_before) - 0.5):
+        stale = True
+    if ts is not None and ttl_s is not None and (wall - ts) > float(ttl_s):
+        stale = True
+    if stale:
+        return None
     return reason
 
 
