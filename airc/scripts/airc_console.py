@@ -3042,6 +3042,25 @@ class AircConsoleCore:
             deny_reason=reason,
         )
 
+    def _capability_deny(
+        self,
+        nick: str,
+        target: str,
+        text: str,
+        reason: str,
+        qid: str | None = None,
+    ) -> HandleResult:
+        """FR #5552: cap-off DONE keeps id= when the operator sent one."""
+        q = (qid or "").strip().lower()
+        id_bit = f" id={q}" if q else ""
+        return HandleResult(
+            action="capability_deny",
+            nick=nick,
+            target=target,
+            text=text,
+            reply=f"DONE{id_bit} exit=126 {reason}",
+        )
+
     def _register_priority_job(self, job_id: str, nick: str) -> dict[str, Any]:
         """FR #5526: track async PRIORITY connect (separate from per-nick shell inflight)."""
         jid = (job_id or "").strip().lower()
@@ -3302,34 +3321,24 @@ class AircConsoleCore:
         # FR #5308: LEGION {target} --- isolated stub worker; same auth as UPDATE.
         leg = _legion.parse_legion_command(cmd)
         if leg is not None:
+            qid = str(leg.get("qid") or "").strip().lower()
             if caps.shell_mode == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 shell-disabled",
+                return self._capability_deny(
+                    nick, target, text, "shell-disabled", qid
                 )
             if caps.update == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 update-disabled",
+                return self._capability_deny(
+                    nick, target, text, "update-disabled", qid
                 )
             if leg.get("error"):
                 # FR #5527: include id= so ear/airc-replies can correlate denies.
-                qid = str(leg.get("qid") or "").strip().lower()
-                id_bit = f" id={qid}" if qid else ""
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply=f"DONE{id_bit} exit=126 bad-target reason={leg['error']}",
+                return self._capability_deny(
+                    nick,
+                    target,
+                    text,
+                    f"bad-target reason={leg['error']}",
+                    qid,
                 )
-            qid = str(leg.get("qid") or "").strip().lower()
             offer = None
             if self.shell_runner is not None and qid:
                 take = getattr(self.shell_runner, "take_dcclisten", None)
@@ -3399,21 +3408,14 @@ class AircConsoleCore:
         # FR #5298: NETWORK / NETWORK diag - isolated stub worker; same auth as UPDATE.
         net = _network.parse_network_command(cmd)
         if net is not None:
+            qid = str(net.get("qid") or "").strip().lower()
             if caps.shell_mode == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 shell-disabled",
+                return self._capability_deny(
+                    nick, target, text, "shell-disabled", qid
                 )
             if caps.update == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 update-disabled",
+                return self._capability_deny(
+                    nick, target, text, "update-disabled", qid
                 )
             qid = str(net.get("qid") or "").strip().lower()
             offer = None
@@ -3483,29 +3485,18 @@ class AircConsoleCore:
         # plus dedicated extension=off (client/workstation default refuse).
         ext = _extension.parse_extension_command(cmd)
         if ext is not None:
+            qid = str(ext.get("qid") or "").strip().lower()
             if caps.shell_mode == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 shell-disabled",
+                return self._capability_deny(
+                    nick, target, text, "shell-disabled", qid
                 )
             if caps.update == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 update-disabled",
+                return self._capability_deny(
+                    nick, target, text, "update-disabled", qid
                 )
             if caps.extension == "off":
-                return HandleResult(
-                    action="capability_deny",
-                    nick=nick,
-                    target=target,
-                    text=text,
-                    reply="DONE exit=126 extension-disabled",
+                return self._capability_deny(
+                    nick, target, text, "extension-disabled", qid
                 )
             try:
                 result = self.extension_runner(
