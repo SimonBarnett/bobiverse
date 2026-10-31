@@ -23,7 +23,13 @@ def test_mrb5381_whatif_does_not_call_install_remote():
         called["remote"] += 0
         return {"ok": True, "status": "dry-run"}
 
-    body = lg.installer_legion_work("box1", whatif=True, run_fn=run_fn)
+    # CredMan identity still required (FR #5310); inject so the WhatIf path runs.
+    body = lg.installer_legion_work(
+        "box1",
+        whatif=True,
+        run_fn=run_fn,
+        credman=lambda: {"username": "u", "password": "FAKE_x"},
+    )
     assert body["invoked_installer"] is True
     assert body["force"] is False
     assert "password" not in body
