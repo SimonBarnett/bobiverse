@@ -26,8 +26,12 @@ DEFAULT_RUN_TIMEOUT_S = 120.0
 
 VerbLevel = Literal["read", "write", "exec"]
 
+# FR #5281: VERSION is STATUS-class read (allowed when shell=off / jobs=off).
+CAPS_OFF_ALLOWED_VERBS = frozenset({"STATUS", "VERSION"})
+
 VERB_LEVELS: dict[str, VerbLevel] = {
     "STATUS": "read",
+    "VERSION": "read",
     "GET": "read",
     "GETCHUNK": "read",
     "JOB": "read",
@@ -50,7 +54,7 @@ _SECRET_SUFFIXES = (".password", ".token")
 
 _KV_RE = re.compile(r"(\w+)=([^\s]+)")
 _VERB_RE = re.compile(
-    r"^(?P<verb>STATUS|PUT|CHUNK|PUTEND|RUN|GETCHUNK|GET|JOB|CANCEL)(?:\s+(?P<rest>.*))?$",
+    r"^(?P<verb>STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GETCHUNK|GET|JOB|CANCEL)(?:\s+(?P<rest>.*))?$",
     re.IGNORECASE,
 )
 # FR #2570: optional leading id=<8 hex> before the verb (same pin as FR #75 shell).
@@ -620,6 +624,15 @@ def collect_status_versions(ai_root: Path | None = None) -> dict[str, str]:
     return out
 
 
+def format_version_lines(*, versions: dict[str, str], machine: str) -> list[str]:
+    """FR #5281: airc install version only (STATUS keeps the aggregate).
+
+    Version source is ``<ai root>\\airc\\VERSION``. Missing/unreadable -> ``-``.
+    No ARP / registry fallback (document: install file is the only source).
+    """
+    return [f"VERSION machine={machine} airc_ver={versions.get('airc', '-')}"]
+
+
 def format_status_lines(*, airc_running: bool, versions: dict[str, str], machine: str) -> list[str]:
     run = "Running" if airc_running else "Stopped"
     return [
@@ -678,6 +691,15 @@ class JobProtocol:
                 )
                 # FR #2570: terminal DONE so Invoke-AircRemote -ReplyFile Wait matches id=.
                 # FR #2575: frame body as out id= seq= (same as format_shell_replies) so StdOut fills.
+                jid = (kv.get("id") or "").strip().lower() or new_job_id()
+                lines = [
+                    f"out id={jid} seq={i} {part}" for i, part in enumerate(body, start=1)
+                ]
+                lines.append(f"DONE id={jid} exit=0")
+                return lines
+            if verb == "VERSION":
+                vers = collect_status_versions(self.ai_root)
+                body = format_version_lines(versions=vers, machine=self.machine)
                 jid = (kv.get("id") or "").strip().lower() or new_job_id()
                 lines = [
                     f"out id={jid} seq={i} {part}" for i, part in enumerate(body, start=1)
