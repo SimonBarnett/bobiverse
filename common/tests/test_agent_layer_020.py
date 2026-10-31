@@ -14,7 +14,7 @@ from repo_layout import ROOT  # t773u: split repo; legacy flat paths resolve per
 SKILLS = ROOT / ".grok" / "skills"
 PRODUCTS = ("jeeves", "bob", "airc")
 RULE_MARKERS = ("CAST IRON RULE - HARVEST AND FILE EVERYTHING", "Report-BobiverseIntakeIssue.ps1",
-                "Invoke-BobiverseHarvest.ps1", "https://irc.ntsa.uk/bob/v1/intake", "-Repo SimonBarnett/bobiverse")
+                "Invoke-BobiverseHarvest.ps1", "https://bob.ntsa.uk/bob/v1/intake", "-Repo SimonBarnett/bobiverse")
 BOOKS = {
     "jeeves": [
         "bobiverse-jeeves",
@@ -100,7 +100,7 @@ def test_agents_files_cover_the_required_topics():
     assert "docs/jeeves-commands.md" in (SKILLS / "bobiverse-jeeves-commands" / "SKILL.md").read_text(encoding="utf-8")
 
 
-ALLOWED_HOSTS = {"irc.ntsa.uk", "github.com", "api.github.com", "raw.githubusercontent.com", "nodejs.org", "archive.org"}
+ALLOWED_HOSTS = {"irc.ntsa.uk", "bob.ntsa.uk", "github.com", "api.github.com", "raw.githubusercontent.com", "nodejs.org", "archive.org"}
 # FR #4476 / FR #4345: fleet-ops documents these public resolvers. Private LAN addresses stay rejected.
 ALLOWED_IPS = {"127.0.0.1", "8.8.8.8", "1.1.1.1"}
 

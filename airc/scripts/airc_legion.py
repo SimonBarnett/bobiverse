@@ -11,6 +11,8 @@ import os
 import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
+from socket import gethostname as socket_hostname
 from typing import Any, Callable
 
 # In-service module (FR #3991). LEGION must not shell a peer installer exe.
@@ -189,33 +191,142 @@ def default_legion_credman() -> dict[str, str]:
         return {}
 
 
-def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
-    """Import-path invoke. WhatIf / dry_run never calls install_remote."""
-    from airc_network_installer.github_msi import download_latest_airc_msi
-    from airc_network_installer.install import install_local, install_remote
+def _candidate_version_from_msi_name(msi: Path) -> str:
+    name = msi.stem
+    if name.lower().startswith("airc-"):
+        return name[5:]
+    return name
 
-    host = (spec.get("hosts") or [""])[0]
-    dry = bool(spec.get("dry_run"))
-    if dry:
-        return {"ok": True, "status": "dry-run", "host": host, "profile": spec.get("profile")}
-    msi = (spec.get("msi") or "").strip()
-    if not msi:
-        dest = spec.get("download_dir") or os.getcwd()
+
+def _resolve_legion_msi_path(spec: dict[str, Any]) -> Path:
+    """Local path, allowed GitHub release URL, or Latest download (FR #5309 / #5382)."""
+    from airc_network_installer.github_msi import download_latest_airc_msi
+    from urllib.request import urlretrieve
+
+    raw = (spec.get("msi") or "").strip()
+    if not raw:
+        dest = Path(str(spec.get("download_dir") or os.getcwd()))
+        dest.mkdir(parents=True, exist_ok=True)
         msi_path, _tag = download_latest_airc_msi(dest)
-        msi = str(msi_path)
+        return msi_path
+    if "://" in raw:
+        if not _msi_allowed(raw):
+            raise ValueError("foreign-msi-url")
+        dest = Path(str(spec.get("download_dir") or os.getcwd()))
+        dest.mkdir(parents=True, exist_ok=True)
+        name = raw.rstrip("/").split("/")[-1] or "airc-download.msi"
+        if not name.lower().endswith(".msi"):
+            name = "airc-download.msi"
+        out = dest / name
+        urlretrieve(raw, out)  # noqa: S310 — allowlist-checked bobiverse release URL only
+        return out
+    return Path(raw)
+
+
+def default_installer_run(spec: dict[str, Any]) -> dict[str, Any]:
+    """Import-path invoke. WhatIf / dry_run never calls install_remote (FR #5382)."""
+    from airc_network_installer.install import find_psexec, install_local, install_remote
+
+    host = str((spec.get("hosts") or [""])[0] or "")
+    dry = bool(spec.get("dry_run"))
+    profile = str(spec.get("profile") or "client")
+    force = bool(spec.get("force"))
+    timeout_s = float(spec.get("timeout_s") or LEGION_TIMEOUT_S)
+    if dry:
+        return {
+            "ok": True,
+            "status": "dry-run",
+            "host": host,
+            "profile": profile,
+            "force": force,
+            "timeout_s": timeout_s,
+        }
+
+    try:
+        msi_path = _resolve_legion_msi_path(spec)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "status": "failed",
+            "host": host,
+            "error": f"msi-resolve:{type(exc).__name__}",
+        }
+    if not msi_path.is_file():
+        return {
+            "ok": False,
+            "status": "failed",
+            "host": host,
+            "error": "msi-missing",
+        }
+
     password = os.environ.get("AIRC_LEGION_PASSWORD", "")
-    user = spec.get("username") or ""
-    log_dir = spec.get("log_dir") or "airc-install-logs"
+    user = str(spec.get("username") or "")
+    log_dir = Path(str(spec.get("log_dir") or "airc-install-logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    psexec = find_psexec(str(spec.get("psexec") or ""))
+    if not psexec:
+        return {
+            "ok": False,
+            "status": "failed",
+            "host": host,
+            "error": "psexec-missing",
+            "msi": str(msi_path),
+            "log_dir": str(log_dir),
+        }
+
+    candidate = _candidate_version_from_msi_name(msi_path)
+    local_names = {socket_hostname().lower(), "localhost", "127.0.0.1"}
+    try:
+        if host.lower() in local_names:
+            row = install_local(
+                msi_path=msi_path,
+                candidate_version=candidate,
+                profile=profile,
+                force=force,
+                log_dir=log_dir,
+                dry_run=False,
+            )
+        else:
+            row = install_remote(
+                host=host,
+                msi_path=msi_path,
+                candidate_version=candidate,
+                profile=profile,
+                force=force,
+                psexec=psexec,
+                username=user,
+                password=password,
+                log_dir=log_dir,
+                dry_run=False,
+                timeout_s=timeout_s,
+            )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "status": "failed",
+            "host": host,
+            "error": f"install:{type(exc).__name__}",
+            "msi": str(msi_path),
+            "log_dir": str(log_dir),
+        }
+
+    status = str(getattr(row, "status", "") or "failed")
+    ok = status in ("success", "reboot_required", "skipped", "dry-run")
     return {
-        "ok": True,
-        "status": "scheduled",
+        "ok": ok,
+        "status": status,
         "host": host,
-        "msi": msi,
-        "install_remote": install_remote,
-        "install_local": install_local,
+        "msi": str(msi_path),
+        "action": getattr(row, "action", ""),
+        "previous_version": getattr(row, "previous_version", ""),
+        "detail": getattr(row, "detail", ""),
+        "log_path": getattr(row, "log_path", ""),
         "username": user,
         "has_password": bool(password),
-        "log_dir": log_dir,
+        "log_dir": str(log_dir),
+        "profile": profile,
+        "force": force,
+        "timeout_s": timeout_s,
     }
 
 

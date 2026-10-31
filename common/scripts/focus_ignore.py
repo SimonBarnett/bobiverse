@@ -40,7 +40,6 @@ HIGH_PRIORITY_REPOS = frozenset(
     {
         "simonbarnett/bobiverse",
         "simonbarnett/a-search",
-        "simonbarnett/agentic_fomprep",
     }
 )
 UNFOCUSED_RANK = 10_000

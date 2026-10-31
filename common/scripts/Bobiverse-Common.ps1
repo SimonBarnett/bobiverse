@@ -3478,3 +3478,24 @@ function Remove-BobiverseAircClientExtraPayload {
     Write-Host ("INFO FR #3514 client allow-list purge count={0}" -f $removed.Count)
     return @($removed)
 }
+
+
+function Get-BobiversePublicBase {
+    <#
+      FR #5272: fleet public HTTP origin for webhooks (not IRC).
+      Env BOB_PUBLIC_BASE overrides; default https://bob.ntsa.uk
+    #>
+    $raw = [string]$env:BOB_PUBLIC_BASE
+    if ($raw -and $raw.Trim()) {
+        return $raw.Trim().TrimEnd('/')
+    }
+    return 'https://bob.ntsa.uk'
+}
+
+function Get-BobiversePublicUrl {
+    param([Parameter(Mandatory)][string]$Path)
+    $base = Get-BobiversePublicBase
+    if (-not $Path.StartsWith('/')) { $Path = '/' + $Path }
+    return ($base + $Path)
+}
+

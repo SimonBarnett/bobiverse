@@ -3258,46 +3258,67 @@ class AircConsoleCore:
                     text=text,
                     reply="DONE exit=126 update-disabled",
                 )
-            try:
-                result = self.network_runner(
-                    action=net["action"],
-                    whatif=net["whatif"],
-                    job_id=net.get("qid") or "",
-                )
-            except TypeError:
-                result = self.network_runner(action=net["action"])
-            except Exception:
-                result = _network.NetworkVerbResult(
-                    False, "NETWORK err isolated-fault", job_id=net.get("qid") or ""
-                )
-            if not isinstance(result, _network.NetworkVerbResult):
-                result = _network.NetworkVerbResult(False, "NETWORK err bad-runner")
-            qid = (net.get("qid") or result.job_id or "").strip().lower()
+            qid = str(net.get("qid") or "").strip().lower()
             offer = None
             if self.shell_runner is not None and qid:
                 take = getattr(self.shell_runner, "take_dcclisten", None)
                 if callable(take):
                     offer = take(qid)
-            payload = _network.build_network_payload(
-                net["action"],
-                whatif=net["whatif"],
-                hosts=getattr(result, "hosts", None),
-                failures=getattr(result, "failures", None),
-            )
             send_fn = getattr(self, "network_log_send", None)
-            delivered = _network.deliver_network_payload(
-                job_id=qid or result.job_id,
-                payload=payload,
-                offer=offer,
-                send_fn=send_fn,
-            )
+            delivered: dict | None = None
+
+            def _deliver_inventory(res: _network.NetworkVerbResult) -> None:
+                nonlocal delivered
+                payload = _network.build_network_payload(
+                    net["action"],
+                    whatif=net["whatif"],
+                    hosts=list(res.hosts or []),
+                    failures=list(res.failures or []),
+                )
+                delivered = _network.deliver_network_payload(
+                    job_id=qid or res.job_id,
+                    payload=payload,
+                    offer=offer,
+                    send_fn=send_fn,
+                )
+                emit = getattr(self, "network_log_emit", None)
+                if callable(emit):
+                    emit(delivered)
+
+            try:
+                result = self.network_runner(
+                    action=net["action"],
+                    whatif=net["whatif"],
+                    job_id=qid,
+                    on_done=_deliver_inventory,
+                )
+            except TypeError:
+                try:
+                    result = self.network_runner(
+                        action=net["action"],
+                        whatif=net["whatif"],
+                        job_id=qid,
+                    )
+                except TypeError:
+                    result = self.network_runner(action=net["action"])
+            except Exception:
+                result = _network.NetworkVerbResult(
+                    False, "NETWORK err isolated-fault", job_id=qid
+                )
+            if not isinstance(result, _network.NetworkVerbResult):
+                result = _network.NetworkVerbResult(False, "NETWORK err bad-runner")
+            if delivered is None and (result.hosts or result.failures):
+                _deliver_inventory(result)
             meta = self._allow_meta(nick, account)
+            reply = result.reply_text()
+            if delivered is not None:
+                reply = f"{reply} {delivered['summary']} {delivered['done']}"
             return HandleResult(
                 action="network",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=f"{result.reply_text()} {delivered['summary']} {delivered['done']}",
+                reply=reply,
                 **meta,
             )
 

@@ -6,7 +6,7 @@
 [CmdletBinding()]
 param(
     [string]$LocalUrl = 'http://127.0.0.1:7700/bob/v1/report',
-    [string]$PublicUrl = 'https://irc.ntsa.uk/bob/v1/report',
+    [string]$PublicUrl = 'https://bob.ntsa.uk/bob/v1/report',
     [string]$DigestHome = '',
     [int]$AnnounceCooldownMinutes = 10
 )

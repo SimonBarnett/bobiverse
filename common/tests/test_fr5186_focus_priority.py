@@ -9,7 +9,6 @@ import focus_ignore as fi
 ALLOWED = (
     "SimonBarnett/bobiverse",
     "SimonBarnett/a-search",
-    "SimonBarnett/agentic_fomprep",
 )
 
 
@@ -58,13 +57,19 @@ def test_loaded_legacy_or_invalid_focus_cannot_make_other_repo_high(tmp_path):
     for raw, expected_repo in (
         ({"repos": {"SimonBarnett/bobiverse": {"priority": 1}}}, "SimonBarnett/bobiverse"),
         ({"repos": ["SimonBarnett/a-search"]}, "SimonBarnett/a-search"),
-        ({"repos": {"SimonBarnett/agentic_fomprep": {"priority": 1}}}, "SimonBarnett/agentic_fomprep"),
     ):
         path.write_text(json.dumps(raw), encoding="utf-8")
         doc = fi.load_focus(tmp_path)
         assert doc["repos"]
         assert fi.repo_priority(doc, expected_repo) == fi.NAMED_PRIORITY["high"]
         assert cd.is_high_priority(tmp_path, _row(expected_repo))
+    path.write_text(
+        json.dumps({"repos": {"SimonBarnett/agentic_fomprep": {"priority": 1}}}),
+        encoding="utf-8",
+    )
+    doc = fi.load_focus(tmp_path)
+    assert fi.repo_priority(doc, "SimonBarnett/agentic_fomprep") != fi.NAMED_PRIORITY["high"]
+    assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/agentic_fomprep"))
 
 
 def test_item_focus_only_makes_allowed_repositories_copilot_eligible(tmp_path):
@@ -77,4 +82,4 @@ def test_item_focus_only_makes_allowed_repositories_copilot_eligible(tmp_path):
     assert fi.offer_sort_key(tmp_path, _row("SimonBarnett/trutex", "#33"))[1] == 3
     assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/ce-priority", "#39"))
     assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/trutex", "#33"))
-    assert cd.is_high_priority(tmp_path, _row("SimonBarnett/agentic_fomprep", "#237"))
+    assert not cd.is_high_priority(tmp_path, _row("SimonBarnett/agentic_fomprep", "#237"))

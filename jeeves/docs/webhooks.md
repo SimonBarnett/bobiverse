@@ -1,6 +1,6 @@
 # Bobiverse webhooks (Jeeves / digest host)
 
-Default public base: `https://irc.ntsa.uk`. Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
+Default public base: `https://bob.ntsa.uk`. Local listener often `127.0.0.1:7700` (align IIS; do not bake `:19781`).
 
 Auth: **none. No route needs a password or shared secret** (v0.1.16). Nothing to copy between machines. Protection is validation instead: body size caps (413), strict JSON/op schema (400), per-machine rate limit (429), GitHub hooks only for allow-listed owners (`BOB_GIT_OWNERS`, default `SimonBarnett`; 403 otherwise), and `POST /bob/v1/report` only from machine ids on the **roster Jeeves publishes** (`registered-machines.json`, mirrored from ChanServ by the chair; 403 otherwise). The receiver only reads that file - it never talks to ChanServ or IRC. A stray `X-Bob-Secret` header is ignored. `POST /bob/v1/intake`, `POST|GET /bob/v1/jira`, and `POST|GET /bob/v1/hours` stay open with their own rate limits / schema gates (hours also rejects obvious credential fields and never logs request bodies).
 
@@ -24,7 +24,7 @@ Git hooks must target **`/bob/v1/git`**, never `/bob/v1/report`.
 
 ### FR #5170: webhook-first queue; Copilot virtual seat
 
-Jeeves updates the job queue from `/bob/v1/git` deliveries (`issues`, `pull_request` including synchronize/closed, `pull_request_review`, `check_run`, `workflow_run`). `!resync` / hourly `github-resync` is the fallback (startup, webhook gap, delivery failure, safety interval). Required hook events include `pull_request_review`, `check_suite`, `check_run`, and `workflow_run` (`New-BobGitWebhook.ps1` / `copilot_dispatch.ensure_repo_webhook`). Permission failures file a stall issue (FR #5164). When Copilot allowance remains, Jeeves POSTs `agents/repos/{owner}/{repo}/tasks` with a `prompt` field and announces hand-off/completion as seat nick `copilot`. FR #5172: allowance is `GET /copilot_internal/user` (5 min cache; `unlimited` or remaining/percent > 0). FR #5316: an out-of-tokens / quota-exhausted Copilot response persists a 7-day cooldown in `copilot-allowance.json` (`exhausted_until`); Jeeves announces once (`Copilot out of tokens - paused until <UTC>`), releases rows held by nick=copilot, and does not dispatch or probe until the cooldown ends. FR #5397: `cooldown_active(..., fuel=)` reads `fuels.<name>.exhausted_until`; Copilot still writes the legacy top-level key; exhausting cursor/grok does not pause Copilot or release Copilot rows. Digest `copilot` pool shows `state=exhausted` and `resume_at`. Chair calls `ensure_repo_webhook` on startup and hourly. Digest `copilot` pool is shown once on TipForm.
+Jeeves updates the job queue from `/bob/v1/git` deliveries (`issues`, `pull_request` including synchronize/closed, `pull_request_review`, `check_run`, `workflow_run`). `!resync` / hourly `github-resync` is the fallback (startup, webhook gap, delivery failure, safety interval). Required hook events include `pull_request_review`, `check_suite`, `check_run`, and `workflow_run` (`New-BobGitWebhook.ps1` / `copilot_dispatch.ensure_repo_webhook`). Permission failures file a stall issue (FR #5164). When Copilot allowance remains, Jeeves POSTs `agents/repos/{owner}/{repo}/tasks` with a `prompt` field and announces hand-off/completion as seat nick `copilot`. FR #5172: allowance is `GET /copilot_internal/user` (5 min cache; `unlimited` or remaining/percent > 0). FR #5316: an out-of-tokens / quota-exhausted Copilot response persists a 7-day cooldown in `copilot-allowance.json` (`exhausted_until`); Jeeves announces once (`Copilot out of tokens - paused until <UTC>`), releases rows held by nick=copilot, and does not dispatch or probe until the cooldown ends. FR #5397: `cooldown_active(..., fuel=)` reads `fuels.<name>.exhausted_until`; Copilot still writes the legacy top-level key; exhausting cursor/grok does not pause Copilot or release Copilot rows. FR #5433: mark_tokens_exhausted keeps an already-active until and skips a second pause announce; an expired until still extends and announces. Digest `copilot` pool shows `state=exhausted` and `resume_at`. Chair calls `ensure_repo_webhook` on startup and hourly. Digest `copilot` pool is shown once on TipForm.
 
 ### Digest lock watchdog (FR #1136 / FR #1388)
 
@@ -47,13 +47,13 @@ Replace the host as needed. Bodies are minimal scaffolds.
 ### GET digest
 
 ```bash
-curl -sS "https://irc.ntsa.uk/bob/v1/report"
+curl -sS "https://bob.ntsa.uk/bob/v1/report"
 ```
 
 ### POST report (status / ops)
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/report" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/report" \
   -H "Content-Type: application/json" \
   -d "{\"op\":\"ping\",\"machine\":\"example-host\"}"
 ```
@@ -61,7 +61,7 @@ curl -sS -X POST "https://irc.ntsa.uk/bob/v1/report" \
 ### POST git webhook (GitHub-shaped)
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/git" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/git" \
   -H "Content-Type: application/json" \
   -H "X-GitHub-Event: issues" \
   -d "{\"action\":\"opened\",\"repository\":{\"full_name\":\"SimonBarnett/bobiverse\"},\"issue\":{\"number\":1,\"title\":\"example\"}}"
@@ -72,7 +72,7 @@ Fleet hooks subscribe to `issues`, `pull_request`, `push`, and **`issue_comment`
 ### POST intake (harvest) — no secret
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
   -H "Content-Type: application/json" \
   -d "{\"kind\":\"harvest\",\"title\":\"example lesson\",\"body\":\"…\",\"repo\":\"SimonBarnett/bobiverse\"}"
 ```
@@ -85,7 +85,7 @@ Optional **`dedupe_key`** (FR #4963, at most 128 chars; else `400 bad_dedupe_key
 Response fields stay backward compatible: `intake_id`, `url`, `queued`, `duplicate`, `state`, plus `action` (`filed`|`commented`|`reopened`) and `number`. Outbox rows carry `dedupe_key`; `drain_intake_outbox` (FR #2595) runs the same comment/reopen/file decision (no duplicate comments on a re-drain).
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/intake" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/intake" \
   -H "Content-Type: application/json" \
   -d "{\"kind\":\"issue\",\"repo\":\"SimonBarnett/a-search\",\"title\":\"import failure: awin merge\",\"body\":\"merge threw\",\"idempotency_key\":\"run-2026-10-25-1\",\"dedupe_key\":\"awin|feed-1|E_MERGE\"}"
 ```
@@ -99,7 +99,7 @@ After intake allow-rule changes merge to `main`, **Sync/compose (or restart) irc
 ### POST jira — no secret
 
 ```bash
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/jira" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/jira" \
   -H "Content-Type: application/json" \
   -d "{\"summary\":\"example\",\"description\":\"…\",\"project\":\"BOB\"}"
 ```
@@ -123,25 +123,25 @@ Agents POST partial work-time entries as source material for Priority timesheets
 
 ```bash
 # Create (open entry)
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/hours" \
   -H "Content-Type: application/json" \
   -d "{\"idempotency_key\":\"seat-1\",\"agent\":\"Haitch\",\"on_behalf_of\":\"SimonB\",\"start\":\"2026-10-08T09:15:00+01:00\",\"customer\":\"ce-priority\",\"project\":\"dayworks\",\"repo_url\":\"https://github.com/SimonBarnett/ce-priority\",\"description\":\"Draft Day Works hours\",\"source\":\"marchhare\"}"
 
 # Create closed in one POST (start + end) — returns status:closed and duration_minutes
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/hours" \
   -H "Content-Type: application/json" \
   -d "{\"idempotency_key\":\"seat-1-closed\",\"agent\":\"Haitch\",\"on_behalf_of\":\"SimonB\",\"start\":\"2026-10-08T09:00:00+01:00\",\"end\":\"2026-10-08T17:00:00+01:00\",\"customer\":\"trutex\",\"project\":\"deposco\",\"description\":\"Closed day\",\"source\":\"cloud\"}"
 
 # Heartbeat / close / withdraw
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/heartbeat" -H "Content-Type: application/json" -d "{}"
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/close" -H "Content-Type: application/json" \
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/hours/<id>/heartbeat" -H "Content-Type: application/json" -d "{}"
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/hours/<id>/close" -H "Content-Type: application/json" \
   -d "{\"end\":\"2026-10-08T11:00:00+01:00\"}"
-curl -sS -X POST "https://irc.ntsa.uk/bob/v1/hours/<id>/withdraw" -H "Content-Type: application/json" -d "{}"
+curl -sS -X POST "https://bob.ntsa.uk/bob/v1/hours/<id>/withdraw" -H "Content-Type: application/json" -d "{}"
 
 # List / summary / export (user= is required)
-curl -sS "https://irc.ntsa.uk/bob/v1/hours?user=SimonB&from=2026-10-08&to=2026-10-08"
-curl -sS "https://irc.ntsa.uk/bob/v1/hours/summary?user=SimonB&date=2026-10-08"
-curl -sS "https://irc.ntsa.uk/bob/v1/hours/export?user=SimonB&from=2026-10-08&to=2026-10-08&format=csv"
+curl -sS "https://bob.ntsa.uk/bob/v1/hours?user=SimonB&from=2026-10-08&to=2026-10-08"
+curl -sS "https://bob.ntsa.uk/bob/v1/hours/summary?user=SimonB&date=2026-10-08"
+curl -sS "https://bob.ntsa.uk/bob/v1/hours/export?user=SimonB&from=2026-10-08&to=2026-10-08&format=csv"
 ```
 
 ## Local assert

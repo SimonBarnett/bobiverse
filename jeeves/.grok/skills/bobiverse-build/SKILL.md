@@ -10,7 +10,7 @@ description: >
 # bobiverse-build
 
 > **CAST IRON RULE - HARVEST AND FILE EVERYTHING (read this first, every time).**
-> File every issue/FR/bug/gap in the same turn via intake (`https://irc.ntsa.uk/bob/v1/intake`):
+> File every issue/FR/bug/gap in the same turn via intake (`https://bob.ntsa.uk/bob/v1/intake`):
 > `.\scripts\Report-BobiverseIntakeIssue.ps1 -Repo SimonBarnett/bobiverse -Kind issue -Title "short title" -Body "what / where / evidence / fix"`
 > End sessions with `Invoke-BobiverseHarvest.ps1 -Repo <job-repo> -Summary ... -Lesson ...` then `-Flush`.
 > Bob fleet lessons use `-Repo SimonBarnett/bobiverse`. Never put tokens, passwords, SASL/NickServ secrets, keys or private hostnames in a filing or skill.
