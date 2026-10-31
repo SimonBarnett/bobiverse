@@ -243,3 +243,39 @@ def test_fr5327_done_k_transcript_lag_no_giveup_no_reinject():
     assert out == []
     assert reinjected == []
     assert bored.ack_open is True
+
+
+def test_fr5327_giveup_path_not_in_done_keys():
+    """GIVEUP marks finished but not done; stale-replay still hits."""
+    logs: list[str] = []
+    bored, _ = _bored(logs)
+    bored.set_ready(True)
+    bored.on_outbox(ACK_K)
+    bored.on_outbox(GIVEUP_K)
+    assert "FR SimonBarnett/bobiverse#4827" in bored._finished_job_keys
+    assert "FR SimonBarnett/bobiverse#4827" not in bored._done_job_keys
+    bored.on_outbox(ACK_J)
+    out: list[str] = []
+    hit = bored.note_stale_replay_user_assign(
+        "FR SimonBarnett/bobiverse#4827",
+        write_giveup=lambda s: out.append(s) or True,
+        reinject_open=lambda: True,
+    )
+    assert hit == "FR SimonBarnett/bobiverse#4827"
+    assert any("stale-replay" in x for x in out)
+
+
+def test_mrb5400_skill_pins_fr5327_done_not_stale_replay():
+    """docs/mrb-5400: worker skill must say DONE-finished K must not GIVEUP."""
+    skill_path = (
+        Path(__file__).resolve().parents[1]
+        / ".grok"
+        / "skills"
+        / "bobiverse-bob-worker"
+        / "SKILL.md"
+    )
+    text = skill_path.read_text(encoding="utf-8")
+    assert "FR #4842 / #5327" in text
+    assert "DONE-finished K" in text
+    assert "must not GIVEUP or re-inject" in text
+    assert "after GIVEUP/DONE for K" not in text
