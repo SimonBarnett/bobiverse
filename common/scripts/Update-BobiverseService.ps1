@@ -82,7 +82,12 @@ function Get-OptOutReason {
 
 function ConvertTo-Ver {
     param([string]$Text)
-    if ($Text -and ($Text -match '(\d+)\.(\d+)\.(\d+)')) {
+    # FR #5354: allow optional 4th segment (v1.0.0.1 / bob-0.1.32.2.msi). Exactly-3-part
+    # tags still parse as Major.Minor.Build (Revision unset).
+    if ($Text -and ($Text -match '(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?')) {
+        if ($Matches[4]) {
+            return [version]('{0}.{1}.{2}.{3}' -f $Matches[1], $Matches[2], $Matches[3], $Matches[4])
+        }
         return [version]('{0}.{1}.{2}' -f $Matches[1], $Matches[2], $Matches[3])
     }
     return $null
@@ -272,14 +277,15 @@ function Set-Failure {
 }
 
 function Write-CheckFailIntake {
-    param([string]$Result)
+    # FR #5354: pass release tag when known so idempotency keys are not tag=-.
+    param([string]$Result, [string]$Tag = '')
     try {
         $common = Join-Path $PSScriptRoot 'Bobiverse-Common.ps1'
         if ((Test-Path -LiteralPath $common) -and -not (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue)) {
             . $common
         }
         if (Get-Command Send-BobiverseUpdateFailureIntake -ErrorAction SilentlyContinue) {
-            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag '' -Result $Result -InstallRoot $InstallRoot
+            $null = Send-BobiverseUpdateFailureIntake -Product $Product -Tag $Tag -Result $Result -InstallRoot $InstallRoot
         }
     } catch { }
 }
@@ -926,10 +932,15 @@ function Invoke-Check {
     }
     if (-not $rel -or -not $rel.assets) { Write-UpdLog 'check result=no-release-data - starting installed version'; return }
 
-    $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
+    # FR #5354: 3- or 4-part product MSI (bob-1.0.0.1.msi) and matching tag_name.
+    $msi = @($rel.assets | Where-Object { $_.name -match ('^{0}-(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$' -f [regex]::Escape($Product)) }) | Select-Object -First 1
     $tagVer = $null
-    if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+)$') { $tagVer = ConvertTo-Ver $Matches[1] }
-    if (-not $msi -or -not $tagVer) { Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"; Write-CheckFailIntake -Result 'no-matching-asset'; return }
+    if ($rel.tag_name -match '^v?(\d+\.\d+\.\d+(?:\.\d+)?)$') { $tagVer = ConvertTo-Ver $Matches[1] }
+    if (-not $msi -or -not $tagVer) {
+        Write-UpdLog "check result=no-matching-asset tag=$($rel.tag_name)"
+        Write-CheckFailIntake -Result 'no-matching-asset' -Tag ([string]$rel.tag_name)
+        return
+    }
     $remote = ConvertTo-Ver ([string]$msi.name)
     if (-not $remote -or $remote -ne $tagVer) { Write-UpdLog "check result=asset-tag-mismatch tag=$($rel.tag_name) asset=$($msi.name)"; return }
     $want = ConvertTo-Ver $TargetVersion
@@ -942,7 +953,9 @@ function Invoke-Check {
     $msiUrl = Resolve-AssetDownloadUrl -Asset $msi -Tag ([string]$rel.tag_name)
     $shaUrl = Resolve-AssetDownloadUrl -Asset $sha -Tag ([string]$rel.tag_name)
     if (-not (Test-AssetUrl -Url $msiUrl) -or -not (Test-AssetUrl -Url $shaUrl)) {
-        Write-UpdLog 'check result=asset-url-rejected'; Write-CheckFailIntake -Result 'asset-url-rejected'; return
+        Write-UpdLog 'check result=asset-url-rejected'
+        Write-CheckFailIntake -Result 'asset-url-rejected' -Tag ([string]$rel.tag_name)
+        return
     }
 
     $tag = 'v' + $remote.ToString()
