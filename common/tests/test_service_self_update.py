@@ -266,8 +266,31 @@ def test_fr5344_html_download_is_not_treated_as_msi(env):
     plan = _plan(env, b"<!DOCTYPE html><html><body>rate limit</body></html>", "0" * 64 + "  bob-0.1.17.msi\n")
     p, log = env("-AllowLocalAssets", "-DelaySeconds", "0", "-PlanFile", str(plan), mode="Apply")
     assert p.returncode == 0
-    assert "download-failed" in log or "sha256-mismatch" in log
+    assert "download-failed" in log
+    assert "sha256-mismatch" not in log
     assert "msiexec" not in log
+    assert (env.root / "VERSION").read_text().strip() == "0.1.16"
+
+
+@win
+def test_fr5413_retry_uses_repaired_urls_and_mismatch_has_detail():
+    t = _t("Update-BobiverseService.ps1")
+    i = t.index("sha256-retry")
+    chunk = t[i : i + 900]
+    assert "Get-Asset -Url $msiUrl" in chunk
+    assert "Get-Asset -Url ([string]$plan.msiUrl)" not in chunk
+    assert "FR #5413" in chunk
+    assert "Set-Failure -Tag $tag -Result 'sha256-mismatch' -Detail" in t
+
+
+@win
+def test_fr5413_bom_html_is_download_failed_not_sha_mismatch(env):
+    html = b"\xef\xbb\xbf<!DOCTYPE html><html>denied</html>"
+    plan = _plan(env, html, "0" * 64 + "  bob-0.1.17.msi\n")
+    p, log = env("-AllowLocalAssets", "-DelaySeconds", "0", "-PlanFile", str(plan), mode="Apply")
+    assert p.returncode == 0
+    assert "download-failed" in log
+    assert "sha256-mismatch" not in log
     assert (env.root / "VERSION").read_text().strip() == "0.1.16"
 
 
