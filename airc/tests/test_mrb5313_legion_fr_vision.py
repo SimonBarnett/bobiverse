@@ -51,6 +51,8 @@ def test_fr_locked_legion_isolation():
         assert n in text
     assert "Closes #5308" not in text
     assert "password=" not in text.lower()
+    assert "airc/docs/mocks/legion" in text
+    assert "\x07irc" not in text
 
 
 def test_mocks_and_validate():

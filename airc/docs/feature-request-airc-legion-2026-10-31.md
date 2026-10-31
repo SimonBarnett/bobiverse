@@ -72,7 +72,7 @@ LOCKED
 
 ## Screens
 
-Wire-only. HTML mocks under irc/docs/mocks/legion/ (home / empty / error) for intake validation (not a GUI product).
+Wire-only. HTML mocks under airc/docs/mocks/legion/ (home / empty / error) for intake validation (not a GUI product).
 
 
 ## Gap vs current tree
