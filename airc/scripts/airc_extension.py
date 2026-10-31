@@ -1,9 +1,10 @@
-"""Airc EXTENSION verb + isolated worker (FR #5290 / #5291 / #5292 / #5293).
+"""Airc EXTENSION verb + isolated worker (FR #5290 / #5291 / #5292 / #5293 / #5520).
 
 FR-A: verb + isolated worker. FR-B: DC + GPO Priority-web-extension.
 FR-C: LDAP enum + per-host Chrome/Edge ForceInstall fallback (always after GPO).
 FR #5364: machine account first; CredMan PriorityAirc/ExtensionAdmin on access-denied.
 FR-D: structured log via DCCLISTEN or IRC CONT.
+FR #5520: DCC log joins worker via on_done (do not build from accept defaults).
 Auth matches UPDATE. Never secrets on IRC.
 """
 from __future__ import annotations
@@ -587,56 +588,12 @@ def run_extension_verb(
     job_id: str = "",
     worker: Callable[..., Any] | None = None,
     wait: bool = False,
+    on_done: Callable[[ExtensionVerbResult], Any] | None = None,
     **_kw: Any,
 ) -> ExtensionVerbResult:
+    """FR #5520: when wait=False, accept immediately and deliver DCC via on_done after worker."""
     qid = (job_id or "").strip().lower() or "00000000"
     work = worker or fill_holes_work
-    last: dict[str, Any] = {}
-
-    def _safe() -> None:
-        nonlocal last
-        try:
-            out = work(
-                action=action,
-                whatif=whatif,
-                extension_id=DEFAULT_EXTENSION_ID,
-                **_kw,
-            )
-            if isinstance(out, dict):
-                last = out
-        except Exception:
-            last = {"ok": False, "gpo": "fail", "reason": "worker_exception"}
-            return
-
-    if wait:
-        _safe()
-    else:
-        import airc_isolated as _iso
-
-        if _iso.is_packaged_work(work):
-
-            def _from_child(data: Any) -> None:
-                nonlocal last
-                if isinstance(data, dict):
-                    last = data
-
-            _iso.start_isolated(
-                wait=False,
-                run=_safe,
-                packaged=(
-                    "airc_extension",
-                    "fill_holes_work",
-                    {
-                        "action": action,
-                        "whatif": bool(whatif),
-                        "extension_id": DEFAULT_EXTENSION_ID,
-                    },
-                ),
-                name="airc-extension-worker",
-                on_done=_from_child,
-            )
-        else:
-            threading.Thread(target=_safe, name="airc-extension-worker", daemon=True).start()
     bits = [
         "EXTENSION accepted",
         f"id={qid}",
@@ -646,15 +603,78 @@ def run_extension_verb(
     ]
     if whatif:
         bits.append("whatif=1")
-    if wait and last:
-        gpo = str(last.get("gpo") or ("ok" if last.get("ok") else "fail"))
-        bits.append(f"gpo_result={gpo}")
-        if last.get("reason"):
-            bits.append(f"reason={last.get('reason')}")
-        browsers = last.get("browsers") or []
-        if browsers:
-            bits.append("browsers=" + ",".join(str(b) for b in browsers))
-    return ExtensionVerbResult(True, " ".join(bits), job_id=qid, payload=last or None)
+    accepted = " ".join(bits)
+
+    def _finish(data: dict[str, Any], *, reply: str | None = None) -> ExtensionVerbResult:
+        res = ExtensionVerbResult(
+            True, reply or accepted, job_id=qid, payload=data or None
+        )
+        if on_done is not None:
+            on_done(res)
+        return res
+
+    def _call_work() -> dict[str, Any]:
+        try:
+            out = work(
+                action=action,
+                whatif=whatif,
+                extension_id=DEFAULT_EXTENSION_ID,
+                **_kw,
+            )
+        except TypeError:
+            out = work(action=action, whatif=whatif, **_kw)
+        return out if isinstance(out, dict) else {}
+
+    def _safe() -> ExtensionVerbResult:
+        try:
+            last = _call_work()
+        except Exception:
+            last = {"ok": False, "gpo": "fail", "reason": "worker_exception"}
+        reply = accepted
+        if wait and last:
+            parts = [accepted]
+            gpo = str(last.get("gpo") or ("ok" if last.get("ok") else "fail"))
+            parts.append(f"gpo_result={gpo}")
+            if last.get("reason"):
+                parts.append(f"reason={last.get('reason')}")
+            browsers = last.get("browsers") or []
+            if browsers:
+                parts.append("browsers=" + ",".join(str(b) for b in browsers))
+            reply = " ".join(parts)
+        return _finish(last, reply=reply)
+
+    if wait:
+        return _safe()
+    import airc_isolated as _iso
+
+    if _iso.is_packaged_work(work):
+
+        def _from_child(data: Any) -> None:
+            payload = data if isinstance(data, dict) else {
+                "ok": False,
+                "gpo": "fail",
+                "reason": "isolated-fault",
+            }
+            _finish(payload)
+
+        _iso.start_isolated(
+            wait=False,
+            run=_safe,
+            packaged=(
+                "airc_extension",
+                "fill_holes_work",
+                {
+                    "action": action,
+                    "whatif": bool(whatif),
+                    "extension_id": DEFAULT_EXTENSION_ID,
+                },
+            ),
+            name="airc-extension-worker",
+            on_done=_from_child,
+        )
+    else:
+        threading.Thread(target=_safe, name="airc-extension-worker", daemon=True).start()
+    return ExtensionVerbResult(True, accepted, job_id=qid, payload=None)
 
 
 _SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
@@ -685,7 +705,18 @@ def build_extension_log(
     extra: dict | None = None,
     extension_id: str = DEFAULT_EXTENSION_ID,
 ) -> dict[str, Any]:
-    fails = list(failures or [])
+    # FR #5520: stub not-implemented only when there is no worker result at all.
+    # Empty failures=[] after a real worker must stay empty (do not re-inject stub).
+    has_worker = (
+        gpo is not None
+        or hosts is not None
+        or failures is not None
+        or fallback is not None
+    )
+    if not has_worker:
+        fails = [{"step": "gpo", "error": "not-implemented-fr-b"}]
+    else:
+        fails = list(failures or [])
     if extra:
         fails = fails  # extra is scrubbed, never merged as secrets
     log = {
@@ -695,8 +726,7 @@ def build_extension_log(
         "gpo": ({"attempted": True, "name": (gpo.get("gpo_name") or gpo.get("name") or DEFAULT_GPO_NAME), "ok": bool(gpo.get("ok")), "result": gpo.get("gpo"), "browsers": list(gpo.get("browsers") or []), "policy_names": list(gpo.get("policy_names") or []), "reason": gpo.get("reason"), "wrote_gpo": bool(gpo.get("wrote_gpo"))} if isinstance(gpo, dict) else (gpo or {"attempted": False, "name": DEFAULT_GPO_NAME})),
         "fallback": fallback or {"attempted": False},
         "hosts": list(hosts or []),
-        "failures": fails
-        or [{"step": "gpo", "error": "not-implemented-fr-b"}],
+        "failures": fails,
     }
     if extra:
         for k, v in extra.items():
@@ -705,6 +735,60 @@ def build_extension_log(
     log = _scrub(log)
     log["failure_count"] = len(log.get("failures") or [])
     return log
+
+
+def extension_log_from_payload(
+    action: str,
+    *,
+    whatif: bool = False,
+    payload: dict[str, Any] | None = None,
+    extension_id: str = DEFAULT_EXTENSION_ID,
+) -> dict[str, Any]:
+    """FR #5520: build DCC log from worker payload (gpo_detail + hosts), not accept defaults."""
+    data = payload if isinstance(payload, dict) else {}
+    detail = data.get("gpo_detail")
+    if isinstance(detail, dict):
+        gpo = dict(detail)
+        if "gpo" not in gpo and data.get("gpo") is not None:
+            gpo["gpo"] = data.get("gpo")
+        if "reason" not in gpo and data.get("gpo_reason") is not None:
+            gpo["reason"] = data.get("gpo_reason")
+    elif data:
+        gpo = {
+            "ok": bool(data.get("ok")),
+            "gpo": data.get("gpo"),
+            "gpo_name": data.get("gpo_name") or DEFAULT_GPO_NAME,
+            "browsers": list(data.get("browsers") or []),
+            "policy_names": list(data.get("policy_names") or []),
+            "reason": data.get("gpo_reason") or data.get("reason"),
+            "wrote_gpo": bool(data.get("wrote_gpo")),
+        }
+    else:
+        gpo = None
+    hosts = list(data.get("hosts") or []) if data else None
+    fails = list(data.get("failures") or []) if data else None
+    if data and fails is not None and not fails:
+        for h in hosts or []:
+            if isinstance(h, dict) and h.get("error"):
+                fails.append(
+                    {
+                        "step": "fallback",
+                        "host": h.get("host") or h.get("hostname"),
+                        "error": h.get("error"),
+                    }
+                )
+    fallback = data.get("fallback") if data else None
+    if fallback is None and data:
+        fallback = {"attempted": True, "host_count": len(hosts or [])}
+    return build_extension_log(
+        action,
+        whatif=whatif,
+        hosts=hosts,
+        failures=fails,
+        gpo=gpo,
+        fallback=fallback,
+        extension_id=extension_id or DEFAULT_EXTENSION_ID,
+    )
 
 
 def extension_log_bytes(log: dict[str, Any]) -> bytes:

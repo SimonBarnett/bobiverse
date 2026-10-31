@@ -81,11 +81,22 @@ def test_fr5293_console_wires_same_job_id():
         sent.append(payload)
 
     auth = ops_auth("op", channel="#tm")
+    # FR #5520: wait=True so accept reply includes DCC summary on the sync path.
     core = ac.AircConsoleCore(
         machine="tm",
         auth=auth,
         nick="tm_console",
         shell_runner=ac.ShellJobRunner(on_reply=lambda *_a, **_k: None),
+        extension_runner=lambda **kw: ex.run_extension_verb(
+            wait=True,
+            worker=lambda **_k: {
+                "ok": True,
+                "gpo": "ok",
+                "gpo_detail": {"ok": True, "gpo": "ok", "wrote_gpo": False},
+                "hosts": [],
+            },
+            **kw,
+        ),
     )
     core.shell_runner.note_dcclisten(
         "DCCLISTEN id=aabbccdd host=127.0.0.1 port=9 token=" + ("ab" * 16) + " tls=0"
@@ -95,4 +106,5 @@ def test_fr5293_console_wires_same_job_id():
     hr = core.handle_raw(":op!u@h PRIVMSG tm_console :id=aabbccdd EXTENSION install")
     assert hr is not None and hr.action == "extension"
     assert "failures=" in (hr.reply or "")
+    assert sent
     assert "password=" not in (hr.reply or "").lower()

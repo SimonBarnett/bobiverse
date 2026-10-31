@@ -3483,6 +3483,7 @@ class AircConsoleCore:
 
         # FR #5290 / #5295: EXTENSION install/status --- isolated worker; UPDATE-style auth
         # plus dedicated extension=off (client/workstation default refuse).
+        # FR #5520: DCC log joins worker via on_done (same pattern as LEGION #5385).
         ext = _extension.parse_extension_command(cmd)
         if ext is not None:
             qid = str(ext.get("qid") or "").strip().lower()
@@ -3498,44 +3499,60 @@ class AircConsoleCore:
                 return self._capability_deny(
                     nick, target, text, "extension-disabled", qid
                 )
-            try:
-                result = self.extension_runner(
-                    action=ext["action"],
-                    whatif=ext["whatif"],
-                    job_id=ext.get("qid") or "",
-                )
-            except TypeError:
-                result = self.extension_runner(action=ext["action"])
-            except Exception:
-                result = _extension.ExtensionVerbResult(
-                    False, "EXTENSION err isolated-fault", job_id=ext.get("qid") or ""
-                )
-            if not isinstance(result, _extension.ExtensionVerbResult):
-                result = _extension.ExtensionVerbResult(False, "EXTENSION err bad-runner")
-            qid = (ext.get("qid") or result.job_id or "").strip().lower()
+            qid = str(ext.get("qid") or "").strip().lower()
             offer = None
             if self.shell_runner is not None and qid:
                 take = getattr(self.shell_runner, "take_dcclisten", None)
                 if callable(take):
                     offer = take(qid)
-            payload = getattr(result, "payload", None) or {}
-            log = _extension.build_extension_log(
-                ext["action"],
-                whatif=ext["whatif"],
-                gpo=payload if payload else None,
-            )
             send_fn = getattr(self, "extension_log_send", None)
-            delivered = _extension.deliver_extension_log(
-                job_id=qid or result.job_id,
-                log=log,
-                offer=offer,
-                send_fn=send_fn,
-            )
-            emit = getattr(self, "extension_log_emit", None)
-            if callable(emit):
-                emit(delivered)
-            reply = f"{result.reply_text()} {delivered['summary']} {delivered['done']}"
+            delivered: dict | None = None
+
+            def _deliver_extension(res: _extension.ExtensionVerbResult) -> None:
+                nonlocal delivered
+                log = _extension.extension_log_from_payload(
+                    ext["action"],
+                    whatif=ext["whatif"],
+                    payload=getattr(res, "payload", None),
+                )
+                delivered = _extension.deliver_extension_log(
+                    job_id=qid or res.job_id,
+                    log=log,
+                    offer=offer,
+                    send_fn=send_fn,
+                )
+                emit = getattr(self, "extension_log_emit", None)
+                if callable(emit):
+                    emit(delivered)
+
+            try:
+                result = self.extension_runner(
+                    action=ext["action"],
+                    whatif=ext["whatif"],
+                    job_id=qid,
+                    on_done=_deliver_extension,
+                )
+            except TypeError:
+                try:
+                    result = self.extension_runner(
+                        action=ext["action"],
+                        whatif=ext["whatif"],
+                        job_id=qid,
+                    )
+                except TypeError:
+                    result = self.extension_runner(action=ext["action"])
+            except Exception:
+                result = _extension.ExtensionVerbResult(
+                    False, "EXTENSION err isolated-fault", job_id=qid
+                )
+            if not isinstance(result, _extension.ExtensionVerbResult):
+                result = _extension.ExtensionVerbResult(False, "EXTENSION err bad-runner")
+            if delivered is None and getattr(result, "payload", None):
+                _deliver_extension(result)
             meta = self._allow_meta(nick, account)
+            reply = result.reply_text()
+            if delivered is not None:
+                reply = f"{reply} {delivered['summary']} {delivered['done']}"
             return HandleResult(
                 action="extension",
                 nick=nick,
