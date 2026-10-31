@@ -1679,8 +1679,22 @@ function Sync-BobiverseWorkTree {
         if ($DryRun) { $log.Add('INFO worktree-dry-run skip fetch/merge'); $res.Ok = $true; return (Done 'dry-run') }
 
         # a merge/rebase/cherry-pick/bisect in progress is somebody's work - leave it completely alone
-        foreach ($m in 'MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD') {
-            if (Test-Path -LiteralPath (Join-Path $root ".git\$m")) { $res.Ok = $true; return (Done "operation in progress ($m); not touching the work tree") }
+        # FR #4444 / harvest: install roots are linked worktrees (.git is a file). Test-Path
+        # <root>\.git\MERGE_HEAD is always false there. Ask git for the real git-dir path.
+        foreach ($m in 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD') {
+            $vr = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', '-q', '--verify', $m)) -TimeoutSec 15
+            if ($vr.Code -eq 0 -and (($vr.Out | Select-Object -First 1) + '').Trim()) {
+                $res.Ok = $true
+                return (Done "operation in progress ($m); not touching the work tree")
+            }
+        }
+        foreach ($m in 'rebase-merge', 'rebase-apply') {
+            $gp = Invoke-BobiverseGit -Git $git -GitArgs ($G + @('rev-parse', '--git-path', $m)) -TimeoutSec 15
+            $p = (($gp.Out | Select-Object -First 1) + '').Trim()
+            if ($p -and (Test-Path -LiteralPath $p)) {
+                $res.Ok = $true
+                return (Done "operation in progress ($m); not touching the work tree")
+            }
         }
         # FR #1074: longer default timeout + retries so transient GitHub slowness does not leave offer gates stale.
         $attempts = 1 + [Math]::Max(0, $FetchRetries)
