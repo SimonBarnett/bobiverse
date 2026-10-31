@@ -26,6 +26,7 @@ KEEP_SCRIPTS = (
     "Report-AircInstallCmdFailure.ps1",
     "airc_console_service.py",
     "crash_report.py",
+    "airc_priority.py",  # FR #5288 Priority Client module
 )
 
 # Must be gone after client allow-list (union leftovers / docs).
@@ -48,6 +49,7 @@ GONE_SCRIPTS = (
 # FR #3899 added scripts\Fetch-Nssm.ps1 to the client allow-list for nssm self-heal.
 # FR #4216 airc pack embeds config\ergo.password; client purge must keep it (mrb3585).
 # FR #5283 adds airc\priority-worker (3 files) under the kept airc\ tree.
+# FR #5288 keeps scripts\airc_priority.py on the client allow-list (31).
 CLIENT_REMAINING_FILES = frozenset(
     {
         "BUILD.json",
@@ -77,12 +79,13 @@ CLIENT_REMAINING_FILES = frozenset(
         r"scripts\Uninstall-Airc.cmd",
         r"scripts\Uninstall-Airc.ps1",
         r"scripts\Update-BobiverseService.ps1",
+        r"scripts\airc_priority.py",
         r"airc\priority-worker\priority_worker.py",
         r"airc\priority-worker\README.md",
         r"airc\priority-worker\package.json",
     }
 )
-assert len(CLIENT_REMAINING_FILES) == 30
+assert len(CLIENT_REMAINING_FILES) == 31
 
 
 def _ps(script: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -268,8 +271,8 @@ def test_fr3514_pack_then_client_allowlist_tree(tmp_path: Path):
         f"client remaining files mismatch (got {len(rels)}, want {len(expected)}): "
         + ", ".join(sorted(rels))
     )
-    # With airc.exe+ergo+priority-worker=30; SkipAircExe+ergo=29; either missing drops one more (28).
-    assert len(expected) in (28, 29, 30)
+    # With airc.exe+ergo+priority-worker+airc_priority=31; SkipAircExe+ergo=30; either missing drops one more (29).
+    assert len(expected) in (29, 30, 31)
     # FR #4400: when pack embedded Ergo PASS, client remaining set must include it.
     if (stage / "config" / "ergo.password").is_file():
         assert r"config\ergo.password" in rels
