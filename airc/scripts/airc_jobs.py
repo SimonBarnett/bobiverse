@@ -32,6 +32,9 @@ MAX_CHUNK_RAW = 300
 MAX_JOBS_RETAINED = 64
 JOB_RETENTION_S = 7 * 24 * 3600
 DEFAULT_RUN_TIMEOUT_S = 120.0
+# FR #5611: DCC receive + atomic write must not sit on the IRC thread forever.
+JOB_IO_TIMEOUT_S = 30.0
+JOB_OFFLOAD_VERBS = frozenset({"PUT", "PUTEND", "GET"})
 
 VerbLevel = Literal["read", "write", "exec"]
 
@@ -76,6 +79,29 @@ class JobProtocolError(Exception):
         self.code = code
         self.message = message
         self.job_id = job_id
+
+
+def run_job_io(fn: Callable[[], object], timeout_s: float, *, job_id: str = "") -> object:
+    """FR #5611: blocking job I/O with a join timeout (hung writes stay off-thread)."""
+    box: dict[str, object] = {}
+
+    def _run() -> None:
+        try:
+            box["r"] = fn()
+        except Exception as exc:  # noqa: BLE001
+            box["e"] = exc
+
+    t = threading.Thread(target=_run, name="airc-job-io", daemon=True)
+    t.start()
+    t.join(max(0.05, float(timeout_s)))
+    if t.is_alive():
+        raise JobProtocolError("timeout", "job I/O timeout", job_id)
+    if "e" in box:
+        exc = box["e"]
+        if isinstance(exc, JobProtocolError):
+            raise exc
+        raise JobProtocolError("io", type(exc).__name__, job_id) from exc  # type: ignore[misc]
+    return box.get("r")
 
 
 def new_job_id() -> str:
@@ -293,6 +319,7 @@ class JobStore:
         self._fetches: dict[str, bytes] = {}
         self._meta: dict[str, JobRecord] = {}
         self._cancel = set()
+        self.job_io_timeout_s = JOB_IO_TIMEOUT_S
         self._load_and_recover()
 
     def _job_dir(self, job_id: str) -> Path:
@@ -407,8 +434,24 @@ class JobStore:
                     f"ok id={jid} put path={dest.name} bytes={nbytes}",
                     f"err id={jid} dcc-put unavailable; falling back to IRC",
                 ]
+            io_t = float(getattr(self, "job_io_timeout_s", JOB_IO_TIMEOUT_S) or JOB_IO_TIMEOUT_S)
             try:
-                blob, dig = recv(jid)
+                pair = run_job_io(lambda: recv(jid), io_t, job_id=jid)
+                blob, dig = pair  # type: ignore[misc]
+            except JobProtocolError as exc:
+                if exc.code == "timeout":
+                    with self._lock:
+                        rec.state = "failed"
+                        rec.error = "job I/O timeout"
+                        self._save(rec)
+                    return [
+                        f"err id={jid} code=timeout msg=job I/O timeout",
+                        f"DONE id={jid} exit=1",
+                    ]
+                return [
+                    f"ok id={jid} put path={dest.name} bytes={nbytes}",
+                    f"err id={jid} dcc failed: {exc.message}; falling back to IRC",
+                ]
             except Exception as exc:
                 return [
                     f"ok id={jid} put path={dest.name} bytes={nbytes}",
@@ -420,7 +463,11 @@ class JobStore:
                     raise JobProtocolError("size", f"dcc payload over {put_max_bytes('dcc')}", jid)
                 if nbytes and len(blob) != nbytes:
                     raise JobProtocolError("size", "dcc size != declared bytes", jid)
-                digest = atomic_place_file(dest, blob, expect)
+                digest = run_job_io(
+                    lambda: atomic_place_file(dest, blob, expect),
+                    io_t,
+                    job_id=jid,
+                )
             except JobProtocolError as exc:
                 with self._lock:
                     rec.state = "failed"
@@ -431,6 +478,11 @@ class JobStore:
                         dest.unlink()
                     except OSError:
                         pass
+                if exc.code == "timeout":
+                    return [
+                        f"err id={jid} code=timeout msg=job I/O timeout",
+                        f"DONE id={jid} exit=1",
+                    ]
                 raise
             with self._lock:
                 rec.state = "ready"
@@ -517,7 +569,31 @@ class JobStore:
             if rec.bytes and len(blob) != rec.bytes:
                 raise JobProtocolError("size", "assembled size != declared bytes", jid)
             dest = Path(rec.path)
-            digest = atomic_place_file(dest, blob, expect)
+            # FR #5611: do not hold the store lock across blocking disk I/O.
+        io_t = float(getattr(self, "job_io_timeout_s", JOB_IO_TIMEOUT_S) or JOB_IO_TIMEOUT_S)
+        try:
+            digest = run_job_io(
+                lambda: atomic_place_file(dest, blob, expect),
+                io_t,
+                job_id=jid,
+            )
+        except JobProtocolError as exc:
+            with self._lock:
+                rec = self._meta.get(jid)
+                if rec:
+                    rec.state = "failed"
+                    rec.error = exc.message
+                    self._save(rec)
+            if exc.code == "timeout":
+                return [
+                    f"err id={jid} code=timeout msg=job I/O timeout",
+                    f"DONE id={jid} exit=1",
+                ]
+            raise
+        with self._lock:
+            rec = self._meta.get(jid)
+            if not rec:
+                raise JobProtocolError("state", "job vanished during putend", jid)
             self._payload_path(jid).write_bytes(blob)
             rec.state = "ready"
             rec.bytes = len(blob)
@@ -773,6 +849,8 @@ class JobProtocol:
         machine: str = "",
         airc_running: bool = True,
         run_timeout_s: float = DEFAULT_RUN_TIMEOUT_S,
+        job_io_timeout_s: float = JOB_IO_TIMEOUT_S,
+        inline_jobs: bool = True,
     ) -> None:
         self.store = store
         self.verb_auth = verb_auth or VerbAuthPolicy()
@@ -782,6 +860,10 @@ class JobProtocol:
         self.machine = machine
         self.airc_running = airc_running
         self.run_timeout_s = run_timeout_s
+        self.job_io_timeout_s = float(job_io_timeout_s)
+        # Tests stay inline; the live console sets inline_jobs=False (FR #5611).
+        self.inline_jobs = bool(inline_jobs)
+        self.store.job_io_timeout_s = self.job_io_timeout_s
         self._lock = threading.Lock()
         self.dcc_receive = None  # FR #5194: (job_id) -> (bytes, sha256)
 
@@ -830,6 +912,7 @@ class JobProtocol:
                 return lines
             if verb == "PUT":
                 self.store.dcc_receive = self.dcc_receive
+                self.store.job_io_timeout_s = self.job_io_timeout_s
                 return self.store.handle_put(nick, kv)
             if verb == "CHUNK":
                 return self.store.handle_chunk(nick, kv)
@@ -851,18 +934,30 @@ class JobProtocol:
             raise JobProtocolError("bad_frame", f"unknown verb {verb}")
         except JobProtocolError as exc:
             jid = exc.job_id or kv.get("id") or "-"
-            return [f"err id={jid} code={exc.code} msg={exc.message}"]
+            lines = [f"err id={jid} code={exc.code} msg={exc.message}"]
+            # FR #5611: I/O timeout must complete the job for callers waiting on DONE.
+            if exc.code == "timeout":
+                lines.append(f"DONE id={jid} exit=1")
+            return lines
 
     def handle_async(self, nick: str, verb: str, kv: dict[str, str]) -> None:
-        """Handle verb and emit replies (RUN may background)."""
-        if verb == "RUN":
+        """Handle verb and emit replies (FR #5611: PUT/GET I/O off the IRC thread)."""
+        def _emit_handle() -> None:
             lines = self.handle(nick, verb, kv)
             for ln in lines:
                 self._emit(nick, ln)
+
+        if verb == "RUN":
+            _emit_handle()
             return
-        lines = self.handle(nick, verb, kv)
-        for ln in lines:
-            self._emit(nick, ln)
+        if (not self.inline_jobs) and verb in JOB_OFFLOAD_VERBS:
+            threading.Thread(
+                target=_emit_handle,
+                name=f"airc-job-{verb.lower()}",
+                daemon=True,
+            ).start()
+            return
+        _emit_handle()
 
     def _run(self, nick: str, kv: dict[str, str]) -> list[str]:
         jid = kv.get("id") or ""
