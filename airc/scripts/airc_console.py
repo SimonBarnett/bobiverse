@@ -28,7 +28,7 @@ from typing import Callable, Literal
 import json
 
 from account_map import AccountMap, parse_message_tags
-from airc_jobs import JobProtocol, parse_job_verb
+from airc_jobs import CAPS_OFF_ALLOWED_VERBS, JobProtocol, parse_job_verb
 
 NICK = "console"
 IRC_NICK_MAX = 30
@@ -908,7 +908,7 @@ def legacy_operator_input_log_lines(args: object, cfg: dict | None) -> list[str]
 class ConsoleCapabilities:
     """FR #3287: install-time remote capability gates (survive MSI upgrade).
 
-    ``shell_mode``: ``off`` = STATUS/ping only; ``operators`` = FR #75 shell for auth nicks.
+    ``shell_mode``: ``off`` = STATUS/VERSION/ping only; ``operators`` = FR #75 shell for auth nicks.
     ``jobs`` / ``update``: finer gates when shell is ``operators``.
 
     FR #3764: ``update`` is the **remote** UPDATE verb (ops-gated IRC command). It is
@@ -2511,7 +2511,7 @@ class AircConsoleCore:
                     "cmd: COMSPEC escape (prefer cmd: dir for listings; bare dir is PS); "
                     "psb64:<base64> EncodedCommand; "
                     "replies out/err id= seq= then DONE id= exit= (batch capture + FLOOD_S); "
-                    "STATUS|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
+                    "STATUS|VERSION|PUT|CHUNK|PUTEND|RUN|GET|GETCHUNK|JOB|CANCEL; "
                     "UPDATE airc|bob|jeeves [ver] schedules detached MSI update "
                     "(ops-gated remote; not auto self-update — FR #3764); "
                     f"capabilities shell={self.capabilities.shell_mode} "
@@ -2596,8 +2596,8 @@ class AircConsoleCore:
         parsed = parse_job_verb(cmd)
         if parsed is not None and self.job_protocol is not None:
             verb, kv = parsed
-            # FR #3287: shell=off keeps STATUS only; jobs=off refuses write/exec verbs.
-            if caps.shell_mode == "off" and verb != "STATUS":
+            # FR #3287 / #5281: shell=off / jobs=off keep STATUS + VERSION (read).
+            if caps.shell_mode == "off" and verb not in CAPS_OFF_ALLOWED_VERBS:
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,
@@ -2605,7 +2605,7 @@ class AircConsoleCore:
                     text=text,
                     reply="DONE exit=126 shell-disabled",
                 )
-            if caps.jobs == "off" and verb != "STATUS":
+            if caps.jobs == "off" and verb not in CAPS_OFF_ALLOWED_VERBS:
                 return HandleResult(
                     action="capability_deny",
                     nick=nick,

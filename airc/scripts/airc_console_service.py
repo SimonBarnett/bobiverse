@@ -1838,13 +1838,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--shell-mode",
         default=None,
         choices=["off", "operators"],
-        help="FR #3287: off=STATUS/ping only; operators=remote shell (default from config/airc.json)",
+        help="FR #3287: off=STATUS/VERSION/ping only; operators=remote shell (default from config/airc.json)",
     )
     p.add_argument(
         "--jobs",
         default=None,
         choices=["off", "on"],
-        help="FR #3287: off refuses PUT/RUN/JOB file protocol (STATUS still allowed)",
+        help="FR #3287: off refuses PUT/RUN/JOB file protocol (STATUS/VERSION still allowed)",
     )
     p.add_argument(
         "--update",
