@@ -758,7 +758,7 @@ def drain_pending(
         try:
             # FR #2595: same receipt-aware rules as CLI drain (probes drop, receipts
             # record-only, idempotent / intake/<iid> PR dedupe).
-            stats = intake.drain_intake_outbox(home, filer, limit=limit)
+            stats = intake.drain_intake_outbox_all(home, filer, batch=limit)
             counts = getattr(stats, "as_counts", None)
             if callable(counts):
                 c = counts()

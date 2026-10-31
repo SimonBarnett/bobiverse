@@ -545,6 +545,10 @@ def reconnect_cap() -> int | None:
     return n if n >= 0 else None
 
 
+# FR #5352: reserved-nick stall; do not crash-report or tight-loop reconnect.
+NICKNAME_RESERVED_BACKOFF_S = 300.0
+
+
 # FR #4980: half-open / silent link detection (mirror airc IDLE_PING / IDLE_DEAD).
 def idle_ping_s() -> float:
     raw = (os.environ.get("BOB_IRC_IDLE_PING_S") or "60").strip()
@@ -4252,25 +4256,19 @@ class Client:
                 break
 
     def _surface_nickname_reserved(self, gate: str) -> None:
-        """FR #3904: NICKNAME_RESERVED must not loop silently — crash-report once per process."""
+        """FR #3904 / #5352: reserved nick is a credential stall, not a crash.
+
+        Log once per process. Do not file a crash hook. Fix
+        home\\nickserv.password or oper SAREGISTER.
+        """
         if getattr(self, "_nickname_reserved_reported", False):
             return
         self._nickname_reserved_reported = True
         info(
-            "INFO FR #3904 surface NICKNAME_RESERVED - fix home\\nickserv.password "
-            "or oper SAREGISTER; filing crash report"
+            "INFO FR #3904/#5352 NICKNAME_RESERVED stall "
+            f"gate={gate or 'NICKNAME_RESERVED'} - fix home\\nickserv.password "
+            "or oper SAREGISTER; not a crash"
         )
-        try:
-            import crash_report
-
-            crash_report.report_exception(
-                "bob-ear",
-                TimeoutError,
-                TimeoutError(gate or "NICKNAME_RESERVED"),
-                None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            info(f"WARN FR #3904 crash-report skipped {type(exc).__name__}")
 
     def run_forever(self) -> None:
         backoff = 1.0
@@ -4282,10 +4280,11 @@ class Client:
                 backoff = 1.0
                 attempt = 0
             except TimeoutError as te:
-                # FR #3904: reserved-nick credential failure was invisible without AppStdout.
+                # FR #3904 / #5352: reserved nick is visible in stdout, not a crash hook.
                 gate = str(te) if te else ""
                 if "NICKNAME_RESERVED" in gate or getattr(self, "_nickname_reserved", False):
                     self._surface_nickname_reserved(gate or "NICKNAME_RESERVED")
+                    backoff = max(backoff, NICKNAME_RESERVED_BACKOFF_S)
             except Exception as e:
                 info(f"INFO session end {type(e).__name__}")
             try:

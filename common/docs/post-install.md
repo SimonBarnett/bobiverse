@@ -33,7 +33,7 @@
    Do **not** mint a fresh GUID for an account that already exists on the network — restore the real password or oper-`SAREGISTER` / `RESETPASS`.  
    **FR #3904:** an upgrade migrates `nickserv.password` from the prior BobHome / `%USERPROFILE%\.bobiverse` / `Administrator\.bobiverse` into `<ai root>\bob\home` and **fails the MSI (1603)** if it cannot.  
    If stdout shows `INFO no-sasl reason=…`, `INFO NICKNAME_RESERVED`, or abort `NICKNAME_RESERVED`, fix NickServ credentials — not `!register` (that is ChanServ shops).  
-   Fleet `Bob-*` ears no longer silently fall back to `Bob-…_l`. A `NICKNAME_RESERVED` loop files a crash report (FR #3904) and is visible in `<ai root>\bob\logs\stdout.log` (NSSM AppStdout is set by Install-Bob).
+   Fleet `Bob-*` ears no longer silently fall back to `Bob-…_l`. A `NICKNAME_RESERVED` stall is logged (FR #3904 / #5352, not a crash hook) and is visible in `<ai root>\bob\logs\stdout.log` (NSSM AppStdout is set by Install-Bob).
 
 4. **LocalSystem fallback**  
    If ObjectName stays LocalSystem, NSSM **omits** `-BobHome` so `Start-Bob` uses `<ai root>\bob\home` (issue #7). Prefer completing service logon.

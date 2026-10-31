@@ -1617,6 +1617,13 @@ class DrainResult:
             ),
         }
 
+    def extend(self, other: "DrainResult") -> None:
+        self.filed.extend(other.filed)
+        self.recorded_receipt.extend(other.recorded_receipt)
+        self.dropped_probe.extend(other.dropped_probe)
+        self.skipped_duplicate.extend(other.skipped_duplicate)
+        self.deferred.extend(other.deferred)
+
 
 @dataclass
 class IntakeConfig:
@@ -2699,6 +2706,56 @@ def drain_intake_outbox(
         path.unlink(missing_ok=True)
         stats.filed.append(iid)
     return stats
+
+
+def gh_cli_available() -> bool:
+    """True when ``gh`` is on PATH (FR #5359 loud fail if missing)."""
+    import shutil
+
+    return bool(shutil.which("gh"))
+
+
+def intake_outbox_snapshot(home: Path, *, now: float | None = None) -> dict[str, Any]:
+    """Queued intake/outbox size and age for digest / health (FR #5359)."""
+    root = intake_root(home) / "outbox"
+    files = sorted(root.glob("*.json")) if root.is_dir() else []
+    oldest = None
+    for path in files:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if oldest is None or mtime < oldest:
+            oldest = mtime
+    clock = time.time() if now is None else float(now)
+    age = None if oldest is None else max(0.0, clock - float(oldest))
+    return {
+        "count": len(files),
+        "oldest_age_s": age,
+        "gh_cli": gh_cli_available(),
+    }
+
+
+def drain_intake_outbox_all(
+    home: Path,
+    filer: GitHubFiler,
+    *,
+    batch: int = 20,
+    max_batches: int = 100,
+    dry_run: bool = False,
+    source_dir: Path | str | None = None,
+) -> DrainResult:
+    """FR #5359: drain every outbox row in batches (not only the first 20)."""
+    merged = DrainResult(dry_run=bool(dry_run))
+    limit = max(1, int(batch))
+    for _ in range(max(1, int(max_batches))):
+        stats = drain_intake_outbox(
+            home, filer, limit=limit, dry_run=dry_run, source_dir=source_dir
+        )
+        merged.extend(stats)
+        if stats.as_counts()["handled"] == 0:
+            break
+    return merged
 
 
 def harvest_should_use_intake(*, gh_available: bool, gh_authenticated: bool) -> bool:
