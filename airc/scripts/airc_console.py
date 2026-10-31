@@ -2767,13 +2767,32 @@ class AircConsoleCore:
                 )
             if not isinstance(result, _network.NetworkVerbResult):
                 result = _network.NetworkVerbResult(False, "NETWORK err bad-runner")
+            qid = (net.get("qid") or result.job_id or "").strip().lower()
+            offer = None
+            if self.shell_runner is not None and qid:
+                take = getattr(self.shell_runner, "take_dcclisten", None)
+                if callable(take):
+                    offer = take(qid)
+            payload = _network.build_network_payload(
+                net["action"],
+                whatif=net["whatif"],
+                hosts=getattr(result, "hosts", None),
+                failures=getattr(result, "failures", None),
+            )
+            send_fn = getattr(self, "network_log_send", None)
+            delivered = _network.deliver_network_payload(
+                job_id=qid or result.job_id,
+                payload=payload,
+                offer=offer,
+                send_fn=send_fn,
+            )
             meta = self._allow_meta(nick, account)
             return HandleResult(
                 action="network",
                 nick=nick,
                 target=target,
                 text=text,
-                reply=result.reply_text(),
+                reply=f"{result.reply_text()} {delivered['summary']} {delivered['done']}",
                 **meta,
             )
 

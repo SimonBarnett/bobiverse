@@ -1,10 +1,12 @@
-"""Airc NETWORK verb + isolated inventory worker (FR #5298 / #5299).
+"""Airc NETWORK verb + isolated inventory worker (FR #5298 / #5299 / #5300).
 
 FR-A: verb + isolated stub. FR-B: LDAP computers + ips[] + OU/DN.
-No DCC in this slice. Auth matches UPDATE.
+FR-C: structured inventory+log via DCCLISTEN or IRC CONT. Auth matches UPDATE.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 from dataclasses import dataclass
@@ -154,3 +156,116 @@ def run_network_verb(
     extra = " whatif=1" if whatif else ""
     reply = f"NETWORK accepted id={qid} action={action}{extra}\nDONE id={qid} exit=0"
     return NetworkVerbResult(True, reply, job_id=qid)
+
+
+_SECRET_KEY_RE = re.compile(r"(?i)pass|secret|token|pwd|cred")
+
+
+def _scrub(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {
+            k: _scrub(v)
+            for k, v in obj.items()
+            if not _SECRET_KEY_RE.search(str(k))
+        }
+    if isinstance(obj, list):
+        return [_scrub(x) for x in obj]
+    if isinstance(obj, str) and _SECRET_KEY_RE.search(obj) and "=" in obj:
+        return "[redacted]"
+    return obj
+
+
+def build_network_payload(
+    action: str = "diag",
+    *,
+    whatif: bool = False,
+    hosts: list[dict] | None = None,
+    failures: list[dict] | None = None,
+    extra: dict | None = None,
+) -> dict[str, Any]:
+    """FR #5300: inventory hosts[] plus operation failures[]; secrets stripped."""
+    payload: dict[str, Any] = {
+        "action": action,
+        "whatif": bool(whatif),
+        "hosts": list(hosts or []),
+        "failures": list(failures or []),
+    }
+    if extra:
+        for k, v in extra.items():
+            if not _SECRET_KEY_RE.search(str(k)):
+                payload[k] = v
+    payload = _scrub(payload)
+    payload["host_count"] = len(payload.get("hosts") or [])
+    payload["failure_count"] = len(payload.get("failures") or [])
+    return payload
+
+
+def network_payload_bytes(payload: dict[str, Any]) -> bytes:
+    return (json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def deliver_network_payload(
+    *,
+    job_id: str,
+    payload: dict[str, Any],
+    offer: Any | None = None,
+    send_fn: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    import airc_dcc_bulk as _dcc
+
+    jid = (job_id or "").strip().lower() or "00000000"
+    raw = network_payload_bytes(payload)
+    digest = hashlib.sha256(raw).hexdigest()
+    nfail = int(payload.get("failure_count") or 0)
+    nhost = int(payload.get("host_count") or 0)
+    summary = (
+        f"NETWORK log hosts={nhost} failures={nfail} "
+        f"action={payload.get('action')} bytes={len(raw)}"
+    )
+    lines: list[str] = [f"out id={jid} seq=1 {summary}"]
+    for i, fail in enumerate(payload.get("failures") or [], start=2):
+        lines.append(
+            f"out id={jid} seq={i} failure {json.dumps(fail, separators=(',', ':'))}"
+        )
+    if offer is not None:
+        sender = send_fn or _dcc.send_offer_payload
+        try:
+            sender(raw, offer)
+            done = _dcc.format_done_via_dcc(
+                jid, 0, nbytes=len(raw), sha256=digest, via="dcc"
+            )
+            return {
+                "via": "dcc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": [lines[0], done],
+                "done": done,
+            }
+        except Exception as exc:
+            lines.append(
+                f"err id={jid} seq={len(lines)+1} dcc failed: {exc}; falling back to IRC"
+            )
+            done = f"DONE id={jid} exit=0 via=irc reason=dcc-fail"
+            lines.append(done)
+            return {
+                "via": "irc",
+                "sha256": digest,
+                "nbytes": len(raw),
+                "summary": summary,
+                "lines": lines,
+                "done": done,
+            }
+    lines.append("CONT id=" + jid + " offset=1")
+    done = f"DONE id={jid} exit=0 via=irc"
+    lines.append(done)
+    return {
+        "via": "irc",
+        "sha256": digest,
+        "nbytes": len(raw),
+        "summary": summary,
+        "lines": lines,
+        "done": done,
+    }
