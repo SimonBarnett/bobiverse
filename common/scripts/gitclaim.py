@@ -8693,20 +8693,37 @@ def detect_mrb_reviewer_deadlock(
         for row in mrb_rows:
             if not _mrb_idle_block_reason(row, nick, seats_live, led):
                 return None
+    # FR #5268 / #5270: cross-giveup clear needs ≥2 idle seats. A sole idle
+    # seat that GIVEUP'd the only waiting MRB is not a multi-seat deadlock —
+    # clearing its giveup_seats lets offer_after_giveup / !bored re-offer the
+    # same job to the same nick (defeats FR #2811 / FR #628).
     clearable: list[tuple[dict, str]] = []
-    for row in mrb_rows:
-        authors = {a.lower() for a in row_author_seats(row)}
-        for nick in seats_idle:
-            if nick.lower() in authors:
-                continue
-            if row_gave_up_by(row, nick, live=seats_live):
-                clearable.append((row, nick))
-                continue
-            if led:
-                why = ledger_blocks(led, row, nick, seats_live)
-                if why and "gave up" in why.lower():
+    if len(seats_idle) >= 2:
+        for row in mrb_rows:
+            authors = {a.lower() for a in row_author_seats(row)}
+            for nick in seats_idle:
+                if nick.lower() in authors:
+                    continue
+                if row_gave_up_by(row, nick, live=seats_live):
                     clearable.append((row, nick))
-    kind = "cross_giveup" if clearable else "author_only"
+                    continue
+                if led:
+                    why = ledger_blocks(led, row, nick, seats_live)
+                    if why and "gave up" in why.lower():
+                        clearable.append((row, nick))
+    if clearable:
+        kind = "cross_giveup"
+    else:
+        # author_only recycleseat only when every idle block is author (not
+        # giveup/cooldown). Sole-seat GIVEUP must stick until another seat
+        # appears or an operator !cleargiveup / !assign.
+        if not all(
+            _mrb_idle_block_reason(row, nick, seats_live, led) == "author"
+            for nick in seats_idle
+            for row in mrb_rows
+        ):
+            return None
+        kind = "author_only"
     sig_parts = sorted(
         f"{str(r.get('repo') or '')}{_norm_row_id(r.get('id'))}" for r in mrb_rows
     ) + sorted(n.lower() for n in seats_idle)
