@@ -47,7 +47,7 @@ def test_fr5298_accepted_isolated_not_on_caller_thread():
     elapsed = time.perf_counter() - t0
     assert hr and hr.action == "network"
     assert "NETWORK accepted" in (hr.reply or "")
-    assert "DONE id=c25bd00e exit=0" in (hr.reply or "")
+    assert "DONE id=c25bd00e" not in (hr.reply or "")
     assert elapsed < 0.15
     assert "password=" not in (hr.reply or "").lower()
 

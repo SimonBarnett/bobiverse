@@ -1,9 +1,18 @@
-"""FR #5530: LEGION -WhatIf still plans when CredMan is missing."""
+"""FR #5530: LEGION -WhatIf still plans when CredMan is missing.
+
+Retest (main @ f0cdf784): installer_legion_work returns msi/psexec, but the DCC
+log dropped them. Pins keep plan fields on LegionVerbResult and in build_legion_log.
+"""
 from __future__ import annotations
 
+import json
+import threading
+import time
 from pathlib import Path
 
+import airc_console as ac
 import airc_legion as lg
+from airc_auth_helpers import ops_auth
 
 
 def test_fr5530_whatif_invokes_runner_without_secret():
@@ -23,9 +32,105 @@ def test_fr5530_whatif_invokes_runner_without_secret():
     assert body["whatif"] is True
     assert body["invoked_installer"] is True
     assert body.get("status") == "dry-run"
+    assert body.get("msi") == "latest"
+    assert body.get("psexec")
     fails = body.get("failures") or []
     assert any(f.get("error") == "credman-missing" for f in fails)
     assert "password" not in body
+
+
+def test_fr5530_verb_result_carries_msi_psexec():
+    """Simon retest: plan fields must survive run_legion_verb into the result."""
+
+    def work(target, **_kw):
+        return lg.installer_legion_work(
+            target,
+            whatif=True,
+            run_fn=lambda spec: {
+                "ok": True,
+                "status": "dry-run",
+                "msi": "latest",
+                "psexec": r"C:\Tools\PsExec.exe",
+            },
+            credman=lambda: {},
+        )
+
+    res = lg.run_legion_verb(
+        target="flamingo",
+        whatif=True,
+        job_id="aabbccdd",
+        wait=True,
+        worker=work,
+    )
+    assert res.msi == "latest"
+    assert res.psexec == r"C:\Tools\PsExec.exe"
+    assert any(f.get("error") == "credman-missing" for f in res.failures)
+    log = lg.build_legion_log(
+        target="flamingo",
+        whatif=True,
+        summary=res.status or "",
+        failures=res.failures,
+        extra={"msi": res.msi, "psexec": res.psexec},
+    )
+    assert log.get("msi") == "latest"
+    assert log.get("psexec") == r"C:\Tools\PsExec.exe"
+    assert log.get("summary") == "dry-run"
+    assert log.get("failure_count") == 1
+    blob = json.dumps(log)
+    assert "credman-missing" in blob
+    assert "password" not in blob.lower()
+
+
+def test_fr5530_dcc_log_includes_msi_psexec_when_credman_missing():
+    """Console on_done path must put msi/psexec into the delivered DCC JSON."""
+    sent: list[bytes] = []
+    done = threading.Event()
+
+    def send(payload: bytes, offer, **_k):
+        sent.append(payload)
+        done.set()
+
+    def work(target, **_kw):
+        return lg.installer_legion_work(
+            target,
+            whatif=True,
+            run_fn=lambda spec: {
+                "ok": True,
+                "status": "dry-run",
+                "msi": "latest",
+                "psexec": r"C:\Tools\PsExec.exe",
+            },
+            credman=lambda: {},
+        )
+
+    auth = ops_auth("op", channel="#tm")
+    core = ac.AircConsoleCore(
+        machine="tm",
+        auth=auth,
+        nick="tm_console",
+        shell_runner=ac.ShellJobRunner(on_reply=lambda *_a, **_k: None),
+        legion_runner=lambda **kw: lg.run_legion_verb(wait=False, **kw, worker=work),
+    )
+    core.shell_runner.note_dcclisten(
+        "DCCLISTEN id=aabbccdd host=127.0.0.1 port=9 token=" + ("ab" * 16) + " tls=0"
+    )
+    core.legion_log_send = send
+    t0 = time.perf_counter()
+    hr = core.handle_raw(
+        ":op!u@h PRIVMSG tm_console :id=aabbccdd LEGION flamingo -WhatIf"
+    )
+    assert time.perf_counter() - t0 < 0.5
+    assert hr and hr.action == "legion"
+    assert done.wait(2.0), "DCC log was not delivered"
+    body = json.loads(sent[0].decode("utf-8"))
+    assert body["whatif"] is True
+    assert body["summary"] == "dry-run"
+    assert body["target"] == "flamingo"
+    assert body.get("msi") == "latest"
+    assert body.get("psexec") == r"C:\Tools\PsExec.exe"
+    assert body["failure_count"] == 1
+    assert any(f.get("error") == "credman-missing" for f in body["failures"])
+    assert "password" not in json.dumps(body).lower()
 
 
 def test_fr5530_live_still_fails_closed_without_credman():

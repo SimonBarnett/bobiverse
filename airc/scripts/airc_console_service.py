@@ -449,8 +449,6 @@ class AircConsoleService:
                 text = str(line).strip()
                 if not text:
                     continue
-                if text.upper().startswith("DONE "):
-                    continue
                 self._on_console_out(str(nick), text)
 
         attach_verb_log_hooks(self.core, send_fn=_verb_log_send, emit_fn=_verb_log_emit)
@@ -1576,8 +1574,9 @@ class AircConsoleService:
         } and hr.nick and hr.reply:
             # FR #77: UPDATE reply is sent before the detached helper stops Airc.
             # FR #5284: PRIORITY may emit out id= + DONE id= on separate lines.
-            # FR #5518: NETWORK / EXTENSION / LEGION accepted+DONE must reach IRC
-            # (Invoke-AircRemote waits on DONE; DCC payload alone is not enough).
+            # FR #5518: NETWORK / EXTENSION / LEGION accepted must reach IRC.
+            # FR #5583: DONE is last (emit out/CONT then DONE); do not put DONE
+            # on the accept line or Invoke-AircRemote stops before the log.
             # FR #5526: pending async PRIORITY connect returns reply="" — skip blank PRIVMSG.
             for part in str(hr.reply).splitlines():
                 line = part.strip()

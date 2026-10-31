@@ -3410,11 +3410,21 @@ class AircConsoleCore:
                 fails = list(res.failures or [])
                 if not fails and res.error:
                     fails = [{"host": leg.get("target"), "error": str(res.error)}]
+                # FR #5530: WhatIf plan (msi/psexec) must reach the DCC JSON.
+                extra: dict = {}
+                if getattr(res, "msi", ""):
+                    extra["msi"] = res.msi
+                if getattr(res, "psexec", ""):
+                    extra["psexec"] = res.psexec
+                plan = getattr(res, "plan", None)
+                if isinstance(plan, dict) and plan:
+                    extra["plan"] = plan
                 log = _legion.build_legion_log(
                     target=leg.get("target") or "",
                     whatif=bool(leg.get("whatif")),
                     summary=res.status or "",
                     failures=fails,
+                    extra=extra or None,
                 )
                 delivered = _legion.deliver_legion_log(
                     job_id=qid or res.job_id,
@@ -3454,7 +3464,7 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             reply = result.reply_text()
             if delivered is not None:
-                reply = f"{reply} {delivered['summary']} {delivered['done']}"
+                reply = f"{reply} {delivered['summary']}"
             return HandleResult(
                 action="legion",
                 nick=nick,
@@ -3531,7 +3541,7 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             reply = result.reply_text()
             if delivered is not None:
-                reply = f"{reply} {delivered['summary']} {delivered['done']}"
+                reply = f"{reply} {delivered['summary']}"
             return HandleResult(
                 action="network",
                 nick=nick,
@@ -3613,7 +3623,7 @@ class AircConsoleCore:
             meta = self._allow_meta(nick, account)
             reply = result.reply_text()
             if delivered is not None:
-                reply = f"{reply} {delivered['summary']} {delivered['done']}"
+                reply = f"{reply} {delivered['summary']}"
             return HandleResult(
                 action="extension",
                 nick=nick,

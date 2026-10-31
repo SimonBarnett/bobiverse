@@ -334,6 +334,7 @@ routes to bobiverse via the split rule.
 - When handle_privmsg gains a new _maybe_* dispatch, bind that Client method on FakeChair in test_chair_commands_020 or every fall-through command raises AttributeError.
 - GitHub search remaining must never be stored as core rate_remaining; BACKOFF_FLOOR=500 is core-only; search uses SEARCH_BACKOFF_FLOOR=1.
 - Copilot-high is HIGH_PRIORITY_REPOS plus is_high_priority_repo; item-focus rank 1 is shop order only and must not imply Copilot dispatch.
+- Accept-only NETWORK/LEGION replies plus emit-last DONE so clients do not stop before out/CONT.
 
 ## Harvest digest (lessons audit 2026-10-06)
 
