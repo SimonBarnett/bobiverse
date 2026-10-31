@@ -75,7 +75,7 @@ None (no UI). Mocks out of scope.
 
 | Area | Today | Gap |
 |------|-------|-----|
-| Remote UPDATE | FR #77 `UPDATE airc[ ver]` → Check/detached Apply | Exists; **restart not guaranteed on all abort/timeout/skip paths** (e.g. msiexec-timeout leaves helper running; some skips do not heal nick) |
+| Remote UPDATE | FR #77 `UPDATE airc[ ver]` -> Check/detached Apply | **FR #5277:** Apply `finally` always `Ensure-ServiceRunning` (`airc/docs/airc-update-restart-matrix.md`) |
 | Latest | Bare UPDATE omits `-TargetVersion` (latest) | Document + test as Success; keep pin |
 | Failure filing | `Set-Failure` writes local `state.json` only | **No deterministic bobiverse intake issue** |
 | Version query | `STATUS` includes `airc_ver=` (FR #2575) | No dedicated **`VERSION`** verb as requested |

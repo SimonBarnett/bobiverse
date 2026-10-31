@@ -263,7 +263,7 @@ function Write-CheckFailIntake {
 }
 
 function Ensure-ServiceRunning {
-    # FR #2563: after pre-msiexec Apply abort (esp. backup fail) leave the service Running.
+    # FR #2563 / FR #5277: after any Apply abort/skip/timeout/ok leave the service Running.
     param([string]$Why = 'apply-abort')
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $svc) { Write-UpdLog "ensure-running-skip missing=$ServiceName why=$Why"; return }
@@ -834,6 +834,12 @@ function Invoke-Apply {
         if ($msiHeld) { try { $msiMutex.ReleaseMutex() } catch { } }
         try { $mutex.ReleaseMutex() } catch { }
         try { Unregister-ScheduledTask -TaskName "bobiverse-update-$Product" -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        # FR #5277: PowerShell return inside try still runs finally. Heal here so
+        # download-failed / stop-failed / msiexec-timeout / apply-skip-after-stop
+        # cannot leave Airc (or bob/jeeves) Stopped. Check mode never stops the service.
+        if (-not $VerifyOnly) {
+            Ensure-ServiceRunning -Why 'apply-finally-heal'
+        }
     }
 }
 
