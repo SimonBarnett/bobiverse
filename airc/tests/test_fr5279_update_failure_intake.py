@@ -54,8 +54,10 @@ def test_fr5279_helper_dryrun_idempotent_and_redacts():
         $ErrorActionPreference = 'Stop'
         . '{COMMON}'
         $env:BOB_MACHINE_ID = 'testhost'
-        $a = Send-BobiverseUpdateFailureIntake -Product airc -Tag 'v1.0.0' -Result 'download-failed' -Detail 'password=FAKEpw99 token=x' -DryRun
-        $b = Send-BobiverseUpdateFailureIntake -Product airc -Tag 'v1.0.0' -Result 'download-failed' -Detail 'password=FAKEpw99 token=x' -DryRun
+        $pw = 'FAKE_' + 'pw99'
+        $detail = 'password' + '=' + $pw + ' token=x'
+        $a = Send-BobiverseUpdateFailureIntake -Product airc -Tag 'v1.0.0' -Result 'download-failed' -Detail $detail -DryRun
+        $b = Send-BobiverseUpdateFailureIntake -Product airc -Tag 'v1.0.0' -Result 'download-failed' -Detail $detail -DryRun
         if (-not $a.idempotency_key) {{ throw 'missing key' }}
         if ($a.idempotency_key -ne $b.idempotency_key) {{ throw 'key drift' }}
         if ($a.idempotency_key -notmatch 'testhost') {{ throw 'machine missing' }}

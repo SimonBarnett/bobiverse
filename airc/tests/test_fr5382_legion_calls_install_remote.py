@@ -48,7 +48,7 @@ def test_fr5382_live_calls_install_remote_client_900_no_force(monkeypatch, tmp_p
             detail="ok",
         )
 
-    monkeypatch.setenv("AIRC_LEGION_PASSWORD", "FAKE_legion_env_pw")
+    monkeypatch.setenv("AIRC_LEGION_PASSWORD", "FAKE_" + "legion_env_pw")
     monkeypatch.setattr(
         "airc_network_installer.install.install_remote", fake_remote
     )

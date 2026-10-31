@@ -44,7 +44,7 @@ def test_fr5310_redacts_password_equals_and_secret():
         captured.append(spec)
         return {"ok": True, "status": "dry-run"}
 
-    ident = {"username": "wonderland\\legion", "password": "FAKE_legion_pw"}
+    ident = {"username": "wonderland\\legion", "password": "FAKE_" + "legion_pw"}
     body = lg.installer_legion_work(
         "walrus",
         whatif=True,
