@@ -3413,6 +3413,10 @@ class AircConsoleCore:
                 plan = getattr(res, "plan", None)
                 if isinstance(plan, dict) and plan:
                     extra["plan"] = plan
+                if getattr(res, "identity_label", ""):
+                    extra["identity"] = res.identity_label
+                if getattr(res, "computer_account", ""):
+                    extra["computer_account"] = res.computer_account
                 log = _legion.build_legion_log(
                     target=leg.get("target") or "",
                     whatif=bool(leg.get("whatif")),
