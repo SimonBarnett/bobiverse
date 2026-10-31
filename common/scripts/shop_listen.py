@@ -846,6 +846,7 @@ def handle_shop_worker_line(
             pass
         
         # FR #3948: DONE MRB PASS -> merge-on-green ledger (seat never polls CI).
+        # FR #5581: CONFLICTING at DONE queues FIX immediately (enqueue_from_done).
         if str(parsed.task or "").upper() == "MRB" and str(parsed.result or "").upper() == "PASS":
             try:
                 import mrb_merge_on_green
@@ -877,6 +878,14 @@ def handle_shop_worker_line(
                     out["mrb_fail_fix"] = fail_fix
             except Exception:  # noqa: BLE001
                 pass
+        # FR #5581: belt-and-suspenders idle of worker_list so a CONFLICTING PASS
+        # cannot leave the digest tile as "doing MRB #N" after DONE.
+        with contextlib.suppress(Exception):
+            bobreport.clear_seat_doing(
+                home,
+                nick,
+                only_if_work_contains=str(parsed.id or "").lstrip("#"),
+            )
         payload = format_activity_payload(
             machine=mid, pid=pid, nick=nick, kind=kind, working_on="", state="idle"
         )
