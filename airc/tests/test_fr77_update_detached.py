@@ -35,6 +35,8 @@ def test_parse_update_command_shapes():
     assert ac.parse_update_command("UPDATE airc 0.1.20") == ("airc", "0.1.20")
     assert ac.parse_update_command("UPDATE airc v0.1.20") == ("airc", "0.1.20")
     assert ac.parse_update_command("UPDATE bob 1.2.3") == ("bob", "1.2.3")
+    assert ac.parse_update_command("UPDATE bob 0.1.17.1") == ("bob", "0.1.17.1")
+    assert ac.parse_update_command("UPDATE airc v0.1.17.1") == ("airc", "0.1.17.1")
     assert ac.parse_update_command("UPDATE jeeves") == ("jeeves", None)
     assert ac.parse_update_command("update airc") == ("airc", None)  # case-insensitive verb
     assert ac.parse_update_command("UPDATE evil") is None

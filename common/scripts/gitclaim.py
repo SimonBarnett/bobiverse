@@ -370,6 +370,14 @@ def is_bored_command(body: str) -> bool:
     return (body or "").strip().lower() == "!bored"
 
 
+def shop_line_resets_bored_clock(body: str) -> bool:
+    """FR #5203: ACK/DONE/NACK/GIVEUP mean the seat is not waiting to !bored."""
+    text = (body or "").strip()
+    if not text:
+        return False
+    return bool(re.match(r"(?i)^(?:@?\S+[:,]\s*)?(?:ACK|DONE|NACK|GIVEUP)\b", text))
+
+
 def last_bored_path(home: Path) -> Path:
     return _root(home) / LAST_BORED_NAME
 
@@ -3559,6 +3567,15 @@ def _coerce_row(row: dict) -> dict | None:
         out["closed_by"] = str(row.get("closed_by"))
     if row.get("cancel_reason"):
         out["cancel_reason"] = str(row.get("cancel_reason"))[:200]
+    # FR #5317: CodeRabbit wait stamps must survive queue reload (else timeout never fires).
+    if row.get("coderabbit"):
+        out["coderabbit"] = str(row.get("coderabbit"))
+    try:
+        raw_cr = row.get("coderabbit_wait_since")
+        if raw_cr is not None and str(raw_cr).strip() != "":
+            out["coderabbit_wait_since"] = float(raw_cr)
+    except (TypeError, ValueError):
+        pass
     return out
 
 
@@ -5751,6 +5768,14 @@ def format_assign_line(nick: str, row: dict) -> str:
     """Wire line the seats and Watch-AgentHealth parse: ``<nick>: FR|MRB|UAT owner/repo#N url``."""
     num = str(row.get("id") or "").strip().lstrip("#")
     line = f"{nick}: {_canon_task(row)} {row.get('repo') or ''}#{num} {resolve_assign_url(row)}"
+    try:
+        import fuel_chain
+
+        extra = fuel_chain.assign_suffix(row)
+    except Exception:
+        extra = ""
+    if extra:
+        line = f"{line} {extra}"
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", line)).strip()
 
 
@@ -7885,6 +7910,23 @@ def offer_focus_top(
                     return None
                 if not mrb_row_offerable(cand, pr_exists=pr_exists):
                     return None
+                # FR #5317: optional CodeRabbit wait (off by default; timeout still offers).
+                try:
+                    import fuel_chain
+
+                    def _cr_lookup(repo: str, num: str, _row=cand):
+                        return fuel_chain.lookup_coderabbit_reviewed(
+                            repo, num, str(_row.get("head_sha") or "")
+                        )
+
+                    cr_check = _budgeted_github(_cr_lookup, budget, "coderabbit")
+                    if fuel_chain.apply_mrb_coderabbit_gate(
+                        cand, now_f, lookup=cr_check
+                    ):
+                        purged = True
+                        return None
+                except Exception:
+                    pass
                 to = str(cand.get("offered_to") or "").strip()
                 if to and not _same_seat(to, me):
                     try:
@@ -8185,6 +8227,22 @@ def offer_top(
                 if not mrb_row_offerable(row, pr_exists=pr_exists):
                     i += 1
                     continue
+                try:
+                    import fuel_chain
+
+                    def _cr_lookup(repo: str, num: str, _row=row):
+                        return fuel_chain.lookup_coderabbit_reviewed(
+                            repo, num, str(_row.get("head_sha") or "")
+                        )
+
+                    cr_check = _budgeted_github(_cr_lookup, budget, "coderabbit")
+                    if fuel_chain.apply_mrb_coderabbit_gate(
+                        row, now_f, lookup=cr_check
+                    ):
+                        i += 1
+                        continue
+                except Exception:
+                    pass
                 row_eff = enrich_review_author_fields(doc, row)
                 led = ledger_load(home)
                 if row_blocked_for_machine(row_eff, nick or "") or review_blocked_for_author(
@@ -8635,20 +8693,37 @@ def detect_mrb_reviewer_deadlock(
         for row in mrb_rows:
             if not _mrb_idle_block_reason(row, nick, seats_live, led):
                 return None
+    # FR #5268 / #5270: cross-giveup clear needs ≥2 idle seats. A sole idle
+    # seat that GIVEUP'd the only waiting MRB is not a multi-seat deadlock —
+    # clearing its giveup_seats lets offer_after_giveup / !bored re-offer the
+    # same job to the same nick (defeats FR #2811 / FR #628).
     clearable: list[tuple[dict, str]] = []
-    for row in mrb_rows:
-        authors = {a.lower() for a in row_author_seats(row)}
-        for nick in seats_idle:
-            if nick.lower() in authors:
-                continue
-            if row_gave_up_by(row, nick, live=seats_live):
-                clearable.append((row, nick))
-                continue
-            if led:
-                why = ledger_blocks(led, row, nick, seats_live)
-                if why and "gave up" in why.lower():
+    if len(seats_idle) >= 2:
+        for row in mrb_rows:
+            authors = {a.lower() for a in row_author_seats(row)}
+            for nick in seats_idle:
+                if nick.lower() in authors:
+                    continue
+                if row_gave_up_by(row, nick, live=seats_live):
                     clearable.append((row, nick))
-    kind = "cross_giveup" if clearable else "author_only"
+                    continue
+                if led:
+                    why = ledger_blocks(led, row, nick, seats_live)
+                    if why and "gave up" in why.lower():
+                        clearable.append((row, nick))
+    if clearable:
+        kind = "cross_giveup"
+    else:
+        # author_only recycleseat only when every idle block is author (not
+        # giveup/cooldown). Sole-seat GIVEUP must stick until another seat
+        # appears or an operator !cleargiveup / !assign.
+        if not all(
+            _mrb_idle_block_reason(row, nick, seats_live, led) == "author"
+            for nick in seats_idle
+            for row in mrb_rows
+        ):
+            return None
+        kind = "author_only"
     sig_parts = sorted(
         f"{str(r.get('repo') or '')}{_norm_row_id(r.get('id'))}" for r in mrb_rows
     ) + sorted(n.lower() for n in seats_idle)
@@ -8770,6 +8845,17 @@ def heal_mrb_reviewer_deadlock(
                 "mrb-reviewer-deadlock",
                 now=now_f,
             )
+            # FR #5220: chair-local recycleseat JSON never reaches a remote tray.
+            # PRIVMSG !recycleseat so that machine's ear queues the recycle.
+            parsed = bobreport.parse_seat_nick(pick)
+            mid = (parsed[0] if parsed else "") or ""
+            if mid:
+                cmd = f"!recycleseat {pick} {mid}"
+                shop = worker_shop_channel(pick) or f"#{mid}"
+                with contextlib.suppress(Exception):
+                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel="#bobiverse")
+                with contextlib.suppress(Exception):
+                    bobreport.enqueue_chair_fleet_privmsg(home, cmd, channel=shop)
             lines.append(
                 f"mrb-reviewer-deadlock author_only recycleseat={pick} id={rid}"
             )
@@ -10421,6 +10507,7 @@ def resync_from_github(
     failed: list[str] = []
     unchanged: list[str] = []
     open_pulls_map: dict[str, set[str]] = {}
+    open_issue_ids: dict[str, set[str]] = {}  # FR #5267: open issue numbers per fetched repo
     skipped_draft = 0
     skipped_ci = 0
     fix_added = 0  # FR #4596: FIX enqueue adds counted into github-resync ok added=
@@ -10496,6 +10583,15 @@ def resync_from_github(
             issues = []
         if not isinstance(prs, list):
             prs = []
+        # FR #5267: open issue ids (not pulls) so accepted rows for closed issues can leave.
+        issue_ids: set[str] = set()
+        for iss in issues:
+            if not isinstance(iss, dict) or not isinstance(iss.get("number"), int):
+                continue
+            if iss.get("pull_request"):
+                continue
+            issue_ids.add(f"#{int(iss['number'])}")
+        open_issue_ids[repo] = issue_ids
         # t853u: repo-level UAT gate. Excluded issues (needs-human, boards/mrb-home, harvest/skill
         # records, CRITICAL spam, safe-to-close, needs-mrb1 — FR #1416) never hold a repo back;
         # every other open issue or any open PR does.
@@ -11470,6 +11566,21 @@ def resync_from_github(
             except Exception:
                 focus_pruned = 0
                 focus_redundant = 0
+            # FR #5267: closed issue/PR (or cancel already delivered) leaves accepted,
+            # whoever holds it. Stranded nick=copilot rows return to the seat queue.
+            try:
+                import copilot_dispatch as _cd5267
+
+                _cd5267.settle_stuck_accepted_unlocked(
+                    home,
+                    doc,
+                    now=time.time(),
+                    open_issues=open_issue_ids,
+                    open_pulls=open_pulls_map,
+                    fetched_repos=set(fetched),
+                )
+            except Exception:  # noqa: BLE001 — queue write must still happen
+                pass
             _write_queue(queue_path(home), doc)
             # FR #3205: refresh ordered offer candidates off the IRC thread (resync path).
             with contextlib.suppress(Exception):

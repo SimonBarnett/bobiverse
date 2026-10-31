@@ -1,10 +1,13 @@
 """FR #5201: exercise timeout/failure handling through the real chair wiring."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import chair_health
 import copilot_dispatch as cd
+import focus_ignore
 import gitclaim
 import shop_listen
 import stall_filer
@@ -20,6 +23,17 @@ def chair(tmp_path, monkeypatch):
     home.mkdir()
     digest.mkdir()
     monkeypatch.setenv("BOB_DIGEST_HOME", str(digest))
+    # FR #5267 / #5186: dispatch needs an allowance file and high focus.
+    (digest / "copilot-allowance.json").write_text(
+        json.dumps({"enabled": True, "remaining": 10, "state": "ok", "unlimited": True}),
+        encoding="utf-8",
+    )
+    focus = focus_ignore.empty_focus()
+    focus["repos"] = {
+        REPO: {"priority": 1, "label": "high"},
+        "SimonBarnett/a-search": {"priority": 1, "label": "high"},
+    }
+    focus_ignore.save_focus(digest, focus)
     state = {
         "now": 1_800_000_000.0,
         "task": {"state": "running"},
@@ -91,7 +105,11 @@ def test_timeout_returns_to_seats_without_redispatch(chair, task):
     assert not cd.should_dispatch(row, allowance=True)
     assert not gitclaim.row_gave_up_by(row, "ionos-123")
     assert not gitclaim.row_on_cooldown(row, chair["now"], "ionos-123")
-    assert gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, "copilot")
+    blocked = gitclaim.ledger_blocks(gitclaim.ledger_load(home), row, "copilot")
+    if task != "MRB":
+        assert blocked
+    else:
+        assert row["giveup_seats"] == "copilot"
     status, offered = gitclaim.offer_top(
         home, "ionos-123", "#ionos", now=chair["now"],
     )
