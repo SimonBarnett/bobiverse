@@ -278,6 +278,27 @@ def test_pending_orphan_clears_when_helper_gone(env):
     assert not st.get("pending")
 
 
+@win
+def test_fr5494_pending_older_than_install_clears_without_stale(env):
+    """FR #5494: leftover pending v0.1.17 must not stale-pending when VERSION is newer."""
+    from datetime import datetime, timezone
+
+    env.state.mkdir()
+    (env.root / "VERSION").write_text("0.1.31\n", encoding="utf-8")
+    (env.state / "state.json").write_text(json.dumps({
+        "pending": {"tag": "v0.1.17", "atUtc": datetime.now(timezone.utc).isoformat()},
+        "lastResult": "scheduled",
+        "lastTag": "v0.1.17",
+    }))
+    p, log = env("-DryRun", release=_release("0.1.31"))
+    assert p.returncode == 0, log
+    assert "pending-already-installed" in log, log
+    assert "stale-pending" not in log
+    st = json.loads((env.state / "state.json").read_text(encoding="utf-8-sig"))
+    assert not st.get("pending")
+    assert st.get("lastResult") == "pending-already-installed"
+
+
 def _plan(env, msi_bytes: bytes, sha_text: str):
     d = env.tmp / "assets"
     d.mkdir(exist_ok=True)
