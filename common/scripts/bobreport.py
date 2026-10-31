@@ -3239,6 +3239,15 @@ def _intake_outbox_public(home: Path) -> dict:
     }
 
 
+
+def _digest_stuck(home: Path) -> list:
+    try:
+        import stuck_job_sweep
+        return stuck_job_sweep.digest_stuck_section(home)
+    except Exception:
+        return []
+
+
 def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = None) -> dict:
     """GET /bob/v1/report payload: ChanServ roster shops only + chair_channels."""
     doc = load_digest(home)
@@ -3277,6 +3286,8 @@ def build_digest_object(home: Path, briefer_nick: str, now: datetime | None = No
         "intake_outbox": _intake_outbox_public(home),
         # FR #5204: live airc *_console nicks from shop NAMES (no NickServ).
         "airc_consoles": _airc_consoles_from_machines(exported),
+        # FR #5510: stuck-job sweep report (silent accepts / untracked / held rules).
+        "stuck": _digest_stuck(home),
     }
 
 

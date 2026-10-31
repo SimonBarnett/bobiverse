@@ -11650,6 +11650,27 @@ def resync_from_github(
             except Exception:  # noqa: BLE001 — queue write must still happen
                 pass
             _write_queue(queue_path(home), doc)
+            # FR #5510: persist open catalog so stuck-sweep can find untracked/held items offline.
+            with contextlib.suppress(Exception):
+                import stuck_job_sweep as _sjs5510
+                cat = []
+                for c in desired:
+                    cat.append({
+                        "repo": c.repo,
+                        "id": c.id,
+                        "task": c.task,
+                        "kind": "pr" if str(c.task).upper() == "MRB" else "issue",
+                        "title": (c.line or "")[:160],
+                    })
+                for repo, num in sorted(skipped_open_pulls):
+                    cat.append({
+                        "repo": repo,
+                        "id": num if str(num).startswith("#") else f"#{num}",
+                        "kind": "pr",
+                        "task": "MRB",
+                        "rule": "skipped_resync",
+                    })
+                _sjs5510.write_open_catalog(home, cat)
             # FR #3205: refresh ordered offer candidates off the IRC thread (resync path).
             with contextlib.suppress(Exception):
                 rebuild_offer_precompute(home, list(doc.get("unaccepted") or []))
