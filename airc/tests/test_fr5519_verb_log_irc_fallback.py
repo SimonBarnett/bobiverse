@@ -22,9 +22,17 @@ def _core(tmp_path, **kw):
     )
 
 
-def test_fr5519_network_emit_cont_without_dcclisten(tmp_path):
+def test_fr5519_network_emit_cont_without_dcclisten(tmp_path, monkeypatch):
     emitted: list[dict] = []
     core = _core(tmp_path)
+    # Isolated worker is async; ADSI enum can take seconds after FR #5521.
+    monkeypatch.setattr(
+        "airc_network.default_ldap_enum",
+        lambda: [{"hostname": "pc-ok", "dn": "CN=pc-ok,DC=example,DC=invalid"}],
+    )
+    core.network_runner = lambda **kw: __import__("airc_network").run_network_verb(
+        wait=True, **kw
+    )
     svc.attach_verb_log_hooks(
         core,
         send_fn=lambda *_a, **_k: None,
