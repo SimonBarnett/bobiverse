@@ -22,7 +22,7 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | Verb | Purpose |
 |------|---------|
 | `STATUS` | Airc Running + VERSION files (bob/airc/jeeves); replies as `out id= seq=` then `DONE` (FR #2575) |
-| `VERSION` | Current airc install version from `<ai root>\\airc\\VERSION` (missing -> `-`; no ARP fallback) plus `commit=` / `built=` from `BUILD.json` and `hotpatch=1` overlay from `HOTPATCH.json` (FR #5281 / #5534); same `out id= seq=` + `DONE exit=0` framing; allowed when `shell=off` / `jobs=off` like STATUS |
+| `VERSION` | Current airc install version from `<ai root>\\airc\\VERSION` (missing -> `-`; no ARP fallback) plus `commit=` / `built=` from `BUILD.json`. `HOTPATCH.json` overlays `commit` and adds `hotpatched=` / `hotpatch=1` without replacing `built=` (FR #5281 / #5534 / #5589). Schema: BUILD `{commit, built_utc}`; HOTPATCH `{commit` or `hotpatch_commit`, `hotpatched_utc}` (legacy `built_utc` on HOTPATCH is the hotpatch time). Same `out id= seq=` + `DONE exit=0` framing; allowed when `shell=off` / `jobs=off` like STATUS |
 | plain line | PowerShell (default); UTF-8 `$OutputEncoding` wrap so StdOut keeps Greek/CJK (FR #2580); `$ProgressPreference=SilentlyContinue` so StdErr stays free of CLIXML progress noise (FR #2641); terminating / `Write-Error` StdErr is decoded from CLIXML to plain text with user-relative `At line:` (FR #2910 / #2918) |
 | `cmd: ???` | COMSPEC escape hatch (`chcp 65001` prefixed, FR #2580); trailing `\` paths like `cmd: dir C:\` work (FR #3773: `/d /s /c` string cmdline, not list2cmdline) |
 | `psb64:<b64>` | `powershell -EncodedCommand` (same UTF-8 wrap) |
@@ -30,11 +30,11 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `RUN path` | Execute; end with `DONE id=… exit=…` |
 | `GET path` | hash/size + head (80 chars). Does not send the file. |
 | `GET path fetch=chunk` then `GETCHUNK id seq` | FR #4795 outbound fetch. Open returns bytes/sha256/seqs only. Each GETCHUNK returns one <=300-byte raw chunk. The next GETCHUNK is the ack; the console never pushes the following chunk. |
-| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Optional leading `id=<job>` (FR #5532). Reply is `UPDATE accepted id=...` then `DONE id= exit=`. Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
+| `UPDATE airc\|bob\|jeeves [ver]` | Allowlisted GitHub Release MSI via detached `Update-BobiverseService.ps1` (FR #77). Optional leading `id=<job>` (FR #5532). Reply is `UPDATE accepted id=...` then `DONE id= exit=0` on schedule, or `UPDATE current` + `DONE exit=0` when already up to date (FR #5584); failures use `DONE exit=1`. Bare product (no ver) = **latest** release asset; optional `x.y.z` pin (FR #5280) |
 | `PRIORITY prepare <ENAME>` | TYPE=P named prep: EXEC `REPPREPDIRECT2`; success only if SDK ok **and** `EXECPREPLOCK.UPD=N` **and** `.prp` mtime advanced (FR #5286). Never form-prep; never SQL-fake UPD; never a password on IRC |
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
-| NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou. Full data+log via DCCLISTEN same job id or IRC CONT. |
+| NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou (parent-container DN; FR #5587). Full data+log via DCCLISTEN same job id or IRC CONT. |
 | `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312 / FR #5594). UPDATE-class auth. Default identity: Airc LocalSystem / computer account (`DOMAIN\\HOST$`). CredMan `PriorityAirc/LegionAdmin` is off-by-default (`AIRC_LEGION_USE_CREDMAN=1`). Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
 | EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). Fill-holes: machine account first, then CredMan `PriorityAirc/ExtensionAdmin` on access-denied (FR #5364; fail closed `credman-missing`; never on IRC). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
 
@@ -113,7 +113,7 @@ PRIVMSG marchhare_console :id=aabbccdd EXTENSION install -WhatIf
 
 ## NETWORK (FR #5301) - docs contract
 
-Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isolated worker (FR-A #5298). Inventory fields (FR-B #5299): `hostname`, `ips[]`, `ou`.
+Authorized PRIVMSG only (UPDATE-class: ops/half-ops; `update=off` refuses). Isolated worker (FR-A #5298). Inventory fields (FR-B #5299): `hostname`, `ips[]`, `ou` (parent-container DN, including `CN=Computers,...`; FR #5587).
 
 ```text
 PRIVMSG marchhare_console :id=aabbccdd DCCLISTEN id=aabbccdd host=127.0.0.1 port=7700 token=<hex> tls=1

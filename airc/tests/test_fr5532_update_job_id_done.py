@@ -36,7 +36,8 @@ def test_fr5532_prefixed_update_is_not_shell():
     assert hr is not None
     assert hr.action == "update"
     text = hr.reply or ""
-    assert "UPDATE accepted" in text
+    # FR #5584: status=current keeps ``UPDATE current`` + exit=0 (not accepted/exit=1).
+    assert "UPDATE current" in text
     assert "id=8ddfdad8" in text
     assert "DONE id=8ddfdad8 exit=0" in text
     assert "CommandNotFound" not in text
@@ -47,7 +48,7 @@ def test_fr5532_bare_update_still_has_id_and_done():
     hr = core.handle_raw(":bob-marchhare!u@h PRIVMSG marchhare_console :UPDATE airc")
     assert hr and hr.action == "update"
     text = hr.reply or ""
-    assert "UPDATE accepted" in text
+    assert "UPDATE current" in text
     assert "DONE id=" in text
     assert "exit=0" in text
 
