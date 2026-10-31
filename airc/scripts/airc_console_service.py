@@ -418,6 +418,7 @@ class AircConsoleService:
             ai_root=ai_root if (ai_root / "bob").is_dir() or (ai_root / "airc").is_dir() else Path(r"C:\ai"),
             machine=self.machine,
             airc_running=True,
+            inline_jobs=False,
         )
         self.job_protocol.dcc_receive = self._dcc_put_receive
         self.core = AircConsoleCore(
