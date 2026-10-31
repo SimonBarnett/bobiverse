@@ -188,12 +188,31 @@ def parse_priority_prepare_command(text: str) -> dict[str, str] | None:
 
 
 def _load_priority_worker():
+    # FR #5523: pack path is <install>\\airc\\priority-worker, not __file__/_MEIPASS.
+    candidates: list[Path] = []
+    d = _priority.resolve_priority_worker_dir()
+    if d is not None:
+        candidates.append(d / "priority_worker.py")
     here = Path(__file__).resolve()
-    candidates = [
-        here.parents[1] / "priority-worker" / "priority_worker.py",
-        Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc") / "priority-worker" / "priority_worker.py",
-    ]
+    candidates.extend(
+        [
+            here.parents[1] / "airc" / "priority-worker" / "priority_worker.py",
+            here.parents[1] / "priority-worker" / "priority_worker.py",
+            Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+            / "airc"
+            / "priority-worker"
+            / "priority_worker.py",
+            Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+            / "priority-worker"
+            / "priority_worker.py",
+        ]
+    )
+    seen: set[str] = set()
     for p in candidates:
+        key = str(p).lower()
+        if key in seen:
+            continue
+        seen.add(key)
         if p.is_file():
             spec = importlib.util.spec_from_file_location("priority_worker", p)
             if spec and spec.loader:
@@ -295,7 +314,12 @@ def _priority_sdk_repprep(
     if form_prep or path.upper() != "REPPREPDIRECT2":
         return {"ok": False, "path": path, "reason": "refused_non_repprep"}
     root = Path(os.environ.get("AIRC_INSTALL_ROOT") or r"C:\ai\airc")
+    pw = _priority.resolve_priority_worker_dir(root)
     mjs_candidates = [
+        (pw / "sdk" / "run-repprep-via-exec.mjs") if pw else Path(),
+        (pw / "run-repprep-via-exec.mjs") if pw else Path(),
+        root / "airc" / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
+        root / "airc" / "priority-worker" / "run-repprep-via-exec.mjs",
         root / "priority-worker" / "sdk" / "run-repprep-via-exec.mjs",
         root / "priority-worker" / "run-repprep-via-exec.mjs",
         Path(os.environ.get("AIRC_PRIORITY_REPPREP_MJS") or ""),
