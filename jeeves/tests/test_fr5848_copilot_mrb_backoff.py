@@ -115,6 +115,7 @@ def test_successful_mrb_resets_fast_failure_streak(tmp_path, monkeypatch):
 
 
 def test_copilot_giveup_preserved_by_author_only_recycle(tmp_path, monkeypatch):
+    """FR #5901 / #5889: author-only flags (no !recycleseat); Copilot giveups stay."""
     rows = _setup(tmp_path, monkeypatch)
     _fail_three(tmp_path, rows)
     install = tmp_path / "install"
@@ -122,13 +123,16 @@ def test_copilot_giveup_preserved_by_author_only_recycle(tmp_path, monkeypatch):
         tmp_path, live={AUTHOR, "copilot"}, idle={AUTHOR, "copilot"},
         install_root=install, now=NOW + 180,
     )
-    assert any("author_only" in line and "recycle" in line for line in lines)
-    requests = list(recycleseat.queue_dir(install).glob("req-*.json"))
-    assert len(requests) == 1
-    assert json.loads(requests[0].read_text())["nick"] == AUTHOR
-    assert all(
-        gitclaim.nick_in_giveup_seats(row, "copilot")
-        for row in gitclaim.load_unaccepted(tmp_path) if row["id"] != "#4"
+    assert any("author_only" in line and "flag" in line.lower() for line in lines), lines
+    assert not any("recycleseat=" in line for line in lines), lines
+    assert list(recycleseat.queue_dir(install).glob("req-*.json")) == []
+    # load_unaccepted strips author_only_deadlock; read the queue file.
+    saved = json.loads(gitclaim.queue_path(tmp_path).read_text(encoding="utf-8"))
+    rows_saved = [row for row in saved["unaccepted"] if isinstance(row, dict)]
+    assert rows_saved and all(row.get("author_only_deadlock") for row in rows_saved)
+    given_up = [row for row in rows_saved if row.get("id") != "#4"]
+    assert given_up and all(
+        gitclaim.nick_in_giveup_seats(row, "copilot") for row in given_up
     )
 
 
