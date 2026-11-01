@@ -271,6 +271,54 @@ function Get-BobCursorPoolsCachePath {
     try { return (Join-Path (Get-BridgeRoot) 'cursor-pools.json') } catch { return $null }
 }
 
+function Test-BobCursorPoolPeriodEndCurrent {
+    param(
+        [string]$PeriodEnd,
+        [datetime]$Now = [datetime]::UtcNow,
+        [string]$MinPeriodEnd = $null
+    )
+    # FR #5689: refuse expired stamps, and stamps earlier than a fresh billing end.
+    if (-not $PeriodEnd -or -not [string]$PeriodEnd.Trim()) { return $false }
+    try {
+        $styles = [Globalization.DateTimeStyles]::RoundtripKind
+        $ci = [Globalization.CultureInfo]::InvariantCulture
+        $dt = [datetime]::Parse([string]$PeriodEnd.Trim(), $ci, $styles)
+        if ($dt.Kind -eq [DateTimeKind]::Local) { $dt = $dt.ToUniversalTime() }
+        elseif ($dt.Kind -eq [DateTimeKind]::Unspecified) {
+            $dt = [DateTime]::SpecifyKind($dt, [DateTimeKind]::Utc)
+        }
+        $nowUtc = $Now.ToUniversalTime()
+        if ($dt -lt $nowUtc) { return $false }
+        if ($MinPeriodEnd -and [string]$MinPeriodEnd.Trim()) {
+            $minDt = [datetime]::Parse([string]$MinPeriodEnd.Trim(), $ci, $styles)
+            if ($minDt.Kind -eq [DateTimeKind]::Local) { $minDt = $minDt.ToUniversalTime() }
+            elseif ($minDt.Kind -eq [DateTimeKind]::Unspecified) {
+                $minDt = [DateTime]::SpecifyKind($minDt, [DateTimeKind]::Utc)
+            }
+            if ($dt -lt $minDt) { return $false }
+        }
+        return $true
+    }
+    catch { return $false }
+}
+
+function Select-BobCursorPoolBillingPeriodEnd {
+    param(
+        [string]$LocalPeriodEnd,
+        [string]$CachedPeriodEnd,
+        [datetime]$Now = [datetime]::UtcNow
+    )
+    # FR #5689: prefer LocalCursorDoc.period_end when present; never take an
+    # expired cached group period_end (or one earlier than the fresh billing end).
+    $local = if ($LocalPeriodEnd) { [string]$LocalPeriodEnd.Trim() } else { '' }
+    $cached = if ($CachedPeriodEnd) { [string]$CachedPeriodEnd.Trim() } else { '' }
+    if ($local) { return $local }
+    if ($cached -and (Test-BobCursorPoolPeriodEndCurrent -PeriodEnd $cached -Now $Now)) {
+        return $cached
+    }
+    return $null
+}
+
 function Read-BobCursorPoolsCache {
     $p = Get-BobCursorPoolsCachePath
     if (-not $p -or -not (Test-Path $p)) {
@@ -281,7 +329,21 @@ function Read-BobCursorPoolsCache {
         $by = @{}
         if ($j.by_seat) {
             foreach ($prop in $j.by_seat.PSObject.Properties) {
-                $by[$prop.Name] = $prop.Value
+                $seat = $prop.Value
+                # FR #5689: drop expired group period_end on read so LocalOnly
+                # publish cannot re-save a past stamp every heartbeat.
+                if ($seat -and $seat.groups) {
+                    foreach ($gp in @($seat.groups.PSObject.Properties)) {
+                        $grow = $gp.Value
+                        if (-not $grow -or -not $grow.period_end) { continue }
+                        if (-not (Test-BobCursorPoolPeriodEndCurrent -PeriodEnd ([string]$grow.period_end))) {
+                            if ($grow.PSObject.Properties['period_end']) {
+                                $grow.PSObject.Properties.Remove('period_end')
+                            }
+                        }
+                    }
+                }
+                $by[$prop.Name] = $seat
             }
         }
         return [pscustomobject]@{ by_seat = $by }
@@ -344,7 +406,13 @@ function Save-BobCursorPoolGroupForSeat {
         $grow | Add-Member -NotePropertyName remaining_pct -NotePropertyValue ([int]$RemainingPct) -Force
     }
     if ($PeriodEnd) {
-        $grow | Add-Member -NotePropertyName period_end -NotePropertyValue ([string]$PeriodEnd) -Force
+        # FR #5689: never persist an expired period_end (re-save loop poisoned digest).
+        if (Test-BobCursorPoolPeriodEndCurrent -PeriodEnd $PeriodEnd) {
+            $grow | Add-Member -NotePropertyName period_end -NotePropertyValue ([string]$PeriodEnd) -Force
+        }
+        elseif ($grow.PSObject.Properties['period_end']) {
+            $grow.PSObject.Properties.Remove('period_end')
+        }
     }
     $grow | Add-Member -NotePropertyName updated_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
     $groups[$gid] = $grow
