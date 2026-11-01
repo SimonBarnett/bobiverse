@@ -8,12 +8,18 @@ from airc_network_installer.core import HostResult
 
 
 def test_fr5382_dry_run_still_skips_install_remote(monkeypatch, tmp_path):
+    # FR #5655: WhatIf probes find_psexec (PATH-only); stub present so this
+    # case still asserts dry-run skip of install_remote (ok=True).
     called = {"n": 0}
 
     def boom(**_kw):
         called["n"] += 1
         raise AssertionError("install_remote must not run on dry_run")
 
+    monkeypatch.setattr(
+        "airc_network_installer.install.find_psexec",
+        lambda _explicit="": r"C:\Tools\PsExec.exe",
+    )
     monkeypatch.setattr(
         "airc_network_installer.install.install_remote", boom
     )
@@ -55,6 +61,10 @@ def test_fr5382_live_calls_install_remote_client_900_no_force(monkeypatch, tmp_p
     monkeypatch.setattr(
         "airc_network_installer.install.find_psexec", lambda _explicit="": r"C:\Tools\PsExec.exe"
     )
+    monkeypatch.setattr(
+        "airc_network_installer.install.ensure_psexec",
+        lambda _explicit="", dest=None: r"C:\Tools\PsExec.exe",
+    )
     out = lg.default_installer_run(
         {
             "hosts": ["10.0.0.8"],
@@ -88,11 +98,18 @@ def test_fr5382_live_calls_install_remote_client_900_no_force(monkeypatch, tmp_p
 
 
 def test_fr5382_missing_psexec_fails_closed(monkeypatch, tmp_path):
+    # FR #5655: live path uses ensure_psexec (may download / ProgramData).
+    # Stub both find + ensure and opt out of download so missing stays closed.
     msi = tmp_path / "airc-9.9.9.msi"
     msi.write_bytes(b"x")
     monkeypatch.setenv("AIRC_LEGION_PASSWORD", "FAKE_x")
+    monkeypatch.setenv("AIRC_LEGION_NO_PSEXEC_DOWNLOAD", "1")
     monkeypatch.setattr(
         "airc_network_installer.install.find_psexec", lambda _explicit="": None
+    )
+    monkeypatch.setattr(
+        "airc_network_installer.install.ensure_psexec",
+        lambda _explicit="", dest=None: None,
     )
     monkeypatch.setattr(
         "airc_network_installer.install.install_remote",
