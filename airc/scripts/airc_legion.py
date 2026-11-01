@@ -285,7 +285,7 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     FR #5529: secret is an explicit kwarg (or leftover env for older callers),
     never written into the service process environment.
     """
-    from airc_network_installer.install import find_psexec, install_local, install_remote
+    from airc_network_installer.install import install_local, install_remote, plan_psexec
 
     host = str((spec.get("hosts") or [""])[0] or "")
     dry = bool(spec.get("dry_run"))
@@ -293,8 +293,8 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
     force = bool(spec.get("force"))
     timeout_s = float(spec.get("timeout_s") or LEGION_TIMEOUT_S)
     if dry:
-        # FR #5655: WhatIf probes PATH only (no download); missing => ok=false.
-        psexec = find_psexec(str(spec.get("psexec") or ""))
+        # FR #5712: plan the same provisioning as a live run without downloading.
+        psexec, will_download_psexec = plan_psexec(str(spec.get("psexec") or ""))
         raw_msi = (spec.get("msi") or "").strip()
         if raw_msi:
             try:
@@ -322,7 +322,7 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
                 "need": need,
                 "failures": [{"host": host, "error": "psexec-missing", "need": need}],
             }
-        return {
+        plan = {
             "ok": True,
             "status": "dry-run",
             "host": host,
@@ -332,6 +332,9 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
             "msi": msi_note,
             "psexec": psexec,
         }
+        if will_download_psexec:
+            plan["psexec_action"] = "download"
+        return plan
 
     try:
         msi_path = _resolve_legion_msi_path(spec)
@@ -579,6 +582,8 @@ def installer_legion_work(
         body["msi"] = (out or {}).get("msi")
     if (out or {}).get("psexec"):
         body["psexec"] = (out or {}).get("psexec")
+    if (out or {}).get("psexec_action"):
+        body["psexec_action"] = (out or {}).get("psexec_action")
     if (out or {}).get("need"):
         body["need"] = (out or {}).get("need")
     # FR #5655: surface psexec-missing as a failure even when runner only set error=.
@@ -607,6 +612,8 @@ def installer_legion_work(
             "psexec": pse,
             "install": "skipped (whatif)",
         }
+        if body.get("psexec_action"):
+            body["plan"]["psexec_action"] = body["psexec_action"]
         # FR #5655: fail WhatIf only when runner/error explicitly says missing.
         if str(err or "") == "psexec-missing" or body.get("psexec") == "psexec-missing":
             body["ok"] = False

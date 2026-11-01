@@ -25,8 +25,52 @@ def test_fr5655_ensure_psexec_exists():
 def test_fr5655_default_installer_uses_ensure_psexec():
     t = LEGION.read_text(encoding="utf-8")
     assert "ensure_psexec" in t
+    assert "plan_psexec" in t
     assert "FR #5655" in t
     assert "will_fail" in t
+
+
+def test_fr5712_whatif_plans_allowed_psexec_download_without_downloading(monkeypatch, tmp_path):
+    import airc_network_installer.install as inst
+
+    program_data = tmp_path / "ProgramData"
+    monkeypatch.setenv("ProgramData", str(program_data))
+    monkeypatch.delenv("AIRC_PSEXEC_PATH", raising=False)
+    monkeypatch.delenv("AIRC_LEGION_NO_PSEXEC_DOWNLOAD", raising=False)
+    monkeypatch.setattr(inst, "find_psexec", lambda explicit="": None)
+    downloads: list[Path] = []
+    monkeypatch.setattr(
+        inst,
+        "offer_download_psexec",
+        lambda dest: downloads.append(dest) or dest,
+    )
+
+    out = lg.default_installer_run(
+        {
+            "hosts": ["flamingo"],
+            "dry_run": True,
+            "profile": "client",
+            "force": False,
+            "timeout_s": 30,
+            "msi": "",
+        }
+    )
+
+    assert out["ok"] is True
+    assert out["status"] == "dry-run"
+    assert out["psexec"] == str(program_data / "bobiverse" / "tools" / "PsExec.exe")
+    assert out["psexec_action"] == "download"
+    assert downloads == []
+
+    body = lg.installer_legion_work(
+        "flamingo",
+        whatif=True,
+        run_fn=lg.default_installer_run,
+        credman=lambda: {},
+    )
+    assert body["ok"] is True
+    assert body["plan"]["psexec_action"] == "download"
+    assert downloads == []
 
 
 def test_fr5655_whatif_psexec_missing_fail_closed(monkeypatch):
@@ -34,7 +78,6 @@ def test_fr5655_whatif_psexec_missing_fail_closed(monkeypatch):
 
     monkeypatch.setenv("AIRC_LEGION_NO_PSEXEC_DOWNLOAD", "1")
     monkeypatch.setattr(inst, "find_psexec", lambda explicit="": None)
-    monkeypatch.setattr(inst, "ensure_psexec", lambda explicit="", dest=None: None)
 
     out = lg.default_installer_run(
         {

@@ -8,8 +8,7 @@ from airc_network_installer.core import HostResult
 
 
 def test_fr5382_dry_run_still_skips_install_remote(monkeypatch, tmp_path):
-    # FR #5655: WhatIf probes find_psexec (PATH-only); stub present so this
-    # case still asserts dry-run skip of install_remote (ok=True).
+    # WhatIf plans existing/provisionable PsExec without running the installer.
     called = {"n": 0}
 
     def boom(**_kw):

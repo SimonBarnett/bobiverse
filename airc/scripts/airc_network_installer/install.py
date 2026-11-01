@@ -29,6 +29,40 @@ def find_psexec(explicit: str = "") -> Optional[str]:
     return found
 
 
+def _psexec_download_target(dest: Optional[Path] = None) -> Path:
+    explicit_dest = (os.environ.get("AIRC_PSEXEC_PATH") or "").strip()
+    if explicit_dest:
+        return Path(explicit_dest)
+    if dest is not None:
+        return Path(dest)
+    pd = os.environ.get("ProgramData") or r"C:\ProgramData"
+    return Path(pd) / "bobiverse" / "tools" / "PsExec.exe"
+
+
+def _psexec_download_disabled() -> bool:
+    return (os.environ.get("AIRC_LEGION_NO_PSEXEC_DOWNLOAD") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def plan_psexec(
+    explicit: str = "", *, dest: Optional[Path] = None
+) -> tuple[Optional[str], bool]:
+    """Resolve existing PsExec or report where an allowed live run would download it."""
+    found = find_psexec(explicit)
+    if found:
+        return found, False
+    target = _psexec_download_target(dest)
+    if target.is_file():
+        return str(target.resolve()), False
+    if _psexec_download_disabled():
+        return None, False
+    return str(target.resolve()), True
+
+
 def offer_download_psexec(dest: Path) -> Path:
     """
     Download PsExec from the official Microsoft Sysinternals URL.
@@ -62,23 +96,11 @@ def ensure_psexec(explicit: str = "", *, dest: Optional[Path] = None) -> Optiona
     found = find_psexec(explicit)
     if found:
         return found
-    if (os.environ.get("AIRC_LEGION_NO_PSEXEC_DOWNLOAD") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
-        return None
-    explicit_dest = (os.environ.get("AIRC_PSEXEC_PATH") or "").strip()
-    if explicit_dest:
-        target = Path(explicit_dest)
-    elif dest is not None:
-        target = Path(dest)
-    else:
-        pd = os.environ.get("ProgramData") or r"C:\ProgramData"
-        target = Path(pd) / "bobiverse" / "tools" / "PsExec.exe"
+    target = _psexec_download_target(dest)
     if target.is_file():
         return str(target.resolve())
+    if _psexec_download_disabled():
+        return None
     try:
         return str(offer_download_psexec(target).resolve())
     except Exception:
