@@ -101,3 +101,12 @@ def test_fr5692_ensure_noop_when_default_ok(monkeypatch):
     cfg = SimpleNamespace(option=SimpleNamespace(basetemp=None))
     assert crash_report.ensure_writable_pytest_basetemp(cfg) is None
     assert cfg.option.basetemp is None
+
+
+def test_mrb5693_root_conftest_wires_ensure():
+    """Hostile MRB #5693: root conftest must call ensure_writable_pytest_basetemp."""
+    root = Path(__file__).resolve().parents[2] / "conftest.py"
+    src = root.read_text(encoding="utf-8")
+    assert "ensure_writable_pytest_basetemp" in src
+    assert "FR #5692" in src
+    assert src.endswith("\n")
