@@ -118,6 +118,12 @@ def _deploy_opted_out() -> bool:
 
 
 def extract_psexec_from_zip(zip_path: Path, dest: Path) -> Path:
+    """Extract PsExec.exe from PSTools.zip into ``dest``.
+
+    FR #5743: real PSTools.zip members are named ``PsExec.exe`` (same basename as
+    ``dest``). Always extract into a temp dir first; if ``src`` and ``dest`` still
+    resolve to the same path, skip ``shutil.copy2`` (avoids ``SameFileError``).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
         for name in zf.namelist():
@@ -137,29 +143,40 @@ def extract_psexec_from_zip(zip_path: Path, dest: Path) -> Path:
                     if not matches:
                         raise RuntimeError("PsExec.exe not found after extract")
                     src = matches[0]
-                shutil.copy2(src, dest)
+                # FR #5743: never copy2 when src == dest (SameFileError swallowed
+                # as psexec-missing on first-run download before this guard).
+                try:
+                    same = src.resolve() == dest.resolve()
+                except OSError:
+                    same = False
+                if not same:
+                    shutil.copy2(src, dest)
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 return dest
     raise RuntimeError("PsExec.exe not found inside PSTools.zip")
 
 
-def redeploy_psexec_from_cache(
+def redeploy_psexec_from_cache_result(
     *,
     dest: Optional[Path] = None,
     pin: Optional[dict[str, str]] = None,
-) -> Optional[str]:
-    """FR #5737: extract PsExec from the local install cache (no network)."""
+) -> dict[str, Any]:
+    """FR #5737 / #5743: extract from local cache; never swallow extract errors."""
     if _deploy_opted_out():
-        return None
+        return {"ok": False, "path": "", "error": "psexec-undeployed"}
     pin = pin or load_psexec_pin()
     target = psexec_dest(dest=dest)
     zpath = cache_zip_path(dest=dest)
     if not cache_zip_ok(zpath, expected=pin["zip_sha256"]):
-        return None
+        return {"ok": False, "path": "", "error": "psexec-undeployed"}
     try:
         extract_psexec_from_zip(zpath, target)
-    except Exception:
-        return None
+    except Exception as exc:  # noqa: BLE001 - surface type to LEGION failure row
+        return {
+            "ok": False,
+            "path": "",
+            "error": f"psexec-download-failed:{type(exc).__name__}",
+        }
     if not psexec_hash_ok(target, expected=pin["psexec_sha256"]):
         try:
             target.unlink(missing_ok=True)  # type: ignore[call-arg]
@@ -168,8 +185,20 @@ def redeploy_psexec_from_cache(
                 target.unlink()
         except OSError:
             pass
-        return None
-    return str(target.resolve())
+        return {"ok": False, "path": "", "error": "psexec-download-failed:HashMismatch"}
+    return {"ok": True, "path": str(target.resolve()), "error": ""}
+
+
+def redeploy_psexec_from_cache(
+    *,
+    dest: Optional[Path] = None,
+    pin: Optional[dict[str, str]] = None,
+) -> Optional[str]:
+    """FR #5737: extract PsExec from the local install cache (no network)."""
+    hit = redeploy_psexec_from_cache_result(dest=dest, pin=pin)
+    if hit.get("ok"):
+        return str(hit["path"])
+    return None
 
 
 def deploy_psexec(
@@ -268,27 +297,43 @@ def find_psexec(explicit: str = "") -> Optional[str]:
     return found
 
 
-def ensure_psexec(explicit: str = "", *, dest: Optional[Path] = None) -> Optional[str]:
-    """FR #5737: return airc-owned PsExec (hash-ok), redeploying from local cache only.
+def ensure_psexec_result(
+    explicit: str = "", *, dest: Optional[Path] = None
+) -> dict[str, Any]:
+    """FR #5737 / #5743: ``{ok, path, error}`` — never silent on extract failure.
 
-    Never downloads from the network (install/UPDATE owns that). Explicit path wins
-    when present. PATH copies are ignored so LEGION stays on the pinned airc deploy.
+    ``error`` is empty on success; otherwise ``psexec-undeployed`` or
+    ``psexec-download-failed:<ExcType>`` (FR #5743: SameFileError must not look
+    like a plain missing binary).
     """
     pin = load_psexec_pin()
     if explicit:
         p = Path(explicit)
         if p.is_file():
-            # Explicit operator override: trust path presence (hash optional).
-            return str(p.resolve())
+            return {"ok": True, "path": str(p.resolve()), "error": ""}
     if _psexec_download_opted_out():
         target = psexec_dest(dest=dest)
         if psexec_hash_ok(target, expected=pin["psexec_sha256"]):
-            return str(target.resolve())
-        return None
+            return {"ok": True, "path": str(target.resolve()), "error": ""}
+        return {"ok": False, "path": "", "error": "psexec-undeployed"}
     target = psexec_dest(dest=dest)
     if psexec_hash_ok(target, expected=pin["psexec_sha256"]):
-        return str(target.resolve())
-    return redeploy_psexec_from_cache(dest=dest, pin=pin)
+        return {"ok": True, "path": str(target.resolve()), "error": ""}
+    return redeploy_psexec_from_cache_result(dest=dest, pin=pin)
+
+
+def ensure_psexec(explicit: str = "", *, dest: Optional[Path] = None) -> Optional[str]:
+    """FR #5737: return airc-owned PsExec (hash-ok), redeploying from local cache only.
+
+    Never downloads from the network (install/UPDATE owns that). Explicit path wins
+    when present. PATH copies are ignored so LEGION stays on the pinned airc deploy.
+    Prefer ``ensure_psexec_result`` when the caller must surface extract failures
+    (FR #5743).
+    """
+    hit = ensure_psexec_result(explicit, dest=dest)
+    if hit.get("ok"):
+        return str(hit["path"])
+    return None
 
 
 def plan_psexec(

@@ -145,7 +145,7 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
 - CredMan `PriorityAirc/LegionAdmin` is retired as the default. Optional fallback only when `AIRC_LEGION_USE_CREDMAN=1` (workgroup targets). CAST IRON: no secrets on IRC or in the DCC body.
 - Same job `id=` on DCCLISTEN and LEGION. WhatIf is dry-run (no remote install) and reports `identity=SYSTEM (HOST$)`.
 - FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).
-- FR #5655 / #5712 / #5737: PsExec is never MSI-bundled (Sysinternals license). Install/UPDATE deploys the official zip with pinned SHA-256 to `%ProgramData%\bobiverse\tools\PsExec.exe`. WhatIf/`ensure_psexec` use that copy or redeploy from the local cache (no verb-time network); fail `psexec-undeployed` when undeployed.
+- FR #5655 / #5712 / #5737: PsExec is never MSI-bundled (Sysinternals license). Install/UPDATE deploys the official zip with pinned SHA-256 to `%ProgramData%\bobiverse\tools\PsExec.exe`. WhatIf/`ensure_psexec` use that copy or redeploy from the local cache (no verb-time network); fail `psexec-undeployed` when undeployed; `psexec-download-failed:<ExcType>` on extract failure (FR #5743).
 
 ## Identity for remote verbs (FR #5659 / #5711)
 

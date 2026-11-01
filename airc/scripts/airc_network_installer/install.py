@@ -32,6 +32,7 @@ from .psexec_deploy import (  # noqa: E402
     cache_zip_path,
     deploy_psexec,
     ensure_psexec,
+    ensure_psexec_result,
     find_psexec,
     load_psexec_pin,
     offer_download_psexec,
