@@ -860,6 +860,29 @@ def _coerce_worker_list(raw: object, *, now: float | None = None) -> list[dict]:
     return out[:WORKER_LIST_MAX]
 
 
+def _sync_running_queued_from_jobs(ent: dict) -> None:
+    """FR #5687: derive machines.<id>.running/queued from the jobs list.
+
+    Empty jobs must yield running=0 and queued=0 so export never contradicts
+    itself after FR #663 clears jobs when no worker_list row is doing.
+    """
+    jobs = ent.get("jobs")
+    if not isinstance(jobs, list):
+        jobs = []
+    running = 0
+    queued = 0
+    for item in jobs:
+        if not isinstance(item, dict):
+            continue
+        st = str(item.get("state") or "running").strip().lower() or "running"
+        if st in ("queued", "pending", "waiting", "queue"):
+            queued += 1
+        else:
+            running += 1
+    ent["running"] = running
+    ent["queued"] = queued
+
+
 def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
     """FR #663: machines.<id>.working_on / jobs follow worker_list; clear when none doing."""
     rows = _coerce_worker_list(ent.get("worker_list"))
@@ -881,6 +904,8 @@ def _refresh_machine_activity_from_worker_list(ent: dict) -> None:
         jobs = ent.get("jobs")
         if isinstance(jobs, list) and jobs:
             ent["jobs"] = []
+    # FR #5687: keep running/queued aligned with (possibly cleared) jobs.
+    _sync_running_queued_from_jobs(ent)
 
 
 def _mirror_worker_list_to_legacy_workers(ent: dict, mid: str, nick: str) -> None:
