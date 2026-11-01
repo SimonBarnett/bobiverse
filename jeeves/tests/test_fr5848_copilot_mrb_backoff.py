@@ -111,7 +111,7 @@ def test_successful_mrb_resets_fast_failure_streak(tmp_path, monkeypatch):
     })
     assert out["status"] == "ok"
     assert cd.mrb_dispatch_enabled(tmp_path, now=NOW + 180)
-    assert cd.load_allowance(tmp_path)["mrb_fast_giveups"] == 0
+    assert cd.load_mrb_backoff(tmp_path)["mrb_fast_giveups"] == 0
 
 
 def test_copilot_giveup_preserved_by_author_only_recycle(tmp_path, monkeypatch):
@@ -197,7 +197,7 @@ def test_expired_backoff_can_rearm_and_quota_refresh_preserves_it(tmp_path, monk
     for n in range(3):
         job = {"task": "MRB", "started": start + n * 60}
         cd._record_mrb_result(tmp_path, job, now=job["started"] + 40, giveup=True)
-        assert cd.load_allowance(tmp_path)["mrb_fast_giveups"] == n + 1
+        assert cd.load_mrb_backoff(tmp_path)["mrb_fast_giveups"] == n + 1
     now = start + 180
     assert not cd.mrb_dispatch_enabled(tmp_path, now=now)
     cd.refresh_allowance(
@@ -212,6 +212,37 @@ def test_non_fast_mrb_breaks_streak_but_fr_does_not(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     cd._record_mrb_result(tmp_path, {"task": "MRB", "started": NOW}, now=NOW + 40, giveup=True)
     cd._record_mrb_result(tmp_path, {"task": "FR", "started": NOW}, now=NOW + 50, giveup=True)
-    assert cd.load_allowance(tmp_path)["mrb_fast_giveups"] == 1
+    assert cd.load_mrb_backoff(tmp_path)["mrb_fast_giveups"] == 1
     cd._record_mrb_result(tmp_path, {"task": "MRB", "started": NOW}, now=NOW + 121, giveup=True)
-    assert cd.load_allowance(tmp_path)["mrb_fast_giveups"] == 0
+    assert cd.load_mrb_backoff(tmp_path)["mrb_fast_giveups"] == 0
+
+
+def test_overlapping_quota_refresh_cannot_erase_backoff(tmp_path, monkeypatch):
+    rows = _setup(tmp_path, monkeypatch)
+
+    def fetch_user():
+        _fail_three(tmp_path, rows)
+        return {"quota_snapshots": {"premium_interactions": {"unlimited": True}}}
+
+    cd.refresh_allowance(tmp_path, now=NOW + 180, fetch_user=fetch_user)
+    assert cd.has_allowance(tmp_path, now=NOW + 180)
+    assert not cd.mrb_dispatch_enabled(tmp_path, now=NOW + 180)
+
+
+def test_bored_non_author_gets_mrb_despite_copilot_giveups(tmp_path, monkeypatch):
+    import bobreport
+
+    rows = _setup(tmp_path, monkeypatch)
+    _fail_three(tmp_path, rows)
+    nick = "flamingo-64124"
+    digest = bobreport.empty_digest()
+    digest["machines"]["flamingo"] = bobreport._empty_machine("flamingo")
+    digest["machines"]["flamingo"]["worker_list"] = [{"nick": nick, "state": "idle"}]
+    bobreport.save_digest(tmp_path, digest)
+    status, row = gitclaim.offer_focus_top(
+        tmp_path, nick, "#flamingo", now=NOW + 180,
+        pr_exists=lambda *_args, **_kwargs: True,
+    )
+    assert status == "ok"
+    assert row["id"] in {"#1", "#2", "#3"}
+    assert row["offered_to"] == nick

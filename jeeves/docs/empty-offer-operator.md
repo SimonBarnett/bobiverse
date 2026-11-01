@@ -64,10 +64,11 @@ virtual seat is never selected for `recycleseat`.
 
 Three consecutive Copilot MRB GIVEUPs within 120 seconds of each task's start
 pause **MRB dispatch only** for 30 minutes. State survives chair restarts in
-`copilot-allowance.json` (`mrb_fast_giveups`, epoch `mrb_backoff_until`).
+`copilot-mrb-backoff.json` (`mrb_fast_giveups`, epoch `mrb_backoff_until`),
+written under the queue lock with atomic replacement, separate from quota.
 A completed MRB PASS/FAIL verdict resets the breaker; cooldown expiry allows
 new reviews but never retries rows Copilot already gave up. Set top-level
-`"mrb": false` in that file to disable cloud reviews without disabling FR/FIX
+`"mrb": false` in `copilot-allowance.json` to disable cloud reviews without disabling FR/FIX
 dispatch. Quota refresh does not clear this independent MRB pause.
 
 An unaccepted, otherwise offerable MRB with no eligible live reviewer is
