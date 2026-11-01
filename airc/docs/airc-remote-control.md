@@ -39,8 +39,8 @@ PRIVMSG marchhare_console :id=aabbccdd cmd: echo %COMSPEC%
 | `PRIORITY connect|status [instance-id]` | Allowlisted Priority Web connect/status via CredMan; `out id=` JSON + `DONE id= exit=`; never password on IRC (FR #5284 / #5275). See [airc-priority-client.md](./airc-priority-client.md) |
 | PRIORITY formStart|subform|getRows | FR #5285 read-path form walk via in-service fixture worker (JSON + DONE id= exit=). Allowlisted instance only; no passwords on IRC; no agent .mjs. |
 | NETWORK / NETWORK diag [-WhatIf] | Isolated diagnostic worker (FR #5298 / docs FR #5301). UPDATE-class auth. Inventory hostname, ips[], ou (parent-container DN; FR #5587). Full data+log via DCCLISTEN same job id or IRC CONT. Unknown action/flag is `err … code=usage` + `DONE exit=2` (never PowerShell; FR #5614). |
-| `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / docs FR #5312 / FR #5594). UPDATE-class auth. Default identity: Airc LocalSystem / computer account (`DOMAIN\\HOST$`). CredMan `PriorityAirc/LegionAdmin` is off-by-default (`AIRC_LEGION_USE_CREDMAN=1`). Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
-| EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). Fill-holes: machine account first, then CredMan `PriorityAirc/ExtensionAdmin` on access-denied (FR #5364; fail closed `credman-missing`; never on IRC). DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
+| `LEGION {host|ip}` [-WhatIf] | Isolated in-service installer (FR #5308 / #5309 / #5659 / #5745). UPDATE-class auth. Identity: passed credentials, then configurable CredMan, then SYSTEM / computer account (`DOMAIN\\HOST$`). Log via DCCLISTEN same job id or IRC CONT (FR #5311). |
+| EXTENSION install|status [-WhatIf] | Isolated worker: DC + GPO Priority-web-extension ForceInstall Chrome+Edge then LDAP fill-holes (FR #5290/#5291/#5292). Registry writes use passed credentials, then configurable CredMan, then SYSTEM (#5659 / #5745); status/WhatIf does not probe write credentials. GPO retry uses the same configured target. DCC/CONT log (FR #5293). Default id cgmpadejahkaggjpffnhaoiafbnicgpa. No DC -> GPO fail closed |
 
 ## UPDATE (FR #77 / FR #5280) - shipped
 
@@ -142,9 +142,9 @@ PRIVMSG marchhare_console :id=aabbccdd LEGION walrus -WhatIf
 ```
 
 - Default identity is the Airc service LocalSystem. The remote host sees the source computer account (for example `WONDERLAND\\MARCHHARE$`) via Kerberos. That account must be in the target local Administrators group (GPO restricted groups or a Bob Fleet installers AD group). Access denied -> `reason=system-access-denied` plus that hint.
-- CredMan `PriorityAirc/LegionAdmin` is retired as the default. Optional fallback only when `AIRC_LEGION_USE_CREDMAN=1` (workgroup targets). CAST IRON: no secrets on IRC or in the DCC body.
+- FR #5659 / #5745: passed credentials take precedence, then the configured CredMan target (default `PriorityAirc/LegionAdmin`), then SYSTEM. CAST IRON: no secrets on IRC or in the DCC log body.
 - Same job `id=` on DCCLISTEN and LEGION. WhatIf is dry-run (no remote install) and reports `identity=SYSTEM (HOST$)`.
-- FR #5530: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run, and a credman-missing failure row (live installs still fail closed before install_remote).
+- FR #5530 / #5659 / #5745: -WhatIf still probes MSI/PsExec when CredMan is missing; the DCC log includes msi, psexec, summary=dry-run and the SYSTEM fallback reason. Missing CredMan alone is not an install failure; invalid explicit credentials fail closed.
 - FR #5655 / #5712 / #5737: PsExec is never MSI-bundled (Sysinternals license). Install/UPDATE deploys the official zip with pinned SHA-256 to `%ProgramData%\bobiverse\tools\PsExec.exe`. WhatIf/`ensure_psexec` use that copy or redeploy from the local cache (no verb-time network); fail `psexec-undeployed` when undeployed.
 
 ## Identity for remote verbs (FR #5659 / #5711 / #5745)

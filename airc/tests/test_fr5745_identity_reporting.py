@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import io
+import sys
 import threading
 from pathlib import Path
 
@@ -85,7 +87,7 @@ def test_raised_reader_error_is_safe():
 
 
 @pytest.mark.parametrize("verb", ["legion", "extension", "network"])
-@pytest.mark.parametrize("source", ["credman", "system"])
+@pytest.mark.parametrize("source", ["credman", "system", "read-error"])
 def test_console_config_worker_json_and_fallback_log(tmp_path, monkeypatch, verb, source):
     config = tmp_path / "config"
     config.mkdir()
@@ -96,6 +98,8 @@ def test_console_config_worker_json_and_fallback_log(tmp_path, monkeypatch, verb
 
     def read(target):
         read_targets.append(target)
+        if source == "read-error":
+            return {"__error__": "winerror-5"}
         return {"username": "TEST\\admin", "password": FAKE_PW} if source == "credman" else {}
 
     monkeypatch.setattr(ident, "default_credman_reader", read)
@@ -133,15 +137,19 @@ def test_console_config_worker_json_and_fallback_log(tmp_path, monkeypatch, verb
     assert result and result.action == verb
     assert read_targets == [TARGETS[verb]]
     payload = json.loads(deliveries[0]["payload"])
-    assert payload["identity"] == source
+    expected_source = "credman" if source == "credman" else "system"
+    assert payload["identity"] == expected_source
     if source == "credman":
         assert payload["account"] == "TEST\\admin"
     else:
         assert payload["account"].endswith("$")
     assert payload["account"]
-    assert f"identity={source}" in deliveries[0]["done"]
-    if source == "system":
-        reason = f"credman-missing:{TARGETS[verb]}"
+    assert f"identity={expected_source}" in deliveries[0]["done"]
+    if expected_source == "system":
+        reason = (
+            "credman-read-error:winerror-5" if source == "read-error"
+            else f"credman-missing:{TARGETS[verb]}"
+        )
         assert payload["identity_reason"] == reason
         assert len(logs) == 1 and "identity-fallback" in logs[0]
         assert f"identity_reason={reason}" in logs[0]
@@ -162,6 +170,35 @@ def test_custom_target_crosses_isolated_worker_spec(monkeypatch, verb):
     runner(credman_target=TARGETS[verb])
     assert specs[0][2]["credman_target"] == TARGETS[verb]
     assert FAKE_PW not in json.dumps(specs)
+
+
+def test_isolated_parent_and_child_keep_only_target(monkeypatch, capsys):
+    seen = []
+
+    def runner(argv, **kw):
+        spec = json.loads(kw["input"])
+        seen.append(spec)
+        return type("Result", (), {"returncode": 0, "stdout": '{"ok":true}', "stderr": ""})()
+
+    kwargs = {"credman_target": TARGETS["network"],
+              "passed_cred": {"username": "TEST\\admin", "password": FAKE_PW},
+              "password": FAKE_PW, "cred_id": "aabbccdd"}
+    iso.call_isolated_module("airc_network", "inventory_work", kwargs, runner=runner)
+    assert seen[0]["kwargs"] == {"credman_target": TARGETS["network"]}
+    assert FAKE_PW not in json.dumps(seen)
+
+    def worker(**kw):
+        assert kw == {"credman_target": TARGETS["network"]}
+        return {"ok": True}
+
+    monkeypatch.setattr(nw, "inventory_work", worker)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({
+        "module": "airc_network", "func": "inventory_work", "kwargs": kwargs,
+    })))
+    assert iso.isolated_job_main() == 0
+    assert FAKE_PW not in capsys.readouterr().out
+    assert iso._scrub_kwargs({"credman_target": {"password": FAKE_PW}}) == {}
+    assert iso._scrub_kwargs({"credman_target": "bad\nlog"}) == {}
 
 
 def test_config_defaults_and_invalid_overrides():

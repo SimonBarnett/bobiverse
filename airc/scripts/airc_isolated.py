@@ -47,6 +47,12 @@ def _child_env() -> dict[str, str]:
 def _scrub_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in (kwargs or {}).items():
+        if k == "credman_target":
+            if isinstance(v, str) and v.strip() and not any(
+                ord(c) < 32 or ord(c) == 127 for c in v
+            ):
+                out[k] = v.strip()
+            continue
         if _SECRET_KEY_RE.search(str(k)):
             continue
         if callable(v):
