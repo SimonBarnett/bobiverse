@@ -392,11 +392,14 @@ def skip_mrb_fail_fix_for_harvest(
     merged: bool = False,
     comments: list[dict] | None = None,
 ) -> bool:
-    """FR #4800: skip FIX for harvest-lesson tips closed (or disposition-boarded).
+    """FR #4800 / #5720: skip FIX for harvest-lesson tips closed (or disposition-boarded).
 
     Product MRB FAIL @ sha still queues FIX (FR #4718). Open harvest tips with a
     real ``MRB FAIL @ sha`` board (no CLOSED/FAIL-supersede disposition) still
     queue FIX so a fix PR can land.
+
+    FR #5720: the same carve-out applies to conflict-FIX (#4636/#4679/#5581) so a
+    closed FAIL-supersede harvest tip never gets ``FIX conflict`` on DONE/resync.
     """
     if merged:
         return False
@@ -1449,11 +1452,15 @@ def offer_dirty_conflict_fix(
     sha: str,
     url: str = "",
     reason: str = "conflicting",
+    pr_state: dict[str, Any] | None = None,
 ) -> str:
     """Offer one conflict FIX for a DIRTY/CONFLICTING PR (FR #4669 / #4636 / #4679).
 
     A finished FIX on this SHA is re-offered. A still-queued FIX stays ``duplicate``.
     After ``FIX_CI_RECOVER_MAX`` re-offers, stamp ``needs_human``.
+
+    FR #5720: harvest-lesson closed / FAIL-supersede dispositions return ``skipped``
+    (same carve-out as FR #4800 for mrb-fail FIX).
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
@@ -1465,6 +1472,7 @@ def offer_dirty_conflict_fix(
         pass_sha=sha,
         url=url,
         reason=reason,
+        pr_state=pr_state,
     )
     if result != "duplicate":
         return result
@@ -1496,6 +1504,7 @@ def offer_dirty_conflict_fix(
         pass_sha=sha,
         url=url,
         reason=reason,
+        pr_state=pr_state,
     )
     if result == "added":
         doc = load_ledger(home)
@@ -2093,17 +2102,35 @@ def enqueue_conflict_fix(
     pass_sha: str,
     url: str = "",
     reason: str = "",
+    pr_state: dict[str, Any] | None = None,
 ) -> str:
     """Queue one FIX to merge main and resolve conflicts for this PR+SHA (FR #4636).
 
     Same SHA returns ``duplicate``. A later SHA is a new job once any earlier FIX
     row for this PR has left the queue. FIX stays offerable to any seat: the
     author block applies to MRB/UAT, not to FIX.
+
+    FR #5720: harvest-lesson tips closed unmerged (or FAIL-supersede / CLOSED /
+    MOVED disposition-boarded) return ``skipped`` — never ``FIX conflict``.
     """
     repo_c = gitclaim.canonical_queue_repo(repo)
     num = str(pr).lstrip("#")
     sha = _norm_sha(pass_sha)
     if not repo_c or not num or not sha:
+        return "skipped"
+    state = pr_state
+    if state is None:
+        try:
+            state = fetch_pr_state(repo_c, num)
+        except Exception:  # noqa: BLE001
+            state = None
+    if isinstance(state, dict) and skip_mrb_fail_fix_for_harvest(
+        title=str(state.get("title") or ""),
+        labels=tuple(state.get("labels") or ()),
+        closed=bool(state.get("closed")),
+        merged=bool(state.get("merged")),
+        comments=state.get("comments") if isinstance(state.get("comments"), list) else None,
+    ):
         return "skipped"
     sig = f"conflict|{repo_c}|{num}|{sha}"
     doc = load_ledger(home)
@@ -2929,6 +2956,31 @@ def enqueue_from_done(
         ),
     )
     if conflict:
+        st_dict = st if isinstance(st, dict) else {}
+        # FR #5720: closed harvest FAIL-supersede must not enqueue FIX conflict
+        # (FR #4800 carve-out for the DONE CONFLICTING path / FR #5581).
+        if skip_mrb_fail_fix_for_harvest(
+            title=str(st_dict.get("title") or ""),
+            labels=tuple(st_dict.get("labels") or ()),
+            closed=bool(st_dict.get("closed")),
+            merged=bool(st_dict.get("merged")),
+            comments=(
+                st_dict.get("comments")
+                if isinstance(st_dict.get("comments"), list)
+                else None
+            ),
+        ):
+            return {
+                "key": _row_key(pr_repo, pr_num),
+                "repo": gitclaim.canonical_queue_repo(pr_repo),
+                "pr": str(pr_num).lstrip("#"),
+                "pass_sha": sha,
+                "url": url,
+                "nick": nick,
+                "status": "skipped_harvest_disposition",
+                "conflict_reason": conflict,
+                "conflict_fix": "skipped",
+            }
         fix = offer_dirty_conflict_fix(
             home,
             repo=pr_repo,
@@ -2936,6 +2988,7 @@ def enqueue_from_done(
             sha=sha,
             url=url,
             reason=conflict,
+            pr_state=st_dict or None,
         )
         # Park so resync/process_pending do not re-try merge on this SHA.
         doc = load_ledger(home)

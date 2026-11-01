@@ -195,7 +195,7 @@ Non-draft PRs labelled `harvest-lesson` with title `lesson(<book>): …` edit a 
 **FR #3317 — seats open harvest PRs in the owning skill book** (job/product/plan repo; Bob tooling stays bobiverse). MRB is a **light triage**, not a re-route. Cost cap: use the short checklist below; **no full test suite** unless the tip also touches code/tests.
 
 
-**FR #4800 (CAST IRON):** harvest tip light-triage exits (FAIL-supersede / CLOSED not-useful / Duplicate / MOVED / plan-content) complete as **`DONE MRB … PASS <url>`**. Never `DONE FAIL` on those tips — FR #4718 would enqueue a FIX job for a tip that must stay closed unmerged. Chair also skips FIX when the PR is `harvest-lesson` and closed unmerged (or carries a FAIL-supersede/CLOSED/MOVED board).
+**FR #4800 (CAST IRON):** harvest tip light-triage exits (FAIL-supersede / CLOSED not-useful / Duplicate / MOVED / plan-content) complete as **`DONE MRB … PASS <url>`**. Never `DONE FAIL` on those tips — FR #4718 would enqueue a FIX job for a tip that must stay closed unmerged. Chair also skips FIX when the PR is `harvest-lesson` and closed unmerged (or carries a FAIL-supersede/CLOSED/MOVED board). **FR #5720:** the same carve-out skips **conflict-FIX** (`FIX conflict` / FR #4636/#4679/#5581) for those closed harvest disposition tips — a CONFLICTING harvest tip closed FAIL-supersede must not enqueue fold-main FIX.
 
 **FR #4917 (CAST IRON):** do **not** open a `docs/mrb-N` pin for a lesson-of-lesson tip (CLOSED-duplicate / FAIL-supersede / light-triage meta / FIX of a pin). Do **not** harvest after FIX/MRB/re-DONE on `harvest-lesson` or `docs/mrb-*` PRs (`Invoke-BobiverseHarvest` skips; Jeeves does not offer those tips as MRB). First-level pin of a useful product lesson still OK.
 
