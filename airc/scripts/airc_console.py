@@ -3150,6 +3150,17 @@ class AircConsoleCore:
             if normalize_irc_channel(c)
         ]
 
+    def _resolved_priority_allowlist_path(self) -> str | None:
+        """FR #5836: same allowlist resolution as PRIORITY walk/status/connect.
+
+        Service constructs the core with ``install_root`` and without an injected
+        ``priority_allowlist_path``. CRED via=irc must fall back to
+        ``<install>/config/priority-instances.json`` the same way PRIORITY does.
+        """
+        override = self.priority_allowlist or self.priority_allowlist_path
+        path = _priority.resolve_walk_allowlist_path(self.install_root, override)
+        return str(path) if path is not None else None
+
     def register_commands(self) -> list[str]:
         """NickServ register / identify sequence (password from env/file at service layer)."""
         return [
@@ -3577,8 +3588,9 @@ class AircConsoleCore:
             allow = self._allow_meta(nick, account)
             qid = (seal_cmd.get("qid") or "").lower()
             try:
+                # FR #5836: resolve via install_root when path not injected (service).
                 allowlisted = _circ.allowlisted_cred_targets(
-                    getattr(self, "priority_allowlist_path", None)
+                    self._resolved_priority_allowlist_path()
                 )
             except Exception:
                 allowlisted = set()
@@ -3670,9 +3682,9 @@ class AircConsoleCore:
                         import airc_cred_irc as _circ
 
                         # Fail closed: target must appear in priority-instances
-                        # credentialTarget values (FR #5812).
+                        # credentialTarget values (FR #5812 / #5836).
                         allowlisted = _circ.allowlisted_cred_targets(
-                            getattr(self, "priority_allowlist_path", None)
+                            self._resolved_priority_allowlist_path()
                         )
                         if cred_target not in allowlisted:
                             return HandleResult(
