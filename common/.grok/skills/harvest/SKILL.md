@@ -339,6 +339,7 @@ routes to bobiverse via the split rule.
 - DCCLISTEN wiring pins must stub NETWORK inventory_work on domain hosts; waiting on packaged LDAP makes fr5300 flake under full suite
 - After FR #663 clears digest jobs when no worker_list is doing, always derive running/queued from the jobs list so empty jobs yields 0/0 (FR #5687); tip tests must not hardcode D:\Temp.
 - is_offerable_intake_skill_lesson_pr must require Lesson/light-triage body; via-intake+skill with _via-intake footer or queue me and no Lesson is a receipt (fomprep#144)
+- Tray cursor_pools: prefer LocalCursorDoc.period_end over cursor-pools.json group period_end; never persist or re-read an expired group period_end (FR #5689) or digest _mask_expired_pools nulls remaining forever
 
 ## Harvest digest (lessons audit 2026-10-06)
 
