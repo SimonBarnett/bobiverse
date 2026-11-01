@@ -64,10 +64,11 @@ CONSOLE_OUTBOX_FLOOD_S = float(os.environ.get("BOB_CONSOLE_OUTBOX_FLOOD_S", "1.5
 _AIRC_CONSOLE_NICK_RE = re.compile(r".+_console$", re.IGNORECASE)
 # FR #1546 / #5002: accept id-less DONE exit= (auth refusals) as well as DONE id=...
 # FR #5679: accept id-less err seq= (synthetic too_long when outbox had no hex id).
+# FR #5742: accept non-hex id= on err/DONE so FR #5678 bad_id echoes reach airc-replies.jsonl.
 _AIRC_REPLY_BODY_RE = re.compile(
-    r"^(?:(?:out|err)\s+id=[0-9a-f]+\s+seq=\d+\s|"
+    r"^(?:(?:out|err)\s+id=\S+\s+seq=\d+\s|"
     r"err\s+seq=\d+\s|"
-    r"DONE\s+(?:id=[0-9a-f]+\s+)?exit=-?\d+\b|"
+    r"DONE\s+(?:id=\S+\s+)?exit=-?\d+\b|"
     r"UPDATE\s+accepted\b)",
     re.IGNORECASE,
 )

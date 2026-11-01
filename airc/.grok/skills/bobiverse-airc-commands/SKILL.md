@@ -29,7 +29,7 @@ PRIVMSG <machine>_console :psb64:<base64>
 ```
 
 - Default is **PowerShell 5.1** (`-NoProfile`); `cmd:` uses COMSPEC; `psb64:` is `-EncodedCommand` (UTF-16LE or UTF-8 payload).
-- **Job id frame (FR #5532 / #5678):** optional leading `id=<8hex> ` pins DONE/out/err. A leading `id=` that is not exactly eight hex digits is `code=bad_id` / `DONE exit=2` (never PowerShell under a new id).
+- **Job id frame (FR #5532 / #5678 / #5742):** optional leading `id=<8hex> ` pins DONE/out/err. A leading `id=` that is not exactly eight hex digits is `code=bad_id` / `DONE exit=2` (never PowerShell under a new id). Service `on_line` must send that reply (FR #5742); ear captures non-hex `id=` on err/DONE.
 - Replies are Query-only: `out id=… seq=…`, `err id=… seq=…`, then `DONE id=… exit=…`. Long lines are chunked (~350 chars).
 - Allowlist: nick must be in operators (installer seeds `bob-<machine>`); arbitrary `bob-*` is **not** auth (FR #3286). With `--require-account` / `--accounts`, SASL/NickServ account must match too.
 - PUT/RUN/JOB/UPDATE are separate FRs - see `docs/airc-remote-control.md`. **FR #5280:** bare `UPDATE airc` (no version) schedules Check against the **latest** GitHub Release airc MSI; `UPDATE airc x.y.z` pins a tag.
