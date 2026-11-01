@@ -15,9 +15,12 @@ SRC = ROOT / "airc" / "scripts" / "airc_extension.py"
 
 def test_fr5709_source_uses_wnet_not_net_use_password():
     src = SRC.read_text(encoding="utf-8")
+    wnet_src = (ROOT / "airc" / "scripts" / "airc_wnet.py").read_text(encoding="utf-8")
     assert "FR #5709" in src
-    assert "WNetAddConnection2W" in src
+    # FR #5726: ctypes WNet lives in shared airc_wnet; EXTENSION imports it.
+    assert "from airc_wnet import" in src
     assert "wnet_add_ipc" in src
+    assert "WNetAddConnection2W" in wnet_src
     fn = src[src.index("def default_apply_force_install_as") :]
     fn = fn[: fn.index("\ndef default_apply_force_install")]
     assert "wnet_add_ipc" in fn
