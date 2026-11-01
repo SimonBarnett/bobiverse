@@ -294,6 +294,56 @@ def normalize_outbox_line(text: str) -> tuple[str, str]:
     return "bare", s
 
 
+def _is_cred_seal_outbox_line(line: str) -> bool:
+    kind, normalized = normalize_outbox_line(line)
+    if kind != "privmsg":
+        return False
+    match = _PREWRAPPED_PRIVMSG.match(normalized)
+    if not match or not match.group(1).lower().endswith("_console"):
+        return False
+    body = match.group(2).lstrip(" \t\ufeff")
+    return bool(
+        re.match(r"(?i)^(?:id=[0-9a-f]{8}\s+)?CRED-SEAL(?:\s|$)", body)
+    )
+
+
+def _scrub_consumed_cred_seal_lines(path: Path, start: int, end: int) -> int:
+    """Blank consumed CRED-SEAL payloads in place while preserving outbox offsets."""
+    try:
+        with Path(path).open("r+b") as fh:
+            data = fh.read()
+            begin = 0 if start > len(data) else max(0, int(start))
+            stop = min(len(data), max(begin, int(end)))
+            consumed = data[begin:stop]
+            cursor = begin
+            replacements: list[tuple[int, bytes]] = []
+            for raw in consumed.splitlines(keepends=True):
+                content_end = len(raw)
+                if raw.endswith(b"\n"):
+                    content_end -= 1
+                if content_end and raw[content_end - 1 : content_end] == b"\r":
+                    content_end -= 1
+                if _is_cred_seal_outbox_line(
+                    raw[:content_end].decode("utf-8", "replace")
+                ):
+                    replacements.append(
+                        (cursor, b" " * content_end + raw[content_end:])
+                    )
+                cursor += len(raw)
+            for offset, replacement in replacements:
+                fh.seek(offset)
+                fh.write(replacement)
+            return len(replacements)
+    except OSError:
+        return -1
+
+
+def _outbox_log_preview(line: str, limit: int = 160) -> str:
+    if _is_cred_seal_outbox_line(line):
+        return "[CRED-SEAL payload omitted]"
+    return line if len(line) <= limit else line[: limit - 3] + "..."
+
+
 def is_misplaced_worker_job_wire(line: str) -> bool:
     """True when an outbox line is a worker ACK/DONE/NACK/GIVEUP job-wire (FR #2384).
 
@@ -4201,14 +4251,14 @@ class Client:
                     try:
                         wire = self.send_privmsg_lines(line)
                     except OSError as exc:
-                        preview = line if len(line) <= 160 else (line[:157] + "...")
+                        preview = _outbox_log_preview(line)
                         info(
                             f"ERROR outbox: send failed {type(exc).__name__}: {preview}"[:220]
                         )
                         continue
                     for w in wire:
                         head = w.split(" :", 1)[0]
-                        prev = w if len(w) <= 160 else (w[:157] + "...")
+                        prev = _outbox_log_preview(w)
                         info(f"INFO outbox: sent {head} ({len(w)} chars): {prev}")
                     sent.extend(wire)
                     # FR #4796: pace *_console Commands slower than shop chat.
@@ -4222,10 +4272,13 @@ class Client:
                     self.say(line)
                     sent.append(line)
             except Exception as exc:  # noqa: BLE001 -- FR #5157
-                preview = line if len(str(line)) <= 160 else (str(line)[:157] + "...")
+                preview = _outbox_log_preview(str(line))
                 info(f"ERROR outbox: line failed {type(exc).__name__}: {preview}"[:220])
                 continue
         if new_last != last:
+            scrubbed = _scrub_consumed_cred_seal_lines(path, last, new_last)
+            if scrubbed < 0:
+                info("WARN outbox: consumed CRED-SEAL payload could not be scrubbed")
             save_outbox_pos(path, new_last)
         return sent
 

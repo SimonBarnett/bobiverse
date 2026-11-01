@@ -112,6 +112,23 @@ function Protect-AircRemoteSecret {
     return $s
 }
 
+function Protect-AircRemoteReplyLine {
+    param([Parameter(Mandatory)][string]$Line)
+    $hello = [regex]::Match(
+        $Line,
+        '^out\s+(?:id=[0-9a-f]+\s+)?seq=\d+\s+CRED-HELLO\s+token=(?<token>[0-9a-f]{32})(?=\s|$)',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    if (-not $hello.Success) { return Protect-AircRemoteSecret $Line }
+    $token = $hello.Groups['token'].Value
+    $marker = '__AIRC_PUBLIC_CRED_HELLO_' + [guid]::NewGuid().ToString('N') + '__'
+    $start = $hello.Groups['token'].Index
+    $fieldStart = $start - 'token='.Length
+    $safe = $Line.Substring(0, $fieldStart) + $marker + $Line.Substring($start + $token.Length)
+    $safe = Protect-AircRemoteSecret $safe
+    return $safe.Replace($marker, 'token=' + $token)
+}
+
 function ConvertTo-AircPsb64 {
     param([Parameter(Mandatory)][string]$Script)
     $bytes = [System.Text.Encoding]::Unicode.GetBytes($Script)  # UTF-16LE
@@ -282,7 +299,7 @@ function ConvertFrom-AircRemoteReply {
     $errs = New-Object System.Collections.Generic.List[object]
     $done = $null
     foreach ($raw in $Lines) {
-        $line = Protect-AircRemoteSecret $raw
+        $line = Protect-AircRemoteReplyLine $raw
         if ($line -match '^(?<stream>out|err)\s+id=(?<id>[0-9a-f]+)\s+seq=(?<seq>\d+)\s(?<body>.*)$') {
             $obj = [pscustomobject]@{
                 Stream = $Matches.stream
@@ -674,6 +691,24 @@ function Invoke-AircRemoteSelfTest {
     Assert-True ($red -notmatch 'super-secret') 'secret redacted password'
     Assert-True ($red -notmatch 'token=abc') 'secret redacted token'
     Assert-True ($red -notmatch '12345678-1234-1234-1234-123456789abc') 'secret redacted guid'
+
+    $helloToken = '0123456789abcdef0123456789abcdef'
+    $helloParsed = ConvertFrom-AircRemoteReply -Lines @(
+        "out id=$id seq=1 CRED-HELLO token=$helloToken pub=public",
+        "DONE id=$id exit=0"
+    ) -ExpectJobId $id
+    Assert-True ($helloParsed.StdOut -match "CRED-HELLO token=$helloToken") 'CRED-HELLO public token preserved'
+    $helloPasswordField = [string]::Concat('password', '=not-a-secret')
+    $helloSensitive = ConvertFrom-AircRemoteReply -Lines @(
+        "out id=$id seq=1 CRED-HELLO token=$helloToken pub=public $helloPasswordField",
+        "DONE id=$id exit=0"
+    ) -ExpectJobId $id
+    Assert-True ($helloSensitive.StdOut -notmatch 'not-a-secret') 'CRED-HELLO password remains redacted'
+    $ordinaryParsed = ConvertFrom-AircRemoteReply -Lines @(
+        "out id=$id seq=1 token=$helloToken",
+        "DONE id=$id exit=0"
+    ) -ExpectJobId $id
+    Assert-True ($ordinaryParsed.StdOut -notmatch [regex]::Escape($helloToken)) 'non-HELLO token stays redacted'
 
     $script:RetryAttempts = 0
     $result = Invoke-AircRemoteWithRetry -MaxRetries 2 -Send {
