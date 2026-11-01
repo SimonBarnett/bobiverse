@@ -148,6 +148,7 @@ def test_put_reply_timeout_starts_after_paced_frames():
     send = script.index("Write-AircOutbox -Outbox $Outbox")
     reset = script.index("if ($Action -eq 'Put')", send)
     wait = script.index("if (-not $wantWait)", reset)
-    assert send < reset < wait
+    comment = script.rfind("# FR #5838: the reply allowance", 0, reset)
+    assert send < comment < reset < wait
     assert "$deadline = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec))" in script[reset:wait]
-    assert "FR #5838: the reply allowance starts once all paced PUT frames were sent." in script[reset:wait]
+    assert "FR #5838: the reply allowance starts once all paced PUT frames were sent." in script[comment:wait]
