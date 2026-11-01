@@ -183,6 +183,9 @@ class HostResult:
     log_path: str = ""
     detail: str = ""
     reboot_required: bool = False
+    # FR #5744: classified remote failure (host_down / auth_failed / session_conflict).
+    error: str = ""
+    step: str = ""
 
 
 def write_summary_csv(path: Path, rows: list[HostResult]) -> None:
@@ -200,6 +203,8 @@ def write_summary_csv(path: Path, rows: list[HostResult]) -> None:
                 "log_path",
                 "reboot_required",
                 "detail",
+                "error",
+                "step",
             ],
         )
         w.writeheader()
@@ -215,6 +220,8 @@ def write_summary_csv(path: Path, rows: list[HostResult]) -> None:
                     "log_path": r.log_path,
                     "reboot_required": "1" if r.reboot_required else "0",
                     "detail": r.detail,
+                    "error": r.error,
+                    "step": r.step,
                 }
             )
 
