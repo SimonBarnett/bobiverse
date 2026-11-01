@@ -25,7 +25,7 @@ The Bob ear is this box's presence on IRC (`#bobiverse` + `#wonderland` + `#<mac
 - `.grok/skills/bobiverse-bob-commands/SKILL.md` - what the ear handles; typing as the ear via outbox.txt
 - `.grok/skills/bobiverse-bob-troubleshooting/SKILL.md` - restart loops (--host), SASL, outbox BOM, tray
 - `.grok/skills/bobiverse-bob-worker/SKILL.md` - the tray **Agent** item / `bob-worker.exe`: how a worker seat starts (cursor > grok > key prompt), ONE window, `!bored`, IRC relay, IRC-loss exit, hang restarts, logs
-- `.grok/skills/bobiverse-bob-job-irc/SKILL.md` (+ `-fr`, `-mrb`, `-uat`) - exact ACK / DONE / NACK / GIVEUP lines and the FR / MRB / UAT job processes (with diagrams) a worker follows. MRB seats verify CodeRabbit findings first (FR #5317) then vision/tests/docs only.
+- `.grok/skills/bobiverse-bob-job-irc/SKILL.md` (+ `-fr`, `-mrb`, `-uat`) - exact ACK / DONE / NACK / GIVEUP lines and the FR / MRB / UAT job processes (with diagrams) a worker follows. MRB seats follow assign-line `coderabbit=`/`review=` stamps (FR #5317/#5865): light triage when ready, full review otherwise; then vision/tests/docs.
 - `.grok/skills/bobiverse-bob-plan/SKILL.md` - the tray **Plan** item: `bob-worker.exe --mode plan` in `<ai root>\bob\plan` (visionary / plan skills)
 - `.grok/skills/bobiverse-fleet-ops/SKILL.md` - shared health checks, hotpatch, rollback, privilege rules, tests
 - `.grok/skills/harvest/SKILL.md` - harvest + intake

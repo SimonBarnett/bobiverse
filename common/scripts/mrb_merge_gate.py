@@ -153,7 +153,27 @@ def find_mrb_pass_board(comments: list[dict] | None) -> str | None:
     return None
 
 
-def evaluate_merge_gate(comments: list[dict] | None) -> tuple[bool, str]:
+def evaluate_coderabbit_gate(row: dict | None) -> tuple[bool, str]:
+    """FR #5865: refuse merge while CodeRabbit stamp is still pending (switch on)."""
+    try:
+        import fuel_chain
+    except Exception:
+        return True, ""
+    if not fuel_chain.stage_enabled("coderabbit"):
+        return True, ""
+    stamp = str((row or {}).get("coderabbit") or "").strip().lower()
+    if stamp == "pending" or stamp == "":
+        return False, f"coderabbit pending on head ({stamp or 'unset'})"
+    if fuel_chain.gate_cleared(stamp):
+        return True, ""
+    return False, f"coderabbit not cleared ({stamp})"
+
+
+def evaluate_merge_gate(
+    comments: list[dict] | None,
+    *,
+    coderabbit_row: dict | None = None,
+) -> tuple[bool, str]:
     """Pure gate: (ok, reason). reason empty when ok."""
     hold = find_active_owner_hold(comments)
     if hold:
@@ -161,6 +181,9 @@ def evaluate_merge_gate(comments: list[dict] | None) -> tuple[bool, str]:
     board = find_mrb_pass_board(comments)
     if not board:
         return False, "no MRB PASS board comment posted yet"
+    ok_cr, reason_cr = evaluate_coderabbit_gate(coderabbit_row)
+    if not ok_cr:
+        return False, reason_cr
     return True, ""
 
 
