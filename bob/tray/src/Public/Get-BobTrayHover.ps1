@@ -974,8 +974,35 @@ function Get-BobTrayTitle {
     return ('#Bobiverse ({0})' -f $mid)
 }
 
+function Test-BobLiveGrokIsFleetSeat {
+    <#
+    .SYNOPSIS
+      FR #5688: true when a live grok.exe belongs to a Bob seat (bob-worker parent chain).
+      User-hosted sessions (PriorityAgent.exe, bare explorer, etc.) are false.
+    #>
+    param(
+        [string]$ParentName,
+        [string]$ParentPath,
+        [string]$CommandLine,
+        [string[]]$AncestorNames
+    )
+    $names = @()
+    if ($ParentName) { $names += [string]$ParentName }
+    foreach ($a in @($AncestorNames)) {
+        if ($a) { $names += [string]$a }
+    }
+    foreach ($n in $names) {
+        $leaf = [IO.Path]::GetFileNameWithoutExtension($n)
+        if ($leaf -match '(?i)^bob-worker') { return $true }
+    }
+    if ($ParentPath -and ($ParentPath -match '(?i)[\\/]bob-worker')) { return $true }
+    if ($CommandLine -and ($CommandLine -match '(?i)(?:^|[\\/\s])bob-worker')) { return $true }
+    return $false
+}
+
 function Get-BobLiveGrokAgents {
     # grok.exe on this box, including sessions Bob did not start. Not Grok Bot.exe.
+    # FR #5688: each row carries fleetSeat (bob-worker parent chain). Digest uses only fleet seats.
     if ($env:BOB_SKIP_LIVE_GROK -eq '1') { return @() }
     $byPid = @{}
     $sessPath = Join-Path $env:USERPROFILE '.grok\active_sessions.json'
@@ -1014,15 +1041,37 @@ function Get-BobLiveGrokAgents {
         if (-not $opened -and $p.CreationDate) {
             try { $opened = [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime().ToString('o') } catch { }
         }
+        $parentName = $null
+        $parentPath = $null
+        $ancestors = @()
+        $walk = 0
+        try { $walk = [int]$p.ParentProcessId } catch { $walk = 0 }
+        for ($i = 0; $i -lt 6 -and $walk -gt 0; $i++) {
+            $par = $null
+            try {
+                $par = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $walk) -ErrorAction SilentlyContinue
+            } catch { $par = $null }
+            if (-not $par) { break }
+            $nm = [string]$par.Name
+            if ($i -eq 0) {
+                $parentName = $nm
+                $parentPath = [string]$par.ExecutablePath
+            }
+            if ($nm) { $ancestors += $nm }
+            try { $walk = [int]$par.ParentProcessId } catch { break }
+        }
+        $fleet = [bool](Test-BobLiveGrokIsFleetSeat -ParentName $parentName -ParentPath $parentPath -AncestorNames $ancestors -CommandLine $cmd)
         $out += ,[pscustomobject]@{
-            id        = $sid
-            sessionId = $sid
-            pid       = $pid
-            cwd       = $cwd
-            claimedAt = $opened
-            machine   = $null
-            state     = 'running'
-            source    = 'live-grok'
+            id         = $sid
+            sessionId  = $sid
+            pid        = $pid
+            cwd        = $cwd
+            claimedAt  = $opened
+            machine    = $null
+            state      = 'running'
+            source     = 'live-grok'
+            parentName = $parentName
+            fleetSeat  = $fleet
         }
     }
     return $out
