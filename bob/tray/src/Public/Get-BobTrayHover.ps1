@@ -1848,26 +1848,23 @@ function Get-BobCursorPoolsForTray {
             }
         }
         else {
-            $pe = $periodEnd
-            if (-not $LocalOnly) {
-                if ($ce -and $ce.groups) {
-                    $ge = $ce.groups.$gid
-                    if (-not $ge -and $gid -eq 'auto') { $ge = $ce.groups.'low-cost-models' }
-                    if ($ge -and $ge.period_end) { $pe = [string]$ge.period_end }
-                }
-                if ($null -eq $pe -or $pe -eq '') {
-                    foreach ($seatEnt in @($cache.by_seat.GetEnumerator())) {
-                        if (-not $seatEnt.Value.groups) { continue }
-                        $ge = $seatEnt.Value.groups.$gid
-                        if ($ge -and $ge.period_end) { $pe = [string]$ge.period_end; break }
-                    }
-                }
-            }
-            elseif ($ce -and $ce.groups) {
+            # FR #5689: prefer LocalCursorDoc.period_end; never let a stale cached
+            # group period_end overwrite a fresh billing end (digest then nulls remaining).
+            $cachedPe = $null
+            if ($ce -and $ce.groups) {
                 $ge = $ce.groups.$gid
                 if (-not $ge -and $gid -eq 'auto') { $ge = $ce.groups.'low-cost-models' }
-                if ($ge -and $ge.period_end) { $pe = [string]$ge.period_end }
+                if ($ge -and $ge.period_end) { $cachedPe = [string]$ge.period_end }
             }
+            if ((-not $cachedPe -or $cachedPe -eq '') -and -not $LocalOnly) {
+                foreach ($seatEnt in @($cache.by_seat.GetEnumerator())) {
+                    if (-not $seatEnt.Value.groups) { continue }
+                    $ge = $seatEnt.Value.groups.$gid
+                    if (-not $ge -and $gid -eq 'auto') { $ge = $seatEnt.Value.groups.'low-cost-models' }
+                    if ($ge -and $ge.period_end) { $cachedPe = [string]$ge.period_end; break }
+                }
+            }
+            $pe = Select-BobCursorPoolBillingPeriodEnd -LocalPeriodEnd $periodEnd -CachedPeriodEnd $cachedPe
         }
         # Digest may fill still-null period_end (reset countdown) without clobbering local %.
         if ((-not $pe -or $pe -eq '') -and -not $LocalOnly -and $DigestPools) {
