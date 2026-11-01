@@ -545,9 +545,12 @@ def report_update_failure_intake(
     mid = (os.environ.get("BOB_MACHINE_ID") or os.environ.get("COMPUTERNAME") or "unknown").strip()
     mid = re.sub(r"[^a-z0-9-]", "-", mid.lower()) or "unknown"
     prod = re.sub(r"[^a-z0-9-]", "-", (product or "unknown").lower())
+    # FR #5766: Python's requested version and the updater's resolved release
+    # tag are not always both available or represented the same way. Keep tag
+    # in the report body, but key one failure class per machine/product/result.
     tg = re.sub(r"[^A-Za-z0-9._-]", "-", tag) if tag else "-"
     res = re.sub(r"[^a-z0-9-]", "-", (result or "unknown").lower())
-    key = f"airc-update-fail|{mid}|{prod}|{tg}|{res}"
+    key = f"airc-update-fail|{mid}|{prod}|-|{res}"
     title = _redact_update_intake_text(f"airc UPDATE fail {res} product={prod}")
     safe_detail = _redact_update_intake_text((detail or "")[:400])
     body = _redact_update_intake_text(
@@ -569,6 +572,11 @@ def report_update_failure_intake(
     if dry_run:
         return payload
     script = Path(__file__).resolve().parent / "Report-BobiverseIntakeIssue.ps1"
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bundled = Path(meipass) / "Report-BobiverseIntakeIssue.ps1"
+        if bundled.is_file():
+            script = bundled
     if not script.is_file():
         alt = Path(__file__).resolve().parents[1] / "scripts" / "Report-BobiverseIntakeIssue.ps1"
         script = alt if alt.is_file() else script

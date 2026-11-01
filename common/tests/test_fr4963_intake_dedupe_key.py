@@ -119,6 +119,25 @@ def test_idempotent_retry_no_second_comment(tmp_path: Path):
     assert len(filer.issues) == 1
 
 
+def test_idempotent_retry_reopens_closed_issue_and_comments_once(tmp_path: Path):
+    filer = intake.FakeGitHubFiler()
+    payload = _payload(idem="closed-repeat")
+    first = _process(tmp_path, payload, filer)
+    number = first.body["number"]
+    filer.issues[0]["state"] = "closed"
+
+    retried = _process(tmp_path, payload, filer)
+    assert retried.body.get("duplicate") is True
+    assert retried.body.get("action") == "reopened"
+    assert filer.issues[0]["state"] == "open"
+    assert len(filer.comments) == 1
+
+    _process(tmp_path, payload, filer)
+    assert filer.issues[0]["number"] == number
+    assert len(filer.comments) == 1
+    assert len(filer.issues) == 1
+
+
 def test_lost_index_rebuilds_from_marker_search(tmp_path: Path):
     filer = intake.FakeGitHubFiler()
     r1 = _process(tmp_path, _payload(idem="lost-1"), filer)

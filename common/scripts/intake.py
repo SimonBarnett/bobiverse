@@ -2540,6 +2540,31 @@ def process_intake(
     # idempotency
     existing = _find_idempotent(home, str(norm.get("idempotency_key") or ""))
     if existing and existing.get("url"):
+        if norm["kind"] == "issue" and existing.get("number"):
+            repo = str(norm["repo"])
+            number = int(existing["number"])
+            try:
+                state = str(filer.get_issue_state(repo, number) or "open").lower()
+                if state == "closed":
+                    iid = str(existing.get("intake_id") or "")
+                    if existing.get("action") != "reopen-pending-comment" and not _issue_already_commented(
+                        filer, repo, number, iid
+                    ):
+                        filer.comment_issue(
+                            repo, number, _comment_payload(norm, iid, quarantine=False)
+                        )
+                        existing["action"] = "reopen-pending-comment"
+                        _save_record(home, existing)
+                    filer.reopen_issue(repo, number)
+                    existing["state"] = "filed"
+                    existing["action"] = "reopened"
+                    _save_record(home, existing)
+            except GitHubDown:
+                return IntakeResult(
+                    503,
+                    {"error": "github_down"},
+                    log_safe=_safe_log(norm, existing["intake_id"], "duplicate_recovery_failed"),
+                )
         body = _intake_public_fields(existing)
         body["queued"] = False
         body["duplicate"] = True

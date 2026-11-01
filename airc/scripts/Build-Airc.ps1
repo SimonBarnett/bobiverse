@@ -33,10 +33,16 @@ $hidden = @('account_map', 'airc_console', 'airc_jobs', 'airc_dcc_bulk', 'airc_c
 $hiddenArgs = @(); foreach ($h in $hidden) { $hiddenArgs += @('--hidden-import', $h) }
 
 # FR #5522: EXTENSION GPO step needs Invoke-AircExtensionGpo.ps1 inside the onefile
-# image (gpo_script_path reads _MEIPASS). Windows --add-data is src;dest.
+# image (gpo_script_path reads _MEIPASS). FR #5766: Python UPDATE intake runs the
+# shared reporter from the same directory. Windows --add-data is src;dest.
 $gpoPs1 = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'scripts\Invoke-AircExtensionGpo.ps1'
 if (-not (Test-Path -LiteralPath $gpoPs1)) { throw "missing $gpoPs1" }
-$addDataArgs = @('--add-data', ($gpoPs1 + ';.'))
+$intakePs1 = Get-BobiverseRepoPath -Root $RepoRoot -Rel 'common\scripts\Report-BobiverseIntakeIssue.ps1'
+if (-not (Test-Path -LiteralPath $intakePs1)) { throw "missing $intakePs1" }
+$addDataArgs = @(
+    '--add-data', ($gpoPs1 + ';.'),
+    '--add-data', ($intakePs1 + ';.')
+)
 
 if (-not $Python) {
     foreach ($c in @((Get-Command python.exe -ErrorAction SilentlyContinue).Source, 'C:\Program Files\Python312\python.exe', 'C:\Python312\python.exe')) {

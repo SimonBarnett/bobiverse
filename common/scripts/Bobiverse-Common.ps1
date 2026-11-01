@@ -1017,7 +1017,8 @@ function Send-BobiverseAircInstallFailureIntake {
 
 function Get-BobiverseUpdateFailureIdempotencyKey {
     <#
-      FR #5279: machine + product + tag + result. Stable across retries.
+      FR #5279 / #5766: machine + product + result. Tag is diagnostic only,
+      because Python and PowerShell may see different/unknown release tags.
     #>
     param(
         [string]$Machine = '',
@@ -1030,16 +1031,15 @@ function Get-BobiverseUpdateFailureIdempotencyKey {
     if (-not $mid) { $mid = [string]$env:COMPUTERNAME }
     $mid = ($mid.ToLowerInvariant() -replace '[^a-z0-9-]', '-')
     $prod = ($(if ($Product) { $Product } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
-    $tg = ($(if ($Tag) { $Tag } else { '-' })) -replace '[^A-Za-z0-9._-]', '-'
     $res = ($(if ($Result) { $Result } else { 'unknown' })).ToLowerInvariant() -replace '[^a-z0-9-]', '-'
-    return ('airc-update-fail|{0}|{1}|{2}|{3}' -f $mid, $prod, $tg, $res)
+    return ('airc-update-fail|{0}|{1}|-|{2}' -f $mid, $prod, $res)
 }
 
 
 function Send-BobiverseUpdateFailureIntake {
     <#
-      FR #5279: map UPDATE/Apply failure classes to intake kind=issue with
-      idempotency_key = machine|product|tag|result. Classes include
+      FR #5279 / #5766: map UPDATE/Apply failure classes to intake kind=issue with
+      idempotency_key = machine|product|-|result. Tag remains in the body. Classes include
       download-failed, msiexec-exit, msiexec-timeout, stop-failed,
       backup-failed, spawn-failed, updater-missing, asset-url-rejected
       (plus sha256-mismatch / stop-timeout / rolled-back when Set-Failure records them).
@@ -3526,4 +3526,3 @@ function Get-BobiversePublicUrl {
     if (-not $Path.StartsWith('/')) { $Path = '/' + $Path }
     return ($base + $Path)
 }
-
