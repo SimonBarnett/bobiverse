@@ -424,25 +424,41 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
                 timeout_s=timeout_s,
             )
     except Exception as exc:  # noqa: BLE001
+        # FR #5744: classify like EXTENSION #5708 (host_down / auth_failed / session_conflict).
+        from airc_network_installer.install import classify_legion_install_error
+
+        cls = classify_legion_install_error(exc, step="install")
         return {
             "ok": False,
             "status": "failed",
             "host": host,
-            "error": f"install:{type(exc).__name__}",
+            "error": cls["error"],
+            "detail": cls["detail"],
             "msi": str(msi_path),
             "log_dir": str(log_dir),
+            "failures": [
+                {
+                    "host": host,
+                    "error": cls["error"],
+                    "detail": cls["detail"],
+                    "step": cls["step"],
+                }
+            ],
         }
 
     status = str(getattr(row, "status", "") or "failed")
     ok = status in ("success", "reboot_required", "skipped", "dry-run")
-    return {
+    row_err = str(getattr(row, "error", "") or "")
+    row_step = str(getattr(row, "step", "") or "")
+    row_detail = str(getattr(row, "detail", "") or "")
+    body = {
         "ok": ok,
         "status": status,
         "host": host,
         "msi": str(msi_path),
         "action": getattr(row, "action", ""),
         "previous_version": getattr(row, "previous_version", ""),
-        "detail": getattr(row, "detail", ""),
+        "detail": row_detail,
         "log_path": getattr(row, "log_path", ""),
         "username": user,
         "has_password": bool(password),
@@ -451,6 +467,18 @@ def default_installer_run(spec: dict[str, Any], *, secret: str = "") -> dict[str
         "force": force,
         "timeout_s": timeout_s,
     }
+    if not ok and row_err:
+        # FR #5744: surface classified HostResult error/step into failures[].
+        body["error"] = row_err
+        body["failures"] = [
+            {
+                "host": host,
+                "error": row_err,
+                "detail": row_detail,
+                "step": row_step or "install",
+            }
+        ]
+    return body
 
 
 def installer_legion_work(

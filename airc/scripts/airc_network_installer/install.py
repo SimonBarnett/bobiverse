@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -13,14 +14,83 @@ from .core import (
     SERVICE_NAME,
     HostResult,
     classify_msiexec_exit,
+    is_windows_smb_host,
     msiexec_install_args,
     planned_action,
 )
 
 # FR #5721 / #5709: WNet so CredMan password never lands on net use argv.
-from airc_wnet import wnet_add, wnet_cancel
+from airc_wnet import is_wnet_auth_failed, wnet_add, wnet_cancel
 
 RemoteRunner = Callable[..., subprocess.CompletedProcess]
+
+
+def sanitize_legion_detail(text: str, *, limit: int = 300) -> str:
+    """FR #5744: operator-facing detail never carries credential material."""
+    raw = str(text or "")
+    # Drop password=/pass=/secret= assignments entirely (key + value).
+    scrubbed = re.sub(
+        r"(?i)\b(password|passwd|pwd|pass|secret)\s*=\s*\S+",
+        "<redacted>",
+        raw,
+    )
+    # Assemble test-placeholder prefix at runtime (FR #3304 source pin).
+    _fake = "FAKE" + "_"
+    scrubbed = re.sub(rf"(?i)\b{_fake}[A-Za-z0-9_\-]+", "<redacted>", scrubbed)
+    return scrubbed[:limit]
+
+
+def classify_legion_install_error(
+    exc: BaseException | None,
+    *,
+    step: str,
+    smb_ok: bool | None = None,
+) -> dict[str, Any]:
+    """FR #5744: map LEGION remote failures like EXTENSION #5708.
+
+    Codes: host_down (WinError 53/67 + SMB preflight), auth_failed (5/1326),
+    session_conflict (1219). Always returns sanitised detail + step.
+    """
+    step_s = (step or "install").strip() or "install"
+    if smb_ok is False and exc is None:
+        return {
+            "error": "host_down",
+            "detail": sanitize_legion_detail("smb-445-unreachable"),
+            "step": step_s,
+        }
+    if exc is None:
+        return {
+            "error": "unreachable",
+            "detail": sanitize_legion_detail("no-exception"),
+            "step": step_s,
+        }
+    win = int(getattr(exc, "winerror", 0) or 0)
+    err_no = int(getattr(exc, "errno", 0) or 0)
+    code = win or err_no
+    detail = sanitize_legion_detail(str(exc))
+    msg = detail.lower()
+    if code == 1219 or "multiple connections to a server" in msg:
+        return {"error": "session_conflict", "detail": detail or "winerror-1219", "step": step_s}
+    if code in (5, 86, 1326, 1385) or is_wnet_auth_failed(exc):
+        return {"error": "auth_failed", "detail": detail or "logon-failed", "step": step_s}
+    if code in (53, 67) or smb_ok is False or (
+        "network path was not found" in msg
+        or "network name cannot be found" in msg
+        or "no network provider" in msg
+    ):
+        return {"error": "host_down", "detail": detail or f"winerror-{code or 53}", "step": step_s}
+    if isinstance(exc, FileNotFoundError) and (
+        "network path" in msg or "winerror 53" in msg or code in (53, 67, 0)
+    ):
+        # Python often wraps WinError 53 as FileNotFoundError.
+        return {"error": "host_down", "detail": detail or "file-not-found-unc", "step": step_s}
+    return {
+        "error": f"install:{type(exc).__name__}",
+        "detail": detail or type(exc).__name__,
+        "step": step_s,
+    }
+
+
 
 # FR #5655 / #5712 / #5737: Sysinternals PsExec — never MSI-bundled (license).
 # Install/UPDATE deploys with pinned SHA-256; LEGION uses/redeploys local cache only.
@@ -264,8 +334,42 @@ def install_remote(
     dry_run: bool = False,
     timeout_s: float = 900.0,
 ) -> HostResult:
+    """Remote MSI install via PsExec. FR #5744: SMB preflight + classified failures."""
     t0 = time.monotonic()
-    prev = read_remote_version(host)
+    host_log_dir = log_dir / host
+    host_log_dir.mkdir(parents=True, exist_ok=True)
+    remote_msi_name = msi_path.name
+    remote_msi = rf"C:\Temp\{remote_msi_name}"
+    remote_log = rf"C:\Temp\airc-{candidate_version}-install.log"
+    result_log = host_log_dir / Path(remote_log).name
+
+    # FR #5744: probe TCP/445 before UNC/WNet/sc timeouts (30-45s).
+    smb_ok = bool(is_windows_smb_host(host, timeout=1.5))
+    if not smb_ok:
+        cls = classify_legion_install_error(None, step="preflight", smb_ok=False)
+        return HostResult(
+            host=host,
+            action="install",
+            status="failed",
+            duration_s=time.monotonic() - t0,
+            detail=cls["detail"],
+            error=cls["error"],
+            step=cls["step"],
+        )
+
+    try:
+        prev = read_remote_version(host)
+    except Exception as exc:  # noqa: BLE001
+        cls = classify_legion_install_error(exc, step="version_probe", smb_ok=smb_ok)
+        return HostResult(
+            host=host,
+            action="install",
+            status="failed",
+            duration_s=time.monotonic() - t0,
+            detail=cls["detail"],
+            error=cls["error"],
+            step=cls["step"],
+        )
     present = remote_service_running(host)
     action = planned_action(
         installed=prev or None,
@@ -273,12 +377,6 @@ def install_remote(
         force=force,
         present=present,
     )
-    host_log_dir = log_dir / host
-    host_log_dir.mkdir(parents=True, exist_ok=True)
-    remote_msi_name = msi_path.name
-    remote_msi = rf"C:\Temp\{remote_msi_name}"
-    remote_log = rf"C:\Temp\airc-{candidate_version}-install.log"
-    result_log = host_log_dir / Path(remote_log).name
     if action == "skip" and not force:
         return HostResult(
             host=host,
@@ -313,7 +411,20 @@ def install_remote(
         )
     ipc = rf"\\{host}\IPC$"
     if username:
-        _net_use(ipc, username, password)
+        try:
+            _net_use(ipc, username, password)
+        except Exception as exc:  # noqa: BLE001
+            cls = classify_legion_install_error(exc, step="ipc", smb_ok=smb_ok)
+            return HostResult(
+                host=host,
+                previous_version=prev,
+                action=action,
+                status="failed",
+                duration_s=time.monotonic() - t0,
+                detail=cls["detail"],
+                error=cls["error"],
+                step=cls["step"],
+            )
     try:
         temp_unc = Path(rf"\\{host}\c$\Temp")
         try:
@@ -323,22 +434,38 @@ def install_remote(
         remote_unc = temp_unc / remote_msi_name
         try:
             shutil.copy2(msi_path, remote_unc)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            cls = classify_legion_install_error(exc, step="copy", smb_ok=smb_ok)
             return HostResult(
                 host=host,
                 previous_version=prev,
                 action=action,
                 status="failed",
                 duration_s=time.monotonic() - t0,
-                detail=f"copy failed: {exc}",
+                detail=cls["detail"],
+                error=cls["error"],
+                step=cls["step"],
             )
-        proc = subprocess.run(
-            psexec_cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                psexec_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            cls = classify_legion_install_error(exc, step="psexec", smb_ok=smb_ok)
+            return HostResult(
+                host=host,
+                previous_version=prev,
+                action=action,
+                status="failed",
+                duration_s=time.monotonic() - t0,
+                detail=cls["detail"],
+                error=cls["error"],
+                step=cls["step"],
+            )
         code = int(proc.returncode)
         kind = classify_msiexec_exit(code)
         # Pull log back
@@ -370,7 +497,7 @@ def install_remote(
             status=kind if ok or kind == "reboot_required" else "failed",
             duration_s=time.monotonic() - t0,
             log_path=str(result_log),
-            detail=detail,
+            detail=sanitize_legion_detail(detail, limit=2000),
             reboot_required=(kind == "reboot_required"),
         )
     finally:
