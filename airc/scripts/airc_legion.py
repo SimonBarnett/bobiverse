@@ -793,6 +793,17 @@ def installer_legion_work(
     except TypeError:
         out = runner(spec)
     status = str((out or {}).get("status") or "")
+    # FR #5782: skipped/already-current must report the host's actual profile
+    # (profile_before), not the resolved install choice (e.g. silent client).
+    if status == "skipped":
+        unchanged_profile = str(rp.get("profile_before") or "").strip() or "unchanged"
+        rp = {
+            "profile": unchanged_profile,
+            "profile_before": unchanged_profile,
+            "profile_after": unchanged_profile,
+            "profile_warn": "",
+        }
+        chosen_profile = unchanged_profile
     fails = list((out or {}).get("failures") or [])
     err = (out or {}).get("error")
     detail = str((out or {}).get("detail") or "")
