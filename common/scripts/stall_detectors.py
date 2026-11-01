@@ -5,6 +5,7 @@ Each detector returns zero or more findings:
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import gitclaim
@@ -101,6 +102,10 @@ def detect_self_review_deadlock(snap: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     ledger = snap.get("ledger") or {}
     for row in waiting:
+        if snap.get("home") and gitclaim.mrb_has_eligible_reviewer(
+            Path(snap["home"]), row, idle, ledger=ledger, now=snap.get("now"),
+        ):
+            return []
         for nick in idle:
             if _idle_blocked(row, nick, live, idle, ledger):
                 continue

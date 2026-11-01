@@ -8862,6 +8862,20 @@ def _mrb_idle_block_reason(
     return ""
 
 
+def mrb_has_eligible_reviewer(
+    home: Path, row: dict, live: set[str], *, ledger: dict | None = None,
+    now: float | None = None,
+) -> bool:
+    """A busy third-party seat can eventually review; Copilot must pass dispatch."""
+    import copilot_dispatch
+
+    led = ledger if ledger is not None else ledger_load(home)
+    humans = {n for n in live if str(n).strip().lower() != "copilot"}
+    return any(
+        not _mrb_idle_block_reason(row, nick, humans, led) for nick in humans
+    ) or copilot_dispatch.mrb_reviewer_available(home, row, ledger=led, now=now)
+
+
 def detect_mrb_reviewer_deadlock(
     home: Path,
     *,
@@ -8869,6 +8883,7 @@ def detect_mrb_reviewer_deadlock(
     live: set[str] | None = None,
     rows: list | None = None,
     ledger: dict | None = None,
+    now: float | None = None,
 ) -> dict | None:
     """Return deadlock info when every idle seat is ineligible for every waiting MRB.
 
@@ -8881,6 +8896,9 @@ def detect_mrb_reviewer_deadlock(
         for n in seats_idle
         if (canonical_worker_nick(n) or n or "").strip()
     }
+    # Virtual seats cannot be recycled or have GIVEUP cleared as cross-seat heal.
+    seats_idle = {n for n in seats_idle if n.lower() != "copilot"}
+    seats_live = {n for n in seats_live if n.lower() != "copilot"}
     if not seats_idle:
         return None
     if rows is None:
@@ -8900,6 +8918,13 @@ def detect_mrb_reviewer_deadlock(
     if not mrb_rows:
         return None
     led = ledger if ledger is not None else ledger_load(home)
+    import copilot_dispatch
+
+    if any(
+        copilot_dispatch.mrb_reviewer_available(home, row, ledger=led, now=now)
+        for row in mrb_rows
+    ):
+        return None
     for nick in seats_idle:
         for row in mrb_rows:
             if not _mrb_idle_block_reason(row, nick, seats_live, led):
@@ -9007,6 +9032,7 @@ def heal_mrb_reviewer_deadlock(
             live=seats_live,
             rows=doc_rows,
             ledger=ledger,
+            now=now_f,
         )
 
     lines: list[str] = []
